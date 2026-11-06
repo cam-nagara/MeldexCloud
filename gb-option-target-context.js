@@ -170,9 +170,7 @@
     const descriptor = describeOptionTarget(rawContext, options);
     const caption = header.querySelector('.gb-context-target-header__caption');
     const name = header.querySelector('.gb-context-target-header__name');
-    const editor = global.GBEditorHost?.get();
-    const sourceCaption = global.GBEditorHost ? (editor?.surface === 'subpanel' ? '対象 サブ' : '対象 メイン') : '対象';
-    if (caption) caption.textContent = String(options?.caption || sourceCaption);
+    if (caption) caption.textContent = String(options?.caption || '対象');
     if (name) {
       name.textContent = descriptor.label;
       name.title = descriptor.title || descriptor.label;

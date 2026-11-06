@@ -96,7 +96,6 @@ const UI_STYLE_SECTIONS = {
     { label: 'パネル内タブ 通常', fg:'--ui-inner-tab-fg', bg:'--ui-inner-tab-bg', line:'--ui-inner-tab-border', width:'--ui-inner-tab-border-width', leftAccent:'--ui-inner-tab-left-accent', underline:'--ui-inner-tab-underline', accent:'--ui-inner-tab-accent-color', bold:'--ui-inner-tab-font-weight', italic:'--ui-inner-tab-font-style', fontSize:'--ui-inner-tab-font-size', text:'タブ', font:'--ui-inner-tab-font', lineHeight:'--ui-inner-tab-line-height' },
     { label: 'パネル内タブ ホバー', fg:'--ui-inner-tab-hover-fg', bg:'--ui-inner-tab-hover-bg', line:'--ui-inner-tab-hover-border', leftAccent:'--ui-inner-tab-hover-left-accent', underline:'--ui-inner-tab-hover-underline', accent:'--ui-inner-tab-hover-accent-color', text:'ホバー' },
     { label: 'パネル内タブ 選択', fg:'--ui-inner-tab-active-fg', bg:'--ui-inner-tab-active-bg', line:'--ui-inner-tab-active-border', width:'--ui-inner-tab-active-border-width', leftAccent:'--ui-inner-tab-active-left-accent', underline:'--ui-inner-tab-active-underline-width', accent:'--ui-inner-tab-active-underline', bold:'--ui-inner-tab-active-font-weight', italic:'--ui-inner-tab-active-font-style', fontSize:'--ui-inner-tab-active-font-size', font:'--ui-inner-tab-active-font', lineHeight:'--ui-inner-tab-active-line-height', text:'選択中' },
-    { label: 'パネル内タブ 選択背景濃度', numbers:[{ label:'濃度', key:'--ui-inner-tab-active-bg-alpha', min:0, max:100, step:1, unit:'%', slider:true, fallback:14 }], text:'14%' },
     { label: 'パネル内タブ サイズ', numbers:[{ label:'高さ', key:'--ui-inner-tab-height', min:18, max:56, step:1, unit:'px', fallback:28 }, { label:'左右余白', key:'--ui-inner-tab-padding-x', min:0, max:40, step:1, unit:'px', fallback:12 }], text:'タブ' },
     { label: '強調文字', fg:'--ui-accent-fg', previewBg:'--ui-accent', text:'強調文字' },
     { label: 'スライダー', previewType:'slider', fg:'--ui-range-fill-bg', fgLabel:'塗り', bg:'--ui-range-track-bg', bgLabel:'残り', text:'スライダー' },
@@ -419,6 +418,7 @@ function applySettingsThemeStyleSetting(key, value, options = {}) {
 
 function getAllStyleKeys() {
   const keys = new Set(typeof SETTINGS_SIMPLE_THEME_BASE_KEYS === 'undefined' ? [] : SETTINGS_SIMPLE_THEME_BASE_KEYS);
+  keys.add('--ui-inner-tab-active-bg-alpha'); // Preserve legacy mixes until their color is edited.
   for (const defs of Object.values(UI_STYLE_SECTIONS)) {
     defs.forEach(d => {
       if(d.fg) keys.add(d.fg); if(d.bg) keys.add(d.bg);
@@ -938,7 +938,7 @@ function renderStyleRow(d) {
 
   // 線色タイプ
   if (d.line) {
-    const hex = lineVal.startsWith('#') ? lineVal : rgbToHex(lineVal);
+    const hex = lineVal;
     row += `<div class="cs-row-group">
       <span class="cs-row-group-label">線色</span>
       <div class="cs-swatch" style="${_settingsThemeSwatchStyle(hex)}"
@@ -955,7 +955,7 @@ function renderStyleRow(d) {
 
   // 文字色スウォッチ
   if (d.fg) {
-    const hex = fgVal.startsWith('#') ? fgVal : rgbToHex(fgVal);
+    const hex = fgVal;
     row += `<div class="cs-row-group">
       <span class="cs-row-group-label">${esc(d.fgLabel || '文字')}</span>
       <div class="cs-swatch" style="${_settingsThemeSwatchStyle(hex)}"
@@ -992,23 +992,8 @@ function renderStyleRow(d) {
 
   // 背景色スウォッチ
   if (d.bg) {
-    if (d.bgType === 'rgba') {
-      // スウォッチ + 不透明度スライダー（rgba/transparent対応）
-      const { hex: bgHex, alpha: bgAlpha } = parseColorToHexAlpha(bgVal);
-      const pct = Math.round(bgAlpha * 100);
-      row += `<div class="cs-row-group">
-        <span class="cs-row-group-label">背景</span>
-        <div class="cs-swatch" style="${_settingsThemeSwatchStyle(bgVal)}"
-          data-e2e-id="${esc(_settingsThemeE2eId('settings-theme-swatch', d.bg))}" data-key="${esc(d.bg)}" data-hex="${esc(bgHex)}" data-rgba="1" data-action="openCsPaletteRgba(this,'${d.bg}')"></div>
-        <input type="range" min="0" max="100" value="${pct}" class="cs-alpha" data-e2e-id="${esc(_settingsThemeE2eId('settings-theme-alpha', d.bg))}" data-key="${d.bg}"
-          data-oninput="this.nextElementSibling.textContent=this.value+'%';updateBgFromSwatchAlpha('${d.bg}')">
-        <span class="cs-alpha-val">${pct}%</span>
-      </div>`;
-    } else {
-      const hex = bgVal.startsWith('#') ? bgVal : rgbToHex(bgVal);
-      row += `<div class="cs-row-group">
+    row += `<div class="cs-row-group">
       <span class="cs-row-group-label">${esc(d.bgLabel || '背景')}</span>
-      <div class="cs-swatch" style="${_settingsThemeSwatchStyle(hex)}"
-          data-e2e-id="${esc(_settingsThemeE2eId('settings-theme-swatch', d.bg))}" data-key="${esc(d.bg)}" data-action="openCsPalette(this,'${d.bg}')"></div>
-      </div>`;
-    }
+      <div class="cs-swatch" style="${_settingsThemeSwatchStyle(bgVal)}"
+        data-e2e-id="${esc(_settingsThemeE2eId('settings-theme-swatch', d.bg))}" data-key="${esc(d.bg)}" data-action="openCsPalette(this,'${d.bg}')"></div>
+    </div>`;

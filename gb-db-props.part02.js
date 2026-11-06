@@ -177,7 +177,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const rowPath = sourceRow?.dataset?.entityName === entityName ? sourceRow.dataset.meldexEntityPath : '';
   const ep = rowPath || _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
-  // サブパネル内では、サブパネルで開く・チャットを開く等の
+  // サブパネル内では、右サイドバーで開く・チャットを開く等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -221,7 +221,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
       else selectEntity(ep);
     } },
-    ...(canUseRightSidebar ? [{ icon: 'panelRight', label: 'サブパネルで開く', action: () => {
+    ...(canUseRightSidebar ? [{ icon: 'panelRight', label: '右サイドバーで開く', action: () => {
       if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e?.target || null });
       else selectEntity(ep);
     } }] : []),

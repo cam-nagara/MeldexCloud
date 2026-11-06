@@ -545,19 +545,85 @@
         <p>取り込み範囲: <strong id="google-personal-scope">マイドライブ全体</strong></p>
         <p><label>対応するGoogleフォルダURL <input id="google-personal-folder" class="gb-input" type="url" value="${PERSONAL_MY_DRIVE_URL}" aria-describedby="google-personal-folder-help" placeholder="https://drive.google.com/drive/folders/…"></label></p>
         <button type="button" id="google-personal-folder-auto" class="gb-btn gb-btn-sm">全体のURLを設定</button>
+        <details class="google-personal-help"><summary>保存先・変換内容について</summary>
         <p id="google-personal-folder-help">保存先に対応する全体のURLを自動設定します。共有ドライブの親フォルダを選んだ場合は、配下の共有ドライブをまとめて対象にします。一部だけを取り込む場合は、対応するGoogleフォルダのURLへ変更できます。</p>
         <p>文書・表を先に検索し、保存に必要な親フォルダだけを確認します。選んだフォルダの配下も対象です。Docsはノート、Sheetsは全タブを含むシートに変換します。画像・コメント・組版・グラフ・数式の再計算は再現対象外です。作成したコピーもDriveの同期・共有対象になります。オフライン利用にはDrive側でも「オフラインで使用可能」にしてください。</p>
-        <button type="button" id="google-personal-preview" class="gb-btn gb-btn-sm">対象と保存先を確認</button>
-        <button type="button" id="google-personal-preview-cancel" class="gb-btn gb-btn-sm" hidden>対象の確認を停止</button>
-        <p id="google-personal-progress" role="status" aria-live="polite"></p>
-        <div id="google-personal-results" role="region" aria-label="取り込み対象と結果"></div>
-        <button type="button" id="google-personal-run" class="gb-btn gb-btn-sm" hidden>確認した保存先へ取り込む</button>
-        <button type="button" id="google-personal-cancel" class="gb-btn gb-btn-sm" hidden>取り込みを停止</button>
-        <p id="google-personal-message" role="status" aria-live="polite"></p>`;
+        </details>
+        <section class="google-personal-task" id="google-personal-task" data-stage="idle" aria-label="Google取り込みの状態">
+          <h4 id="google-personal-task-title">対象と保存先を確認してください</h4>
+          <div id="google-personal-summary" class="google-personal-summary"></div>
+          <div id="google-personal-meters" class="google-personal-meters" hidden>
+            <label for="google-personal-overall-meter" id="google-personal-overall-label"></label>
+            <progress id="google-personal-overall-meter" max="1" value="0"></progress>
+            <div id="google-personal-current" hidden>
+              <label for="google-personal-current-meter" id="google-personal-current-label"></label>
+              <progress id="google-personal-current-meter" max="1" value="0"></progress>
+            </div>
+            <p class="google-personal-background-note">設定を閉じて、ほかの作業を続けられます。Meldex本体は起動したままにしてください。</p>
+          </div>
+          <p id="google-personal-message" role="status" aria-live="polite"></p>
+          <div class="google-personal-task-actions">
+            <button type="button" id="google-personal-preview" class="gb-btn gb-btn-sm">対象と保存先を確認</button>
+            <button type="button" id="google-personal-preview-cancel" class="gb-btn gb-btn-sm" hidden>対象の確認を停止</button>
+            <button type="button" id="google-personal-run" class="gb-btn gb-btn-primary" hidden>取り込みを開始</button>
+            <button type="button" id="google-personal-cancel" class="gb-btn gb-btn-sm" hidden>取り込みを停止</button>
+          </div>
+          <details id="google-personal-scan-details" class="google-personal-task-details" hidden>
+            <summary>対象確認の詳細</summary>
+            <p id="google-personal-progress"></p>
+          </details>
+          <details id="google-personal-result-details" class="google-personal-task-details" hidden>
+            <summary id="google-personal-result-summary">対象一覧</summary>
+            <div id="google-personal-results" role="region" aria-label="取り込み対象と結果"></div>
+          </details>
+        </section>`;
       // Put the actionable personal flow before the separately configured
       // managed importer. Its connection and destination are independent.
       root.querySelector('#google-import-details').prepend(panel);
       const find = id => panel.querySelector('#google-personal-' + id);
+      const count = value => Math.max(0, Number(value) || 0);
+      const stage = (name, title) => {
+        find('task').dataset.stage = name;
+        find('task-title').textContent = title;
+        find('preview').hidden = ['importing', 'cancelling', 'starting'].includes(name);
+        find('meters').hidden = !['importing', 'cancelling'].includes(name);
+      };
+      const summary = entries => {
+        find('summary').replaceChildren();
+        for (const [label, value] of entries) {
+          const item = document.createElement('span');
+          const amount = document.createElement('strong');
+          amount.textContent = count(value).toLocaleString() + '件';
+          item.append(document.createTextNode(label + ' '), amount);
+          find('summary').appendChild(item);
+        }
+      };
+      const resetTask = () => {
+        stage('idle', '対象と保存先を確認してください');
+        summary([]);
+        find('scan-details').hidden = true;
+        find('progress').textContent = '';
+      };
+      const importing = job => {
+        stage(job.cancel ? 'cancelling' : 'importing', job.cancel ? '取り込みを停止しています' : 'Googleドライブから取り込み中');
+        summary([]);
+        find('run').hidden = true;
+        find('result-details').hidden = true;
+        find('result-details').open = false;
+        find('scan-details').hidden = true;
+        find('progress').textContent = '';
+        const total = Math.max(1, count(job.total));
+        find('overall-label').textContent = `全体：${count(job.processed).toLocaleString()} / ${count(job.total).toLocaleString()}ファイルを処理済み`;
+        find('overall-meter').max = total;
+        find('overall-meter').value = Math.min(total, count(job.processed));
+        const sheet = job.phase === 'sheet-records' && count(job.record_total) > 0;
+        find('current').hidden = !sheet;
+        if (sheet) {
+          find('current-label').textContent = `現在のシート：${job.item_name || 'シート'} — ${count(job.record_processed).toLocaleString()} / ${count(job.record_total).toLocaleString()}行を保存`;
+          find('current-meter').max = count(job.record_total);
+          find('current-meter').value = Math.min(count(job.record_total), count(job.record_processed));
+        }
+      };
       const message = text => { find('message').textContent = text; };
       const selectedTargets = () => ['docs', 'sheets'].filter(key => find(key).checked);
       const updatePreviewEnabled = () => {
@@ -624,11 +690,16 @@
         rows = rows || [];
         const generation = panel._outputGeneration = (panel._outputGeneration || 0) + 1;
         const total = paging?.total ?? rows.length;
+        find('result-details').hidden = !total;
+        find('result-summary').textContent = `${panel._job ? '取り込み結果' : '対象と保存先'}の一覧（${total.toLocaleString()}件）`;
+        if (!total) find('result-details').open = false;
         const size = 200;
+        const loadPage = paging?.load || (async offset => ({ items: rows.slice(offset, offset + size), offset }));
         let pageError = null;
         let beforePageError = null;
         const render = (pageRows, offset) => {
           if (panel._outputGeneration !== generation) return;
+          panel._outputState = { rows: pageRows, paging: { total, offset, load: loadPage } };
           find('results').replaceChildren();
           if (total > size) {
             const nav = document.createElement('nav');
@@ -642,7 +713,7 @@
                 for (const item of nav.querySelectorAll('button')) item.disabled = true;
                 try {
                   const nextOffset = offset + delta;
-                  const data = paging?.load ? await paging.load(nextOffset) : { items: rows.slice(nextOffset, nextOffset + size), offset: nextOffset };
+                  const data = await loadPage(nextOffset);
                   if (panel._outputGeneration !== generation) return;
                   render(data.items, data.offset);
                   if (pageError && find('message').textContent === pageError) message(beforePageError);
@@ -666,8 +737,27 @@
           const list = document.createElement('ul');
           for (const row of pageRows) {
             const item = document.createElement('li');
-            const labels = { ready: '作成予定', created: '作成済み', skipped: '成功済み・スキップ', failed: '失敗', blocked: '要確認', unsupported: '未対応', warning: '警告' };
-            item.textContent = `${labels[row.status] || row.status}: ${row.name}${row.relative ? ' → ' + row.relative : ''}${row.message ? ' / ' + row.message : ''}`;
+            item.dataset.status = row.status;
+            const labels = { ready: '取り込み予定', created: '取り込み済み', skipped: '取り込み済み', failed: '失敗', blocked: '要確認', unsupported: '未対応', warning: '警告' };
+            const badge = document.createElement('span');
+            badge.className = 'google-personal-result-status';
+            badge.textContent = labels[row.status] || row.status;
+            const content = document.createElement('div');
+            const name = document.createElement('strong');
+            name.textContent = row.name;
+            content.appendChild(name);
+            if (row.relative) {
+              const path = document.createElement('div');
+              path.className = 'google-personal-result-path';
+              path.textContent = row.relative;
+              content.appendChild(path);
+            }
+            if (row.message && row.status !== 'skipped') {
+              const detail = document.createElement('div');
+              detail.textContent = row.message;
+              content.appendChild(detail);
+            }
+            item.append(badge, content);
             list.appendChild(item);
           }
           find('results').appendChild(list);
@@ -681,7 +771,7 @@
         panel._checkedImportRecovery = panel._checkedPreviewRecovery = true;
         invalidate(); output([]);
         panel._previewJob = panel._job = null;
-        find('progress').textContent = '';
+        resetTask();
         find('preview').textContent = '対象と保存先を確認';
       };
       const setBusy = busy => {
@@ -698,7 +788,10 @@
       };
       const act = fn => async () => {
         try { await fn(); }
-        catch (err) { message(err.userMessage || err.message || '操作に失敗しました'); }
+        catch (err) {
+          if (find('task').dataset.stage === 'checking' && !panel._previewJob) stage('attention', '対象確認を開始できませんでした');
+          message(err.userMessage || err.message || '操作に失敗しました');
+        }
       };
       const watchPreview = async jobId => {
         if (panel._watchingPreview === jobId) return;
@@ -712,8 +805,11 @@
             const phaseLabel = job.status === 'running' ? (({ documents: '文書・表を検索', locations: '保存場所を確認', shortcuts: '文書・表へのリンクを確認' }[job.phase] || '')
               + (job.scope_label ? ' / ' + job.scope_label : '')) : '';
             find('progress').textContent = `${progressLabel}${phaseLabel ? '（' + phaseLabel + '）' : ''}: 文書・表取得 ${job.loaded ?? 0}件 / 保存場所確認 ${job.checked ?? 0}件 / 必要フォルダ ${job.folders ?? 0} / 文書・表へのリンク確認 ${job.aliases ?? 0}件 / 一覧 ${job.found}件`;
+            find('scan-details').hidden = false;
             find('preview-cancel').disabled = !!job.cancel;
             if (job.status === 'running') {
+              stage('checking', job.cancel ? '対象確認を停止しています' : '取り込み対象を確認中');
+              summary([['見つかった対象', job.found]]);
               if (job.cancel) message('停止を要求しました。実行中のGoogle応答が戻り次第停止します。');
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
@@ -723,12 +819,18 @@
             if (job.status === 'done') {
               const plan = job.result;
               panel._plan = plan.plan_id;
+              const counts = plan.counts || {};
+              const attention = count(counts.blocked) + count(counts.unsupported);
+              stage('ready', plan.ready ? '対象確認が完了しました。取り込みは未実行です' : attention ? '対象確認が完了しました。確認が必要な項目があります' : '新たに取り込む対象はありません');
+              summary([['対象', plan.total], ['今回取り込む', plan.ready], ['取り込み済み', counts.skipped || 0], ...(attention ? [['要確認・未対応', attention]] : [])]);
               output(plan.items, { total: plan.total, offset: plan.offset, load: offset => apiFetch(`/google-import/local/plans/${encodeURIComponent(plan.plan_id)}?offset=${offset}`, { silentError: true }) });
-              find('run').textContent = '確認した保存先へ取り込む';
+              find('run').textContent = `${counts.skipped ? '残り' : ''}${count(plan.ready).toLocaleString()}件を取り込む`;
               find('run').hidden = !plan.ready;
-              message(`対象 ${plan.total}件。保存先と要確認・未対応の項目を確認してください。成功済みコピーは上書きしません。`);
+              message(`対象 ${plan.total}件。取り込み済みは保存記録に基づく表示です。編集・移動・削除後も上書き・再作成しません。${plan.ready ? '下のボタンで取り込みを開始してください。' : ''}`);
             } else {
               invalidate(); output([]);
+              stage('attention', job.status === 'cancelled' ? '対象確認を停止しました' : '対象確認を完了できませんでした');
+              summary([]);
               find('preview').textContent = job.resumable ? '全体の確認を再開' : '対象と保存先を確認';
               message(job.message || '対象の確認を完了できませんでした。もう一度確認してください。');
             }
@@ -751,9 +853,10 @@
             if (!panel.isConnected || panel._job !== jobId) return;
             if (job._progressUnavailable) { message(job.message); await pause(1000); continue; }
             if (job.status === 'running') {
-              const detail = job.phase === 'sheet-records'
-                ? ` / ${job.item_name || 'シート'}: シート内のデータを保存 ${job.record_processed ?? 0} / ${job.record_total ?? 0}` : '';
-              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。' : `全体を取り込み中 ${job.processed} / ${job.total}${detail}`);
+              importing(job);
+              message(job.cancel ? '停止を要求しました。確定済みファイルは残ります。'
+                : job.phase === 'sheet-records' ? 'このシートの保存が終わると、次のファイルへ進みます。'
+                  : job.item_name ? `現在のファイル：${job.item_name}` : '次のファイルを確認しています。');
               await new Promise(resolve => setTimeout(resolve, 1000));
               continue;
             }
@@ -761,7 +864,14 @@
             find('cancel').hidden = true;
             const result = job.result;
             if (result) {
+              const attention = ['failed', 'blocked', 'unsupported', 'unprocessed'].some(key => count(result[key]) > 0);
+              const warnings = count(result.warnings) > 0;
+              const stopped = job.cancel || job.status === 'cancelled';
+              stage(job.status === 'failed' || attention || stopped || warnings ? 'attention' : 'complete', job.status === 'failed' ? '取り込みを完了できませんでした' : stopped ? '取り込みを停止しました' : attention ? '取り込みが終了しました。未完了の項目があります' : warnings ? '取り込みが完了しました（注意事項あり）' : '取り込みが完了しました');
+              summary([['新規取り込み', result.created], ['取り込み済み', result.skipped], ['失敗', result.failed], ['未処理', result.unprocessed],
+                ...(count(result.blocked) ? [['要確認', result.blocked]] : []), ...(count(result.unsupported) ? [['未対応', result.unsupported]] : []), ...(count(result.warnings) ? [['警告', result.warnings]] : [])]);
               output(result.items, { total: result.total, offset: result.offset, load: offset => apiFetch(`/google-import/local/jobs/${encodeURIComponent(jobId)}?offset=${offset}`, { silentError: true }).then(value => value.result) });
+              find('result-summary').textContent = `取り込み結果の詳細（${count(result.total).toLocaleString()}件）`;
               message(`${job.status === 'failed' ? '取り込み停止: ' + (job.message || '') + ' / ' : ''}取り込み結果: 作成${result.created} / 警告${result.warnings} / スキップ${result.skipped} / 失敗${result.failed} / 要確認${result.blocked} / 未対応${result.unsupported} / 未処理${result.unprocessed}。`);
               invalidate();
               if (result.retry_requires_preview) {
@@ -772,6 +882,8 @@
                 find('run').hidden = false;
               }
             } else {
+              stage('attention', '取り込みを完了できませんでした');
+              summary([]);
               invalidate();
               if (job.plan_id) {
                 panel._plan = job.plan_id;
@@ -838,7 +950,9 @@
             : summary ? `個人用 前回: 作成${summary.created} / スキップ${summary.skipped} / 失敗${summary.failed} / 要確認${summary.blocked} / 未対応${summary.unsupported} / 未処理${summary.unprocessed}`
               : '個人用 前回: 開始失敗';
         } else {
-          root.querySelector('#google-import-last-run').textContent = lastRunLabel(root._googlePayload?.config?.run_state);
+          root.querySelector('#google-import-last-run').textContent = status.configured
+            ? '個人用：取り込み済みの件数は対象確認で確認できます'
+            : lastRunLabel(root._googlePayload?.config?.run_state);
         }
         const importNewer = importJob && (!status.preview_job || importJob.created >= status.preview_job.created);
         const restoreImport = importJob && (importJob.status === 'running' || panel._job === importJob.job_id || (!panel._checkedImportRecovery && importNewer));
@@ -923,7 +1037,7 @@
       const selectionChanged = () => {
         invalidate(); output([]);
         find('preview').textContent = '対象と保存先を確認';
-        find('progress').textContent = '';
+        resetTask();
         updatePreviewEnabled();
         message(selectedTargets().length ? '対象と保存先を確認してください。' : '取り込み対象を1つ以上選択してください。');
       };
@@ -952,6 +1066,8 @@
         find('preview').textContent = '対象と保存先を確認';
         output([]);
         find('progress').textContent = '';
+        stage('checking', '取り込み対象を確認中');
+        summary([]);
         message('Googleの対象とローカルの保存先を確認しています...');
         find('preview').disabled = true;
         panel._previewStarting = true;
@@ -982,6 +1098,14 @@
       }));
       find('run').addEventListener('click', act(async () => {
         if (!panel._plan) return;
+        const previousTitle = find('task-title').textContent;
+        const previousOutput = panel._outputState;
+        stage('starting', '取り込みを開始しています');
+        find('scan-details').hidden = true;
+        find('result-details').open = false;
+        find('result-details').hidden = true;
+        // An in-flight preview page must not restore the old confirmation list.
+        panel._outputGeneration = (panel._outputGeneration || 0) + 1;
         find('run').disabled = true;
         panel._importStarting = true;
         setBusy(true);
@@ -989,6 +1113,10 @@
           panel._job = (await apiPost('/google-import/local/run', { plan_id: panel._plan }, { silentError: true })).job_id;
           observePersonalJob('import', panel._job);
           find('cancel').hidden = false;
+        } catch (error) {
+          stage('ready', previousTitle);
+          if (previousOutput) output(previousOutput.rows, previousOutput.paging);
+          throw error;
         } finally {
           panel._importStarting = false;
           await refresh();

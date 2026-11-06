@@ -13,7 +13,7 @@
     const backup = JSON.stringify(root);
     // Build the migration off the live tree so a failed conversion cannot remove tabs.
     root = JSON.parse(backup);
-    let tab = null, wasOpen = false;
+    let tab = null;
     function remove(node) {
       if (node.type === 'pane') {
         const active = node.tabs?.[node.activeTabIndex];
@@ -22,10 +22,6 @@
         node.activeTabIndex = node.tabs.length ? Math.max(0, node.tabs.indexOf(active)) : -1;
       } else if (node.type === 'split') node.children.forEach(remove);
       else if (node.type === 'panelset') {
-        const selected = node.groups.find(g => g.id === node.activeGroupId);
-        if (node.meldexRole === 'right-sidebar') {
-          wasOpen ||= !node.collapsed && GBLayout.getAllPanes(selected?.root).some(p => p.tabs?.[p.activeTabIndex]?.type === 'subpanel');
-        }
         const oldGroups = new Set(node.groups.filter(g => GBLayout.getAllPanes(g.root).some(p => p.tabs?.some(t => t.type === 'subpanel'))));
         node.groups.forEach(g => remove(g.root));
         node.groups = node.groups.filter(g => !oldGroups.has(g) || GBLayout.getAllPanes(g.root).some(p => p.tabs?.length));
@@ -43,7 +39,7 @@
     const dock = GBPanelSet.createPanelSetNode([group], group.id);
     dock.meldexRole = ROLE;
     dock.defaultPopupWidth = 440;
-    dock.collapsed = !wasOpen;
+    dock.collapsed = true;
     function insert(node) {
       if (node.type === 'split') {
         const index = node.children.findIndex(child => child.meldexRole === 'right-sidebar');

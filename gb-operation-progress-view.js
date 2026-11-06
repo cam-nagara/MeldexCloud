@@ -5,7 +5,11 @@
 
   const originNodes = new Map();
   let tray = null;
+  let modalHost = null;
   let liveRegion = null;
+  let trayLayoutRoot = null;
+  let trayLayoutObserver = null;
+  let trayPositionFrame = 0;
 
   function _text(value) { return String(value == null ? '' : value); }
 
@@ -70,7 +74,7 @@
   }
 
   function _ensureTray() {
-    if (tray?.isConnected) return tray;
+    if (tray) { _syncTrayHost(); return tray; }
     tray = document.createElement('section');
     tray.id = 'meldex-operation-tray';
     tray.className = 'meldex-operation-tray';
@@ -78,7 +82,69 @@
     tray.setAttribute('aria-label', '進行中の処理');
     tray.hidden = true;
     document.body.appendChild(tray);
+    _syncTrayHost();
     return tray;
+  }
+
+  function _syncTrayHost(preferred) {
+    if (!tray) return;
+    // Native modal dialogs occupy the browser top layer, above every z-index.
+    // Keep the same tray inside the active dialog so it remains visible and
+    // interactive, then return it to body on close (even if the dialog is removed).
+    if (preferred?.matches('dialog:modal')) modalHost = preferred;
+    if (!modalHost?.matches('dialog:modal') || !modalHost.isConnected) {
+      modalHost = Array.from(document.querySelectorAll('dialog:modal')).at(-1) || null;
+    }
+    const host = modalHost || document.body;
+    if (tray.parentElement !== host) host.appendChild(tray);
+  }
+
+  function _syncTrayPosition() {
+    if (!tray?.isConnected || tray.hidden) return;
+    tray.style.removeProperty('bottom');
+    tray.style.removeProperty('--meldex-operation-available-height');
+    const rail = document.querySelector('.gb-dock-fixed-right .gb-dock-bar-right');
+    const rect = rail?.getBoundingClientRect();
+    // チャットは右レールの外側に開くため、レールの実座標を基準にする。
+    const zoom = typeof _getZoom === 'function' ? _getZoom()
+      : (parseFloat(getComputedStyle(document.documentElement).zoom) || 1);
+    if (rect?.width && rect.height) {
+      const inset = Math.max(0, (window.innerWidth - rect.left) / zoom);
+      tray.style.setProperty('--meldex-operation-right-inset', (inset + 8) + 'px');
+    } else {
+      tray.style.removeProperty('--meldex-operation-right-inset');
+    }
+    // 前面表示を維持したまま、設定の「閉じる」等の操作を覆わない。
+    const box = tray.getBoundingClientRect();
+    let actionTop = window.innerHeight;
+    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button')) {
+      const action = button.getBoundingClientRect();
+      if (action.width && action.height && action.left < box.right && action.right > box.left
+          && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
+    }
+    if (actionTop > 112 && actionTop < window.innerHeight) {
+      tray.style.bottom = ((window.innerHeight - actionTop + 8) / zoom) + 'px';
+      tray.style.setProperty('--meldex-operation-available-height', ((actionTop - 16) / zoom) + 'px');
+    }
+  }
+
+  function _scheduleTrayPosition() {
+    if (!tray?.isConnected || tray.hidden || trayPositionFrame) return;
+    trayPositionFrame = requestAnimationFrame(function () {
+      trayPositionFrame = 0;
+      _syncTrayPosition();
+    });
+  }
+
+  function _watchTrayLayout() {
+    const root = document.getElementById('gb-layout-root');
+    if (root === trayLayoutRoot) return;
+    trayLayoutObserver?.disconnect();
+    trayLayoutRoot = root;
+    if (!root) return;
+    trayLayoutObserver ||= new MutationObserver(_scheduleTrayPosition);
+    // 開閉でレールDOMが置き換わる。寸法だけの変更は共通リサイズ通知で追従する。
+    trayLayoutObserver.observe(root, { childList: true, subtree: true });
   }
 
   function _ensureLiveRegion() {
@@ -129,7 +195,7 @@
       const disclosure = document.createElement('details');
       disclosure.className = 'meldex-operation-details';
       const summary = document.createElement('summary');
-      summary.textContent = '失敗した項目を確認（' + (operation.detailCount || operation.details.length) + '件）';
+      summary.textContent = '結果と対処方法を確認（' + (operation.detailCount || operation.details.length) + '件）';
       const list = document.createElement('ul');
       operation.details.forEach(function (item) {
         const entry = document.createElement('li');
@@ -153,6 +219,16 @@
     if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
+      if (operation.settingsPanel && typeof showSettingsModal === 'function') {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.dataset.action = 'open-operation-settings';
+        open.textContent = operation.settingsPanel + 'の設定を開く';
+        open.addEventListener('click', async function () {
+          await showSettingsModal({ panel: operation.settingsPanel });
+        });
+        actions.appendChild(open);
+      }
       if (operation.cancellable && operation.status !== 'cancelling') {
         const cancel = document.createElement('button');
         cancel.type = 'button';
@@ -184,10 +260,19 @@
 
   function _renderTray(operations) {
     const el = _ensureTray();
+    const previousScroll = el.querySelector('.meldex-operation-list')?.scrollTop || 0;
+    const expanded = new Set(Array.from(el.querySelectorAll('.meldex-operation-row')).filter(function (row) {
+      return row.querySelector('details')?.open;
+    }).map(function (row) { return row.dataset.operationId; }));
+    const active = document.activeElement;
+    const focusedId = el.contains(active) ? active.closest('.meldex-operation-row')?.dataset.operationId : null;
+    const focusedAction = focusedId ? (active.dataset.action || (active.tagName === 'SUMMARY' ? 'summary' : '')) : '';
     const visible = operations.filter(function (operation) { return operation.showInTray; });
     if (!visible.length) {
       el.hidden = true;
       el.replaceChildren();
+      trayLayoutObserver?.disconnect();
+      trayLayoutRoot = null;
       return;
     }
     const header = document.createElement('div');
@@ -201,9 +286,23 @@
     header.appendChild(title);
     const list = document.createElement('div');
     list.className = 'meldex-operation-list';
-    visible.slice(0, 6).forEach(function (operation) { list.appendChild(_operationRow(operation, false)); });
+    visible.slice(0, 6).forEach(function (operation) {
+      const row = _operationRow(operation, false);
+      const details = row.querySelector('details');
+      if (details && expanded.has(operation.id)) details.open = true;
+      list.appendChild(row);
+    });
     el.replaceChildren(header, list);
     el.hidden = false;
+    _watchTrayLayout();
+    _syncTrayPosition();
+    list.scrollTop = previousScroll;
+    if (focusedAction) {
+      const row = Array.from(list.children).find(function (node) { return node.dataset.operationId === focusedId; });
+      const control = focusedAction === 'summary' ? row?.querySelector('summary')
+        : Array.from(row?.querySelectorAll('[data-action]') || []).find(function (node) { return node.dataset.action === focusedAction; });
+      control?.focus({ preventScroll: true });
+    }
   }
 
   function _clearOrigins(activeIds) {
@@ -252,6 +351,14 @@
 
   function _init() {
     if (!window.MeldexOperationProgress || !document.body) return;
+    new MutationObserver(function (records) {
+      for (const record of records) {
+        if (record.target.tagName === 'DIALOG') _syncTrayHost(record.target);
+      }
+    }).observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
+    new MutationObserver(_scheduleTrayPosition).observe(document.body, { childList: true });
+    window.addEventListener('resize', _scheduleTrayPosition);
+    window.addEventListener('gb:layout-viewport-resize', _scheduleTrayPosition);
     window.MeldexOperationProgress.subscribe(_render);
   }
 

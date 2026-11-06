@@ -9,6 +9,13 @@
   let syncInFlight = false;
   let connected = false;
   let accounts = [];
+  let savedOriginalPath = '';
+
+  function showSavedOriginals(path) {
+    if (path) savedOriginalPath = path;
+    const button = document.getElementById('x-account-posts-open-originals');
+    if (button) button.hidden = !savedOriginalPath;
+  }
 
   function icon(name, size) {
     if (typeof lucide === 'function') return lucide(name, size || 14);
@@ -76,11 +83,12 @@
     }
   }
 
-  function rememberActiveJob(jobId, username) {
+  function rememberActiveJob(jobId, username, enrichmentOnly = false) {
     try {
       localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify({
         jobId: String(jobId || ''),
         username: normalizeUsername(username),
+        enrichmentOnly,
         startedAt: Date.now(),
       }));
     } catch (_) {
@@ -124,6 +132,7 @@
     if (data.media_failed) message += ` メディア取得失敗${data.media_failed}件。`;
     if (data.translation_pending_existing || data.translation_pending_replies) message += ` 翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`;
     if (data.reply_unavailable) message += ` 返信取得失敗${data.reply_unavailable}件。`;
+    if (data.enrichment_pending) message += ` 後処理待ち${data.enrichment_pending}件。「後処理を再開」で続行できます。返信は追加料金の確認後に「今すぐ取得」から再開してください。`;
     if (data.stop_reason === 'repeated_pagination_token') message += ' X APIから同じページ情報が返されたため、安全のため停止しました。もう一度実行してください。';
     if (data.api_limit_reached) message += ' X APIの仕様上、最新3,200件が上限です。';
     return message;
@@ -142,6 +151,7 @@
     const fetched = Number(progress.processed) || 0;
     const saved = Number(progress.succeeded);
     const phase = String(progress.phase || '取得中');
+    if (/原文|メディア|ノート|翻訳/.test(phase) && progress.message) return progress.message;
     if (fetched > 0 || (Number.isFinite(saved) && saved > 0)) {
       const savedText = Number.isFinite(saved) ? `${saved}件保存済み` : `${fetched}件取得済み`;
       const fetchedText = Number.isFinite(saved) && fetched !== saved ? `（${fetched}件取得）` : '';
@@ -161,18 +171,20 @@
     return ` この実行では${fetched}件を取得し、${saved}件を保存済みです（新規${created}件、更新${updated}件）。`;
   }
 
-  async function runAccountPostsJob(username, resumeJobId) {
+  async function runAccountPostsJob(username, resumeJobId, enrichmentOnly = false) {
+    if (!resumeJobId) { savedOriginalPath = ''; showSavedOriginals(); }
     setBusy(true);
     setStatus(
       resumeJobId
         ? `@${username} の保存状況を再確認しています。`
-        : `@${username} のポストを取得しています。件数が多い場合は1時間以上かかることがあります。`,
+        : enrichmentOnly ? `@${username} の保存済み原文から後処理を再開しています。`
+          : `@${username} の原文を先に保存します。翻訳・メディア保存はその後に進みます。`,
       false
     );
     let activeJobId = String(resumeJobId || '');
     try {
       const data = await runBackgroundJob(
-        '/x-bookmarks/account-posts/sync',
+        enrichmentOnly ? '/x-bookmarks/account-posts/enrich' : '/x-bookmarks/account-posts/sync',
         { username, ack_cost_notice: true,
           include_replies: document.getElementById('x-account-posts-include-replies')?.checked === true,
           ack_reply_cost_notice: document.getElementById('x-account-posts-include-replies')?.checked === true,
@@ -183,10 +195,13 @@
           maxPolls: Number.POSITIVE_INFINITY,
           onStarted: (jobId) => {
             activeJobId = String(jobId || '');
-            rememberActiveJob(activeJobId, username);
+            rememberActiveJob(activeJobId, username, enrichmentOnly);
           },
           onProgress: (progress) => {
             setStatus(jobProgressText(progress), false);
+            if (progress.current && ['原文を保存中', 'メディア・ノートを保存中', 'メディア参照を整理中'].includes(progress.phase)) {
+              showSavedOriginals(progress.current);
+            }
           },
           onLongRunning: () => {
             setStatus(`@${username} の保存を続けています。設定画面を閉じても処理は継続します。`, false);
@@ -194,8 +209,12 @@
         }
       );
       forgetActiveJob(activeJobId);
-      const successMessage = resultSummary(data);
+      showSavedOriginals(data.save_dir);
+      const successMessage = enrichmentOnly
+        ? `@${username} の後処理を実行しました。完了${data.enriched || 0}件・後処理待ち${data.enrichment_pending || 0}件・翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`
+        : resultSummary(data);
       setStatus(successMessage, false);
+      await refreshAccounts();
       if (typeof loadOutliner === 'function') {
         try {
           await loadOutliner();
@@ -215,6 +234,7 @@
         forgetActiveJob(activeJobId);
       }
       if (detail && typeof detail === 'object' && (detail.message || detail.partial_result)) {
+        if (detail.partial_result?.save_dir) showSavedOriginals(detail.partial_result.save_dir);
         const saved = partialResultText(detail);
         const retry = detail.retry_at ? ` 再実行目安: ${retryAtText(detail.retry_at)}` : '';
         setStatus(`${detail.message || 'X APIの取得上限に達しました'}${saved}${retry}`, true);
@@ -270,6 +290,12 @@
 
   async function loadAccounts() {
     if (typeof apiFetch !== 'function') return [];
+    try {
+      const recovered = await apiPost('/x-bookmarks/account-posts/reconcile', {}, {silentError: true});
+      if (recovered?.changed_sheets && typeof loadOutliner === 'function') await loadOutliner();
+    } catch (error) {
+      setStatus('保存済みアカウントの引き継ぎを完了できませんでした。設定画面を開き直すと再試行します: ' + (error?.userMessage || error?.message || error), true);
+    }
     const data = await apiFetch('/import-schedules?category=x-account-posts', {silentError: true});
     const schedules = Array.isArray(data?.schedules) ? data.schedules : [];
     return schedules
@@ -321,7 +347,14 @@
       row.dataset.e2eId = `x-account-posts-row-${username.toLowerCase()}`;
       const title = document.createElement('div');
       title.className = 'gb-section-title';
-      title.textContent = `@${username}`;
+      const displayName = String(entry.target_ref?.display_name || '').trim();
+      title.textContent = displayName ? `${displayName} @${username}` : `@${username}`;
+      if (entry.target_ref?.icon && window.GBIconAssets) {
+        const avatar = document.createElement('span');
+        avatar.innerHTML = GBIconAssets.render(entry.target_ref.icon, 24, {className: 'gb-file-custom-icon'});
+        avatar.style.cssText = 'display:inline-flex;align-items:center;margin-right:6px;flex-shrink:0;';
+        title.prepend(avatar);
+      }
       const status = document.createElement('div');
       status.className = 'gb-section-desc';
       status.textContent = accountStatus(entry);
@@ -337,12 +370,14 @@
         down,
         actionButton(entry.enabled ? '定期実行をOFF' : '定期実行をON', 'toggle', username),
         actionButton('今すぐ取得', 'sync', username),
+        actionButton('後処理を再開', 'enrich', username),
         actionButton('ブラウザで開く', 'open', username),
         actionButton('削除', 'delete', username, 'gb-btn-danger'),
       );
       row.append(title, status, actions);
       const syncButton = actions.querySelector('[data-action="sync"]');
       if (syncButton) syncButton.disabled = syncInFlight || !connected;
+      actions.querySelector('[data-action="enrich"]').disabled = syncInFlight;
       list.appendChild(row);
     });
   }
@@ -408,6 +443,8 @@
         await refreshAccounts();
       } else if (button.dataset.action === 'sync') {
         await syncAccountPosts(username);
+      } else if (button.dataset.action === 'enrich') {
+        if (!syncInFlight) await runAccountPostsJob(username, '', true);
       } else if (button.dataset.action === 'open') {
         window.open(`https://x.com/${encodeURIComponent(username)}`, '_blank', 'noopener,noreferrer');
       } else if (button.dataset.action === 'delete' && await confirmDelete(username)) {
@@ -432,7 +469,7 @@
       input.value = `@${active.username}`;
       updateSavePreview();
     }
-    await runAccountPostsJob(active.username, active.jobId);
+    await runAccountPostsJob(active.username, active.jobId, active.enrichmentOnly === true);
   }
 
   function renderXAccountPostsSettings(scope) {
@@ -461,6 +498,7 @@
       <label class="gb-field"><span><input type="checkbox" id="x-account-posts-include-replies"> 手動取得で各ポストの返信を最大30件取得する（追加料金）</span></label>
       <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、投稿者アイコン付きのノートとして保存します。返信の追加取得は定期実行には適用されません。</div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
+      <button type="button" id="x-account-posts-open-originals" class="gb-btn gb-btn-sm" hidden>保存済みの原文を開く</button>
     `;
     const input = container.querySelector('#x-account-posts-username');
     input?.addEventListener('input', updateSavePreview);
@@ -469,6 +507,13 @@
     });
     container.querySelector('#x-account-posts-add')?.addEventListener('click', addAccount);
     container.querySelector('#x-account-posts-list')?.addEventListener('click', handleAccountAction);
+    container.querySelector('#x-account-posts-open-originals')?.addEventListener('click', async () => {
+      if (savedOriginalPath && typeof selectDatabase === 'function') {
+        try { await selectDatabase(savedOriginalPath); }
+        catch (error) { setStatus('保存済み原文を開けませんでした: ' + (error?.message || error), true); }
+      }
+    });
+    showSavedOriginals();
     loadConnectionStatus();
     refreshAccounts().then(async () => {
       if (accounts.length) return;

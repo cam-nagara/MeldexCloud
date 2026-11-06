@@ -1,3 +1,40 @@
+
+/* ==============================
+   初期化
+   ============================== */
+// 認証トークン管理
+// 旧認証変数（互換性のため残す — 他モジュールが参照）
+let _authToken = '';
+let _authUser = null;
+
+function _apiLockJsonBody(opts) {
+  const raw = opts?.body;
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
+  return {};
+}
+
+function _apiLockPathDir(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const index = text.lastIndexOf('/');
+  return index > 0 ? text.slice(0, index) : '';
+}
+
+function _apiLockRenameExtension(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const name = text.slice(text.lastIndexOf('/') + 1);
+  if (!name || name.endsWith('.')) return '';
+  const visibleName = name.replace(/^\.+/, '');
+  const dotIndex = visibleName.indexOf('.');
+  return dotIndex >= 0 ? visibleName.slice(dotIndex) : '';
+}
+
+function _apiLockAddPath(paths, value) {
+  const text = String(value || '').trim();
+  if (text) paths.push(text);
 }
 
 function _apiLockWriteCandidatePaths(path, opts) {
@@ -649,6 +686,7 @@ async function init() {
    表示切替
    ============================== */
 function showView(viewName, ctx) {
+  if (!ctx?.embedded && typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
   const resolvedViewName = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewName) ? 'timeline' : viewName;
   const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(name);
   // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
@@ -860,41 +898,3 @@ function showScreenshotMenu(e) {
       items.at(-1)?.focus();
     } else if (ev.key === 'Escape') {
       ev.preventDefault();
-      closeMenu(true);
-    }
-  });
-  pointerCloser = (ev) => {
-    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
-  };
-  keyCloser = (ev) => {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeMenu(true);
-    }
-  };
-  document.addEventListener('pointerdown', pointerCloser, true);
-  document.addEventListener('keydown', keyCloser, true);
-  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
-}
-
-function _screenshotModeIsRegion(mode) {
-  return String(mode || '').includes('region');
-}
-
-async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
-  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
-  try {
-    const res = await fetch(API_BASE + '/app-window-visibility', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, hwnds: hwnds || [] }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function _hideMeldexWindowForScreenshot() {
-  const state = await _setMeldexWindowVisibilityForScreenshot('hide');

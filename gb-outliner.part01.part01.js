@@ -295,7 +295,8 @@ function _outlinerIconName(type, path, isSpecialFolder) {
 }
 
 function _outlinerIconMarkup(item, size) {
-  return lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && isWorkFolder(item?.path)), size || 18);
+  const fallback = lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && isWorkFolder(item?.path)), size || 18);
+  return window.MeldexFileIcons?.render(item, size || 18, fallback) ?? fallback;
 }
 
 async function loadOutliner(options) {
@@ -1619,6 +1620,10 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
     // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
     if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
+    // ボード本文の保存はフォルダ構造を変えない。全ツリー更新は
+    // オプションパネルまで再構築するため、保存通知では行わない。
+    if (event.detail?.reason === 'save'
+        && /(?:\.mel-board|\.board\.md)$/i.test(event.detail?.dbPath || '')) return;
     clearTimeout(_topicRecordsOutlinerRefreshTimer);
     _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
       const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });

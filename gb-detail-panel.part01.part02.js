@@ -75,67 +75,20 @@
     return sel;
   }
   if (field.type === 'color') {
-    if (field.bgType === 'rgba' && typeof parseColorToHexAlpha === 'function' && typeof hexAlphaToRgba === 'function') {
-      const wrap = document.createElement('span');
-      wrap.className = 'gb-fmt-popup-group';
-      const parsed = parseColorToHexAlpha(cur);
-      const sw = document.createElement('button');
-      sw.type = 'button';
-      sw.className = 'gb-fmt-swatch-bg';
-      sw.style.background = cur || field.fallback || 'var(--bg3)';
-      sw.title = field.label;
-      sw.dataset.hex = parsed.hex;
-      _fsSetControlE2e(sw, field, rowLabel, 'swatch');
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      slider.min = '0';
-      slider.max = '100';
-      slider.value = String(Math.round(parsed.alpha * 100));
-      slider.className = 'cs-alpha';
-      slider.title = field.label + ' 透明度';
-      _fsSetControlE2e(slider, field, rowLabel, 'alpha');
-      const val = document.createElement('span');
-      val.className = 'cs-alpha-val';
-      val.textContent = slider.value + '%';
-      const applyRgba = () => {
-        const raw = hexAlphaToRgba(sw.dataset.hex || '#000000', parseInt(slider.value, 10) / 100);
-        adapter.set(field, raw);
-        sw.style.background = raw || field.fallback || 'var(--bg3)';
-        adapter.applyCss(field, raw);
-        val.textContent = slider.value + '%';
-        globalThis.GBUI?.refreshRangeFill?.(slider);
-        if (typeof _fsNotifyFieldChanged === 'function') _fsNotifyFieldChanged(wrap, field, adapter, raw);
-      };
-      sw.addEventListener('click', () => {
-        if (typeof openColorPalette !== 'function') return;
-        openColorPalette(sw, sw.dataset.hex || cur || '', (color) => {
-          if (color === 'transparent') {
-            slider.value = '0';
-            sw.dataset.hex = '#000000';
-          } else if (color) {
-            sw.dataset.hex = color;
-          }
-          applyRgba();
-        });
-      });
-      slider.addEventListener('input', applyRgba);
-      wrap.append(sw, slider, val);
-      return wrap;
-    }
     const sw = document.createElement('button');
     sw.type = 'button';
     sw.className = 'gb-fmt-swatch-bg';
     if (field.applyCustom === 'bgColor') sw.id = 'bd-bg-swatch';
-    sw.style.background = cur || field.fallback || 'var(--bg3)';
+    setColorSwatchValue(sw, cur || field.fallback || 'var(--bg3)');
     sw.title = field.label;
     sw.dataset.value = cur || '';
     _fsSetControlE2e(sw, field, rowLabel, 'swatch');
     sw.addEventListener('click', () => {
       if (typeof openColorPalette !== 'function') return;
       openColorPalette(sw, sw.dataset.value || '', (color) => {
-        const raw = color === 'transparent' ? '' : color;
+        const raw = color || '';
         adapter.set(field, raw);
-        sw.style.background = raw || field.fallback || 'var(--bg3)';
+        setColorSwatchValue(sw, raw || field.fallback || 'var(--bg3)');
         sw.dataset.value = raw || '';
         adapter.applyCss(field, raw);
         if (typeof _fsNotifyFieldChanged === 'function') _fsNotifyFieldChanged(sw, field, adapter, raw);

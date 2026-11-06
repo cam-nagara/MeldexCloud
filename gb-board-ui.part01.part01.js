@@ -13,6 +13,10 @@ function _bdColorWithOpacity(color, opacity) {
   if (!color) return color || '';
   const normalized = _bdNormalizeStyleOpacity(opacity, 1);
   if (normalized >= 1) return color;
+  if (typeof parseColorToHexAlpha === 'function' && typeof hexAlphaToRgba === 'function' && /^(#|rgba?\()/i.test(color)) {
+    const parsed = parseColorToHexAlpha(color);
+    return hexAlphaToRgba(parsed.hex, parsed.alpha * normalized);
+  }
   return `color-mix(in srgb, ${color} ${Math.round(normalized * 10000) / 100}%, transparent)`;
 }
 
@@ -890,7 +894,7 @@ function bdAddChildToSelected() {
 }
 
 // 選択中カードと同階層 (同じ親を持つ) の新規カードを追加する。Enter / コンテキストメニューから呼ばれる。
-// ルートカード (親なし) の場合は同階層追加できないため null を返す。
+// 親なしの場合は、選択トピックの下に独立したルートを追加する。
 function bdAddSiblingToSelected() {
   const perf = typeof bdPerfStart === 'function' ? bdPerfStart('bdAddSiblingToSelected') : 0;
   if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
@@ -899,26 +903,30 @@ function bdAddSiblingToSelected() {
     if (bd.selected.size !== 1) return null;
     const selId = [...bd.selected][0];
     const selNode = bd.nodes.find(n => n.id === selId);
-    if (!selNode || !selNode.parent) return null;
-    const parentId = selNode.parent;
+    if (!selNode) return null;
+    const parentId = selNode.parent || null;
     const el = document.getElementById('bdn-' + selNode.id);
     const sibH = el ? el.offsetHeight : (selNode.h || 36);
     const sibW = el ? el.offsetWidth : (selNode.w || 160);
     const G = (typeof bdLayoutGaps === 'function') ? bdLayoutGaps() : { sibling: 40, level: 60 };
-    const root = bdRoot(parentId);
+    const root = parentId ? bdRoot(parentId) : null;
     // 中間カード構造 (c33a3a6) を尊重: 親に適用される有効 structure を取得。
-    const effectiveStructure = (typeof bdStructureOf === 'function') ? bdStructureOf(parentId) : (root?.structure || '');
+    const effectiveStructure = parentId && typeof bdStructureOf === 'function' ? bdStructureOf(parentId) : (root?.structure || '');
     const isTreeStructure = effectiveStructure === 'tree';
     // mindmap は放射状で親ノード位置に応じて展開方向が変わるため、
     // bdTreeDirection の動的判定に委ねる（logic / timeline / flowchart / orgchart / tree は固定）
     const dir = (effectiveStructure === 'flowchart' || effectiveStructure === 'orgchart' || effectiveStructure === 'tree') ? 'down'
       : (effectiveStructure === 'logic' || effectiveStructure === 'timeline') ? 'right'
-      : (typeof bdTreeDirection === 'function') ? bdTreeDirection(parentId) : 'right';
+      : (parentId && typeof bdTreeDirection === 'function') ? bdTreeDirection(parentId) : 'right';
     // 兄弟は構造の「展開方向」に対して直交方向に並ぶ。
     // 右展開 / 左展開 → 兄弟は縦に並ぶ → 選択カードの下に追加
     // 下展開 / 上展開 → 兄弟は横に並ぶ → 選択カードの右に追加
     let nx = selNode.x;
     let ny = selNode.y + sibH + G.sibling;
+    if (!parentId && typeof bdFastSubtreeBounds === 'function') {
+      const bounds = bdFastSubtreeBounds(selId);
+      if (bounds) ny = Math.max(ny, bounds.y2 + G.sibling);
+    }
     if (!isTreeStructure && (dir === 'down' || dir === 'up')) {
       nx = selNode.x + sibW + G.sibling;
       ny = selNode.y;
@@ -929,7 +937,7 @@ function bdAddSiblingToSelected() {
     // 起点解決は parentId 起点で行う (selId 起点で解決すると、selNode 自身が起点カードだった
     // 場合に selNode 自身の「深さ0」を誤って兄弟へ適用してしまう)。無ければ従来どおり
     // 選択カードの見た目を継承する。
-    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
+    const anchor = (parentId && typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
     const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
     const parentDepth = (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(parentId, anchor) : 0;
     const sibDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(parentDepth + 1, anchor) : null;
@@ -939,13 +947,13 @@ function bdAddSiblingToSelected() {
     const insertIndex = bd.nodes.findIndex(node => node.id === selId);
     if (insertIndex >= 0) bd.nodes.splice(insertIndex + 1, 0, sib);
     else bd.nodes.push(sib);
-    const conn = typeof bdCreateStructureConnection === 'function'
+    const conn = !parentId ? null : typeof bdCreateStructureConnection === 'function'
       ? bdCreateStructureConnection(parentId, sib.id, effectiveStructure)
       : bdCreateConnectionWithStyle(parentId, sib.id, { arrow: effectiveStructure === 'flowchart' ? 'end' : '' });
-    if (sibDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+    if (conn && sibDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
       _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(parentDepth, anchor));
     }
-    bd.connections.push(conn);
+    if (conn) bd.connections.push(conn);
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(sib)) {
       if (typeof bdRequestFullRender === 'function') bdRequestFullRender('add-sibling-fallback');
       else bdRender();

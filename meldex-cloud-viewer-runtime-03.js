@@ -3527,6 +3527,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (persist) saveValue(storageKey(appId, 'open'), next ? '1' : '0');
       if (next) panel.querySelector('.sa-secondary-panel-close')?.focus();
       else if (lastFocus?.isConnected) lastFocus.focus();
+      panel.dispatchEvent(new CustomEvent('meldex:secondary-open', { detail: { open: next } }));
     }
 
     button.addEventListener('click', () => setOpen(!panel.classList.contains('is-open'), true));
@@ -3564,7 +3565,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       setPanelWidth(width);
       saveValue(widthKey, Math.round(width));
     });
-    setOpen(readBool(storageKey(appId, 'open'), false), false);
+    setOpen(root.MeldexStandaloneNative ? false : readBool(storageKey(appId, 'open'), false), false);
     return { appId, button, panel, body: panel.querySelector('.sa-secondary-panel-body'), setOpen };
   }
 
@@ -3576,7 +3577,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     bar.setAttribute('role', 'tablist');
     bar.setAttribute('aria-label', 'オプションパネルのタブ');
     const panels = new Map();
+    let activeId = '';
     const activate = (id) => {
+      activeId = id;
       tabs.forEach(tab => {
         const active = tab.id === id;
         const button = bar.querySelector(`[data-secondary-tab="${tab.id}"]`);
@@ -3587,8 +3590,11 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       });
       saveValue(storageKey(shell.appId, 'tab'), id);
       const activeTab = tabs.find(tab => tab.id === id);
-      activeTab?.onActivate?.(panels.get(id));
+      if (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open')) activeTab?.onActivate?.(panels.get(id));
     };
+    shell.panel.addEventListener('meldex:secondary-open', event => {
+      if (root.MeldexStandaloneNative && event.detail.open && activeId) activate(activeId);
+    });
     tabs.forEach(tab => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -3667,7 +3673,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   // 単独版サーバーが無い環境（Cloud等）では従来どおりタグ欄を出す。
   async function standaloneTagsAvailable() {
     try {
-      const response = await fetch('/api/standalone/config', { cache: 'no-store' });
+      const response = await fetch('/api/standalone/config?include_tags=1', { cache: 'no-store' });
       if (!response.ok) return true;
       const config = await response.json();
       return config?.tagsAvailable !== false;
@@ -3735,7 +3741,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (infoSource) {
       new MutationObserver(() => {
         const host = tabs.panels.get('info');
-        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+        if (host && !host.hidden && (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open'))) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
       }).observe(infoSource, { childList: true, subtree: true, characterData: true });
     }
     return true;
@@ -3816,9 +3822,21 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   const RAW = 'raw';
   let dbPromise = null;
   const instances = new Set();
+  const NATIVE_STORAGE_KEY = 'meldex-native-draft-storage-v1';
+
+  function nativeStorageIsNew() {
+    if (!window.MeldexStandaloneNative) return false;
+    try { return localStorage.getItem(NATIVE_STORAGE_KEY) !== '1'; }
+    catch { return false; } // If the marker cannot be read, attempt recovery.
+  }
 
   function openDb() {
     if (dbPromise) return dbPromise;
+    // The native profile is new to this runtime. Mark it before the first DB
+    // operation so a crash can never hide an existing recovery database.
+    if (window.MeldexStandaloneNative) {
+      try { localStorage.setItem(NATIVE_STORAGE_KEY, '1'); } catch { /* attempt DB anyway */ }
+    }
     dbPromise = new Promise((resolve, reject) => {
       if (!window.indexedDB) {
         reject(new Error('この端末では端末内保存を利用できません'));
@@ -3854,6 +3872,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function contextKey() {
+    if (window.MeldexStandaloneNative) return 'native|' + String(window.MeldexStandaloneFS?.rootPathLabel?.() || '').replace(/\\/g, '/').toLowerCase();
     const status = window.MeldexStandaloneCloud?.getStatus?.() || {};
     const root = window.MeldexStandaloneCloud?.getActiveRoot?.() || {};
     return [status.provider || '', status.accountId || status.account_id || '', root.id || root.path || '']
@@ -3929,6 +3948,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
 
     function recordId() {
+      if (window.MeldexStandaloneNative && path()) return `${opts.appId}:${contextKey()}:path:${path().toLowerCase()}`;
       if (path()) return `${opts.appId}:path:${path()}`;
       if (!state.localId) state.localId = newId(`${opts.appId}_local`);
       return `${opts.appId}:local:${state.localId}`;
@@ -3945,6 +3965,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
     async function saveNow() {
       if (state.savePromise) return state.savePromise;
+      // Merely opening/closing a new native note must not manufacture an
+      // unnamed draft and force a Save As dialog without any user edit.
+      if (window.MeldexStandaloneNative && !state.dirtyVersion && !state.hasSnapshot) return true;
       const captureVersion = state.dirtyVersion;
       state.saving = true;
       status('local-saving', '端末へ保存中…');
@@ -4037,11 +4060,19 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
 
     async function restoreLatest() {
+      if (nativeStorageIsNew() && typeof indexedDB.databases === 'function') {
+        // The marker is a hint, not evidence that recovery data is absent.
+        // Enumerate metadata without creating a database on a fresh profile.
+        try {
+          const databases = await indexedDB.databases();
+          if (!databases.some(database => database.name === DB_NAME)) return false;
+        } catch { /* Fall back to the normal recovery path. */ }
+      }
       const rows = await listApp(opts.appId).catch(() => []);
       const currentPath = path();
       const record = rows.find(row => row.pending && (
         currentPath ? row.remotePath === currentPath : !row.remotePath
-      ));
+      ) && (!window.MeldexStandaloneNative || row.contextKey === contextKey()));
       if (!record || typeof opts.restore !== 'function') return false;
       if (!currentPath && record.localDocumentId) state.localId = record.localDocumentId;
       await opts.restore(structuredClone(record.snapshot), record);
@@ -4075,11 +4106,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
     async function flush() {
       clearTimeout(state.timer);
+      if (!state.dirtyVersion && !state.hasSnapshot && nativeStorageIsNew()) return true;
       if (state.dirtyVersion > state.localVersion && !await saveNow()) return false;
       if (state.syncPromise) return state.syncPromise;
       if (typeof opts.sync !== 'function') return true;
       const record = await getSnapshot(recordId()).catch(() => null);
-      if (!record?.pending || !record.remotePath) return !record?.remotePath;
+      if (!record?.pending || !record.remotePath) return true;
       const currentContext = contextKey();
       if (record.contextKey && currentContext && record.contextKey !== currentContext) {
         record.state = 'destination-check';
@@ -5636,6 +5668,14 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   async function prepareNativeInitialTarget() {
     const openPath = params.get('open') || params.get('path') || '';
+    if (window.MeldexStandaloneNative) {
+      // This lightweight endpoint does not resolve main-app source roots/tags.
+      const response = await fetch(API + '/standalone/config', { cache: 'no-store' });
+      if (!response.ok) throw new Error('ファイルの起動情報を読み込めませんでした');
+      const config = await response.json();
+      nativeRoot = String(config.root || '');
+      if (applyInitialOpenPath(openPath || config.initialPath)) return;
+    }
     if (!hasExplicitViewerTarget() && applyInitialOpenPath(openPath)) return;
     if (hasExplicitViewerTarget() || params.get('native') !== '1') return;
     try {
@@ -6099,9 +6139,11 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   async function init() {
     await viewerPreparation;
     _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
-    await loadSiblingFolders();
+    // Native folder navigation is requested only when the user uses its buttons.
+    if (!window.MeldexStandaloneNative) await loadSiblingFolders();
     const generation = ++targetGeneration;
-    await loadResolvedTarget(generation);
+    const displayed = await loadResolvedTarget(generation);
+    if (!displayed && !singleFile && !pdfPath && !folderPath) window.MeldexStandaloneNative?.markReady();
   }
 
   // ============================================================
@@ -6431,6 +6473,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       window.MeldexViewerAnnotations?.onSceneChanged?.();
       window.MeldexViewerVideo?.startActiveVideoPlayback?.();
       window.MeldexViewerAudio?.startActiveAudioPlayback?.();
+      window.MeldexStandaloneNative?.markReady();
     };
     if (media.length > 0) {
       Promise.all([...media].map(el => {
@@ -7149,8 +7192,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     } else if (isNativeStandaloneViewer()) {
       prevName = String(_nativeFolderState?.prev?.name || '');
       nextName = String(_nativeFolderState?.next?.name || '');
-      prevEnabled = !!prevName && !_nativeFolderNavigating;
-      nextEnabled = !!nextName && !_nativeFolderNavigating;
+      const unknown = !!window.MeldexStandaloneNative && !_nativeFolderState;
+      prevEnabled = (unknown || !!prevName) && !_nativeFolderNavigating;
+      nextEnabled = (unknown || !!nextName) && !_nativeFolderNavigating;
     } else {
       prevEnabled = _siblingIdx > 0;
       nextEnabled = _siblingIdx >= 0 && _siblingIdx < _siblingFolders.length - 1;
@@ -7190,6 +7234,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   // 単独版サーバーに作業範囲を前後の兄弟フォルダへ切り替えてもらい、そのフォルダを開き直す。
   async function navigateNativeFolder(direction) {
     if (_nativeFolderNavigating) return;
+    if (window.MeldexStandaloneNative && !_nativeFolderState) await loadNativeFolderState();
     const neighbor = direction < 0 ? _nativeFolderState?.prev : _nativeFolderState?.next;
     if (!neighbor) {
       flashStatus(direction < 0 ? '前のフォルダはありません' : '次のフォルダはありません');
@@ -7304,7 +7349,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   // btn-prev-folder/btn-next-folder のクリック配線は viewer-controls.js が委譲する
-  loadSiblingFolders(); // 初期化時に兄弟フォルダも読み込み
+  if (!window.MeldexStandaloneNative) loadSiblingFolders();
+  else updateFolderNavButtons();
 
   // 拡大縮小した後にウィンドウや右サイドバーで表示領域の大きさが変わっても、画面上の倍率
   // （原寸比）を保つ。フィットのまま（zoom=1）の時は従来どおり新しい大きさへ合わせ直す。

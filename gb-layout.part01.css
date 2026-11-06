@@ -1206,11 +1206,11 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #app-toolbar button,
   #app-toolbar input,
   #app-toolbar select,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-icon-btn,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-select,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) button,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) input,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) select,
+  #page-rt-toolbar .tb-icon-btn,
+  #page-rt-toolbar .tb-select,
+  #page-rt-toolbar button,
+  #page-rt-toolbar input,
+  #page-rt-toolbar select,
   #html-toolbar .tb-icon-btn,
   #html-toolbar input,
   #csv-toolbar .tb-icon-btn,
@@ -1248,7 +1248,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
     flex-wrap: wrap !important;
   }
   #app-toolbar .tb-icon-btn .ico,
-  :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) .tb-icon-btn .ico,
+  #page-rt-toolbar .tb-icon-btn .ico,
   #html-toolbar .tb-icon-btn .ico,
   #csv-toolbar .tb-icon-btn .ico,
   #folder-toolbar .tb-icon-btn .ico {
@@ -1678,7 +1678,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
 }
 .chat-list-state-icons { margin-left: auto; color: var(--accent); font-size: 11px; white-space: nowrap; }
 
-:is(#note-toc,[data-editor-local-id="note-toc"]) {
+#note-toc {
   width: 200px;
   flex-shrink: 0;
   overflow-y: auto;
@@ -1689,7 +1689,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   font-size: 12px;
 }
 
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
+#note-toc-resize {
   width: var(--note-toc-resize-hit, 8px);
   min-width: var(--note-toc-resize-hit, 8px);
   flex-shrink: 0;
@@ -1699,7 +1699,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   touch-action: none;
 }
 
-:is(#page-content,[data-editor-local-id="page-content"]) {
+#page-content {
   flex: 1;
   padding-block: 16px;
   padding-inline: max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2));

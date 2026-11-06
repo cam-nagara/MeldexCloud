@@ -250,6 +250,7 @@ function getOrAssignStableHeadingAnchorId(headingEl) {
 
 function _noteHeadingPlainText(value) {
   return String(value || '')
+    .replace(/<span data-meldex-text-style="1" style="[^"]*">|<\/span>/g, '')
     .replace(/\x02NLID:[A-Za-z0-9_-]+\x02/g, '')
     .replace(/\x02NSTATUS:[a-z][a-z0-9-]*\x02/g, '')
     .replace(/^:([a-zA-Z][a-zA-Z0-9-]*):\s*/, '')
@@ -400,9 +401,44 @@ function _mdResolvedMediaPath(src) {
   return _mdNormalizeVaultRelPath(dir + '/' + rel);
 }
 
+// Persist only text-format properties; markup, layout and network-loading CSS stay escaped.
+function _noteSafeInlineStyle(css) {
+  const input = document.createElement('span');
+  input.style.cssText = css;
+  const output = document.createElement('span');
+  for (const name of ['color', 'background-color', 'font-family', 'font-size', 'font-weight',
+    'font-style', 'text-decoration', 'text-decoration-line', 'text-decoration-color',
+    '-webkit-text-stroke-color', '-webkit-text-stroke-width', 'paint-order',
+    'border-left', 'border-left-color', 'padding-left']) {
+    const value = input.style.getPropertyValue(name);
+    if (value && !/url\s*\(|expression\s*\(|[<>]/i.test(value)) output.style.setProperty(name, value);
+  }
+  return output.getAttribute('style') || '';
+}
+
 // インラインMarkdown変換
 function inlinemd(text) {
-  let s = esc(text);
+  const formats = [];
+  let depth = 0;
+  // Keep code literals intact. Only the exact format emitted by htmlToMd is interpreted.
+  const protectedText = String(text).replace(/`[^`]*`|<span data-meldex-text-style="1" style="([^"]*)">|<\/span>/g, (match, css) => {
+    if (match.startsWith('`')) return match;
+    let html;
+    if (css !== undefined) {
+      const decoded = document.createElement('textarea');
+      decoded.innerHTML = css;
+      const safe = _noteSafeInlineStyle(decoded.value);
+      html = '<span data-meldex-text-style="1" style="' + esc(safe) + '">';
+      depth++;
+    } else {
+      if (!depth) return match;
+      depth--;
+      html = '</span>';
+    }
+    formats.push(html);
+    return '\x02NSTYLE:' + (formats.length - 1) + '\x02';
+  });
+  let s = esc(protectedText);
   // キーキャップ記法: [[Ctrl]] → <kbd>Ctrl</kbd>（インラインコードの前に処理）
   s = s.replace(/\[\[([^\]]+?)\]\]/g, '<kbd>$1</kbd>');
   // インラインコード
@@ -474,7 +510,7 @@ function inlinemd(text) {
   // ルビ記法: {漢字|ルビ} → data-ruby属性のspanで表示
   // ルビ部分はひらがな・カタカナ・漢字・英数字のみ（プログラムの{x|y}との誤判定を防止）
   s = s.replace(/\{([^|{}]+)\|([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBFa-zA-Z0-9\u30FC\u3005\u3006\u3007ー\s]+)\}/g, '<span data-ruby="$2" style="position:relative;">$1</span>');
-  return _noteLinkifyBareUrls(s);
+  return _noteLinkifyBareUrls(s).replace(/\x02NSTYLE:(\d+)\x02/g, (_, index) => formats[Number(index)] || '');
 }
 
 // HTML→Markdown変換
@@ -722,7 +758,10 @@ function htmlToMd(html) {
         if (node.dataset && node.dataset.ruby) {
           return `{${children}|${node.dataset.ruby}}`;
         }
-        return children;
+        {
+          const style = _noteSafeInlineStyle(node.getAttribute('style') || '');
+          return style ? '<span data-meldex-text-style="1" style="' + esc(style) + '">' + children + '</span>' : children;
+        }
       case 'MARK':
         if (node.classList?.contains('cmt-highlight')) return children;
         return children;
@@ -1106,7 +1145,7 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  // サブパネル内では、サブパネルで開く（別サブパネルを開くUI）を
+  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1183,7 +1222,7 @@ function _showLinkContextMenu(e, linkTarget) {
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
     if (_canUseRightSidebar) {
-      addItem('panelRight', 'サブパネルで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
+      addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
         linkType: linkTarget.linkType || '',
         sourcePaneId: linkTarget.sourcePaneId || '',
         sourceEl: e?.target || null,

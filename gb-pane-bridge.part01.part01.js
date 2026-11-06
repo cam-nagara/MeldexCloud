@@ -900,15 +900,15 @@ const GBPaneBridge = (() => {
     const livePath = viewEl?.dataset?.gbLegacyPath || '';
     const adoptsUnmarkedLiveContent = !liveView && !livePath
       && _hasMatchingUnmarkedLiveContent(viewEl, viewName, path);
-    const needsLiveReload = !adoptsUnmarkedLiveContent
-      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path
-        // A layout rebuild can retain the view marker while replacing its
-        // sheet context. That empty context has no data to render.
-        || (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)
-          && !paneRenderCtx?.pivotData));
     const resolvedViewName = typeof _resolveDbPaneDisplayView === 'function'
       ? _resolveDbPaneDisplayView(viewName, tab)
       : viewName;
+    const sheetView = ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName);
+    const renderedSheet = sheetView ? viewEl?.querySelector?.('#' + _normalizeDbPaneView(resolvedViewName) + '-view') : null;
+    const needsLiveReload = (!adoptsUnmarkedLiveContent
+      && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path))
+      // A tab can retain its data/marker after another view cleared the shared DOM.
+      || (sheetView && (!paneRenderCtx?.pivotData || !renderedSheet?.firstElementChild));
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
@@ -935,6 +935,8 @@ const GBPaneBridge = (() => {
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
+        // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
+
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
@@ -949,8 +951,6 @@ const GBPaneBridge = (() => {
         // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
         // ケースは正しく再読込される。
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
-        // Embedded notes also bind the shared state. Returning to an already
-        // rendered main note must not start a disk load that overwrites typing.
         else if (viewName === 'page' && typeof openPage === 'function' && needsLiveReload) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
         else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
@@ -968,8 +968,6 @@ const GBPaneBridge = (() => {
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        // A linked editor also changes the shared view/path. Returning to this
-        // already rendered sheet must preserve the first click and its input.
         else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && needsLiveReload) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
@@ -1134,8 +1132,6 @@ const GBPaneBridge = (() => {
     const orphanComponentIds = [];
     if (typeof forEachComponent === 'function') {
       forEachComponent((comp, tabId) => {
-        // Linked editors own their lifetime outside the layout's tab IDs.
-        if (window.GBEditorHost?.ownsComponent?.(comp)) return;
         if (!validTabIds.has(tabId)) orphanComponentIds.push(tabId);
       });
     }

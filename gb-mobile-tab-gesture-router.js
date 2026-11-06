@@ -1,4 +1,4 @@
-/* Shared tab overflow, <=640px tab dropdown and edge gesture router. */
+/* Common <=640px tab dropdown and edge gesture router. */
 (function (global) {
   'use strict';
 
@@ -14,7 +14,6 @@
   ].join(',');
   let observer = null;
   let gesture = null;
-  const overflowBars = new Map();
 
   function isPhone() {
     return !!global.matchMedia?.(PHONE_QUERY).matches;
@@ -44,31 +43,27 @@
     return tabs.find(tab => tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true') || tabs[0];
   }
 
-  function closeMenu(menu, trigger, restoreFocus = true) {
-    menu?._cleanup?.();
+  function closeMenu(menu, trigger) {
     menu?.remove();
     trigger?.setAttribute('aria-expanded', 'false');
-    if (trigger?._tabMenu === menu) trigger._tabMenu = null;
-    if (restoreFocus) trigger?.focus?.();
+    trigger?.focus?.();
   }
 
-  async function closeMainTab(tablist, tab) {
+  function closeMainTab(tablist, tab) {
     const paneId = tablist.closest('.gb-pane')?.dataset?.paneId;
     const tabId = tab?.dataset?.tabId;
-    const tabsApi = typeof GBTabs !== 'undefined' ? GBTabs : global.GBTabs;
-    if (!paneId || !tabId || typeof tabsApi?.closeTab !== 'function') return false;
-    return await tabsApi.closeTab(paneId, tabId) !== false;
+    if (!paneId || !tabId || typeof global.GBTabs?.closeTab !== 'function') return false;
+    global.GBTabs.closeTab(paneId, tabId);
+    return true;
   }
 
-  function openMenu(trigger, tablist, overflowTabs = null) {
-    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => closeMenu(node, node._trigger, false));
-    const tabs = overflowTabs || tabItems(tablist);
+  function openMenu(trigger, tablist) {
+    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => node.remove());
+    const tabs = tabItems(tablist);
     const menu = document.createElement('div');
-    menu.className = 'gb-mobile-tab-menu' + (overflowTabs ? ' gb-tab-overflow-menu gb-context-menu' : '');
-    menu._trigger = trigger; trigger._tabMenu = menu;
-    menu._closeTabMenu = () => closeMenu(menu, trigger, false);
+    menu.className = 'gb-mobile-tab-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', overflowTabs ? '隠れているタブ' : '表示を切り替える');
+    menu.setAttribute('aria-label', '表示を切り替える');
     tabs.forEach((tab) => {
       const row = document.createElement('div');
       row.className = 'gb-mobile-tab-menu-row';
@@ -78,26 +73,21 @@
       item.setAttribute('role', 'menuitem');
       item.disabled = tab.matches(':disabled,[aria-disabled="true"]');
       item.textContent = tabTitle(tab);
-      if (tab === activeTab(tabItems(tablist))) item.setAttribute('aria-current', 'page');
       item.addEventListener('click', () => {
-        closeMenu(menu, trigger, !overflowTabs);
         tab.click();
         syncOne(tablist);
-        if (overflowTabs) global.requestAnimationFrame(() => {
-          if (tab.isConnected) tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-          scheduleSync();
-        });
+        closeMenu(menu, trigger);
       });
       row.appendChild(item);
-      if (tablist.classList.contains('gb-pane-tabs') && tab.dataset.tabId) {
+      if (tablist.classList.contains('gb-pane-tabs')) {
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'gb-mobile-tab-menu-close';
         close.setAttribute('aria-label', `${tabTitle(tab)}を閉じる`);
         close.title = `${tabTitle(tab)}を閉じる`;
         close.textContent = '×';
-        close.addEventListener('click', async () => {
-          if (await closeMainTab(tablist, tab)) closeMenu(menu, trigger);
+        close.addEventListener('click', () => {
+          if (closeMainTab(tablist, tab)) closeMenu(menu, trigger);
         });
         row.appendChild(close);
       }
@@ -122,81 +112,18 @@
       else if (event.key === 'End') next = items.length - 1;
       if (next >= 0) {
         event.preventDefault();
-        event.stopPropagation();
         items[next]?.focus();
       }
     });
     const dismiss = (event) => {
       if (event.key === 'Escape' || (event.type === 'pointerdown' && !menu.contains(event.target) && event.target !== trigger)) {
-        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
         closeMenu(menu, trigger);
+        document.removeEventListener('keydown', dismiss, true);
+        document.removeEventListener('pointerdown', dismiss, true);
       }
-    };
-    menu._cleanup = () => {
-      document.removeEventListener('keydown', dismiss, true);
-      document.removeEventListener('pointerdown', dismiss, true);
     };
     document.addEventListener('keydown', dismiss, true);
     document.addEventListener('pointerdown', dismiss, true);
-  }
-
-  function clippedTabs(bar, scroll) {
-    const clip = scroll.getBoundingClientRect();
-    return tabItems(bar).filter(tab => {
-      const rect = tab.getBoundingClientRect();
-      return rect.width > 0 && (rect.left < clip.left - 1 || rect.right > clip.right + 1);
-    });
-  }
-
-  function syncOverflow(bar) {
-    if (!bar.classList.contains('gb-pane-tabs')) return;
-    const scroll = bar.querySelector(':scope > .gb-pane-tabs-scroll');
-    if (!scroll?.clientWidth) {
-      const existing = overflowBars.get(bar);
-      if (existing) {
-        if (!existing.trigger.hidden) existing.trigger.hidden = true;
-        if (existing.trigger._tabMenu) closeMenu(existing.trigger._tabMenu, existing.trigger, false);
-      }
-      return;
-    }
-    let state = overflowBars.get(bar);
-    if (!state) {
-      const trigger = document.createElement('button');
-      trigger.type = 'button'; trigger.className = 'gb-tab-overflow-button'; trigger.textContent = '▼';
-      trigger.hidden = true;
-      trigger.title = '隠れているタブを表示'; trigger.setAttribute('aria-label', trigger.title);
-      trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
-      trigger.dataset.e2eId = 'tab-overflow-button';
-      trigger.addEventListener('click', () => {
-        if (trigger._tabMenu) closeMenu(trigger._tabMenu, trigger);
-        else {
-          const hidden = clippedTabs(bar, scroll);
-          if (hidden.length) openMenu(trigger, bar, hidden);
-          else scheduleSync();
-        }
-      });
-      bar.appendChild(trigger);
-      const resize = typeof global.ResizeObserver === 'function' ? new global.ResizeObserver(scheduleSync) : null;
-      resize?.observe(scroll); resize?.observe(bar);
-      scroll.addEventListener('scroll', scheduleSync, { passive: true });
-      state = { scroll, trigger, resize, active: null, add: scroll.querySelector(':scope > .gb-pane-add-tab') }; overflowBars.set(bar, state);
-    }
-    const { trigger } = state;
-    // Compare against the space without the trigger to avoid show/hide oscillation.
-    const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
-    const overflow = !isPhone() && scroll.scrollWidth > scroll.clientWidth + reserved + 1;
-    if (trigger.hidden === overflow) trigger.hidden = !overflow;
-    // Keep creation available when the final tab and its following + are clipped.
-    if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
-    else if (state.add && !overflow && state.add.parentNode === bar) scroll.appendChild(state.add);
-    if (!overflow && trigger._tabMenu) closeMenu(trigger._tabMenu, trigger, false);
-    const active = activeTab(tabItems(bar));
-    if (active !== state.active) {
-      state.active = active;
-      if (active && !isPhone()) global.requestAnimationFrame(() => {
-        if (active.isConnected) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      });
-    }
   }
 
   // 1ペイン内に複数のタブバー（ペイン自体のタブ + 中に埋め込まれたオプション
@@ -248,11 +175,7 @@
     // Sheet/board view bars already provide their own phone select and menu.
     // Adding a second dropdown also collects hidden menu text into its label.
     const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
-    // A tab-styled toolbar may wrap a semantic tablist plus an add button.
-    // Convert the inner list so the toolbar's other controls remain visible.
-    const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
-      && tablist.querySelector(':scope > [role="tablist"]');
-    if (nativeSwitcher || nestedTablist || tablist.dataset.mobileTabContainer === '1') {
+    if (nativeSwitcher) {
       const old = tablist.previousElementSibling;
       if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
       return;
@@ -278,13 +201,7 @@
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
     const usedIds = new Map();
-    tablists.forEach((tablist) => { syncOne(tablist, usedIds); syncOverflow(tablist); });
-    for (const [bar, state] of overflowBars) {
-      if (bar.isConnected) continue;
-      state.resize?.disconnect(); state.scroll.removeEventListener('scroll', scheduleSync);
-      if (state.trigger._tabMenu) closeMenu(state.trigger._tabMenu, state.trigger, false);
-      overflowBars.delete(bar);
-    }
+    tablists.forEach((tablist) => syncOne(tablist, usedIds));
     document.querySelectorAll('.gb-mobile-tab-dropdown').forEach((trigger) => {
       if (!trigger.__meldexTablist?.isConnected) trigger.remove();
     });
@@ -392,7 +309,7 @@
     installGestures();
     _installMenuOutsideClickGuard();
     observer = new MutationObserver(scheduleSync);
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-selected', 'aria-disabled', 'disabled'] });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-disabled', 'disabled'] });
     global.addEventListener('resize', scheduleSync, { passive: true });
   }
 

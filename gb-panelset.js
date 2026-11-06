@@ -1482,14 +1482,6 @@
     });
     if (fixedSide === 'right') {
       _appendRightRailChat(dockBar);
-      if (window.GBIndependentSubpanel) {
-        const button = _railButton('gb-dock-icon', 'panelRight', 'サブパネル', () => window.GBIndependentSubpanel.toggle());
-        button.dataset.tabType = 'subpanel';
-        button.dataset.e2eId = 'fixed-right-rail-subpanel';
-        button.classList.toggle('active', window.GBIndependentSubpanel.isOpen());
-        button.setAttribute('aria-pressed', String(window.GBIndependentSubpanel.isOpen()));
-        dockBar.appendChild(button);
-      }
       _appendRightRailQuickMemo(dockBar);
     }
     if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {

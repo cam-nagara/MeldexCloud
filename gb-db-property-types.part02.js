@@ -40,16 +40,34 @@
     const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
     const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
     optDiv.innerHTML = `<div class="field"><label>最大枚数</label>
-      <input id="pt-image-max-count" class="gb-num-input" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
+      <input id="pt-image-max-count" aria-label="最大枚数" class="gb-num-input" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
     </div>
     <div class="field"><label>許可する拡張子</label>
-      <input id="pt-image-accept" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
+      <input id="pt-image-accept" aria-label="許可する拡張子" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
     </div>
     <div class="field"><label>表の画像高さ(px)</label>
-      <input id="pt-image-cell-height" class="gb-num-input" type="number" min="32" max="320" value="${esc(cellHeight)}">
+      <input id="pt-image-cell-height" aria-label="表の画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(cellHeight)}">
+    </div>
+    <div class="field"><label>ギャラリーの画像高さ(px)</label>
+      <input id="pt-image-gallery-height" aria-label="ギャラリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gallery || cellHeight)}">
+    </div>
+    <div class="field"><label>カンバンの画像高さ(px)</label>
+      <input id="pt-image-kanban-height" aria-label="カンバンの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.kanban || cellHeight)}">
+    </div>
+    <div class="field"><label>ツリーの画像高さ(px)</label>
+      <input id="pt-image-tree-height" aria-label="ツリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.tree || cellHeight)}">
+    </div>
+    <div class="field"><label>タイムラインの画像高さ(px)</label>
+      <input id="pt-image-timeline-height" aria-label="タイムラインの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.timeline || cellHeight)}">
+    </div>
+    <div class="field"><label>ガントの画像高さ(px)</label>
+      <input id="pt-image-gantt-height" aria-label="ガントの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gantt || cellHeight)}">
+    </div>
+    <div class="field"><label>フォームの画像高さ(px)</label>
+      <input id="pt-image-form-height" aria-label="フォームの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.form || cellHeight)}">
     </div>
     <div class="field"><label>保存サムネイルサイズ(px)</label>
-      <input id="pt-image-thumb-size" class="gb-num-input" type="number" min="64" max="1024" value="${esc(uploadThumbSize)}">
+      <input id="pt-image-thumb-size" aria-label="保存サムネイルサイズ(px)" class="gb-num-input" type="number" min="64" max="1024" value="${esc(uploadThumbSize)}">
     </div>`;
   } else {
     optDiv.innerHTML = '';
@@ -278,9 +296,12 @@ async function applyPropertyType(propName, root, options = {}) {
     const cellHeight = Math.max(32, Math.min(320, parseInt(_ptGet('pt-image-cell-height', scope)?.value || '96', 10) || 96));
     const thumbSize = Math.max(64, Math.min(1024, parseInt(_ptGet('pt-image-thumb-size', scope)?.value || '256', 10) || 256));
     config.options = {
+      ...(prev.type === 'image' && prev.options && !Array.isArray(prev.options) ? prev.options : {}),
       max_count: maxCount,
       accept: accept.length ? accept.filter(ext => ext !== 'svg') : ['png', 'jpg', 'jpeg', 'gif', 'webp'],
       cell_height: cellHeight,
+      view_thumbnail_sizes: { ...(prev.options?.view_thumbnail_sizes || {}), ...Object.fromEntries(['gallery', 'kanban', 'tree', 'timeline', 'gantt', 'form'].map(view => [view,
+        Math.max(32, Math.min(320, parseInt(_ptGet('pt-image-' + view + '-height', scope)?.value, 10) || cellHeight))])) },
       thumbnail_size: thumbSize,
     };
   }

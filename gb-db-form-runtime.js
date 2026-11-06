@@ -161,7 +161,7 @@
     if (candidates.length > 1) {
       const more = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '候補一覧（' + candidates.length + '件）'; more.appendChild(summary);
       const list = document.createElement('div');
-      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: true });
+      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: true, viewType: 'form' });
       more.appendChild(list); body.appendChild(more);
     }
     return true;
@@ -286,11 +286,7 @@
   function renderView(root, dbPath, cfg, propTypes, ctx) {
     const owner = ctx?.containerEl || root;
     let session = viewSessions.get(owner);
-    if (!session || session.dbPath !== dbPath) {
-      const linkedEntry = ctx?.formApp?._embeddedEntryPath || '';
-      const initial = normalPath(linkedEntry.replace(/\/[^/]+$/, '')) === normalPath(dbPath) ? linkedEntry : '';
-      session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
-    }
+    if (!session || session.dbPath !== dbPath) { session = { dbPath, path: '', continuous: false, created: new Map() }; viewSessions.set(owner, session); }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
     const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
@@ -352,15 +348,8 @@
         const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
         if (layout) _elRenderLayoutBody(panel, data, path, { propTypes, ctx, readOnly: access.readOnly || ctx?.readOnly, formLayout: ctx?.formApp?.getLayout() }, dbPath, layout.id, renderRecord);
         else {
-          if (ctx?.formApp?._embeddedEntryPath) {
-            // A topic form edits the enclosing record. Do not recursively mount
-            // that topic's linked files inside its own form application.
-            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx,
-              topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
-          } else {
-            const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
-          }
+          const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
+          await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
         }
       } catch (error) {
         if (generation === current && panel.isConnected) {

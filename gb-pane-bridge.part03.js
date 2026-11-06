@@ -361,7 +361,6 @@
   // ツール（chat/calendar/annotation/history等）をペインタブとして開く
   function _openToolPane(toolType, options) {
     const openOpts = options || {};
-    if (toolType === 'subpanel' && window.GBIndependentSubpanel) return openOpts.toggleExisting ? window.GBIndependentSubpanel.toggle() : window.GBIndependentSubpanel.open();
     if (toolType === 'preview') {
       const paneId = window.GBPaneDefaultLayout?.resolveMainPaneId?.({ contentOnly: true });
       if (paneId) return window.openToolTab?.('preview', { paneId, preferTargetPane: true });
@@ -713,7 +712,7 @@
   }
 
   function _canUseRightSidebarTools(surface) {
-    return surface !== 'subpanel' || (typeof window !== 'undefined' && !!window.GBIndependentSubpanel);
+    return surface !== 'subpanel';
   }
 
   function _isRightSidebarRestrictedTool(toolType) {

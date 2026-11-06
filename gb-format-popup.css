@@ -437,3 +437,19 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
     max-width: min(100%, 220px);
   }
 }
+
+/* Keep note theme numeric controls inside narrow option panels. */
+[data-file-theme-panel="page"] .gb-fmt-popup-group:has(.gb-fs-range-number) {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+[data-file-theme-panel="page"] .gb-fs-range-number {
+  flex: 1 1 0;
+  min-width: 0;
+}
+[data-file-theme-panel="page"] .gb-fs-range-number__slider {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 40px;
+}

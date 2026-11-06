@@ -1222,6 +1222,9 @@
     const _origShowView = window.showView;
 
     window.showView = function(viewName, ctx) {
+      if (!ctx?.embedded && typeof _captureDbNavigationBeforeLeave === 'function') {
+        _captureDbNavigationBeforeLeave(ctx?.paneId || _getViewHostPane(viewName));
+      }
       // スプリットペイン内のビュー切替はそのまま
       if (ctx && ctx.containerEl) {
         const result = _origShowView(viewName, ctx);

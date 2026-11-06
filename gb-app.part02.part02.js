@@ -474,6 +474,7 @@ async function init() {
    表示切替
    ============================== */
 function showView(viewName, ctx) {
+  if (!ctx?.embedded && typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
   const resolvedViewName = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewName) ? 'timeline' : viewName;
   const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(name);
   // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）

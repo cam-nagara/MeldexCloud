@@ -2404,6 +2404,7 @@
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
     const entity = { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) };
+    if (frontmatter.display_icon) entity._display_icon = String(frontmatter.display_icon);
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
     if (frontmatter.modified_by) entity._modified_by = String(frontmatter.modified_by);
@@ -3299,10 +3300,9 @@
   async function _resolveSheetDefaultForm(provider, path, preferred) {
     const sheet = _normalizeFolderPath(path);
     let malformedPreferred = null, found = null;
-    const matches = async (candidate, automatic = false) => {
+    const matches = async candidate => {
       try {
         const doc = JSON.parse(await provider.readText(candidate));
-        if (automatic && doc.meldex?.topic_attachment === true) return false;
         return doc.fileType === 'meldex-form' && doc.schema_version === 1
           && _normalizeFolderPath(doc.sheet?.path) === sheet;
       } catch (error) {
@@ -3312,7 +3312,7 @@
     };
     if (preferred && await matches(preferred)) return preferred;
     await _iterateWorkspaceFiles(provider, async candidate => {
-      if (!found && candidate.endsWith('.mel-form') && await matches(candidate, true)) found = candidate;
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
     }, '');
     return found || malformedPreferred;
   }

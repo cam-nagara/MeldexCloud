@@ -249,9 +249,19 @@
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) return;
     const range = sel.getRangeAt(0);
+    _captureUndoBeforeFormat(_savedRoot);
+    // Palette adjustments must replace the selected format rather than layer opaque backgrounds.
+    const current = range.startContainer;
+    if (current === range.endContainer && current.nodeType === 1 && current.tagName === 'SPAN'
+        && range.startOffset === 0 && range.endOffset === current.childNodes.length
+        && !current.className && !current.dataset.ruby) {
+      Object.assign(current.style, patch);
+      _savedRange = range.cloneRange();
+      _savedRoot?.dispatchEvent?.(new Event('input', { bubbles: true }));
+      return;
+    }
     const span = document.createElement('span');
     Object.assign(span.style, patch);
-    _captureUndoBeforeFormat(_savedRoot);
     try {
       range.surroundContents(span);
     } catch {

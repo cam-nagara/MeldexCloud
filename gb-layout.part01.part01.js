@@ -1291,6 +1291,24 @@ const GBLayout = (() => {
       e.preventDefault();
     });
     if (showPaneActionsButton) ctrls.appendChild(moreBtn);
+    if (_isMainPaneNode(node) && !window._gbSingleWindow && window.GBIndependentSubpanel) {
+      const subpanelButton = document.createElement('button');
+      const open = window.GBIndependentSubpanel.isOpen();
+      subpanelButton.type = 'button';
+      subpanelButton.className = 'gb-pane-btn gb-pane-subpanel-toggle' + (open ? ' is-active' : '');
+      subpanelButton.dataset.e2eId = 'main-tab-subpanel-toggle';
+      subpanelButton.title = open ? 'サブパネルを非表示' : 'サブパネルを表示';
+      subpanelButton.setAttribute('aria-label', subpanelButton.title);
+      subpanelButton.setAttribute('aria-pressed', String(open));
+      subpanelButton.setAttribute('aria-expanded', String(open));
+      subpanelButton.setAttribute('aria-controls', 'gb-subpanel-root');
+      subpanelButton.innerHTML = lucide('panelRight', 16);
+      subpanelButton.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await window.GBIndependentSubpanel.toggle();
+      });
+      ctrls.appendChild(subpanelButton);
+    }
 
     // タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls が切れないよう、
     // タブ部分だけを横スクロール可能な中間コンテナに入れる
@@ -1314,7 +1332,10 @@ const GBLayout = (() => {
 
         const iconSpan = document.createElement('span');
         iconSpan.className = 'gb-tab-icon';
-        if (typeof lucide === 'function') iconSpan.innerHTML = lucide(tab.icon || 'page', 14);
+        if (typeof lucide === 'function') {
+          const fallback = lucide(tab.icon || 'page', 14);
+          iconSpan.innerHTML = window.MeldexFileIcons?.tabIcon(tab, 14, fallback) ?? fallback;
+        }
         tabEl.appendChild(iconSpan);
 
         const labelSpan = document.createElement('span');
@@ -1488,7 +1509,7 @@ const GBLayout = (() => {
     if (!_isSidebarPaneNode(node)) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
-    if (showPaneActionsButton) tabBar.appendChild(ctrls);
+    if (ctrls.childElementCount) tabBar.appendChild(ctrls);
 
     // タブバーの D&D 並び替え（同ペイン内のタブを並び替える）
     // 別ペインからのタブ移動は docking システム側が処理する

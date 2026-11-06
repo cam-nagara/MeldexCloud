@@ -1,3 +1,41 @@
+      closeMenu(true);
+    }
+  });
+  pointerCloser = (ev) => {
+    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
+  };
+  keyCloser = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  };
+  document.addEventListener('pointerdown', pointerCloser, true);
+  document.addEventListener('keydown', keyCloser, true);
+  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
+}
+
+function _screenshotModeIsRegion(mode) {
+  return String(mode || '').includes('region');
+}
+
+async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
+  try {
+    const res = await fetch(API_BASE + '/app-window-visibility', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, hwnds: hwnds || [] }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function _hideMeldexWindowForScreenshot() {
+  const state = await _setMeldexWindowVisibilityForScreenshot('hide');
   if (!state?.hidden) window.blur();
   await new Promise(r => setTimeout(r, 500));
   return state;
@@ -860,41 +898,3 @@ async function _viewerFolderNavRevealCurrentFolder(folderPath, options = {}) {
 
 function _viewerFolderNavDisplayableFromBrowseItems(items) {
   const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];
-  const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
-    .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
-  const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
-  return {
-    has: images.length > 0 || pdfs.length > 0,
-    hasImage: images.length > 0,
-    firstImage: images[0] || null,
-    firstPdf: pdfs[0] || null,
-  };
-}
-
-async function _viewerFolderNavDisplayableInFolder(folderPath) {
-  const key = _viewerFolderNavCleanPath(folderPath);
-  if (!key) return { has: false, hasImage: false, firstImage: null, firstPdf: null };
-  if (_viewerFolderNavDisplayableCache.has(key)) return _viewerFolderNavDisplayableCache.get(key);
-  const result = await apiFetch('/browse?path=' + encodeURIComponent(key) + '&all_files=true')
-    .then(items => _viewerFolderNavDisplayableFromBrowseItems(items))
-    .catch(() => ({ has: false, hasImage: false, firstImage: null, firstPdf: null }));
-  _viewerFolderNavDisplayableCache.set(key, result);
-  return result;
-}
-
-function _viewerFolderNavOpenTarget(folderPath, result, targetIframe = null) {
-  const url = result?.hasImage
-    ? '/viewer?folder=' + encodeURIComponent(folderPath)
-    : (result?.firstPdf?.path ? '/viewer?pdf=' + encodeURIComponent(result.firstPdf.path) : '');
-  if (!url) return;
-  if (targetIframe) {
-    // サブパネルのビューワーからの移動は、そのビューワーだけを切り替える。メインのビューワー・
-    // フォルダツリーの選択・プロパティは動かさない（2つ目の表示面がメインを奪わないようにする）。
-    const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(url) || url;
-    const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
-      ? _gbPrepareUntrustedIframe(targetIframe, resolvedUrl)
-      : targetIframe;
-    _gbOpenViewerIframe(preparedIframe || targetIframe, url, resolvedUrl, { skipGlobalUi: true, skipHighlight: true });
-    return;
-  }
-  const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);

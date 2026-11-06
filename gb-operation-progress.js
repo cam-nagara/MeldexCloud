@@ -40,6 +40,7 @@
     return {
       id: state.id,
       kind: state.kind,
+      settingsPanel: state.settingsPanel,
       label: state.label,
       phase: state.phase,
       currentItem: state.currentItem,
@@ -241,6 +242,7 @@
       state: {
         id: id,
         kind: String(opts.kind || 'operation'),
+        settingsPanel: String(opts.settingsPanel || ''),
         label: String(opts.label || '処理中'),
         phase: String(opts.phase || ''),
         currentItem: String(opts.currentItem || ''),

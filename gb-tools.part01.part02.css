@@ -323,10 +323,10 @@
   box-sizing: border-box;
 }
 .gallery-grid {
-  align-content: start; grid-auto-rows: minmax(188px, auto);
+  align-content: start; grid-auto-rows: max-content;
 }
 .gallery-card {
-  min-height: 188px; box-sizing: border-box;
+  min-height: 188px; height: max-content; box-sizing: border-box;
   display: flex; flex-direction: column; gap: 8px;
 }
 .gallery-card-title {
@@ -528,14 +528,14 @@
   display: inline-block; width: 14px; height: 14px; border: 2px solid var(--fg2);
   border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
 }
-#entity-freetext > div, :is(#page-content,[data-editor-local-id="page-content"]) > div { margin-block: 2px; }
-:is(#page-content,[data-editor-local-id="page-content"]) > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
+#entity-freetext > div, #page-content > div { margin-block: 2px; }
+#page-content > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
 #entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }
 
 /* 目次の項目。旧実装は見た目もホバーも JS のインラインstyle直書きだったため、
    ポインタが項目に乗ったまま目次が作り直されると mouseleave が発火せず、
    ハイライトが消えないまま残った。CSS の :hover へ移して構造的に解消する。 */
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item {
+#note-toc .note-toc-item {
   display: block;
   inline-size: 100%;
   padding-block: 2px;
@@ -551,17 +551,17 @@
   white-space: nowrap;
   color: var(--page-toc-item-fg, var(--fg));
 }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item:hover,
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-item:focus-visible { background: var(--bg4); }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-1 { padding-inline-start: 0; color: var(--page-toc-item-fg, var(--accent)); }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-2 { padding-inline-start: 12px; }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-3 { padding-inline-start: 24px; }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-4 { padding-inline-start: 36px; }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-5 { padding-inline-start: 48px; }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-level-6 { padding-inline-start: 60px; }
-:is(#note-toc,[data-editor-local-id="note-toc"]) .note-toc-empty { color: var(--fg2); padding: 4px; }
+#note-toc .note-toc-item:hover,
+#note-toc .note-toc-item:focus-visible { background: var(--bg4); }
+#note-toc .note-toc-level-1 { padding-inline-start: 0; color: var(--page-toc-item-fg, var(--accent)); }
+#note-toc .note-toc-level-2 { padding-inline-start: 12px; }
+#note-toc .note-toc-level-3 { padding-inline-start: 24px; }
+#note-toc .note-toc-level-4 { padding-inline-start: 36px; }
+#note-toc .note-toc-level-5 { padding-inline-start: 48px; }
+#note-toc .note-toc-level-6 { padding-inline-start: 60px; }
+#note-toc .note-toc-empty { color: var(--fg2); padding: 4px; }
 
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
+#note-toc-resize {
   --note-toc-resize-hit: 8px;
   position: relative;
   outline: none;
@@ -572,19 +572,19 @@
 .note-editor-body {
   min-height: 0;
 }
-.note-editor-body :is(#note-toc,[data-editor-local-id="note-toc"]),
-.note-editor-body :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
+.note-editor-body #note-toc,
+.note-editor-body #note-toc-resize {
   min-height: 0;
   box-sizing: border-box;
 }
 /* 本文だけ min-height を 0 にしない。旧実装では Meldex.html のインラインstyleが
-   min-height:200px を持っていたため、この規則の min-height:0 は :is(#page-content,[data-editor-local-id="page-content"]) には
+   min-height:200px を持っていたため、この規則の min-height:0 は #page-content には
    元から効いていなかった。レイアウトを外部CSS（gb-layout.part01.css）へ移すにあたり、
    当時の実効値（200px）を保つために本文を対象から外す。 */
-.note-editor-body :is(#page-content,[data-editor-local-id="page-content"]) {
+.note-editor-body #page-content {
   box-sizing: border-box;
 }
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"])::before {
+#note-toc-resize::before {
   content: '';
   position: absolute;
   top: 0;
@@ -594,18 +594,18 @@
   transform: translateX(-50%);
   background: var(--ui-border, var(--border));
 }
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):hover,
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):focus-visible {
+#note-toc-resize:hover,
+#note-toc-resize:focus-visible {
   background: transparent !important;
   border-right-color: transparent !important;
 }
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):hover::before,
-:is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]):focus-visible::before {
+#note-toc-resize:hover::before,
+#note-toc-resize:focus-visible::before {
   width: 2px;
   background: var(--ui-accent, var(--accent));
 }
 @media (pointer: coarse), (max-width: 640px) {
-  :is(#page-view,[data-editor-local-id="page-view"]) {
+  #page-view {
     --note-page-mobile-top-offset: 52px;
     height: min(
       calc((var(--meldex-window-inner-height, 100dvh) - var(--note-page-mobile-top-offset)) * var(--meldex-inverse-layout-zoom, 1)),
@@ -619,13 +619,19 @@
     ) !important;
     min-height: 0 !important;
   }
-  :is(#page-view,[data-editor-local-id="page-view"]) .note-editor-body {
+  #page-view .note-editor-body {
     flex: 1 1 auto;
     min-height: 0 !important;
   }
-  :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
+  #note-toc-resize {
     --note-toc-resize-hit: 24px;
     align-self: stretch;
     max-height: 100%;
   }
+}
+
+/* Per-column thumbnail height is independent of the number of card thumbnails. */
+.db-card-image-preview[style] :is(.db-card-image-host, .db-card-media-placeholder),
+.db-card-image-preview[style] > img {
+  height: var(--db-card-image-height, 96px); aspect-ratio: auto;
 }

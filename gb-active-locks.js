@@ -82,8 +82,7 @@
   }
 
   function _normalizePath(path) {
-    const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').trim();
-    return normalized === '.' ? '' : normalized;
+    return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').trim();
   }
 
   // サーバー側 meldex_file_locks.SYSTEM_LOCK_BLACKLIST と同じ一覧。

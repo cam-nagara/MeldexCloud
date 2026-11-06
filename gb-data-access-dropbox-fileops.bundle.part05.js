@@ -112,7 +112,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           if (item.type !== 'form-app') continue;
           try {
             const doc = JSON.parse(await provider.readText(item.path));
-            if (doc.meldex?.topic_attachment === true) continue;
             if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
             const sheetPath = _normalizeFolderPath(doc.sheet.path);
             const handle = await _resolveEntryHandle(provider, sheetPath);
@@ -318,6 +317,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     if (pathname === '/file' && (method === 'PUT' || method === 'POST')) {
       const provider = await _requirePwaProvider('readwrite');
+      if (body?._file_icon_write && !window.MeldexFileIcons?.matchesScope(body._file_icon_scope,provider)) {
+        throw new Error('保存先が変わりました。アイコンを開き直してください');
+      }
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
       if (!filePath) throw new Error('path は必須です');
       if (_isProductionFolderNotePath(filePath)) {
@@ -362,6 +364,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
       }
       const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
+      if (!body?._file_icon_write && window.MeldexFileIcons) {
+        content = window.MeldexFileIcons.preserve(content, currentContent, filePath);
+      }
       const titleHelper = window.GBPathUtils?.displayTitle;
       const storedTitle = titleHelper?.read(currentContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
@@ -893,8 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const labelName = await _uniqueName(provider, parent, label, '.md');
         const targetPath = _joinPath(parent, labelName + '.md');
         await createText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
-        return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
-      }
-      if (type === 'database') {
-        const labelName = await _uniqueName(provider, parent, label, '');
-        const targetPath = _joinPath(parent, labelName);

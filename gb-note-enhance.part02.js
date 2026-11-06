@@ -67,7 +67,7 @@ function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
 }
 
 async function _saveFileThemeToNoteFrontmatter(theme) {
-  const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+  const pc = document.getElementById('page-content');
   if (!pc || pc.contentEditable === 'false' || !pc.dataset.path) return false;
   const path = pc.dataset.path;
   let fmStr = pc.dataset.frontmatter || '';

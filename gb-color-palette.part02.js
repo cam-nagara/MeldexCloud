@@ -1,4 +1,5 @@
       if (!pickedHex) return;
+      if (selectedIsTransparent) selectedAlpha = 1;
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
@@ -13,6 +14,7 @@
   });
 
   function applyOsAccentColor(hex, tone) {
+    if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = hex;
     hsb = _hexToHsb(hex);
     selectedIsTransparent = false;
@@ -88,10 +90,14 @@
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  sliderSection.append(hSlider.row, sSlider.row, bSlider.row);
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  aSlider.row.dataset.e2eId = 'color-palette-opacity';
+  sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
 
   function updateSliderVisuals() {
+    aSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, transparent, ${currentHex()})`);
+    aSlider.slider.style.setProperty('--gb-color-axis-thumb', currentOutputColor());
     const hue = ((Number(hsb.h) % 360) + 360) % 360;
     const saturation = Math.max(0, Math.min(100, Number(hsb.s) || 0));
     const brightness = Math.max(0, Math.min(100, Number(hsb.b) || 0));
@@ -103,11 +109,12 @@
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
     bSlider.slider.value = hsb.b; bSlider.valInput.value = hsb.b;
+    aSlider.slider.value = Math.round(selectedAlpha * 100); aSlider.valInput.value = Math.round(selectedAlpha * 100);
     updateSliderVisuals();
     globalThis.GBUI?.refreshRangeFills?.(sliderSection);
   }

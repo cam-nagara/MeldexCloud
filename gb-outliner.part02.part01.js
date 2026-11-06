@@ -883,7 +883,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
     if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
-        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
+        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
           openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },
@@ -949,6 +949,13 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   }
 
   // --- 編集ロック ---
+  if (!isMulti && window.MeldexFileIcons?.canEdit(nodeData) && !isItemLocked(nodeData.path)) {
+    addMenuItem('アイコンを変更', () => {
+      closeTreeContextMenu();
+      window.MeldexFileIcons.openPicker(nodeData, nodeEl.querySelector('.tree-icon') || nodeEl);
+    }, null, 'smile');
+    addSep();
+  }
   if (!isMulti && nodeData.path && !isEntity) {
     const locked = isItemLocked(nodeData.path);
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(nodeData.path);

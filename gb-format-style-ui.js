@@ -266,15 +266,7 @@
   }
 
   function _styleBgColorWithPreservedAlpha(def, currentValue, color) {
-    const next = color || '';
-    if (def?.bgType !== 'rgba') return next;
-    if (!next || next === 'transparent' || !/^#[0-9a-f]{3,6}$/i.test(next)) return next;
-    const parsed = typeof parseColorToHexAlpha === 'function' ? parseColorToHexAlpha(currentValue) : null;
-    const alpha = Number.isFinite(parsed?.alpha) ? parsed.alpha : 1;
-    if (alpha > 0 && alpha < 1 && typeof hexAlphaToRgba === 'function') {
-      return hexAlphaToRgba(next, alpha);
-    }
-    return next;
+    return color || '';
   }
 
   function _mapSettingsDef(def) {
@@ -1139,6 +1131,10 @@
     if (fields.length <= 1) return [rowData];
     const mapped = new Set(Object.values(_mapFileRow(rowData).map).filter(Boolean));
     const unsupported = fields.filter(field => !mapped.has(field));
+    if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) {
+      return [{ ...rowData, fields: fields.filter(field => mapped.has(field)) },
+        { label: rowData.label + ' 行間・余白', fields: unsupported, preview: false }];
+    }
     return unsupported.length ? fields.map(field => ({ label: field.label, fields: [field], preview: rowData.preview })) : [rowData];
   }
 

@@ -147,6 +147,7 @@
 
     navPush = async function(entry, paneId) {
       const targetPaneId = paneId || _getFileOpenPane(GBLayout.activePane);
+      if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(targetPaneId);
       const historyReplayAtRequest = navNavigating;
       // Legacy loads keep the bridge guard active across awaits. A user action
       // during that load is a new navigation, not a recursive history-only push.

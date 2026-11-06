@@ -19,11 +19,10 @@ class FormAppComponent extends ToolComponent {
     window.addEventListener('beforeunload', this._beforeUnload);
     return this.el;
   }
-  _historyScope() { return this._embedded ? 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath) : ''; }
   _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
-    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function') historySetScope(this._historyScope());
+    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
     if (path && path !== this.path) this.ready = this.load(path);
@@ -50,7 +49,7 @@ class FormAppComponent extends ToolComponent {
     this.el.textContent = 'フォームを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([
-        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true),
+        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false),
       ]);
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
@@ -178,7 +177,7 @@ class FormAppComponent extends ToolComponent {
         }
         if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
       };
-      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), this._historyScope(), this.state.label || 'フォーム');
+      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
     }
     return true;
   }
@@ -202,7 +201,7 @@ class FormAppComponent extends ToolComponent {
         MeldexEntityDetail.resolveReadOnly(path, false),
       ]);
       if (this.ctx !== ctx || ctx.destroyed) return;
-      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly || this._embeddedReadOnly === true;
+      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly;
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
     } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
   }

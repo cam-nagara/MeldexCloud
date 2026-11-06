@@ -134,10 +134,6 @@ function historySetScope(scope) {
 }
 
 function _historyScopeDisplayName(scope) {
-  if (String(scope || '').startsWith('form:')) {
-    const host = globalThis.GBEditorHost?.get();
-    return host?.kind === 'form-app' && host.historyScope?.() === scope ? (host.label || 'フォーム') : 'フォーム';
-  }
   const raw = scope ? scope.split(':').slice(1).join(':') : '';
   // パスの場合はファイル名のみ表示
   return raw.includes('/') ? raw.split('/').pop() : raw;
@@ -704,9 +700,6 @@ function _meldexScriptNoteTabHistoryScope(tab) {
 function _meldexScheduleTabHistoryScope(tab) {
   if (typeof getComponentInstance !== 'function' || typeof _schedHistoryScope !== 'function') return '';
   const comp = getComponentInstance(tab?.id);
-  const embed = comp?._surface === 'productionTasks' && comp._productionTaskState?.embed;
-  const path = embed?.getCurrentPath?.();
-  if (path) return typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(path) : 'db:' + String(path).replace(/\\/g, '/');
   return comp ? _schedHistoryScope(comp) : '';
 }
 function _meldexPageTabHistoryScope(tab) {
@@ -755,8 +748,6 @@ function _meldexActiveTabForPane(paneId) {
 // 戻り値 null は「このタブ種別は履歴スコープを持たない（道具パネル等）」ことを示し、
 // 呼び出し側は現在の _historyActiveScope をそのまま維持すること。
 function _meldexResolveActiveTabHistoryScope(paneId) {
-  const editor = globalThis.GBEditorHost?.get();
-  if (editor && !paneId) return editor.historyScope?.() || null;
   const tab = _meldexActiveTabForPane(paneId);
   if (!tab || !tab.type) return null;
   const resolver = _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS[tab.type];
@@ -908,9 +899,8 @@ async function _meldexPrepareHistoryScopeTarget(scope) {
    シートがアクティブな時だけ系統(B)へルーティングするよう厳密化した。
    ============================== */
 function _meldexProductionEmbedHistoryScope() {
-  const editor = globalThis.GBEditorHost?.get();
-  const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
-    : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
+  if (typeof _activeCalendarShortcutComponent !== 'function') return '';
+  const component = _activeCalendarShortcutComponent();
   if (!component || component._surface !== 'productionTasks') return '';
   const embed = component._productionTaskState && component._productionTaskState.embed;
   const path = embed && typeof embed.getCurrentPath === 'function' ? embed.getCurrentPath() : '';
@@ -930,9 +920,8 @@ const _MELDEX_SCHEDULE_SETTINGS_HISTORY_SCOPE = 'calendar:settings';
 // （制作管理タスクリスト等、productionTasks）を表示していない場合にそのコンポーネントを返す。
 // productionTasks 面は上の _meldexProductionEmbedHistoryScope() が別途処理するため対象外にする。
 function _meldexScheduleActiveComponent() {
-  const editor = globalThis.GBEditorHost?.get();
-  const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
-    : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
+  if (typeof _activeCalendarShortcutComponent !== 'function') return null;
+  const component = _activeCalendarShortcutComponent();
   if (!component || component._surface === 'productionTasks') return null;
   return component;
 }
@@ -956,12 +945,6 @@ function _meldexCalendarSheetActive() {
 }
 
 function _meldexUndoRedoContext() {
-  const editor = globalThis.GBEditorHost?.get();
-  if (editor) {
-    if (editor.kind === 'board') return 'board';
-    if (editor.kind === 'calendar') return _meldexProductionEmbedHistoryScope() ? 'embedded-sheet' : 'schedule';
-    return 'history';
-  }
   if (_meldexProductionEmbedHistoryScope()) return 'embedded-sheet';
   if (_meldexScheduleActiveComponent()) return 'schedule';
   if (typeof state !== 'undefined' && state && state.view === 'board') return 'board';
@@ -1007,7 +990,7 @@ async function meldexUndo() {
   if (ctx === 'schedule') return _meldexScheduleUndo();
   if (ctx === 'calendar') { if (typeof _calUndo === 'function') return _calUndo(); return false; }
   if (typeof historyUndo !== 'function') return;
-  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
+  const scope = _historyActiveScope;
   // 通常は _historyActiveScope が既にアクティブタブへ追随済み（Step2）のため
   // ここでの切替は基本的に発生しない。念のための保険（例: スコープ同期漏れ）。
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
@@ -1024,7 +1007,7 @@ async function meldexRedo() {
   if (ctx === 'schedule') return _meldexScheduleRedo();
   if (ctx === 'calendar') { if (typeof _calRedo === 'function') return _calRedo(); return false; }
   if (typeof historyRedo !== 'function') return;
-  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
+  const scope = _historyActiveScope;
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
     const prep = await _meldexPrepareHistoryScopeTarget(scope);
     if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないためやり直せません', true); return; }
@@ -1100,25 +1083,9 @@ function _meldexScheduleCanRedo() {
 // 全ツールバー・履歴パネルの取り消し・やり直しボタンの有効/無効を一括更新する。
 // 目印は data-undo-button / data-redo-button。ノート・自由記述欄（ブラウザ標準undo）は
 // 判定手段が無いため対象外＝常時有効のまま（この属性を付けない）。
-function _meldexHistoryButtonCan(button, direction, fallback) {
-  const owner = globalThis.GBEditorHost?.ownerOf?.(button);
-  const paneId = button.closest?.('.gb-pane')?.dataset.paneId;
-  if (!owner && (!paneId || (typeof GBLayout !== 'undefined' && paneId === GBLayout.activePane && !globalThis.GBEditorHost?.get()))) return fallback;
-  const scope = owner ? owner.historyScope?.() : _meldexResolveActiveTabHistoryScope(paneId);
-  if (scope == null) return fallback;
-  const ctx = owner?.ctx || (typeof getPaneContext === 'function' ? getPaneContext(paneId) : null);
-  if (ctx?.pivotData?.calendar_db && ctx.viewMode === 'calendar'
-      && (typeof getCalendarMode !== 'function' || getCalendarMode(ctx.dbPath) !== 'timeline')) {
-    if (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy) return false;
-    return direction === 'undo' ? typeof _calUndoStack !== 'undefined' && _calUndoStack.length > 0
-      : typeof _calRedoStack !== 'undefined' && _calRedoStack.length > 0;
-  }
-  const can = direction === 'undo' ? historyCanUndo : historyCanRedo;
-  return can(scope) || (String(scope).startsWith('schedule:') && can(_MELDEX_SCHEDULE_SETTINGS_HISTORY_SCOPE));
-}
 function updateUndoRedoButtonStates() {
   const canUndo = meldexCanUndo();
   const canRedo = meldexCanRedo();
-  document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'undo', canUndo); });
-  document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'redo', canRedo); });
+  document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !canUndo; });
+  document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !canRedo; });
 }

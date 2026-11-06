@@ -98,15 +98,17 @@
     const entityPath = String(options?.entityPath || '');
     const propName = String(options?.propName || '');
     const ctx = options?.ctx || contextForEntityPath(entityPath);
-    const dbPath = ctx?.dbPath || state?.currentDbPath || '';
+    const dbPath = ctx?.dbPath || ctx?.currentDbPath || state?.currentDbPath || '';
     const rowOrder = visibleRowOrder(ctx, dbPath);
     const entityName = entityNameForPath(ctx, dbPath, entityPath);
     const foundRowIndex = rowOrder.indexOf(entityName);
-    const rowIndex = foundRowIndex >= 0 ? foundRowIndex : 0;
+    if (foundRowIndex < 0) return null;
+    const rowIndex = foundRowIndex;
     const imagesByRow = rowOrder.map(name => cellImages(ctx, name, propName));
     const clickedKey = imageKey(options?.item);
     const foundImageIndex = imagesByRow[rowIndex]?.findIndex(image => image.id === clickedKey) ?? -1;
-    const startIndex = foundImageIndex >= 0 ? foundImageIndex : 0;
+    if (foundImageIndex < 0) return null;
+    const startIndex = foundImageIndex;
     return remember({
       id: 'sheet-viewer-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
       dbPath,

@@ -3,7 +3,7 @@
    論理プロパティで持つ。ここは縦書きのときだけ差し替える分を書く。
    padding-inline は「行の左右」＝縦書きでは上下の余白。設定「余白」(--page-margin-x) が
    横書き・縦書きのどちらでも同じ意味（行の左右の余白）で効くようにするための要。 */
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing {
+#page-content.vertical-writing {
   writing-mode: vertical-rl; text-orientation: mixed;
   font-feature-settings: "vert" 1, "vpal" 1;
   overflow-y: hidden; overflow-x: auto;
@@ -19,11 +19,11 @@
 /* 縦書きでは目次を左ではなく上に出す（縦書きは右上が読み始めなので、左の縦帯だと視線と逆）。
    DOM順（目次 → 仕切り → 本文）のまま flex の方向だけ変えるので、フォーカス順や
    パネル複製への影響が無い。
-   狭い画面では単独アプリが :is(#note-toc,[data-editor-local-id="note-toc"]) を引き出し（position:fixed）へ切り替えるため、
+   狭い画面では単独アプリが #note-toc を引き出し（position:fixed）へ切り替えるため、
    flex の並びを変えるのは通常幅のときだけにする。 */
 @media (min-width: 821px) {
   .note-editor-body.is-note-vertical { flex-direction: column; }
-  .note-editor-body.is-note-vertical > :is(#note-toc,[data-editor-local-id="note-toc"]) {
+  .note-editor-body.is-note-vertical > #note-toc {
     width: auto;
     max-width: none;
     flex-basis: auto;
@@ -32,7 +32,7 @@
     overflow-y: auto;
     overflow-x: hidden;
   }
-  .note-editor-body.is-note-vertical > :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
+  .note-editor-body.is-note-vertical > #note-toc-resize {
     width: auto;
     min-width: 0;
     height: var(--note-toc-resize-hit, 8px);
@@ -42,7 +42,7 @@
     border-bottom: 1px solid var(--border);
   }
   /* 仕切りのホバー線も横向きに */
-  .note-editor-body.is-note-vertical > :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"])::before {
+  .note-editor-body.is-note-vertical > #note-toc-resize::before {
     top: 50%;
     bottom: auto;
     left: 0;
@@ -54,33 +54,33 @@
 
 /* 番号付きリストのマーカー。text-orientation:mixed を継承すると半角数字が横倒しになるが、
    ::marker には text-orientation を適用できないため、縦組みの慣行どおり縦中横にする。 */
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing ol > li::marker { text-combine-upright: all; }
+#page-content.vertical-writing ol > li::marker { text-combine-upright: all; }
 
 /* コードは縦組みにしない（ソースコードが縦に流れると読めないため） */
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing pre {
+#page-content.vertical-writing pre {
   writing-mode: horizontal-tb;
   text-orientation: initial;
   inline-size: auto;
   max-inline-size: none;
 }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing pre code { writing-mode: horizontal-tb; }
+#page-content.vertical-writing pre code { writing-mode: horizontal-tb; }
 
 /* チェックボックス・キー表示などの小さな部品は横組みのまま（記号の向きが崩れるため） */
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing input[type="checkbox"],
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing kbd { writing-mode: horizontal-tb; }
+#page-content.vertical-writing input[type="checkbox"],
+#page-content.vertical-writing kbd { writing-mode: horizontal-tb; }
 
 /* 論理プロパティが無いもの（box-shadow によるアクセント線）は縦書き専用に鏡映しへ差し替える。
    横書き側の宣言（gb-tools.part02.part01.css）は触らない。 */
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing {
+#page-content.vertical-writing {
   box-shadow: 0 calc(-1 * var(--page-text-left-accent, 0px)) 0 0 var(--page-text-accent-color, var(--accent));
 }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h1 { box-shadow: 0 calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h2 { box-shadow: 0 calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h3 { box-shadow: 0 calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h4 { box-shadow: 0 calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
-:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
+#page-content.vertical-writing h1 { box-shadow: 0 calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); }
+#page-content.vertical-writing h2 { box-shadow: 0 calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); }
+#page-content.vertical-writing h3 { box-shadow: 0 calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); }
+#page-content.vertical-writing h4 { box-shadow: 0 calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); }
+#page-content.vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
+#page-content.vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
+#page-content.vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
 
 /* ルビ */
 /* ルビ: data-ruby属性でCSS疑似要素として表示（ContentEditable互換） */
@@ -119,6 +119,7 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 
 
 /* 自動リンク */
+a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .auto-link {
   color: var(--page-link-fg); text-decoration: none; cursor: pointer;
   position: relative; font-weight: var(--page-link-bold); font-style: var(--page-link-italic);
@@ -134,15 +135,15 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 .auto-link:hover { color: var(--page-link-fg); text-decoration-line: underline; text-decoration-style: solid; filter: brightness(1.15); }
 .link-tooltip {
   position: fixed; z-index: 200; background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 4px; padding: 8px 12px; max-width: 350px; font-size: 13px;
+  border-radius: 4px; padding: 8px 12px; max-width: min(350px, calc(100vw - 16px)); font-size: 13px;
   color: var(--fg); box-shadow: 0 4px 12px rgba(0,0,0,0.5); pointer-events: none;
-  line-height: 1.5;
+  line-height: 1.5; box-sizing: border-box; white-space: normal; overflow-wrap: anywhere;
 }
 .link-tooltip .lt-title { font-weight: bold; color: var(--accent); margin-bottom: 4px; }
 .link-tooltip .lt-props { color: var(--fg2); font-size: 12px; }
 .link-tooltip .lt-preview {
   display: block;
-  max-width: 200px;
+  max-width: min(200px, 100%);
   max-height: 120px;
   border-radius: 4px;
   margin-top: 4px;
@@ -1135,12 +1136,48 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   margin-top: 10px;
   flex-wrap: wrap;
 }
+.google-personal-help { margin: 12px 0; }
+.google-personal-help > summary,
+.google-personal-task-details > summary { display: list-item; min-height: 0; padding: 8px 0; }
+.google-personal-task {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent);
+  border-radius: var(--ui-radius-md, 8px);
+  background: var(--bg2);
+  min-width: 0;
+}
+#google-personal-import .google-personal-task h4 { margin: 0 0 12px; line-height: 1.5; }
+.google-personal-task[data-stage="attention"] { border-inline-start-color: var(--warning, #d79b45); }
+.google-personal-summary { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.google-personal-summary > span { color: var(--fg2); font-size: 12px; }
+.google-personal-summary strong { color: var(--fg); font-size: 15px; font-variant-numeric: tabular-nums; }
+.google-personal-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.google-personal-meters { display: grid; gap: 8px; }
+.google-personal-meters[hidden], .google-personal-meters [hidden] { display: none; }
+.google-personal-meters label { font-size: 13px; overflow-wrap: anywhere; }
+.google-personal-meters progress { display: block; width: 100%; height: 8px; appearance: none; border: 0; border-radius: 4px; overflow: hidden; background: var(--border); accent-color: var(--accent); }
+.google-personal-meters progress::-webkit-progress-bar { background: var(--border); border-radius: 4px; }
+.google-personal-meters progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+#google-personal-current { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+#google-personal-current progress { margin-top: 8px; height: 5px; }
+#google-personal-import .google-personal-background-note { color: var(--fg2); font-size: 12px; margin: 4px 0; }
+.google-personal-task-details { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.google-personal-task-details > summary { font-size: 12px; }
+#google-personal-progress { color: var(--fg2); font-size: 12px; }
 #google-personal-results {
   max-height: 320px;
   overflow: auto;
   overflow-wrap: anywhere;
   line-height: 1.6;
 }
+#google-personal-results nav { position: sticky; top: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 0; background: var(--bg2); font-size: 12px; }
+#google-personal-results ul { list-style: none; margin: 0; padding: 0; }
+#google-personal-results li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.google-personal-result-status { color: var(--fg2); white-space: nowrap; }
+#google-personal-results li:is([data-status="failed"], [data-status="blocked"], [data-status="warning"]) .google-personal-result-status { color: var(--warning, #d79b45); }
+.google-personal-result-path { color: var(--fg2); overflow-wrap: anywhere; }
 .google-import-target-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

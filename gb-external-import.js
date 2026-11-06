@@ -12,6 +12,8 @@
   const pendingConnections = new Set();
   let lastConfig = null;
   let refreshSequence = 0;
+  let notionMigration = null;
+  let notionMigrationBusy = false;
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
   const ENEX_MAX_BYTES = 32 * 1024 * 1024;
   const PUREREF_WARN_BYTES = 64 * 1024 * 1024;
@@ -317,6 +319,149 @@
       pendingConnections.delete('notion');
       await refresh();
       setStatus('Notionの取り込み接続を解除しました。', false, 'notion');
+    } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+  }
+
+  function renderNotionMigration(data, appendIssues) {
+    const host = document.getElementById('notion-migration-result');
+    if (!host) return;
+    if (!appendIssues) {
+      notionMigration = data;
+      host.textContent = '';
+      const summary = data.summary || {};
+      host.appendChild(textEl('p', `${data.committed ? '取り込み済み' : '移行前の確認'}: ノート・トピック ${summary.pages || 0}件 / シート ${summary.sheets || 0}件 / 添付 ${summary.assets || 0}件`));
+      host.appendChild(textEl('p', `数式: 再計算可能 ${summary.formulas_enabled || 0}件 / 原式と値の保管 ${summary.formulas_preserved || 0}件`));
+      const preservation = data.preservation;
+      if (preservation) {
+        host.appendChild(textEl('p', `将来の再現用に保管: ビュー ${preservation.views || 0}件 / テンプレート ${preservation.templates || 0}件。未取得・未確認 ${preservation.gaps || 0}件。`));
+        host.appendChild(textEl('p', '現在Meldexで使える機能と、元の設定を保管できた機能は別です。Notionの全機能を将来復元できる状態とは確認していません。取得不足は下の一覧で確認できます。'));
+      } else {
+        host.appendChild(textEl('p', 'この確認結果には、将来の復元に必要な取得範囲の記録がありません。ZIPとAPIから再確認してください。'));
+      }
+      host.appendChild(textEl('p', `保存先: ${data.save_dir}`));
+      host.appendChild(textEl('p', `確認項目 ${data.issue_count || 0}件。取得できない情報や再計算に未対応の式は、原本と移行レポートに残します。`));
+      const list = document.createElement('ul');
+      list.id = 'notion-migration-issues';
+      list.style.overflowWrap = 'anywhere';
+      host.appendChild(list);
+      const reviewed = document.getElementById('notion-migration-reviewed');
+      reviewed.checked = false;
+      reviewed.disabled = !!data.committed;
+      document.getElementById('notion-migration-commit').disabled = true;
+      if (data.committed) {
+        host.appendChild(textEl('p', `移行レポート: ${data.report_path}`));
+        if (data.index_errors) host.appendChild(textEl('p', `保存は完了しました。検索への登録を確認できないファイルが${data.index_errors}件あります。`));
+      }
+    }
+    const list = document.getElementById('notion-migration-issues');
+    for (const issue of data.issues || []) {
+      const row = textEl('li', `${issue.title || issue.target}: ${issue.message}`);
+      if (issue.source_url && /^https:\/\/www\.notion\.so\/[0-9a-f]{32}$/.test(issue.source_url)) {
+        const link = document.createElement('a');
+        link.href = issue.source_url;
+        link.textContent = ' 元ページ';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        row.appendChild(link);
+      }
+      list.appendChild(row);
+    }
+    document.getElementById('notion-migration-more')?.remove();
+    if (data.next_offset != null) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.id = 'notion-migration-more';
+      more.className = 'gb-btn gb-btn-sm';
+      more.textContent = '確認項目をさらに表示';
+      const currentId = data.migration_id;
+      more.addEventListener('click', async () => {
+        more.disabled = true;
+        try {
+          const next = await apiFetch(`/external-import/notion/migrations/${encodeURIComponent(currentId)}?offset=${data.next_offset}`, { silentError: true });
+          if (notionMigration?.migration_id === currentId) renderNotionMigration(next, true);
+        } catch (err) {
+          more.disabled = false;
+          setStatus(err.userMessage || err.message || String(err), true, 'notion');
+        }
+      });
+      host.appendChild(more);
+    }
+  }
+
+  async function chooseNotionMigrationZip() {
+    if (notionMigrationBusy) return;
+    try {
+      const selected = await apiPost('/open-file-dialog', { title: 'Notionの全体エクスポートを選ぶ', filetypes: [['NotionエクスポートZIP', '*.zip']] }, { silentError: true });
+      if (!selected.path) return;
+      document.getElementById('notion-migration-path').value = selected.path;
+      notionMigration = null;
+      document.getElementById('notion-migration-result').textContent = '';
+      document.getElementById('notion-migration-reviewed').checked = false;
+      document.getElementById('notion-migration-commit').disabled = true;
+    } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+  }
+
+  async function runNotionMigration(commit) {
+    if (notionMigrationBusy) return;
+    const reviewed = document.getElementById('notion-migration-reviewed');
+    if (commit && (!notionMigration || notionMigration.committed || !reviewed.checked)) return;
+    const zipPath = document.getElementById('notion-migration-path').value;
+    if (!commit && !zipPath) { setStatus('Notionから書き出したZIPを選んでください。', true, 'notion'); return; }
+    notionMigrationBusy = true;
+    const buttons = ['notion-migration-choose', 'notion-migration-prepare', 'notion-migration-commit', 'notion-migration-resume'];
+    buttons.forEach(id => { document.getElementById(id).disabled = true; });
+    reviewed.disabled = true;
+    try {
+      const path = commit ? `/external-import/notion/migrations/${encodeURIComponent(notionMigration.migration_id)}/commit` : '/external-import/notion/migrations/prepare';
+      const body = commit ? { reviewed: true } : { zip_path: zipPath, name: document.getElementById('notion-migration-name').value.trim() || 'Notion' };
+      const result = await runBackgroundJob(path, body, {
+        operationLabel: commit ? 'Notionを一括取り込み中' : 'Notionの移行内容を確認中',
+        onProgress: value => setStatus(formatJobProgress(value, { unit: '件', defaultPhase: 'Notionを確認中' }), false, 'notion'),
+      });
+      renderNotionMigration(result);
+      setStatus(result.committed ? 'Notionの一括取り込みが完了しました。確認項目と移行レポートをご確認ください。' : '確認が終わりました。内容を確認して「一括取り込み」を押してください。', false, 'notion');
+      if (result.committed && typeof loadOutliner === 'function') {
+        try { await loadOutliner(); }
+        catch (err) { setStatus('一括取り込みは保存済みですが、フォルダツリーを更新できませんでした。画面を再読み込みしてください。', true, 'notion'); }
+      }
+    } catch (err) {
+      const saved = err?.jobStatus?.result;
+      if (saved?.committed) {
+        renderNotionMigration(saved);
+        setStatus('一括取り込みは確定済みです。移行レポートをご確認ください。', false, 'notion');
+      } else {
+        setStatus(err?.name === 'AbortError' ? '処理を停止しました。「前回の確認結果」から保存状態を確認できます。' : (err.userMessage || err.message || String(err)), err?.name !== 'AbortError', 'notion');
+      }
+    } finally {
+      notionMigrationBusy = false;
+      buttons.forEach(id => { const button = document.getElementById(id); if (button) button.disabled = false; });
+      const currentReview = document.getElementById('notion-migration-reviewed');
+      const currentCommit = document.getElementById('notion-migration-commit');
+      if (currentReview) currentReview.disabled = !notionMigration || !!notionMigration.committed;
+      if (currentCommit) currentCommit.disabled = !notionMigration || notionMigration.committed || !currentReview?.checked;
+    }
+  }
+
+  async function resumeNotionMigration() {
+    if (notionMigrationBusy) return;
+    try {
+      const data = await apiFetch('/external-import/notion/migrations', { silentError: true });
+      const host = document.getElementById('notion-migration-saved');
+      host.textContent = '';
+      if (!data.migrations?.length) { host.appendChild(textEl('p', '保存された確認結果はありません。')); return; }
+      for (const item of data.migrations) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'gb-btn gb-btn-sm';
+        button.textContent = `${item.name} / ${item.committed ? '取り込み済み' : '確認済み'} / ${new Date(item.created_at).toLocaleString('ja-JP')}`;
+        button.addEventListener('click', async () => {
+          if (notionMigrationBusy) return;
+          try {
+            renderNotionMigration(await apiFetch(`/external-import/notion/migrations/${encodeURIComponent(item.migration_id)}`, { silentError: true }));
+          } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
+        });
+        host.appendChild(button);
+      }
     } catch (err) { setStatus(err.userMessage || err.message || String(err), true, 'notion'); }
   }
 
@@ -786,6 +931,13 @@
   }
 
   function bind() {
+    document.getElementById('notion-migration-choose')?.addEventListener('click', chooseNotionMigrationZip);
+    document.getElementById('notion-migration-prepare')?.addEventListener('click', () => runNotionMigration(false));
+    document.getElementById('notion-migration-commit')?.addEventListener('click', () => runNotionMigration(true));
+    document.getElementById('notion-migration-resume')?.addEventListener('click', resumeNotionMigration);
+    document.getElementById('notion-migration-reviewed')?.addEventListener('change', event => {
+      document.getElementById('notion-migration-commit').disabled = notionMigrationBusy || !notionMigration || notionMigration.committed || !event.target.checked;
+    });
     document.getElementById('external-import-notion-connect')?.addEventListener('click', revealNotionConnection);
     document.getElementById('external-import-notion-relay')?.addEventListener('click', () => connect('notion'));
     document.getElementById('external-import-notion-token-form')?.addEventListener('submit', connectNotionToken);
@@ -868,6 +1020,19 @@
               <label class="external-import-check"><input type="checkbox" id="external-import-notion-assets">添付ファイルをコピーする</label>
               <button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm" disabled>${icon('plus', 14)} 取り込みセットを追加</button>
             </div>
+            <section class="gb-section gb-section--boxed" aria-labelledby="notion-migration-heading">
+              <h3 id="notion-migration-heading" class="gb-section-title">ZIPとAPIで一括移行</h3>
+              <p class="gb-section-desc">Notionの全体エクスポート（マークダウンとCSV）と、上の取り込み接続を使います。リンク・階層・シートを新しいフォルダへ移行します。現在Meldexで未対応の式や設定も、取得できた原情報を将来の復元用に保管します。取得できない設定も確認できます。元のNotionは変更しません。確認結果には本文・添付の原本も保存されます。</p>
+              <div class="external-import-form">
+                <label for="notion-migration-name">移行フォルダ名</label><input id="notion-migration-name" class="gb-input" value="Notion" maxlength="65">
+                <label for="notion-migration-path">全体エクスポートのZIP</label><div class="external-import-input-row"><input id="notion-migration-path" class="gb-input" readonly><button type="button" id="notion-migration-choose" class="gb-btn gb-btn-sm">ZIPを選ぶ</button></div>
+              </div>
+              <div class="external-import-provider-detail-actions"><button type="button" id="notion-migration-prepare" class="gb-btn gb-btn-sm">移行内容を確認</button><button type="button" id="notion-migration-resume" class="gb-btn gb-btn-sm">前回の確認結果</button></div>
+              <div id="notion-migration-saved"></div>
+              <div id="notion-migration-result" aria-live="polite"></div>
+              <label class="external-import-check"><input type="checkbox" id="notion-migration-reviewed" disabled>移行内容と確認項目を確認しました</label>
+              <button type="button" id="notion-migration-commit" class="gb-btn gb-btn-sm" disabled>一括取り込み</button>
+            </section>
           </div>
         </section>
         <section class="external-import-provider" data-provider="obsidian">

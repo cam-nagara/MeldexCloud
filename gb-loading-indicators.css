@@ -125,13 +125,16 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray {
   position: fixed;
-  /* 通常時の進捗は通知レイヤーに表示する。ダイアログ表示中は下の規則で背面へ置く。 */
-  z-index: var(--ui-z-toast, 400);
-  /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
-  right: calc(14px + var(--gb-rail-width, 38px) + 8px);
+  display: flex;
+  flex-direction: column;
+  /* すべてのダイアログの暗転より前に置く。GBModalShellもこの予約レイヤーを追い越さない。 */
+  z-index: 2147483647;
+  /* 右レールの実位置に追従し、外側に開いたチャットも避ける。 */
+  --meldex-operation-right-inset: calc(var(--gb-rail-width, 38px) + 8px);
+  right: calc(14px + var(--meldex-operation-right-inset));
   bottom: calc(34px + env(safe-area-inset-bottom, 0px));
-  width: min(360px, calc(100vw - 28px - var(--gb-rail-width, 38px) - 8px));
-  max-height: min(62vh, 520px);
+  width: min(360px, calc(100vw - 28px - var(--meldex-operation-right-inset)));
+  max-height: min(62vh, 520px, var(--meldex-operation-available-height, 100vh));
   overflow: hidden;
   color: var(--fg, #e7e9ec);
   background: var(--meldex-progress-surface);
@@ -143,13 +146,9 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray[hidden] { display: none; }
 
-/* Modal actions must remain above background progress, including on phones. */
-body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-operation-tray {
-  z-index: calc(var(--ui-z-modal, 300) - 1);
-}
-
 .meldex-operation-tray-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   min-height: 34px;
   padding: 6px 10px;
@@ -161,6 +160,7 @@ body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-oper
 
 .meldex-operation-list {
   display: grid;
+  min-height: 0;
   max-height: min(55vh, 460px);
   overflow: auto;
 }
@@ -290,7 +290,7 @@ body:has(.gb-modal-overlay:not([hidden]):not([aria-hidden="true"])) .meldex-oper
     bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     left: 10px;
     width: auto;
-    max-height: min(48vh, 420px);
+    max-height: min(48vh, 420px, var(--meldex-operation-available-height, 100vh));
     border-radius: 12px;
   }
 

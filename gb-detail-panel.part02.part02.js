@@ -72,6 +72,9 @@ async function _syncDetailPanel(label, path, type, opts) {
       ? GBSubPanel.isOpen()
       : false;
     if (!drawerOpen && !subPanelOpen) return false;
+    // Promotion already displays this entity; reopening it cancels the source close in flight.
+    const target = typeof GBSubPanel !== 'undefined' ? GBSubPanel.getCurrentTarget?.() : null;
+    if (target?.type === 'entity' && target.path === path) return true;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。

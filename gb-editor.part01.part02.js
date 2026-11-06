@@ -141,7 +141,7 @@
 }
 window.MeldexSetupEditableDropHandler = setupEditableDropHandler;
 // page-content と entity-freetext にドロップハンドラを設定
-setupEditableDropHandler((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
+setupEditableDropHandler(document.getElementById('page-content'));
 setupEditableDropHandler(document.getElementById('entity-freetext'));
 
 // ノート選択テキストの外部ドラッグ対応（ボード/別ノートへの転送）
@@ -158,14 +158,14 @@ function setupEditableDragSource(el) {
     e.dataTransfer.effectAllowed = 'copyMove';
   });
 }
-setupEditableDragSource((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
+setupEditableDragSource(document.getElementById('page-content'));
 initNoteTocResize();
 syncNoteTocLayout();
 
 // ノート目次の表示/非表示
 function toggleNoteToc() {
-  const toc = (window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc'));
-  const btn = (window.GBEditorHost?.element('btn-toc-toggle') || document.getElementById('btn-toc-toggle'));
+  const toc = document.getElementById('note-toc');
+  const btn = document.getElementById('btn-toc-toggle');
   if (toc.style.display === 'none') {
     toc.style.display = '';
     btn.classList.add('active');
@@ -181,7 +181,7 @@ function toggleNoteToc() {
 
 // フロントマターからtoc設定を取得（true/false/undefined）
 function _getFrontmatterToc() {
-  const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
+  const pc = document.getElementById('page-content');
   const fm = pc?.dataset.frontmatter || '';
   const m = fm.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return undefined;

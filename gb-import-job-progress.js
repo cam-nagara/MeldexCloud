@@ -148,6 +148,34 @@
     return '処理しています';
   }
 
+  // 翻訳待ちは保存済みポスト全体の残件で、今回の取り込み失敗ではない。
+  function describeImportResult(result) {
+    result = result || {};
+    const labels = {
+      failed: '保存失敗', errors: 'エラー', failed_assets: '添付取得失敗', conflicts: '競合',
+      blocked: '処理不可', unsupported: '未対応', unprocessed: '未処理',
+      media_failed: '画像取得失敗', author_icon_failed: 'アイコン取得失敗',
+      reply_unavailable: '返信取得不可', reference_unavailable: '参照ポスト取得不可',
+    };
+    const issues = Object.entries(labels).filter(([key]) => Number(result[key]) > 0)
+      .map(([key, label]) => label + Number(result[key]) + '件');
+    const samples = result.failure_samples || result.failures;
+    const details = Array.isArray(samples) ? [...samples] : [];
+    if (result.folder_error) {
+      issues.push('フォルダ取得失敗');
+      details.push({ stage: 'フォルダ', message: String(result.folder_error) });
+    }
+    (Array.isArray(result.warnings) ? result.warnings : []).forEach(message => {
+      issues.push(String(message));
+    });
+    const pending = Number(result.translation_pending_existing || 0) + Number(result.translation_pending_replies || 0);
+    const pendingText = pending > 0 ? '翻訳待ち' + pending + '件（原文は保存済み）。設定の「保存済みポストの翻訳を続ける」で再開できます。' : '';
+    const summary = [result.summary || '取り込みが終了しました', issues.join(' / '), pendingText].filter(Boolean).join('。');
+    if (Number(result.media_failed) > 0 || Number(result.author_icon_failed) > 0) details.push({ message: '設定で前回保存の内訳と保存先を確認してください。取得できなかった画像・アイコンは、X上の元ポストでも確認できます。' });
+    if (Number(result.reply_unavailable) > 0 || Number(result.reference_unavailable) > 0) details.push({ message: '削除済み・非公開や通信失敗などにより、返信や参照ポストを取得できませんでした。保存済みの原文は残ります。返信の追加取得は設定から実行でき、X APIの料金が発生します。' });
+    return { partial: issues.length > 0, summary, details };
+  }
+
   // 通信/ジョブ処理は従来実装を保ち、表示だけを共通操作状態へ接続する。
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
@@ -157,6 +185,7 @@
       ? null
       : progressApi.begin({
           kind: String(opts.operationKind || 'background-job'),
+          settingsPanel: String(startPath || '').startsWith('/x-bookmarks/') ? 'Xブックマーク' : '',
           label: _operationLabel(startPath, opts),
           mode: 'indeterminate',
           background: true,
@@ -206,9 +235,11 @@
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
       if (result?.ok === false) {
         operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
-      } else if (['failed', 'errors', 'failed_assets', 'conflicts', 'blocked', 'unsupported', 'unprocessed', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result?.[key]) > 0) || result?.folder_error || result?.warnings?.length) {
-        operation?.partial({ summary: result.summary || '処理が終了しました。確認が必要な項目があります。', details: result.failure_samples || result.failures || [] });
-      } else operation?.succeed({ summary: opts.successMessage || '完了しました' });
+      } else {
+        const outcome = describeImportResult(result);
+        if (outcome.partial) operation?.partial(outcome);
+        else operation?.succeed({ ...outcome, summary: opts.successMessage || outcome.summary });
+      }
       return result;
     } catch (error) {
       if (error?.name === 'AbortError') {
@@ -249,6 +280,7 @@
     return (value / 86400).toFixed(1) + '日';
   }
 
+  window.describeImportResult = describeImportResult;
   window.runBackgroundJob = runBackgroundJob;
   window.formatJobProgress = formatJobProgress;
   window.formatJobEta = formatJobEta;

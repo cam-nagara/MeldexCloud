@@ -1,3 +1,29 @@
+      const found = _outlinerFindNewItemInListing(items, type, existingNames);
+      if (found) {
+        if (onConfirmed) await onConfirmed(found);
+        _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
+        return;
+      }
+    }
+    const message = '作成結果を確認できませんでした。重複を避けるため、再作成する前にフォルダを再読込してください';
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
+  } finally {
+    if (pendingNode?.parentNode) pendingNode.remove();
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: '作成結果の確認を完了できませんでした' });
+    }
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
+}
+
+// アイテムを指定パス配下に追加（部分更新、チラつき防止）
+async function addItemAt(parentPath, type, options = {}) {
+  if (_isCloudPhase1BlockedCreateType(type)) {
+    _showCloudPhase1BlockedCreate(type);
+    return;
+  }
   const label = '無題';
   // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
   const anchorNode = options.anchorNode;
@@ -872,29 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     pointerCaptured = false;
     selectionScope = _outlinerLassoScopeFromTarget(e.target);
     baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
-    const rect = scroller.getBoundingClientRect();
-    startX = e.clientX - rect.left + scroller.scrollLeft;
-    startY = e.clientY - rect.top + scroller.scrollTop;
-    startClientX = e.clientX;
-    startClientY = e.clientY;
-  });
-
-  scroller.addEventListener('pointermove', (e) => {
-    if (!tracking) return;
-    const distance = Math.max(Math.abs(e.clientX - startClientX), Math.abs(e.clientY - startClientY));
-    if (!active && distance < LASSO_DRAG_THRESHOLD) return;
-    beginLasso(e);
-    const rect = _outlinerLassoRectForEvent(e);
-    const { left, top, width, height } = rect;
-    box.style.left = left + 'px';
-    box.style.top = top + 'px';
-    box.style.width = width + 'px';
-    box.style.height = height + 'px';
-    updateSelection(rect);
-    e.preventDefault();
-  });
-  scroller.addEventListener('pointerup', endLasso);
-  scroller.addEventListener('pointercancel', endLasso);
-})();
-
-function _readOutlinerDroppedFile(file) {

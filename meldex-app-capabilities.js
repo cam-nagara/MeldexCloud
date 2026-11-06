@@ -67,6 +67,10 @@
 
   const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
   const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
+  const NATIVE_NOTE_CAPABILITIES = new Set([
+    'load', 'edit', 'save', 'save_as', 'export', 'file_info',
+    'right_sidebar_drawer', 'drag_drop', 'clipboard', 'conflict_detection', 'offline_save',
+  ]);
   const STANDALONE_VERSION_HISTORY_APPS = new Set(['quick_memo', 'viewer']);
   const APP_OUT_OF_SCOPE = Object.freeze({
     map: Object.freeze(Object.fromEntries(CAPABILITIES.filter(capability => ![
@@ -348,6 +352,7 @@
         'Cloud・モバイル・単独版への対応は後続段階です', 'デスクトップ版本体で開く');
     }
     if (INTEGRATED_ONLY_APPS.has(app)
+        && !(app === 'note' && environment === 'windows_standalone' && NATIVE_NOTE_CAPABILITIES.has(capability))
         && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
       const isCloud = environment === 'cloud_standalone';
       return _record(

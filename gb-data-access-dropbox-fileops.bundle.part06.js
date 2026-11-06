@@ -1,3 +1,8 @@
+        return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
+      }
+      if (type === 'database') {
+        const labelName = await _uniqueName(provider, parent, label, '');
+        const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         await provider.writeText(_joinPath(targetPath, labelName + '.md'), `# ${labelName}\n\n`);
         return { ok: true, node: { type: _phase1SurfaceType('database', 'directory'), label: shown(labelName), path: targetPath } };
@@ -51,7 +56,7 @@
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${shown(labelName)}\n\n`;
+        let boardContent = '---\ntype: board\nschema_version: 1\n---\n';
         boardContent = titled(boardContent, targetPath);
         if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
         await createText(targetPath, boardContent);
@@ -893,8 +898,3 @@
         } }]),
         result: intent => ({ ok: true, removed: intent.entries.length,
           trash_roots: roots.map(root => root.path) }),
-      }); } catch (cause) {
-        const error = new Error('ゴミ箱を完全に空にできませんでした（1件）');
-        error.code = 'trash_empty_partial_failure';
-        error.failures = [{ trash_root: '', name: '', error: cause?.message || String(cause) }];
-        throw error;

@@ -212,7 +212,6 @@ function bdContextMenu(e, nodeId) {
       : null;
     const isLinkCard = nd && !!nd.link;
     const isImageCard = nd && !!nd.img;
-    const isRootCard = nd && !nd.parent;
     const openTarget = !multi && typeof MeldexBoardOpenTarget !== 'undefined'
       ? MeldexBoardOpenTarget.resolve(nd)
       : null;
@@ -260,16 +259,10 @@ function bdContextMenu(e, nodeId) {
     }
     if (!multi) {
       item('テキスト編集 (F2)', () => bdEditNode(nodeId));
-      // 「同階層カード追加 (Enter)」: ルートカード (親なし) では追加先の階層が不定のため disabled。
-      if (isRootCard) {
-        const disabled = _bdContextMenuItem(menu, '同階層トピック追加 (Enter)', null, { disabled: true, html: false });
-        disabled.title = 'メイントピックは親が無いため、同階層追加できません';
-      } else {
-        item('同階層トピック追加 (Enter)', () => {
-          bdSelect(nodeId);
-          if (typeof bdAddSiblingToSelected === 'function') bdAddSiblingToSelected();
-        });
-      }
+      item('同階層トピック追加 (Enter)', () => {
+        bdSelect(nodeId);
+        if (typeof bdAddSiblingToSelected === 'function') bdAddSiblingToSelected();
+      });
       item('サブトピック追加 (Ctrl+Enter)', () => {
         bdSelect(nodeId);
         if (typeof bdAddChildToSelected === 'function') bdAddChildToSelected();

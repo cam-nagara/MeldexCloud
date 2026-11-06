@@ -216,14 +216,17 @@ function _themeUiNormalizeHexColor(color) {
 }
 
 function _themeUiCustomValue(color) {
-  const hex = _themeUiNormalizeHexColor(color);
-  return hex ? THEME_UI_CUSTOM_COLOR_PREFIX + hex : '';
+  const raw = String(color || '').trim();
+  if (!raw || !/^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$|rgba?\(|transparent$)/i.test(raw)) return '';
+  const { hex, alpha } = parseColorToHexAlpha(raw);
+  const normalized = hex.toLowerCase() + (alpha < 1 ? Math.round(alpha * 255).toString(16).padStart(2, '0') : '');
+  return THEME_UI_CUSTOM_COLOR_PREFIX + normalized;
 }
 
 function _themeUiCustomColor(value) {
   const raw = String(value == null ? '' : value).trim();
-  if (raw.startsWith(THEME_UI_CUSTOM_COLOR_PREFIX)) return _themeUiNormalizeHexColor(raw.slice(THEME_UI_CUSTOM_COLOR_PREFIX.length));
-  return _themeUiNormalizeHexColor(raw);
+  const custom = _themeUiCustomValue(raw.startsWith(THEME_UI_CUSTOM_COLOR_PREFIX) ? raw.slice(THEME_UI_CUSTOM_COLOR_PREFIX.length) : raw);
+  return custom ? custom.slice(THEME_UI_CUSTOM_COLOR_PREFIX.length) : '';
 }
 
 function _themeUiSelectOptions(value) {

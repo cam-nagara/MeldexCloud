@@ -625,6 +625,21 @@ const _FS_FIELDS = {
   },
   page: {
     display: [
+      ...['ul', 'ol'].flatMap(kind => Array.from({ length: 6 }, (_, i) => {
+        const prefix = `--page-${kind}-${i + 1}`;
+        const label = `${kind === 'ul' ? '箇条書き' : '番号付きリスト'} 階層${i + 1}`;
+        return [
+          { key: prefix + '-fg', label: label + ' 色', type: 'color' },
+          { key: prefix + '-bg', label: label + ' 背景', type: 'color' },
+          { key: prefix + '-bold', label: label + ' 太字', type: 'toggle', on: 'bold', off: 'normal' },
+          { key: prefix + '-italic', label: label + ' 斜体', type: 'toggle', on: 'italic', off: 'normal' },
+          { key: prefix + '-font', label: label + ' フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
+          { key: prefix + '-font-size', label: '文字サイズ', type: 'rangeNumber', min: 8, max: 72, step: 1, unit: 'px', fallback: '14px' },
+          { key: prefix + '-line-height', label: '行間', type: 'rangeNumber', min: 80, max: 300, step: 5, unit: '%', fallback: '160%' },
+          { key: prefix + '-space-before', label: '前余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
+          { key: prefix + '-space-after', label: '後余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
+        ];
+      }).flat()),
       { key: '--page-margin-x', label: '余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
       { key: '--page-content-max-width', label: '内容最大幅', type: 'rangeNumber', unit: 'px', min: 480, max: 3200, step: 10, fallback: '1200px' },
       // タイトル

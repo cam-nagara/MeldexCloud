@@ -397,7 +397,8 @@ function bdInitBoardShell(root) {
   root.dataset.bdShellReady = '1';
   _bdBindToolbarStylePickerTriggers(root);
   root.addEventListener('click', event => {
-    const btn = event.target.closest('[data-bd-action],[data-bd-tool]');
+    // キャンバスにもカーソル表示用のdata-bd-toolがあるため、実際のボタンに限定する。
+    const btn = event.target.closest('[data-bd-action],.bd-tool-btn[data-bd-tool]');
     if (!btn || !root.contains(btn)) return;
     if (!['pick-card-style', 'pick-line-style'].includes(btn.dataset.bdAction || '')) bdCloseStylePicker();
     if (btn.dataset.bdTool) {

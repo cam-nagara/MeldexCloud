@@ -14,15 +14,12 @@
     }
     if (typeof bdAddChildToSelected === 'function') bdAddChildToSelected();
   },
-  // Enter で同階層カードを追加。選択カードがルート (親なし) の場合は何もしない。
+  // Enter で同階層トピックを追加。ルートでは下に別のルートを作る。
   'board.addSibling': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
     if (bd.selected.size !== 1) return; // 単一選択時のみ反応 (board.addChild と整合)
     if (typeof bdAddSiblingToSelected !== 'function') return false;
-    const created = bdAddSiblingToSelected();
-    if (!created && typeof showStatus === 'function') {
-      showStatus('ルートトピックは同階層に追加できません');
-    }
+    bdAddSiblingToSelected();
   },
   'board.group': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;

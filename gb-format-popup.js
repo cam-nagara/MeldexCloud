@@ -86,6 +86,7 @@
   }
 
   function _setSwatchBg(sw, color) {
+    if (typeof setColorSwatchValue === 'function') { setColorSwatchValue(sw, color); return; }
     // 透明（'transparent' / 空文字 / 'rgba(0,0,0,0)'）はどちらも
     // 「色が付いていない」ことを示すためチェッカー柄で表現する。
     if (!_isTransparentColor(color)) {
@@ -152,13 +153,7 @@
   }
 
   function _colorWithPreservedAlpha(currentColor, nextColor, options) {
-    const next = nextColor || '';
-    if (options?.bgType !== 'rgba') return next;
-    if (!next || next === 'transparent' || !/^#[0-9a-f]{3,6}$/i.test(next)) return next;
-    const parsed = typeof parseColorToHexAlpha === 'function' ? parseColorToHexAlpha(currentColor) : null;
-    const alpha = Number.isFinite(parsed?.alpha) ? parsed.alpha : 1;
-    if (alpha > 0 && alpha < 1 && typeof hexAlphaToRgba === 'function') return hexAlphaToRgba(next, alpha);
-    return next;
+    return nextColor || '';
   }
 
   function _makeSwatchBg(title, initialColor, onPick, options = {}) {
@@ -195,7 +190,7 @@
     _bindPressAction(btn, () => {
       if (typeof openColorPalette !== 'function') return;
       openColorPalette(btn, currentColor || '', (color) => {
-        const resolved = color === 'transparent' ? '' : color;
+        const resolved = color || '';
         currentColor = resolved;
         btn.style.color = resolved || 'var(--fg)';
         onPick(resolved);

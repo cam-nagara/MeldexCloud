@@ -67,7 +67,7 @@
   }
 
   function stripIds(root, surface) {
-    root.querySelectorAll('[id]').forEach(el => { if (!el.id.startsWith('linked-')) el.removeAttribute('id'); });
+    root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
     // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
     // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
     // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
@@ -231,8 +231,6 @@
       if (!await flush().catch(() => false)) return false;
       if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
       state.disposed = true;
-      state.titleCleanup?.();
-      if (options.parentHost) options.parentHost.replaceChildren();
       clearTimeout(state.timer);
       if (root._meldexEntityDetailController === controller) delete root._meldexEntityDetailController;
       return true;
@@ -252,7 +250,6 @@
           return false;
         }
         if (currentSection._linkedFiles && !await currentSection._linkedFiles.dispose()) return false;
-        if (state.disposed || refreshSeq !== state.attachmentRefreshSeq) return false;
         const nextSectionData = {
           ...(state.data || {}),
           entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
@@ -262,7 +259,6 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
-          columnsPanel: state.columnsPane,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
@@ -308,9 +304,6 @@
       root.dataset.meldexEntityDetail = id;
       root.dataset.surface = state.surface;
       root.dataset.path = state.path;
-      state.titleCleanup?.();
-      state.titleCleanup = null;
-      if (options.parentHost) options.parentHost.replaceChildren();
       root.replaceChildren();
       const loading = document.createElement('div');
       loading.className = 'meldex-entity-detail-loading';
@@ -341,12 +334,11 @@
           if (typeof selectDatabase === 'function') selectDatabase(parent);
         });
         if (state.surface === 'main') parentButton.id = 'entity-parent-link';
-        (options.parentHost || root).appendChild(parentButton);
+        root.appendChild(parentButton);
       }
 
-      const title = options.titleEl || document.createElement('h2');
-      if (!options.titleEl) title.className = 'meldex-entity-detail-title';
-      else title.classList.add('meldex-entity-detail-header-title');
+      const title = document.createElement('h2');
+      title.className = 'meldex-entity-detail-title';
       title.textContent = entityName(data, state.path);
       title.dataset.e2eId = 'entity-detail-title';
       title.contentEditable = access.readOnly ? 'false' : 'plaintext-only';
@@ -355,54 +347,15 @@
       title.setAttribute('aria-multiline', 'false');
       let savedTitle = title.textContent;
       let cancellingTitle = false;
-      const entryId = state.data?.entry_id || state.data?.id
-        || Object.values(state.data?.properties || {}).flat().find(value => value?.entry_id)?.entry_id || '';
-      const renameCtx = options.ctx || (typeof getAllPanes === 'function' ? Object.values(getAllPanes() || {}) : [])
-        .find(ctx => !ctx.destroyed && Object.values(ctx.pivotData?.entities || {}).some(entity =>
-          (entryId && (entity?._id || entity?.entry_id) === entryId)
-          || entity?._entry_path === state.path
-          || Object.values(entity || {}).some(values => Array.isArray(values) && values.some(value => value?.file === state.path))));
-      const renameDbPath = renameCtx?.dbPath || parent;
-      const titleScope = typeof _dbScope === 'function' ? _dbScope(renameDbPath) : '';
-      const titleOwner = window.GBEditorHost?.register(title, {
-        path: state.path, kind: 'entity', label: savedTitle, surface: state.surface,
-        ctx: { viewMode: 'entity', entityPath: state.path, dbPath: renameDbPath },
-        activate: () => { if (typeof historySetScope === 'function') historySetScope(titleScope); },
-        historyScope: () => titleScope, flush,
-        syncDetail: () => { if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.(); },
-      });
-      const updateTitle = event => {
-        if (state.disposed || event.detail?.path !== state.path) return;
-        const editing = title === document.activeElement && title.textContent !== savedTitle && !state.titleSaving;
-        savedTitle = event.detail.name;
-        state.data.entity = savedTitle;
-        if (!editing) title.textContent = savedTitle;
-        if (titleOwner) titleOwner.host.label = savedTitle;
-        options.onTitleChange?.(savedTitle);
-        root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
-          if (option.value === state.path) option.textContent = savedTitle;
-        });
-      };
-      window.addEventListener('meldex:entity-renamed', updateTitle);
-      const titleKeydown = event => {
+      title.addEventListener('keydown', event => {
         if (event.isComposing) return;
-        if ((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(event.key.toLowerCase())
-            && title.textContent === savedTitle && !state.titleSaving) {
-          event.preventDefault(); event.stopPropagation();
-          titleOwner?.activate();
-          const redo = event.key.toLowerCase() === 'y' || event.shiftKey;
-          void (redo ? meldexRedo() : meldexUndo());
-          return;
-        }
         if (event.key === 'Enter' || event.key === 'Escape') {
           event.preventDefault();
-          event.stopPropagation();
           if (event.key === 'Escape') { cancellingTitle = true; title.textContent = savedTitle; state.titleFailed = false; }
           title.blur();
         }
-      };
-      const titleBlur = () => {
-        if (state.titleSaving || state.disposed) return;
+      });
+      title.addEventListener('blur', () => {
         const next = title.textContent.replace(/[\r\n]+/g, ' ').trim();
         if (cancellingTitle || !next || next === savedTitle || root.dataset.readOnly === '1') {
           cancellingTitle = false;
@@ -415,34 +368,15 @@
         state.titleSaving = (async () => {
           try {
             if (!await save()) throw new Error('本文を保存できませんでした');
-            const oldName = savedTitle;
             const renamed = await window.GbDbEntryIdentity.rename({
-              path: state.path, dbPath: renameDbPath, oldName: savedTitle, newName: next,
-              entryId, ctx: renameCtx,
+              path: state.path, dbPath: parent, oldName: savedTitle, newName: next,
+              entryId: state.data?.entry_id || state.data?.id, ctx: options.ctx,
             });
             if (renamed?.ok === false) throw new Error('名前を変更できませんでした');
-            if (typeof _dbUndoRename === 'function') _dbUndoRename(renameDbPath, oldName, next, renameCtx,
-              { path: state.path, entryId });
             savedTitle = next;
             state.data.entity = next;
-            options.onTitleChange?.(next);
-            // Retained form editors keep their inputs and undo stack. Only the
-            // enclosing record's display label changes after this rename.
-            root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
-              if (option.value === state.path) option.textContent = next;
-            });
             // 表示名変更は同じ論理パス・IDを維持する。保存基準だけ取り直す。
-            // A display-name change must preserve the live linked editors and
-            // their undo stacks. Refresh only the entry's save baseline.
-            const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
-            if (!state.saving && String(refreshed.page_content || '') === String(state.editor?.dataset.lastSavedMd || '')) {
-              state.data.revision = refreshed.revision;
-              state.data.freetext_etag = refreshed.freetext_etag;
-              if (state.editor) {
-                state.editor.dataset.lastSavedRevision = String(refreshed.revision);
-                state.editor.dataset.lastSavedEtag = refreshed.freetext_etag || '';
-              }
-            }
+            await refreshAttachmentsOnly();
             return true;
           } catch (error) {
             state.titleFailed = true;
@@ -454,17 +388,9 @@
             state.titleSaving = null;
           }
         })();
-      };
-      title.addEventListener('keydown', titleKeydown);
-      title.addEventListener('blur', titleBlur);
-      state.titleCleanup = () => {
-        window.removeEventListener('meldex:entity-renamed', updateTitle);
-        titleOwner?.dispose();
-        title.removeEventListener('keydown', titleKeydown); title.removeEventListener('blur', titleBlur);
-        if (options.titleEl) { title.contentEditable = 'false'; title.removeAttribute('role'); title.removeAttribute('aria-label'); title.classList.remove('meldex-entity-detail-header-title'); }
-      };
+      });
       if (state.surface === 'main') title.id = 'entity-title';
-      if (!options.titleEl) root.appendChild(title);
+      root.appendChild(title);
 
       const actions = document.createElement('div');
       actions.className = 'meldex-entity-detail-actions';
@@ -491,21 +417,15 @@
       }
       if (actions.childElementCount) root.appendChild(actions);
 
-      const columnsPane = document.createElement('div');
-      columnsPane.className = 'meldex-topic-columns-pane';
-      columnsPane.setAttribute('role', 'tabpanel');
-      columnsPane.setAttribute('aria-label', '列一覧');
-      state.columnsPane = columnsPane;
       const grid = document.createElement('div');
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
-      columnsPane.appendChild(grid);
+      root.appendChild(grid);
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
           parentDb: parent,
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
-          topicTabs: true,
           readOnly: access.readOnly,
           ctx: options.ctx,
         });
@@ -525,7 +445,6 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
-          columnsPanel: state.columnsPane,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
         });
@@ -554,7 +473,7 @@
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
-        columnsPane.appendChild(preview);
+        root.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
         if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
@@ -594,8 +513,8 @@
       }
       const toolbar = buildToolbar(editor);
       if (state.surface === 'main') toolbar.id = 'entity-rt-toolbar';
-      columnsPane.appendChild(toolbar);
-      columnsPane.appendChild(editor);
+      root.appendChild(toolbar);
+      root.appendChild(editor);
 
       // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 

@@ -49,6 +49,14 @@
 
   async function prepareNativeInitialTarget() {
     const openPath = params.get('open') || params.get('path') || '';
+    if (window.MeldexStandaloneNative) {
+      // This lightweight endpoint does not resolve main-app source roots/tags.
+      const response = await fetch(API + '/standalone/config', { cache: 'no-store' });
+      if (!response.ok) throw new Error('ファイルの起動情報を読み込めませんでした');
+      const config = await response.json();
+      nativeRoot = String(config.root || '');
+      if (applyInitialOpenPath(openPath || config.initialPath)) return;
+    }
     if (!hasExplicitViewerTarget() && applyInitialOpenPath(openPath)) return;
     if (hasExplicitViewerTarget() || params.get('native') !== '1') return;
     try {
@@ -512,9 +520,11 @@
   async function init() {
     await viewerPreparation;
     _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
-    await loadSiblingFolders();
+    // Native folder navigation is requested only when the user uses its buttons.
+    if (!window.MeldexStandaloneNative) await loadSiblingFolders();
     const generation = ++targetGeneration;
-    await loadResolvedTarget(generation);
+    const displayed = await loadResolvedTarget(generation);
+    if (!displayed && !singleFile && !pdfPath && !folderPath) window.MeldexStandaloneNative?.markReady();
   }
 
   // ============================================================
@@ -844,6 +854,7 @@
       window.MeldexViewerAnnotations?.onSceneChanged?.();
       window.MeldexViewerVideo?.startActiveVideoPlayback?.();
       window.MeldexViewerAudio?.startActiveAudioPlayback?.();
+      window.MeldexStandaloneNative?.markReady();
     };
     if (media.length > 0) {
       Promise.all([...media].map(el => {
@@ -1562,8 +1573,9 @@
     } else if (isNativeStandaloneViewer()) {
       prevName = String(_nativeFolderState?.prev?.name || '');
       nextName = String(_nativeFolderState?.next?.name || '');
-      prevEnabled = !!prevName && !_nativeFolderNavigating;
-      nextEnabled = !!nextName && !_nativeFolderNavigating;
+      const unknown = !!window.MeldexStandaloneNative && !_nativeFolderState;
+      prevEnabled = (unknown || !!prevName) && !_nativeFolderNavigating;
+      nextEnabled = (unknown || !!nextName) && !_nativeFolderNavigating;
     } else {
       prevEnabled = _siblingIdx > 0;
       nextEnabled = _siblingIdx >= 0 && _siblingIdx < _siblingFolders.length - 1;
@@ -1603,6 +1615,7 @@
   // 単独版サーバーに作業範囲を前後の兄弟フォルダへ切り替えてもらい、そのフォルダを開き直す。
   async function navigateNativeFolder(direction) {
     if (_nativeFolderNavigating) return;
+    if (window.MeldexStandaloneNative && !_nativeFolderState) await loadNativeFolderState();
     const neighbor = direction < 0 ? _nativeFolderState?.prev : _nativeFolderState?.next;
     if (!neighbor) {
       flashStatus(direction < 0 ? '前のフォルダはありません' : '次のフォルダはありません');
@@ -1717,7 +1730,8 @@
   }
 
   // btn-prev-folder/btn-next-folder のクリック配線は viewer-controls.js が委譲する
-  loadSiblingFolders(); // 初期化時に兄弟フォルダも読み込み
+  if (!window.MeldexStandaloneNative) loadSiblingFolders();
+  else updateFolderNavButtons();
 
   // 拡大縮小した後にウィンドウや右サイドバーで表示領域の大きさが変わっても、画面上の倍率
   // （原寸比）を保つ。フィットのまま（zoom=1）の時は従来どおり新しい大きさへ合わせ直す。

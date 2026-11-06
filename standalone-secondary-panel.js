@@ -134,6 +134,7 @@
       if (persist) saveValue(storageKey(appId, 'open'), next ? '1' : '0');
       if (next) panel.querySelector('.sa-secondary-panel-close')?.focus();
       else if (lastFocus?.isConnected) lastFocus.focus();
+      panel.dispatchEvent(new CustomEvent('meldex:secondary-open', { detail: { open: next } }));
     }
 
     button.addEventListener('click', () => setOpen(!panel.classList.contains('is-open'), true));
@@ -171,7 +172,7 @@
       setPanelWidth(width);
       saveValue(widthKey, Math.round(width));
     });
-    setOpen(readBool(storageKey(appId, 'open'), false), false);
+    setOpen(root.MeldexStandaloneNative ? false : readBool(storageKey(appId, 'open'), false), false);
     return { appId, button, panel, body: panel.querySelector('.sa-secondary-panel-body'), setOpen };
   }
 
@@ -183,7 +184,9 @@
     bar.setAttribute('role', 'tablist');
     bar.setAttribute('aria-label', 'オプションパネルのタブ');
     const panels = new Map();
+    let activeId = '';
     const activate = (id) => {
+      activeId = id;
       tabs.forEach(tab => {
         const active = tab.id === id;
         const button = bar.querySelector(`[data-secondary-tab="${tab.id}"]`);
@@ -194,8 +197,11 @@
       });
       saveValue(storageKey(shell.appId, 'tab'), id);
       const activeTab = tabs.find(tab => tab.id === id);
-      activeTab?.onActivate?.(panels.get(id));
+      if (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open')) activeTab?.onActivate?.(panels.get(id));
     };
+    shell.panel.addEventListener('meldex:secondary-open', event => {
+      if (root.MeldexStandaloneNative && event.detail.open && activeId) activate(activeId);
+    });
     tabs.forEach(tab => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -274,7 +280,7 @@
   // 単独版サーバーが無い環境（Cloud等）では従来どおりタグ欄を出す。
   async function standaloneTagsAvailable() {
     try {
-      const response = await fetch('/api/standalone/config', { cache: 'no-store' });
+      const response = await fetch('/api/standalone/config?include_tags=1', { cache: 'no-store' });
       if (!response.ok) return true;
       const config = await response.json();
       return config?.tagsAvailable !== false;
@@ -342,7 +348,7 @@
     if (infoSource) {
       new MutationObserver(() => {
         const host = tabs.panels.get('info');
-        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+        if (host && !host.hidden && (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open'))) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
       }).observe(infoSource, { childList: true, subtree: true, characterData: true });
     }
     return true;

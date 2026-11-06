@@ -1,3 +1,41 @@
+  }
+  _loadingVisible = true;
+}
+
+function _hideLoadingUi() {
+  const statusEl = document.getElementById('sb-loading');
+  if (statusEl) {
+    statusEl.replaceChildren();
+    statusEl.style.display = 'none';
+  }
+  const floatingEl = document.getElementById('gb-global-loading');
+  if (floatingEl) {
+    floatingEl.replaceChildren();
+    floatingEl.hidden = true;
+  }
+  _loadingVisible = false;
+}
+
+function _loadingPaintDelay() {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+      setTimeout(finish, 80);
+    } else {
+      setTimeout(finish, 0);
+    }
+  });
+}
+
+async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
+  const options = opts || {};
+  const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;
   const size = typeof sizeOrText === 'number'
     ? sizeOrText
     : String(sizeOrText || '').length;

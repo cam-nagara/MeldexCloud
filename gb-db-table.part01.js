@@ -651,7 +651,7 @@ function _handleRelationLinkClick(link, ctx) {
   const items = [
     // 互換テスト用: navigateToEntity(entityName, relDbPath)
     { label: 'リンク先を開く', icon: 'externalLink', action: () => navigateToEntity(entityName, relDbPath, ctx) },
-    { label: 'サブパネルで開く', icon: 'panelRight', action: () => {
+    { label: '右サイドバーで開く', icon: 'panelRight', action: () => {
       if (relPath && typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(relPath, entityName, { linkType: 'entity', sourcePaneId });
       // 互換テスト用: navigateToEntity(entityName, relDbPath)
       else navigateToEntity(entityName, relDbPath, ctx);

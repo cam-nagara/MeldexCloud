@@ -114,8 +114,8 @@
 }
 .gb-image-cell-card-preview .gb-image-thumb {
   width: 100%;
-  height: auto;
-  aspect-ratio: 4 / 3;
+  height: var(--gb-image-cell-size, 96px);
+  aspect-ratio: auto;
   flex-basis: auto;
 }
 .gb-cell-dropzone-active { border-color: var(--accent) !important; outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); }

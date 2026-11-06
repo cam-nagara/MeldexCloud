@@ -390,7 +390,6 @@ async function _flushOpenScriptNoteVersionTarget(path) {
 }
 
 async function _flushOpenVersionTarget(path, type) {
-  await globalThis.GBEditorHost?.flushPath?.(path);
   const flushed = await _flushOpenAppVersionTarget(path, '');
   if (_isScriptNoteVersionPath(path)) {
     return flushed + await _flushOpenScriptNoteVersionTarget(path);
@@ -400,7 +399,6 @@ async function _flushOpenVersionTarget(path, type) {
 
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
-  if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
   for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
@@ -427,7 +425,7 @@ async function _refreshRestoredVersionTarget(path, type) {
     await Promise.resolve(openBoard(label, path));
   } else if (state.view === 'entity' && state.currentEntityPath && typeof selectEntity === 'function') {
     await Promise.resolve(selectEntity(state.currentEntityPath));
-  } else if ((state.view === 'pivot' || state.view === 'tree' || state.view === 'gallery' || state.view === 'kanban' || state.view === 'timeline') && state.currentDbPath && typeof selectDatabase === 'function') {
+  } else if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(state.view) && state.currentDbPath && typeof selectDatabase === 'function') {
     await Promise.resolve(selectDatabase(state.currentDbPath));
   } else if (state.view === 'csv' && typeof _csvPath !== 'undefined' && _sameVersionTargetPath(_csvPath, path) && typeof openCsvFile === 'function') {
     await Promise.resolve(openCsvFile(path.split('/').pop() || '', path));
@@ -919,8 +917,6 @@ function renderDiff(modal = null) {
 
 // 現在のビューのパスとタイプを取得
 function _getCurrentVersionTarget() {
-  const editor = globalThis.GBEditorHost?.get();
-  if (editor) return { path: editor.path, type: ['database', 'calendar'].includes(editor.kind) ? 'db' : editor.kind === 'folder' ? 'folder' : 'file' };
   let path = '', type = 'file';
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
     ? GBTabs.getActiveTab(GBLayout.activePane)

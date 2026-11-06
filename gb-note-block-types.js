@@ -656,7 +656,54 @@
     }
   }
 
+  function _clearInheritedBlockFormatting(block) {
+    const source = getComputedStyle(block);
+    const defaults = { color: source.color, fontSize: source.fontSize, fontFamily: source.fontFamily };
+    block.querySelectorAll('span[style],font').forEach(el => {
+      if (el.closest('a,code,._nl-id,.heading-icon,.callout-icon,[data-ruby]')) return;
+      const computed = getComputedStyle(el);
+      for (const prop of Object.keys(defaults)) {
+        if (el.style[prop] && computed[prop] === defaults[prop]) el.style[prop] = '';
+      }
+      if (el.tagName === 'FONT') {
+        if (el.hasAttribute('color') && computed.color === defaults.color) el.removeAttribute('color');
+        if (el.hasAttribute('size') && computed.fontSize === defaults.fontSize) el.removeAttribute('size');
+        if (el.hasAttribute('face') && computed.fontFamily === defaults.fontFamily) el.removeAttribute('face');
+      }
+      if (el.getAttribute('style') === '') el.removeAttribute('style');
+    });
+  }
+
   function _performConvert(typeId, info, ctx) {
+    const sourceHeading = info.kind === 'heading' ? info.block : null;
+    _clearInheritedBlockFormatting(info.block);
+    // Older formatBlock commands could also leave <li><h2>...</h2></li>.
+    const containingItem = sourceHeading?.parentElement?.tagName === 'LI' ? sourceHeading.parentElement : null;
+    if (containingItem) {
+      const ownNodes = Array.from(containingItem.childNodes).filter(node => {
+        if (node.nodeType === 3) return !!node.textContent.trim();
+        return !_isNlIdSpan(node) && !/^(UL|OL)$/.test(node.tagName);
+      });
+      if (ownNodes.length === 1 && ownNodes[0] === sourceHeading) {
+        sourceHeading.replaceWith(...Array.from(sourceHeading.childNodes));
+        info = { ...info, kind: 'list-item', block: containingItem };
+      }
+    }
+    // Legacy execCommand could create <h2><ul><li>...</li></ul></h2>.
+    // Hoist its list out of the heading before changing the selected item.
+    if (info.kind === 'list-item') {
+      let list = info.block.parentElement;
+      while (list?.parentElement?.tagName === 'LI') list = list.parentElement.parentElement;
+      const heading = list?.parentElement;
+      if (heading && /^H[1-6]$/.test(heading.tagName)) {
+        const tail = heading.cloneNode(false);
+        tail.removeAttribute('id'); tail.removeAttribute('data-note-heading-id');
+        while (list.nextSibling) tail.appendChild(list.nextSibling);
+        heading.after(list);
+        if (tail.childNodes.length) list.after(tail);
+        if (!heading.textContent.trim() && !heading.querySelector('img')) heading.remove();
+      }
+    }
     const extracted = _extractForConvert(info);
     let nodes = extracted.nodes;
     if (!nodes.length && extracted.text) nodes = [document.createTextNode(extracted.text)];
@@ -669,7 +716,7 @@
       focusTarget = newRoot;
     } else if (/^h[1-6]$/.test(typeId)) {
       newRoot = _buildSimpleBlock(typeId, extracted.nlIdSpan, nodes);
-      if (info.kind === 'heading') _copyHeadingAnchor(info.block, newRoot);
+      if (sourceHeading) _copyHeadingAnchor(sourceHeading, newRoot);
       focusTarget = newRoot;
     } else if (typeId === 'quote') {
       newRoot = _buildQuote(extracted.nlIdSpan, nodes);
@@ -725,7 +772,8 @@
     if (info && info.kind === 'table' && typeId !== 'table') {
       return { allowed: false, reason: '表からの変換には対応していません' };
     }
-    if (info && info.kind === 'list-item' && info.hasNestedList) {
+    const headingItem = info?.kind === 'heading' && info.block.parentElement?.tagName === 'LI' ? info.block.parentElement : null;
+    if (info && ((info.kind === 'list-item' && info.hasNestedList) || headingItem?.querySelector(':scope > ul, :scope > ol'))) {
       const staysList = typeId === 'ul' || typeId === 'ol' || typeId === 'checklist';
       if (!staysList) return { allowed: false, reason: 'サブリストを含む行は変換できません' };
     }
@@ -838,7 +886,7 @@
     // beforeConvert（行頭記法の「###」等トリガー文字削除）が指定されている場合は、
     // 型が同じでもトリガー文字の削除自体を1操作として実行する必要があるため、
     // unchanged 早期returnをスキップする。
-    if (currentTypeId === typeId && typeof opts.beforeConvert !== 'function') {
+    if (currentTypeId === typeId && !opts.force && !info.block.classList.contains('note-title') && typeof opts.beforeConvert !== 'function') {
       return { ok: true, block: info.block, unchanged: true };
     }
 
@@ -867,6 +915,7 @@
 
     const result = _performConvert(typeId, info, { orderedStart: opts.orderedStart });
     if (!result) return { ok: false, reason: 'convert-failed' };
+    if (typeof opts.afterConvert === 'function') opts.afterConvert(result);
 
     _refreshHeadingSectionsAfterConvert(editable, currentTypeId, typeId);
     // 行種変換と見出し階層の再構築がすべて完了してから復元する（§2.2）。
@@ -885,6 +934,53 @@
     if (toc && toc.style.display !== 'none' && typeof updateNoteToc === 'function') updateNoteToc();
 
     return { ok: true, block: result.newRoot };
+  }
+
+  // Toolbar commands may span several rows; commit them as one undoable edit.
+  function convertSelectionTo(typeId, options = {}) {
+    if (!getType(typeId)) return { ok: false, reason: 'unknown-type' };
+    const editable = options.editable || activeEditableHost();
+    const range = options.range || currentRangeWithin(editable);
+    if (!editable || !range || !isEditableWritable(editable) || !editable.contains(range.startContainer) || !editable.contains(range.endContainer)) return { ok: false, reason: 'no-selection' };
+    const start = resolveCurrentBlock(editable, range);
+    const rows = [];
+    if (!range.collapsed && global.MeldexNoteLogicalRows) {
+      for (const block of global.MeldexNoteLogicalRows.listRows(editable)) {
+        const own = document.createRange(); own.selectNodeContents(block);
+        const nested = block.tagName === 'LI' && Array.from(block.children).find(el => /^(UL|OL)$/.test(el.tagName));
+        if (nested) own.setEndBefore(nested);
+        // START_TO_END compares this end with the other start; exclude touching boundaries.
+        if (range.compareBoundaryPoints(Range.START_TO_END, own) <= 0 || range.compareBoundaryPoints(Range.END_TO_START, own) >= 0) continue;
+        const overlap = own.cloneRange();
+        if (range.compareBoundaryPoints(Range.START_TO_START, own) > 0) overlap.setStart(range.startContainer, range.startOffset);
+        if (range.compareBoundaryPoints(Range.END_TO_END, own) < 0) overlap.setEnd(range.endContainer, range.endOffset);
+        if (own.toString() && !overlap.toString()) continue;
+        const probe = own.cloneRange(); probe.collapse(true);
+        const info = resolveCurrentBlock(editable, probe);
+        if (info && !rows.some(row => row.block === info.block)) rows.push(info);
+      }
+    }
+    if (!rows.length && start) rows.push(start);
+    const next = options.toggle && rows.length && rows.every(info => getBlockTypeId(info) === typeId) ? 'body' : typeId;
+    if (rows.length <= 1) return convertCurrentLineTo(next, { editable, range });
+    if (!rows.every(info => canConvert(next, editable, info).allowed)) return { ok: false, reason: 'unsupported-selection' };
+    if (rows.every(info => getBlockTypeId(info) === next && !info.block.classList.contains('note-title'))) return { ok: true, unchanged: true };
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    const refs = _captureCaretRefs(range);
+    const converted = rows.map(info => _performConvert(next, info, {})).filter(Boolean);
+    if (['ul', 'ol'].includes(next)) {
+      converted.forEach(({ newRoot }) => {
+        const previous = newRoot.previousElementSibling;
+        if (previous?.tagName === newRoot.tagName && converted.some(result => result.newRoot === previous)) {
+          while (newRoot.firstChild) previous.appendChild(newRoot.firstChild);
+          newRoot.remove();
+        }
+      });
+    }
+    _refreshHeadingSectionsAfterConvert(editable, 'h1', next);
+    _restoreCaretRefs(refs, converted[0]?.focusTarget);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block: converted[0]?.newRoot };
   }
 
   // 見出しは行種を変更し、リストは項目と子リストを一緒に一段だけ移動する。
@@ -1100,7 +1196,7 @@
 
   const TYPES_BY_ID = TYPES.reduce((acc, t) => { acc[t.id] = t; return acc; }, {});
 
-  function getType(id) { return TYPES_BY_ID[id] || null; }
+  function getType(id) { return Object.prototype.hasOwnProperty.call(TYPES_BY_ID, id) ? TYPES_BY_ID[id] : null; }
 
   // ============================================================
   // 公開API
@@ -1116,6 +1212,7 @@
     getBlockTypeId,
     canConvert,
     convertCurrentLineTo,
+    convertSelectionTo,
     changeParagraphLevel,
     insertLineAfter,
     isBlockTextEmpty: _isBlockTextEmpty,

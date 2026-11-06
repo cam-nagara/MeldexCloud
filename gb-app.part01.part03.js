@@ -83,7 +83,9 @@ function _getDbViewScrollContainer(ctx, viewMode) {
   const scoped = typeof _paneEl === 'function'
     ? (_paneEl(ctx, '#' + name) || _paneEl(ctx, '.' + name))
     : null;
-  return scoped || document.getElementById(name) || document.querySelector('.' + name);
+  const view = scoped || document.getElementById(name) || document.querySelector('.' + name);
+  const inner = { gallery: '.gallery-grid', kanban: '.kanban-board' }[mode];
+  return (inner && view?.querySelector?.(inner)) || view;
 }
 
 function _navPushWithViewState(ctx, entityName) {
@@ -92,7 +94,7 @@ function _navPushWithViewState(ctx, entityName) {
   if (!dbPath) return;
   const cfg = getDbViewConfig(dbPath);
   const viewIdx = Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : cfg.currentViewIdx;
-  const viewMode = getCurrentViewMode(dbPath, { ctx });
+  const viewMode = ctx?.viewMode || getCurrentViewMode(dbPath, { ctx });
   const container = _getDbViewScrollContainer(ctx, viewMode);
   let savedView = null;
   try {
@@ -104,22 +106,51 @@ function _navPushWithViewState(ctx, entityName) {
     path: dbPath,
     label: dbPath.split('/').pop() || dbPath,
     viewIdx,
+    viewMode,
     viewSnapshot: savedView ? { viewIdx, savedView } : null,
     scrollState: {
       scrollLeft: container?.scrollLeft || 0,
       scrollTop: container?.scrollTop || 0,
       focusedEntity: entityName || null,
+      nestedScrolls: ['.kanban-column-body', '.cal-week-grid', '.cal-day-grid'].flatMap(selector =>
+        Array.from(container?.querySelectorAll?.(selector) || []).map((el, index) => ({ selector, index, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft }))),
     },
   };
   const navState = _getNavState(ctx?.paneId);
   const current = navState.history[navState.index];
-  if (current && current.path === dbPath && ['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(current.type)) {
+  if (current && current.path === dbPath && ['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(current.type)) {
     navState.history[navState.index] = snapshot;
     _refreshPaneNavUi(navState.paneId);
     _persistPaneNavState(navState);
     return;
   }
   _forcedNavPush(snapshot, ctx?.paneId);
+}
+
+// Capture while the outgoing sheet is still visible, before its shared DOM moves.
+function _captureDbNavigationBeforeLeave(paneId) {
+  if (navNavigating) return;
+  const nav = _getNavState(paneId);
+  const entry = nav.history[nav.index];
+  if (!entry?.path || entry.calendarFile || !['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(entry.type)) return;
+  const root = typeof GBLayout !== 'undefined' && nav.paneId
+    ? GBLayout.paneMap?.[nav.paneId]?.contentEl : document;
+  if (!root) return;
+  const live = typeof getPaneContext === 'function' ? getPaneContext(nav.paneId) : null;
+  // Focus can expose a stale shared root; the pane's current view owns its scroll.
+  const modes = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
+  const liveMode = ['calendar', 'tasks', 'shifts', 'gantt'].includes(live?.viewMode) ? 'timeline' : live?.viewMode;
+  const orderedModes = live?.dbPath === entry.path && modes.includes(liveMode)
+    ? [liveMode, ...modes.filter(mode => mode !== liveMode)] : modes;
+  for (const mode of orderedModes) {
+    const container = root.querySelector('#' + mode + '-view, .' + mode + '-view');
+    if (!container?.getClientRects().length) continue;
+    _navPushWithViewState({ ...(live?.dbPath === entry.path ? live : {}),
+      paneId: nav.paneId, containerEl: root, dbPath: entry.path,
+      viewMode: mode === 'timeline' && ['calendar', 'tasks', 'shifts', 'gantt'].includes(live?.viewMode) ? live.viewMode : mode,
+    }, null);
+    return;
+  }
 }
 
 function navOpen(entry, opts) {
@@ -131,7 +162,7 @@ function navOpen(entry, opts) {
   if (entry.type === 'map') return openMapApp(entry.path, entry.label, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
-  if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
+  if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(entry.type)) {
     if (entry.calendarFile && entry.type === 'timeline' && typeof openCalendarFile === 'function') return openCalendarFile(entry.label, entry.path, o);
     return selectDatabase(entry.path, null, {
       ...(o || {}),
@@ -246,7 +277,8 @@ function renderTabs() {
     el.dataset.tabIdx = i;
     el.addEventListener('click', (e) => { if (!e.target.closest('.tab-close')) activateTab(tab.id); });
     el.onpointerdown = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(tab.id); } };
-    const iconSvg = typeof lucide === 'function' ? lucide(tab.icon, 14) : '';
+    const fallbackIcon = typeof lucide === 'function' ? lucide(tab.icon, 14) : '';
+    const iconSvg = window.MeldexFileIcons?.tabIcon(tab, 14, fallbackIcon) ?? fallbackIcon;
     el.innerHTML = `${iconSvg}<span class="tab-label">${esc(tab.label)}</span><span class="tab-close" data-action="closeTab('${tab.id}')">${lucide('x', 12)}</span>`;
 
     // D&D: タブ順序入替+ウィンドウ分離

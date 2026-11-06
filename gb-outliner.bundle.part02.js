@@ -1,3 +1,4 @@
+      if (!path) continue;
       const mountedEl = state.mountedById.get(path);
       if (mountedEl) this.add(mountedEl);
       else state.selectedIds.add(path);
@@ -780,6 +781,10 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
     // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
     if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
+    // ボード本文の保存はフォルダ構造を変えない。全ツリー更新は
+    // オプションパネルまで再構築するため、保存通知では行わない。
+    if (event.detail?.reason === 'save'
+        && /(?:\.mel-board|\.board\.md)$/i.test(event.detail?.dbPath || '')) return;
     clearTimeout(_topicRecordsOutlinerRefreshTimer);
     _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
       const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
@@ -893,8 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
   const isDB = item.type === 'database';
   const isUnavailableRoot = item.needsMapping === true;
   const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
-
-  // Toggle arrow
-  const toggle = document.createElement('span');
-  toggle.className = 'tree-toggle';
-  if (isExpandable) {

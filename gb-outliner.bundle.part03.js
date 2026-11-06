@@ -1,3 +1,8 @@
+
+  // Toggle arrow
+  const toggle = document.createElement('span');
+  toggle.className = 'tree-toggle';
+  if (isExpandable) {
     toggle.innerHTML = lucide('chevronRight', 16);
     toggle.dataset.expanded = 'false';
   }
@@ -8,13 +13,26 @@
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
     icon.innerHTML = _outlinerIconMarkup(item, 18);
+    if (!itemLocked && window.MeldexFileIcons?.canEdit(item)) {
+      icon.setAttribute('role', 'button');
+      icon.tabIndex = 0;
+      icon.setAttribute('aria-label', 'アイコンを変更');
+      icon.setAttribute('aria-haspopup', 'dialog');
+      const chooseIcon = event => {
+        event.preventDefault(); event.stopPropagation();
+        window.MeldexFileIcons.openPicker(item, icon);
+      };
+      icon.addEventListener('click', chooseIcon);
+      icon.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); });
+      icon.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') chooseIcon(event); });
+    }
     // リンクファイルマーク
     if (item.linked) {
       icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
     }
     row.appendChild(icon);
     // フォルダツリー改修Phase4: 軽量サムネイル表示・OS登録形式アイコン（対象外/OFF時は何もしない）
-    window.GBOutlinerThumbnails?.attachToRow(row, item, icon);
+    if (!item.display_icon) window.GBOutlinerThumbnails?.attachToRow(row, item, icon);
   }
 
   // Label
@@ -121,7 +139,7 @@
       toggle.classList.add('expanded');
       toggle.dataset.expanded = 'true';
       // 作品フォルダ動的アイコン切替（icon-implementation-plan §D）
-      if (currentIsFolder) {
+      if (currentIsFolder && !item.display_icon) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = isWorkFolder(item.path);
@@ -273,7 +291,7 @@
       }
       window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
       // 作品フォルダ動的アイコン切替（折畳み時）
-      if (currentIsFolder) {
+      if (currentIsFolder && !item.display_icon) {
         const iconEl = row.querySelector('.tree-icon');
         if (iconEl) {
           const isWork = isWorkFolder(item.path);
@@ -816,6 +834,7 @@ function clearDragIndicators() {
 function _outlinerSheetTreeItems(item, pivotData) {
   const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
     name, type: 'entity',
+    display_icon: pivotData.entities[name]?._display_icon || '',
     path: pivotData.entities[name]?._entry_path || (typeof _entityPath === 'function'
       ? _entityPath(item.path, name, pivotData) : item.path + '/' + name + (pivotData.new_format ? '.md' : '')),
     _dbPath: item.path,
@@ -879,22 +898,3 @@ function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, 
     child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
   const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
   // Navigation must paint before a migration reads/writes the entire Topic store.
-  setTimeout(async () => {
-    if (!container.isConnected || container._outlinerLoadToken !== loadToken) return;
-    try {
-      const result = await window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, { reason: 'outliner-expand' });
-      const refresh = () => {
-      if (result?.ok === false || !container.isConnected || container._outlinerLoadToken !== loadToken
-          || container.dataset.loaded !== 'true') return;
-      if (container.querySelector('input, [contenteditable="true"]')) {
-        container.addEventListener('focusout', () => setTimeout(refresh, 0), { once: true });
-        return;
-      }
-      const lastClickedPath = treeSelection.lastClicked?._nodeData?.path;
-      const restoreFocus = container.contains(document.activeElement);
-      const vr = window.GBOutlinerVirtualRender;
-      const currentItems = vr?.stateChildItemsFor?.(container, item.path)
-        || Array.from(container.querySelectorAll(':scope > .tree-node'), node => node._nodeData).filter(Boolean);
-      // A user rename/add/delete while migration was pending takes precedence.
-      if (signature(currentItems) !== initialSignature) return;
-      window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);

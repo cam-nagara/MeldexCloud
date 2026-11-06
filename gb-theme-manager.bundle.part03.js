@@ -1,3 +1,4 @@
+    return false;
   }
 
   function handlePaletteDomMutations(mutations) {
@@ -897,4 +898,3 @@
       if (!fs || fs['--bd-auto-align'] === undefined) {
         const t = readBoardThemeVar('--bd-auto-align');
         if (t !== '') board.autoAlign = t !== '0';
-      }

@@ -1,3 +1,41 @@
+  const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
+    .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
+  const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
+  return {
+    has: images.length > 0 || pdfs.length > 0,
+    hasImage: images.length > 0,
+    firstImage: images[0] || null,
+    firstPdf: pdfs[0] || null,
+  };
+}
+
+async function _viewerFolderNavDisplayableInFolder(folderPath) {
+  const key = _viewerFolderNavCleanPath(folderPath);
+  if (!key) return { has: false, hasImage: false, firstImage: null, firstPdf: null };
+  if (_viewerFolderNavDisplayableCache.has(key)) return _viewerFolderNavDisplayableCache.get(key);
+  const result = await apiFetch('/browse?path=' + encodeURIComponent(key) + '&all_files=true')
+    .then(items => _viewerFolderNavDisplayableFromBrowseItems(items))
+    .catch(() => ({ has: false, hasImage: false, firstImage: null, firstPdf: null }));
+  _viewerFolderNavDisplayableCache.set(key, result);
+  return result;
+}
+
+function _viewerFolderNavOpenTarget(folderPath, result, targetIframe = null) {
+  const url = result?.hasImage
+    ? '/viewer?folder=' + encodeURIComponent(folderPath)
+    : (result?.firstPdf?.path ? '/viewer?pdf=' + encodeURIComponent(result.firstPdf.path) : '');
+  if (!url) return;
+  if (targetIframe) {
+    // サブパネルのビューワーからの移動は、そのビューワーだけを切り替える。メインのビューワー・
+    // フォルダツリーの選択・プロパティは動かさない（2つ目の表示面がメインを奪わないようにする）。
+    const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(url) || url;
+    const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
+      ? _gbPrepareUntrustedIframe(targetIframe, resolvedUrl)
+      : targetIframe;
+    _gbOpenViewerIframe(preparedIframe || targetIframe, url, resolvedUrl, { skipGlobalUi: true, skipHighlight: true });
+    return;
+  }
+  const targetPath = result?.hasImage ? folderPath : (result?.firstPdf?.path || folderPath);
   if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(targetPath);
   openViewer(url);
 }
@@ -860,41 +898,3 @@ function _renderLoadingUi(msg) {
   if (floatingEl) {
     _setLoadingNodeContent(floatingEl, text);
     floatingEl.hidden = false;
-  }
-  _loadingVisible = true;
-}
-
-function _hideLoadingUi() {
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    statusEl.replaceChildren();
-    statusEl.style.display = 'none';
-  }
-  const floatingEl = document.getElementById('gb-global-loading');
-  if (floatingEl) {
-    floatingEl.replaceChildren();
-    floatingEl.hidden = true;
-  }
-  _loadingVisible = false;
-}
-
-function _loadingPaintDelay() {
-  return new Promise(resolve => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') {
-      requestAnimationFrame(() => requestAnimationFrame(finish));
-      setTimeout(finish, 80);
-    } else {
-      setTimeout(finish, 0);
-    }
-  });
-}
-
-async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
-  const options = opts || {};
-  const threshold = Number.isFinite(options.threshold) ? options.threshold : 200000;

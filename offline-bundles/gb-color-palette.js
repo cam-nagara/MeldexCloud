@@ -281,7 +281,7 @@ function _normalizeCustomColor(c) {
   const text = typeof c === 'string' ? c.trim() : '';
   if (!text) return '';
   if (text.toLowerCase() === 'transparent') return 'transparent';
-  if (/^#[0-9a-f]{3}$/i.test(text) || /^#[0-9a-f]{6}$/i.test(text)) return text;
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(text)) return text;
   if (/^rgba?\(/i.test(text)) return text;
   return '';
 }
@@ -301,6 +301,7 @@ function getCustomColors() {
 }
 function _refreshCustomColorsAfterHistory() {
   document.querySelectorAll('.gb-palette').forEach(palette => palette.remove());
+  if (typeof _queuePersonalColorsSync === 'function') _queuePersonalColorsSync();
 }
 function _saveCustomColors(colors, options) {
   const before = (typeof captureLocalStorageSettings === 'function')
@@ -436,8 +437,13 @@ function calcBgColor(c) {
 }
 
 function parseColorToHexAlpha(val) {
+  val = String(val || '').trim();
   if (!val || val === 'transparent') return { hex: '#000000', alpha: 0 };
   if (val.startsWith('#')) {
+    if (/^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(val)) {
+      const full = val.length === 5 ? '#' + [...val.slice(1)].map(c => c + c).join('') : val;
+      return { hex: full.slice(0, 7), alpha: parseInt(full.slice(7), 16) / 255 };
+    }
     const hex = val.length === 4 ? '#' + val[1] + val[1] + val[2] + val[2] + val[3] + val[3] : val;
     return { hex, alpha: 1 };
   }
@@ -446,13 +452,28 @@ function parseColorToHexAlpha(val) {
     const hex = '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
     return { hex, alpha: m[4] !== undefined ? parseFloat(m[4]) : 1 };
   }
+  const srgb = val.match(/^color\(srgb\s+([\d.e+-]+)\s+([\d.e+-]+)\s+([\d.e+-]+)(?:\s*\/\s*([\d.]+))?\)$/i);
+  if (srgb) {
+    const hex = '#' + srgb.slice(1, 4).map(n => Math.round(Math.max(0, Math.min(1, Number(n))) * 255).toString(16).padStart(2, '0')).join('');
+    return { hex, alpha: srgb[4] == null ? 1 : Math.max(0, Math.min(1, Number(srgb[4]))) };
+  }
+  // Resolve variable-based legacy colors and color-mix defaults without losing alpha.
+  if (typeof document !== 'undefined' && typeof getComputedStyle === 'function' && document.body && !/^color\(/i.test(val)) {
+    const probe = document.createElement('span');
+    probe.style.color = val;
+    if (probe.style.color) {
+      probe.style.display = 'none'; document.body.appendChild(probe);
+      const resolved = getComputedStyle(probe).color; probe.remove();
+      if (resolved && resolved !== val) return parseColorToHexAlpha(resolved);
+    }
+  }
   return { hex: '#000000', alpha: 1 };
 }
 
 function _colorValueToHex(color) {
   const raw = String(color || '').trim();
   if (!raw || raw.toLowerCase() === 'transparent') return '';
-  if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw) || /^rgba?\(/i.test(raw)) {
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(raw) || /^rgba?\(/i.test(raw)) {
     const parsed = parseColorToHexAlpha(raw);
     return parsed.alpha > 0 && /^#[0-9a-f]{6}$/i.test(parsed.hex) ? parsed.hex.toLowerCase() : '';
   }
@@ -465,7 +486,7 @@ function _customColorSelectionValue(color) {
   if (normalized === 'transparent') return { hex: '#000000', isTransparent: true };
   const parsed = parseColorToHexAlpha(normalized);
   if (parsed.alpha <= 0) return { hex: '#000000', isTransparent: true };
-  return /^#[0-9a-f]{6}$/i.test(parsed.hex) ? { hex: parsed.hex.toLowerCase(), isTransparent: false } : null;
+  return /^#[0-9a-f]{6}$/i.test(parsed.hex) ? { hex: hexAlphaToRgba(parsed.hex.toLowerCase(), parsed.alpha), isTransparent: false } : null;
 }
 
 function _computedCssColorToHex(cssColor) {
@@ -709,6 +730,8 @@ function setColorSwatchValue(el, color) {
   if (isChecker) {
     el.style.background = 'linear-gradient(45deg, rgba(148,163,184,0.38) 25%, transparent 25%, transparent 75%, rgba(148,163,184,0.38) 75%),linear-gradient(45deg, rgba(148,163,184,0.38) 25%, transparent 25%, transparent 75%, rgba(148,163,184,0.38) 75%)';
     el.style.backgroundSize = '8px 8px'; el.style.backgroundPosition = '0 0,4px 4px';
+  } else if (/^(rgba|#)/i.test(next) && parseColorToHexAlpha(next).alpha < 1) {
+    el.style.background = `linear-gradient(${next}, ${next}), repeating-conic-gradient(#cbd5e1 0% 25%, #fff 0% 50%) 0 0 / 8px 8px`;
   } else { el.style.background = next; }
   return next;
 }
@@ -864,7 +887,7 @@ function createInlineColorGrid(currentColor, onSelect) {
     const c = info.color;
     const swatch = document.createElement('div');
     swatch.className = 'gb-swatch' + (!isDefault && c.toLowerCase() === curHex.toLowerCase() ? ' active' : '');
-    swatch.style.background = c; swatch.title = info.title || c;
+    setColorSwatchValue(swatch, c); swatch.title = info.title || c;
     const selectStandard = () => onSelect(c);
     swatch.addEventListener('click', selectStandard);
     _setPaletteSwatchControl(swatch, `${info.title || c}を選択`, selectStandard);
@@ -876,7 +899,7 @@ function createInlineColorGrid(currentColor, onSelect) {
     if (c === 'transparent') {
       swatch.style.cssText = 'background:linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%),linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%);background-size:6px 6px;background-position:0 0,3px 3px;';
     } else {
-      swatch.style.background = c;
+      setColorSwatchValue(swatch, c);
     }
     swatch.title = c;
     const selectCustom = () => onSelect(c);
@@ -891,7 +914,8 @@ function createInlineColorGrid(currentColor, onSelect) {
 // 内部: パレット要素の構築
 // ============================================================
 function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
-  const { hex: curHex } = parseColorToHexAlpha(currentColor);
+  const { hex: curHex, alpha: curAlpha } = parseColorToHexAlpha(currentColor);
+  let selectedAlpha = curAlpha;
   const isTransparent = !currentColor || currentColor === 'transparent';
 
   let selectedHex = isTransparent ? '#000000' : curHex;
@@ -902,7 +926,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   let standardAdjust = getStandardPaletteAdjust();
   if (!isTransparent) {
     const initCustoms = getCustomColors();
-    const initIdx = initCustoms.findIndex(c => _colorValueToHex(c).toLowerCase() === curHex.toLowerCase());
+    const initIdx = initCustoms.findIndex(c => { const parsed = parseColorToHexAlpha(c); return parsed.hex.toLowerCase() === curHex.toLowerCase() && Math.round(parsed.alpha * 255) === Math.round(curAlpha * 255); });
     if (initIdx >= 0) selectedCustomIdx = initIdx;
     if (selectedCustomIdx < 0) {
       const initPresetIdx = getStandardPaletteColors(standardAdjust).findIndex(c => c.toLowerCase() === curHex.toLowerCase());
@@ -921,20 +945,22 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
 
   function currentOutputColor() {
     if (selectedIsTransparent) return 'transparent';
-    return currentHex();
+    return hexAlphaToRgba(currentHex(), selectedAlpha);
   }
   // Keep exact RGB selections; only slider edits need HSB conversion.
   function currentHex() { return selectedHex || _hsbToHex(hsb.h, hsb.s, hsb.b); }
   function applyLive() {
     const preset = selectedPresetIdx >= 0 ? getStandardPaletteSwatches(standardAdjust)[selectedPresetIdx] : null;
-    if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedOsAccentTone, preset });
+    if (typeof onChange === 'function') onChange(currentOutputColor(), { osAccentTone: selectedAlpha === 1 ? selectedOsAccentTone : '', preset });
     palette.querySelectorAll('[data-theme-palette-auto-row]').forEach(check => { check.checked = false; });
   }
 
   function selectSwatch(hex, isTransp, customIdx, presetIdx) {
-    selectedHex = hex; selectedIsTransparent = isTransp; selectedCustomIdx = customIdx; selectedPresetIdx = presetIdx ?? -1;
+    const parsed = parseColorToHexAlpha(hex);
+    selectedAlpha = isTransp ? 0 : parsed.alpha;
+    selectedHex = parsed.hex; selectedIsTransparent = isTransp; selectedCustomIdx = customIdx; selectedPresetIdx = presetIdx ?? -1;
     selectedOsAccentTone = '';
-    if (!isTransp) { hsb = _hexToHsb(hex); } else { hsb = { h: 0, s: 0, b: 0 }; }
+    if (!isTransp) { hsb = _hexToHsb(parsed.hex); } else { hsb = { h: 0, s: 0, b: 0 }; }
     updateSliders(); updatePicker(); updateSwatchHighlights();
     applyLive();
   }
@@ -982,7 +1008,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         swatch.dataset.presetIdx = String(presetIdx);
         // E2E/UI監査用の安定識別子（data-hex は監査の許可リスト外のため別途付与）
         swatch.dataset.e2eId = 'color-palette-preset-' + c.replace('#', '').toLowerCase();
-        swatch.style.background = c;
+        setColorSwatchValue(swatch, c);
         swatch.title = info.title || c;
         const selectPreset = () => selectSwatch(c, false, -1, presetIdx);
         swatch.addEventListener('click', selectPreset);
@@ -1093,7 +1119,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       if (c === 'transparent') {
         swatch.style.cssText = 'background:linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%),linear-gradient(45deg,#666 25%,transparent 25%,transparent 75%,#666 75%);background-size:6px 6px;background-position:0 0,3px 3px;';
       } else {
-        swatch.style.background = c;
+        setColorSwatchValue(swatch, c);
       }
       swatch.title = c; swatch.draggable = true;
       swatch.dataset.e2eId = `color-palette-custom-${i}`;
@@ -1213,7 +1239,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   function makeSlider(labelText, min, max, value, onChange) {
     const row = document.createElement('div'); row.className = 'gb-palette-slider-row';
     const lbl = document.createElement('label'); lbl.textContent = labelText;
-    const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness' }[labelText] || labelText).toString();
+    const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness', '不透明度': 'opacity' }[labelText] || labelText).toString();
     const slider = document.createElement('input');
     slider.type = 'range'; slider.min = String(min); slider.max = String(max); slider.value = String(value);
     slider.classList.add('gb-color-axis-range');
@@ -1243,6 +1269,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
   const onPickerChange = () => {
+    if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
     selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
@@ -1260,7 +1287,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   saveBtn.title = 'カスタムカラーに追加（選択中のカスタム色があれば上書き）';
   saveBtn.setAttribute('aria-label', 'カスタムカラーに追加');
   saveBtn.addEventListener('click', () => {
-    const hex = selectedIsTransparent ? 'transparent' : currentHex();
+    const hex = currentOutputColor();
     const customs = getCustomColors();
     if (selectedCustomIdx >= 0 && selectedCustomIdx < customs.length) {
       customs[selectedCustomIdx] = hex; _saveCustomColors(customs);
@@ -1292,6 +1319,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       const result = await ed.open();
       const pickedHex = parseColorToHexAlpha(result?.sRGBHex).hex;
       if (!pickedHex) return;
+      if (selectedIsTransparent) selectedAlpha = 1;
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
@@ -1306,6 +1334,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   });
 
   function applyOsAccentColor(hex, tone) {
+    if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = hex;
     hsb = _hexToHsb(hex);
     selectedIsTransparent = false;
@@ -1381,10 +1410,14 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  sliderSection.append(hSlider.row, sSlider.row, bSlider.row);
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  aSlider.row.dataset.e2eId = 'color-palette-opacity';
+  sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
 
   function updateSliderVisuals() {
+    aSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, transparent, ${currentHex()})`);
+    aSlider.slider.style.setProperty('--gb-color-axis-thumb', currentOutputColor());
     const hue = ((Number(hsb.h) % 360) + 360) % 360;
     const saturation = Math.max(0, Math.min(100, Number(hsb.s) || 0));
     const brightness = Math.max(0, Math.min(100, Number(hsb.b) || 0));
@@ -1396,11 +1429,12 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
     bSlider.slider.value = hsb.b; bSlider.valInput.value = hsb.b;
+    aSlider.slider.value = Math.round(selectedAlpha * 100); aSlider.valInput.value = Math.round(selectedAlpha * 100);
     updateSliderVisuals();
     globalThis.GBUI?.refreshRangeFills?.(sliderSection);
   }
@@ -1464,7 +1498,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
 // ビューワー安定化・共通UI計画書「4. 共通カスタムカラー」対応。
 // getCustomColors()/saveCustomColor()/removeCustomColor() は既存どおり
 // localStorage を同期キャッシュとして即座に反映し続け、永続化の共有先
-// （%LOCALAPPDATA%\Meldex\custom-color-sets.json）への反映だけを
+// （%LOCALAPPDATA%\Meldex\custom-color-sets-v2.json）への反映だけを
 // バックグラウンドで非同期に行う。GETが一時的に失敗した場合は
 // _personalColorsApiAvailable=false のまま GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS
 // の間だけlocalStorageのみで動作し、その後の色の追加/削除操作で自動的に再試行する
@@ -1474,8 +1508,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
 // localStorageのみで動作する（恒久フォールバック）。
 // ============================================================
 const GB_PERSONAL_COLORS_API_PATH = '/personal/custom-colors';
-const GB_PERSONAL_COLORS_MIGRATED_KEY = '_gb-colors-server-migrated';
-const GB_PERSONAL_COLORS_SCHEMA_VERSION = 1;
+const GB_PERSONAL_COLORS_MIGRATED_KEY = '_gb-colors-server-migrated-v2';
+const GB_PERSONAL_COLORS_SCHEMA_VERSION = 2;
 const GB_PERSONAL_COLORS_EXPORT_FILENAME_PREFIX = 'meldex-custom-colors';
 const GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS = 30000;
 
@@ -1487,15 +1521,16 @@ let _personalColorsSyncChain = Promise.resolve();
 let _personalColorsSyncPending = false; // 実行待ちの同期要求が既にあるか（連続呼び出しの合流用）
 let _personalColorsInitPromise = null;
 
-// #RRGGBB以外（transparent/rgba/不正値）を読み飛ばしつつ重複排除する。
+// 不透明色は#RRGGBB、半透明色は#RRGGBBAAで共有・書き出しする。
 // 共有ストア（meldex_personal_colors.py）の正規化と同じ意味論。
 function _personalColorsNormalizeList(colors) {
   const seen = new Set();
   const out = [];
   (Array.isArray(colors) ? colors : []).forEach((c) => {
-    const hex = _colorValueToHex(c);
-    if (!hex) return;
-    const key = hex.toLowerCase();
+    const normalized = _normalizeCustomColor(c);
+    if (!normalized) return;
+    const { hex, alpha } = parseColorToHexAlpha(normalized);
+    const key = hex.toLowerCase() + (alpha < 1 ? Math.round(alpha * 255).toString(16).padStart(2, '0') : '');
     if (seen.has(key)) return;
     seen.add(key);
     out.push(key);
@@ -1738,6 +1773,10 @@ function _handleImportCustomColorsFile(file) {
       if (typeof showStatus === 'function') showStatus('読み込みファイルにカスタムカラーの一覧がありません', true);
       return;
     }
+    if (parsed.schemaVersion != null && ![1, GB_PERSONAL_COLORS_SCHEMA_VERSION].includes(parsed.schemaVersion)) {
+      if (typeof showStatus === 'function') showStatus('このカラーセットの形式には対応していません', true);
+      return;
+    }
     if (parsed.colors.length > GB_PERSONAL_COLORS_MAX_IMPORT_RAW_COLORS) {
       if (typeof showStatus === 'function') showStatus('読み込みファイルの色数が多すぎます', true);
       return;
@@ -1823,6 +1862,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   if (_personalColorsApiAvailable === true && typeof apiPost === 'function') {
     try {
       const res = await apiPost(GB_PERSONAL_COLORS_API_PATH + '/import', {
+        schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION,
         content: { schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION, colors: normalized },
         mode,
       });

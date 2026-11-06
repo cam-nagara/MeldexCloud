@@ -1,3 +1,8 @@
+      }); } catch (cause) {
+        const error = new Error('ゴミ箱を完全に空にできませんでした（1件）');
+        error.code = 'trash_empty_partial_failure';
+        error.failures = [{ trash_root: '', name: '', error: cause?.message || String(cause) }];
+        throw error;
       }
     }
 

@@ -121,6 +121,7 @@ function _applyNavEntryToBoundTab(navState, entry) {
       : tab.icon;
     tab.state = {
       ...(typeChanged ? {} : (tab.state || {})),
+      ...(entry.viewMode ? { viewMode: entry.viewMode } : {}),
       ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
       ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
     };
@@ -182,6 +183,7 @@ function navBack(paneId) {
   if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
   const navState = _getNavState(paneId);
   if (navState.index <= 0) return false;
+  if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
   const nextIndex = navState.index - 1;
   const entry = navState.history[nextIndex];
   if (!entry) return false;
@@ -201,6 +203,7 @@ function navForward(paneId) {
   if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
   const navState = _getNavState(paneId);
   if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
+  if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
   const nextIndex = navState.index + 1;
   const entry = navState.history[nextIndex];
   if (!entry) return false;
@@ -241,8 +244,10 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
     item.title = entry.path || '';
     item.addEventListener('click', async () => {
       try {
+        if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
+        navNavigating = true;
         const applied = await _applyNavEntryToBoundTab(navState, entry);
-        if (!applied) return;
+        if (!applied) { navNavigating = false; return; }
         _finishPaneHistoryNavigation(navState, index, entry);
       } catch (e) {
         navNavigating = false;

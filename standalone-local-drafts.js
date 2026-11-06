@@ -8,9 +8,21 @@
   const RAW = 'raw';
   let dbPromise = null;
   const instances = new Set();
+  const NATIVE_STORAGE_KEY = 'meldex-native-draft-storage-v1';
+
+  function nativeStorageIsNew() {
+    if (!window.MeldexStandaloneNative) return false;
+    try { return localStorage.getItem(NATIVE_STORAGE_KEY) !== '1'; }
+    catch { return false; } // If the marker cannot be read, attempt recovery.
+  }
 
   function openDb() {
     if (dbPromise) return dbPromise;
+    // The native profile is new to this runtime. Mark it before the first DB
+    // operation so a crash can never hide an existing recovery database.
+    if (window.MeldexStandaloneNative) {
+      try { localStorage.setItem(NATIVE_STORAGE_KEY, '1'); } catch { /* attempt DB anyway */ }
+    }
     dbPromise = new Promise((resolve, reject) => {
       if (!window.indexedDB) {
         reject(new Error('この端末では端末内保存を利用できません'));
@@ -46,6 +58,7 @@
   }
 
   function contextKey() {
+    if (window.MeldexStandaloneNative) return 'native|' + String(window.MeldexStandaloneFS?.rootPathLabel?.() || '').replace(/\\/g, '/').toLowerCase();
     const status = window.MeldexStandaloneCloud?.getStatus?.() || {};
     const root = window.MeldexStandaloneCloud?.getActiveRoot?.() || {};
     return [status.provider || '', status.accountId || status.account_id || '', root.id || root.path || '']
@@ -121,6 +134,7 @@
     }
 
     function recordId() {
+      if (window.MeldexStandaloneNative && path()) return `${opts.appId}:${contextKey()}:path:${path().toLowerCase()}`;
       if (path()) return `${opts.appId}:path:${path()}`;
       if (!state.localId) state.localId = newId(`${opts.appId}_local`);
       return `${opts.appId}:local:${state.localId}`;
@@ -137,6 +151,9 @@
 
     async function saveNow() {
       if (state.savePromise) return state.savePromise;
+      // Merely opening/closing a new native note must not manufacture an
+      // unnamed draft and force a Save As dialog without any user edit.
+      if (window.MeldexStandaloneNative && !state.dirtyVersion && !state.hasSnapshot) return true;
       const captureVersion = state.dirtyVersion;
       state.saving = true;
       status('local-saving', '端末へ保存中…');
@@ -229,11 +246,19 @@
     }
 
     async function restoreLatest() {
+      if (nativeStorageIsNew() && typeof indexedDB.databases === 'function') {
+        // The marker is a hint, not evidence that recovery data is absent.
+        // Enumerate metadata without creating a database on a fresh profile.
+        try {
+          const databases = await indexedDB.databases();
+          if (!databases.some(database => database.name === DB_NAME)) return false;
+        } catch { /* Fall back to the normal recovery path. */ }
+      }
       const rows = await listApp(opts.appId).catch(() => []);
       const currentPath = path();
       const record = rows.find(row => row.pending && (
         currentPath ? row.remotePath === currentPath : !row.remotePath
-      ));
+      ) && (!window.MeldexStandaloneNative || row.contextKey === contextKey()));
       if (!record || typeof opts.restore !== 'function') return false;
       if (!currentPath && record.localDocumentId) state.localId = record.localDocumentId;
       await opts.restore(structuredClone(record.snapshot), record);
@@ -267,11 +292,12 @@
 
     async function flush() {
       clearTimeout(state.timer);
+      if (!state.dirtyVersion && !state.hasSnapshot && nativeStorageIsNew()) return true;
       if (state.dirtyVersion > state.localVersion && !await saveNow()) return false;
       if (state.syncPromise) return state.syncPromise;
       if (typeof opts.sync !== 'function') return true;
       const record = await getSnapshot(recordId()).catch(() => null);
-      if (!record?.pending || !record.remotePath) return !record?.remotePath;
+      if (!record?.pending || !record.remotePath) return true;
       const currentContext = contextKey();
       if (record.contextKey && currentContext && record.contextKey !== currentContext) {
         record.state = 'destination-check';

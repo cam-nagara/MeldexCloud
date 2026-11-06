@@ -180,17 +180,17 @@ function applyFileStyle(style) {
   }
 }
 
-function applyFileStyleToPanel(style, panelId, targetElement) {
+function applyFileStyleToPanel(style, panelId) {
   // 指定パネルに適用。--page-* / --db-* / --sn2-* すべて対応
-  const el = targetElement || (panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
+  const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : panelId === 'page-content' ? (window.GBEditorHost?.element(panelId) || document.getElementById(panelId)) : document.getElementById(panelId));
+    : document.getElementById(panelId);
   if (!el) return;
   applyFileStyleToElement(style, el, panelId);
   if (panelId === 'page-content') {
-    const pageView = el.closest?.('[data-editor-host],#page-view');
+    const pageView = el.closest?.('#page-view');
     if (pageView) applyFileStyleToElement(style, pageView, panelId);
-    const titleEl = pageView?.querySelector('[data-editor-local-id="page-title"],#page-title');
+    const titleEl = document.getElementById('page-title');
     if (typeof applyPageTitleStyleToElement === 'function') {
       applyPageTitleStyleToElement(style, titleEl);
     } else if (titleEl && typeof applyFileStyleToElement === 'function') {
@@ -240,11 +240,11 @@ function clearFileStyle() {
   _FILE_STYLE_PANELS.forEach(id => clearFileStyleForPanel(id));
 }
 
-function clearFileStyleForPanel(panelId, targetElement) {
+function clearFileStyleForPanel(panelId) {
   if (!panelId) return;
-  const el = targetElement || (panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
+  const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : panelId === 'page-content' ? (window.GBEditorHost?.element(panelId) || document.getElementById(panelId)) : document.getElementById(panelId));
+    : document.getElementById(panelId);
   if (el) {
     const remove = [];
     for (const prop of el.style) {
@@ -254,9 +254,9 @@ function clearFileStyleForPanel(panelId, targetElement) {
     if (el.dataset) delete el.dataset.fileStyleAppliedVars;
   }
   if (panelId === 'page-content') {
-    const pageView = el?.closest?.('[data-editor-host],#page-view');
+    const pageView = el?.closest?.('#page-view');
     if (pageView) clearFileStyleFromElement(pageView);
-    const titleEl = pageView?.querySelector('[data-editor-local-id="page-title"],#page-title');
+    const titleEl = document.getElementById('page-title');
     if (titleEl && typeof clearFileStyleFromElement === 'function') clearFileStyleFromElement(titleEl);
     const dp = document.getElementById('dp-editable');
     if (dp) clearFileStyleFromElement(dp);
@@ -351,7 +351,7 @@ function _getCurrentFileStyle() {
   if (view === 'folder') {
     return _getFolderFileStyle();
   } else if (view === 'page') {
-    const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
+    const pc = document.getElementById('page-content');
     return _parseFileStyleFromFrontmatter(pc?.dataset?.frontmatter || '') || {};
   } else if (view === 'board') {
     // bd._fileStyle 優先、旧 bd._fileTheme もフォールバック
@@ -659,9 +659,9 @@ function unwrapHeadingSections(container) {
 }
 
 function toggleHeadingIndent() {
-  const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
+  const pc = document.getElementById('page-content');
   if (!pc) return;
-  const btn = (window.GBEditorHost?.element('btn-heading-indent') || document.getElementById('btn-heading-indent'));
+  const btn = document.getElementById('btn-heading-indent');
   const _v = localStorage.getItem('note-heading-indent');
   const isOn = _v === null || _v === '1';
   if (isOn) {
@@ -682,21 +682,21 @@ function toggleHeadingIndent() {
 const _origOpenPage = typeof openPage === 'function' ? openPage : null;
 if (_origOpenPage) {
   openPage = async function(label, path, opts) {
-    const pc = opts?.containerEl || document.getElementById('page-content');
-    if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content', pc);
+    if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content');
     const opened = await _origOpenPage(label, path, opts);
     // 競合解決側は読込成功の真偽で未保存編集を保全する。装飾層でも
     // 結果を保持し、失敗・古い読込・別アプリへの遷移は装飾しない。
     if (!opened) return opened;
     // ファイル個別テーマはpage-contentパネルにのみ適用
+    const pc = document.getElementById('page-content');
     const _fileTheme = _parseFileStyleFromFrontmatter(pc?.dataset.frontmatter);
     if (!opts?.skipGlobalUi) {
       if (_fileTheme) {
-        applyFileStyleToPanel(_fileTheme, 'page-content', pc);
+        applyFileStyleToPanel(_fileTheme, 'page-content');
       } else {
         // ファイル固有スタイルが無い場合、既定ファイルスタイルを視覚的に適用
         const _def = _getDefaultFileStyle('page');
-        if (_def) applyFileStyleToPanel(_def, 'page-content', pc);
+        if (_def) applyFileStyleToPanel(_def, 'page-content');
       }
     }
     // 見出しインデント（デフォルト: オン）
@@ -708,7 +708,7 @@ if (_origOpenPage) {
     if (pc && typeof _schedulePageDisplayLayers === 'function') {
       _schedulePageDisplayLayers(path, pc, pc.innerHTML, () => pc.dataset.path !== path);
     }
-    const btn = pc?.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="btn-heading-indent"],#btn-heading-indent');
+    const btn = document.getElementById('btn-heading-indent');
     if (btn) btn.classList.toggle('active', _indentOn);
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();

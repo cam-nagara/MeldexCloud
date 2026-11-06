@@ -791,11 +791,14 @@ function chatAddMessage(role, content, options = {}) {
     header.appendChild(timeEl);
   }
   if (isQueued && isUser) {
+    wrapper.classList.add('is-queued');
+    header.style.flexWrap = 'wrap';
     const badge = document.createElement('span');
     badge.className = 'chat-queued-badge';
-    badge.textContent = '待機';
-    badge.title = 'AI作業の完了後に送信されます';
-    badge.style.cssText = 'display:inline-flex;align-items:center;height:16px;padding:0 6px;border:1px solid var(--border);border-radius:999px;font-size:10px;color:var(--fg2);background:var(--bg2);';
+    badge.innerHTML = lucide('clock', 12);
+    badge.appendChild(document.createTextNode('未送信・待機中'));
+    badge.title = 'このメッセージはまだAIへ送信されていません。AI作業の完了後に送信されます';
+    badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;min-height:20px;padding:0 7px;border:1px dashed var(--chat-accent, var(--accent));border-radius:5px;font-size:11px;font-weight:600;white-space:nowrap;color:var(--chat-fg, var(--fg));background:var(--chat-bg, var(--bg));';
     header.appendChild(badge);
     const queuedId = String(options?.queuedMessageId || msgId || '');
     const addAction = (label, iconName, handler, attr) => {
@@ -913,6 +916,13 @@ function chatAddMessage(role, content, options = {}) {
       if (typeof renderStamps === 'function') safe = renderStamps(safe);
       div.innerHTML = safe;
     }
+  }
+  if (isQueued && isUser) {
+    div.classList.add('is-queued');
+    div.style.background = 'color-mix(in srgb, var(--chat-accent, var(--accent)) 10%, var(--chat-bg, var(--bg)))';
+    div.style.color = 'var(--chat-fg, var(--fg))';
+    div.style.border = '1px dashed color-mix(in srgb, var(--chat-accent, var(--accent)) 65%, var(--chat-fg, var(--fg)))';
+    div.style.borderRadius = '10px';
   }
   wrapper.appendChild(div);
   container.appendChild(wrapper);

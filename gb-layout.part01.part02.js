@@ -44,7 +44,8 @@
     _paneMap[node.id] = { node, el: pane, contentEl: content };
     _updatePaneNavButtons(node.id);
 
-    // ラベル付き最小72pxでも収まらないタブは、共通の「▼」から選べる。
+    // タブは自然幅 -> ラベル付き最小72px -> アイコンのみ、の順で縮退する。
+    // compact 化してもなお溢れる場合だけ tabsScroll が横スクロールで対応する。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
         tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
@@ -52,6 +53,11 @@
         void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
           tabBar.classList.add('gb-tabs-shrink');
+          void tabsScroll.offsetWidth;
+          if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
+            tabBar.classList.remove('gb-tabs-shrink');
+            tabBar.classList.add('gb-tabs-compact');
+          }
         }
         const iconOnly = tabBar.classList.contains('gb-tabs-compact');
         tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {

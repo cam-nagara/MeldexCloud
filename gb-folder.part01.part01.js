@@ -823,7 +823,7 @@ function renderFolderGrid(opts) {
           ? _outlinerIconMarkup(item, 36)
           : fileTypeIcon(item.type);
         thumb.appendChild(icon);
-        window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
+        if (!item.display_icon) window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
       };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
@@ -1235,7 +1235,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   closeColHeaderMenu();
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
-  // サブパネル内では、サブパネルで開く・バージョン管理等の
+  // サブパネル内では、右サイドバーで開く・バージョン管理等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1371,13 +1371,17 @@ function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
   }
 
+  if (!blankTarget && window.MeldexFileIcons?.canEdit(item) && !_folderMenuItemLocked(item)) {
+    addItem('アイコンを変更', () => window.MeldexFileIcons.openPicker(item, itemEl || e?.target), null, 'smile');
+    addSep();
+  }
   // --- 開く ---
   if (!blankTarget && item.path) {
     const openSub = addSub('開く', 'folderOpen');
     openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
     openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
     if (_canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
-      openSub.item('サブパネルで開く', () => openLinkedPathInRightSidebar(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
+      openSub.item('右サイドバーで開く', () => openLinkedPathInRightSidebar(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
     }
     if (typeof openLinkedPathStandalone === 'function'
         && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(item.path, item.type))) {

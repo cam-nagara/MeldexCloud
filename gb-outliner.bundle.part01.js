@@ -356,7 +356,8 @@ function _outlinerIconName(type, path, isSpecialFolder) {
 }
 
 function _outlinerIconMarkup(item, size) {
-  return lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && isWorkFolder(item?.path)), size || 18);
+  const fallback = lucide(_outlinerIconName(item?.type, item?.path, item?.type === 'folder' && isWorkFolder(item?.path)), size || 18);
+  return window.MeldexFileIcons?.render(item, size || 18, fallback) ?? fallback;
 }
 
 async function loadOutliner(options) {
@@ -897,4 +898,3 @@ const treeSelection = {
     for (let i = start; i <= end; i++) {
       const entry = state.flat[i];
       const path = entry && entry.data && entry.data.path;
-      if (!path) continue;

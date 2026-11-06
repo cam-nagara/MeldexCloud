@@ -954,6 +954,20 @@
       _activeTarget = null;
     });
     row.appendChild(btn);
+    const search = document.createElement('button');
+    search.type = 'button';
+    search.className = 'gb-fmt-btn';
+    search.textContent = 'Googleで検索';
+    search.setAttribute('aria-label', '選択範囲をGoogleで検索');
+    const searchText = target.range?.toString() || target.text;
+    search.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (searchText) window.open('https://www.google.com/search?q=' + encodeURIComponent(searchText), '_blank', 'noopener,noreferrer');
+      _suppressUntil = Date.now() + 350;
+      _closePopup();
+    });
+    row.appendChild(search);
     popup.appendChild(row);
     document.body.appendChild(popup);
     const anchor = { getBoundingClientRect: () => rect };

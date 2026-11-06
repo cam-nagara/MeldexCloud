@@ -273,7 +273,7 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
   const cardProps = Array.isArray(cfg.cardProps) ? cfg.cardProps : [];
   const editable = options.editable && options.dbPath && typeof _entityPath === 'function';
   const propTypes = options.propTypes || {};
-  const entityPath = editable ? _entityPath(options.dbPath, entry.name) : '';
+  const entityPath = editable ? _entityPath(options.dbPath, entry.name, options.ctx?.pivotData) : '';
   cardProps.forEach(propName => {
     const vals = _timelineEntryPropValues(entry, propName, options.filter);
     const displayVal = vals.map(v => v?.value ?? '').filter(v => String(v).trim()).join(', ');
@@ -294,6 +294,7 @@ function _renderTimelineEntityContent(root, entry, cfg, options = {}) {
           ctx: options.ctx || null,
           filter: options.filter,
           cardPreview: true,
+          viewType: options.viewType || options.ctx?.viewMode || 'timeline',
           imagePreviewCount: displayCfg.cardImageThumbCount,
         });
         if (valueEl) value.appendChild(valueEl);

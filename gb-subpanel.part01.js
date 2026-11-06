@@ -20,7 +20,7 @@ const GBSubPanel = (() => {
   const ROOT_ID = 'gb-subpanel-root';
   const CONTENT_ID = 'gb-subpanel-content';
   const INNER_PANE_ID = 'gb-subpanel-inner-pane';
-  const EMPTY_MESSAGE = 'リンクのメニューから「サブパネルで開く」を選ぶと、ここに表示されます。';
+  const EMPTY_MESSAGE = 'リンクのメニューから「右サイドバーで開く」を選ぶと、ここに表示されます。';
   const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const MAX_HISTORY = 50;
 
@@ -31,7 +31,7 @@ const GBSubPanel = (() => {
   let _forwardBtn = null;
   let _promoteBtn = null;
   let _closeContentBtn = null;
-  let _parentLinkHost = null;
+  let _pathBarEl = null;
   let _contentEl = null;
   let _pane = null;
   let _current = null;
@@ -42,7 +42,6 @@ const GBSubPanel = (() => {
   let _sheetEmbed = null;
   let _sheetEmbedSeq = 0;
   let _sheetTheftObserver = null;
-  let _editorOwnership = null;
 
   function _basename(path) {
     return String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
@@ -240,13 +239,6 @@ const GBSubPanel = (() => {
     const type = entry.type || '';
     try {
       if (type === 'page' && typeof flushPendingEditorAutosave === 'function') {
-        const editor = _contentEl?.querySelector('.gb-subpanel-note-content');
-        if (editor?.dataset.path === entry.path && editor.dataset.loadFailed !== '1'
-            && typeof _runNoteAutoSave === 'function' && window.MeldexNoteSaveAdapter) {
-          await _runNoteAutoSave(editor);
-          return { ok: !window.MeldexNoteSaveAdapter.isConflictPending?.(entry.path)
-            && window.MeldexNoteSaveAdapter.isUnchanged(editor, _noteMarkdownFromEditor(editor)) };
-        }
         const settled = await Promise.resolve(flushPendingEditorAutosave());
         const failed = Array.isArray(settled) && settled.some(item => item?.status === 'rejected');
         return { ok: !failed };
@@ -261,11 +253,10 @@ const GBSubPanel = (() => {
         return { ok: true };
       }
       if (DB_VIEW_TYPES.has(type)) {
-        if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(entry.path);
-        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(entry.path) === false) return { ok: false };
+        if (typeof waitForPendingDbValueMutations === 'function') await waitForPendingDbValueMutations(entry.path);
         if (typeof flushPendingDbPropertySettings === 'function') await flushPendingDbPropertySettings(entry.path);
         if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(entry.path);
-        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(entry.path) === false) return { ok: false };
+        if (typeof waitForPendingDbValueMutations === 'function') await waitForPendingDbValueMutations(entry.path);
         return { ok: true };
       }
       if (type === 'board') {
@@ -313,25 +304,33 @@ const GBSubPanel = (() => {
   // ---- 既存内容の破棄 ----
   function _retractCurrentContent(options) {
     const opts = options || {};
-    if (!_contentEl) return Promise.resolve(true);
+    if (!_contentEl) return Promise.resolve();
+    _stopLoadFailureObserver();
     const content = _contentEl;
+    // 比較は openCompareView() 内で container._compareResizeCleanup に window resize
+    // リスナーの解除関数を積む（gb-compare.js）。サブパネルは対象切替のたびに専用
+    // コンテナごと作り直す（使い回さない）ため、ここで明示的に解除しないとリスナーが
+    // 破棄済みDOMを握ったまま蓄積し続ける（メイン画面側は同一containerを使い回すため
+    // 問題にならない）。
+    content.querySelectorAll('.gb-subpanel-compare-root').forEach(root => {
+      root._compareResizeCleanup?.();
+    });
+    // シート専用埋め込み（MeldexProductionSheetEmbed）はDOM監視/書き込みガード用の
+    // リスナー・Observerを持つため、DOM除去任せにせずdestroy()で明示的に解放する
+    // （ctx.destroyedも立ち、進行中のselectDatabase()読込を安全に打ち切れる）。
+    if (_sheetEmbed) {
+      try { _sheetEmbed.destroy(); } catch { /* 失敗しても後続のDOM除去で片付く */ }
+      _sheetEmbed = null;
+    }
+    _stopSheetTheftObserver();
     const disposals = [...content.querySelectorAll('[data-meldex-entity-detail]')]
       .map(root => Promise.resolve(root._meldexEntityDetailController?.dispose?.()).catch(() => false));
-    return Promise.all(disposals).then(results => {
-      if (results.some(result => result === false)) return false;
-      _editorOwnership?.dispose();
-      _editorOwnership = null;
-      _stopLoadFailureObserver();
-      content.querySelectorAll('.gb-subpanel-compare-root').forEach(root => root._compareResizeCleanup?.());
-      // Dispose listeners and pending loads only after every editor confirmed its save.
-      if (_sheetEmbed) { _sheetEmbed.destroy(); _sheetEmbed = null; }
-      _stopSheetTheftObserver();
+    return Promise.allSettled(disposals).then(() => {
       _teardownVirtualPane();
       content.replaceChildren();
       if (opts.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
         GBPaneBridge.mountAllPanes();
       }
-      return true;
     });
   }
 
@@ -364,7 +363,7 @@ const GBSubPanel = (() => {
       if (typeof showStatus === 'function') showStatus('保存を確認できませんでした。もう一度お試しください', true);
       return false;
     }
-    if (await _retractCurrentContent({ remount: true }) === false) return false;
+    await _retractCurrentContent({ remount: true });
     if (seq !== _opSeq) return false;
     return fn();
   }
@@ -390,10 +389,10 @@ const GBSubPanel = (() => {
     if (_titleTextEl) _titleTextEl.textContent = entry.label || _toolLabel(entry.type);
     if (_promoteBtn) _promoteBtn.hidden = !entry.path || entry.type === 'unsupported';
     if (_closeContentBtn) _closeContentBtn.hidden = false;
-    if (_titleTextEl) _titleTextEl.title = entry.path || '';
-    if (_parentLinkHost) {
-      if (entry.type !== 'entity') _parentLinkHost.replaceChildren();
-      _parentLinkHost.hidden = entry.type !== 'entity';
+    if (_pathBarEl) {
+      _pathBarEl.textContent = entry.path ? _basename(entry.path) : '';
+      _pathBarEl.title = entry.path || '';
+      _pathBarEl.style.display = entry.path ? '' : 'none';
     }
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -521,10 +520,8 @@ const GBSubPanel = (() => {
     if (typeof openPage !== 'function') return false;
     const root = document.createElement('div');
     root.className = 'gb-subpanel-note-content';
-    root.classList.add('meldex-entity-detail-editor');
-    root.dataset.editorLocalId = 'page-content';
     root.dataset.testid = 'gb-subpanel-note-content';
-    root.contentEditable = 'false';
+    root.contentEditable = 'true';
     root.style.cssText = 'flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:16px;line-height:1.7;outline:none;';
     _contentEl.appendChild(root);
     openPage(entry.label || _basename(entry.path), entry.path, {
@@ -705,11 +702,7 @@ const GBSubPanel = (() => {
     root.dataset.gbSubpanelEntityRoot = 'true';
     _contentEl.appendChild(root);
     if (window.MeldexEntityDetail?.mount) {
-      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel',
-        titleEl: _titleTextEl, parentHost: _parentLinkHost, onTitleChange: name => {
-          entry.label = name;
-          _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
-        } });
+      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
       return true;
     }
     root.textContent = 'トピックを表示できません';

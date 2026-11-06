@@ -976,8 +976,11 @@
         : 'folder';
       const folderItem = { name, type, path: _normalizeFolderPath(relativePath), sourceId: sourceId || undefined, file_id: _fnvFileId(_normalizeFolderPath(relativePath)) };
       if (window.GBPathUtils?.displayTitle) {
-        try { const title = window.GBPathUtils.displayTitle.read(await provider.readText(_joinPath(relativePath,name+'.md')));
-          if (title) folderItem.name=title; } catch {}
+        try { const text = await provider.readText(_joinPath(relativePath,name+'.md'));
+          const title = window.GBPathUtils.displayTitle.read(text);
+          if (title) folderItem.name=title;
+          folderItem.display_icon = window.MeldexFileIcons?.readFields(text, name+'.md').display_icon || '';
+        } catch {}
       }
       if (safeOptions.detail) folderItem.os_type = _fallbackOsTypeLabel(name, type, true);
       return folderItem;
@@ -991,9 +994,14 @@
       sourceId: sourceId || undefined,
       file_id: _fnvFileId(_normalizeFolderPath(relativePath)),
     };
-    if (['page','board','database','scenario','scriptnote','timer','calendar'].includes(fileType) && window.GBPathUtils?.displayTitle) {
-      try { const title=window.GBPathUtils.displayTitle.read(await provider.readText(relativePath),relativePath);
-        if (title) item.name=title; } catch {}
+    if (['page','board','database','scenario','scriptnote','timer','calendar','form-app','map','chat'].includes(fileType) && window.GBPathUtils?.displayTitle) {
+      try { const text = await provider.readText(relativePath);
+        const title=window.GBPathUtils.displayTitle.read(text,relativePath);
+        if (title) item.name=title;
+        const fields = window.MeldexFileIcons?.readFields(text,relativePath);
+        if (fields?.file_icon_metadata_only === true) return null;
+        item.display_icon = fields?.display_icon || '';
+      } catch {}
     }
     if (safeOptions.allFiles && fileType === 'unknown') {
       item.ext = _splitNameAndExt(name).ext.toLowerCase();

@@ -3,7 +3,7 @@
 // ビューワー安定化・共通UI計画書「4. 共通カスタムカラー」対応。
 // getCustomColors()/saveCustomColor()/removeCustomColor() は既存どおり
 // localStorage を同期キャッシュとして即座に反映し続け、永続化の共有先
-// （%LOCALAPPDATA%\Meldex\custom-color-sets.json）への反映だけを
+// （%LOCALAPPDATA%\Meldex\custom-color-sets-v2.json）への反映だけを
 // バックグラウンドで非同期に行う。GETが一時的に失敗した場合は
 // _personalColorsApiAvailable=false のまま GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS
 // の間だけlocalStorageのみで動作し、その後の色の追加/削除操作で自動的に再試行する
@@ -13,8 +13,8 @@
 // localStorageのみで動作する（恒久フォールバック）。
 // ============================================================
 const GB_PERSONAL_COLORS_API_PATH = '/personal/custom-colors';
-const GB_PERSONAL_COLORS_MIGRATED_KEY = '_gb-colors-server-migrated';
-const GB_PERSONAL_COLORS_SCHEMA_VERSION = 1;
+const GB_PERSONAL_COLORS_MIGRATED_KEY = '_gb-colors-server-migrated-v2';
+const GB_PERSONAL_COLORS_SCHEMA_VERSION = 2;
 const GB_PERSONAL_COLORS_EXPORT_FILENAME_PREFIX = 'meldex-custom-colors';
 const GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS = 30000;
 
@@ -26,15 +26,16 @@ let _personalColorsSyncChain = Promise.resolve();
 let _personalColorsSyncPending = false; // 実行待ちの同期要求が既にあるか（連続呼び出しの合流用）
 let _personalColorsInitPromise = null;
 
-// #RRGGBB以外（transparent/rgba/不正値）を読み飛ばしつつ重複排除する。
+// 不透明色は#RRGGBB、半透明色は#RRGGBBAAで共有・書き出しする。
 // 共有ストア（meldex_personal_colors.py）の正規化と同じ意味論。
 function _personalColorsNormalizeList(colors) {
   const seen = new Set();
   const out = [];
   (Array.isArray(colors) ? colors : []).forEach((c) => {
-    const hex = _colorValueToHex(c);
-    if (!hex) return;
-    const key = hex.toLowerCase();
+    const normalized = _normalizeCustomColor(c);
+    if (!normalized) return;
+    const { hex, alpha } = parseColorToHexAlpha(normalized);
+    const key = hex.toLowerCase() + (alpha < 1 ? Math.round(alpha * 255).toString(16).padStart(2, '0') : '');
     if (seen.has(key)) return;
     seen.add(key);
     out.push(key);
@@ -277,6 +278,10 @@ function _handleImportCustomColorsFile(file) {
       if (typeof showStatus === 'function') showStatus('読み込みファイルにカスタムカラーの一覧がありません', true);
       return;
     }
+    if (parsed.schemaVersion != null && ![1, GB_PERSONAL_COLORS_SCHEMA_VERSION].includes(parsed.schemaVersion)) {
+      if (typeof showStatus === 'function') showStatus('このカラーセットの形式には対応していません', true);
+      return;
+    }
     if (parsed.colors.length > GB_PERSONAL_COLORS_MAX_IMPORT_RAW_COLORS) {
       if (typeof showStatus === 'function') showStatus('読み込みファイルの色数が多すぎます', true);
       return;
@@ -362,6 +367,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   if (_personalColorsApiAvailable === true && typeof apiPost === 'function') {
     try {
       const res = await apiPost(GB_PERSONAL_COLORS_API_PATH + '/import', {
+        schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION,
         content: { schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION, colors: normalized },
         mode,
       });

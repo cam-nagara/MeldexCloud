@@ -530,7 +530,8 @@
     const type = String(item?.type || '').toLowerCase();
     const canThumb = (type === 'image' || type === 'video') && item?.path && _layout !== 'list';
     if (!canThumb) {
-      el.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      const fallback = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      el.innerHTML = window.MeldexFileIcons?.render(item, _layout === 'list' ? 20 : 28, fallback) ?? fallback;
       return;
     }
     const img = document.createElement('img');
@@ -844,6 +845,10 @@
     sheet.appendChild(_makeSheetButton('名前を変更', 'pencil', 'cloud-mobile-explorer-action-item', () => {
       closeItemMenu();
       _openRenameSheet(item);
+    }));
+    if (window.MeldexFileIcons?.canEdit(item)) sheet.appendChild(_makeSheetButton('アイコンを変更', 'smile', 'cloud-mobile-explorer-action-item', () => {
+      closeItemMenu();
+      window.MeldexFileIcons.openPicker(item, _sidebar());
     }));
     sheet.appendChild(_makeSheetButton('削除', 'trash2', 'cloud-mobile-explorer-action-item cloud-mobile-explorer-action-danger', async () => {
       closeItemMenu();

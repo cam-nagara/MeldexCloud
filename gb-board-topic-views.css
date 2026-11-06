@@ -6,6 +6,19 @@
   min-width: 0;
 }
 
+.bd-view-tabs-row {
+  flex: 0 0 auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  background: var(--bg2);
+}
+.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; }
+.bd-view-tabs-row .bd-common-view-tabs { flex: 1 1 auto; border-bottom: 0; }
+.bd-view-tabs-row .bd-topic-view-controls > select { display: none; }
+@media (max-width: 768px) {
+  .bd-view-tabs-row .bd-topic-view-controls > select { display: block; }
+}
+
 .bd-topic-view-controls > select {
   min-width: 96px;
   max-width: 220px;

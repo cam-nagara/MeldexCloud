@@ -307,6 +307,8 @@ function _appendDbCardImagePreview(root, items, options = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'db-card-image-preview ' + (options.className || '');
   if (options.propName) wrap.title = options.propName;
+  const size = _imagePropCellSize(options.ptc, options.viewType || options.ctx?.viewMode || 'gallery');
+  wrap.style.setProperty('--db-card-image-height', size + 'px');
   const thumbCount = typeof _normalizeDbCardImageThumbCount === 'function'
     ? _normalizeDbCardImageThumbCount(options.thumbCount)
     : Math.max(1, Math.min(12, Math.round(Number(options.thumbCount || 3) || 3)));
@@ -331,7 +333,7 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       placeholder.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
+        if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item, options);
       });
       wrap.appendChild(placeholder);
       appended += 1;
@@ -363,7 +365,7 @@ function _appendDbCardImagePreview(root, items, options = {}) {
     img.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
+      if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item, options);
     });
     const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'db-card-image-host' });
     wrap.appendChild(imageHost || img);
@@ -391,7 +393,7 @@ function _appendFirstDbCardImagePreview(root, entityData, propNames, propTypes, 
     if (ptc.type && ptc.type !== 'image') continue;
     const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
     const imageItems = _dbCardImageItemsFromValues(vals);
-    if (imageItems.length && _appendDbCardImagePreview(root, imageItems, { ...options, propName })) {
+    if (imageItems.length && _appendDbCardImagePreview(root, imageItems, { ...options, propName, ptc, ctx })) {
       return true;
     }
   }
@@ -738,6 +740,7 @@ function renderGallery(ctx) {
       }
       _appendDbCardImagePreview(card, imageItems, {
         className: 'gallery-card-image-preview',
+        entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
         thumbCount: galleryCfg.cardImageThumbCount,
         columns: Math.min(2, galleryCfg.cardImageThumbCount),
         propName,
@@ -837,6 +840,7 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
       if (imageItems.length) {
         _appendDbCardImagePreview(root, imageItems, {
           className: 'kanban-card-image-preview',
+          entityPath: _entityPath(dbPath, card.name, ctx?.pivotData), ctx, ptc, viewType: 'kanban',
           propName,
           thumbCount: options.cardImageThumbCount,
         });

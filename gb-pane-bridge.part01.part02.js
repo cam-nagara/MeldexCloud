@@ -230,7 +230,6 @@
   }
 
   function _syncDetailForActivePane(paneId, options) {
-    if (window.GBEditorHost?.get()) { window.GBEditorHost.sync(); return; }
     if (!paneId) return;
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
     if (!paneInfo) return;

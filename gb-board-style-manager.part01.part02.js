@@ -43,10 +43,7 @@
   // kind === 'line'
   // --- Row 1: 色 + 太さ + ライン種 + 矢印 ---
   const lrow1 = fmt.makeRow({ wrap: true });
-  lrow1.appendChild(tag('color')(fmt.makeSwatchBg({ title: '色', color: style.color || '', onPick: (c) => setField('color', c) })));
-  const colorOpacityInp = fmt.makeNumInput({ title: 'ライン不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.colorOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('colorOpacity', v == null ? 100 : v) });
-  tag('colorOpacity')(colorOpacityInp);
-  lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('不透明度'), colorOpacityInp, fmt.makeLabel('%')]));
+  lrow1.appendChild(tag('color')(fmt.makeSwatchBg({ title: '色', color: _bdColorWithOpacity(style.color || '', style.colorOpacity), onPick: (c) => setField('color', c) })));
   const lwInp = fmt.makeNumInput({ title: '太さ', value: style.width, min: 0, max: 200, onChange: (v) => setField('width', v == null ? 0 : v) });
   tag('width')(lwInp);
   lrow1.appendChild(fmt.makeGroup([fmt.makeLabel('太さ'), lwInp, fmt.makeLabel('px')]));

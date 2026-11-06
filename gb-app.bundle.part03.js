@@ -1,3 +1,36 @@
+    else {
+      const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+      if (labelEl) labelEl.textContent = tab.label;
+    }
+    return true;
+  };
+  const formFileChanged = ['form-app', 'map'].includes(nextType) && tab.path !== (entry.path || entry.dbPath || '');
+  if ((typeChanged || formFileChanged) && typeof removeComponentInstance === 'function') {
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+    if (component && typeof removeComponentInstanceSafely === 'function') {
+      return removeComponentInstanceSafely(tab.id).then(ok => ok ? applyEntry() : false);
+    }
+    if (removeComponentInstance(tab.id) === false) return false;
+  }
+  return applyEntry();
+}
+
+function _finishPaneHistoryNavigation(navState, nextIndex, entry) {
+  navState.index = nextIndex;
+  navNavigating = true;
+  if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+  _withNavFlag(navOpen(entry));
+  if (navState.kind === 'legacy') {
+    const tab = _tabs.find(t => t.path === entry.path && t.type === entry.type);
+    if (tab) { _activeTabId = tab.id; renderTabs(); }
+  }
+  _refreshPaneNavUi(navState.paneId);
+  _persistPaneNavState(navState);
+  return true;
+}
+
+function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
+  if (!applied || typeof applied.then !== 'function') {
     return applied === false ? false : _finishPaneHistoryNavigation(navState, nextIndex, entry);
   }
   navNavigating = true;
@@ -22,6 +55,7 @@ function navBack(paneId) {
   if (railState) return GBPanelSet.navigateRightRail(paneId, -1);
   const navState = _getNavState(paneId);
   if (navState.index <= 0) return false;
+  if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
   const nextIndex = navState.index - 1;
   const entry = navState.history[nextIndex];
   if (!entry) return false;
@@ -41,6 +75,7 @@ function navForward(paneId) {
   if (railState) return GBPanelSet.navigateRightRail(paneId, 1);
   const navState = _getNavState(paneId);
   if (navState.index < 0 || navState.index >= navState.history.length - 1) return false;
+  if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
   const nextIndex = navState.index + 1;
   const entry = navState.history[nextIndex];
   if (!entry) return false;
@@ -81,8 +116,10 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
     item.title = entry.path || '';
     item.addEventListener('click', async () => {
       try {
+        if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(navState.paneId);
+        navNavigating = true;
         const applied = await _applyNavEntryToBoundTab(navState, entry);
-        if (!applied) return;
+        if (!applied) { navNavigating = false; return; }
         _finishPaneHistoryNavigation(navState, index, entry);
       } catch (e) {
         navNavigating = false;
@@ -861,40 +898,3 @@ async function apiPost(path, body, options = {}) {
   _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
-
-/* ==============================
-   初期化
-   ============================== */
-// 認証トークン管理
-// 旧認証変数（互換性のため残す — 他モジュールが参照）
-let _authToken = '';
-let _authUser = null;
-
-function _apiLockJsonBody(opts) {
-  const raw = opts?.body;
-  if (!raw) return {};
-  if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch { return {}; }
-  }
-  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
-  return {};
-}
-
-function _apiLockPathDir(path) {
-  const text = String(path || '').replace(/\\/g, '/');
-  const index = text.lastIndexOf('/');
-  return index > 0 ? text.slice(0, index) : '';
-}
-
-function _apiLockRenameExtension(path) {
-  const text = String(path || '').replace(/\\/g, '/');
-  const name = text.slice(text.lastIndexOf('/') + 1);
-  if (!name || name.endsWith('.')) return '';
-  const visibleName = name.replace(/^\.+/, '');
-  const dotIndex = visibleName.indexOf('.');
-  return dotIndex >= 0 ? visibleName.slice(dotIndex) : '';
-}
-
-function _apiLockAddPath(paths, value) {
-  const text = String(value || '').trim();
-  if (text) paths.push(text);

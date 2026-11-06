@@ -1014,13 +1014,14 @@ function bdParseMd(raw) {
   // ノード解析: # で始まる行 = ノード
   const nodes = []; let cur = null;
   for (const line of raw.split('\n')) {
-    const hm = line.match(/^#\s+(.*)/);
+    // 本文末尾のtrimで「# 」が「#」になっても空トピックを復元する。
+    const hm = line.match(/^#(?:[ \t]+(.*)|$)/);
     if (hm) {
       if (cur) nodes.push(cur);
       const nid = 'n' + nodes.length;
       const pos = positions[nid] || {x: 100 + nodes.length * 200, y: 100 + (nodes.length % 4) * 120};
       const sz = sizes[nid] || {};
-      const heading = hm[1];
+      const heading = hm[1] || '';
       const isImg = heading.startsWith('[img]');
       const text = isImg ? '' : heading.replace(/^\\(\[img\])/, '$1');
       cur = bdNode(text, pos.x, pos.y, sz.w||160, sz.h||0, { id: nodeIds[nid] || undefined, img: isImg ? heading.replace('[img]','').trim() : '', parent: '', structure: '' });

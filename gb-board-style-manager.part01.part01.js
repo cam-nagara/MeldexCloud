@@ -243,6 +243,8 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
     else if (field === 'fontSize') style._userFontSize = true;
     else if (field === 'fontBold') style._userFontBold = true;
   };
+  const alphaKey = { bgColor: 'bgOpacity', borderColor: 'borderOpacity', color: 'colorOpacity' }[field];
+  if (alphaKey) style[alphaKey] = 1;
   if (field === 'fontFamily') {
     style.fontFamily = _bdNormalizeFontFamily(value);
     return;
@@ -908,14 +910,8 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
     // 並び順: 背景色 → 背景不透明度 → 枠線色 → 枠線不透明度 → 文字色 → 文字フチ色。
     // 文字色・文字フチ色スウォッチは背景を bgColor に揃え、実際の見え方をプレビュー。
     const row1 = fmt.makeRow({ wrap: true });
-    row1.appendChild(tag('bgColor')(fmt.makeSwatchBg({ title: '背景色', color: style.bgColor || '', onPick: (c) => setField('bgColor', c) })));
-    const bgOpacityInp = fmt.makeNumInput({ title: '背景不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.bgOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('bgOpacity', v == null ? 100 : v) });
-    tag('bgOpacity')(bgOpacityInp);
-    row1.appendChild(fmt.makeGroup([fmt.makeLabel('背景'), bgOpacityInp, fmt.makeLabel('%')]));
-    row1.appendChild(tag('borderColor')(fmt.makeSwatchBg({ title: '枠線色', color: style.borderColor || '', onPick: (c) => setField('borderColor', c) })));
-    const borderOpacityInp = fmt.makeNumInput({ title: '枠線不透明度', value: Math.round(_bdNormalizeStyleOpacity(style.borderOpacity, 1) * 100), min: 0, max: 100, onChange: (v) => setField('borderOpacity', v == null ? 100 : v) });
-    tag('borderOpacity')(borderOpacityInp);
-    row1.appendChild(fmt.makeGroup([fmt.makeLabel('枠線'), borderOpacityInp, fmt.makeLabel('%')]));
+    row1.appendChild(tag('bgColor')(fmt.makeSwatchBg({ title: '背景色', color: _bdColorWithOpacity(style.bgColor || '', style.bgOpacity), onPick: (c) => setField('bgColor', c) })));
+    row1.appendChild(tag('borderColor')(fmt.makeSwatchBg({ title: '枠線色', color: _bdColorWithOpacity(style.borderColor || '', style.borderOpacity), onPick: (c) => setField('borderColor', c) })));
     row1.appendChild(tag('textColor')(fmt.makeSwatchText({ title: '文字色', color: style.textColor || '', iconName: 'type', bgColor: style.bgColor || '', onPick: (c) => setField('textColor', c) })));
     row1.appendChild(tag('textStrokeColor')(fmt.makeSwatchText({ title: '文字フチ色', color: style.textStrokeColor || '', iconName: 'typeOutline', bgColor: style.bgColor || '', onPick: (c) => setField('textStrokeColor', c) })));
     row1.appendChild(tag('fontBold')(fmt.makeToggle({ html: '<b>B</b>', title: '太字', active: !!style.fontBold, onToggle: (on) => setField('fontBold', on) })));

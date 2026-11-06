@@ -789,7 +789,8 @@
     if (raw === THEME_UI_VALUE_OS_ACCENT) return THEME_UI_VALUE_OS_ACCENT;
     if (raw === THEME_UI_VALUE_NONE || raw === '') return THEME_UI_VALUE_NONE;
     if (raw.startsWith(THEME_UI_VALUE_COLOR_PREFIX) || raw.startsWith('#')) {
-      const color = normalizeThemeColor(raw.startsWith(THEME_UI_VALUE_COLOR_PREFIX) ? raw.slice(THEME_UI_VALUE_COLOR_PREFIX.length) : raw);
+      const custom = raw.startsWith(THEME_UI_VALUE_COLOR_PREFIX) ? raw.slice(THEME_UI_VALUE_COLOR_PREFIX.length) : raw;
+      const color = /^#[0-9a-f]{8}$/i.test(custom) ? custom.toLowerCase() : normalizeThemeColor(custom);
       return color ? THEME_UI_VALUE_COLOR_PREFIX + color : THEME_UI_VALUE_NONE;
     }
     const index = parseInt(raw, 10);
@@ -897,4 +898,3 @@
     if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
       applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
       const apps = getThemeUiApplications();
-      const tone = getThemeUiAutoTone();

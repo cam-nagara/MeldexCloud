@@ -1,3 +1,22 @@
+        for (const target of editableContextItems) {
+          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
+        }
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
+      },
+      onDelete: deleteContextItems,
+      copyDisabled: contextOperationItems.length === 0,
+      cutDisabled: editableContextItems.length === 0,
+      pasteDisabled: !folderToolbarCanPasteTo(addParent),
+      duplicateDisabled: editableContextItems.length === 0,
+      deleteDisabled: editableContextItems.length === 0,
+    });
+    addSep();
+  }
+
+  if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
+    const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
+    if (topicSource) {
       window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
         addMenuItem(item.label, () => {
           closeTreeContextMenu();
@@ -48,7 +67,7 @@
     });
     if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
-        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
+        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
           openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },
@@ -114,6 +133,13 @@
   }
 
   // --- 編集ロック ---
+  if (!isMulti && window.MeldexFileIcons?.canEdit(nodeData) && !isItemLocked(nodeData.path)) {
+    addMenuItem('アイコンを変更', () => {
+      closeTreeContextMenu();
+      window.MeldexFileIcons.openPicker(nodeData, nodeEl.querySelector('.tree-icon') || nodeEl);
+    }, null, 'smile');
+    addSep();
+  }
   if (!isMulti && nodeData.path && !isEntity) {
     const locked = isItemLocked(nodeData.path);
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(nodeData.path);
@@ -872,29 +898,3 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
     for (const delay of _outlinerPostTimeoutConfirmDelays()) {
       await new Promise(r => setTimeout(r, delay));
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
-      const found = _outlinerFindNewItemInListing(items, type, existingNames);
-      if (found) {
-        if (onConfirmed) await onConfirmed(found);
-        _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
-        progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
-        return;
-      }
-    }
-    const message = '作成結果を確認できませんでした。重複を避けるため、再作成する前にフォルダを再読込してください';
-    if (progress) progress.fail({ error: message });
-    else showStatus(message, true);
-  } finally {
-    if (pendingNode?.parentNode) pendingNode.remove();
-    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
-      progress.fail({ error: '作成結果の確認を完了できませんでした' });
-    }
-    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
-  }
-}
-
-// アイテムを指定パス配下に追加（部分更新、チラつき防止）
-async function addItemAt(parentPath, type, options = {}) {
-  if (_isCloudPhase1BlockedCreateType(type)) {
-    _showCloudPhase1BlockedCreate(type);
-    return;
-  }

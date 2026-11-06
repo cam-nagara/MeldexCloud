@@ -257,6 +257,9 @@
       else { bd.zoom = 1; bd.panX = 0; bd.panY = 0; bd.rotation = 0; bdTransform(); showStatus('表示をリセット'); }
       return;
     }
+    // 追加・消しゴム・ラインの操作はpointerdown側で完結する。
+    // 削除でトピックのDOMが消えた後のdblclickを空白への追加として扱わない。
+    if (e.button !== 0 || (bd.tool || 'select') !== 'select') return;
     const ne = e.target.closest('.bd-node');
     if (ne) {
       const nid = ne.id.replace('bdn-','');

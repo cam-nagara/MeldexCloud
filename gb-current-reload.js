@@ -214,8 +214,6 @@
   }
 
   async function reloadCurrentOpenFile(event) {
-    const editor = window.GBEditorHost?.get();
-    if (editor?.reload) return editor.reload();
     const current = _currentTarget(event);
     if (!event || !DB_VIEW_TYPES.has(current.tab?.type)) return _reloadCurrentOpenFile(event, current);
     const key = _tabPath(current.tab);

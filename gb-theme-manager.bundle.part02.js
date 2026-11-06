@@ -1,3 +1,4 @@
+      const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
       dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
       dispatchThemeUiAutoToneChange({ tone, fromHistory: true });
@@ -897,4 +898,3 @@
     if (node.dataset?.connId || node.dataset?.bdNodeId) return true;
     if (node.closest?.('[data-bd-role="nodes"], [data-bd-role="svg"], [data-bd-role="resize-layer"]')) return true;
     if (node.ownerSVGElement?.getAttribute?.('data-bd-role') === 'svg') return true;
-    return false;

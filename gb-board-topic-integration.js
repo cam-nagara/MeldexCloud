@@ -634,11 +634,13 @@
   }
 
   function redraw() {
-    global.bdRender?.();
+    if (global._bdRenderKeepingDetailTab) global._bdRenderKeepingDetailTab();
+    else global.bdRender?.();
     global.bdDrawConns?.();
     global.bdDrawFrames?.();
     global.bdTransform?.();
-    global.bdSyncBoardUi?.(false);
+    // ビュー／保存結果の反映は選択操作ではない。選択中のオプションタブを維持する。
+    global.bdSyncBoardUi?.(true);
   }
 
   function switchView(board, boardViewId, options) {
@@ -769,6 +771,7 @@
       readOnly,
       listGroups: () => clone(active()?.groups || []),
       getGroup: (groupId) => clone(selectedGroup(groupId)),
+      getResolvedGroupStyle: (groupId) => clone(groupsApi.resolveGroupStyle(board.topicViewDocument, selectedGroup(groupId))),
       listGroupStyles: () => clone(groupsApi.normalizeGroupStyles(board.topicViewDocument).groupStyles),
       getGroupStyle: (groupStyleId) => clone(groupsApi.normalizeGroupStyles(board.topicViewDocument).groupStyles
         .find(style => style.groupStyleId === groupStyleId) || null),
@@ -906,6 +909,25 @@
 
   function groupStyleField(root, labelText, key, value, type, onChange) {
     const label = document.createElement('label'); label.textContent = labelText;
+    if (type === 'color') {
+      const swatch = document.createElement('button'); swatch.type = 'button';
+      swatch.className = 'gb-fmt-btn cs-swatch';
+      swatch.style.width = '32px'; swatch.style.height = '24px';
+      swatch.dataset.groupStyleField = key;
+      swatch.setAttribute('aria-label', labelText + 'を変更');
+      let color = value || '';
+      const refresh = () => {
+        if (typeof global.setColorSwatchValue === 'function') global.setColorSwatchValue(swatch, color);
+        else swatch.style.background = color;
+      };
+      refresh();
+      swatch.addEventListener('click', event => {
+        event.preventDefault();
+        global.openColorPalette(swatch, color, next => { color = next; refresh(); onChange(next); });
+      });
+      label.appendChild(swatch); root.appendChild(label);
+      return;
+    }
     const input = document.createElement('input'); input.type = type === 'opacity-percent' ? 'number' : (type || 'text');
     if (type === 'checkbox') input.checked = !!value;
     else if (type === 'opacity-percent') {
@@ -992,17 +1014,17 @@
       const section = global.MeldexBoardGroups.renderOptionsTab(optionsHost, group, {
         onChange: (groupId, changes) => { controller.updateGroup(groupId, changes); refreshAll(); },
       });
+      const effectiveStyle = controller.getResolvedGroupStyle(group.groupId);
       const applyStyle = (key, value) => {
         const current = controller.getGroup(group.groupId);
         controller.updateGroup(group.groupId, {
-          styleOverrides: { ...(current?.styleOverrides || {}), [key]: value },
+          styleOverrides: { ...(current?.styleOverrides || {}), [key]: value,
+            ...({ background: { backgroundOpacity: 1 }, borderColor: { borderOpacity: 1 } }[key] || {}) },
         });
       };
-      [['背景色', 'background', group.styleOverrides?.background, 'color'],
-        ['背景不透明度', 'backgroundOpacity', group.styleOverrides?.backgroundOpacity, 'opacity-percent'],
+      [['背景色', 'background', _bdColorWithOpacity(effectiveStyle.background, effectiveStyle.backgroundOpacity), 'color'],
         ['透明度', 'opacity', group.styleOverrides?.opacity, 'number'],
-        ['枠色', 'borderColor', group.styleOverrides?.borderColor, 'color'],
-        ['枠線不透明度', 'borderOpacity', group.styleOverrides?.borderOpacity, 'opacity-percent'],
+        ['枠色', 'borderColor', _bdColorWithOpacity(effectiveStyle.borderColor, effectiveStyle.borderOpacity), 'color'],
         ['枠幅', 'borderWidth', group.styleOverrides?.borderWidth, 'number'],
         ['線種', 'borderStyle', group.styleOverrides?.borderStyle, 'text'],
         ['角丸', 'borderRadius', group.styleOverrides?.borderRadius, 'number'],
@@ -1041,14 +1063,15 @@
       styleFields.replaceChildren();
       if (!selected) return;
       const updateVisual = (key, value) => controller.updateGroupStyle(selected.groupStyleId, {
-        visualStyle: { ...(controller.getGroupStyle(selected.groupStyleId)?.visualStyle || {}), [key]: value },
+        visualStyle: { ...(controller.getGroupStyle(selected.groupStyleId)?.visualStyle || {}), [key]: value,
+          ...({ background: { backgroundOpacity: 1 }, borderColor: { borderOpacity: 1 } }[key] || {}) },
       });
-      [['背景色', 'background', 'color'], ['背景不透明度', 'backgroundOpacity', 'opacity-percent'], ['透明度', 'opacity', 'number'], ['枠色', 'borderColor', 'color'], ['枠線不透明度', 'borderOpacity', 'opacity-percent'],
+      [['背景色', 'background', 'color'], ['透明度', 'opacity', 'number'], ['枠色', 'borderColor', 'color'],
         ['枠幅', 'borderWidth', 'number'], ['線種', 'borderStyle', 'text'], ['角丸', 'borderRadius', 'number'],
         ['影', 'shadow', 'text'], ['内側余白', 'padding', 'number'], ['ラベル色', 'labelColor', 'color'],
         ['ラベルサイズ', 'labelFontSize', 'number'], ['ラベルフォント', 'labelFontFamily', 'text'],
         ['ラベル太字', 'labelBold', 'checkbox']]
-        .forEach(([label, key, type]) => groupStyleField(styleFields, label, key, selected.visualStyle?.[key], type,
+        .forEach(([label, key, type]) => groupStyleField(styleFields, label, key, (type === 'color' && ['background','borderColor'].includes(key) ? _bdColorWithOpacity(selected.visualStyle?.[key], selected.visualStyle?.[key === 'background' ? 'backgroundOpacity' : 'borderOpacity']) : selected.visualStyle?.[key]), type,
           value => { updateVisual(key, value); refreshAll(); }));
     };
     const refreshAll = () => {
@@ -1302,9 +1325,16 @@
   function mountToolbar(board) {
     commitPendingEdits(board);
     const boardRoot = global._bdToolbarRoot?.();
-    const desktopRoot = boardRoot?.nodeType === 1
+    const desktopToolbar = boardRoot?.nodeType === 1
       ? (boardRoot.querySelector?.('[data-bd-role="toolbar-top"]') || boardRoot)
       : null;
+    let desktopRoot = boardRoot?.querySelector?.('[data-bd-role="view-tabs"]') || null;
+    if (!desktopRoot && desktopToolbar?.parentElement) {
+      desktopRoot = global.document.createElement('div');
+      desktopRoot.className = 'bd-view-tabs-row';
+      desktopRoot.dataset.bdRole = 'view-tabs';
+      desktopToolbar.after(desktopRoot);
+    }
     const mobileRoot = global.document?.getElementById?.('cloud-mobile-boardbar') || null;
     const views = global.MeldexBoardTopicViews;
     const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
@@ -1346,11 +1376,6 @@
       if (root === mobileRoot) {
         attached.root.dataset.bdTopicViewMobile = '1';
         root.prepend(attached.root);
-      }
-      if (root === desktopRoot && global.MeldexToolbarOverflow?.setup) {
-        const overflow = global.MeldexToolbarOverflow.setup({ toolbar: root });
-        global.MeldexToolbarOverflow.setup({ toolbar: root,
-          keep: [...new Set([...(overflow?.keep || []), '[data-bd-topic-view-controls]'])] });
       }
       toolbars.push(attached);
     });

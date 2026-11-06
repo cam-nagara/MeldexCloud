@@ -1020,8 +1020,6 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const fallbackDbPath = typeof state !== 'undefined' ? state.currentDbPath : '';
   const dbPath = options.dbPath || fallbackDbPath || '';
   const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
-  const editorCtx = target?.closest?.('[data-editor-host]')?._dbPaneContext;
-  if (editorCtx && !editorCtx.destroyed) return editorCtx;
   const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
   const embeddedCtx = embeddedEl?._dbPaneContext;
   if (embeddedCtx && !embeddedCtx.destroyed) return embeddedCtx;

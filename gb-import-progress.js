@@ -29,7 +29,7 @@
 
   function _jobLabel(job) {
     const kind = _kindLabel(job?.kind);
-    return job?.label ? kind + ': ' + job.label : kind;
+    return job?.label && job.label !== kind ? kind + ': ' + job.label : kind;
   }
 
   function _activeJobs(jobs) {
@@ -65,6 +65,7 @@
       handle = api.begin({
         id: 'job-' + jobId,
         kind: String(job.kind || 'import'),
+        settingsPanel: String(job.kind || '').startsWith('x-bookmark') ? 'Xブックマーク' : '',
         label: _jobLabel(job),
         phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
         status: activeStatus,
@@ -146,9 +147,9 @@
         return;
       }
       entry.handle = entry.handle || _syncJob(job);
-      const values = { summary: result.summary || '取り込みが完了しました', details: result.failure_samples || result.failures || [] };
-      if (result.ok === false) entry.handle.fail({ error: result.error || result.message || '取り込みに失敗しました', ...values });
-      else if (['failed', 'errors', 'failed_assets', 'conflicts', 'blocked', 'unsupported', 'unprocessed', 'media_failed', 'author_icon_failed', 'translation_pending_existing', 'translation_pending_replies', 'reply_unavailable', 'reference_unavailable'].some(key => Number(result[key]) > 0) || result.folder_error || result.warnings?.length) entry.handle.partial({ ...values, summary: result.summary || '取り込みが終了しました。確認が必要な項目があります。' });
+      const values = window.describeImportResult(result);
+      if (result.ok === false) entry.handle.fail({ ...values, error: result.error || result.message || '取り込みに失敗しました' });
+      else if (values.partial) entry.handle.partial(values);
       else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
     } else if (job?.status === 'cancelled' || job?.status === 'canceled') {

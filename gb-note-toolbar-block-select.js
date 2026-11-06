@@ -71,8 +71,8 @@
     return defs;
   }
 
-  function _trigger() { return (global.GBEditorHost?.element(TRIGGER_ID) || document.getElementById(TRIGGER_ID)); }
-  function _pageContent() { return (global.GBEditorHost?.element(TOOLBAR_HOST_ID) || document.getElementById(TOOLBAR_HOST_ID)); }
+  function _trigger() { return document.getElementById(TRIGGER_ID); }
+  function _pageContent() { return document.getElementById(TOOLBAR_HOST_ID); }
 
   // ============================================================
   // 現在の行種の解決（キャレット追従・要件4）
@@ -120,6 +120,9 @@
   document.addEventListener('selectionchange', function () {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(_syncTriggerLabel);
     else _syncTriggerLabel();
+  });
+  document.addEventListener('input', function (e) {
+    if (e.target === _pageContent()) _syncTriggerLabel();
   });
   document.addEventListener('focusin', function (e) {
     if (e.target && e.target.id === TOOLBAR_HOST_ID) _syncTriggerLabel();

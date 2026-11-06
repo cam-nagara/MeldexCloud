@@ -1,3 +1,29 @@
+    const rect = scroller.getBoundingClientRect();
+    startX = e.clientX - rect.left + scroller.scrollLeft;
+    startY = e.clientY - rect.top + scroller.scrollTop;
+    startClientX = e.clientX;
+    startClientY = e.clientY;
+  });
+
+  scroller.addEventListener('pointermove', (e) => {
+    if (!tracking) return;
+    const distance = Math.max(Math.abs(e.clientX - startClientX), Math.abs(e.clientY - startClientY));
+    if (!active && distance < LASSO_DRAG_THRESHOLD) return;
+    beginLasso(e);
+    const rect = _outlinerLassoRectForEvent(e);
+    const { left, top, width, height } = rect;
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
+    box.style.width = width + 'px';
+    box.style.height = height + 'px';
+    updateSelection(rect);
+    e.preventDefault();
+  });
+  scroller.addEventListener('pointerup', endLasso);
+  scroller.addEventListener('pointercancel', endLasso);
+})();
+
+function _readOutlinerDroppedFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = ev => resolve(ev.target.result);

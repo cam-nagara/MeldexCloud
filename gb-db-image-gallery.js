@@ -34,10 +34,10 @@ function _imagePropOptions(ptc) {
   };
 }
 
-function _imagePropCellSize(ptc) {
+function _imagePropCellSize(ptc, viewType) {
   const opts = ptc?.options || {};
   const thumbSize = Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256));
-  const raw = opts.cell_height ?? opts.cell_thumbnail_size;
+  const raw = opts.view_thumbnail_sizes?.[viewType] ?? opts.cell_height ?? opts.cell_thumbnail_size;
   return Math.max(32, Math.min(320, parseInt(raw, 10) || Math.min(96, thumbSize)));
 }
 
@@ -448,12 +448,12 @@ function _imagePropOpenPath(item) {
 }
 
 function openImagePropertyItemInViewer(item, options = {}) {
-  const sheetContext = window.MeldexViewerSheetContext?.create?.({
+  const sheetContext = options.entityPath && options.propName ? window.MeldexViewerSheetContext?.create?.({
     item,
     entityPath: options.entityPath,
     propName: options.propName,
     ctx: options.ctx,
-  });
+  }) : null;
   const sheetViewerUrl = sheetContext
     ? window.MeldexViewerSheetContext.viewerUrl(sheetContext)
     : '';
@@ -466,14 +466,12 @@ function openImagePropertyItemInViewer(item, options = {}) {
       : null) || _attachmentKind(item);
     // シートの表示状態（スクロール位置・表示中のビュー）を戻る履歴へ積んでから画像を開く。
     // DB行ダブルクリック（_handleTbodyDblclick）と同一パターン（②タブ別ナビ履歴、2026-07-21）。
-    // _navPushWithViewState の既定フォールバック（_currentPaneState()）は旧split専用の
-    // gb-pane-context.js 由来で、現行のペイン/タブ体系には存在しないペインID 'main' を
-    // 返すため、履歴が対象タブへ積まれない（legacy側の未使用履歴へ迷子になる）。
-    // ここでは現在アクティブなペインIDを明示して渡す（dbPathはstate.currentDbPathへの
-    // 内蔵フォールバックに委ねる）。
+    // 履歴の対象ペインと、まだ表示中のシートDOMから直前の位置を取得する。
+    // 旧split用の既定ctx（paneId='main'）へフォールバックして別履歴へ保存しない。
     if (typeof _navPushWithViewState === 'function') {
       const activePaneId = (typeof GBLayout !== 'undefined' && GBLayout.activePane) ? GBLayout.activePane : null;
-      _navPushWithViewState(activePaneId ? { paneId: activePaneId } : null, null);
+      if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(activePaneId);
+      else _navPushWithViewState(options.ctx || (activePaneId ? { paneId: activePaneId } : null), null);
     }
     if (typeof openMedia === 'function') {
       openMedia(label, imagePath, mediaType, sheetViewerUrl ? { viewerUrl: sheetViewerUrl } : undefined);
@@ -506,8 +504,8 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
   const wrap = document.createElement('div');
   wrap.className = 'gb-image-cell';
   if (options.cardPreview) wrap.classList.add('gb-image-cell-card-preview');
-  const imageOptions = _imagePropOptions(ptc);
-  wrap.style.setProperty('--gb-image-cell-size', imageOptions.cellSize + 'px');
+  const viewType = options.viewType || options.ctx?.viewMode || (options.cardPreview ? 'timeline' : 'pivot');
+  wrap.style.setProperty('--gb-image-cell-size', _imagePropCellSize(ptc, viewType) + 'px');
   const items = parseImagePropertyValue(val?.value);
   const configuredCount = typeof _normalizeDbCardImageThumbCount === 'function'
     ? _normalizeDbCardImageThumbCount(options.imagePreviewCount)

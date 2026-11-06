@@ -1,7 +1,6 @@
-function updateNoteToc(editor) {
-  const pc = editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
-  const toc = editor ? editor.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="note-toc"],#note-toc')
-    : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
+function updateNoteToc() {
+  const pc = document.getElementById('page-content');
+  const toc = document.getElementById('note-toc');
   if (!pc || !toc) return;
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
@@ -247,6 +246,7 @@ function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTy
       valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
         entityData: data.properties,
         propTypes,
+        viewType: options.viewType,
         readOnly: options.readOnly === true,
       });
     } else if (typeof createValueElement === 'function') {
@@ -310,7 +310,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
@@ -988,21 +988,17 @@ function _restoreCustomUndoSelection(editable, snapshot) {
 function _resetCustomUndo(editable) {
   editable._customUndoStack = []; editable._customRedoStack = [];
   editable._lastCustomOp = false; editable._customUndoInputPending = false;
-  editable._customUndoDocument = _customUndoDocumentIdentity(editable);
-}
-function _customUndoDocumentIdentity(editable) {
-  return JSON.stringify([editable.dataset.path || editable.dataset.entityPath || globalThis.GBEditorHost?.ownerOf?.(editable)?.path || '', editable._openPageLoadSeq]);
+  editable._customUndoDocument = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
 }
 function _ensureCustomUndoDocument(editable) {
-  const identity = _customUndoDocumentIdentity(editable);
+  const identity = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
   if (editable._customUndoDocument !== identity) _resetCustomUndo(editable);
 }
-function _customUndoPush(stack, editable, snapshot = null) {
+function _customUndoPush(stack, editable) {
   const selections = _customUndoSelections.get(stack) || [];
   selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
-  const html = snapshot ? snapshot.html : editable.innerHTML;
-  stack.push(html);
-  selections.push({ html, selection: snapshot ? snapshot.selection : _customUndoSelection(editable) });
+  stack.push(editable.innerHTML);
+  selections.push({ html: editable.innerHTML, selection: _customUndoSelection(editable) });
   if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
   _customUndoSelections.set(stack, selections);
 }
@@ -1030,61 +1026,6 @@ function _customUndoHost(node) {
   return host;
 }
 let _customUndoInProgress = false;
-const _scopedNoteUndoStates = new WeakMap();
-function _scopedNoteUndoState(editable) {
-  if (!editable || globalThis.GBEditorHost?.ownerOf?.(editable)?.kind !== 'page') return null;
-  _ensureCustomUndoDocument(editable);
-  let value = _scopedNoteUndoStates.get(editable);
-  if (!value || value.stack !== editable._customUndoStack) {
-    value = { stack: editable._customUndoStack, html: editable.innerHTML,
-      selection: _customUndoSelection(editable), kind: '', time: 0, after: null, pending: null, composing: false };
-    _scopedNoteUndoStates.set(editable, value);
-  }
-  return value;
-}
-function _syncScopedNoteUndoState(editable, value, kind = '') {
-  if (!value) return;
-  value.html = editable.innerHTML;
-  value.selection = _customUndoSelection(editable);
-  value.after = value.selection;
-  value.kind = kind;
-  value.time = Date.now();
-  value.pending = null;
-}
-document.addEventListener('focusin', event => {
-  _scopedNoteUndoState(_customUndoHost(event.target));
-}, true);
-document.addEventListener('selectionchange', () => {
-  const editable = _customUndoHost(document.activeElement);
-  const value = _scopedNoteUndoState(editable);
-  if (value && !value.pending) value.selection = _customUndoSelection(editable);
-});
-document.addEventListener('beforeinput', event => {
-  const editable = _customUndoHost(event.target);
-  const value = _scopedNoteUndoState(editable);
-  if (!value) return;
-  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
-    event.preventDefault();
-    _applyCustomUndo(editable, event.inputType === 'historyRedo');
-    return;
-  }
-  value.pending = { html: editable.innerHTML, selection: _customUndoSelection(editable) };
-}, true);
-document.addEventListener('compositionstart', event => {
-  const value = _scopedNoteUndoState(_customUndoHost(event.target));
-  if (value) { value.composing = true; value.kind = ''; }
-}, true);
-document.addEventListener('compositionend', event => {
-  const editable = _customUndoHost(event.target);
-  const value = _scopedNoteUndoState(editable);
-  if (!value) return;
-  value.composing = false;
-  if (value.kind === 'composition' && editable._customUndoStack.at(-1) === editable.innerHTML) {
-    _customUndoPop(editable._customUndoStack);
-    editable._lastCustomOp = editable._customUndoStack.length > 0;
-    value.kind = '';
-  }
-}, true);
 function _applyCustomUndo(editable, redo) {
   if (!editable || !editable.isContentEditable) return false;
   _ensureCustomUndoDocument(editable);
@@ -1107,34 +1048,18 @@ document.addEventListener('keydown', function(e) {
   const key = String(e.key).toLowerCase();
   if (key !== 'z' && key !== 'y') return;
   const editable = _customUndoHost(document.activeElement);
-  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey)) || _scopedNoteUndoState(editable)) e.preventDefault();
+  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey))) e.preventDefault();
 }, true);
 
 // Undo後の通常入力は古いRedoを破棄する。コールアウト内部からのinputも同じ文書へ集約する。
 document.addEventListener('input', function(e) {
+  if (_customUndoInProgress) return;
   const editable = _customUndoHost(e.target);
   if (!editable) return;
   _ensureCustomUndoDocument(editable);
-  const scoped = _scopedNoteUndoState(editable);
-  if (_customUndoInProgress) { _syncScopedNoteUndoState(editable, scoped); return; }
   if (editable._customUndoInputPending) {
     editable._customUndoInputPending = false;
     editable._lastCustomOp = true;
-    _syncScopedNoteUndoState(editable, scoped);
-    return;
-  }
-  if (scoped) {
-    const before = scoped.pending || { html: scoped.html, selection: scoped.selection };
-    const kind = scoped.composing || e.isComposing || /Composition/.test(e.inputType || '') ? 'composition' : e.inputType || 'command';
-    const continuous = kind === scoped.kind && Date.now() - scoped.time < 750
-      && (kind === 'composition' || (['insertText', 'deleteContentBackward', 'deleteContentForward'].includes(kind)
-        && JSON.stringify(before.selection) === JSON.stringify(scoped.after)));
-    if (before.html !== editable.innerHTML) {
-      if (!continuous) _customUndoPush(editable._customUndoStack, editable, before);
-      editable._customRedoStack.length = 0;
-      editable._lastCustomOp = true;
-    }
-    _syncScopedNoteUndoState(editable, scoped, kind);
     return;
   }
   editable._customRedoStack.length = 0;
@@ -1167,8 +1092,6 @@ function rtCaptureSelectionFromToolbar() {
   const range = sel.getRangeAt(0).cloneRange();
   const editable = _rtSelectionEditable(range);
   if (!editable) return false;
-  const host = window.GBEditorHost?.get();
-  if (host?.kind === 'page' && !host.root.contains(editable)) return false;
   rtSavedSelection = range;
   rtTarget = editable;
   return true;
@@ -1248,6 +1171,11 @@ function _rtClearNoteTitleAtSelection(editable) {
 function _rtApplyNoteTitle() {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
+  if (window.MeldexNoteBlockTypes) {
+    return window.MeldexNoteBlockTypes.convertCurrentLineTo('h1', { editable, force: true,
+      afterConvert: ({ newRoot }) => { newRoot.classList.add('note-title'); newRoot.dataset.noteTitle = '1'; },
+    });
+  }
   if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
   let block = _rtBlockAtSelection(editable);
   if (!block) {
@@ -1265,8 +1193,14 @@ function _rtApplyNoteTitle() {
 function rtCmd(cmd, value) {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
-  if (cmd === 'undo' || cmd === 'redo') {
-    if (_applyCustomUndo(editable, cmd === 'redo') || _scopedNoteUndoState(editable)) return;
+  if ((cmd === 'undo' || cmd === 'redo') && _applyCustomUndo(editable, cmd === 'redo')) return;
+  const blockType = cmd === 'insertUnorderedList' ? 'ul' : cmd === 'insertOrderedList' ? 'ol'
+    : cmd === 'formatBlock' ? (/^h[1-6]$/i.test(value || '') ? String(value).toLowerCase() : /^(p|div)$/i.test(value || '') ? 'body' : String(value || '').toLowerCase() === 'blockquote' ? 'quote' : '') : '';
+  if (blockType && window.MeldexNoteBlockTypes) {
+    const types = window.MeldexNoteBlockTypes;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    return types.convertSelectionTo(blockType, { editable, range, toggle: cmd.startsWith('insert') });
   }
   document.execCommand(cmd, false, value || null);
   if (cmd === 'formatBlock') _rtClearNoteTitleAtSelection(editable);
@@ -1305,8 +1239,7 @@ function rtHeading(tag) {
   }
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
-  document.execCommand('formatBlock', false, tag);
-  _rtClearNoteTitleAtSelection(editable);
+  return rtCmd('formatBlock', tag);
 }
 
 function showRtToolbar(show) {
@@ -1492,8 +1425,7 @@ function _calloutImageOptions(editable, isCurrent) {
 }
 
 function insertNoteTable(rows = 3, cols = 3) {
-  const editable = _rtEnsureEditableSelection()
-                || document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
+  const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
                 || document.getElementById('page-content');
   if (!editable) return;
   editable.focus();

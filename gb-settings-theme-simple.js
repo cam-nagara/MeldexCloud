@@ -48,9 +48,9 @@ function settingsThemeSimpleSelections() {
   return Object.fromEntries(SETTINGS_SIMPLE_THEME_FIELDS.map(field => {
     const stored = getCssVar(`--simple-theme-${field.id}`).trim();
     const matchesCurrent = document.documentElement.style.getPropertyValue(field.key).trim() === _settingsSimpleResolve(stored);
-    const hex = parseColorToHexAlpha(getCssVar(field.key)).hex;
-    return [field.id, /^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6})$/i.test(stored) && matchesCurrent
-      ? stored : `color:${/^#[0-9a-f]{6}$/i.test(hex || '') ? hex : field.fallback}`];
+    const custom = _themeUiCustomValue(getCssVar(field.key)) || `color:${field.fallback}`;
+    return [field.id, /^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6}(?:[0-9a-f]{2})?)$/i.test(stored) && matchesCurrent
+      ? stored : custom];
   }));
 }
 
@@ -194,9 +194,9 @@ function settingsThemeApplySimpleColors(overrides = {}) {
   const selections = { ...settingsThemeSimpleSelections() };
   for (const [id, value] of Object.entries(overrides)) {
     if (!(id in selections)) return false;
-    selections[id] = /^#[0-9a-f]{6}$/i.test(value) ? `color:${value}` : value;
+    selections[id] = /^#(?:[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value) ? `color:${value}` : value;
   }
-  if (Object.values(selections).some(value => !/^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6})$/i.test(value))) return false;
+  if (Object.values(selections).some(value => !/^(?:none|os-accent|auto(?:-light|-dark)?|auto-rows:[1-4](?:,[1-4])*|[0-7]|color:#[0-9a-f]{6}(?:[0-9a-f]{2})?)$/i.test(value))) return false;
   const colors = Object.fromEntries(Object.entries(selections).map(([id, value]) => [id, _settingsSimpleResolve(value)]));
   const manager = MeldexThemeManager;
   const changed = new Set(Object.keys(overrides));
@@ -342,8 +342,7 @@ function bindSettingsSimpleThemeEditor(root) {
     openColorPalette(button, settingsThemeSimpleValues()[id], (color, metadata) => {
       if (metadata?.osAccentTone === 'base') apply('os-accent');
       else if (metadata?.preset?.row === 3 && metadata.preset.themeSlot) apply(String(metadata.preset.index));
-      else if (color === 'transparent') apply('none');
-      else { const hex = parseColorToHexAlpha(color).hex; if (/^#[0-9a-f]{6}$/i.test(hex || '')) apply(`color:${hex}`); }
+      else { const custom = _themeUiCustomValue(color); if (custom) apply(custom); }
     }, { themeUi: {
       getRows: rows,
       onRowsChange: selected => apply(selected.length ? `auto-rows:${selected.join(',')}` : 'none'),

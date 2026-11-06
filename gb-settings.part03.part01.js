@@ -398,7 +398,7 @@ function bindThemeUiApplicationEditor(root) {
         (color, metadata) => {
           if (metadata?.osAccentTone === 'base') apply('os-accent');
           else if (metadata?.preset?.row === 3 && metadata.preset.themeSlot) apply(String(metadata.preset.index));
-          else apply(color === 'transparent' ? 'none' : _themeUiCustomValue(color));
+          else apply(_themeUiCustomValue(color) || 'none');
         }, { themeUi: {
           getRows: rows,
           onRowsChange: selected => apply(selected.length ? `auto-rows:${selected.join(',')}` : 'none'),
@@ -724,27 +724,7 @@ function openStylePreviewPopup(previewEl) {
 }
 
 function openCsPaletteRgba(swatchEl, key) {
-  if (_settingsThemeIsReadonlyElement(swatchEl)) {
-    _settingsThemePromptDuplicateForEdit();
-    return;
-  }
-  const curHex = swatchEl.dataset.hex || '#000000';
-  const slider = document.querySelector(`.cs-alpha[data-key="${key}"]`);
-  const curAlpha = slider ? parseFloat(slider.value) / 100 : 1;
-  const curColor = hexAlphaToRgba(curHex, curAlpha);
-  // パレットはα非対応になったため純hexか'transparent'を返す。αは外部スライダーで維持する。
-  openColorPalette(swatchEl, curColor, (color) => {
-    const sw = document.querySelector(`.cs-swatch[data-key="${key}"]`);
-    const sl = document.querySelector(`.cs-alpha[data-key="${key}"]`);
-    if (color === 'transparent') {
-      if (sl) { sl.value = 0; globalThis.GBUI?.refreshRangeFill?.(sl); if (sl.nextElementSibling) sl.nextElementSibling.textContent = '0%'; }
-      if (sw) setColorSwatchValue(sw, 'transparent');
-      setColorSetting(key, 'transparent');
-    } else {
-      if (sw) sw.dataset.hex = color;
-      updateBgFromSwatchAlpha(key);
-    }
-  });
+  openCsPalette(swatchEl, key);
 }
 
 function updateCsSwatch(key, color) {

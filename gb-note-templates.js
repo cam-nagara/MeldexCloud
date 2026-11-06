@@ -68,7 +68,7 @@
     });
   }
   async function show(options = {}) {
-    const editor = options.editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+    const editor = options.editor || document.getElementById('page-content');
     const path = editor?.dataset.path;
     // Capture the source before the asynchronous library read can switch the active file.
     const sourceContent = options.registerCurrent && editor ? currentContent(editor) : '';

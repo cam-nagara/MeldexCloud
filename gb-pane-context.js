@@ -350,8 +350,6 @@ function _globalPaneState() {
 }
 
 function _currentPaneState() {
-  const editorCtx = globalThis.GBEditorHost?.get()?.ctx;
-  if (editorCtx && !editorCtx.destroyed) return editorCtx;
   if (_activePane) return _activePane;
   return _globalPaneState();
 }

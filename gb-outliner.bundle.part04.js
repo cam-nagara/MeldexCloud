@@ -1,3 +1,22 @@
+  setTimeout(async () => {
+    if (!container.isConnected || container._outlinerLoadToken !== loadToken) return;
+    try {
+      const result = await window.GbTopicLiveBridge?.migrateOpenedSheet?.(item.path, { reason: 'outliner-expand' });
+      const refresh = () => {
+      if (result?.ok === false || !container.isConnected || container._outlinerLoadToken !== loadToken
+          || container.dataset.loaded !== 'true') return;
+      if (container.querySelector('input, [contenteditable="true"]')) {
+        container.addEventListener('focusout', () => setTimeout(refresh, 0), { once: true });
+        return;
+      }
+      const lastClickedPath = treeSelection.lastClicked?._nodeData?.path;
+      const restoreFocus = container.contains(document.activeElement);
+      const vr = window.GBOutlinerVirtualRender;
+      const currentItems = vr?.stateChildItemsFor?.(container, item.path)
+        || Array.from(container.querySelectorAll(':scope > .tree-node'), node => node._nodeData).filter(Boolean);
+      // A user rename/add/delete while migration was pending takes precedence.
+      if (signature(currentItems) !== initialSignature) return;
+      window.MeldexTopicPlacementUI?.projectSheetPivot?.(item.path, pivotData);
       const nextItems = _outlinerSheetTreeItems(item, pivotData);
       const byPath = new Map(currentItems.map(child => [child.path, child]));
       const nextPaths = new Set(nextItems.map(child => child.path));
@@ -879,22 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       onPaste: () => folderToolbarPasteToFolder(addParent),
       onDuplicate: async () => {
         let count = 0;
-        for (const target of editableContextItems) {
-          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
-        }
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
-      },
-      onDelete: deleteContextItems,
-      copyDisabled: contextOperationItems.length === 0,
-      cutDisabled: editableContextItems.length === 0,
-      pasteDisabled: !folderToolbarCanPasteTo(addParent),
-      duplicateDisabled: editableContextItems.length === 0,
-      deleteDisabled: editableContextItems.length === 0,
-    });
-    addSep();
-  }
-
-  if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
-    const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
-    if (topicSource) {

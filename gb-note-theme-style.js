@@ -79,6 +79,18 @@
     { label: 'ドラッグ中不透明度', numbers:[{ label:'不透明度', key:'--page-dragging-opacity', min:0, max:1, step:0.05, unit:'', slider:true, fallback:0.4 }], text:'0.4' },
   ];
 
+  for (const [kind, label] of [['ul', '箇条書き'], ['ol', '番号付きリスト']]) {
+    for (let level = 1; level <= 6; level++) {
+      const key = `--page-${kind}-${level}`;
+      NOTE_STYLE_ROWS.push({ label: `${label} 階層${level}`, fg: key + '-fg', bg: key + '-bg',
+        bold: key + '-bold', italic: key + '-italic', font: key + '-font', fontSize: key + '-font-size',
+        lineHeight: key + '-line-height', text: `${level}. リスト`, popupNumbers: [
+          { label: '前余白', key: key + '-space-before', min: 0, max: 64, step: 1, unit: 'px', fallback: 4 },
+          { label: '後余白', key: key + '-space-after', min: 0, max: 64, step: 1, unit: 'px', fallback: 4 },
+        ] });
+    }
+  }
+
   function registerNoteStyleRows() {
     if (typeof UI_STYLE_SECTIONS === 'undefined' || !Array.isArray(UI_STYLE_SECTIONS['ノート'])) return;
     const noteRows = UI_STYLE_SECTIONS['ノート'];

@@ -24,6 +24,9 @@
     );
     for (const node of candidates) {
       if (node === element || element.contains(node)) continue;
+      // 進捗はダイアログ外でも確認・中止できる最前面の予約レイヤー。
+      // これを基準にすると新しいダイアログが進捗を覆い、z-indexも上限へ張り付く。
+      if (node.closest('.meldex-operation-tray')) continue;
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
       if (!rect.width || !rect.height || style.display === 'none' || style.visibility === 'hidden') continue;

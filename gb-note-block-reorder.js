@@ -365,10 +365,19 @@
     if (!nbt) return;
     if (_handle && (e.target === _handle || _handle.contains(e.target))) return; // ハンドル上では現状維持
     if (_addButton?.contains(e.target)) return;
+    if (_hoverEditable?.isConnected && _hoverTargetBlock?.isConnected && _handle?.style.opacity === '1') {
+      const hr = _handle.getBoundingClientRect();
+      const ar = _addButton?.getBoundingClientRect() || hr;
+      const vertical = _axis(_hoverEditable).vertical;
+      const inBridge = vertical
+        ? e.clientX >= Math.min(hr.left, ar.left) - 4 && e.clientX <= Math.max(hr.right, ar.right) + 4 && e.clientY >= Math.min(hr.top, ar.top) - 4 && e.clientY <= hr.bottom + 28
+        : e.clientY >= Math.min(hr.top, ar.top) - 4 && e.clientY <= Math.max(hr.bottom, ar.bottom) + 4 && e.clientX >= Math.min(hr.left, ar.left) - 4 && e.clientX <= hr.right + 28;
+      if (inBridge) return;
+    }
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) { _hideHandle(); return; } // 工程7-8: viewer/ロック中は出さない
     // 修正1: 直接ブロック上でない場合（ガター/余白）は、Y座標から対応する行を探す。
-    const block = _blockUnderNode(editable, e.target) || (lr && lr.rowAtPoint(editable, _pointOf(e)));
+    const block = (lr && lr.rowAtPoint(editable, _pointOf(e))) || _blockUnderNode(editable, e.target);
     if (!block) return; // ブロック外（余白等）: 現状維持
     const handle = _ensureHandle();
     // ユーザー指示(2026-08-05): 行テキスト・空行へのホバーではハイライト枠を出さない
@@ -391,6 +400,15 @@
     const nbt = NBT();
     const lr = LR();
     if (!nbt) return;
+    if (_hoverEditable?.isConnected && _hoverTargetBlock?.isConnected && _handle?.style.opacity === '1') {
+      const hr = _handle.getBoundingClientRect();
+      const ar = _addButton?.getBoundingClientRect() || hr;
+      const vertical = _axis(_hoverEditable).vertical;
+      const inBridge = vertical
+        ? e.clientX >= Math.min(hr.left, ar.left) - 4 && e.clientX <= Math.max(hr.right, ar.right) + 4 && e.clientY >= Math.min(hr.top, ar.top) - 4 && e.clientY <= hr.bottom + 28
+        : e.clientY >= Math.min(hr.top, ar.top) - 4 && e.clientY <= Math.max(hr.bottom, ar.bottom) + 4 && e.clientX >= Math.min(hr.left, ar.left) - 4 && e.clientX <= hr.right + 28;
+      if (inBridge) return;
+    }
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) return;
     const t = e.touches && e.touches[0];

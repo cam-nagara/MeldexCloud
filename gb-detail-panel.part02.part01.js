@@ -129,6 +129,10 @@ function _fsResolveSections(ctx, spec) {
           { label: '見出し H5', fields: pick(['--page-h5-fg', '--page-h5-bg', '--page-h5-bold', '--page-h5-italic', '--page-h5-font']) },
           { label: '見出し H6', fields: pick(['--page-h6-fg', '--page-h6-bg', '--page-h6-bold', '--page-h6-italic', '--page-h6-font']) },
           { label: '本文',     fields: pick(['--page-text-fg', '--page-text-bold', '--page-text-italic', '--page-text-font']) },
+          ...['ul', 'ol'].flatMap(kind => Array.from({ length: 6 }, (_, i) => ({
+            label: `${kind === 'ul' ? '箇条書き' : '番号付きリスト'} 階層${i + 1}`,
+            fields: pick(['fg', 'bg', 'bold', 'italic', 'font', 'font-size', 'line-height', 'space-before', 'space-after'].map(suffix => `--page-${kind}-${i + 1}-${suffix}`)),
+          }))),
           { label: 'リンク',   fields: pick(['--page-link-fg', '--page-link-bold', '--page-link-italic']) },
           { label: '引用ブロック', fields: pick(['--page-quote-fg', '--page-quote-bg', '--page-quote-bold', '--page-quote-italic']) },
           { label: '区切り線', fields: pick(['--page-hr-color']) },

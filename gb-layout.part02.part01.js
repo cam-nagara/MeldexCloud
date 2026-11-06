@@ -171,7 +171,16 @@
     handle.className = 'gb-split-handle';
     handle.dataset.e2eId = `split-${node.id}-resize`;
     handle.dataset.splitId = node.id || '';
-    _setupResizeHandle(handle, node, split, first);
+    // レールを持たず幅0で閉じる列には、動かせない境界を残さない。
+    // 隣のsplitの境界が、表示中のパネル同士の幅調整を担当する。
+    const hiddenColumn = node.direction === 'horizontal' && node.children.some(child =>
+      child?.collapsed && ['chat-sidebar', 'subpanel-workspace'].includes(child.meldexRole));
+    if (hiddenColumn) {
+      handle.hidden = true;
+      handle.style.display = 'none';
+    } else {
+      _setupResizeHandle(handle, node, split, first);
+    }
     _setSplitHandleAnchor(handle, node.direction);
     _bindSplitHandleAnchor(handle, node.direction);
     if (!_showFreeLayoutUi()) {
