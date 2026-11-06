@@ -247557,7 +247557,7 @@ const GBPaneBridge = (() => {
         if (!isCurrentLoadJob()) return;
         // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
 
-        if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
+        if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || (typeof bd !== 'undefined' && bd.path !== path))) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
         // メインの folder-view とサブパネルの2つの面が同時に更新し得る単一のグローバル変数に
