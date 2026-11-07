@@ -1021,35 +1021,133 @@ function _chatBindImeCompositionGuard(inputId) {
   const input = document.getElementById(inputId);
   if (!input || input.dataset.chatImeGuardBound === '1') return;
   input.dataset.chatImeGuardBound = '1';
+  input.addEventListener('focus', updateChatShortcutHints);
   input.addEventListener('compositionstart', () => {
     input.dataset.chatImeComposing = '1';
+    input.dataset.chatImePendingEnter = '0';
   });
   input.addEventListener('compositionend', () => {
     input.dataset.chatImeComposing = '0';
-    input.dataset.chatLastCompositionEnd = String(Date.now());
+    input.dataset.chatImePendingEnter = '1';
+  });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.isComposing || event.keyCode === 229 || input.dataset.chatImeComposing === '1')) {
+      input.dataset.chatImeEnterDown = '1';
+    } else if (event.key !== 'Enter' && !event.isComposing && input.dataset.chatImeComposing !== '1') {
+      input.dataset.chatImePendingEnter = '0';
+    }
+  }, true);
+  input.addEventListener('keyup', event => {
+    if (event.key === 'Enter') input.dataset.chatImeEnterDown = '0';
+    if (!event.isComposing && input.dataset.chatImeComposing !== '1') input.dataset.chatImePendingEnter = '0';
+  });
+  input.addEventListener('pointerup', () => {
+    if (input.dataset.chatImeComposing !== '1') input.dataset.chatImePendingEnter = '0';
+  });
+  input.addEventListener('blur', () => {
+    input.dataset.chatImeComposing = '0';
+    input.dataset.chatImeEnterDown = '0';
+    input.dataset.chatImePendingEnter = '0';
   });
 }
 
 function _chatIsImeEnterEvent(event) {
-  const target = event?.target;
-  const lastEnd = Number(target?.dataset?.chatLastCompositionEnd || 0);
+  const target = event?.currentTarget?.dataset?.chatImeGuardBound === '1'
+    ? event.currentTarget : event?.target?.closest?.('[data-chat-ime-guard-bound="1"]') || event?.target;
   return !!(
     event?.isComposing ||
     event?.keyCode === 229 ||
     event?.which === 229 ||
     target?.dataset?.chatImeComposing === '1' ||
-    (lastEnd && Date.now() - lastEnd < 120)
+    target?.dataset?.chatImeEnterDown === '1' ||
+    (event?.key === 'Enter' && target?.dataset?.chatImePendingEnter === '1') ||
+    event?.repeat
   );
+}
+
+function _chatSendKeyMatches(event) {
+  return window.MeldexShortcutRegistry
+    ? window.MeldexShortcutRegistry.matchEvent(event, ['chat']) === 'chat.send'
+    : event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+function _chatListEnterEdit(text, start, end) {
+  const lineStart = start > 0 ? text.lastIndexOf('\n', start - 1) + 1 : 0;
+  const newline = text.indexOf('\n', start);
+  const lineEnd = newline < 0 ? text.length : newline;
+  const line = text.slice(lineStart, lineEnd);
+  const item = line.match(/^([ \t]*)([・●○◦▪■‣])([ \t]*)(.*)$/)
+    || line.match(/^([ \t]*)([-+*]|\d{1,9}[.)])([ \t]+|$)(.*)$/);
+  if (!item || start < lineStart + item[1].length + item[2].length) return null;
+  if (start !== end) return { start, end, text: '\n' };
+  if (!item[4].trim()) return { start: lineStart, end: lineEnd, text: '' };
+  const number = item[2].match(/^(\d+)([.)])$/);
+  const marker = number ? String(Number(number[1]) + 1) + number[2] : item[2];
+  return { start, end, text: '\n' + item[1] + marker + item[3] };
+}
+
+function _chatComposerKeyAction(event, text, start, end) {
+  const send = _chatSendKeyMatches(event);
+  if (event.key !== 'Enter' && !send) return null;
+  if (_chatIsImeEnterEvent(event)) return { kind: 'ime' };
+  const plainEnter = event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+  const listEdit = plainEnter ? _chatListEnterEdit(text, start, end) : null;
+  if (listEdit) return { kind: 'newline', edit: listEdit };
+  if (send) return { kind: 'send' };
+  if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return { kind: 'newline', edit: { start, end, text: '\n' } };
+  }
+  return null;
+}
+
+function _chatConsumeComposerKey(event, action) {
+  if (!action) return;
+  event.stopPropagation();
+  // Let the IME commit its own text, but suppress post-commit/repeated Enter.
+  const input = event.currentTarget;
+  if (action.kind !== 'ime' || (!event.isComposing && event.keyCode !== 229 && event.which !== 229
+      && input?.dataset?.chatImeComposing !== '1')) event.preventDefault();
+}
+
+function _chatHandlePlainComposerKey(event, send) {
+  const input = event.currentTarget;
+  const action = _chatComposerKeyAction(event, input.value, input.selectionStart, input.selectionEnd);
+  if (!action) return;
+  _chatConsumeComposerKey(event, action);
+  if (action.kind === 'send') send();
+  else if (action.kind === 'newline') {
+    input.setRangeText(action.edit.text, action.edit.start, action.edit.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function _chatSendShortcutTitle() {
+  const registry = window.MeldexShortcutRegistry;
+  const key = registry ? registry.keyFor('chat.send') : 'enter';
+  return key ? '送信 (' + (registry?.formatKey(key) || 'Enter') + ')' : '送信（ボタンのみ）';
+}
+
+function updateChatShortcutHints() {
+  const title = _chatSendShortcutTitle();
+  const registry = window.MeldexShortcutRegistry;
+  const newlineHint = registry?.normalizeKeyDef(registry.keyFor('chat.send')) === 'shift+enter'
+    ? 'Enterで改行' : 'Shift+Enterで改行';
+  for (const id of ['chat-input', 'team-input']) {
+    const input = document.getElementById(id);
+    if (input) input.placeholder = 'メッセージを入力... (' + title + '、' + newlineHint + ')';
+  }
+  const rich = document.getElementById('chat-rich-input');
+  if (rich) rich.dataset.placeholder = document.getElementById('chat-input')?.placeholder || '';
+  for (const id of ['chat-send-btn', 'team-send-btn']) {
+    const button = document.getElementById(id);
+    if (button && !button.disabled && button.textContent.trim() === '送信') button.title = title;
+  }
 }
 
 _chatBindImeCompositionGuard('team-input');
 _bindTeamClipboardPaste();
 document.getElementById('team-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    if (_chatIsImeEnterEvent(e)) return;
-    e.preventDefault();
-    teamSend();
-  }
+  _chatHandlePlainComposerKey(e, teamSend);
 });
 
 // textarea auto-grow（入力内容に合わせて高さを調整）
@@ -1076,6 +1174,8 @@ function _autoGrowTextarea(ta, minRows, maxRows) {
 }
 document.getElementById('team-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 8); });
 _chatBindImeCompositionGuard('chat-input');
+updateChatShortcutHints();
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', updateChatShortcutHints, { once: true });
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 

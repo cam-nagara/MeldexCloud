@@ -62,9 +62,10 @@
   }
 
   function _removeFormatPopup(popup, options) {
-    if (!popup) return;
-    if (typeof popup._gbFmtCleanup === 'function') popup._gbFmtCleanup();
+    if (!popup || popup._gbFmtClosing) return;
+    popup._gbFmtClosing = true;
     if (!(options && options.skipCommit)) _commitPendingFormatInputs(popup);
+    if (typeof popup._gbFmtCleanup === 'function') popup._gbFmtCleanup();
     popup.remove?.();
   }
 
@@ -101,7 +102,8 @@
   }
 
   function _setTextSwatchBg(btn, bgColor) {
-    btn.style.background = _isTransparentColor(bgColor) ? 'var(--bg)' : bgColor;
+    // 色見本は対象の背景ではなく、設定する色そのものを示す。
+    _setSwatchBg(btn, btn.dataset.fmtColor || '');
   }
 
   function _lucideOr(name, size, fallback) {
@@ -161,6 +163,7 @@
     btn.type = 'button';
     btn.className = 'gb-fmt-swatch gb-fmt-swatch-bg';
     btn.title = title || '背景色';
+    btn.setAttribute('aria-label', btn.title);
     let currentColor = initialColor || '';
     _setSwatchBg(btn, currentColor);
     _bindPressAction(btn, () => {
@@ -183,8 +186,9 @@
     btn.type = 'button';
     btn.className = 'gb-fmt-swatch gb-fmt-swatch-fg';
     btn.title = title || '文字色';
-    btn.innerHTML = _lucideOr(iconName || 'type', 14, 'T');
     let currentColor = initialColor || '';
+    btn.setAttribute('aria-label', btn.title);
+    btn.dataset.fmtColor = currentColor;
     btn.style.color = currentColor || 'var(--fg)';
     _setTextSwatchBg(btn, bgColor);
     _bindPressAction(btn, () => {
@@ -192,7 +196,9 @@
       openColorPalette(btn, currentColor || '', (color) => {
         const resolved = color || '';
         currentColor = resolved;
+        btn.dataset.fmtColor = resolved;
         btn.style.color = resolved || 'var(--fg)';
+        _setTextSwatchBg(btn);
         onPick(resolved);
       });
     });
@@ -248,6 +254,8 @@
     inp.defaultValue = inp.value;
     inp._gbFmtCommittedValue = inp.value;
     const commit = () => {
+      // onChange が再描画・ポップアップ終了を起こしても二重確定しない。
+      inp._gbFmtCommittedValue = inp.value;
       if (inp.value === '') {
         if (allowEmpty) { onChange(null); }
         else { onChange(Math.max(minV, Math.min(maxV, parseInt(inp.defaultValue, 10) || minV))); }
@@ -258,7 +266,6 @@
         const v = Math.max(minV, Math.min(maxV, raw));
         onChange(v);
       }
-      inp._gbFmtCommittedValue = inp.value;
     };
     inp._gbFmtCommit = () => {
       if (inp.value === inp._gbFmtCommittedValue) return;
@@ -406,6 +413,51 @@
    *   ラベルと選択肢の表記を縦書きの方向（水平⇔垂直、左右⇔上下）へ切り替える。保存値は変えない
    * @returns {HTMLElement} 生成されたポップアップ要素
    */
+  // 独自の書式編集にも同じヘッダー・用途ラベルを適用する。保存イベントは移植しない。
+  function decorateFormatPopup(popup, options = {}) {
+    if (!popup || popup.querySelector(':scope > .gb-fmt-popup-header')) return popup;
+    popup.setAttribute('role', 'dialog');
+    if (options.close) popup._requestClose = options.close;
+    const header = document.createElement('div');
+    header.className = 'gb-fmt-popup-header';
+    const heading = document.createElement('span');
+    heading.className = 'gb-fmt-popup-title';
+    heading.textContent = options.title || '書式設定';
+    popup.setAttribute('aria-label', heading.textContent);
+    const close = popup.querySelector('.gb-fmt-footer-close,[data-meldex-dropdown-close]') || document.createElement('button');
+    if (!close.parentElement) {
+      close.type = 'button';
+      close.innerHTML = _lucideOr('x', 14, '閉じる');
+      _bindPressAction(close, () => options.close ? options.close() : _removeFormatPopup(popup));
+    }
+    close.classList.add('gb-fmt-popup-close');
+    close.setAttribute('data-meldex-dropdown-close', '');
+    close.title = '閉じる';
+    close.setAttribute('aria-label', '閉じる');
+    header.append(heading, close);
+    popup.prepend(header);
+    popup.querySelectorAll('.meldex-dropdown-close-row:empty,.gb-fmt-footer-actions-row:empty').forEach(row => row.remove());
+    for (const swatch of popup.querySelectorAll('.gb-fmt-swatch')) {
+      // 独自生成の旧ポップアップにも色だけの見本を適用する。
+      swatch.replaceChildren();
+      if (swatch.classList.contains('gb-fmt-swatch-fg')) _setSwatchBg(swatch, 'fmtColor' in swatch.dataset ? swatch.dataset.fmtColor : swatch.style.color || '');
+      if (swatch.closest('.gb-style-field,.gb-fmt-color-pair,.sn2-bulk-row')) continue;
+      const pair = document.createElement('span');
+      pair.className = 'gb-fmt-popup-group gb-fmt-color-pair';
+      const label = _makeLabel(swatch.title || swatch.getAttribute('aria-label') || '色');
+      swatch.before(pair);
+      pair.append(label, swatch);
+    }
+    for (const row of popup.querySelectorAll(':scope > .gb-fmt-popup-row--text,:scope > .gb-fmt-popup-row--text-decoration,:scope > .gb-fmt-popup-row--decoration')) {
+      const label = document.createElement('div');
+      label.className = 'gb-fmt-section-title';
+      label.textContent = row.classList.contains('gb-fmt-popup-row--text') ? '文字・線' : row.classList.contains('gb-fmt-popup-row--text-decoration') ? '文字の装飾' : '背景・アクセント';
+      row.before(label);
+    }
+
+    return popup;
+  }
+
   function openFormatPopup(anchorEl, options) {
     options = options || {};
     closeAllFormatPopups();
@@ -427,6 +479,7 @@
     popup.className = POPUP_CLASS + (options.className ? ' ' + options.className : '');
     popup.setAttribute('role', 'dialog');
     popup.setAttribute('aria-modal', 'false');
+    popup._requestClose = () => _removeFormatPopup(popup);
     let outsideCloseHandler = null;
     let escapeCloseHandler = null;
     popup._gbFmtCleanup = () => {
@@ -434,6 +487,8 @@
       if (escapeCloseHandler) document.removeEventListener('keydown', escapeCloseHandler, true);
       outsideCloseHandler = null;
       escapeCloseHandler = null;
+      if (Array.isArray(options.content)) closeAllPalettePopups();
+      if (typeof options.onClose === 'function') options.onClose();
       popup._gbFmtCleanup = null;
     };
 
@@ -695,9 +750,22 @@
       }
     }
 
+    // 実際の部品を移動して使うスタイル編集も、位置補正・終了・確定処理を共有する。
+    if (Array.isArray(options.content)) options.content.forEach(el => { if (el) popup.appendChild(el); });
+    decorateFormatPopup(popup, options);
+
     // --- マウント + 位置決め ---
     document.body.appendChild(popup);
     const anchor = options.positionAnchor || anchorEl;
+    popup._gbFmtOwner = anchorEl;
+    if (Array.isArray(options.content) && anchorEl instanceof Element) {
+      const ownerObserver = new MutationObserver(() => {
+        if (!anchorEl.isConnected || !popup.isConnected) _removeFormatPopup(popup, { skipCommit:true });
+      });
+      ownerObserver.observe(document.body, { childList:true, subtree:true });
+      const previousCleanup = popup._gbFmtCleanup;
+      popup._gbFmtCleanup = () => { ownerObserver.disconnect(); previousCleanup?.(); };
+    }
     if (typeof positionPopup === 'function' && anchor) {
       positionPopup(popup, anchor.getBoundingClientRect(), {
         avoidRect: options.avoidRect || null,
@@ -710,7 +778,7 @@
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
         // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
-        if (document.querySelector('.gb-palette-popup')) return;
+        if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
         ev.preventDefault();
         ev.stopPropagation();
         closeAllPalettePopups();
@@ -724,7 +792,7 @@
       setTimeout(() => {
         if (!popup.isConnected) return;
         outsideCloseHandler = (ev) => {
-          if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup')) {
+          if (!popup.contains(ev.target) && !anchorEl?.contains?.(ev.target) && !ev.target.closest?.('.gb-palette-popup,.gb-palette')) {
             _removeFormatPopup(popup);
           }
         };
@@ -823,6 +891,13 @@
     makeCheckbox: _makeCheckbox,
     makeRow: _makeRow,
     makeResetBtn: _makeResetBtn,
+    decoratePopup: decorateFormatPopup,
+    closePopup: _removeFormatPopup,
+    closeOwnedPopups(root) {
+      for (const popup of document.querySelectorAll('.gb-fmt-popup')) {
+        if (root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
+      }
+    },
   };
 
   window.openFormatPopup = openFormatPopup;

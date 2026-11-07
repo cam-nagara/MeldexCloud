@@ -559,10 +559,13 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _showBulkEditPopup(panelContainer) {
-    if (!this._detailSelection?.size) return;
+    if (this._readOnly || !this._detailSelection?.size) return;
+    const ownerDocument = this.doc;
+    const selected = [...this._detailSelection].map(index => [index,this.doc.characters[index]]);
     const toolbar = this._detailBulkBar;
     const anchor = toolbar?.querySelector('.sn2-detail-bulk-btn:last-child') || toolbar;
-    document.querySelectorAll('.gb-fmt-popup--bulk-edit').forEach(el => el.remove());
+    if (!anchor) return;
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--bulk-edit';
     const e = MeldexEscape.html;
@@ -575,7 +578,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         </div>
         <div class="sn2-bulk-row">
           <label><input type="checkbox" data-bulk-check="textColor"> 文字色</label>
-          <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="textColor">T</button>
+          <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="textColor" title="文字色"></button>
         </div>
         <div class="sn2-bulk-row">
           <label><input type="checkbox" data-bulk-check="fontWeight"> 太字</label>
@@ -614,7 +617,7 @@ Object.assign(ScriptNoteEditor.prototype, {
             <label><input type="checkbox" data-bulk-check="ts_bgColor"> 背景</label>
             <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg" data-bulk-color="ts_bgColor"></button>
             <label><input type="checkbox" data-bulk-check="ts_textColor"> 文字</label>
-            <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="ts_textColor">T</button>
+            <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="ts_textColor" title="本文の文字色"></button>
             <label><input type="checkbox" data-bulk-check="ts_fontSize"> サイズ</label>
             <input type="number" class="sn2-bulk-input-num sn2-bulk-input-num--sm" data-bulk-val="ts_fontSize" value="" placeholder="14" min="8" max="48">
           </div>
@@ -651,6 +654,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     const mirrorToTextStyle = new Set(['bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'textBefore', 'textAfter']);
     // カラーピッカー（直接openColorPaletteを使用。適用前なので_refreshRowStylesは呼ばない）
     popup.querySelectorAll('[data-bulk-color]').forEach(btn => {
+      btn.title = btn.dataset.bulkColor.endsWith('bgColor') ? '背景色' : '文字色';
+      btn.setAttribute('aria-label',btn.title);
+      btn.dataset.fmtColor = '';
+      if (typeof setColorSwatchValue === 'function') setColorSwatchValue(btn,'');
       btn.addEventListener('click', () => {
         const prop = btn.dataset.bulkColor;
         const cb = popup.querySelector(`[data-bulk-check="${prop}"]`);
@@ -658,14 +665,16 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (typeof openColorPalette === 'function') {
           openColorPalette(btn, bulkValues[prop] || '', (color) => {
             bulkValues[prop] = color;
-            if (prop === 'bgColor' || prop === 'ts_bgColor') Object.assign(btn.style, { background: color });
-            if (prop === 'textColor' || prop === 'ts_textColor') Object.assign(btn.style, { color: color });
+            btn.dataset.fmtColor = color;
+            if (typeof setColorSwatchValue === 'function') setColorSwatchValue(btn,color); else btn.style.background = color;
           });
         }
       });
     });
     // 適用ボタン
     popup.querySelector('[data-bulk-apply]')?.addEventListener('click', () => {
+      if (this._readOnly || this.doc !== ownerDocument || selected.some(([index,chara]) => this.doc.characters[index] !== chara)
+        || this._detailSelection.size !== selected.length || selected.some(([index]) => !this._detailSelection.has(index))) { closePopup(); return; }
       this._pushUndo('一括設定適用');
       popup.querySelectorAll('[data-bulk-check]').forEach(cb => {
         if (!cb.checked) return;
@@ -722,6 +731,12 @@ Object.assign(ScriptNoteEditor.prototype, {
         close: () => closePopup(true),
       });
     }
+    if (window.gbFmt?.decoratePopup) {
+      popup.querySelector('.sn2-bulk-title')?.remove();
+      window.gbFmt.decoratePopup(popup,{title:`一括設定（${this._detailSelection.size}件）`,close:()=>closePopup(true)});
+    }
+    popup._gbFmtCleanup = () => closePopup();
+    popup._gbFmtOwner = anchor;
     const positionAnchor = this._detailMultiSelectionPositionAnchor(anchor, panelContainer) || anchor;
     if (typeof positionPopup === 'function') positionPopup(popup, positionAnchor.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);

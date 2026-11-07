@@ -67,7 +67,7 @@
   }
 
   function stripIds(root, surface) {
-    root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    root.querySelectorAll('[id]').forEach(el => { if (!el.id.startsWith('linked-')) el.removeAttribute('id'); });
     // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
     // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
     // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
@@ -259,6 +259,9 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
+          columnsPanel: state.columnsPane,
+          inlineNotePanel: state.inlineNotePanel,
+          saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
@@ -417,15 +420,29 @@
       }
       if (actions.childElementCount) root.appendChild(actions);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
+      state.columnsPane = columnsPane;
+      const inlineNotePanel = String(data?.page_content || '').trim() && !htmlSnapshotPath(data)
+        ? document.createElement('section') : null;
+      if (inlineNotePanel) {
+        inlineNotePanel.className = 'meldex-topic-inline-note-pane';
+        inlineNotePanel.setAttribute('role', 'tabpanel');
+        inlineNotePanel.setAttribute('aria-label', 'ノート');
+      }
+      state.inlineNotePanel = inlineNotePanel;
       const grid = document.createElement('div');
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
-      root.appendChild(grid);
+      columnsPane.appendChild(grid);
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
           parentDb: parent,
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
+          topicTabs: true,
           readOnly: access.readOnly,
           ctx: options.ctx,
         });
@@ -445,6 +462,9 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
+          columnsPanel: state.columnsPane,
+          inlineNotePanel: state.inlineNotePanel,
+          saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
         });
@@ -473,7 +493,7 @@
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
-        root.appendChild(preview);
+        columnsPane.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
         if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
@@ -513,8 +533,8 @@
       }
       const toolbar = buildToolbar(editor);
       if (state.surface === 'main') toolbar.id = 'entity-rt-toolbar';
-      root.appendChild(toolbar);
-      root.appendChild(editor);
+      (inlineNotePanel || columnsPane).appendChild(toolbar);
+      (inlineNotePanel || columnsPane).appendChild(editor);
 
       // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 

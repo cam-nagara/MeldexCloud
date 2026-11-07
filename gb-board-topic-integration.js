@@ -907,8 +907,39 @@
     };
   }
 
+  function compactGroupStyleFields(host, visualStyle) {
+    if (!global.gbFmt || typeof global.openFormatPopup !== 'function') return;
+    global.gbFmt.closeOwnedPopups(host);
+    const fields = [...host.querySelectorAll('[data-group-style-field]')]
+      .filter(el => !['locked','collapsed','borderRadius','padding'].includes(el.dataset.groupStyleField))
+      .map(el => el.closest('label'));
+    if (!fields.length) return;
+    const section = document.createElement('section'); section.className = 'gb-style-format-section';
+    const heading = document.createElement('div'); heading.className = 'gb-fmt-section-title'; heading.textContent = '背景・枠・ラベル';
+    const row = document.createElement('div'); row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-style-fields-row';
+    fields.forEach(el => row.appendChild(el)); section.append(heading, row);
+    const store = document.createElement('div'); store.hidden = true; store.appendChild(section);
+    const open = document.createElement('button'); open.type = 'button'; open.className = 'bd-style-format-open';
+    open.setAttribute('aria-haspopup','dialog'); open.setAttribute('aria-label','グループの書式設定');
+    const preview = document.createElement('span'); preview.className = 'bd-style-format-preview'; preview.setAttribute('aria-hidden','true');
+    preview.innerHTML = _bdCardStylePreviewHtml({ bgColor:visualStyle?.background, bgOpacity:visualStyle?.backgroundOpacity, borderColor:visualStyle?.borderColor, borderOpacity:visualStyle?.borderOpacity, borderWidth:visualStyle?.borderWidth, borderRadius:visualStyle?.borderRadius, textColor:visualStyle?.labelColor, fontBold:visualStyle?.labelBold, fontFamily:visualStyle?.labelFontFamily });
+    const caption = document.createElement('span'); caption.textContent = 'グループの書式設定…'; open.append(preview,caption);
+    host.append(open,store);
+    open.addEventListener('click', () => global.openFormatPopup(open, {
+      title:'グループの書式設定', fields:[], content:[section], className:'gb-fmt-popup--group-style',
+      onClose() { store.appendChild(section); },
+    }));
+  }
+
   function groupStyleField(root, labelText, key, value, type, onChange) {
     const label = document.createElement('label'); label.textContent = labelText;
+    label.className = 'gb-style-field';
+    if (type === 'color' && global.gbFmt) {
+      const swatch = global.gbFmt.makeSwatchBg({ title:labelText, color:value || '', onPick:onChange });
+      swatch.dataset.groupStyleField = key;
+      label.appendChild(swatch); root.appendChild(label);
+      return;
+    }
     if (type === 'color') {
       const swatch = document.createElement('button'); swatch.type = 'button';
       swatch.className = 'gb-fmt-btn cs-swatch';
@@ -929,6 +960,8 @@
       return;
     }
     const input = document.createElement('input'); input.type = type === 'opacity-percent' ? 'number' : (type || 'text');
+    if (input.type !== 'checkbox') input.className = input.type === 'number' ? 'gb-fmt-num' : 'gb-fmt-text';
+    input.title = labelText;
     if (type === 'checkbox') input.checked = !!value;
     else if (type === 'opacity-percent') {
       input.min = '0'; input.max = '100'; input.step = '1';
@@ -1037,6 +1070,7 @@
         .forEach(([label, key, value, type]) => groupStyleField(section, label, key, value, type, (next) => applyStyle(key, next)));
       groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
       groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
+      compactGroupStyleFields(section, effectiveStyle);
     };
     const refreshTemplates = () => {
       templateSelect.replaceChildren();
@@ -1060,6 +1094,7 @@
       if (controller.getGroupStyle(previous)) styleSelect.value = previous;
       const selected = controller.getGroupStyle(styleSelect.value);
       styleName.value = selected?.name || '';
+      global.gbFmt?.closeOwnedPopups(styleFields);
       styleFields.replaceChildren();
       if (!selected) return;
       const updateVisual = (key, value) => controller.updateGroupStyle(selected.groupStyleId, {
@@ -1073,6 +1108,7 @@
         ['ラベル太字', 'labelBold', 'checkbox']]
         .forEach(([label, key, type]) => groupStyleField(styleFields, label, key, (type === 'color' && ['background','borderColor'].includes(key) ? _bdColorWithOpacity(selected.visualStyle?.[key], selected.visualStyle?.[key === 'background' ? 'backgroundOpacity' : 'borderOpacity']) : selected.visualStyle?.[key]), type,
           value => { updateVisual(key, value); refreshAll(); }));
+      compactGroupStyleFields(styleFields, selected.visualStyle);
     };
     const refreshAll = () => {
       const selectedId = groupSelect.value;

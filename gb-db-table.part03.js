@@ -486,6 +486,7 @@ function _syncRelationWarningIcons(ctx) {
 function renderPivot(ctx) {
   const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
+  if (!ctx) return;
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
 
@@ -760,7 +761,9 @@ function renderPivot(ctx) {
     const typeIcon = document.createElement('span');
     typeIcon.className = 'th-type-icon';
     typeIcon.style.cssText = 'opacity:0.8;margin-right:4px;';
-    typeIcon.innerHTML = lucide(PROP_TYPE_ICON[ptcHeader?.type] || PROP_TYPE_ICON.text, 14);
+    typeIcon.innerHTML = ptcHeader?.icon && window.GBIconAssets?.render
+      ? GBIconAssets.render(ptcHeader.icon, 14, { contextPath: dbPath })
+      : lucide(PROP_TYPE_ICON[ptcHeader?.type] || PROP_TYPE_ICON.text, 14);
     th.appendChild(typeIcon);
     const labelSpan = document.createElement('span');
     labelSpan.className = 'th-label';

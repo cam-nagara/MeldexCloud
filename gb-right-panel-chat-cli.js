@@ -862,7 +862,7 @@
     const sendBtn = document.getElementById('chat-send-btn');
     if (!sendBtn) return null;
     sendBtn.textContent = streaming ? '停止' : '送信';
-    sendBtn.title = streaming ? 'CLIの実行を停止' : '送信 (Enter)';
+    sendBtn.title = streaming ? 'CLIの実行を停止' : _chatSendShortcutTitle();
     sendBtn.disabled = false;
     return sendBtn;
   }

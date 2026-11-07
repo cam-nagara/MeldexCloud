@@ -239,7 +239,8 @@
       const endpoint = parsed.path.startsWith('_media/') ? '/api/media/file' : '/api/file-raw';
       const context = endpoint === '/api/file-raw' && options.contextPath
         ? '&context_path=' + encodeURIComponent(options.contextPath) : '';
-      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context;
+      const assetScope = parsed.path.startsWith('Meldex画像/') ? '&asset_scope=home' : '';
+      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context + assetScope;
       return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
     }
     if (parsed.type === 'lucide') {

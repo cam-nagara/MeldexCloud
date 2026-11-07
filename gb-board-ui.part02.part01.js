@@ -360,10 +360,10 @@ function _bdBindSelectionDetailPanel() {
          'fontBold', 'fontItalic',
          'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth', 'textShadowColor']
           .forEach(key => { if (eff[key] !== undefined) displayStyle[key] = eff[key]; });
-        const rerender = () => {
+        const rerender = (field) => {
           bdDrawConns({ connIds, reason: 'selection-detail-fields' });
           bdDirty();
-          if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+          if ((!field || _bdStyleFieldNeedsFullRebuild('line', field) || !lineFieldsEl._bdFormatPopup?.isConnected) && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         };
         _bdBuildStyleFields(lineFieldsEl, 'line', displayStyle, rerender, {
           editTargets: () => connIds
@@ -572,7 +572,7 @@ async function _bdOpenLinkedTarget(node, e) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
-function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
+function _bdRefreshNodeDetailDirty(nodeId, includeSubtree, keepStyleEditor = false) {
   const ids = includeSubtree && typeof bdFastSubtreeIds === 'function'
     ? bdFastSubtreeIds(nodeId)
     : [nodeId];
@@ -582,7 +582,7 @@ function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
   if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(ids, 'node-detail');
   if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'node-detail');
   if (typeof bdMarkExtrasDirty === 'function') {
-    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: true }, 'node-detail');
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: !keepStyleEditor }, 'node-detail');
   }
 }
 
@@ -637,11 +637,12 @@ function _bdBindNodeDetailPanel(nodeId) {
     });
   });
   const node = bd.nodes.find(item => item.id === nodeId);
-  const rerenderNodeDetail = () => {
+  const rerenderNodeDetail = (field) => {
+    const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('card', field) && roots.some(root => root.querySelector('[data-bd-node-card-style-fields]')?._bdFormatPopup?.isConnected);
     bdDirty();
-    _bdRefreshNodeDetailDirty(nodeId, false);
+    _bdRefreshNodeDetailDirty(nodeId, false, keepStyleEditor);
     bdRefreshBoardToolbar();
-    if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+    if (!keepStyleEditor && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
   const styleTrigger = roots.map(root => root.querySelector('[data-bd-node-style-pick]')).find(Boolean);
   styleTrigger?.addEventListener('click', event => {
@@ -775,11 +776,12 @@ function _bdBindConnectionDetailPanel(connId) {
         applyField(btn.dataset.bdConnResetField, '');
       });
     });
-    const rerenderConnDetail = () => {
+    const rerenderConnDetail = (field) => {
+      const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('line', field) && root.querySelector('[data-bd-conn-line-style-fields]')?._bdFormatPopup?.isConnected;
       bdDirty();
       bdDrawConns({ connIds: [connId], reason: 'connection-detail-style' });
       bdRefreshBoardToolbar();
-      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+      if (!keepStyleEditor && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     };
     root.querySelector('[data-bd-conn-style-pick]')?.addEventListener('click', event => {
       const trigger = event.currentTarget;

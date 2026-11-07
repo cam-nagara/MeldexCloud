@@ -42666,22 +42666,38 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     section.dataset.e2eId = 'entity-attachments-section';
 
     const header = document.createElement('div');
-    header.className = 'meldex-entity-attachments-header';
+    header.className = 'meldex-entity-attachments-header gb-pane-tabs';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
-    section.classList.toggle('is-empty', attachments.length === 0);
+    const columns = options.columnsPanel;
+    const columnsId = '__columns__';
+    const inlineNote = options.inlineNotePanel;
+    const inlineNoteId = '__inline_note__';
+    section.classList.toggle('is-unified', !!columns);
+    section.classList.toggle('is-empty', attachments.length === 0 && !columns && !inlineNote);
     const list = document.createElement('div');
-    list.className = 'meldex-entity-attachments-list';
+    list.className = 'meldex-entity-attachments-list gb-pane-tabs-scroll';
     list.setAttribute('role', 'tablist');
-    list.setAttribute('aria-label', 'リンクファイル');
-    if (attachments.length) header.appendChild(list);
+    list.setAttribute('aria-label', columns ? 'トピックのタブ' : 'リンクファイル');
+    if (attachments.length || columns || inlineNote) header.appendChild(list);
     const content = document.createElement('div');
     content.className = 'meldex-entity-linked-content';
+    if (columns) {
+      columns.dataset.attachmentId = columnsId;
+      columns.id = 'linked-columns-' + section.dataset.instanceId;
+      content.appendChild(columns);
+    }
+    if (inlineNote) {
+      inlineNote.dataset.attachmentId = inlineNoteId;
+      inlineNote.id = 'linked-inline-note-' + section.dataset.instanceId;
+      content.appendChild(inlineNote);
+    }
     const editors = new Map();
     let selectedId = '';
     let switching = Promise.resolve(true);
     let disposed = false;
     const flushEditors = async () => {
+      if (inlineNote && await options.saveInlineNote?.() === false) return false;
       for (const editor of editors.values()) if (await editor.flush?.() === false) return false;
       return true;
     };
@@ -42695,11 +42711,44 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return true;
       },
     };
-    function selectAttachment(item) {
+    function updateSelection() {
+      section.dataset.selectedAttachment = selectedId;
+      list.querySelectorAll('[role=tab]').forEach(tab => {
+        const selected = tab.dataset.attachmentId === selectedId;
+        tab.closest('.gb-tab')?.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+        if (selected) tab.closest('.gb-tab')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      });
+      Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+    }
+    function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
         if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
         if (!await flushEditors()) return false;
         if (disposed) return false;
+        if (item.id === columnsId || item.id === inlineNoteId) {
+          editors.get(selectedId)?.deactivate?.();
+          selectedId = item.id; updateSelection();
+          // A hidden linked editor must not remain the target of the inspector.
+          if (selectionOptions.activate !== false) {
+            const builtin = columns || inlineNote;
+            const parent = window.GBEditorHost?.ownerOf?.(builtin.closest('.meldex-entity-detail') || builtin);
+            if (parent) window.GBEditorHost.activate(parent);
+            else {
+              if (typeof state !== 'undefined') { state.view = 'entity'; state.currentEntityPath = entryPath; }
+              window.GBOptionTargetContext?.set({ path: entryPath, kind: 'entity' }, 'topic-columns');
+              if (typeof historySetScope === 'function') historySetScope('');
+              // The topic is already mounted: the legacy entity-detail sync
+              // reopens the subpanel and would discard retained file editors.
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.();
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.syncFollowingVersionTabs?.();
+            }
+          }
+          if (item.id === inlineNoteId && selectionOptions.activate !== false) {
+            inlineNote.querySelector('[contenteditable="true"]')?.focus();
+          }
+          return true;
+        }
         if (editors.get(item.id)?.failed) {
           await editors.get(item.id).dispose();
           editors.delete(item.id);
@@ -42719,13 +42768,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           await editor.ready;
         }
         selectedId = item.id;
-        section.dataset.selectedAttachment = selectedId;
-        list.querySelectorAll('[role="tab"]').forEach(tab => {
-          const selected = tab.dataset.attachmentId === selectedId;
-          tab.setAttribute('aria-selected', String(selected));
-          tab.tabIndex = selected ? 0 : -1;
-        });
-        Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+        updateSelection();
         editors.get(selectedId)?.activate?.();
         return true;
       }).catch(error => {
@@ -42733,6 +42776,39 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return false;
       });
       return switching;
+    }
+
+    function navigateTab(event, current) {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...list.querySelectorAll('[role=tab]')];
+      const index = tabs.indexOf(current);
+      const target = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1)
+        : tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      if (!target) return;
+      event.preventDefault();
+      target.click(); target.focus();
+    }
+    if (columns) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = '列一覧'; tab.dataset.tabTitle = '列一覧'; tab.dataset.attachmentId = columnsId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-columns-tab';
+      tab.setAttribute('aria-controls', columns.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: columnsId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
+    }
+    if (inlineNote) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = 'ノート'; tab.dataset.tabTitle = 'ノート'; tab.dataset.attachmentId = inlineNoteId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-inline-note-tab';
+      tab.setAttribute('aria-controls', inlineNote.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: inlineNoteId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
     }
 
     if (!options.readOnly) {
@@ -43021,9 +43097,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       });
     }
 
-    if (attachments.length) section.appendChild(content);
+    if (attachments.length || columns || inlineNote) section.appendChild(content);
     container.appendChild(section);
-    const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
+    const initial = (inlineNote && options.selectedId === inlineNoteId ? { id: inlineNoteId } : null)
+      || attachments.find(item => item.id === options.selectedId)
+      || (columns ? { id: columnsId } : inlineNote ? { id: inlineNoteId } : attachments[0]);
     if (initial) selectAttachment(initial);
     return section;
   }
@@ -52590,7 +52668,7 @@ document.addEventListener('DOMContentLoaded', () => {
  * delegated handlers, editor selection and application state remain intact. */
 (function () {
   'use strict';
-  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
+  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
   const hiddenClass = 'gb-tbo-hidden';
   const registry = new Map();
   let active = null;
@@ -52674,6 +52752,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (source.hidden) return;
       const row = document.createElement(source.tagName === 'BUTTON' ? 'button' : 'label');
       row.className = 'gb-context-menu-item gb-tbo-row';
+      row._gbTboSource = source;
       row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
@@ -52737,7 +52816,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const right = box.right - (parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth) || 0) * zoom;
       const left = box.left + (parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth) || 0) * zoom;
       return Array.from(toolbar.children).filter(el => !el.hidden && getComputedStyle(el).display !== 'none')
-        .every(el => { const rect = el.getBoundingClientRect(); return rect.right <= right + 1 && rect.left >= left - 1; });
+        .every(el => [el, ...(entry.sources.get(el) || [])].every(node => {
+          const rect = node.getBoundingClientRect();
+          return rect.right <= right + 1 && rect.left >= left - 1;
+        }));
     };
     const removed = new Set();
     if (!fits()) {
@@ -52755,6 +52837,19 @@ document.addEventListener('DOMContentLoaded', () => {
     more.hidden = entry.overflow.length === 0;
     if (hadMoreFocus && !more.hidden) more.focus({ preventScroll: true });
     if (active === entry && (before.length !== entry.overflow.length || before.some((el, i) => el !== entry.overflow[i]))) close(true);
+    if (active === entry) entry.popup.querySelectorAll('.gb-tbo-row').forEach(row => {
+      const source = row._gbTboSource;
+      if (!source) return;
+      if (row.tagName === 'BUTTON') {
+        row.disabled = source.disabled;
+        const pressed = source.classList.contains('active') || source.getAttribute('aria-pressed') === 'true';
+        row.classList.toggle('active', pressed);
+        row.setAttribute('aria-pressed', String(pressed));
+      } else {
+        const copy = row.querySelector('input,select');
+        if (copy && copy !== document.activeElement) { copy.value = source.value; copy.checked = source.checked; copy.disabled = source.disabled; }
+      }
+    });
   }
 
   function schedule() {
@@ -52770,8 +52865,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 0);
   }
 
-  function setup(config) {
-    const opts = typeof config === 'string' || config instanceof Element ? { toolbar: config } : config || {};
+  function setup(config, legacyOptions) {
+    const opts = typeof config === 'string' || config instanceof Element ? { ...legacyOptions, toolbar: config } : config || {};
     const toolbar = typeof opts.toolbar === 'string' ? document.querySelector(opts.toolbar) : opts.toolbar;
     if (!toolbar || toolbar.matches('.gb-toolbar-app--vertical')) return null;
     if (registry.has(toolbar)) {
@@ -52785,7 +52880,11 @@ document.addEventListener('DOMContentLoaded', () => {
     more.type = 'button';
     more.className = 'tb-icon-btn gb-toolbar-overflow-button';
     more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
-    more.textContent = '▼';
+    const symbol = document.createElement('span');
+    symbol.className = 'gb-toolbar-overflow-symbol';
+    symbol.textContent = '▼';
+    symbol.setAttribute('aria-hidden', 'true');
+    more.appendChild(symbol);
     more.title = '隠れている操作を表示';
     more.setAttribute('aria-label', more.title);
     more.setAttribute('aria-haspopup', 'dialog');
@@ -55446,7 +55545,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const endpoint = parsed.path.startsWith('_media/') ? '/api/media/file' : '/api/file-raw';
       const context = endpoint === '/api/file-raw' && options.contextPath
         ? '&context_path=' + encodeURIComponent(options.contextPath) : '';
-      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context;
+      const assetScope = parsed.path.startsWith('Meldex画像/') ? '&asset_scope=home' : '';
+      const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context + assetScope;
       return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
     }
     if (parsed.type === 'lucide') {
@@ -55958,7 +56058,7 @@ document.addEventListener('DOMContentLoaded', () => {
 /* Document icons share the callout picker and its image registration UI. */
 (function (global) {
   'use strict';
-  const supported = new Set(['folder', 'page', 'database', 'board', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app', 'map', 'chat']);
+  const supported = new Set(['folder', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'board', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app', 'map', 'chat']);
   const cache = new Map();
   const pending = new Set();
   const providers = new WeakMap();
@@ -56019,12 +56119,14 @@ document.addEventListener('DOMContentLoaded', () => {
     return parsed.spec;
   }
   function refreshTabs() {
-    if (global.GBLayout?.getAllPanes) {
-      for (const pane of GBLayout.getAllPanes()) {
+    const layout = typeof GBLayout !== 'undefined' ? GBLayout : global.GBLayout;
+    if (layout?.getAllPanes) {
+      for (const pane of layout.getAllPanes(layout.root)) {
         for (const tab of pane.tabs || []) {
           const icon = document.querySelector('[data-tab-id="' + CSS.escape(tab.id) + '"] .gb-tab-icon');
           if (icon) icon.innerHTML = render(tab, 14, typeof lucide === 'function' ? lucide(tab.icon || 'page', 14) : '');
         }
+        layout.refreshPaneTabs?.(pane.id);
       }
     }
     if (typeof renderTabs === 'function') renderTabs();
@@ -56062,12 +56164,35 @@ document.addEventListener('DOMContentLoaded', () => {
     return parsed.type === 'image' ? '<span data-file-icon-type="' + MeldexEscape.attr(item.type || 'page') + '">' + markup + '</span>' : markup;
   }
   async function refresh(path, spec) {
+    const activeScope = scope();
     cache.set(key(path), spec || '');
+    const updateItem = item => {
+      if (item?.path === path) item.display_icon = spec || '';
+    };
+    const refreshTree = () => document.querySelectorAll('.tree-node').forEach(node => {
+      updateItem(node._nodeData);
+      if (node._nodeData?.path !== path) return;
+      const icon = node.querySelector('.tree-node-row .tree-icon');
+      if (icon) icon.innerHTML = typeof _outlinerIconMarkup === 'function'
+        ? _outlinerIconMarkup(node._nodeData, 18)
+        : render(node._nodeData, 18, typeof lucide === 'function' ? lucide('file', 18) : '');
+    });
+    refreshTree();
+    const layout = typeof GBLayout !== 'undefined' ? GBLayout : global.GBLayout;
+    for (const pane of layout?.getAllPanes?.(layout.root) || []) {
+      for (const tab of pane.tabs || []) updateItem(tab);
+    }
+    if (typeof _tabs !== 'undefined') _tabs.forEach(updateItem);
+    // Cache-only refreshes can return an old browse payload. Keep the saved
+    // value authoritative until the reload below completes.
     try {
       if (typeof loadOutliner === 'function') await loadOutliner({force: true});
     } catch (_) {
       if (typeof showStatus === 'function') showStatus('アイコンを保存しました。表示を更新できなかったため画面を再読込してください', true);
     }
+    if (scope() !== activeScope) return;
+    refreshTree();
+    cache.set(key(path), spec || '');
     document.querySelectorAll('.fv-item[data-path]').forEach(element => {
       if (element.dataset.path !== path) return;
       if (element._folderItem) element._folderItem.display_icon = spec || '';
@@ -56119,9 +56244,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const activeScope = scope();
       apiFetch('/file-icon?path=' + encodeURIComponent(tab.path), {silentError: true}).then(data => {
         if (scope() !== activeScope) return;
+        if (cache.has(id)) return;
         cache.set(id, data.icon || '');
         refreshTabs();
-      }).catch(() => { if (scope() === activeScope) cache.set(id, ''); }).finally(() => pending.delete(id));
+      }).catch(() => { if (scope() === activeScope && !cache.has(id)) cache.set(id, ''); }).finally(() => pending.delete(id));
     }
     return result;
   }
@@ -76339,9 +76465,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _removeFormatPopup(popup, options) {
-    if (!popup) return;
-    if (typeof popup._gbFmtCleanup === 'function') popup._gbFmtCleanup();
+    if (!popup || popup._gbFmtClosing) return;
+    popup._gbFmtClosing = true;
     if (!(options && options.skipCommit)) _commitPendingFormatInputs(popup);
+    if (typeof popup._gbFmtCleanup === 'function') popup._gbFmtCleanup();
     popup.remove?.();
   }
 
@@ -76378,7 +76505,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _setTextSwatchBg(btn, bgColor) {
-    btn.style.background = _isTransparentColor(bgColor) ? 'var(--bg)' : bgColor;
+    // 色見本は対象の背景ではなく、設定する色そのものを示す。
+    _setSwatchBg(btn, btn.dataset.fmtColor || '');
   }
 
   function _lucideOr(name, size, fallback) {
@@ -76438,6 +76566,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     btn.type = 'button';
     btn.className = 'gb-fmt-swatch gb-fmt-swatch-bg';
     btn.title = title || '背景色';
+    btn.setAttribute('aria-label', btn.title);
     let currentColor = initialColor || '';
     _setSwatchBg(btn, currentColor);
     _bindPressAction(btn, () => {
@@ -76460,8 +76589,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     btn.type = 'button';
     btn.className = 'gb-fmt-swatch gb-fmt-swatch-fg';
     btn.title = title || '文字色';
-    btn.innerHTML = _lucideOr(iconName || 'type', 14, 'T');
     let currentColor = initialColor || '';
+    btn.setAttribute('aria-label', btn.title);
+    btn.dataset.fmtColor = currentColor;
     btn.style.color = currentColor || 'var(--fg)';
     _setTextSwatchBg(btn, bgColor);
     _bindPressAction(btn, () => {
@@ -76469,7 +76599,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
       openColorPalette(btn, currentColor || '', (color) => {
         const resolved = color || '';
         currentColor = resolved;
+        btn.dataset.fmtColor = resolved;
         btn.style.color = resolved || 'var(--fg)';
+        _setTextSwatchBg(btn);
         onPick(resolved);
       });
     });
@@ -76525,6 +76657,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     inp.defaultValue = inp.value;
     inp._gbFmtCommittedValue = inp.value;
     const commit = () => {
+      // onChange が再描画・ポップアップ終了を起こしても二重確定しない。
+      inp._gbFmtCommittedValue = inp.value;
       if (inp.value === '') {
         if (allowEmpty) { onChange(null); }
         else { onChange(Math.max(minV, Math.min(maxV, parseInt(inp.defaultValue, 10) || minV))); }
@@ -76535,7 +76669,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
         const v = Math.max(minV, Math.min(maxV, raw));
         onChange(v);
       }
-      inp._gbFmtCommittedValue = inp.value;
     };
     inp._gbFmtCommit = () => {
       if (inp.value === inp._gbFmtCommittedValue) return;
@@ -76683,6 +76816,51 @@ async function _applyImportedCustomColors(rawColors, mode) {
    *   ラベルと選択肢の表記を縦書きの方向（水平⇔垂直、左右⇔上下）へ切り替える。保存値は変えない
    * @returns {HTMLElement} 生成されたポップアップ要素
    */
+  // 独自の書式編集にも同じヘッダー・用途ラベルを適用する。保存イベントは移植しない。
+  function decorateFormatPopup(popup, options = {}) {
+    if (!popup || popup.querySelector(':scope > .gb-fmt-popup-header')) return popup;
+    popup.setAttribute('role', 'dialog');
+    if (options.close) popup._requestClose = options.close;
+    const header = document.createElement('div');
+    header.className = 'gb-fmt-popup-header';
+    const heading = document.createElement('span');
+    heading.className = 'gb-fmt-popup-title';
+    heading.textContent = options.title || '書式設定';
+    popup.setAttribute('aria-label', heading.textContent);
+    const close = popup.querySelector('.gb-fmt-footer-close,[data-meldex-dropdown-close]') || document.createElement('button');
+    if (!close.parentElement) {
+      close.type = 'button';
+      close.innerHTML = _lucideOr('x', 14, '閉じる');
+      _bindPressAction(close, () => options.close ? options.close() : _removeFormatPopup(popup));
+    }
+    close.classList.add('gb-fmt-popup-close');
+    close.setAttribute('data-meldex-dropdown-close', '');
+    close.title = '閉じる';
+    close.setAttribute('aria-label', '閉じる');
+    header.append(heading, close);
+    popup.prepend(header);
+    popup.querySelectorAll('.meldex-dropdown-close-row:empty,.gb-fmt-footer-actions-row:empty').forEach(row => row.remove());
+    for (const swatch of popup.querySelectorAll('.gb-fmt-swatch')) {
+      // 独自生成の旧ポップアップにも色だけの見本を適用する。
+      swatch.replaceChildren();
+      if (swatch.classList.contains('gb-fmt-swatch-fg')) _setSwatchBg(swatch, 'fmtColor' in swatch.dataset ? swatch.dataset.fmtColor : swatch.style.color || '');
+      if (swatch.closest('.gb-style-field,.gb-fmt-color-pair,.sn2-bulk-row')) continue;
+      const pair = document.createElement('span');
+      pair.className = 'gb-fmt-popup-group gb-fmt-color-pair';
+      const label = _makeLabel(swatch.title || swatch.getAttribute('aria-label') || '色');
+      swatch.before(pair);
+      pair.append(label, swatch);
+    }
+    for (const row of popup.querySelectorAll(':scope > .gb-fmt-popup-row--text,:scope > .gb-fmt-popup-row--text-decoration,:scope > .gb-fmt-popup-row--decoration')) {
+      const label = document.createElement('div');
+      label.className = 'gb-fmt-section-title';
+      label.textContent = row.classList.contains('gb-fmt-popup-row--text') ? '文字・線' : row.classList.contains('gb-fmt-popup-row--text-decoration') ? '文字の装飾' : '背景・アクセント';
+      row.before(label);
+    }
+
+    return popup;
+  }
+
   function openFormatPopup(anchorEl, options) {
     options = options || {};
     closeAllFormatPopups();
@@ -76704,6 +76882,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     popup.className = POPUP_CLASS + (options.className ? ' ' + options.className : '');
     popup.setAttribute('role', 'dialog');
     popup.setAttribute('aria-modal', 'false');
+    popup._requestClose = () => _removeFormatPopup(popup);
     let outsideCloseHandler = null;
     let escapeCloseHandler = null;
     popup._gbFmtCleanup = () => {
@@ -76711,6 +76890,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (escapeCloseHandler) document.removeEventListener('keydown', escapeCloseHandler, true);
       outsideCloseHandler = null;
       escapeCloseHandler = null;
+      if (Array.isArray(options.content)) closeAllPalettePopups();
+      if (typeof options.onClose === 'function') options.onClose();
       popup._gbFmtCleanup = null;
     };
 
@@ -76972,9 +77153,22 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
     }
 
+    // 実際の部品を移動して使うスタイル編集も、位置補正・終了・確定処理を共有する。
+    if (Array.isArray(options.content)) options.content.forEach(el => { if (el) popup.appendChild(el); });
+    decorateFormatPopup(popup, options);
+
     // --- マウント + 位置決め ---
     document.body.appendChild(popup);
     const anchor = options.positionAnchor || anchorEl;
+    popup._gbFmtOwner = anchorEl;
+    if (Array.isArray(options.content) && anchorEl instanceof Element) {
+      const ownerObserver = new MutationObserver(() => {
+        if (!anchorEl.isConnected || !popup.isConnected) _removeFormatPopup(popup, { skipCommit:true });
+      });
+      ownerObserver.observe(document.body, { childList:true, subtree:true });
+      const previousCleanup = popup._gbFmtCleanup;
+      popup._gbFmtCleanup = () => { ownerObserver.disconnect(); previousCleanup?.(); };
+    }
     if (typeof positionPopup === 'function' && anchor) {
       positionPopup(popup, anchor.getBoundingClientRect(), {
         avoidRect: options.avoidRect || null,
@@ -76987,7 +77181,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
         // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
-        if (document.querySelector('.gb-palette-popup')) return;
+        if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
         ev.preventDefault();
         ev.stopPropagation();
         closeAllPalettePopups();
@@ -77001,7 +77195,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       setTimeout(() => {
         if (!popup.isConnected) return;
         outsideCloseHandler = (ev) => {
-          if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup')) {
+          if (!popup.contains(ev.target) && !anchorEl?.contains?.(ev.target) && !ev.target.closest?.('.gb-palette-popup,.gb-palette')) {
             _removeFormatPopup(popup);
           }
         };
@@ -77100,6 +77294,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     makeCheckbox: _makeCheckbox,
     makeRow: _makeRow,
     makeResetBtn: _makeResetBtn,
+    decoratePopup: decorateFormatPopup,
+    closePopup: _removeFormatPopup,
+    closeOwnedPopups(root) {
+      for (const popup of document.querySelectorAll('.gb-fmt-popup')) {
+        if (root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
+      }
+    },
   };
 
   window.openFormatPopup = openFormatPopup;

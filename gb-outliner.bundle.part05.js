@@ -1,3 +1,14 @@
+  };
+
+  if (typeof appendFolderOperationButtons === 'function') {
+    appendFolderOperationButtons(menu, {
+      e2ePrefix: 'folder-tree-context',
+      closeMenu: closeTreeContextMenu,
+      onCopy: () => folderToolbarCopyItems(contextOperationItems),
+      onCut: () => folderToolbarCutItems(contextOperationItems),
+      onPaste: () => folderToolbarPasteToFolder(addParent),
+      onDuplicate: async () => {
+        let count = 0;
         for (const target of editableContextItems) {
           try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
         }
@@ -887,14 +898,3 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
     kind: 'create-confirmation',
     label: '作成結果を確認しています',
     mode: 'indeterminate',
-    origin: pendingNode,
-    showImmediately: true,
-    showInTray: true,
-    priority: 60,
-  });
-  try {
-    if (!progress) showStatus('作成に時間がかかっています。結果を確認中…');
-    const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
-    for (const delay of _outlinerPostTimeoutConfirmDelays()) {
-      await new Promise(r => setTimeout(r, delay));
-      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);

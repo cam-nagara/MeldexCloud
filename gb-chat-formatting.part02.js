@@ -246,16 +246,20 @@
       if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) {
         event.stopPropagation();
       }
-      if (event.key === 'Enter' && !event.shiftKey) {
-        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
-        event.preventDefault();
+      if (event.key !== 'Enter' && !_chatSendKeyMatches(event)) {
+        if (!String(event.key || '').startsWith('Arrow')) _richVerticalColumn = null;
+        return;
+      }
+      const source = _richInputToMarkdown(editor).replace(/\r\n?/g, '\n');
+      const range = _richSelectionSourceRange(editor, true, source);
+      const action = _chatComposerKeyAction(event, source, range?.start ?? source.length, range?.end ?? source.length);
+      _chatConsumeComposerKey(event, action);
+      if (action?.kind === 'send') {
         _syncPlainFromRich();
         if (typeof chatSend === 'function') chatSend();
-      } else if (event.key === 'Enter' && event.shiftKey) {
-        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        _insertSourceTextAtRichSelection('\n');
+      } else if (action?.kind === 'newline') {
+        _setRichSelectionFromSourceRange(editor, source, action.edit.start, action.edit.end);
+        _insertSourceTextAtRichSelection(action.edit.text);
       } else if (!String(event.key || '').startsWith('Arrow')) {
         _richVerticalColumn = null;
       }

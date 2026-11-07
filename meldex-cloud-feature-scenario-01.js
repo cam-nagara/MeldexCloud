@@ -10477,10 +10477,13 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _showBulkEditPopup(panelContainer) {
-    if (!this._detailSelection?.size) return;
+    if (this._readOnly || !this._detailSelection?.size) return;
+    const ownerDocument = this.doc;
+    const selected = [...this._detailSelection].map(index => [index,this.doc.characters[index]]);
     const toolbar = this._detailBulkBar;
     const anchor = toolbar?.querySelector('.sn2-detail-bulk-btn:last-child') || toolbar;
-    document.querySelectorAll('.gb-fmt-popup--bulk-edit').forEach(el => el.remove());
+    if (!anchor) return;
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--bulk-edit';
     const e = MeldexEscape.html;
@@ -10493,7 +10496,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         </div>
         <div class="sn2-bulk-row">
           <label><input type="checkbox" data-bulk-check="textColor"> 文字色</label>
-          <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="textColor">T</button>
+          <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="textColor" title="文字色"></button>
         </div>
         <div class="sn2-bulk-row">
           <label><input type="checkbox" data-bulk-check="fontWeight"> 太字</label>
@@ -10532,7 +10535,7 @@ Object.assign(ScriptNoteEditor.prototype, {
             <label><input type="checkbox" data-bulk-check="ts_bgColor"> 背景</label>
             <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg" data-bulk-color="ts_bgColor"></button>
             <label><input type="checkbox" data-bulk-check="ts_textColor"> 文字</label>
-            <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="ts_textColor">T</button>
+            <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-bulk-color="ts_textColor" title="本文の文字色"></button>
             <label><input type="checkbox" data-bulk-check="ts_fontSize"> サイズ</label>
             <input type="number" class="sn2-bulk-input-num sn2-bulk-input-num--sm" data-bulk-val="ts_fontSize" value="" placeholder="14" min="8" max="48">
           </div>
@@ -10569,6 +10572,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     const mirrorToTextStyle = new Set(['bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'textBefore', 'textAfter']);
     // カラーピッカー（直接openColorPaletteを使用。適用前なので_refreshRowStylesは呼ばない）
     popup.querySelectorAll('[data-bulk-color]').forEach(btn => {
+      btn.title = btn.dataset.bulkColor.endsWith('bgColor') ? '背景色' : '文字色';
+      btn.setAttribute('aria-label',btn.title);
+      btn.dataset.fmtColor = '';
+      if (typeof setColorSwatchValue === 'function') setColorSwatchValue(btn,'');
       btn.addEventListener('click', () => {
         const prop = btn.dataset.bulkColor;
         const cb = popup.querySelector(`[data-bulk-check="${prop}"]`);
@@ -10576,14 +10583,16 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (typeof openColorPalette === 'function') {
           openColorPalette(btn, bulkValues[prop] || '', (color) => {
             bulkValues[prop] = color;
-            if (prop === 'bgColor' || prop === 'ts_bgColor') Object.assign(btn.style, { background: color });
-            if (prop === 'textColor' || prop === 'ts_textColor') Object.assign(btn.style, { color: color });
+            btn.dataset.fmtColor = color;
+            if (typeof setColorSwatchValue === 'function') setColorSwatchValue(btn,color); else btn.style.background = color;
           });
         }
       });
     });
     // 適用ボタン
     popup.querySelector('[data-bulk-apply]')?.addEventListener('click', () => {
+      if (this._readOnly || this.doc !== ownerDocument || selected.some(([index,chara]) => this.doc.characters[index] !== chara)
+        || this._detailSelection.size !== selected.length || selected.some(([index]) => !this._detailSelection.has(index))) { closePopup(); return; }
       this._pushUndo('一括設定適用');
       popup.querySelectorAll('[data-bulk-check]').forEach(cb => {
         if (!cb.checked) return;
@@ -10640,6 +10649,12 @@ Object.assign(ScriptNoteEditor.prototype, {
         close: () => closePopup(true),
       });
     }
+    if (window.gbFmt?.decoratePopup) {
+      popup.querySelector('.sn2-bulk-title')?.remove();
+      window.gbFmt.decoratePopup(popup,{title:`一括設定（${this._detailSelection.size}件）`,close:()=>closePopup(true)});
+    }
+    popup._gbFmtCleanup = () => closePopup();
+    popup._gbFmtOwner = anchor;
     const positionAnchor = this._detailMultiSelectionPositionAnchor(anchor, panelContainer) || anchor;
     if (typeof positionPopup === 'function') positionPopup(popup, positionAnchor.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
@@ -11415,13 +11430,14 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _showRoleOptionsPopup(anchorEl, chara, panelContainer) {
-    document.querySelectorAll('.gb-fmt-popup--role-opts').forEach(el => el.remove());
-    document.querySelectorAll('.gb-fmt-popup:not(.gb-fmt-popup--role-opts)').forEach(el => el.remove());
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--role-opts';
     let closeHandler = null;
     let keyHandler = null;
     const closePopup = (restoreFocus = false) => {
+      // Escapeでも、まだフォーカス中の値を既存の保存ハンドラーへ確定する。
+      popup.querySelectorAll('input').forEach(input => input._gbFmtCommit?.());
       popup.remove();
       if (closeHandler) {
         document.removeEventListener('pointerdown', closeHandler, true);
@@ -11649,6 +11665,15 @@ Object.assign(ScriptNoteEditor.prototype, {
         }
       });
     });
+    popup.querySelectorAll('input:not([type="checkbox"])').forEach(input => {
+      input._gbFmtCommittedValue = input.value;
+      input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
+      input._gbFmtCommit = () => {
+        if (input.value === input._gbFmtCommittedValue) return;
+        input._gbFmtCommittedValue = input.value;
+        input.dispatchEvent(new Event('change', { bubbles:true }));
+      };
+    });
     document.body.appendChild(popup);
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
@@ -11656,10 +11681,16 @@ Object.assign(ScriptNoteEditor.prototype, {
         close: () => closePopup(true),
       });
     }
+    if (window.gbFmt?.decoratePopup) {
+      popup.querySelector('.sn2-role-opts-title')?.remove();
+      window.gbFmt.decoratePopup(popup, { title:'タイプの設定', close:() => closePopup(true) });
+    }
+    popup._gbFmtCleanup = () => closePopup();
     if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
     keyHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
       ev.preventDefault();
       ev.stopPropagation();
       closePopup(true);
@@ -11963,6 +11994,19 @@ Object.assign(ScriptNoteEditor.prototype, {
         <label class="sn2-detail-settings-label">小区切り</label>
         <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter2" data-e2e-id="scriptnote-theme-secondary-style">書式設定…</button>
       </div>`;
+    // 行全体をスクロールさせず、ラベルと操作部を一つの組として折り返す。
+    settings.querySelectorAll('.sn2-detail-settings-row:not(.sn2-detail-settings-row--nowrap)').forEach(row => {
+      let pair = null;
+      for (const child of Array.from(row.children)) {
+        if (child.matches('label:not(.sn2-detail-settings-label--ml0)')) {
+          pair = document.createElement('span');
+          pair.className = 'sn2-detail-settings-pair';
+          row.insertBefore(pair, child);
+        }
+        if (pair) pair.appendChild(child);
+      }
+      row.classList.add('sn2-detail-settings-row--pairs');
+    });
     settings.querySelectorAll('[data-gutter-style]').forEach(button => {
       const colId = button.dataset.gutterStyle;
       const style = this.doc.editor?.columnStyles?.[colId] || {};
@@ -14164,121 +14208,39 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列スタイル設定ポップアップ ===
 
   _showColumnStylePopup(anchorEl, colId) {
-    if (this._readOnly) return;
+    if (this._readOnly || typeof openFormatPopup !== 'function') return;
     const ownerDocument = this.doc;
-    document.querySelectorAll('.gb-fmt-popup--col-style').forEach(el => el.remove());
-    if (!this.doc.editor.columnStyles) this.doc.editor.columnStyles = {};
-    if (!this.doc.editor.columnStyles[colId]) this.doc.editor.columnStyles[colId] = {};
-    const cs = this.doc.editor.columnStyles[colId];
-    const safeColor = (value, fallback) => {
+    const style = () => this.doc.editor?.columnStyles?.[colId] || {};
+    const safeColor = value => {
       const raw = String(value || '').trim();
-      if (!raw) return fallback;
-      if (raw === 'transparent') return raw;
-      if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
-      if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(raw)) return raw;
-      if (/^var\(--[-_a-zA-Z0-9]+\)$/.test(raw)) return raw;
-      return fallback;
+      return raw === 'transparent' || /^#[0-9a-f]{3,8}$/i.test(raw)
+        || /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(raw)
+        || /^var\(--[-_a-zA-Z0-9]+\)$/.test(raw) ? raw : '';
     };
-    const fontSize = Number.isFinite(Number(cs.fontSize)) ? Math.max(8, Math.min(48, Number(cs.fontSize))) : '';
-    const bgColor = safeColor(cs.bgColor, 'transparent');
-    const textColor = safeColor(cs.textColor, 'var(--fg)');
-    const popup = document.createElement('div');
-    popup.className = 'gb-fmt-popup gb-fmt-popup--col-style';
-    popup.innerHTML = `
-      <div class="sn2-col-style-title">列スタイル</div>
-      <div class="sn2-col-style-row">
-        <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg" data-csp="bgColor" style="background:${bgColor};" title="背景色"></button>
-        <button type="button" class="gb-fmt-swatch gb-fmt-swatch-fg" data-csp="textColor" style="color:${textColor};" title="テキスト色">T</button>
-        <button type="button" class="gb-fmt-btn${cs.fontWeight === 'bold' ? ' active' : ''}" data-csp-toggle-fmt="fontWeight" title="太字"><b>B</b></button>
-        <button type="button" class="gb-fmt-btn${cs.fontStyle === 'italic' ? ' active' : ''}" data-csp-toggle-fmt="fontStyle" title="斜体"><i>I</i></button>
-        <input type="number" class="gb-fmt-num gb-fmt-num--w54" data-csp-num="fontSize" value="${fontSize}" placeholder="px" min="8" max="48">
-        <button type="button" class="gb-fmt-btn sn2-col-style-reset" data-csp-reset title="リセット">${lucide('rotateCcw', 12)}</button>
-      </div>
-      <div class="sn2-col-style-note">※ タイプ管理の設定が優先されます</div>`;
-    let closeHandler = null;
-    let escapeHandler = null;
-    const closePopup = () => {
-      popup.remove();
-      if (closeHandler) {
-        document.removeEventListener('pointerdown', closeHandler, true);
-        closeHandler = null;
-      }
-      if (escapeHandler) {
-        window.removeEventListener('keydown', escapeHandler, true);
-        escapeHandler = null;
-      }
-    };
-    const refresh = () => { this._refreshRowStyles(); this._markDirty(); };
-    // カラーピッカー
-    popup.querySelectorAll('[data-csp]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (typeof openColorPalette === 'function') {
-          openColorPalette(btn, cs[btn.dataset.csp] || '#888', (color) => {
-            if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
-            this._pushUndo('列スタイル変更');
-            if (color === 'transparent') { delete cs[btn.dataset.csp]; } else { cs[btn.dataset.csp] = color; }
-            if (btn.dataset.csp === 'bgColor') btn.style.background = cs.bgColor || 'transparent';
-            if (btn.dataset.csp === 'textColor') btn.style.color = cs.textColor || 'var(--fg)';
-            refresh();
-          });
-        }
-      });
-    });
-    // B / I トグル
-    popup.querySelectorAll('[data-csp-toggle-fmt]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
-        this._pushUndo('列スタイル変更');
-        const prop = btn.dataset.cspToggleFmt;
-        const activeVal = prop === 'fontWeight' ? 'bold' : 'italic';
-        cs[prop] = cs[prop] === activeVal ? '' : activeVal;
-        btn.classList.toggle('active', cs[prop] === activeVal);
-        refresh();
-      });
-    });
-    // サイズ
-    popup.querySelectorAll('[data-csp-num]').forEach(inp => {
-      inp.addEventListener('change', () => { if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; } this._pushUndo('列スタイル変更'); cs[inp.dataset.cspNum] = inp.value ? Number(inp.value) : ''; refresh(); });
-    });
-    // リセット
-    popup.querySelector('[data-csp-reset]')?.addEventListener('click', () => {
-      if (this.doc !== ownerDocument || this._readOnly) { closePopup(); return; }
+    const initial = style();
+    const mutate = change => {
+      if (this.doc !== ownerDocument || this._readOnly) { closeAllFormatPopups(); return; }
       this._pushUndo('列スタイル変更');
-      Object.keys(cs).forEach(k => delete cs[k]);
-      popup.querySelector('[data-csp="bgColor"]').style.background = 'transparent';
-      popup.querySelector('[data-csp="textColor"]').style.color = 'var(--fg)';
-      popup.querySelectorAll('[data-csp-toggle-fmt]').forEach(b => b.classList.remove('active'));
-      const sizeInp = popup.querySelector('[data-csp-num="fontSize"]'); if (sizeInp) sizeInp.value = '';
-      refresh();
-    });
-    // (タイプ優先は常時有効 — トグル廃止)
-
-    popup.style.cssText = 'position:fixed;z-index:10001;min-width:220px;';
-    document.body.appendChild(popup);
-    if (typeof attachMeldexDropdownCloseButton === 'function') {
-      attachMeldexDropdownCloseButton(popup, {
-        trigger: anchorEl,
-        close: closePopup,
-      });
-    }
-    positionPopup(popup, anchorEl.getBoundingClientRect());
-    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
-    escapeHandler = (ev) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      closePopup();
+      this.doc.editor.columnStyles ||= {};
+      const cs = this.doc.editor.columnStyles[colId] ||= {};
+      change(cs);
+      this._refreshRowStyles(); this._markDirty();
     };
-    window.addEventListener('keydown', escapeHandler, true);
-    setTimeout(() => {
-      if (!popup.isConnected) return;
-      closeHandler = (ev) => {
-        if (!popup.contains(ev.target) && !ev.target.closest?.('.gb-palette-popup') && !ev.target.closest?.('.sn2-header-popup') && !ev.target.closest?.('.gb-fmt-popup')) {
-          closePopup();
-        }
-      };
-      document.addEventListener('pointerdown', closeHandler, true);
-    }, 0);
+    const popup = openFormatPopup(anchorEl, {
+      title:'列スタイル', className:'gb-fmt-popup--col-style', fields:['bgColor','textColor','bold','italic','fontSize'],
+      values:{ ...initial, bgColor:safeColor(initial.bgColor), textColor:safeColor(initial.textColor),
+        fontSize:Number.isFinite(Number(initial.fontSize)) ? Math.max(8,Math.min(48,Number(initial.fontSize))) : '' },
+      onChange:(prop,value) => mutate(cs => {
+        const key = prop === 'bold' ? 'fontWeight' : prop === 'italic' ? 'fontStyle' : prop;
+        if (value == null || value === '' || value === 'transparent') delete cs[key];
+        else cs[key] = value;
+      }),
+      onReset:() => mutate(cs => Object.keys(cs).forEach(key => delete cs[key])),
+    });
+    popup.querySelector('.gb-fmt-swatch-bg').dataset.csp = 'bgColor';
+    popup.querySelector('.gb-fmt-swatch-fg').dataset.csp = 'textColor';
+    popup.querySelector('.gb-fmt-popup-title').title = 'タイプ管理の設定が優先されます';
+    return popup;
   },
 
   // === 列追加（指定列の右に） ===

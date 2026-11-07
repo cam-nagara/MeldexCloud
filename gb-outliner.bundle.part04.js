@@ -1,3 +1,14 @@
+        finally { _outlinerWarmKeys.delete(next.path); }
+      }
+    } finally { _outlinerWarmRunning = false; }
+  }, 0);
+}
+
+function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
+  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
+    child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
+  const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
+  // Navigation must paint before a migration reads/writes the entire Topic store.
   setTimeout(async () => {
     if (!container.isConnected || container._outlinerLoadToken !== loadToken) return;
     try {
@@ -887,14 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showStatus('削除対象が見つからなかったため、表示を更新しました', true);
       loadOutliner();
     }
-  };
-
-  if (typeof appendFolderOperationButtons === 'function') {
-    appendFolderOperationButtons(menu, {
-      e2ePrefix: 'folder-tree-context',
-      closeMenu: closeTreeContextMenu,
-      onCopy: () => folderToolbarCopyItems(contextOperationItems),
-      onCut: () => folderToolbarCutItems(contextOperationItems),
-      onPaste: () => folderToolbarPasteToFolder(addParent),
-      onDuplicate: async () => {
-        let count = 0;

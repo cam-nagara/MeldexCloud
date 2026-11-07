@@ -1297,7 +1297,7 @@ const GBLayout = (() => {
       subpanelButton.type = 'button';
       subpanelButton.className = 'gb-pane-btn gb-pane-subpanel-toggle' + (open ? ' is-active' : '');
       subpanelButton.dataset.e2eId = 'main-tab-subpanel-toggle';
-      subpanelButton.title = open ? 'サブパネルを非表示' : 'サブパネルを表示';
+      subpanelButton.title = 'サブパネルを表示';
       subpanelButton.setAttribute('aria-label', subpanelButton.title);
       subpanelButton.setAttribute('aria-pressed', String(open));
       subpanelButton.setAttribute('aria-expanded', String(open));
@@ -1305,9 +1305,24 @@ const GBLayout = (() => {
       subpanelButton.innerHTML = lucide('panelRight', 16);
       subpanelButton.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await window.GBIndependentSubpanel.toggle();
+        await window.GBIndependentSubpanel.open();
       });
       ctrls.appendChild(subpanelButton);
+    }
+    if (node.meldexRole === 'subpanel-workspace' && window.GBIndependentSubpanel) {
+      const closeSubpanel = document.createElement('button');
+      closeSubpanel.type = 'button';
+      closeSubpanel.className = 'gb-pane-btn gb-pane-subpanel-close';
+      closeSubpanel.dataset.e2eId = 'subpanel-tab-close';
+      closeSubpanel.title = 'サブパネルを閉じる';
+      closeSubpanel.setAttribute('aria-label', closeSubpanel.title);
+      closeSubpanel.setAttribute('aria-controls', 'gb-subpanel-root');
+      closeSubpanel.innerHTML = lucide('x', 16);
+      closeSubpanel.addEventListener('click', async event => {
+        event.stopPropagation();
+        await window.GBIndependentSubpanel.close();
+      });
+      ctrls.appendChild(closeSubpanel);
     }
 
     // タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls が切れないよう、

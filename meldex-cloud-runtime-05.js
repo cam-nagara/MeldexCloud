@@ -8611,8 +8611,39 @@
     };
   }
 
+  function compactGroupStyleFields(host, visualStyle) {
+    if (!global.gbFmt || typeof global.openFormatPopup !== 'function') return;
+    global.gbFmt.closeOwnedPopups(host);
+    const fields = [...host.querySelectorAll('[data-group-style-field]')]
+      .filter(el => !['locked','collapsed','borderRadius','padding'].includes(el.dataset.groupStyleField))
+      .map(el => el.closest('label'));
+    if (!fields.length) return;
+    const section = document.createElement('section'); section.className = 'gb-style-format-section';
+    const heading = document.createElement('div'); heading.className = 'gb-fmt-section-title'; heading.textContent = '背景・枠・ラベル';
+    const row = document.createElement('div'); row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-style-fields-row';
+    fields.forEach(el => row.appendChild(el)); section.append(heading, row);
+    const store = document.createElement('div'); store.hidden = true; store.appendChild(section);
+    const open = document.createElement('button'); open.type = 'button'; open.className = 'bd-style-format-open';
+    open.setAttribute('aria-haspopup','dialog'); open.setAttribute('aria-label','グループの書式設定');
+    const preview = document.createElement('span'); preview.className = 'bd-style-format-preview'; preview.setAttribute('aria-hidden','true');
+    preview.innerHTML = _bdCardStylePreviewHtml({ bgColor:visualStyle?.background, bgOpacity:visualStyle?.backgroundOpacity, borderColor:visualStyle?.borderColor, borderOpacity:visualStyle?.borderOpacity, borderWidth:visualStyle?.borderWidth, borderRadius:visualStyle?.borderRadius, textColor:visualStyle?.labelColor, fontBold:visualStyle?.labelBold, fontFamily:visualStyle?.labelFontFamily });
+    const caption = document.createElement('span'); caption.textContent = 'グループの書式設定…'; open.append(preview,caption);
+    host.append(open,store);
+    open.addEventListener('click', () => global.openFormatPopup(open, {
+      title:'グループの書式設定', fields:[], content:[section], className:'gb-fmt-popup--group-style',
+      onClose() { store.appendChild(section); },
+    }));
+  }
+
   function groupStyleField(root, labelText, key, value, type, onChange) {
     const label = document.createElement('label'); label.textContent = labelText;
+    label.className = 'gb-style-field';
+    if (type === 'color' && global.gbFmt) {
+      const swatch = global.gbFmt.makeSwatchBg({ title:labelText, color:value || '', onPick:onChange });
+      swatch.dataset.groupStyleField = key;
+      label.appendChild(swatch); root.appendChild(label);
+      return;
+    }
     if (type === 'color') {
       const swatch = document.createElement('button'); swatch.type = 'button';
       swatch.className = 'gb-fmt-btn cs-swatch';
@@ -8633,6 +8664,8 @@
       return;
     }
     const input = document.createElement('input'); input.type = type === 'opacity-percent' ? 'number' : (type || 'text');
+    if (input.type !== 'checkbox') input.className = input.type === 'number' ? 'gb-fmt-num' : 'gb-fmt-text';
+    input.title = labelText;
     if (type === 'checkbox') input.checked = !!value;
     else if (type === 'opacity-percent') {
       input.min = '0'; input.max = '100'; input.step = '1';
@@ -8741,6 +8774,7 @@
         .forEach(([label, key, value, type]) => groupStyleField(section, label, key, value, type, (next) => applyStyle(key, next)));
       groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
       groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
+      compactGroupStyleFields(section, effectiveStyle);
     };
     const refreshTemplates = () => {
       templateSelect.replaceChildren();
@@ -8764,6 +8798,7 @@
       if (controller.getGroupStyle(previous)) styleSelect.value = previous;
       const selected = controller.getGroupStyle(styleSelect.value);
       styleName.value = selected?.name || '';
+      global.gbFmt?.closeOwnedPopups(styleFields);
       styleFields.replaceChildren();
       if (!selected) return;
       const updateVisual = (key, value) => controller.updateGroupStyle(selected.groupStyleId, {
@@ -8777,6 +8812,7 @@
         ['ラベル太字', 'labelBold', 'checkbox']]
         .forEach(([label, key, type]) => groupStyleField(styleFields, label, key, (type === 'color' && ['background','borderColor'].includes(key) ? _bdColorWithOpacity(selected.visualStyle?.[key], selected.visualStyle?.[key === 'background' ? 'backgroundOpacity' : 'borderOpacity']) : selected.visualStyle?.[key]), type,
           value => { updateVisual(key, value); refreshAll(); }));
+      compactGroupStyleFields(styleFields, selected.visualStyle);
     };
     const refreshAll = () => {
       const selectedId = groupSelect.value;
@@ -13311,7 +13347,7 @@ const GBLayout = (() => {
       subpanelButton.type = 'button';
       subpanelButton.className = 'gb-pane-btn gb-pane-subpanel-toggle' + (open ? ' is-active' : '');
       subpanelButton.dataset.e2eId = 'main-tab-subpanel-toggle';
-      subpanelButton.title = open ? 'サブパネルを非表示' : 'サブパネルを表示';
+      subpanelButton.title = 'サブパネルを表示';
       subpanelButton.setAttribute('aria-label', subpanelButton.title);
       subpanelButton.setAttribute('aria-pressed', String(open));
       subpanelButton.setAttribute('aria-expanded', String(open));
@@ -13319,9 +13355,24 @@ const GBLayout = (() => {
       subpanelButton.innerHTML = lucide('panelRight', 16);
       subpanelButton.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await window.GBIndependentSubpanel.toggle();
+        await window.GBIndependentSubpanel.open();
       });
       ctrls.appendChild(subpanelButton);
+    }
+    if (node.meldexRole === 'subpanel-workspace' && window.GBIndependentSubpanel) {
+      const closeSubpanel = document.createElement('button');
+      closeSubpanel.type = 'button';
+      closeSubpanel.className = 'gb-pane-btn gb-pane-subpanel-close';
+      closeSubpanel.dataset.e2eId = 'subpanel-tab-close';
+      closeSubpanel.title = 'サブパネルを閉じる';
+      closeSubpanel.setAttribute('aria-label', closeSubpanel.title);
+      closeSubpanel.setAttribute('aria-controls', 'gb-subpanel-root');
+      closeSubpanel.innerHTML = lucide('x', 16);
+      closeSubpanel.addEventListener('click', async event => {
+        event.stopPropagation();
+        await window.GBIndependentSubpanel.close();
+      });
+      ctrls.appendChild(closeSubpanel);
     }
 
     // タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls が切れないよう、
@@ -47725,17 +47776,8 @@ function _bdSafeDetailCssColor(value, fallback = '') {
 
 function _bdColorFieldHtml(label, field, value, buttonAttr, resetAttr) {
   const nextValue = String(value || '').trim();
-  const safeValue = _bdSafeDetailCssColor(nextValue, '');
-  const isTextColor = field === 'textColor';
-  const isStrokeColor = field === 'textStrokeColor';
-  const iconSvg = isTextColor ? (typeof lucide === 'function' ? lucide('type', 14) : 'T')
-    : isStrokeColor ? (typeof lucide === 'function' ? lucide('typeOutline', 14) : 'T')
-    : '';
-  const gbFmtClass = (isTextColor || isStrokeColor) ? 'gb-fmt-swatch-fg' : 'gb-fmt-swatch-bg';
-  const styleStr = (isTextColor || isStrokeColor)
-    ? `color:${_bdEscAttr(safeValue || 'var(--fg)')};`
-    : _bdColorSwatchStyle(nextValue);
-  return `<label class="bd-detail-field"><span>${esc(label)}</span><span class="bd-detail-swatch-row"><button type="button" class="bd-color-swatch gb-fmt-swatch ${gbFmtClass}${nextValue ? ' is-set' : ''}" style="${styleStr}" ${buttonAttr}="${_bdEscAttr(field)}" title="${esc(label)}">${iconSvg}</button><button type="button" class="gb-fmt-reset bd-detail-reset-btn" ${resetAttr}="${_bdEscAttr(field)}" ${nextValue ? '' : 'disabled'}>リセット</button></span></label>`;
+  const styleStr = _bdColorSwatchStyle(nextValue);
+  return `<label class="bd-detail-field"><span>${esc(label)}</span><span class="bd-detail-swatch-row"><button type="button" class="bd-color-swatch gb-fmt-swatch gb-fmt-swatch-bg${nextValue ? ' is-set' : ''}" style="${styleStr}" ${buttonAttr}="${_bdEscAttr(field)}" title="${esc(label)}" aria-label="${esc(label)}"></button><button type="button" class="gb-fmt-reset bd-detail-reset-btn" ${resetAttr}="${_bdEscAttr(field)}" ${nextValue ? '' : 'disabled'}>リセット</button></span></label>`;
 }
 
 function _bdRangeFieldHtml(label, field, value, min, max, step, attrName) {
@@ -48305,10 +48347,10 @@ function _bdBindSelectionDetailPanel() {
          'fontBold', 'fontItalic',
          'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth', 'textShadowColor']
           .forEach(key => { if (eff[key] !== undefined) displayStyle[key] = eff[key]; });
-        const rerender = () => {
+        const rerender = (field) => {
           bdDrawConns({ connIds, reason: 'selection-detail-fields' });
           bdDirty();
-          if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+          if ((!field || _bdStyleFieldNeedsFullRebuild('line', field) || !lineFieldsEl._bdFormatPopup?.isConnected) && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         };
         _bdBuildStyleFields(lineFieldsEl, 'line', displayStyle, rerender, {
           editTargets: () => connIds
@@ -48517,7 +48559,7 @@ async function _bdOpenLinkedTarget(node, e) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
-function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
+function _bdRefreshNodeDetailDirty(nodeId, includeSubtree, keepStyleEditor = false) {
   const ids = includeSubtree && typeof bdFastSubtreeIds === 'function'
     ? bdFastSubtreeIds(nodeId)
     : [nodeId];
@@ -48527,7 +48569,7 @@ function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
   if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(ids, 'node-detail');
   if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'node-detail');
   if (typeof bdMarkExtrasDirty === 'function') {
-    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: true }, 'node-detail');
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: !keepStyleEditor }, 'node-detail');
   }
 }
 
@@ -48582,11 +48624,12 @@ function _bdBindNodeDetailPanel(nodeId) {
     });
   });
   const node = bd.nodes.find(item => item.id === nodeId);
-  const rerenderNodeDetail = () => {
+  const rerenderNodeDetail = (field) => {
+    const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('card', field) && roots.some(root => root.querySelector('[data-bd-node-card-style-fields]')?._bdFormatPopup?.isConnected);
     bdDirty();
-    _bdRefreshNodeDetailDirty(nodeId, false);
+    _bdRefreshNodeDetailDirty(nodeId, false, keepStyleEditor);
     bdRefreshBoardToolbar();
-    if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+    if (!keepStyleEditor && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
   const styleTrigger = roots.map(root => root.querySelector('[data-bd-node-style-pick]')).find(Boolean);
   styleTrigger?.addEventListener('click', event => {
@@ -48720,11 +48763,12 @@ function _bdBindConnectionDetailPanel(connId) {
         applyField(btn.dataset.bdConnResetField, '');
       });
     });
-    const rerenderConnDetail = () => {
+    const rerenderConnDetail = (field) => {
+      const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('line', field) && root.querySelector('[data-bd-conn-line-style-fields]')?._bdFormatPopup?.isConnected;
       bdDirty();
       bdDrawConns({ connIds: [connId], reason: 'connection-detail-style' });
       bdRefreshBoardToolbar();
-      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+      if (!keepStyleEditor && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     };
     root.querySelector('[data-bd-conn-style-pick]')?.addEventListener('click', event => {
       const trigger = event.currentTarget;
@@ -48894,7 +48938,14 @@ function bdRefreshSelectionDetails(forceEmpty) {
 function bdSyncBoardUi(forceEmptyDetail) {
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncBoardUi') : 0;
   bdRefreshBoardToolbar();
-  bdRefreshSelectionDetails(forceEmptyDetail);
+  // 描画予約だけで編集中の操作部を破棄しない。Undo/読込で実体が変わった場合は再生成する。
+  const context = document.querySelector('.gb-fmt-popup--board-style')?._bdSelectionContext;
+  const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
+  const sameSelection = context && context.path === bd.path
+    && context.nodes.length === bd.selected.size && context.connections.length === connIds.length
+    && context.nodes.every(node => node && bd.selected.has(node.id) && bd.nodes.includes(node))
+    && context.connections.every(conn => conn && connIds.includes(conn.id) && bd.connections.includes(conn));
+  if (forceEmptyDetail === true || !sameSelection) bdRefreshSelectionDetails(forceEmptyDetail);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdSyncBoardUi', started);
 }
 
@@ -51561,10 +51612,14 @@ function _bdSaveCurrentConnectionLineStyle(conn) {
  */
 function _bdBuildStyleFields(container, kind, style, onChange, options) {
   if (!container || !style) return;
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = '';
   const fmt = window.gbFmt;
   if (!fmt) { container.textContent = '書式UI未ロード'; return; }
-  const emit = (field) => { try { onChange && onChange(field); } catch (_) {} };
+  const emit = (field) => {
+    try { onChange && onChange(field); } catch (_) {}
+    container._bdRefreshFormatPreview?.();
+  };
   const editTarget = () => {
     if (options && typeof options.beforeEdit === 'function') {
       const next = options.beforeEdit();
@@ -51740,6 +51795,7 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
       row3.appendChild(fmt.makeGroup([fmt.makeLabel('小山高'), subHInp, fmt.makeLabel('%')]));
       container.appendChild(row3);
     }
+    _bdCompactStyleFields(container, kind, style, options);
     // リセットボタンは詳細パネルの style-row に移動 (2026-04-18)
     return;
   }
@@ -51878,7 +51934,124 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
 
   // 「テキストをラインに合わせる」はボードツールバー（フィルタメニュー）の表示トグルへ移行
   // （D-4、計画書 §4-3-A）
+  _bdCompactStyleFields(container, kind, style, options);
   // リセットボタンは詳細パネルの style-row に移動 (2026-04-18)
+}
+
+// 操作部を複製せず共通ポップアップへ移し、保存・Undo・無効条件を維持する。
+function _bdCompactStyleFields(container, kind, style, options = {}) {
+  const fmt = window.gbFmt;
+  if (!fmt || typeof openFormatPopup !== 'function') return;
+  container.classList.add('bd-compact-style-fields');
+  const controls = new Map();
+  for (const el of container.querySelectorAll('[data-bd-style-field-container],[data-bd-style-field]')) {
+    const key = el.dataset.bdStyleFieldContainer || el.dataset.bdStyleField;
+    if (!controls.has(key)) controls.set(key, el.closest('[data-bd-style-field-container]') || el);
+  }
+  const labels = {
+    bgColor:'背景色', borderColor:'枠線色', borderWidth:'枠線太さ', textColor:'文字色',
+    textStrokeColor:'フチ色', textStrokeWidth:'フチ幅', fontSize:'サイズ', fontFamily:'フォント',
+    shape:'形状', borderRadius:'角丸', width:kind === 'card' ? '標準幅' : '太さ',
+    color:'ライン色', style:'種類', arrow:'矢印', pathType:'形状', cornerRadius:'コーナー半径',
+    branchRatio:'分岐位置', labelTextColor:'文字色', labelBgColor:'背景色', labelBorderColor:'枠線色',
+    labelBorderWidth:'枠線太さ', textShadowColor:'縁取り色', textShadowWidth:'縁取り太さ',
+    cloudBumpWidth:'山の幅', cloudBumpHeight:'山の高さ', cloudOffset:'ズラし量',
+    cloudSubWidthRatio:'小山幅', cloudSubHeightRatio:'小山高',
+  };
+  const remaining = new Set(controls.keys());
+  remaining.delete('name');
+  const unit = key => {
+    const node = controls.get(key);
+    if (!node || !remaining.delete(key)) return null;
+    const pair = document.createElement('span');
+    pair.className = 'gb-style-field';
+    pair.dataset.styleField = key;
+    const input = node.matches('input,select,button') ? node : node.querySelector('input,select,button');
+    if (input?.type !== 'checkbox' && key !== 'fontBold' && key !== 'fontItalic') {
+      pair.appendChild(fmt.makeLabel(labels[key] || input?.title || key));
+    }
+    pair.appendChild(node);
+    if (input?.type === 'number') pair.appendChild(fmt.makeLabel(/Ratio|Offset/.test(key) ? '%' : 'px'));
+    return pair;
+  };
+  const row = keys => {
+    const el = fmt.makeRow({ wrap:true, className:'gb-style-fields-row' });
+    keys.forEach(key => { const child = unit(key); if (child) el.appendChild(child); });
+    return el;
+  };
+  const name = container.querySelector('.bd-style-name-row');
+  const structure = kind === 'card'
+    ? [['shape','borderRadius','width'],['cloudBumpWidth','cloudBumpHeight'],['cloudOffset','cloudSubWidthRatio','cloudSubHeightRatio']]
+    : [['pathType','cornerRadius','branchRatio']];
+  const structuralRows = structure.map(row).filter(el => el.childElementCount);
+  const plans = kind === 'card' ? [
+    ['文字',[['textColor','fontSize','fontBold','fontItalic'],['fontFamily'],['textStrokeColor','textStrokeWidth']]],
+    ['背景・枠',[['bgColor','borderColor','borderWidth']]],
+  ] : [
+    ['ライン',[['color','width','style','arrow']]],
+    ['ライン上の文字',[['textVisible','textAlongPath','textAutoFlip'],['labelTextColor','fontBold','fontItalic'],['fontFamily'],['textShadowColor','textShadowWidth'],['labelBgColor','labelBorderColor','labelBorderWidth']]],
+  ];
+  const content = [];
+  for (const [title, rows] of plans) {
+    const section = document.createElement('section');
+    section.className = 'gb-style-format-section';
+    const heading = document.createElement('div');
+    heading.className = 'gb-fmt-section-title';
+    heading.textContent = title;
+    section.appendChild(heading);
+    rows.map(row).filter(el => el.childElementCount).forEach(el => section.appendChild(el));
+    if (section.children.length > 1) content.push(section);
+  }
+  if (remaining.size) { const extra = row([...remaining]); if (extra.childElementCount) content.push(extra); }
+  const storage = document.createElement('div');
+  storage.hidden = true;
+  storage.className = 'bd-style-format-storage';
+  content.forEach(el => storage.appendChild(el));
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'bd-style-format-open';
+  open.dataset.bdFormat = kind;
+  open.setAttribute('aria-haspopup','dialog');
+  open.setAttribute('aria-expanded','false');
+  const title = kind === 'card' ? 'トピックの書式設定' : 'ラインの書式設定';
+  open.setAttribute('aria-label', title);
+  const preview = document.createElement('span');
+  preview.className = 'bd-style-format-preview';
+  preview.setAttribute('aria-hidden','true');
+  const caption = document.createElement('span');
+  caption.textContent = title + '…';
+  open.append(preview, caption);
+  const refresh = () => {
+    let live = style;
+    if (typeof options.beforeEdit === 'function') live = {...style, ...options.beforeEdit()};
+    if (typeof options.editTargets === 'function') live = {...style, ...options.editTargets()?.[0]};
+    preview.innerHTML = kind === 'card' ? _bdCardStylePreviewHtml(live) : _bdLineStylePreviewHtml(live);
+  };
+  container._bdRefreshFormatPreview = refresh;
+  refresh();
+  container.replaceChildren(...(name ? [name] : []), ...structuralRows, open, storage);
+  open.addEventListener('click', () => {
+    closeAllFormatPopups();
+    const popup = openFormatPopup(open, {
+      title, fields:[], content, className:'gb-fmt-popup--board-style',
+      onClose() {
+        content.forEach(el => storage.appendChild(el));
+        container._bdFormatPopup = null;
+        open.setAttribute('aria-expanded','false');
+        if (container.isConnected) refresh();
+      },
+    });
+    container._bdFormatPopup = popup;
+    if (container.closest('[data-bd-detail-root]')) {
+      const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
+      popup._bdSelectionContext = {
+        path:bd.path,
+        nodes:[...bd.selected].map(id => bd.nodes.find(node => node.id === id)),
+        connections:connIds.map(id => bd.connections.find(conn => conn.id === id)),
+      };
+    }
+    open.setAttribute('aria-expanded','true');
+  });
 }
 
 function bdDepthStyleLabel(index, total) {
@@ -52465,6 +52638,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
 
   // プレビュードロップダウン (ピッカー) は最上部、編集フィールドはその下に。
   // 上段の大きなプレビュー枠は削除し、設定項目を縦 1 カラムで詰めて表示する。
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = `
     <div class="bd-detail-panel bd-style-in-panel" data-bd-style-in-panel="${_bdEscAttr(kind)}">
       <div class="bd-detail-section">
@@ -52707,6 +52881,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
 
   // プレビュードロップダウン (ピッカー) は最上部、編集フィールドはその下に。
   // 上段の大きなプレビュー枠は削除し、設定項目を縦 1 カラムで詰めて表示する。
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = `
     <div class="bd-detail-panel bd-style-in-panel bd-depth-in-panel" data-bd-style-in-panel="depth">
       <div class="bd-detail-section">
@@ -52807,7 +52982,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     // カードスタイル部
     const cardHeader = document.createElement('div');
     cardHeader.className = 'bd-detail-section-title';
-    cardHeader.textContent = 'トピックスタイル';
+    cardHeader.textContent = 'トピック';
     depthFieldsEl.appendChild(cardHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'card', selected, liveDepth, () => {
       applyDepthStyles();
@@ -52845,7 +53020,8 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const lineHeader = document.createElement('div');
     lineHeader.className = 'bd-detail-section-title';
     lineHeader.style.marginTop = '12px';
-  lineHeader.textContent = 'ラインスタイル（この階層のトピックから出るライン）';
+  lineHeader.textContent = 'ライン';
+    if (typeof fieldHelp === 'function') lineHeader.insertAdjacentHTML('beforeend', ' ' + fieldHelp('この階層のトピックから出るラインの設定です。'));
     depthFieldsEl.appendChild(lineHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'line', selected, liveDepth, () => {
       applyDepthStyles();
@@ -57834,7 +58010,7 @@ function _sn2StopSep() {
   }
 
   function stripIds(root, surface) {
-    root.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    root.querySelectorAll('[id]').forEach(el => { if (!el.id.startsWith('linked-')) el.removeAttribute('id'); });
     // DOM の id は同時表示面で重複できないため除去する。一方 data-e2e-id は
     // 表示面をまたぐ製品契約であり、呼び出し側が各 surface の root 内へ
     // スコープして参照する。ここで接頭辞を付けると、右サイドバーだけ
@@ -58026,6 +58202,9 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
+          columnsPanel: state.columnsPane,
+          inlineNotePanel: state.inlineNotePanel,
+          saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
@@ -58184,15 +58363,29 @@ function _sn2StopSep() {
       }
       if (actions.childElementCount) root.appendChild(actions);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
+      state.columnsPane = columnsPane;
+      const inlineNotePanel = String(data?.page_content || '').trim() && !htmlSnapshotPath(data)
+        ? document.createElement('section') : null;
+      if (inlineNotePanel) {
+        inlineNotePanel.className = 'meldex-topic-inline-note-pane';
+        inlineNotePanel.setAttribute('role', 'tabpanel');
+        inlineNotePanel.setAttribute('aria-label', 'ノート');
+      }
+      state.inlineNotePanel = inlineNotePanel;
       const grid = document.createElement('div');
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
-      root.appendChild(grid);
+      columnsPane.appendChild(grid);
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
           parentDb: parent,
           propTypes: meta?.property_types || options.propTypes || undefined,
           surface: state.surface,
+          topicTabs: true,
           readOnly: access.readOnly,
           ctx: options.ctx,
         });
@@ -58212,6 +58405,9 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
+          columnsPanel: state.columnsPane,
+          inlineNotePanel: state.inlineNotePanel,
+          saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
         });
@@ -58240,7 +58436,7 @@ function _sn2StopSep() {
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
-        root.appendChild(preview);
+        columnsPane.appendChild(preview);
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
         if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;
@@ -58280,8 +58476,8 @@ function _sn2StopSep() {
       }
       const toolbar = buildToolbar(editor);
       if (state.surface === 'main') toolbar.id = 'entity-rt-toolbar';
-      root.appendChild(toolbar);
-      root.appendChild(editor);
+      (inlineNotePanel || columnsPane).appendChild(toolbar);
+      (inlineNotePanel || columnsPane).appendChild(editor);
 
       // 新規ファイル作成は「ファイルを追加」メニューへ集約する。
 
@@ -105977,7 +106173,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
@@ -107069,7 +107265,8 @@ function _calloutImageOptions(editable, isCurrent) {
       }
       const path = editable.dataset.path || editable.dataset.entityPath || '';
       if (!path) throw new Error('先にノートを保存してください');
-      const dir = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      const home = typeof _homeFolderPath !== 'undefined' ? String(_homeFolderPath || '').replace(/\\/g, '/').replace(/\/$/, '') : '';
+      const dir = (home ? home + '/' : '') + 'Meldex画像';
       const data = await _readFileAsDataURL(prepared);
       if (!current()) throw new Error('編集対象が変わりました');
       const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
@@ -107078,7 +107275,7 @@ function _calloutImageOptions(editable, isCurrent) {
       });
       if (!result.ok || !result.path) throw new Error(result.error || '画像を登録できませんでした');
       if (!current()) throw new Error('編集対象が変わりました。元のノートで画像を選び直してください');
-      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.path));
+      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.icon_path || result.path));
       if (!spec) throw new Error('画像の保存先を読み込めませんでした');
       const item = { spec, type: 'image', label: (details.label || file.name).slice(0, 500), keywords: (details.keywords || '画像 写真 カスタム').slice(0, 500) };
       if (libraryKey) {
@@ -124574,7 +124771,9 @@ function _fsRenderThemeControlSection(ctx, adapter) {
         </select>
         ${_fsThemeMenuButton(ctx)}
       </div>
-      ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor }) : ''}
+      <details class="fs-theme-palette"><summary>テーマカラー・OSアクセント</summary>
+        ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor, hideLabel:true }) : ''}
+      </details>
     </section>`;
 }
 
@@ -124620,7 +124819,12 @@ function _fsRefreshThemePanels(ctx) {
     renderFileStyleTab(ctx);
     return;
   }
-  hosts.forEach(host => renderFileStyleTab(ctx, host));
+  hosts.forEach(host => {
+    const expanded = host.querySelector('.fs-theme-palette')?.open;
+    renderFileStyleTab(ctx, host);
+    const palette = host.querySelector('.fs-theme-palette');
+    if (palette && expanded !== undefined) palette.open = expanded;
+  });
 }
 
 function _fsBindThemeColorSetEditor(root, ctx) {
@@ -125034,7 +125238,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = type !== 'map'; });
   if (type !== 'map' && ['map-settings', 'map-selection'].includes(_currentDetailTab)) switchDetailTab(null);
-  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map']);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map', 'form-app']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
@@ -142154,10 +142358,7 @@ function hideBoardNoteTab() {
     if (fields.length <= 1) return [rowData];
     const mapped = new Set(Object.values(_mapFileRow(rowData).map).filter(Boolean));
     const unsupported = fields.filter(field => !mapped.has(field));
-    if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) {
-      return [{ ...rowData, fields: fields.filter(field => mapped.has(field)) },
-        { label: rowData.label + ' 行間・余白', fields: unsupported, preview: false }];
-    }
+    if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) return [rowData];
     return unsupported.length ? fields.map(field => ({ label: field.label, fields: [field], preview: rowData.preview })) : [rowData];
   }
 
@@ -142298,7 +142499,10 @@ function hideBoardNoteTab() {
     if (!anchorEl || !adapter || typeof openFormatPopup !== 'function') return;
     const { map, fields } = _mapFileRow(rowData);
     if (!fields.length) return;
-    openFormatPopup(anchorEl, {
+    const mapped = new Set(Object.values(map));
+    const extraFields = (rowData.fields || []).filter(field => !mapped.has(field));
+    const popup = openFormatPopup(anchorEl, {
+      title: `${_rowLabel(rowData)}の書式設定`,
       fields,
       values: _fileValues(rowData, adapter, map),
       onChange(prop, value) {
@@ -142320,6 +142524,9 @@ function hideBoardNoteTab() {
           for (const [prop, field] of Object.entries(map)) {
             if (await _setFileField(field, prop, '', adapter) === false) return;
           }
+          for (const field of extraFields) {
+            if (await _setFileField(field, '', '', adapter) === false) return;
+          }
           if (adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
         } catch (error) {
           console.warn('テーマ書式のリセットに失敗:', error);
@@ -142327,6 +142534,23 @@ function hideBoardNoteTab() {
         }
       },
     });
+    // 元の保存・履歴ハンドラーを使い、行間や余白も同じ書式編集へ集約する。
+    if (popup && extraFields.length) {
+      const row = document.createElement('div');
+      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap';
+      extraFields.forEach(field => row.appendChild(_fsBuildFieldInline(field, adapter, rowData.label)));
+      row.querySelectorAll('input').forEach(input => {
+        input._gbFmtCommittedValue = input.value;
+        input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
+        input._gbFmtCommit = () => {
+          if (input.value === input._gbFmtCommittedValue) return;
+          input._gbFmtCommittedValue = input.value;
+          input.dispatchEvent(new Event('change', { bubbles:true }));
+        };
+      });
+      popup.insertBefore(row, popup.querySelector('.gb-fmt-footer'));
+      if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
+    }
   }
 
   function _rowLabel(rowData) {
@@ -155977,40 +156201,7 @@ function onPropertyTypeChange(root) {
       </select>
     </div>`;
   } else if (type === 'image') {
-    const options = current.options || {};
-    const accept = Array.isArray(options.accept) ? options.accept.filter(ext => String(ext).toLowerCase() !== 'svg').join(', ') : 'png, jpg, jpeg, gif, webp';
-    const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
-    const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
-    optDiv.innerHTML = `<div class="field"><label>最大枚数</label>
-      <input id="pt-image-max-count" aria-label="最大枚数" class="gb-num-input" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
-    </div>
-    <div class="field"><label>許可する拡張子</label>
-      <input id="pt-image-accept" aria-label="許可する拡張子" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
-    </div>
-    <div class="field"><label>表の画像高さ(px)</label>
-      <input id="pt-image-cell-height" aria-label="表の画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(cellHeight)}">
-    </div>
-    <div class="field"><label>ギャラリーの画像高さ(px)</label>
-      <input id="pt-image-gallery-height" aria-label="ギャラリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gallery || cellHeight)}">
-    </div>
-    <div class="field"><label>カンバンの画像高さ(px)</label>
-      <input id="pt-image-kanban-height" aria-label="カンバンの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.kanban || cellHeight)}">
-    </div>
-    <div class="field"><label>ツリーの画像高さ(px)</label>
-      <input id="pt-image-tree-height" aria-label="ツリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.tree || cellHeight)}">
-    </div>
-    <div class="field"><label>タイムラインの画像高さ(px)</label>
-      <input id="pt-image-timeline-height" aria-label="タイムラインの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.timeline || cellHeight)}">
-    </div>
-    <div class="field"><label>ガントの画像高さ(px)</label>
-      <input id="pt-image-gantt-height" aria-label="ガントの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gantt || cellHeight)}">
-    </div>
-    <div class="field"><label>フォームの画像高さ(px)</label>
-      <input id="pt-image-form-height" aria-label="フォームの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.form || cellHeight)}">
-    </div>
-    <div class="field"><label>保存サムネイルサイズ(px)</label>
-      <input id="pt-image-thumb-size" aria-label="保存サムネイルサイズ(px)" class="gb-num-input" type="number" min="64" max="1024" value="${esc(uploadThumbSize)}">
-    </div>`;
+    optDiv.innerHTML = _ptImageOptionsHtml(current.options || {});
   } else {
     optDiv.innerHTML = '';
   }
@@ -156775,6 +156966,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
 /* 列ごとのユーザー設定アイコン（property_types[prop].icon、GBIconAssets の spec 文字列）。
    列一覧・エントリレイアウトの field セルのキャプションで、列タイプの既定アイコンより優先される。 */
 function _bindDbPropertyIconField(root, dbPath, propName, ctx) {
+  ctx = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null) || ctx;
   const btn = root?.querySelector?.('#pt-icon-btn');
   if (!btn) return;
   // UI部品検査（gb-e2e-coverage.js）の安定ID要件: ヘルプアイコンにも data-e2e-id を付ける
@@ -156809,13 +157001,14 @@ function _bindDbPropertyIconField(root, dbPath, propName, ctx) {
     else delete next.icon;
     // setPropertyType は保護列で同期的に false を返し、バックエンド保存失敗時は reject する。
     // どちらも握りつぶさず、成功時だけ成功メッセージを出す。
-    Promise.resolve(setPropertyType(dbPath, propName, next, ctx))
+    Promise.resolve().then(() => setPropertyType(dbPath, propName, next, ctx))
       .then((ok) => {
         if (ok === false) {
           if (typeof showStatus === 'function') showStatus('この列のアイコンは変更できません', true);
           return;
         }
-        if (typeof renderPivot === 'function') renderPivot(ctx);
+        const renderCtx = typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(dbPath, ctx) : ctx;
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
         if (typeof showStatus === 'function') {
           showStatus(spec ? '列のアイコンを設定しました' : '列のアイコンを既定へ戻しました');
         }
@@ -157154,6 +157347,30 @@ async function applyDbPropertySettings(originalPropName, root, options = {}) {
 }
 
 /* 型別値エディタ・ドロップダウン → gb-db-value-editors.js に分離 */
+
+function _ptImageOptionsHtml(options) {
+  const accept = Array.isArray(options.accept) ? options.accept.filter(ext => String(ext).toLowerCase() !== 'svg').join(', ') : 'png, jpg, jpeg, gif, webp';
+  const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
+  const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
+  const row = (id, label, aria, value, min, max, suffix = 'px', note = '') => `
+    <div class="gb-field-pair"><label for="${id}">${label}</label>
+      <span class="gb-num-unit"><input id="${id}" aria-label="${aria}" ${note ? `aria-describedby="${id}-note"` : ''} class="gb-num-input" type="number" min="${min}" max="${max}" value="${esc(value)}"><span class="unit">${suffix}</span>${note ? `<span class="gb-section-desc" id="${id}-note">${esc(note)}</span>` : ''}</span>
+    </div>`;
+  return `<fieldset class="gb-field-pair-group">
+      ${row('pt-image-max-count', '最大枚数', '最大枚数', options.max_count ?? '', 1, 100, '枚', '空欄＝100')}
+    </fieldset>
+    <div class="field"><label for="pt-image-accept">許可する拡張子</label>
+      <input id="pt-image-accept" aria-label="許可する拡張子" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
+    </div>
+    <fieldset class="gb-field-pair-group"><legend>画像の高さ</legend>
+      ${row('pt-image-cell-height', 'テーブル', '表の画像高さ(px)', cellHeight, 32, 320)}
+      ${[['gallery', 'ギャラリー'], ['kanban', 'カンバン'], ['tree', 'ツリー'], ['timeline', 'タイムライン'], ['gantt', 'ガント'], ['form', 'フォーム']]
+        .map(([view, label]) => row('pt-image-' + view + '-height', label, label + 'の画像高さ(px)', options.view_thumbnail_sizes?.[view] || cellHeight, 32, 320)).join('')}
+    </fieldset>
+    <fieldset class="gb-field-pair-group"><legend>保存用画像</legend>
+      ${row('pt-image-thumb-size', 'サムネイルサイズ', '保存サムネイルサイズ(px)', uploadThumbSize, 64, 1024)}
+    </fieldset>`;
+}
 ;
 
 ;
@@ -174148,7 +174365,7 @@ const MeldexMapControls = (() => {
   const D = () => MeldexMapDocument;
   function field(app, parent, label, value, apply, options = {}) {
     const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
-    const caption = document.createElement('span'); caption.textContent = label;
+    const caption = document.createElement('span'); caption.textContent = label; caption.title = label;
     const input = document.createElement(options.multiline ? 'textarea' : 'input');
     input.className = options.multiline ? 'gb-textarea' : options.type === 'number' ? 'gb-input gb-num-input' : 'gb-input';
     if (!options.multiline) input.type = options.type || 'text';
@@ -174179,7 +174396,7 @@ const MeldexMapControls = (() => {
   }
   function select(parent, label, choices, value, apply, disabled = false) {
     const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
-    const caption = document.createElement('span'); caption.textContent = label;
+    const caption = document.createElement('span'); caption.textContent = label; caption.title = label;
     const control = document.createElement('select'); control.className = 'gb-select'; control.setAttribute('aria-label', label); control.disabled = disabled;
     for (const [key, text] of choices) control.add(new Option(text, key));
     control.value = value; control.onchange = () => apply(control.value);
@@ -175392,6 +175609,7 @@ class FormAppComponent extends ToolComponent {
   _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
+    this._syncDetailPanel();
     if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
@@ -175454,6 +175672,7 @@ class FormAppComponent extends ToolComponent {
       else await this._loadSheet();
       if (generation !== this._generation) return false;
       this._render(); this._changed();
+      this._syncDetailPanel();
       if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
@@ -175831,6 +176050,12 @@ class FormAppComponent extends ToolComponent {
       this.saveDefinition(); return true;
     }
     return false;
+  }
+  _syncDetailPanel() {
+    const path = this.path || this._tab()?.path || this.state.formPath;
+    if (!path || this._embedded || this.paneId !== GBLayout.activePane) return;
+    if (typeof _syncDetailPanel === 'function') return _syncDetailPanel(this.state.label || 'フォーム', path, 'form-app');
+    window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
   }
   saveDefinition() {
     this._commitFocusedControl();
@@ -180171,6 +180396,7 @@ function _syncRelationWarningIcons(ctx) {
 function renderPivot(ctx) {
   const renderPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   ctx = typeof _normalizeDbRenderContext === 'function' ? _normalizeDbRenderContext(ctx) : (ctx || _currentPaneState());
+  if (!ctx) return;
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
 
@@ -180445,7 +180671,9 @@ function renderPivot(ctx) {
     const typeIcon = document.createElement('span');
     typeIcon.className = 'th-type-icon';
     typeIcon.style.cssText = 'opacity:0.8;margin-right:4px;';
-    typeIcon.innerHTML = lucide(PROP_TYPE_ICON[ptcHeader?.type] || PROP_TYPE_ICON.text, 14);
+    typeIcon.innerHTML = ptcHeader?.icon && window.GBIconAssets?.render
+      ? GBIconAssets.render(ptcHeader.icon, 14, { contextPath: dbPath })
+      : lucide(PROP_TYPE_ICON[ptcHeader?.type] || PROP_TYPE_ICON.text, 14);
     th.appendChild(typeIcon);
     const labelSpan = document.createElement('span');
     labelSpan.className = 'th-label';
@@ -212157,35 +212385,133 @@ function _chatBindImeCompositionGuard(inputId) {
   const input = document.getElementById(inputId);
   if (!input || input.dataset.chatImeGuardBound === '1') return;
   input.dataset.chatImeGuardBound = '1';
+  input.addEventListener('focus', updateChatShortcutHints);
   input.addEventListener('compositionstart', () => {
     input.dataset.chatImeComposing = '1';
+    input.dataset.chatImePendingEnter = '0';
   });
   input.addEventListener('compositionend', () => {
     input.dataset.chatImeComposing = '0';
-    input.dataset.chatLastCompositionEnd = String(Date.now());
+    input.dataset.chatImePendingEnter = '1';
+  });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.isComposing || event.keyCode === 229 || input.dataset.chatImeComposing === '1')) {
+      input.dataset.chatImeEnterDown = '1';
+    } else if (event.key !== 'Enter' && !event.isComposing && input.dataset.chatImeComposing !== '1') {
+      input.dataset.chatImePendingEnter = '0';
+    }
+  }, true);
+  input.addEventListener('keyup', event => {
+    if (event.key === 'Enter') input.dataset.chatImeEnterDown = '0';
+    if (!event.isComposing && input.dataset.chatImeComposing !== '1') input.dataset.chatImePendingEnter = '0';
+  });
+  input.addEventListener('pointerup', () => {
+    if (input.dataset.chatImeComposing !== '1') input.dataset.chatImePendingEnter = '0';
+  });
+  input.addEventListener('blur', () => {
+    input.dataset.chatImeComposing = '0';
+    input.dataset.chatImeEnterDown = '0';
+    input.dataset.chatImePendingEnter = '0';
   });
 }
 
 function _chatIsImeEnterEvent(event) {
-  const target = event?.target;
-  const lastEnd = Number(target?.dataset?.chatLastCompositionEnd || 0);
+  const target = event?.currentTarget?.dataset?.chatImeGuardBound === '1'
+    ? event.currentTarget : event?.target?.closest?.('[data-chat-ime-guard-bound="1"]') || event?.target;
   return !!(
     event?.isComposing ||
     event?.keyCode === 229 ||
     event?.which === 229 ||
     target?.dataset?.chatImeComposing === '1' ||
-    (lastEnd && Date.now() - lastEnd < 120)
+    target?.dataset?.chatImeEnterDown === '1' ||
+    (event?.key === 'Enter' && target?.dataset?.chatImePendingEnter === '1') ||
+    event?.repeat
   );
+}
+
+function _chatSendKeyMatches(event) {
+  return window.MeldexShortcutRegistry
+    ? window.MeldexShortcutRegistry.matchEvent(event, ['chat']) === 'chat.send'
+    : event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+function _chatListEnterEdit(text, start, end) {
+  const lineStart = start > 0 ? text.lastIndexOf('\n', start - 1) + 1 : 0;
+  const newline = text.indexOf('\n', start);
+  const lineEnd = newline < 0 ? text.length : newline;
+  const line = text.slice(lineStart, lineEnd);
+  const item = line.match(/^([ \t]*)([・●○◦▪■‣])([ \t]*)(.*)$/)
+    || line.match(/^([ \t]*)([-+*]|\d{1,9}[.)])([ \t]+|$)(.*)$/);
+  if (!item || start < lineStart + item[1].length + item[2].length) return null;
+  if (start !== end) return { start, end, text: '\n' };
+  if (!item[4].trim()) return { start: lineStart, end: lineEnd, text: '' };
+  const number = item[2].match(/^(\d+)([.)])$/);
+  const marker = number ? String(Number(number[1]) + 1) + number[2] : item[2];
+  return { start, end, text: '\n' + item[1] + marker + item[3] };
+}
+
+function _chatComposerKeyAction(event, text, start, end) {
+  const send = _chatSendKeyMatches(event);
+  if (event.key !== 'Enter' && !send) return null;
+  if (_chatIsImeEnterEvent(event)) return { kind: 'ime' };
+  const plainEnter = event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+  const listEdit = plainEnter ? _chatListEnterEdit(text, start, end) : null;
+  if (listEdit) return { kind: 'newline', edit: listEdit };
+  if (send) return { kind: 'send' };
+  if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return { kind: 'newline', edit: { start, end, text: '\n' } };
+  }
+  return null;
+}
+
+function _chatConsumeComposerKey(event, action) {
+  if (!action) return;
+  event.stopPropagation();
+  // Let the IME commit its own text, but suppress post-commit/repeated Enter.
+  const input = event.currentTarget;
+  if (action.kind !== 'ime' || (!event.isComposing && event.keyCode !== 229 && event.which !== 229
+      && input?.dataset?.chatImeComposing !== '1')) event.preventDefault();
+}
+
+function _chatHandlePlainComposerKey(event, send) {
+  const input = event.currentTarget;
+  const action = _chatComposerKeyAction(event, input.value, input.selectionStart, input.selectionEnd);
+  if (!action) return;
+  _chatConsumeComposerKey(event, action);
+  if (action.kind === 'send') send();
+  else if (action.kind === 'newline') {
+    input.setRangeText(action.edit.text, action.edit.start, action.edit.end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function _chatSendShortcutTitle() {
+  const registry = window.MeldexShortcutRegistry;
+  const key = registry ? registry.keyFor('chat.send') : 'enter';
+  return key ? '送信 (' + (registry?.formatKey(key) || 'Enter') + ')' : '送信（ボタンのみ）';
+}
+
+function updateChatShortcutHints() {
+  const title = _chatSendShortcutTitle();
+  const registry = window.MeldexShortcutRegistry;
+  const newlineHint = registry?.normalizeKeyDef(registry.keyFor('chat.send')) === 'shift+enter'
+    ? 'Enterで改行' : 'Shift+Enterで改行';
+  for (const id of ['chat-input', 'team-input']) {
+    const input = document.getElementById(id);
+    if (input) input.placeholder = 'メッセージを入力... (' + title + '、' + newlineHint + ')';
+  }
+  const rich = document.getElementById('chat-rich-input');
+  if (rich) rich.dataset.placeholder = document.getElementById('chat-input')?.placeholder || '';
+  for (const id of ['chat-send-btn', 'team-send-btn']) {
+    const button = document.getElementById(id);
+    if (button && !button.disabled && button.textContent.trim() === '送信') button.title = title;
+  }
 }
 
 _chatBindImeCompositionGuard('team-input');
 _bindTeamClipboardPaste();
 document.getElementById('team-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    if (_chatIsImeEnterEvent(e)) return;
-    e.preventDefault();
-    teamSend();
-  }
+  _chatHandlePlainComposerKey(e, teamSend);
 });
 
 // textarea auto-grow（入力内容に合わせて高さを調整）
@@ -212212,6 +212538,8 @@ function _autoGrowTextarea(ta, minRows, maxRows) {
 }
 document.getElementById('team-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 8); });
 _chatBindImeCompositionGuard('chat-input');
+updateChatShortcutHints();
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', updateChatShortcutHints, { once: true });
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
@@ -212699,7 +213027,7 @@ async function _chatRefreshApiKeyState() {
   if (refreshToken !== _chatState.apiKeyRefreshToken || provider !== _chatProviderKey(_chatState.provider)) return;
   const configured = typeof _chatProviderStatusConfigured === 'function' ? _chatProviderStatusConfigured(status) : !!status.configured;
   sendBtn.disabled = !configured;
-  sendBtn.title = configured ? '送信 (Enter)' : (status.message || '送信設定を確認してください。');
+  sendBtn.title = configured ? _chatSendShortcutTitle() : (status.message || '送信設定を確認してください。');
   if (typeof _chatRefreshProviderAvailability === 'function') {
     _chatRefreshProviderAvailability({ [provider]: status }).catch(() => {});
   }
@@ -214959,7 +215287,7 @@ async function chatSend(options = {}) {
       const liveSendBtn = document.getElementById('chat-send-btn') || sendBtn;
       if (liveSendBtn && !detachedScope) {
         liveSendBtn.textContent = '送信';
-        liveSendBtn.title = '送信 (Enter)';
+        liveSendBtn.title = _chatSendShortcutTitle();
         liveSendBtn.disabled = false;
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
@@ -216192,14 +216520,9 @@ document.getElementById('chat-search-input')?.addEventListener('input', () => {
 });
 document.getElementById('chat-search-scope')?.addEventListener('change', () => { _chatSearch(); });
 
-// Enter送信、Shift+Enter改行
+// Plain and rich composers share IME, list and configured-send-key handling.
 document.getElementById('chat-input')?.addEventListener('keydown', function(e) {
-  const shortcutId = window.MeldexShortcutRegistry?.matchEvent(e, ['chat']) || '';
-  if (shortcutId === 'chat.send' || (!window.MeldexShortcutRegistry && e.key === 'Enter' && !e.shiftKey)) {
-    if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(e)) return;
-    e.preventDefault();
-    chatSend();
-  }
+  _chatHandlePlainComposerKey(e, chatSend);
 });
 
 // ============================
@@ -219395,16 +219718,20 @@ _chatInstallTabActivationHook();
       if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) {
         event.stopPropagation();
       }
-      if (event.key === 'Enter' && !event.shiftKey) {
-        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
-        event.preventDefault();
+      if (event.key !== 'Enter' && !_chatSendKeyMatches(event)) {
+        if (!String(event.key || '').startsWith('Arrow')) _richVerticalColumn = null;
+        return;
+      }
+      const source = _richInputToMarkdown(editor).replace(/\r\n?/g, '\n');
+      const range = _richSelectionSourceRange(editor, true, source);
+      const action = _chatComposerKeyAction(event, source, range?.start ?? source.length, range?.end ?? source.length);
+      _chatConsumeComposerKey(event, action);
+      if (action?.kind === 'send') {
         _syncPlainFromRich();
         if (typeof chatSend === 'function') chatSend();
-      } else if (event.key === 'Enter' && event.shiftKey) {
-        if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        _insertSourceTextAtRichSelection('\n');
+      } else if (action?.kind === 'newline') {
+        _setRichSelectionFromSourceRange(editor, source, action.edit.start, action.edit.end);
+        _insertSourceTextAtRichSelection(action.edit.text);
       } else if (!String(event.key || '').startsWith('Arrow')) {
         _richVerticalColumn = null;
       }
@@ -221828,7 +222155,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const sendBtn = document.getElementById('chat-send-btn');
     if (!sendBtn) return null;
     sendBtn.textContent = streaming ? '停止' : '送信';
-    sendBtn.title = streaming ? 'CLIの実行を停止' : '送信 (Enter)';
+    sendBtn.title = streaming ? 'CLIの実行を停止' : _chatSendShortcutTitle();
     sendBtn.disabled = false;
     return sendBtn;
   }
@@ -235719,6 +236046,17 @@ function createTreeNodeFromBrowse(item, rootPath) {
     row.title = notice.title;
     row.dataset.gbTooltip = notice.title;
     row.appendChild(notice);
+  }
+  if (Array.isArray(item.feature_labels) && item.feature_labels.length) {
+    const badge = document.createElement('span');
+    badge.className = 'tree-feature-badge';
+    badge.innerHTML = lucide('link', 12);
+    badge.title = 'Meldex連携: ' + item.feature_labels.join('、');
+    badge.dataset.gbTooltip = badge.title;
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', badge.title);
+    badge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:auto;flex-shrink:0;';
+    row.appendChild(badge);
   }
   if (itemLocked) {
     const lockBadge = document.createElement('span');
@@ -264160,6 +264498,7 @@ async function _exportDictFile(options = {}) {
   // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
   function _refreshOpenSettings() {
     if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+    if (typeof global.updateChatShortcutHints === 'function') global.updateChatShortcutHints();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     document.querySelectorAll('[data-shortcut-settings-host]').forEach(host => {
       renderSettings(host, { scope: host.dataset.shortcutSettingsScope || '', boxed: host.dataset.shortcutSettingsBoxed === '1' });
@@ -264176,6 +264515,7 @@ async function _exportDictFile(options = {}) {
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
     if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
+    if (typeof global.updateChatShortcutHints === 'function') global.updateChatShortcutHints();
     if (before && options?.skipHistory !== true && typeof global.pushLocalStorageSettingsHistory === 'function') {
       const after = global.captureLocalStorageSettings([STORAGE_KEY]);
       const refreshAfterHistory = (_keys, restoredSnapshot) => {
@@ -264380,21 +264720,21 @@ async function _exportDictFile(options = {}) {
     const searchText = [item.label, item.id, item.key, item.display, label].join(' ').toLowerCase();
     let html = '<div class="shortcut-row gb-field-row" data-id="' + _esc(item.id) + '" data-scope="' + _esc(item.displayScope)
       + '" data-search="' + _esc(searchText) + '">';
-    html += '<span class="shortcut-label gb-label" title="' + _esc(item.id) + '">' + _esc(item.label) + '</span>';
+    html += '<span class="shortcut-label gb-label" title="' + _esc(item.label) + '">' + _esc(item.label) + '</span>';
     if (item.readonly) {
       // マウス操作を伴うため割り当て変更の対象にしない。一覧には必ず出す。
-      html += '<span class="shortcut-status">操作</span>';
       html += '<kbd class="shortcut-key is-readonly" data-e2e-id="shortcut-key-' + _esc(item.id) + '">'
         + _esc(keyText) + '</kbd>';
+      html += '<span class="shortcut-status">操作</span>';
       html += '<span class="shortcut-reset-spacer"></span>';
       return html + '</div>';
     }
     const status = item.isCustom ? 'カスタム' : '既定';
-    html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     html += '<kbd class="shortcut-key' + (item.isCustom ? ' is-custom' : '') + '" data-id="' + _esc(item.id)
       + '" data-e2e-id="shortcut-key-' + _esc(item.id)
       + '" tabindex="0" role="button" title="クリックして変更" aria-label="' + _esc(item.label) + 'のキーを変更">'
       + _esc(keyText) + '</kbd>';
+    html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     if (item.isCustom) {
       html += '<button type="button" class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + _esc(item.id)
         + '" data-e2e-id="shortcut-reset-' + _esc(item.id) + '" title="デフォルトに戻す" aria-label="'
@@ -264411,6 +264751,7 @@ async function _exportDictFile(options = {}) {
     html += '<span>' + _esc(scopeLabel(scope)) + '</span>';
     html += '<span class="shortcut-group-count gb-section-desc">' + items.length + '件</span>';
     html += '</div>';
+    html += '<div class="shortcut-columns" aria-hidden="true"><span>操作</span><span>キー</span><span>状態</span><span></span></div>';
     html += items.map(_rowHtml).join('');
     return html + '</div>';
   }

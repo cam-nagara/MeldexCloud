@@ -1,0 +1,196 @@
+/* 設定の項目名・値・単位は同じ行。既存DOMと保存イベントを保つ共通アダプタ。
+   .field は設定/ダイアログの内部だけに限定し、本文やシートのセルへ適用しない。 */
+:is(
+  .gb-field-row, .gb-field-inline, .gb-field-select-row,
+  .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field)
+):has(> :is(input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea, .gb-num-unit, .cal-option-check), > .gb-label ~ *):not(.shortcut-row):not(.shortcut-settings-filter):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: var(--ui-space-5, 12px) !important;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field)
+):has(> :is(input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea, button, .gb-num-unit, .cal-option-check), > .gb-label ~ *)
+> :is(label, .gb-label, .cs-row-label, .msr-field-label, span:first-child):first-child {
+  flex: 0 0 128px;
+  width: 128px;
+  min-width: 0;
+  max-width: 128px;
+  margin: 0 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 行内の入力だけを縮める。readonly/disabled、min/max、イベントは変更しない。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> :is(input:not([type="checkbox"]):not([type="radio"]):not([type="number"]):not([type="range"]):not([type="color"]):not([type="hidden"]), select, textarea) {
+  flex: 0 1 320px;
+  width: 320px;
+  max-width: 100%;
+  min-width: 0 !important;
+  box-sizing: border-box;
+}
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> select { flex-basis: 240px; width: 240px; }
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> input[type="number"] {
+  flex: 0 0 auto;
+  max-width: 96px !important;
+  min-width: 64px;
+  font-variant-numeric: tabular-nums;
+}
+:is(.gb-field-row, .gb-field-inline, .field, .gb-field, .sn2-detail-settings-row, .sn2-role-opts-row)
+input[type="number"]::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+:is(.gb-field-row, .gb-field-inline, .field, .gb-field, .sn2-detail-settings-row, .sn2-role-opts-row)
+input[type="number"]::-webkit-inner-spin-button { margin-left: 0; }
+.gb-fmt-num::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+.gb-fmt-num::-webkit-inner-spin-button { margin-left: 0; }
+input.gb-fmt-num { min-width: 64px; }
+:where(.gb-section, .sa-option-panel, .settings-modal, .modal) input[type="number"]::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+:where(.gb-section, .sa-option-panel, .settings-modal, .modal) input[type="number"]::-webkit-inner-spin-button { margin-left: 0; }
+
+/* 複数の組を持つ設定行も、ラベルとその値を上下へ切り離さない。 */
+:is(.sn2-detail-settings-row, .sn2-role-opts-row, .cs-row, .settings-theme-note-layout-row):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  flex-wrap: nowrap !important;
+  justify-content: flex-start !important;
+  gap: var(--ui-space-4, 8px);
+  max-width: 100%;
+  overflow-x: auto;
+}
+.gb-num-unit { flex-wrap: nowrap; }
+
+/* 新旧の右サイドバーと単独アプリは同じ設定部品を使用する。本文・履歴一覧には適用しない。 */
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
+:is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row, .gb-form-option-field,
+    .map-settings-field, .viewer-setting-row):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display:flex;
+  flex-direction:row;
+  align-items:center;
+  justify-content:flex-start;
+  flex-wrap:nowrap;
+  gap:6px 8px;
+  min-width:0;
+}
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
+:is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row) > :is(label,span):first-child {
+  flex:0 0 auto;
+  max-width:128px;
+  white-space:nowrap;
+}
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel) :is(.gb-fmt-popup-group,.gb-style-field) {
+  flex-wrap:nowrap;
+  white-space:nowrap;
+}
+.fs-theme-palette { min-width:0; margin-top:4px; }
+.fs-theme-palette > summary { cursor:pointer; font-size:12px; color:var(--fg2); }
+.fs-theme-palette .cs-theme-color-set-row { display:flex !important; flex-wrap:wrap !important; overflow:visible; gap:6px 8px; padding:8px 0 0 12px; }
+.fs-theme-palette .cs-theme-color-set { flex:0 1 auto; flex-wrap:wrap; gap:4px; }
+.fs-theme-palette .cs-toggle { flex:0 0 auto; white-space:nowrap; }
+.fs-theme-management .fs-theme-row button { flex-shrink:0; white-space:nowrap; }
+/* フォーム／マップの専用設定も、本文の入力フォームとは分けて共通配置にする。 */
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) {
+  display:flex;
+  flex-direction:row;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(span,label):first-child {
+  flex:0 1 128px;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(input:not([type="checkbox"]),select,textarea) {
+  flex:1 1 120px;
+  width:120px;
+  min-width:0;
+  max-width:240px;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) .gb-map-options .gb-map-field > input[type="number"] {
+  flex:0 0 80px;
+  max-width:96px;
+}
+#rp-detail .sn2-detail-settings-row.sn2-detail-settings-row--pairs {
+  flex-wrap:wrap !important;
+  overflow:visible;
+}
+#rp-detail .sn2-detail-settings-pair { display:inline-flex; flex:0 0 auto; align-items:center; gap:4px; min-width:0; }
+#rp-detail .sn2-detail-settings-pair > .sn2-detail-settings-label { width:auto; flex:0 0 auto; margin:0; white-space:nowrap; }
+#rp-detail .sn2-detail-settings-pair > :is(input,select,button) { flex-shrink:0; }
+.gb-form-field-palette:has(> .gb-form-editor-label) {
+  display:grid;
+  grid-template-columns:minmax(64px, 96px) minmax(0, 1fr);
+  align-content:start;
+  align-items:center;
+  gap:8px;
+}
+.gb-form-field-palette > .gb-form-editor-label { margin:0; }
+.gb-form-field-palette > :is(input,textarea) { width:100%; min-width:0; box-sizing:border-box; }
+.gb-form-field-palette > :not(.gb-form-editor-label,input,textarea) { grid-column:1/-1; }
+.gb-form-submit-field { display:flex; flex-direction:row; align-items:center; gap:8px; min-width:0; }
+.gb-form-submit-field > span { flex:0 0 auto; white-space:nowrap; }
+.gb-form-submit-field > input { flex:1 1 120px; min-width:0; width:120px; }
+.gb-form-app-toolbar.gb-toolbar-overflow-host > label { flex-wrap:nowrap; }
+.gb-form-app-toolbar.gb-toolbar-overflow-host select { max-width:240px; }
+.gb-section > :not(.gb-section-title) { margin-left: var(--ui-space-5, 12px); }
+/* 書式設定などの複数の小項目は組の内部だけを近づけ、主項目の列幅を継承しない。 */
+.gb-field-inline > :is(label, .gb-label, .cs-row-label, span):first-child {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+}
+/* 子のラベルを上段へ逃がす代わりに、設定の組ごとに十分な列幅を確保する。 */
+:is(.gb-scheduler-scope-grid, .gb-scheduler-option-row, .tl-calendar-fields,
+  .tl-calendar-leap-fields, .bd-group-style-fields, .bd-group-options,
+  .gb-form-subform-settings, .el-chart-axis-settings) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--ui-space-4, 8px);
+  min-width: 0;
+}
+:where(.modal, .gb-modal, .gb-section, .db-prop-settings) .field:has(> label + button):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  gap: var(--ui-space-5, 12px);
+}

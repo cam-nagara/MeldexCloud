@@ -179,13 +179,14 @@
   },
 
   _showRoleOptionsPopup(anchorEl, chara, panelContainer) {
-    document.querySelectorAll('.gb-fmt-popup--role-opts').forEach(el => el.remove());
-    document.querySelectorAll('.gb-fmt-popup:not(.gb-fmt-popup--role-opts)').forEach(el => el.remove());
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--role-opts';
     let closeHandler = null;
     let keyHandler = null;
     const closePopup = (restoreFocus = false) => {
+      // Escapeでも、まだフォーカス中の値を既存の保存ハンドラーへ確定する。
+      popup.querySelectorAll('input').forEach(input => input._gbFmtCommit?.());
       popup.remove();
       if (closeHandler) {
         document.removeEventListener('pointerdown', closeHandler, true);
@@ -413,6 +414,15 @@
         }
       });
     });
+    popup.querySelectorAll('input:not([type="checkbox"])').forEach(input => {
+      input._gbFmtCommittedValue = input.value;
+      input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
+      input._gbFmtCommit = () => {
+        if (input.value === input._gbFmtCommittedValue) return;
+        input._gbFmtCommittedValue = input.value;
+        input.dispatchEvent(new Event('change', { bubbles:true }));
+      };
+    });
     document.body.appendChild(popup);
     if (typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
@@ -420,10 +430,16 @@
         close: () => closePopup(true),
       });
     }
+    if (window.gbFmt?.decoratePopup) {
+      popup.querySelector('.sn2-role-opts-title')?.remove();
+      window.gbFmt.decoratePopup(popup, { title:'タイプの設定', close:() => closePopup(true) });
+    }
+    popup._gbFmtCleanup = () => closePopup();
     if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
     else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
     keyHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
       ev.preventDefault();
       ev.stopPropagation();
       closePopup(true);
@@ -727,6 +743,19 @@
         <label class="sn2-detail-settings-label">小区切り</label>
         <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter2" data-e2e-id="scriptnote-theme-secondary-style">書式設定…</button>
       </div>`;
+    // 行全体をスクロールさせず、ラベルと操作部を一つの組として折り返す。
+    settings.querySelectorAll('.sn2-detail-settings-row:not(.sn2-detail-settings-row--nowrap)').forEach(row => {
+      let pair = null;
+      for (const child of Array.from(row.children)) {
+        if (child.matches('label:not(.sn2-detail-settings-label--ml0)')) {
+          pair = document.createElement('span');
+          pair.className = 'sn2-detail-settings-pair';
+          row.insertBefore(pair, child);
+        }
+        if (pair) pair.appendChild(child);
+      }
+      row.classList.add('sn2-detail-settings-row--pairs');
+    });
     settings.querySelectorAll('[data-gutter-style]').forEach(button => {
       const colId = button.dataset.gutterStyle;
       const style = this.doc.editor?.columnStyles?.[colId] || {};

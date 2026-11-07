@@ -34,11 +34,13 @@
   appearance: auto;
   -moz-appearance: number-input;
 }
+/* 数値エディタとネイティブのスピンボタンの間隔。右端のボタン位置は維持する。 */
+.gb-num-input::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4); }
 .gb-num-input::-webkit-outer-spin-button,
 .gb-num-input::-webkit-inner-spin-button {
   -webkit-appearance: auto;
   opacity: 0;
-  margin-left: var(--ui-space-3);
+  margin-left: 0;
   transition: opacity 0.12s;
 }
 .gb-num-input:hover::-webkit-outer-spin-button,

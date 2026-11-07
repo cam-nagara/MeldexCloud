@@ -7,6 +7,14 @@
   white-space: nowrap;
 }
 .gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
+/* メインパネルの旧描画も測定可能な一行にする。非表示のアプリは変更しない。 */
+.gb-toolbar.gb-toolbar-overflow-host:is([style*="display: contents"], [style*="display:contents"]) {
+  display:flex !important;
+  flex:1 1 100%;
+  width:100%;
+  align-items:center;
+  gap:4px;
+}
 /* Item names stay on one line before width measurement and in overflow menus. */
 :is(.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar,
     .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar,
@@ -42,13 +50,23 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 28px !important;
-  width: 28px;
-  min-width: 28px;
+  flex: 0 0 32px !important;
+  width: 32px !important;
+  min-width: 32px !important;
   min-height: 28px;
   padding: 0 !important;
   margin-left: auto;
   font-size: 11px;
+}
+.gb-toolbar-overflow-button > .gb-toolbar-overflow-symbol {
+  display:inline-block;
+  flex:0 0 auto;
+  width:18px;
+  font:normal 14px/1 Arial, sans-serif;
+  letter-spacing:0;
+  text-align:center;
+  transform:scaleX(1.2);
+  pointer-events:none;
 }
 .gb-toolbar-overflow-button[hidden] { display: none !important; }
 .gb-toolbar-overflow-popup {
@@ -90,7 +108,7 @@
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
-  .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
+  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: 44px !important; min-height: 44px; }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }

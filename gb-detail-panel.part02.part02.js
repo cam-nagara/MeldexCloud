@@ -104,7 +104,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = type !== 'map'; });
   if (type !== 'map' && ['map-settings', 'map-selection'].includes(_currentDetailTab)) switchDetailTab(null);
-  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map']);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map', 'form-app']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));

@@ -292,22 +292,38 @@
     section.dataset.e2eId = 'entity-attachments-section';
 
     const header = document.createElement('div');
-    header.className = 'meldex-entity-attachments-header';
+    header.className = 'meldex-entity-attachments-header gb-pane-tabs';
 
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
-    section.classList.toggle('is-empty', attachments.length === 0);
+    const columns = options.columnsPanel;
+    const columnsId = '__columns__';
+    const inlineNote = options.inlineNotePanel;
+    const inlineNoteId = '__inline_note__';
+    section.classList.toggle('is-unified', !!columns);
+    section.classList.toggle('is-empty', attachments.length === 0 && !columns && !inlineNote);
     const list = document.createElement('div');
-    list.className = 'meldex-entity-attachments-list';
+    list.className = 'meldex-entity-attachments-list gb-pane-tabs-scroll';
     list.setAttribute('role', 'tablist');
-    list.setAttribute('aria-label', 'リンクファイル');
-    if (attachments.length) header.appendChild(list);
+    list.setAttribute('aria-label', columns ? 'トピックのタブ' : 'リンクファイル');
+    if (attachments.length || columns || inlineNote) header.appendChild(list);
     const content = document.createElement('div');
     content.className = 'meldex-entity-linked-content';
+    if (columns) {
+      columns.dataset.attachmentId = columnsId;
+      columns.id = 'linked-columns-' + section.dataset.instanceId;
+      content.appendChild(columns);
+    }
+    if (inlineNote) {
+      inlineNote.dataset.attachmentId = inlineNoteId;
+      inlineNote.id = 'linked-inline-note-' + section.dataset.instanceId;
+      content.appendChild(inlineNote);
+    }
     const editors = new Map();
     let selectedId = '';
     let switching = Promise.resolve(true);
     let disposed = false;
     const flushEditors = async () => {
+      if (inlineNote && await options.saveInlineNote?.() === false) return false;
       for (const editor of editors.values()) if (await editor.flush?.() === false) return false;
       return true;
     };
@@ -321,11 +337,44 @@
         return true;
       },
     };
-    function selectAttachment(item) {
+    function updateSelection() {
+      section.dataset.selectedAttachment = selectedId;
+      list.querySelectorAll('[role=tab]').forEach(tab => {
+        const selected = tab.dataset.attachmentId === selectedId;
+        tab.closest('.gb-tab')?.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+        if (selected) tab.closest('.gb-tab')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      });
+      Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+    }
+    function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
         if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
         if (!await flushEditors()) return false;
         if (disposed) return false;
+        if (item.id === columnsId || item.id === inlineNoteId) {
+          editors.get(selectedId)?.deactivate?.();
+          selectedId = item.id; updateSelection();
+          // A hidden linked editor must not remain the target of the inspector.
+          if (selectionOptions.activate !== false) {
+            const builtin = columns || inlineNote;
+            const parent = window.GBEditorHost?.ownerOf?.(builtin.closest('.meldex-entity-detail') || builtin);
+            if (parent) window.GBEditorHost.activate(parent);
+            else {
+              if (typeof state !== 'undefined') { state.view = 'entity'; state.currentEntityPath = entryPath; }
+              window.GBOptionTargetContext?.set({ path: entryPath, kind: 'entity' }, 'topic-columns');
+              if (typeof historySetScope === 'function') historySetScope('');
+              // The topic is already mounted: the legacy entity-detail sync
+              // reopens the subpanel and would discard retained file editors.
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.();
+              if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.syncFollowingVersionTabs?.();
+            }
+          }
+          if (item.id === inlineNoteId && selectionOptions.activate !== false) {
+            inlineNote.querySelector('[contenteditable="true"]')?.focus();
+          }
+          return true;
+        }
         if (editors.get(item.id)?.failed) {
           await editors.get(item.id).dispose();
           editors.delete(item.id);
@@ -345,13 +394,7 @@
           await editor.ready;
         }
         selectedId = item.id;
-        section.dataset.selectedAttachment = selectedId;
-        list.querySelectorAll('[role="tab"]').forEach(tab => {
-          const selected = tab.dataset.attachmentId === selectedId;
-          tab.setAttribute('aria-selected', String(selected));
-          tab.tabIndex = selected ? 0 : -1;
-        });
-        Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+        updateSelection();
         editors.get(selectedId)?.activate?.();
         return true;
       }).catch(error => {
@@ -359,6 +402,39 @@
         return false;
       });
       return switching;
+    }
+
+    function navigateTab(event, current) {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...list.querySelectorAll('[role=tab]')];
+      const index = tabs.indexOf(current);
+      const target = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1)
+        : tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      if (!target) return;
+      event.preventDefault();
+      target.click(); target.focus();
+    }
+    if (columns) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = '列一覧'; tab.dataset.tabTitle = '列一覧'; tab.dataset.attachmentId = columnsId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-columns-tab';
+      tab.setAttribute('aria-controls', columns.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: columnsId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
+    }
+    if (inlineNote) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = 'ノート'; tab.dataset.tabTitle = 'ノート'; tab.dataset.attachmentId = inlineNoteId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-inline-note-tab';
+      tab.setAttribute('aria-controls', inlineNote.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: inlineNoteId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
     }
 
     if (!options.readOnly) {
@@ -647,9 +723,11 @@
       });
     }
 
-    if (attachments.length) section.appendChild(content);
+    if (attachments.length || columns || inlineNote) section.appendChild(content);
     container.appendChild(section);
-    const initial = attachments.find(item => item.id === options.selectedId) || attachments[0];
+    const initial = (inlineNote && options.selectedId === inlineNoteId ? { id: inlineNoteId } : null)
+      || attachments.find(item => item.id === options.selectedId)
+      || (columns ? { id: columnsId } : inlineNote ? { id: inlineNoteId } : attachments[0]);
     if (initial) selectAttachment(initial);
     return section;
   }

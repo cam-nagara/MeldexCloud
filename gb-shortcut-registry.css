@@ -67,6 +67,10 @@
 
 .shortcut-group {
   margin-top: 10px;
+  max-width: 464px;
+  min-width: 0;
+  container: shortcut-group / inline-size;
+  overflow-x: auto;
 }
 
 .shortcut-group-head {
@@ -85,21 +89,35 @@
   margin-bottom: 0;
 }
 
-.shortcut-row {
-  display: flex;
+.shortcut-row,
+.shortcut-columns {
+  display: grid;
+  grid-template-columns: 160px 136px 52px 26px;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
-  flex-wrap: nowrap;
+  padding: 4px 0;
+  min-width: 398px;
+}
+.shortcut-group > .shortcut-row,
+.shortcut-group > .shortcut-columns { margin-left: 12px; }
+.shortcut-columns {
+  color: var(--ui-fg-muted);
+  font-size: 11px;
+}
+.shortcut-row:hover,
+.shortcut-row:focus-within {
+  background: var(--ui-bg-control, var(--bg3));
+  border-radius: var(--ui-radius-xs);
 }
 
 .shortcut-row .shortcut-label {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
 }
 
 .shortcut-status {
@@ -116,7 +134,9 @@
 
 .shortcut-key {
   flex: 0 0 auto;
-  min-width: 116px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
   text-align: center;
   padding: 2px 8px;
   font-size: 12px;
@@ -158,13 +178,22 @@
   padding: 1px 4px;
 }
 
-/* 行が狭いときは、キー欄を優先して残しつつ操作名を縮める */
+/* 狭い容器でも操作名とキーは同じ行。必要な幅は一覧内で横スクロールする。 */
+@container shortcut-group (max-width: 410px) {
+  .shortcut-row,
+  .shortcut-columns {
+    grid-template-columns: minmax(0, 1fr) 112px 44px 22px;
+    min-width: 0;
+    gap: 4px;
+  }
+  .shortcut-status { width: auto; }
+  .shortcut-key { padding: 2px 4px; font-size: 11px; white-space: nowrap; }
+  .shortcut-row .shortcut-reset,
+  .shortcut-reset-spacer { width: 22px; }
+}
 @media (max-width: 480px) {
   .shortcut-settings-wrap.gb-section--boxed.is-multi-scope {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .shortcut-key {
-    min-width: 96px;
-  }
 }

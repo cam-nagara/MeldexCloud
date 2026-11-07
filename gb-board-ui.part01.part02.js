@@ -534,17 +534,8 @@ function _bdSafeDetailCssColor(value, fallback = '') {
 
 function _bdColorFieldHtml(label, field, value, buttonAttr, resetAttr) {
   const nextValue = String(value || '').trim();
-  const safeValue = _bdSafeDetailCssColor(nextValue, '');
-  const isTextColor = field === 'textColor';
-  const isStrokeColor = field === 'textStrokeColor';
-  const iconSvg = isTextColor ? (typeof lucide === 'function' ? lucide('type', 14) : 'T')
-    : isStrokeColor ? (typeof lucide === 'function' ? lucide('typeOutline', 14) : 'T')
-    : '';
-  const gbFmtClass = (isTextColor || isStrokeColor) ? 'gb-fmt-swatch-fg' : 'gb-fmt-swatch-bg';
-  const styleStr = (isTextColor || isStrokeColor)
-    ? `color:${_bdEscAttr(safeValue || 'var(--fg)')};`
-    : _bdColorSwatchStyle(nextValue);
-  return `<label class="bd-detail-field"><span>${esc(label)}</span><span class="bd-detail-swatch-row"><button type="button" class="bd-color-swatch gb-fmt-swatch ${gbFmtClass}${nextValue ? ' is-set' : ''}" style="${styleStr}" ${buttonAttr}="${_bdEscAttr(field)}" title="${esc(label)}">${iconSvg}</button><button type="button" class="gb-fmt-reset bd-detail-reset-btn" ${resetAttr}="${_bdEscAttr(field)}" ${nextValue ? '' : 'disabled'}>リセット</button></span></label>`;
+  const styleStr = _bdColorSwatchStyle(nextValue);
+  return `<label class="bd-detail-field"><span>${esc(label)}</span><span class="bd-detail-swatch-row"><button type="button" class="bd-color-swatch gb-fmt-swatch gb-fmt-swatch-bg${nextValue ? ' is-set' : ''}" style="${styleStr}" ${buttonAttr}="${_bdEscAttr(field)}" title="${esc(label)}" aria-label="${esc(label)}"></button><button type="button" class="gb-fmt-reset bd-detail-reset-btn" ${resetAttr}="${_bdEscAttr(field)}" ${nextValue ? '' : 'disabled'}>リセット</button></span></label>`;
 }
 
 function _bdRangeFieldHtml(label, field, value, min, max, step, attrName) {

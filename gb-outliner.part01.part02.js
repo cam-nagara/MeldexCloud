@@ -62,6 +62,17 @@
     row.dataset.gbTooltip = notice.title;
     row.appendChild(notice);
   }
+  if (Array.isArray(item.feature_labels) && item.feature_labels.length) {
+    const badge = document.createElement('span');
+    badge.className = 'tree-feature-badge';
+    badge.innerHTML = lucide('link', 12);
+    badge.title = 'Meldex連携: ' + item.feature_labels.join('、');
+    badge.dataset.gbTooltip = badge.title;
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', badge.title);
+    badge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:auto;flex-shrink:0;';
+    row.appendChild(badge);
+  }
   if (itemLocked) {
     const lockBadge = document.createElement('span');
     lockBadge.className = 'tree-lock-badge';

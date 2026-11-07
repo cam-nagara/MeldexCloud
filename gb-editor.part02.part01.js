@@ -310,7 +310,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
@@ -1402,7 +1402,8 @@ function _calloutImageOptions(editable, isCurrent) {
       }
       const path = editable.dataset.path || editable.dataset.entityPath || '';
       if (!path) throw new Error('先にノートを保存してください');
-      const dir = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      const home = typeof _homeFolderPath !== 'undefined' ? String(_homeFolderPath || '').replace(/\\/g, '/').replace(/\/$/, '') : '';
+      const dir = (home ? home + '/' : '') + 'Meldex画像';
       const data = await _readFileAsDataURL(prepared);
       if (!current()) throw new Error('編集対象が変わりました');
       const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
@@ -1411,7 +1412,7 @@ function _calloutImageOptions(editable, isCurrent) {
       });
       if (!result.ok || !result.path) throw new Error(result.error || '画像を登録できませんでした');
       if (!current()) throw new Error('編集対象が変わりました。元のノートで画像を選び直してください');
-      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.path));
+      const spec = GBIconAssets.normalizeSpec('image:' + encodeURIComponent(result.icon_path || result.path));
       if (!spec) throw new Error('画像の保存先を読み込めませんでした');
       const item = { spec, type: 'image', label: (details.label || file.name).slice(0, 500), keywords: (details.keywords || '画像 写真 カスタム').slice(0, 500) };
       if (libraryKey) {

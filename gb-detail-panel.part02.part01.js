@@ -686,7 +686,9 @@ function _fsRenderThemeControlSection(ctx, adapter) {
         </select>
         ${_fsThemeMenuButton(ctx)}
       </div>
-      ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor }) : ''}
+      <details class="fs-theme-palette"><summary>テーマカラー・OSアクセント</summary>
+        ${typeof renderThemeColorSetEditor === 'function' ? renderThemeColorSetEditor(colorSet, { osAccent: useOsAccent, osAccentColor, hideLabel:true }) : ''}
+      </details>
     </section>`;
 }
 
@@ -732,7 +734,12 @@ function _fsRefreshThemePanels(ctx) {
     renderFileStyleTab(ctx);
     return;
   }
-  hosts.forEach(host => renderFileStyleTab(ctx, host));
+  hosts.forEach(host => {
+    const expanded = host.querySelector('.fs-theme-palette')?.open;
+    renderFileStyleTab(ctx, host);
+    const palette = host.querySelector('.fs-theme-palette');
+    if (palette && expanded !== undefined) palette.open = expanded;
+  });
 }
 
 function _fsBindThemeColorSetEditor(root, ctx) {

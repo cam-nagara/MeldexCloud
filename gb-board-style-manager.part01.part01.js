@@ -804,10 +804,14 @@ function _bdSaveCurrentConnectionLineStyle(conn) {
  */
 function _bdBuildStyleFields(container, kind, style, onChange, options) {
   if (!container || !style) return;
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = '';
   const fmt = window.gbFmt;
   if (!fmt) { container.textContent = '書式UI未ロード'; return; }
-  const emit = (field) => { try { onChange && onChange(field); } catch (_) {} };
+  const emit = (field) => {
+    try { onChange && onChange(field); } catch (_) {}
+    container._bdRefreshFormatPreview?.();
+  };
   const editTarget = () => {
     if (options && typeof options.beforeEdit === 'function') {
       const next = options.beforeEdit();

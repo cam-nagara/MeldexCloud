@@ -35,40 +35,7 @@
       </select>
     </div>`;
   } else if (type === 'image') {
-    const options = current.options || {};
-    const accept = Array.isArray(options.accept) ? options.accept.filter(ext => String(ext).toLowerCase() !== 'svg').join(', ') : 'png, jpg, jpeg, gif, webp';
-    const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
-    const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
-    optDiv.innerHTML = `<div class="field"><label>最大枚数</label>
-      <input id="pt-image-max-count" aria-label="最大枚数" class="gb-num-input" type="number" min="1" max="100" value="${esc(options.max_count == null ? '' : options.max_count)}" placeholder="空欄 = 100">
-    </div>
-    <div class="field"><label>許可する拡張子</label>
-      <input id="pt-image-accept" aria-label="許可する拡張子" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
-    </div>
-    <div class="field"><label>表の画像高さ(px)</label>
-      <input id="pt-image-cell-height" aria-label="表の画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(cellHeight)}">
-    </div>
-    <div class="field"><label>ギャラリーの画像高さ(px)</label>
-      <input id="pt-image-gallery-height" aria-label="ギャラリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gallery || cellHeight)}">
-    </div>
-    <div class="field"><label>カンバンの画像高さ(px)</label>
-      <input id="pt-image-kanban-height" aria-label="カンバンの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.kanban || cellHeight)}">
-    </div>
-    <div class="field"><label>ツリーの画像高さ(px)</label>
-      <input id="pt-image-tree-height" aria-label="ツリーの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.tree || cellHeight)}">
-    </div>
-    <div class="field"><label>タイムラインの画像高さ(px)</label>
-      <input id="pt-image-timeline-height" aria-label="タイムラインの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.timeline || cellHeight)}">
-    </div>
-    <div class="field"><label>ガントの画像高さ(px)</label>
-      <input id="pt-image-gantt-height" aria-label="ガントの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.gantt || cellHeight)}">
-    </div>
-    <div class="field"><label>フォームの画像高さ(px)</label>
-      <input id="pt-image-form-height" aria-label="フォームの画像高さ(px)" class="gb-num-input" type="number" min="32" max="320" value="${esc(options.view_thumbnail_sizes?.form || cellHeight)}">
-    </div>
-    <div class="field"><label>保存サムネイルサイズ(px)</label>
-      <input id="pt-image-thumb-size" aria-label="保存サムネイルサイズ(px)" class="gb-num-input" type="number" min="64" max="1024" value="${esc(uploadThumbSize)}">
-    </div>`;
+    optDiv.innerHTML = _ptImageOptionsHtml(current.options || {});
   } else {
     optDiv.innerHTML = '';
   }
@@ -833,6 +800,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
 /* 列ごとのユーザー設定アイコン（property_types[prop].icon、GBIconAssets の spec 文字列）。
    列一覧・エントリレイアウトの field セルのキャプションで、列タイプの既定アイコンより優先される。 */
 function _bindDbPropertyIconField(root, dbPath, propName, ctx) {
+  ctx = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null) || ctx;
   const btn = root?.querySelector?.('#pt-icon-btn');
   if (!btn) return;
   // UI部品検査（gb-e2e-coverage.js）の安定ID要件: ヘルプアイコンにも data-e2e-id を付ける
@@ -867,13 +835,14 @@ function _bindDbPropertyIconField(root, dbPath, propName, ctx) {
     else delete next.icon;
     // setPropertyType は保護列で同期的に false を返し、バックエンド保存失敗時は reject する。
     // どちらも握りつぶさず、成功時だけ成功メッセージを出す。
-    Promise.resolve(setPropertyType(dbPath, propName, next, ctx))
+    Promise.resolve().then(() => setPropertyType(dbPath, propName, next, ctx))
       .then((ok) => {
         if (ok === false) {
           if (typeof showStatus === 'function') showStatus('この列のアイコンは変更できません', true);
           return;
         }
-        if (typeof renderPivot === 'function') renderPivot(ctx);
+        const renderCtx = typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(dbPath, ctx) : ctx;
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
         if (typeof showStatus === 'function') {
           showStatus(spec ? '列のアイコンを設定しました' : '列のアイコンを既定へ戻しました');
         }
@@ -1212,3 +1181,27 @@ async function applyDbPropertySettings(originalPropName, root, options = {}) {
 }
 
 /* 型別値エディタ・ドロップダウン → gb-db-value-editors.js に分離 */
+
+function _ptImageOptionsHtml(options) {
+  const accept = Array.isArray(options.accept) ? options.accept.filter(ext => String(ext).toLowerCase() !== 'svg').join(', ') : 'png, jpg, jpeg, gif, webp';
+  const uploadThumbSize = Math.max(64, Math.min(1024, parseInt(options.thumbnail_size, 10) || 256));
+  const cellHeight = Math.max(32, Math.min(320, parseInt(options.cell_height ?? options.cell_thumbnail_size, 10) || Math.min(96, uploadThumbSize)));
+  const row = (id, label, aria, value, min, max, suffix = 'px', note = '') => `
+    <div class="gb-field-pair"><label for="${id}">${label}</label>
+      <span class="gb-num-unit"><input id="${id}" aria-label="${aria}" ${note ? `aria-describedby="${id}-note"` : ''} class="gb-num-input" type="number" min="${min}" max="${max}" value="${esc(value)}"><span class="unit">${suffix}</span>${note ? `<span class="gb-section-desc" id="${id}-note">${esc(note)}</span>` : ''}</span>
+    </div>`;
+  return `<fieldset class="gb-field-pair-group">
+      ${row('pt-image-max-count', '最大枚数', '最大枚数', options.max_count ?? '', 1, 100, '枚', '空欄＝100')}
+    </fieldset>
+    <div class="field"><label for="pt-image-accept">許可する拡張子</label>
+      <input id="pt-image-accept" aria-label="許可する拡張子" type="text" value="${esc(accept)}" placeholder="png, jpg, webp">
+    </div>
+    <fieldset class="gb-field-pair-group"><legend>画像の高さ</legend>
+      ${row('pt-image-cell-height', 'テーブル', '表の画像高さ(px)', cellHeight, 32, 320)}
+      ${[['gallery', 'ギャラリー'], ['kanban', 'カンバン'], ['tree', 'ツリー'], ['timeline', 'タイムライン'], ['gantt', 'ガント'], ['form', 'フォーム']]
+        .map(([view, label]) => row('pt-image-' + view + '-height', label, label + 'の画像高さ(px)', options.view_thumbnail_sizes?.[view] || cellHeight, 32, 320)).join('')}
+    </fieldset>
+    <fieldset class="gb-field-pair-group"><legend>保存用画像</legend>
+      ${row('pt-image-thumb-size', 'サムネイルサイズ', '保存サムネイルサイズ(px)', uploadThumbSize, 64, 1024)}
+    </fieldset>`;
+}

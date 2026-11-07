@@ -255,7 +255,7 @@
       const liveSendBtn = document.getElementById('chat-send-btn') || sendBtn;
       if (liveSendBtn && !detachedScope) {
         liveSendBtn.textContent = '送信';
-        liveSendBtn.title = '送信 (Enter)';
+        liveSendBtn.title = _chatSendShortcutTitle();
         liveSendBtn.disabled = false;
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});

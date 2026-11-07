@@ -3,7 +3,7 @@
   if (refreshToken !== _chatState.apiKeyRefreshToken || provider !== _chatProviderKey(_chatState.provider)) return;
   const configured = typeof _chatProviderStatusConfigured === 'function' ? _chatProviderStatusConfigured(status) : !!status.configured;
   sendBtn.disabled = !configured;
-  sendBtn.title = configured ? '送信 (Enter)' : (status.message || '送信設定を確認してください。');
+  sendBtn.title = configured ? _chatSendShortcutTitle() : (status.message || '送信設定を確認してください。');
   if (typeof _chatRefreshProviderAvailability === 'function') {
     _chatRefreshProviderAvailability({ [provider]: status }).catch(() => {});
   }

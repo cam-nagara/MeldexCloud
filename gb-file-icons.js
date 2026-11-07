@@ -1,7 +1,7 @@
 /* Document icons share the callout picker and its image registration UI. */
 (function (global) {
   'use strict';
-  const supported = new Set(['folder', 'page', 'database', 'board', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app', 'map', 'chat']);
+  const supported = new Set(['folder', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'board', 'calendar', 'scenario', 'scriptnote', 'timer', 'form-app', 'map', 'chat']);
   const cache = new Map();
   const pending = new Set();
   const providers = new WeakMap();
@@ -62,12 +62,14 @@
     return parsed.spec;
   }
   function refreshTabs() {
-    if (global.GBLayout?.getAllPanes) {
-      for (const pane of GBLayout.getAllPanes()) {
+    const layout = typeof GBLayout !== 'undefined' ? GBLayout : global.GBLayout;
+    if (layout?.getAllPanes) {
+      for (const pane of layout.getAllPanes(layout.root)) {
         for (const tab of pane.tabs || []) {
           const icon = document.querySelector('[data-tab-id="' + CSS.escape(tab.id) + '"] .gb-tab-icon');
           if (icon) icon.innerHTML = render(tab, 14, typeof lucide === 'function' ? lucide(tab.icon || 'page', 14) : '');
         }
+        layout.refreshPaneTabs?.(pane.id);
       }
     }
     if (typeof renderTabs === 'function') renderTabs();
@@ -105,12 +107,35 @@
     return parsed.type === 'image' ? '<span data-file-icon-type="' + MeldexEscape.attr(item.type || 'page') + '">' + markup + '</span>' : markup;
   }
   async function refresh(path, spec) {
+    const activeScope = scope();
     cache.set(key(path), spec || '');
+    const updateItem = item => {
+      if (item?.path === path) item.display_icon = spec || '';
+    };
+    const refreshTree = () => document.querySelectorAll('.tree-node').forEach(node => {
+      updateItem(node._nodeData);
+      if (node._nodeData?.path !== path) return;
+      const icon = node.querySelector('.tree-node-row .tree-icon');
+      if (icon) icon.innerHTML = typeof _outlinerIconMarkup === 'function'
+        ? _outlinerIconMarkup(node._nodeData, 18)
+        : render(node._nodeData, 18, typeof lucide === 'function' ? lucide('file', 18) : '');
+    });
+    refreshTree();
+    const layout = typeof GBLayout !== 'undefined' ? GBLayout : global.GBLayout;
+    for (const pane of layout?.getAllPanes?.(layout.root) || []) {
+      for (const tab of pane.tabs || []) updateItem(tab);
+    }
+    if (typeof _tabs !== 'undefined') _tabs.forEach(updateItem);
+    // Cache-only refreshes can return an old browse payload. Keep the saved
+    // value authoritative until the reload below completes.
     try {
       if (typeof loadOutliner === 'function') await loadOutliner({force: true});
     } catch (_) {
       if (typeof showStatus === 'function') showStatus('アイコンを保存しました。表示を更新できなかったため画面を再読込してください', true);
     }
+    if (scope() !== activeScope) return;
+    refreshTree();
+    cache.set(key(path), spec || '');
     document.querySelectorAll('.fv-item[data-path]').forEach(element => {
       if (element.dataset.path !== path) return;
       if (element._folderItem) element._folderItem.display_icon = spec || '';
@@ -162,9 +187,10 @@
       const activeScope = scope();
       apiFetch('/file-icon?path=' + encodeURIComponent(tab.path), {silentError: true}).then(data => {
         if (scope() !== activeScope) return;
+        if (cache.has(id)) return;
         cache.set(id, data.icon || '');
         refreshTabs();
-      }).catch(() => { if (scope() === activeScope) cache.set(id, ''); }).finally(() => pending.delete(id));
+      }).catch(() => { if (scope() === activeScope && !cache.has(id)) cache.set(id, ''); }).finally(() => pending.delete(id));
     }
     return result;
   }

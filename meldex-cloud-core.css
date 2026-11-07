@@ -6849,6 +6849,39 @@ iframe.meldex-entity-linked-media {
   background: rgba(239, 68, 68, 0.1);
 }
 
+/* The linked application owns the space remaining below topic properties. */
+.meldex-entity-detail:has(.meldex-entity-linked-content) { overflow: hidden; }
+.meldex-entity-attachments-section:has(.meldex-entity-linked-content) {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 180px; margin-bottom: 0;
+}
+.meldex-entity-attachments-header { flex: 0 0 auto; margin-bottom: 0; gap: 0; }
+.meldex-entity-attachments-list { flex: 1; gap: 0; }
+.meldex-entity-linked-content { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-note { flex: 1; min-height: 0; overflow: auto; }
+.gb-editor-host-toolbar { flex: 0 0 auto; min-width: 0; overflow-x: auto; }
+.gb-editor-host-toolbar .tb-file-title { min-width: 60px; }
+
+/* One topic strip owns the columns and all normal file applications. */
+.meldex-entity-attachments-section.is-unified { margin: 0; }
+.meldex-topic-columns-pane,
+.meldex-topic-inline-note-pane { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.meldex-topic-columns-pane[hidden],
+.meldex-topic-inline-note-pane[hidden] { display: none !important; }
+.meldex-entity-attachment-item:has(.gb-tab-more) { position: relative; padding-right: 27px; }
+.meldex-entity-attachment-more { flex: none; }
+.meldex-entity-linked-pane:has(.gb-form-app) { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.meldex-entity-linked-pane > .gb-form-app { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+#tb-db #toolbar-category,
+.gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] {
+  display: inline-flex; align-items: center; min-height: 30px;
+  font-size: 16px; line-height: 30px; font-weight: 600;
+}
+#tb-db #toolbar-category input,
+.gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {
+  height: 30px; box-sizing: border-box; line-height: normal;
+}
+
 /* Command palette and left chrome footer */
 
 #sidebar .left-chrome-command,
@@ -19581,13 +19614,18 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   gap: var(--ui-space-4);
   padding: var(--ui-space-4);
 }
-.db-prop-settings .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ui-space-1);
+.db-prop-settings .field,
+.pt-modal .field {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2) var(--ui-space-5);
   min-width: 0;
 }
-.db-prop-settings .field > label {
+.db-prop-settings .field > label,
+.pt-modal .field > label {
+  margin: 0;
+  white-space: nowrap;
   color: var(--ui-fg-muted);
   font-size: var(--ui-font-12);
 }
@@ -23303,6 +23341,48 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   font-size: var(--ui-font-11);
   color: var(--ui-fg-muted);
 }
+/* 項目と値の距離を容器の幅で引き伸ばさない、共通の設定行。 */
+.gb-field-pair-group {
+  container: field-pairs / inline-size;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.gb-field-pair-group > legend {
+  padding: 0;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+}
+.gb-field-pair-group:has(> legend) > .gb-field-pair { margin-left: var(--ui-space-5); }
+.gb-field-pair {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2) var(--ui-space-5);
+  margin-bottom: var(--ui-space-3);
+  min-width: 0;
+}
+.gb-field-pair > label {
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.gb-field-pair .gb-num-unit { flex-wrap: nowrap; min-width: 0; }
+.gb-field-pair .gb-num-unit > .gb-section-desc { margin: 0; white-space: nowrap; }
+.gb-field-pair input.gb-num-input[type="number"],
+.field > input.gb-num-input[type="number"],
+.gb-field > input.gb-num-input[type="number"] {
+  width: 96px;
+  max-width: 100%;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.gb-field-pair input#pt-image-max-count { width: 64px; }
 /* 列などを選ぶフォーム。本文幅へ引き伸ばさず、狭い容器では下へ折り返す。 */
 .gb-field-select-row {
   display: flex;
@@ -23469,11 +23549,13 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   appearance: auto;
   -moz-appearance: number-input;
 }
+/* 数値エディタとネイティブのスピンボタンの間隔。右端のボタン位置は維持する。 */
+.gb-num-input::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4); }
 .gb-num-input::-webkit-outer-spin-button,
 .gb-num-input::-webkit-inner-spin-button {
   -webkit-appearance: auto;
   opacity: 0;
-  margin-left: var(--ui-space-3);
+  margin-left: 0;
   transition: opacity 0.12s;
 }
 .gb-num-input:hover::-webkit-outer-spin-button,
@@ -27823,6 +27905,14 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   white-space: nowrap;
 }
 .gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
+/* メインパネルの旧描画も測定可能な一行にする。非表示のアプリは変更しない。 */
+.gb-toolbar.gb-toolbar-overflow-host:is([style*="display: contents"], [style*="display:contents"]) {
+  display:flex !important;
+  flex:1 1 100%;
+  width:100%;
+  align-items:center;
+  gap:4px;
+}
 /* Item names stay on one line before width measurement and in overflow menus. */
 :is(.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar,
     .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar,
@@ -27858,13 +27948,23 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 28px !important;
-  width: 28px;
-  min-width: 28px;
+  flex: 0 0 32px !important;
+  width: 32px !important;
+  min-width: 32px !important;
   min-height: 28px;
   padding: 0 !important;
   margin-left: auto;
   font-size: 11px;
+}
+.gb-toolbar-overflow-button > .gb-toolbar-overflow-symbol {
+  display:inline-block;
+  flex:0 0 auto;
+  width:18px;
+  font:normal 14px/1 Arial, sans-serif;
+  letter-spacing:0;
+  text-align:center;
+  transform:scaleX(1.2);
+  pointer-events:none;
 }
 .gb-toolbar-overflow-button[hidden] { display: none !important; }
 .gb-toolbar-overflow-popup {
@@ -27906,9 +28006,206 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
-  .gb-toolbar-overflow-button { flex-basis: 44px !important; min-width: 44px; min-height: 44px; }
+  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: 44px !important; min-height: 44px; }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
+}
+
+/* 設定の項目名・値・単位は同じ行。既存DOMと保存イベントを保つ共通アダプタ。
+   .field は設定/ダイアログの内部だけに限定し、本文やシートのセルへ適用しない。 */
+:is(
+  .gb-field-row, .gb-field-inline, .gb-field-select-row,
+  .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field)
+):has(> :is(input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea, .gb-num-unit, .cal-option-check), > .gb-label ~ *):not(.shortcut-row):not(.shortcut-settings-filter):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: var(--ui-space-5, 12px) !important;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field)
+):has(> :is(input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea, button, .gb-num-unit, .cal-option-check), > .gb-label ~ *)
+> :is(label, .gb-label, .cs-row-label, .msr-field-label, span:first-child):first-child {
+  flex: 0 0 128px;
+  width: 128px;
+  min-width: 0;
+  max-width: 128px;
+  margin: 0 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 行内の入力だけを縮める。readonly/disabled、min/max、イベントは変更しない。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> :is(input:not([type="checkbox"]):not([type="radio"]):not([type="number"]):not([type="range"]):not([type="color"]):not([type="hidden"]), select, textarea) {
+  flex: 0 1 320px;
+  width: 320px;
+  max-width: 100%;
+  min-width: 0 !important;
+  box-sizing: border-box;
+}
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> select { flex-basis: 240px; width: 240px; }
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,
+  .tl-settings .tl-calendar-date-field, .tl-calendar-fields label, .tl-calendar-leap-fields label,
+  .db-tree-option-section label, .gb-form-subform-settings > label, .el-chart-axis-settings > label,
+  .notion-sync-row, .notion-sync-token-row,
+  :where(.modal, .gb-modal, .db-prop-settings, .gb-section, [data-settings-view], [data-pt-root]) :is(.field, .gb-field))
+> input[type="number"] {
+  flex: 0 0 auto;
+  max-width: 96px !important;
+  min-width: 64px;
+  font-variant-numeric: tabular-nums;
+}
+:is(.gb-field-row, .gb-field-inline, .field, .gb-field, .sn2-detail-settings-row, .sn2-role-opts-row)
+input[type="number"]::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+:is(.gb-field-row, .gb-field-inline, .field, .gb-field, .sn2-detail-settings-row, .sn2-role-opts-row)
+input[type="number"]::-webkit-inner-spin-button { margin-left: 0; }
+.gb-fmt-num::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+.gb-fmt-num::-webkit-inner-spin-button { margin-left: 0; }
+input.gb-fmt-num { min-width: 64px; }
+:where(.gb-section, .sa-option-panel, .settings-modal, .modal) input[type="number"]::-webkit-textfield-decoration-container { column-gap: var(--ui-space-4, 8px); }
+:where(.gb-section, .sa-option-panel, .settings-modal, .modal) input[type="number"]::-webkit-inner-spin-button { margin-left: 0; }
+
+/* 複数の組を持つ設定行も、ラベルとその値を上下へ切り離さない。 */
+:is(.sn2-detail-settings-row, .sn2-role-opts-row, .cs-row, .settings-theme-note-layout-row):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  flex-wrap: nowrap !important;
+  justify-content: flex-start !important;
+  gap: var(--ui-space-4, 8px);
+  max-width: 100%;
+  overflow-x: auto;
+}
+.gb-num-unit { flex-wrap: nowrap; }
+
+/* 新旧の右サイドバーと単独アプリは同じ設定部品を使用する。本文・履歴一覧には適用しない。 */
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
+:is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row, .gb-form-option-field,
+    .map-settings-field, .viewer-setting-row):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display:flex;
+  flex-direction:row;
+  align-items:center;
+  justify-content:flex-start;
+  flex-wrap:nowrap;
+  gap:6px 8px;
+  min-width:0;
+}
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
+:is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row) > :is(label,span):first-child {
+  flex:0 0 auto;
+  max-width:128px;
+  white-space:nowrap;
+}
+:is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel) :is(.gb-fmt-popup-group,.gb-style-field) {
+  flex-wrap:nowrap;
+  white-space:nowrap;
+}
+.fs-theme-palette { min-width:0; margin-top:4px; }
+.fs-theme-palette > summary { cursor:pointer; font-size:12px; color:var(--fg2); }
+.fs-theme-palette .cs-theme-color-set-row { display:flex !important; flex-wrap:wrap !important; overflow:visible; gap:6px 8px; padding:8px 0 0 12px; }
+.fs-theme-palette .cs-theme-color-set { flex:0 1 auto; flex-wrap:wrap; gap:4px; }
+.fs-theme-palette .cs-toggle { flex:0 0 auto; white-space:nowrap; }
+.fs-theme-management .fs-theme-row button { flex-shrink:0; white-space:nowrap; }
+/* フォーム／マップの専用設定も、本文の入力フォームとは分けて共通配置にする。 */
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) {
+  display:flex;
+  flex-direction:row;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(span,label):first-child {
+  flex:0 1 128px;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(input:not([type="checkbox"]),select,textarea) {
+  flex:1 1 120px;
+  width:120px;
+  min-width:0;
+  max-width:240px;
+}
+:is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) .gb-map-options .gb-map-field > input[type="number"] {
+  flex:0 0 80px;
+  max-width:96px;
+}
+#rp-detail .sn2-detail-settings-row.sn2-detail-settings-row--pairs {
+  flex-wrap:wrap !important;
+  overflow:visible;
+}
+#rp-detail .sn2-detail-settings-pair { display:inline-flex; flex:0 0 auto; align-items:center; gap:4px; min-width:0; }
+#rp-detail .sn2-detail-settings-pair > .sn2-detail-settings-label { width:auto; flex:0 0 auto; margin:0; white-space:nowrap; }
+#rp-detail .sn2-detail-settings-pair > :is(input,select,button) { flex-shrink:0; }
+.gb-form-field-palette:has(> .gb-form-editor-label) {
+  display:grid;
+  grid-template-columns:minmax(64px, 96px) minmax(0, 1fr);
+  align-content:start;
+  align-items:center;
+  gap:8px;
+}
+.gb-form-field-palette > .gb-form-editor-label { margin:0; }
+.gb-form-field-palette > :is(input,textarea) { width:100%; min-width:0; box-sizing:border-box; }
+.gb-form-field-palette > :not(.gb-form-editor-label,input,textarea) { grid-column:1/-1; }
+.gb-form-submit-field { display:flex; flex-direction:row; align-items:center; gap:8px; min-width:0; }
+.gb-form-submit-field > span { flex:0 0 auto; white-space:nowrap; }
+.gb-form-submit-field > input { flex:1 1 120px; min-width:0; width:120px; }
+.gb-form-app-toolbar.gb-toolbar-overflow-host > label { flex-wrap:nowrap; }
+.gb-form-app-toolbar.gb-toolbar-overflow-host select { max-width:240px; }
+.gb-section > :not(.gb-section-title) { margin-left: var(--ui-space-5, 12px); }
+/* 書式設定などの複数の小項目は組の内部だけを近づけ、主項目の列幅を継承しない。 */
+.gb-field-inline > :is(label, .gb-label, .cs-row-label, span):first-child {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+}
+/* 子のラベルを上段へ逃がす代わりに、設定の組ごとに十分な列幅を確保する。 */
+:is(.gb-scheduler-scope-grid, .gb-scheduler-option-row, .tl-calendar-fields,
+  .tl-calendar-leap-fields, .bd-group-style-fields, .bd-group-options,
+  .gb-form-subform-settings, .el-chart-axis-settings) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--ui-space-4, 8px);
+  min-width: 0;
+}
+:where(.modal, .gb-modal, .gb-section, .db-prop-settings) .field:has(> label + button):not([hidden]):not([style*="display:none"]):not([style*="display: none"]) {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  gap: var(--ui-space-5, 12px);
 }
 
 
@@ -31327,7 +31624,46 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   font-size: var(--ui-font-12);
   color: var(--fg);
+  width: max-content;
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  box-sizing: border-box;
 }
+
+.gb-fmt-popup-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+.gb-fmt-popup-title { font-size:12px; font-weight:600; }
+.gb-fmt-popup .gb-fmt-popup-close { display:inline-flex; align-items:center; justify-content:center; flex:0 0 22px; width:22px; height:22px; padding:0; border:1px solid var(--border); border-radius:4px; background:var(--bg3); color:var(--fg); cursor:pointer; }
+.gb-fmt-section-title { font-size:12px; font-weight:600; margin:4px 0; }
+.gb-fmt-popup :is(.gb-fmt-popup-row--text,.gb-fmt-popup-row--text-decoration,.gb-fmt-popup-row--decoration) { flex-wrap:wrap; padding-left:12px; }
+.gb-fmt-color-pair { white-space:nowrap; gap:4px; }
+.gb-fmt-popup-row:empty { display:none; }
+
+/* 書式設定はラベルと値を一組にし、色見本内に文字やアイコンを重ねない。 */
+.gb-fmt-swatch { font-size:0; }
+.gb-fmt-swatch > svg { display:none; }
+.gb-style-field { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; min-width:0; }
+.gb-style-fields-row { gap:8px 12px; margin:6px 0; }
+.gb-style-format-section > .gb-style-fields-row { padding-left:12px; }
+.gb-style-field .gb-fmt-num { width:54px; }
+.gb-style-field select { max-width:220px; min-width:0; }
+.gb-fmt-popup--board-style .gb-fmt-section-title { margin:4px 0; }
+.gb-fmt-popup--group-style { max-width:min(420px, calc(100vw - 24px)); }
+.gb-fmt-popup--group-style .bd-group-manager-field { display:inline-flex; align-items:center; gap:4px; margin:0; white-space:nowrap; }
+.gb-fmt-popup--group-style input:not([type=checkbox]) { width:64px; min-width:0; }
+.gb-fmt-popup--group-style input[type=text] { width:120px; }
+.bd-compact-style-fields > .gb-style-fields-row { gap:6px 8px; }
+.bd-compact-style-fields > .gb-style-fields-row select { width:84px; }
+.bd-style-format-storage[hidden] { display:none !important; }
+.bd-style-format-open { display:flex; align-items:center; gap:12px; width:100%; min-width:0; text-align:left; padding:6px 10px; margin:8px 0; border:1px solid var(--border); border-radius:4px; background:var(--bg3); color:var(--fg); cursor:pointer; font-size:12px; }
+.bd-style-format-preview { display:inline-flex; align-items:center; justify-content:center; flex:0 0 112px; width:112px; height:40px; padding:3px; box-sizing:border-box; overflow:hidden; background:var(--bg); border:1px solid var(--border); border-radius:4px; }
+.bd-style-format-preview .bd-style-card-preview, .bd-style-format-preview svg { width:100%; height:100%; min-width:0; min-height:0; }
+.bd-style-format-open > span:last-child { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bd-depth-in-panel .bd-depth-fields { display:block; }
+.bd-depth-in-panel .bd-depth-fields > :is(.bd-depth-style-ref-row,.bd-depth-style-field-group,.gb-fmt-popup-row) { margin-left:12px; max-width:calc(100% - 12px); }
+.bd-depth-in-panel .bd-depth-style-ref-row select { flex:0 1 140px; width:140px; min-width:0; max-width:180px; }
+.bd-depth-in-panel .bd-depth-fields > .bd-detail-section-title { margin-top:12px; padding-top:8px; border-top:1px solid var(--border); }
 
 /* モディファイア（フェーズE-2 で sn2-* から移行） */
 .gb-fmt-popup--colbulk { min-width: 220px; }
@@ -31339,12 +31675,22 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 }
 .gb-fmt-popup--role-opts {
   z-index: 10000;
-  /* 2026-07-17 ユーザー指示: 幅を従来（min-width 340px）の半分にする。説明文は行内折返しで表示 */
-  min-width: 160px;
-  max-width: 170px;
+  /* 共通書式ポップアップと同じ内容幅。用途ラベルを含めて収める。 */
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 24px));
   max-height: 80vh;
   overflow-y: auto;
 }
+.gb-fmt-popup--bulk-edit .sn2-bulk-body {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:6px 10px;
+  padding-left:12px;
+}
+.gb-fmt-popup--bulk-edit .sn2-bulk-row { display:flex; align-items:center; flex-wrap:nowrap; gap:4px; min-width:0; }
+.gb-fmt-popup--bulk-edit .sn2-bulk-row > label { white-space:nowrap; }
+.gb-fmt-popup--bulk-edit :is(.sn2-bulk-section-divider,.sn2-bulk-apply-row),
+.gb-fmt-popup--bulk-edit .sn2-bulk-row:has([data-bulk-val="textBefore"],[data-bulk-val="textAfter"]) { grid-column:1/-1; }
 .gb-text-selection-fmt {
   z-index: 10060;
 }
@@ -31425,11 +31771,9 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   justify-content: center;
   vertical-align: middle;
 }
-/* 文字色系スウォッチは対象要素の背景色を JS で反映する。透明時は共通背景色に戻す。 */
+/* 文字色も設定色のみを表示する。透明・未設定は共通パレットのチェッカーを使う。 */
 .gb-fmt-swatch-fg {
-  font-weight: bold;
-  font-size: var(--ui-font-12);
-  background: var(--bg);
+  font-size: 0;
 }
 .gb-fmt-swatch-fg svg {
   pointer-events: none;
@@ -34281,6 +34625,10 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
 
 .shortcut-group {
   margin-top: 10px;
+  max-width: 464px;
+  min-width: 0;
+  container: shortcut-group / inline-size;
+  overflow-x: auto;
 }
 
 .shortcut-group-head {
@@ -34299,21 +34647,35 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
   margin-bottom: 0;
 }
 
-.shortcut-row {
-  display: flex;
+.shortcut-row,
+.shortcut-columns {
+  display: grid;
+  grid-template-columns: 160px 136px 52px 26px;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
-  flex-wrap: nowrap;
+  padding: 4px 0;
+  min-width: 398px;
+}
+.shortcut-group > .shortcut-row,
+.shortcut-group > .shortcut-columns { margin-left: 12px; }
+.shortcut-columns {
+  color: var(--ui-fg-muted);
+  font-size: 11px;
+}
+.shortcut-row:hover,
+.shortcut-row:focus-within {
+  background: var(--ui-bg-control, var(--bg3));
+  border-radius: var(--ui-radius-xs);
 }
 
 .shortcut-row .shortcut-label {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
 }
 
 .shortcut-status {
@@ -34330,7 +34692,9 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
 
 .shortcut-key {
   flex: 0 0 auto;
-  min-width: 116px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
   text-align: center;
   padding: 2px 8px;
   font-size: 12px;
@@ -34372,15 +34736,24 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
   padding: 1px 4px;
 }
 
-/* 行が狭いときは、キー欄を優先して残しつつ操作名を縮める */
+/* 狭い容器でも操作名とキーは同じ行。必要な幅は一覧内で横スクロールする。 */
+@container shortcut-group (max-width: 410px) {
+  .shortcut-row,
+  .shortcut-columns {
+    grid-template-columns: minmax(0, 1fr) 112px 44px 22px;
+    min-width: 0;
+    gap: 4px;
+  }
+  .shortcut-status { width: auto; }
+  .shortcut-key { padding: 2px 4px; font-size: 11px; white-space: nowrap; }
+  .shortcut-row .shortcut-reset,
+  .shortcut-reset-spacer { width: 22px; }
+}
 @media (max-width: 480px) {
   .shortcut-settings-wrap.gb-section--boxed.is-multi-scope {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .shortcut-key {
-    min-width: 96px;
-  }
 }
 
 .folder-multi-info {

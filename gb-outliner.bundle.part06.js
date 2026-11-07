@@ -1,3 +1,14 @@
+    origin: pendingNode,
+    showImmediately: true,
+    showInTray: true,
+    priority: 60,
+  });
+  try {
+    if (!progress) showStatus('作成に時間がかかっています。結果を確認中…');
+    const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
+    for (const delay of _outlinerPostTimeoutConfirmDelays()) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindNewItemInListing(items, type, existingNames);
       if (found) {
         if (onConfirmed) await onConfirmed(found);
@@ -887,14 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     if (e.pointerType && e.pointerType !== 'mouse') return;
     // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
     // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない
-    // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
-    //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
-    if (!_outlinerLassoIsBlankTarget(e.target)) return;
-    selectionMode = _outlinerLassoMode(e);
-    tracking = true;
-    active = false;
-    addDocumentPointerEndHandlers();
-    pointerId = e.pointerId;
-    pointerCaptured = false;
-    selectionScope = _outlinerLassoScopeFromTarget(e.target);
-    baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];

@@ -36,6 +36,7 @@
       row3.appendChild(fmt.makeGroup([fmt.makeLabel('小山高'), subHInp, fmt.makeLabel('%')]));
       container.appendChild(row3);
     }
+    _bdCompactStyleFields(container, kind, style, options);
     // リセットボタンは詳細パネルの style-row に移動 (2026-04-18)
     return;
   }
@@ -174,7 +175,124 @@
 
   // 「テキストをラインに合わせる」はボードツールバー（フィルタメニュー）の表示トグルへ移行
   // （D-4、計画書 §4-3-A）
+  _bdCompactStyleFields(container, kind, style, options);
   // リセットボタンは詳細パネルの style-row に移動 (2026-04-18)
+}
+
+// 操作部を複製せず共通ポップアップへ移し、保存・Undo・無効条件を維持する。
+function _bdCompactStyleFields(container, kind, style, options = {}) {
+  const fmt = window.gbFmt;
+  if (!fmt || typeof openFormatPopup !== 'function') return;
+  container.classList.add('bd-compact-style-fields');
+  const controls = new Map();
+  for (const el of container.querySelectorAll('[data-bd-style-field-container],[data-bd-style-field]')) {
+    const key = el.dataset.bdStyleFieldContainer || el.dataset.bdStyleField;
+    if (!controls.has(key)) controls.set(key, el.closest('[data-bd-style-field-container]') || el);
+  }
+  const labels = {
+    bgColor:'背景色', borderColor:'枠線色', borderWidth:'枠線太さ', textColor:'文字色',
+    textStrokeColor:'フチ色', textStrokeWidth:'フチ幅', fontSize:'サイズ', fontFamily:'フォント',
+    shape:'形状', borderRadius:'角丸', width:kind === 'card' ? '標準幅' : '太さ',
+    color:'ライン色', style:'種類', arrow:'矢印', pathType:'形状', cornerRadius:'コーナー半径',
+    branchRatio:'分岐位置', labelTextColor:'文字色', labelBgColor:'背景色', labelBorderColor:'枠線色',
+    labelBorderWidth:'枠線太さ', textShadowColor:'縁取り色', textShadowWidth:'縁取り太さ',
+    cloudBumpWidth:'山の幅', cloudBumpHeight:'山の高さ', cloudOffset:'ズラし量',
+    cloudSubWidthRatio:'小山幅', cloudSubHeightRatio:'小山高',
+  };
+  const remaining = new Set(controls.keys());
+  remaining.delete('name');
+  const unit = key => {
+    const node = controls.get(key);
+    if (!node || !remaining.delete(key)) return null;
+    const pair = document.createElement('span');
+    pair.className = 'gb-style-field';
+    pair.dataset.styleField = key;
+    const input = node.matches('input,select,button') ? node : node.querySelector('input,select,button');
+    if (input?.type !== 'checkbox' && key !== 'fontBold' && key !== 'fontItalic') {
+      pair.appendChild(fmt.makeLabel(labels[key] || input?.title || key));
+    }
+    pair.appendChild(node);
+    if (input?.type === 'number') pair.appendChild(fmt.makeLabel(/Ratio|Offset/.test(key) ? '%' : 'px'));
+    return pair;
+  };
+  const row = keys => {
+    const el = fmt.makeRow({ wrap:true, className:'gb-style-fields-row' });
+    keys.forEach(key => { const child = unit(key); if (child) el.appendChild(child); });
+    return el;
+  };
+  const name = container.querySelector('.bd-style-name-row');
+  const structure = kind === 'card'
+    ? [['shape','borderRadius','width'],['cloudBumpWidth','cloudBumpHeight'],['cloudOffset','cloudSubWidthRatio','cloudSubHeightRatio']]
+    : [['pathType','cornerRadius','branchRatio']];
+  const structuralRows = structure.map(row).filter(el => el.childElementCount);
+  const plans = kind === 'card' ? [
+    ['文字',[['textColor','fontSize','fontBold','fontItalic'],['fontFamily'],['textStrokeColor','textStrokeWidth']]],
+    ['背景・枠',[['bgColor','borderColor','borderWidth']]],
+  ] : [
+    ['ライン',[['color','width','style','arrow']]],
+    ['ライン上の文字',[['textVisible','textAlongPath','textAutoFlip'],['labelTextColor','fontBold','fontItalic'],['fontFamily'],['textShadowColor','textShadowWidth'],['labelBgColor','labelBorderColor','labelBorderWidth']]],
+  ];
+  const content = [];
+  for (const [title, rows] of plans) {
+    const section = document.createElement('section');
+    section.className = 'gb-style-format-section';
+    const heading = document.createElement('div');
+    heading.className = 'gb-fmt-section-title';
+    heading.textContent = title;
+    section.appendChild(heading);
+    rows.map(row).filter(el => el.childElementCount).forEach(el => section.appendChild(el));
+    if (section.children.length > 1) content.push(section);
+  }
+  if (remaining.size) { const extra = row([...remaining]); if (extra.childElementCount) content.push(extra); }
+  const storage = document.createElement('div');
+  storage.hidden = true;
+  storage.className = 'bd-style-format-storage';
+  content.forEach(el => storage.appendChild(el));
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'bd-style-format-open';
+  open.dataset.bdFormat = kind;
+  open.setAttribute('aria-haspopup','dialog');
+  open.setAttribute('aria-expanded','false');
+  const title = kind === 'card' ? 'トピックの書式設定' : 'ラインの書式設定';
+  open.setAttribute('aria-label', title);
+  const preview = document.createElement('span');
+  preview.className = 'bd-style-format-preview';
+  preview.setAttribute('aria-hidden','true');
+  const caption = document.createElement('span');
+  caption.textContent = title + '…';
+  open.append(preview, caption);
+  const refresh = () => {
+    let live = style;
+    if (typeof options.beforeEdit === 'function') live = {...style, ...options.beforeEdit()};
+    if (typeof options.editTargets === 'function') live = {...style, ...options.editTargets()?.[0]};
+    preview.innerHTML = kind === 'card' ? _bdCardStylePreviewHtml(live) : _bdLineStylePreviewHtml(live);
+  };
+  container._bdRefreshFormatPreview = refresh;
+  refresh();
+  container.replaceChildren(...(name ? [name] : []), ...structuralRows, open, storage);
+  open.addEventListener('click', () => {
+    closeAllFormatPopups();
+    const popup = openFormatPopup(open, {
+      title, fields:[], content, className:'gb-fmt-popup--board-style',
+      onClose() {
+        content.forEach(el => storage.appendChild(el));
+        container._bdFormatPopup = null;
+        open.setAttribute('aria-expanded','false');
+        if (container.isConnected) refresh();
+      },
+    });
+    container._bdFormatPopup = popup;
+    if (container.closest('[data-bd-detail-root]')) {
+      const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
+      popup._bdSelectionContext = {
+        path:bd.path,
+        nodes:[...bd.selected].map(id => bd.nodes.find(node => node.id === id)),
+        connections:connIds.map(id => bd.connections.find(conn => conn.id === id)),
+      };
+    }
+    open.setAttribute('aria-expanded','true');
+  });
 }
 
 function bdDepthStyleLabel(index, total) {

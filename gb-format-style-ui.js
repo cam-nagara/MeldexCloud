@@ -1131,10 +1131,7 @@
     if (fields.length <= 1) return [rowData];
     const mapped = new Set(Object.values(_mapFileRow(rowData).map).filter(Boolean));
     const unsupported = fields.filter(field => !mapped.has(field));
-    if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) {
-      return [{ ...rowData, fields: fields.filter(field => mapped.has(field)) },
-        { label: rowData.label + ' 行間・余白', fields: unsupported, preview: false }];
-    }
+    if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) return [rowData];
     return unsupported.length ? fields.map(field => ({ label: field.label, fields: [field], preview: rowData.preview })) : [rowData];
   }
 
@@ -1275,7 +1272,10 @@
     if (!anchorEl || !adapter || typeof openFormatPopup !== 'function') return;
     const { map, fields } = _mapFileRow(rowData);
     if (!fields.length) return;
-    openFormatPopup(anchorEl, {
+    const mapped = new Set(Object.values(map));
+    const extraFields = (rowData.fields || []).filter(field => !mapped.has(field));
+    const popup = openFormatPopup(anchorEl, {
+      title: `${_rowLabel(rowData)}の書式設定`,
       fields,
       values: _fileValues(rowData, adapter, map),
       onChange(prop, value) {
@@ -1297,6 +1297,9 @@
           for (const [prop, field] of Object.entries(map)) {
             if (await _setFileField(field, prop, '', adapter) === false) return;
           }
+          for (const field of extraFields) {
+            if (await _setFileField(field, '', '', adapter) === false) return;
+          }
           if (adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
         } catch (error) {
           console.warn('テーマ書式のリセットに失敗:', error);
@@ -1304,6 +1307,23 @@
         }
       },
     });
+    // 元の保存・履歴ハンドラーを使い、行間や余白も同じ書式編集へ集約する。
+    if (popup && extraFields.length) {
+      const row = document.createElement('div');
+      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap';
+      extraFields.forEach(field => row.appendChild(_fsBuildFieldInline(field, adapter, rowData.label)));
+      row.querySelectorAll('input').forEach(input => {
+        input._gbFmtCommittedValue = input.value;
+        input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
+        input._gbFmtCommit = () => {
+          if (input.value === input._gbFmtCommittedValue) return;
+          input._gbFmtCommittedValue = input.value;
+          input.dispatchEvent(new Event('change', { bubbles:true }));
+        };
+      });
+      popup.insertBefore(row, popup.querySelector('.gb-fmt-footer'));
+      if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
+    }
   }
 
   function _rowLabel(rowData) {

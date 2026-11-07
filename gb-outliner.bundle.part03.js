@@ -55,6 +55,17 @@
     row.dataset.gbTooltip = notice.title;
     row.appendChild(notice);
   }
+  if (Array.isArray(item.feature_labels) && item.feature_labels.length) {
+    const badge = document.createElement('span');
+    badge.className = 'tree-feature-badge';
+    badge.innerHTML = lucide('link', 12);
+    badge.title = 'Meldex連携: ' + item.feature_labels.join('、');
+    badge.dataset.gbTooltip = badge.title;
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', badge.title);
+    badge.style.cssText = 'display:inline-flex;align-items:center;opacity:0.65;margin-left:auto;flex-shrink:0;';
+    row.appendChild(badge);
+  }
   if (itemLocked) {
     const lockBadge = document.createElement('span');
     lockBadge.className = 'tree-lock-badge';
@@ -887,14 +898,3 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
             ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
           });
         } catch (_) { /* A foreground click retries through the normal error path. */ }
-        finally { _outlinerWarmKeys.delete(next.path); }
-      }
-    } finally { _outlinerWarmRunning = false; }
-  }, 0);
-}
-
-function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
-  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
-    child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
-  const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
-  // Navigation must paint before a migration reads/writes the entire Topic store.

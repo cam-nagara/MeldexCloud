@@ -20,7 +20,46 @@
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   font-size: var(--ui-font-12);
   color: var(--fg);
+  width: max-content;
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  box-sizing: border-box;
 }
+
+.gb-fmt-popup-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+.gb-fmt-popup-title { font-size:12px; font-weight:600; }
+.gb-fmt-popup .gb-fmt-popup-close { display:inline-flex; align-items:center; justify-content:center; flex:0 0 22px; width:22px; height:22px; padding:0; border:1px solid var(--border); border-radius:4px; background:var(--bg3); color:var(--fg); cursor:pointer; }
+.gb-fmt-section-title { font-size:12px; font-weight:600; margin:4px 0; }
+.gb-fmt-popup :is(.gb-fmt-popup-row--text,.gb-fmt-popup-row--text-decoration,.gb-fmt-popup-row--decoration) { flex-wrap:wrap; padding-left:12px; }
+.gb-fmt-color-pair { white-space:nowrap; gap:4px; }
+.gb-fmt-popup-row:empty { display:none; }
+
+/* 書式設定はラベルと値を一組にし、色見本内に文字やアイコンを重ねない。 */
+.gb-fmt-swatch { font-size:0; }
+.gb-fmt-swatch > svg { display:none; }
+.gb-style-field { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; min-width:0; }
+.gb-style-fields-row { gap:8px 12px; margin:6px 0; }
+.gb-style-format-section > .gb-style-fields-row { padding-left:12px; }
+.gb-style-field .gb-fmt-num { width:54px; }
+.gb-style-field select { max-width:220px; min-width:0; }
+.gb-fmt-popup--board-style .gb-fmt-section-title { margin:4px 0; }
+.gb-fmt-popup--group-style { max-width:min(420px, calc(100vw - 24px)); }
+.gb-fmt-popup--group-style .bd-group-manager-field { display:inline-flex; align-items:center; gap:4px; margin:0; white-space:nowrap; }
+.gb-fmt-popup--group-style input:not([type=checkbox]) { width:64px; min-width:0; }
+.gb-fmt-popup--group-style input[type=text] { width:120px; }
+.bd-compact-style-fields > .gb-style-fields-row { gap:6px 8px; }
+.bd-compact-style-fields > .gb-style-fields-row select { width:84px; }
+.bd-style-format-storage[hidden] { display:none !important; }
+.bd-style-format-open { display:flex; align-items:center; gap:12px; width:100%; min-width:0; text-align:left; padding:6px 10px; margin:8px 0; border:1px solid var(--border); border-radius:4px; background:var(--bg3); color:var(--fg); cursor:pointer; font-size:12px; }
+.bd-style-format-preview { display:inline-flex; align-items:center; justify-content:center; flex:0 0 112px; width:112px; height:40px; padding:3px; box-sizing:border-box; overflow:hidden; background:var(--bg); border:1px solid var(--border); border-radius:4px; }
+.bd-style-format-preview .bd-style-card-preview, .bd-style-format-preview svg { width:100%; height:100%; min-width:0; min-height:0; }
+.bd-style-format-open > span:last-child { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bd-depth-in-panel .bd-depth-fields { display:block; }
+.bd-depth-in-panel .bd-depth-fields > :is(.bd-depth-style-ref-row,.bd-depth-style-field-group,.gb-fmt-popup-row) { margin-left:12px; max-width:calc(100% - 12px); }
+.bd-depth-in-panel .bd-depth-style-ref-row select { flex:0 1 140px; width:140px; min-width:0; max-width:180px; }
+.bd-depth-in-panel .bd-depth-fields > .bd-detail-section-title { margin-top:12px; padding-top:8px; border-top:1px solid var(--border); }
 
 /* モディファイア（フェーズE-2 で sn2-* から移行） */
 .gb-fmt-popup--colbulk { min-width: 220px; }
@@ -32,12 +71,22 @@
 }
 .gb-fmt-popup--role-opts {
   z-index: 10000;
-  /* 2026-07-17 ユーザー指示: 幅を従来（min-width 340px）の半分にする。説明文は行内折返しで表示 */
-  min-width: 160px;
-  max-width: 170px;
+  /* 共通書式ポップアップと同じ内容幅。用途ラベルを含めて収める。 */
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 24px));
   max-height: 80vh;
   overflow-y: auto;
 }
+.gb-fmt-popup--bulk-edit .sn2-bulk-body {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:6px 10px;
+  padding-left:12px;
+}
+.gb-fmt-popup--bulk-edit .sn2-bulk-row { display:flex; align-items:center; flex-wrap:nowrap; gap:4px; min-width:0; }
+.gb-fmt-popup--bulk-edit .sn2-bulk-row > label { white-space:nowrap; }
+.gb-fmt-popup--bulk-edit :is(.sn2-bulk-section-divider,.sn2-bulk-apply-row),
+.gb-fmt-popup--bulk-edit .sn2-bulk-row:has([data-bulk-val="textBefore"],[data-bulk-val="textAfter"]) { grid-column:1/-1; }
 .gb-text-selection-fmt {
   z-index: 10060;
 }
@@ -118,11 +167,9 @@
   justify-content: center;
   vertical-align: middle;
 }
-/* 文字色系スウォッチは対象要素の背景色を JS で反映する。透明時は共通背景色に戻す。 */
+/* 文字色も設定色のみを表示する。透明・未設定は共通パレットのチェッカーを使う。 */
 .gb-fmt-swatch-fg {
-  font-weight: bold;
-  font-size: var(--ui-font-12);
-  background: var(--bg);
+  font-size: 0;
 }
 .gb-fmt-swatch-fg svg {
   pointer-events: none;

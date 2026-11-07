@@ -93,7 +93,14 @@ function bdRefreshSelectionDetails(forceEmpty) {
 function bdSyncBoardUi(forceEmptyDetail) {
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncBoardUi') : 0;
   bdRefreshBoardToolbar();
-  bdRefreshSelectionDetails(forceEmptyDetail);
+  // 描画予約だけで編集中の操作部を破棄しない。Undo/読込で実体が変わった場合は再生成する。
+  const context = document.querySelector('.gb-fmt-popup--board-style')?._bdSelectionContext;
+  const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
+  const sameSelection = context && context.path === bd.path
+    && context.nodes.length === bd.selected.size && context.connections.length === connIds.length
+    && context.nodes.every(node => node && bd.selected.has(node.id) && bd.nodes.includes(node))
+    && context.connections.every(conn => conn && connIds.includes(conn.id) && bd.connections.includes(conn));
+  if (forceEmptyDetail === true || !sameSelection) bdRefreshSelectionDetails(forceEmptyDetail);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdSyncBoardUi', started);
 }
 

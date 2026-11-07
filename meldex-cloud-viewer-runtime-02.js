@@ -20957,7 +20957,7 @@ document.addEventListener('DOMContentLoaded', () => {
  * delegated handlers, editor selection and application state remain intact. */
 (function () {
   'use strict';
-  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
+  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
   const hiddenClass = 'gb-tbo-hidden';
   const registry = new Map();
   let active = null;
@@ -21041,6 +21041,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (source.hidden) return;
       const row = document.createElement(source.tagName === 'BUTTON' ? 'button' : 'label');
       row.className = 'gb-context-menu-item gb-tbo-row';
+      row._gbTboSource = source;
       row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
@@ -21104,7 +21105,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const right = box.right - (parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth) || 0) * zoom;
       const left = box.left + (parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth) || 0) * zoom;
       return Array.from(toolbar.children).filter(el => !el.hidden && getComputedStyle(el).display !== 'none')
-        .every(el => { const rect = el.getBoundingClientRect(); return rect.right <= right + 1 && rect.left >= left - 1; });
+        .every(el => [el, ...(entry.sources.get(el) || [])].every(node => {
+          const rect = node.getBoundingClientRect();
+          return rect.right <= right + 1 && rect.left >= left - 1;
+        }));
     };
     const removed = new Set();
     if (!fits()) {
@@ -21122,6 +21126,19 @@ document.addEventListener('DOMContentLoaded', () => {
     more.hidden = entry.overflow.length === 0;
     if (hadMoreFocus && !more.hidden) more.focus({ preventScroll: true });
     if (active === entry && (before.length !== entry.overflow.length || before.some((el, i) => el !== entry.overflow[i]))) close(true);
+    if (active === entry) entry.popup.querySelectorAll('.gb-tbo-row').forEach(row => {
+      const source = row._gbTboSource;
+      if (!source) return;
+      if (row.tagName === 'BUTTON') {
+        row.disabled = source.disabled;
+        const pressed = source.classList.contains('active') || source.getAttribute('aria-pressed') === 'true';
+        row.classList.toggle('active', pressed);
+        row.setAttribute('aria-pressed', String(pressed));
+      } else {
+        const copy = row.querySelector('input,select');
+        if (copy && copy !== document.activeElement) { copy.value = source.value; copy.checked = source.checked; copy.disabled = source.disabled; }
+      }
+    });
   }
 
   function schedule() {
@@ -21137,8 +21154,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 0);
   }
 
-  function setup(config) {
-    const opts = typeof config === 'string' || config instanceof Element ? { toolbar: config } : config || {};
+  function setup(config, legacyOptions) {
+    const opts = typeof config === 'string' || config instanceof Element ? { ...legacyOptions, toolbar: config } : config || {};
     const toolbar = typeof opts.toolbar === 'string' ? document.querySelector(opts.toolbar) : opts.toolbar;
     if (!toolbar || toolbar.matches('.gb-toolbar-app--vertical')) return null;
     if (registry.has(toolbar)) {
@@ -21152,7 +21169,11 @@ document.addEventListener('DOMContentLoaded', () => {
     more.type = 'button';
     more.className = 'tb-icon-btn gb-toolbar-overflow-button';
     more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
-    more.textContent = '▼';
+    const symbol = document.createElement('span');
+    symbol.className = 'gb-toolbar-overflow-symbol';
+    symbol.textContent = '▼';
+    symbol.setAttribute('aria-hidden', 'true');
+    more.appendChild(symbol);
     more.title = '隠れている操作を表示';
     more.setAttribute('aria-label', more.title);
     more.setAttribute('aria-haspopup', 'dialog');

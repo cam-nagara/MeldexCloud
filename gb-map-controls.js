@@ -3,7 +3,7 @@ const MeldexMapControls = (() => {
   const D = () => MeldexMapDocument;
   function field(app, parent, label, value, apply, options = {}) {
     const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
-    const caption = document.createElement('span'); caption.textContent = label;
+    const caption = document.createElement('span'); caption.textContent = label; caption.title = label;
     const input = document.createElement(options.multiline ? 'textarea' : 'input');
     input.className = options.multiline ? 'gb-textarea' : options.type === 'number' ? 'gb-input gb-num-input' : 'gb-input';
     if (!options.multiline) input.type = options.type || 'text';
@@ -34,7 +34,7 @@ const MeldexMapControls = (() => {
   }
   function select(parent, label, choices, value, apply, disabled = false) {
     const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
-    const caption = document.createElement('span'); caption.textContent = label;
+    const caption = document.createElement('span'); caption.textContent = label; caption.title = label;
     const control = document.createElement('select'); control.className = 'gb-select'; control.setAttribute('aria-label', label); control.disabled = disabled;
     for (const [key, text] of choices) control.add(new Option(text, key));
     control.value = value; control.onchange = () => apply(control.value);

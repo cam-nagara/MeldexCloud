@@ -356,6 +356,7 @@
   // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
   function _refreshOpenSettings() {
     if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+    if (typeof global.updateChatShortcutHints === 'function') global.updateChatShortcutHints();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     document.querySelectorAll('[data-shortcut-settings-host]').forEach(host => {
       renderSettings(host, { scope: host.dataset.shortcutSettingsScope || '', boxed: host.dataset.shortcutSettingsBoxed === '1' });
@@ -372,6 +373,7 @@
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
     if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
+    if (typeof global.updateChatShortcutHints === 'function') global.updateChatShortcutHints();
     if (before && options?.skipHistory !== true && typeof global.pushLocalStorageSettingsHistory === 'function') {
       const after = global.captureLocalStorageSettings([STORAGE_KEY]);
       const refreshAfterHistory = (_keys, restoredSnapshot) => {
@@ -576,21 +578,21 @@
     const searchText = [item.label, item.id, item.key, item.display, label].join(' ').toLowerCase();
     let html = '<div class="shortcut-row gb-field-row" data-id="' + _esc(item.id) + '" data-scope="' + _esc(item.displayScope)
       + '" data-search="' + _esc(searchText) + '">';
-    html += '<span class="shortcut-label gb-label" title="' + _esc(item.id) + '">' + _esc(item.label) + '</span>';
+    html += '<span class="shortcut-label gb-label" title="' + _esc(item.label) + '">' + _esc(item.label) + '</span>';
     if (item.readonly) {
       // マウス操作を伴うため割り当て変更の対象にしない。一覧には必ず出す。
-      html += '<span class="shortcut-status">操作</span>';
       html += '<kbd class="shortcut-key is-readonly" data-e2e-id="shortcut-key-' + _esc(item.id) + '">'
         + _esc(keyText) + '</kbd>';
+      html += '<span class="shortcut-status">操作</span>';
       html += '<span class="shortcut-reset-spacer"></span>';
       return html + '</div>';
     }
     const status = item.isCustom ? 'カスタム' : '既定';
-    html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     html += '<kbd class="shortcut-key' + (item.isCustom ? ' is-custom' : '') + '" data-id="' + _esc(item.id)
       + '" data-e2e-id="shortcut-key-' + _esc(item.id)
       + '" tabindex="0" role="button" title="クリックして変更" aria-label="' + _esc(item.label) + 'のキーを変更">'
       + _esc(keyText) + '</kbd>';
+    html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     if (item.isCustom) {
       html += '<button type="button" class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + _esc(item.id)
         + '" data-e2e-id="shortcut-reset-' + _esc(item.id) + '" title="デフォルトに戻す" aria-label="'
@@ -607,6 +609,7 @@
     html += '<span>' + _esc(scopeLabel(scope)) + '</span>';
     html += '<span class="shortcut-group-count gb-section-desc">' + items.length + '件</span>';
     html += '</div>';
+    html += '<div class="shortcut-columns" aria-hidden="true"><span>操作</span><span>キー</span><span>状態</span><span></span></div>';
     html += items.map(_rowHtml).join('');
     return html + '</div>';
   }

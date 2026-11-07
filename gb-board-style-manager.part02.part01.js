@@ -492,6 +492,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
 
   // プレビュードロップダウン (ピッカー) は最上部、編集フィールドはその下に。
   // 上段の大きなプレビュー枠は削除し、設定項目を縦 1 カラムで詰めて表示する。
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = `
     <div class="bd-detail-panel bd-style-in-panel" data-bd-style-in-panel="${_bdEscAttr(kind)}">
       <div class="bd-detail-section">
@@ -734,6 +735,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
 
   // プレビュードロップダウン (ピッカー) は最上部、編集フィールドはその下に。
   // 上段の大きなプレビュー枠は削除し、設定項目を縦 1 カラムで詰めて表示する。
+  window.gbFmt?.closeOwnedPopups(container);
   container.innerHTML = `
     <div class="bd-detail-panel bd-style-in-panel bd-depth-in-panel" data-bd-style-in-panel="depth">
       <div class="bd-detail-section">
@@ -834,7 +836,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     // カードスタイル部
     const cardHeader = document.createElement('div');
     cardHeader.className = 'bd-detail-section-title';
-    cardHeader.textContent = 'トピックスタイル';
+    cardHeader.textContent = 'トピック';
     depthFieldsEl.appendChild(cardHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'card', selected, liveDepth, () => {
       applyDepthStyles();
@@ -872,7 +874,8 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const lineHeader = document.createElement('div');
     lineHeader.className = 'bd-detail-section-title';
     lineHeader.style.marginTop = '12px';
-  lineHeader.textContent = 'ラインスタイル（この階層のトピックから出るライン）';
+  lineHeader.textContent = 'ライン';
+    if (typeof fieldHelp === 'function') lineHeader.insertAdjacentHTML('beforeend', ' ' + fieldHelp('この階層のトピックから出るラインの設定です。'));
     depthFieldsEl.appendChild(lineHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'line', selected, liveDepth, () => {
       applyDepthStyles();

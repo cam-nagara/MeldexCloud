@@ -466,14 +466,9 @@ document.getElementById('chat-search-input')?.addEventListener('input', () => {
 });
 document.getElementById('chat-search-scope')?.addEventListener('change', () => { _chatSearch(); });
 
-// Enter送信、Shift+Enter改行
+// Plain and rich composers share IME, list and configured-send-key handling.
 document.getElementById('chat-input')?.addEventListener('keydown', function(e) {
-  const shortcutId = window.MeldexShortcutRegistry?.matchEvent(e, ['chat']) || '';
-  if (shortcutId === 'chat.send' || (!window.MeldexShortcutRegistry && e.key === 'Enter' && !e.shiftKey)) {
-    if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(e)) return;
-    e.preventDefault();
-    chatSend();
-  }
+  _chatHandlePlainComposerKey(e, chatSend);
 });
 
 // ============================

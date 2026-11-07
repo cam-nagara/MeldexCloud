@@ -22,6 +22,7 @@ class FormAppComponent extends ToolComponent {
   _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
+    this._syncDetailPanel();
     if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
@@ -84,6 +85,7 @@ class FormAppComponent extends ToolComponent {
       else await this._loadSheet();
       if (generation !== this._generation) return false;
       this._render(); this._changed();
+      this._syncDetailPanel();
       if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
@@ -461,6 +463,12 @@ class FormAppComponent extends ToolComponent {
       this.saveDefinition(); return true;
     }
     return false;
+  }
+  _syncDetailPanel() {
+    const path = this.path || this._tab()?.path || this.state.formPath;
+    if (!path || this._embedded || this.paneId !== GBLayout.activePane) return;
+    if (typeof _syncDetailPanel === 'function') return _syncDetailPanel(this.state.label || 'フォーム', path, 'form-app');
+    window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
   }
   saveDefinition() {
     this._commitFocusedControl();

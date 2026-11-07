@@ -109,6 +109,48 @@
   font-size: var(--ui-font-11);
   color: var(--ui-fg-muted);
 }
+/* 項目と値の距離を容器の幅で引き伸ばさない、共通の設定行。 */
+.gb-field-pair-group {
+  container: field-pairs / inline-size;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.gb-field-pair-group > legend {
+  padding: 0;
+  margin-bottom: var(--ui-space-3);
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-12);
+  font-weight: 600;
+}
+.gb-field-pair-group:has(> legend) > .gb-field-pair { margin-left: var(--ui-space-5); }
+.gb-field-pair {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2) var(--ui-space-5);
+  margin-bottom: var(--ui-space-3);
+  min-width: 0;
+}
+.gb-field-pair > label {
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.gb-field-pair .gb-num-unit { flex-wrap: nowrap; min-width: 0; }
+.gb-field-pair .gb-num-unit > .gb-section-desc { margin: 0; white-space: nowrap; }
+.gb-field-pair input.gb-num-input[type="number"],
+.field > input.gb-num-input[type="number"],
+.gb-field > input.gb-num-input[type="number"] {
+  width: 96px;
+  max-width: 100%;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.gb-field-pair input#pt-image-max-count { width: 64px; }
 /* 列などを選ぶフォーム。本文幅へ引き伸ばさず、狭い容器では下へ折り返す。 */
 .gb-field-select-row {
   display: flex;

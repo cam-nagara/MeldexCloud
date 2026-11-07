@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.448-3670c5e373d7ca38408c",
+  "version": "0.7.448-097d36823ee56786c84c",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -373,11 +373,11 @@
     },
     {
       "path": "gb-board-style-manager.part01.part01.js",
-      "sha256": "54638832ba3ac1fe67f270156ccb9a6aeed654fa2f3daf8a7893f2afdf8e58c7"
+      "sha256": "ec1eadda8fa828ee774f79ce85c5a27b3e9f5b38ca8edc8825c72c6d86721023"
     },
     {
       "path": "gb-board-style-manager.part01.part02.js",
-      "sha256": "4d2219412d02b5bc0aa26dd6101bde0fefbf4f3ff038b6832fabcbb567457f22"
+      "sha256": "75c3c210506683242df17338719e89cfe0f542724138e99fe5608425528c7ff0"
     },
     {
       "path": "gb-board-style-manager.part02.js",
@@ -385,7 +385,7 @@
     },
     {
       "path": "gb-board-style-manager.part02.part01.js",
-      "sha256": "2f01e3d9d6094a7238ebc20e9b2eacb83034dbe96426626c9fa5281de76a937b"
+      "sha256": "859d90bab92a38f8b87f5b5fd2c3580be3c7bd34310e753ca8923f0f7ac5df8f"
     },
     {
       "path": "gb-board-style-manager.part02.part02.js",
@@ -393,7 +393,7 @@
     },
     {
       "path": "gb-board-topic-integration.js",
-      "sha256": "ac50b2efafae5d8c5566a5af7c89a2cace81bd4ff01892d1ce8953972f155727"
+      "sha256": "6c15a4838b58336444e5576b4b6710a367cad0a562a8be2b6e60650650a1bf39"
     },
     {
       "path": "gb-board-topic-views.css",
@@ -421,7 +421,7 @@
     },
     {
       "path": "gb-board-ui.part01.part02.js",
-      "sha256": "c8bf75beccba5ce18c52f3222adf587d857d230c1bcae2bafe3218ed8d7a4188"
+      "sha256": "0a49d6281a7065bb339208cd2f0af76e559961322bec1e6af09eadb93ba0844a"
     },
     {
       "path": "gb-board-ui.part02.js",
@@ -429,11 +429,11 @@
     },
     {
       "path": "gb-board-ui.part02.part01.js",
-      "sha256": "3928d6b28b43e9b6462b3c19d8a63defc68f5993ac830af7f91b94a3dafaa51d"
+      "sha256": "3eb7e4cd2f3c9e3f305bda2ef700174b1311ae4d619f1322afd0741a89a2cc22"
     },
     {
       "path": "gb-board-ui.part02.part02.js",
-      "sha256": "959abdc1bfd06644253b3f2e73cec8a7daae035d5401b512dd518c682fb977b2"
+      "sha256": "d6885f8b451ec3fe4e4c262d5ad9a804a342217168e4f6054596276e8aac30a9"
     },
     {
       "path": "gb-broadcast.js",
@@ -633,7 +633,7 @@
     },
     {
       "path": "gb-chat-formatting.part02.js",
-      "sha256": "d18b37206bf1d60d25cbe7b4b4e957d11f2746cd00470b689e041c439643bb56"
+      "sha256": "f4eb7b81fbb2f8c19f43c13f887ff8da9c39a98eb7b92116c576d759913d98c2"
     },
     {
       "path": "gb-chat-generation-settings.js",
@@ -713,7 +713,7 @@
     },
     {
       "path": "gb-cloud-asset-loader.js",
-      "sha256": "59406d2105891cab93b1f0b4e3de4ae82d216041dc0235fe4ee34bcd6a4c0cbe"
+      "sha256": "12b8b1a87482d29c2852c885f14c763c19ef56a9337b32bb12e5f8a3e73e6607"
     },
     {
       "path": "gb-cloud-bootstrap-inherit.js",
@@ -1261,7 +1261,7 @@
     },
     {
       "path": "gb-db-property-types.part02.js",
-      "sha256": "4d61c958711d76b03db2ca7cb589982b17a78fb6c71fe39cf3d8650053050aff"
+      "sha256": "6c841cc6495b8780dd15b90ed945a4fe64ccdbc9788c58e8a548f9e9312aaa6b"
     },
     {
       "path": "gb-db-props.js",
@@ -1309,7 +1309,7 @@
     },
     {
       "path": "gb-db-table.part03.js",
-      "sha256": "71572011899f944d8eba5e7c762e2091a6c20bb540e5f67a4d89e6e0f2f01039"
+      "sha256": "b94507097f159430a42d2bfcef6ca4f7969cb6d28f80d83cad3ce54f83bf5908"
     },
     {
       "path": "gb-db-table.part04.js",
@@ -1465,11 +1465,11 @@
     },
     {
       "path": "gb-detail-panel.part02.part01.js",
-      "sha256": "ebab92e7e87bc52009d333dbf786b1ed5413f76d9c73d899d45cb0421b227a2d"
+      "sha256": "66892316bebc9695a21915cf4ea4be39ba16f3de9d64628ee44d7161bb40d36b"
     },
     {
       "path": "gb-detail-panel.part02.part02.js",
-      "sha256": "0fc89b74a76c0ecdf3155fa7e69a314257f91c643e3d8bf8a97d745903d1402e"
+      "sha256": "342567845c2975fa8ff7c75374f63399b2d1791da9f7661b8122b4e7569a8459"
     },
     {
       "path": "gb-detail-panel.part03.js",
@@ -1629,7 +1629,7 @@
     },
     {
       "path": "gb-editor.part02.part01.js",
-      "sha256": "1e7ea176c6a8d4950266de3df63e166b591240b7f3396f8a1712f6390456f19a"
+      "sha256": "a0e8d9ea08da8a6352fee5c1cfade8b37153f76ee0caaff1b8ee984849f7b8aa"
     },
     {
       "path": "gb-editor.part02.part02.js",
@@ -1661,11 +1661,11 @@
     },
     {
       "path": "gb-entity-detail-surface.css",
-      "sha256": "8453c648ed3136449e51b10796c927d47db2b4e7241a427efe28cdf7cb076216"
+      "sha256": "7b4e0d39c2d22fb2919c6b6a1dee9125b183fbe1577204edd94518c9e36c2478"
     },
     {
       "path": "gb-entity-detail-surface.js",
-      "sha256": "bb9519a10ba324abd3c25e4aa7ab569a2d39a489441e7f15ff2c2e9fc4f519fc"
+      "sha256": "34be9cddf1cbe1a6268f0a9553c7f3e407451c9e5a92a054465668ac7902a6be"
     },
     {
       "path": "gb-entity-props-panel.js",
@@ -1705,7 +1705,7 @@
     },
     {
       "path": "gb-file-icons.js",
-      "sha256": "113ae3a2f0c613817304c68b58e0b3559f02d23b6bd4cfcfac79684d21eb6f2f"
+      "sha256": "11245bc3d5a332a7977e19d708e000f71124d2c29c9706483709a1d5b7851154"
     },
     {
       "path": "gb-file-info-panel.js",
@@ -1805,15 +1805,15 @@
     },
     {
       "path": "gb-format-popup.css",
-      "sha256": "0051070fbe7c9416fbb7a99bfcf53d8feca5e7e4730d77889422acc36729c3de"
+      "sha256": "59b8b0d79036789ec6ed98fb3ef27893baf71d281dee5ae59308d6dca82814ae"
     },
     {
       "path": "gb-format-popup.js",
-      "sha256": "8e99447361d93f2bfa815dde962299db881840953d5687dc37711eb4deaa3232"
+      "sha256": "9e323d610e00e0881344e7b3e2ac9c46b1aaa4a584af9e43838da6f5830c7d7b"
     },
     {
       "path": "gb-format-style-ui.js",
-      "sha256": "fdc8771d0e1742eb07bcfb20586d2765bb2c140ae210108e298bbbeedcd60318"
+      "sha256": "bdce063528b5c866640be5f7952cc4b3c7c9212cc7219cb373423e19364c5624"
     },
     {
       "path": "gb-global-tags.js",
@@ -1857,7 +1857,7 @@
     },
     {
       "path": "gb-icon-assets.js",
-      "sha256": "789cd7595767d4adc67f614d9ceb57b7c6d1fa45eed90d9872a0f1d41abd85c1"
+      "sha256": "a7a2ad231ad8cc1198d25b916f582457e4c67c92cc6c51c75a4e8cce7964a424"
     },
     {
       "path": "gb-idea-inbox.js",
@@ -1929,7 +1929,7 @@
     },
     {
       "path": "gb-layout.part01.part01.js",
-      "sha256": "a52d142de6b7b590e8eabf317ec495b94635b1b82a07b3925c49e6608ca64011"
+      "sha256": "521bdb7ebf3f92a26fa3f9f9b9c3d459be4a84539722960cc9d2ff590c0559e4"
     },
     {
       "path": "gb-layout.part01.part02.js",
@@ -2017,7 +2017,7 @@
     },
     {
       "path": "gb-map-controls.js",
-      "sha256": "0d246560309eb8f4dffa6743c340d148fd15c28c3fe944e934d8620976d49277"
+      "sha256": "69c49e714b7ed0f181725c3b11a4085c1dfbbc7ebad7d1ed360c8ff6d65d0b7e"
     },
     {
       "path": "gb-map-document.js",
@@ -2309,23 +2309,23 @@
     },
     {
       "path": "gb-outliner.bundle.part03.js",
-      "sha256": "41b040eda462f460fff37e8e154d1f6e65b91895009350eab46d14243ee3e319"
+      "sha256": "25758e3389e4a5a311374c90896e2e50c0e17177e35f46d45c0c730c6e7b9fd0"
     },
     {
       "path": "gb-outliner.bundle.part04.js",
-      "sha256": "7c18a04f989f9cc01e6b73efb00dbeaeee727a3518a40a7b08c067f0c2372c19"
+      "sha256": "394ad00f13fe0ab5001c8142a214b35832e9ecfc91dcf938e347a5507c4296dd"
     },
     {
       "path": "gb-outliner.bundle.part05.js",
-      "sha256": "ca8a1daeecacffd6c583e43b424ff3a9939fe45a5078de78c08d8ffcd5049d58"
+      "sha256": "2c611ce37489870fab9742961aa20e4a441e3f0216fedd41c2e586a655e998df"
     },
     {
       "path": "gb-outliner.bundle.part06.js",
-      "sha256": "cae4011b39c03537632d1b397caa0710846987ddfa4e18438c200ad07728a3c1"
+      "sha256": "0abb860c39d822c724cc8fc4465403fd08e572c94f224f13d22c69bfa0dbf06b"
     },
     {
       "path": "gb-outliner.bundle.part07.js",
-      "sha256": "96a83e7517082185aa93894d7210f90684f4a95a106ced3dfafa4ab68f155f2e"
+      "sha256": "8aa387198cdd1208525524df31b30b57269e5f384c44c3bbbf8cec3498661a5c"
     },
     {
       "path": "gb-outliner.js",
@@ -2341,7 +2341,7 @@
     },
     {
       "path": "gb-outliner.part01.part02.js",
-      "sha256": "344e470444a7b14fd736b709c19159e102efa5e1a6d65370bdd3015146c50385"
+      "sha256": "f0fa900d2860c93fa6cb05e41e0f377c08f060b197738fcbb0bd173d29027685"
     },
     {
       "path": "gb-outliner.part02.js",
@@ -2653,7 +2653,7 @@
     },
     {
       "path": "gb-right-panel-chat-cli.js",
-      "sha256": "b282c1d865bd01580539b59383b25d7871c6698ed5ed36603b98b3757e0fdcb1"
+      "sha256": "4d954a142311fb2203d158ebb13abce83168317b1a490c33e103773896d0ab28"
     },
     {
       "path": "gb-right-panel-chat.js",
@@ -2669,11 +2669,11 @@
     },
     {
       "path": "gb-right-panel-chat.part01.part02.js",
-      "sha256": "35b996c393c5291ec2a66c0ef43ec5cfbce22e3443e0c12b1dc89528bda1683c"
+      "sha256": "fbdfba38542ba29b7b3c39ec7195af87f3c47aa6361a8877fce8d22407cf0d2f"
     },
     {
       "path": "gb-right-panel-chat.part01.part03.js",
-      "sha256": "a04e7a865b8f40366eb0383a95acfea29b1b213a0296bf27c6f285e713258c4c"
+      "sha256": "38b4bbc18902312127bb2c8fabb66f27d8901216bce76444adb6f044333182f7"
     },
     {
       "path": "gb-right-panel-chat.part01.part04.js",
@@ -2689,11 +2689,11 @@
     },
     {
       "path": "gb-right-panel-chat.part02.part01.js",
-      "sha256": "c4a15fbe97b4d60c2cf71890406fae784a1a3af2506ae2bd7f03f5248bc06941"
+      "sha256": "65f7300fff174011b0c3c189e78d52b44aa6821677cb2e98cf9233af66af236d"
     },
     {
       "path": "gb-right-panel-chat.part02.part02.js",
-      "sha256": "92ba0e014022a8e7ef944cbad9492ff7271c43aeb47ccd33167369e79bd95ed0"
+      "sha256": "ab635e8d033edca87dabd38970a1650bb4e16ded14276fec15789ec588ceda24"
     },
     {
       "path": "gb-right-panel.js",
@@ -2769,7 +2769,7 @@
     },
     {
       "path": "gb-scriptnote-columns.js",
-      "sha256": "44b8b2fe8e3f0b3c14db764d1128aa7afbb8a95e509c84aa829c87360387aa4d"
+      "sha256": "8b0c436a5544cf5a7e4284a20be98c36d6611016d73658c8d148f811e631533f"
     },
     {
       "path": "gb-scriptnote-detail.js",
@@ -2777,11 +2777,11 @@
     },
     {
       "path": "gb-scriptnote-detail.part01.js",
-      "sha256": "f6c07788d9283c7d7b0a644324663de995d2ca22240da7fe5f15d836fe2606ee"
+      "sha256": "f94318ca9d5d7e261f82068bed186b549734c1fb2d903d6b89ee61cad859d969"
     },
     {
       "path": "gb-scriptnote-detail.part02.js",
-      "sha256": "7e463f230fe6e2b5d4d8d567a58e5c64264293b9a6b1c9ffffd083a30a94d1e6"
+      "sha256": "7008b0f2f727e6a835c6d2a7bb46707e3a9731b9e5daeac2c927b27d5715b6ff"
     },
     {
       "path": "gb-scriptnote-detail.part03.js",
@@ -2960,6 +2960,10 @@
       "sha256": "6464ace729eb744acc9575d40a345e754dfa8390c5b732c597a036a22ff114f7"
     },
     {
+      "path": "gb-settings-fields.css",
+      "sha256": "1f8febfca9eff44bb4505708f85340ffc9fc4ff4dc6547363cb6cdf660f4002e"
+    },
+    {
       "path": "gb-settings-mobile-access.js",
       "sha256": "150ba7fd474897b42d8eb4cdc2b7223dfaea7cb7c4c6369a4b29bd52d544d115"
     },
@@ -3073,7 +3077,7 @@
     },
     {
       "path": "gb-sheet-entry-attachments.js",
-      "sha256": "1f153f4ec754a69c557c53b91210dbe87ba90e71faaa01650de70ca4b407da5c"
+      "sha256": "2483b84602a7a8498c88bd676ba5127cffad6a36e916587b3a487c41f3682969"
     },
     {
       "path": "gb-sheet-import-refresh.js",
@@ -3105,11 +3109,11 @@
     },
     {
       "path": "gb-shortcut-registry.css",
-      "sha256": "8d0c88d8d37af761b0b59acf777b51f65584bf303b8bbe44f965e26bf8d99f13"
+      "sha256": "4a32e9e57a98866e315f1014546eed4a2d0cc24f079d96821b5b11f376c47953"
     },
     {
       "path": "gb-shortcut-registry.js",
-      "sha256": "9fb13c4e945bb73fdb763b536fa59adb82b9dd9e48c4d8516f1aecd5ac93027b"
+      "sha256": "9ef077d56ad3b426b80df3262e662dce49a188e59149c2db316882d1cd08c7fc"
     },
     {
       "path": "gb-shortcuts.js",
@@ -3133,7 +3137,7 @@
     },
     {
       "path": "gb-split-loader.js",
-      "sha256": "bb9c6775eb2530deb225423c73311956bbffdd90d6c258c19758e18466cff61a"
+      "sha256": "1587cd7224f8713c5b9c1ea7da0887ebb925385673af88a006cc87d0a9a8a631"
     },
     {
       "path": "gb-split.js",
@@ -3505,7 +3509,7 @@
     },
     {
       "path": "gb-tool-form.js",
-      "sha256": "2d0606986234cf0326763cdc43ebded2ea903d660e5acdc4ba88cfe72c517457"
+      "sha256": "2f7470522cb1d19b6acef008add689efbb683a54303781145dcb7590549b1b6f"
     },
     {
       "path": "gb-tool-map.css",
@@ -3533,11 +3537,11 @@
     },
     {
       "path": "gb-toolbar-overflow.css",
-      "sha256": "6d95177d78b51e42dd1b393a485c51067de83fd34f0e0e6bae30185c4a17bbea"
+      "sha256": "0e2ced1cd1b3eb5e5992f82d973ca55b8421a119cc2cd48cef382402ae659cc4"
     },
     {
       "path": "gb-toolbar-overflow.js",
-      "sha256": "46a558325fa43c1881fc7354a2320bfe848e42dbb8d387d94a734dc2cf8ac2e5"
+      "sha256": "e56168b6a316f37d50ba9b8bdfaa754104b7c4599fb6a10b0dab570f312fc646"
     },
     {
       "path": "gb-tools.css",
@@ -3597,7 +3601,7 @@
     },
     {
       "path": "gb-tools.part05.css",
-      "sha256": "462409b3fd7f4691fdb70784cef2b28342800ce20ae2c8eb720e7b3861c33043"
+      "sha256": "b21782b55a8723311a26a1ee97174b17f99fe946cac9d6c8526386ab32f37f8c"
     },
     {
       "path": "gb-tooltip.css",
@@ -3693,7 +3697,7 @@
     },
     {
       "path": "gb-ui.css",
-      "sha256": "ab8169f3b66e01a6b3a36654c9caa7046a6eed59f6de8a8b60e76042dae9fdd3"
+      "sha256": "65648beb1bf94d1751b319c6a465a16d9b354cff37c253d8c54c7eb6ddcdfcfd"
     },
     {
       "path": "gb-ui.js",
@@ -3709,7 +3713,7 @@
     },
     {
       "path": "gb-ui.part01.part02.css",
-      "sha256": "2efe04ed71b74245a54c9d0230c014680c3fa9c51832bb2200d0586c2ae0457a"
+      "sha256": "250d15d03740e1d9877435f82eb82f2abc53b29fc545d9dddb659c413121ea55"
     },
     {
       "path": "gb-ui.part02.css",
@@ -3733,7 +3737,7 @@
     },
     {
       "path": "gb-ui.part04.part01.css",
-      "sha256": "70b3ed46f5bd6f62524ef591629f3ceaeee52e7bd861959b85b750020431db43"
+      "sha256": "811067cedf7c2bbbcc40452ae711ffe5daf8bc6d897481a52c69e831bb2566d3"
     },
     {
       "path": "gb-ui.part04.part02.css",
@@ -3817,7 +3821,7 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "e967f2a788dd5b35aeefaf783920925183390c7cc0aabed63510a1a18d3c0c04"
+      "sha256": "cdb9d142d0949a55df6857be1e5eb1bdb4d5461c24d48965830072a3527e40bf"
     },
     {
       "path": "manual-versions.json",
@@ -3825,7 +3829,7 @@
     },
     {
       "path": "manual.html",
-      "sha256": "cdbf4d86f4002a72e81f265097195453cbfb296a2cce8133e3bc3654066ad48f"
+      "sha256": "01c70b4d3289c6a9742fab36339d50861a3f96b49a1e90f1a299c66decdc83cd"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3833,7 +3837,7 @@
     },
     {
       "path": "meldex-cloud-core.css",
-      "sha256": "9ffd015462d4327227415ef213a7fc3ce07279710f32176286fa4986cf57c83f"
+      "sha256": "97df5bc687aa41c05812210accbaaeb1e36ad7c4002230ad3f3b57a06089510c"
     },
     {
       "path": "meldex-cloud-feature-capture-01.js",
@@ -3845,7 +3849,7 @@
     },
     {
       "path": "meldex-cloud-feature-scenario-01.js",
-      "sha256": "28a3da6f11a216b52407b2ecbcb2a5718447598e514b08d327a28f79dcc6d594"
+      "sha256": "d79712e1cc65c3edb90868e6214593e0c29e0d59ca9c2dcb94716a9738955d60"
     },
     {
       "path": "meldex-cloud-runtime-01.js",
@@ -3857,15 +3861,15 @@
     },
     {
       "path": "meldex-cloud-runtime-03.js",
-      "sha256": "3fe66913993eeb8bf42cd490c36a0ef8dc2f7184c61ab362786988d0d2fa7afe"
+      "sha256": "c8daa0839a3baf8e668d6e2c21256706e2995a283b5e75e48244cd9d9dba7d3d"
     },
     {
       "path": "meldex-cloud-runtime-04.js",
-      "sha256": "350590ad6415cb16ebdf78def084b80c239138566d84be1b73fad5000aa2512b"
+      "sha256": "8cd711878a99490ee7170090768017a0d2692c63252937257318ac63a12105b0"
     },
     {
       "path": "meldex-cloud-runtime-05.js",
-      "sha256": "ff6df892cf6a49a92bd979c6d9a36d35d5ea197106c9f0afe9bc0203b5abdb1c"
+      "sha256": "a21b4cfb2bc07539ef1834b23b3434d502f387fd06dbe14b67f1e0e50eafcfce"
     },
     {
       "path": "meldex-cloud-runtime-06.js",
@@ -3877,15 +3881,15 @@
     },
     {
       "path": "meldex-cloud-viewer-runtime-01.js",
-      "sha256": "f75bab8dd8ef673efd6f307a51a4580a43eb25d5c9ed9cc5691b184f9e4f79c3"
+      "sha256": "9750dc9bf4ec6a904d7964599f9a5b977bf8322df09b628534ada9d7b82eb3d2"
     },
     {
       "path": "meldex-cloud-viewer-runtime-02.js",
-      "sha256": "3348d85500bc153d0b5f1833b896a9fa4a59380c51569b05fc258225e1278f5e"
+      "sha256": "9b0d7626ae018451d364c10494e6c401906efcfd75bfe6f9c27f7c93079601f3"
     },
     {
       "path": "meldex-cloud-viewer-runtime-03.js",
-      "sha256": "1e76d4a573227d4015cc5cf5f89ae1d2c008a9a2cd53b124bb04ef7741b7ee4d"
+      "sha256": "eacd246e6a14de520bcfaa18676f8bd50b2155042d1d9a1887f0ae9a6c086690"
     },
     {
       "path": "meldex-cloud-viewer-runtime-04.js",
@@ -3941,7 +3945,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "1410becf3820546c2e206a4a2d920053a91d774a766611f5dca10187129501a0"
+      "sha256": "4409db326976ea8ba2c638e1d39412b4ff46a0e440098c2002414f57208ccbd7"
     },
     {
       "path": "Meldex.ico",
@@ -4389,7 +4393,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "e39dc23d9e1fa9b11d3986c458da07b924a1dded3c9257cc262ef007a0d6e695"
+      "sha256": "116b30bbd14ccb271bdf29f0fd6cee5d4cb9abdcc5c5af51b91682b1419210c1"
     },
     {
       "path": "webclip-inbox.css",

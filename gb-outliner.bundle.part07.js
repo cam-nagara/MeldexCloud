@@ -1,3 +1,14 @@
+    // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
+    //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
+    if (!_outlinerLassoIsBlankTarget(e.target)) return;
+    selectionMode = _outlinerLassoMode(e);
+    tracking = true;
+    active = false;
+    addDocumentPointerEndHandlers();
+    pointerId = e.pointerId;
+    pointerCaptured = false;
+    selectionScope = _outlinerLassoScopeFromTarget(e.target);
+    baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
     const rect = scroller.getBoundingClientRect();
     startX = e.clientX - rect.left + scroller.scrollLeft;
     startY = e.clientY - rect.top + scroller.scrollTop;
