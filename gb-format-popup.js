@@ -116,9 +116,9 @@
     return fallback || '';
   }
 
-  function _fontFamilyOptions() {
+  function _fontFamilyOptions(currentValue) {
     if (typeof getFontFamilyOptionItems === 'function') {
-      try { return getFontFamilyOptionItems(); } catch {}
+      try { return getFontFamilyOptionItems(currentValue); } catch {}
     }
     return [
       { v: '', l: '共通フォント', style: 'font-family:inherit;' },
@@ -558,10 +558,10 @@
       row1.appendChild(_makeGroup([cInput, _makeLabel('px')]));
     }
     if (fields.has('fontFamily')) {
-      const sel = _makeSelect(_fontFamilyOptions(), values.fontFamily || '', (v) => emit('fontFamily', v));
+      const sel = _makeSelect(_fontFamilyOptions(values.fontFamily), values.fontFamily || '', (v) => emit('fontFamily', v));
       sel.title = 'フォント';
       sel.classList.add('gb-fmt-sel--font');
-      const refreshFontOptions = () => sel._gbFmtSetOptions?.(_fontFamilyOptions(), sel._gbFmtSelectedValue);
+      const refreshFontOptions = () => sel._gbFmtSetOptions?.(_fontFamilyOptions(sel._gbFmtSelectedValue), sel._gbFmtSelectedValue);
       window.addEventListener('meldex:font-catalog-updated', refreshFontOptions);
       const previousCleanup = popup._gbFmtCleanup;
       popup._gbFmtCleanup = () => {

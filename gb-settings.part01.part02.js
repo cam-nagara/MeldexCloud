@@ -802,92 +802,25 @@ function _isFontInstalled(fontFamily) {
   return false;
 }
 
+// 共通カタログへ委譲する。後からロードされる設定モジュールで旧実装へ戻さない。
 function getDetectedSystemFonts() {
-  const seen = new Set(UI_PRESET_FONTS.map(f => f && f.family).filter(Boolean));
-  const detected = [];
-  const catalog = globalThis.MeldexFontCatalog;
-  if (globalThis.navigator?.userActivation?.isActive) void catalog?.refresh?.();
-  const catalogFamilies = catalog?.getFamilies?.() || [];
-  catalogFamilies.forEach(name => {
-    const family = `${JSON.stringify(String(name || '').trim())}, sans-serif`;
-    if (!name || seen.has(family)) return;
-    detected.push({ name, family });
-    seen.add(family);
-  });
-  for (const candidate of _SYSTEM_FONT_CANDIDATES) {
-    if (!candidate || !candidate.family) continue;
-    if (seen.has(candidate.family)) continue;
-    try {
-      if (_isFontInstalled(candidate.family)) {
-        detected.push(candidate);
-        seen.add(candidate.family);
-      }
-    } catch {}
-  }
-  detected.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-  return detected;
-}
-
-function _renderFontOption(opt, current) {
-  const sel = opt.family === current ? ' selected' : '';
-  return `<option value="${esc(opt.family)}" style="font-family:${opt.family || 'inherit'};"${sel}>${esc(opt.name)}</option>`;
+  return window.MeldexFontCatalog.getDetectedSystemFonts();
 }
 
 function getUIFontOptions() {
-  const current = document.documentElement.style.getPropertyValue('--ui-font') || '';
-  const preset = UI_PRESET_FONTS.map(f => _renderFontOption(f, current)).join('');
-  const detected = getDetectedSystemFonts();
-  const detectedHtml = detected.length
-    ? `<optgroup label="システムフォント">${detected.map(f => _renderFontOption(f, current)).join('')}</optgroup>`
-    : '';
-  const known = UI_PRESET_FONTS.some(item => item.family === current) || detected.some(item => item.family === current);
-  const currentHtml = current && !known
-    ? `<option value="${esc(current)}" style="font-family:${esc(current)};" selected>${esc(current)}（現在の設定）</option>`
-    : '';
-  return preset + detectedHtml + currentHtml;
+  return window.MeldexFontCatalog.getUIFontOptions();
 }
 
-function getFontFamilyOptionItems() {
-  const detected = getDetectedSystemFonts();
-  return [
-    { v: '', l: '共通フォント', style: 'font-family:inherit;' },
-    ...UI_PRESET_FONTS
-      .filter(f => f && f.family)
-      .map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};` })),
-    ...detected.map(f => ({ v: f.family, l: f.name, style: `font-family:${f.family};`, group: 'システムフォント' })),
-  ];
+function getFontFamilyOptionItems(currentValue) {
+  return window.MeldexFontCatalog.getFontFamilyOptionItems(currentValue);
 }
 
 function normalizeFontFamilyValue(value) {
-  const raw = String(value == null ? '' : value).trim();
-  if (!raw) return '';
-  const lower = raw.toLowerCase();
-  if (['inherit', 'initial', 'unset', 'revert', 'revert-layer'].includes(lower)) return '';
-  // CSS インジェクション防止のため危険な記号を排除。残りは OS フォント名として許容する。
-  if (/[<>{};\\]/.test(raw)) return '';
-  return raw;
+  return window.MeldexFontCatalog.normalizeFontFamilyValue(value);
 }
 
 function getFontFamilyOptions(currentValue) {
-  const current = normalizeFontFamilyValue(currentValue);
-  const items = getFontFamilyOptionItems();
-  let out = '';
-  let currentGroup = null;
-  for (const item of items) {
-    const grp = item.group || null;
-    if (grp !== currentGroup) {
-      if (currentGroup) out += '</optgroup>';
-      if (grp) out += `<optgroup label="${esc(grp)}">`;
-      currentGroup = grp;
-    }
-    const sel = item.v === current ? ' selected' : '';
-    out += `<option value="${esc(item.v)}" style="${esc(item.style)}"${sel}>${esc(item.l)}</option>`;
-  }
-  if (currentGroup) out += '</optgroup>';
-  if (current && !items.some(item => item.v === current)) {
-    out += `<option value="${esc(current)}" style="font-family:${esc(current)};" selected>${esc(current)}（現在の設定）</option>`;
-  }
-  return out;
+  return window.MeldexFontCatalog.getFontFamilyOptions(currentValue);
 }
 
 window.addEventListener('meldex:font-catalog-updated', () => {

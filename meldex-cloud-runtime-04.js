@@ -76540,9 +76540,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return fallback || '';
   }
 
-  function _fontFamilyOptions() {
+  function _fontFamilyOptions(currentValue) {
     if (typeof getFontFamilyOptionItems === 'function') {
-      try { return getFontFamilyOptionItems(); } catch {}
+      try { return getFontFamilyOptionItems(currentValue); } catch {}
     }
     return [
       { v: '', l: '共通フォント', style: 'font-family:inherit;' },
@@ -76982,10 +76982,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
       row1.appendChild(_makeGroup([cInput, _makeLabel('px')]));
     }
     if (fields.has('fontFamily')) {
-      const sel = _makeSelect(_fontFamilyOptions(), values.fontFamily || '', (v) => emit('fontFamily', v));
+      const sel = _makeSelect(_fontFamilyOptions(values.fontFamily), values.fontFamily || '', (v) => emit('fontFamily', v));
       sel.title = 'フォント';
       sel.classList.add('gb-fmt-sel--font');
-      const refreshFontOptions = () => sel._gbFmtSetOptions?.(_fontFamilyOptions(), sel._gbFmtSelectedValue);
+      const refreshFontOptions = () => sel._gbFmtSetOptions?.(_fontFamilyOptions(sel._gbFmtSelectedValue), sel._gbFmtSelectedValue);
       window.addEventListener('meldex:font-catalog-updated', refreshFontOptions);
       const previousCleanup = popup._gbFmtCleanup;
       popup._gbFmtCleanup = () => {
@@ -82156,6 +82156,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     'Courier New', 'Courier', 'Impact',
   ]);
   const _families = new Map();
+  // 名前は記号・装飾フォントでも読めるよう、プレビューとは別の書体で表示する。
+  const OPTION_STYLE = 'font-family:"Noto Sans JP",sans-serif;font-size:13px;font-weight:normal;font-style:normal;';
   let _fontDetectionCtx = null;
   let _localFetchStarted = false;
   let _localFontAccessStarted = false;
@@ -82176,6 +82178,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _cssFamily(name) {
     const safe = String(name || '').trim();
     return safe ? `${JSON.stringify(safe)}, sans-serif` : '';
+  }
+
+  function _familyKey(value) {
+    return (String(value).match(/"[^"]*"|'[^']*'|[^,]+/g) || [])
+      .map(part => part.trim().replace(/^(["'])(.*)\1$/, '$2').toLowerCase()).join(',');
+  }
+
+  function _currentLabel(value) {
+    const first = (String(value).match(/^\s*(?:"([^"]*)"|'([^']*)'|([^,]+))/) || []);
+    const name = first[1] || first[2] || first[3] || 'フォント';
+    return `${name.trim().slice(0, 48)}${name.trim().length > 48 ? '…' : ''}（現在の設定）`;
   }
 
   function _addFamilies(values) {
@@ -82252,27 +82265,35 @@ async function _applyImportedCustomColors(rawColors, mode) {
       .map(name => ({ name, family: _cssFamily(name) }));
   }
 
-  function getFontFamilyOptionItems() {
+  function getFontFamilyOptionItems(currentValue) {
     const seen = new Set();
-    const items = [{ v: '', l: '共通フォント', style: 'font-family:inherit;' }];
+    const items = [{ v: '', l: '共通フォント', style: OPTION_STYLE }];
     PRESET_FONTS.filter(item => item.family).forEach(item => {
-      if (seen.has(item.family)) return;
-      seen.add(item.family);
-      items.push({ v: item.family, l: item.name, style: `font-family:${item.family};` });
+      if (seen.has(_familyKey(item.family))) return;
+      seen.add(_familyKey(item.family));
+      items.push({ v: item.family, l: item.name, style: OPTION_STYLE });
     });
     getDetectedSystemFonts().forEach(item => {
-      if (seen.has(item.family)) return;
-      seen.add(item.family);
-      items.push({ v: item.family, l: item.name, style: `font-family:${item.family};`, group: 'システムフォント' });
+      if (seen.has(_familyKey(item.family))) return;
+      seen.add(_familyKey(item.family));
+      items.push({ v: item.family, l: item.name, style: OPTION_STYLE, group: 'システムフォント' });
     });
+    const current = normalizeFontFamilyValue(currentValue);
+    if (current) {
+      const matching = items.find(item => _familyKey(item.v) === _familyKey(current));
+      if (matching) matching.v = current;
+      else items.push({ v: current, l: _currentLabel(current), style: OPTION_STYLE, title: current });
+    }
     return items;
   }
 
-  function getFontFamilyOptions(currentValue) {
+  function _renderOptions(items, currentValue) {
     const current = normalizeFontFamilyValue(currentValue);
     let output = '';
     let group = null;
-    const items = getFontFamilyOptionItems();
+    // 引用符だけが異なる既存値も保持し、呼出元の select.value 復元を壊さない。
+    const matching = items.find(item => _familyKey(item.v) === _familyKey(current));
+    if (matching) matching.v = current;
     items.forEach(item => {
       const nextGroup = item.group || null;
       if (nextGroup !== group) {
@@ -82284,23 +82305,20 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
     if (group) output += '</optgroup>';
     if (current && !items.some(item => item.v === current)) {
-      output += `<option value="${_escapeHtml(current)}" style="font-family:${_escapeHtml(current)};" selected>${_escapeHtml(current)}（現在の設定）</option>`;
+      output += `<option value="${_escapeHtml(current)}" style="${_escapeHtml(OPTION_STYLE)}" selected>${_escapeHtml(_currentLabel(current))}</option>`;
     }
     return output;
   }
 
+  function getFontFamilyOptions(currentValue) {
+    return _renderOptions(getFontFamilyOptionItems(currentValue), currentValue);
+  }
+
   function getUIFontOptions() {
     const current = document.documentElement.style.getPropertyValue('--ui-font') || '';
-    const preset = PRESET_FONTS.map(item => `<option value="${_escapeHtml(item.family)}" style="font-family:${item.family || 'inherit'};"${item.family === current ? ' selected' : ''}>${_escapeHtml(item.name)}</option>`).join('');
-    const system = getDetectedSystemFonts();
-    const systemHtml = system.length
-      ? `<optgroup label="システムフォント">${system.map(item => `<option value="${_escapeHtml(item.family)}" style="font-family:${_escapeHtml(item.family)};"${item.family === current ? ' selected' : ''}>${_escapeHtml(item.name)}</option>`).join('')}</optgroup>`
-      : '';
-    const known = PRESET_FONTS.some(item => item.family === current) || system.some(item => item.family === current);
-    const currentHtml = current && !known
-      ? `<option value="${_escapeHtml(current)}" style="font-family:${_escapeHtml(current)};" selected>${_escapeHtml(current)}（現在の設定）</option>`
-      : '';
-    return preset + systemHtml + currentHtml;
+    const items = getFontFamilyOptionItems();
+    items[0].l = PRESET_FONTS[0].name;
+    return _renderOptions(items, current);
   }
 
   _loadDetectedFallbacks();
@@ -82314,6 +82332,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
     // 選べるフォントの既定一覧はここが正本。同じ内容を他所へ書き写さないこと
     // （写しが増えると環境ごとに選択肢がずれる）。
     PRESET_FONTS,
+    getDetectedSystemFonts,
+    getFontFamilyOptionItems,
+    getFontFamilyOptions,
+    getUIFontOptions,
+    normalizeFontFamilyValue,
     getFamilies: () => [..._families.values()],
     refresh: requestLocalFontAccess,
   });
