@@ -197,6 +197,23 @@ async function _syncMyTeamProfile() {
   if (!name || name === 'anonymous') return;
   const avatar = localStorage.getItem('meldex-avatar') || '';
   const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncFolderProfile = async (folder) => {
+    // Profile registration is best effort at startup. A read-only/virtual root
+    // must not interrupt startup or prevent reading its existing role.
+    try {
+      await apiPost('/team/sync', teamPayload(folder ? { folder } : undefined), { silentError: true });
+    } catch (error) {
+      console.warn('[team-profile] 起動時のプロフィール同期を保留しました:', error);
+    }
+    try {
+      const members = await apiFetch('/team' + (folder ? '?folder=' + encodeURIComponent(folder) : ''), { silentError: true });
+      const me = members.find(member => member.name === name);
+      return me ? me.role || 'editor' : undefined;
+    } catch (error) {
+      console.warn('[team-profile] チーム情報を読み込めませんでした:', error);
+      return undefined;
+    }
+  };
   const syncWorkspaceProfiles = async () => {
     try {
       const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
@@ -204,7 +221,11 @@ async function _syncMyTeamProfile() {
         : [];
       for (const workspace of workspaces || []) {
         if (!workspace?.id) continue;
-        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+        try {
+          await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }), { silentError: true });
+        } catch (error) {
+          console.warn('[team-profile] ワークスペースのプロフィール同期を保留しました:', error);
+        }
       }
       await window.MeldexWorkspaces?.load?.({ force: true });
     } catch {}
@@ -215,22 +236,14 @@ async function _syncMyTeamProfile() {
     const visibleRoots = roots.filter(r => r.visible && r.path);
     if (visibleRoots.length === 0) {
       // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
-      try {
-        await apiPost('/team/sync', teamPayload());
-        const members = await apiFetch('/team');
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRole = me.role || 'editor';
-      } catch {}
+      const role = await syncFolderProfile();
+      if (role) _myTeamRole = role;
       await syncWorkspaceProfiles();
       return;
     }
     for (const root of visibleRoots) {
-      try {
-        await apiPost('/team/sync', teamPayload({ folder: root.path }));
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRoles[root.path] = me.role || 'editor';
-      } catch {}
+      const role = await syncFolderProfile(root.path);
+      if (role) _myTeamRoles[root.path] = role;
     }
     // デフォルトロール = 最初の可視ソースフォルダのロール
     const firstRole = _myTeamRoles[visibleRoots[0].path];
@@ -465,9 +478,10 @@ async function _primeStaffRegistrySelfUpsert() {
   const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
   if (!me || me === 'anonymous') return;
   try {
-    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true });
+    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true, silentError: true });
   } catch (e) {
     // ソースフォルダ未設定・オフライン等では起動処理を止めない。
+    console.warn('[staff-registry] 起動時のプロフィール登録を保留しました:', e);
   }
 }
 
@@ -884,17 +898,3 @@ function showScreenshotMenu(e) {
   };
   placeMenu();
   menu.addEventListener('keydown', (ev) => {
-    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
-    const index = items.indexOf(document.activeElement);
-    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-      ev.preventDefault();
-      const delta = ev.key === 'ArrowDown' ? 1 : -1;
-      items[(index + delta + items.length) % items.length]?.focus();
-    } else if (ev.key === 'Home') {
-      ev.preventDefault();
-      items[0]?.focus();
-    } else if (ev.key === 'End') {
-      ev.preventDefault();
-      items.at(-1)?.focus();
-    } else if (ev.key === 'Escape') {
-      ev.preventDefault();

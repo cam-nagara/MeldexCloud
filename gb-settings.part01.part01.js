@@ -736,6 +736,9 @@ async function showSettingsModal(opts) {
         </section>
       </div>
     </div>
+    <div class="settings-panel" data-panel="利用料金" hidden>
+      <div id="monthly-usage-costs-container"><div class="gb-section-desc">表示時に読み込みます…</div></div>
+    </div>
     <!-- ユーザー -->
     <div class="settings-panel" data-panel="ユーザー" hidden>
       <section class="gb-section gb-section--boxed" data-settings-view="profile">
@@ -812,7 +815,6 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
-      <div id="import-schedule-settings-container" data-settings-view="import-schedules"></div>
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
@@ -821,6 +823,7 @@ async function showSettingsModal(opts) {
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper ${fieldHelp('Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の「Web Clipper」フォルダです')}</div>
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
+        <div id="webclip-inbox-schedule-container"></div>
         <label class="gb-field" style="margin-top:8px;">
           <span class="gb-label">ブラウザに読み込むフォルダ</span>
           <input id="settings-webclip-install-path" class="gb-input" type="text" readonly value="" placeholder="Web Clipperを準備すると表示されます">

@@ -14,7 +14,7 @@ const bd = {
   lastSavedEtag:'',
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
-  cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'',
+  cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'', activeDepthStylePreset:'',
   _stylePresetSeedVersion:0, themeId:'',
   tool:'select', displayFilters:{},
   // 2026-04-18: レイアウト隙間 / 自動整列 (スタイルタブで設定)
@@ -755,6 +755,7 @@ function bdParseMd(raw) {
     if (boardUiBlock) {
       const acm = boardUiBlock[1].match(/activeCardStyle:\s*([^\n]+)/);
       const alm = boardUiBlock[1].match(/activeLineStyle:\s*([^\n]+)/);
+      const dpm = boardUiBlock[1].match(/activeDepthStylePreset:\s*([^\n]+)/);
       const pvm = boardUiBlock[1].match(/stylePresetSeedVersion:\s*([^\n]+)/);
       const thm = boardUiBlock[1].match(/themeId:\s*([^\n]+)/);
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
@@ -762,6 +763,7 @@ function bdParseMd(raw) {
       const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
+      if (dpm) boardUi.activeDepthStylePreset = String(bdYamlScalar(dpm[1]));
       if (pvm) boardUi.stylePresetSeedVersion = parseInt(pvm[1], 10) || 0;
       if (thm) boardUi.themeId = thm[1].trim();
       if (ssm) boardUi.showShadow = ssm[1] === 'true';

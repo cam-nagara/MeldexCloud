@@ -196,10 +196,11 @@
   function _initScheduleWidget(schedule, scheduleState) {
     const container = document.getElementById('x-bookmarks-schedule-container');
     if (!container) return;
-    if (!_scheduleWidget) {
-      _scheduleWidget = window.MeldexScheduler?.createWidget(container, schedule, (cfg) => {
-        _currentSchedule = cfg;
-        saveConfig({ silentError: true });
+    if (!_scheduleWidget || !container.querySelector('.gb-scheduler-widget')) {
+      _scheduleWidget = window.MeldexScheduler?.createWidget(container, schedule, async (cfg) => {
+        const saved = await saveConfig({ silentError: true, schedule: cfg });
+        if (saved) _currentSchedule = cfg;
+        return saved;
       });
     }
     _scheduleWidget?.setStatusText(_formatScheduleState(scheduleState));
@@ -224,7 +225,7 @@
       return false;
     }
     const body = settingsPayload();
-    const schedulePayload = _scheduleWidget ? _scheduleWidget.getCurrentConfig() : _currentSchedule;
+    const schedulePayload = options.schedule || (_scheduleWidget ? _scheduleWidget.getCommittedConfig() : _currentSchedule);
     try {
       if (schedulePayload) body.schedule = schedulePayload;
       await saveSharedSettings(settingsPayload());

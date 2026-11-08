@@ -299,3 +299,9 @@ iframe.meldex-entity-linked-media {
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {
   height: 30px; box-sizing: border-box; line-height: normal;
 }
+
+/* Saved HTML owns the topic content area independently of its columns. */
+.meldex-entity-linked-content > .meldex-entity-detail-webclip { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.meldex-entity-detail-webclip[hidden] { display:none !important; }
+.meldex-entity-detail-webclip-toolbar { flex:none; }
+.meldex-entity-linked-content > .meldex-entity-detail-webclip > .meldex-entity-detail-webclip-frame { flex:1; width:100%; min-height:0; height:100%; border:0; }

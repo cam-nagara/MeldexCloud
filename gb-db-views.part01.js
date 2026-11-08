@@ -510,7 +510,7 @@ async function _showDbConfigModal(dbPath, ctx) {
             <label for="dbcfg-default-panel">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}</label>
             <select id="dbcfg-default-panel" class="gb-select">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
-              <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>右サイドバー</option>
+              <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>サブパネル</option>
             </select>
           </div>
         </div>

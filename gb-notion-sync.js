@@ -323,7 +323,7 @@
     const schedContainer = card.querySelector('.notion-sync-schedule-container');
     if (schedContainer && window.MeldexScheduler) {
       const w = window.MeldexScheduler.createWidget(schedContainer, folderSchedule, (cfg) => {
-        _updateAutoSyncSchedule(card, index, cfg);
+        return _updateAutoSyncSchedule(card, index, cfg);
       });
       card._scheduleWidget = w;
       w?.setStatusText(_formatScheduleState(folder.schedule_state));
@@ -586,7 +586,7 @@
     const index = parseInt(card.dataset.index);
     const path = card.querySelector('.notion-folder-path').value.trim();
     const notionUrl = card.querySelector('.notion-page-url').value.trim();
-    const schedule = card._scheduleWidget ? card._scheduleWidget.getCurrentConfig() : null;
+    const schedule = card._scheduleWidget ? card._scheduleWidget.getCommittedConfig() : null;
     const syncMode = 'push';
     const urlChanged = notionUrl !== (card.dataset.notionPageUrl || '');
     const extraPayload = extra || {};
@@ -796,26 +796,27 @@
         const notionUrl = card.querySelector('.notion-page-url').value.trim();
         if (!path) {
           showStatus('自動同期にはフォルダ指定が必要です', true);
-          return;
+          return false;
         }
         if (!notionUrl) {
           showStatus('自動同期にはNotionページURLが必要です', true);
-          return;
+          return false;
         }
         const cfg = await apiFetch('/notion/config');
         if (!cfg?.has_token) {
           card.dataset.notionHasToken = '0';
           showStatus('自動同期にはNotionトークンの保存が必要です', true);
-          return;
+          return false;
         }
         card.dataset.notionHasToken = '1';
         const ready = await _ensureNotionPageReady(card, statusEl);
         if (!ready) {
           showStatus('Notionページを確認できないため、自動同期を無効にしました', true);
-          return;
+          return false;
         }
       }
-      await _saveFolderConfig(card, {});
+      if (!await _saveFolderConfig(card, { schedule: scheduleCfg, auto_sync: isEnabled,
+        sync_interval: scheduleCfg?.interval_minutes || 0 })) return false;
       if (isEnabled) {
         const text = window.MeldexScheduler?.nextRunText?.(scheduleCfg) || '';
         showStatus(`自動同期を設定しました: ${text}`);
@@ -824,6 +825,7 @@
       }
     } catch (e) {
       showStatus('設定の保存に失敗しました', true);
+      return false;
     }
   }
 

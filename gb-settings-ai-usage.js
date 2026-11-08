@@ -1,4 +1,93 @@
-/* gb-settings-ai-usage.js: AI API budget and administrator AI usage settings */
+/* gb-settings-ai-usage.js: monthly API costs, AI budgets and administrator usage */
+async function renderMonthlyUsageCosts(root) {
+  const container = root?.querySelector?.('#monthly-usage-costs-container');
+  if (!container) return;
+  const currentMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
+  container.innerHTML = `
+    <section class="gb-section gb-section--boxed">
+      <div class="gb-section-title">${lucide('walletCards',14)} 利用料金</div>
+      <div class="gb-section-desc">この端末のMeldexで記録した概算料金です。税・割引・他のアプリや端末の利用分は含みません。実際の請求額とは異なる場合があります。AI予算カウンターのリセット後も、料金台帳は保持します。</div>
+      <div class="gb-field-row" style="flex-wrap:wrap;gap:8px">
+        <label style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">集計月 <input type="month" class="gb-input" data-cost-month aria-label="集計月" value="${currentMonth}" max="${currentMonth}" style="width:150px"></label>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-icon" data-cost-refresh aria-label="利用料金を更新" title="利用料金を更新">${lucide('refreshCw',14)}</button>
+        <label style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">円換算 <input type="number" class="gb-input" data-cost-rate aria-label="概算のドル円換算レート" min="0.01" step="0.01" value="${CHAT_COST_USD_JPY_APPROX_RATE}" style="width:85px"> 円 / USD</label>
+      </div>
+      <div class="gb-section-desc" data-cost-status role="status" aria-live="polite"></div>
+    </section>
+    <div data-cost-content></div>`;
+  const month = container.querySelector('[data-cost-month]');
+  const rate = container.querySelector('[data-cost-rate]');
+  const status = container.querySelector('[data-cost-status]');
+  const content = container.querySelector('[data-cost-content]');
+  let request = 0;
+  let updatedStatus = '';
+  const formatMoney = () => {
+    const conversion = Number(rate.value);
+    const valid = Number.isFinite(conversion) && conversion > 0 && conversion <= 1000000;
+    if (!valid) {
+      rate.setAttribute('aria-invalid', 'true');
+      status.textContent = '円換算レートには0より大きい数値を入力してください。';
+    } else if (rate.getAttribute('aria-invalid') === 'true') {
+      rate.removeAttribute('aria-invalid');
+      status.textContent = updatedStatus;
+    }
+    container.querySelectorAll('[data-cost-usd]').forEach(el => {
+      const usd = Number(el.dataset.costUsd);
+      const dollars = usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+      el.textContent = valid ? '約' + (usd * conversion).toLocaleString('ja-JP', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+        + '円（USD ' + dollars + '）' : '円換算未算定（USD ' + dollars + '）';
+    });
+  };
+  const money = value => `<strong data-cost-usd="${Number(value)}"></strong>`;
+  const load = async () => {
+    const ticket = ++request;
+    status.textContent = '読み込み中…';
+    content.replaceChildren();
+    try {
+      const data = await apiFetch('/usage/costs?month=' + encodeURIComponent(month.value));
+      if (ticket !== request || !container.isConnected) return;
+      const groups = data.groups || [];
+      const llm = groups.filter(row => row.category === 'llm');
+      const x = groups.filter(row => row.category === 'x');
+      const subscriptions = groups.filter(row => ['subscription', 'local', 'mock'].includes(row.category));
+      const sum = (rows, key) => rows.reduce((n, row) => n + Number(row[key] || 0), 0);
+      const names = { openai:'OpenAI', anthropic:'Anthropic', gemini:'Google Gemini', xai:'xAI', unknown:'不明' };
+      const llmRows = llm.map(row => `<tr><td>${esc(names[row.provider] || row.provider)}<br><span class="gb-section-desc">${esc(row.model)}</span></td><td>${Number(row.requests).toLocaleString()}回<br><span class="gb-section-desc">入力 ${Number(row.input_tokens).toLocaleString()} / 出力 ${Number(row.output_tokens).toLocaleString()} tokens</span></td><td>${row.unpriced && !row.cost_usd ? '<strong>未算定</strong>' : money(row.cost_usd)}</td></tr>`).join('');
+      const started = String(data.x_recording_since || '').replace('T', ' ');
+      content.innerHTML = `
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">記録済み分の概算合計</div>
+          <div style="font-size:1.3em">${money(data.total_cost_usd)}</div>
+          ${data.unpriced ? `<div class="gb-section-desc">単価を確定できない取得 ${Number(data.unpriced).toLocaleString()}件は合計に含みません。</div>` : ''}
+        </section>
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">LLM API</div>
+          <div class="gb-section-desc">トークン記録に基づく概算です。検索・ストレージ等の追加料金を含む実際の明細は、<a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer">OpenAI</a> / <a href="https://platform.claude.com/cost" target="_blank" rel="noopener noreferrer">Anthropic</a> / <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer">Geminiの確認方法</a>から確認できます。</div>
+          ${llmRows ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;border-spacing:0 8px"><thead><tr><th scope="col">サービス / モデル</th><th scope="col">使用量</th><th scope="col">概算料金</th></tr></thead><tbody>${llmRows}</tbody></table></div>` : '<div class="gb-section-desc">この月のAPI利用記録はありません。</div>'}
+          ${subscriptions.length ? `<div class="gb-section-desc">定額CLI・ローカルLLM・テスト実行: ${sum(subscriptions,'requests').toLocaleString()}回。従量料金の合計には含みません。</div>` : ''}
+        </section>
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">X API</div>
+          <div>${x.length ? money(sum(x,'cost_usd')) : '<strong>未集計</strong>'} <span class="gb-section-desc">${sum(x,'requests').toLocaleString()}回の取得 / 概算の対象 ${sum(x,'resources').toLocaleString()}件</span></div>
+          <div class="gb-section-desc">記録開始: ${esc(started)}。開始前の取得料金は未集計です。再取得の重複をUTC日ごとに除き、通常の読み取り単価で概算します。Owned Reads等の割引や実際の請求とは差が出る場合があります。</div>
+          ${data.x_recording_failures ? '<div class="gb-inline-error">記録の保存に失敗した取得があるため、Xの概算には未記録分があります。</div>' : ''}
+          <div class="gb-section-desc"><a href="https://console.x.com/" target="_blank" rel="noopener noreferrer">Xの利用明細・残高を確認</a> · <a href="https://docs.x.com/x-api/getting-started/pricing" target="_blank" rel="noopener noreferrer">単価と計算条件</a>（確認日 ${esc(data.x_pricing_reviewed || '')}）</div>
+        </section>`;
+      updatedStatus = '更新: ' + String(data.updated_at || '').replace('T',' ');
+      status.textContent = updatedStatus;
+      formatMoney();
+    } catch (error) {
+      if (ticket !== request || !container.isConnected) return;
+      status.textContent = '利用料金を読み込めませんでした。更新ボタンで再試行してください。';
+      content.textContent = error.userMessage || error.message || String(error);
+    }
+  };
+  month.addEventListener('change', load);
+  rate.addEventListener('input', formatMoney);
+  container.querySelector('[data-cost-refresh]').addEventListener('click', load);
+  await load();
+}
+
 function _formatUsd(value) {
   const number = Number(value || 0);
   return '$' + number.toFixed(number >= 1 ? 2 : 4) + '（' + _formatApproxJpyFromUsd(number) + '）';

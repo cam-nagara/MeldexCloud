@@ -297,6 +297,8 @@
     const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
     const columns = options.columnsPanel;
     const columnsId = '__columns__';
+    const htmlPanel = options.htmlPanel;
+    const htmlId = '__html__';
     const inlineNote = options.inlineNotePanel;
     const inlineNoteId = '__inline_note__';
     section.classList.toggle('is-unified', !!columns);
@@ -312,6 +314,11 @@
       columns.dataset.attachmentId = columnsId;
       columns.id = 'linked-columns-' + section.dataset.instanceId;
       content.appendChild(columns);
+    }
+    if (htmlPanel) {
+      htmlPanel.dataset.attachmentId = htmlId;
+      htmlPanel.id = 'linked-html-' + section.dataset.instanceId;
+      content.appendChild(htmlPanel);
     }
     if (inlineNote) {
       inlineNote.dataset.attachmentId = inlineNoteId;
@@ -352,7 +359,7 @@
         if (disposed || (selectedId === item.id && !editors.get(item.id)?.failed)) return true;
         if (!await flushEditors()) return false;
         if (disposed) return false;
-        if (item.id === columnsId || item.id === inlineNoteId) {
+        if (item.id === columnsId || item.id === inlineNoteId || item.id === htmlId) {
           editors.get(selectedId)?.deactivate?.();
           selectedId = item.id; updateSelection();
           // A hidden linked editor must not remain the target of the inspector.
@@ -422,6 +429,17 @@
       tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-columns-tab';
       tab.setAttribute('aria-controls', columns.id); tab.setAttribute('aria-selected', 'false');
       tab.addEventListener('click', () => selectAttachment({ id: columnsId }));
+      tab.addEventListener('keydown', event => navigateTab(event, tab));
+      row.appendChild(tab); list.appendChild(row);
+    }
+    if (htmlPanel) {
+      const row = document.createElement('div'); row.className = 'gb-tab meldex-entity-attachment-item';
+      const tab = document.createElement('button'); tab.type = 'button';
+      tab.className = 'meldex-entity-attachment-name'; tab.setAttribute('role', 'tab');
+      tab.textContent = 'HTML'; tab.dataset.tabTitle = 'HTML'; tab.dataset.attachmentId = htmlId;
+      tab.dataset.allowReadonly = '1'; tab.dataset.e2eId = 'entity-topic-html-tab';
+      tab.setAttribute('aria-controls', htmlPanel.id); tab.setAttribute('aria-selected', 'false');
+      tab.addEventListener('click', () => selectAttachment({ id: htmlId }));
       tab.addEventListener('keydown', event => navigateTab(event, tab));
       row.appendChild(tab); list.appendChild(row);
     }
@@ -624,6 +642,7 @@
         nameSpan.dataset.e2eId = `entity-attachment-select-${item.id}`;
         nameSpan.tabIndex = -1;
         nameSpan.textContent = item.name || item.path.split('/').pop();
+        nameSpan.dataset.tabTitle = nameSpan.textContent;
         nameSpan.title = item.path || '';
         nameSpan.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -725,9 +744,11 @@
 
     if (attachments.length || columns || inlineNote) section.appendChild(content);
     container.appendChild(section);
-    const initial = (inlineNote && options.selectedId === inlineNoteId ? { id: inlineNoteId } : null)
+    const initial = (options.selectedId === columnsId && columns ? { id: columnsId } : null)
+      || (options.selectedId === htmlId && htmlPanel ? { id: htmlId } : null)
+      || (inlineNote && options.selectedId === inlineNoteId ? { id: inlineNoteId } : null)
       || attachments.find(item => item.id === options.selectedId)
-      || (columns ? { id: columnsId } : inlineNote ? { id: inlineNoteId } : attachments[0]);
+      || (htmlPanel ? { id: htmlId } : columns ? { id: columnsId } : inlineNote ? { id: inlineNoteId } : attachments[0]);
     if (initial) selectAttachment(initial);
     return section;
   }

@@ -3,22 +3,14 @@
     const visibleRoots = roots.filter(r => r.visible && r.path);
     if (visibleRoots.length === 0) {
       // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
-      try {
-        await apiPost('/team/sync', teamPayload());
-        const members = await apiFetch('/team');
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRole = me.role || 'editor';
-      } catch {}
+      const role = await syncFolderProfile();
+      if (role) _myTeamRole = role;
       await syncWorkspaceProfiles();
       return;
     }
     for (const root of visibleRoots) {
-      try {
-        await apiPost('/team/sync', teamPayload({ folder: root.path }));
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRoles[root.path] = me.role || 'editor';
-      } catch {}
+      const role = await syncFolderProfile(root.path);
+      if (role) _myTeamRoles[root.path] = role;
     }
     // デフォルトロール = 最初の可視ソースフォルダのロール
     const firstRole = _myTeamRoles[visibleRoots[0].path];
@@ -253,9 +245,10 @@ async function _primeStaffRegistrySelfUpsert() {
   const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
   if (!me || me === 'anonymous') return;
   try {
-    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true });
+    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true, silentError: true });
   } catch (e) {
     // ソースフォルダ未設定・オフライン等では起動処理を止めない。
+    console.warn('[staff-registry] 起動時のプロフィール登録を保留しました:', e);
   }
 }
 

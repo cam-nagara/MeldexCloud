@@ -261,6 +261,7 @@
           surface: state.surface,
           columnsPanel: state.columnsPane,
           inlineNotePanel: state.inlineNotePanel,
+          htmlPanel: state.htmlPanel,
           saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
@@ -458,18 +459,7 @@
       });
       if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
 
-      if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
-        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
-          readOnly: access.readOnly,
-          surface: state.surface,
-          columnsPanel: state.columnsPane,
-          inlineNotePanel: state.inlineNotePanel,
-          saveInlineNote: save,
-          onReload: refreshAttachmentsOnly,
-          beforeMutation: flush,
-        });
-      }
-
+      state.htmlPanel = null;
       const snapshotPath = htmlSnapshotPath(data);
 
       if (snapshotPath) {
@@ -493,7 +483,26 @@
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
         previewBar.append(previewLabel, openSnapshot);
         preview.append(previewBar, frame);
-        columnsPane.appendChild(preview);
+        preview.setAttribute('role', 'tabpanel');
+        preview.setAttribute('aria-label', 'HTML');
+        state.htmlPanel = preview;
+
+      }
+
+      if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
+        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
+          readOnly: access.readOnly,
+          surface: state.surface,
+          columnsPanel: state.columnsPane,
+          inlineNotePanel: state.inlineNotePanel,
+          htmlPanel: state.htmlPanel,
+          saveInlineNote: save,
+          onReload: refreshAttachmentsOnly,
+          beforeMutation: flush,
+        });
+      }
+
+      if (snapshotPath) {
         applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
         if (state.surface !== 'main') stripIds(root, state.surface);
         delete root.dataset.loadFailed;

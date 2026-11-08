@@ -59,13 +59,20 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     ],
   },
   {
+    id: '利用料金',
+    desc: 'LLM APIとX取得の月別料金・使用量',
+    icon: 'walletCards',
+    pages: [
+      { id: 'usage-costs', label: '利用料金', panels: ['利用料金'], view: 'usage-costs', commitMode: 'immediate-safe' },
+    ],
+  },
+  {
     id: 'インポート',
-    desc: '外部ノート、Notion同期、定期実行の予定と結果',
+    desc: '外部ノートの取り込み、Notion同期',
     icon: 'download',
     pages: [
       { id: 'external-import', label: '外部取り込み', panels: ['取り込み'], view: 'external-import', commitMode: 'immediate-safe' },
       { id: 'notion-sync', label: 'Notion同期', panels: ['拡張機能'], view: 'notion-sync', commitMode: 'immediate-safe' },
-      { id: 'import-schedules', label: '定期実行', panels: ['取り込み'], view: 'import-schedules', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -149,7 +156,8 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'LLM費用': { tabId: 'AI', pageId: 'ai-usage' },
   'LLMコスト': { tabId: 'AI', pageId: 'ai-usage' },
   'LLMコスト管理': { tabId: 'AI', pageId: 'ai-usage' },
-  '利用料金': { tabId: 'AI', pageId: 'ai-usage' },
+  '利用料金': { tabId: '利用料金', pageId: 'usage-costs' },
+  '月別利用料金': { tabId: '利用料金', pageId: 'usage-costs' },
   'AI料金': { tabId: 'AI', pageId: 'ai-usage' },
   'AI使用量': { tabId: 'AI', pageId: 'ai-usage' },
   'AI API使用量': { tabId: 'AI', pageId: 'ai-usage' },
@@ -164,7 +172,7 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'Meldex本体': { tabId: '導入・アプリ連携', pageId: 'setup' },
   'クイックメモ': { tabId: '導入・アプリ連携', pageId: 'quick-memo-setup' },
   'ファイル関連付け': { tabId: '導入・アプリ連携', pageId: 'file-associations' },
-  '定期実行': { tabId: 'インポート', pageId: 'import-schedules' },
+  '定期実行': { tabId: 'Webクリップ', pageId: 'web-clipper' },
   '診断・更新': { tabId: 'フィードバック', pageId: 'diagnostics' },
   'フォーム・受信箱の管理': { tabId: 'フィードバック', pageId: 'feedback-management' },
   '連携': { tabId: 'Webクリップ', pageId: 'web-clipper' },
@@ -197,7 +205,7 @@ function _settingsAutoTagPageVisible() {
 function _settingsNavigationRuntimeTabs() {
   const autoTagVisible = _settingsAutoTagPageVisible();
   const desktop = _settingsDesktopFeaturesAvailable();
-  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates']);
+  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates', 'usage-costs']);
   return MELDEX_SETTINGS_NAVIGATION.map(tab => ({
     ...tab,
     desc: !desktop && tab.id === 'AI' ? 'AIキー、管理者AI、記憶・指示、AI使用量'

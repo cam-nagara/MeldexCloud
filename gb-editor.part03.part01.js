@@ -1145,7 +1145,7 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、サブパネルで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1222,7 +1222,7 @@ function _showLinkContextMenu(e, linkTarget) {
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
     if (_canUseRightSidebar) {
-      addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
+      addItem('panelRight', 'サブパネルで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
         linkType: linkTarget.linkType || '',
         sourcePaneId: linkTarget.sourcePaneId || '',
         sourceEl: e?.target || null,

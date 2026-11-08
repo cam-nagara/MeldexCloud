@@ -347,7 +347,7 @@
     scheduleRoot.textContent = '';
     scheduleRoot.className = '';
     if (manageable && !cloudSurface && capabilities.can_import && window.MeldexScheduler) {
-      window.MeldexScheduler.createWidget(scheduleRoot, config.schedule, cfg => savePatch(root, { schedule: cfg }));
+      window.MeldexScheduler.createWidget(scheduleRoot, config.schedule, cfg => savePatch(root, { schedule: cfg }, { keepScheduleDraft: true }));
     } else if (!capabilities.can_import) {
       scheduleRoot.className = 'gb-section-desc google-import-schedule-pending';
       scheduleRoot.textContent = '実取り込み対応後に自動実行を設定できます。';
@@ -375,8 +375,8 @@
     }
   }
 
-  async function savePatch(root, patch) {
-    if (!canManage()) return;
+  async function savePatch(root, patch, options = {}) {
+    if (!canManage()) return false;
     try {
       setMessage(root, '設定を保存しています...', false);
       const payload = isCloudSurface()
@@ -386,7 +386,8 @@
       setMessage(root, 'Google取り込み設定を保存しました。', false);
     } catch (err) {
       setMessage(root, '保存できませんでした: ' + (err.userMessage || err.message || err), true);
-      await load(root);
+      if (!options.keepScheduleDraft) await load(root);
+      return false;
     }
   }
 

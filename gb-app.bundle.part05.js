@@ -1,3 +1,17 @@
+    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
+    const index = items.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const delta = ev.key === 'ArrowDown' ? 1 : -1;
+      items[(index + delta + items.length) % items.length]?.focus();
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0]?.focus();
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items.at(-1)?.focus();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
       closeMenu(true);
     }
   });
@@ -884,17 +898,3 @@ async function _viewerFolderNavEnsureAncestorsExpanded(node) {
     await _viewerFolderNavEnsureNodeExpanded(ancestor);
   }
 }
-
-async function _viewerFolderNavRevealCurrentFolder(folderPath, options = {}) {
-  if (!folderPath) return;
-  if (typeof _autoExpandToPath === 'function') {
-    try { await _autoExpandToPath(folderPath, true); } catch {}
-  }
-  if (!options.skipHighlight && typeof highlightOutlinerNode === 'function') {
-    try { highlightOutlinerNode(folderPath, { noScroll: true }); } catch {}
-  }
-  await _viewerFolderNavDelay(50);
-}
-
-function _viewerFolderNavDisplayableFromBrowseItems(items) {
-  const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];

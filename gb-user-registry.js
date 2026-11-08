@@ -126,7 +126,7 @@
   async function upsertStaff(entry, opts) {
     const options = opts || {};
     const body = Object.assign({}, entry || {}, { fill_only: !!options.fillOnly });
-    const result = await apiPost('/staff-registry/upsert', body);
+    const result = await apiPost('/staff-registry/upsert', body, { silentError: options.silentError === true });
     invalidate();
     _notify();
     return result?.staff || null;

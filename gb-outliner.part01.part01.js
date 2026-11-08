@@ -1620,10 +1620,13 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
     // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
     if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
-    // ボード本文の保存はフォルダ構造を変えない。全ツリー更新は
-    // オプションパネルまで再構築するため、保存通知では行わない。
-    if (event.detail?.reason === 'save'
-        && /(?:\.mel-board|\.board\.md)$/i.test(event.detail?.dbPath || '')) return;
+    // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
+    // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
+    // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
+    const detail = event.detail || {};
+    const boardDocument = detail.viewDocument?.defaultSurface === 'board'
+      || /(?:\.mel-board|\.board\.md|\.board\.json|\.canvas\.json)$/i.test(detail.dbPath || detail.legacyPath || '');
+    if (boardDocument) return;
     clearTimeout(_topicRecordsOutlinerRefreshTimer);
     _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
       const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });

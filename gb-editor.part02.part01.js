@@ -64,6 +64,53 @@ function setEntryPropOrder(dbPath, order) {
   if (typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, c);
 }
 
+async function _saveEntryPropAddedValue(grid, entityPath, propName, value, status, note, options) {
+  let path = entityPath;
+  let viewPath = grid.__entryPropEntityPath;
+  let reference;
+  const applyResult = result => {
+    path = result.new_path || path;
+    reference = { file: result.path || path, entry_path: path, property: propName,
+      candidate_id: result.candidate_id, entry_id: result.entry_id,
+      candidate_index: result.candidate_index, entry_revision: result.revision };
+  };
+  const refresh = async () => {
+    try {
+      const fresh = await apiFetch('/entity?path=' + encodeURIComponent(path));
+      // Undo may run after another topic has reused this container.
+      if (grid.isConnected && grid.__entryPropEntityPath === viewPath) {
+        renderEntityPropsGridInto(grid, fresh, path, options);
+        viewPath = path;
+      }
+    } catch (error) {
+      showStatus('値は保存しました。表示を更新してください: ' + error.message, true);
+    }
+  };
+  applyResult(await _apiPostValue(path, propName, value, status, note));
+  if (typeof historyPush === 'function') {
+    const db = options?.parentDb || _entityParentDir(path);
+    const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(db)
+      : typeof _dbScope === 'function' ? _dbScope(db) : 'db:' + db;
+    historyPush('候補値追加: ' + propName + '=' + value, async () => {
+      if (reference.candidate_id || reference.candidate_index != null) {
+        await _apiPutValue(reference, { _delete: true });
+      } else if (reference.file && reference.file !== path) {
+        await apiPost('/outliner/delete', { path: reference.file });
+      } else {
+        throw new Error('追加した候補値を識別できません');
+      }
+      await refresh();
+    }, async () => {
+      const result = await _apiPostValue(path, propName, value, status, note, undefined, { entry_id: reference.entry_id });
+      applyResult(result);
+      await refresh();
+    }, scope);
+  }
+  // A refresh failure after the write must not leave a retryable save button.
+  showStatus('候補値を追加しました');
+  await refresh();
+}
+
 function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options) {
   const opts = options || {};
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
@@ -75,7 +122,9 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
     valuesEl?.querySelector?.('.entry-prop-inline-add input')?.focus();
     return;
   }
-  if (parentDb && typeof getStatusEnabled === 'function' && !getStatusEnabled(parentDb) && valuesEl.querySelector('.cell-value')) {
+  const singleValueOnly = parentDb && (typeof hidesCandidateStatusUi === 'function'
+    ? hidesCandidateStatusUi(parentDb) : typeof getStatusEnabled === 'function' && !getStatusEnabled(parentDb));
+  if (singleValueOnly && valuesEl.querySelector('.cell-value')) {
     showStatus('このシートは1セル1値運用です（ステータス機能オフ）');
     return;
   }
@@ -102,15 +151,8 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
         }
         saved = true;
         try {
-          await _apiPostValue(entityPath, propName, hex, '採用', '');
-          const fresh = await apiFetch('/entity?path=' + encodeURIComponent(entityPath)).catch(() => null);
-          if (fresh && fresh.properties) renderEntityPropsGridInto(grid, fresh, entityPath, opts);
-          else {
-            if (!Array.isArray(data.properties[propName])) data.properties[propName] = [];
-            data.properties[propName].push({ property: propName, value: hex, status: '採用', note: '', file: entityPath });
-            renderEntityPropsGridInto(grid, data, entityPath, opts);
-          }
-        } catch (e) { showStatus('候補値の追加に失敗しました', true); }
+          await _saveEntryPropAddedValue(grid, entityPath, propName, hex, '採用', '', opts);
+        } catch (e) { saved = false; showStatus('候補値の追加に失敗しました', true); }
       };
       saveTimer = setTimeout(persistColor, 300);
     });
@@ -164,26 +206,22 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
   cancelBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '取消';
   row.appendChild(cancelBtn);
 
-  const cancel = () => row.remove();
+  let saving = false;
+  const cancel = () => { if (!saving) row.remove(); };
   const submit = async () => {
+    if (saving || !row.isConnected) return;
     const value = input.value.trim();
     if (!value) { showStatus('値を入力してください', true); input.focus(); return; }
     const status = statusSelect ? statusSelect.value : '採用';
     const note = noteInput.value.trim();
-    saveBtn.disabled = true;
+    saving = true;
+    row.querySelectorAll('input, select, button').forEach(control => { control.disabled = true; });
     try {
-      await _apiPostValue(entityPath, propName, value, status, note);
-      showStatus('候補値を追加しました');
-      const fresh = await apiFetch('/entity?path=' + encodeURIComponent(entityPath)).catch(() => null);
-      if (fresh && fresh.properties) {
-        renderEntityPropsGridInto(grid, fresh, entityPath, opts);
-      } else {
-        if (!Array.isArray(data.properties[propName])) data.properties[propName] = [];
-        data.properties[propName].push({ property: propName, value, status, note, file: entityPath });
-        renderEntityPropsGridInto(grid, data, entityPath, opts);
-      }
+      await _saveEntryPropAddedValue(grid, entityPath, propName, value, status, note, opts);
+      row.remove();
     } catch (e) {
-      saveBtn.disabled = false;
+      saving = false;
+      row.querySelectorAll('input, select, button').forEach(control => { control.disabled = false; });
       showStatus('候補値の追加に失敗しました', true);
     }
   };
@@ -191,6 +229,7 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
   saveBtn.addEventListener('click', submit);
   cancelBtn.addEventListener('click', cancel);
   row.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
     if (e.key === 'Escape') { e.preventDefault(); cancel(); }
   });
@@ -274,6 +313,7 @@ function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTy
 // プロパティグリッドを指定 container に描画する共通関数 (entity-view と詳細パネルで共有)
 function renderEntityPropsGridInto(grid, data, entityPath, options) {
   if (!grid) return;
+  grid.__entryPropEntityPath = entityPath;
   const opts = options || {};
   // Cloud/mobile の容量・ロック状態は表示中にも変化する。古い描画closureが false を
   // 捕捉していても、grid の現在状態を優先して変更操作を再生成しない。

@@ -1,3 +1,17 @@
+  return el;
+}
+
+function _renderLoadingUi(msg) {
+  const text = _loadingText(msg);
+  const statusEl = document.getElementById('sb-loading');
+  if (statusEl) {
+    _setLoadingNodeContent(statusEl, text);
+    statusEl.style.display = '';
+  }
+  const floatingEl = _ensureGlobalLoadingIndicator();
+  if (floatingEl) {
+    _setLoadingNodeContent(floatingEl, text);
+    floatingEl.hidden = false;
   }
   _loadingVisible = true;
 }

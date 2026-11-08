@@ -72,6 +72,39 @@
     return true;
   }
 
+  // Delete offscreen/collapsed entries too: removing DOM alone lets refresh resurrect them.
+  function removeMatchingPaths(matches) {
+    if (typeof matches !== 'function') return;
+    _activeContainers.forEach(function (owner) {
+      var state = owner._virtualState;
+      if (!state) return;
+      var removed = new Set();
+      function keep(items) {
+        return (items || []).filter(function (item) {
+          if (!item || !item.path || !matches(item.path)) return true;
+          removed.add(item.path);
+          return false;
+        });
+      }
+      state.allItems = keep(state.allItems);
+      state.childrenByParent.forEach(function (items, parentPath) {
+        var remaining = keep(items);
+        if (matches(parentPath)) {
+          removed.add(parentPath);
+          state.childrenByParent.delete(parentPath);
+        } else state.childrenByParent.set(parentPath, remaining);
+      });
+      if (!removed.size) return;
+      removed.forEach(function (path) {
+        state.selectedIds.remove(path);
+        state.expandedIds.delete(path);
+        if (state.heightsByPath) state.heightsByPath.delete(path);
+        _pathToContainer.delete(path);
+      });
+      refresh(owner);
+    });
+  }
+
   function parentPathForItem(childrenDiv, path) {
     var owner = _resolvedVirtualContainer(childrenDiv);
     var state = owner && owner._virtualState;
@@ -442,6 +475,7 @@
     clearDragExempt: clearDragExempt,
     dropInto: dropInto,
     removeFromContainer: removeFromContainer,
+    removeMatchingPaths: removeMatchingPaths,
     reorderAround: reorderAround,
     saveManualOrderFromVirtualModel: saveManualOrderFromVirtualModel,
     applyLassoSelection: applyLassoSelection,

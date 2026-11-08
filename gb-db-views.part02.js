@@ -335,7 +335,7 @@ function _appendDbCardImagePreview(root, items, options = {}) {
         ev.stopPropagation();
         if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item, options);
       });
-      wrap.appendChild(placeholder);
+      wrap.appendChild(typeof _setupAttachmentThumbDrag === 'function' ? _setupAttachmentThumbDrag(placeholder, item) : placeholder);
       appended += 1;
       return;
     }
@@ -368,7 +368,7 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item, options);
     });
     const imageHost = window.MeldexImageLoading?.createHost?.(img, { className: 'db-card-image-host' });
-    wrap.appendChild(imageHost || img);
+    wrap.appendChild(typeof _setupAttachmentThumbDrag === 'function' ? _setupAttachmentThumbDrag(imageHost || img, item) : (imageHost || img));
     window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像を読み込んでいます' });
     appended += 1;
   });

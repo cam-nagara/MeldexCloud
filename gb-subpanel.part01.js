@@ -20,7 +20,7 @@ const GBSubPanel = (() => {
   const ROOT_ID = 'gb-subpanel-root';
   const CONTENT_ID = 'gb-subpanel-content';
   const INNER_PANE_ID = 'gb-subpanel-inner-pane';
-  const EMPTY_MESSAGE = 'リンクのメニューから「右サイドバーで開く」を選ぶと、ここに表示されます。';
+  const EMPTY_MESSAGE = 'リンクのメニューから「サブパネルで開く」を選ぶと、ここに表示されます。';
   const DB_VIEW_TYPES = new Set(['database', 'db', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
   const MAX_HISTORY = 50;
 

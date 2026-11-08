@@ -168,10 +168,11 @@
   const defaultDisplayFilters = typeof BD_DEFAULT_DISPLAY_FILTERS !== 'undefined' ? BD_DEFAULT_DISPLAY_FILTERS : {};
   const hasDisplayFilterOverrides = !!displayFiltersForSave && Object.keys(displayFiltersForSave)
     .some(key => displayFiltersForSave[key] !== defaultDisplayFilters[key]);
-  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
+  if (bd.activeCardStyle || bd.activeLineStyle || bd.activeDepthStylePreset || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
+    if (bd.activeDepthStylePreset) fm += `  activeDepthStylePreset: ${JSON.stringify(String(bd.activeDepthStylePreset))}\n`;
     if (bd._stylePresetSeedVersion) fm += `  stylePresetSeedVersion: ${bd._stylePresetSeedVersion}\n`;
     if (bd.themeId) fm += `  themeId: ${bd.themeId}\n`;
     if (bd._showShadow) fm += `  showShadow: true\n`;

@@ -6882,6 +6882,12 @@ iframe.meldex-entity-linked-media {
   height: 30px; box-sizing: border-box; line-height: normal;
 }
 
+/* Saved HTML owns the topic content area independently of its columns. */
+.meldex-entity-linked-content > .meldex-entity-detail-webclip { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.meldex-entity-detail-webclip[hidden] { display:none !important; }
+.meldex-entity-detail-webclip-toolbar { flex:none; }
+.meldex-entity-linked-content > .meldex-entity-detail-webclip > .meldex-entity-detail-webclip-frame { flex:1; width:100%; min-height:0; height:100%; border:0; }
+
 /* Command palette and left chrome footer */
 
 #sidebar .left-chrome-command,
@@ -28690,6 +28696,17 @@ input.gb-fmt-num { min-width: 64px; }
   color: var(--ui-hover-fg);
   background: var(--ui-hover-bg);
   border-color: var(--border);
+}
+@media (hover: hover) and (pointer: fine) {
+  .entry-prop-values .cell-add-btn {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .entry-prop-card:hover .entry-prop-values .cell-add-btn,
+  .entry-prop-values .cell-add-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 @media (pointer: coarse) {
   .entry-prop-values .cell-add-btn {

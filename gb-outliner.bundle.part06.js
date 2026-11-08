@@ -1,3 +1,18 @@
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+  await loadOutliner();
+  _openOutlinerCreatedNode(nd, name);
+}
+
+// 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
+async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, onConfirmed) {
+  const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
+  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
+  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'create-confirmation',
+    label: '作成結果を確認しています',
+    mode: 'indeterminate',
     origin: pendingNode,
     showImmediately: true,
     showInTray: true,
@@ -882,19 +897,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
     if (!wasActive && selectionMode === 'replace') treeSelection.clear();
   };
-
-  function addDocumentPointerEndHandlers() {
-    document.addEventListener('pointerup', endLasso, true);
-    document.addEventListener('pointercancel', endLasso, true);
-  }
-
-  function removeDocumentPointerEndHandlers() {
-    document.removeEventListener('pointerup', endLasso, true);
-    document.removeEventListener('pointercancel', endLasso, true);
-  }
-
-  scroller.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    if (e.pointerType && e.pointerType !== 'mouse') return;
-    // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
-    // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない

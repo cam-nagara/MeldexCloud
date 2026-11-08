@@ -175,7 +175,12 @@
     // Sheet/board view bars already provide their own phone select and menu.
     // Adding a second dropdown also collects hidden menu text into its label.
     const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
-    if (nativeSwitcher) {
+    // Attachment headers style the outer container as pane tabs, but their
+    // child tablist owns the actual tabs. An outer empty dropdown hides that
+    // entire header through the phone CSS, including its working dropdown.
+    const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
+      && tablist.querySelector(':scope > [role="tablist"]');
+    if (nativeSwitcher || nestedTablist) {
       const old = tablist.previousElementSibling;
       if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
       return;

@@ -104,12 +104,48 @@
   function createWidget(container, config, onChange) {
     if (!container) return;
     const c = normalize(config);
+    let committed = normalize(config);
+    let savedStatus = '';
+    let saving = false;
     // E2E/UI監査用の安定識別子。ホスト側の data-e2e-id（例: notion-sync-schedule-0）を
     // 接頭辞に継承し、無ければ汎用の gb-scheduler を使う
     const idBase = (container.dataset && container.dataset.e2eId) || 'gb-scheduler';
 
     const wrap = document.createElement('div');
     wrap.className = 'gb-scheduler-widget';
+    const header = document.createElement('div');
+    header.className = 'gb-scheduler-row';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'gb-btn gb-btn-sm gb-scheduler-edit';
+    edit.dataset.e2eId = idBase + '-edit';
+    edit.innerHTML = typeof lucide === 'function' ? lucide('calendarClock', 16) : '◷';
+    edit.title = '定期実行の設定';
+    edit.setAttribute('aria-label', '定期実行の設定');
+    edit.setAttribute('aria-expanded', 'false');
+    const editor = document.createElement('div');
+    editor.className = 'gb-scheduler-editor';
+    editor.hidden = true;
+    const apply = document.createElement('button');
+    apply.type = 'button'; apply.className = 'gb-btn gb-btn-sm gb-scheduler-apply';
+    apply.innerHTML = typeof lucide === 'function' ? lucide('check', 16) : '✓';
+    apply.title = '定期実行を保存'; apply.setAttribute('aria-label', '定期実行を保存');
+    apply.disabled = true;
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.className = 'gb-btn gb-btn-sm';
+    cancel.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '×';
+    cancel.title = '変更を取り消す'; cancel.setAttribute('aria-label', '変更を取り消す');
+    edit.addEventListener('click', () => {
+      editor.hidden = !editor.hidden;
+      edit.setAttribute('aria-expanded', String(!editor.hidden));
+      if (!editor.hidden) typeSelect.focus();
+    });
+    editor.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation();
+        editor.hidden = true; edit.setAttribute('aria-expanded', 'false'); edit.focus();
+      }
+    });
 
     const typeRow = document.createElement('div');
     typeRow.className = 'gb-scheduler-row';
@@ -155,7 +191,7 @@
 
     function getCurrentConfig() {
       const type = typeSelect.value;
-      const result = { type };
+      const result = { ...c, type };
       if (type === 'interval') {
         const sel = detailBox.querySelector('.gb-scheduler-interval');
         result.interval_minutes = Number(sel?.value) || 30;
@@ -182,9 +218,54 @@
 
     function fireChange() {
       const cfg = getCurrentConfig();
+      Object.assign(c, cfg);
       summaryEl.textContent = nextRunText(cfg);
-      if (typeof onChange === 'function') onChange(cfg);
+      edit.dataset.enabled = String(cfg.type !== 'off');
+      apply.disabled = false;
+      statusEl.textContent = '未保存';
     }
+
+    apply.addEventListener('click', async () => {
+      if (saving) return;
+      saving = true;
+      let succeeded = false;
+      editor.querySelectorAll('input, select, button').forEach(node => { node.disabled = true; });
+      const cfg = getCurrentConfig();
+      try {
+        if (cfg.type === 'weekly' && !detailBox.querySelector('.gb-scheduler-dow:checked')) {
+          throw new Error('実行する曜日を1つ以上選択してください。');
+        }
+        if (cfg.type === 'monthly') {
+          const days = detailBox.querySelector('.gb-scheduler-dom').value.trim().split(/[,、\s]+/).map(Number);
+          if (!days.length || days.some(day => !Number.isInteger(day) || day < 1 || day > 31)) {
+            throw new Error('実行日は1〜31の日付を入力してください。');
+          }
+        }
+        if (['daily', 'weekly', 'monthly'].includes(cfg.type) && !detailBox.querySelector('.gb-scheduler-time').value) {
+          throw new Error('実行時刻を入力してください。');
+        }
+        const result = await onChange?.(cfg);
+        if (result === false) throw new Error('定期実行を保存できませんでした。入力を確認して再試行してください。');
+        committed = normalize(getCurrentConfig());
+        editor.hidden = true; edit.setAttribute('aria-expanded', 'false');
+        statusEl.textContent = savedStatus; statusEl.removeAttribute('role');
+        succeeded = true;
+      } catch (error) {
+        statusEl.textContent = '保存できませんでした: ' + (error?.userMessage || error?.message || error);
+        statusEl.setAttribute('role', 'alert');
+      } finally {
+        saving = false;
+        editor.querySelectorAll('input, select, button').forEach(node => { node.disabled = false; });
+        apply.disabled = succeeded;
+      }
+    });
+    cancel.addEventListener('click', () => {
+      if (saving) return;
+      Object.assign(c, committed); typeSelect.value = c.type; renderDetail(c.type);
+      edit.dataset.enabled = String(c.type !== 'off'); apply.disabled = true;
+      statusEl.textContent = savedStatus; statusEl.removeAttribute('role');
+      editor.hidden = true; edit.setAttribute('aria-expanded', 'false'); edit.focus();
+    });
 
     function renderDetail(type) {
       detailBox.innerHTML = '';
@@ -198,7 +279,8 @@
         sel.className = 'gb-select gb-select-sm gb-scheduler-interval';
         sel.dataset.e2eId = idBase + '-interval';
         sel.setAttribute('aria-label', '実行間隔');
-        [5, 10, 15, 30, 60, 120, 360, 720, 1440].forEach(v => {
+        [...new Set([1, 5, 10, 15, 30, 60, 120, 360, 720, 1440, c.interval_minutes])]
+          .filter(v => Number.isInteger(v) && v > 0).sort((a, b) => a - b).forEach(v => {
           const opt = document.createElement('option');
           opt.value = v;
           opt.textContent = v < 60 ? `${v}分` : `${v / 60}時間`;
@@ -257,22 +339,38 @@
     }
 
     typeSelect.addEventListener('change', () => {
-      Object.assign(c, _defaults(), { type: typeSelect.value });
+      c.type = typeSelect.value;
       renderDetail(typeSelect.value);
       fireChange();
     });
 
     renderDetail(c.type);
+    edit.dataset.enabled = String(c.type !== 'off');
+    header.append(edit, summaryEl);
+    typeRow.append(apply, cancel);
+    editor.append(typeRow, detailBox);
+    wrap.replaceChildren(header, editor, statusEl);
 
     container.innerHTML = '';
     container.appendChild(wrap);
     return {
       getCurrentConfig,
+      // Other settings saves must never commit the schedule editor's draft.
+      getCommittedConfig() { return normalize(committed); },
+      setCurrentConfig(value) {
+        Object.assign(c, normalize(value));
+        committed = normalize(value);
+        typeSelect.value = c.type;
+        renderDetail(c.type);
+        edit.dataset.enabled = String(c.type !== 'off');
+      },
       // バックエンドが確定した次回予定・前回結果を表示する（保存直後や
       // 一覧再読み込み時に、ローカル計算のプレビューではなく信頼できる値へ
       // 差し替えるために使う）。文字列以外を渡すと表示をクリアする。
       setStatusText(text) {
-        statusEl.textContent = typeof text === 'string' ? text : '';
+        savedStatus = typeof text === 'string' ? text : '';
+        statusEl.textContent = savedStatus;
+        statusEl.removeAttribute('role');
       },
     };
   }
@@ -284,6 +382,10 @@
     style.id = 'gb-scheduler-css';
     style.textContent = `
       .gb-scheduler-widget { display:flex; flex-direction:column; gap:6px; }
+      .gb-scheduler-editor { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--border); border-radius:4px; }
+      .gb-scheduler-editor[hidden] { display:none; }
+      .gb-scheduler-edit { display:inline-flex; align-items:center; justify-content:center; min-width:30px; min-height:30px; padding:4px; }
+      .gb-scheduler-edit[data-enabled="true"] { color:var(--accent); }
       .gb-scheduler-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .gb-scheduler-label { font-size:12px; color:var(--fg2); white-space:nowrap; min-width:60px; }
       .gb-scheduler-detail { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-height:0; }
@@ -291,13 +393,14 @@
       .gb-scheduler-summary { font-size:11px; color:var(--fg2); margin:0; }
       .gb-scheduler-status { font-size:11px; color:var(--fg2); margin:0; }
       .gb-scheduler-status:empty { display:none; }
-      .gb-scheduler-time { width:100px; font-size:12px; padding:2px 4px; }
-      .gb-scheduler-dom { width:120px; font-size:12px; padding:2px 4px; }
+      .gb-scheduler-detail > input.gb-scheduler-time { width:112px; max-width:112px; flex:0 0 112px; font-size:12px; padding:2px 4px; }
+      .gb-scheduler-detail > input.gb-scheduler-dom { width:140px; max-width:140px; flex:0 0 140px; font-size:12px; padding:2px 4px; }
       .gb-scheduler-dow-row { display:flex; gap:2px; flex-wrap:wrap; }
       .gb-scheduler-dow-label { display:inline-flex; align-items:center; gap:2px; font-size:11px; color:var(--fg);
         padding:2px 5px; border:1px solid var(--border); border-radius:3px; cursor:pointer; user-select:none; }
       .gb-scheduler-dow-label:has(:checked) { background:var(--accent); color:var(--bg); border-color:var(--accent); }
-      .gb-scheduler-dow { display:none; }
+      .gb-scheduler-dow { position:absolute; opacity:0; width:1px; height:1px; }
+      .gb-scheduler-dow-label:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
     `;
     document.head.appendChild(style);
   }

@@ -318,6 +318,7 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
   'テーマ': 'settingsInitTheme',
   'LLM': 'settingsInitLlm',
   'LLMコスト': 'settingsInitChatCost',
+  '利用料金': 'settingsInitMonthlyUsageCosts',
   'フィードバック': 'settingsInitFeedbackForm',
   'ユーザー': 'settingsInitUsers',
   'ワークスペース': 'settingsInitWorkspaces',
@@ -386,6 +387,10 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     }
     if (canonical === 'LLMコスト') {
       if (typeof renderChatCostSettings === 'function') renderChatCostSettings(modal);
+      return;
+    }
+    if (canonical === '利用料金') {
+      if (typeof renderMonthlyUsageCosts === 'function') renderMonthlyUsageCosts(modal);
       return;
     }
     if (canonical === 'フィードバック' && typeof renderMeldexFeedbackPanel === 'function') {
@@ -604,7 +609,7 @@ function _showSettingsNavigationTarget(modal, target) {
   if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
-  if (target.pageId === 'import-schedules') window.MeldexImportScheduleSettings?.mount();
+  if (target.pageId === 'web-clipper') window.MeldexImportScheduleSettings?.mount('webclip-inbox-schedule-container');
   const headerText = modal.querySelector('#settings-header-text');
   if (headerText) headerText.textContent = typeof _settingsNavigationDisplayName === 'function'
     ? _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId })

@@ -166,7 +166,7 @@
         // Each refresh creates new cards; a cached widget still points to the
         // detached previous card and would leave the current schedule blank.
         const widget = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
-          _saveSetSchedule(item.id, cfg);
+          return _saveSetSchedule(item.id, cfg);
         });
         widget?.setStatusText(_formatScheduleState(item.schedule_state));
       }
@@ -194,6 +194,7 @@
       await refresh();
     } catch (e) {
       setStatus('定期実行を保存できませんでした: ' + (e.userMessage || e.message || e), true);
+      return false;
     }
   }
 

@@ -198,7 +198,22 @@ function _dbCloseColumnFilterPopup() {
   document.querySelectorAll('.db-column-filter-popover').forEach(el => el.remove());
 }
 
-function _dbPositionColumnFilterPopup(popover, source) {
+function _dbPositionColumnPopup(popover, source) {
+  const header = source?.target?.closest?.('th, [role="columnheader"]')
+    || source?.currentTarget?.closest?.('th, [role="columnheader"]');
+  if (header && typeof positionPopup === 'function') {
+    const rect = header.getBoundingClientRect();
+    // クリック点や「…」の幅でなく、列全体を避ける。右端では共通の位置補正で
+    // 左側へ反転し、列の値をメニューやフィルターで覆わない。
+    positionPopup(popover, rect, { prefer: 'right', gap: 4,
+      avoidRect: { left: rect.left, right: rect.right, top: 0,
+        bottom: Math.max(rect.bottom, document.documentElement.clientHeight) } });
+    // Keep a sideways popup aligned with its header after generic avoidance.
+    const zoom = typeof _getZoom === 'function' ? _getZoom() : 1;
+    popover.style.top = (rect.top / (Number(zoom) || 1)) + 'px';
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popover);
+    return;
+  }
   const rect = source?.currentTarget?.getBoundingClientRect?.()
     || source?.target?.getBoundingClientRect?.();
   if (typeof positionPopup === 'function') {
@@ -213,6 +228,10 @@ function _dbPositionColumnFilterPopup(popover, source) {
     popover.style.left = Math.max(8, Number(source?.clientX) || 8) + 'px';
     popover.style.top = Math.max(8, Number(source?.clientY) || 8) + 'px';
   }
+}
+
+function _dbPositionColumnFilterPopup(popover, source) {
+  _dbPositionColumnPopup(popover, source);
 }
 
 function showDbColumnFilterPopup(source, propName, ctxOverride, dbPathOverride) {

@@ -188,7 +188,7 @@
   }
 
   // 現在のボードの階層別スタイルと一致するプリセットを探す。
-  // 「今どれを使っているか」をボードファイルへ書き足さずに示せるようにするための比較。
+  // 保存済みの選択IDも、現在の内容が一致する間だけ適用中として扱う。
   function fingerprint(styles) {
     return JSON.stringify(normalizeStyles(styles));
   }
@@ -196,8 +196,20 @@
   function matchedPresetId() {
     const current = fingerprint(currentStyles());
     if (!current || current === '[]') return '';
-    const hit = listPresets().find(entry => fingerprint(entry.styles) === current);
+    const state = boardState();
+    const presets = listPresets();
+    // 同じ内容を別名保存しても、選んだプリセットを標準搭載のものへ戻さない。
+    // 選択IDはボードの保存・履歴に含め、別タブや復元時も同じ選択へ戻す。
+    const preferred = state?.activeDepthStylePreset
+      ? presets.find(entry => entry.id === state.activeDepthStylePreset && fingerprint(entry.styles) === current)
+      : null;
+    const hit = preferred || presets.find(entry => fingerprint(entry.styles) === current);
     return hit ? hit.id : '';
+  }
+
+  function rememberChosenPreset(id) {
+    const state = boardState();
+    if (state) state.activeDepthStylePreset = id;
   }
 
   // ============================================================
@@ -220,14 +232,21 @@
     const preset = findPreset(id);
     const state = boardState();
     if (!preset || !state) return false;
-    if (typeof bdPushUndo === 'function') bdPushUndo();
+    if (state.readOnly || state.readonly || state.isReadOnly) {
+      status('読み取り専用のボードは変更できません', true);
+      return false;
+    }
+    if (typeof bdPushUndo === 'function') bdPushUndo(`階層別スタイル: ${preset.name}`);
     state.depthStyles = normalizeStyles(preset.styles);
+    rememberChosenPreset(id);
     applyBoardChange();
     status(`階層別スタイル「${preset.name}」を適用しました`);
     return true;
   }
 
   function saveCurrentAsNew(name) {
+    const state = boardState();
+    if (!state || state.readOnly || state.readonly || state.isReadOnly) return null;
     const styles = currentStyles();
     if (!styles.length) return null;
     const presets = readUserPresets();
@@ -247,6 +266,9 @@
       if (typeof global.showStatus === 'function') global.showStatus('プリセットを保存できませんでした', true);
       return null;
     }
+    if (typeof bdPushUndo === 'function') bdPushUndo(`階層別スタイルを保存: ${entry.name}`);
+    rememberChosenPreset(entry.id);
+    if (typeof bdDirty === 'function') bdDirty();
     return entry;
   }
 

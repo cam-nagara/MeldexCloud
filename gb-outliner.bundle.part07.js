@@ -1,3 +1,18 @@
+  function addDocumentPointerEndHandlers() {
+    document.addEventListener('pointerup', endLasso, true);
+    document.addEventListener('pointercancel', endLasso, true);
+  }
+
+  function removeDocumentPointerEndHandlers() {
+    document.removeEventListener('pointerup', endLasso, true);
+    document.removeEventListener('pointercancel', endLasso, true);
+  }
+
+  scroller.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.pointerType && e.pointerType !== 'mouse') return;
+    // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
+    // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない
     // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
     //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
     if (!_outlinerLassoIsBlankTarget(e.target)) return;

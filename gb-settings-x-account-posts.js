@@ -9,6 +9,8 @@
   let syncInFlight = false;
   let connected = false;
   let accounts = [];
+  const pendingScheduleSaves = new Set();
+  let accountRenderDeferred = false;
   let savedOriginalPath = '';
 
   function showSavedOriginals(path) {
@@ -322,13 +324,18 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `gb-btn gb-btn-sm ${extraClass || ''}`.trim();
-    button.textContent = label;
+    const names = {up:'arrowUp', down:'arrowDown', sync:'download', enrich:'refreshCw', open:'externalLink', delete:'trash2'};
+    button.innerHTML = icon(names[action] || 'settings', 16);
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:30px;min-height:30px;padding:4px;';
     button.dataset.action = action;
     button.dataset.username = username;
     return button;
   }
 
   function renderAccountList() {
+    if (pendingScheduleSaves.size) { accountRenderDeferred = true; return; }
     const list = document.getElementById('x-account-posts-list');
     if (!list) return;
     list.textContent = '';
@@ -368,13 +375,40 @@
       actions.append(
         up,
         down,
-        actionButton(entry.enabled ? '定期実行をOFF' : '定期実行をON', 'toggle', username),
         actionButton('今すぐ取得', 'sync', username),
         actionButton('後処理を再開', 'enrich', username),
         actionButton('ブラウザで開く', 'open', username),
         actionButton('削除', 'delete', username, 'gb-btn-danger'),
       );
-      row.append(title, status, actions);
+      const scheduleHost = document.createElement('div');
+      scheduleHost.dataset.e2eId = `x-account-posts-schedule-${username.toLowerCase()}`;
+      scheduleHost.style.marginTop = '6px';
+      row.append(title, status, actions, scheduleHost);
+      let scheduleSave = Promise.resolve();
+      const widget = window.MeldexScheduler?.createWidget(scheduleHost, entry.period, cfg => {
+        const save = async () => {
+          let ack = false;
+          if (cfg.type !== 'off' && !entry.enabled) {
+            ack = await confirmAccountPostsCost(username);
+            if (!ack) { widget.setCurrentConfig(entry.period); return; }
+          }
+          const result = await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
+            period: cfg, ack_cost_notice: ack,
+          }, {method:'PATCH', silentError:true});
+          Object.assign(entry, result.schedule);
+          status.textContent = accountStatus(entry);
+        };
+        scheduleSave = scheduleSave.catch(() => {}).then(save);
+        const pending = scheduleSave.finally(() => {
+          pendingScheduleSaves.delete(pending);
+          if (!pendingScheduleSaves.size && accountRenderDeferred) {
+            accountRenderDeferred = false;
+            renderAccountList();
+          }
+        });
+        pendingScheduleSaves.add(pending);
+        return pending;
+      });
       const syncButton = actions.querySelector('[data-action="sync"]');
       if (syncButton) syncButton.disabled = syncInFlight || !connected;
       actions.querySelector('[data-action="enrich"]').disabled = syncInFlight;
@@ -384,8 +418,16 @@
 
   async function refreshAccounts() {
     try {
-      accounts = await loadAccounts();
-      renderAccountList();
+      for (;;) {
+        const loaded = await loadAccounts();
+        if (pendingScheduleSaves.size) {
+          await Promise.allSettled([...pendingScheduleSaves]);
+          continue;
+        }
+        accounts = loaded;
+        renderAccountList();
+        break;
+      }
     } catch (error) {
       setStatus('Xアカウント一覧を読み込めませんでした: ' + (error?.userMessage || error?.message || error), true);
     }
@@ -430,17 +472,6 @@
         [accounts[index], accounts[target]] = [accounts[target], accounts[index]];
         await persistOrder();
         renderAccountList();
-      } else if (button.dataset.action === 'toggle') {
-        let ack = false;
-        if (!entry.enabled) {
-          ack = await confirmAccountPostsCost(username);
-          if (!ack) return;
-        }
-        await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
-          period: entry.enabled ? {type: 'off'} : {type: 'daily', time: '09:00'},
-          ack_cost_notice: ack,
-        }, {method: 'PATCH', silentError: true});
-        await refreshAccounts();
       } else if (button.dataset.action === 'sync') {
         await syncAccountPosts(username);
       } else if (button.dataset.action === 'enrich') {

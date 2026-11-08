@@ -176,6 +176,13 @@ function _removeOutlinerNodesForPaths(paths) {
   // 同じ項目はホーム、ワークスペース、固定ソース、仮想化ツリーなど複数面に
   // 現れ得る。コンテナIDを限定すると削除中の複製だけが残るため、安定pathを
   // 持つ全ツリーノードを同時に隠す。
+  if (typeof GBOutlinerVirtualRender !== 'undefined') {
+    GBOutlinerVirtualRender.removeMatchingPaths?.(path => {
+      const normalizedPath = _normalizeOutlinerPathForCompare(path);
+      return deletedPaths.some(dp => _isOutlinerPathWithin(normalizedPath, dp)
+        || normalizedPath.endsWith('/' + dp) || normalizedPath.includes('/' + dp + '/'));
+    });
+  }
   const allTreeNodes = document.querySelectorAll('.tree-node');
   allTreeNodes.forEach(nodeEl => {
     const path = nodeEl?._nodeData?.path || nodeEl?.dataset?.path || nodeEl?._virtualPath || '';
@@ -267,6 +274,8 @@ async function _restoreOutlinerTrashRefs(refs) {
 }
 
 async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
+  // Successful Redo already updated the tree model and DOM through pending deletion.
+  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount) return;
   if (typeof refresh === 'function') {
     await refresh(phase, result);
     return;
@@ -372,10 +381,12 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
           : {};
         const nextTrashRefs = [];
         const redoFailures = [];
+        let redoSkippedCount = 0;
         if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
         for (const item of succeeded) {
           const res = await apiPost('/outliner/delete', {
             path: item.path,
+            kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
             ...(item.assetId ? { assetId: item.assetId } : {}),
             ...confirmationPayload,
           }).catch(error => {
@@ -385,6 +396,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
           const ref = _outlinerTrashRefFromResponse(res);
           if (ref) nextTrashRefs.push(ref);
           else if (res && !res.ok) redoFailures.push({ item, error: new Error('削除応答が不正です') });
+          else if (res) redoSkippedCount++;
         }
         if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
         trashRefs = nextTrashRefs;
@@ -392,7 +404,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
         if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
           purgeAppPathReferences(deletedPaths);
         }
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames });
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount });
         if (redoFailures.length) {
           throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした`);
         }
@@ -883,7 +895,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
     if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
-        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
           openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },

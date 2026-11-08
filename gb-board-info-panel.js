@@ -113,7 +113,7 @@
       ? normalized
       : [
           { value: 'main', label: 'メインパネル' },
-          { value: 'right-sidebar', label: '右サイドバー' },
+          { value: 'right-sidebar', label: 'サブパネル' },
         ];
   }
 
@@ -133,9 +133,9 @@
       + '<p class="gb-section-desc">ダブルクリックとトピック右端の開くボタンに適用されます。</p>'
       + '<div class="gb-check-help-row">'
       + '<label class="bd-detail-check"><input type="checkbox" data-bd-select-auto-subpanel'
-      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>トピックを選ぶと右サイドバーに表示する</span></label>`
+      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>トピックを選ぶとサブパネルに表示する</span></label>`
       + (typeof fieldHelp === 'function' ? fieldHelp(
-        'リンクを持つトピックを1件だけ選ぶと、右サイドバー（サブパネル）が開いている場合にかぎり、その中身を選んだトピックのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・トピックの文字を編集中は切り替わりません。',
+        'リンクを持つトピックを1件だけ選ぶと、サブパネルが開いている場合にかぎり、その中身を選んだトピックのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・トピックの文字を編集中は切り替わりません。',
         { e2eId: 'bd-select-auto-subpanel-help' },
       ) : '')
       + '</div>'

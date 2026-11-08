@@ -1,3 +1,17 @@
+
+async function _viewerFolderNavRevealCurrentFolder(folderPath, options = {}) {
+  if (!folderPath) return;
+  if (typeof _autoExpandToPath === 'function') {
+    try { await _autoExpandToPath(folderPath, true); } catch {}
+  }
+  if (!options.skipHighlight && typeof highlightOutlinerNode === 'function') {
+    try { highlightOutlinerNode(folderPath, { noScroll: true }); } catch {}
+  }
+  await _viewerFolderNavDelay(50);
+}
+
+function _viewerFolderNavDisplayableFromBrowseItems(items) {
+  const files = Array.isArray(items) ? items.filter(item => item && item.type !== 'folder') : [];
   const images = files.filter(item => item.type === 'image' || _viewerFolderNavIsDisplayableFile(item.path || item.name || ''))
     .filter(item => _viewerFolderNavExt(item.path || item.name || '') !== '.pdf');
   const pdfs = files.filter(item => _viewerFolderNavExt(item.path || item.name || '') === '.pdf');
@@ -884,17 +898,3 @@ function _ensureGlobalLoadingIndicator() {
   el.setAttribute('aria-atomic', 'true');
   el.hidden = true;
   document.body.appendChild(el);
-  return el;
-}
-
-function _renderLoadingUi(msg) {
-  const text = _loadingText(msg);
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    _setLoadingNodeContent(statusEl, text);
-    statusEl.style.display = '';
-  }
-  const floatingEl = _ensureGlobalLoadingIndicator();
-  if (floatingEl) {
-    _setLoadingNodeContent(floatingEl, text);
-    floatingEl.hidden = false;

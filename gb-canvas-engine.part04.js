@@ -75,6 +75,7 @@ function _bdSnapshot() {
     cardStyles: bd.cardStyles,
     lineStyles: bd.lineStyles,
     depthStyles: bd.depthStyles,
+    activeDepthStylePreset: bd.activeDepthStylePreset || '',
     activeCardStyle: bd.activeCardStyle,
     activeLineStyle: bd.activeLineStyle,
     stylePresetSeedVersion: bd._stylePresetSeedVersion || 0,
@@ -136,6 +137,7 @@ function _bdApplySnapshot(s) {
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
   bd.depthStyles = s.depthStyles || bd.depthStyles;
+  bd.activeDepthStylePreset = s.activeDepthStylePreset || '';
   bd.activeCardStyle = s.activeCardStyle || bd.activeCardStyle;
   bd.activeLineStyle = s.activeLineStyle || bd.activeLineStyle;
   bd._stylePresetSeedVersion = s.stylePresetSeedVersion || 0;
@@ -182,6 +184,10 @@ function _bdApplySnapshot(s) {
   if (typeof MeldexBoardTopicIntegration !== 'undefined' && bd.topicViewDocument) {
     MeldexBoardTopicIntegration.teardownMixedSheetView(bd);
     MeldexBoardTopicIntegration.mountToolbar(bd);
+  }
+  const depthPanel = document.getElementById('detail-tab-board-depth-style');
+  if (depthPanel?.childElementCount && typeof _bdRenderDepthStyleInPanel === 'function') {
+    _bdRenderDepthStyleInPanel(depthPanel, typeof _bdLastDepthEditIndex !== 'undefined' ? _bdLastDepthEditIndex : 0);
   }
   if (typeof bdTransform === 'function') bdTransform();
   if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="board"]')
@@ -412,6 +418,7 @@ async function bdOpenBoard(label, path, opts) {
     bd.cardStyles = parsed.cardStyles || [];
     bd.lineStyles = parsed.lineStyles || [];
     bd.depthStyles = parsed.depthStyles || [];
+    bd.activeDepthStylePreset = parsed.boardUi?.activeDepthStylePreset || '';
     // 新しいボードを開くたびにグローバルデフォルト適用フラグをリセット
     bd._globalStyleDefaultsApplied = false;
     bd._globalDepthStylesApplied = false;

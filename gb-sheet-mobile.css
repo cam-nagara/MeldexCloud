@@ -23,6 +23,17 @@
   background: var(--ui-hover-bg);
   border-color: var(--border);
 }
+@media (hover: hover) and (pointer: fine) {
+  .entry-prop-values .cell-add-btn {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .entry-prop-card:hover .entry-prop-values .cell-add-btn,
+  .entry-prop-values .cell-add-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 @media (pointer: coarse) {
   .entry-prop-values .cell-add-btn {
     width: 44px;

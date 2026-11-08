@@ -1225,6 +1225,23 @@ async function _syncMyTeamProfile() {
   if (!name || name === 'anonymous') return;
   const avatar = localStorage.getItem('meldex-avatar') || '';
   const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncFolderProfile = async (folder) => {
+    // Profile registration is best effort at startup. A read-only/virtual root
+    // must not interrupt startup or prevent reading its existing role.
+    try {
+      await apiPost('/team/sync', teamPayload(folder ? { folder } : undefined), { silentError: true });
+    } catch (error) {
+      console.warn('[team-profile] 起動時のプロフィール同期を保留しました:', error);
+    }
+    try {
+      const members = await apiFetch('/team' + (folder ? '?folder=' + encodeURIComponent(folder) : ''), { silentError: true });
+      const me = members.find(member => member.name === name);
+      return me ? me.role || 'editor' : undefined;
+    } catch (error) {
+      console.warn('[team-profile] チーム情報を読み込めませんでした:', error);
+      return undefined;
+    }
+  };
   const syncWorkspaceProfiles = async () => {
     try {
       const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
@@ -1232,7 +1249,11 @@ async function _syncMyTeamProfile() {
         : [];
       for (const workspace of workspaces || []) {
         if (!workspace?.id) continue;
-        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+        try {
+          await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }), { silentError: true });
+        } catch (error) {
+          console.warn('[team-profile] ワークスペースのプロフィール同期を保留しました:', error);
+        }
       }
       await window.MeldexWorkspaces?.load?.({ force: true });
     } catch {}

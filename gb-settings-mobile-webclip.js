@@ -14,7 +14,7 @@
           DropboxのWeb受信箱に保管し、PC版Meldexが起動中に本文・画像・取得できる動画を保存します。PC停止中の分は次回起動時に取得します。
         </div>
         <div class="gb-section-desc" style="margin-top:8px;">
-          PCにも登録したDropboxフォルダを送信先に選んでください。初期設定は1分ごとの確認で、「定期実行」のWeb受信箱から周期変更・停止ができます。
+          PCにも登録したDropboxフォルダを送信先に選んでください。初期設定は1分ごとの確認で、この画面の「Web受信箱の取得」で周期変更・停止ができます。
           ログインが必要なページや分割配信・DRM動画などは取得できない場合があります。
         </div>
         <button type="button" class="gb-btn" data-webclip-inbox-open>Web受信箱を開く</button>

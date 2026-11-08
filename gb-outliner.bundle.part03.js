@@ -1,3 +1,6 @@
+  const isDB = item.type === 'database';
+  const isUnavailableRoot = item.needsMapping === true;
+  const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
 
   // Toggle arrow
   const toggle = document.createElement('span');
@@ -895,6 +898,3 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
         try {
           if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
             background: true, silentError: true,
-            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
-          });
-        } catch (_) { /* A foreground click retries through the normal error path. */ }

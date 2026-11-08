@@ -4,21 +4,10 @@
 // Notion同期・Xブックマーク・外部取り込みセットの各設定画面は、それぞれの場所で
 // 周期を編集できる（gb-notion-sync.js / gb-settings-x-bookmarks.js /
 // gb-external-import.js。いずれも /api/import-schedules へ書き込みが委譲される）。
-// 本モジュールは、それらを横断する「インポート予定」一覧を1画面にまとめ、
-// Xブックマークは予定・結果の確認と専用設定への移動だけを提供する。
-// 設定の「定期実行」ページへまとめる。Xアカウントの登録と周期変更は
-// アカウント別の専用画面を正とする。
+// 本モジュールはWeb Clipperの設定内にWeb受信箱の周期・実行結果を表示する。
+// 他機能の予定をまとめる独立ページは作らず、各機能の設定を正本とする。
 (function () {
   'use strict';
-
-  const CATEGORY_LABELS = {
-    'notion-sync': 'Notion同期',
-    'x-bookmarks': 'Xブックマーク',
-    'x-account-posts': 'Xアカウント投稿',
-    'external-import-set': '外部取り込み',
-    'webclip-inbox': 'Web受信箱',
-  };
-  const USER_FACING_CATEGORIES = new Set(Object.keys(CATEGORY_LABELS));
 
   function icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 14) : '';
@@ -31,16 +20,6 @@
   function isCloudStaticScheduleSurface() {
     return window.MeldexRuntimeAdapter?.isPwaMode?.()
       || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
-  }
-
-  async function confirmAction(message) {
-    if (typeof cfConfirm === 'function') return await cfConfirm(message, { danger: true, okLabel: '削除' });
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') return window.confirm(message);
-    return false;
-  }
-
-  function categoryLabel(category) {
-    return CATEGORY_LABELS[category] || '';
   }
 
   function statusLine(entry) {
@@ -61,9 +40,9 @@
 
   async function loadSchedules() {
     if (!apiReady()) return [];
-    const data = await apiFetch('/import-schedules', { silentError: true });
+    const data = await apiFetch('/import-schedules?category=webclip-inbox', { silentError: true });
     return Array.isArray(data?.schedules)
-      ? data.schedules.filter(entry => USER_FACING_CATEGORIES.has(String(entry?.category || '')))
+      ? data.schedules.filter(entry => entry?.category === 'webclip-inbox')
       : [];
   }
 
@@ -74,7 +53,7 @@
     return el;
   }
 
-  function renderEntryCard(entry, onChanged) {
+  function renderEntryCard(entry) {
     const card = document.createElement('div');
     card.className = 'gb-section gb-section--boxed';
     card.style.marginTop = '8px';
@@ -83,37 +62,12 @@
 
     const title = document.createElement('div');
     title.className = 'gb-section-title';
-    title.textContent = `${categoryLabel(entry.category)}: ${entry.label || entry.id}`;
+    title.textContent = `Web受信箱: ${entry.label || entry.id}`;
     card.appendChild(title);
 
     const status = textEl('div', statusLine(entry), 'gb-section-desc');
     status.dataset.e2eId = `import-schedule-status-${stableId}`;
     card.appendChild(status);
-
-    if (entry.category === 'x-bookmarks' || entry.category === 'x-account-posts') {
-      const settingsName = entry.category === 'x-bookmarks' ? 'Xブックマーク' : 'Xアカウント保存';
-      card.appendChild(textEl('div', '接続・取り込み・自動実行の設定は専用画面で変更できます。', 'gb-section-desc'));
-      const link = document.createElement('button');
-      link.type = 'button';
-      link.className = 'gb-btn gb-btn-sm';
-      link.innerHTML = icon('arrowRight', 14) + ` ${settingsName}の設定を開く`;
-      link.dataset.e2eId = `import-schedule-settings-${stableId}`;
-      link.addEventListener('click', async () => {
-        try {
-          if (typeof _openSettingsSection === 'function') {
-            _openSettingsSection(settingsName, card, { forcePage: true });
-          } else if (typeof showSettingsModal === 'function') {
-            await showSettingsModal({ panel: settingsName });
-          } else {
-            throw new Error('設定画面を利用できません');
-          }
-        } catch (err) {
-          status.textContent = '設定画面を開けませんでした: ' + (err.userMessage || err.message || err);
-        }
-      });
-      card.appendChild(link);
-      return card;
-    }
 
     const schedContainer = document.createElement('div');
     schedContainer.className = 'gb-section gb-section--boxed';
@@ -123,8 +77,9 @@
 
     if (window.MeldexScheduler) {
       window.MeldexScheduler.createWidget(schedContainer, entry.period, async (cfg) => {
-        await savePeriod(entry, cfg);
-        onChanged();
+        const result = await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {period:cfg}, {method:'PATCH', silentError:true});
+        Object.assign(entry, result.schedule);
+        status.textContent = statusLine(entry);
       });
     }
 
@@ -137,7 +92,8 @@
     const runBtn = document.createElement('button');
     runBtn.type = 'button';
     runBtn.className = 'gb-btn gb-btn-sm';
-    runBtn.innerHTML = icon('play', 14) + ' 今すぐ実行';
+    runBtn.innerHTML = icon('play', 16);
+    runBtn.title = '今すぐ実行';
     runBtn.dataset.e2eId = `import-schedule-run-${stableId}`;
     runBtn.setAttribute('aria-label', `${entry.label || entry.id}を今すぐ実行`);
     runBtn.addEventListener('click', async () => {
@@ -154,37 +110,9 @@
     });
     row.appendChild(runBtn);
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'gb-btn gb-btn-sm gb-btn-danger';
-    deleteBtn.innerHTML = icon('trash2', 14) + ' 定期実行を削除';
-    deleteBtn.dataset.e2eId = `import-schedule-delete-${stableId}`;
-    deleteBtn.setAttribute('aria-label', `${entry.label || entry.id}の定期実行設定を削除`);
-    deleteBtn.addEventListener('click', async () => {
-      const ok = await confirmAction('この定期実行の設定を削除しますか？\n取り込み済みのデータは削除しません。');
-      if (!ok) return;
-      try {
-        await apiFetch(`/import-schedules/${encodeURIComponent(entry.id)}`, { method: 'DELETE', silentError: true });
-        onChanged();
-      } catch (err) {
-        status.textContent = '削除できませんでした: ' + (err.userMessage || err.message || err);
-      }
-    });
-    if (entry.category !== 'webclip-inbox') row.appendChild(deleteBtn);
     card.appendChild(row);
 
     return card;
-  }
-
-  async function savePeriod(entry, period) {
-    try {
-      await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, { period }, { method: 'PATCH', silentError: true });
-    } catch (err) {
-      if (err && err.status === 400 && entry.category === 'x-account-posts') {
-        // 料金確認ゲート: 未承諾のまま有効化しようとした場合
-        window.__gbImportScheduleCostNoticeError = err.userMessage || err.message || String(err);
-      }
-    }
   }
 
   async function refresh(root) {
@@ -199,7 +127,7 @@
         return;
       }
       schedules.forEach((entry) => {
-        list.appendChild(renderEntryCard(entry, () => refresh(root)));
+        list.appendChild(renderEntryCard(entry));
       });
     } catch (err) {
       list.textContent = '';
@@ -229,18 +157,10 @@
     section.dataset.e2eId = 'import-schedule-settings-root';
     section.style.marginTop = '12px';
     section.innerHTML = `
-      <div class="gb-section-title">${icon('calendarClock', 14)} インポート予定（定期実行）</div>
-      <div class="gb-section-desc">取り込みの予定と前回結果をまとめて確認できます。Xブックマークの設定は専用画面で変更します。定期実行は既定で無効です。</div>
+      <div class="gb-section-title">Web受信箱の取得</div>
+      <div class="gb-section-desc">このPCでWeb受信箱を確認する周期を設定します。</div>
     `;
     container.appendChild(section);
-
-    const accountLink = document.createElement('button');
-    accountLink.type = 'button';
-    accountLink.className = 'gb-btn gb-btn-sm';
-    accountLink.dataset.e2eId = 'import-schedule-open-x-account-posts';
-    accountLink.textContent = 'Xアカウント保存の設定を開く';
-    accountLink.addEventListener('click', () => _openSettingsSection('Xアカウント保存', container, { forcePage: true }));
-    section.append(accountLink);
 
     const list = document.createElement('div');
     list.className = 'import-schedule-list';
@@ -252,12 +172,12 @@
 
   // 設定ダイアログの専用コンテナへマウントする。
   function mount(hostContainerId) {
-    const host = document.getElementById(hostContainerId || 'import-schedule-settings-container');
+    const host = document.getElementById(hostContainerId || 'webclip-inbox-schedule-container');
     return host ? render(host) : Promise.resolve();
   }
 
   window.MeldexImportScheduleSettings = {
     render, mount, refresh, isCloudStaticScheduleSurface,
-    isUserFacingCategory: category => USER_FACING_CATEGORIES.has(String(category || '')),
+    isUserFacingCategory: category => category === 'webclip-inbox',
   };
 })();

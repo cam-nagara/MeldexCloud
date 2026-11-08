@@ -8,11 +8,9 @@
 
   _renderColMenuItems(menu, items);
 
-  // マウス位置を原点とするゼロサイズのアンカー矩形で positionPopup を呼ぶと、
-  // zoom 補正 + ビューポートクランプが一括処理される。サブメニューの方向反転は
-  // attachHoverSubmenu が自動処理する。
+  // 列全体を避け、メニューを列の外側へ表示する。
   document.body.appendChild(menu);
-  positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  _dbPositionColumnPopup(menu, e);
 
   _installColHeaderMenuDismissHandlers();
 }
@@ -177,7 +175,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   const rowPath = sourceRow?.dataset?.entityName === entityName ? sourceRow.dataset.meldexEntityPath : '';
   const ep = rowPath || _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
-  // サブパネル内では、右サイドバーで開く・チャットを開く等の
+  // サブパネル内では、サブパネルで開く・チャットを開く等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -221,7 +219,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
       else selectEntity(ep);
     } },
-    ...(canUseRightSidebar ? [{ icon: 'panelRight', label: '右サイドバーで開く', action: () => {
+    ...(canUseRightSidebar ? [{ icon: 'panelRight', label: 'サブパネルで開く', action: () => {
       if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e?.target || null });
       else selectEntity(ep);
     } }] : []),
@@ -556,10 +554,9 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
 
   _renderColMenuItems(menu, items);
 
-  // positionPopup() でマウス位置基準の配置 + ビューポートクランプを一括処理。
-  // サブメニューの方向反転は attachHoverSubmenu が自動処理する。
+  // トピック名列も通常列と同じく、列全体を避ける。
   document.body.appendChild(menu);
-  positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  _dbPositionColumnPopup(menu, e);
 
   _installColHeaderMenuDismissHandlers();
 }

@@ -392,7 +392,9 @@ document.addEventListener('keydown', async (e) => {
     }).then((result) => {
       const deletedCount = result.deletedCount || result.succeeded.length;
       showStatus(deletedCount + ' 件を削除しました（Undoで戻せます）' + (result.failedCount ? `（${result.failedCount}件失敗）` : ''), result.failedCount > 0);
-      if (typeof loadOutliner === 'function') loadOutliner();
+      // 成功分は削除共通処理で全ツリー面へ差分反映済み。
+      // 失敗時の復旧とUndoはrefreshコールバックへ任せる。
+      if (result.skipped.length && !result.failedCount && typeof loadOutliner === 'function') loadOutliner();
     });
     return;
   }
