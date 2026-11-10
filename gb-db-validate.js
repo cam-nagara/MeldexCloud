@@ -365,7 +365,7 @@ function showValidationResults(results, dbPath, dialogFlow) {
 
       item.addEventListener('click', () => {
         modalApi.close('select-result');
-        if (r.entityPath) selectEntity(r.entityPath);
+        if (r.entityPath) _dbOpenConfiguredTarget(r.entityPath, r.entityName, { linkType: 'entity' });
       });
       list.appendChild(item);
     });

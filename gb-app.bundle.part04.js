@@ -1,3 +1,35 @@
+  return result;
+}
+
+function _scheduleLinkDictionaryRefreshForMutation(path) {
+  const pathname = String(path || '').split('?')[0];
+  if (![
+    '/value', '/entity/create', '/entity/rename',
+    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
+  ].includes(pathname)) return;
+  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
+    MeldexAutoLink.scheduleReload(3000);
+  }
+}
+
+async function apiPost(path, body, options = {}) {
+  let stableCopyKey = '';
+  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
+      && body && typeof body === 'object' && !body.operation_id) {
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
+      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    body = prepared.body; stableCopyKey = prepared.key;
+  }
+  const result = await apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(options || {}),
+  });
+  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  _scheduleLinkDictionaryRefreshForMutation(path);
+  return result;
+}
 
 /* ==============================
    初期化
@@ -866,35 +898,3 @@ function showScreenshotMenu(e) {
     item.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(item);
   }
-  function addSep() {
-    const s = document.createElement('div');
-    s.className = 'ab-dropdown-sep';
-    s.setAttribute('role', 'separator');
-    menu.appendChild(s);
-  }
-  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
-  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
-  addSep();
-  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
-  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
-  addSep();
-  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
-  document.body.appendChild(menu);
-  const placeMenu = () => {
-    if (!btn?.getBoundingClientRect) return;
-    const rect = btn.getBoundingClientRect();
-    if (typeof positionPopup === 'function') {
-      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
-      return;
-    }
-    const z = _getZoom();
-    menu.style.left = (rect.right / z + 4) + 'px';
-    menu.style.top = (rect.top / z) + 'px';
-    requestAnimationFrame(() => {
-      const mr = menu.getBoundingClientRect();
-      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
-      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
-    });
-  };
-  placeMenu();
-  menu.addEventListener('keydown', (ev) => {

@@ -346,6 +346,12 @@
   }
 
   function _classificationFor(app, environment, capability) {
+    if (app === 'viewer' && environment === 'windows_standalone'
+        && (capability === 'annotations_comments' || capability === 'version_history')) {
+      return _record(STATUS.out_of_scope, 'scope:viewer-read-only',
+        _route(environment, app, 'アノテートと復元ポイントはMeldex本体で開く'),
+        'Windows単独ビューワーは閲覧専用です', 'Meldex本体で開く');
+    }
     if (app === 'map' && environment !== 'desktop_main') {
       return _record(STATUS.out_of_scope, 'route:desktop_main',
         _route(environment, app, 'マップ初期版はデスクトップ版本体で開きます'),
@@ -389,17 +395,7 @@
         'exception:cloud_browser_local_annotations',
         null,
         'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないためアノテートを保存しない',
-        'アノテートが必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
-      );
-    }
-    if (app === 'viewer'
-        && environment === 'windows_standalone'
-        && capability === 'annotations_comments') {
-      return _record(
-        STATUS.available,
-        `implementation:${environment}:annotations_comments`,
-        null,
-        'Windows単独ビューワーのアノテート画面で利用可能',
+        'アノテートが必要なファイルはMeldex本体で開く',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {

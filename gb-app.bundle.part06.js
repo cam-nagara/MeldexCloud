@@ -1,3 +1,35 @@
+  if (!targetPath) return -1;
+  return nodes.findIndex(node => _viewerFolderNavPathMatches(_viewerFolderNavNodePath(node), targetPath));
+}
+
+function _viewerFolderNavDelay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function _viewerFolderNavEnsureNodeExpanded(node) {
+  const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
+  if (!toggle || toggle.dataset.expanded === undefined || toggle.dataset.expanded === 'true') return false;
+  const childrenDiv = node.querySelector(':scope > .tree-children');
+  toggle.click();
+  for (let i = 0; i < 30; i++) {
+    await _viewerFolderNavDelay(100);
+    if (!childrenDiv) break;
+    if (!childrenDiv.classList.contains('collapsed') && childrenDiv.dataset.loaded === 'true') break;
+  }
+  return true;
+}
+
+async function _viewerFolderNavEnsureAncestorsExpanded(node) {
+  const ancestors = [];
+  let parent = node?.parentElement?.closest?.('.tree-node') || null;
+  while (parent) {
+    ancestors.unshift(parent);
+    parent = parent.parentElement?.closest?.('.tree-node') || null;
+  }
+  for (const ancestor of ancestors) {
+    await _viewerFolderNavEnsureNodeExpanded(ancestor);
+  }
+}
 
 async function _viewerFolderNavRevealCurrentFolder(folderPath, options = {}) {
   if (!folderPath) return;
@@ -866,35 +898,3 @@ let _loadingMessage = '';
 const _loadingOperations = [];
 const _loadingGroups = new Map();
 const _iframeLoadingTrackers = new Map();
-
-function _commonLoadingProgress() {
-  return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'
-    ? window.MeldexOperationProgress
-    : null;
-}
-
-function _loadingText(msg) {
-  return String(msg || _loadingMessage || '読み込み中...');
-}
-
-function _setLoadingNodeContent(el, msg) {
-  if (!el) return;
-  const spinner = document.createElement('span');
-  spinner.className = 'gb-spinner';
-  const label = document.createElement('span');
-  label.className = 'gb-loading-label';
-  label.textContent = _loadingText(msg);
-  el.replaceChildren(spinner, label);
-}
-
-function _ensureGlobalLoadingIndicator() {
-  let el = document.getElementById('gb-global-loading');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'gb-global-loading';
-  el.className = 'gb-global-loading';
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
-  el.setAttribute('aria-atomic', 'true');
-  el.hidden = true;
-  document.body.appendChild(el);

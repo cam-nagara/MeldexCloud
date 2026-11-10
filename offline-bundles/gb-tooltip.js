@@ -434,6 +434,7 @@
     // includes all descendants (even inline CSS), so never tooltip the shell itself.
     if (el.matches('[role="dialog"], [role="alertdialog"]')) return false;
     if (el.getAttribute(ATTR_DISABLED) === 'true') return false;
+    if (el.matches('.cmt-highlight,.cmt-line-highlight') && el.hasAttribute(ATTR_PRIMARY)) return !isBlockedByActiveModal(el);
     if (isTabLike(el)) return false;
     if (isCustomLinkTooltipTarget(el)) return false;
     if (isCellContentTooltipTarget(el)) return false;

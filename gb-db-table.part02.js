@@ -792,6 +792,10 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   });
   const aligned = document.createElement('div');
   aligned.className = 'db-rollup-relation-lines';
+  // 列設定の「表示」で付けたチップ書式を、行揃え表示のリレーションにも反映する
+  if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
+    applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
+  }
   if (!groups.length) {
     aligned.appendChild(_dbRollupLineElement('—', 'db-rollup-relation-line'));
   } else {
@@ -1298,21 +1302,7 @@ function renderEntityRow(entityName, ctx, options) {
     e.stopPropagation();
     const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
     if (!ep) return;
-    const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
-    const target = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
-      ? 'right-sidebar'
-      : (cfg.defaultPanel || 'right-sidebar');
-    const sourceEl = e.currentTarget;
-    const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || '';
-    if (target === 'right-sidebar') {
-      // サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
-      // 右サイドバー補助操作の制限に触れるため、呼び出し元要素を渡して判定させる
-      // （計画書「右サイドバー操作の制限」節）。制限時は openLinkInRightPane 側が
-      // 実行を中止し、短いステータス通知を出す。
-      if (typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl });
-    } else {
-      if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
-    }
+    _dbOpenConfiguredEntity(ep, entityName, ctx, e.currentTarget);
   });
   // スマホでは「...」を行並べ替えハンドルと兼用し、左端を選択だけにする。
   const moreBtn = document.createElement('span');

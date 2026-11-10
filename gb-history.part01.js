@@ -390,6 +390,7 @@ async function _flushOpenScriptNoteVersionTarget(path) {
 }
 
 async function _flushOpenVersionTarget(path, type) {
+  await globalThis.GBEditorHost?.flushPath?.(path);
   const flushed = await _flushOpenAppVersionTarget(path, '');
   if (_isScriptNoteVersionPath(path)) {
     return flushed + await _flushOpenScriptNoteVersionTarget(path);
@@ -399,6 +400,7 @@ async function _flushOpenVersionTarget(path, type) {
 
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
+  if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
   for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
@@ -917,6 +919,8 @@ function renderDiff(modal = null) {
 
 // 現在のビューのパスとタイプを取得
 function _getCurrentVersionTarget() {
+  const editor = globalThis.GBEditorHost?.get();
+  if (editor) return { path: editor.path, type: ['database', 'calendar'].includes(editor.kind) ? 'db' : editor.kind === 'folder' ? 'folder' : 'file' };
   let path = '', type = 'file';
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
     ? GBTabs.getActiveTab(GBLayout.activePane)

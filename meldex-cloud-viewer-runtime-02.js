@@ -124,6 +124,7 @@
   let _authChannel = null;
   let _accountRootInfo = null;
   const _readFolderCache = new Map();
+  const READ_FOLDER_PRESENT_STALE_MS = 10 * 60 * 1000;
   const _readFolderPending = new Map();
   let _readFolderGeneration = 0;
   let _rateLimitUntil = 0;
@@ -137,7 +138,8 @@
   let _apiActive = 0;
   let _mediaActive = 0;
   function _isMediaRead(route, path) {
-    return /^(files\/download|files\/get_metadata)$/.test(route)
+    return route === 'files/get_thumbnail_v2'
+      || /^(files\/download|files\/get_metadata)$/.test(route)
       && /\.(png|jpe?g|gif|webp|svg|bmp|avif|pdf|mp[34]|webm|mov|ogg|wav)$/i.test(String(path || ''));
   }
   function _drainApiQueue() {
@@ -1137,11 +1139,16 @@
   // Optional sidecars and management records are often absent. Check their
   // parent listing instead of using a failing download/get_metadata as an
   // existence probe. Share listings across adapters and concurrent callers.
-  async function _readFolderEntries(path, options) {
+  async function _readFolderKey(path, options) {
     const namespaceKind = _normalizeNamespaceKind(options?.namespaceKind);
     const account = await getCurrentAccount(false);
     const namespaceId = account?.root_info?.[namespaceKind === 'team_root' ? 'root_namespace_id' : 'home_namespace_id'] || '';
-    const key = JSON.stringify([account?.account_id || '', namespaceKind, namespaceId, path.toLowerCase()]);
+    return JSON.stringify([account?.account_id || '', namespaceKind, namespaceId, path.toLowerCase()]);
+  }
+
+  async function _readFolderEntries(path, options) {
+    const namespaceKind = _normalizeNamespaceKind(options?.namespaceKind);
+    const key = await _readFolderKey(path, options);
     const cached = _readFolderCache.get(key);
     if (!options?.freshMissingCheck && cached?.until > Date.now()) return cached.entries;
     const pending = _readFolderPending.get(key);
@@ -1173,7 +1180,7 @@
       }
       if (generation === _readFolderGeneration && _readFolderPending.get(key) === promise && entries.size <= 4096) {
         if (_readFolderCache.size >= 128) _readFolderCache.delete(_readFolderCache.keys().next().value);
-        _readFolderCache.set(key, { entries, until: Date.now() + 30000 });
+        _readFolderCache.set(key, { entries, until: Date.now() + 30000, at: Date.now() });
       }
       return entries;
     })();
@@ -1187,8 +1194,18 @@
     if (typeof path !== 'string' || !path.startsWith('/') || path === '/') return false;
     const normalized = path.replace(/\/+$/, '');
     const split = normalized.lastIndexOf('/');
-    const entries = await _readFolderEntries(normalized.slice(0, split), options);
-    return !entries.has(normalized.slice(split + 1).toLowerCase());
+    const parent = normalized.slice(0, split);
+    const name = normalized.slice(split + 1).toLowerCase();
+    if (!options?.freshMissingCheck) {
+      // 「ある」と分かっている項目は、一覧の有効期限（30秒）が切れた後もしばらく存在すると
+      // みなす。30秒以上あけて操作するたびに、管理用フォルダの親をルートまで順に一覧し直す
+      // 通信（最大5回）が走っていた。実際には消されていた場合も、続く本来の通信が
+      // 「見つからない」を返すので結果は変わらない。「無い」という記憶は従来どおり30秒で捨てる。
+      const cached = _readFolderCache.get(await _readFolderKey(parent, options));
+      if (cached && Date.now() - cached.at < READ_FOLDER_PRESENT_STALE_MS && cached.entries.has(name)) return false;
+    }
+    const entries = await _readFolderEntries(parent, options);
+    return !entries.has(name);
   }
 
   async function _guardMissingRead(path, options) {
@@ -1244,7 +1261,7 @@
       const response = await _fetchDropboxWithRetry(route, async () => {
         const result = await fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit);
         // Keep the slot until the download body finishes, not just its headers.
-        if (result.ok && route === 'files/download') {
+        if (result.ok && (route === 'files/download' || route === 'files/get_thumbnail_v2')) {
           return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
         }
         if (result.ok && route === 'files/download_zip') {
@@ -1353,6 +1370,8 @@
     resolveFileLocation,
     apiRpc,
     apiContent,
+    readFolderEntries: _readFolderEntries,
+    isMissingReadPath: _isMissingReadPath,
     getCurrentAccount,
     getSpaceUsage,
   };
@@ -2139,6 +2158,108 @@
       .replace(/\/$/, '');
   }
 
+  // 一覧読み込み用：ファイルの版番号（rev）ごとに読んだ内容を覚えておく。revが同じなら
+  // Dropbox上の内容は同一なので、読み直しを省いても結果は変わらない。
+  const _ENVELOPE_REV_CACHE = new Map();
+  const ENVELOPE_REV_CACHE_LIMIT = 4000;
+  const ENVELOPE_CACHE_MAX_TEXT_LENGTH = 16 * 1024;
+
+  // 同じ控えを端末内（IndexedDB）にも置く。使えない時は通常のダウンロードに戻る。接続解除で消す。
+  const ENVELOPE_STORE_DB = 'meldex-system-storage-envelopes';
+  const ENVELOPE_STORE_NAME = 'by-revision';
+  let _envelopeStoreDb = null;
+
+  function _envelopeStoreOpen() {
+    if (_envelopeStoreDb) return _envelopeStoreDb;
+    _envelopeStoreDb = new Promise((resolve) => {
+      try {
+        if (typeof indexedDB === 'undefined') { resolve(null); return; }
+        // 開けないまま応答が返らない環境でも、保存を止めない。
+        setTimeout(() => resolve(null), 1500);
+        const request = indexedDB.open(ENVELOPE_STORE_DB, 1);
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains(ENVELOPE_STORE_NAME)) request.result.createObjectStore(ENVELOPE_STORE_NAME);
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+        request.onblocked = () => resolve(null);
+      } catch { resolve(null); }
+    });
+    return _envelopeStoreDb;
+  }
+
+  // 端末内の控えに対する操作を1回行う。使えない・失敗した時は何もしない。
+  function _envelopeStoreRun(mode, action) {
+    return _envelopeStoreOpen().then((db) => {
+      if (!db) return null;
+      try { return action(db.transaction(ENVELOPE_STORE_NAME, mode).objectStore(ENVELOPE_STORE_NAME)); } catch { return null; }
+    }).catch(() => null);
+  }
+
+  function _envelopeStoreGet(key) {
+    return _envelopeStoreRun('readonly', store => new Promise((resolve) => {
+      setTimeout(() => resolve(null), 1500);
+      const request = store.get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    }));
+  }
+
+  function _envelopeStorePut(key, entry) { _envelopeStoreRun('readwrite', store => { store.put(entry, key); }); }
+
+  const _envelopePrunedAt = new Map();
+  function _envelopeStorePrune(prefix, keepNames) {
+    if (Date.now() - (_envelopePrunedAt.get(prefix) || 0) < 10 * 60 * 1000 || typeof IDBKeyRange === 'undefined') return;
+    if (_envelopePrunedAt.size >= 200) _envelopePrunedAt.clear();
+    _envelopePrunedAt.set(prefix, Date.now());
+    _envelopeStoreRun('readwrite', (store) => {
+      const request = store.openKeyCursor(IDBKeyRange.bound(prefix, prefix + String.fromCharCode(0xffff)));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const name = String(cursor.key).slice(prefix.length).toLowerCase();
+        if (!name.includes('/') && !keepNames.has(name)) {
+          store.delete(cursor.key);
+          _ENVELOPE_REV_CACHE.delete(cursor.key);
+        }
+        cursor.continue();
+      };
+    });
+  }
+
+  function _envelopeStoreClear() {
+    _ENVELOPE_REV_CACHE.clear();
+    _envelopeStoreRun('readwrite', store => { store.clear(); });
+  }
+
+  async function _envelopeCacheAccount() {
+    try {
+      const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+      return String(account?.account_id || '');
+    } catch { return ''; }
+  }
+
+  try {
+    window.addEventListener?.('meldex:dropbox-auth-session-changed', (event) => {
+      _VERIFIED_FOLDERS.clear(); // 接続先が変わったら、フォルダの確認もやり直す
+      if (event?.detail?.connected === false) _envelopeStoreClear();
+    });
+  } catch {}
+
+  // 読み取りを同時数を抑えて並行実行し、入力と同じ並び順で結果を返す。
+  async function _mapInOrder(items, worker, limit = 4) {
+    const results = new Array(items.length);
+    let next = 0;
+    const run = async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await worker(items[index], index);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+    return results;
+  }
+
   function _joinDropboxPath(base, relative) {
     const normalizedBase = _normalizeDropboxPath(base);
     const normalizedRelative = _normalizeRelativePath(relative);
@@ -2220,22 +2341,33 @@
     return _RETRYABLE_ERROR_RE.test(String((error && error.message) || error || ''));
   }
 
+  const _VERIFIED_FOLDERS = new Set();
+
   async function _ensureFolder(dropboxPath, namespaceKind) {
     const normalized = _normalizeDropboxPath(dropboxPath);
     if (!normalized || normalized === '/') return true;
+    // 一度フォルダだと確認できた場所は、この画面を開いている間は確認し直さない。
+    // 管理データを1件保存するたびに2回ずつ確認の通信が走っていた。確認後に外部で
+    // 消されていても、Dropboxのアップロードは親フォルダを自動で作るので保存は成立する。
+    const verifiedKey = `${namespaceKind || ''}|${normalized.toLowerCase()}`;
+    if (_VERIFIED_FOLDERS.has(verifiedKey)) return true;
     // Existing management folders are the normal case. Do not create them on
     // every save: Dropbox reports an HTTP 409 even though nothing is wrong.
     try {
       const meta = await _rpc('files/get_metadata', {
         path: normalized, include_deleted: false, include_has_explicit_shared_members: false,
       }, namespaceKind);
-      if (meta?.['.tag'] === 'folder') return true;
+      if (meta?.['.tag'] === 'folder') {
+        _VERIFIED_FOLDERS.add(verifiedKey);
+        return true;
+      }
       throw new (_contract().SystemStorageError)(`${normalized} はDropbox上でフォルダではありません`);
     } catch (err) {
       if (!_isNotFoundError(err)) throw err;
     }
     try {
       await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
+      _VERIFIED_FOLDERS.add(verifiedKey);
       return true;
     } catch (err) {
       if (!_isConflictError(err)) throw err;
@@ -2415,13 +2547,79 @@
       }
     }
 
+    async _readExistingAtRevision(kind, documentId, listedRev) {
+      const contract = _contract();
+      const docId = contract.sanitizeDocumentId(documentId);
+      if (!listedRev) return this._readExisting(kind, docId);
+      const path = this._pathFor(kind, docId);
+      const cacheKey = `${await _envelopeCacheAccount()}|${this._namespaceKind}|${path}`;
+      let cached = _ENVELOPE_REV_CACHE.get(cacheKey);
+      if (!cached || cached.rev !== listedRev) {
+        // この端末に前回までに読んだ内容が残っていれば、それを使う（画面を開き直した直後の
+        // 最初の保存で、過去の履歴を全件ダウンロードし直さないため）。
+        const stored = await _envelopeStoreGet(cacheKey);
+        if (stored && stored.rev === listedRev && typeof stored.text === 'string') {
+          cached = stored;
+          _ENVELOPE_REV_CACHE.set(cacheKey, cached);
+        }
+      }
+      if (cached && cached.rev === listedRev) {
+        try {
+          return contract.recordFromEnvelope(JSON.parse(cached.text), { revisionOverride: cached.rev });
+        } catch {
+          _ENVELOPE_REV_CACHE.delete(cacheKey); // 壊れた控えは捨てて読み直す
+        }
+      }
+      const result = await _downloadEnvelope(path, this._namespaceKind);
+      if (!result) {
+        _ENVELOPE_REV_CACHE.delete(cacheKey);
+        return null;
+      }
+      let record;
+      try {
+        record = contract.recordFromEnvelope(result.data, { revisionOverride: result.rev });
+      } catch (error) {
+        this._audit('error', 'load', kind, docId, { message: '破損した管理データを検出しました' });
+        throw error;
+      }
+      if (result.rev) {
+        const text = JSON.stringify(result.data);
+        // 控えるのは編集履歴の見出しのような小さい記録だけ。本文全文を持つ版データなどの
+        // 大きい記録は、メモリにも端末内にも残さない（毎回ダウンロードする）。
+        if (text.length <= ENVELOPE_CACHE_MAX_TEXT_LENGTH) {
+          if (_ENVELOPE_REV_CACHE.size >= ENVELOPE_REV_CACHE_LIMIT) _ENVELOPE_REV_CACHE.clear();
+          const entry = { rev: result.rev, text };
+          _ENVELOPE_REV_CACHE.set(cacheKey, entry);
+          _envelopeStorePut(cacheKey, entry);
+        } else {
+          _ENVELOPE_REV_CACHE.delete(cacheKey);
+        }
+      }
+      return record;
+    }
+
     async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
       return this._readExisting(kind, docId, options?.fresh === true);
     }
 
-    async _listFolderEntries(folderPath) {
+    async _listFolderEntries(folderPath, { reuseRecent = false } = {}) {
+      // 認証側の共有一覧を通して取得する。直後に続く「このファイルは在るか」の確認が
+      // 同じ一覧を使えるので、同じフォルダを続けて2回一覧する通信が1回で済む。
+      const auth = window.MeldexDropboxAuth;
+      if (typeof auth?.readFolderEntries === 'function' && typeof auth?.isMissingReadPath === 'function') {
+        const location = await _resolveApiLocation(folderPath, this._namespaceKind);
+        const options = { namespaceKind: location.namespaceKind };
+        try {
+          if (await auth.isMissingReadPath(location.path, options)) return [];
+        } catch (err) {
+          // 親フォルダが外部で消されていた場合も、従来どおり「空」として扱う。
+          if (_isNotFoundError(err)) return [];
+          throw err;
+        }
+        return [...(await auth.readFolderEntries(location.path, { ...options, freshMissingCheck: !reuseRecent })).values()];
+      }
       const entries = [];
       let payload;
       try {
@@ -2441,7 +2639,7 @@
     async listDocuments(kind) {
       const contract = _contract();
       const entries = await this._listFolderEntries(this._folderFor(kind));
-      const records = [];
+      const documents = [];
       for (const entry of entries) {
         if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
@@ -2450,16 +2648,29 @@
         } catch {
           continue; // 本契約が作成したものではない未知のファイルは無視する
         }
+        documents.push({ documentId, rev: String(entry.rev || '') });
+      }
+      // 1件ずつ順番に読むと件数ぶんの通信待ちが直列に積み上がる（保存のたびに呼ばれる）。
+      // 読み取りだけなので並行して取得し、結果は一覧の並び順のまま返す。
+      // さらに、一覧が返す版番号（rev）が前回読んだ時と同じファイルは内容も同じなので、
+      // 読み直さずに覚えている内容から組み立てる。編集履歴のように増え続けるデータでも、
+      // 保存のたびに全件を読み直さずに済む（新しく増えた・変わった分だけ通信する）。
+      const loaded = await _mapInOrder(documents, async ({ documentId, rev }) => {
         try {
-          const record = await this.load(kind, documentId);
-          if (record) records.push(record);
+          return await this._readExistingAtRevision(kind, documentId, rev);
         } catch (error) {
           this._audit('error', 'list_documents', kind, documentId, {
             message: `破損データをスキップしました: ${error && error.message}`,
           });
+          return null;
         }
-      }
-      return records;
+      });
+      // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
+      _envelopeStorePrune(
+        `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
+        new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
+      );
+      return loaded.filter(Boolean);
     }
 
     async listActiveLeaseRecords() {
@@ -2469,22 +2680,26 @@
       const kind = contract.SystemStorageKind.EDIT_LOCKS;
       const folder = this._folderFor(kind);
       const files = await this._listFolderEntries(folder);
-      const records = [];
+      const names = [];
       for (const file of files) {
         const name = String(file.name || '');
         if (file['.tag'] !== 'file' || !/\.json$/i.test(name)
             || !(name.startsWith('active-lock-store') || name.startsWith('active-lock-owner-'))) continue;
         if (/[\\/]/.test(name)) throw new contract.SystemStorageCorruptRecordError('編集リースのファイル名が不正です');
-        const downloaded = await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, true);
+        names.push(name);
+      }
+      // 編集中ロックの確認は書き込み操作のたびに走る。読み取りだけなので並行して取得する
+      // （1件でも読めなければ全体を失敗にする点は従来どおり）。
+      return _mapInOrder(names, async (name) => {
+        const downloaded =await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false); // listed just above; a vanished file still fails the null check below
         if (!downloaded) throw new contract.SystemStorageError('編集中ロックの読込中に同期状態が変わりました');
         const record = contract.recordFromEnvelope(downloaded.data, { revisionOverride: downloaded.rev });
         if (record.kind !== kind || !(record.documentId === 'active-lock-store'
             || /^active-lock-owner-[0-9a-f]{64}$/.test(record.documentId))) {
           throw new contract.SystemStorageCorruptRecordError('編集リースの管理情報が一致しません');
         }
-        records.push(record);
-      }
-      return records;
+        return record;
+      });
     }
 
     async listDocumentHeaders(kind, options) {
@@ -2535,7 +2750,8 @@
     async _totalBytesForKind(kind, excludeDocumentId) {
       let entries;
       try {
-        entries = await this._listFolderEntries(this._folderFor(kind));
+        // The total is only a quota estimate: reuse the listing the save just fetched.
+        entries = await this._listFolderEntries(this._folderFor(kind), { reuseRecent: true });
       } catch (err) {
         if (_isNotFoundError(err)) return 0;
         throw err;
@@ -5313,6 +5529,36 @@
       assertCurrent();
       this._sheetPrefetchResult = 'accepted';
       return 'accepted';
+    }
+
+    // Only preview callers use this path. Original-file reads remain lossless.
+    async _downloadThumbnail(relativePath, size, media) {
+      if (!media?.meta?.rev || Number(media.meta.size) > 20 * 1024 * 1024
+          || !/\.(?:jpe?g|png|tiff?|gif|webp|ppm|bmp)$/i.test(relativePath)) return null;
+      const pixels = Math.max(64, Math.min(1024, Number(size) || 256));
+      const dimensions = pixels <= 64 ? 'w64h64' : pixels <= 128 ? 'w128h128'
+        : pixels <= 256 ? 'w256h256' : pixels <= 480 ? 'w640h480'
+          : pixels <= 768 ? 'w1024h768' : 'w2048h1536';
+      let response;
+      try {
+        response = await this._content('files/get_thumbnail_v2', {
+          // Pin the response to the revision used for the cache key.
+          resource: { '.tag': 'path', path: 'rev:' + media.meta.rev },
+          format: 'png', size: dimensions, mode: 'strict',
+        }, undefined, this._dropboxLocation(relativePath));
+      } catch (error) {
+        // Conversion failures can use the original. Auth, permission and
+        // network failures must keep their normal error/retry behavior.
+        if (/^(?:unsupported_extension|unsupported_image|conversion_error)(?:\/|$)/.test(String(error?.message || ''))) return null;
+        throw error;
+      }
+      const result = _safeJsonParse(response.headers.get('dropbox-api-result'), null);
+      if (result?.file_metadata?.rev !== media.meta.rev) {
+        throw new Error('画像の取得中にファイルの版が変更されました');
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('Dropboxのサムネイルが空です');
+      return blob.type === 'image/png' ? blob : blob.slice(0, blob.size, 'image/png');
     }
 
     async downloadAsFile(relativePath) {
@@ -12246,11 +12492,32 @@ async function _editRecordIntegrity(provider, adapter, record) {
   return result || { ok: false, status: 'pending-owner-signature' };
 }
 
-async function _listSharedEditRecords(provider, path, recursive) {
+// 所有者の保存のたびに行っていた「署名待ちの記録への自動署名」を、保存を待たせない形で
+// 続ける。対象は新しい順に数件、同じファイルにつき一定間隔まで。
+const _backgroundSignedAt = new Map();
+const BACKGROUND_SIGN_INTERVAL_MS = 10 * 60 * 1000;
+const BACKGROUND_SIGN_RECORD_LIMIT = 10;
+
+function _signPendingEditRecordsInBackground(provider, adapter, path, records) {
+  if (!_isSharedHistoryOwner() || !records?.length) return;
+  const last = _backgroundSignedAt.get(path) || 0;
+  if (Date.now() - last < BACKGROUND_SIGN_INTERVAL_MS) return;
+  if (_backgroundSignedAt.size >= 500) _backgroundSignedAt.clear();
+  _backgroundSignedAt.set(path, Date.now());
+  const targets = records.slice(0, BACKGROUND_SIGN_RECORD_LIMIT);
+  (async () => {
+    for (const row of targets) {
+      await _editRecordIntegrity(provider, adapter, row).catch(() => null);
+    }
+  })().catch(() => {});
+}
+
+async function _listSharedEditRecords(provider, path, recursive, options = {}) {
+  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -12259,27 +12526,56 @@ async function _listSharedEditRecords(provider, path, recursive) {
       && payload.committed && !payload.aborted;
   }).sort((a, b) => String(b.payload?.committed_at || b.payload?.timestamp || '')
     .localeCompare(String(a.payload?.committed_at || a.payload?.timestamp || '')));
-  for (const row of visible) {
-    const integrity = await _editRecordIntegrity(provider, adapter, row).catch(() => ({
-      ok: false, status: 'pending-owner-signature', reason: 'integrity-check-failed',
-    }));
-    row.integrity = integrity;
+  // 保存の前処理は「直前の編集者」を知るために最新1件の内容を見るだけで、署名の検証結果は
+  // 使わない。検証は履歴1件ごとに通信が発生し、保存のたびに履歴の件数ぶん遅くなっていた。
+  // 履歴画面など検証結果を表示する呼び出しでは従来どおり全件を検証する。
+  if (options.skipIntegrity) {
+    _signPendingEditRecordsInBackground(provider, adapter, normalized, visible);
+    return visible;
   }
+  // 署名の確認は1件ごとに通信が要る。順番に行うと履歴が十数件を超えた時点で履歴画面が
+  // 時間切れになっていたので、同時4件で進める。確認が取れた結果は同じ版の記録に限り
+  // 2分間だけ使い回す（パネルを開き直すたびに全件を取り直さない）。
+  let next = 0;
+  const worker = async () => {
+    while (next < visible.length) {
+      const row = visible[next++];
+      const memoKey = `${row.documentId}|${row.revision || ''}`;
+      const memo = _verifiedIntegrityMemo.get(memoKey);
+      if (memo && Date.now() - memo.at < 120000) { row.integrity = memo.result; continue; }
+      row.integrity = await _editRecordIntegrity(provider, adapter, row).catch(() => ({
+        ok: false, status: 'pending-owner-signature', reason: 'integrity-check-failed',
+      }));
+      if (row.integrity?.ok === true && row.revision) {
+        if (_verifiedIntegrityMemo.size >= 5000) _verifiedIntegrityMemo.clear();
+        _verifiedIntegrityMemo.set(memoKey, { at: Date.now(), result: row.integrity });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, visible.length) }, worker));
   return visible;
 }
+const _verifiedIntegrityMemo = new Map();
 
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
+  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = await adapter.listDocuments(kind);
   const currentHash = _contentHistoryHash(currentContent);
+  let changed = false;
   for (const row of records) {
     const payload = row?.payload || {};
     if (payload.object_type !== 'edit-record' || payload.original_relative_path !== normalized
         || payload.committed || payload.aborted) continue;
     const intentAge = Date.now() - Date.parse(payload.timestamp || '');
-    if (!Number.isFinite(intentAge) || intentAge > 24 * 60 * 60 * 1000) {
+    // 書こうとした内容が今の本文と一致していれば、その保存は成立している。保存直後に
+    // 画面を閉じて確定が終わらなかった記録も、何日後でもここで確定する（期限切れ扱いに
+    // して履歴から落とさない）。
+    const contentWritten = payload.planned_content_hash === currentHash;
+    if (!contentWritten && (!Number.isFinite(intentAge) || intentAge > 24 * 60 * 60 * 1000)) {
+      changed = true;
       await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
       const saved = await adapter.save(kind, row.documentId, {
         ...payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'expired_intent',
@@ -12288,22 +12584,24 @@ async function _reconcileCloudEditIntents(provider, path, currentContent) {
       continue;
     }
     if (payload.planned_content_hash !== currentHash) continue;
+    changed = true;
     await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
     const saved = await adapter.save(kind, row.documentId, {
       ...payload, committed: true, committed_at: _nowIso(), recovered_from_intent: true,
     }, { expectedRevision: row.revision }).catch(() => null);
     if (saved) await _protectSharedEditRevision(provider, adapter, saved).catch(() => null);
   }
-  return { adapter, kind };
+  // 何も書き換えなかった時だけ、読んだ一覧を直後の処理で使い回せるように返す。
+  return { adapter, kind, records: changed ? null : records };
 }
 
 async function _prepareCloudFileEdit(provider, path, currentContent, nextContent, actor, sourceRevision, exists, options = {}) {
   const normalized = _normalizeFolderPath(path);
-  const { adapter, kind } = await _reconcileCloudEditIntents(provider, normalized, currentContent);
+  const { adapter, kind, records } = await _reconcileCloudEditIntents(provider, normalized, currentContent);
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -12364,7 +12662,53 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   return { provider, adapter, kind, documentId, intentRevision: intent?.revision || '', payload, eventId, intentRecord: intent };
 }
 
-async function _commitCloudFileEdit(prepared, committedRevision) {
+// 本文の保存が終わった後の「履歴の確定」は、通信を10回以上（実測で約15秒）使う。
+// 本文はこの時点で保存済みなので、確定は裏で続け、保存の完了を待たせない。
+// 確定が終わる前に同じ履歴を読む処理（次の保存・履歴表示・移動に伴う付け替え）は、
+// _awaitPendingEditFinalizations で先に完了を待つので、順序は従来と変わらない。
+// 確定できなかった場合は従来どおり、次回の保存時に内容の一致で回収される。
+const _pendingEditFinalizations = new Set();
+
+const PENDING_EDIT_FINALIZATION_WAIT_MS = 45000;
+
+async function _awaitPendingEditFinalizations() {
+  const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
+  while (_pendingEditFinalizations.size) {
+    const remaining = deadline - Date.now();
+    // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
+    // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
+    if (remaining <= 0) return;
+    const settled = Promise.allSettled([..._pendingEditFinalizations]);
+    await (typeof setTimeout === 'function'
+      ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
+      : settled);
+  }
+}
+
+// 確定が終わる前に画面を閉じようとしたら、ブラウザの離脱確認を出す。
+try {
+  window.addEventListener?.('beforeunload', (event) => {
+    if (!_pendingEditFinalizations.size) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+} catch {}
+
+function _commitCloudFileEdit(prepared, committedRevision) {
+  if (!prepared || prepared.skipped) return Promise.resolve(false);
+  const finalization = _finalizeCloudFileEdit(prepared, committedRevision).then((pending) => {
+    if (pending && typeof showStatus === 'function') {
+      showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
+    }
+    return pending;
+  }).catch(() => true).finally(() => {
+    _pendingEditFinalizations.delete(finalization);
+  });
+  _pendingEditFinalizations.add(finalization);
+  return Promise.resolve(false);
+}
+
+async function _finalizeCloudFileEdit(prepared, committedRevision) {
   if (!prepared || prepared.skipped) return false;
   try {
     await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
@@ -12420,6 +12764,7 @@ window.MeldexSharedEditHistory = {
   actor: _versionActor,
   prepare: _prepareCloudFileEdit,
   commit: _commitCloudFileEdit,
+  settled: _awaitPendingEditFinalizations,
   abort: _abortCloudFileEdit,
   track: _trackCloudEdit,
   fileKind: _historyFileKind,
@@ -12479,6 +12824,7 @@ function _throwEtagConflict(path, expected, current) {
 }
 
 async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
+  await _awaitPendingEditFinalizations();
   const normalizedOld = _normalizeFolderPath(oldPath);
   const normalizedNew = _normalizeFolderPath(newPath);
   if (!normalizedOld || normalizedOld === normalizedNew) return false;
@@ -12585,6 +12931,7 @@ async function _saveFileVersion(provider, path, options) {
   let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
   if (pointMetadata.restore_point_kind === 'periodic') {
     payload.content_hash = payload.content_hash || _contentHistoryHash(content);
+    await _awaitPendingEditFinalizations();
     const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
     const existing = rows.find(row => {
       const value = row.payload || {};
@@ -12616,6 +12963,7 @@ async function _listFileVersions(provider, path) {
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
   const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
   const versions = [];
   for (const entry of entries) {
@@ -12752,6 +13100,7 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
   const name = _safeVersionName(version);
   const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(storageKind);
   let record = records.find(row => {
     const payload = row?.payload || {};
@@ -12838,6 +13187,7 @@ async function _undeleteFileVersion(provider, path, token) {
   const normalized = _normalizeFolderPath(path);
   const safeToken = _safeVersionName(token);
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
   const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
   if (!record) throw new Error('削除済みバージョンが見つかりません');
@@ -13646,6 +13996,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           if (item.type !== 'form-app') continue;
           try {
             const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.meldex?.topic_attachment === true) continue;
             if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
             const sheetPath = _normalizeFolderPath(doc.sheet.path);
             const handle = await _resolveEntryHandle(provider, sheetPath);
@@ -15949,6 +16300,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             headers: { 'Content-Type': thumbnail.type || 'image/jpeg' },
           });
         }
+        if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexPwaFileUrl?.ensureDisplayUrl) {
+          const info = await window.MeldexPwaFileUrl.ensureDisplayUrl(url.href);
+          return nativeFetch(info.url);
+        }
         const file = await _downloadMediaFile(provider, relativePath);
         return new Response(await file.arrayBuffer(), {
           status: 200,
@@ -16632,10 +16987,22 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
     const provider = await _provider();
     if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
-        || typeof createImageBitmap !== 'function' || !/\.(?:png|jpe?g|webp|bmp|avif)$/i.test(normalized)) {
+        || !/\.(?:png|jpe?g|webp|bmp|avif|gif|tiff?|ppm|svg|heic|heif)$/i.test(normalized)) {
       return ensureRawUrl(pathLike, options);
     }
-    const media = await provider._mediaCacheRecord(normalized);
+    const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
+    let media, mediaPath, lastError;
+    for (const candidate of candidates) {
+      try {
+        media = await provider._mediaCacheRecord(candidate);
+        mediaPath = candidate;
+        break;
+      } catch (error) {
+        if (!/path\/not_found|path_not_found|ファイルが見つかりません/.test(String(error?.message || ''))) throw error;
+        lastError = error;
+      }
+    }
+    if (!mediaPath) throw lastError;
     if (!media?.key) return ensureRawUrl(pathLike, options);
     const key = _thumbnailCacheKey(pathLike), persistentKey = media.key + '/thumbnail-v1-' + size;
     const memory = CACHE[key];
@@ -16646,26 +17013,32 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       try { cache = await caches.open('meldex-image-thumbnails-v1'); blob = await (await cache.match(persistentKey))?.blob(); } catch (_) {}
       const retained = !!blob;
       if (!blob) {
-        const file = await _getFileWithMediaFallback(provider, normalized);
-        let bitmap;
-        try {
-          bitmap = await createImageBitmap(file);
-          const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-          canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-          blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        } catch (_) { return ensureRawUrl(pathLike, options); }
-        finally { bitmap?.close(); }
+        blob = await provider._downloadThumbnail?.(mediaPath, size, media);
+        const remote = !!blob;
+        if (typeof createImageBitmap !== 'function') {
+          if (!remote) return ensureRawUrl(pathLike, options);
+        } else {
+          const file = blob || await _getFileWithMediaFallback(provider, mediaPath);
+          let bitmap;
+          try {
+            bitmap = await createImageBitmap(file);
+            const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+            canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+            canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png')) || blob;
+          } catch (_) { if (!remote) return ensureRawUrl(pathLike, options); }
+          finally { bitmap?.close(); }
+        }
         if (!blob) return ensureRawUrl(pathLike, options);
       }
-      const current = await provider._mediaCacheRecord(normalized);
+      const current = await provider._mediaCacheRecord(mediaPath);
       if (current?.key !== media.key || current?.scope !== media.scope
           || provider._mediaScope !== media.scope) throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
       // Reuse the existing bounded background trim, in a separate local store.
       if (cache && !retained) await provider._persistCachedFile({ cache, key: persistentKey, documentFile: true, maxBytes: 128 * 1024, maxEntries: 1024 }, blob);
-      const published = await provider._mediaCacheRecord(normalized);
+      const published = await provider._mediaCacheRecord(mediaPath);
       if (published?.key !== media.key || published?.scope !== media.scope || provider._mediaScope !== media.scope) {
         throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
       }
@@ -22561,6 +22934,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function _classificationFor(app, environment, capability) {
+    if (app === 'viewer' && environment === 'windows_standalone'
+        && (capability === 'annotations_comments' || capability === 'version_history')) {
+      return _record(STATUS.out_of_scope, 'scope:viewer-read-only',
+        _route(environment, app, 'アノテートと復元ポイントはMeldex本体で開く'),
+        'Windows単独ビューワーは閲覧専用です', 'Meldex本体で開く');
+    }
     if (app === 'map' && environment !== 'desktop_main') {
       return _record(STATUS.out_of_scope, 'route:desktop_main',
         _route(environment, app, 'マップ初期版はデスクトップ版本体で開きます'),
@@ -22604,17 +22983,7 @@ document.addEventListener('DOMContentLoaded', () => {
         'exception:cloud_browser_local_annotations',
         null,
         'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないためアノテートを保存しない',
-        'アノテートが必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
-      );
-    }
-    if (app === 'viewer'
-        && environment === 'windows_standalone'
-        && capability === 'annotations_comments') {
-      return _record(
-        STATUS.available,
-        `implementation:${environment}:annotations_comments`,
-        null,
-        'Windows単独ビューワーのアノテート画面で利用可能',
+        'アノテートが必要なファイルはMeldex本体で開く',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {

@@ -78,8 +78,10 @@ function _imageSrc(item, preferThumb, thumbSize) {
   // Only legacy uploads live in _media. Imported src/url references can point
   // to ordinary files in any registered source root (including hidden files).
   const path = rel.replace(/\\/g, '/');
-  if (path.startsWith('_media/')) return '/api/media/file?path=' + encodeURIComponent(path);
   const kind = _attachmentKind(item);
+  if (path.startsWith('_media/') && (!preferThumb || kind !== 'image' || !window.MeldexRuntimeAdapter?.isDropboxMode?.())) {
+    return '/api/media/file?path=' + encodeURIComponent(path);
+  }
   return _attachmentUrlFromPath(path, !!preferThumb && (kind === 'image' || kind === 'video'), thumbSize);
 }
 
@@ -458,6 +460,19 @@ function openImagePropertyItemInViewer(item, options = {}) {
     ? window.MeldexViewerSheetContext.viewerUrl(sheetContext)
     : '';
   const imagePath = _imagePropOpenPath(item);
+  const dbPath = options.ctx?.dbPath || (options.entityPath ? _imagePropDbPathForEntity(options.entityPath) : '');
+  if (dbPath && typeof _dbOpenConfiguredTarget === 'function') {
+    const path = imagePath || sheetViewerUrl || _imageSrc(item, false);
+    if (!path) return false;
+    const label = item?.caption || item?.filename || path.split('/').pop() || '画像';
+    const mediaType = _attachmentKind(item);
+    const viewerUrl = mediaType === 'pdf' ? '' : (sheetViewerUrl || (!imagePath ? path : ''));
+    const entry = imagePath
+      ? { type: 'media', path, label, mediaType, ...(viewerUrl ? { viewerUrl } : {}) }
+      : { type: 'media', path, label, mediaType, viewerUrl };
+    _dbOpenConfiguredTarget(path, label, { ...options, dbPath, entry, linkType: entry.type });
+    return true;
+  }
   if (imagePath) {
     const label = item?.caption || item?.filename || imagePath.split('/').pop() || imagePath;
     const ext = (imagePath.split('.').pop() || '').toLowerCase();

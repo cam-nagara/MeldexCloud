@@ -126,7 +126,7 @@
       if (handling || !_hasReportedLoadFailure() || _current?.path !== watchedPath) return;
       handling = true;
       const seq = ++_opSeq;
-      await _retractCurrentContent({ remount: true });
+      if (await _retractCurrentContent({ remount: true }) === false) return;
       if (seq !== _opSeq || _current?.path !== watchedPath) return;
       _renderErrorState(entry, 'ファイルを読み込めませんでした');
       _current = entry;
@@ -142,6 +142,40 @@
   }
 
   function _renderTarget(entry) {
+    _renderTargetContent(entry);
+    if (!_contentEl || entry.type === 'entity' || entry.loadError || _hasReportedLoadFailure()) return;
+    const kind = DB_VIEW_TYPES.has(entry.type) ? 'database' : entry.type;
+    _editorOwnership = window.GBEditorHost?.register(_contentEl, {
+      editorId: INNER_PANE_ID, path: entry.path, label: entry.label, kind, surface: 'subpanel',
+      resolveCtx: () => _sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null)
+        || (kind === 'page' ? { paneId: INNER_PANE_ID, pagePath: entry.path, viewMode: 'page', containerEl: _contentEl } : null),
+      resolveComponent: () => typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null,
+      activate: () => {
+        if (['board', 'scriptnote'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
+      },
+      syncDetail: () => {
+        const component = typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null;
+        if (component?._syncDetailPanel) component._syncDetailPanel();
+        else if (typeof _syncDetailPanel === 'function') void _syncDetailPanel(entry.label, entry.path, kind);
+      },
+      flush: () => _flushBeforeTransition(entry).then(result => result?.ok !== false),
+      reload: async (options = {}) => {
+        if (!options.skipFlush && !(await _flushBeforeTransition(entry)).ok) return false;
+        if (kind === 'page') return window.GBEditorHost.reloadNote(_contentEl, entry.label, entry.path);
+        if (_sheetEmbed) return _sheetEmbed.refresh();
+        const component = getComponentInstance(_pane?.tabs?.[0]?.id);
+        if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
+        return component?.reload?.();
+      },
+      historyScope: () => kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
+        : kind === 'scriptnote' ? getComponentInstance(_pane?.tabs?.[0]?.id)?._editor?._historyScope?.()
+        : kind === 'calendar' && typeof _meldexScheduleTabHistoryScope === 'function' ? _meldexScheduleTabHistoryScope(_pane?.tabs?.[0])
+        : kind === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(entry.path)
+        : kind + ':' + entry.path.replace(/^\/+/, ''),
+    });
+  }
+
+  function _renderTargetContent(entry) {
     if (!_contentEl) return;
     _contentEl.replaceChildren();
     _updateHeader(entry);
@@ -243,7 +277,7 @@
     if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
-    if (_pathBarEl) _pathBarEl.style.display = 'none';
+    if (_parentLinkHost) { _parentLinkHost.replaceChildren(); _parentLinkHost.hidden = true; }
     _updateNavUi();
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -268,7 +302,10 @@
     _titleIconEl.className = 'gb-subpanel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
-    title.append(_titleIconEl, _titleTextEl);
+    _parentLinkHost = document.createElement('span');
+    _parentLinkHost.className = 'gb-subpanel-parent-host';
+    _parentLinkHost.hidden = true;
+    title.append(_parentLinkHost, _titleIconEl, _titleTextEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
       MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
     }
@@ -298,22 +335,20 @@
     _forwardBtn.disabled = true;
     _forwardBtn.addEventListener('click', () => navForward());
 
-    // 計画書「文字が見える『メインパネルで開く』ボタン」— アイコンのみにしない。
+    // 名前は共通ツールチップと支援技術に残し、ヘッダーでは専用アイコンを使う。
     _promoteBtn = document.createElement('button');
     _promoteBtn.type = 'button';
     _promoteBtn.className = 'gb-subpanel-button gb-subpanel-promote-btn';
     _promoteBtn.dataset.testid = 'gb-subpanel-promote';
     _promoteBtn.dataset.e2eId = 'gb-subpanel-promote';
     _promoteBtn.title = 'メインパネルで開く';
+    _promoteBtn.setAttribute('aria-label', 'メインパネルで開く');
     _promoteBtn.hidden = true;
     const promoteIcon = document.createElement('span');
     promoteIcon.className = 'gb-subpanel-promote-icon';
     promoteIcon.setAttribute('aria-hidden', 'true');
-    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('panelTop', 14) : '';
-    const promoteLabel = document.createElement('span');
-    promoteLabel.className = 'gb-subpanel-promote-label';
-    promoteLabel.textContent = 'メインパネルで開く';
-    _promoteBtn.append(promoteIcon, promoteLabel);
+    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('squareArrowOutUpLeft', 16) : '';
+    _promoteBtn.append(promoteIcon);
     _promoteBtn.addEventListener('click', () => promoteToMainPane());
 
     _closeContentBtn = document.createElement('button');
@@ -330,16 +365,12 @@
     actions.append(_backBtn, _forwardBtn, _promoteBtn, _closeContentBtn);
     titlebar.append(title, actions);
 
-    _pathBarEl = document.createElement('div');
-    _pathBarEl.className = 'gb-subpanel-pathbar';
-    _pathBarEl.style.display = 'none';
-
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
     _contentEl.className = 'gb-subpanel-content';
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
-    root.append(titlebar, _pathBarEl, _contentEl);
+    root.append(titlebar, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
       MeldexDnD.installSurfaceDropTarget(root, async item => {
         const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;
@@ -382,11 +413,12 @@
     } catch {
       return false;
     }
-    await _retractCurrentContent({ remount: false });
+    if (await _retractCurrentContent({ remount: false }) === false) return false;
     _current = null;
     _navHistory = [];
     _navIndex = -1;
     _showEmptyState();
+    window.GBEditorHost?.returnToMain?.();
     return true;
   }
 
@@ -462,6 +494,7 @@
       _navHistory = [];
       _navIndex = -1;
       _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
       return true;
     });
   }
@@ -549,6 +582,7 @@
   }
 
   function onPathRename(oldPath, newPath, options = {}) {
+    window.GBEditorHost?.onPathRename?.(oldPath, newPath, options);
     if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
     const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
     const viewerState = frame ? _captureViewerFrameState(frame) : null;

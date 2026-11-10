@@ -718,6 +718,35 @@ function _refreshRenamedCurrentDatabase(previousDbPath, nextDbPath) {
 }
 
 function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
+  // Title-only renames keep the mounted editor and its unsaved input intact.
+  // Refresh the visible title at the same boundary as the tab label.
+  if (exactLabel != null) {
+    const dbViews = new Set(['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+    if (state.currentDbPath === newPath && dbViews.has(state.view)) {
+      for (const id of ['toolbar-category', 'current-title']) {
+        const el = document.getElementById(id);
+        if (el && !el.querySelector('input')) { el.textContent = exactLabel; window.MeldexFileLockBadge?.apply?.(el, newPath); }
+      }
+      const status = document.getElementById('sb-category');
+      if (status) status.textContent = 'シート: ' + exactLabel;
+      if (state.dbMetadata) state.dbMetadata.display_title = exactLabel;
+    }
+    if (state.currentPagePath === newPath && state.view === 'page') {
+      const title = document.getElementById('page-title');
+      if (title && document.activeElement !== title) { title.textContent = exactLabel; window.MeldexFileLockBadge?.apply?.(title, newPath); }
+      if (typeof _pageTitleOld !== 'undefined') _pageTitleOld = exactLabel;
+    }
+    if (typeof bd !== 'undefined' && (bd.path === oldPath || bd.path === newPath)) {
+      bd.label = exactLabel;
+      const writer = window.GBPathUtils?.displayTitle;
+      if (writer) {
+        const header = writer.write('---\n' + (bd._preservedFrontmatter || '') + '\n---\n', exactLabel, newPath);
+        bd._preservedFrontmatter = header.replace(/^---\n/, '').replace(/\n---\n?$/, '');
+      }
+      const title = document.getElementById('bd-title');
+      if (title && document.activeElement !== title) title.textContent = exactLabel;
+    }
+  }
   if (typeof _csvPath !== 'undefined' && _csvPath) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
@@ -854,6 +883,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
           layoutChanged = true;
         }
         if (tab.state && typeof tab.state === 'object') {
+          if (wasExact && exactLabel != null) tab.state.label = exactLabel;
           if (_updatePathRefs(tab.state, APP_PATH_REF_KEYS, oldPath, newPath)) {
             layoutChanged = true;
           }
@@ -872,7 +902,9 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   if (typeof forEachComponent === 'function') {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
+      const exactDocument = ['path', 'dbPath', 'pagePath', 'boardPath'].some(key => component.state[key] === oldPath);
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (exactDocument && exactLabel != null) component.state.label = exactLabel;
       // A detached view must not interrupt rebinding the other open editors.
       try { component.onPathRename?.(oldPath, newPath, options); }
       catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }

@@ -891,12 +891,13 @@
   }
 
   // 1件分のコピー整形行を組み立てる（DOM/Range非依存の純粋関数）。
-  // 本文が選択されていれば従来どおり「[時刻] 発言者\n本文」、ヘッダー
-  // （発言者名・日時）だけが選択されている場合は本文行を付けず「[時刻] 発言者」の
-  // 見出し行だけを返す。どちらも選択されていなければ null（対象外）。
-  // 複数発言をまたぐ場合の結合（entries.join('\n\n')）は呼び出し元のまま維持する。
+  // 本文だけが選択されていれば本文のみを返し、日時・発言者は付けない。
+  // ヘッダー（発言者名・日時）も選択範囲に含まれる時だけ「[時刻] 発言者\n本文」、
+  // ヘッダーだけなら「[時刻] 発言者」の見出し行を返す。どちらも選択されていなければ
+  // null（対象外）。複数発言をまたぐ場合の結合（entries.join('\n\n')）は呼び出し元のまま。
   function _chatCopyEntryLine(message, bodyText, headerSelected) {
     if (!bodyText && !headerSelected) return null;
+    if (!headerSelected) return bodyText;
     const author = String(message?.dataset?.chatCopyAuthor || '').trim() || '発言者';
     const time = String(message?.dataset?.chatCopyTime || '').trim();
     const headerLine = `${time ? `[${time}] ` : ''}${author}`;

@@ -608,11 +608,7 @@ function showDbSearchModal(options) {
       lastResults = data.entities || [];
       _renderDbSearchResults(resultArea, lastResults, q, entry => {
         modalApi.close('result-select');
-        if (entry.db_path) {
-          selectDatabase(entry.db_path).then(() => {
-            if (entry.path && typeof selectEntity === 'function') selectEntity(entry.path);
-          });
-        }
+        if (entry.path) _dbOpenConfiguredTarget(entry.path, entry.name || '', { linkType: 'entity' });
       });
       statusSpan.textContent = lastResults.length + '件（' + (data.total_dbs_scanned || '?') + 'シート検索）';
       setExportVisible(lastResults.length > 0);

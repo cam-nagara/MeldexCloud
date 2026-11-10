@@ -828,11 +828,22 @@ function renderFolderGrid(opts) {
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
         const generatedThumbnail = item.type === 'video';
+        const cloudThumbnail = item.type === 'image' && window.MeldexRuntimeAdapter?.isDropboxMode?.()
+          && window.MeldexPwaFileUrl?.applyToElement
+          && !item.archive_path && !item.external_reference;
         folderPreviewImage = img;
-        img.src = generatedThumbnail ? _folderItemThumbnailUrl(item) : _folderItemRawUrl(item);
+        if (!cloudThumbnail) img.src = generatedThumbnail ? _folderItemThumbnailUrl(item) : _folderItemRawUrl(item);
+        const loadCloudImage = source => window.MeldexPwaFileUrl.applyToElement(img, source).then(info => {
+          if (!info?.url) img.onerror();
+        });
         img.loading = 'lazy';
         img.onerror = () => {
-          if (!generatedThumbnail && !img.dataset.thumbFallback && !item?.external_reference) {
+          if (cloudThumbnail && img.getAttribute('src')?.startsWith('blob:') && !img.dataset.rawFallback) {
+            img.dataset.rawFallback = '1';
+            loadCloudImage(_folderItemRawUrl(item));
+            return;
+          }
+          if (!cloudThumbnail && !generatedThumbnail && !img.dataset.thumbFallback && !item?.external_reference) {
             img.dataset.thumbFallback = '1';
             img.src = _folderItemThumbnailUrl(item);
             return;
@@ -843,6 +854,7 @@ function renderFolderGrid(opts) {
           img.replaceWith(sp);
         };
         thumb.appendChild(img);
+        if (cloudThumbnail) loadCloudImage(_folderItemThumbnailUrl(item));
         window.MeldexImageLoading?.track?.(img, { host: thumb, errorMode: 'silent' });
       } else if (SHELL_THUMB_TYPES.has(item.type)) {
         // Windows シェルサムネイルは起動直後の大量生成で固まるため、フォルダカードでは安定したアイコンを使う。

@@ -363,10 +363,22 @@
     const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
     const provider = await _provider();
     if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
-        || typeof createImageBitmap !== 'function' || !/\.(?:png|jpe?g|webp|bmp|avif)$/i.test(normalized)) {
+        || !/\.(?:png|jpe?g|webp|bmp|avif|gif|tiff?|ppm|svg|heic|heif)$/i.test(normalized)) {
       return ensureRawUrl(pathLike, options);
     }
-    const media = await provider._mediaCacheRecord(normalized);
+    const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
+    let media, mediaPath, lastError;
+    for (const candidate of candidates) {
+      try {
+        media = await provider._mediaCacheRecord(candidate);
+        mediaPath = candidate;
+        break;
+      } catch (error) {
+        if (!/path\/not_found|path_not_found|ファイルが見つかりません/.test(String(error?.message || ''))) throw error;
+        lastError = error;
+      }
+    }
+    if (!mediaPath) throw lastError;
     if (!media?.key) return ensureRawUrl(pathLike, options);
     const key = _thumbnailCacheKey(pathLike), persistentKey = media.key + '/thumbnail-v1-' + size;
     const memory = CACHE[key];
@@ -377,26 +389,32 @@
       try { cache = await caches.open('meldex-image-thumbnails-v1'); blob = await (await cache.match(persistentKey))?.blob(); } catch (_) {}
       const retained = !!blob;
       if (!blob) {
-        const file = await _getFileWithMediaFallback(provider, normalized);
-        let bitmap;
-        try {
-          bitmap = await createImageBitmap(file);
-          const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-          canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-          blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-        } catch (_) { return ensureRawUrl(pathLike, options); }
-        finally { bitmap?.close(); }
+        blob = await provider._downloadThumbnail?.(mediaPath, size, media);
+        const remote = !!blob;
+        if (typeof createImageBitmap !== 'function') {
+          if (!remote) return ensureRawUrl(pathLike, options);
+        } else {
+          const file = blob || await _getFileWithMediaFallback(provider, mediaPath);
+          let bitmap;
+          try {
+            bitmap = await createImageBitmap(file);
+            const scale = Math.min(1, size / bitmap.width, size / bitmap.height);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+            canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+            canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png')) || blob;
+          } catch (_) { if (!remote) return ensureRawUrl(pathLike, options); }
+          finally { bitmap?.close(); }
+        }
         if (!blob) return ensureRawUrl(pathLike, options);
       }
-      const current = await provider._mediaCacheRecord(normalized);
+      const current = await provider._mediaCacheRecord(mediaPath);
       if (current?.key !== media.key || current?.scope !== media.scope
           || provider._mediaScope !== media.scope) throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
       // Reuse the existing bounded background trim, in a separate local store.
       if (cache && !retained) await provider._persistCachedFile({ cache, key: persistentKey, documentFile: true, maxBytes: 128 * 1024, maxEntries: 1024 }, blob);
-      const published = await provider._mediaCacheRecord(normalized);
+      const published = await provider._mediaCacheRecord(mediaPath);
       if (published?.key !== media.key || published?.scope !== media.scope || provider._mediaScope !== media.scope) {
         throw new Error('画像の取得中に接続先またはファイルの版が変更されました');
       }

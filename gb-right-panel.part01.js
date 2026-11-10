@@ -99,6 +99,7 @@ function _rightSidebarToolAllowed(tabName, source) {
 }
 
 function openRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.open();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
@@ -118,6 +119,7 @@ function openRightPanelTab(tabName, source) {
 
 // 右アクティブバーからのトグル: 同じタブなら閉じる、違うタブなら開く
 function toggleRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.toggle();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
@@ -416,6 +418,7 @@ function _rpRefMatches(filterRef, actualRef) {
 }
 
 function _rpAnnotationMatchesTargetFilter(annotation, filter) {
+  if (Array.isArray(filter.annotationIds) && !filter.annotationIds.includes(annotation.id)) return false;
   const ref = annotation.target_ref || {};
   const targetPath = ref.file || annotation.target_path || '';
   const targetCandidates = Array.isArray(filter.targetPathCandidates) && filter.targetPathCandidates.length

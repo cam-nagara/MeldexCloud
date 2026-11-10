@@ -1,3 +1,35 @@
+      _addingTab = false;
+    }
+  }
+};
+
+// 履歴再生では navPush() が navNavigating により記録を抑止するため、同じタブの
+// 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
+// ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
+function _applyNavEntryToBoundTab(navState, entry) {
+  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return true;
+  if (typeof GBLayout === 'undefined') return true;
+  const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
+  const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
+  if (!tab) return true;
+  const nextType = typeof _normalizeOpenTypeForNav === 'function'
+    ? _normalizeOpenTypeForNav(entry.type)
+    : entry.type;
+  const typeChanged = tab.type !== nextType;
+  const applyEntry = () => {
+    tab.type = nextType;
+    tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
+    tab.path = entry.path || entry.dbPath || '';
+    tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
+      ? GBTabs.tabIcon(nextType)
+      : tab.icon;
+    tab.state = {
+      ...(typeChanged ? {} : (tab.state || {})),
+      ...(entry.viewMode ? { viewMode: entry.viewMode } : {}),
+      ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
+      ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
+    };
+    if (typeChanged) GBTabs.updateTab(navState.paneId, tab.id, {});
     else {
       const labelEl = GBLayout.paneMap?.[navState.paneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
       if (labelEl) labelEl.textContent = tab.label;
@@ -866,35 +898,3 @@ async function apiPut(path, body, options = {}) {
     result = await pending;
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
-  return result;
-}
-
-function _scheduleLinkDictionaryRefreshForMutation(path) {
-  const pathname = String(path || '').split('?')[0];
-  if (![
-    '/value', '/entity/create', '/entity/rename',
-    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
-  ].includes(pathname)) return;
-  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
-    MeldexAutoLink.scheduleReload(3000);
-  }
-}
-
-async function apiPost(path, body, options = {}) {
-  let stableCopyKey = '';
-  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
-      && body && typeof body === 'object' && !body.operation_id) {
-    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
-      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
-    body = prepared.body; stableCopyKey = prepared.key;
-  }
-  const result = await apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
-  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
-  _scheduleLinkDictionaryRefreshForMutation(path);
-  return result;
-}

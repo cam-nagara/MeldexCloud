@@ -412,7 +412,7 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
 
   openBtn.addEventListener('click', () => {
     closePanel('open-entry');
-    if (ctx.entityPath && typeof selectEntity === 'function') selectEntity(ctx.entityPath);
+    if (ctx.entityPath) _dbOpenConfiguredTarget(ctx.entityPath, ev.title || ev.name || '', { dbPath, sourceEl: triggerEl, linkType: 'entity' });
   });
   cancelBtn.addEventListener('click', () => closePanel('cancel'));
   saveBtn.addEventListener('click', async () => {

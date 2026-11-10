@@ -164,6 +164,9 @@ function navigateToEntity(entityName, dbPath, ctx) {
     ? _dbFindPaneContextForPath(dbPath)
     : null) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   const currentDbPath = targetCtx?.dbPath || state.currentDbPath;
+  if (typeof _dbOpenConfiguredEntity === 'function') {
+    return _dbOpenConfiguredEntity(_entityPath(dbPath || currentDbPath, entityName), entityName, targetCtx);
+  }
   // dbPath指定時: 別DBに遷移してからエントリを選択
   if (dbPath && dbPath !== currentDbPath) {
     selectDatabase(dbPath, targetCtx).then(() => {

@@ -175,8 +175,12 @@ function _dbLinkConfirm(message) {
   });
 }
 
-async function _dbLinkOpen(link, sourceEl) {
+async function _dbLinkOpen(link, sourceEl, options = {}) {
   if (!link?.target) return false;
+  if (options.dbPath && ['web', 'meldex'].includes(link.kind)) {
+    const entry = link.kind === 'web' ? { type: 'html', path: link.target, label: link.label, urlExternal: true } : undefined;
+    return _dbOpenConfiguredTarget(link.target, link.label, { ...options, sourceEl, entry, linkType: 'link' });
+  }
   if (link.kind === 'web') {
     window.open(link.target, '_blank', 'noopener');
     return true;
@@ -279,13 +283,13 @@ function createDbLinkValueElement(val, entityPath, propName, thumbSize, propType
   }
   wrap.addEventListener('click', (e) => {
     e.stopPropagation();
-    _dbLinkOpen(linkValue, wrap);
+    _dbLinkOpen(linkValue, wrap, { dbPath, ctx: options?.ctx });
   });
   wrap.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     e.stopPropagation();
-    _dbLinkOpen(linkValue, wrap);
+    _dbLinkOpen(linkValue, wrap, { dbPath, ctx: options?.ctx });
   });
 
   void dbPath;

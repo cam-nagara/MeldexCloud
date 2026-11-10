@@ -6,17 +6,18 @@
 // ページタイトルのインライン編集
 // ページタイトル — contenteditableのblurでリネーム
 let _pageTitleOld = '';
-function initPageTitle() {
-  const el = document.getElementById('page-title');
+function initPageTitle(titleElement, titleOptions = {}) {
+  const el = titleElement || document.getElementById('page-title');
+  let oldTitle = '';
   if (!el || el._titleInit) return;
   el._titleInit = true;
-  el.addEventListener('focus', () => { _pageTitleOld = el.textContent; });
+  el.addEventListener('focus', () => { oldTitle = el.textContent; if (!titleOptions.onRenamed) _pageTitleOld = oldTitle; });
   el.addEventListener('blur', async () => {
     const nv = el.textContent.trim();
-    const path = state.currentPagePath;
-    if (!nv) { el.textContent = _pageTitleOld; return; }
-    if (!path || nv === _pageTitleOld) return;
-    if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = _pageTitleOld; return; }
+    const path = titleOptions.getPath?.() || state.currentPagePath;
+    if (!nv) { el.textContent = oldTitle; return; }
+    if (!path || nv === oldTitle) return;
+    if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = oldTitle; return; }
     try {
       const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page', title_only: true });
       if (!res || !res.ok) throw new Error('rename failed');
@@ -25,18 +26,20 @@ function initPageTitle() {
         const ext = path.substring(path.lastIndexOf('.'));
         return dir + '/' + nv + ext;
       })();
-      _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
+      if (titleOptions.onRenamed) await titleOptions.onRenamed({ path, newPath, label: nv, result: res });
+      else if (state.currentPagePath === path) _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
+      else if (typeof renameAppPathReferences === 'function') renameAppPathReferences(path, newPath, { label: nv, fileId: res.file_id, type: 'page' });
       const contentHost = document.getElementById("page-content");
       if (res.title_only && res.etag) renameAppPathReferences(path,newPath,{label:nv,etag:res.etag,titleOnly:true,type:"page"});
       if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
     } catch (e) {
       if (e && e.isTimeout) {
-        await _pageTitleConfirmRenameAfterTimeout(el, path, nv);
+        await _pageTitleConfirmRenameAfterTimeout(el, path, nv, { oldName: oldTitle, onRenamed: titleOptions.onRenamed });
       } else {
         // API失敗時はタイトルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
-        el.textContent = _pageTitleOld;
+        el.textContent = oldTitle;
         const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
-        showStatus(`「${_pageTitleOld}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
+        showStatus(`「${oldTitle}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
       }
     }
   });
@@ -85,8 +88,8 @@ function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId, options)
 }
 
 // リネームAPIタイムアウト時の事後確認。フォルダツリー側（gb-outliner）の共通ヘルパーを再利用する
-async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
-  const oldName = _pageTitleOld;
+async function _pageTitleConfirmRenameAfterTimeout(el, path, nv, titleOptions = {}) {
+  const oldName = titleOptions.oldName ?? _pageTitleOld;
   const progress = window.MeldexOperationProgress?.begin?.({
     kind: 'rename-confirmation',
     label: 'リネーム結果を確認しています',
@@ -112,7 +115,9 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindRenamedItem(items, oldName, nv, path);
       if (found) {
-        if (state.currentPagePath === path) {
+        if (titleOptions.onRenamed) {
+          await titleOptions.onRenamed({ path, newPath: found.path, label: nv, result: found });
+        } else if (state.currentPagePath === path) {
           _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id, { skipStatus: !!progress });
         } else {
           // 確認中に別のノートへ移動していた場合はエディタ状態（現在パス・タイトル・
@@ -282,12 +287,12 @@ function _noteHeadingSignature(pc) {
 // updateNoteToc() を呼ぶ。目次が非表示、または見出し構造に変化が無ければ
 // 全再構築しない。
 function _maybeRefreshNoteTocAfterEdit(pc) {
-  const tocEl = document.getElementById('note-toc');
+  const tocEl = pc.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="note-toc"],#note-toc');
   if (!tocEl || tocEl.style.display === 'none') return;
   const signature = _noteHeadingSignature(pc);
   if (pc._noteTocSignature === signature) return;
   pc._noteTocSignature = signature;
-  if (typeof updateNoteToc === 'function') updateNoteToc();
+  if (typeof updateNoteToc === 'function') updateNoteToc(pc);
 }
 
 // 項目4: ドラフト退避のdebounce+最大待ち時間。連続入力は1件へ集約し、最終
@@ -1294,8 +1299,8 @@ function _applyNoteTocSize(toc, size, vertical) {
 }
 
 function syncNoteTocLayout() {
-  const toc = document.getElementById('note-toc');
-  const handle = document.getElementById('note-toc-resize');
+  const toc = window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
+  const handle = window.GBEditorHost?.element('note-toc-resize') || document.getElementById('note-toc-resize');
   if (!toc || !handle) return;
   const visible = toc.style.display !== 'none';
   handle.style.display = visible ? '' : 'none';
@@ -1305,12 +1310,12 @@ function syncNoteTocLayout() {
   _applyNoteTocSize(toc, _noteTocSavedSize(spec), vertical);
 }
 
-function initNoteTocResize() {
-  if (window._noteTocResizeInitialized) return;
-  window._noteTocResizeInitialized = true;
-  const toc = document.getElementById('note-toc');
-  const handle = document.getElementById('note-toc-resize');
+function initNoteTocResize(root = document) {
+  const toc = root.querySelector('[data-editor-local-id="note-toc"],#note-toc');
+  const handle = root.querySelector('[data-editor-local-id="note-toc-resize"],#note-toc-resize');
   if (!toc || !handle) return;
+  if (handle.dataset.noteTocResizeInitialized) return;
+  handle.dataset.noteTocResizeInitialized = '1';
   handle.setAttribute('role', 'separator');
   // 縦書き時の向き・ラベルは MeldexNoteWritingMode.applyState() が付け替える
   handle.setAttribute('aria-orientation', 'vertical');
@@ -1688,6 +1693,11 @@ function _wireNotePasteHandler(pc) {
   if (text) {
     e.preventDefault();
     document.execCommand('insertText', false, text);
+    // 共有リンクだけを貼った時は、その場で動画・ポストの埋め込みを表示する（保存内容は変えない）
+    if (/^\s*https?:\/\/\S+\s*$/.test(text)) {
+      const editor = this;
+      setTimeout(() => window.GBWebEmbeds?.decorate?.(editor), 0);
+    }
   }
   });
 }

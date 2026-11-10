@@ -32,6 +32,8 @@
   }
 
   function _currentRevealPath(hint, event) {
+    const editor = window.GBEditorHost?.get();
+    if (editor) return editor.path;
     const tab = _activeTab(event);
     const type = hint || tab?.type || '';
     if (type === 'entity') return _tabPath(tab, 'entityPath') || _statePath('currentEntityPath');

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ja">
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data: https://www.youtube-nocookie.com https://player.vimeo.com https://embed.nicovideo.jp https://geo.dailymotion.com https://www.tiktok.com https://platform.twitter.com https://www.instagram.com https://embed.bsky.app https://www.threads.com https://open.spotify.com https://w.soundcloud.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
@@ -14857,6 +14857,7 @@ CLIを選ぶと、MeldexはPCに入っている <code>codex</code> / <code>claud
 <article id="manual-65e8b76f1357" class="manual-article" data-manual-path="03_設定と連携/単独アプリの保存と終了.md" data-manual-title="単独アプリの保存と終了"><p class="manual-version">Meldex v0.7.444 対応</p><section class="manual-outline-section manual-outline-level-1" data-outline-level="1"><h1 id="manual-65e8b76f1357--_1" data-manual-anchor="_1">単独アプリの保存と終了</h1><div class="manual-outline-content">
 <p>単独アプリは、Meldex本体を開かずに使うための画面です。Windows版では <strong>Meldex Note</strong>、<strong>Meldex Viewer</strong>、<strong>Meldex クイックメモ</strong>を利用できます。Cloud/PWA版は <strong>Meldex Viewer</strong> と <strong>Meldex クイックメモ</strong>です。シナリオ、シート、ボードはMeldex本体から開きます。旧単独アプリで作成したファイルは削除・自動変換されず、本体から引き続き開けます。</p>
 <p>Windows版のノートとビューワーは常駐アプリを必要としません。起動時は指定したファイルの編集・表示を優先し、タグや本体との連携は、その機能を選んだときだけ読み込みます。ソースフォルダの登録やMeldex本体の起動を待たずに、通常のファイルを開けます。ノートは <code>.md</code> と <code>.txt</code> に対応し、ファイルを指定せずに起動すると新規ノートを作成します。</p>
+<p>Windows版の両アプリに <strong>Meldex本体で開く</strong> ボタンがあります。ノートは本文を保存してから、ビューワーは表示中の画像・PDFを本体へ引き継ぎます。Windows版の単独ビューワーには、アノテートとアノテートの復元ポイントの操作はありません。これらの操作は本体で行います。既存のアノテートデータは保持されます。</p>
 <p>ファイル名に <code>%20</code> などの文字列を含む場合は、別ファイルへの誤保存を防ぐため、開く操作を止めます。この形式を含まない名前に変更してから開いてください。</p>
 <section class="manual-outline-section manual-outline-level-2" data-outline-level="2"><h2 id="manual-65e8b76f1357--_2" data-manual-anchor="_2">環境による機能の違い</h2><div class="manual-outline-content">
 <p>単独アプリは、現在の環境で利用できる機能を自動判定します。Meldex本体にしかない機能を選んだ場合も、無反応のままにはなりません。</p>
@@ -14917,7 +14918,11 @@ CLIを選ぶと、MeldexはPCに入っている <code>codex</code> / <code>claud
 <td>未保存の本文と端末保存の完了を確認する</td>
 </tr>
 <tr>
-<td>Meldex Viewer</td>
+<td>Meldex Viewer（Windows版）</td>
+<td>保存中のファイル情報などの変更完了を確認する</td>
+</tr>
+<tr>
+<td>Meldex Viewer（Cloud/PWA版）</td>
 <td>タグ、アノテート、描画など変更可能な情報を保護する</td>
 </tr>
 </tbody>

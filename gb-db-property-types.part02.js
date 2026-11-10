@@ -39,6 +39,8 @@
   } else {
     optDiv.innerHTML = '';
   }
+  // タグ・リレーション・ロールアップ列: 値の見た目どおりのプレビュー（クリックで書式設定）
+  if (typeof renderDbColumnChipStyleField === 'function') renderDbColumnChipStyleField(optDiv, scope, type);
 
   // Phase 3 §5.1 / §12.1: 全型共通の自動初期値設定（autoFillOnCreate）。
   // $ 接頭辞で動的評価: $today / $now / $currentUser / $version（§15.4.2）
@@ -212,6 +214,10 @@ async function applyPropertyType(propName, root, options = {}) {
       const optionColors = collectDbOptionColors(scope, prev.optionColors, config.options);
       if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
     }
+    if (typeof collectDbOptionStyles === 'function') {
+      const optionStyles = collectDbOptionStyles(scope, prev.optionStyles);
+      if (optionStyles && Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+    }
   } else if (type === 'relation' || type === 'multi-relation') {
     const dbInput = _ptGet('pt-relation-db', scope);
     if (dbInput) {
@@ -297,6 +303,11 @@ async function applyPropertyType(propName, root, options = {}) {
   if (prev.icon && !('icon' in config)) {
     config.icon = prev.icon;
   }
+  // タグ・リレーション・ロールアップ列のチップ書式（列設定の「表示」）
+  if (['relation', 'multi-relation', 'common-tags', 'rollup'].includes(type) && typeof collectDbColumnChipStyle === 'function') {
+    const chipStyle = collectDbColumnChipStyle(scope, prev.chipStyle);
+    if (Object.keys(chipStyle).length) config.chipStyle = chipStyle;
+  }
 
   if ((type === 'relation' || type === 'multi-relation') && config.bidirectional && typeof _ensureBidirectionalRelationConfig === 'function') {
     try {
@@ -345,6 +356,14 @@ async function applyPropertyType(propName, root, options = {}) {
       });
       if (Object.keys(optionColors).length) config.optionColors = optionColors;
       else delete config.optionColors;
+      const previousStyles = { ...(config.optionStyles || {}) };
+      const optionStyles = {};
+      config.options.forEach((value) => {
+        const style = previousStyles[value] || previousStyles[renamedFrom[value]];
+        if (style) optionStyles[value] = style;
+      });
+      if (Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+      else delete config.optionStyles;
       const previousIds = { ...(prev.option_ids || {}) };
       const optionIds = {};
       Object.entries(migration.renamed || {}).forEach(([oldValue, newValue]) => {
@@ -988,6 +1007,11 @@ function _ptApplyFastLocalSettings(root) {
     const optionColors = collectDbOptionColors(scope, prev.optionColors, options);
     if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
     else delete config.optionColors;
+  }
+  if (typeof collectDbOptionStyles === 'function') {
+    const optionStyles = collectDbOptionStyles(scope, prev.optionStyles);
+    if (optionStyles && Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+    else delete config.optionStyles;
   }
   const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
   // 入力中はDOMに紐づく一時状態だけを更新する。永続メタデータを先に書き換えると、

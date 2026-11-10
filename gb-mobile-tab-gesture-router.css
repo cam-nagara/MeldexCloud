@@ -1,6 +1,21 @@
 .gb-mobile-tab-dropdown { display: none; }
 
+.gb-tab-overflow-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; flex: 0 0 26px; width: 26px; height: 26px;
+  padding: 0; border: 1px solid transparent; border-radius: var(--ui-radius-sm, 3px);
+  background: transparent; color: var(--fg2); font-size: 11px; cursor: pointer;
+}
+.gb-tab-overflow-button[hidden] { display: none !important; }
+.gb-tab-overflow-button:hover, .gb-tab-overflow-button:focus-visible {
+  background: var(--ui-hover-bg); color: var(--fg); border-color: var(--border);
+}
+.gb-tab-overflow-menu .gb-mobile-tab-menu-row { min-height: 28px; }
+.gb-tab-overflow-menu .gb-mobile-tab-menu-item { padding: 5px 10px; font-size: 12px; }
+.gb-tab-overflow-menu .gb-mobile-tab-menu-close { flex-basis: 28px; width: 28px; font-size: 16px; }
+
 @media (max-width: 640px) {
+  .gb-tab-overflow-button { display: none !important; }
   [data-meldex-phone-tabs] .gb-mobile-tab-dropdown {
     box-sizing: border-box;
     display: flex;

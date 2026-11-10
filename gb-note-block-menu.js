@@ -68,7 +68,7 @@
     const NBT = global.MeldexNoteBlockTypes;
     const insertItems = _state.allowInsertItems && global.MeldexNoteEmbedBlock
       ? global.MeldexNoteEmbedBlock.menuItems() : [];
-    return NBT.TYPES.concat(insertItems).filter((def) => _matchesQuery(def, _state.query));
+    return NBT.TYPES.concat(insertItems, _state.actions || []).filter((def) => _matchesQuery(def, _state.query));
   }
 
   function _itemAvailability(def) {
@@ -79,7 +79,7 @@
     const removableText = _state.removableTextPrefix
       ? _state.removableTextPrefix + _state.query
       : '';
-    if (def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
+    if (def.action || def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
     return NBT.canConvert(def.id, _state.editable, _state.blockInfo, { removableText });
   }
 
@@ -103,13 +103,13 @@
       item.className = 'gb-context-menu-item note-block-menu-item' + (i === _state.selectedIndex ? ' selected' : '') + (avail.allowed ? '' : ' disabled');
       item.dataset.typeId = def.id;
       item.dataset.e2eId = 'note-block-menu-item-' + def.id;
-      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('role', def.action ? 'menuitem' : 'menuitemradio');
       // 行種は排他選択のため menuitemradio + aria-checked(現在の行種)。
       // キーボードの選択位置はフォーカスをエディタへ残す設計のため、
       // aria-selected(listbox用で本roleには不正)ではなく、メニュー側の
       // aria-activedescendant(下のrender末尾で設定)で支援技術へ伝える。
       item.id = 'note-block-menu-item-' + def.id;
-      item.setAttribute('aria-checked', isCurrent ? 'true' : 'false');
+      if (!def.action) item.setAttribute('aria-checked', isCurrent ? 'true' : 'false');
       item.setAttribute('aria-disabled', avail.allowed ? 'false' : 'true');
       item.tabIndex = i === _state.selectedIndex ? 0 : -1;
       const label = avail.allowed ? def.label : def.label + '（' + avail.reason + '）';
@@ -153,6 +153,8 @@
 
   function _activate(typeId) {
     if (!_state) return;
+    const action = (_state.actions || []).find(item => item.id === typeId)?.action;
+    if (action) { close(); action(); return; }
     const onSelect = _state.onSelect;
     const editable = _state.editable;
     const range = _state.range;
@@ -228,6 +230,7 @@
       onClose: opts.onClose || null,
       allowInsertItems: !!opts.allowInsertItems,
       insertMode: !!opts.insertMode,
+      actions: opts.actions || [],
     };
     const menu = _ensureMenuEl();
     menu.setAttribute('aria-label', opts.insertMode ? '下に追加する行種を選択' : '行種を選択');

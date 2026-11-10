@@ -80,10 +80,17 @@
         _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
+      // Adding a comment is an explicit request to see its anchor immediately.
+      window.MeldexDisplayLayers?.setLayer?.('comments', true, { silent: true });
       // 現在開いている関連エディタのバッジを更新
       if (ctx.filePath) {
         const pc = document.getElementById('page-content');
-        if (pc && pc.dataset.path === ctx.filePath) refreshNote(ctx.filePath, pc);
+        if (pc && pc.dataset.path === ctx.filePath) {
+          // The anchor may have assigned a new line ID. Advance the editor's
+          // serialization revision and save it through the usual autosave path.
+          if (pc.isContentEditable) pc.dispatchEvent(new Event('input', { bubbles: true }));
+          refreshNote(ctx.filePath, pc);
+        }
         try {
           if (typeof _sn2Editors !== 'undefined' && _sn2Editors[ctx.filePath]) {
             refreshScriptnote(ctx.filePath, _sn2Editors[ctx.filePath].host);
@@ -131,6 +138,7 @@
     refreshFileIndicator,
     detectCommentContext, addCommentHere, openPanelForFileComments,
     openPanelForTarget: _openPanelForTarget,
+    openPanelForHighlight,
   };
   window.addCommentHere = addCommentHere;
 })();

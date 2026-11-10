@@ -12,6 +12,8 @@
   const DEFAULT_SETTINGS_PATH = '/MeldexSettings';
 
   let _startupProfilePromise = null;
+  // 別画面の更新やアカウント切替後に、取得中だった旧プロフィールを持ち戻さない。
+  let _startupProfileEpoch = 0;
   let _cachedAccount = null;
   let _cachedProfile = null;
 
@@ -494,7 +496,7 @@
     }
   }
 
-  async function saveCurrentProfile(overrides) {
+  async function saveCurrentProfile(overrides, startupEpoch) {
     if (!await _shouldUseSharedProfile()) return { ok: false, reason: 'not-dropbox-workspace' };
     const account = await _getCurrentAccount(false);
     // OAuthのaccount_idが最優先。無ければ、呼び出し側が既に自己同定済みのキー
@@ -517,6 +519,7 @@
       accountId = link.key;
     }
 
+    if (startupEpoch !== undefined && startupEpoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
     const updatedAt = String(overrides?.updatedAt || _nowIso());
     const profile = _normalizeProfile(account, {
       ..._localProfile(account, updatedAt),
@@ -531,10 +534,12 @@
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const current = await _readProfileStore();
+        if (startupEpoch !== undefined && startupEpoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
         const store = _normalizeStore(current.store);
         store.updatedAt = updatedAt;
         store.profiles[accountId] = profile;
         await _writeProfileStore(store, current.rev);
+        if (startupEpoch !== undefined && startupEpoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
         _cachedProfile = profile;
         return { ok: true, profile, source: 'dropbox' };
       } catch (error) {
@@ -645,21 +650,23 @@
   // 呼んでキャッシュを無効化する。
   function resetStartupResolution() {
     _startupProfilePromise = null;
+    _startupProfileEpoch += 1;
   }
 
   async function resolveStartupProfile() {
     if (_startupProfilePromise) return _startupProfilePromise;
-    _startupProfilePromise = _resolveStartupProfile().then((result) => {
-      if (!result?.ok) _startupProfilePromise = null;
+    const pending = _resolveStartupProfile(_startupProfileEpoch).then((result) => {
+      if (!result?.ok && _startupProfilePromise === pending) _startupProfilePromise = null;
       return result;
     }, (error) => {
-      _startupProfilePromise = null;
+      if (_startupProfilePromise === pending) _startupProfilePromise = null;
       throw error;
     });
-    return _startupProfilePromise;
+    _startupProfilePromise = pending;
+    return pending;
   }
 
-  async function _resolveStartupProfile() {
+  async function _resolveStartupProfile(epoch) {
     if (!await _shouldUseSharedProfile()) return { ok: false, reason: 'not-dropbox-workspace' };
     const account = await _getCurrentAccount(false);
     let accountId = _accountId(account);
@@ -674,12 +681,14 @@
       try { console.warn('[MeldexDropboxProfileSync] startup read failed', error); } catch {}
       return { ok: false, reason: 'dropbox-read-failed', error };
     }
+    if (epoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
     let store = _normalizeStore(current.store);
 
     if (!accountId) {
       // OAuth未接続: 記憶済みキー・唯一エントリ・表示名一致の順に自己同定を試みる。
       // 曖昧なまま決められない場合は store に一切書き込まない。
       const link = await _resolveIdentityKey(store);
+      if (epoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
       if (!link) return { ok: false, reason: 'profile-unlinked' };
       accountId = link.key;
     } else {
@@ -698,6 +707,7 @@
       }
     }
 
+    if (epoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
     const sharedRaw = store.profiles[accountId];
     if (sharedRaw && typeof sharedRaw === 'object') {
       // store のエントリ本体は accountId を持たないことがある（キー側が正本）。
@@ -714,7 +724,8 @@
           avatarBg: _readStorage(LOCAL_AVATAR_BG_KEY, ''),
           updatedAt,
         }, updatedAt);
-        const saved = await saveCurrentProfile({ ...mergedLocal, accountId });
+        const saved = await saveCurrentProfile({ ...mergedLocal, accountId }, epoch);
+        if (epoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
         const applied = _applyProfileToLocal(saved.ok ? saved.profile : mergedLocal);
         return { ok: true, source: saved.ok ? 'local-newer' : 'local', profile: applied };
       }
@@ -725,7 +736,8 @@
     const initial = _localProfileForKey(account, accountId, _nowIso());
     if (!initial.displayName) return { ok: false, reason: 'empty-profile' };
     const applied = _applyProfileToLocal(initial);
-    const saved = await saveCurrentProfile({ updatedAt: applied.updatedAt, accountId });
+    const saved = await saveCurrentProfile({ updatedAt: applied.updatedAt, accountId }, epoch);
+    if (epoch !== _startupProfileEpoch) return { ok: false, reason: 'profile-changed' };
     return { ok: true, source: saved.ok ? 'created' : 'local', profile: applied };
   }
 
@@ -758,6 +770,19 @@
   function getLinkState() {
     return window.MeldexProfileIdentity?.getLinkState?.() || null;
   }
+
+  // 同じCloud originの本体・単独画面はlocalStorageを共有する。
+  // storageイベントは書込元以外へ届くため、別画面の更新でもキャッシュと表示を更新する。
+  window.addEventListener?.('storage', (event) => {
+    if (event.key !== null && ![
+      LOCAL_USER_KEY, LOCAL_AVATAR_KEY, LOCAL_AVATAR_SPEC_KEY, LOCAL_AVATAR_BG_KEY,
+      LOCAL_ACCOUNT_KEY, LOCAL_UPDATED_KEY, LOCAL_UPDATED_FOR_KEY,
+    ].includes(event.key)) return;
+    resetStartupResolution();
+    _cachedProfile = null;
+    try { if (typeof updateUserIcon === 'function') updateUserIcon(); } catch {}
+    try { if (typeof updateLeftChromeUser === 'function') updateLeftChromeUser(); } catch {}
+  });
 
   window.MeldexDropboxProfileSync = {
     profileStorePath: _profileStorePath,

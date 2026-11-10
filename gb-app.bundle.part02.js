@@ -1,3 +1,35 @@
+        }
+      });
+    });
+  }
+
+  if (typeof forEachComponent === 'function') {
+    forEachComponent(component => {
+      if (!component?.state || typeof component.state !== 'object') return;
+      const exactDocument = ['path', 'dbPath', 'pagePath', 'boardPath'].some(key => component.state[key] === oldPath);
+      _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (exactDocument && exactLabel != null) component.state.label = exactLabel;
+      // A detached view must not interrupt rebinding the other open editors.
+      try { component.onPathRename?.(oldPath, newPath, options); }
+      catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
+    });
+  }
+
+  ['currentDbPath', 'currentEntityPath', 'currentPagePath', 'currentBoardPath'].forEach(key => {
+    state[key] = _mapRenamedPath(state[key], oldPath, newPath);
+  });
+  _renameRuntimePathReferences(oldPath, newPath, exactLabel);
+  try { window.GBSubPanel?.onPathRename?.(oldPath, newPath, options); }
+  catch (error) { console.warn('[Meldex] 移動後のサブパネル更新に失敗しました', error); }
+
+  if (options.titleOnly && options.etag && exactLabel != null) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const key = coordinator?.documentKeyForPath?.(newPath);
+    const hosts = new Set([document.getElementById('page-content'), ...(key ? coordinator.getParticipants?.(key) || [] : [])]);
+    hosts.forEach(host => {
+      if (host?.dataset?.path !== newPath || host.dataset.lastSavedMd == null) return;
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const savedMd = titleHelper ? titleHelper.write(host.dataset.lastSavedMd,exactLabel,newPath) : host.dataset.lastSavedMd;
       const fm = savedMd.match(/^(---\n[\s\S]*?\n---\n?)/);
       if (fm) host.dataset.frontmatter = fm[1];
       window.MeldexNoteSaveAdapter?.syncResolvedBaseline?.(newPath,host,savedMd,options.etag);
@@ -866,35 +898,3 @@ navPush = function(entry, paneId) {
         }
       }
     } finally {
-      _addingTab = false;
-    }
-  }
-};
-
-// 履歴再生では navPush() が navNavigating により記録を抑止するため、同じタブの
-// 表示先は履歴エントリから先に確定する。これにより、読み込み側の非同期処理や
-// ペインブリッジ初期化状態に左右されず、戻る/進むが別タブを汚さない。
-function _applyNavEntryToBoundTab(navState, entry) {
-  if (navState?.kind !== 'tab' || !navState.paneId || !navState.tabId || !entry) return true;
-  if (typeof GBLayout === 'undefined') return true;
-  const pane = GBLayout.findNode?.(GBLayout.root, navState.paneId)?.node;
-  const tab = pane?.tabs?.find(candidate => candidate.id === navState.tabId);
-  if (!tab) return true;
-  const nextType = typeof _normalizeOpenTypeForNav === 'function'
-    ? _normalizeOpenTypeForNav(entry.type)
-    : entry.type;
-  const typeChanged = tab.type !== nextType;
-  const applyEntry = () => {
-    tab.type = nextType;
-    tab.label = entry.label || entry.path?.split('/').pop() || '(無題)';
-    tab.path = entry.path || entry.dbPath || '';
-    tab.icon = typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function'
-      ? GBTabs.tabIcon(nextType)
-      : tab.icon;
-    tab.state = {
-      ...(typeChanged ? {} : (tab.state || {})),
-      ...(entry.viewMode ? { viewMode: entry.viewMode } : {}),
-      ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
-      ...(entry.viewerUrl ? { viewerUrl: entry.viewerUrl } : {}),
-    };
-    if (typeChanged) GBTabs.updateTab(navState.paneId, tab.id, {});

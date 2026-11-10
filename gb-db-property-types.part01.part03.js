@@ -127,14 +127,17 @@ function onPropertyTypeChange(root) {
 
   if (type === 'select' || type === 'multi-select') {
     const opts = _ptMergedSelectOptions(current, existing, type);
-    const optionColorHelp = fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます。セル編集時の選択肢ドロップダウンからも設定できます')
+    const optionColorHelp = fieldHelp('左のチップはセルでの見た目です。クリックすると書式（背景色・文字色・枠線・太字など）を設定できます。背景色はドロップダウン・カンバン・グループヘッダーにも反映されます')
       .replace('<span ', '<span data-e2e-id="pt-select-option-color-help" ');
     optDiv.innerHTML = `<div class="field"><label>選択肢 ${optionColorHelp}</label>
       <textarea id="pt-select-options" hidden aria-hidden="true">${esc(opts.join('\n'))}</textarea>
-      <div id="pt-select-option-rows" class="pt-select-option-list" data-e2e-id="pt-select-option-list"></div>
-      <button type="button" id="pt-select-option-add" class="gb-btn gb-btn-sm pt-select-option-add" data-e2e-id="pt-select-option-add">＋ 選択肢</button>
+      <div class="pt-select-option-editor">
+        <div id="pt-select-option-rows" class="pt-select-option-list" data-e2e-id="pt-select-option-list"></div>
+        <button type="button" id="pt-select-option-add" class="gb-btn gb-btn-sm pt-select-option-add" data-e2e-id="pt-select-option-add">＋ 選択肢</button>
+      </div>
     </div>`;
     scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
+    scope._dbOptionStyleBuffer = { ...(current.optionStyles || {}) };
     if (typeof renderDbSelectOptionRows === 'function') {
       renderDbSelectOptionRows(_ptGet('pt-select-option-rows', scope), scope);
     }

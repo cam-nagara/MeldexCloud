@@ -229,7 +229,7 @@
 
   async function _openParentDatabase(parentDb) {
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(parentDb));
       _renderSeq += 1;
@@ -363,7 +363,7 @@
   async function _prepareContentReplacement(seq) {
     const portedOk = await _runPortedBeforeClose('replace');
     if (!portedOk || seq !== _renderSeq) return false;
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     return editorOk !== false && seq === _renderSeq;
   }
 
@@ -398,7 +398,7 @@
     _openingTarget = true;
     _syncOpenButton();
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (actionSeq !== _renderSeq || target !== _currentTarget || !isOpen()) return;
       const entry = await _resolveTargetEntry(target);
@@ -522,15 +522,19 @@
     }
   }
 
-  function _flushActiveEditor() {
+  async function _flushActiveEditor(options = {}) {
+    const links = document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]');
+    if (await links?._linkedFiles?.flush?.() === false) return false;
     const editor = _activeEditor;
-    if (!editor) return Promise.resolve(true);
-    clearTimeout(editor.timer);
-    editor.timer = null;
-    return _saveEditor(editor).then((ok) => {
+    if (editor) {
+      clearTimeout(editor.timer);
+      editor.timer = null;
+      const ok = await _saveEditor(editor);
       if (ok || !editor.dirty) _activeEditor = null;
-      return ok;
-    });
+      if (!ok) return false;
+    }
+    if (options.disposeLinks && await links?._linkedFiles?.dispose?.() === false) return false;
+    return true;
   }
 
   function _ensureDrawer() {
@@ -603,6 +607,13 @@
 
   function openElement(title, element, options) {
     if (!_isEnabled()) return false;
+    // A synchronous API cannot wait for linked-file saves. Keep the current
+    // editor until the caller closes it through the asynchronous save guard.
+    if (isOpen() && _portedPanel?.element !== element
+        && document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]')) {
+      if (typeof showStatus === 'function') showStatus('表示中の内容を閉じてから開いてください', true);
+      return false;
+    }
     // 保存ガードを持つ別パネルを同期APIで黙って置換すると内容を失い得る。
     // 同じ要素の再表示は、呼び出し元が先にflush済みなので許可する。
     if (_portedPanel?.beforeClose && _portedPanel.element !== element) {
@@ -632,7 +643,7 @@
       const portedOk = await _runPortedBeforeClose('close');
       if (!portedOk || closeSeq !== _renderSeq) return false;
     }
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     if (!editorOk || closeSeq !== _renderSeq) return false;
     _hideDrawerNow();
     return true;
@@ -813,9 +824,10 @@
     _syncEntityAccessNotice(body, access);
     if (
       typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
-      && body.__MeldexAttachmentsRenderedReadOnly !== access.readOnly
+      && (body.__MeldexAttachmentsRequestedReadOnly ?? body.__MeldexAttachmentsRenderedReadOnly) !== access.readOnly
     ) {
-      body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      await body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
     }
     const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
     if (grid) {
@@ -880,7 +892,7 @@
     return true;
   }
 
-  async function _renderEntity(body, entityPath, entityName, seq) {
+  async function _renderEntity(body, entityPath, entityName, seq, selectedId) {
     const name = entityName || _fileName(entityPath).replace(/\.md$/i, '');
     const noteTarget = _entityNoteTarget(entityPath, name);
     const parentDb = _parentDb(entityPath);
@@ -896,10 +908,15 @@
             : (document.body?.dataset?.cloudReadonly === '1' ? '閲覧専用のため編集できません' : ''),
         };
       if (seq !== _renderSeq) return;
+      if (!await _flushActiveEditor({ disposeLinks: true }) || seq !== _renderSeq) return;
       body.replaceChildren();
 
       _syncEntityAccessNotice(body, access);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
       const props = document.createElement('section');
       props.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-props';
       const propsTitle = document.createElement('h3');
@@ -923,6 +940,7 @@
           renderEntityPropsGridInto(grid, data, entityPath, {
             parentDb,
             surface: 'mobile-drawer',
+            topicTabs: true,
             readOnly: readOnly === true,
           });
           grid.__MeldexRenderedReadOnly = readOnly === true;
@@ -932,28 +950,46 @@
       } else {
         grid.textContent = '列を表示できません';
       }
-      body.appendChild(props);
+      columnsPane.appendChild(props);
 
       if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
-        const renderAttachmentsForAccess = (readOnly) => {
-          body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]')?.remove();
+        let attachmentsAccessQueue = Promise.resolve();
+        const renderAttachmentsNow = async (readOnly, requestedId) => {
+          if (seq !== _renderSeq) return false;
+          const old = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
+          if (await old?._linkedFiles?.dispose?.() === false || seq !== _renderSeq) return false;
+          // Initial selection also mounts asynchronously. Read it after dispose
+          // has joined that work, rather than reverting a loading file to columns.
+          const selectedId = requestedId || old?.dataset.selectedAttachment;
+          // Another access refresh may have completed while saving this one.
+          if (body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]') !== old) return false;
+          old?.remove();
           window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
             readOnly,
             surface: 'mobile-drawer',
-            onReload: async () => {
-              await _flushActiveEditor();
+            selectedId,
+            columnsPanel: columnsPane,
+            beforeMutation: _flushActiveEditor,
+            onReload: async (nextId) => {
+              if (!await _flushActiveEditor()) return false;
               if (_currentTarget?.kind !== 'entity' || _currentTarget.entityPath !== entityPath || !isOpen()) return;
               const reloadSeq = ++_renderSeq;
-              await _renderEntity(body, entityPath, name, reloadSeq);
+              await _renderEntity(body, entityPath, name, reloadSeq, nextId);
             },
           });
-          const attachments = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
-          const page = body.querySelector(':scope > .cloud-mobile-side-drawer-page');
-          if (attachments && page) body.insertBefore(attachments, page);
           body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
+          return true;
+        };
+        const renderAttachmentsForAccess = (readOnly, requestedId) => {
+          body.__MeldexAttachmentsRequestedReadOnly = readOnly === true;
+          attachmentsAccessQueue = attachmentsAccessQueue.catch(() => false)
+            .then(() => renderAttachmentsNow(readOnly, requestedId));
+          return attachmentsAccessQueue;
         };
         body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
-        renderAttachmentsForAccess(access.readOnly);
+        await renderAttachmentsForAccess(access.readOnly, selectedId);
+      } else {
+        body.appendChild(columnsPane);
       }
 
       const page = document.createElement('section');
@@ -1012,7 +1048,7 @@
       if (!access.readOnly) _bindEditorHelpers(editor);
       _activeEditor = access.readOnly ? null : editorState;
       page.appendChild(editor);
-      body.appendChild(page);
+      columnsPane.appendChild(page);
     } catch {
       if (seq !== _renderSeq) return;
       _setError(body, 'エントリの表示に失敗しました');

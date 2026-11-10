@@ -174,6 +174,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   if (type === 'rollup' || type === 'formula') {
     const row = document.createElement('div');
     row.className = 'cell-value';
+    if (type === 'rollup' && typeof applyDbColumnChipStyle === 'function') applyDbColumnChipStyle(row, propTypeConfig);
     const span = document.createElement('span');
     span.className = 'db-cell-display-text';
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
@@ -243,6 +244,10 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const row = document.createElement('div');
   row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
+  // タグ・リレーション列の列全体のチップ書式（列設定の「表示」）
+  if ((type === 'relation' || type === 'multi-relation' || type === 'common-tags') && typeof applyDbColumnChipStyle === 'function') {
+    applyDbColumnChipStyle(row, propTypeConfig);
+  }
 
   // 列型・候補数による例外を設けず、シートのON/OFFに従う。
   if (getStatusEnabled(dbPath)) {
@@ -555,7 +560,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     span.className = 'cell-select-val';
     span.textContent = v;
     span.style.cursor = 'pointer';
-    if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+    if (typeof applyDbChipStyle === 'function' && typeof getDbOptionStyle === 'function') {
+      applyDbChipStyle(span, getDbOptionStyle(propTypeConfig, v));
+    } else if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
       applyDbOptionChipColor(span, getDbOptionColor(propTypeConfig, v));
     }
     span.addEventListener('click', (e) => {
@@ -589,7 +596,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const tag = document.createElement('span');
       tag.className = 'multi-select-tag';
       tag.textContent = t;
-      if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+      if (typeof applyDbChipStyle === 'function' && typeof getDbOptionStyle === 'function') {
+        applyDbChipStyle(tag, getDbOptionStyle(propTypeConfig, t));
+      } else if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
         applyDbOptionChipColor(tag, getDbOptionColor(propTypeConfig, t));
       }
       tagContainer.appendChild(tag);

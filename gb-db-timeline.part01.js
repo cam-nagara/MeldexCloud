@@ -70,7 +70,7 @@ function _appendGanttUnscheduled(container, entries, dbPath, ctx) {
     button.type = 'button';
     button.className = 'tl-gantt-unscheduled-item';
     button.innerHTML = `<span>${esc(entry.name)}</span><small>${esc(entry.reason)}</small>`;
-    button.addEventListener('click', () => selectEntity(_entityPath(dbPath, entry.name, ctx?.pivotData)));
+    button.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, entry.name, ctx?.pivotData), entry.name, ctx));
     list.appendChild(button);
   });
   unscheduled.appendChild(list);
@@ -636,6 +636,9 @@ function _restoreTimelineViewState(snapshot, ctx) {
 }
 
 async function _openTimelineEntityInSubpanel(ctx, dbPath, entityName) {
+  if (typeof _dbOpenConfiguredEntity === 'function') {
+    return _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx);
+  }
   const snapshot = _captureTimelineViewState(ctx, dbPath);
   let result = false;
   try {
@@ -1143,7 +1146,7 @@ function renderTimeline(ctx) {
           ev.stopPropagation();
           _cancelTimelineEntitySingleClick(card);
           if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
-          selectEntity(_entityPath(dbPath, e.name));
+          _dbOpenConfiguredEntity(_entityPath(dbPath, e.name), e.name, ctx);
         });
         cell.appendChild(card);
       });
@@ -1214,7 +1217,7 @@ function renderTimeline(ctx) {
         ev.stopPropagation();
         _cancelTimelineEntitySingleClick(bar);
         if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
-        selectEntity(_entityPath(dbPath, e.name));
+        _dbOpenConfiguredEntity(_entityPath(dbPath, e.name), e.name, ctx);
       });
 
       // ドラッグ移動

@@ -1771,6 +1771,7 @@
     getGroup, currentDisplayOrder, itemAnnotationPath,
     // 単独ビューワーの右サイドバー「プロパティ」タブが、表示中のファイルを知るために使う
     currentPath: currentViewerPathForFolderNavigation,
+    currentRootPath: () => nativeRoot,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
     getFitMode: () => fitMode, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,

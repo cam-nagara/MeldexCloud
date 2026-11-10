@@ -134,6 +134,47 @@
 .pivot-table td[data-cell-overflow="clip"] .gb-image-thumb-stack {
   flex-wrap: nowrap;
 }
+/* セレクト列（チップ表示）も「値の最大行数」に従う。チップは文字行ではなく flex の
+   折り返し行なので line-clamp が効かない。チップの高さを固定し、1行分
+   （チップ高 + 行間 gap 3px）× 最大行数 で切り取る。 */
+#pivot-table .multi-select-tags .multi-select-tag,
+.pivot-table .multi-select-tags .multi-select-tag {
+  box-sizing: border-box;
+  height: var(--db-select-chip-h, 20px);
+  line-height: calc(var(--db-select-chip-h, 20px) - 2px);
+}
+#pivot-table[data-cell-overflow="wrap"] .multi-select-tags,
+.pivot-table[data-cell-overflow="wrap"] .multi-select-tags,
+#pivot-table td[data-cell-overflow="wrap"] .multi-select-tags,
+.pivot-table td[data-cell-overflow="wrap"] .multi-select-tags {
+  flex-wrap: wrap !important;
+  overflow: hidden;
+  max-height: calc(var(--db-cell-wrap-lines, 10) * (var(--db-select-chip-h, 20px) + 3px) - 3px);
+}
+#pivot-table[data-cell-overflow="clip"] .multi-select-tags,
+.pivot-table[data-cell-overflow="clip"] .multi-select-tags,
+#pivot-table td[data-cell-overflow="clip"] .multi-select-tags,
+.pivot-table td[data-cell-overflow="clip"] .multi-select-tags {
+  /* 描画側がインラインで flex-wrap:wrap を指定するため !important で上書きする */
+  flex-wrap: nowrap !important;
+  overflow: hidden;
+  max-height: none;
+}
+#pivot-table[data-cell-overflow="clip"] .multi-select-tags .multi-select-tag,
+.pivot-table[data-cell-overflow="clip"] .multi-select-tags .multi-select-tag,
+#pivot-table td[data-cell-overflow="clip"] .multi-select-tags .multi-select-tag,
+.pivot-table td[data-cell-overflow="clip"] .multi-select-tags .multi-select-tag {
+  flex-shrink: 0;
+}
+#pivot-table[data-cell-overflow="clip"] .cell-select-val,
+.pivot-table[data-cell-overflow="clip"] .cell-select-val,
+#pivot-table td[data-cell-overflow="clip"] .cell-select-val,
+.pivot-table td[data-cell-overflow="clip"] .cell-select-val {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
 /* エントリ名列（__entity__）の折り返し/切り詰め上書き。.entity-name-label は
    上の .value-text / .db-cell-display-text ルールの対象外なので個別に指定する。 */
 #pivot-table td.col-entity[data-cell-overflow="wrap"] .entity-name-label,
@@ -400,3 +441,15 @@
   .gb-cal-modal { min-width: auto !important; width: 95vw !important; max-width: 95vw !important; }
   [data-event-id] > input.gb-cal-event-select-check { width: 16px; height: 16px; min-width: 16px; min-height: 16px; }
 }
+/* タグ・リレーション・ロールアップ列のチップ書式（列設定の「表示」）。値の外枠に置いた
+   CSS変数を、設定された項目だけ中のチップ／行へ反映する。ロールアップは描画側が
+   インラインで文字色を付けるため !important で上書きする。 */
+.db-chip-styled[data-chip-bg] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line),
+.db-chip-styled[data-chip-bg] > .db-cell-display-text:not(.db-rollup-lines) { background: var(--db-chip-bg) !important; }
+.db-chip-styled[data-chip-fg] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { color: var(--db-chip-fg) !important; }
+.db-chip-styled[data-chip-border] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line),
+.db-chip-styled[data-chip-border] > .db-cell-display-text:not(.db-rollup-lines) { box-shadow: inset 0 0 0 1px var(--db-chip-border); }
+.db-chip-styled[data-chip-border] :is(.relation-link, .pt-chip-style-sample--relation) { border-color: var(--db-chip-border); }
+.db-chip-styled[data-chip-weight] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { font-weight: var(--db-chip-weight); }
+.db-chip-styled[data-chip-font-style] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { font-style: var(--db-chip-font-style); }
+.db-chip-styled[data-chip-decoration] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { text-decoration: var(--db-chip-decoration); }

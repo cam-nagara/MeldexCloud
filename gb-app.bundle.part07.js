@@ -1,3 +1,35 @@
+
+function _commonLoadingProgress() {
+  return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'
+    ? window.MeldexOperationProgress
+    : null;
+}
+
+function _loadingText(msg) {
+  return String(msg || _loadingMessage || '読み込み中...');
+}
+
+function _setLoadingNodeContent(el, msg) {
+  if (!el) return;
+  const spinner = document.createElement('span');
+  spinner.className = 'gb-spinner';
+  const label = document.createElement('span');
+  label.className = 'gb-loading-label';
+  label.textContent = _loadingText(msg);
+  el.replaceChildren(spinner, label);
+}
+
+function _ensureGlobalLoadingIndicator() {
+  let el = document.getElementById('gb-global-loading');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'gb-global-loading';
+  el.className = 'gb-global-loading';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  el.setAttribute('aria-atomic', 'true');
+  el.hidden = true;
+  document.body.appendChild(el);
   return el;
 }
 

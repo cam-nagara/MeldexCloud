@@ -1,6 +1,7 @@
 /* standalone-profile.js
  * クラウド単独アプリ（ノート/シナリオ/シート/タイマー/ボード）共通の
  * ユーザー名・アイコン表示 + 変更用ポップオーバー。
+ * PCクイックメモは本体のプロフィールを参照し、変更は本体の設定に集約する。
  *
  * 目的（2026-07-20 実装）:
  *   「ホームに追加」で端末ホーム画面に入れるクラウド単独アプリで、現在ユーザーの
@@ -34,10 +35,27 @@
   const LOCAL_AVATAR_BG_KEY = 'meldex-avatar-bg';
   const DEFAULT_AVATAR_BG = '#3a6ea5';
   const AVATAR_UPLOAD_SIZE = 128;
+  let mainProfile = {};
+
+  function _usesMainProfile() {
+    return _isLocalProfile() && !_isStandaloneCloud();
+  }
+
+  function _embeddedMainStorage() {
+    try {
+      if (window.parent !== window && typeof window.parent?.getUsername === 'function') {
+        return window.parent.localStorage;
+      }
+    } catch { /* 別originの親画面は参照しない */ }
+    return null;
+  }
 
   function _safeGet(key, fallbackValue) {
     try {
-      const value = localStorage.getItem(key);
+      // PC単独版は一時ポート・別WebViewなので、クイックメモ固有の古い値を使わない。
+      const value = _usesMainProfile()
+        ? (_embeddedMainStorage()?.getItem(key) ?? mainProfile[key])
+        : localStorage.getItem(key);
       return value == null ? fallbackValue : value;
     } catch {
       return fallbackValue;
@@ -156,7 +174,7 @@
     const display = _displayName();
     badgeEl.classList.toggle('sa-profile-badge--guest', !connected);
     badgeEl.title = _isLocalProfile() && !_isStandaloneCloud()
-      ? (display || 'ユーザー設定（この端末のみ）')
+      ? (display || '本体のユーザー情報')
       : (connected ? (display || 'ユーザー設定') : 'ユーザー設定（Dropbox未接続）');
     badgeEl.setAttribute('aria-label', badgeEl.title);
     badgeEl.innerHTML = _avatarHtml(display, 22, !connected);
@@ -268,24 +286,35 @@
   }
 
   async function _saveProfile(overrides) {
-    if (_isLocalProfile() && !_isStandaloneCloud()) return;
+    if (_usesMainProfile()) return false;
     const sync = window.MeldexDropboxProfileSync;
-    if (typeof sync?.saveCurrentProfile === 'function') {
+    const save = sync?.afterLocalProfileChanged || sync?.saveCurrentProfile;
+    if (typeof save === 'function') {
       try {
-        await sync.saveCurrentProfile(overrides || {});
+        const result = await save.call(sync, overrides || {});
+        if (result?.ok === false) {
+          window.showStatus?.('変更はこの端末に保存しました。Dropboxへの同期は接続後に再試行してください', true);
+          return false;
+        }
       } catch (error) {
         console.warn('[standalone-profile] saveCurrentProfile failed', error);
+        window.showStatus?.('変更はこの端末に保存しました。プロフィールの同期に失敗しました', true);
+        return false;
       }
     }
     try {
-      if (typeof window.apiPost !== 'function') return;
+      if (typeof window.apiPost !== 'function') return true;
       const folder = window.MeldexStandaloneCloud?.getActiveRoot?.()?.path || '';
       const name = typeof getUsername === 'function' ? getUsername() : 'anonymous';
       const avatar = _safeGet(LOCAL_AVATAR_KEY, '');
-      await window.apiPost('/team/sync', { name, avatar, folder });
+      const payload = { name, avatar, folder };
+      await window.apiPost('/team/sync', sync?.teamSyncPayload?.(payload) || payload);
     } catch (error) {
       console.warn('[standalone-profile] /team/sync failed', error);
+      window.showStatus?.('プロフィールを保存しました。メンバー情報の同期に失敗しました', true);
+      return false;
     }
+    return true;
   }
 
   // popoverEl._saProfileRefs は _openPopover() が生成直後に保持する直接参照
@@ -296,9 +325,11 @@
     if (!refs) return;
     if (refs.preview) refs.preview.innerHTML = _avatarHtml(_displayName(), 48, false);
     if (refs.nameLabel) refs.nameLabel.textContent = _displayName() || '未設定';
+    if (refs.nameInput && refs.nameInput.value === refs.currentName) refs.nameInput.value = _displayName();
+    refs.currentName = _displayName();
   }
 
-  function _handleNameSave(input) {
+  async function _handleNameSave(input) {
     const value = String(input?.value || '').trim();
     if (!value) {
       window.showStatus?.('ユーザー名を入力してください', true);
@@ -307,8 +338,7 @@
     _safeSet(LOCAL_USER_KEY, JSON.stringify({ name: value }));
     _renderBadgeContent();
     _refreshPopoverPreview();
-    window.showStatus?.('ユーザー名を更新しました');
-    _saveProfile({ displayName: value });
+    if (await _saveProfile({ displayName: value })) window.showStatus?.('ユーザー名を更新しました');
   }
 
   function _resizeImageToDataUrl(file) {
@@ -350,8 +380,7 @@
       _safeSet(LOCAL_AVATAR_SPEC_KEY, '');
       _renderBadgeContent();
       _refreshPopoverPreview();
-      window.showStatus?.('アイコンを更新しました');
-      await _saveProfile({ avatar: dataUrl, avatarSpec: '' });
+      if (await _saveProfile({ avatar: dataUrl, avatarSpec: '' })) window.showStatus?.('アイコンを更新しました');
     } catch {
       window.showStatus?.('画像を読み込めませんでした', true);
     } finally {
@@ -364,8 +393,7 @@
     _safeSet(LOCAL_AVATAR_SPEC_KEY, '');
     _renderBadgeContent();
     _refreshPopoverPreview();
-    window.showStatus?.('アイコンを削除しました');
-    await _saveProfile({ avatar: '', avatarSpec: '' });
+    if (await _saveProfile({ avatar: '', avatarSpec: '' })) window.showStatus?.('アイコンを削除しました');
   }
 
   function _attachCloseButton(popup, anchor) {
@@ -434,7 +462,7 @@
     const desc = _el('p', {
       className: 'sa-profile-popover-desc',
       text: _isLocalProfile() && !_isStandaloneCloud()
-        ? 'ここで設定した名前とアイコンは、この端末のクイックメモだけに保存されます。'
+        ? 'Meldex本体と同じ名前とアイコンを表示します。変更は本体の「設定 → ユーザー・共同作業」で行ってください。'
         : connected
         ? 'ここで設定した名前とアイコンは、同じDropboxにつないだ Meldex Cloud・他の端末・他の単独アプリでも使われます。'
         : 'Dropboxに接続すると、名前とアイコンが他の端末と共通になります。',
@@ -475,8 +503,9 @@
       }
     });
 
-    popup.append(head, desc, field, actions, fileInput);
-    popup._saProfileRefs = { preview, nameLabel, nameInput };
+    popup.append(head, desc);
+    if (!_usesMainProfile()) popup.append(field, actions, fileInput);
+    popup._saProfileRefs = { preview, nameLabel, nameInput, currentName };
     document.body.appendChild(popup);
 
     _attachCloseButton(popup, anchor);
@@ -502,20 +531,31 @@
     document.addEventListener('pointerdown', outsidePointerHandler, true);
     document.addEventListener('keydown', popoverKeydownHandler, true);
     requestAnimationFrame(() => {
-      try { nameInput?.focus({ preventScroll: true }); } catch { nameInput?.focus(); }
+      if (!_usesMainProfile()) {
+        try { nameInput?.focus({ preventScroll: true }); } catch { nameInput?.focus(); }
+      }
     });
   }
 
   // ---- 起動時プロフィール解決 -------------------------------------------------
 
-  async function _resolveOnReady() {
-    if (_isLocalProfile() && !_isStandaloneCloud()) {
-      _renderBadgeContent();
-      _refreshPopoverPreview();
-      return;
-    }
+  let resolvePromise = null;
+  let resolveAgain = false;
+  async function _resolveProfile() {
     try {
-      await window.MeldexDropboxProfileSync?.resolveStartupProfile?.();
+      if (_usesMainProfile()) {
+        if (!_embeddedMainStorage()) {
+          const response = await fetch('/api/quick-memo/profile', {
+            cache: 'no-store', signal: window.AbortSignal?.timeout?.(5000),
+          });
+          if (!response.ok) throw new Error('profile request failed');
+          const result = await response.json();
+          if (result?.ok !== true || !result.profile || typeof result.profile !== 'object') throw new Error('invalid profile');
+          mainProfile = result.profile;
+        }
+      } else if (_isConnected()) {
+        await window.MeldexDropboxProfileSync?.resolveStartupProfile?.();
+      }
     } catch (error) {
       console.warn('[standalone-profile] resolveStartupProfile failed', error);
     }
@@ -523,22 +563,54 @@
     _refreshPopoverPreview();
   }
 
+  function _resolveOnReady() {
+    if (resolvePromise) {
+      resolveAgain = true;
+      return resolvePromise;
+    }
+    resolvePromise = _resolveProfile().finally(() => {
+      resolvePromise = null;
+      if (resolveAgain) {
+        resolveAgain = false;
+        _resolveOnReady();
+      }
+    });
+    return resolvePromise;
+  }
+
   window.addEventListener('meldex:standalone-cloud-ready', () => {
     _watchForInsertionPoint();
     _resolveOnReady();
   });
   window.addEventListener('meldex:standalone-auth-changed', () => {
+    window.MeldexDropboxProfileSync?.resetStartupResolution?.();
     _renderBadgeContent();
     _refreshPopoverPreview();
+    _resolveOnReady();
   });
   window.addEventListener('meldex-profile-updated', () => {
     _renderBadgeContent();
     _refreshPopoverPreview();
   });
+  window.addEventListener('storage', (event) => {
+    if (event.key === null || [LOCAL_USER_KEY, LOCAL_AVATAR_KEY, LOCAL_AVATAR_SPEC_KEY, LOCAL_AVATAR_BG_KEY].includes(event.key)) {
+      _renderBadgeContent();
+      _refreshPopoverPreview();
+    }
+  });
+  function _refreshOnFocus() {
+    window.MeldexDropboxProfileSync?.resetStartupResolution?.();
+    _resolveOnReady();
+  }
+  window.addEventListener('focus', _refreshOnFocus);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _refreshOnFocus();
+  });
 
   // 4アプリは header.sa-toolbar が静的markupのため、Dropbox接続確認を待たず
   // スクリプト実行時点で即バッジを挿入する（board は上のイベント/observer経由）。
   _watchForInsertionPoint();
+  if (_usesMainProfile() || _isConnected()) _resolveOnReady();
 
   window.MeldexStandaloneProfile = {
     isCloudMode: _isStandaloneCloud,

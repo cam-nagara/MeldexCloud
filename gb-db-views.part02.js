@@ -634,11 +634,11 @@ function renderGallery(ctx) {
       );
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
     });
-    card.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, entityName), entityName));
+    card.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx));
     card.addEventListener('dblclick', (ev) => {
       ev.stopPropagation();
       if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, entityName);
-      selectEntity(_entityPath(dbPath, entityName));
+      _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx);
     });
     card.addEventListener('contextmenu', (e) => { e.preventDefault(); showDbCardContextMenu(e, dbPath, entityName); });
     if (typeof addLongPressHandler === 'function') {
@@ -1255,11 +1255,11 @@ function renderKanban(ctx) {
       cardEl.addEventListener('dragend', () => cardEl.classList.remove('dragging'));
 
       // クリック: サイドバーに詳細表示
-      cardEl.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, card.name), card.name));
+      cardEl.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, card.name), card.name, ctx));
       cardEl.addEventListener('dblclick', (ev) => {
         ev.stopPropagation();
         if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, card.name);
-        selectEntity(_entityPath(dbPath, card.name));
+        _dbOpenConfiguredEntity(_entityPath(dbPath, card.name), card.name, ctx);
       });
       cardEl.addEventListener('contextmenu', (e) => { e.preventDefault(); showDbCardContextMenu(e, dbPath, card.name); });
       if (typeof addLongPressHandler === 'function') {

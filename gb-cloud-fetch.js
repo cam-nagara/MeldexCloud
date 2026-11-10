@@ -217,6 +217,10 @@
             headers: { 'Content-Type': thumbnail.type || 'image/jpeg' },
           });
         }
+        if (window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexPwaFileUrl?.ensureDisplayUrl) {
+          const info = await window.MeldexPwaFileUrl.ensureDisplayUrl(url.href);
+          return nativeFetch(info.url);
+        }
         const file = await _downloadMediaFile(provider, relativePath);
         return new Response(await file.arrayBuffer(), {
           status: 200,

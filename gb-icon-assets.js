@@ -368,6 +368,12 @@
   }
 
   function openPicker(options = {}) {
+    if (global.MeldexStandaloneNative && !global.NOTO_EMOJI && !options.nativeIconsReady) {
+      global.MeldexStandaloneNative.loadFeature('icons')
+        .then(() => openPicker({ ...options, nativeIconsReady: true }))
+        .catch(error => global.showStatus?.(error.message, true));
+      return null;
+    }
     const includeLucide = options.includeLucide !== false;
     const includeNoto = options.includeNoto !== false;
     let allItems = null;
@@ -510,8 +516,11 @@
     search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
 
+    let imageRegistration = null;
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
+      imageRegistration = form;
+      form.hidden = activeSource !== 'image';
       const upload = document.createElement('button'); upload.type = 'button'; upload.className = 'gb-btn gb-btn-xs';
       upload.textContent = '画像を登録'; upload.dataset.e2eId = 'icon-picker-image-upload';
       const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.hidden = true;
@@ -591,6 +600,7 @@
 
     function renderGrid() {
       if (!picker.isConnected) return;
+      if (imageRegistration) imageRegistration.hidden = activeSource !== 'image';
       const qRaw = search.value.trim();
       const q = _normalizeSearch(qRaw);
       const exactEmoji = qRaw && qRaw.length <= 8 ? qRaw : '';

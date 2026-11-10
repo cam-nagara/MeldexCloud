@@ -155,7 +155,13 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
     root.querySelectorAll?.('td[data-prop-name]').forEach(td => {
       if (td.dataset.propName !== propName) return;
       td.querySelectorAll('.cell-select-val, .multi-select-tag').forEach(chip => {
-        if ((chip.textContent || '').trim() === String(option)) applyDbOptionChipColor(chip, safeHex);
+        if ((chip.textContent || '').trim() !== String(option)) return;
+        // 背景色以外の書式（文字色・太字など）は保存済みの値を保ったまま、背景色だけ差し替える。
+        const ptc = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {})[propName] : null;
+        const style = { ...getDbOptionStyle(ptc, option) };
+        if (safeHex) style.bgColor = safeHex;
+        else delete style.bgColor;
+        applyDbChipStyle(chip, style);
       });
     });
 
@@ -207,6 +213,15 @@ async function setDbOptionColorAndSave(dbPath, propName, option, color, ctx) {
   else delete colors[String(option)];
   if (Object.keys(colors).length) cfg.optionColors = colors;
   else delete cfg.optionColors;
+  // 書式（optionStyles）側の背景色が優先されるため、同じ値へそろえる。
+  if (cfg.optionStyles && cfg.optionStyles[String(option)]) {
+    const style = { ...cfg.optionStyles[String(option)] };
+    if (_dbOptionColorIsValidHex(color)) style.bgColor = color.trim();
+    else delete style.bgColor;
+    if (Object.keys(style).length) cfg.optionStyles[String(option)] = style;
+    else delete cfg.optionStyles[String(option)];
+    if (!Object.keys(cfg.optionStyles).length) delete cfg.optionStyles;
+  }
   try {
     const saved = await Promise.resolve(setPropertyType(dbPath, propName, cfg, ctx));
     if (saved === false) throw new Error('保護されている列のため変更できません');
@@ -556,8 +571,10 @@ function renderDbSelectOptionRows(container, scope) {
     : scope.querySelector?.('#pt-select-option-add');
   if (!textarea) return null;
   if (!scope._dbOptionColorBuffer) scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
+  if (!scope._dbOptionStyleBuffer) scope._dbOptionStyleBuffer = { ...(current.optionStyles || {}) };
   const buffer = scope._dbOptionColorBuffer;
-  const used = new Set((stateInfo?.existing || []).flatMap(value => {
+  const styleBuffer = scope._dbOptionStyleBuffer;
+  const used =new Set((stateInfo?.existing || []).flatMap(value => {
     const raw = String(value ?? '').trim();
     return stateInfo?.current?.type === 'multi-select' ? raw.split(',').map(v => v.trim()).filter(Boolean) : (raw ? [raw] : []);
   }));
@@ -616,6 +633,10 @@ function renderDbSelectOptionRows(container, scope) {
           buffer[next] = buffer[option];
           delete buffer[option];
         }
+        if (Object.prototype.hasOwnProperty.call(styleBuffer, option)) {
+          styleBuffer[next] = styleBuffer[option];
+          delete styleBuffer[option];
+        }
         writeOptions(latest);
         renderRows(next);
       });
@@ -625,23 +646,11 @@ function renderDbSelectOptionRows(container, scope) {
       });
       row.appendChild(input);
 
-      const swatch = document.createElement('button');
-      swatch.type = 'button';
-      swatch.className = 'gb-fmt-swatch pt-select-option-color';
-      swatch.dataset.e2eId = `pt-select-option-color-${optionIndex}`;
-      swatch.title = `${option} の色`;
-      swatch.setAttribute('aria-label', `${option}の色を選択`);
-      if (protectionReason) swatch.disabled = true;
-      row.appendChild(swatch);
-      if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, buffer[option] || '');
-      if (typeof bindColorSwatch === 'function') {
-        bindColorSwatch(swatch, () => buffer[option] || '', color => {
-          if (_dbOptionColorIsValidHex(color)) buffer[option] = color.trim();
-          else delete buffer[option];
-          if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, buffer[option] || '');
-          scope.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-      }
+      // セルでの見た目そのままのチップ。クリックで書式設定ポップアップ（背景色・文字色など）。
+      row.insertBefore(
+        _dbCreateOptionPreviewChip(scope, option, optionIndex, stateInfo?.current?.type === 'multi-select', protectionReason),
+        input,
+      );
 
       const duplicateButton = document.createElement('button');
       duplicateButton.type = 'button';
@@ -656,6 +665,7 @@ function renderDbSelectOptionRows(container, scope) {
         const name = uniqueCopyName(option, latest);
         latest.splice(optionIndex + 1, 0, name);
         if (buffer[option]) buffer[name] = buffer[option];
+        if (styleBuffer[option]) styleBuffer[name] = { ...styleBuffer[option] };
         writeOptions(latest);
         renderRows(name);
       });
@@ -673,6 +683,7 @@ function renderDbSelectOptionRows(container, scope) {
         const latest = readOptions();
         latest.splice(optionIndex, 1);
         delete buffer[option];
+        delete styleBuffer[option];
         writeOptions(latest);
         renderRows();
       });
@@ -746,4 +757,236 @@ function collectDbOptionColors(scope, prevColors, currentOptions) {
     if (_dbOptionColorIsValidHex(hex)) out[key] = hex.trim();
   });
   return out;
+}
+
+// --- 選択肢・チップの書式（背景色・文字色・枠線色・太字・斜体・取消線）: 2026-11-09 ---
+// セレクト/マルチセレクトは選択肢ごとに optionStyles[選択肢] へ、タグ・リレーション・
+// ロールアップは列全体の chipStyle へ保存する。背景色の16進数は旧版互換のため
+// optionColors にも書き続ける（旧版は optionStyles を無視して背景色だけ表示する）。
+const DB_CHIP_FORMAT_FIELDS = ['textColor', 'borderColor', 'bold', 'italic', 'strike', 'bgColor'];
+const DB_CHIP_STYLE_TYPES = new Set(['relation', 'multi-relation', 'common-tags', 'rollup']);
+
+function _dbChipCssColorValid(value) {
+  return typeof value === 'string'
+    && /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9\s.,%]+\)|hsla?\([0-9\s.,%deg]+\)|transparent)$/.test(value.trim());
+}
+
+function normalizeDbChipStyle(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  ['bgColor', 'textColor', 'borderColor'].forEach(key => {
+    if (_dbChipCssColorValid(raw[key])) out[key] = raw[key].trim();
+  });
+  if (raw.fontWeight === 'bold') out.fontWeight = 'bold';
+  if (raw.fontStyle === 'italic') out.fontStyle = 'italic';
+  if (raw.strike === true) out.strike = true;
+  return out;
+}
+
+function _dbChipStyleIsEmpty(style) {
+  return !style || !Object.keys(style).length;
+}
+
+// 選択肢の表示書式。optionStyles が無い選択肢は旧来の optionColors（背景色）だけを使う。
+function getDbOptionStyle(ptc, value) {
+  if (!ptc || value == null) return {};
+  const style = normalizeDbChipStyle(ptc.optionStyles?.[String(value)]);
+  if (!style.bgColor) {
+    const hex = getDbOptionColor(ptc, value);
+    if (hex) style.bgColor = hex;
+  }
+  return style;
+}
+
+// チップ要素へ書式を直接適用する。文字色の指定が無く背景色が16進数なら、従来どおり読みやすい白/黒を選ぶ。
+function applyDbChipStyle(el, rawStyle) {
+  if (!el) return;
+  const style = normalizeDbChipStyle(rawStyle);
+  ['background', 'background-color', 'color', 'font-weight', 'font-style', 'text-decoration', 'box-shadow']
+    .forEach(prop => el.style.removeProperty(prop));
+  if (style.bgColor) el.style.background = style.bgColor;
+  if (style.textColor) el.style.color = style.textColor;
+  else if (style.bgColor) {
+    const fg = dbOptionTextColorFor(style.bgColor);
+    if (fg) el.style.color = fg;
+  }
+  if (style.borderColor) el.style.boxShadow = `inset 0 0 0 1px ${style.borderColor}`;
+  if (style.fontWeight) el.style.fontWeight = style.fontWeight;
+  if (style.fontStyle) el.style.fontStyle = style.fontStyle;
+  if (style.strike) el.style.textDecoration = 'line-through';
+}
+
+// タグ・リレーション・ロールアップ: 値の外枠へCSS変数を置き、中のチップ／行へCSSで反映する。
+function applyDbColumnChipStyle(el, ptc) {
+  if (!el) return;
+  const style = normalizeDbChipStyle(ptc?.chipStyle);
+  const vars = {
+    '--db-chip-bg': style.bgColor || '',
+    '--db-chip-fg': style.textColor || (style.bgColor ? dbOptionTextColorFor(style.bgColor) : ''),
+    '--db-chip-border': style.borderColor || '',
+    '--db-chip-weight': style.fontWeight || '',
+    '--db-chip-font-style': style.fontStyle || '',
+    '--db-chip-decoration': style.strike ? 'line-through' : '',
+  };
+  Object.entries(vars).forEach(([name, value]) => {
+    if (value) el.style.setProperty(name, value);
+    else el.style.removeProperty(name);
+  });
+  el.classList.toggle('db-chip-styled', !_dbChipStyleIsEmpty(style));
+  const flags = {
+    chipBg: vars['--db-chip-bg'],
+    chipFg: vars['--db-chip-fg'],
+    chipBorder: vars['--db-chip-border'],
+    chipWeight: vars['--db-chip-weight'],
+    chipFontStyle: vars['--db-chip-font-style'],
+    chipDecoration: vars['--db-chip-decoration'],
+  };
+  Object.entries(flags).forEach(([key, value]) => {
+    if (value) el.dataset[key] = '1';
+    else delete el.dataset[key];
+  });
+}
+
+// 書式設定ポップアップを開く。値の名前は共通ポップアップと同じ（fontWeight/fontStyle/strike 等）。
+function openDbChipFormatPopup(anchorEl, initialStyle, onStyleChange) {
+  if (typeof openFormatPopup !== 'function') {
+    if (typeof showStatus === 'function') showStatus('書式設定を利用できません', true);
+    return null;
+  }
+  const values = { ...normalizeDbChipStyle(initialStyle) };
+  return openFormatPopup(anchorEl, {
+    className: 'db-chip-format-popup',
+    fields: DB_CHIP_FORMAT_FIELDS,
+    values: { ...values },
+    onChange: (prop, value) => {
+      if (value === '' || value == null || value === false) delete values[prop];
+      else values[prop] = value;
+      onStyleChange(normalizeDbChipStyle(values));
+    },
+    onReset: () => {
+      Object.keys(values).forEach(key => delete values[key]);
+      onStyleChange({});
+    },
+  });
+}
+
+// 列設定パネルの選択肢プレビュー（チップの見た目そのまま。クリックで書式設定ポップアップ）
+function _dbCreateOptionPreviewChip(scope, option, optionIndex, multi, protectionReason) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = `${multi ? 'multi-select-tag' : 'cell-select-val'} pt-select-option-preview`;
+  chip.dataset.e2eId = `pt-select-option-preview-${optionIndex}`;
+  chip.textContent = option;
+  chip.title = protectionReason || `${option} の書式を設定`;
+  chip.setAttribute('aria-label', protectionReason ? `${option}の書式は変更できません。${protectionReason}` : `${option}の書式を設定`);
+  if (protectionReason) chip.disabled = true;
+  const currentStyle = () => {
+    const colors = scope._dbOptionColorBuffer || {};
+    const styles = scope._dbOptionStyleBuffer || {};
+    const style = normalizeDbChipStyle(styles[option]);
+    if (!style.bgColor && _dbOptionColorIsValidHex(colors[option])) style.bgColor = colors[option].trim();
+    return style;
+  };
+  applyDbChipStyle(chip, currentStyle());
+  chip.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openDbChipFormatPopup(chip, currentStyle(), (style) => {
+      if (!scope._dbOptionStyleBuffer) scope._dbOptionStyleBuffer = {};
+      if (!scope._dbOptionColorBuffer) scope._dbOptionColorBuffer = {};
+      if (_dbChipStyleIsEmpty(style)) delete scope._dbOptionStyleBuffer[option];
+      else scope._dbOptionStyleBuffer[option] = style;
+      if (_dbOptionColorIsValidHex(style.bgColor)) scope._dbOptionColorBuffer[option] = style.bgColor.trim();
+      else delete scope._dbOptionColorBuffer[option];
+      applyDbChipStyle(chip, style);
+      try { scope.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+    });
+  });
+  return chip;
+}
+
+// 保存直前に呼ぶ: 選択肢ごとの書式（optionStyles）を作業バッファから集める。
+function collectDbOptionStyles(scope, prevStyles) {
+  const buffer = (scope && scope._dbOptionStyleBuffer) || prevStyles || {};
+  const out = {};
+  Object.keys(buffer).forEach(key => {
+    const style = normalizeDbChipStyle(buffer[key]);
+    if (!_dbChipStyleIsEmpty(style)) out[key] = style;
+  });
+  return out;
+}
+
+// 保存直前に呼ぶ: タグ・リレーション・ロールアップ列のチップ書式（chipStyle）。
+function collectDbColumnChipStyle(scope, prevStyle) {
+  const source = scope && Object.prototype.hasOwnProperty.call(scope, '_dbChipStyleBuffer')
+    ? scope._dbChipStyleBuffer
+    : prevStyle;
+  return normalizeDbChipStyle(source);
+}
+
+// 列設定パネル: タグ・リレーション・ロールアップ列の「表示」欄。列内の実際の値を
+// チップの見た目どおりに並べ、クリックで列全体のチップ書式を設定する。
+function renderDbColumnChipStyleField(optDiv, scope, type) {
+  if (!optDiv || !scope || !DB_CHIP_STYLE_TYPES.has(type)) return null;
+  const stateInfo = typeof _ptState === 'function' ? _ptState(scope) : {};
+  const current = stateInfo?.current || {};
+  const protectionLevel = typeof _dbSchemaProtectionLevel === 'function'
+    ? _dbSchemaProtectionLevel(stateInfo?.dbPath, stateInfo?.propName) : null;
+  const protectionReason = _dbOptionColorProtectionReason(protectionLevel);
+  scope._dbChipStyleBuffer = normalizeDbChipStyle(current.chipStyle);
+
+  const field = document.createElement('div');
+  field.className = 'field pt-chip-style-field';
+  field.dataset.e2eId = 'pt-chip-style-field';
+  const label = document.createElement('label');
+  label.textContent = '表示';
+  if (typeof fieldHelp === 'function') {
+    label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('値をクリックすると書式（背景色・文字色・枠線・太字など）を設定できます。この列のすべての値に反映されます'));
+  }
+  const host = document.createElement('div');
+  host.className = 'pt-chip-style-preview';
+  host.dataset.e2eId = 'pt-chip-style-preview';
+  applyDbColumnChipStyle(host, { chipStyle: scope._dbChipStyleBuffer });
+
+  // 見本は列内の実際の値から最大3件。共通タグはタグIDで保存されるため名前が出せず、種類名で代替する。
+  const samples = [];
+  const seen = new Set();
+  if (type !== 'common-tags' && type !== 'rollup') {
+    (stateInfo?.existing || []).forEach(raw => {
+      String(raw ?? '').split(',').map(v => v.trim()).filter(Boolean).forEach(v => {
+        const text = v.replace(/^\[\[|\]\]$/g, '').split('|').pop().split('/').pop();
+        if (samples.length >= 3 || !text || seen.has(text)) return;
+        seen.add(text);
+        samples.push(text);
+      });
+    });
+  }
+  const fallback = { 'common-tags': ['タグ'], rollup: ['ロールアップの値'], relation: ['リンク先'], 'multi-relation': ['リンク先'] }[type];
+  (samples.length ? samples : fallback).forEach((text, index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = type === 'rollup'
+      ? 'db-rollup-line pt-chip-style-sample'
+      : type === 'common-tags'
+        ? 'gb-tag-chip gb-tag-chip--compact multi-select-tag common-tags-tag pt-chip-style-sample'
+        // relation-link はリンク先を開く全体のクリック処理に横取りされるため、見た目だけ専用クラスでそろえる
+        : 'pt-chip-style-sample pt-chip-style-sample--relation';
+    chip.dataset.e2eId = `pt-chip-style-sample-${index}`;
+    chip.textContent = text;
+    chip.title = protectionReason || '書式を設定';
+    if (protectionReason) chip.disabled = true;
+    chip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDbChipFormatPopup(chip, scope._dbChipStyleBuffer, (style) => {
+        scope._dbChipStyleBuffer = style;
+        applyDbColumnChipStyle(host, { chipStyle: style });
+        try { scope.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+      });
+    });
+    host.appendChild(chip);
+  });
+  field.append(label, host);
+  optDiv.appendChild(field);
+  return field;
 }

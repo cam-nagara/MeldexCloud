@@ -739,6 +739,8 @@
     if (headingIndent) {
       _applyChatHeadingSections(root);
     }
+    // 動画・SNSポストの共有リンクは段落の下に埋め込みを表示する（発言テキストは変えない）
+    try { global.GBWebEmbeds?.decorateChat?.(root); } catch (_) { /* 埋め込みに失敗しても本文は表示する */ }
     container.replaceChildren(root);
     container.style.whiteSpace = 'normal';
     _verifyBareWorkspaceLinks(root);

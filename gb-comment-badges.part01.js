@@ -303,6 +303,7 @@
       el.classList.remove('cmt-line-highlight');
       delete el.dataset.cmtFile;
       delete el.dataset.cmtLineId;
+      if (el._cmtComments) { el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle; delete el._cmtComments; }
     });
   }
 
@@ -311,13 +312,60 @@
     return containerEl.querySelector(`span._nl-id[data-line-id="${_cssEscape(lineId)}"]`)?.parentElement || null;
   }
 
-  function _wrapStableSnippetInBlock(block, ref, commentId, filePath) {
+  function _bindCommentHighlight(el, comments, filePath) {
+    if (!el) return;
+    if (!comments.length) {
+      if (el._cmtComments) { el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle; delete el._cmtComments; delete el.dataset.cmtFile; }
+      return;
+    }
+    el._cmtComments = comments;
+    el.dataset.cmtFile = filePath;
+    el.title = comments.map(a => String(a.body || a.data?.text || '')).filter(Boolean).join('\n\n');
+    el.dataset.gbTooltip = el.title;
+    delete el.dataset.gbNativeTitle;
+  }
+
+  function _commentsForTarget(items, kind, matches) {
+    return items.filter(a => !a.orphan && !a.resolved && !a.data?.deleted && (
+      a.target_kind === kind && matches(a.target_ref || {})
+      || a.target_kind === 'text_range' && a.target_ref?.container?.kind === kind && matches(a.target_ref.container)));
+  }
+
+  function openPanelForHighlight(el) {
+    const comments = el?._cmtComments || [];
+    if (!comments.length) return;
+    _openPanelForTarget(el.dataset.cmtFile, '', null, comments.map(a => a.id));
+  }
+
+  document.addEventListener('click', event => {
+    const target = event.target.closest?.('.cmt-highlight,.cmt-line-highlight');
+    const list = document.getElementById('rp-ann-list');
+    if (target?._cmtComments?.length && list?.getClientRects().length) openPanelForHighlight(target);
+  }, true);
+  document.addEventListener('contextmenu', event => {
+    const target = event.target.closest?.('.cmt-highlight,.cmt-line-highlight');
+    if (!target?._cmtComments?.length) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    window.closeMeldexDropdowns?.();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu'; menu.setAttribute('role', 'menu');
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'gb-context-menu-item'; button.setAttribute('role', 'menuitem');
+    button.textContent = 'アノテートパネルに表示';
+    button.addEventListener('click', () => { menu.remove(); openPanelForHighlight(target); });
+    menu.appendChild(button); document.body.appendChild(menu);
+    if (typeof positionPopup === 'function') positionPopup(menu, { top:event.clientY, bottom:event.clientY, left:event.clientX, right:event.clientX }, { gap:0 });
+    else { menu.style.position = 'fixed'; menu.style.left = event.clientX + 'px'; menu.style.top = event.clientY + 'px'; window.clampPopupToViewport?.(menu); }
+    button.focus();
+  }, true);
+
+  function _wrapStableSnippetInBlock(block, ref, comment, filePath) {
     const needle = String(ref?.snippet || '').trim();
     if (!block || !needle) return false;
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
-        if (!parent || parent.closest('mark.cmt-highlight,.cmt-badge,._nl-id')) return NodeFilter.FILTER_REJECT;
+        if (!parent || parent.closest('.cmt-badge,._nl-id')) return NodeFilter.FILTER_REJECT;
         return node.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
       },
     });
@@ -365,9 +413,9 @@
     range.setEnd(endPart.node, finish - endPart.start);
     const mark = document.createElement('mark');
     mark.className = 'cmt-highlight';
-    mark.dataset.cmtId = commentId || '';
+    mark.dataset.cmtId = comment.id || '';
     mark.dataset.cmtFile = filePath || '';
-    mark.title = 'コメントあり';
+    _bindCommentHighlight(mark, [comment], filePath);
     mark.appendChild(range.extractContents());
     range.insertNode(mark);
     return true;
@@ -383,11 +431,15 @@
       } else if (a.target_kind === 'text_range' && ref.container?.kind === 'note_line' && ref.container.id) {
         block = _noteLineBlock(containerEl, ref.container.id);
         const anchorRef = { ...ref, snippet: ref.snippet || a.target_snapshot || '' };
-        if (_wrapStableSnippetInBlock(block, anchorRef, a.id, filePath)) return;
-        if (!ref.anchorSchema && _wrapStableSnippetInBlock(containerEl, anchorRef, a.id, filePath)) return;
+        if (_wrapStableSnippetInBlock(block, anchorRef, a, filePath)) return;
+        // Older comments could anchor to a temporary heading-section wrapper.
+        // Recover only a unique/context-matched quote, never its stale offset.
+        if (!block && _wrapStableSnippetInBlock(containerEl, { ...anchorRef, startOffset: undefined, endOffset: undefined }, a, filePath)) return;
+        if (!ref.anchorSchema && _wrapStableSnippetInBlock(containerEl, anchorRef, a, filePath)) return;
       }
       if (!block) return;
       block.classList.add('cmt-line-highlight');
+      _bindCommentHighlight(block, [...(block._cmtComments || []), a], filePath);
       block.dataset.cmtFile = filePath || '';
       block.dataset.cmtLineId = ref.lineId || ref.container?.id || '';
     });
@@ -425,6 +477,7 @@
     hostEl.querySelectorAll('.sn2-row[data-row-id]').forEach(row => {
       const rid = row.dataset.rowId;
       row.classList.toggle('cmt-line-highlight', (counts.get(rid) || 0) > 0);
+      _bindCommentHighlight(row, _commentsForTarget(items, 'scriptnote_line', ref => (ref.lineId || ref.id) === rid), filePath);
       _ensureBadge(row, counts.get(rid) || 0,
         () => _openPanelForTarget(filePath, 'scriptnote_line', { file: filePath, lineId: rid }));
     });
@@ -460,6 +513,7 @@
       if (!hud) return;
       const n = counts.get(cid) || 0;
       card.classList.toggle('cmt-line-highlight', n > 0);
+      _bindCommentHighlight(card, _commentsForTarget(items, 'board_card', ref => (ref.cardId || ref.id) === cid), filePath);
       _updateBoardCommentHud(hud, n);
     });
     if (typeof bdPerfEnd === 'function') {
@@ -620,6 +674,7 @@
       const cid = evEl.dataset.calendarId || '_calendar';
       const n = counts.get(eid) || 0;
       evEl.classList.toggle('cmt-line-highlight', n > 0);
+      _bindCommentHighlight(evEl, _commentsForTarget(items, 'calendar_event', ref => (ref.eventId || ref.id) === eid), cid);
       const open = () => _openPanelForTarget(cid, 'calendar_event', { file: cid, eventId: eid });
       if (evEl.classList.contains('gb-cal-clock-event-slice')) {
         _ensureClockCalendarBadge(evEl, n, open);
@@ -653,6 +708,7 @@
         const key = entryId + '\x00' + colId;
         const n = counts.get(key) || 0;
         td.classList.toggle('cmt-line-highlight', n > 0);
+        _bindCommentHighlight(td, _commentsForTarget(items, 'sheet_cell', ref => ref.entryId === entryId && ref.colId === colId), filePath);
         _ensureBadge(td, counts.get(key) || 0,
           () => _openPanelForTarget(filePath, 'sheet_cell', { file: filePath, entryId, colId }));
       });
@@ -660,7 +716,7 @@
   }
 
   // バッジクリック時: アノテートタブを開いて該当コメントを絞り込む
-  function _openPanelForTarget(filePath, targetKind, targetRef) {
+  function _openPanelForTarget(filePath, targetKind, targetRef, annotationIds) {
     if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
     else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
     else if (typeof switchRightTab === 'function') switchRightTab('annotation');
@@ -670,7 +726,7 @@
     const searchEl = document.getElementById('rp-ann-search');
     if (searchEl) {
       searchEl.value = '';
-      searchEl.dataset.targetFilter = JSON.stringify({ targetPath: filePath, targetKind, targetRef });
+      searchEl.dataset.targetFilter = JSON.stringify({ targetPath: filePath, targetKind, targetRef, annotationIds });
     }
     if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
   }
@@ -890,6 +946,8 @@
   }
 
   function _findNoteLineBlock(el, stopAt) {
+    const row = window.MeldexNoteLogicalRows?.resolveRowAt?.(stopAt, el);
+    if (row) return row;
     let cur = el;
     while (cur && cur !== stopAt) {
       if (cur.nodeType === 1 && cur.parentElement === stopAt) return cur;

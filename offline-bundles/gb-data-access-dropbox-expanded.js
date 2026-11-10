@@ -1348,14 +1348,8 @@
     const match = raw.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) return { frontmatter: {}, body: raw };
     const frontmatter = _yamlLiteObject(match[1]);
-    match[1].split(/\r?\n/).forEach((line) => {
-      if (/^\s/.test(line)) return;
-      const idx = line.indexOf(':');
-      if (idx <= 0) return;
-      const key = line.slice(0, idx).trim();
-      if (!key || Object.prototype.hasOwnProperty.call(frontmatter, key)) return;
-      frontmatter[key] = _parseFrontmatterValue(line.slice(idx + 1));
-    });
+    // Indentless YAML sequences belong to their preceding key. Reading them
+    // again as top-level pairs creates invalid keys such as "- hash" on save.
     return { frontmatter, body: raw.slice(match[0].length) };
   }
 
@@ -3300,9 +3294,10 @@
   async function _resolveSheetDefaultForm(provider, path, preferred) {
     const sheet = _normalizeFolderPath(path);
     let malformedPreferred = null, found = null;
-    const matches = async candidate => {
+    const matches = async (candidate, automatic = false) => {
       try {
         const doc = JSON.parse(await provider.readText(candidate));
+        if (automatic && doc.meldex?.topic_attachment === true) return false;
         return doc.fileType === 'meldex-form' && doc.schema_version === 1
           && _normalizeFolderPath(doc.sheet?.path) === sheet;
       } catch (error) {
@@ -3312,7 +3307,7 @@
     };
     if (preferred && await matches(preferred)) return preferred;
     await _iterateWorkspaceFiles(provider, async candidate => {
-      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate, true)) found = candidate;
     }, '');
     return found || malformedPreferred;
   }
@@ -5302,9 +5297,15 @@
     return -1;
   }
 
-  function _yamlLiteScalar(raw) {
+  function _yamlLiteScalar(raw, anchors) {
     const value = String(raw == null ? '' : raw).trim();
     if (!value) return '';
+    if (/^\*[A-Za-z0-9_-]+$/.test(value)) {
+      const name = value.slice(1);
+      if (!anchors?.has(name)) throw new Error('未解決のYAML参照があるため保存できません');
+      return JSON.parse(JSON.stringify(anchors.get(name)));
+    }
+    if (/^[&*!]/.test(value)) throw new Error('未対応のYAML参照があるため保存できません');
     if (value === '{}') return {};
     if (value === '[]') return [];
     if (value.startsWith('{') && value.endsWith('}')) {
@@ -5313,11 +5314,11 @@
         const idx = _yamlPairIndex(part);
         if (idx <= 0) return;
         const key = part.slice(0, idx).trim().replace(/^['"]|['"]$/g, '');
-        obj[key] = _yamlLiteScalar(part.slice(idx + 1));
+        obj[key] = _yamlLiteScalar(part.slice(idx + 1), anchors);
       });
       return obj;
     }
-    if (value.startsWith('[') && value.endsWith(']')) return _yamlFlowSplit(value.slice(1, -1)).map(_yamlLiteScalar);
+    if (value.startsWith('[') && value.endsWith(']')) return _yamlFlowSplit(value.slice(1, -1)).map(part => _yamlLiteScalar(part, anchors));
     return _parseFrontmatterValue(value);
   }
 
@@ -5356,6 +5357,7 @@
   }
 
   function _yamlLiteObject(text) {
+    const anchors = new Map();
     const lines = _yamlLiteMergeQuotedLines(String(text || '').replace(/\t/g, '  ').split(/\r?\n/))
       .map((raw) => ({ raw, indent: (String(raw || '').match(/^ */) || [''])[0].length, text: String(raw || '').trim() }))
       .filter(line => line.text && !line.text.startsWith('#'));
@@ -5390,7 +5392,9 @@
           continue;
         }
         const key = line.text.slice(0, idx).trim();
-        const rawValue = line.text.slice(idx + 1).trim();
+        let rawValue = line.text.slice(idx + 1).trim();
+        const anchor = rawValue.match(/^&([A-Za-z0-9_-]+)(?:\s+(.*))?$/);
+        if (anchor) rawValue = anchor[2] || '';
         if (/^[>|][+-]?$/.test(rawValue)) {
           const scalar = readBlockScalar(index + 1, line.indent, rawValue[0] === '>');
           obj[key] = scalar.value;
@@ -5398,7 +5402,8 @@
           continue;
         }
         if (rawValue) {
-          obj[key] = _yamlLiteScalar(rawValue);
+          obj[key] = _yamlLiteScalar(rawValue, anchors);
+          if (anchor) anchors.set(anchor[1], obj[key]);
           index += 1;
           continue;
         }
@@ -5407,6 +5412,7 @@
         if (hasChild) {
           const child = parseBlock(index + 1);
           obj[key] = child.value;
+          if (anchor) anchors.set(anchor[1], obj[key]);
           index = child.index;
         } else {
           obj[key] = '';
@@ -5429,7 +5435,7 @@
           continue;
         }
         const idx = _yamlPairIndex(rawValue);
-        let item = idx > 0 ? { [rawValue.slice(0, idx).trim()]: _yamlLiteScalar(rawValue.slice(idx + 1)) } : _yamlLiteScalar(rawValue);
+        let item = idx > 0 ? { [rawValue.slice(0, idx).trim()]: _yamlLiteScalar(rawValue.slice(idx + 1), anchors) } : _yamlLiteScalar(rawValue, anchors);
         index += 1;
         while (index < lines.length && lines[index].indent > baseIndent) {
           const childLine = lines[index];
@@ -5444,7 +5450,7 @@
             continue;
           }
           if (rawChild) {
-            item[key] = _yamlLiteScalar(rawChild);
+            item[key] = _yamlLiteScalar(rawChild, anchors);
             index += 1;
             continue;
           }
@@ -5465,6 +5471,7 @@
     }
 
     const parsed = parseBlock(0);
+    if (parsed.index !== lines.length) throw new Error('シートmetadataの構造が不正なため保存できません');
     return parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value : {};
   }
 

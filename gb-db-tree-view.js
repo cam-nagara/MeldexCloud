@@ -598,7 +598,7 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
   open.textContent = 'トピックを開く';
   open.addEventListener('click', () => {
     const pathValue = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
-    if (typeof selectEntity === 'function') selectEntity(pathValue);
+    _dbOpenConfiguredEntity(pathValue, node.entityName, ctx, open);
   });
   host.appendChild(open);
 }
@@ -773,16 +773,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     actions.appendChild(button);
   };
   action('entity-row-open-btn', 'externalLink', '既定パネルで開く', event => {
-    const panel = getDbViewConfig(dbPath).defaultPanel || 'right-sidebar';
-    const path = row.dataset.meldexEntityPath;
-    const sourceEl = event.currentTarget;
-    if (['right-sidebar', 'float', 'sidebar'].includes(panel)) {
-      const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || ctx.paneId || '';
-      const options = { linkType: 'entity', sourceEl, sourcePaneId };
-      if (typeof openLinkInRightSidebar === 'function') return openLinkInRightSidebar(path, node.entityName, options);
-      if (typeof openLinkInRightPane === 'function') return openLinkInRightPane(path, node.entityName, options);
-    } else if (typeof openLinkInMainPane === 'function') return openLinkInMainPane(path, node.entityName, { linkType: 'entity' });
-    if (typeof selectEntity === 'function') return selectEntity(path);
+    return _dbOpenConfiguredEntity(row.dataset.meldexEntityPath, node.entityName, ctx, event.currentTarget);
   });
   action('entity-row-more-btn', 'moreHorizontal', `トピックのメニュー: ${node.entityName}`,
     event => showDbCardContextMenu(event, dbPath, node.entityName));

@@ -141,14 +141,8 @@
     const match = raw.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) return { frontmatter: {}, body: raw };
     const frontmatter = _yamlLiteObject(match[1]);
-    match[1].split(/\r?\n/).forEach((line) => {
-      if (/^\s/.test(line)) return;
-      const idx = line.indexOf(':');
-      if (idx <= 0) return;
-      const key = line.slice(0, idx).trim();
-      if (!key || Object.prototype.hasOwnProperty.call(frontmatter, key)) return;
-      frontmatter[key] = _parseFrontmatterValue(line.slice(idx + 1));
-    });
+    // Indentless YAML sequences belong to their preceding key. Reading them
+    // again as top-level pairs creates invalid keys such as "- hash" on save.
     return { frontmatter, body: raw.slice(match[0].length) };
   }
 
@@ -2093,9 +2087,10 @@
   async function _resolveSheetDefaultForm(provider, path, preferred) {
     const sheet = _normalizeFolderPath(path);
     let malformedPreferred = null, found = null;
-    const matches = async candidate => {
+    const matches = async (candidate, automatic = false) => {
       try {
         const doc = JSON.parse(await provider.readText(candidate));
+        if (automatic && doc.meldex?.topic_attachment === true) return false;
         return doc.fileType === 'meldex-form' && doc.schema_version === 1
           && _normalizeFolderPath(doc.sheet?.path) === sheet;
       } catch (error) {
@@ -2105,7 +2100,7 @@
     };
     if (preferred && await matches(preferred)) return preferred;
     await _iterateWorkspaceFiles(provider, async candidate => {
-      if (!found && candidate.endsWith('.mel-form') && await matches(candidate)) found = candidate;
+      if (!found && candidate.endsWith('.mel-form') && await matches(candidate, true)) found = candidate;
     }, '');
     return found || malformedPreferred;
   }

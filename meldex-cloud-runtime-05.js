@@ -10692,7 +10692,7 @@
     });
   }
   async function show(options = {}) {
-    const editor = options.editor || document.getElementById('page-content');
+    const editor = options.editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
     const path = editor?.dataset.path;
     // Capture the source before the asynchronous library read can switch the active file.
     const sourceContent = options.registerCurrent && editor ? currentContent(editor) : '';
@@ -13781,8 +13781,7 @@ const GBLayout = (() => {
     _paneMap[node.id] = { node, el: pane, contentEl: content };
     _updatePaneNavButtons(node.id);
 
-    // タブは自然幅 -> ラベル付き最小72px -> アイコンのみ、の順で縮退する。
-    // compact 化してもなお溢れる場合だけ tabsScroll が横スクロールで対応する。
+    // ラベル付き最小72pxでも収まらないタブは、共通の「▼」から選べる。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
         tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
@@ -13790,11 +13789,6 @@ const GBLayout = (() => {
         void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
           tabBar.classList.add('gb-tabs-shrink');
-          void tabsScroll.offsetWidth;
-          if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
-            tabBar.classList.remove('gb-tabs-shrink');
-            tabBar.classList.add('gb-tabs-compact');
-          }
         }
         const iconOnly = tabBar.classList.contains('gb-tabs-compact');
         tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {
@@ -43603,6 +43597,7 @@ const GBLinkRouter = (() => {
     const state = {};
     if (!entry || typeof entry !== 'object') return state;
     if (entry.mediaType) state.mediaType = entry.mediaType;
+    if (entry.viewerUrl) state.viewerUrl = entry.viewerUrl;
     if (entry.calendarFile) state.calendarFile = true;
     if (entry.urlExternal) state.urlExternal = true;
     if (entry.type === 'scriptnote') {
@@ -44287,6 +44282,7 @@ function _bdTabStateForLinkedEntry(entry) {
   const state = {};
   if (!entry || typeof entry !== 'object') return state;
   if (entry.mediaType) state.mediaType = entry.mediaType;
+  if (entry.viewerUrl) state.viewerUrl = entry.viewerUrl;
   if (entry.calendarFile) state.calendarFile = true;
   if (entry.urlExternal) state.urlExternal = true;
   if (entry.type === 'scriptnote') {
@@ -54227,13 +54223,19 @@ class CanvasComponent extends ToolComponent {
   }
 
   activate() {
+    if (!this.el) return false;
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
     if (isPaneActive) {
       // Visible split panes are not deactivated by the layout bridge. Hand off
       // the shared runtime before changing its root so each pane keeps its camera.
       const previous = CanvasComponent._runtimeOwner;
-      if (previous && previous !== this && previous.el) previous.deactivate();
+      if (previous && previous !== this && previous.el) {
+        const display = previous.el.style.display;
+        previous.deactivate();
+        // Visible split editors retain their picture while the other owns input.
+        previous.el.style.display = display;
+      }
       CanvasComponent._runtimeOwner = this;
       _bdSetActiveBoardRootIds(this.el, this.idSuffix);
     }
@@ -54298,7 +54300,9 @@ class CanvasComponent extends ToolComponent {
       if (typeof bdRender === 'function') bdRender();
       if (typeof bdTransform === 'function') bdTransform();
     }
-    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+    // Focus in an owned editor rebinds this runtime. Toolbar rebuilding commits
+    // inline edits, so keep the current toolbar while the text owns focus.
+    if (!this._boardLoadPending && isPaneActive && !bd.editing && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }
@@ -58206,6 +58210,8 @@ function _sn2StopSep() {
       if (!await flush().catch(() => false)) return false;
       if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
       state.disposed = true;
+      state.titleCleanup?.();
+      if (options.parentHost) options.parentHost.replaceChildren();
       clearTimeout(state.timer);
       if (root._meldexEntityDetailController === controller) delete root._meldexEntityDetailController;
       return true;
@@ -58225,6 +58231,7 @@ function _sn2StopSep() {
           return false;
         }
         if (currentSection._linkedFiles && !await currentSection._linkedFiles.dispose()) return false;
+        if (state.disposed || refreshSeq !== state.attachmentRefreshSeq) return false;
         const nextSectionData = {
           ...(state.data || {}),
           entry_attachments: Array.isArray(refreshed?.entry_attachments) ? refreshed.entry_attachments : [],
@@ -58283,6 +58290,9 @@ function _sn2StopSep() {
       root.dataset.meldexEntityDetail = id;
       root.dataset.surface = state.surface;
       root.dataset.path = state.path;
+      state.titleCleanup?.();
+      state.titleCleanup = null;
+      if (options.parentHost) options.parentHost.replaceChildren();
       root.replaceChildren();
       const loading = document.createElement('div');
       loading.className = 'meldex-entity-detail-loading';
@@ -58313,11 +58323,12 @@ function _sn2StopSep() {
           if (typeof selectDatabase === 'function') selectDatabase(parent);
         });
         if (state.surface === 'main') parentButton.id = 'entity-parent-link';
-        root.appendChild(parentButton);
+        (options.parentHost || root).appendChild(parentButton);
       }
 
-      const title = document.createElement('h2');
-      title.className = 'meldex-entity-detail-title';
+      const title = options.titleEl || document.createElement('h2');
+      if (!options.titleEl) title.className = 'meldex-entity-detail-title';
+      else title.classList.add('meldex-entity-detail-header-title');
       title.textContent = entityName(data, state.path);
       title.dataset.e2eId = 'entity-detail-title';
       title.contentEditable = access.readOnly ? 'false' : 'plaintext-only';
@@ -58326,15 +58337,54 @@ function _sn2StopSep() {
       title.setAttribute('aria-multiline', 'false');
       let savedTitle = title.textContent;
       let cancellingTitle = false;
-      title.addEventListener('keydown', event => {
+      const entryId = state.data?.entry_id || state.data?.id
+        || Object.values(state.data?.properties || {}).flat().find(value => value?.entry_id)?.entry_id || '';
+      const renameCtx = options.ctx || (typeof getAllPanes === 'function' ? Object.values(getAllPanes() || {}) : [])
+        .find(ctx => !ctx.destroyed && Object.values(ctx.pivotData?.entities || {}).some(entity =>
+          (entryId && (entity?._id || entity?.entry_id) === entryId)
+          || entity?._entry_path === state.path
+          || Object.values(entity || {}).some(values => Array.isArray(values) && values.some(value => value?.file === state.path))));
+      const renameDbPath = renameCtx?.dbPath || parent;
+      const titleScope = typeof _dbScope === 'function' ? _dbScope(renameDbPath) : '';
+      const titleOwner = window.GBEditorHost?.register(title, {
+        path: state.path, kind: 'entity', label: savedTitle, surface: state.surface,
+        ctx: { viewMode: 'entity', entityPath: state.path, dbPath: renameDbPath },
+        activate: () => { if (typeof historySetScope === 'function') historySetScope(titleScope); },
+        historyScope: () => titleScope, flush,
+        syncDetail: () => { if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.(); },
+      });
+      const updateTitle = event => {
+        if (state.disposed || event.detail?.path !== state.path) return;
+        const editing = title === document.activeElement && title.textContent !== savedTitle && !state.titleSaving;
+        savedTitle = event.detail.name;
+        state.data.entity = savedTitle;
+        if (!editing) title.textContent = savedTitle;
+        if (titleOwner) titleOwner.host.label = savedTitle;
+        options.onTitleChange?.(savedTitle);
+        root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
+          if (option.value === state.path) option.textContent = savedTitle;
+        });
+      };
+      window.addEventListener('meldex:entity-renamed', updateTitle);
+      const titleKeydown = event => {
         if (event.isComposing) return;
+        if ((event.ctrlKey || event.metaKey) && ['z', 'y'].includes(event.key.toLowerCase())
+            && title.textContent === savedTitle && !state.titleSaving) {
+          event.preventDefault(); event.stopPropagation();
+          titleOwner?.activate();
+          const redo = event.key.toLowerCase() === 'y' || event.shiftKey;
+          void (redo ? meldexRedo() : meldexUndo());
+          return;
+        }
         if (event.key === 'Enter' || event.key === 'Escape') {
           event.preventDefault();
+          event.stopPropagation();
           if (event.key === 'Escape') { cancellingTitle = true; title.textContent = savedTitle; state.titleFailed = false; }
           title.blur();
         }
-      });
-      title.addEventListener('blur', () => {
+      };
+      const titleBlur = () => {
+        if (state.titleSaving || state.disposed) return;
         const next = title.textContent.replace(/[\r\n]+/g, ' ').trim();
         if (cancellingTitle || !next || next === savedTitle || root.dataset.readOnly === '1') {
           cancellingTitle = false;
@@ -58347,15 +58397,34 @@ function _sn2StopSep() {
         state.titleSaving = (async () => {
           try {
             if (!await save()) throw new Error('本文を保存できませんでした');
+            const oldName = savedTitle;
             const renamed = await window.GbDbEntryIdentity.rename({
-              path: state.path, dbPath: parent, oldName: savedTitle, newName: next,
-              entryId: state.data?.entry_id || state.data?.id, ctx: options.ctx,
+              path: state.path, dbPath: renameDbPath, oldName: savedTitle, newName: next,
+              entryId, ctx: renameCtx,
             });
             if (renamed?.ok === false) throw new Error('名前を変更できませんでした');
+            if (typeof _dbUndoRename === 'function') _dbUndoRename(renameDbPath, oldName, next, renameCtx,
+              { path: state.path, entryId });
             savedTitle = next;
             state.data.entity = next;
+            options.onTitleChange?.(next);
+            // Retained form editors keep their inputs and undo stack. Only the
+            // enclosing record's display label changes after this rename.
+            root.querySelectorAll('.gb-form-record-nav select option').forEach(option => {
+              if (option.value === state.path) option.textContent = next;
+            });
             // 表示名変更は同じ論理パス・IDを維持する。保存基準だけ取り直す。
-            await refreshAttachmentsOnly();
+            // A display-name change must preserve the live linked editors and
+            // their undo stacks. Refresh only the entry's save baseline.
+            const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
+            if (!state.saving && String(refreshed.page_content || '') === String(state.editor?.dataset.lastSavedMd || '')) {
+              state.data.revision = refreshed.revision;
+              state.data.freetext_etag = refreshed.freetext_etag;
+              if (state.editor) {
+                state.editor.dataset.lastSavedRevision = String(refreshed.revision);
+                state.editor.dataset.lastSavedEtag = refreshed.freetext_etag || '';
+              }
+            }
             return true;
           } catch (error) {
             state.titleFailed = true;
@@ -58367,9 +58436,17 @@ function _sn2StopSep() {
             state.titleSaving = null;
           }
         })();
-      });
+      };
+      title.addEventListener('keydown', titleKeydown);
+      title.addEventListener('blur', titleBlur);
+      state.titleCleanup = () => {
+        window.removeEventListener('meldex:entity-renamed', updateTitle);
+        titleOwner?.dispose();
+        title.removeEventListener('keydown', titleKeydown); title.removeEventListener('blur', titleBlur);
+        if (options.titleEl) { title.contentEditable = 'false'; title.removeAttribute('role'); title.removeAttribute('aria-label'); title.classList.remove('meldex-entity-detail-header-title'); }
+      };
       if (state.surface === 'main') title.id = 'entity-title';
-      root.appendChild(title);
+      if (!options.titleEl) root.appendChild(title);
 
       const actions = document.createElement('div');
       actions.className = 'meldex-entity-detail-actions';
@@ -69111,6 +69188,8 @@ function _globalPaneState() {
 }
 
 function _currentPaneState() {
+  const editorCtx = globalThis.GBEditorHost?.get()?.ctx;
+  if (editorCtx && !editorCtx.destroyed) return editorCtx;
   if (_activePane) return _activePane;
   return _globalPaneState();
 }
@@ -69296,7 +69375,9 @@ if (typeof window !== 'undefined') {
     const descriptor = describeOptionTarget(rawContext, options);
     const caption = header.querySelector('.gb-context-target-header__caption');
     const name = header.querySelector('.gb-context-target-header__name');
-    if (caption) caption.textContent = String(options?.caption || '対象');
+    const editor = global.GBEditorHost?.get();
+    const sourceCaption = global.GBEditorHost ? (editor?.surface === 'subpanel' ? '対象 サブ' : '対象 メイン') : '対象';
+    if (caption) caption.textContent = String(options?.caption || sourceCaption);
     if (name) {
       name.textContent = descriptor.label;
       name.title = descriptor.title || descriptor.label;
@@ -69317,6 +69398,296 @@ if (typeof window !== 'undefined') {
     isCurrentRevision: isCurrentRevision,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-editor-host.js === */
+;
+/* Editor ownership is independent of focus in an inspector, menu, or rail. */
+(function () {
+  'use strict';
+  const hosts = new Map();
+  let current = null, generation = 0, syncTimer = null, pointerPending = false, needsSync = false;
+  function mainStamp() {
+    const paneId = window.GBPaneDefaultLayout?.resolveMainPaneId?.({ contentOnly: true });
+    const tab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+    return tab ? [tab.id, tab.type, tab.path || ''].join('|') : '';
+  }
+  function get() {
+    if (!current?.root?.isConnected || current.root.closest('[hidden]') || !current.root.getClientRects().length) return null;
+    if (current.surface === 'subpanel' && current.mainStamp !== mainStamp()) {
+      current = null; generation++; return null;
+    }
+    if (current.resolveCtx) current.ctx = current.resolveCtx();
+    if (current.resolveComponent) current.component = current.resolveComponent();
+    if (current.auto) {
+      const paneId = current.root.closest('.gb-pane')?.dataset.paneId;
+      const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+      if (tab?.type !== 'page') return null;
+      if (current.path !== tab.path) { current = null; generation++; return null; }
+    }
+    return current;
+  }
+  function element(id) {
+    const host = get();
+    if (host?.root.dataset.editorLocalId === id) return host.root;
+    return host?.root.querySelector('[data-editor-local-id="' + id + '"]') || document.getElementById(id);
+  }
+  function ownerOf(element) {
+    const host = hosts.get(element?.closest?.('[data-editor-host]'));
+    if (host?.resolveCtx) host.ctx = host.resolveCtx();
+    if (host?.resolveComponent) host.component = host.resolveComponent();
+    return host || null;
+  }
+  function ownsComponent(component) {
+    return !!component && [...hosts.values()].some(host => host.component === component);
+  }
+  function bindState(host) {
+    if (host.resolveCtx) host.ctx = host.resolveCtx();
+    host.activate?.();
+    if (host.kind === 'page') {
+      const editor = host.root.querySelector('[data-editor-local-id="page-content"],#page-content');
+      if (editor && typeof rtTarget !== 'undefined') {
+        rtTarget = editor;
+        if (host.range && editor.contains(host.range.commonAncestorContainer)) rtSavedSelection = host.range.cloneRange();
+        else if (!rtSavedSelection || !editor.contains(rtSavedSelection.commonAncestorContainer)) {
+          const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+          rtSavedSelection = range;
+        }
+      }
+    }
+    if (host.ctx && typeof state !== 'undefined') {
+      for (const [key, globalKey] of Object.entries({ dbPath: 'currentDbPath', pagePath: 'currentPagePath', entityPath: 'currentEntityPath', boardPath: 'currentBoardPath', pivotData: 'pivotData', viewMode: 'view' })) {
+        if (host.ctx[key] != null) state[globalKey] = host.ctx[key];
+      }
+    }
+    if (typeof state !== 'undefined' && !host.ctx) state.view = host.kind;
+  }
+  function sync() {
+    const host = get();
+    if (!host) return;
+    needsSync = false;
+    bindState(host);
+    const path = host.path;
+    window.GBOptionTargetContext?.set({ path: host.kind === 'database' ? (window.GbBacklinks?.dbFolderNotePath?.(path) || path) : path,
+      contextPath: path, kind: host.kind }, 'editor-host');
+    if (host.syncDetail) host.syncDetail();
+    else if (typeof _syncDetailPanel === 'function') void _syncDetailPanel(host.label || path.split('/').pop(), path, host.kind);
+    const scope = host.historyScope?.();
+    if (scope && typeof historySetScope === 'function' && (typeof _historyActiveScope === 'undefined' || scope !== _historyActiveScope)) historySetScope(scope);
+    if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.syncFollowingVersionTabs?.();
+    for (const id of ['rp-detail', 'rp-history', 'rp-tags', 'rp-information']) {
+      window.GBOptionTargetContext?.renderHeader(document.getElementById(id), null, { caption: host.surface === 'subpanel' ? '対象 サブ' : '対象 メイン' });
+    }
+  }
+  function activate(host) {
+    if (!host?.root?.isConnected) return;
+    const changed = current !== host;
+    current = host;
+    host.mainStamp = mainStamp();
+    // Only runtime binding here: no remount, DOM replacement, or focus change.
+    bindState(host);
+    if (!changed) return;
+    generation++;
+    // Invalidate an older inspector load before this pointer's click executes.
+    if (typeof _detailSyncSeq !== 'undefined') _detailSyncSeq++;
+    needsSync = true;
+    clearTimeout(syncTimer);
+    // Pointer activation waits for click; programmatic activation uses the next task.
+    if (!pointerPending) syncTimer = setTimeout(sync, 0);
+  }
+  function register(root, options) {
+    const host = { ...options, root, editorId: options.editorId || 'editor-' + (hosts.size + 1) };
+    root.dataset.editorHost = host.editorId;
+    hosts.set(root, host);
+    return { host, activate: () => activate(host), dispose() {
+      hosts.delete(root);
+      delete root.dataset.editorHost;
+      if (current === host) { current = null; generation++; }
+    } };
+  }
+  function noteEditor(root) { return root.querySelector('[data-editor-local-id="page-content"],#page-content'); }
+  async function flushNote(root) {
+    const editor = noteEditor(root);
+    if (!editor?.dataset.path) return true;
+    await _runNoteAutoSave(editor);
+    return !window.MeldexNoteSaveAdapter?.isConflictPending?.(editor.dataset.path)
+      && window.MeldexNoteSaveAdapter.isUnchanged(editor, _noteMarkdownFromEditor(editor));
+  }
+  function reloadNote(root, label, path) {
+    return openPage(label, path, { containerEl: noteEditor(root), skipShowView: true, skipGlobalUi: true,
+      skipStateView: true, skipNavPush: true, skipSaveLastView: true, skipRecent: true,
+      skipHighlight: true, skipHistoryScope: true, skipAutoVersion: true });
+  }
+  function fromEvent(event) {
+    if (event.type === 'pointerdown') pointerPending = true;
+    const el = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+    const root = el?.closest('[data-editor-host]');
+    if (root && hosts.has(root)) {
+      const host = hosts.get(root);
+      if (host.auto) {
+        const paneId = root.closest('.gb-pane')?.dataset.paneId;
+        const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+        if (tab?.type !== 'page') return;
+        if (host.path !== tab.path) host.range = null;
+        host.path = tab.path; host.label = tab.label;
+        host.ctx = typeof getPaneContext === 'function' ? getPaneContext(paneId) : null;
+        if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
+      }
+      activate(host); return;
+    }
+    const entity = el?.closest('.meldex-entity-detail[data-path]');
+    const pane = el?.closest('.gb-pane');
+    if (!pane || pane.matches('.gb-pane-role-left-sidebar,.gb-pane-role-right-sidebar,.gb-pane-role-chat-sidebar')) return;
+    const paneId = pane.dataset.paneId;
+    const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+    if (!entity && (!tab?.path || ['detail', 'history', 'version', 'subpanel', 'outliner'].includes(tab.type))) return;
+    if (!entity && tab?.type === 'page') {
+      const noteRoot = pane.querySelector('#page-view');
+      if (noteRoot) {
+        let host = hosts.get(noteRoot);
+        if (!host) host = register(noteRoot, { auto: true, kind: 'page', path: tab.path, label: tab.label,
+          surface: 'main', ctx: typeof getPaneContext === 'function' ? getPaneContext(paneId) : null,
+          flush: () => flushNote(noteRoot), reload: () => reloadNote(noteRoot, host.label, host.path),
+          historyScope: () => 'page:' + String(host.path).replace(/^\/+/, '') }).host;
+        host.path = tab.path;
+        if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
+        activate(host);
+        return;
+      }
+    }
+    // Normal panes already own their runtime. Release only the nested owner.
+    if (current) { current = null; generation++; clearTimeout(syncTimer); }
+    if (entity) {
+      window.GBOptionTargetContext?.set({ path: entity.dataset.path, kind: 'entity' }, 'topic-parent');
+    }
+  }
+  function toolbar(templateId, suffix) {
+    const template = document.getElementById(templateId);
+    if (!template) throw new Error('アプリのツールバーを読み込めませんでした: ' + templateId);
+    const bar = template.cloneNode(true);
+    // Measurement state and generated overflow buttons belong to the source instance.
+    bar.classList.remove('gb-toolbar-overflow-host');
+    bar.querySelectorAll('.gb-toolbar-overflow-button').forEach(el => el.remove());
+    bar.querySelectorAll('.gb-tbo-hidden').forEach(el => el.classList.remove('gb-tbo-hidden'));
+    for (const el of [bar, ...bar.querySelectorAll('[id]')]) {
+      if (!el.id) continue;
+      el.dataset.editorLocalId = el.id;
+      el.id += '-' + suffix;
+    }
+    bar.style.display = 'flex';
+    bar.classList.add('gb-editor-host-toolbar');
+    bar.addEventListener('mousedown', event => {
+      if (event.target.closest('button')) {
+        if (!get() && typeof rtCaptureSelectionFromToolbar === 'function') rtCaptureSelectionFromToolbar();
+        event.preventDefault();
+      }
+    });
+    if (typeof replaceIcons === 'function') replaceIcons(bar);
+    return bar;
+  }
+  async function flushSurface(surface) {
+    for (const host of hosts.values()) if (host.surface === surface && await host.flush?.() === false) return false;
+    return true;
+  }
+  const normalizedPath = path => String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  function matching(path) {
+    const keyFor = value => window.MeldexDocumentSaveCoordinator?.documentKeyForPath?.(value);
+    const key = keyFor(path);
+    return [...hosts.values()].filter(host => host.root.isConnected
+      && (normalizedPath(host.path) === normalizedPath(path) || (key && keyFor(host.path) === key)));
+  }
+  async function flushPath(path) {
+    const targets = matching(path);
+    for (const host of targets) {
+      const result = await withBoardRuntime(host, () => host.flush?.());
+      if (result === false) throw new Error('対象ファイルの未保存内容を保存できませんでした');
+    }
+    return targets.length;
+  }
+  async function withBoardRuntime(host, operation) {
+    if (host.kind !== 'board') return operation();
+    const previous = get();
+    activate(host);
+    const started = generation;
+    try { return await operation(); }
+    finally {
+      if (current === host && generation === started && previous !== host) {
+        if (previous) activate(previous);
+        else returnToMain();
+      }
+    }
+  }
+  async function reloadPath(path) {
+    let count = 0;
+    for (const host of matching(path)) {
+      if (!host.reload) continue;
+      const result = await withBoardRuntime(host, () => host.reload({ skipFlush: true }));
+      if (result === false) throw new Error('復元後のファイルを再読込できませんでした');
+      count++;
+    }
+    return count;
+  }
+  function returnToMain() {
+    const host = [...hosts.values()].find(h => h.surface !== 'subpanel' && h.root.isConnected && !h.root.closest('[hidden]') && h.root.getClientRects().length);
+    if (host) {
+      if (host.auto) {
+        const paneId = host.root.closest('.gb-pane')?.dataset.paneId;
+        const tab = GBTabs.getActiveTab(paneId);
+        if (tab?.type === 'page') {
+          host.path = tab.path; host.label = tab.label;
+          host.ctx = typeof getPaneContext === 'function' ? getPaneContext(paneId) : null;
+          if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
+        }
+      }
+      const paneId = host.root.closest('.gb-pane')?.dataset.paneId;
+      if (paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(paneId, { skipCallback: true });
+      activate(host);
+    }
+    else {
+      current = null; generation++;
+      const paneId = window.GBPaneDefaultLayout?.resolveMainPaneId?.({ contentOnly: true });
+      if (paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(paneId, { sync: true });
+    }
+  }
+  function onPathRename(oldPath, newPath, options = {}) {
+    const normalize = path => String(path || '').replace(/\\/g, '/').replace(/\/$/, '');
+    const before = normalize(oldPath), after = normalize(newPath);
+    if (!before || !after) return;
+    const map = path => normalize(path) === before ? after : normalize(path).startsWith(before + '/') ? after + normalize(path).slice(before.length) : path;
+    for (const host of hosts.values()) {
+      const next = map(host.path);
+      if (next === host.path && host.path !== before) continue;
+      host.path = next;
+      if (options.label && next === after) host.label = options.label;
+      if (host.ctx) for (const key of ['pagePath', 'dbPath', 'entityPath', 'boardPath']) {
+        if (host.ctx[key]) host.ctx[key] = map(host.ctx[key]);
+      }
+      host.root.querySelectorAll('[data-path]').forEach(el => { el.dataset.path = map(el.dataset.path); });
+      Promise.resolve(host.onPathRename?.(oldPath, newPath)).catch(error => {
+        if (typeof showStatus === 'function') showStatus('移動後のファイルを確認できませんでした: ' + error.message, true);
+      });
+      host.mainStamp = mainStamp();
+    }
+  }
+  document.addEventListener('pointerdown', fromEvent, true);
+  document.addEventListener('focusin', fromEvent, true);
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    for (const host of hosts.values()) {
+      const editor = host.root.querySelector('[data-editor-local-id="page-content"],#page-content');
+      if (editor?.contains(range.commonAncestorContainer)) host.range = range.cloneRange();
+    }
+  });
+  for (const type of ['click', 'pointerup', 'pointercancel']) document.addEventListener(type, () => {
+    pointerPending = false;
+    clearTimeout(syncTimer);
+    if (get() && needsSync) syncTimer = setTimeout(sync, 0);
+  }, true);
+  window.GBEditorHost = { get, ownerOf, ownsComponent, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
+})();
 
 ;
 
@@ -69873,6 +70244,7 @@ async function _flushOpenScriptNoteVersionTarget(path) {
 }
 
 async function _flushOpenVersionTarget(path, type) {
+  await globalThis.GBEditorHost?.flushPath?.(path);
   const flushed = await _flushOpenAppVersionTarget(path, '');
   if (_isScriptNoteVersionPath(path)) {
     return flushed + await _flushOpenScriptNoteVersionTarget(path);
@@ -69882,6 +70254,7 @@ async function _flushOpenVersionTarget(path, type) {
 
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
+  if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
   for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
@@ -70400,6 +70773,8 @@ function renderDiff(modal = null) {
 
 // 現在のビューのパスとタイプを取得
 function _getCurrentVersionTarget() {
+  const editor = globalThis.GBEditorHost?.get();
+  if (editor) return { path: editor.path, type: ['database', 'calendar'].includes(editor.kind) ? 'db' : editor.kind === 'folder' ? 'folder' : 'file' };
   let path = '', type = 'file';
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
     ? GBTabs.getActiveTab(GBLayout.activePane)
@@ -70911,6 +71286,10 @@ function historySetScope(scope) {
 }
 
 function _historyScopeDisplayName(scope) {
+  if (String(scope || '').startsWith('form:')) {
+    const host = globalThis.GBEditorHost?.get();
+    return host?.kind === 'form-app' && host.historyScope?.() === scope ? (host.label || 'フォーム') : 'フォーム';
+  }
   const raw = scope ? scope.split(':').slice(1).join(':') : '';
   // パスの場合はファイル名のみ表示
   return raw.includes('/') ? raw.split('/').pop() : raw;
@@ -71477,6 +71856,9 @@ function _meldexScriptNoteTabHistoryScope(tab) {
 function _meldexScheduleTabHistoryScope(tab) {
   if (typeof getComponentInstance !== 'function' || typeof _schedHistoryScope !== 'function') return '';
   const comp = getComponentInstance(tab?.id);
+  const embed = comp?._surface === 'productionTasks' && comp._productionTaskState?.embed;
+  const path = embed?.getCurrentPath?.();
+  if (path) return typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(path) : 'db:' + String(path).replace(/\\/g, '/');
   return comp ? _schedHistoryScope(comp) : '';
 }
 function _meldexPageTabHistoryScope(tab) {
@@ -71525,6 +71907,8 @@ function _meldexActiveTabForPane(paneId) {
 // 戻り値 null は「このタブ種別は履歴スコープを持たない（道具パネル等）」ことを示し、
 // 呼び出し側は現在の _historyActiveScope をそのまま維持すること。
 function _meldexResolveActiveTabHistoryScope(paneId) {
+  const editor = globalThis.GBEditorHost?.get();
+  if (editor && !paneId) return editor.historyScope?.() || null;
   const tab = _meldexActiveTabForPane(paneId);
   if (!tab || !tab.type) return null;
   const resolver = _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS[tab.type];
@@ -71676,8 +72060,9 @@ async function _meldexPrepareHistoryScopeTarget(scope) {
    シートがアクティブな時だけ系統(B)へルーティングするよう厳密化した。
    ============================== */
 function _meldexProductionEmbedHistoryScope() {
-  if (typeof _activeCalendarShortcutComponent !== 'function') return '';
-  const component = _activeCalendarShortcutComponent();
+  const editor = globalThis.GBEditorHost?.get();
+  const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
+    : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
   if (!component || component._surface !== 'productionTasks') return '';
   const embed = component._productionTaskState && component._productionTaskState.embed;
   const path = embed && typeof embed.getCurrentPath === 'function' ? embed.getCurrentPath() : '';
@@ -71697,8 +72082,9 @@ const _MELDEX_SCHEDULE_SETTINGS_HISTORY_SCOPE = 'calendar:settings';
 // （制作管理タスクリスト等、productionTasks）を表示していない場合にそのコンポーネントを返す。
 // productionTasks 面は上の _meldexProductionEmbedHistoryScope() が別途処理するため対象外にする。
 function _meldexScheduleActiveComponent() {
-  if (typeof _activeCalendarShortcutComponent !== 'function') return null;
-  const component = _activeCalendarShortcutComponent();
+  const editor = globalThis.GBEditorHost?.get();
+  const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
+    : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
   if (!component || component._surface === 'productionTasks') return null;
   return component;
 }
@@ -71722,6 +72108,12 @@ function _meldexCalendarSheetActive() {
 }
 
 function _meldexUndoRedoContext() {
+  const editor = globalThis.GBEditorHost?.get();
+  if (editor) {
+    if (editor.kind === 'board') return 'board';
+    if (editor.kind === 'calendar') return _meldexProductionEmbedHistoryScope() ? 'embedded-sheet' : 'schedule';
+    return 'history';
+  }
   if (_meldexProductionEmbedHistoryScope()) return 'embedded-sheet';
   if (_meldexScheduleActiveComponent()) return 'schedule';
   if (typeof state !== 'undefined' && state && state.view === 'board') return 'board';
@@ -71767,7 +72159,7 @@ async function meldexUndo() {
   if (ctx === 'schedule') return _meldexScheduleUndo();
   if (ctx === 'calendar') { if (typeof _calUndo === 'function') return _calUndo(); return false; }
   if (typeof historyUndo !== 'function') return;
-  const scope = _historyActiveScope;
+  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
   // 通常は _historyActiveScope が既にアクティブタブへ追随済み（Step2）のため
   // ここでの切替は基本的に発生しない。念のための保険（例: スコープ同期漏れ）。
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
@@ -71784,7 +72176,7 @@ async function meldexRedo() {
   if (ctx === 'schedule') return _meldexScheduleRedo();
   if (ctx === 'calendar') { if (typeof _calRedo === 'function') return _calRedo(); return false; }
   if (typeof historyRedo !== 'function') return;
-  const scope = _historyActiveScope;
+  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
     const prep = await _meldexPrepareHistoryScopeTarget(scope);
     if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないためやり直せません', true); return; }
@@ -71860,11 +72252,27 @@ function _meldexScheduleCanRedo() {
 // 全ツールバー・履歴パネルの取り消し・やり直しボタンの有効/無効を一括更新する。
 // 目印は data-undo-button / data-redo-button。ノート・自由記述欄（ブラウザ標準undo）は
 // 判定手段が無いため対象外＝常時有効のまま（この属性を付けない）。
+function _meldexHistoryButtonCan(button, direction, fallback) {
+  const owner = globalThis.GBEditorHost?.ownerOf?.(button);
+  const paneId = button.closest?.('.gb-pane')?.dataset.paneId;
+  if (!owner && (!paneId || (typeof GBLayout !== 'undefined' && paneId === GBLayout.activePane && !globalThis.GBEditorHost?.get()))) return fallback;
+  const scope = owner ? owner.historyScope?.() : _meldexResolveActiveTabHistoryScope(paneId);
+  if (scope == null) return fallback;
+  const ctx = owner?.ctx || (typeof getPaneContext === 'function' ? getPaneContext(paneId) : null);
+  if (ctx?.pivotData?.calendar_db && ctx.viewMode === 'calendar'
+      && (typeof getCalendarMode !== 'function' || getCalendarMode(ctx.dbPath) !== 'timeline')) {
+    if (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy) return false;
+    return direction === 'undo' ? typeof _calUndoStack !== 'undefined' && _calUndoStack.length > 0
+      : typeof _calRedoStack !== 'undefined' && _calRedoStack.length > 0;
+  }
+  const can = direction === 'undo' ? historyCanUndo : historyCanRedo;
+  return can(scope) || (String(scope).startsWith('schedule:') && can(_MELDEX_SCHEDULE_SETTINGS_HISTORY_SCOPE));
+}
 function updateUndoRedoButtonStates() {
   const canUndo = meldexCanUndo();
   const canRedo = meldexCanRedo();
-  document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !canUndo; });
-  document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !canRedo; });
+  document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'undo', canUndo); });
+  document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'redo', canRedo); });
 }
 /* Desktop/Cloud間で個人または共有ワークスペースの復元ポイント方針をCAS同期する。 */
 (function (global) {
@@ -92919,6 +93327,8 @@ async function resetLayoutToDefault() {
   }
 
   async function reloadCurrentOpenFile(event) {
+    const editor = window.GBEditorHost?.get();
+    if (editor?.reload) return editor.reload();
     const current = _currentTarget(event);
     if (!event || !DB_VIEW_TYPES.has(current.tab?.type)) return _reloadCurrentOpenFile(event, current);
     const key = _tabPath(current.tab);
@@ -92975,6 +93385,8 @@ async function resetLayoutToDefault() {
   }
 
   function _currentRevealPath(hint, event) {
+    const editor = window.GBEditorHost?.get();
+    if (editor) return editor.path;
     const tab = _activeTab(event);
     const type = hint || tab?.type || '';
     if (type === 'entity') return _tabPath(tab, 'entityPath') || _statePath('currentEntityPath');
@@ -102942,7 +103354,7 @@ const MeldexAutoLink = (() => {
   var CHANGE_EVENT = 'meldex:note-writing-mode-changed';
 
   function _pageContent() {
-    return document.getElementById('page-content');
+    return (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
   }
 
   function isVertical(editable) {
@@ -103089,7 +103501,7 @@ const MeldexAutoLink = (() => {
   /* ---------------- 状態遷移（唯一の入口） ---------------- */
 
   function _syncToolbarButton(vertical) {
-    var btn = document.getElementById('btn-note-vertical');
+    var btn = (window.GBEditorHost?.element('btn-note-vertical') || document.getElementById('btn-note-vertical'));
     if (!btn) return;
     // アイコンは「クリック後の動作」を示す: 横書き中→kanban（縦書きにする）、縦書き中→textAlignStart（横書きに戻す）
     var iconName = vertical ? 'textAlignStart' : 'kanban';
@@ -103101,7 +103513,7 @@ const MeldexAutoLink = (() => {
   }
 
   function _syncTocSeparator(vertical) {
-    var handle = document.getElementById('note-toc-resize');
+    var handle = (window.GBEditorHost?.element('note-toc-resize') || document.getElementById('note-toc-resize'));
     if (!handle) return;
     // 横書き側の文字列は既存契約（E2E が厳密一致で検証）なので変更しない
     handle.setAttribute('aria-orientation', vertical ? 'horizontal' : 'vertical');
@@ -103414,6 +103826,396 @@ const MeldexAutoLink = (() => {
     attach: attach,
     cleanup: cleanup,
   };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-web-embeds.js === */
+;
+/* gb-web-embeds.js — 動画・SNSポストの共有リンクを表示時だけ埋め込みへ展開する。
+ *
+ * 保存データ（Markdown本文）は変えない。描画したHTMLに contenteditable=false の
+ * .gb-web-embed 要素を足すだけで、htmlToMd はこの要素を読み飛ばす。
+ * - ノート本文: URLだけの行（素のURL / [URL](URL)）の下に表示する（mdToHtml・貼り付け・入力時）。
+ * - チャット: 発言内の対応リンク（最大3件）を段落の下に表示する。
+ * 外部スクリプトはページへ入れず、サムネイル画像か各サービス公式の埋め込みiframeだけを使う。
+ * 動画はサムネイル（またはカード）を押した時に初めてプレーヤーを読み込む。
+ * 埋め込み要素はテキストノードを持たない（本文検索・行数え・コピーへ混ざらない）。
+ */
+(function (global) {
+  'use strict';
+
+  const MAX_CHAT_EMBEDS = 3;
+  const PROVIDER_LABELS = {
+    youtube: 'YouTube', niconico: 'ニコニコ動画', vimeo: 'Vimeo', dailymotion: 'Dailymotion',
+    tiktok: 'TikTok', x: 'X', instagram: 'Instagram', bluesky: 'Bluesky', threads: 'Threads',
+    spotify: 'Spotify', soundcloud: 'SoundCloud',
+  };
+
+  function _host(url) {
+    return String(url.hostname || '').toLowerCase().replace(/^(www|m|mobile)\./, '');
+  }
+
+  function _youtubeStart(url) {
+    const raw = url.searchParams.get('t') || url.searchParams.get('start') || '';
+    if (/^\d+$/.test(raw)) return Number(raw);
+    const m = raw.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+    if (!m || !raw) return 0;
+    return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);
+  }
+
+  function _isDarkTheme() {
+    try {
+      const doc = global.document;
+      const bg = global.getComputedStyle?.(doc.body || doc.documentElement)?.backgroundColor || '';
+      const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (!m) return false;
+      return (0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3])) < 128;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 共有URLを解析する。対応外・不正な形式は null。
+  // 返す src/thumbnail は検証済みIDだけから組み立てる（入力URLの断片をそのまま埋めない）。
+  function parse(rawUrl) {
+    const text = String(rawUrl || '').trim();
+    if (!/^https?:\/\/\S+$/i.test(text) || text.length > 2048) return null;
+    let url;
+    try { url = new URL(text); } catch (_) { return null; }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    const host = _host(url);
+    const parts = url.pathname.split('/').filter(Boolean);
+    const base = { url: url.href, provider: '', kind: '', title: '' };
+
+    // YouTube
+    if (host === 'youtube.com' || host === 'music.youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
+      let id = '';
+      let shorts = false;
+      if (host === 'youtu.be') id = parts[0] || '';
+      else if (parts[0] === 'watch') id = url.searchParams.get('v') || '';
+      else if (['shorts', 'live', 'embed', 'v'].includes(parts[0])) { id = parts[1] || ''; shorts = parts[0] === 'shorts'; }
+      if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+      const start = _youtubeStart(url);
+      return { ...base, provider: 'youtube', kind: 'video', id, aspect: shorts ? 'portrait' : 'wide',
+        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+        src: `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0${start ? '&start=' + start : ''}` };
+    }
+    // ニコニコ動画
+    if (host === 'nicovideo.jp' || host === 'sp.nicovideo.jp' || host === 'nico.ms') {
+      const id = host === 'nico.ms' ? (parts[0] || '') : (parts[0] === 'watch' ? (parts[1] || '') : '');
+      const m = id.match(/^(sm|nm|so)(\d{1,12})$/);
+      if (!m) return null;
+      return { ...base, provider: 'niconico', kind: 'video', id, aspect: 'wide',
+        thumbnail: m[1] === 'sm' ? `https://nicovideo.cdn.nimg.jp/thumbnails/${m[2]}/${m[2]}` : '',
+        src: `https://embed.nicovideo.jp/watch/${id}?autoplay=1` };
+    }
+    // Vimeo
+    if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+      const idIndex = parts.findIndex(p => /^\d{3,12}$/.test(p));
+      if (idIndex < 0) return null;
+      const id = parts[idIndex];
+      const hash = /^[0-9a-f]{6,20}$/i.test(parts[idIndex + 1] || '') ? parts[idIndex + 1] : (url.searchParams.get('h') || '');
+      const safeHash = /^[0-9a-f]{6,20}$/i.test(hash) ? hash : '';
+      return { ...base, provider: 'vimeo', kind: 'video', id, aspect: 'wide', thumbnail: '',
+        src: `https://player.vimeo.com/video/${id}?autoplay=1${safeHash ? '&h=' + safeHash : ''}` };
+    }
+    // Dailymotion
+    if (host === 'dailymotion.com' || host === 'dai.ly') {
+      const id = host === 'dai.ly' ? (parts[0] || '') : (parts[0] === 'video' ? String(parts[1] || '').split('_')[0] : '');
+      if (!/^[a-zA-Z0-9]{5,12}$/.test(id)) return null;
+      return { ...base, provider: 'dailymotion', kind: 'video', id, aspect: 'wide',
+        thumbnail: `https://www.dailymotion.com/thumbnail/video/${id}`,
+        src: `https://geo.dailymotion.com/player.html?video=${id}&autoplay=1` };
+    }
+    // TikTok
+    if (host === 'tiktok.com') {
+      const idx = parts.indexOf('video');
+      const id = idx >= 0 ? (parts[idx + 1] || '') : '';
+      if (!/^\d{8,25}$/.test(id)) return null;
+      return { ...base, provider: 'tiktok', kind: 'video', id, aspect: 'portrait', thumbnail: '',
+        src: `https://www.tiktok.com/player/v1/${id}?autoplay=1` };
+    }
+    // X / Twitter
+    if (host === 'x.com' || host === 'twitter.com') {
+      const idx = parts.findIndex(p => p === 'status' || p === 'statuses');
+      const id = idx >= 0 ? (parts[idx + 1] || '') : '';
+      if (!/^\d{5,25}$/.test(id)) return null;
+      return { ...base, provider: 'x', kind: 'post', id, height: 520,
+        src: `https://platform.twitter.com/embed/Tweet.html?id=${id}&dnt=true&lang=ja${_isDarkTheme() ? '&theme=dark' : ''}` };
+    }
+    // Instagram
+    if (host === 'instagram.com') {
+      const idx = parts.findIndex(p => p === 'p' || p === 'reel' || p === 'reels' || p === 'tv');
+      const code = idx >= 0 ? (parts[idx + 1] || '') : '';
+      if (!/^[A-Za-z0-9_-]{5,40}$/.test(code)) return null;
+      const type = parts[idx] === 'reels' ? 'reel' : parts[idx];
+      return { ...base, provider: 'instagram', kind: 'post', id: code, height: 600,
+        src: `https://www.instagram.com/${type}/${code}/embed/` };
+    }
+    // Bluesky
+    if (host === 'bsky.app') {
+      if (parts[0] !== 'profile' || parts[2] !== 'post') return null;
+      const actor = decodeURIComponent(parts[1] || '');
+      const rkey = parts[3] || '';
+      if (!/^[a-z0-9]{6,20}$/i.test(rkey)) return null;
+      const isDid = /^did:(plc|web):[A-Za-z0-9._:-]{3,200}$/.test(actor);
+      if (!isDid && !/^[A-Za-z0-9.-]{3,253}$/.test(actor)) return null;
+      return { ...base, provider: 'bluesky', kind: 'post', id: rkey, actor, height: 420,
+        needsResolve: !isDid,
+        src: isDid ? `https://embed.bsky.app/embed/${actor}/app.bsky.feed.post/${rkey}` : '' };
+    }
+    // Threads
+    if (host === 'threads.net' || host === 'threads.com') {
+      const user = parts[0] || '';
+      const code = parts[1] === 'post' ? (parts[2] || '') : '';
+      if (!/^@[A-Za-z0-9._]{1,40}$/.test(user) || !/^[A-Za-z0-9_-]{5,40}$/.test(code)) return null;
+      return { ...base, provider: 'threads', kind: 'post', id: code, height: 560,
+        src: `https://www.threads.com/${user}/post/${code}/embed` };
+    }
+    // Spotify
+    if (host === 'open.spotify.com') {
+      const rest = /^intl-[a-z-]+$/i.test(parts[0] || '') ? parts.slice(1) : parts;
+      const type = rest[0] || '';
+      const id = rest[1] || '';
+      if (!['track', 'album', 'playlist', 'episode', 'show', 'artist'].includes(type) || !/^[A-Za-z0-9]{10,40}$/.test(id)) return null;
+      return { ...base, provider: 'spotify', kind: 'audio', id, height: (type === 'track' || type === 'episode') ? 152 : 352,
+        src: `https://open.spotify.com/embed/${type}/${id}` };
+    }
+    // SoundCloud
+    if (host === 'soundcloud.com') {
+      if (parts.length < 2 || ['discover', 'search', 'you', 'stream', 'upload', 'pages'].includes(parts[0])) return null;
+      if (!parts.every(p => /^[A-Za-z0-9_.-]+$/.test(p))) return null;
+      const clean = `https://soundcloud.com/${parts.join('/')}`;
+      return { ...base, provider: 'soundcloud', kind: 'audio', id: parts.join('/'), height: parts[1] === 'sets' ? 450 : 166,
+        src: `https://w.soundcloud.com/player/?url=${encodeURIComponent(clean)}&visual=false` };
+    }
+    return null;
+  }
+
+  function _labelFor(info) {
+    return PROVIDER_LABELS[info.provider] || info.provider;
+  }
+
+  function _makeFrame(info, src) {
+    const doc = global.document;
+    const frame = doc.createElement('iframe');
+    frame.className = 'gb-web-embed-frame';
+    frame.src = src;
+    frame.loading = 'lazy';
+    frame.referrerPolicy = 'strict-origin-when-cross-origin';
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation');
+    frame.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write');
+    frame.setAttribute('allowfullscreen', '');
+    frame.title = `${_labelFor(info)}の埋め込み`;
+    if (info.kind !== 'video' && info.height) frame.style.height = info.height + 'px';
+    return frame;
+  }
+
+  // 埋め込み要素を作る。動画は再生ボタン付きのサムネイル/カード、ポスト・音声はiframe。
+  function buildElement(info) {
+    const doc = global.document;
+    if (!doc || !info) return null;
+    const label = _labelFor(info);
+    const box = doc.createElement('div');
+    box.className = `gb-web-embed gb-web-embed--${info.kind} gb-web-embed--${info.provider}`;
+    if (info.aspect === 'portrait') box.classList.add('gb-web-embed--portrait');
+    box.contentEditable = 'false';
+    box.dataset.gbWebEmbed = '1';
+    box.dataset.provider = info.provider;
+    box.dataset.providerLabel = label;
+    box.dataset.url = info.url;
+    if (info.kind === 'video' || info.needsResolve) {
+      const poster = doc.createElement('button');
+      poster.type = 'button';
+      poster.className = 'gb-web-embed-poster';
+      poster.dataset.gbWebEmbedAction = 'load';
+      poster.setAttribute('aria-label', info.kind === 'video' ? `${label}の動画を再生` : `${label}のポストを表示`);
+      poster.title = info.url;
+      if (info.thumbnail) {
+        const img = doc.createElement('img');
+        img.className = 'gb-web-embed-thumb';
+        img.src = info.thumbnail;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.referrerPolicy = 'no-referrer';
+        poster.appendChild(img);
+      } else {
+        poster.classList.add('is-thumb-missing');
+      }
+      const play = doc.createElement('span');
+      play.className = 'gb-web-embed-play';
+      play.setAttribute('aria-hidden', 'true');
+      poster.appendChild(play);
+      box.appendChild(poster);
+    } else {
+      box.appendChild(_makeFrame(info, info.src));
+    }
+    return box;
+  }
+
+  function htmlFor(url) {
+    const el = buildElement(parse(url));
+    return el ? el.outerHTML : '';
+  }
+
+  // ノートの1行（Markdown）がURLだけなら埋め込みHTMLを返す。素のURLと [URL](URL) を対象にする。
+  function htmlForLine(line) {
+    const text = String(line || '').replace(/\x02[^\x02]*\x02/g, '').trim();
+    if (!text || text.length > 2100) return '';
+    let url = '';
+    if (/^https?:\/\/\S+$/i.test(text)) url = text;
+    else {
+      const m = text.match(/^\[([^\]]+)\]\(<?(https?:\/\/[^\s)>]+)>?\)$/);
+      if (m && m[1].trim() === m[2]) url = m[2];
+    }
+    return url ? htmlFor(url) : '';
+  }
+
+  function _blockUrl(block) {
+    const text = String(block.textContent || '').trim();
+    return /^https?:\/\/\S+$/i.test(text) ? text : '';
+  }
+
+  // 編集中の本文（#page-content 等）の直下の行を見て、URLだけの行へ埋め込みを付け、
+  // URLが消えた/変わった行から古い埋め込みを外す。保存内容は変わらない。
+  function decorate(root) {
+    if (!root || !root.children) return 0;
+    let changed = 0;
+    Array.from(root.children).forEach(block => {
+      if (!/^(DIV|P)$/.test(block.tagName) || block.classList.contains('gb-web-embed')) {
+        if (block.classList?.contains('gb-web-embed')) { block.remove(); changed += 1; }
+        return;
+      }
+      const existing = Array.from(block.querySelectorAll('.gb-web-embed'));
+      const info = block.className && !block.classList.contains('note-status-block') ? null : parse(_blockUrl(block));
+      if (info && existing.length === 1 && existing[0].parentElement === block && existing[0].dataset.url === info.url) return;
+      existing.forEach(el => { el.remove(); changed += 1; });
+      if (!info) return;
+      const el = buildElement(info);
+      if (el) { block.appendChild(el); changed += 1; }
+    });
+    return changed;
+  }
+
+  // チャット発言: 段落内の対応リンクを段落の直後へ並べる（最大3件・同一URLは1回）。
+  function decorateChat(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return 0;
+    const seen = new Set();
+    let count = 0;
+    Array.from(root.querySelectorAll('a[href]')).forEach(link => {
+      if (count >= MAX_CHAT_EMBEDS || link.closest('pre,code,.gb-web-embed')) return;
+      const info = parse(link.getAttribute('href'));
+      if (!info || seen.has(info.url)) return;
+      seen.add(info.url);
+      const block = link.closest('p,li,blockquote,td') || link.parentElement;
+      const el = buildElement(info);
+      if (!el || !block) return;
+      el.classList.add('gb-web-embed--chat');
+      block.insertAdjacentElement('afterend', el);
+      count += 1;
+    });
+    return count;
+  }
+
+  async function _resolveBlueskySrc(info) {
+    const res = await global.fetch(`https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(info.actor)}`);
+    if (!res.ok) throw new Error('resolve failed');
+    const data = await res.json();
+    const did = String(data?.did || '');
+    if (!/^did:(plc|web):[A-Za-z0-9._:-]{3,200}$/.test(did)) throw new Error('invalid did');
+    return `https://embed.bsky.app/embed/${did}/app.bsky.feed.post/${info.id}`;
+  }
+
+  async function _load(box) {
+    if (!box || box.dataset.gbWebEmbedLoading === '1') return;
+    // 属性の埋め込み先は信用せず、元URLから毎回組み立て直す。
+    const info = parse(box.dataset.url);
+    if (!info) return;
+    box.dataset.gbWebEmbedLoading = '1';
+    try {
+      const src = info.needsResolve ? await _resolveBlueskySrc(info) : info.src;
+      box.replaceChildren(_makeFrame(info, src));
+      box.classList.add('is-playing');
+    } catch (_) {
+      box.classList.add('is-failed');
+      box.querySelector('.gb-web-embed-poster')?.setAttribute('title', '読み込めませんでした。上のリンクから開いてください');
+    } finally {
+      delete box.dataset.gbWebEmbedLoading;
+    }
+  }
+
+  function _frameHeightFromMessage(data) {
+    let payload = data;
+    if (typeof payload === 'string') {
+      if (payload.length > 4000 || payload[0] !== '{') return 0;
+      try { payload = JSON.parse(payload); } catch (_) { return 0; }
+    }
+    if (!payload || typeof payload !== 'object') return 0;
+    const tw = payload['twttr.embed'];
+    if (tw && tw.method === 'twttr.private.resize' && Array.isArray(tw.params)) return Number(tw.params[0]?.height) || 0;
+    if (payload.type === 'MEASURE' && payload.details) return Number(payload.details.height) || 0;
+    if (typeof payload.height === 'number') return payload.height;
+    return 0;
+  }
+
+  function _install() {
+    const doc = global.document;
+    if (!doc || global.__gbWebEmbedsInstalled) return;
+    global.__gbWebEmbedsInstalled = true;
+    const activate = (event) => {
+      const poster = event.target?.closest?.('.gb-web-embed [data-gb-web-embed-action="load"]');
+      if (!poster) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      _load(poster.closest('.gb-web-embed'));
+      return true;
+    };
+    doc.addEventListener('click', activate, true);
+    doc.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') activate(event);
+    }, true);
+    // 編集面でのクリックがキャレット移動・選択に化けないようにする
+    doc.addEventListener('mousedown', (event) => {
+      if (event.target?.closest?.('.gb-web-embed-poster')) event.preventDefault();
+    }, true);
+    // サムネイル取得に失敗したらカード表示へ切り替える（オフライン・削除済み動画など）
+    doc.addEventListener('error', (event) => {
+      const img = event.target;
+      if (!img || img.tagName !== 'IMG' || !img.classList?.contains('gb-web-embed-thumb')) return;
+      img.closest('.gb-web-embed-poster')?.classList.add('is-thumb-missing');
+      img.remove();
+    }, true);
+    // ポスト埋め込みが通知する高さに合わせる（送信元iframeが本ページの埋め込みである時だけ）
+    global.addEventListener('message', (event) => {
+      if (!event.source || !/^https:\/\/(platform\.twitter\.com|embed\.bsky\.app|www\.instagram\.com|www\.threads\.(com|net))$/.test(String(event.origin || ''))) return;
+      const frame = Array.from(doc.querySelectorAll('.gb-web-embed-frame')).find(f => f.contentWindow === event.source);
+      if (!frame || frame.closest('.gb-web-embed--video')) return;
+      const height = _frameHeightFromMessage(event.data);
+      if (height >= 80) frame.style.height = Math.min(Math.round(height), 2400) + 'px';
+    });
+    // 編集中のノート本文: URL行の追加・変更・削除へ追従する（入力が落ち着いてから1回）
+    let timer = 0;
+    let pendingRoot = null;
+    doc.addEventListener('input', (event) => {
+      const root = event.target?.closest?.('#page-content, #entity-freetext');
+      if (!root || !root.isContentEditable) return;
+      pendingRoot = root;
+      if (timer) global.clearTimeout(timer);
+      timer = global.setTimeout(() => {
+        timer = 0;
+        const target = pendingRoot;
+        pendingRoot = null;
+        if (target && target.isConnected) decorate(target);
+      }, 600);
+    }, true);
+  }
+
+  const api = { parse, buildElement, htmlFor, htmlForLine, decorate, decorateChat, _frameHeightFromMessage };
+  global.GBWebEmbeds = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (global.document) _install();
 })(typeof window !== 'undefined' ? window : globalThis);
 
 ;
@@ -103773,17 +104575,18 @@ const MeldexAutoLink = (() => {
 // ページタイトルのインライン編集
 // ページタイトル — contenteditableのblurでリネーム
 let _pageTitleOld = '';
-function initPageTitle() {
-  const el = document.getElementById('page-title');
+function initPageTitle(titleElement, titleOptions = {}) {
+  const el = titleElement || document.getElementById('page-title');
+  let oldTitle = '';
   if (!el || el._titleInit) return;
   el._titleInit = true;
-  el.addEventListener('focus', () => { _pageTitleOld = el.textContent; });
+  el.addEventListener('focus', () => { oldTitle = el.textContent; if (!titleOptions.onRenamed) _pageTitleOld = oldTitle; });
   el.addEventListener('blur', async () => {
     const nv = el.textContent.trim();
-    const path = state.currentPagePath;
-    if (!nv) { el.textContent = _pageTitleOld; return; }
-    if (!path || nv === _pageTitleOld) return;
-    if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = _pageTitleOld; return; }
+    const path = titleOptions.getPath?.() || state.currentPagePath;
+    if (!nv) { el.textContent = oldTitle; return; }
+    if (!path || nv === oldTitle) return;
+    if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = oldTitle; return; }
     try {
       const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page', title_only: true });
       if (!res || !res.ok) throw new Error('rename failed');
@@ -103792,18 +104595,20 @@ function initPageTitle() {
         const ext = path.substring(path.lastIndexOf('.'));
         return dir + '/' + nv + ext;
       })();
-      _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
+      if (titleOptions.onRenamed) await titleOptions.onRenamed({ path, newPath, label: nv, result: res });
+      else if (state.currentPagePath === path) _applyPageTitleRenameSuccess(el, path, newPath, nv, res.file_id);
+      else if (typeof renameAppPathReferences === 'function') renameAppPathReferences(path, newPath, { label: nv, fileId: res.file_id, type: 'page' });
       const contentHost = document.getElementById("page-content");
       if (res.title_only && res.etag) renameAppPathReferences(path,newPath,{label:nv,etag:res.etag,titleOnly:true,type:"page"});
       if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
     } catch (e) {
       if (e && e.isTimeout) {
-        await _pageTitleConfirmRenameAfterTimeout(el, path, nv);
+        await _pageTitleConfirmRenameAfterTimeout(el, path, nv, { oldName: oldTitle, onRenamed: titleOptions.onRenamed });
       } else {
         // API失敗時はタイトルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
-        el.textContent = _pageTitleOld;
+        el.textContent = oldTitle;
         const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
-        showStatus(`「${_pageTitleOld}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
+        showStatus(`「${oldTitle}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
       }
     }
   });
@@ -103852,8 +104657,8 @@ function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId, options)
 }
 
 // リネームAPIタイムアウト時の事後確認。フォルダツリー側（gb-outliner）の共通ヘルパーを再利用する
-async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
-  const oldName = _pageTitleOld;
+async function _pageTitleConfirmRenameAfterTimeout(el, path, nv, titleOptions = {}) {
+  const oldName = titleOptions.oldName ?? _pageTitleOld;
   const progress = window.MeldexOperationProgress?.begin?.({
     kind: 'rename-confirmation',
     label: 'リネーム結果を確認しています',
@@ -103879,7 +104684,9 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindRenamedItem(items, oldName, nv, path);
       if (found) {
-        if (state.currentPagePath === path) {
+        if (titleOptions.onRenamed) {
+          await titleOptions.onRenamed({ path, newPath: found.path, label: nv, result: found });
+        } else if (state.currentPagePath === path) {
           _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id, { skipStatus: !!progress });
         } else {
           // 確認中に別のノートへ移動していた場合はエディタ状態（現在パス・タイトル・
@@ -104049,12 +104856,12 @@ function _noteHeadingSignature(pc) {
 // updateNoteToc() を呼ぶ。目次が非表示、または見出し構造に変化が無ければ
 // 全再構築しない。
 function _maybeRefreshNoteTocAfterEdit(pc) {
-  const tocEl = document.getElementById('note-toc');
+  const tocEl = pc.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="note-toc"],#note-toc');
   if (!tocEl || tocEl.style.display === 'none') return;
   const signature = _noteHeadingSignature(pc);
   if (pc._noteTocSignature === signature) return;
   pc._noteTocSignature = signature;
-  if (typeof updateNoteToc === 'function') updateNoteToc();
+  if (typeof updateNoteToc === 'function') updateNoteToc(pc);
 }
 
 // 項目4: ドラフト退避のdebounce+最大待ち時間。連続入力は1件へ集約し、最終
@@ -105061,8 +105868,8 @@ function _applyNoteTocSize(toc, size, vertical) {
 }
 
 function syncNoteTocLayout() {
-  const toc = document.getElementById('note-toc');
-  const handle = document.getElementById('note-toc-resize');
+  const toc = window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
+  const handle = window.GBEditorHost?.element('note-toc-resize') || document.getElementById('note-toc-resize');
   if (!toc || !handle) return;
   const visible = toc.style.display !== 'none';
   handle.style.display = visible ? '' : 'none';
@@ -105072,12 +105879,12 @@ function syncNoteTocLayout() {
   _applyNoteTocSize(toc, _noteTocSavedSize(spec), vertical);
 }
 
-function initNoteTocResize() {
-  if (window._noteTocResizeInitialized) return;
-  window._noteTocResizeInitialized = true;
-  const toc = document.getElementById('note-toc');
-  const handle = document.getElementById('note-toc-resize');
+function initNoteTocResize(root = document) {
+  const toc = root.querySelector('[data-editor-local-id="note-toc"],#note-toc');
+  const handle = root.querySelector('[data-editor-local-id="note-toc-resize"],#note-toc-resize');
   if (!toc || !handle) return;
+  if (handle.dataset.noteTocResizeInitialized) return;
+  handle.dataset.noteTocResizeInitialized = '1';
   handle.setAttribute('role', 'separator');
   // 縦書き時の向き・ラベルは MeldexNoteWritingMode.applyState() が付け替える
   handle.setAttribute('aria-orientation', 'vertical');
@@ -105455,6 +106262,11 @@ function _wireNotePasteHandler(pc) {
   if (text) {
     e.preventDefault();
     document.execCommand('insertText', false, text);
+    // 共有リンクだけを貼った時は、その場で動画・ポストの埋め込みを表示する（保存内容は変えない）
+    if (/^\s*https?:\/\/\S+\s*$/.test(text)) {
+      const editor = this;
+      setTimeout(() => window.GBWebEmbeds?.decorate?.(editor), 0);
+    }
   }
   });
 }
@@ -105949,7 +106761,7 @@ function setupEditableDropHandler(el) {
 }
 window.MeldexSetupEditableDropHandler = setupEditableDropHandler;
 // page-content と entity-freetext にドロップハンドラを設定
-setupEditableDropHandler(document.getElementById('page-content'));
+setupEditableDropHandler((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
 setupEditableDropHandler(document.getElementById('entity-freetext'));
 
 // ノート選択テキストの外部ドラッグ対応（ボード/別ノートへの転送）
@@ -105966,14 +106778,14 @@ function setupEditableDragSource(el) {
     e.dataTransfer.effectAllowed = 'copyMove';
   });
 }
-setupEditableDragSource(document.getElementById('page-content'));
+setupEditableDragSource((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
 initNoteTocResize();
 syncNoteTocLayout();
 
 // ノート目次の表示/非表示
 function toggleNoteToc() {
-  const toc = document.getElementById('note-toc');
-  const btn = document.getElementById('btn-toc-toggle');
+  const toc = (window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc'));
+  const btn = (window.GBEditorHost?.element('btn-toc-toggle') || document.getElementById('btn-toc-toggle'));
   if (toc.style.display === 'none') {
     toc.style.display = '';
     btn.classList.add('active');
@@ -105989,7 +106801,7 @@ function toggleNoteToc() {
 
 // フロントマターからtoc設定を取得（true/false/undefined）
 function _getFrontmatterToc() {
-  const pc = document.getElementById('page-content');
+  const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
   const fm = pc?.dataset.frontmatter || '';
   const m = fm.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return undefined;
@@ -105999,9 +106811,10 @@ function _getFrontmatterToc() {
 }
 
 // 目次を見出しから生成
-function updateNoteToc() {
-  const pc = document.getElementById('page-content');
-  const toc = document.getElementById('note-toc');
+function updateNoteToc(editor) {
+  const pc = editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+  const toc = editor ? editor.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="note-toc"],#note-toc')
+    : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
@@ -107029,17 +107842,21 @@ function _restoreCustomUndoSelection(editable, snapshot) {
 function _resetCustomUndo(editable) {
   editable._customUndoStack = []; editable._customRedoStack = [];
   editable._lastCustomOp = false; editable._customUndoInputPending = false;
-  editable._customUndoDocument = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  editable._customUndoDocument = _customUndoDocumentIdentity(editable);
+}
+function _customUndoDocumentIdentity(editable) {
+  return JSON.stringify([editable.dataset.path || editable.dataset.entityPath || globalThis.GBEditorHost?.ownerOf?.(editable)?.path || '', editable._openPageLoadSeq]);
 }
 function _ensureCustomUndoDocument(editable) {
-  const identity = JSON.stringify([editable.dataset.path || editable.dataset.entityPath || '', editable._openPageLoadSeq]);
+  const identity = _customUndoDocumentIdentity(editable);
   if (editable._customUndoDocument !== identity) _resetCustomUndo(editable);
 }
-function _customUndoPush(stack, editable) {
+function _customUndoPush(stack, editable, snapshot = null) {
   const selections = _customUndoSelections.get(stack) || [];
   selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
-  stack.push(editable.innerHTML);
-  selections.push({ html: editable.innerHTML, selection: _customUndoSelection(editable) });
+  const html = snapshot ? snapshot.html : editable.innerHTML;
+  stack.push(html);
+  selections.push({ html, selection: snapshot ? snapshot.selection : _customUndoSelection(editable) });
   if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
   _customUndoSelections.set(stack, selections);
 }
@@ -107067,6 +107884,61 @@ function _customUndoHost(node) {
   return host;
 }
 let _customUndoInProgress = false;
+const _scopedNoteUndoStates = new WeakMap();
+function _scopedNoteUndoState(editable) {
+  if (!editable || globalThis.GBEditorHost?.ownerOf?.(editable)?.kind !== 'page') return null;
+  _ensureCustomUndoDocument(editable);
+  let value = _scopedNoteUndoStates.get(editable);
+  if (!value || value.stack !== editable._customUndoStack) {
+    value = { stack: editable._customUndoStack, html: editable.innerHTML,
+      selection: _customUndoSelection(editable), kind: '', time: 0, after: null, pending: null, composing: false };
+    _scopedNoteUndoStates.set(editable, value);
+  }
+  return value;
+}
+function _syncScopedNoteUndoState(editable, value, kind = '') {
+  if (!value) return;
+  value.html = editable.innerHTML;
+  value.selection = _customUndoSelection(editable);
+  value.after = value.selection;
+  value.kind = kind;
+  value.time = Date.now();
+  value.pending = null;
+}
+document.addEventListener('focusin', event => {
+  _scopedNoteUndoState(_customUndoHost(event.target));
+}, true);
+document.addEventListener('selectionchange', () => {
+  const editable = _customUndoHost(document.activeElement);
+  const value = _scopedNoteUndoState(editable);
+  if (value && !value.pending) value.selection = _customUndoSelection(editable);
+});
+document.addEventListener('beforeinput', event => {
+  const editable = _customUndoHost(event.target);
+  const value = _scopedNoteUndoState(editable);
+  if (!value) return;
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+    event.preventDefault();
+    _applyCustomUndo(editable, event.inputType === 'historyRedo');
+    return;
+  }
+  value.pending = { html: editable.innerHTML, selection: _customUndoSelection(editable) };
+}, true);
+document.addEventListener('compositionstart', event => {
+  const value = _scopedNoteUndoState(_customUndoHost(event.target));
+  if (value) { value.composing = true; value.kind = ''; }
+}, true);
+document.addEventListener('compositionend', event => {
+  const editable = _customUndoHost(event.target);
+  const value = _scopedNoteUndoState(editable);
+  if (!value) return;
+  value.composing = false;
+  if (value.kind === 'composition' && editable._customUndoStack.at(-1) === editable.innerHTML) {
+    _customUndoPop(editable._customUndoStack);
+    editable._lastCustomOp = editable._customUndoStack.length > 0;
+    value.kind = '';
+  }
+}, true);
 function _applyCustomUndo(editable, redo) {
   if (!editable || !editable.isContentEditable) return false;
   _ensureCustomUndoDocument(editable);
@@ -107089,18 +107961,34 @@ document.addEventListener('keydown', function(e) {
   const key = String(e.key).toLowerCase();
   if (key !== 'z' && key !== 'y') return;
   const editable = _customUndoHost(document.activeElement);
-  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey))) e.preventDefault();
+  if (_applyCustomUndo(editable, key === 'y' || (key === 'z' && e.shiftKey)) || _scopedNoteUndoState(editable)) e.preventDefault();
 }, true);
 
 // Undo後の通常入力は古いRedoを破棄する。コールアウト内部からのinputも同じ文書へ集約する。
 document.addEventListener('input', function(e) {
-  if (_customUndoInProgress) return;
   const editable = _customUndoHost(e.target);
   if (!editable) return;
   _ensureCustomUndoDocument(editable);
+  const scoped = _scopedNoteUndoState(editable);
+  if (_customUndoInProgress) { _syncScopedNoteUndoState(editable, scoped); return; }
   if (editable._customUndoInputPending) {
     editable._customUndoInputPending = false;
     editable._lastCustomOp = true;
+    _syncScopedNoteUndoState(editable, scoped);
+    return;
+  }
+  if (scoped) {
+    const before = scoped.pending || { html: scoped.html, selection: scoped.selection };
+    const kind = scoped.composing || e.isComposing || /Composition/.test(e.inputType || '') ? 'composition' : e.inputType || 'command';
+    const continuous = kind === scoped.kind && Date.now() - scoped.time < 750
+      && (kind === 'composition' || (['insertText', 'deleteContentBackward', 'deleteContentForward'].includes(kind)
+        && JSON.stringify(before.selection) === JSON.stringify(scoped.after)));
+    if (before.html !== editable.innerHTML) {
+      if (!continuous) _customUndoPush(editable._customUndoStack, editable, before);
+      editable._customRedoStack.length = 0;
+      editable._lastCustomOp = true;
+    }
+    _syncScopedNoteUndoState(editable, scoped, kind);
     return;
   }
   editable._customRedoStack.length = 0;
@@ -107133,6 +108021,8 @@ function rtCaptureSelectionFromToolbar() {
   const range = sel.getRangeAt(0).cloneRange();
   const editable = _rtSelectionEditable(range);
   if (!editable) return false;
+  const host = window.GBEditorHost?.get();
+  if (host?.kind === 'page' && !host.root.contains(editable)) return false;
   rtSavedSelection = range;
   rtTarget = editable;
   return true;
@@ -107234,7 +108124,9 @@ function _rtApplyNoteTitle() {
 function rtCmd(cmd, value) {
   const editable = _rtEnsureEditableSelection();
   if (!editable) return;
-  if ((cmd === 'undo' || cmd === 'redo') && _applyCustomUndo(editable, cmd === 'redo')) return;
+  if (cmd === 'undo' || cmd === 'redo') {
+    if (_applyCustomUndo(editable, cmd === 'redo') || _scopedNoteUndoState(editable)) return;
+  }
   const blockType = cmd === 'insertUnorderedList' ? 'ul' : cmd === 'insertOrderedList' ? 'ol'
     : cmd === 'formatBlock' ? (/^h[1-6]$/i.test(value || '') ? String(value).toLowerCase() : /^(p|div)$/i.test(value || '') ? 'body' : String(value || '').toLowerCase() === 'blockquote' ? 'quote' : '') : '';
   if (blockType && window.MeldexNoteBlockTypes) {
@@ -107467,7 +108359,8 @@ function _calloutImageOptions(editable, isCurrent) {
 }
 
 function insertNoteTable(rows = 3, cols = 3) {
-  const editable = document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
+  const editable = _rtEnsureEditableSelection()
+                || document.activeElement?.closest('#page-content, #entity-freetext, #dp-editable')
                 || document.getElementById('page-content');
   if (!editable) return;
   editable.focus();
@@ -108255,8 +109148,9 @@ function mdToHtml(md, options) {
     }
 
     closeListAll();
-    // 通常段落
-    html += `<div>${inlinemd(line)}</div>`;
+    // 通常段落（URLだけの行は動画・ポストの埋め込みを表示時だけ添える。保存内容は変えない）
+    const webEmbedHtml = typeof window !== 'undefined' && window.GBWebEmbeds ? window.GBWebEmbeds.htmlForLine(line) : '';
+    html += `<div>${inlinemd(line)}${webEmbedHtml}</div>`;
   }
 
   closeListAll();
@@ -108718,6 +109612,8 @@ function htmlToMd(html) {
     const tag = node.tagName;
     // コピーボタン・テーブル操作ボタン・セル編集inputはスキップ
     if (node.classList?.contains('copy-btn') || node.classList?.contains('table-add-row') || node.classList?.contains('table-add-col')) return '';
+    // 動画・ポストの埋め込みは表示専用（元のURL行だけを保存する）
+    if (node.classList?.contains('gb-web-embed')) return '';
     if (node.classList?.contains('cell-edit')) return node.value || '';
     // DETAILS/SUMMARY/H1-H6は子ノードを個別に走査するため、childrenの事前計算をスキップ
     const _needsChildren = !['DETAILS','SUMMARY','H1','H2','H3','H4','H5','H6','KBD','BLOCKQUOTE','LI'].includes(tag);
@@ -109995,6 +110891,8 @@ function closeFileSearch() {
 }
 
 function _currentFileSearchEditable() {
+  const editor = window.GBEditorHost?.get();
+  if (editor?.kind === 'page') return window.GBEditorHost.element('page-content');
   if (state.view === 'entity') return document.getElementById('entity-freetext');
   if (state.view === 'page') return document.getElementById('page-content');
   return null;
@@ -110092,7 +110990,7 @@ function clearBoardSearchHighlights() {
 }
 
 function clearFileSearchHighlights() {
-  const editables = [document.getElementById('page-content'), document.getElementById('entity-freetext')];
+  const editables = [...document.querySelectorAll('#page-content,[data-editor-local-id="page-content"],#entity-freetext')];
   editables.forEach(el => {
     if (!el) return;
     el.querySelectorAll('mark.file-search-highlight').forEach(mark => {
@@ -110532,7 +111430,8 @@ function _noteCtxMenuHandler(e, contextOverride) {
   ];
   if (_commentHighlightEl) {
     items.unshift(
-      { label: 'コメント一覧を開く', enabled: true, action: () => {
+      { label: 'アノテートパネルに表示', enabled: true, action: () => {
+        if (_commentHighlightEl._cmtComments?.length) { CommentBadges.openPanelForHighlight(_commentHighlightEl); return; }
         const filePath = _commentHighlightEl.dataset.cmtFile || editable.dataset.path || document.getElementById('page-content')?.dataset.path || state.currentPagePath || '';
         if (typeof CommentBadges !== 'undefined' && typeof CommentBadges.openPanelForFileComments === 'function') {
           CommentBadges.openPanelForFileComments(filePath);
@@ -112365,17 +113264,17 @@ function applyFileStyle(style) {
   }
 }
 
-function applyFileStyleToPanel(style, panelId) {
+function applyFileStyleToPanel(style, panelId, targetElement) {
   // 指定パネルに適用。--page-* / --db-* / --sn2-* すべて対応
-  const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
+  const el = targetElement || (panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : document.getElementById(panelId);
+    : panelId === 'page-content' ? (window.GBEditorHost?.element(panelId) || document.getElementById(panelId)) : document.getElementById(panelId));
   if (!el) return;
   applyFileStyleToElement(style, el, panelId);
   if (panelId === 'page-content') {
-    const pageView = el.closest?.('#page-view');
+    const pageView = el.closest?.('[data-editor-host],#page-view');
     if (pageView) applyFileStyleToElement(style, pageView, panelId);
-    const titleEl = document.getElementById('page-title');
+    const titleEl = pageView?.querySelector('[data-editor-local-id="page-title"],#page-title');
     if (typeof applyPageTitleStyleToElement === 'function') {
       applyPageTitleStyleToElement(style, titleEl);
     } else if (titleEl && typeof applyFileStyleToElement === 'function') {
@@ -112425,11 +113324,11 @@ function clearFileStyle() {
   _FILE_STYLE_PANELS.forEach(id => clearFileStyleForPanel(id));
 }
 
-function clearFileStyleForPanel(panelId) {
+function clearFileStyleForPanel(panelId, targetElement) {
   if (!panelId) return;
-  const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
+  const el = targetElement || (panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : document.getElementById(panelId);
+    : panelId === 'page-content' ? (window.GBEditorHost?.element(panelId) || document.getElementById(panelId)) : document.getElementById(panelId));
   if (el) {
     const remove = [];
     for (const prop of el.style) {
@@ -112439,9 +113338,9 @@ function clearFileStyleForPanel(panelId) {
     if (el.dataset) delete el.dataset.fileStyleAppliedVars;
   }
   if (panelId === 'page-content') {
-    const pageView = el?.closest?.('#page-view');
+    const pageView = el?.closest?.('[data-editor-host],#page-view');
     if (pageView) clearFileStyleFromElement(pageView);
-    const titleEl = document.getElementById('page-title');
+    const titleEl = pageView?.querySelector('[data-editor-local-id="page-title"],#page-title');
     if (titleEl && typeof clearFileStyleFromElement === 'function') clearFileStyleFromElement(titleEl);
     const dp = document.getElementById('dp-editable');
     if (dp) clearFileStyleFromElement(dp);
@@ -112536,7 +113435,7 @@ function _getCurrentFileStyle() {
   if (view === 'folder') {
     return _getFolderFileStyle();
   } else if (view === 'page') {
-    const pc = document.getElementById('page-content');
+    const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
     return _parseFileStyleFromFrontmatter(pc?.dataset?.frontmatter || '') || {};
   } else if (view === 'board') {
     // bd._fileStyle 優先、旧 bd._fileTheme もフォールバック
@@ -112844,9 +113743,9 @@ function unwrapHeadingSections(container) {
 }
 
 function toggleHeadingIndent() {
-  const pc = document.getElementById('page-content');
+  const pc = (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
   if (!pc) return;
-  const btn = document.getElementById('btn-heading-indent');
+  const btn = (window.GBEditorHost?.element('btn-heading-indent') || document.getElementById('btn-heading-indent'));
   const _v = localStorage.getItem('note-heading-indent');
   const isOn = _v === null || _v === '1';
   if (isOn) {
@@ -112867,21 +113766,21 @@ function toggleHeadingIndent() {
 const _origOpenPage = typeof openPage === 'function' ? openPage : null;
 if (_origOpenPage) {
   openPage = async function(label, path, opts) {
-    if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content');
+    const pc = opts?.containerEl || document.getElementById('page-content');
+    if (!opts?.skipGlobalUi) clearFileStyleForPanel('page-content', pc);
     const opened = await _origOpenPage(label, path, opts);
     // 競合解決側は読込成功の真偽で未保存編集を保全する。装飾層でも
     // 結果を保持し、失敗・古い読込・別アプリへの遷移は装飾しない。
     if (!opened) return opened;
     // ファイル個別テーマはpage-contentパネルにのみ適用
-    const pc = document.getElementById('page-content');
     const _fileTheme = _parseFileStyleFromFrontmatter(pc?.dataset.frontmatter);
     if (!opts?.skipGlobalUi) {
       if (_fileTheme) {
-        applyFileStyleToPanel(_fileTheme, 'page-content');
+        applyFileStyleToPanel(_fileTheme, 'page-content', pc);
       } else {
         // ファイル固有スタイルが無い場合、既定ファイルスタイルを視覚的に適用
         const _def = _getDefaultFileStyle('page');
-        if (_def) applyFileStyleToPanel(_def, 'page-content');
+        if (_def) applyFileStyleToPanel(_def, 'page-content', pc);
       }
     }
     // 見出しインデント（デフォルト: オン）
@@ -112893,7 +113792,7 @@ if (_origOpenPage) {
     if (pc && typeof _schedulePageDisplayLayers === 'function') {
       _schedulePageDisplayLayers(path, pc, pc.innerHTML, () => pc.dataset.path !== path);
     }
-    const btn = document.getElementById('btn-heading-indent');
+    const btn = pc?.closest('[data-editor-host],#page-view')?.querySelector('[data-editor-local-id="btn-heading-indent"],#btn-heading-indent');
     if (btn) btn.classList.toggle('active', _indentOn);
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();
@@ -113258,7 +114157,7 @@ function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
 }
 
 async function _saveFileThemeToNoteFrontmatter(theme) {
-  const pc = document.getElementById('page-content');
+  const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
   if (!pc || pc.contentEditable === 'false' || !pc.dataset.path) return false;
   const path = pc.dataset.path;
   let fmStr = pc.dataset.frontmatter || '';
@@ -115492,7 +116391,7 @@ document.addEventListener('input', _onSlashInput);
     const NBT = global.MeldexNoteBlockTypes;
     const insertItems = _state.allowInsertItems && global.MeldexNoteEmbedBlock
       ? global.MeldexNoteEmbedBlock.menuItems() : [];
-    return NBT.TYPES.concat(insertItems).filter((def) => _matchesQuery(def, _state.query));
+    return NBT.TYPES.concat(insertItems, _state.actions || []).filter((def) => _matchesQuery(def, _state.query));
   }
 
   function _itemAvailability(def) {
@@ -115503,7 +116402,7 @@ document.addEventListener('input', _onSlashInput);
     const removableText = _state.removableTextPrefix
       ? _state.removableTextPrefix + _state.query
       : '';
-    if (def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
+    if (def.action || def.insertOnly || _state.insertMode) return { allowed: true, reason: '' };
     return NBT.canConvert(def.id, _state.editable, _state.blockInfo, { removableText });
   }
 
@@ -115527,13 +116426,13 @@ document.addEventListener('input', _onSlashInput);
       item.className = 'gb-context-menu-item note-block-menu-item' + (i === _state.selectedIndex ? ' selected' : '') + (avail.allowed ? '' : ' disabled');
       item.dataset.typeId = def.id;
       item.dataset.e2eId = 'note-block-menu-item-' + def.id;
-      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('role', def.action ? 'menuitem' : 'menuitemradio');
       // 行種は排他選択のため menuitemradio + aria-checked(現在の行種)。
       // キーボードの選択位置はフォーカスをエディタへ残す設計のため、
       // aria-selected(listbox用で本roleには不正)ではなく、メニュー側の
       // aria-activedescendant(下のrender末尾で設定)で支援技術へ伝える。
       item.id = 'note-block-menu-item-' + def.id;
-      item.setAttribute('aria-checked', isCurrent ? 'true' : 'false');
+      if (!def.action) item.setAttribute('aria-checked', isCurrent ? 'true' : 'false');
       item.setAttribute('aria-disabled', avail.allowed ? 'false' : 'true');
       item.tabIndex = i === _state.selectedIndex ? 0 : -1;
       const label = avail.allowed ? def.label : def.label + '（' + avail.reason + '）';
@@ -115577,6 +116476,8 @@ document.addEventListener('input', _onSlashInput);
 
   function _activate(typeId) {
     if (!_state) return;
+    const action = (_state.actions || []).find(item => item.id === typeId)?.action;
+    if (action) { close(); action(); return; }
     const onSelect = _state.onSelect;
     const editable = _state.editable;
     const range = _state.range;
@@ -115652,6 +116553,7 @@ document.addEventListener('input', _onSlashInput);
       onClose: opts.onClose || null,
       allowInsertItems: !!opts.allowInsertItems,
       insertMode: !!opts.insertMode,
+      actions: opts.actions || [],
     };
     const menu = _ensureMenuEl();
     menu.setAttribute('aria-label', opts.insertMode ? '下に追加する行種を選択' : '行種を選択');
@@ -116594,6 +117496,50 @@ document.addEventListener('input', _onSlashInput);
     _headingHandleMenuEl = null;
   }
 
+  function _rowActions(editable, block) {
+    return [['duplicate-row', '複製', 'copy'], ['delete-row', '削除', 'trash-2']].map(([id, label, icon]) => ({
+      id, label, icon,
+      action: () => {
+        if (!block.isConnected || !editable.contains(block)) return;
+        const result = _commitRowOperation(editable, () => {
+          const wrapped = editable.id === 'page-content' && !!editable.querySelector('section.heading-section');
+          if (wrapped) global.unwrapHeadingSections?.(editable);
+          let next;
+          if (id === 'duplicate-row') {
+            next = block.cloneNode(true);
+            next.removeAttribute('id');
+            next.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+            next.querySelectorAll('._nl-id,.cmt-badge').forEach(el => el.remove());
+            next.querySelectorAll('mark.cmt-highlight').forEach(mark => mark.replaceWith(...mark.childNodes));
+            for (const el of [next, ...next.querySelectorAll('.cmt-line-highlight')]) {
+              if (el.classList.contains('cmt-line-highlight')) {
+                el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle;
+              }
+              el.classList.remove('cmt-line-highlight');
+              for (const key of Object.keys(el.dataset)) if (key.startsWith('cmt')) delete el.dataset[key];
+            }
+            block.after(next);
+          } else {
+            next = block.nextElementSibling || block.previousElementSibling;
+            const parent = block.parentElement;
+            block.remove();
+            if (parent !== editable && /^(UL|OL)$/.test(parent.tagName) && !parent.children.length) parent.remove();
+            if (!editable.firstChild) { next = document.createElement('p'); next.appendChild(document.createElement('br')); editable.appendChild(next); }
+          }
+          if (wrapped) global.wrapHeadingSections?.(editable);
+          return { ok: true, block: next || editable };
+        });
+        if (result?.ok && result.block?.isConnected) {
+          const host = result.block.closest?.('.callout-body') || result.block.querySelector?.('.callout-body') || editable;
+          host.focus({ preventScroll: true });
+          const range = _rangeAtStartOf(host === editable ? result.block : host);
+          if (range) { const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); }
+        }
+        _hideHandle();
+      },
+    }));
+  }
+
   function _openHeadingHandleMenu(editable, info, anchorRect) {
     _closeHeadingHandleMenu();
     if (typeof global.closeMeldexDropdowns === 'function') global.closeMeldexDropdowns();
@@ -116635,6 +117581,14 @@ document.addEventListener('input', _onSlashInput);
       global.MeldexNoteBlockContextMenu.copyHeadingLink(info.block);
     });
     menu.appendChild(copyBtn);
+    for (const action of _rowActions(editable, info.block)) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'gb-context-menu-item';
+      button.setAttribute('role', 'menuitem'); button.textContent = action.label;
+      button.dataset.e2eId = 'note-' + action.id;
+      button.addEventListener('click', () => { closeHeadingMenu(); menu.remove(); action.action(); });
+      menu.appendChild(button);
+    }
 
     document.body.appendChild(menu);
     if (typeof global.positionPopup === 'function') {
@@ -116684,6 +117638,7 @@ document.addEventListener('input', _onSlashInput);
       range,
       blockInfo: info,
       currentTypeId,
+      actions: _rowActions(editable, blockEl),
       onSelect: (typeId) => {
         const r = _rangeAtStartOf(blockEl.isConnected ? blockEl : editable);
         nbt.convertCurrentLineTo(typeId, { editable, range: r });
@@ -117230,8 +118185,8 @@ document.addEventListener('input', _onSlashInput);
     return defs;
   }
 
-  function _trigger() { return document.getElementById(TRIGGER_ID); }
-  function _pageContent() { return document.getElementById(TOOLBAR_HOST_ID); }
+  function _trigger() { return (global.GBEditorHost?.element(TRIGGER_ID) || document.getElementById(TRIGGER_ID)); }
+  function _pageContent() { return (global.GBEditorHost?.element(TOOLBAR_HOST_ID) || document.getElementById(TOOLBAR_HOST_ID)); }
 
   // ============================================================
   // 現在の行種の解決（キャレット追従・要件4）
@@ -145609,7 +146564,7 @@ function hideBoardNoteTab() {
 
   async function _openParentDatabase(parentDb) {
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(parentDb));
       _renderSeq += 1;
@@ -145743,7 +146698,7 @@ function hideBoardNoteTab() {
   async function _prepareContentReplacement(seq) {
     const portedOk = await _runPortedBeforeClose('replace');
     if (!portedOk || seq !== _renderSeq) return false;
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     return editorOk !== false && seq === _renderSeq;
   }
 
@@ -145778,7 +146733,7 @@ function hideBoardNoteTab() {
     _openingTarget = true;
     _syncOpenButton();
     try {
-      const ok = await _flushActiveEditor();
+      const ok = await _flushActiveEditor({ disposeLinks: true });
       if (!ok) return;
       if (actionSeq !== _renderSeq || target !== _currentTarget || !isOpen()) return;
       const entry = await _resolveTargetEntry(target);
@@ -145902,15 +146857,19 @@ function hideBoardNoteTab() {
     }
   }
 
-  function _flushActiveEditor() {
+  async function _flushActiveEditor(options = {}) {
+    const links = document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]');
+    if (await links?._linkedFiles?.flush?.() === false) return false;
     const editor = _activeEditor;
-    if (!editor) return Promise.resolve(true);
-    clearTimeout(editor.timer);
-    editor.timer = null;
-    return _saveEditor(editor).then((ok) => {
+    if (editor) {
+      clearTimeout(editor.timer);
+      editor.timer = null;
+      const ok = await _saveEditor(editor);
       if (ok || !editor.dirty) _activeEditor = null;
-      return ok;
-    });
+      if (!ok) return false;
+    }
+    if (options.disposeLinks && await links?._linkedFiles?.dispose?.() === false) return false;
+    return true;
   }
 
   function _ensureDrawer() {
@@ -145983,6 +146942,13 @@ function hideBoardNoteTab() {
 
   function openElement(title, element, options) {
     if (!_isEnabled()) return false;
+    // A synchronous API cannot wait for linked-file saves. Keep the current
+    // editor until the caller closes it through the asynchronous save guard.
+    if (isOpen() && _portedPanel?.element !== element
+        && document.getElementById(BODY_ID)?.querySelector('[data-e2e-id="entity-attachments-section"]')) {
+      if (typeof showStatus === 'function') showStatus('表示中の内容を閉じてから開いてください', true);
+      return false;
+    }
     // 保存ガードを持つ別パネルを同期APIで黙って置換すると内容を失い得る。
     // 同じ要素の再表示は、呼び出し元が先にflush済みなので許可する。
     if (_portedPanel?.beforeClose && _portedPanel.element !== element) {
@@ -146012,7 +146978,7 @@ function hideBoardNoteTab() {
       const portedOk = await _runPortedBeforeClose('close');
       if (!portedOk || closeSeq !== _renderSeq) return false;
     }
-    const editorOk = await _flushActiveEditor();
+    const editorOk = await _flushActiveEditor({ disposeLinks: true });
     if (!editorOk || closeSeq !== _renderSeq) return false;
     _hideDrawerNow();
     return true;
@@ -146193,9 +147159,10 @@ function hideBoardNoteTab() {
     _syncEntityAccessNotice(body, access);
     if (
       typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
-      && body.__MeldexAttachmentsRenderedReadOnly !== access.readOnly
+      && (body.__MeldexAttachmentsRequestedReadOnly ?? body.__MeldexAttachmentsRenderedReadOnly) !== access.readOnly
     ) {
-      body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      await body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
+      if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
     }
     const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
     if (grid) {
@@ -146260,7 +147227,7 @@ function hideBoardNoteTab() {
     return true;
   }
 
-  async function _renderEntity(body, entityPath, entityName, seq) {
+  async function _renderEntity(body, entityPath, entityName, seq, selectedId) {
     const name = entityName || _fileName(entityPath).replace(/\.md$/i, '');
     const noteTarget = _entityNoteTarget(entityPath, name);
     const parentDb = _parentDb(entityPath);
@@ -146276,10 +147243,15 @@ function hideBoardNoteTab() {
             : (document.body?.dataset?.cloudReadonly === '1' ? '閲覧専用のため編集できません' : ''),
         };
       if (seq !== _renderSeq) return;
+      if (!await _flushActiveEditor({ disposeLinks: true }) || seq !== _renderSeq) return;
       body.replaceChildren();
 
       _syncEntityAccessNotice(body, access);
 
+      const columnsPane = document.createElement('div');
+      columnsPane.className = 'meldex-topic-columns-pane';
+      columnsPane.setAttribute('role', 'tabpanel');
+      columnsPane.setAttribute('aria-label', '列一覧');
       const props = document.createElement('section');
       props.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-props';
       const propsTitle = document.createElement('h3');
@@ -146303,6 +147275,7 @@ function hideBoardNoteTab() {
           renderEntityPropsGridInto(grid, data, entityPath, {
             parentDb,
             surface: 'mobile-drawer',
+            topicTabs: true,
             readOnly: readOnly === true,
           });
           grid.__MeldexRenderedReadOnly = readOnly === true;
@@ -146312,28 +147285,46 @@ function hideBoardNoteTab() {
       } else {
         grid.textContent = '列を表示できません';
       }
-      body.appendChild(props);
+      columnsPane.appendChild(props);
 
       if (typeof window.MeldexSheetEntryAttachments?.renderEntryAttachmentsSection === 'function') {
-        const renderAttachmentsForAccess = (readOnly) => {
-          body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]')?.remove();
+        let attachmentsAccessQueue = Promise.resolve();
+        const renderAttachmentsNow = async (readOnly, requestedId) => {
+          if (seq !== _renderSeq) return false;
+          const old = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
+          if (await old?._linkedFiles?.dispose?.() === false || seq !== _renderSeq) return false;
+          // Initial selection also mounts asynchronously. Read it after dispose
+          // has joined that work, rather than reverting a loading file to columns.
+          const selectedId = requestedId || old?.dataset.selectedAttachment;
+          // Another access refresh may have completed while saving this one.
+          if (body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]') !== old) return false;
+          old?.remove();
           window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
             readOnly,
             surface: 'mobile-drawer',
-            onReload: async () => {
-              await _flushActiveEditor();
+            selectedId,
+            columnsPanel: columnsPane,
+            beforeMutation: _flushActiveEditor,
+            onReload: async (nextId) => {
+              if (!await _flushActiveEditor()) return false;
               if (_currentTarget?.kind !== 'entity' || _currentTarget.entityPath !== entityPath || !isOpen()) return;
               const reloadSeq = ++_renderSeq;
-              await _renderEntity(body, entityPath, name, reloadSeq);
+              await _renderEntity(body, entityPath, name, reloadSeq, nextId);
             },
           });
-          const attachments = body.querySelector(':scope > [data-e2e-id="entity-attachments-section"]');
-          const page = body.querySelector(':scope > .cloud-mobile-side-drawer-page');
-          if (attachments && page) body.insertBefore(attachments, page);
           body.__MeldexAttachmentsRenderedReadOnly = readOnly === true;
+          return true;
+        };
+        const renderAttachmentsForAccess = (readOnly, requestedId) => {
+          body.__MeldexAttachmentsRequestedReadOnly = readOnly === true;
+          attachmentsAccessQueue = attachmentsAccessQueue.catch(() => false)
+            .then(() => renderAttachmentsNow(readOnly, requestedId));
+          return attachmentsAccessQueue;
         };
         body.__MeldexRenderEntityAttachmentsAccess = renderAttachmentsForAccess;
-        renderAttachmentsForAccess(access.readOnly);
+        await renderAttachmentsForAccess(access.readOnly, selectedId);
+      } else {
+        body.appendChild(columnsPane);
       }
 
       const page = document.createElement('section');
@@ -146392,7 +147383,7 @@ function hideBoardNoteTab() {
       if (!access.readOnly) _bindEditorHelpers(editor);
       _activeEditor = access.readOnly ? null : editorState;
       page.appendChild(editor);
-      body.appendChild(page);
+      columnsPane.appendChild(page);
     } catch {
       if (seq !== _renderSeq) return;
       _setError(body, 'エントリの表示に失敗しました');
@@ -148105,7 +149096,7 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
 
   openBtn.addEventListener('click', () => {
     closePanel('open-entry');
-    if (ctx.entityPath && typeof selectEntity === 'function') selectEntity(ctx.entityPath);
+    if (ctx.entityPath) _dbOpenConfiguredTarget(ctx.entityPath, ev.title || ev.name || '', { dbPath, sourceEl: triggerEl, linkType: 'entity' });
   });
   cancelBtn.addEventListener('click', () => closePanel('cancel'));
   saveBtn.addEventListener('click', async () => {
@@ -148752,6 +149743,47 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// All ordinary opens originating in a sheet use the source sheet's preference,
+// including related rows in another sheet and files displayed in image columns.
+async function _dbOpenConfiguredTarget(path, label, options = {}) {
+  if (!path) return false;
+  const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(options.sourceEl, { dbPath: options.dbPath }) : null);
+  const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
+  const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
+  const target = cfg.defaultPanel === 'main' ? 'main' : 'right-sidebar';
+  try {
+    if (typeof flushPendingEditorAutosave === 'function') {
+      const saved = await flushPendingEditorAutosave();
+      if (saved === false || saved?.ok === false || (Array.isArray(saved) && saved.some(result =>
+        result.status === 'rejected' || result.value === false || result.value?.ok === false))) {
+        throw new Error('編集中の内容を保存できないため、開く操作を中止しました');
+      }
+    }
+    if (target === 'main') {
+      if (typeof openLinkInMainPane !== 'function') return false;
+      const source = options.sourceEl || ctx?.containerEl;
+      if (source?.closest?.('.gb-subpanel') && typeof GBSubPanel !== 'undefined' && !await GBSubPanel.flush()) return false;
+      if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
+      return await openLinkInMainPane(path, label, options);
+    }
+    if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return false;
+    const entry = options.entry || await _bdResolveLinkedEntryAsync(path, label, options.linkType);
+    // Reuse the same subpanel when the source sheet itself is in it. Its own
+    // transition guard flushes pending edits before replacing the content.
+    return await GBSubPanel.open({ type: entry.type, path: entry.path, label: entry.label,
+      state: { ...(typeof GBLinkRouter !== 'undefined' ? GBLinkRouter.stateForEntry(entry) : {}),
+        ...(entry.state || {}), ...(options.state || {}) } });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus(error?.message || '開くことができませんでした', true);
+    return false;
+  }
+}
+
+function _dbOpenConfiguredEntity(path, label, ctx, sourceEl) {
+  return _dbOpenConfiguredTarget(path, label, { ctx, sourceEl, linkType: 'entity' });
+}
+
 // property_types.source は、作成日時などのエントリメタデータ参照と、
 // 外部取り込み列の管理元（例: "import"）の両方で使われている。
 // 表示側が後者まで entityData._<source> と解釈すると、通常の列値を読めず空表示になるため、
@@ -149143,6 +150175,15 @@ function _dbApplyEntityRenameInfo(info) {
   const newName = String(info.new_name || _dbEntityNameFromPath(newPath) || '');
   if (!oldName || !newName || oldName === newName) return;
   const dbPath = _dbPathFromEntityPath(newPath || oldPath) || state.currentDbPath || '';
+  if (window.GbDbEntryIdentity?.applyRename) {
+    const owner = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+    const entry = owner?.pivotData?.entities?.[oldName]
+      || (state.currentDbPath === dbPath ? state.pivotData?.entities?.[oldName] : null);
+    window.GbDbEntryIdentity.applyRename({ new_path: newPath, entry_id: info.entry_id || entry?._id || '', revision: info.revision }, {
+      dbPath, path: oldPath, oldName, newName,
+    });
+    return;
+  }
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
   const targets = [];
   const addTarget = (target) => {
@@ -149180,6 +150221,7 @@ function _dbApplyEntityRenameInfo(info) {
 }
 
 function _dbApplyAutoTaskRenameResult(res) {
+  if (res?.name_generation_warning && typeof showStatus === 'function') showStatus('値は保存しましたが、' + res.name_generation_warning, true);
   _dbApplyEntityRenameInfo(res?.auto_renamed_entry);
 }
 
@@ -149761,6 +150803,8 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const fallbackDbPath = typeof state !== 'undefined' ? state.currentDbPath : '';
   const dbPath = options.dbPath || fallbackDbPath || '';
   const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
+  const editorCtx = target?.closest?.('[data-editor-host]')?._dbPaneContext;
+  if (editorCtx && !editorCtx.destroyed) return editorCtx;
   const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
   const embeddedCtx = embeddedEl?._dbPaneContext;
   if (embeddedCtx && !embeddedCtx.destroyed) return embeddedCtx;
@@ -150107,7 +151151,15 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       reg.idByPath.set(oldPath, entryId);
       reg.idByPath.set(newPath, entryId);
     }
-    contextsForDb(request.dbPath).forEach(ctx => {
+    const renameContexts = contextsForDb(request.dbPath);
+    // Forms keep a separate pivot snapshot. Updating only their current option
+    // text lets a pending history render resurrect the old record name.
+    if (typeof forEachComponent === 'function') forEachComponent(component => {
+      const ctx = component?.ctx;
+      if (ctx?.formApp && !ctx.destroyed && normalize(ctx.dbPath) === normalize(request.dbPath)
+          && !renameContexts.includes(ctx)) renameContexts.push(ctx);
+    });
+    renameContexts.forEach(ctx => {
       updatePivotTarget(ctx, oldName, newName, oldPath, newPath, entryId, result?.revision);
       updateContextDom(ctx, oldName, newName);
     });
@@ -150122,6 +151174,9 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       _dbNotifyCalendarEntryRenamed(request.dbPath, oldPath, newPath, oldName, newName);
     }
     invalidateRelationCaches(request.dbPath);
+    window.dispatchEvent?.(new CustomEvent('meldex:entity-renamed', {
+      detail: { path: newPath, oldPath, oldName, name: newName, entryId },
+    }));
     return { ...result, new_path: newPath, entry_id: entryId || result?.entry_id || '' };
   }
 
@@ -156174,14 +157229,17 @@ function onPropertyTypeChange(root) {
 
   if (type === 'select' || type === 'multi-select') {
     const opts = _ptMergedSelectOptions(current, existing, type);
-    const optionColorHelp = fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます。セル編集時の選択肢ドロップダウンからも設定できます')
+    const optionColorHelp = fieldHelp('左のチップはセルでの見た目です。クリックすると書式（背景色・文字色・枠線・太字など）を設定できます。背景色はドロップダウン・カンバン・グループヘッダーにも反映されます')
       .replace('<span ', '<span data-e2e-id="pt-select-option-color-help" ');
     optDiv.innerHTML = `<div class="field"><label>選択肢 ${optionColorHelp}</label>
       <textarea id="pt-select-options" hidden aria-hidden="true">${esc(opts.join('\n'))}</textarea>
-      <div id="pt-select-option-rows" class="pt-select-option-list" data-e2e-id="pt-select-option-list"></div>
-      <button type="button" id="pt-select-option-add" class="gb-btn gb-btn-sm pt-select-option-add" data-e2e-id="pt-select-option-add">＋ 選択肢</button>
+      <div class="pt-select-option-editor">
+        <div id="pt-select-option-rows" class="pt-select-option-list" data-e2e-id="pt-select-option-list"></div>
+        <button type="button" id="pt-select-option-add" class="gb-btn gb-btn-sm pt-select-option-add" data-e2e-id="pt-select-option-add">＋ 選択肢</button>
+      </div>
     </div>`;
     scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
+    scope._dbOptionStyleBuffer = { ...(current.optionStyles || {}) };
     if (typeof renderDbSelectOptionRows === 'function') {
       renderDbSelectOptionRows(_ptGet('pt-select-option-rows', scope), scope);
     }
@@ -156382,6 +157440,8 @@ function onPropertyTypeChange(root) {
   } else {
     optDiv.innerHTML = '';
   }
+  // タグ・リレーション・ロールアップ列: 値の見た目どおりのプレビュー（クリックで書式設定）
+  if (typeof renderDbColumnChipStyleField === 'function') renderDbColumnChipStyleField(optDiv, scope, type);
 
   // Phase 3 §5.1 / §12.1: 全型共通の自動初期値設定（autoFillOnCreate）。
   // $ 接頭辞で動的評価: $today / $now / $currentUser / $version（§15.4.2）
@@ -156555,6 +157615,10 @@ async function applyPropertyType(propName, root, options = {}) {
       const optionColors = collectDbOptionColors(scope, prev.optionColors, config.options);
       if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
     }
+    if (typeof collectDbOptionStyles === 'function') {
+      const optionStyles = collectDbOptionStyles(scope, prev.optionStyles);
+      if (optionStyles && Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+    }
   } else if (type === 'relation' || type === 'multi-relation') {
     const dbInput = _ptGet('pt-relation-db', scope);
     if (dbInput) {
@@ -156640,6 +157704,11 @@ async function applyPropertyType(propName, root, options = {}) {
   if (prev.icon && !('icon' in config)) {
     config.icon = prev.icon;
   }
+  // タグ・リレーション・ロールアップ列のチップ書式（列設定の「表示」）
+  if (['relation', 'multi-relation', 'common-tags', 'rollup'].includes(type) && typeof collectDbColumnChipStyle === 'function') {
+    const chipStyle = collectDbColumnChipStyle(scope, prev.chipStyle);
+    if (Object.keys(chipStyle).length) config.chipStyle = chipStyle;
+  }
 
   if ((type === 'relation' || type === 'multi-relation') && config.bidirectional && typeof _ensureBidirectionalRelationConfig === 'function') {
     try {
@@ -156688,6 +157757,14 @@ async function applyPropertyType(propName, root, options = {}) {
       });
       if (Object.keys(optionColors).length) config.optionColors = optionColors;
       else delete config.optionColors;
+      const previousStyles = { ...(config.optionStyles || {}) };
+      const optionStyles = {};
+      config.options.forEach((value) => {
+        const style = previousStyles[value] || previousStyles[renamedFrom[value]];
+        if (style) optionStyles[value] = style;
+      });
+      if (Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+      else delete config.optionStyles;
       const previousIds = { ...(prev.option_ids || {}) };
       const optionIds = {};
       Object.entries(migration.renamed || {}).forEach(([oldValue, newValue]) => {
@@ -157331,6 +158408,11 @@ function _ptApplyFastLocalSettings(root) {
     const optionColors = collectDbOptionColors(scope, prev.optionColors, options);
     if (optionColors && Object.keys(optionColors).length) config.optionColors = optionColors;
     else delete config.optionColors;
+  }
+  if (typeof collectDbOptionStyles === 'function') {
+    const optionStyles = collectDbOptionStyles(scope, prev.optionStyles);
+    if (optionStyles && Object.keys(optionStyles).length) config.optionStyles = optionStyles;
+    else delete config.optionStyles;
   }
   const ctx = stateInfo.ctx || _ptContextForDbPath(dbPath);
   // 入力中はDOMに紐づく一時状態だけを更新する。永続メタデータを先に書き換えると、
@@ -158894,7 +159976,13 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
     root.querySelectorAll?.('td[data-prop-name]').forEach(td => {
       if (td.dataset.propName !== propName) return;
       td.querySelectorAll('.cell-select-val, .multi-select-tag').forEach(chip => {
-        if ((chip.textContent || '').trim() === String(option)) applyDbOptionChipColor(chip, safeHex);
+        if ((chip.textContent || '').trim() !== String(option)) return;
+        // 背景色以外の書式（文字色・太字など）は保存済みの値を保ったまま、背景色だけ差し替える。
+        const ptc = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {})[propName] : null;
+        const style = { ...getDbOptionStyle(ptc, option) };
+        if (safeHex) style.bgColor = safeHex;
+        else delete style.bgColor;
+        applyDbChipStyle(chip, style);
       });
     });
 
@@ -158946,6 +160034,15 @@ async function setDbOptionColorAndSave(dbPath, propName, option, color, ctx) {
   else delete colors[String(option)];
   if (Object.keys(colors).length) cfg.optionColors = colors;
   else delete cfg.optionColors;
+  // 書式（optionStyles）側の背景色が優先されるため、同じ値へそろえる。
+  if (cfg.optionStyles && cfg.optionStyles[String(option)]) {
+    const style = { ...cfg.optionStyles[String(option)] };
+    if (_dbOptionColorIsValidHex(color)) style.bgColor = color.trim();
+    else delete style.bgColor;
+    if (Object.keys(style).length) cfg.optionStyles[String(option)] = style;
+    else delete cfg.optionStyles[String(option)];
+    if (!Object.keys(cfg.optionStyles).length) delete cfg.optionStyles;
+  }
   try {
     const saved = await Promise.resolve(setPropertyType(dbPath, propName, cfg, ctx));
     if (saved === false) throw new Error('保護されている列のため変更できません');
@@ -159295,8 +160392,10 @@ function renderDbSelectOptionRows(container, scope) {
     : scope.querySelector?.('#pt-select-option-add');
   if (!textarea) return null;
   if (!scope._dbOptionColorBuffer) scope._dbOptionColorBuffer = { ...(current.optionColors || {}) };
+  if (!scope._dbOptionStyleBuffer) scope._dbOptionStyleBuffer = { ...(current.optionStyles || {}) };
   const buffer = scope._dbOptionColorBuffer;
-  const used = new Set((stateInfo?.existing || []).flatMap(value => {
+  const styleBuffer = scope._dbOptionStyleBuffer;
+  const used =new Set((stateInfo?.existing || []).flatMap(value => {
     const raw = String(value ?? '').trim();
     return stateInfo?.current?.type === 'multi-select' ? raw.split(',').map(v => v.trim()).filter(Boolean) : (raw ? [raw] : []);
   }));
@@ -159355,6 +160454,10 @@ function renderDbSelectOptionRows(container, scope) {
           buffer[next] = buffer[option];
           delete buffer[option];
         }
+        if (Object.prototype.hasOwnProperty.call(styleBuffer, option)) {
+          styleBuffer[next] = styleBuffer[option];
+          delete styleBuffer[option];
+        }
         writeOptions(latest);
         renderRows(next);
       });
@@ -159364,23 +160467,11 @@ function renderDbSelectOptionRows(container, scope) {
       });
       row.appendChild(input);
 
-      const swatch = document.createElement('button');
-      swatch.type = 'button';
-      swatch.className = 'gb-fmt-swatch pt-select-option-color';
-      swatch.dataset.e2eId = `pt-select-option-color-${optionIndex}`;
-      swatch.title = `${option} の色`;
-      swatch.setAttribute('aria-label', `${option}の色を選択`);
-      if (protectionReason) swatch.disabled = true;
-      row.appendChild(swatch);
-      if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, buffer[option] || '');
-      if (typeof bindColorSwatch === 'function') {
-        bindColorSwatch(swatch, () => buffer[option] || '', color => {
-          if (_dbOptionColorIsValidHex(color)) buffer[option] = color.trim();
-          else delete buffer[option];
-          if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, buffer[option] || '');
-          scope.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-      }
+      // セルでの見た目そのままのチップ。クリックで書式設定ポップアップ（背景色・文字色など）。
+      row.insertBefore(
+        _dbCreateOptionPreviewChip(scope, option, optionIndex, stateInfo?.current?.type === 'multi-select', protectionReason),
+        input,
+      );
 
       const duplicateButton = document.createElement('button');
       duplicateButton.type = 'button';
@@ -159395,6 +160486,7 @@ function renderDbSelectOptionRows(container, scope) {
         const name = uniqueCopyName(option, latest);
         latest.splice(optionIndex + 1, 0, name);
         if (buffer[option]) buffer[name] = buffer[option];
+        if (styleBuffer[option]) styleBuffer[name] = { ...styleBuffer[option] };
         writeOptions(latest);
         renderRows(name);
       });
@@ -159412,6 +160504,7 @@ function renderDbSelectOptionRows(container, scope) {
         const latest = readOptions();
         latest.splice(optionIndex, 1);
         delete buffer[option];
+        delete styleBuffer[option];
         writeOptions(latest);
         renderRows();
       });
@@ -159485,6 +160578,238 @@ function collectDbOptionColors(scope, prevColors, currentOptions) {
     if (_dbOptionColorIsValidHex(hex)) out[key] = hex.trim();
   });
   return out;
+}
+
+// --- 選択肢・チップの書式（背景色・文字色・枠線色・太字・斜体・取消線）: 2026-11-09 ---
+// セレクト/マルチセレクトは選択肢ごとに optionStyles[選択肢] へ、タグ・リレーション・
+// ロールアップは列全体の chipStyle へ保存する。背景色の16進数は旧版互換のため
+// optionColors にも書き続ける（旧版は optionStyles を無視して背景色だけ表示する）。
+const DB_CHIP_FORMAT_FIELDS = ['textColor', 'borderColor', 'bold', 'italic', 'strike', 'bgColor'];
+const DB_CHIP_STYLE_TYPES = new Set(['relation', 'multi-relation', 'common-tags', 'rollup']);
+
+function _dbChipCssColorValid(value) {
+  return typeof value === 'string'
+    && /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9\s.,%]+\)|hsla?\([0-9\s.,%deg]+\)|transparent)$/.test(value.trim());
+}
+
+function normalizeDbChipStyle(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  ['bgColor', 'textColor', 'borderColor'].forEach(key => {
+    if (_dbChipCssColorValid(raw[key])) out[key] = raw[key].trim();
+  });
+  if (raw.fontWeight === 'bold') out.fontWeight = 'bold';
+  if (raw.fontStyle === 'italic') out.fontStyle = 'italic';
+  if (raw.strike === true) out.strike = true;
+  return out;
+}
+
+function _dbChipStyleIsEmpty(style) {
+  return !style || !Object.keys(style).length;
+}
+
+// 選択肢の表示書式。optionStyles が無い選択肢は旧来の optionColors（背景色）だけを使う。
+function getDbOptionStyle(ptc, value) {
+  if (!ptc || value == null) return {};
+  const style = normalizeDbChipStyle(ptc.optionStyles?.[String(value)]);
+  if (!style.bgColor) {
+    const hex = getDbOptionColor(ptc, value);
+    if (hex) style.bgColor = hex;
+  }
+  return style;
+}
+
+// チップ要素へ書式を直接適用する。文字色の指定が無く背景色が16進数なら、従来どおり読みやすい白/黒を選ぶ。
+function applyDbChipStyle(el, rawStyle) {
+  if (!el) return;
+  const style = normalizeDbChipStyle(rawStyle);
+  ['background', 'background-color', 'color', 'font-weight', 'font-style', 'text-decoration', 'box-shadow']
+    .forEach(prop => el.style.removeProperty(prop));
+  if (style.bgColor) el.style.background = style.bgColor;
+  if (style.textColor) el.style.color = style.textColor;
+  else if (style.bgColor) {
+    const fg = dbOptionTextColorFor(style.bgColor);
+    if (fg) el.style.color = fg;
+  }
+  if (style.borderColor) el.style.boxShadow = `inset 0 0 0 1px ${style.borderColor}`;
+  if (style.fontWeight) el.style.fontWeight = style.fontWeight;
+  if (style.fontStyle) el.style.fontStyle = style.fontStyle;
+  if (style.strike) el.style.textDecoration = 'line-through';
+}
+
+// タグ・リレーション・ロールアップ: 値の外枠へCSS変数を置き、中のチップ／行へCSSで反映する。
+function applyDbColumnChipStyle(el, ptc) {
+  if (!el) return;
+  const style = normalizeDbChipStyle(ptc?.chipStyle);
+  const vars = {
+    '--db-chip-bg': style.bgColor || '',
+    '--db-chip-fg': style.textColor || (style.bgColor ? dbOptionTextColorFor(style.bgColor) : ''),
+    '--db-chip-border': style.borderColor || '',
+    '--db-chip-weight': style.fontWeight || '',
+    '--db-chip-font-style': style.fontStyle || '',
+    '--db-chip-decoration': style.strike ? 'line-through' : '',
+  };
+  Object.entries(vars).forEach(([name, value]) => {
+    if (value) el.style.setProperty(name, value);
+    else el.style.removeProperty(name);
+  });
+  el.classList.toggle('db-chip-styled', !_dbChipStyleIsEmpty(style));
+  const flags = {
+    chipBg: vars['--db-chip-bg'],
+    chipFg: vars['--db-chip-fg'],
+    chipBorder: vars['--db-chip-border'],
+    chipWeight: vars['--db-chip-weight'],
+    chipFontStyle: vars['--db-chip-font-style'],
+    chipDecoration: vars['--db-chip-decoration'],
+  };
+  Object.entries(flags).forEach(([key, value]) => {
+    if (value) el.dataset[key] = '1';
+    else delete el.dataset[key];
+  });
+}
+
+// 書式設定ポップアップを開く。値の名前は共通ポップアップと同じ（fontWeight/fontStyle/strike 等）。
+function openDbChipFormatPopup(anchorEl, initialStyle, onStyleChange) {
+  if (typeof openFormatPopup !== 'function') {
+    if (typeof showStatus === 'function') showStatus('書式設定を利用できません', true);
+    return null;
+  }
+  const values = { ...normalizeDbChipStyle(initialStyle) };
+  return openFormatPopup(anchorEl, {
+    className: 'db-chip-format-popup',
+    fields: DB_CHIP_FORMAT_FIELDS,
+    values: { ...values },
+    onChange: (prop, value) => {
+      if (value === '' || value == null || value === false) delete values[prop];
+      else values[prop] = value;
+      onStyleChange(normalizeDbChipStyle(values));
+    },
+    onReset: () => {
+      Object.keys(values).forEach(key => delete values[key]);
+      onStyleChange({});
+    },
+  });
+}
+
+// 列設定パネルの選択肢プレビュー（チップの見た目そのまま。クリックで書式設定ポップアップ）
+function _dbCreateOptionPreviewChip(scope, option, optionIndex, multi, protectionReason) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = `${multi ? 'multi-select-tag' : 'cell-select-val'} pt-select-option-preview`;
+  chip.dataset.e2eId = `pt-select-option-preview-${optionIndex}`;
+  chip.textContent = option;
+  chip.title = protectionReason || `${option} の書式を設定`;
+  chip.setAttribute('aria-label', protectionReason ? `${option}の書式は変更できません。${protectionReason}` : `${option}の書式を設定`);
+  if (protectionReason) chip.disabled = true;
+  const currentStyle = () => {
+    const colors = scope._dbOptionColorBuffer || {};
+    const styles = scope._dbOptionStyleBuffer || {};
+    const style = normalizeDbChipStyle(styles[option]);
+    if (!style.bgColor && _dbOptionColorIsValidHex(colors[option])) style.bgColor = colors[option].trim();
+    return style;
+  };
+  applyDbChipStyle(chip, currentStyle());
+  chip.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openDbChipFormatPopup(chip, currentStyle(), (style) => {
+      if (!scope._dbOptionStyleBuffer) scope._dbOptionStyleBuffer = {};
+      if (!scope._dbOptionColorBuffer) scope._dbOptionColorBuffer = {};
+      if (_dbChipStyleIsEmpty(style)) delete scope._dbOptionStyleBuffer[option];
+      else scope._dbOptionStyleBuffer[option] = style;
+      if (_dbOptionColorIsValidHex(style.bgColor)) scope._dbOptionColorBuffer[option] = style.bgColor.trim();
+      else delete scope._dbOptionColorBuffer[option];
+      applyDbChipStyle(chip, style);
+      try { scope.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+    });
+  });
+  return chip;
+}
+
+// 保存直前に呼ぶ: 選択肢ごとの書式（optionStyles）を作業バッファから集める。
+function collectDbOptionStyles(scope, prevStyles) {
+  const buffer = (scope && scope._dbOptionStyleBuffer) || prevStyles || {};
+  const out = {};
+  Object.keys(buffer).forEach(key => {
+    const style = normalizeDbChipStyle(buffer[key]);
+    if (!_dbChipStyleIsEmpty(style)) out[key] = style;
+  });
+  return out;
+}
+
+// 保存直前に呼ぶ: タグ・リレーション・ロールアップ列のチップ書式（chipStyle）。
+function collectDbColumnChipStyle(scope, prevStyle) {
+  const source = scope && Object.prototype.hasOwnProperty.call(scope, '_dbChipStyleBuffer')
+    ? scope._dbChipStyleBuffer
+    : prevStyle;
+  return normalizeDbChipStyle(source);
+}
+
+// 列設定パネル: タグ・リレーション・ロールアップ列の「表示」欄。列内の実際の値を
+// チップの見た目どおりに並べ、クリックで列全体のチップ書式を設定する。
+function renderDbColumnChipStyleField(optDiv, scope, type) {
+  if (!optDiv || !scope || !DB_CHIP_STYLE_TYPES.has(type)) return null;
+  const stateInfo = typeof _ptState === 'function' ? _ptState(scope) : {};
+  const current = stateInfo?.current || {};
+  const protectionLevel = typeof _dbSchemaProtectionLevel === 'function'
+    ? _dbSchemaProtectionLevel(stateInfo?.dbPath, stateInfo?.propName) : null;
+  const protectionReason = _dbOptionColorProtectionReason(protectionLevel);
+  scope._dbChipStyleBuffer = normalizeDbChipStyle(current.chipStyle);
+
+  const field = document.createElement('div');
+  field.className = 'field pt-chip-style-field';
+  field.dataset.e2eId = 'pt-chip-style-field';
+  const label = document.createElement('label');
+  label.textContent = '表示';
+  if (typeof fieldHelp === 'function') {
+    label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('値をクリックすると書式（背景色・文字色・枠線・太字など）を設定できます。この列のすべての値に反映されます'));
+  }
+  const host = document.createElement('div');
+  host.className = 'pt-chip-style-preview';
+  host.dataset.e2eId = 'pt-chip-style-preview';
+  applyDbColumnChipStyle(host, { chipStyle: scope._dbChipStyleBuffer });
+
+  // 見本は列内の実際の値から最大3件。共通タグはタグIDで保存されるため名前が出せず、種類名で代替する。
+  const samples = [];
+  const seen = new Set();
+  if (type !== 'common-tags' && type !== 'rollup') {
+    (stateInfo?.existing || []).forEach(raw => {
+      String(raw ?? '').split(',').map(v => v.trim()).filter(Boolean).forEach(v => {
+        const text = v.replace(/^\[\[|\]\]$/g, '').split('|').pop().split('/').pop();
+        if (samples.length >= 3 || !text || seen.has(text)) return;
+        seen.add(text);
+        samples.push(text);
+      });
+    });
+  }
+  const fallback = { 'common-tags': ['タグ'], rollup: ['ロールアップの値'], relation: ['リンク先'], 'multi-relation': ['リンク先'] }[type];
+  (samples.length ? samples : fallback).forEach((text, index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = type === 'rollup'
+      ? 'db-rollup-line pt-chip-style-sample'
+      : type === 'common-tags'
+        ? 'gb-tag-chip gb-tag-chip--compact multi-select-tag common-tags-tag pt-chip-style-sample'
+        // relation-link はリンク先を開く全体のクリック処理に横取りされるため、見た目だけ専用クラスでそろえる
+        : 'pt-chip-style-sample pt-chip-style-sample--relation';
+    chip.dataset.e2eId = `pt-chip-style-sample-${index}`;
+    chip.textContent = text;
+    chip.title = protectionReason || '書式を設定';
+    if (protectionReason) chip.disabled = true;
+    chip.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDbChipFormatPopup(chip, scope._dbChipStyleBuffer, (style) => {
+        scope._dbChipStyleBuffer = style;
+        applyDbColumnChipStyle(host, { chipStyle: style });
+        try { scope.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+      });
+    });
+    host.appendChild(chip);
+  });
+  field.append(label, host);
+  optDiv.appendChild(field);
+  return field;
 }
 
 ;
@@ -159668,8 +160993,12 @@ function _dbLinkConfirm(message) {
   });
 }
 
-async function _dbLinkOpen(link, sourceEl) {
+async function _dbLinkOpen(link, sourceEl, options = {}) {
   if (!link?.target) return false;
+  if (options.dbPath && ['web', 'meldex'].includes(link.kind)) {
+    const entry = link.kind === 'web' ? { type: 'html', path: link.target, label: link.label, urlExternal: true } : undefined;
+    return _dbOpenConfiguredTarget(link.target, link.label, { ...options, sourceEl, entry, linkType: 'link' });
+  }
   if (link.kind === 'web') {
     window.open(link.target, '_blank', 'noopener');
     return true;
@@ -159772,13 +161101,13 @@ function createDbLinkValueElement(val, entityPath, propName, thumbSize, propType
   }
   wrap.addEventListener('click', (e) => {
     e.stopPropagation();
-    _dbLinkOpen(linkValue, wrap);
+    _dbLinkOpen(linkValue, wrap, { dbPath, ctx: options?.ctx });
   });
   wrap.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     e.stopPropagation();
-    _dbLinkOpen(linkValue, wrap);
+    _dbLinkOpen(linkValue, wrap, { dbPath, ctx: options?.ctx });
   });
 
   void dbPath;
@@ -163495,7 +164824,7 @@ function _dbStartCellInlineEditor(td, options = {}) {
 
 function _dbIsNativeEditingElement(el) {
   return !!(el && el.isConnected !== false && (
-    el.contentEditable === 'true' ||
+    el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only' ||
     el.tagName === 'INPUT' ||
     el.tagName === 'TEXTAREA' ||
     el.tagName === 'SELECT'
@@ -165429,10 +166758,18 @@ function _cellUiClosestFromEvent(e, selector) {
   return target && typeof target.closest === 'function' ? target.closest(selector) : null;
 }
 
-function _cellUiHandleAutoLinkClick(e) {
+function _cellUiHandleAutoLinkClick(e, entityPath) {
   const al = _cellUiClosestFromEvent(e, '.auto-link');
   if (!al || typeof onAutoLinkClick !== 'function') return false;
   e.stopPropagation();
+  if (entityPath && al.dataset.path && typeof _dbOpenConfiguredTarget === 'function') {
+    e.preventDefault();
+    const path = typeof _resolveAutoLinkPath === 'function' ? _resolveAutoLinkPath(al.dataset.path) : al.dataset.path;
+    _dbOpenConfiguredTarget(path, al.textContent, {
+      dbPath: _dbPathFromEntityPath(entityPath), sourceEl: al, linkType: al.dataset.linkType || al.dataset.type,
+    });
+    return true;
+  }
   onAutoLinkClick(al, e);
   return true;
 }
@@ -165518,7 +166855,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
     if (_cellUiApplyAutoLinks(tag, t, entityPath)) {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (_cellUiHandleAutoLinkClick(e)) return;
+        if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
         startInlineEdit(container, val, entityPath, propName);
       });
     } else {
@@ -165530,7 +166867,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
     container.appendChild(tag);
   });
   container.addEventListener('click', (e) => {
-    if (_cellUiHandleAutoLinkClick(e)) return;
+    if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
     e.stopPropagation();
     startInlineEdit(container, val, entityPath, propName);
   });
@@ -165590,7 +166927,12 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     _dbApplyCellInteractiveLinkA11y(link, 'url', entityPath, propName, v);
     // ドメインだけ表示
     try { link.textContent = new URL(v).hostname + '…'; } catch { link.textContent = v; }
-    link.addEventListener('click', (e) => e.stopPropagation());
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _dbOpenConfiguredTarget(v, link.textContent, { dbPath: _dbPathFromEntityPath(entityPath), sourceEl: link,
+        entry: { type: 'html', path: v, label: v, urlExternal: true } });
+    });
     row.appendChild(link);
     return row;
   }
@@ -165607,7 +166949,8 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     img.fetchPriority = 'low';
     const browserFiles = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       && window.MeldexPwaFileUrl?.applyToElement;
-    if (!browserFiles) img.src = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
+    const thumbnailSrc = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
+    if (!browserFiles) img.src = thumbnailSrc;
     img.alt = v;
     img.onerror = () => {
       if (browserFiles) {
@@ -165621,12 +166964,15 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       }
       img.replaceWith(document.createTextNode(v));
     };
-    img.addEventListener('click', (e) => { e.stopPropagation(); });
+    img.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openImagePropertyItemInViewer({ path: imagePath, filename: v }, { entityPath, propName });
+    });
     const imageHost = window.MeldexImageLoading?.createHost?.(img, {
       className: 'cell-thumbnail-host' + (thumbSize === 'large' ? ' large' : ''),
     });
     row.appendChild(imageHost || img);
-    if (browserFiles) window.MeldexPwaFileUrl.applyToElement(img, rawSrc);
+    if (browserFiles) window.MeldexPwaFileUrl.applyToElement(img, thumbnailSrc);
     window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像セルを読み込んでいます', errorMode: 'silent' });
     return row;
   }
@@ -165655,7 +167001,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   if (_cellUiApplyAutoLinks(txt, v, entityPath)) {
     // auto-link がある場合はクリックハンドラを分岐
     txt.addEventListener('click', (e) => {
-      if (_cellUiHandleAutoLinkClick(e)) return;
+      if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
       startInlineEdit(txt, val, entityPath, propName);
     });
   } else {
@@ -166981,6 +168327,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   if (type === 'rollup' || type === 'formula') {
     const row = document.createElement('div');
     row.className = 'cell-value';
+    if (type === 'rollup' && typeof applyDbColumnChipStyle === 'function') applyDbColumnChipStyle(row, propTypeConfig);
     const span = document.createElement('span');
     span.className = 'db-cell-display-text';
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
@@ -167050,6 +168397,10 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const row = document.createElement('div');
   row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
+  // タグ・リレーション列の列全体のチップ書式（列設定の「表示」）
+  if ((type === 'relation' || type === 'multi-relation' || type === 'common-tags') && typeof applyDbColumnChipStyle === 'function') {
+    applyDbColumnChipStyle(row, propTypeConfig);
+  }
 
   // 列型・候補数による例外を設けず、シートのON/OFFに従う。
   if (getStatusEnabled(dbPath)) {
@@ -167362,7 +168713,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     span.className = 'cell-select-val';
     span.textContent = v;
     span.style.cursor = 'pointer';
-    if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+    if (typeof applyDbChipStyle === 'function' && typeof getDbOptionStyle === 'function') {
+      applyDbChipStyle(span, getDbOptionStyle(propTypeConfig, v));
+    } else if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
       applyDbOptionChipColor(span, getDbOptionColor(propTypeConfig, v));
     }
     span.addEventListener('click', (e) => {
@@ -167396,7 +168749,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       const tag = document.createElement('span');
       tag.className = 'multi-select-tag';
       tag.textContent = t;
-      if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
+      if (typeof applyDbChipStyle === 'function' && typeof getDbOptionStyle === 'function') {
+        applyDbChipStyle(tag, getDbOptionStyle(propTypeConfig, t));
+      } else if (typeof applyDbOptionChipColor === 'function' && typeof getDbOptionColor === 'function') {
         applyDbOptionChipColor(tag, getDbOptionColor(propTypeConfig, t));
       }
       tagContainer.appendChild(tag);
@@ -169123,8 +170478,10 @@ function _imageSrc(item, preferThumb, thumbSize) {
   // Only legacy uploads live in _media. Imported src/url references can point
   // to ordinary files in any registered source root (including hidden files).
   const path = rel.replace(/\\/g, '/');
-  if (path.startsWith('_media/')) return '/api/media/file?path=' + encodeURIComponent(path);
   const kind = _attachmentKind(item);
+  if (path.startsWith('_media/') && (!preferThumb || kind !== 'image' || !window.MeldexRuntimeAdapter?.isDropboxMode?.())) {
+    return '/api/media/file?path=' + encodeURIComponent(path);
+  }
   return _attachmentUrlFromPath(path, !!preferThumb && (kind === 'image' || kind === 'video'), thumbSize);
 }
 
@@ -169503,6 +170860,19 @@ function openImagePropertyItemInViewer(item, options = {}) {
     ? window.MeldexViewerSheetContext.viewerUrl(sheetContext)
     : '';
   const imagePath = _imagePropOpenPath(item);
+  const dbPath = options.ctx?.dbPath || (options.entityPath ? _imagePropDbPathForEntity(options.entityPath) : '');
+  if (dbPath && typeof _dbOpenConfiguredTarget === 'function') {
+    const path = imagePath || sheetViewerUrl || _imageSrc(item, false);
+    if (!path) return false;
+    const label = item?.caption || item?.filename || path.split('/').pop() || '画像';
+    const mediaType = _attachmentKind(item);
+    const viewerUrl = mediaType === 'pdf' ? '' : (sheetViewerUrl || (!imagePath ? path : ''));
+    const entry = imagePath
+      ? { type: 'media', path, label, mediaType, ...(viewerUrl ? { viewerUrl } : {}) }
+      : { type: 'media', path, label, mediaType, viewerUrl };
+    _dbOpenConfiguredTarget(path, label, { ...options, dbPath, entry, linkType: entry.type });
+    return true;
+  }
   if (imagePath) {
     const label = item?.caption || item?.filename || imagePath.split('/').pop() || imagePath;
     const ext = (imagePath.split('.').pop() || '').toLowerCase();
@@ -169921,7 +171291,7 @@ if (typeof window !== 'undefined') {
 
 /* === gb-mobile-tab-gesture-router.js === */
 ;
-/* Common <=640px tab dropdown and edge gesture router. */
+/* Shared tab overflow, <=640px tab dropdown and edge gesture router. */
 (function (global) {
   'use strict';
 
@@ -169937,6 +171307,7 @@ if (typeof window !== 'undefined') {
   ].join(',');
   let observer = null;
   let gesture = null;
+  const overflowBars = new Map();
 
   function isPhone() {
     return !!global.matchMedia?.(PHONE_QUERY).matches;
@@ -169966,27 +171337,31 @@ if (typeof window !== 'undefined') {
     return tabs.find(tab => tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true') || tabs[0];
   }
 
-  function closeMenu(menu, trigger) {
+  function closeMenu(menu, trigger, restoreFocus = true) {
+    menu?._cleanup?.();
     menu?.remove();
     trigger?.setAttribute('aria-expanded', 'false');
-    trigger?.focus?.();
+    if (trigger?._tabMenu === menu) trigger._tabMenu = null;
+    if (restoreFocus) trigger?.focus?.();
   }
 
-  function closeMainTab(tablist, tab) {
+  async function closeMainTab(tablist, tab) {
     const paneId = tablist.closest('.gb-pane')?.dataset?.paneId;
     const tabId = tab?.dataset?.tabId;
-    if (!paneId || !tabId || typeof global.GBTabs?.closeTab !== 'function') return false;
-    global.GBTabs.closeTab(paneId, tabId);
-    return true;
+    const tabsApi = typeof GBTabs !== 'undefined' ? GBTabs : global.GBTabs;
+    if (!paneId || !tabId || typeof tabsApi?.closeTab !== 'function') return false;
+    return await tabsApi.closeTab(paneId, tabId) !== false;
   }
 
-  function openMenu(trigger, tablist) {
-    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => node.remove());
-    const tabs = tabItems(tablist);
+  function openMenu(trigger, tablist, overflowTabs = null) {
+    document.querySelectorAll('.gb-mobile-tab-menu').forEach(node => closeMenu(node, node._trigger, false));
+    const tabs = overflowTabs || tabItems(tablist);
     const menu = document.createElement('div');
-    menu.className = 'gb-mobile-tab-menu';
+    menu.className = 'gb-mobile-tab-menu' + (overflowTabs ? ' gb-tab-overflow-menu gb-context-menu' : '');
+    menu._trigger = trigger; trigger._tabMenu = menu;
+    menu._closeTabMenu = () => closeMenu(menu, trigger, false);
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '表示を切り替える');
+    menu.setAttribute('aria-label', overflowTabs ? '隠れているタブ' : '表示を切り替える');
     tabs.forEach((tab) => {
       const row = document.createElement('div');
       row.className = 'gb-mobile-tab-menu-row';
@@ -169996,21 +171371,26 @@ if (typeof window !== 'undefined') {
       item.setAttribute('role', 'menuitem');
       item.disabled = tab.matches(':disabled,[aria-disabled="true"]');
       item.textContent = tabTitle(tab);
+      if (tab === activeTab(tabItems(tablist))) item.setAttribute('aria-current', 'page');
       item.addEventListener('click', () => {
+        closeMenu(menu, trigger, !overflowTabs);
         tab.click();
         syncOne(tablist);
-        closeMenu(menu, trigger);
+        if (overflowTabs) global.requestAnimationFrame(() => {
+          if (tab.isConnected) tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          scheduleSync();
+        });
       });
       row.appendChild(item);
-      if (tablist.classList.contains('gb-pane-tabs')) {
+      if (tablist.classList.contains('gb-pane-tabs') && tab.dataset.tabId) {
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'gb-mobile-tab-menu-close';
         close.setAttribute('aria-label', `${tabTitle(tab)}を閉じる`);
         close.title = `${tabTitle(tab)}を閉じる`;
         close.textContent = '×';
-        close.addEventListener('click', () => {
-          if (closeMainTab(tablist, tab)) closeMenu(menu, trigger);
+        close.addEventListener('click', async () => {
+          if (await closeMainTab(tablist, tab)) closeMenu(menu, trigger);
         });
         row.appendChild(close);
       }
@@ -170035,18 +171415,81 @@ if (typeof window !== 'undefined') {
       else if (event.key === 'End') next = items.length - 1;
       if (next >= 0) {
         event.preventDefault();
+        event.stopPropagation();
         items[next]?.focus();
       }
     });
     const dismiss = (event) => {
       if (event.key === 'Escape' || (event.type === 'pointerdown' && !menu.contains(event.target) && event.target !== trigger)) {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
         closeMenu(menu, trigger);
-        document.removeEventListener('keydown', dismiss, true);
-        document.removeEventListener('pointerdown', dismiss, true);
       }
+    };
+    menu._cleanup = () => {
+      document.removeEventListener('keydown', dismiss, true);
+      document.removeEventListener('pointerdown', dismiss, true);
     };
     document.addEventListener('keydown', dismiss, true);
     document.addEventListener('pointerdown', dismiss, true);
+  }
+
+  function clippedTabs(bar, scroll) {
+    const clip = scroll.getBoundingClientRect();
+    return tabItems(bar).filter(tab => {
+      const rect = tab.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < clip.left - 1 || rect.right > clip.right + 1);
+    });
+  }
+
+  function syncOverflow(bar) {
+    if (!bar.classList.contains('gb-pane-tabs')) return;
+    const scroll = bar.querySelector(':scope > .gb-pane-tabs-scroll');
+    if (!scroll?.clientWidth) {
+      const existing = overflowBars.get(bar);
+      if (existing) {
+        if (!existing.trigger.hidden) existing.trigger.hidden = true;
+        if (existing.trigger._tabMenu) closeMenu(existing.trigger._tabMenu, existing.trigger, false);
+      }
+      return;
+    }
+    let state = overflowBars.get(bar);
+    if (!state) {
+      const trigger = document.createElement('button');
+      trigger.type = 'button'; trigger.className = 'gb-tab-overflow-button'; trigger.textContent = '▼';
+      trigger.hidden = true;
+      trigger.title = '隠れているタブを表示'; trigger.setAttribute('aria-label', trigger.title);
+      trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
+      trigger.dataset.e2eId = 'tab-overflow-button';
+      trigger.addEventListener('click', () => {
+        if (trigger._tabMenu) closeMenu(trigger._tabMenu, trigger);
+        else {
+          const hidden = clippedTabs(bar, scroll);
+          if (hidden.length) openMenu(trigger, bar, hidden);
+          else scheduleSync();
+        }
+      });
+      bar.appendChild(trigger);
+      const resize = typeof global.ResizeObserver === 'function' ? new global.ResizeObserver(scheduleSync) : null;
+      resize?.observe(scroll); resize?.observe(bar);
+      scroll.addEventListener('scroll', scheduleSync, { passive: true });
+      state = { scroll, trigger, resize, active: null, add: scroll.querySelector(':scope > .gb-pane-add-tab') }; overflowBars.set(bar, state);
+    }
+    const { trigger } = state;
+    // Compare against the space without the trigger to avoid show/hide oscillation.
+    const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
+    const overflow = !isPhone() && scroll.scrollWidth > scroll.clientWidth + reserved + 1;
+    if (trigger.hidden === overflow) trigger.hidden = !overflow;
+    // Keep creation available when the final tab and its following + are clipped.
+    if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
+    else if (state.add && !overflow && state.add.parentNode === bar) scroll.appendChild(state.add);
+    if (!overflow && trigger._tabMenu) closeMenu(trigger._tabMenu, trigger, false);
+    const active = activeTab(tabItems(bar));
+    if (active !== state.active) {
+      state.active = active;
+      if (active && !isPhone()) global.requestAnimationFrame(() => {
+        if (active.isConnected) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+    }
   }
 
   // 1ペイン内に複数のタブバー（ペイン自体のタブ + 中に埋め込まれたオプション
@@ -170098,12 +171541,11 @@ if (typeof window !== 'undefined') {
     // Sheet/board view bars already provide their own phone select and menu.
     // Adding a second dropdown also collects hidden menu text into its label.
     const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
-    // Attachment headers style the outer container as pane tabs, but their
-    // child tablist owns the actual tabs. An outer empty dropdown hides that
-    // entire header through the phone CSS, including its working dropdown.
+    // A tab-styled toolbar may wrap a semantic tablist plus an add button.
+    // Convert the inner list so the toolbar's other controls remain visible.
     const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
       && tablist.querySelector(':scope > [role="tablist"]');
-    if (nativeSwitcher || nestedTablist) {
+    if (nativeSwitcher || nestedTablist || tablist.dataset.mobileTabContainer === '1') {
       const old = tablist.previousElementSibling;
       if (old?.classList?.contains('gb-mobile-tab-dropdown')) old.remove();
       return;
@@ -170129,7 +171571,13 @@ if (typeof window !== 'undefined') {
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
     const usedIds = new Map();
-    tablists.forEach((tablist) => syncOne(tablist, usedIds));
+    tablists.forEach((tablist) => { syncOne(tablist, usedIds); syncOverflow(tablist); });
+    for (const [bar, state] of overflowBars) {
+      if (bar.isConnected) continue;
+      state.resize?.disconnect(); state.scroll.removeEventListener('scroll', scheduleSync);
+      if (state.trigger._tabMenu) closeMenu(state.trigger._tabMenu, state.trigger, false);
+      overflowBars.delete(bar);
+    }
     document.querySelectorAll('.gb-mobile-tab-dropdown').forEach((trigger) => {
       if (!trigger.__meldexTablist?.isConnected) trigger.remove();
     });
@@ -170237,7 +171685,7 @@ if (typeof window !== 'undefined') {
     installGestures();
     _installMenuOutsideClickGuard();
     observer = new MutationObserver(scheduleSync);
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-disabled', 'disabled'] });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-selected', 'aria-disabled', 'disabled'] });
     global.addEventListener('resize', scheduleSync, { passive: true });
   }
 
@@ -170777,7 +172225,11 @@ if (typeof window !== 'undefined') {
   function renderView(root, dbPath, cfg, propTypes, ctx) {
     const owner = ctx?.containerEl || root;
     let session = viewSessions.get(owner);
-    if (!session || session.dbPath !== dbPath) { session = { dbPath, path: '', continuous: false, created: new Map() }; viewSessions.set(owner, session); }
+    if (!session || session.dbPath !== dbPath) {
+      const linkedEntry = ctx?.formApp?._embeddedEntryPath || '';
+      const initial = normalPath(linkedEntry.replace(/\/[^/]+$/, '')) === normalPath(dbPath) ? linkedEntry : '';
+      session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
+    }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
     const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
@@ -170839,8 +172291,15 @@ if (typeof window !== 'undefined') {
         const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
         if (layout) _elRenderLayoutBody(panel, data, path, { propTypes, ctx, readOnly: access.readOnly || ctx?.readOnly, formLayout: ctx?.formApp?.getLayout() }, dbPath, layout.id, renderRecord);
         else {
-          const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-          await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+          if (ctx?.formApp?._embeddedEntryPath) {
+            // A topic form edits the enclosing record. Do not recursively mount
+            // that topic's linked files inside its own form application.
+            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx,
+              topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
+          } else {
+            const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
+            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+          }
         }
       } catch (error) {
         if (generation === current && panel.isConnected) {
@@ -175788,11 +177247,12 @@ class FormAppComponent extends ToolComponent {
     window.addEventListener('beforeunload', this._beforeUnload);
     return this.el;
   }
+  _historyScope() { return this._embedded ? 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath) : ''; }
   _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
     this._syncDetailPanel();
-    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function') historySetScope(this._historyScope());
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
     if (path && path !== this.path) this.ready = this.load(path);
@@ -175819,7 +177279,7 @@ class FormAppComponent extends ToolComponent {
     this.el.textContent = 'フォームを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([
-        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false),
+        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true),
       ]);
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
@@ -175948,7 +177408,7 @@ class FormAppComponent extends ToolComponent {
         }
         if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
       };
-      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), '', this.state.label || 'フォーム');
+      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), this._historyScope(), this.state.label || 'フォーム');
     }
     return true;
   }
@@ -175972,7 +177432,7 @@ class FormAppComponent extends ToolComponent {
         MeldexEntityDetail.resolveReadOnly(path, false),
       ]);
       if (this.ctx !== ctx || ctx.destroyed) return;
-      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly;
+      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly || this._embeddedReadOnly === true;
       if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
     } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
   }
@@ -177137,7 +178597,9 @@ function _dbHasColumnCellDisplayOverrides(dbPath, ctx = null) {
 }
 
 function syncDbCellDisplayToolbar(dbPath, ctx = null) {
-  const btn = document.getElementById('btn-db-cell-wrap') || document.getElementById('sheet-tb-cell-wrap');
+  const editorRoot = ctx?.containerEl?.closest?.('[data-editor-host]');
+  const btn = editorRoot?.querySelector('[data-editor-local-id="btn-db-cell-wrap"]')
+    || document.getElementById('btn-db-cell-wrap') || document.getElementById('sheet-tb-cell-wrap');
   if (!btn) return;
   const cfg = _dbCellDisplayConfig(dbPath, ctx);
   const imgCount = typeof getCellImageThumbCount === 'function' ? getCellImageThumbCount(dbPath, { ctx }) : 3;
@@ -179445,6 +180907,10 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   });
   const aligned = document.createElement('div');
   aligned.className = 'db-rollup-relation-lines';
+  // 列設定の「表示」で付けたチップ書式を、行揃え表示のリレーションにも反映する
+  if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
+    applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
+  }
   if (!groups.length) {
     aligned.appendChild(_dbRollupLineElement('—', 'db-rollup-relation-line'));
   } else {
@@ -179951,21 +181417,7 @@ function renderEntityRow(entityName, ctx, options) {
     e.stopPropagation();
     const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
     if (!ep) return;
-    const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
-    const target = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
-      ? 'right-sidebar'
-      : (cfg.defaultPanel || 'right-sidebar');
-    const sourceEl = e.currentTarget;
-    const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || '';
-    if (target === 'right-sidebar') {
-      // サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
-      // 右サイドバー補助操作の制限に触れるため、呼び出し元要素を渡して判定させる
-      // （計画書「右サイドバー操作の制限」節）。制限時は openLinkInRightPane 側が
-      // 実行を中止し、短いステータス通知を出す。
-      if (typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl });
-    } else {
-      if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
-    }
+    _dbOpenConfiguredEntity(ep, entityName, ctx, e.currentTarget);
   });
   // スマホでは「...」を行並べ替えハンドルと兼用し、左端を選択だけにする。
   const moreBtn = document.createElement('span');
@@ -182049,7 +183501,7 @@ async function selectDatabase(dbPath, ctx, opts) {
   const dbName = dbPerfTargetLabel;
   if (!openOpts.skipGlobalUi) {
     const toolbarCategoryEl = document.getElementById('toolbar-category');
-    if (toolbarCategoryEl) {
+    if (toolbarCategoryEl && !toolbarCategoryEl.querySelector('input')) {
       toolbarCategoryEl.textContent = dbName;
       toolbarCategoryEl.title = 'ダブルクリックでシート名を変更';
       // 古いハンドラがある場合は除去してから貼り直す（新しい ctx をクロージャに反映するため）
@@ -182141,7 +183593,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     ctx.dbMetadata = dbMetadata;
     if (dbMetadata.display_title) {
       const titleEl = !openOpts.skipGlobalUi && document.getElementById("toolbar-category");
-      if (titleEl) titleEl.textContent = dbMetadata.display_title;
+      if (titleEl && !titleEl.querySelector('input')) titleEl.textContent = dbMetadata.display_title;
       renameAppPathReferences(dbPath, dbPath, { label: dbMetadata.display_title, type: "database" });
     }
     if (syncGlobalState) state.dbMetadata = dbMetadata;
@@ -182499,7 +183951,9 @@ function getFilterParam(filterMode) {
 }
 
 function _updateFilterBadge(options = {}) {
-  const badge = document.getElementById('filter-badge');
+  const ctx = options.ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const editorRoot = ctx?.containerEl?.closest?.('[data-editor-host]');
+  const badge = editorRoot?.querySelector('[data-editor-local-id="filter-badge"]') || document.getElementById('filter-badge');
   if (!badge) return;
   const dbPath = options.dbPath || state.currentDbPath;
   const filterMode = options.filter == null ? state.filter : options.filter;
@@ -182712,15 +184166,15 @@ function _dbRenameLocalRefs(dbPath, oldName, newName) {
   (c.savedViews || []).forEach(update);
   if (dirty) saveDbViewConfig(dbPath, c);
 }
-function _dbUndoRename(dbPath, oldName, newName, ctx) {
+function _dbUndoRename(dbPath, oldName, newName, ctx, ref = {}) {
   const scope = _dbScope(dbPath);
   historyPush('名前を変更: ' + oldName + ' → ' + newName,
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName: newName, newName: oldName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName: newName, newName: oldName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     async () => {
-      await window.GbDbEntryIdentity.rename({ dbPath, oldName, newName, ctx });
+      await window.GbDbEntryIdentity.rename({ ...ref, dbPath, oldName, newName, ctx });
       await window.GbDbEntryIdentity.reload(ctx, dbPath);
     },
     scope
@@ -184514,7 +185968,7 @@ function _appendGanttUnscheduled(container, entries, dbPath, ctx) {
     button.type = 'button';
     button.className = 'tl-gantt-unscheduled-item';
     button.innerHTML = `<span>${esc(entry.name)}</span><small>${esc(entry.reason)}</small>`;
-    button.addEventListener('click', () => selectEntity(_entityPath(dbPath, entry.name, ctx?.pivotData)));
+    button.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, entry.name, ctx?.pivotData), entry.name, ctx));
     list.appendChild(button);
   });
   unscheduled.appendChild(list);
@@ -185080,6 +186534,9 @@ function _restoreTimelineViewState(snapshot, ctx) {
 }
 
 async function _openTimelineEntityInSubpanel(ctx, dbPath, entityName) {
+  if (typeof _dbOpenConfiguredEntity === 'function') {
+    return _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx);
+  }
   const snapshot = _captureTimelineViewState(ctx, dbPath);
   let result = false;
   try {
@@ -185587,7 +187044,7 @@ function renderTimeline(ctx) {
           ev.stopPropagation();
           _cancelTimelineEntitySingleClick(card);
           if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
-          selectEntity(_entityPath(dbPath, e.name));
+          _dbOpenConfiguredEntity(_entityPath(dbPath, e.name), e.name, ctx);
         });
         cell.appendChild(card);
       });
@@ -185658,7 +187115,7 @@ function renderTimeline(ctx) {
         ev.stopPropagation();
         _cancelTimelineEntitySingleClick(bar);
         if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, e.name);
-        selectEntity(_entityPath(dbPath, e.name));
+        _dbOpenConfiguredEntity(_entityPath(dbPath, e.name), e.name, ctx);
       });
 
       // ドラッグ移動
@@ -186123,6 +187580,9 @@ function navigateToEntity(entityName, dbPath, ctx) {
     ? _dbFindPaneContextForPath(dbPath)
     : null) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   const currentDbPath = targetCtx?.dbPath || state.currentDbPath;
+  if (typeof _dbOpenConfiguredEntity === 'function') {
+    return _dbOpenConfiguredEntity(_entityPath(dbPath || currentDbPath, entityName), entityName, targetCtx);
+  }
   // dbPath指定時: 別DBに遷移してからエントリを選択
   if (dbPath && dbPath !== currentDbPath) {
     selectDatabase(dbPath, targetCtx).then(() => {
@@ -189062,7 +190522,7 @@ async function _showDbConfigModal(dbPath, ctx) {
             </select>
           </div>
           <div class="dbcfg-inline-field gb-field-select-row">
-            <label for="dbcfg-default-panel">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}</label>
+            <label for="dbcfg-default-panel">トピックの開き方 ${fieldHelp('このシートからトピック・画像・添付ファイル・リンクを開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}</label>
             <select id="dbcfg-default-panel" class="gb-select">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>サブパネル</option>
@@ -190369,11 +191829,11 @@ function renderGallery(ctx) {
       );
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
     });
-    card.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, entityName), entityName));
+    card.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx));
     card.addEventListener('dblclick', (ev) => {
       ev.stopPropagation();
       if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, entityName);
-      selectEntity(_entityPath(dbPath, entityName));
+      _dbOpenConfiguredEntity(_entityPath(dbPath, entityName), entityName, ctx);
     });
     card.addEventListener('contextmenu', (e) => { e.preventDefault(); showDbCardContextMenu(e, dbPath, entityName); });
     if (typeof addLongPressHandler === 'function') {
@@ -190990,11 +192450,11 @@ function renderKanban(ctx) {
       cardEl.addEventListener('dragend', () => cardEl.classList.remove('dragging'));
 
       // クリック: サイドバーに詳細表示
-      cardEl.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, card.name), card.name));
+      cardEl.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, card.name), card.name, ctx));
       cardEl.addEventListener('dblclick', (ev) => {
         ev.stopPropagation();
         if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, card.name);
-        selectEntity(_entityPath(dbPath, card.name));
+        _dbOpenConfiguredEntity(_entityPath(dbPath, card.name), card.name, ctx);
       });
       cardEl.addEventListener('contextmenu', (e) => { e.preventDefault(); showDbCardContextMenu(e, dbPath, card.name); });
       if (typeof addLongPressHandler === 'function') {
@@ -199282,14 +200742,12 @@ async function renderGraph(ctx) {
     const entityPath = circle.dataset.entityPath;
     const isExt = circle.dataset.isExternal === '1';
     if (entityPath) {
-      if (typeof openEntityInSplit === 'function') openEntityInSplit(entityPath, nodeName);
-      else selectEntity(entityPath);
+      _dbOpenConfiguredEntity(entityPath, nodeName, ctx, circle);
     } else if (isExt) {
       if (typeof showStatus === 'function') showStatus('参照先トピックが見つかりません: ' + nodeName, true);
     } else {
       const fallbackPath = _entityPath(nodeDbPath || dbPath, nodeName);
-      if (typeof openEntityInSplit === 'function') openEntityInSplit(fallbackPath, nodeName);
-      else selectEntity(fallbackPath);
+      _dbOpenConfiguredEntity(fallbackPath, nodeName, ctx, circle);
     }
   });
   svg.addEventListener('dblclick', (e) => {
@@ -199306,7 +200764,7 @@ async function renderGraph(ctx) {
     }
     const resolvedPath = entityPath || _entityPath(nodeDbPath, nodeName);
     if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, nodeName);
-    selectEntity(resolvedPath);
+    _dbOpenConfiguredEntity(resolvedPath, nodeName, ctx, circle);
   });
 }
 
@@ -199741,7 +201199,7 @@ function showValidationResults(results, dbPath, dialogFlow) {
 
       item.addEventListener('click', () => {
         modalApi.close('select-result');
-        if (r.entityPath) selectEntity(r.entityPath);
+        if (r.entityPath) _dbOpenConfiguredTarget(r.entityPath, r.entityName, { linkType: 'entity' });
       });
       list.appendChild(item);
     });
@@ -201205,11 +202663,7 @@ function showDbSearchModal(options) {
       lastResults = data.entities || [];
       _renderDbSearchResults(resultArea, lastResults, q, entry => {
         modalApi.close('result-select');
-        if (entry.db_path) {
-          selectDatabase(entry.db_path).then(() => {
-            if (entry.path && typeof selectEntity === 'function') selectEntity(entry.path);
-          });
-        }
+        if (entry.path) _dbOpenConfiguredTarget(entry.path, entry.name || '', { linkType: 'entity' });
       });
       statusSpan.textContent = lastResults.length + '件（' + (data.total_dbs_scanned || '?') + 'シート検索）';
       setExportVisible(lastResults.length > 0);
@@ -207439,6 +208893,7 @@ function _rightSidebarToolAllowed(tabName, source) {
 }
 
 function openRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.open();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
@@ -207458,6 +208913,7 @@ function openRightPanelTab(tabName, source) {
 
 // 右アクティブバーからのトグル: 同じタブなら閉じる、違うタブなら開く
 function toggleRightPanelTab(tabName, source) {
+  if (tabName === 'subpanel' && window.GBIndependentSubpanel) return window.GBIndependentSubpanel.toggle();
   tabName = _normalizeRightPanelTabName(tabName);
   if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
@@ -207756,6 +209212,7 @@ function _rpRefMatches(filterRef, actualRef) {
 }
 
 function _rpAnnotationMatchesTargetFilter(annotation, filter) {
+  if (Array.isArray(filter.annotationIds) && !filter.annotationIds.includes(annotation.id)) return false;
   const ref = annotation.target_ref || {};
   const targetPath = ref.file || annotation.target_path || '';
   const targetCandidates = Array.isArray(filter.targetPathCandidates) && filter.targetPathCandidates.length
@@ -209913,6 +211370,8 @@ function openCalendar() {
     if (headingIndent) {
       _applyChatHeadingSections(root);
     }
+    // 動画・SNSポストの共有リンクは段落の下に埋め込みを表示する（発言テキストは変えない）
+    try { global.GBWebEmbeds?.decorateChat?.(root); } catch (_) { /* 埋め込みに失敗しても本文は表示する */ }
     container.replaceChildren(root);
     container.style.whiteSpace = 'normal';
     _verifyBareWorkspaceLinks(root);
@@ -219316,12 +220775,13 @@ _chatInstallTabActivationHook();
   }
 
   // 1件分のコピー整形行を組み立てる（DOM/Range非依存の純粋関数）。
-  // 本文が選択されていれば従来どおり「[時刻] 発言者\n本文」、ヘッダー
-  // （発言者名・日時）だけが選択されている場合は本文行を付けず「[時刻] 発言者」の
-  // 見出し行だけを返す。どちらも選択されていなければ null（対象外）。
-  // 複数発言をまたぐ場合の結合（entries.join('\n\n')）は呼び出し元のまま維持する。
+  // 本文だけが選択されていれば本文のみを返し、日時・発言者は付けない。
+  // ヘッダー（発言者名・日時）も選択範囲に含まれる時だけ「[時刻] 発言者\n本文」、
+  // ヘッダーだけなら「[時刻] 発言者」の見出し行を返す。どちらも選択されていなければ
+  // null（対象外）。複数発言をまたぐ場合の結合（entries.join('\n\n')）は呼び出し元のまま。
   function _chatCopyEntryLine(message, bodyText, headerSelected) {
     if (!bodyText && !headerSelected) return null;
+    if (!headerSelected) return bodyText;
     const author = String(message?.dataset?.chatCopyAuthor || '').trim() || '発言者';
     const time = String(message?.dataset?.chatCopyTime || '').trim();
     const headerLine = `${time ? `[${time}] ` : ''}${author}`;
@@ -224481,6 +225941,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       el.classList.remove('cmt-line-highlight');
       delete el.dataset.cmtFile;
       delete el.dataset.cmtLineId;
+      if (el._cmtComments) { el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle; delete el._cmtComments; }
     });
   }
 
@@ -224489,13 +225950,60 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     return containerEl.querySelector(`span._nl-id[data-line-id="${_cssEscape(lineId)}"]`)?.parentElement || null;
   }
 
-  function _wrapStableSnippetInBlock(block, ref, commentId, filePath) {
+  function _bindCommentHighlight(el, comments, filePath) {
+    if (!el) return;
+    if (!comments.length) {
+      if (el._cmtComments) { el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle; delete el._cmtComments; delete el.dataset.cmtFile; }
+      return;
+    }
+    el._cmtComments = comments;
+    el.dataset.cmtFile = filePath;
+    el.title = comments.map(a => String(a.body || a.data?.text || '')).filter(Boolean).join('\n\n');
+    el.dataset.gbTooltip = el.title;
+    delete el.dataset.gbNativeTitle;
+  }
+
+  function _commentsForTarget(items, kind, matches) {
+    return items.filter(a => !a.orphan && !a.resolved && !a.data?.deleted && (
+      a.target_kind === kind && matches(a.target_ref || {})
+      || a.target_kind === 'text_range' && a.target_ref?.container?.kind === kind && matches(a.target_ref.container)));
+  }
+
+  function openPanelForHighlight(el) {
+    const comments = el?._cmtComments || [];
+    if (!comments.length) return;
+    _openPanelForTarget(el.dataset.cmtFile, '', null, comments.map(a => a.id));
+  }
+
+  document.addEventListener('click', event => {
+    const target = event.target.closest?.('.cmt-highlight,.cmt-line-highlight');
+    const list = document.getElementById('rp-ann-list');
+    if (target?._cmtComments?.length && list?.getClientRects().length) openPanelForHighlight(target);
+  }, true);
+  document.addEventListener('contextmenu', event => {
+    const target = event.target.closest?.('.cmt-highlight,.cmt-line-highlight');
+    if (!target?._cmtComments?.length) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    window.closeMeldexDropdowns?.();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu'; menu.setAttribute('role', 'menu');
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'gb-context-menu-item'; button.setAttribute('role', 'menuitem');
+    button.textContent = 'アノテートパネルに表示';
+    button.addEventListener('click', () => { menu.remove(); openPanelForHighlight(target); });
+    menu.appendChild(button); document.body.appendChild(menu);
+    if (typeof positionPopup === 'function') positionPopup(menu, { top:event.clientY, bottom:event.clientY, left:event.clientX, right:event.clientX }, { gap:0 });
+    else { menu.style.position = 'fixed'; menu.style.left = event.clientX + 'px'; menu.style.top = event.clientY + 'px'; window.clampPopupToViewport?.(menu); }
+    button.focus();
+  }, true);
+
+  function _wrapStableSnippetInBlock(block, ref, comment, filePath) {
     const needle = String(ref?.snippet || '').trim();
     if (!block || !needle) return false;
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
-        if (!parent || parent.closest('mark.cmt-highlight,.cmt-badge,._nl-id')) return NodeFilter.FILTER_REJECT;
+        if (!parent || parent.closest('.cmt-badge,._nl-id')) return NodeFilter.FILTER_REJECT;
         return node.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
       },
     });
@@ -224543,9 +226051,9 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     range.setEnd(endPart.node, finish - endPart.start);
     const mark = document.createElement('mark');
     mark.className = 'cmt-highlight';
-    mark.dataset.cmtId = commentId || '';
+    mark.dataset.cmtId = comment.id || '';
     mark.dataset.cmtFile = filePath || '';
-    mark.title = 'コメントあり';
+    _bindCommentHighlight(mark, [comment], filePath);
     mark.appendChild(range.extractContents());
     range.insertNode(mark);
     return true;
@@ -224561,11 +226069,15 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       } else if (a.target_kind === 'text_range' && ref.container?.kind === 'note_line' && ref.container.id) {
         block = _noteLineBlock(containerEl, ref.container.id);
         const anchorRef = { ...ref, snippet: ref.snippet || a.target_snapshot || '' };
-        if (_wrapStableSnippetInBlock(block, anchorRef, a.id, filePath)) return;
-        if (!ref.anchorSchema && _wrapStableSnippetInBlock(containerEl, anchorRef, a.id, filePath)) return;
+        if (_wrapStableSnippetInBlock(block, anchorRef, a, filePath)) return;
+        // Older comments could anchor to a temporary heading-section wrapper.
+        // Recover only a unique/context-matched quote, never its stale offset.
+        if (!block && _wrapStableSnippetInBlock(containerEl, { ...anchorRef, startOffset: undefined, endOffset: undefined }, a, filePath)) return;
+        if (!ref.anchorSchema && _wrapStableSnippetInBlock(containerEl, anchorRef, a, filePath)) return;
       }
       if (!block) return;
       block.classList.add('cmt-line-highlight');
+      _bindCommentHighlight(block, [...(block._cmtComments || []), a], filePath);
       block.dataset.cmtFile = filePath || '';
       block.dataset.cmtLineId = ref.lineId || ref.container?.id || '';
     });
@@ -224603,6 +226115,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     hostEl.querySelectorAll('.sn2-row[data-row-id]').forEach(row => {
       const rid = row.dataset.rowId;
       row.classList.toggle('cmt-line-highlight', (counts.get(rid) || 0) > 0);
+      _bindCommentHighlight(row, _commentsForTarget(items, 'scriptnote_line', ref => (ref.lineId || ref.id) === rid), filePath);
       _ensureBadge(row, counts.get(rid) || 0,
         () => _openPanelForTarget(filePath, 'scriptnote_line', { file: filePath, lineId: rid }));
     });
@@ -224638,6 +226151,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       if (!hud) return;
       const n = counts.get(cid) || 0;
       card.classList.toggle('cmt-line-highlight', n > 0);
+      _bindCommentHighlight(card, _commentsForTarget(items, 'board_card', ref => (ref.cardId || ref.id) === cid), filePath);
       _updateBoardCommentHud(hud, n);
     });
     if (typeof bdPerfEnd === 'function') {
@@ -224798,6 +226312,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       const cid = evEl.dataset.calendarId || '_calendar';
       const n = counts.get(eid) || 0;
       evEl.classList.toggle('cmt-line-highlight', n > 0);
+      _bindCommentHighlight(evEl, _commentsForTarget(items, 'calendar_event', ref => (ref.eventId || ref.id) === eid), cid);
       const open = () => _openPanelForTarget(cid, 'calendar_event', { file: cid, eventId: eid });
       if (evEl.classList.contains('gb-cal-clock-event-slice')) {
         _ensureClockCalendarBadge(evEl, n, open);
@@ -224831,6 +226346,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         const key = entryId + '\x00' + colId;
         const n = counts.get(key) || 0;
         td.classList.toggle('cmt-line-highlight', n > 0);
+        _bindCommentHighlight(td, _commentsForTarget(items, 'sheet_cell', ref => ref.entryId === entryId && ref.colId === colId), filePath);
         _ensureBadge(td, counts.get(key) || 0,
           () => _openPanelForTarget(filePath, 'sheet_cell', { file: filePath, entryId, colId }));
       });
@@ -224838,7 +226354,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   }
 
   // バッジクリック時: アノテートタブを開いて該当コメントを絞り込む
-  function _openPanelForTarget(filePath, targetKind, targetRef) {
+  function _openPanelForTarget(filePath, targetKind, targetRef, annotationIds) {
     if (typeof openRightPanelTab === 'function') openRightPanelTab('annotation');
     else if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('annotation');
     else if (typeof switchRightTab === 'function') switchRightTab('annotation');
@@ -224848,7 +226364,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const searchEl = document.getElementById('rp-ann-search');
     if (searchEl) {
       searchEl.value = '';
-      searchEl.dataset.targetFilter = JSON.stringify({ targetPath: filePath, targetKind, targetRef });
+      searchEl.dataset.targetFilter = JSON.stringify({ targetPath: filePath, targetKind, targetRef, annotationIds });
     }
     if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
   }
@@ -225068,6 +226584,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   }
 
   function _findNoteLineBlock(el, stopAt) {
+    const row = window.MeldexNoteLogicalRows?.resolveRowAt?.(stopAt, el);
+    if (row) return row;
     let cur = el;
     while (cur && cur !== stopAt) {
       if (cur.nodeType === 1 && cur.parentElement === stopAt) return cur;
@@ -225251,10 +226769,17 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
+      // Adding a comment is an explicit request to see its anchor immediately.
+      window.MeldexDisplayLayers?.setLayer?.('comments', true, { silent: true });
       // 現在開いている関連エディタのバッジを更新
       if (ctx.filePath) {
         const pc = document.getElementById('page-content');
-        if (pc && pc.dataset.path === ctx.filePath) refreshNote(ctx.filePath, pc);
+        if (pc && pc.dataset.path === ctx.filePath) {
+          // The anchor may have assigned a new line ID. Advance the editor's
+          // serialization revision and save it through the usual autosave path.
+          if (pc.isContentEditable) pc.dispatchEvent(new Event('input', { bubbles: true }));
+          refreshNote(ctx.filePath, pc);
+        }
         try {
           if (typeof _sn2Editors !== 'undefined' && _sn2Editors[ctx.filePath]) {
             refreshScriptnote(ctx.filePath, _sn2Editors[ctx.filePath].host);
@@ -225302,6 +226827,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     refreshFileIndicator,
     detectCommentContext, addCommentHere, openPanelForFileComments,
     openPanelForTarget: _openPanelForTarget,
+    openPanelForHighlight,
   };
   window.addCommentHere = addCommentHere;
 })();
@@ -227214,11 +228740,22 @@ function renderFolderGrid(opts) {
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
         const generatedThumbnail = item.type === 'video';
+        const cloudThumbnail = item.type === 'image' && window.MeldexRuntimeAdapter?.isDropboxMode?.()
+          && window.MeldexPwaFileUrl?.applyToElement
+          && !item.archive_path && !item.external_reference;
         folderPreviewImage = img;
-        img.src = generatedThumbnail ? _folderItemThumbnailUrl(item) : _folderItemRawUrl(item);
+        if (!cloudThumbnail) img.src = generatedThumbnail ? _folderItemThumbnailUrl(item) : _folderItemRawUrl(item);
+        const loadCloudImage = source => window.MeldexPwaFileUrl.applyToElement(img, source).then(info => {
+          if (!info?.url) img.onerror();
+        });
         img.loading = 'lazy';
         img.onerror = () => {
-          if (!generatedThumbnail && !img.dataset.thumbFallback && !item?.external_reference) {
+          if (cloudThumbnail && img.getAttribute('src')?.startsWith('blob:') && !img.dataset.rawFallback) {
+            img.dataset.rawFallback = '1';
+            loadCloudImage(_folderItemRawUrl(item));
+            return;
+          }
+          if (!cloudThumbnail && !generatedThumbnail && !img.dataset.thumbFallback && !item?.external_reference) {
             img.dataset.thumbFallback = '1';
             img.src = _folderItemThumbnailUrl(item);
             return;
@@ -227229,6 +228766,7 @@ function renderFolderGrid(opts) {
           img.replaceWith(sp);
         };
         thumb.appendChild(img);
+        if (cloudThumbnail) loadCloudImage(_folderItemThumbnailUrl(item));
         window.MeldexImageLoading?.track?.(img, { host: thumb, errorMode: 'silent' });
       } else if (SHELL_THUMB_TYPES.has(item.type)) {
         // Windows シェルサムネイルは起動直後の大量生成で固まるため、フォルダカードでは安定したアイコンを使う。
@@ -248124,8 +249662,6 @@ const GBPaneBridge = (() => {
         _beginBridgeUpdate();
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
-        // 補助パネルへフォーカスしただけなら、同じシートの表示を読み直さない。
-
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || (typeof bd !== 'undefined' && bd.path !== path))) await openBoard(label, path, scopedBridgeOpts);
         // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
         // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
@@ -248140,6 +249676,8 @@ const GBPaneBridge = (() => {
         // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
         // ケースは正しく再読込される。
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
+        // Embedded notes also bind the shared state. Returning to an already
+        // rendered main note must not start a disk load that overwrites typing.
         else if (viewName === 'page' && typeof openPage === 'function' && needsLiveReload) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
         else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
@@ -248157,6 +249695,8 @@ const GBPaneBridge = (() => {
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
+        // A linked editor also changes the shared view/path. Returning to this
+        // already rendered sheet must preserve the first click and its input.
         else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && needsLiveReload) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
         else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
           if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
@@ -248321,6 +249861,8 @@ const GBPaneBridge = (() => {
     const orphanComponentIds = [];
     if (typeof forEachComponent === 'function') {
       forEachComponent((comp, tabId) => {
+        // Linked editors own their lifetime outside the layout's tab IDs.
+        if (window.GBEditorHost?.ownsComponent?.(comp)) return;
         if (!validTabIds.has(tabId)) orphanComponentIds.push(tabId);
       });
     }
@@ -248590,6 +250132,7 @@ const GBPaneBridge = (() => {
   }
 
   function _syncDetailForActivePane(paneId, options) {
+    if (window.GBEditorHost?.get()) { window.GBEditorHost.sync(); return; }
     if (!paneId) return;
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
     if (!paneInfo) return;
@@ -251162,6 +252705,7 @@ const GBPaneBridge = (() => {
   // ツール（chat/calendar/annotation/history等）をペインタブとして開く
   function _openToolPane(toolType, options) {
     const openOpts = options || {};
+    if (toolType === 'subpanel' && window.GBIndependentSubpanel) return openOpts.toggleExisting ? window.GBIndependentSubpanel.toggle() : window.GBIndependentSubpanel.open();
     if (toolType === 'preview') {
       const paneId = window.GBPaneDefaultLayout?.resolveMainPaneId?.({ contentOnly: true });
       if (paneId) return window.openToolTab?.('preview', { paneId, preferTargetPane: true });
@@ -251513,7 +253057,7 @@ const GBPaneBridge = (() => {
   }
 
   function _canUseRightSidebarTools(surface) {
-    return surface !== 'subpanel';
+    return surface !== 'subpanel' || (typeof window !== 'undefined' && !!window.GBIndependentSubpanel);
   }
 
   function _isRightSidebarRestrictedTool(toolType) {
@@ -251607,7 +253151,7 @@ const GBSubPanel = (() => {
   let _forwardBtn = null;
   let _promoteBtn = null;
   let _closeContentBtn = null;
-  let _pathBarEl = null;
+  let _parentLinkHost = null;
   let _contentEl = null;
   let _pane = null;
   let _current = null;
@@ -251618,6 +253162,7 @@ const GBSubPanel = (() => {
   let _sheetEmbed = null;
   let _sheetEmbedSeq = 0;
   let _sheetTheftObserver = null;
+  let _editorOwnership = null;
 
   function _basename(path) {
     return String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
@@ -251815,6 +253360,13 @@ const GBSubPanel = (() => {
     const type = entry.type || '';
     try {
       if (type === 'page' && typeof flushPendingEditorAutosave === 'function') {
+        const editor = _contentEl?.querySelector('.gb-subpanel-note-content');
+        if (editor?.dataset.path === entry.path && editor.dataset.loadFailed !== '1'
+            && typeof _runNoteAutoSave === 'function' && window.MeldexNoteSaveAdapter) {
+          await _runNoteAutoSave(editor);
+          return { ok: !window.MeldexNoteSaveAdapter.isConflictPending?.(entry.path)
+            && window.MeldexNoteSaveAdapter.isUnchanged(editor, _noteMarkdownFromEditor(editor)) };
+        }
         const settled = await Promise.resolve(flushPendingEditorAutosave());
         const failed = Array.isArray(settled) && settled.some(item => item?.status === 'rejected');
         return { ok: !failed };
@@ -251829,10 +253381,11 @@ const GBSubPanel = (() => {
         return { ok: true };
       }
       if (DB_VIEW_TYPES.has(type)) {
-        if (typeof waitForPendingDbValueMutations === 'function') await waitForPendingDbValueMutations(entry.path);
+        if (typeof waitForPendingDbEntityCreates === 'function') await waitForPendingDbEntityCreates(entry.path);
+        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(entry.path) === false) return { ok: false };
         if (typeof flushPendingDbPropertySettings === 'function') await flushPendingDbPropertySettings(entry.path);
         if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(entry.path);
-        if (typeof waitForPendingDbValueMutations === 'function') await waitForPendingDbValueMutations(entry.path);
+        if (typeof waitForPendingDbValueMutations === 'function' && await waitForPendingDbValueMutations(entry.path) === false) return { ok: false };
         return { ok: true };
       }
       if (type === 'board') {
@@ -251880,33 +253433,25 @@ const GBSubPanel = (() => {
   // ---- 既存内容の破棄 ----
   function _retractCurrentContent(options) {
     const opts = options || {};
-    if (!_contentEl) return Promise.resolve();
-    _stopLoadFailureObserver();
+    if (!_contentEl) return Promise.resolve(true);
     const content = _contentEl;
-    // 比較は openCompareView() 内で container._compareResizeCleanup に window resize
-    // リスナーの解除関数を積む（gb-compare.js）。サブパネルは対象切替のたびに専用
-    // コンテナごと作り直す（使い回さない）ため、ここで明示的に解除しないとリスナーが
-    // 破棄済みDOMを握ったまま蓄積し続ける（メイン画面側は同一containerを使い回すため
-    // 問題にならない）。
-    content.querySelectorAll('.gb-subpanel-compare-root').forEach(root => {
-      root._compareResizeCleanup?.();
-    });
-    // シート専用埋め込み（MeldexProductionSheetEmbed）はDOM監視/書き込みガード用の
-    // リスナー・Observerを持つため、DOM除去任せにせずdestroy()で明示的に解放する
-    // （ctx.destroyedも立ち、進行中のselectDatabase()読込を安全に打ち切れる）。
-    if (_sheetEmbed) {
-      try { _sheetEmbed.destroy(); } catch { /* 失敗しても後続のDOM除去で片付く */ }
-      _sheetEmbed = null;
-    }
-    _stopSheetTheftObserver();
     const disposals = [...content.querySelectorAll('[data-meldex-entity-detail]')]
       .map(root => Promise.resolve(root._meldexEntityDetailController?.dispose?.()).catch(() => false));
-    return Promise.allSettled(disposals).then(() => {
+    return Promise.all(disposals).then(results => {
+      if (results.some(result => result === false)) return false;
+      _editorOwnership?.dispose();
+      _editorOwnership = null;
+      _stopLoadFailureObserver();
+      content.querySelectorAll('.gb-subpanel-compare-root').forEach(root => root._compareResizeCleanup?.());
+      // Dispose listeners and pending loads only after every editor confirmed its save.
+      if (_sheetEmbed) { _sheetEmbed.destroy(); _sheetEmbed = null; }
+      _stopSheetTheftObserver();
       _teardownVirtualPane();
       content.replaceChildren();
       if (opts.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
         GBPaneBridge.mountAllPanes();
       }
+      return true;
     });
   }
 
@@ -251939,7 +253484,7 @@ const GBSubPanel = (() => {
       if (typeof showStatus === 'function') showStatus('保存を確認できませんでした。もう一度お試しください', true);
       return false;
     }
-    await _retractCurrentContent({ remount: true });
+    if (await _retractCurrentContent({ remount: true }) === false) return false;
     if (seq !== _opSeq) return false;
     return fn();
   }
@@ -251965,10 +253510,10 @@ const GBSubPanel = (() => {
     if (_titleTextEl) _titleTextEl.textContent = entry.label || _toolLabel(entry.type);
     if (_promoteBtn) _promoteBtn.hidden = !entry.path || entry.type === 'unsupported';
     if (_closeContentBtn) _closeContentBtn.hidden = false;
-    if (_pathBarEl) {
-      _pathBarEl.textContent = entry.path ? _basename(entry.path) : '';
-      _pathBarEl.title = entry.path || '';
-      _pathBarEl.style.display = entry.path ? '' : 'none';
+    if (_titleTextEl) _titleTextEl.title = entry.path || '';
+    if (_parentLinkHost) {
+      if (entry.type !== 'entity') _parentLinkHost.replaceChildren();
+      _parentLinkHost.hidden = entry.type !== 'entity';
     }
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -252096,8 +253641,10 @@ const GBSubPanel = (() => {
     if (typeof openPage !== 'function') return false;
     const root = document.createElement('div');
     root.className = 'gb-subpanel-note-content';
+    root.classList.add('meldex-entity-detail-editor');
+    root.dataset.editorLocalId = 'page-content';
     root.dataset.testid = 'gb-subpanel-note-content';
-    root.contentEditable = 'true';
+    root.contentEditable = 'false';
     root.style.cssText = 'flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:16px;line-height:1.7;outline:none;';
     _contentEl.appendChild(root);
     openPage(entry.label || _basename(entry.path), entry.path, {
@@ -252278,7 +253825,11 @@ const GBSubPanel = (() => {
     root.dataset.gbSubpanelEntityRoot = 'true';
     _contentEl.appendChild(root);
     if (window.MeldexEntityDetail?.mount) {
-      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel' });
+      window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel',
+        titleEl: _titleTextEl, parentHost: _parentLinkHost, onTitleChange: name => {
+          entry.label = name;
+          _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
+        } });
       return true;
     }
     root.textContent = 'トピックを表示できません';
@@ -252413,7 +253964,7 @@ const GBSubPanel = (() => {
       if (handling || !_hasReportedLoadFailure() || _current?.path !== watchedPath) return;
       handling = true;
       const seq = ++_opSeq;
-      await _retractCurrentContent({ remount: true });
+      if (await _retractCurrentContent({ remount: true }) === false) return;
       if (seq !== _opSeq || _current?.path !== watchedPath) return;
       _renderErrorState(entry, 'ファイルを読み込めませんでした');
       _current = entry;
@@ -252429,6 +253980,40 @@ const GBSubPanel = (() => {
   }
 
   function _renderTarget(entry) {
+    _renderTargetContent(entry);
+    if (!_contentEl || entry.type === 'entity' || entry.loadError || _hasReportedLoadFailure()) return;
+    const kind = DB_VIEW_TYPES.has(entry.type) ? 'database' : entry.type;
+    _editorOwnership = window.GBEditorHost?.register(_contentEl, {
+      editorId: INNER_PANE_ID, path: entry.path, label: entry.label, kind, surface: 'subpanel',
+      resolveCtx: () => _sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null)
+        || (kind === 'page' ? { paneId: INNER_PANE_ID, pagePath: entry.path, viewMode: 'page', containerEl: _contentEl } : null),
+      resolveComponent: () => typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null,
+      activate: () => {
+        if (['board', 'scriptnote'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
+      },
+      syncDetail: () => {
+        const component = typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null;
+        if (component?._syncDetailPanel) component._syncDetailPanel();
+        else if (typeof _syncDetailPanel === 'function') void _syncDetailPanel(entry.label, entry.path, kind);
+      },
+      flush: () => _flushBeforeTransition(entry).then(result => result?.ok !== false),
+      reload: async (options = {}) => {
+        if (!options.skipFlush && !(await _flushBeforeTransition(entry)).ok) return false;
+        if (kind === 'page') return window.GBEditorHost.reloadNote(_contentEl, entry.label, entry.path);
+        if (_sheetEmbed) return _sheetEmbed.refresh();
+        const component = getComponentInstance(_pane?.tabs?.[0]?.id);
+        if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
+        return component?.reload?.();
+      },
+      historyScope: () => kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
+        : kind === 'scriptnote' ? getComponentInstance(_pane?.tabs?.[0]?.id)?._editor?._historyScope?.()
+        : kind === 'calendar' && typeof _meldexScheduleTabHistoryScope === 'function' ? _meldexScheduleTabHistoryScope(_pane?.tabs?.[0])
+        : kind === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(entry.path)
+        : kind + ':' + entry.path.replace(/^\/+/, ''),
+    });
+  }
+
+  function _renderTargetContent(entry) {
     if (!_contentEl) return;
     _contentEl.replaceChildren();
     _updateHeader(entry);
@@ -252530,7 +254115,7 @@ const GBSubPanel = (() => {
     if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
-    if (_pathBarEl) _pathBarEl.style.display = 'none';
+    if (_parentLinkHost) { _parentLinkHost.replaceChildren(); _parentLinkHost.hidden = true; }
     _updateNavUi();
     if (typeof replaceIcons === 'function') replaceIcons();
   }
@@ -252555,7 +254140,10 @@ const GBSubPanel = (() => {
     _titleIconEl.className = 'gb-subpanel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
-    title.append(_titleIconEl, _titleTextEl);
+    _parentLinkHost = document.createElement('span');
+    _parentLinkHost.className = 'gb-subpanel-parent-host';
+    _parentLinkHost.hidden = true;
+    title.append(_parentLinkHost, _titleIconEl, _titleTextEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
       MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
     }
@@ -252585,22 +254173,20 @@ const GBSubPanel = (() => {
     _forwardBtn.disabled = true;
     _forwardBtn.addEventListener('click', () => navForward());
 
-    // 計画書「文字が見える『メインパネルで開く』ボタン」— アイコンのみにしない。
+    // 名前は共通ツールチップと支援技術に残し、ヘッダーでは専用アイコンを使う。
     _promoteBtn = document.createElement('button');
     _promoteBtn.type = 'button';
     _promoteBtn.className = 'gb-subpanel-button gb-subpanel-promote-btn';
     _promoteBtn.dataset.testid = 'gb-subpanel-promote';
     _promoteBtn.dataset.e2eId = 'gb-subpanel-promote';
     _promoteBtn.title = 'メインパネルで開く';
+    _promoteBtn.setAttribute('aria-label', 'メインパネルで開く');
     _promoteBtn.hidden = true;
     const promoteIcon = document.createElement('span');
     promoteIcon.className = 'gb-subpanel-promote-icon';
     promoteIcon.setAttribute('aria-hidden', 'true');
-    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('panelTop', 14) : '';
-    const promoteLabel = document.createElement('span');
-    promoteLabel.className = 'gb-subpanel-promote-label';
-    promoteLabel.textContent = 'メインパネルで開く';
-    _promoteBtn.append(promoteIcon, promoteLabel);
+    promoteIcon.innerHTML = typeof lucide === 'function' ? lucide('squareArrowOutUpLeft', 16) : '';
+    _promoteBtn.append(promoteIcon);
     _promoteBtn.addEventListener('click', () => promoteToMainPane());
 
     _closeContentBtn = document.createElement('button');
@@ -252617,16 +254203,12 @@ const GBSubPanel = (() => {
     actions.append(_backBtn, _forwardBtn, _promoteBtn, _closeContentBtn);
     titlebar.append(title, actions);
 
-    _pathBarEl = document.createElement('div');
-    _pathBarEl.className = 'gb-subpanel-pathbar';
-    _pathBarEl.style.display = 'none';
-
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
     _contentEl.className = 'gb-subpanel-content';
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
-    root.append(titlebar, _pathBarEl, _contentEl);
+    root.append(titlebar, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
       MeldexDnD.installSurfaceDropTarget(root, async item => {
         const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;
@@ -252669,11 +254251,12 @@ const GBSubPanel = (() => {
     } catch {
       return false;
     }
-    await _retractCurrentContent({ remount: false });
+    if (await _retractCurrentContent({ remount: false }) === false) return false;
     _current = null;
     _navHistory = [];
     _navIndex = -1;
     _showEmptyState();
+    window.GBEditorHost?.returnToMain?.();
     return true;
   }
 
@@ -252749,6 +254332,7 @@ const GBSubPanel = (() => {
       _navHistory = [];
       _navIndex = -1;
       _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
       return true;
     });
   }
@@ -252836,6 +254420,7 @@ const GBSubPanel = (() => {
   }
 
   function onPathRename(oldPath, newPath, options = {}) {
+    window.GBEditorHost?.onPathRename?.(oldPath, newPath, options);
     if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
     const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
     const viewerState = frame ? _captureViewerFrameState(frame) : null;
@@ -253357,6 +254942,8 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
         opened.focus();
         return true;
       }
+      // 単独ホストは別originで起動するため、本体の現在のプロフィールを先に保存する。
+      if (typeof _saveUiConfigToServer === 'function') await _saveUiConfigToServer();
       const result = await apiPost('/quick-memo/open', {});
       if (result?.ok !== true) throw new Error('クイックメモの単独アプリを起動できませんでした');
       return true;
@@ -254833,6 +256420,35 @@ function _refreshRenamedCurrentDatabase(previousDbPath, nextDbPath) {
 }
 
 function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
+  // Title-only renames keep the mounted editor and its unsaved input intact.
+  // Refresh the visible title at the same boundary as the tab label.
+  if (exactLabel != null) {
+    const dbViews = new Set(['pivot', 'database', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'calendar', 'tasks', 'shifts', 'chart', 'graph', 'form']);
+    if (state.currentDbPath === newPath && dbViews.has(state.view)) {
+      for (const id of ['toolbar-category', 'current-title']) {
+        const el = document.getElementById(id);
+        if (el && !el.querySelector('input')) { el.textContent = exactLabel; window.MeldexFileLockBadge?.apply?.(el, newPath); }
+      }
+      const status = document.getElementById('sb-category');
+      if (status) status.textContent = 'シート: ' + exactLabel;
+      if (state.dbMetadata) state.dbMetadata.display_title = exactLabel;
+    }
+    if (state.currentPagePath === newPath && state.view === 'page') {
+      const title = document.getElementById('page-title');
+      if (title && document.activeElement !== title) { title.textContent = exactLabel; window.MeldexFileLockBadge?.apply?.(title, newPath); }
+      if (typeof _pageTitleOld !== 'undefined') _pageTitleOld = exactLabel;
+    }
+    if (typeof bd !== 'undefined' && (bd.path === oldPath || bd.path === newPath)) {
+      bd.label = exactLabel;
+      const writer = window.GBPathUtils?.displayTitle;
+      if (writer) {
+        const header = writer.write('---\n' + (bd._preservedFrontmatter || '') + '\n---\n', exactLabel, newPath);
+        bd._preservedFrontmatter = header.replace(/^---\n/, '').replace(/\n---\n?$/, '');
+      }
+      const title = document.getElementById('bd-title');
+      if (title && document.activeElement !== title) title.textContent = exactLabel;
+    }
+  }
   if (typeof _csvPath !== 'undefined' && _csvPath) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
@@ -254969,6 +256585,7 @@ function renameAppPathReferences(oldPath, newPath, opts) {
           layoutChanged = true;
         }
         if (tab.state && typeof tab.state === 'object') {
+          if (wasExact && exactLabel != null) tab.state.label = exactLabel;
           if (_updatePathRefs(tab.state, APP_PATH_REF_KEYS, oldPath, newPath)) {
             layoutChanged = true;
           }
@@ -254987,7 +256604,9 @@ function renameAppPathReferences(oldPath, newPath, opts) {
   if (typeof forEachComponent === 'function') {
     forEachComponent(component => {
       if (!component?.state || typeof component.state !== 'object') return;
+      const exactDocument = ['path', 'dbPath', 'pagePath', 'boardPath'].some(key => component.state[key] === oldPath);
       _updatePathRefs(component.state, APP_PATH_REF_KEYS, oldPath, newPath);
+      if (exactDocument && exactLabel != null) component.state.label = exactLabel;
       // A detached view must not interrupt rebinding the other open editors.
       try { component.onPathRename?.(oldPath, newPath, options); }
       catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
@@ -261343,6 +262962,10 @@ function showToolMenu(e, toolType, component) {
   if (component === e) component = null; // gb-events appends the event after explicit arguments.
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
+  const editorHost = window.GBEditorHost?.get();
+  if (!component && editorHost && btn?.closest('[data-editor-host]')) {
+    component = editorHost.component || { path: editorHost.path, state: { label: editorHost.label } };
+  }
   if (!component && typeof getComponentInstance === 'function' && typeof GBTabs !== 'undefined') {
     const subpanel = btn?.closest('#gb-subpanel-root') && window.GBSubPanel?.getCurrentTarget?.();
     const paneId = btn?.closest('[data-pane-id]')?.dataset.paneId;
@@ -261454,6 +263077,8 @@ function _buildRecentSubmenuItems(toolType) {
 
 // 現在のファイルパス取得
 function getCurrentFilePath() {
+  const editor = window.GBEditorHost?.get();
+  if (editor) return editor.path;
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined') ? GBTabs.getActiveTab(GBLayout.activePane) : null;
   if (activeTab?.type === 'folder') {
     if (activeTab.path) return activeTab.path;
@@ -261480,6 +263105,10 @@ function getCurrentFilePath() {
 }
 
 function _toolMenuFileTarget(toolType, component) {
+  const editor = window.GBEditorHost?.get();
+  if (editor && editor.kind === toolType && (!component || component === editor.component || component.path === editor.path)) {
+    return { path: editor.path, label: editor.label, type: toolType };
+  }
   const tabs = typeof GBTabs !== 'undefined' ? GBTabs : null;
   const tab = component
     ? (component.paneId && component.tabId ? tabs?.getTabs?.(component.paneId)?.find(item => item.id === component.tabId) : null)
@@ -265136,6 +266765,7 @@ async function _exportDictFile(options = {}) {
 
   function _startSync() {
     _migrateLegacyOnce();
+    if (global.MeldexStandaloneNative) return;
     global.addEventListener?.('focus', () => { syncNow(); });
     global.addEventListener?.('online', () => { syncNow(); });
     global.addEventListener?.('storage', event => {
@@ -268148,7 +269778,7 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
   open.textContent = 'トピックを開く';
   open.addEventListener('click', () => {
     const pathValue = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
-    if (typeof selectEntity === 'function') selectEntity(pathValue);
+    _dbOpenConfiguredEntity(pathValue, node.entityName, ctx, open);
   });
   host.appendChild(open);
 }
@@ -268323,16 +269953,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
     actions.appendChild(button);
   };
   action('entity-row-open-btn', 'externalLink', '既定パネルで開く', event => {
-    const panel = getDbViewConfig(dbPath).defaultPanel || 'right-sidebar';
-    const path = row.dataset.meldexEntityPath;
-    const sourceEl = event.currentTarget;
-    if (['right-sidebar', 'float', 'sidebar'].includes(panel)) {
-      const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || ctx.paneId || '';
-      const options = { linkType: 'entity', sourceEl, sourcePaneId };
-      if (typeof openLinkInRightSidebar === 'function') return openLinkInRightSidebar(path, node.entityName, options);
-      if (typeof openLinkInRightPane === 'function') return openLinkInRightPane(path, node.entityName, options);
-    } else if (typeof openLinkInMainPane === 'function') return openLinkInMainPane(path, node.entityName, { linkType: 'entity' });
-    if (typeof selectEntity === 'function') return selectEntity(path);
+    return _dbOpenConfiguredEntity(row.dataset.meldexEntityPath, node.entityName, ctx, event.currentTarget);
   });
   action('entity-row-more-btn', 'moreHorizontal', `トピックのメニュー: ${node.entityName}`,
     event => showDbCardContextMenu(event, dbPath, node.entityName));

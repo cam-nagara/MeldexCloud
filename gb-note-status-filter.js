@@ -22,7 +22,7 @@
   let lastBlock = null;
   let popup = null;
 
-  function editor() { return document.getElementById('page-content'); }
+  function editor() { return (global.GBEditorHost?.element('page-content') || document.getElementById('page-content')); }
   function readFilter() {
     const initial = { categories: {}, statuses: {} };
     CATEGORY.forEach(item => { initial.categories[item.id] = true; });
@@ -57,7 +57,7 @@
   }
 
   function syncStatusButton() {
-    const button = document.getElementById('page-note-status-btn');
+    const button = (global.GBEditorHost?.element('page-note-status-btn') || document.getElementById('page-note-status-btn'));
     if (!button) return;
     const status = currentBlock()?.dataset?.noteStatus || '';
     button.title = `段落ステータス: ${statusLabel(status)}`;
@@ -192,8 +192,8 @@
     return 'paragraph';
   }
 
-  function applyFilter() {
-    const host = editor();
+  function applyFilter(explicitHost) {
+    const host = explicitHost?.nodeType === 1 ? explicitHost : editor();
     if (!host) return;
     function filterChildren(container) { [...container.children].forEach(block => {
       if (block.matches('section.heading-section')) {
@@ -217,12 +217,15 @@
     }); }
     filterChildren(host);
     const active = !!host.querySelector('.note-filter-hidden');
-    document.getElementById('page-note-filter-btn')?.classList.toggle('active', active);
+    const toolbarRoot = host.closest('[data-editor-host],#page-view') || document;
+    toolbarRoot.querySelector('[data-editor-local-id=page-note-filter-btn],#page-note-filter-btn')?.classList.toggle('active', active);
   }
 
-  function init() {
-    const statusButton = document.getElementById('page-note-status-btn');
-    const filterButton = document.getElementById('page-note-filter-btn');
+  function bindButtons(root = document) {
+    const statusButton = root.querySelector('[data-editor-local-id=page-note-status-btn],#page-note-status-btn');
+    const filterButton = root.querySelector('[data-editor-local-id=page-note-filter-btn],#page-note-filter-btn');
+    if (statusButton?._noteStatusBound) return;
+    if (statusButton) statusButton._noteStatusBound = true;
     // tb-icon-btn の ico-* 疑似アイコン一覧へ依存させず、既存の Lucide
     // ヘルパーから直接描画する。Cloud 静的版でも同じボタンが空にならない。
     if (typeof global.lucide === 'function') {
@@ -232,19 +235,23 @@
     statusButton?.addEventListener('pointerdown', rememberSelection);
     statusButton?.addEventListener('click', event => showStatusMenu(event.currentTarget));
     filterButton?.addEventListener('click', event => showFilterMenu(event.currentTarget));
+  }
+
+  function init() {
+    bindButtons();
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') closePopup();
     });
     document.addEventListener('selectionchange', rememberSelection);
     const host = editor();
     if (host && typeof MutationObserver !== 'undefined') {
-      new MutationObserver(() => applyFilter()).observe(host, { childList: true, subtree: true });
+      new MutationObserver(() => applyFilter(host)).observe(host, { childList: true, subtree: true });
     }
     applyFilter();
     syncStatusButton();
   }
 
-  global.MeldexNoteStatusFilter = { init, applyFilter, showStatusMenu, showFilterMenu, STATUSES };
+  global.MeldexNoteStatusFilter = { init, bindButtons, applyFilter, showStatusMenu, showFilterMenu, STATUSES };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
   else init();
 })(window);

@@ -469,6 +469,7 @@ function _bdTabStateForLinkedEntry(entry) {
   const state = {};
   if (!entry || typeof entry !== 'object') return state;
   if (entry.mediaType) state.mediaType = entry.mediaType;
+  if (entry.viewerUrl) state.viewerUrl = entry.viewerUrl;
   if (entry.calendarFile) state.calendarFile = true;
   if (entry.urlExternal) state.urlExternal = true;
   if (entry.type === 'scriptnote') {

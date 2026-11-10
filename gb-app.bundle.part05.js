@@ -1,3 +1,35 @@
+  function addSep() {
+    const s = document.createElement('div');
+    s.className = 'ab-dropdown-sep';
+    s.setAttribute('role', 'separator');
+    menu.appendChild(s);
+  }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
+  addSep();
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
+  addSep();
+  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
+  document.body.appendChild(menu);
+  const placeMenu = () => {
+    if (!btn?.getBoundingClientRect) return;
+    const rect = btn.getBoundingClientRect();
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
+      return;
+    }
+    const z = _getZoom();
+    menu.style.left = (rect.right / z + 4) + 'px';
+    menu.style.top = (rect.top / z) + 'px';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
+    });
+  };
+  placeMenu();
+  menu.addEventListener('keydown', (ev) => {
     const items = [...menu.querySelectorAll('.ab-dropdown-item')];
     const index = items.indexOf(document.activeElement);
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
@@ -866,35 +898,3 @@ function _viewerFolderNavFolderNodes() {
 }
 
 function _viewerFolderNavFindIndex(nodes, targetPath) {
-  if (!targetPath) return -1;
-  return nodes.findIndex(node => _viewerFolderNavPathMatches(_viewerFolderNavNodePath(node), targetPath));
-}
-
-function _viewerFolderNavDelay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function _viewerFolderNavEnsureNodeExpanded(node) {
-  const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
-  if (!toggle || toggle.dataset.expanded === undefined || toggle.dataset.expanded === 'true') return false;
-  const childrenDiv = node.querySelector(':scope > .tree-children');
-  toggle.click();
-  for (let i = 0; i < 30; i++) {
-    await _viewerFolderNavDelay(100);
-    if (!childrenDiv) break;
-    if (!childrenDiv.classList.contains('collapsed') && childrenDiv.dataset.loaded === 'true') break;
-  }
-  return true;
-}
-
-async function _viewerFolderNavEnsureAncestorsExpanded(node) {
-  const ancestors = [];
-  let parent = node?.parentElement?.closest?.('.tree-node') || null;
-  while (parent) {
-    ancestors.unshift(parent);
-    parent = parent.parentElement?.closest?.('.tree-node') || null;
-  }
-  for (const ancestor of ancestors) {
-    await _viewerFolderNavEnsureNodeExpanded(ancestor);
-  }
-}

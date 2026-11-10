@@ -536,6 +536,9 @@
     }
     const img = document.createElement('img');
     const generatedThumbnail = type === 'video';
+    const cloudThumbnail = type === 'image' && window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      && window.MeldexPwaFileUrl?.applyToElement
+      && !item.archive_path && !item.external_reference;
     const rawUrl = typeof _folderItemRawUrl === 'function'
       ? _folderItemRawUrl(item)
       : '/api/file-raw?path=' + encodeURIComponent(item.path);
@@ -544,9 +547,19 @@
       : '/api/thumbnail?path=' + encodeURIComponent(item.path) + '&size=384';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = generatedThumbnail ? thumbnailUrl : rawUrl;
+    // Setting an /api URL here would start a real HTTP request before the
+    // Cloud observer can replace it, racing the thumbnail with a raw fallback.
+    if (!cloudThumbnail) img.src = generatedThumbnail ? thumbnailUrl : rawUrl;
+    const loadCloudImage = source => window.MeldexPwaFileUrl.applyToElement(img, source).then(info => {
+      if (!info?.url) img.onerror();
+    });
     img.onerror = () => {
-      if (!generatedThumbnail && !img.dataset.thumbFallback) {
+      if (cloudThumbnail && img.getAttribute('src')?.startsWith('blob:') && !img.dataset.rawFallback) {
+        img.dataset.rawFallback = '1';
+        loadCloudImage(rawUrl);
+        return;
+      }
+      if (!cloudThumbnail && !generatedThumbnail && !img.dataset.thumbFallback) {
         img.dataset.thumbFallback = '1';
         img.src = thumbnailUrl;
         return;
@@ -557,6 +570,7 @@
       img.replaceWith(fallback);
     };
     el.replaceChildren(img);
+    if (cloudThumbnail) loadCloudImage(thumbnailUrl);
     window.MeldexImageLoading?.track?.(img, { host: el, errorMode: 'silent' });
   }
 

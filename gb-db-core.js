@@ -11,6 +11,47 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// All ordinary opens originating in a sheet use the source sheet's preference,
+// including related rows in another sheet and files displayed in image columns.
+async function _dbOpenConfiguredTarget(path, label, options = {}) {
+  if (!path) return false;
+  const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(options.sourceEl, { dbPath: options.dbPath }) : null);
+  const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
+  const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
+  const target = cfg.defaultPanel === 'main' ? 'main' : 'right-sidebar';
+  try {
+    if (typeof flushPendingEditorAutosave === 'function') {
+      const saved = await flushPendingEditorAutosave();
+      if (saved === false || saved?.ok === false || (Array.isArray(saved) && saved.some(result =>
+        result.status === 'rejected' || result.value === false || result.value?.ok === false))) {
+        throw new Error('編集中の内容を保存できないため、開く操作を中止しました');
+      }
+    }
+    if (target === 'main') {
+      if (typeof openLinkInMainPane !== 'function') return false;
+      const source = options.sourceEl || ctx?.containerEl;
+      if (source?.closest?.('.gb-subpanel') && typeof GBSubPanel !== 'undefined' && !await GBSubPanel.flush()) return false;
+      if (typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
+      return await openLinkInMainPane(path, label, options);
+    }
+    if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return false;
+    const entry = options.entry || await _bdResolveLinkedEntryAsync(path, label, options.linkType);
+    // Reuse the same subpanel when the source sheet itself is in it. Its own
+    // transition guard flushes pending edits before replacing the content.
+    return await GBSubPanel.open({ type: entry.type, path: entry.path, label: entry.label,
+      state: { ...(typeof GBLinkRouter !== 'undefined' ? GBLinkRouter.stateForEntry(entry) : {}),
+        ...(entry.state || {}), ...(options.state || {}) } });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus(error?.message || '開くことができませんでした', true);
+    return false;
+  }
+}
+
+function _dbOpenConfiguredEntity(path, label, ctx, sourceEl) {
+  return _dbOpenConfiguredTarget(path, label, { ctx, sourceEl, linkType: 'entity' });
+}
+
 // property_types.source は、作成日時などのエントリメタデータ参照と、
 // 外部取り込み列の管理元（例: "import"）の両方で使われている。
 // 表示側が後者まで entityData._<source> と解釈すると、通常の列値を読めず空表示になるため、
@@ -402,6 +443,15 @@ function _dbApplyEntityRenameInfo(info) {
   const newName = String(info.new_name || _dbEntityNameFromPath(newPath) || '');
   if (!oldName || !newName || oldName === newName) return;
   const dbPath = _dbPathFromEntityPath(newPath || oldPath) || state.currentDbPath || '';
+  if (window.GbDbEntryIdentity?.applyRename) {
+    const owner = typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null;
+    const entry = owner?.pivotData?.entities?.[oldName]
+      || (state.currentDbPath === dbPath ? state.pivotData?.entities?.[oldName] : null);
+    window.GbDbEntryIdentity.applyRename({ new_path: newPath, entry_id: info.entry_id || entry?._id || '', revision: info.revision }, {
+      dbPath, path: oldPath, oldName, newName,
+    });
+    return;
+  }
   const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
   const targets = [];
   const addTarget = (target) => {
@@ -439,6 +489,7 @@ function _dbApplyEntityRenameInfo(info) {
 }
 
 function _dbApplyAutoTaskRenameResult(res) {
+  if (res?.name_generation_warning && typeof showStatus === 'function') showStatus('値は保存しましたが、' + res.name_generation_warning, true);
   _dbApplyEntityRenameInfo(res?.auto_renamed_entry);
 }
 
@@ -1020,6 +1071,8 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const fallbackDbPath = typeof state !== 'undefined' ? state.currentDbPath : '';
   const dbPath = options.dbPath || fallbackDbPath || '';
   const target = eventOrElement?.currentTarget || eventOrElement?.target || eventOrElement;
+  const editorCtx = target?.closest?.('[data-editor-host]')?._dbPaneContext;
+  if (editorCtx && !editorCtx.destroyed) return editorCtx;
   const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
   const embeddedCtx = embeddedEl?._dbPaneContext;
   if (embeddedCtx && !embeddedCtx.destroyed) return embeddedCtx;

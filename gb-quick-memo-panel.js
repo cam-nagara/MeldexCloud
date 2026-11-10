@@ -70,6 +70,8 @@
         opened.focus();
         return true;
       }
+      // 単独ホストは別originで起動するため、本体の現在のプロフィールを先に保存する。
+      if (typeof _saveUiConfigToServer === 'function') await _saveUiConfigToServer();
       const result = await apiPost('/quick-memo/open', {});
       if (result?.ok !== true) throw new Error('クイックメモの単独アプリを起動できませんでした');
       return true;

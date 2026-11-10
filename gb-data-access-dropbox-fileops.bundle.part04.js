@@ -1,3 +1,105 @@
+  return _fileVersionInfoFromName(name).label || '';
+}
+
+function _versionCreatedFromName(name) {
+  return _fileVersionInfoFromName(name).created || '';
+}
+
+async function _listEntriesSafe(provider, dir) {
+  try {
+    return await _listDirectoryEntries(provider, dir);
+  } catch {
+    return [];
+  }
+}
+
+async function _saveFileVersion(provider, path, options) {
+  const normalized = _normalizeFolderPath(path);
+  const pointMetadata = _restorePointMetadata(options?.label || '', !!options?.auto, options?.metadata);
+  if (!_shouldCreateRestorePoint(options?.label || '', !!options?.auto, options?.metadata)) {
+    return { ok: true, skipped: true, reason: 'ordinary_write' };
+  }
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
+  const versionName = _fileVersionName(normalized, options || {});
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const expectedRevision = String(options?.expectedRevision || '');
+  const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
+  const before = expectedRevision ? await provider.getMetadata(normalized) : null;
+  const content = await provider.readText(normalized);
+  const after = expectedRevision ? await provider.getMetadata(normalized) : null;
+  if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
+    throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
+  }
+  const payload = {
+    object_type: 'text-file',
+    original_relative_path: normalized,
+    version_name: versionName,
+    content,
+    auto: !!options?.auto,
+    label: String(options?.label || ''),
+    file_kind: _historyFileKind(normalized, content),
+    created_at: _nowIso(),
+    deleted_at: '',
+    ...pointMetadata,
+  };
+  let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  if (pointMetadata.restore_point_kind === 'periodic') {
+    payload.content_hash = payload.content_hash || _contentHistoryHash(content);
+    await _awaitPendingEditFinalizations();
+    const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+    const existing = rows.find(row => {
+      const value = row.payload || {};
+      if (value.object_type !== 'text-file' || value.original_relative_path !== normalized || value.deleted_at) return false;
+      const sameBucket = value.schedule_id === payload.schedule_id
+        && value.schedule_bucket_id === payload.schedule_bucket_id;
+      return sameBucket || value.content_hash === payload.content_hash;
+    });
+    if (existing) {
+      return { ok: true, skipped: true, reason: 'unchanged_or_duplicate', version: existing.payload?.version_name || '' };
+    }
+    if (payload.schedule_id && payload.schedule_bucket_id) {
+      documentId = `file-${_fnvFileId(normalized)}-periodic-${_fnvFileId(`${payload.schedule_id}:${payload.schedule_bucket_id}`)}`;
+    }
+  }
+  try {
+    await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, payload, { expectedRevision: null });
+  } catch (error) {
+    if (pointMetadata.restore_point_kind === 'periodic' && (error?.status === 409 || error?.code === 'revision_conflict')) {
+      return { ok: true, skipped: true, reason: 'duplicate_schedule_bucket' };
+    }
+    throw error;
+  }
+  return { ok: true, version: versionName };
+}
+
+async function _listFileVersions(provider, path) {
+  const normalized = _normalizeFolderPath(path);
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
+  const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const versions = [];
+  for (const entry of entries) {
+    const payload = entry.payload || {};
+    if (payload.original_relative_path !== normalized || payload.object_type !== 'text-file' || payload.deleted_at) continue;
+    const entryInfo = _fileVersionInfoFromName(payload.version_name);
+    versions.push({
+      name: payload.version_name,
+      auto: !!payload.auto,
+      label: payload.label || entryInfo.label,
+      created: payload.created_at || entryInfo.created || '',
+      modified: payload.created_at || '',
+      file_kind: String(payload.file_kind || _historyFileKind(normalized, payload.content || '')),
+      size: new TextEncoder().encode(payload.content || '').length,
+      _modifiedMs: Date.parse(payload.created_at || '') || 0,
+      ...Object.fromEntries(Object.entries(payload).filter(([key]) =>
+        key === 'event_id' || key === 'snapshot_reason' || key === 'restore_point_kind'
+        || key === 'content_hash' || key === 'stable_document_id' || key === 'schedule_id'
+        || key === 'schedule_bucket_id' || key === 'transaction_id' || key === 'created_by'
+        || key.startsWith('content_last_editor_')
         || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
     });
   }
@@ -114,6 +216,7 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
   const name = _safeVersionName(version);
   const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(storageKind);
   let record = records.find(row => {
     const payload = row?.payload || {};
@@ -200,6 +303,7 @@ async function _undeleteFileVersion(provider, path, token) {
   const normalized = _normalizeFolderPath(path);
   const safeToken = _safeVersionName(token);
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
   const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
   if (!record) throw new Error('削除済みバージョンが見つかりません');
@@ -794,107 +898,3 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const provider = await _requirePwaProvider('read');
       const rawPath = _normalizeFolderPath(body?.path || '');
       if (!rawPath) return { ok: false, needManualInput: true };
-      const entry = await _resolveEntryHandle(provider, rawPath);
-      if (!entry || entry.kind !== 'directory') return { ok: false, error: 'フォルダが見つかりません' };
-      return { ok: true, path: rawPath, name: _basename(rawPath) || rawPath || 'vault' };
-    }
-
-    if (pathname === '/browse' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const browsePath = _normalizeFolderPath(url.searchParams.get('path') || url.searchParams.get('root') || '');
-      const sort = url.searchParams.get('sort') || 'name';
-      const order = url.searchParams.get('order') || 'asc';
-
-/* === gb-data-access-dropbox-folder-links.js === */
-/* Atomic, retry-safe batch folder-link routes shared by Cloud/PWA surfaces. */
-const _folderLinkBatchFlights = new Map();
-const _FOLDER_LINK_REQUEST_LIMIT = 512;
-
-function _folderLinkBatchSummary(operation, requestId, results) {
-  const summary = { ok: !results.some(row => row.status === 'failed'), operation, request_id: requestId, results };
-  ['created', 'removed', 'unchanged', 'failed'].forEach(status => {
-    summary[`${status}_count`] = results.filter(row => row.status === status).length;
-  });
-  return summary;
-}
-
-function _folderLinkBatchFingerprint(operation, body) {
-  return JSON.stringify({
-    operation,
-    folder_path: _normalizeFolderPath(body?.folder_path || ''),
-    folder_id: String(body?.folder_id || '').trim(),
-    items: (Array.isArray(body?.items) ? body.items : []).map(item => ({
-      file_path: _normalizeFolderPath(item?.file_path || item?.path || ''),
-      file_id: String(item?.file_id || '').trim(),
-    })),
-  });
-}
-
-function _assertFolderLinkRequestFingerprint(record, operation, fingerprint, scopeId) {
-  if (record && (record.operation !== operation || record.fingerprint !== fingerprint || record.scope_id !== scopeId)) {
-    throw new Error('同じ request_id を異なるリンク操作へ再利用できません');
-  }
-}
-
-async function _resolveCloudLinkFolder(provider, body) {
-  const requestedPath = _normalizeFolderPath(body?.folder_path || '');
-  let folderId = String(body?.folder_id || '').trim();
-  let folderPath = requestedPath;
-  if (folderId) {
-    const byId = _normalizeFolderPath(await _findPathByFileId(provider, folderId));
-    if (!byId) throw new Error('folder_id に対応するフォルダが見つかりません');
-    if (requestedPath && requestedPath !== byId) throw new Error('folder_path と folder_id が同じフォルダを指していません');
-    folderPath = byId;
-  }
-  const folderEntry = await _resolveEntryHandle(provider, folderPath);
-  if (!folderPath || !folderEntry || folderEntry.kind !== 'directory') throw new Error('リンク先フォルダが見つかりません');
-  const canonicalId = _fnvFileId(folderPath);
-  if (folderId && folderId !== canonicalId) throw new Error('folder_id が現在のフォルダ識別子と一致しません');
-  folderId = canonicalId;
-  if (typeof isItemLocked === 'function' && isItemLocked(folderPath)) throw new Error('編集ロック中のフォルダにはリンクを変更できません');
-  return { folderPath, folderId };
-}
-
-function _cloudFolderLinkMatches(link, fileId, folderPath, folderId) {
-  return link.file_id === fileId && (link.folder_id === folderId || (!link.folder_id && link.folder_path === folderPath));
-}
-
-async function _validateFolderLinkBatch(provider, operation, body) {
-  const { folderPath, folderId } = await _resolveCloudLinkFolder(provider, body);
-  const inputItems = Array.isArray(body?.items) ? body.items : [];
-  if (!inputItems.length) throw new Error('items は1件以上必要です');
-  const validated = [];
-  const validationFailures = [];
-  for (const input of inputItems) {
-    const filePath = _normalizeFolderPath(input?.file_path || input?.path || '');
-    let fileId = String(input?.file_id || '').trim();
-    try {
-      if (operation === 'add') {
-        const entry = await _resolveEntryHandle(provider, filePath);
-        if (!entry) throw new Error('ファイル/フォルダが見つかりません');
-        if (entry.kind === 'directory' && (filePath === folderPath || folderPath.startsWith(`${filePath}/`))) {
-          throw new Error('元フォルダ自身またはその配下にはリンクできません');
-        }
-      }
-      fileId = fileId || (filePath ? _fnvFileId(filePath) : '');
-      if (!fileId) throw new Error('file_id が見つかりません');
-      validated.push({ file_path: filePath, file_id: fileId });
-    } catch (error) {
-      validationFailures.push({ file_path: filePath, file_id: fileId, folder_path: folderPath, folder_id: folderId, status: 'failed', error: error?.message || String(error) });
-    }
-  }
-  return { folderPath, folderId, validated, validationFailures };
-}
-
-function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, folderId) {
-  const next = currentLinks.map(link => ({ ...link }));
-  const results = validated.map(item => {
-    const result = { ...item, folder_path: folderPath, folder_id: folderId };
-    const index = next.findIndex(link => _cloudFolderLinkMatches(link, item.file_id, folderPath, folderId));
-    if (operation === 'add') {
-      if (index >= 0) {
-        if (!next[index].folder_id) next[index] = { ...next[index], folder_path: folderPath, folder_id: folderId };
-        result.status = 'unchanged';
-      } else {
-        next.push({ ...item, path: item.file_path, name: _displayLabelForPath(item.file_path, ''), folder_path: folderPath, folder_id: folderId, added_at: new Date().toISOString() });
-        result.status = 'created';

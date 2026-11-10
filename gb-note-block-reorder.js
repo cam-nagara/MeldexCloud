@@ -472,6 +472,50 @@
     _headingHandleMenuEl = null;
   }
 
+  function _rowActions(editable, block) {
+    return [['duplicate-row', '複製', 'copy'], ['delete-row', '削除', 'trash-2']].map(([id, label, icon]) => ({
+      id, label, icon,
+      action: () => {
+        if (!block.isConnected || !editable.contains(block)) return;
+        const result = _commitRowOperation(editable, () => {
+          const wrapped = editable.id === 'page-content' && !!editable.querySelector('section.heading-section');
+          if (wrapped) global.unwrapHeadingSections?.(editable);
+          let next;
+          if (id === 'duplicate-row') {
+            next = block.cloneNode(true);
+            next.removeAttribute('id');
+            next.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+            next.querySelectorAll('._nl-id,.cmt-badge').forEach(el => el.remove());
+            next.querySelectorAll('mark.cmt-highlight').forEach(mark => mark.replaceWith(...mark.childNodes));
+            for (const el of [next, ...next.querySelectorAll('.cmt-line-highlight')]) {
+              if (el.classList.contains('cmt-line-highlight')) {
+                el.removeAttribute('title'); delete el.dataset.gbTooltip; delete el.dataset.gbNativeTitle;
+              }
+              el.classList.remove('cmt-line-highlight');
+              for (const key of Object.keys(el.dataset)) if (key.startsWith('cmt')) delete el.dataset[key];
+            }
+            block.after(next);
+          } else {
+            next = block.nextElementSibling || block.previousElementSibling;
+            const parent = block.parentElement;
+            block.remove();
+            if (parent !== editable && /^(UL|OL)$/.test(parent.tagName) && !parent.children.length) parent.remove();
+            if (!editable.firstChild) { next = document.createElement('p'); next.appendChild(document.createElement('br')); editable.appendChild(next); }
+          }
+          if (wrapped) global.wrapHeadingSections?.(editable);
+          return { ok: true, block: next || editable };
+        });
+        if (result?.ok && result.block?.isConnected) {
+          const host = result.block.closest?.('.callout-body') || result.block.querySelector?.('.callout-body') || editable;
+          host.focus({ preventScroll: true });
+          const range = _rangeAtStartOf(host === editable ? result.block : host);
+          if (range) { const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); }
+        }
+        _hideHandle();
+      },
+    }));
+  }
+
   function _openHeadingHandleMenu(editable, info, anchorRect) {
     _closeHeadingHandleMenu();
     if (typeof global.closeMeldexDropdowns === 'function') global.closeMeldexDropdowns();
@@ -513,6 +557,14 @@
       global.MeldexNoteBlockContextMenu.copyHeadingLink(info.block);
     });
     menu.appendChild(copyBtn);
+    for (const action of _rowActions(editable, info.block)) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'gb-context-menu-item';
+      button.setAttribute('role', 'menuitem'); button.textContent = action.label;
+      button.dataset.e2eId = 'note-' + action.id;
+      button.addEventListener('click', () => { closeHeadingMenu(); menu.remove(); action.action(); });
+      menu.appendChild(button);
+    }
 
     document.body.appendChild(menu);
     if (typeof global.positionPopup === 'function') {
@@ -562,6 +614,7 @@
       range,
       blockInfo: info,
       currentTypeId,
+      actions: _rowActions(editable, blockEl),
       onSelect: (typeId) => {
         const r = _rangeAtStartOf(blockEl.isConnected ? blockEl : editable);
         nbt.convertCurrentLineTo(typeId, { editable, range: r });

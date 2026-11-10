@@ -29,6 +29,8 @@ function closeFileSearch() {
 }
 
 function _currentFileSearchEditable() {
+  const editor = window.GBEditorHost?.get();
+  if (editor?.kind === 'page') return window.GBEditorHost.element('page-content');
   if (state.view === 'entity') return document.getElementById('entity-freetext');
   if (state.view === 'page') return document.getElementById('page-content');
   return null;
@@ -126,7 +128,7 @@ function clearBoardSearchHighlights() {
 }
 
 function clearFileSearchHighlights() {
-  const editables = [document.getElementById('page-content'), document.getElementById('entity-freetext')];
+  const editables = [...document.querySelectorAll('#page-content,[data-editor-local-id="page-content"],#entity-freetext')];
   editables.forEach(el => {
     if (!el) return;
     el.querySelectorAll('mark.file-search-highlight').forEach(mark => {
@@ -566,7 +568,8 @@ function _noteCtxMenuHandler(e, contextOverride) {
   ];
   if (_commentHighlightEl) {
     items.unshift(
-      { label: 'コメント一覧を開く', enabled: true, action: () => {
+      { label: 'アノテートパネルに表示', enabled: true, action: () => {
+        if (_commentHighlightEl._cmtComments?.length) { CommentBadges.openPanelForHighlight(_commentHighlightEl); return; }
         const filePath = _commentHighlightEl.dataset.cmtFile || editable.dataset.path || document.getElementById('page-content')?.dataset.path || state.currentPagePath || '';
         if (typeof CommentBadges !== 'undefined' && typeof CommentBadges.openPanelForFileComments === 'function') {
           CommentBadges.openPanelForFileComments(filePath);

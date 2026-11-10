@@ -63,7 +63,9 @@ function _dbHasColumnCellDisplayOverrides(dbPath, ctx = null) {
 }
 
 function syncDbCellDisplayToolbar(dbPath, ctx = null) {
-  const btn = document.getElementById('btn-db-cell-wrap') || document.getElementById('sheet-tb-cell-wrap');
+  const editorRoot = ctx?.containerEl?.closest?.('[data-editor-host]');
+  const btn = editorRoot?.querySelector('[data-editor-local-id="btn-db-cell-wrap"]')
+    || document.getElementById('btn-db-cell-wrap') || document.getElementById('sheet-tb-cell-wrap');
   if (!btn) return;
   const cfg = _dbCellDisplayConfig(dbPath, ctx);
   const imgCount = typeof getCellImageThumbCount === 'function' ? getCellImageThumbCount(dbPath, { ctx }) : 3;

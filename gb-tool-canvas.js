@@ -67,13 +67,19 @@ class CanvasComponent extends ToolComponent {
   }
 
   activate() {
+    if (!this.el) return false;
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
     if (isPaneActive) {
       // Visible split panes are not deactivated by the layout bridge. Hand off
       // the shared runtime before changing its root so each pane keeps its camera.
       const previous = CanvasComponent._runtimeOwner;
-      if (previous && previous !== this && previous.el) previous.deactivate();
+      if (previous && previous !== this && previous.el) {
+        const display = previous.el.style.display;
+        previous.deactivate();
+        // Visible split editors retain their picture while the other owns input.
+        previous.el.style.display = display;
+      }
       CanvasComponent._runtimeOwner = this;
       _bdSetActiveBoardRootIds(this.el, this.idSuffix);
     }
@@ -138,7 +144,9 @@ class CanvasComponent extends ToolComponent {
       if (typeof bdRender === 'function') bdRender();
       if (typeof bdTransform === 'function') bdTransform();
     }
-    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+    // Focus in an owned editor rebinds this runtime. Toolbar rebuilding commits
+    // inline edits, so keep the current toolbar while the text owns focus.
+    if (!this._boardLoadPending && isPaneActive && !bd.editing && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }

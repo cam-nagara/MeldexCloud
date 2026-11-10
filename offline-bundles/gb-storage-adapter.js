@@ -1258,6 +1258,36 @@
       return 'accepted';
     }
 
+    // Only preview callers use this path. Original-file reads remain lossless.
+    async _downloadThumbnail(relativePath, size, media) {
+      if (!media?.meta?.rev || Number(media.meta.size) > 20 * 1024 * 1024
+          || !/\.(?:jpe?g|png|tiff?|gif|webp|ppm|bmp)$/i.test(relativePath)) return null;
+      const pixels = Math.max(64, Math.min(1024, Number(size) || 256));
+      const dimensions = pixels <= 64 ? 'w64h64' : pixels <= 128 ? 'w128h128'
+        : pixels <= 256 ? 'w256h256' : pixels <= 480 ? 'w640h480'
+          : pixels <= 768 ? 'w1024h768' : 'w2048h1536';
+      let response;
+      try {
+        response = await this._content('files/get_thumbnail_v2', {
+          // Pin the response to the revision used for the cache key.
+          resource: { '.tag': 'path', path: 'rev:' + media.meta.rev },
+          format: 'png', size: dimensions, mode: 'strict',
+        }, undefined, this._dropboxLocation(relativePath));
+      } catch (error) {
+        // Conversion failures can use the original. Auth, permission and
+        // network failures must keep their normal error/retry behavior.
+        if (/^(?:unsupported_extension|unsupported_image|conversion_error)(?:\/|$)/.test(String(error?.message || ''))) return null;
+        throw error;
+      }
+      const result = _safeJsonParse(response.headers.get('dropbox-api-result'), null);
+      if (result?.file_metadata?.rev !== media.meta.rev) {
+        throw new Error('画像の取得中にファイルの版が変更されました');
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('Dropboxのサムネイルが空です');
+      return blob.type === 'image/png' ? blob : blob.slice(0, blob.size, 'image/png');
+    }
+
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       // Documents use revision-keyed local copies too. Management/security

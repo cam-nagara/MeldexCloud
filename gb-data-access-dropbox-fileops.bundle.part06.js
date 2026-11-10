@@ -1,3 +1,108 @@
+    if (pathname === '/version/save-folder' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const actor = _versionActor(url, body);
+      return _saveFolderVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
+    }
+    if (pathname === '/version/restore-folder' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
+    }
+    if (pathname === '/version/delete-folder' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _deleteFolderVersion(provider, body?.path || '', body?.version || '');
+    }
+    if (pathname === '/version/undelete-folder' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _undeleteFolderVersion(provider, body?.path || '', body?.token || '');
+    }
+    if (pathname === '/version/list' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _listFileVersions(provider, url.searchParams.get('path') || '');
+    }
+    if (pathname === '/version/read' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _readFileVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
+    }
+    if (pathname === '/version/save' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const actor = _versionActor(url, body);
+      return _saveFileVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
+    }
+    if (pathname === '/version-panel/timeline' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _buildCloudVersionTimeline(provider, url);
+    }
+    if (pathname === '/version/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
+    }
+    if (pathname === '/version/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _deleteFileVersion(provider, body?.path || '', body?.version || '');
+    }
+    if (pathname === '/version/undelete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      return _undeleteFileVersion(provider, body?.path || '', body?.token || '');
+    }
+
+    if (/^\/cal(\/|$)/.test(pathname)) {
+      if (method === 'GET') {
+        if (pathname === '/cal/sync/status') return { enabled: false, configured: false, unsupported: true };
+        return [];
+      }
+      return _phaseUnsupported('カレンダー', 'Phase 3');
+    }
+    if (/^\/calendar-db(\/|$)/.test(pathname)) {
+      if (method === 'GET') return [];
+      return _phaseUnsupported('カレンダー', 'Phase 3');
+    }
+    if (/^\/chat\/(list|search)/.test(pathname) && method === 'GET') return [];
+    if (pathname === '/chat/load' && method === 'GET') return { messages: [], title: '', unsupported: true };
+    if (pathname === '/chat/save' && method === 'POST') return _phaseUnsupported('チャット', 'Phase 3');
+    if (pathname === '/chat/stream' && method === 'POST') return _phaseUnsupported('チャット', 'Phase 3');
+    if (/^\/collab\/(rooms|messages)/.test(pathname) && method === 'GET') return [];
+    if (/^\/collab\//.test(pathname)) return _phaseUnsupported('チャット', 'Phase 3');
+
+    if (pathname === '/outliner/add' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const parent = _normalizeFolderPath(body?.parent || '');
+      const type = String(body?.type || '');
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
+      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
+      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
+      const shown = name => title !== null && title !== label ? title : name;
+      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
+      const createText = async (path, text) => {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+        }
+        const identity = window.MeldexDocumentIdentity;
+        const format = identity?.formatForPath?.(path, text);
+        const content = format ? identity.ensureDocumentId(text, format).text : text;
+        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
+      };
+      const blockedCreate = {
+        database: ['シート', 'Phase 4'],
+        calendar: ['カレンダー', 'Phase 3'],
+      }[type];
+      if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
+      if (type === 'folder') {
+        const labelName = await _uniqueName(provider, parent, label, '');
+        const targetPath = _joinPath(parent, labelName);
+        await _directoryHandle(provider, targetPath, true);
+        return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
+      }
+      if (type === 'page') {
+        const labelName = await _uniqueName(provider, parent, label, '.md');
+        const targetPath = _joinPath(parent, labelName + '.md');
+        await createText(targetPath, titled(`# ${shown(labelName)}\n\n`, targetPath));
         return { ok: true, node: { type: 'page', label: shown(labelName), path: targetPath } };
       }
       if (type === 'database') {
@@ -793,108 +898,3 @@
       if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
       const result = await durable(provider, {
         operationId: body?.confirmationToken || body?.confirmation_token,
-        operation: 'permanent-delete', payload: { name, trash_root: trashRoot.path },
-        prepare: async () => {
-          const entry = await _resolveEntryHandle(provider, trashPath);
-          const meta = await _readJsonSafe(provider, metaPath, null);
-          const originalPath = _normalizeFolderPath(meta?.original_path || '');
-          if (!entry || !originalPath) throw new Error('削除元情報を確認できないため完全削除できません');
-          const confirmationItems = [{
-            path: originalPath, kind: entry.kind === 'directory' ? 'folder' : 'file',
-            physicalPath: trashPath,
-          }];
-          const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'permanent');
-          const collected = await _collectCloudIdentityCandidates(
-            provider, trashPath, entry.kind, originalPath,
-            { includeCompletedImageClaims: true },
-          );
-          return { trash_path: trashPath, meta_path: metaPath, original_path: originalPath,
-            source_kind: entry.kind, confirmation_items: confirmationItems,
-            receipt: consumed.receipt, identity_claims: {
-              boundary: collected.boundary, target_path: collected.target_path, items: collected.items,
-            } };
-        },
-        steps: intent => [{ name: 'physical-delete', run: async () => {
-          const current = await _resolveEntryHandle(provider, intent.trash_path);
-          if (!current) return { ok: true, already_missing: true };
-          await window.MeldexCloudDeleteConfirmation.revalidateProviderDelete({
-            provider, receipt: intent.receipt, items: intent.confirmation_items,
-          });
-          await _removeEntry(provider, intent.trash_path);
-          return { ok: true };
-        } }, { name: 'identity-claims', run: () => (
-          _tombstoneCollectedCloudIdentities(intent.identity_claims, provider)
-        ) }],
-        result: () => ({ ok: true, trash_root: trashRoot.path }),
-      });
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ...result, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/trash/empty' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const requestedRoots = body?.trash_root
-        ? [await _resolveAllowedTrashRoot(body.trash_root)]
-        : await _allowedTrashRoots();
-      const seenPhysicalRoots = new Set();
-      const roots = requestedRoots.filter((root) => {
-        const key = String(root.physicalPath || root.path).toLowerCase();
-        if (seenPhysicalRoots.has(key)) return false;
-        seenPhysicalRoots.add(key);
-        return true;
-      });
-      const durable = window.MeldexCloudIdentityClaimAftercare?.durableDelete;
-      if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
-      try { return await durable(provider, {
-        operationId: body?.confirmationToken || body?.confirmation_token,
-        operation: 'empty-trash', payload: { trash_roots: roots.map(root => root.path) },
-        prepare: async () => {
-          const confirmationItems = [];
-          const entries = [];
-          for (const trashRoot of roots) {
-            const trash = await _resolveEntryHandle(provider, trashRoot.path);
-            if (!trash || trash.kind !== 'directory') continue;
-            for (const entry of await _listDirectoryEntries(provider, trashRoot.path)) {
-              if (entry.name.endsWith('._trash_meta.json')) continue;
-              const itemPath = _joinPath(trashRoot.path, entry.name);
-              const metaPath = itemPath + '._trash_meta.json';
-              const meta = await _readJsonSafe(provider, metaPath, null);
-              const originalPath = _normalizeFolderPath(meta?.original_path || '');
-              if (!originalPath) throw new Error('削除元情報を確認できない項目があるためゴミ箱を空にできません');
-              confirmationItems.push({ path: originalPath,
-                kind: entry.handle.kind === 'directory' ? 'folder' : 'file', physicalPath: itemPath });
-              const collected = await _collectCloudIdentityCandidates(
-                provider, itemPath, entry.handle.kind, originalPath,
-                { includeCompletedImageClaims: true },
-              );
-              entries.push({ trash_path: itemPath, meta_path: metaPath,
-                identity_claims: { boundary: collected.boundary,
-                  target_path: collected.target_path, items: collected.items } });
-            }
-          }
-          const consumed = confirmationItems.length
-            ? await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'permanent') : null;
-          return { confirmation_items: confirmationItems, receipt: consumed?.receipt || null, entries };
-        },
-        steps: intent => intent.entries.flatMap((entry, index) => [{
-          name: `${index}:physical-delete`, run: async () => {
-            if (!(await _pathExists(provider, entry.trash_path))) return { ok: true, already_missing: true };
-            if (!intent.receipt) throw new Error('削除直前の確認情報がありません');
-            await window.MeldexCloudDeleteConfirmation.revalidateProviderDelete({
-              provider, receipt: intent.receipt,
-              items: intent.confirmation_items.filter(item => item.physicalPath === entry.trash_path),
-            });
-            await _removeEntry(provider, entry.trash_path);
-            return { ok: true };
-          },
-        }, { name: `${index}:identity-claims`, run: () => (
-          _tombstoneCollectedCloudIdentities(entry.identity_claims, provider)
-        ) }, { name: `${index}:trash-metadata`, run: async () => {
-          if (await _pathExists(provider, entry.meta_path)) await _removeEntry(provider, entry.meta_path);
-          return { ok: true };
-        } }]),
-        result: intent => ({ ok: true, removed: intent.entries.length,
-          trash_roots: roots.map(root => root.path) }),

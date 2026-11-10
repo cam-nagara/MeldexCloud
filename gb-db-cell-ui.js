@@ -363,10 +363,18 @@ function _cellUiClosestFromEvent(e, selector) {
   return target && typeof target.closest === 'function' ? target.closest(selector) : null;
 }
 
-function _cellUiHandleAutoLinkClick(e) {
+function _cellUiHandleAutoLinkClick(e, entityPath) {
   const al = _cellUiClosestFromEvent(e, '.auto-link');
   if (!al || typeof onAutoLinkClick !== 'function') return false;
   e.stopPropagation();
+  if (entityPath && al.dataset.path && typeof _dbOpenConfiguredTarget === 'function') {
+    e.preventDefault();
+    const path = typeof _resolveAutoLinkPath === 'function' ? _resolveAutoLinkPath(al.dataset.path) : al.dataset.path;
+    _dbOpenConfiguredTarget(path, al.textContent, {
+      dbPath: _dbPathFromEntityPath(entityPath), sourceEl: al, linkType: al.dataset.linkType || al.dataset.type,
+    });
+    return true;
+  }
   onAutoLinkClick(al, e);
   return true;
 }
@@ -452,7 +460,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
     if (_cellUiApplyAutoLinks(tag, t, entityPath)) {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (_cellUiHandleAutoLinkClick(e)) return;
+        if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
         startInlineEdit(container, val, entityPath, propName);
       });
     } else {
@@ -464,7 +472,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
     container.appendChild(tag);
   });
   container.addEventListener('click', (e) => {
-    if (_cellUiHandleAutoLinkClick(e)) return;
+    if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
     e.stopPropagation();
     startInlineEdit(container, val, entityPath, propName);
   });
@@ -524,7 +532,12 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     _dbApplyCellInteractiveLinkA11y(link, 'url', entityPath, propName, v);
     // ドメインだけ表示
     try { link.textContent = new URL(v).hostname + '…'; } catch { link.textContent = v; }
-    link.addEventListener('click', (e) => e.stopPropagation());
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _dbOpenConfiguredTarget(v, link.textContent, { dbPath: _dbPathFromEntityPath(entityPath), sourceEl: link,
+        entry: { type: 'html', path: v, label: v, urlExternal: true } });
+    });
     row.appendChild(link);
     return row;
   }
@@ -541,7 +554,8 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     img.fetchPriority = 'low';
     const browserFiles = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       && window.MeldexPwaFileUrl?.applyToElement;
-    if (!browserFiles) img.src = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
+    const thumbnailSrc = '/api/thumbnail?path=' + encodeURIComponent(imagePath) + '&size=' + thumbPx;
+    if (!browserFiles) img.src = thumbnailSrc;
     img.alt = v;
     img.onerror = () => {
       if (browserFiles) {
@@ -555,12 +569,15 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       }
       img.replaceWith(document.createTextNode(v));
     };
-    img.addEventListener('click', (e) => { e.stopPropagation(); });
+    img.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openImagePropertyItemInViewer({ path: imagePath, filename: v }, { entityPath, propName });
+    });
     const imageHost = window.MeldexImageLoading?.createHost?.(img, {
       className: 'cell-thumbnail-host' + (thumbSize === 'large' ? ' large' : ''),
     });
     row.appendChild(imageHost || img);
-    if (browserFiles) window.MeldexPwaFileUrl.applyToElement(img, rawSrc);
+    if (browserFiles) window.MeldexPwaFileUrl.applyToElement(img, thumbnailSrc);
     window.MeldexImageLoading?.track?.(img, { host: imageHost, label: '画像セルを読み込んでいます', errorMode: 'silent' });
     return row;
   }
@@ -589,7 +606,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   if (_cellUiApplyAutoLinks(txt, v, entityPath)) {
     // auto-link がある場合はクリックハンドラを分岐
     txt.addEventListener('click', (e) => {
-      if (_cellUiHandleAutoLinkClick(e)) return;
+      if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
       startInlineEdit(txt, val, entityPath, propName);
     });
   } else {

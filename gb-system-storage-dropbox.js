@@ -94,6 +94,108 @@
       .replace(/\/$/, '');
   }
 
+  // 一覧読み込み用：ファイルの版番号（rev）ごとに読んだ内容を覚えておく。revが同じなら
+  // Dropbox上の内容は同一なので、読み直しを省いても結果は変わらない。
+  const _ENVELOPE_REV_CACHE = new Map();
+  const ENVELOPE_REV_CACHE_LIMIT = 4000;
+  const ENVELOPE_CACHE_MAX_TEXT_LENGTH = 16 * 1024;
+
+  // 同じ控えを端末内（IndexedDB）にも置く。使えない時は通常のダウンロードに戻る。接続解除で消す。
+  const ENVELOPE_STORE_DB = 'meldex-system-storage-envelopes';
+  const ENVELOPE_STORE_NAME = 'by-revision';
+  let _envelopeStoreDb = null;
+
+  function _envelopeStoreOpen() {
+    if (_envelopeStoreDb) return _envelopeStoreDb;
+    _envelopeStoreDb = new Promise((resolve) => {
+      try {
+        if (typeof indexedDB === 'undefined') { resolve(null); return; }
+        // 開けないまま応答が返らない環境でも、保存を止めない。
+        setTimeout(() => resolve(null), 1500);
+        const request = indexedDB.open(ENVELOPE_STORE_DB, 1);
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains(ENVELOPE_STORE_NAME)) request.result.createObjectStore(ENVELOPE_STORE_NAME);
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+        request.onblocked = () => resolve(null);
+      } catch { resolve(null); }
+    });
+    return _envelopeStoreDb;
+  }
+
+  // 端末内の控えに対する操作を1回行う。使えない・失敗した時は何もしない。
+  function _envelopeStoreRun(mode, action) {
+    return _envelopeStoreOpen().then((db) => {
+      if (!db) return null;
+      try { return action(db.transaction(ENVELOPE_STORE_NAME, mode).objectStore(ENVELOPE_STORE_NAME)); } catch { return null; }
+    }).catch(() => null);
+  }
+
+  function _envelopeStoreGet(key) {
+    return _envelopeStoreRun('readonly', store => new Promise((resolve) => {
+      setTimeout(() => resolve(null), 1500);
+      const request = store.get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    }));
+  }
+
+  function _envelopeStorePut(key, entry) { _envelopeStoreRun('readwrite', store => { store.put(entry, key); }); }
+
+  const _envelopePrunedAt = new Map();
+  function _envelopeStorePrune(prefix, keepNames) {
+    if (Date.now() - (_envelopePrunedAt.get(prefix) || 0) < 10 * 60 * 1000 || typeof IDBKeyRange === 'undefined') return;
+    if (_envelopePrunedAt.size >= 200) _envelopePrunedAt.clear();
+    _envelopePrunedAt.set(prefix, Date.now());
+    _envelopeStoreRun('readwrite', (store) => {
+      const request = store.openKeyCursor(IDBKeyRange.bound(prefix, prefix + String.fromCharCode(0xffff)));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const name = String(cursor.key).slice(prefix.length).toLowerCase();
+        if (!name.includes('/') && !keepNames.has(name)) {
+          store.delete(cursor.key);
+          _ENVELOPE_REV_CACHE.delete(cursor.key);
+        }
+        cursor.continue();
+      };
+    });
+  }
+
+  function _envelopeStoreClear() {
+    _ENVELOPE_REV_CACHE.clear();
+    _envelopeStoreRun('readwrite', store => { store.clear(); });
+  }
+
+  async function _envelopeCacheAccount() {
+    try {
+      const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+      return String(account?.account_id || '');
+    } catch { return ''; }
+  }
+
+  try {
+    window.addEventListener?.('meldex:dropbox-auth-session-changed', (event) => {
+      _VERIFIED_FOLDERS.clear(); // 接続先が変わったら、フォルダの確認もやり直す
+      if (event?.detail?.connected === false) _envelopeStoreClear();
+    });
+  } catch {}
+
+  // 読み取りを同時数を抑えて並行実行し、入力と同じ並び順で結果を返す。
+  async function _mapInOrder(items, worker, limit = 4) {
+    const results = new Array(items.length);
+    let next = 0;
+    const run = async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await worker(items[index], index);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+    return results;
+  }
+
   function _joinDropboxPath(base, relative) {
     const normalizedBase = _normalizeDropboxPath(base);
     const normalizedRelative = _normalizeRelativePath(relative);
@@ -175,22 +277,33 @@
     return _RETRYABLE_ERROR_RE.test(String((error && error.message) || error || ''));
   }
 
+  const _VERIFIED_FOLDERS = new Set();
+
   async function _ensureFolder(dropboxPath, namespaceKind) {
     const normalized = _normalizeDropboxPath(dropboxPath);
     if (!normalized || normalized === '/') return true;
+    // 一度フォルダだと確認できた場所は、この画面を開いている間は確認し直さない。
+    // 管理データを1件保存するたびに2回ずつ確認の通信が走っていた。確認後に外部で
+    // 消されていても、Dropboxのアップロードは親フォルダを自動で作るので保存は成立する。
+    const verifiedKey = `${namespaceKind || ''}|${normalized.toLowerCase()}`;
+    if (_VERIFIED_FOLDERS.has(verifiedKey)) return true;
     // Existing management folders are the normal case. Do not create them on
     // every save: Dropbox reports an HTTP 409 even though nothing is wrong.
     try {
       const meta = await _rpc('files/get_metadata', {
         path: normalized, include_deleted: false, include_has_explicit_shared_members: false,
       }, namespaceKind);
-      if (meta?.['.tag'] === 'folder') return true;
+      if (meta?.['.tag'] === 'folder') {
+        _VERIFIED_FOLDERS.add(verifiedKey);
+        return true;
+      }
       throw new (_contract().SystemStorageError)(`${normalized} はDropbox上でフォルダではありません`);
     } catch (err) {
       if (!_isNotFoundError(err)) throw err;
     }
     try {
       await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
+      _VERIFIED_FOLDERS.add(verifiedKey);
       return true;
     } catch (err) {
       if (!_isConflictError(err)) throw err;
@@ -370,13 +483,79 @@
       }
     }
 
+    async _readExistingAtRevision(kind, documentId, listedRev) {
+      const contract = _contract();
+      const docId = contract.sanitizeDocumentId(documentId);
+      if (!listedRev) return this._readExisting(kind, docId);
+      const path = this._pathFor(kind, docId);
+      const cacheKey = `${await _envelopeCacheAccount()}|${this._namespaceKind}|${path}`;
+      let cached = _ENVELOPE_REV_CACHE.get(cacheKey);
+      if (!cached || cached.rev !== listedRev) {
+        // この端末に前回までに読んだ内容が残っていれば、それを使う（画面を開き直した直後の
+        // 最初の保存で、過去の履歴を全件ダウンロードし直さないため）。
+        const stored = await _envelopeStoreGet(cacheKey);
+        if (stored && stored.rev === listedRev && typeof stored.text === 'string') {
+          cached = stored;
+          _ENVELOPE_REV_CACHE.set(cacheKey, cached);
+        }
+      }
+      if (cached && cached.rev === listedRev) {
+        try {
+          return contract.recordFromEnvelope(JSON.parse(cached.text), { revisionOverride: cached.rev });
+        } catch {
+          _ENVELOPE_REV_CACHE.delete(cacheKey); // 壊れた控えは捨てて読み直す
+        }
+      }
+      const result = await _downloadEnvelope(path, this._namespaceKind);
+      if (!result) {
+        _ENVELOPE_REV_CACHE.delete(cacheKey);
+        return null;
+      }
+      let record;
+      try {
+        record = contract.recordFromEnvelope(result.data, { revisionOverride: result.rev });
+      } catch (error) {
+        this._audit('error', 'load', kind, docId, { message: '破損した管理データを検出しました' });
+        throw error;
+      }
+      if (result.rev) {
+        const text = JSON.stringify(result.data);
+        // 控えるのは編集履歴の見出しのような小さい記録だけ。本文全文を持つ版データなどの
+        // 大きい記録は、メモリにも端末内にも残さない（毎回ダウンロードする）。
+        if (text.length <= ENVELOPE_CACHE_MAX_TEXT_LENGTH) {
+          if (_ENVELOPE_REV_CACHE.size >= ENVELOPE_REV_CACHE_LIMIT) _ENVELOPE_REV_CACHE.clear();
+          const entry = { rev: result.rev, text };
+          _ENVELOPE_REV_CACHE.set(cacheKey, entry);
+          _envelopeStorePut(cacheKey, entry);
+        } else {
+          _ENVELOPE_REV_CACHE.delete(cacheKey);
+        }
+      }
+      return record;
+    }
+
     async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
       return this._readExisting(kind, docId, options?.fresh === true);
     }
 
-    async _listFolderEntries(folderPath) {
+    async _listFolderEntries(folderPath, { reuseRecent = false } = {}) {
+      // 認証側の共有一覧を通して取得する。直後に続く「このファイルは在るか」の確認が
+      // 同じ一覧を使えるので、同じフォルダを続けて2回一覧する通信が1回で済む。
+      const auth = window.MeldexDropboxAuth;
+      if (typeof auth?.readFolderEntries === 'function' && typeof auth?.isMissingReadPath === 'function') {
+        const location = await _resolveApiLocation(folderPath, this._namespaceKind);
+        const options = { namespaceKind: location.namespaceKind };
+        try {
+          if (await auth.isMissingReadPath(location.path, options)) return [];
+        } catch (err) {
+          // 親フォルダが外部で消されていた場合も、従来どおり「空」として扱う。
+          if (_isNotFoundError(err)) return [];
+          throw err;
+        }
+        return [...(await auth.readFolderEntries(location.path, { ...options, freshMissingCheck: !reuseRecent })).values()];
+      }
       const entries = [];
       let payload;
       try {
@@ -396,7 +575,7 @@
     async listDocuments(kind) {
       const contract = _contract();
       const entries = await this._listFolderEntries(this._folderFor(kind));
-      const records = [];
+      const documents = [];
       for (const entry of entries) {
         if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
@@ -405,16 +584,29 @@
         } catch {
           continue; // 本契約が作成したものではない未知のファイルは無視する
         }
+        documents.push({ documentId, rev: String(entry.rev || '') });
+      }
+      // 1件ずつ順番に読むと件数ぶんの通信待ちが直列に積み上がる（保存のたびに呼ばれる）。
+      // 読み取りだけなので並行して取得し、結果は一覧の並び順のまま返す。
+      // さらに、一覧が返す版番号（rev）が前回読んだ時と同じファイルは内容も同じなので、
+      // 読み直さずに覚えている内容から組み立てる。編集履歴のように増え続けるデータでも、
+      // 保存のたびに全件を読み直さずに済む（新しく増えた・変わった分だけ通信する）。
+      const loaded = await _mapInOrder(documents, async ({ documentId, rev }) => {
         try {
-          const record = await this.load(kind, documentId);
-          if (record) records.push(record);
+          return await this._readExistingAtRevision(kind, documentId, rev);
         } catch (error) {
           this._audit('error', 'list_documents', kind, documentId, {
             message: `破損データをスキップしました: ${error && error.message}`,
           });
+          return null;
         }
-      }
-      return records;
+      });
+      // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
+      _envelopeStorePrune(
+        `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
+        new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
+      );
+      return loaded.filter(Boolean);
     }
 
     async listActiveLeaseRecords() {
@@ -424,22 +616,26 @@
       const kind = contract.SystemStorageKind.EDIT_LOCKS;
       const folder = this._folderFor(kind);
       const files = await this._listFolderEntries(folder);
-      const records = [];
+      const names = [];
       for (const file of files) {
         const name = String(file.name || '');
         if (file['.tag'] !== 'file' || !/\.json$/i.test(name)
             || !(name.startsWith('active-lock-store') || name.startsWith('active-lock-owner-'))) continue;
         if (/[\\/]/.test(name)) throw new contract.SystemStorageCorruptRecordError('編集リースのファイル名が不正です');
-        const downloaded = await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, true);
+        names.push(name);
+      }
+      // 編集中ロックの確認は書き込み操作のたびに走る。読み取りだけなので並行して取得する
+      // （1件でも読めなければ全体を失敗にする点は従来どおり）。
+      return _mapInOrder(names, async (name) => {
+        const downloaded =await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false); // listed just above; a vanished file still fails the null check below
         if (!downloaded) throw new contract.SystemStorageError('編集中ロックの読込中に同期状態が変わりました');
         const record = contract.recordFromEnvelope(downloaded.data, { revisionOverride: downloaded.rev });
         if (record.kind !== kind || !(record.documentId === 'active-lock-store'
             || /^active-lock-owner-[0-9a-f]{64}$/.test(record.documentId))) {
           throw new contract.SystemStorageCorruptRecordError('編集リースの管理情報が一致しません');
         }
-        records.push(record);
-      }
-      return records;
+        return record;
+      });
     }
 
     async listDocumentHeaders(kind, options) {
@@ -490,7 +686,8 @@
     async _totalBytesForKind(kind, excludeDocumentId) {
       let entries;
       try {
-        entries = await this._listFolderEntries(this._folderFor(kind));
+        // The total is only a quota estimate: reuse the listing the save just fetched.
+        entries = await this._listFolderEntries(this._folderFor(kind), { reuseRecent: true });
       } catch (err) {
         if (_isNotFoundError(err)) return 0;
         throw err;

@@ -112,8 +112,9 @@
     }
 
     closeListAll();
-    // 通常段落
-    html += `<div>${inlinemd(line)}</div>`;
+    // 通常段落（URLだけの行は動画・ポストの埋め込みを表示時だけ添える。保存内容は変えない）
+    const webEmbedHtml = typeof window !== 'undefined' && window.GBWebEmbeds ? window.GBWebEmbeds.htmlForLine(line) : '';
+    html += `<div>${inlinemd(line)}${webEmbedHtml}</div>`;
   }
 
   closeListAll();
@@ -575,6 +576,8 @@ function htmlToMd(html) {
     const tag = node.tagName;
     // コピーボタン・テーブル操作ボタン・セル編集inputはスキップ
     if (node.classList?.contains('copy-btn') || node.classList?.contains('table-add-row') || node.classList?.contains('table-add-col')) return '';
+    // 動画・ポストの埋め込みは表示専用（元のURL行だけを保存する）
+    if (node.classList?.contains('gb-web-embed')) return '';
     if (node.classList?.contains('cell-edit')) return node.value || '';
     // DETAILS/SUMMARY/H1-H6は子ノードを個別に走査するため、childrenの事前計算をスキップ
     const _needsChildren = !['DETAILS','SUMMARY','H1','H2','H3','H4','H5','H6','KBD','BLOCKQUOTE','LI'].includes(tag);

@@ -622,14 +622,12 @@ async function renderGraph(ctx) {
     const entityPath = circle.dataset.entityPath;
     const isExt = circle.dataset.isExternal === '1';
     if (entityPath) {
-      if (typeof openEntityInSplit === 'function') openEntityInSplit(entityPath, nodeName);
-      else selectEntity(entityPath);
+      _dbOpenConfiguredEntity(entityPath, nodeName, ctx, circle);
     } else if (isExt) {
       if (typeof showStatus === 'function') showStatus('参照先トピックが見つかりません: ' + nodeName, true);
     } else {
       const fallbackPath = _entityPath(nodeDbPath || dbPath, nodeName);
-      if (typeof openEntityInSplit === 'function') openEntityInSplit(fallbackPath, nodeName);
-      else selectEntity(fallbackPath);
+      _dbOpenConfiguredEntity(fallbackPath, nodeName, ctx, circle);
     }
   });
   svg.addEventListener('dblclick', (e) => {
@@ -646,7 +644,7 @@ async function renderGraph(ctx) {
     }
     const resolvedPath = entityPath || _entityPath(nodeDbPath, nodeName);
     if (typeof _navPushWithViewState === 'function') _navPushWithViewState(ctx, nodeName);
-    selectEntity(resolvedPath);
+    _dbOpenConfiguredEntity(resolvedPath, nodeName, ctx, circle);
   });
 }
 

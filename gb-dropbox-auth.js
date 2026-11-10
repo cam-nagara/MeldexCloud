@@ -24,6 +24,7 @@
   let _authChannel = null;
   let _accountRootInfo = null;
   const _readFolderCache = new Map();
+  const READ_FOLDER_PRESENT_STALE_MS = 10 * 60 * 1000;
   const _readFolderPending = new Map();
   let _readFolderGeneration = 0;
   let _rateLimitUntil = 0;
@@ -37,7 +38,8 @@
   let _apiActive = 0;
   let _mediaActive = 0;
   function _isMediaRead(route, path) {
-    return /^(files\/download|files\/get_metadata)$/.test(route)
+    return route === 'files/get_thumbnail_v2'
+      || /^(files\/download|files\/get_metadata)$/.test(route)
       && /\.(png|jpe?g|gif|webp|svg|bmp|avif|pdf|mp[34]|webm|mov|ogg|wav)$/i.test(String(path || ''));
   }
   function _drainApiQueue() {
@@ -1037,11 +1039,16 @@
   // Optional sidecars and management records are often absent. Check their
   // parent listing instead of using a failing download/get_metadata as an
   // existence probe. Share listings across adapters and concurrent callers.
-  async function _readFolderEntries(path, options) {
+  async function _readFolderKey(path, options) {
     const namespaceKind = _normalizeNamespaceKind(options?.namespaceKind);
     const account = await getCurrentAccount(false);
     const namespaceId = account?.root_info?.[namespaceKind === 'team_root' ? 'root_namespace_id' : 'home_namespace_id'] || '';
-    const key = JSON.stringify([account?.account_id || '', namespaceKind, namespaceId, path.toLowerCase()]);
+    return JSON.stringify([account?.account_id || '', namespaceKind, namespaceId, path.toLowerCase()]);
+  }
+
+  async function _readFolderEntries(path, options) {
+    const namespaceKind = _normalizeNamespaceKind(options?.namespaceKind);
+    const key = await _readFolderKey(path, options);
     const cached = _readFolderCache.get(key);
     if (!options?.freshMissingCheck && cached?.until > Date.now()) return cached.entries;
     const pending = _readFolderPending.get(key);
@@ -1073,7 +1080,7 @@
       }
       if (generation === _readFolderGeneration && _readFolderPending.get(key) === promise && entries.size <= 4096) {
         if (_readFolderCache.size >= 128) _readFolderCache.delete(_readFolderCache.keys().next().value);
-        _readFolderCache.set(key, { entries, until: Date.now() + 30000 });
+        _readFolderCache.set(key, { entries, until: Date.now() + 30000, at: Date.now() });
       }
       return entries;
     })();
@@ -1087,8 +1094,18 @@
     if (typeof path !== 'string' || !path.startsWith('/') || path === '/') return false;
     const normalized = path.replace(/\/+$/, '');
     const split = normalized.lastIndexOf('/');
-    const entries = await _readFolderEntries(normalized.slice(0, split), options);
-    return !entries.has(normalized.slice(split + 1).toLowerCase());
+    const parent = normalized.slice(0, split);
+    const name = normalized.slice(split + 1).toLowerCase();
+    if (!options?.freshMissingCheck) {
+      // 「ある」と分かっている項目は、一覧の有効期限（30秒）が切れた後もしばらく存在すると
+      // みなす。30秒以上あけて操作するたびに、管理用フォルダの親をルートまで順に一覧し直す
+      // 通信（最大5回）が走っていた。実際には消されていた場合も、続く本来の通信が
+      // 「見つからない」を返すので結果は変わらない。「無い」という記憶は従来どおり30秒で捨てる。
+      const cached = _readFolderCache.get(await _readFolderKey(parent, options));
+      if (cached && Date.now() - cached.at < READ_FOLDER_PRESENT_STALE_MS && cached.entries.has(name)) return false;
+    }
+    const entries = await _readFolderEntries(parent, options);
+    return !entries.has(name);
   }
 
   async function _guardMissingRead(path, options) {
@@ -1144,7 +1161,7 @@
       const response = await _fetchDropboxWithRetry(route, async () => {
         const result = await fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit);
         // Keep the slot until the download body finishes, not just its headers.
-        if (result.ok && route === 'files/download') {
+        if (result.ok && (route === 'files/download' || route === 'files/get_thumbnail_v2')) {
           return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
         }
         if (result.ok && route === 'files/download_zip') {
@@ -1253,6 +1270,8 @@
     resolveFileLocation,
     apiRpc,
     apiContent,
+    readFolderEntries: _readFolderEntries,
+    isMissingReadPath: _isMissingReadPath,
     getCurrentAccount,
     getSpaceUsage,
   };

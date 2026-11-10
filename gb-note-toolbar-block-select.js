@@ -71,8 +71,8 @@
     return defs;
   }
 
-  function _trigger() { return document.getElementById(TRIGGER_ID); }
-  function _pageContent() { return document.getElementById(TOOLBAR_HOST_ID); }
+  function _trigger() { return (global.GBEditorHost?.element(TRIGGER_ID) || document.getElementById(TRIGGER_ID)); }
+  function _pageContent() { return (global.GBEditorHost?.element(TOOLBAR_HOST_ID) || document.getElementById(TOOLBAR_HOST_ID)); }
 
   // ============================================================
   // 現在の行種の解決（キャレット追従・要件4）

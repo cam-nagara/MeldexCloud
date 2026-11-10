@@ -1621,6 +1621,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   }
 }
 .cmt-highlight {
+  color: inherit;
   background: color-mix(in srgb, var(--annotation-accent, var(--accent)) 28%, transparent);
   border-bottom: 1px solid var(--annotation-accent, var(--accent));
   border-radius: 2px;

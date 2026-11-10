@@ -22,7 +22,7 @@
   var CHANGE_EVENT = 'meldex:note-writing-mode-changed';
 
   function _pageContent() {
-    return document.getElementById('page-content');
+    return (window.GBEditorHost?.element('page-content') || document.getElementById('page-content'));
   }
 
   function isVertical(editable) {
@@ -169,7 +169,7 @@
   /* ---------------- 状態遷移（唯一の入口） ---------------- */
 
   function _syncToolbarButton(vertical) {
-    var btn = document.getElementById('btn-note-vertical');
+    var btn = (window.GBEditorHost?.element('btn-note-vertical') || document.getElementById('btn-note-vertical'));
     if (!btn) return;
     // アイコンは「クリック後の動作」を示す: 横書き中→kanban（縦書きにする）、縦書き中→textAlignStart（横書きに戻す）
     var iconName = vertical ? 'textAlignStart' : 'kanban';
@@ -181,7 +181,7 @@
   }
 
   function _syncTocSeparator(vertical) {
-    var handle = document.getElementById('note-toc-resize');
+    var handle = (window.GBEditorHost?.element('note-toc-resize') || document.getElementById('note-toc-resize'));
     if (!handle) return;
     // 横書き側の文字列は既存契約（E2E が厳密一致で検証）なので変更しない
     handle.setAttribute('aria-orientation', vertical ? 'horizontal' : 'vertical');

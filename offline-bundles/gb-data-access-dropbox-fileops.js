@@ -2304,11 +2304,32 @@ async function _editRecordIntegrity(provider, adapter, record) {
   return result || { ok: false, status: 'pending-owner-signature' };
 }
 
-async function _listSharedEditRecords(provider, path, recursive) {
+// 所有者の保存のたびに行っていた「署名待ちの記録への自動署名」を、保存を待たせない形で
+// 続ける。対象は新しい順に数件、同じファイルにつき一定間隔まで。
+const _backgroundSignedAt = new Map();
+const BACKGROUND_SIGN_INTERVAL_MS = 10 * 60 * 1000;
+const BACKGROUND_SIGN_RECORD_LIMIT = 10;
+
+function _signPendingEditRecordsInBackground(provider, adapter, path, records) {
+  if (!_isSharedHistoryOwner() || !records?.length) return;
+  const last = _backgroundSignedAt.get(path) || 0;
+  if (Date.now() - last < BACKGROUND_SIGN_INTERVAL_MS) return;
+  if (_backgroundSignedAt.size >= 500) _backgroundSignedAt.clear();
+  _backgroundSignedAt.set(path, Date.now());
+  const targets = records.slice(0, BACKGROUND_SIGN_RECORD_LIMIT);
+  (async () => {
+    for (const row of targets) {
+      await _editRecordIntegrity(provider, adapter, row).catch(() => null);
+    }
+  })().catch(() => {});
+}
+
+async function _listSharedEditRecords(provider, path, recursive, options = {}) {
+  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -2317,27 +2338,56 @@ async function _listSharedEditRecords(provider, path, recursive) {
       && payload.committed && !payload.aborted;
   }).sort((a, b) => String(b.payload?.committed_at || b.payload?.timestamp || '')
     .localeCompare(String(a.payload?.committed_at || a.payload?.timestamp || '')));
-  for (const row of visible) {
-    const integrity = await _editRecordIntegrity(provider, adapter, row).catch(() => ({
-      ok: false, status: 'pending-owner-signature', reason: 'integrity-check-failed',
-    }));
-    row.integrity = integrity;
+  // 保存の前処理は「直前の編集者」を知るために最新1件の内容を見るだけで、署名の検証結果は
+  // 使わない。検証は履歴1件ごとに通信が発生し、保存のたびに履歴の件数ぶん遅くなっていた。
+  // 履歴画面など検証結果を表示する呼び出しでは従来どおり全件を検証する。
+  if (options.skipIntegrity) {
+    _signPendingEditRecordsInBackground(provider, adapter, normalized, visible);
+    return visible;
   }
+  // 署名の確認は1件ごとに通信が要る。順番に行うと履歴が十数件を超えた時点で履歴画面が
+  // 時間切れになっていたので、同時4件で進める。確認が取れた結果は同じ版の記録に限り
+  // 2分間だけ使い回す（パネルを開き直すたびに全件を取り直さない）。
+  let next = 0;
+  const worker = async () => {
+    while (next < visible.length) {
+      const row = visible[next++];
+      const memoKey = `${row.documentId}|${row.revision || ''}`;
+      const memo = _verifiedIntegrityMemo.get(memoKey);
+      if (memo && Date.now() - memo.at < 120000) { row.integrity = memo.result; continue; }
+      row.integrity = await _editRecordIntegrity(provider, adapter, row).catch(() => ({
+        ok: false, status: 'pending-owner-signature', reason: 'integrity-check-failed',
+      }));
+      if (row.integrity?.ok === true && row.revision) {
+        if (_verifiedIntegrityMemo.size >= 5000) _verifiedIntegrityMemo.clear();
+        _verifiedIntegrityMemo.set(memoKey, { at: Date.now(), result: row.integrity });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, visible.length) }, worker));
   return visible;
 }
+const _verifiedIntegrityMemo = new Map();
 
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
+  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = await adapter.listDocuments(kind);
   const currentHash = _contentHistoryHash(currentContent);
+  let changed = false;
   for (const row of records) {
     const payload = row?.payload || {};
     if (payload.object_type !== 'edit-record' || payload.original_relative_path !== normalized
         || payload.committed || payload.aborted) continue;
     const intentAge = Date.now() - Date.parse(payload.timestamp || '');
-    if (!Number.isFinite(intentAge) || intentAge > 24 * 60 * 60 * 1000) {
+    // 書こうとした内容が今の本文と一致していれば、その保存は成立している。保存直後に
+    // 画面を閉じて確定が終わらなかった記録も、何日後でもここで確定する（期限切れ扱いに
+    // して履歴から落とさない）。
+    const contentWritten = payload.planned_content_hash === currentHash;
+    if (!contentWritten && (!Number.isFinite(intentAge) || intentAge > 24 * 60 * 60 * 1000)) {
+      changed = true;
       await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
       const saved = await adapter.save(kind, row.documentId, {
         ...payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'expired_intent',
@@ -2346,22 +2396,24 @@ async function _reconcileCloudEditIntents(provider, path, currentContent) {
       continue;
     }
     if (payload.planned_content_hash !== currentHash) continue;
+    changed = true;
     await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
     const saved = await adapter.save(kind, row.documentId, {
       ...payload, committed: true, committed_at: _nowIso(), recovered_from_intent: true,
     }, { expectedRevision: row.revision }).catch(() => null);
     if (saved) await _protectSharedEditRevision(provider, adapter, saved).catch(() => null);
   }
-  return { adapter, kind };
+  // 何も書き換えなかった時だけ、読んだ一覧を直後の処理で使い回せるように返す。
+  return { adapter, kind, records: changed ? null : records };
 }
 
 async function _prepareCloudFileEdit(provider, path, currentContent, nextContent, actor, sourceRevision, exists, options = {}) {
   const normalized = _normalizeFolderPath(path);
-  const { adapter, kind } = await _reconcileCloudEditIntents(provider, normalized, currentContent);
+  const { adapter, kind, records } = await _reconcileCloudEditIntents(provider, normalized, currentContent);
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -2422,7 +2474,53 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   return { provider, adapter, kind, documentId, intentRevision: intent?.revision || '', payload, eventId, intentRecord: intent };
 }
 
-async function _commitCloudFileEdit(prepared, committedRevision) {
+// 本文の保存が終わった後の「履歴の確定」は、通信を10回以上（実測で約15秒）使う。
+// 本文はこの時点で保存済みなので、確定は裏で続け、保存の完了を待たせない。
+// 確定が終わる前に同じ履歴を読む処理（次の保存・履歴表示・移動に伴う付け替え）は、
+// _awaitPendingEditFinalizations で先に完了を待つので、順序は従来と変わらない。
+// 確定できなかった場合は従来どおり、次回の保存時に内容の一致で回収される。
+const _pendingEditFinalizations = new Set();
+
+const PENDING_EDIT_FINALIZATION_WAIT_MS = 45000;
+
+async function _awaitPendingEditFinalizations() {
+  const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
+  while (_pendingEditFinalizations.size) {
+    const remaining = deadline - Date.now();
+    // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
+    // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
+    if (remaining <= 0) return;
+    const settled = Promise.allSettled([..._pendingEditFinalizations]);
+    await (typeof setTimeout === 'function'
+      ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
+      : settled);
+  }
+}
+
+// 確定が終わる前に画面を閉じようとしたら、ブラウザの離脱確認を出す。
+try {
+  window.addEventListener?.('beforeunload', (event) => {
+    if (!_pendingEditFinalizations.size) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+} catch {}
+
+function _commitCloudFileEdit(prepared, committedRevision) {
+  if (!prepared || prepared.skipped) return Promise.resolve(false);
+  const finalization = _finalizeCloudFileEdit(prepared, committedRevision).then((pending) => {
+    if (pending && typeof showStatus === 'function') {
+      showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
+    }
+    return pending;
+  }).catch(() => true).finally(() => {
+    _pendingEditFinalizations.delete(finalization);
+  });
+  _pendingEditFinalizations.add(finalization);
+  return Promise.resolve(false);
+}
+
+async function _finalizeCloudFileEdit(prepared, committedRevision) {
   if (!prepared || prepared.skipped) return false;
   try {
     await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
@@ -2478,6 +2576,7 @@ window.MeldexSharedEditHistory = {
   actor: _versionActor,
   prepare: _prepareCloudFileEdit,
   commit: _commitCloudFileEdit,
+  settled: _awaitPendingEditFinalizations,
   abort: _abortCloudFileEdit,
   track: _trackCloudEdit,
   fileKind: _historyFileKind,
@@ -2537,6 +2636,7 @@ function _throwEtagConflict(path, expected, current) {
 }
 
 async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
+  await _awaitPendingEditFinalizations();
   const normalizedOld = _normalizeFolderPath(oldPath);
   const normalizedNew = _normalizeFolderPath(newPath);
   if (!normalizedOld || normalizedOld === normalizedNew) return false;
@@ -2643,6 +2743,7 @@ async function _saveFileVersion(provider, path, options) {
   let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
   if (pointMetadata.restore_point_kind === 'periodic') {
     payload.content_hash = payload.content_hash || _contentHistoryHash(content);
+    await _awaitPendingEditFinalizations();
     const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
     const existing = rows.find(row => {
       const value = row.payload || {};
@@ -2674,6 +2775,7 @@ async function _listFileVersions(provider, path) {
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
   const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
   const versions = [];
   for (const entry of entries) {
@@ -2810,6 +2912,7 @@ async function _findFileVersionRecord(provider, path, version, includeDeleted, m
   const name = _safeVersionName(version);
   const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(storageKind);
   let record = records.find(row => {
     const payload = row?.payload || {};
@@ -2896,6 +2999,7 @@ async function _undeleteFileVersion(provider, path, token) {
   const normalized = _normalizeFolderPath(path);
   const safeToken = _safeVersionName(token);
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
   const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
   const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
   if (!record) throw new Error('削除済みバージョンが見つかりません');
@@ -3704,6 +3808,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           if (item.type !== 'form-app') continue;
           try {
             const doc = JSON.parse(await provider.readText(item.path));
+            if (doc.meldex?.topic_attachment === true) continue;
             if (doc.fileType !== 'meldex-form' || doc.schema_version !== 1 || !doc.sheet?.path) continue;
             const sheetPath = _normalizeFolderPath(doc.sheet.path);
             const handle = await _resolveEntryHandle(provider, sheetPath);

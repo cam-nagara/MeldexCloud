@@ -749,6 +749,7 @@
 
   function _startSync() {
     _migrateLegacyOnce();
+    if (global.MeldexStandaloneNative) return;
     global.addEventListener?.('focus', () => { syncNow(); });
     global.addEventListener?.('online', () => { syncNow(); });
     global.addEventListener?.('storage', event => {
