@@ -16,6 +16,8 @@
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
   const CLI_CHAT_TRANSPORT_TIMEOUT_MS = 75000;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
+  // 受信中の途中経過を描く間隔。文字の流れは保ちつつ、受信ごとの全文描画を避ける。
+  const CLI_CHAT_STREAM_PAINT_INTERVAL_MS = 120;
   const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
   const CLI_CHAT_SESSION_STATE_PREFIX = 'chat-cli-session-state:v1:';
@@ -1194,23 +1196,43 @@
         .find(el => String(el.dataset.msgId || '') === assistantMessageId);
       return row?.querySelector?.('.chat-message-bubble') || null;
     };
+    // 回答は受信のたびに全文を描き直すため、同じ内容なら描き直さない。長い作業では
+    // 毎秒の確認と細かな受信ごとの全文描画が積み上がり、画面全体を重くしていた（2026-11-12）。
+    let renderedAssistantDiv = null;
+    let renderedAssistantText = '';
     const ensureAssistantVisible = (content = fullText) => {
-      if (!String(content || '').trim()) return null;
+      const text = String(content || '');
+      if (!text.trim()) return null;
       if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = findAssistantBubble();
       if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream('', renderOptions());
-      if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, String(content || ''), []);
-      else if (assistantDiv) assistantDiv.textContent = String(content || '');
+      if (assistantDiv && assistantDiv === renderedAssistantDiv && renderedAssistantText === text
+          && assistantDiv.firstChild) return assistantDiv;
+      if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, text, []);
+      else if (assistantDiv) assistantDiv.textContent = text;
+      renderedAssistantDiv = assistantDiv;
+      renderedAssistantText = text;
       return assistantDiv;
+    };
+    // 進行中パネルの状態表示は、出力・進行ログの受信が交互に届くたびに切り替わり、
+    // そのたびにパネル全体を描き直す。1秒に1回までにまとめ、残りは毎秒の確認で反映する。
+    let lastPhaseSyncAt = 0;
+    const syncExecutionPhase = () => {
+      const now = Date.now();
+      if (now - lastPhaseSyncAt < 1000) return;
+      lastPhaseSyncAt = now;
+      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
     };
     const refreshActivityStatus = (label = lastStatusText) => {
       lastStatusText = String(label || 'CLIを実行中...');
-      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
+      syncExecutionPhase();
       if (!activity.status) return;
       const elapsed = formatCliChatDuration(Date.now() - streamStartedAt);
       const idle = lastCliOutputAt
         ? '最終出力 ' + formatCliChatDuration(Date.now() - lastCliOutputAt) + '前'
         : 'まだ出力なし';
-      activity.status.textContent = `${lastStatusText}（経過 ${elapsed} / ${idle}）`;
+      const statusText = `${lastStatusText}（経過 ${elapsed} / ${idle}）`;
+      // 同じ文字列の再設定も画面全体の変更監視へ通知されるため、変わった時だけ書く。
+      if (activity.status.textContent !== statusText) activity.status.textContent = statusText;
     };
     const ensureActivityVisible = () => {
       const liveContainer = streamLiveContainer();
@@ -1222,6 +1244,32 @@
         if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
         else liveContainer.scrollTop = liveContainer.scrollHeight;
       }
+    };
+    // 受信は1秒に何十回も届くため、描画は一定間隔にまとめる。完了・中断時の最終描画は
+    // 待たずに直接行うので、ここでは途中経過の表示だけを扱う。
+    let streamPaintTimer = 0;
+    let streamPaintAssistant = false;
+    let streamPaintScroll = false;
+    const flushStreamPaint = () => {
+      streamPaintTimer = 0;
+      const paintAssistant = streamPaintAssistant;
+      const paintScroll = streamPaintScroll;
+      streamPaintAssistant = false;
+      streamPaintScroll = false;
+      if (paintAssistant) ensureAssistantVisible(fullText);
+      if (streamVisibleInCurrentChat()) ensureActivityVisible();
+      if (paintScroll) scrollStreamContainer();
+    };
+    const scheduleStreamPaint = ({ assistant = false, scroll = false } = {}) => {
+      if (assistant) streamPaintAssistant = true;
+      if (scroll) streamPaintScroll = true;
+      if (!streamPaintTimer) streamPaintTimer = setTimeout(flushStreamPaint, CLI_CHAT_STREAM_PAINT_INTERVAL_MS);
+    };
+    const cancelStreamPaint = () => {
+      if (streamPaintTimer) clearTimeout(streamPaintTimer);
+      streamPaintTimer = 0;
+      streamPaintAssistant = false;
+      streamPaintScroll = false;
     };
     const markCliOutput = (isText = false) => {
       lastCliOutputAt = Date.now();
@@ -1235,7 +1283,7 @@
       refreshActivityStatus(label);
       if (streamVisibleInCurrentChat()) {
         appendCliChatLog(activity.log, text);
-        ensureActivityVisible();
+        scheduleStreamPaint();
       }
     };
     const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
@@ -1257,6 +1305,7 @@
     };
     const activityTimer = setInterval(() => {
       if (maybeAbortIdleCliStream()) return;
+      syncExecutionPhase();
       if (!streamVisibleInCurrentChat()) return;
       if (fullText.trim()) ensureAssistantVisible(fullText);
       ensureActivityVisible();
@@ -1349,7 +1398,7 @@
                 : data.status === 'waiting' ? 'CLIからの応答を待っています...'
                   : String(data.status || 'CLIを実行中...'));
             refreshActivityStatus(nextStatus);
-            ensureActivityVisible();
+            scheduleStreamPaint();
           } else if (data.type === 'text_delta') {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
@@ -1357,9 +1406,7 @@
             refreshActivityStatus('CLIの出力を受信中...');
             fullText += chunk;
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
-            ensureAssistantVisible(fullText);
-            ensureActivityVisible();
-            scrollStreamContainer();
+            scheduleStreamPaint({ assistant: true, scroll: true });
           } else if (data.type === 'text_replace') {
             // 途中送信で文字が壊れていた場合、CLIが最後に返す完成テキストで本文を差し替える。
             const finalText = data.content == null ? '' : String(data.content);
@@ -1367,8 +1414,7 @@
             fullText = finalText;
             markCliOutput(true);
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
-            ensureAssistantVisible(fullText);
-            scrollStreamContainer();
+            scheduleStreamPaint({ assistant: true, scroll: true });
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
@@ -1377,14 +1423,14 @@
             const safeChunk = summarizeCliChatErrorDetail(chunk);
             if (safeChunk && streamVisibleInCurrentChat()) {
               appendCliChatLog(activity.log, safeChunk);
-              ensureActivityVisible();
+              scheduleStreamPaint();
             }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
           } else if (data.type === 'cli_activity') {
             markCliOutput();
             refreshActivityStatus('CLIが質問を処理中...');
-            ensureActivityVisible();
+            scheduleStreamPaint();
           } else if (data.type === 'cli_session_reset') {
             resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
           } else if (data.type === 'cli_session_update') {
@@ -1408,6 +1454,7 @@
           }
         }
       }
+      cancelStreamPaint();
       activity.wrapper.remove();
       if (!fullText.trim()) {
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
@@ -1437,6 +1484,7 @@
         saveStreamMessages().catch(() => {});
       }
     } catch (error) {
+      cancelStreamPaint();
       activity.wrapper.remove();
       if (error?.name === 'AbortError') {
         const abortedText = clientIdleAbortMessage
@@ -1497,6 +1545,7 @@
       }
     } finally {
       clearInterval(activityTimer);
+      cancelStreamPaint();
       if (activeCliChatStream?.restore === streamExecution?.restore) activeCliChatStream = null;
       activity.wrapper.remove();
       const interruptDraftId = String(streamExecution?.interruptDraftId || '');

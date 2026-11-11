@@ -146176,10 +146176,17 @@ function hideBoardNoteTab() {
   // グループボタン（ストローク/ライン/塗りつぶし）のアイコンを選択中メンバーへ追従させる。
   function _applyAnnMobileGroupIcon(button, group, member) {
     if (!button || !member) return;
+    // 変わらない時は書き換えない。このバーは更新のたびに呼ばれ、同じアイコンでも
+    // 書き換えるとツールバーのあふれ判定が「中身が変わった」と受け取って全ツールバーを
+    // 測り直し、その切替でまたこのバーが更新される無限ループになっていた（2026-11-12）。
     const iconSpan = button.querySelector('.cloud-mobile-icon');
-    if (iconSpan && typeof lucide === 'function') iconSpan.innerHTML = lucide(member.icon, 18);
+    if (iconSpan && typeof lucide === 'function' && iconSpan.dataset.annMobileIcon !== member.icon) {
+      iconSpan.innerHTML = lucide(member.icon, 18);
+      iconSpan.dataset.annMobileIcon = member.icon;
+    }
     const groupLabel = ANNOTATION_GROUP_LABELS[group] || '';
-    button.setAttribute('aria-label', groupLabel ? `${groupLabel}（${member.label}）` : member.label);
+    const ariaLabel = groupLabel ? `${groupLabel}（${member.label}）` : member.label;
+    if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
   }
 
   let _mainButton = null;
@@ -147562,8 +147569,10 @@ function hideBoardNoteTab() {
     document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', `${bottom}px`);
   }
 
+  // 同じ値の再設定も変更通知になり、ツールバーのあふれ判定を起こしてしまう。
+  // 変わる時だけ書く（あふれ判定と互いに起こし合う無限ループの防止）。
   function _setHidden(el, hidden) {
-    if (el) el.hidden = !!hidden;
+    if (el && el.hidden !== !!hidden) el.hidden = !!hidden;
   }
 
   function _hasVisibleInlineMobileMenu() {
@@ -147627,8 +147636,21 @@ function hideBoardNoteTab() {
 
   function _setDatasetFlag(name, enabled) {
     if (!document.body) return;
-    if (enabled) document.body.dataset[name] = '1';
-    else delete document.body.dataset[name];
+    if (enabled) {
+      if (document.body.dataset[name] !== '1') document.body.dataset[name] = '1';
+    } else if (name in document.body.dataset) {
+      delete document.body.dataset[name];
+    }
+  }
+
+  const _TOOLBAR_OVERFLOW_HIDDEN_CLASS = 'gb-tbo-hidden';
+  function _classWithoutToolbarOverflow(value) {
+    return String(value || '').split(/\s+/).filter(name => name && name !== _TOOLBAR_OVERFLOW_HIDDEN_CLASS).sort().join(' ');
+  }
+
+  function _isToolbarOverflowClassToggle(record) {
+    return record?.type === 'attributes' && record.attributeName === 'class'
+      && _classWithoutToolbarOverflow(record.oldValue) === _classWithoutToolbarOverflow(record.target?.getAttribute?.('class'));
   }
 
   function _scheduleRefresh() {
@@ -147677,18 +147699,26 @@ function hideBoardNoteTab() {
     });
     const mainViews = document.getElementById('main-views');
     if (mainViews) {
-      new MutationObserver(_scheduleRefresh).observe(mainViews, {
+      // ツールバーのあふれ判定は測り直しのたびに隠しクラスを外して付け直す。
+      // その出し入れだけでは更新しない（拾うとあふれ判定と互いに起こし合って止まらない）。
+      new MutationObserver((records) => {
+        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
+      }).observe(mainViews, {
         attributes: true,
         attributeFilter: ['style', 'class'],
+        attributeOldValue: true,
         subtree: true,
       });
     }
     const annToolbar = document.getElementById('ann-toolbar');
     if (annToolbar) {
       annToolbar.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
-      new MutationObserver(_scheduleRefresh).observe(annToolbar, {
+      new MutationObserver((records) => {
+        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
+      }).observe(annToolbar, {
         attributes: true,
         attributeFilter: ['class', 'style'],
+        attributeOldValue: true,
         subtree: true,
       });
     }
@@ -218229,6 +218259,29 @@ async function chatSend(options = {}) {
   let _autoScroll = true;
   let streamError = null;
   let streamCompleted = false;
+  // 受信のたびに回答全文を描き直すと、長い回答ほど画面全体が重くなる。途中経過は
+  // 一定間隔にまとめ、完了時は保留分を描き切ってから最終処理へ進む。中断・失敗時は
+  // 保留分を捨てる（後から発火して最終表示を上書きしないため）。
+  let streamPaintTimer = 0;
+  const paintAssistantStream = () => {
+    streamPaintTimer = 0;
+    if (!assistantDiv || !assistantDiv.isConnected) return;
+    if (typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
+    else { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
+    scrollStreamContainer();
+  };
+  const scheduleAssistantStreamPaint = () => {
+    if (!streamPaintTimer) streamPaintTimer = setTimeout(paintAssistantStream, 120);
+  };
+  const flushAssistantStreamPaint = () => {
+    if (!streamPaintTimer) return;
+    clearTimeout(streamPaintTimer);
+    paintAssistantStream();
+  };
+  const cancelAssistantStreamPaint = () => {
+    if (streamPaintTimer) clearTimeout(streamPaintTimer);
+    streamPaintTimer = 0;
+  };
   const _scrollHandler = () => {
     _autoScroll = _chatIsScrolledNearBottom(msgContainer);
   };
@@ -218369,9 +218422,7 @@ async function chatSend(options = {}) {
             // 発言の吹き出しを作った後に置き直し、思考内容を最新発言の後ろへ表示する。
             if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
             fullText += chunk;
-            if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
-            else if (assistantDiv) { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
-            scrollStreamContainer();
+            scheduleAssistantStreamPaint();
           } else if (data.type === 'thinking_delta') {
             appendLiveThinking(data.content, '思考中...');
           } else if (data.type === 'citation') {
@@ -218381,6 +218432,7 @@ async function chatSend(options = {}) {
             if (!assistantDiv || !assistantDiv.isConnected) {
               assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
             }
+            cancelAssistantStreamPaint();
             if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
             scrollStreamContainer();
           } else if (data.type === 'usage') {
@@ -218425,6 +218477,7 @@ async function chatSend(options = {}) {
     }
 
     if (streamError) throw streamError;
+    flushAssistantStreamPaint();
     streamCompleted = true;
 
     // アシスタントメッセージを記録 + 自動保存
@@ -218478,6 +218531,7 @@ async function chatSend(options = {}) {
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
     }
   } catch (e) {
+    cancelAssistantStreamPaint();
     if (!isCurrentStream()) return false;
     spinnerWrapper.remove();
     if (e?.name === 'AbortError') {
@@ -218536,6 +218590,7 @@ async function chatSend(options = {}) {
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
     }
   } finally {
+    cancelAssistantStreamPaint();
     spinnerWrapper.remove();
     const interruptDraftId = String(streamExecution?.interruptDraftId || '');
     const interruptedByDraft = !!interruptDraftId;
@@ -224593,6 +224648,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
   const CLI_CHAT_TRANSPORT_TIMEOUT_MS = 75000;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
+  // 受信中の途中経過を描く間隔。文字の流れは保ちつつ、受信ごとの全文描画を避ける。
+  const CLI_CHAT_STREAM_PAINT_INTERVAL_MS = 120;
   const CLI_CHAT_CONTINUE_MARKER = '[MELDEX_CONTINUE_NEEDED]';
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
   const CLI_CHAT_SESSION_STATE_PREFIX = 'chat-cli-session-state:v1:';
@@ -225771,23 +225828,43 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         .find(el => String(el.dataset.msgId || '') === assistantMessageId);
       return row?.querySelector?.('.chat-message-bubble') || null;
     };
+    // 回答は受信のたびに全文を描き直すため、同じ内容なら描き直さない。長い作業では
+    // 毎秒の確認と細かな受信ごとの全文描画が積み上がり、画面全体を重くしていた（2026-11-12）。
+    let renderedAssistantDiv = null;
+    let renderedAssistantText = '';
     const ensureAssistantVisible = (content = fullText) => {
-      if (!String(content || '').trim()) return null;
+      const text = String(content || '');
+      if (!text.trim()) return null;
       if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = findAssistantBubble();
       if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream('', renderOptions());
-      if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, String(content || ''), []);
-      else if (assistantDiv) assistantDiv.textContent = String(content || '');
+      if (assistantDiv && assistantDiv === renderedAssistantDiv && renderedAssistantText === text
+          && assistantDiv.firstChild) return assistantDiv;
+      if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, text, []);
+      else if (assistantDiv) assistantDiv.textContent = text;
+      renderedAssistantDiv = assistantDiv;
+      renderedAssistantText = text;
       return assistantDiv;
+    };
+    // 進行中パネルの状態表示は、出力・進行ログの受信が交互に届くたびに切り替わり、
+    // そのたびにパネル全体を描き直す。1秒に1回までにまとめ、残りは毎秒の確認で反映する。
+    let lastPhaseSyncAt = 0;
+    const syncExecutionPhase = () => {
+      const now = Date.now();
+      if (now - lastPhaseSyncAt < 1000) return;
+      lastPhaseSyncAt = now;
+      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
     };
     const refreshActivityStatus = (label = lastStatusText) => {
       lastStatusText = String(label || 'CLIを実行中...');
-      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
+      syncExecutionPhase();
       if (!activity.status) return;
       const elapsed = formatCliChatDuration(Date.now() - streamStartedAt);
       const idle = lastCliOutputAt
         ? '最終出力 ' + formatCliChatDuration(Date.now() - lastCliOutputAt) + '前'
         : 'まだ出力なし';
-      activity.status.textContent = `${lastStatusText}（経過 ${elapsed} / ${idle}）`;
+      const statusText = `${lastStatusText}（経過 ${elapsed} / ${idle}）`;
+      // 同じ文字列の再設定も画面全体の変更監視へ通知されるため、変わった時だけ書く。
+      if (activity.status.textContent !== statusText) activity.status.textContent = statusText;
     };
     const ensureActivityVisible = () => {
       const liveContainer = streamLiveContainer();
@@ -225799,6 +225876,32 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
         else liveContainer.scrollTop = liveContainer.scrollHeight;
       }
+    };
+    // 受信は1秒に何十回も届くため、描画は一定間隔にまとめる。完了・中断時の最終描画は
+    // 待たずに直接行うので、ここでは途中経過の表示だけを扱う。
+    let streamPaintTimer = 0;
+    let streamPaintAssistant = false;
+    let streamPaintScroll = false;
+    const flushStreamPaint = () => {
+      streamPaintTimer = 0;
+      const paintAssistant = streamPaintAssistant;
+      const paintScroll = streamPaintScroll;
+      streamPaintAssistant = false;
+      streamPaintScroll = false;
+      if (paintAssistant) ensureAssistantVisible(fullText);
+      if (streamVisibleInCurrentChat()) ensureActivityVisible();
+      if (paintScroll) scrollStreamContainer();
+    };
+    const scheduleStreamPaint = ({ assistant = false, scroll = false } = {}) => {
+      if (assistant) streamPaintAssistant = true;
+      if (scroll) streamPaintScroll = true;
+      if (!streamPaintTimer) streamPaintTimer = setTimeout(flushStreamPaint, CLI_CHAT_STREAM_PAINT_INTERVAL_MS);
+    };
+    const cancelStreamPaint = () => {
+      if (streamPaintTimer) clearTimeout(streamPaintTimer);
+      streamPaintTimer = 0;
+      streamPaintAssistant = false;
+      streamPaintScroll = false;
     };
     const markCliOutput = (isText = false) => {
       lastCliOutputAt = Date.now();
@@ -225812,7 +225915,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       refreshActivityStatus(label);
       if (streamVisibleInCurrentChat()) {
         appendCliChatLog(activity.log, text);
-        ensureActivityVisible();
+        scheduleStreamPaint();
       }
     };
     const cliResponseIdleMs = () => Date.now() - (lastCliTextAt || streamStartedAt);
@@ -225834,6 +225937,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     };
     const activityTimer = setInterval(() => {
       if (maybeAbortIdleCliStream()) return;
+      syncExecutionPhase();
       if (!streamVisibleInCurrentChat()) return;
       if (fullText.trim()) ensureAssistantVisible(fullText);
       ensureActivityVisible();
@@ -225926,7 +226030,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
                 : data.status === 'waiting' ? 'CLIからの応答を待っています...'
                   : String(data.status || 'CLIを実行中...'));
             refreshActivityStatus(nextStatus);
-            ensureActivityVisible();
+            scheduleStreamPaint();
           } else if (data.type === 'text_delta') {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
@@ -225934,9 +226038,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             refreshActivityStatus('CLIの出力を受信中...');
             fullText += chunk;
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
-            ensureAssistantVisible(fullText);
-            ensureActivityVisible();
-            scrollStreamContainer();
+            scheduleStreamPaint({ assistant: true, scroll: true });
           } else if (data.type === 'text_replace') {
             // 途中送信で文字が壊れていた場合、CLIが最後に返す完成テキストで本文を差し替える。
             const finalText = data.content == null ? '' : String(data.content);
@@ -225944,8 +226046,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             fullText = finalText;
             markCliOutput(true);
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
-            ensureAssistantVisible(fullText);
-            scrollStreamContainer();
+            scheduleStreamPaint({ assistant: true, scroll: true });
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
@@ -225954,14 +226055,14 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             const safeChunk = summarizeCliChatErrorDetail(chunk);
             if (safeChunk && streamVisibleInCurrentChat()) {
               appendCliChatLog(activity.log, safeChunk);
-              ensureActivityVisible();
+              scheduleStreamPaint();
             }
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
           } else if (data.type === 'cli_activity') {
             markCliOutput();
             refreshActivityStatus('CLIが質問を処理中...');
-            ensureActivityVisible();
+            scheduleStreamPaint();
           } else if (data.type === 'cli_session_reset') {
             resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
           } else if (data.type === 'cli_session_update') {
@@ -225985,6 +226086,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           }
         }
       }
+      cancelStreamPaint();
       activity.wrapper.remove();
       if (!fullText.trim()) {
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
@@ -226014,6 +226116,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         saveStreamMessages().catch(() => {});
       }
     } catch (error) {
+      cancelStreamPaint();
       activity.wrapper.remove();
       if (error?.name === 'AbortError') {
         const abortedText = clientIdleAbortMessage
@@ -226074,6 +226177,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       }
     } finally {
       clearInterval(activityTimer);
+      cancelStreamPaint();
       if (activeCliChatStream?.restore === streamExecution?.restore) activeCliChatStream = null;
       activity.wrapper.remove();
       const interruptDraftId = String(streamExecution?.interruptDraftId || '');

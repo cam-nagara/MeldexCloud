@@ -32880,6 +32880,12 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   to { --meldex-ring-angle: 360deg; }
 }
 
+/* 進行中パネルのリングは長時間回り続けるため、画面側の再計算が要らない回転で動かす
+   （角度の変数を動かす方式は毎フレーム再描画を伴う）。見た目は同じ。 */
+@keyframes meldex-segmented-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes meldex-progress-slide {
   from { transform: translateX(-130%); }
   to { transform: translateX(330%); }
@@ -32894,7 +32900,7 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   background: repeating-conic-gradient(from var(--meldex-ring-angle), var(--meldex-progress-accent) 0 18deg, transparent 18deg 32deg);
   -webkit-mask: radial-gradient(circle, transparent 0 48%, #000 50% 100%);
   mask: radial-gradient(circle, transparent 0 48%, #000 50% 100%);
-  animation: meldex-segmented-ring-rotate .9s linear infinite;
+  animation: meldex-segmented-ring-spin .9s linear infinite;
 }
 
 .meldex-segmented-ring--small { width: 16px; height: 16px; }

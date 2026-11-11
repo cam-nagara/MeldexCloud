@@ -136,8 +136,9 @@
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
     if (toolbar.lastElementChild !== more) toolbar.appendChild(more);
     const before = entry.overflow;
-    Array.from(toolbar.children).forEach(el => el.classList.remove(hiddenClass));
-    more.hidden = true;
+    // 付いていないクラスの削除も変更通知になり、他の監視を起こすため、付いている時だけ外す。
+    Array.from(toolbar.children).forEach(el => { if (el.classList.contains(hiddenClass)) el.classList.remove(hiddenClass); });
+    if (!more.hidden) more.hidden = true;
     const items = Array.from(toolbar.children).filter(el => el !== more && !el.hidden && getComputedStyle(el).display !== 'none');
     entry.sources = new Map(items.map(el => [el, controls(el)]));
     const candidates = items.filter(el => entry.sources.get(el).length && !matches(el, entry.keep) &&
@@ -168,7 +169,7 @@
       }
     }
     entry.overflow = items.filter(el => removed.has(el));
-    more.hidden = entry.overflow.length === 0;
+    if (more.hidden !== (entry.overflow.length === 0)) more.hidden = entry.overflow.length === 0;
     if (hadMoreFocus && !more.hidden) more.focus({ preventScroll: true });
     if (active === entry && (before.length !== entry.overflow.length || before.some((el, i) => el !== entry.overflow[i]))) close(true);
     if (active === entry) entry.popup.querySelectorAll('.gb-tbo-row').forEach(row => {

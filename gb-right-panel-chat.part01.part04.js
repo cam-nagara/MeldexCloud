@@ -511,6 +511,29 @@ async function chatSend(options = {}) {
   let _autoScroll = true;
   let streamError = null;
   let streamCompleted = false;
+  // 受信のたびに回答全文を描き直すと、長い回答ほど画面全体が重くなる。途中経過は
+  // 一定間隔にまとめ、完了時は保留分を描き切ってから最終処理へ進む。中断・失敗時は
+  // 保留分を捨てる（後から発火して最終表示を上書きしないため）。
+  let streamPaintTimer = 0;
+  const paintAssistantStream = () => {
+    streamPaintTimer = 0;
+    if (!assistantDiv || !assistantDiv.isConnected) return;
+    if (typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
+    else { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
+    scrollStreamContainer();
+  };
+  const scheduleAssistantStreamPaint = () => {
+    if (!streamPaintTimer) streamPaintTimer = setTimeout(paintAssistantStream, 120);
+  };
+  const flushAssistantStreamPaint = () => {
+    if (!streamPaintTimer) return;
+    clearTimeout(streamPaintTimer);
+    paintAssistantStream();
+  };
+  const cancelAssistantStreamPaint = () => {
+    if (streamPaintTimer) clearTimeout(streamPaintTimer);
+    streamPaintTimer = 0;
+  };
   const _scrollHandler = () => {
     _autoScroll = _chatIsScrolledNearBottom(msgContainer);
   };

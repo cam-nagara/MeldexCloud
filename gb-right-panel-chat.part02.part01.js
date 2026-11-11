@@ -78,9 +78,7 @@
             // 発言の吹き出しを作った後に置き直し、思考内容を最新発言の後ろへ表示する。
             if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
             fullText += chunk;
-            if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
-            else if (assistantDiv) { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
-            scrollStreamContainer();
+            scheduleAssistantStreamPaint();
           } else if (data.type === 'thinking_delta') {
             appendLiveThinking(data.content, '思考中...');
           } else if (data.type === 'citation') {
@@ -90,6 +88,7 @@
             if (!assistantDiv || !assistantDiv.isConnected) {
               assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
             }
+            cancelAssistantStreamPaint();
             if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
             scrollStreamContainer();
           } else if (data.type === 'usage') {
@@ -134,6 +133,7 @@
     }
 
     if (streamError) throw streamError;
+    flushAssistantStreamPaint();
     streamCompleted = true;
 
     // アシスタントメッセージを記録 + 自動保存
@@ -187,6 +187,7 @@
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
     }
   } catch (e) {
+    cancelAssistantStreamPaint();
     if (!isCurrentStream()) return false;
     spinnerWrapper.remove();
     if (e?.name === 'AbortError') {
@@ -245,6 +246,7 @@
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
     }
   } finally {
+    cancelAssistantStreamPaint();
     spinnerWrapper.remove();
     const interruptDraftId = String(streamExecution?.interruptDraftId || '');
     const interruptedByDraft = !!interruptDraftId;

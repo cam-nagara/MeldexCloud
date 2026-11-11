@@ -181,8 +181,10 @@
     document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', `${bottom}px`);
   }
 
+  // 同じ値の再設定も変更通知になり、ツールバーのあふれ判定を起こしてしまう。
+  // 変わる時だけ書く（あふれ判定と互いに起こし合う無限ループの防止）。
   function _setHidden(el, hidden) {
-    if (el) el.hidden = !!hidden;
+    if (el && el.hidden !== !!hidden) el.hidden = !!hidden;
   }
 
   function _hasVisibleInlineMobileMenu() {
@@ -246,8 +248,21 @@
 
   function _setDatasetFlag(name, enabled) {
     if (!document.body) return;
-    if (enabled) document.body.dataset[name] = '1';
-    else delete document.body.dataset[name];
+    if (enabled) {
+      if (document.body.dataset[name] !== '1') document.body.dataset[name] = '1';
+    } else if (name in document.body.dataset) {
+      delete document.body.dataset[name];
+    }
+  }
+
+  const _TOOLBAR_OVERFLOW_HIDDEN_CLASS = 'gb-tbo-hidden';
+  function _classWithoutToolbarOverflow(value) {
+    return String(value || '').split(/\s+/).filter(name => name && name !== _TOOLBAR_OVERFLOW_HIDDEN_CLASS).sort().join(' ');
+  }
+
+  function _isToolbarOverflowClassToggle(record) {
+    return record?.type === 'attributes' && record.attributeName === 'class'
+      && _classWithoutToolbarOverflow(record.oldValue) === _classWithoutToolbarOverflow(record.target?.getAttribute?.('class'));
   }
 
   function _scheduleRefresh() {
@@ -296,18 +311,26 @@
     });
     const mainViews = document.getElementById('main-views');
     if (mainViews) {
-      new MutationObserver(_scheduleRefresh).observe(mainViews, {
+      // ツールバーのあふれ判定は測り直しのたびに隠しクラスを外して付け直す。
+      // その出し入れだけでは更新しない（拾うとあふれ判定と互いに起こし合って止まらない）。
+      new MutationObserver((records) => {
+        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
+      }).observe(mainViews, {
         attributes: true,
         attributeFilter: ['style', 'class'],
+        attributeOldValue: true,
         subtree: true,
       });
     }
     const annToolbar = document.getElementById('ann-toolbar');
     if (annToolbar) {
       annToolbar.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
-      new MutationObserver(_scheduleRefresh).observe(annToolbar, {
+      new MutationObserver((records) => {
+        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
+      }).observe(annToolbar, {
         attributes: true,
         attributeFilter: ['class', 'style'],
+        attributeOldValue: true,
         subtree: true,
       });
     }

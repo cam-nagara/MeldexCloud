@@ -142,13 +142,28 @@
     });
   }
 
+  const TRAY_POSITION_SELECTOR = '.gb-dock-fixed-right, .gb-dock-bar-right, .annotation-fab, .gb-modal-footer, .gb-modal-shell-footer, [data-modal-footer], .gb-confirm-actions';
+  function _nodeAffectsTrayPosition(node) {
+    return node?.nodeType === 1 && (node.matches(TRAY_POSITION_SELECTOR) || !!node.querySelector(TRAY_POSITION_SELECTOR));
+  }
+
+  function _recordAffectsTrayPosition(record) {
+    return !!record.target?.closest?.('.gb-dock-fixed-right')
+      || Array.prototype.some.call(record.addedNodes, _nodeAffectsTrayPosition)
+      || Array.prototype.some.call(record.removedNodes, _nodeAffectsTrayPosition);
+  }
+
   function _watchTrayLayout() {
     const root = document.getElementById('gb-layout-root');
     if (root === trayLayoutRoot) return;
     trayLayoutObserver?.disconnect();
     trayLayoutRoot = root;
     if (!root) return;
-    trayLayoutObserver ||= new MutationObserver(_scheduleTrayPosition);
+    // 位置に関わるのは右レールと右下の操作ボタンの出入りだけ。チャットの受信表示や
+    // シートの描画のたびに測り直すと、それだけで画面全体の再計算が毎フレーム走る。
+    trayLayoutObserver ||= new MutationObserver(function (records) {
+      if (records.some(_recordAffectsTrayPosition)) _scheduleTrayPosition();
+    });
     // 開閉でレールDOMが置き換わる。寸法だけの変更は共通リサイズ通知で追従する。
     trayLayoutObserver.observe(root, { childList: true, subtree: true });
   }

@@ -149,10 +149,17 @@
   // グループボタン（ストローク/ライン/塗りつぶし）のアイコンを選択中メンバーへ追従させる。
   function _applyAnnMobileGroupIcon(button, group, member) {
     if (!button || !member) return;
+    // 変わらない時は書き換えない。このバーは更新のたびに呼ばれ、同じアイコンでも
+    // 書き換えるとツールバーのあふれ判定が「中身が変わった」と受け取って全ツールバーを
+    // 測り直し、その切替でまたこのバーが更新される無限ループになっていた（2026-11-12）。
     const iconSpan = button.querySelector('.cloud-mobile-icon');
-    if (iconSpan && typeof lucide === 'function') iconSpan.innerHTML = lucide(member.icon, 18);
+    if (iconSpan && typeof lucide === 'function' && iconSpan.dataset.annMobileIcon !== member.icon) {
+      iconSpan.innerHTML = lucide(member.icon, 18);
+      iconSpan.dataset.annMobileIcon = member.icon;
+    }
     const groupLabel = ANNOTATION_GROUP_LABELS[group] || '';
-    button.setAttribute('aria-label', groupLabel ? `${groupLabel}（${member.label}）` : member.label);
+    const ariaLabel = groupLabel ? `${groupLabel}（${member.label}）` : member.label;
+    if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
   }
 
   let _mainButton = null;
