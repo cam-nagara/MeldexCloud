@@ -100,7 +100,20 @@
     return exactMatch.length ? exactMatch : chooseUnique(byName);
   }
 
-  async function _workspaceRoots() {
+  // 保存先の一覧は、リンクの確認1件ごとに3回ずつ取り直していた。短い間だけ使い回す。
+  const WORKSPACE_ROOTS_REUSE_MS = 10000;
+  let _workspaceRootsCache = null;
+
+  function _workspaceRoots() {
+    const now = Date.now();
+    if (_workspaceRootsCache && now - _workspaceRootsCache.at < WORKSPACE_ROOTS_REUSE_MS) return _workspaceRootsCache.promise;
+    const promise = _loadWorkspaceRoots();
+    _workspaceRootsCache = { at: now, promise };
+    promise.catch(() => { if (_workspaceRootsCache?.promise === promise) _workspaceRootsCache = null; });
+    return promise;
+  }
+
+  async function _loadWorkspaceRoots() {
     if (typeof apiFetch !== 'function') return [];
     const roots = [];
     const addRoot = (kind, payload) => {
@@ -186,10 +199,32 @@
     }
   }
 
-  async function _resolveWorkspaceTarget(target) {
+  // 裸書きリンクの実在確認では、同じ候補パスを別のリンクでも何度も問い合わせていた
+  // （拡張子違い・ソースフォルダ違いで1件あたり最大百通り近く）。結果を短い間だけ共有する。
+  // クリックで開く時は使い回さず、その場で確かめる。
+  const CANDIDATE_CHECK_REUSE_MS = 15000;
+  const CANDIDATE_CHECK_CACHE_LIMIT = 2000;
+  const _candidateChecks = new Map();
+
+  function _checkWorkspaceCandidateReused(cleanPath) {
+    const key = String(cleanPath || '').replace(/\\/g, '/').toLowerCase();
+    const now = Date.now();
+    const cached = _candidateChecks.get(key);
+    if (cached && now - cached.at < CANDIDATE_CHECK_REUSE_MS) return cached.promise;
+    if (_candidateChecks.size >= CANDIDATE_CHECK_CACHE_LIMIT) {
+      const oldest = _candidateChecks.keys().next().value;
+      if (oldest !== undefined) _candidateChecks.delete(oldest);
+    }
+    const promise = _checkWorkspaceCandidate(cleanPath);
+    _candidateChecks.set(key, { at: now, promise });
+    return promise;
+  }
+
+  async function _resolveWorkspaceTarget(target, options = {}) {
     const candidates = await _workspacePathCandidates(target);
+    const check = options.reuseChecks ? _checkWorkspaceCandidateReused : _checkWorkspaceCandidate;
     for (const candidate of candidates) {
-      const checked = await _checkWorkspaceCandidate(candidate);
+      const checked = await check(candidate);
       if (checked.exists) return { path: candidate, type: checked.type, exists: true };
     }
     return { path: candidates[0] || target, type: '', exists: false };
@@ -283,6 +318,88 @@
     });
   }
 
+  // 実在確認は同時に2件までにする。長い会話を開くと数十件が一斉に走り、
+  // 本体の処理を占有して画面全体が重くなっていた。
+  const BARE_LINK_CHECK_CONCURRENCY = 2;
+  const _bareLinkCheckQueue = [];
+  let _bareLinkChecksRunning = 0;
+
+  function _runQueuedBareLinkCheck(task) {
+    return new Promise((resolve, reject) => {
+      _bareLinkCheckQueue.push({ task, resolve, reject });
+      _drainBareLinkChecks();
+    });
+  }
+
+  function _drainBareLinkChecks() {
+    while (_bareLinkChecksRunning < BARE_LINK_CHECK_CONCURRENCY && _bareLinkCheckQueue.length) {
+      const { task, resolve, reject } = _bareLinkCheckQueue.shift();
+      _bareLinkChecksRunning += 1;
+      Promise.resolve().then(task).then(resolve, reject).finally(() => {
+        _bareLinkChecksRunning -= 1;
+        _drainBareLinkChecks();
+      });
+    }
+  }
+
+  // 会話を開いた直後は発言ごとに確認が呼ばれる。少し待って、その間に集まった
+  // リンクの候補をすべて1回の問い合わせで確かめる（/api/paths/exist）。使えない環境
+  // （クラウド版など）では1件ずつの確認へ戻る。
+  const BARE_LINK_BATCH_DELAY_MS = 60;
+  const BARE_LINK_BATCH_CHUNK = 400;
+  let _bareLinkBatch = null;
+  let _bareLinkBatchUnsupported = false;
+
+  async function _pathsExistBatch(paths) {
+    const exists = new Set();
+    for (let index = 0; index < paths.length; index += BARE_LINK_BATCH_CHUNK) {
+      const chunk = paths.slice(index, index + BARE_LINK_BATCH_CHUNK);
+      const headers = { 'Content-Type': 'application/json' };
+      if (typeof _authToken !== 'undefined' && _authToken) headers.Authorization = 'Bearer ' + _authToken;
+      const base = typeof API_BASE === 'string' ? API_BASE : '/api';
+      // 書き込み用の送信関数を通すと、成功のたびに画面側の読み込みキャッシュが捨てられるため直接送る。
+      const response = await fetch(base + '/paths/exist', { method: 'POST', headers, body: JSON.stringify({ paths: chunk }) });
+      if (!response.ok) throw new Error('paths-exist-unavailable');
+      const data = await response.json();
+      if (!data || typeof data.results !== 'object') throw new Error('paths-exist-unavailable');
+      chunk.forEach(path => { if (data.results[path] === true) exists.add(path); });
+    }
+    return exists;
+  }
+
+  async function _flushBareLinkBatch(batch) {
+    const entries = [...batch.entries()];
+    try {
+      if (_bareLinkBatchUnsupported) throw new Error('paths-exist-unavailable');
+      const candidateLists = await Promise.all(entries.map(([target]) => _workspacePathCandidates(_splitTargetAnchor(target).path)));
+      const exists = await _pathsExistBatch([...new Set(candidateLists.flat())]);
+      entries.forEach(([, waiter], index) => waiter.resolve({ exists: candidateLists[index].some(path => exists.has(path)) }));
+    } catch (_error) {
+      _bareLinkBatchUnsupported = true;
+      entries.forEach(([target, waiter]) => {
+        _runQueuedBareLinkCheck(() => _resolveWorkspaceTarget(_splitTargetAnchor(target).path, { reuseChecks: true }))
+          .then(waiter.resolve, waiter.reject);
+      });
+    }
+  }
+
+  function _checkBareLinkTarget(target) {
+    if (!_bareLinkBatch) {
+      const batch = new Map();
+      _bareLinkBatch = batch;
+      global.setTimeout(() => {
+        if (_bareLinkBatch === batch) _bareLinkBatch = null;
+        _flushBareLinkBatch(batch);
+      }, BARE_LINK_BATCH_DELAY_MS);
+    }
+    const existing = _bareLinkBatch.get(target);
+    if (existing) return existing.promise;
+    const waiter = {};
+    waiter.promise = new Promise((resolve, reject) => { waiter.resolve = resolve; waiter.reject = reject; });
+    _bareLinkBatch.set(target, waiter);
+    return waiter.promise;
+  }
+
   function _verifyBareWorkspaceLinks(root) {
     if (!root?.querySelectorAll || typeof apiFetch !== 'function') return;
     const links = [...root.querySelectorAll('a.chat-md-link[data-chat-link-bare="true"]')];
@@ -295,7 +412,7 @@
         return;
       }
       if (cached !== undefined) return;
-      const pending = _resolveWorkspaceTarget(_splitTargetAnchor(target).path)
+      const pending = _checkBareLinkTarget(target)
         .then(resolved => {
           _rememberBareLinkExistence(target, !!resolved?.exists);
           if (!resolved?.exists) _demoteBareWorkspaceLink(target);

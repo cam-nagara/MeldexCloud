@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.458-978fb536bd28167b230a",
+  "version": "0.7.459-63da16c763ae0f4c2184",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -45,7 +45,7 @@
     },
     {
       "path": "dropbox-session-bridge.html",
-      "sha256": "94339c5684e3a5db04a50c0f1affb057cd9c415a4fcb5fb1415ce7bb17fdd669"
+      "sha256": "0d51af621c5d3af37e175733b6fea4a1108f80c216f2e89913b614c306f11317"
     },
     {
       "path": "dropbox-session-bridge.js",
@@ -249,7 +249,7 @@
     },
     {
       "path": "gb-autolink.js",
-      "sha256": "cc0699dde0c5982b251cfbd71a934fe21216512fe9ffb1f48f9874866bc79cb0"
+      "sha256": "a1799f1e07f0c35b8258b1c50403b2e680ff5d1411a8530eb6fd96d0f7cf8158"
     },
     {
       "path": "gb-backlinks.js",
@@ -661,7 +661,7 @@
     },
     {
       "path": "gb-chat-markdown.part02.js",
-      "sha256": "64ce4662039d9b4b6a31454f6192f2163fc52c7ba1261b8cf950663d0a55006b"
+      "sha256": "d76cd55c1845d4ff1b83dce5f34f399c1278a5c8fa324687fdf26991e722ca37"
     },
     {
       "path": "gb-chat-polls.css",
@@ -821,7 +821,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "a96585e2530e1e0ca02c68ac1c1602ce3c670e18234d663cd825d45ae6f9447b"
+      "sha256": "6ee60fcba721898ecbd0a51d8bca4cf209f182e7fe8e2fc64aee879f03aa0b6e"
     },
     {
       "path": "gb-color-palette.js",
@@ -3841,7 +3841,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "2c6f62509bc58b52fbc0c3cb9f21d8400b07c2e6c459cb9f0f279f0c752ed6f6"
+      "sha256": "2c9bb9da871bce9dca093ff952e01e2b9109ef368bf5af7f3face483e183e5c2"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3853,15 +3853,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "8589e731e762522fd362cee7bf60edb48a2f35ec5389a7685ad3e77491d5afe4"
+      "sha256": "36474827056d455e3098b18cfa68b2881baeb49d5d61d427678524c74d827839"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "2a225dbbe00c1b5db2eaa607c324a43e73fb91e2f8b500665a4141a484c4f70b"
+      "sha256": "81d4f06e082a51022c6ac1085582a1664fcb37038ebd1acbd8d3772aa422178d"
     },
     {
       "path": "manual.html",
-      "sha256": "01fc911fa67eeae06a3dfb61b4b00e268aa5d5472fcc7e7628eada4add09ba0c"
+      "sha256": "b55d881671bf1accd093a19fcb5067371e176f1eaaee5b7c4af14e3fee239c1e"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3901,7 +3901,7 @@
     },
     {
       "path": "meldex-cloud-runtime-05.js",
-      "sha256": "582dbb085e147ed8d13dceeaf32883298cd37ede2128a127d40d8d827300e793"
+      "sha256": "78265c2ecd83c2ef22bff0cd719c698e0d7e9c41efc7a972b3943a36a322c6bd"
     },
     {
       "path": "meldex-cloud-runtime-06.js",
@@ -3977,7 +3977,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "bb2e32210511c814784c1062da91c32d838c8697761faa4408af29ccb49dd5aa"
+      "sha256": "5cb32df263c391e87d776b3a99e0baf49575c26ccd36373304b6856c9e4562a4"
     },
     {
       "path": "Meldex.ico",
@@ -4145,7 +4145,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "e9cd4f04fdafa47a1909dd7584255a7a37b752a86f34056806b36ce9f27e868f"
+      "sha256": "bf8e3aec2d489778ec64253513b9146d57eb599a9b3c9fd4a0ef0a273e8d8e53"
     },
     {
       "path": "public-legal.css",
@@ -4193,7 +4193,7 @@
     },
     {
       "path": "quick-memo.html",
-      "sha256": "79805d3fd447b1b37b1083de4e9af35b585861ad622c3f01e6d9c75571564149"
+      "sha256": "e0a1a0b3ac57d46a6be4284124854fa9216588573c8af8d2f4644711090c4e2f"
     },
     {
       "path": "quick-memo.js",
@@ -4353,7 +4353,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "27982df0f04b2c5c41303a55a8e619afc61c02f9eb1cf69df3541f7ece8716af"
+      "sha256": "1294eed8856331eea290e712966ddc5c95cb4ae69b71e6113433f3d67d9bc7ba"
     },
     {
       "path": "viewer-annotation-legacy.js",
@@ -4425,7 +4425,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "dd98e752db8e8cabdcd818e18d9a04f381b740aae1cc2446d8d80d63946ece29"
+      "sha256": "65b61a10dbec2954844cab3a5053c5b1abe91fbb5bf473325c4fc82431473f3d"
     },
     {
       "path": "webclip-inbox.css",

@@ -143,6 +143,17 @@ const MeldexAutoLink = (() => {
       }));
   }
 
+  // 辞書の中身の比較用。同じ配列を何度も比べるため結果を覚えておく。
+  const _dictSignatures = new WeakMap();
+  function _dictSignature(entries) {
+    if (!Array.isArray(entries)) return '';
+    if (_dictSignatures.has(entries)) return _dictSignatures.get(entries);
+    let signature = '';
+    try { signature = JSON.stringify(entries); } catch { signature = String(Math.random()); }
+    _dictSignatures.set(entries, signature);
+    return signature;
+  }
+
   async function loadDict(workFolder) {
     const seq = ++_dictLoadSeq;
     const scope = _normalizeDictScope(workFolder);
@@ -162,9 +173,13 @@ const MeldexAutoLink = (() => {
       const data = await apiFetch(url);
       if (seq === _dictLoadSeq) {
         const next = _normalizeDictEntries(data.entries);
+        // 中身も範囲も変わらない読み直しでは通知しない。通知は開いているファイルの
+        // 再読み込みを起こし、シートの再読み込みはまた辞書の読み直しを予約するため、
+        // 毎回通知すると数秒おきに辞書の作り直しとシートの再描画が止まらなくなっていた。
+        const changed = scope !== _dictScope || _dictSignature(next) !== _dictSignature(_linkDict);
         _dictScope = scope;
         _linkDict = next;
-        _notifyDictChanged(scope);
+        if (changed) _notifyDictChanged(scope);
       }
     } catch {
       // 一時的な取得失敗では既存辞書を保持する。同じ作業範囲の再読込失敗なら空にしない。
