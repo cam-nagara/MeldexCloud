@@ -13155,35 +13155,239 @@ const GBLayout = (() => {
     return Number(targetNode?.defaultPopupWidth || 0) > 0;
   }
 
+  // ==== 固定サイドバー（フォルダツリー・右サイドバー・チャット）の幅 ====
+  // 幅は親の分割に対する比率で持っているため、チャットの開閉などで親の幅が変わると
+  // 開き直した時の幅がばらつき、極端に狭く開くことがあった。閉じる時の実際の幅（px）を
+  // 覚えて開く時に戻し、使える範囲（最低幅〜画面の45%）に収める。
+  const _FIXED_DOCK_ROLES = ['left-sidebar', 'right-sidebar', 'chat-sidebar'];
+  // 幅はレールを含む。フォルダツリーは名前が読める幅、チャットは発言が読める幅を下限にする。
+  const _FIXED_DOCK_MIN_PX = { 'left-sidebar': 260, 'right-sidebar': 280, 'chat-sidebar': 320 };
+  const _FIXED_DOCK_DEFAULT_PX = { 'left-sidebar': 300, 'right-sidebar': 360, 'chat-sidebar': 400 };
+  const _FIXED_DOCK_MAX_FRACTION = 0.45;
+  let _fixedDockWidthsNormalized = false;
+  const _SPLIT_HANDLE_PX = 4;
+  const _RAIL_PX = 32;
+
+  function _isFixedDockRole(role) {
+    return _FIXED_DOCK_ROLES.includes(role);
+  }
+
+  // 描画される幅を配置データから求める（CSSの配置と同じ規則）。レール（32px）を描くのは
+  // 左右の固定サイドバーと、複数の内容を重ねた枠だけ。中身が1つの枠はレールを描かない。
+  function _allocatedWidths() {
+    const widths = new Map();
+    const available = Math.max(1, _layoutEl?.clientWidth || window.innerWidth || 1200);
+    // renderSplit と同じく、チャット欄とサブパネル列は閉じると幅0で描かれる。
+    const collapsedWidth = (node) => (['chat-sidebar', 'subpanel-workspace'].includes(node?.meldexRole) ? 0 : _RAIL_PX);
+    const visit = (node, width) => {
+      if (!node) return;
+      widths.set(node.id, width);
+      if (node.type === 'panelset') {
+        if (node.collapsed) return;
+        const rail = (node.meldexRole === 'left-sidebar' || node.meldexRole === 'right-sidebar'
+          || (Array.isArray(node.groups) && node.groups.length > 1)) ? _RAIL_PX : 0;
+        const group = node.groups?.find(item => item.id === node.activeGroupId) || node.groups?.[0];
+        visit(group?.root, Math.max(0, width - rail));
+        return;
+      }
+      if (node.type !== 'split' || !Array.isArray(node.children) || node.children.length !== 2) return;
+      if (node.direction !== 'horizontal') {
+        node.children.forEach(child => visit(child, width));
+        return;
+      }
+      const space = Math.max(0, width - _SPLIT_HANDLE_PX);
+      const [a, b] = node.children;
+      const first = a.collapsed ? collapsedWidth(a)
+        : b.collapsed ? space - collapsedWidth(b)
+          : space * Number(node.ratio || 0.5);
+      visit(a, first);
+      visit(b, space - first);
+    };
+    visit(_root, available);
+    return { widths, available };
+  }
+
+  function _fixedDockLimits(dock, available) {
+    const min = _FIXED_DOCK_MIN_PX[dock?.meldexRole] || 220;
+    const max = Math.max(min, Math.floor(available * _FIXED_DOCK_MAX_FRACTION));
+    return { min, max };
+  }
+
+  // 固定サイドバーの幅を px で指定する（直接の親の水平分割の比率で表す）。
+  function _setFixedDockPx(dock, px, allocation) {
+    const parent = typeof findParent === 'function' ? findParent(_root, dock.id)?.node : null;
+    if (!parent || parent.type !== 'split' || parent.direction !== 'horizontal' || !Array.isArray(parent.children)) return false;
+    const index = parent.children.indexOf(dock);
+    if (index < 0 || parent.children[1 - index]?.collapsed) return false;
+    const { widths } = allocation || _allocatedWidths();
+    const space = Number(widths.get(parent.id) || 0) - _SPLIT_HANDLE_PX;
+    if (!(space > 0)) return false;
+    const fraction = Math.max(0.05, Math.min(0.95, px / space));
+    parent.ratio = index === 0 ? fraction : 1 - fraction;
+    return true;
+  }
+
+  // 閉じる直前の幅を覚える（開き直した時に同じ幅で戻すため）。
+  function _rememberFixedDockWidth(dock) {
+    if (!dock || dock.collapsed || !_isFixedDockRole(dock.meldexRole)) return;
+    const px = Number(_allocatedWidths().widths.get(dock.id) || 0);
+    if (px > _RAIL_PX * 2) dock._expandedPx = Math.round(px);
+  }
+
+  // 開いた直後の幅を、覚えていた幅（無ければ既定幅）にして使える範囲へ収める。
+  function _applyExpandedFixedDockWidth(dock) {
+    if (!dock || dock.collapsed || !_isFixedDockRole(dock.meldexRole) || _isMobileLayout()) return;
+    const allocation = _allocatedWidths();
+    const { min, max } = _fixedDockLimits(dock, allocation.available);
+    const wanted = Number(dock._expandedPx) > 0 ? Number(dock._expandedPx) : (_FIXED_DOCK_DEFAULT_PX[dock.meldexRole] || 260);
+    _setFixedDockPx(dock, Math.max(min, Math.min(max, wanted)), allocation);
+  }
+
+  // 描画済みの分割の子要素の幅を、renderSplit と同じ規則で書き直す（DOMは作り直さない）。
+  function _applySplitChildStylesInPlace(node, splitEl) {
+    const first = splitEl.querySelector(':scope > .gb-split-first');
+    const second = splitEl.querySelector(':scope > .gb-split-second');
+    if (!first || !second || !Array.isArray(node.children) || node.children.length !== 2) return false;
+    const horizontal = node.direction === 'horizontal';
+    const key = horizontal ? 'width' : 'height';
+    const zeroWidthRoles = ['chat-sidebar', 'subpanel-workspace'];
+    const [a, b] = node.children;
+    [[first, a, b], [second, b, a]].forEach(([el, self, other], index) => {
+      el.style.width = '';
+      el.style.height = '';
+      el.style.flex = '';
+      el.style.flexShrink = '';
+      if (self?.collapsed) {
+        el.style[key] = horizontal && zeroWidthRoles.includes(self.meldexRole) ? '0px' : '32px';
+        el.style.flexShrink = '0';
+      } else if (other?.collapsed) {
+        el.style.flex = '1';
+      } else {
+        const ratio = Number(node.ratio || 0.5);
+        el.style[key] = ((index === 0 ? ratio : 1 - ratio) * 100).toFixed(2) + '%';
+      }
+    });
+    splitEl.dataset.ratio = node.ratio;
+    return true;
+  }
+
+  // 固定サイドバー（フォルダツリー／右サイドバー）の開閉を、配置全体を作り直さずに反映する。
+  // 全体の描画し直しはノート本文・チャット欄などの表示部品をいったん外して付け直すため、
+  // 長い会話を開いていると開くまで数百ミリ秒かかっていた。反映できない時は false を返し、
+  // 呼び出し側が従来どおり全体を描画する。
+  // チャット欄の列を、その場で隠す／表示し直す。全体描画では閉じたチャット欄は中身ごと
+  // 描かれないため、中身が残っている（その場で閉じた）時だけ扱える。準備だけ確かめて
+  // 実際の書き換えは apply() で行う（途中で中止して画面を半端な状態にしないため）。
+  function _prepareChatDockInPlace(node) {
+    const col = _layoutEl.querySelector(`.gb-chat-sidebar[data-panelset-id="${node.id}"]`);
+    const body = col?.querySelector(':scope > .gb-dock-body');
+    const parent = typeof findParent === 'function' ? findParent(_root, node.id)?.node : null;
+    const splitEl = parent?.type === 'split'
+      ? _layoutEl.querySelector(`.gb-split[data-split-id="${parent.id}"]`) : null;
+    const handle = splitEl?.querySelector(':scope > .gb-split-handle');
+    if (!col || !body || !handle) return null;
+    // 閉じた状態で描かれた境界線には幅調整の操作が付いていない。開く時は全体描画で作り直す。
+    if (!node.collapsed && handle.getAttribute('role') !== 'separator') return null;
+    return {
+      apply() {
+        const collapsed = !!node.collapsed;
+        col.classList.toggle('gb-dock-collapsed', collapsed);
+        body.style.display = collapsed ? 'none' : 'flex';
+        handle.hidden = collapsed;
+        handle.style.display = collapsed ? 'none' : '';
+        return true;
+      },
+    };
+  }
+
+  function _toggleFixedRailInPlace(node) {
+    if (!node || node.type !== 'panelset') return false;
+    const isChat = node.meldexRole === 'chat-sidebar';
+    if (node.meldexRole !== 'left-sidebar' && node.meldexRole !== 'right-sidebar' && !isChat) return false;
+    if (!_layoutEl || _isMobileLayout() || _maximizedPaneId) return false;
+    if (typeof GBDockPopup !== 'undefined' && GBDockPopup.isOpen?.()) return false;
+    if (typeof GBPanelSet === 'undefined' || typeof GBPanelSet.syncFixedDockCollapsed !== 'function') return false;
+    // 開く時は、中身が描画済みのペインだけを対象にする（未描画なら全体描画で取り付ける）。
+    // 描かれるのは表示中のグループだけ（右サイドバーは複数グループを持つ）。
+    const activeGroup = node.groups?.find(group => group?.id === node.activeGroupId) || node.groups?.[0];
+    const panes = typeof getAllPanes === 'function' && activeGroup?.root ? getAllPanes(activeGroup.root) : [];
+    if (!panes.length || panes.some(pane => !_paneMap[pane.id]?.contentEl?.isConnected)) return false;
+    // 閉じた状態で全体描画されたペインには、本物の表示部品ではなく表示用の写し
+    // （.gb-legacy-snapshot-host）だけが置かれる。その場合は全体描画で本物を取り付け直す。
+    // 本物が残っていて写しが重なっているだけなら、写しを外して（取り付け処理と同じ）その場で開く。
+    const isSnapshot = el => el.classList?.contains('gb-legacy-snapshot-host');
+    if (!node.collapsed && panes.some(pane => ![..._paneMap[pane.id].contentEl.children].some(child => !isSnapshot(child)))) return false;
+    const chatDock = isChat ? _prepareChatDockInPlace(node) : null;
+    if (isChat && !chatDock) return false;
+    const splitEls = new Map();
+    const splits = [];
+    const collect = (n) => {
+      if (!n) return;
+      if (n.type === 'split') {
+        if (!n.collapsed) splits.push(n);
+        (n.children || []).forEach(collect);
+      } else if (n.type === 'panelset') {
+        (n.groups || []).forEach(group => collect(group?.root));
+      }
+    };
+    collect(_root);
+    for (const split of splits) {
+      const el = _layoutEl.querySelector(`.gb-split[data-split-id="${split.id}"]`);
+      // 描画されていない分割（折りたたみ中の枠の中など）は書き換え不要。描画済みのものだけ扱う。
+      if (el) splitEls.set(split.id, el);
+    }
+    if (isChat ? !chatDock.apply() : !GBPanelSet.syncFixedDockCollapsed(node)) return false;
+    if (!node.collapsed) {
+      panes.forEach(pane => _paneMap[pane.id].contentEl.querySelectorAll(':scope > .gb-legacy-snapshot-host').forEach(el => el.remove()));
+    }
+    splits.forEach(split => {
+      const el = splitEls.get(split.id);
+      if (el) _applySplitChildStylesInPlace(split, el);
+    });
+    if (typeof GBPanelSet.syncLeftRailActiveApp === 'function') GBPanelSet.syncLeftRailActiveApp();
+    if (isChat && typeof GBPanelSet.syncRightRailChatButton === 'function') GBPanelSet.syncRightRailChatButton();
+    // 幅が変わったことだけを通知する（ウィンドウの大きさを変えた時と同じ非破壊の経路）。
+    _notifyLayoutViewportResize();
+    return true;
+  }
+
   // 固定サイドバーを同時に開いても、文書を数文字幅まで圧縮しない。
-  // 内容やタブは閉じず、操作中でない補助ドックを既存のレールへ折りたたむ。
+  // 他のサイドバーは閉じずに最低幅まで縮めて場所を空ける（勝手に閉じると、開いていた
+  // チャットやフォルダツリーが消えたように見えるため）。最後に開いたものは最後に縮める。
+  // 最低幅まで縮めても足りない場合は、そのまま表示する。
   function _ensureReadableMainPane() {
     if (_isMobileLayout() || _maximizedPaneId || !_hasFixedRailRoles(_root)) return;
     const main = _collectFixedRailPanes(_root).find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main');
     if (!main) return;
-    const available = _layoutEl?.clientWidth || window.innerWidth;
-    const minimum = Math.min(400, available - 100);
-    const widthOfMain = (node, width) => {
-      if (!node || node.collapsed) return 0;
-      if (node.id === main.id) return width;
-      if (node.type === 'panelset') {
-        const group = node.groups?.find(item => item.id === node.activeGroupId) || node.groups?.[0];
-        return widthOfMain(group?.root, Math.max(0, width - 32));
-      }
-      if (node.type !== 'split') return 0;
-      if (node.direction !== 'horizontal') return Math.max(...node.children.map(child => widthOfMain(child, width)));
-      const space = Math.max(0, width - 4);
-      const [a, b] = node.children;
-      const first = a.collapsed ? 32 : b.collapsed ? space - 32 : space * node.ratio;
-      return Math.max(widthOfMain(a, first), widthOfMain(b, space - first));
-    };
-    const docks = ['left-sidebar', 'right-sidebar', 'chat-sidebar']
-      .map(role => _findFixedRailPanelset(_root, role)).filter(Boolean)
-      .filter(dock => !dock.collapsed && dock.id !== _lastExpandedDockId);
-    for (const dock of docks) {
-      if (widthOfMain(_root, available) >= minimum) break;
-      dock.collapsed = true;
-      _adjustSplitForCollapse(dock, { skipRender: true });
+    const docks = _FIXED_DOCK_ROLES
+      .map(role => _findFixedRailPanelset(_root, role)).filter(dock => dock && !dock.collapsed);
+    if (!docks.length) return;
+    // 極端に狭いまま開いているもの（古い保存値など）は、文書の幅を削らない範囲で最低幅へ戻す。
+    // 読み込み直後の1回だけ行う。毎回行うと、利用者が境界線のドラッグで細くした幅まで戻してしまう。
+    const normalizeNarrow = !_fixedDockWidthsNormalized;
+    _fixedDockWidthsNormalized = true;
+    for (const dock of normalizeNarrow ? docks : []) {
+      const allocation = _allocatedWidths();
+      const width = Number(allocation.widths.get(dock.id) || 0);
+      const { min } = _fixedDockLimits(dock, allocation.available);
+      const mainWidth = Number(allocation.widths.get(main.id) || 0);
+      const minimum = Math.min(400, allocation.available - 100);
+      const grow = Math.min(min - width, mainWidth - minimum);
+      // 最低幅をわずかに下回るだけの幅（丸めやチャット開閉の調整分）は直さない。
+      if (width > 0 && width < min * 0.75 && grow > 1) _setFixedDockPx(dock, width + grow, allocation);
+    }
+    const ordered = docks.filter(dock => dock.id !== _lastExpandedDockId)
+      .concat(docks.filter(dock => dock.id === _lastExpandedDockId));
+    for (const dock of ordered) {
+      const allocation = _allocatedWidths();
+      const minimum = Math.min(400, allocation.available - 100);
+      const mainWidth = Number(allocation.widths.get(main.id) || 0);
+      if (mainWidth >= minimum) break;
+      const dockWidth = Number(allocation.widths.get(dock.id) || 0);
+      const { min } = _fixedDockLimits(dock, allocation.available);
+      const room = dockWidth - min;
+      if (room <= 1) continue;
+      _setFixedDockPx(dock, dockWidth - Math.min(room, minimum - mainWidth), allocation);
     }
   }
 
@@ -13335,6 +13539,7 @@ const GBLayout = (() => {
       }
       return true;
     }
+    if (nextCollapsed) _rememberFixedDockWidth(node);
     node.collapsed = nextCollapsed;
     // 固定レール（フォルダツリー/右サイドバー）をユーザーが明示的に閉じたことを記録する。
     // この記録がある間、ファイルを開く等に伴う付随的な revealPane では開き直さない
@@ -13344,10 +13549,32 @@ const GBLayout = (() => {
       else delete node._userCollapsed;
     }
     _adjustSplitForCollapse(node, { skipRender: true });
-    if (options?.activePaneId && typeof setActivePane === 'function') {
-      setActivePane(options.activePaneId, { skipCallback: !!options.skipActivePaneCallback });
+    if (!nextCollapsed) _applyExpandedFixedDockWidth(node);
+    _ensureReadableMainPane();
+    let nextActivePane = options?.activePaneId || '';
+    if (nextCollapsed) {
+      // 閉じるサイドバーの中に操作対象やフォーカスを残さない（全体描画では要素ごと
+      // 退避されて外れていたが、その場で閉じると非表示になるだけのため）。表示中のうちに
+      // 切り替えておく（隠した後だと、表示部品が写しへ置き換わり開き直しが遅くなる）。
+      const dockEl = _layoutEl?.querySelector(`[data-panelset-id="${node.id}"]`);
+      const focused = typeof document !== 'undefined' ? document.activeElement : null;
+      if (dockEl && focused && dockEl.contains(focused) && typeof focused.blur === 'function') focused.blur();
+      const closedPaneIds = new Set((typeof getAllPanes === 'function' ? getAllPanes(node) : []).map(pane => pane.id));
+      if (!nextActivePane && closedPaneIds.has(_activePane)) {
+        nextActivePane = _collectFixedRailPanes(_root).find(pane => pane.meldexRole === 'main' || pane.id === 'pane-main')?.id || '';
+      }
     }
-    render();
+    const previousActivePane = _activePane;
+    if (nextActivePane && nextActivePane !== previousActivePane && typeof setActivePane === 'function') {
+      // 操作対象が変わる時は通常の切り替え処理（表示状態・詳細パネル・注釈表示の同期）を
+      // その場で通す。その場で開閉した時は全体描画の後処理が走らないため。
+      setActivePane(nextActivePane, { sync: true });
+    }
+    const inPlace = _toggleFixedRailInPlace(node);
+    if (nextActivePane && nextActivePane === previousActivePane && !inPlace && typeof setActivePane === 'function') {
+      setActivePane(nextActivePane, { skipCallback: !!options?.skipActivePaneCallback });
+    }
+    if (!inPlace) render();
     if (!options?.skipSave) saveLayout({ immediate: true });
     return true;
   }
@@ -17772,6 +17999,20 @@ const GBLayout = (() => {
     if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
   }
 
+  // 右レールのチャットボタンの開閉表示を、描画し直さずに現在の状態へ合わせる。
+  function syncRightRailChatButton() {
+    if (!window.GBChatSidebar || typeof document === 'undefined') return;
+    const open = window.GBChatSidebar.isOpen();
+    const title = open ? 'チャットを閉じる' : 'チャットを開く';
+    document.querySelectorAll('.gb-dock-rail-chat').forEach(button => {
+      button.classList.toggle('active', open);
+      button.setAttribute('aria-pressed', String(open));
+      button.setAttribute('aria-expanded', String(open));
+      button.title = title;
+      button.setAttribute('aria-label', title);
+    });
+  }
+
   function _appendRightRailChat(dockBar) {
     if (!window.GBChatSidebar) return;
     const open = window.GBChatSidebar.isOpen();
@@ -18140,6 +18381,26 @@ const GBLayout = (() => {
     return col;
   }
 
+  // 固定サイドバー（フォルダツリー／右サイドバー）の開閉を、描画済みの列へその場で反映する。
+  // 全体の描画し直しは、ノート本文・チャット欄などの大きな表示部品をいったん外して
+  // 付け直すため、開くまでに時間がかかっていた（2026-11-12）。反映できない時は false。
+  function syncFixedDockCollapsed(panelsetNode) {
+    const side = _fixedDockSide(panelsetNode);
+    if (!side || typeof document === 'undefined') return false;
+    const col = document.querySelector(`.gb-dock-fixed-${side}[data-panelset-id="${panelsetNode.id}"]`);
+    const body = col?.querySelector(':scope > .gb-dock-body');
+    const toggle = col?.querySelector(':scope > .gb-dock-bar .gb-dock-rail-toggle');
+    if (!col || !body || !toggle) return false;
+    const collapsed = !!panelsetNode.collapsed;
+    col.classList.toggle('gb-dock-collapsed', collapsed);
+    body.style.display = collapsed ? 'none' : 'flex';
+    const title = _toggleRailTitle(side, collapsed);
+    toggle.title = title;
+    toggle.setAttribute('aria-label', title);
+    toggle.innerHTML = _railIcon(_toggleRailIcon(side, collapsed), 20);
+    return true;
+  }
+
   // groups が 1 件になった panelset を解体し、唯一の group.root を返す。
   // 呼び出し側がツリー内の該当位置をこの戻り値で置換する。
   function extractSoleGroupRoot(panelsetNode) {
@@ -18156,6 +18417,8 @@ const GBLayout = (() => {
     renderActiveGroupContent,
     renderGroupIconButton,
     renderDock,
+    syncFixedDockCollapsed,
+    syncRightRailChatButton,
     syncLeftRailActiveApp,
     collectGroupTabTypes,
     switchGroup,
@@ -119606,9 +119869,12 @@ document.addEventListener('input', _onSlashInput);
     }
     var labelEl = trigger.querySelector('[data-role="label"]');
     var text = typeId ? _labelFor(typeId) : NEUTRAL_LABEL;
-    if (labelEl) labelEl.textContent = text;
-    trigger.setAttribute('aria-label', '行の種類を変更（現在: ' + text + '）');
-    trigger.dataset.currentTypeId = typeId || '';
+    // 文字入力・キャレット移動のたびに呼ばれる。同じ値の書き直しもツールバーの
+    // あふれ判定などの変更監視を起こし、1文字ごとの遅れになるため、変わる時だけ書く。
+    if (labelEl && labelEl.textContent !== text) labelEl.textContent = text;
+    var ariaLabel = '行の種類を変更（現在: ' + text + '）';
+    if (trigger.getAttribute('aria-label') !== ariaLabel) trigger.setAttribute('aria-label', ariaLabel);
+    if (trigger.dataset.currentTypeId !== (typeId || '')) trigger.dataset.currentTypeId = typeId || '';
   }
 
   // キャレット移動・フォーカス移動のたびにボタン表示へ反映する。
@@ -173343,11 +173609,32 @@ if (typeof window !== 'undefined') {
     else setTimeout(run, 0);
   }
 
+  // タブバーに関係する変化だけで同期する。以前は文書内のあらゆる変化（ノートへの文字入力、
+  // 書式ボタンの状態切替、シートの描画など）のたびに全タブバーを探し直して幅を測っており、
+  // 大きな画面では1文字ごとの遅れになっていた。タブバーの幅の変化は各バーの
+  // ResizeObserver が、画面サイズの変化は resize が拾う。
+  const TABLIST_SELECTOR = '[role="tablist"], .gb-pane-tabs, .gb-mobile-tab-dropdown';
+  function nodeHasTablist(node) {
+    return node?.nodeType === 1 && (node.matches?.(TABLIST_SELECTOR) || !!node.querySelector?.(TABLIST_SELECTOR));
+  }
+  function recordTouchesTabs(record) {
+    const target = record.target;
+    if (target?.nodeType === 1 && target.closest?.(TABLIST_SELECTOR)) return true;
+    if (record.type === 'childList') {
+      return Array.prototype.some.call(record.addedNodes, nodeHasTablist)
+        || Array.prototype.some.call(record.removedNodes, nodeHasTablist);
+    }
+    // タブバーを含む枠の表示・非表示（class / hidden の切替）は見え方とあふれに影響する。
+    return record.type === 'attributes' && nodeHasTablist(target);
+  }
+
   function init() {
     syncAll();
     installGestures();
     _installMenuOutsideClickGuard();
-    observer = new MutationObserver(scheduleSync);
+    observer = new MutationObserver((records) => {
+      if (records.some(recordTouchesTabs)) scheduleSync();
+    });
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-selected', 'aria-disabled', 'disabled'] });
     global.addEventListener('resize', scheduleSync, { passive: true });
   }

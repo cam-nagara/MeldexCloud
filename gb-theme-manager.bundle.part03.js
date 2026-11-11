@@ -1,3 +1,17 @@
+        } catch {
+          return true;
+        }
+      });
+    }
+  }
+
+  function paletteNodeIsBoardRenderMutation(node) {
+    const role = node.getAttribute?.('data-bd-role') || '';
+    if (role === 'nodes' || role === 'svg' || role === 'resize-layer') return true;
+    if (node.classList?.contains('bd-node') || node.classList?.contains('bd-conn-label')) return true;
+    if (node.dataset?.connId || node.dataset?.bdNodeId) return true;
+    if (node.closest?.('[data-bd-role="nodes"], [data-bd-role="svg"], [data-bd-role="resize-layer"]')) return true;
+    if (node.ownerSVGElement?.getAttribute?.('data-bd-role') === 'svg') return true;
     return false;
   }
 
@@ -884,17 +898,3 @@
         const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
         if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
         const local = canvas?.style?.getPropertyValue?.(key)?.trim();
-        if (local) return local;
-        return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';
-      };
-      const fs = board._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : null;
-      if (!fs || fs['--bd-shadow'] === undefined) {
-        const t = readBoardThemeVar('--bd-shadow');
-        if (t !== '') {
-          board._showShadow = t !== '0';
-          if (canvas) canvas.classList.toggle('bd-shadow-on', !!board._showShadow);
-        }
-      }
-      if (!fs || fs['--bd-auto-align'] === undefined) {
-        const t = readBoardThemeVar('--bd-auto-align');
-        if (t !== '') board.autoAlign = t !== '0';

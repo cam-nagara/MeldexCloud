@@ -1,3 +1,17 @@
+        if (local) return local;
+        return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';
+      };
+      const fs = board._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : null;
+      if (!fs || fs['--bd-shadow'] === undefined) {
+        const t = readBoardThemeVar('--bd-shadow');
+        if (t !== '') {
+          board._showShadow = t !== '0';
+          if (canvas) canvas.classList.toggle('bd-shadow-on', !!board._showShadow);
+        }
+      }
+      if (!fs || fs['--bd-auto-align'] === undefined) {
+        const t = readBoardThemeVar('--bd-auto-align');
+        if (t !== '') board.autoAlign = t !== '0';
       }
     }
   }

@@ -1145,6 +1145,20 @@
     if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
   }
 
+  // 右レールのチャットボタンの開閉表示を、描画し直さずに現在の状態へ合わせる。
+  function syncRightRailChatButton() {
+    if (!window.GBChatSidebar || typeof document === 'undefined') return;
+    const open = window.GBChatSidebar.isOpen();
+    const title = open ? 'チャットを閉じる' : 'チャットを開く';
+    document.querySelectorAll('.gb-dock-rail-chat').forEach(button => {
+      button.classList.toggle('active', open);
+      button.setAttribute('aria-pressed', String(open));
+      button.setAttribute('aria-expanded', String(open));
+      button.title = title;
+      button.setAttribute('aria-label', title);
+    });
+  }
+
   function _appendRightRailChat(dockBar) {
     if (!window.GBChatSidebar) return;
     const open = window.GBChatSidebar.isOpen();
@@ -1513,6 +1527,26 @@
     return col;
   }
 
+  // 固定サイドバー（フォルダツリー／右サイドバー）の開閉を、描画済みの列へその場で反映する。
+  // 全体の描画し直しは、ノート本文・チャット欄などの大きな表示部品をいったん外して
+  // 付け直すため、開くまでに時間がかかっていた（2026-11-12）。反映できない時は false。
+  function syncFixedDockCollapsed(panelsetNode) {
+    const side = _fixedDockSide(panelsetNode);
+    if (!side || typeof document === 'undefined') return false;
+    const col = document.querySelector(`.gb-dock-fixed-${side}[data-panelset-id="${panelsetNode.id}"]`);
+    const body = col?.querySelector(':scope > .gb-dock-body');
+    const toggle = col?.querySelector(':scope > .gb-dock-bar .gb-dock-rail-toggle');
+    if (!col || !body || !toggle) return false;
+    const collapsed = !!panelsetNode.collapsed;
+    col.classList.toggle('gb-dock-collapsed', collapsed);
+    body.style.display = collapsed ? 'none' : 'flex';
+    const title = _toggleRailTitle(side, collapsed);
+    toggle.title = title;
+    toggle.setAttribute('aria-label', title);
+    toggle.innerHTML = _railIcon(_toggleRailIcon(side, collapsed), 20);
+    return true;
+  }
+
   // groups が 1 件になった panelset を解体し、唯一の group.root を返す。
   // 呼び出し側がツリー内の該当位置をこの戻り値で置換する。
   function extractSoleGroupRoot(panelsetNode) {
@@ -1529,6 +1563,8 @@
     renderActiveGroupContent,
     renderGroupIconButton,
     renderDock,
+    syncFixedDockCollapsed,
+    syncRightRailChatButton,
     syncLeftRailActiveApp,
     collectGroupTabTypes,
     switchGroup,

@@ -403,11 +403,32 @@
     else setTimeout(run, 0);
   }
 
+  // タブバーに関係する変化だけで同期する。以前は文書内のあらゆる変化（ノートへの文字入力、
+  // 書式ボタンの状態切替、シートの描画など）のたびに全タブバーを探し直して幅を測っており、
+  // 大きな画面では1文字ごとの遅れになっていた。タブバーの幅の変化は各バーの
+  // ResizeObserver が、画面サイズの変化は resize が拾う。
+  const TABLIST_SELECTOR = '[role="tablist"], .gb-pane-tabs, .gb-mobile-tab-dropdown';
+  function nodeHasTablist(node) {
+    return node?.nodeType === 1 && (node.matches?.(TABLIST_SELECTOR) || !!node.querySelector?.(TABLIST_SELECTOR));
+  }
+  function recordTouchesTabs(record) {
+    const target = record.target;
+    if (target?.nodeType === 1 && target.closest?.(TABLIST_SELECTOR)) return true;
+    if (record.type === 'childList') {
+      return Array.prototype.some.call(record.addedNodes, nodeHasTablist)
+        || Array.prototype.some.call(record.removedNodes, nodeHasTablist);
+    }
+    // タブバーを含む枠の表示・非表示（class / hidden の切替）は見え方とあふれに影響する。
+    return record.type === 'attributes' && nodeHasTablist(target);
+  }
+
   function init() {
     syncAll();
     installGestures();
     _installMenuOutsideClickGuard();
-    observer = new MutationObserver(scheduleSync);
+    observer = new MutationObserver((records) => {
+      if (records.some(recordTouchesTabs)) scheduleSync();
+    });
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'aria-selected', 'aria-disabled', 'disabled'] });
     global.addEventListener('resize', scheduleSync, { passive: true });
   }

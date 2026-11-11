@@ -682,7 +682,9 @@
     }
     if (global.GBMutationBus) {
       _paletteObserver = global.GBMutationBus.subscribe('theme-palette-targets', {
-        filter: (mutation) => paletteMutationTouchesTargets([mutation]),
+        // 対象一覧を捨てた後で、作り直し待ちの間は調べても結果は変わらない。画面の作り直しで
+        // 大量の要素が追加された時に、要素ごとの検索を省く。
+        filter: (mutation) => !paletteInvalidationPending() && paletteMutationTouchesTargets([mutation]),
         callback: handlePaletteDomMutations,
         throttle: 50,
       });
@@ -700,16 +702,28 @@
     return false;
   }
 
+  function paletteInvalidationPending() {
+    return !_paletteTargetCache && (!!_paletteBindRaf || !_activeThemeColorSet);
+  }
+
+  // 対象の選択子を1つにまとめ、要素1つあたりの検索を1回にする（選択子ごとに
+  // 部分木を検索すると、大きな画面の作り直しで数十回の全体検索になる）。
+  const PALETTE_TARGET_SELECTOR = PALETTE_TARGET_SPECS.map(([selector]) => selector).join(', ');
+
   function paletteNodeTouchesTarget(node) {
     if (!node || node.nodeType !== 1) return false;
     if (paletteNodeIsBoardRenderMutation(node)) return false;
-    return PALETTE_TARGET_SPECS.some(([selector]) => {
-      try {
-        return node.matches?.(selector) || !!node.querySelector?.(selector);
-      } catch {
-        return true;
-      }
-    });
+    try {
+      return !!(node.matches?.(PALETTE_TARGET_SELECTOR) || node.querySelector?.(PALETTE_TARGET_SELECTOR));
+    } catch {
+      return PALETTE_TARGET_SPECS.some(([selector]) => {
+        try {
+          return node.matches?.(selector) || !!node.querySelector?.(selector);
+        } catch {
+          return true;
+        }
+      });
+    }
   }
 
   function paletteNodeIsBoardRenderMutation(node) {

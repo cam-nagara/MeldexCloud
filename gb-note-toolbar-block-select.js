@@ -111,9 +111,12 @@
     }
     var labelEl = trigger.querySelector('[data-role="label"]');
     var text = typeId ? _labelFor(typeId) : NEUTRAL_LABEL;
-    if (labelEl) labelEl.textContent = text;
-    trigger.setAttribute('aria-label', '行の種類を変更（現在: ' + text + '）');
-    trigger.dataset.currentTypeId = typeId || '';
+    // 文字入力・キャレット移動のたびに呼ばれる。同じ値の書き直しもツールバーの
+    // あふれ判定などの変更監視を起こし、1文字ごとの遅れになるため、変わる時だけ書く。
+    if (labelEl && labelEl.textContent !== text) labelEl.textContent = text;
+    var ariaLabel = '行の種類を変更（現在: ' + text + '）';
+    if (trigger.getAttribute('aria-label') !== ariaLabel) trigger.setAttribute('aria-label', ariaLabel);
+    if (trigger.dataset.currentTypeId !== (typeId || '')) trigger.dataset.currentTypeId = typeId || '';
   }
 
   // キャレット移動・フォーカス移動のたびにボタン表示へ反映する。
