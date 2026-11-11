@@ -634,7 +634,7 @@ const _FS_FIELDS = {
           { key: prefix + '-bold', label: label + ' 太字', type: 'toggle', on: 'bold', off: 'normal' },
           { key: prefix + '-italic', label: label + ' 斜体', type: 'toggle', on: 'italic', off: 'normal' },
           { key: prefix + '-font', label: label + ' フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
-          { key: prefix + '-font-size', label: '文字サイズ', type: 'rangeNumber', min: 8, max: 72, step: 1, unit: 'px', fallback: '14px' },
+          // 文字サイズ・文字フチ・アクセント等は見出しと同じ書式ポップアップ項目として自動で揃う。
           { key: prefix + '-line-height', label: '行間', type: 'rangeNumber', min: 80, max: 300, step: 5, unit: '%', fallback: '160%' },
           { key: prefix + '-space-before', label: '前余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
           { key: prefix + '-space-after', label: '後余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
@@ -985,6 +985,7 @@ function _fsGetScriptnoteAdapter() {
       else if (val === null || val === undefined || val === '') delete ed.doc.editor[field.key];
       else ed.doc.editor[field.key] = val;
       if (typeof ed._markDirty === 'function') ed._markDirty(pushedUndo ? { skipUndo: true } : {});
+      if (typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect('scriptnote');
     },
     applyCss: (field, raw) => {
       if (field.applyCustom === 'wrapMode' || field.applyCustom === 'textSpacing') { if (typeof ed._render === 'function') ed._render(); return; }
@@ -1035,6 +1036,9 @@ function _fsSaveStyleForContext(ctx, style) {
   if (ctx === 'board' && typeof bd !== 'undefined') {
     bd._fileStyle = saved;
     if (!saved && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
+    // 背景色を持たない書式（プリセット参照・アプリ設定に従う）では背景色をテーマに任せる。
+    // 実行時の背景色（ファイルの canvasBg としても保存される）を残すと、テーマを切り替えても古い色のままになる。
+    else if (!Object.prototype.hasOwnProperty.call(saved, '--bd-bg')) bd._bgColor = '';
     bd.dirty = true;
     result = typeof bdSave === 'function' ? bdSave() : undefined;
     _fsMarkStyleVersionDirty(ctx);
@@ -1073,18 +1077,24 @@ function _fsGetFrontmatterAdapter(ctx) {
       const boardUndoPushed = ctx === 'board' && typeof bdPushUndo === 'function' && !_fsStyleHistorySuppressed;
       if (boardUndoPushed) bdPushUndo();
       const current = _fsGetStyleForContext(ctx);
-      const cur = typeof _fsBuildLocalCustomThemeStyle === 'function' && !_fsIsLocalCustomThemeStyle(current)
+      // アプリ設定やプリセットから外れる変更は、それを基にしたファイル内カスタムテーマを自動作成して切り替える。
+      const createsLocalCustom = typeof _fsBuildLocalCustomThemeStyle === 'function' && !_fsIsLocalCustomThemeStyle(current);
+      const cur = createsLocalCustom
         ? _fsBuildLocalCustomThemeStyle(ctx, { adapter: _fsGetFrontmatterAdapter(ctx) }) : current;
       const next = { ...cur };
       if (val === null || val === undefined || val === '') delete next[field.key];
       else next[field.key] = val;
       const result = _fsSaveStyleForContext(ctx, next);
+      // 選択欄は保存完了を待たずに即時、完了時（失敗時も）にもう一度揃える。
+      const syncSelect = () => { if (isCurrent() && typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(ctx); };
+      syncSelect();
       const finish = saved => {
+        syncSelect();
         if (saved === false || !isCurrent()) return false;
         _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
         return true;
       };
-      return result?.then ? result.then(finish) : finish(result);
+      return result?.then ? result.then(finish, error => { syncSelect(); throw error; }) : finish(result);
     },
     applyCss: (field, raw) => {
       const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'

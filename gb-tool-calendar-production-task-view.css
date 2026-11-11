@@ -506,20 +506,40 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   color: var(--cal-fg, var(--fg));
 }
 
-/* 作品ごとのボタンは別シートではなく、同じタスクシートの保存ビューとして表示する。 */
+/* 作品ごとのボタンは別シートではなく、同じタスクシートの保存ビューとして表示する。
+   行の高さ・余白はシートのビュータブ行（.db-view-switcher: 上下2px＋タブ高 --ui-h-xs）に揃える。
+   タッチ環境の44pxは下の @media 側（!important）が優先する。 */
 .gb-production-list-switch.db-view-tabs {
-  padding: 0 8px;
-  gap: 0;
+  padding: 2px 6px;
+  gap: 2px;
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn {
-  min-height: 32px;
-  padding: 5px 12px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  padding: 0 8px;
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-radius: var(--ui-radius-xs);
   background: transparent;
   color: var(--cal-muted-fg, var(--fg2));
+}
+
+@media (pointer: fine) and (min-width: 721px) {
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-form input,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-cancel {
+    box-sizing: border-box;
+    height: var(--ui-h-xs);
+    min-height: var(--ui-h-xs);
+  }
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-cancel {
+    min-width: var(--ui-h-xs);
+  }
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn.is-active {

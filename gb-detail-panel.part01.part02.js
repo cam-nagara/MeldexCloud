@@ -261,7 +261,8 @@
     num.addEventListener('change', () => commit(num.value));
     if (typeof globalThis.GBUI?.refreshRangeFill === 'function') globalThis.GBUI.refreshRangeFill(range);
 
-    wrap.append(range, num);
+    // 数値は他の書式項目と同じく「数値入力＋単位」で表示する（スライダーは出さない）。
+    wrap.append(num);
     if (unit.textContent) wrap.appendChild(unit);
     return wrap;
   }

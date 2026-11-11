@@ -117,10 +117,7 @@
   max-width: 100%;
 }
 
-.db-pane-view-switcher {
-  padding: 0;
-}
-
+/* 分割表示のペインでも、ビュータブ行の上下余白はメインのシート（.db-view-switcher）と同じにする。 */
 .db-pane-view-switcher .db-view-tabs {
   border-bottom: 0;
 }

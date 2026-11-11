@@ -6755,10 +6755,16 @@
         summary.innerHTML = typeof global.lucide === 'function' ? global.lucide('moreHorizontal', 14) : '…';
         summary.dataset.e2eId = `board-common-view-menu-trigger-${refToken}`;
         summary.setAttribute('aria-label', `${entry.name}のビュー操作`); menu.appendChild(summary);
-        const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; menu.appendChild(panel);
+        const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu bd-view-tab-menu';
+        menu.appendChild(panel);
         bindMenu(menu, panel);
+        const separator = () => {
+          const sep = document.createElement('div'); sep.className = 'gb-context-menu-sep'; sep.setAttribute('role', 'separator');
+          panel.appendChild(sep);
+        };
         const action = (text, run, disabled, actionId, refreshAfter = true) => {
           const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+          button.className = 'gb-context-menu-item';
           button.dataset.bdTopicViewMutation = actionId;
           button.dataset.e2eId = `board-common-view-${actionId}-${refToken}`;
           button.disabled = settings.readOnly === true || !!disabled;
@@ -6767,10 +6773,12 @@
             if (refreshAfter) refresh();
           }); panel.appendChild(button);
         };
-        action('名前変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
+        action('名前を変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
         action('複製', () => controller.duplicateMixed(ref), false, 'duplicate');
+        separator();
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
+        separator();
         action('削除', async () => {
           const confirmed = typeof global.cfConfirm === 'function'
             ? await global.cfConfirm(`「${entry.name}」を削除します。トピック本体は残り、このビュー固有の配置・ライン・グループ・表示設定だけが削除されます。`)
@@ -6796,17 +6804,20 @@
       addSummary.innerHTML = typeof global.lucide === 'function' ? global.lucide('plus', 16) : '＋';
       addSummary.dataset.e2eId = 'board-common-view-add-trigger';
       addSummary.setAttribute('aria-label', 'ビューを追加'); add.appendChild(addSummary);
-      const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu'; add.appendChild(addMenu);
+      const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu bd-view-tab-menu';
+      add.appendChild(addMenu);
       bindMenu(add, addMenu);
       [['board', 'ボード', () => controller.add()], ['pivot', 'テーブル', () => controller.addSheet({ viewMode: 'pivot', name: 'テーブル' })],
         ['tree', 'ツリー', () => controller.addSheet({ viewMode: 'tree', name: 'ツリー' })]].forEach(([kind, text, run]) => {
         const button = document.createElement('button'); button.type = 'button'; button.disabled = settings.readOnly === true;
+        button.className = 'gb-context-menu-item';
         button.dataset.bdTopicViewMutation = `add-${kind}`;
         button.dataset.e2eId = `board-common-view-add-${kind}`;
         button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
         button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
       });
-      root.appendChild(add);
+      // 再描画でも「＋」はタブ列の直後に戻す（末尾へ足すと後付けのシャッフル等と順序が入れ替わる）。
+      root.insertBefore(add, select.nextSibling);
       addElement = add;
     };
     select.addEventListener('change', () => {
@@ -6997,18 +7008,15 @@
   function attachShuffleAction(container, onShuffle) {
     if (!container?.appendChild || typeof onShuffle !== 'function') return null;
     const button = document.createElement('button'); button.type = 'button';
-    button.textContent = 'シャッフル'; button.className = 'bd-board-shuffle-action bd-topic-view-wide-action';
+    // アイコンボタン。幅を取らないためモバイルでも隠さず、ビュータブの「⋯」メニューへの
+    // 複製も置かない（以前は先頭タブのメニューへ紛れ込み、タブ再描画で消えていた）。
+    button.className = 'bd-board-shuffle-action tb-icon-btn';
+    button.innerHTML = typeof global.lucide === 'function' ? global.lucide('shuffle', 16) : '⇄';
+    button.title = 'トピックをシャッフル';
     button.dataset.bdTopicViewAction = 'shuffle';
     button.dataset.bdAction = 'topic-view-shuffle';
     button.setAttribute('aria-label', 'トピックを重ならないようにシャッフル');
     button.addEventListener('click', () => onShuffle()); container.appendChild(button);
-    const overflow = container.querySelector?.('.bd-topic-view-overflow-menu');
-    if (overflow) {
-      const compact = button.cloneNode(true); compact.className = 'bd-board-shuffle-overflow-action';
-      compact.dataset.bdTopicViewAction = 'shuffle-compact';
-      compact.dataset.bdAction = 'topic-view-shuffle-compact';
-      compact.addEventListener('click', () => onShuffle()); overflow.appendChild(compact);
-    }
     return button;
   }
 
@@ -115555,7 +115563,7 @@ function _saveFileThemeToDbFolderNote(theme) {
         theme: null,
       });
       _syncDbMetadataFileStyle(themeSnapshot, dbPath);
-      showStatus('DBテーマを保存しました');
+      showStatus('シートのテーマを保存しました');
     } catch (e) {
       showStatus('テーマ保存に失敗しました', true);
       throw e;
@@ -125588,7 +125596,7 @@ const _FS_FIELDS = {
           { key: prefix + '-bold', label: label + ' 太字', type: 'toggle', on: 'bold', off: 'normal' },
           { key: prefix + '-italic', label: label + ' 斜体', type: 'toggle', on: 'italic', off: 'normal' },
           { key: prefix + '-font', label: label + ' フォント', type: 'select', options: getFontFamilyOptions, normalize: normalizeFontFamilyValue, preview: 'fontSample' },
-          { key: prefix + '-font-size', label: '文字サイズ', type: 'rangeNumber', min: 8, max: 72, step: 1, unit: 'px', fallback: '14px' },
+          // 文字サイズ・文字フチ・アクセント等は見出しと同じ書式ポップアップ項目として自動で揃う。
           { key: prefix + '-line-height', label: '行間', type: 'rangeNumber', min: 80, max: 300, step: 5, unit: '%', fallback: '160%' },
           { key: prefix + '-space-before', label: '前余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
           { key: prefix + '-space-after', label: '後余白', type: 'rangeNumber', min: 0, max: 64, step: 1, unit: 'px', fallback: '4px' },
@@ -125939,6 +125947,7 @@ function _fsGetScriptnoteAdapter() {
       else if (val === null || val === undefined || val === '') delete ed.doc.editor[field.key];
       else ed.doc.editor[field.key] = val;
       if (typeof ed._markDirty === 'function') ed._markDirty(pushedUndo ? { skipUndo: true } : {});
+      if (typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect('scriptnote');
     },
     applyCss: (field, raw) => {
       if (field.applyCustom === 'wrapMode' || field.applyCustom === 'textSpacing') { if (typeof ed._render === 'function') ed._render(); return; }
@@ -125989,6 +125998,9 @@ function _fsSaveStyleForContext(ctx, style) {
   if (ctx === 'board' && typeof bd !== 'undefined') {
     bd._fileStyle = saved;
     if (!saved && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
+    // 背景色を持たない書式（プリセット参照・アプリ設定に従う）では背景色をテーマに任せる。
+    // 実行時の背景色（ファイルの canvasBg としても保存される）を残すと、テーマを切り替えても古い色のままになる。
+    else if (!Object.prototype.hasOwnProperty.call(saved, '--bd-bg')) bd._bgColor = '';
     bd.dirty = true;
     result = typeof bdSave === 'function' ? bdSave() : undefined;
     _fsMarkStyleVersionDirty(ctx);
@@ -126027,18 +126039,24 @@ function _fsGetFrontmatterAdapter(ctx) {
       const boardUndoPushed = ctx === 'board' && typeof bdPushUndo === 'function' && !_fsStyleHistorySuppressed;
       if (boardUndoPushed) bdPushUndo();
       const current = _fsGetStyleForContext(ctx);
-      const cur = typeof _fsBuildLocalCustomThemeStyle === 'function' && !_fsIsLocalCustomThemeStyle(current)
+      // アプリ設定やプリセットから外れる変更は、それを基にしたファイル内カスタムテーマを自動作成して切り替える。
+      const createsLocalCustom = typeof _fsBuildLocalCustomThemeStyle === 'function' && !_fsIsLocalCustomThemeStyle(current);
+      const cur = createsLocalCustom
         ? _fsBuildLocalCustomThemeStyle(ctx, { adapter: _fsGetFrontmatterAdapter(ctx) }) : current;
       const next = { ...cur };
       if (val === null || val === undefined || val === '') delete next[field.key];
       else next[field.key] = val;
       const result = _fsSaveStyleForContext(ctx, next);
+      // 選択欄は保存完了を待たずに即時、完了時（失敗時も）にもう一度揃える。
+      const syncSelect = () => { if (isCurrent() && typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(ctx); };
+      syncSelect();
       const finish = saved => {
+        syncSelect();
         if (saved === false || !isCurrent()) return false;
         _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
         return true;
       };
-      return result?.then ? result.then(finish) : finish(result);
+      return result?.then ? result.then(finish, error => { syncSelect(); throw error; }) : finish(result);
     },
     applyCss: (field, raw) => {
       const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
@@ -126554,7 +126572,8 @@ function _fsBuildControl(field, adapter, rowLabel) {
     num.addEventListener('change', () => commit(num.value));
     if (typeof globalThis.GBUI?.refreshRangeFill === 'function') globalThis.GBUI.refreshRangeFill(range);
 
-    wrap.append(range, num);
+    // 数値は他の書式項目と同じく「数値入力＋単位」で表示する（スライダーは出さない）。
+    wrap.append(num);
     if (unit.textContent) wrap.appendChild(unit);
     return wrap;
   }
@@ -126709,7 +126728,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '本文',     fields: pick(['--page-text-fg', '--page-text-bold', '--page-text-italic', '--page-text-font']) },
           ...['ul', 'ol'].flatMap(kind => Array.from({ length: 6 }, (_, i) => ({
             label: `${kind === 'ul' ? '箇条書き' : '番号付きリスト'} 階層${i + 1}`,
-            fields: pick(['fg', 'bg', 'bold', 'italic', 'font', 'font-size', 'line-height', 'space-before', 'space-after'].map(suffix => `--page-${kind}-${i + 1}-${suffix}`)),
+            fields: pick(['fg', 'bg', 'bold', 'italic', 'font', 'line-height', 'space-before', 'space-after'].map(suffix => `--page-${kind}-${i + 1}-${suffix}`)),
           }))),
           { label: 'リンク',   fields: pick(['--page-link-fg', '--page-link-bold', '--page-link-italic']) },
           { label: '引用ブロック', fields: pick(['--page-quote-fg', '--page-quote-bg', '--page-quote-bold', '--page-quote-italic']) },
@@ -127031,7 +127050,14 @@ function _fsThemeColorSlots(themeDef) {
 }
 
 function _fsComputedThemeColorSet(themeDef) {
-  if (!themeDef || typeof computeThemeColorSetFromSlots !== 'function') return null;
+  if (!themeDef) return null;
+  // アプリ全体のテーマ・プリセット参照の表示と同じ解決（テーマ固有の配色 → スロットからの生成）に揃える。
+  // ここだけ別の計算をすると、プリセットから作ったカスタムテーマで見出し等の色が入れ替わる。
+  if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeColorSet === 'function') {
+    const resolved = MeldexThemeManager.getThemeColorSet(themeDef, { ignoreOsAccent: true });
+    if (Array.isArray(resolved) && resolved.length) return resolved.slice();
+  }
+  if (typeof computeThemeColorSetFromSlots !== 'function') return null;
   const shouldUseGeneratedPalette = !!themeDef.builtIn
     || Object.prototype.hasOwnProperty.call(themeDef?.ui || {}, 'standardPaletteAdjust')
     || Object.prototype.hasOwnProperty.call(themeDef || {}, 'standardPaletteAdjust')
@@ -127147,6 +127173,9 @@ function _fsBuildLocalCustomThemeStyle(ctx, options = {}) {
     : String(current[_fsLocalCustomThemeSourceKey()] || currentThemeId || defaultThemeId || '');
   if (_fsIsLocalCustomThemeId(sourceId)) sourceId = defaultThemeId;
   const useDocumentSourceValues = !explicitSource && !String(currentThemeId || '').trim();
+  // プリセット参照中の書式変更では、画面全体（アプリ設定）の値ではなく参照先プリセットの値を写す。
+  const readFromSource = explicitSource || (!useDocumentSourceValues
+    && !_fsIsLocalCustomThemeId(currentThemeId) && String(currentThemeId) === String(sourceId));
   const sourceTheme = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
     ? MeldexThemeManager.getThemeById(sourceId || defaultThemeId)
     : null;
@@ -127163,11 +127192,13 @@ function _fsBuildLocalCustomThemeStyle(ctx, options = {}) {
     if (!key || key === _fsThemeIdField(ctx).key) return;
     let value = '';
     const sourceKey = key.startsWith('--') ? key : field.cssVar;
-    if (explicitSource && sourceKey) {
+    if (readFromSource && sourceKey) {
       value = _fsReadSourceThemeVar(sourceTheme, sourceKey, false);
       if (field.type === 'number' && value !== '') value = parseFloat(value);
     }
-    if (!value) value = _fsReadFieldValue(field, adapter);
+    // 入力欄の表示用初期値（field.fallback）は実際の既定値と異なることがあるため、
+    // 自動作成するカスタムテーマへは書き込まない（未設定のまま既定の見た目を保つ）。
+    if (!value) value = _fsReadFieldValue(field.fallback !== undefined ? { ...field, fallback: undefined } : field, adapter);
     if (!value && !useDocumentSourceValues && key.startsWith('--')) value = _fsReadSourceThemeVar(sourceTheme, key, false);
     if (value !== undefined && value !== null && value !== '') next[key] = value;
   });
@@ -127323,11 +127354,19 @@ function _fsRefreshThemePanels(ctx) {
 function _fsBindThemeColorSetEditor(root, ctx) {
   if (!root || typeof MeldexThemeManager === 'undefined') return;
   const adapter = _fsGetAdapter(ctx);
-  const id = _fsCurrentThemeId(ctx, adapter);
-  const key = _fsThemeColorSetKey(ctx, id);
-  const isLocalCustom = _fsIsLocalCustomThemeId(id);
-  const isCustom = isLocalCustom || !!(id && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
-  const currentColors = () => _fsPendingThemeColorSets[key]?.slice() || _fsThemeColorSetForCurrent(ctx, adapter) || [];
+  // 書式変更でファイル内カスタムテーマへ切り替わってもパネルは描き直さないため、
+  // 現在のテーマはクリック時に読み直す。
+  const themeState = () => {
+    const id = _fsCurrentThemeId(ctx, adapter);
+    const isLocalCustom = _fsIsLocalCustomThemeId(id);
+    return {
+      id,
+      key: _fsThemeColorSetKey(ctx, id),
+      isLocalCustom,
+      isCustom: isLocalCustom || !!(id && MeldexThemeManager.getCustomThemes().some(t => t.id === id)),
+    };
+  };
+  const currentColors = () => _fsPendingThemeColorSets[themeState().key]?.slice() || _fsThemeColorSetForCurrent(ctx, adapter) || [];
   const saveLocalPalette = async (colors) => {
     const current = _fsGetStyleForContext(ctx) || {};
     const source = _fsIsLocalCustomThemeStyle(current)
@@ -127354,6 +127393,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
         if (!color || color === 'transparent') return;
         const next = currentColors();
         next[index] = color;
+        const { id, key, isCustom, isLocalCustom } = themeState();
         if (!id || !isCustom || isLocalCustom) {
           _fsRunThemeAction(ctx, () => saveLocalPalette(next));
           return;
@@ -127364,6 +127404,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
     });
   });
   root.querySelector('[data-theme-color-reset]')?.addEventListener('click', () => {
+    const { id, key, isCustom, isLocalCustom } = themeState();
     if (!id || !isCustom || isLocalCustom) {
       const sourceId = (_fsGetStyleForContext(ctx) || {})[_fsLocalCustomThemeSourceKey()] || MeldexThemeManager.getDefaultThemeId?.();
       const colors = _fsThemeColorSetForThemeId(sourceId);
@@ -127375,18 +127416,77 @@ function _fsBindThemeColorSetEditor(root, ctx) {
   });
 }
 
+// テーマ（配色・フォント・太字/斜体）ではなく、ファイルごとの配置・寸法・動作の設定か。
+function _fsIsThemeIndependentField(field) {
+  if (!field || !field.key) return false;
+  if (['color', 'select', 'boardBgColorReset'].includes(field.type)) return false;
+  if (field.type === 'toggle' && ['bold', 'italic'].includes(field.on)) return false;
+  return true;
+}
+
+// テーマを切り替えても保つ設定（余白・内容最大幅・リストの行間、シナリオの折り返しや行間、
+// ボードの背景画像や隙間・自動整列など）。切替先のテーマが値を持つ項目はテーマの値を優先する。
+const _FS_THEME_INDEPENDENT_EXTRA_KEYS = { board: ['--bd-bg-image-scale'] };
+function _fsThemeIndependentStyle(ctx, targetThemeId) {
+  const current = _fsGetStyleForContext(ctx) || {};
+  const spec = _FS_FIELDS[ctx] || {};
+  let targetVars = {};
+  if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
+    && typeof MeldexThemeManager.getThemeStyleVars === 'function') {
+    const theme = MeldexThemeManager.getThemeById(targetThemeId || MeldexThemeManager.getDefaultThemeId?.());
+    targetVars = (theme && MeldexThemeManager.getThemeStyleVars(theme)) || {};
+  }
+  const has = value => value !== undefined && value !== null && value !== '';
+  const kept = {};
+  [...(spec.display || []), ...(spec.editOps || [])].forEach(field => {
+    if (!_fsIsThemeIndependentField(field)) return;
+    const key = _fsStyleStorageKeyForField(ctx, field);
+    if (!key || !has(current[key])) return;
+    const varKey = key.startsWith('--') ? key : field.cssVar;
+    if (varKey && has(targetVars[varKey])) return;
+    kept[key] = current[key];
+  });
+  (_FS_THEME_INDEPENDENT_EXTRA_KEYS[ctx] || []).forEach(key => {
+    if (has(current[key])) kept[key] = current[key];
+  });
+  return kept;
+}
+
 function fileThemeSelect(ctx, id) {
   const adapter = _fsGetAdapter(ctx);
   if (!adapter) return;
   const nextId = String(id || '');
+  if (_fsIsLocalCustomThemeId(nextId)) return;
+  // テーマと関係のないファイル固有の設定は、テーマを切り替えても保つ。
+  const kept = _fsThemeIndependentStyle(ctx, nextId);
   if (!nextId) {
     if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = '';
-    return _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマ解除' });
+    return _fsCommitThemeStyle(ctx, adapter, Object.keys(kept).length ? kept : null, { label: 'テーマ解除' });
   }
-  if (_fsIsLocalCustomThemeId(nextId)) return;
-  const next = _fsBuildLocalCustomThemeStyle(ctx, { adapter, sourceId: nextId, name: 'カスタムテーマ' });
-  return _fsCommitThemeStyle(ctx, adapter, next);
+  // プリセットは参照として保存し、選択欄にもそのプリセット名を表示する。
+  // 書式を変更した時点で、このプリセットを基にしたファイル内カスタムテーマが自動作成される。
+  if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = nextId;
+  return _fsCommitThemeStyle(ctx, adapter, { ...kept, [_fsThemeIdField(ctx).key]: nextId }, { label: 'テーマ変更' });
 }
+
+// 書式変更でファイル内カスタムテーマへ切り替わった時など、選択欄だけを現在値へ揃える。
+// パネル全体を描き直すと開いている書式ポップアップの基準要素が消えるため、選択欄とパレットだけ更新する。
+function _fsSyncThemeSelect(ctx) {
+  if (typeof document === 'undefined' || !ctx) return;
+  document.querySelectorAll(`.fs-theme-management[data-file-theme-panel="${ctx}"]`).forEach(section => {
+    const select = section.querySelector('[data-fs-theme-select]');
+    if (!select) return;
+    const adapter = _fsGetAdapter(ctx);
+    if (!adapter) return;
+    const current = _fsCurrentThemeId(ctx, adapter);
+    if (select.dataset.fsThemeSyncedId === current && select.value === current) return;
+    select.innerHTML = _fsThemeOptionsHtml(current, ctx);
+    select.value = current;
+    select.dataset.fsThemeSyncedId = current;
+    if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
+  });
+}
+if (typeof window !== 'undefined') window._fsSyncThemeSelect = _fsSyncThemeSelect;
 
 function _fsThemeAdapterIsCurrent(ctx, adapter) {
   if (!adapter || adapter.isCurrent?.() === false || (typeof _railStyleIsReadOnly === 'function' && _railStyleIsReadOnly(ctx))) return false;
@@ -127467,13 +127567,10 @@ async function fileThemeReset(ctx) {
     showStatus('デフォルトに戻しました');
     return;
   }
-  if (ctx === 'board' && typeof bd !== 'undefined') {
-    if (!await _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマリセット' })) return false;
-  } else if (ctx === 'scriptnote') {
-    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
-  } else {
-    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
-  }
+  // テーマの書式だけを戻し、余白・背景画像などファイル固有の設定は保つ。
+  const kept = _fsThemeIndependentStyle(ctx, id);
+  const next = ctx !== 'board' && id ? { ...kept, [_fsThemeIdField(ctx).key]: id } : kept;
+  if (!await _fsCommitThemeStyle(ctx, adapter, Object.keys(next).length ? next : null, { label: 'テーマリセット' })) return false;
   if (ctx !== 'scriptnote') {
     const panelId = _fsThemePanelId(ctx);
     if (panelId && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel(panelId);
@@ -143729,7 +143826,8 @@ function hideBoardNoteTab() {
   const TEXT_RE = /fg|textColor|baseTextColor|文字|本文|リンク|タイトル|見出し|セル|ヘッダー|エントリ|メタ|アイコン/i;
   const STYLE_LEFT_ACCENT_WIDTH = '6px';
   const STYLE_UNDERLINE_WIDTH = '2px';
-  const SETTINGS_GENERATED_STYLE_BASE_RE = /^--(?:page-(?:title|text|h[1-6]|quote|quote-cite|link)|db-(?:th|entity|cell))$/;
+  // 箇条書き・番号付きリストの階層も見出しと同じ書式（サイズ・フチ・アクセント等）を持つ。
+  const SETTINGS_GENERATED_STYLE_BASE_RE = /^--(?:page-(?:title|text|h[1-6]|quote|quote-cite|link|(?:ul|ol)-[1-6])|db-(?:th|entity|cell))$/;
   let _settingsStyleRowSeq = 0;
   const _settingsStyleDefs = new Map();
 
@@ -144862,21 +144960,21 @@ function hideBoardNoteTab() {
 
   function _fileValues(rowData, adapter, map) {
     return {
-      textColor: _readFile(map.textColor, adapter),
-      bgColor: _readFile(map.bgColor, adapter),
-      fontWeight: _readFile(map.fontWeight, adapter) === 'bold' ? 'bold' : '',
-      fontStyle: _readFile(map.fontStyle, adapter) === 'italic' ? 'italic' : '',
-      fontSize: _pxNumber(_readFile(map.fontSize, adapter), _previewFontSize(rowData.label) || ''),
-      fontFamily: _readFile(map.fontFamily, adapter),
-      textStrokeColor: _readFile(map.textStrokeColor, adapter),
-      textStrokeWidth: _pxNumber(_readFile(map.textStrokeWidth, adapter), 0),
-      leftAccent: _activeFlag(_readFile(map.leftAccent, adapter)),
-      underline: _activeFlag(_readFile(map.underline, adapter)),
-      accentColor: _readFile(map.accentColor, adapter),
-      borderColor: _readFile(map.borderColor, adapter),
-      borderWidth: _pxNumber(_readFile(map.borderWidth, adapter), ''),
-      caretColor: _readFile(map.caretColor, adapter),
-      caretWidth: _pxNumber(_readFile(map.caretWidth, adapter), ''),
+      textColor: _readFileWithInheritance(map.textColor, adapter),
+      bgColor: _readFileWithInheritance(map.bgColor, adapter),
+      fontWeight: _readFileWithInheritance(map.fontWeight, adapter) === 'bold' ? 'bold' : '',
+      fontStyle: _readFileWithInheritance(map.fontStyle, adapter) === 'italic' ? 'italic' : '',
+      fontSize: _pxNumber(_readFileWithInheritance(map.fontSize, adapter), _previewFontSize(rowData.label) || ''),
+      fontFamily: _readFileWithInheritance(map.fontFamily, adapter),
+      textStrokeColor: _readFileWithInheritance(map.textStrokeColor, adapter),
+      textStrokeWidth: _pxNumber(_readFileWithInheritance(map.textStrokeWidth, adapter), 0),
+      leftAccent: _activeFlag(_readFileWithInheritance(map.leftAccent, adapter)),
+      underline: _activeFlag(_readFileWithInheritance(map.underline, adapter)),
+      accentColor: _readFileWithInheritance(map.accentColor, adapter),
+      borderColor: _readFileWithInheritance(map.borderColor, adapter),
+      borderWidth: _pxNumber(_readFileWithInheritance(map.borderWidth, adapter), ''),
+      caretColor: _readFileWithInheritance(map.caretColor, adapter),
+      caretWidth: _pxNumber(_readFileWithInheritance(map.caretWidth, adapter), ''),
     };
   }
 
@@ -144958,8 +145056,24 @@ function hideBoardNoteTab() {
     return el;
   }
 
-  function _rawForField(field, prop, value) {
+  // トグルをオフにした値。空にすると親テーマ（アプリ設定やプリセット）の太字・斜体などへ
+  // 戻ってしまい「オフにできない」ため、オフは明示値として保存する。
+  function _toggleOffValue(field, prop) {
+    if (field?.off !== undefined && field.off !== null && field.off !== '') return field.off;
+    if (prop === 'fontWeight' || prop === 'fontStyle') return 'normal';
+    if (prop === 'leftAccent' || prop === 'underline') return '0px';
+    return '';
+  }
+
+  function _rawForField(field, prop, value, options = {}) {
+    if (field?.type === 'toggle' && !options.clear && (value == null || value === '' || value === false)) {
+      return _toggleOffValue(field, prop);
+    }
     if (value == null || value === '') return '';
+    // 表示切替（例: シートの罫線 1px/0px）を線の太さ欄で編集する場合は、入力した太さをそのまま保存する。
+    if (field.type === 'toggle' && prop === 'borderWidth' && Number.isFinite(Number(value))) {
+      return `${Math.max(0, Number(value))}px`;
+    }
     if (field.type === 'toggle') {
       if (prop === 'fontWeight') return value === 'bold' ? field.on : field.off;
       if (prop === 'fontStyle') return value === 'italic' ? field.on : field.off;
@@ -144969,9 +145083,9 @@ function hideBoardNoteTab() {
     return value;
   }
 
-  function _setFileField(field, prop, value, adapter) {
+  function _setFileField(field, prop, value, adapter, options = {}) {
     if (!field || !adapter) return;
-    const raw = _rawForField(field, prop, value);
+    const raw = _rawForField(field, prop, value, options);
     const normalized = typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
     const result = adapter.set(field, normalized || '');
     const apply = saved => {
@@ -144980,6 +145094,26 @@ function hideBoardNoteTab() {
       return true;
     };
     return result?.then ? result.then(apply) : apply(result);
+  }
+
+  // 書式を変えるとファイル内カスタムテーマが自動作成されるため、テーマ選択欄も追従させる。
+  function _syncFileThemeSelect(adapter) {
+    const ctx = adapter?.ctx || adapter?.kind || '';
+    if (ctx && typeof window._fsSyncThemeSelect === 'function') window._fsSyncThemeSelect(ctx);
+  }
+
+  // 箇条書き・番号付きリストは未設定の項目が本文の書式を継承する（CSSと同じ順序）。
+  function _inheritedFileFieldValue(field, adapter) {
+    const key = String(field?.key || '');
+    const match = key.match(/^--page-(?:ul|ol)-[1-6](-(?:fg|font-size|font|bold|italic|line-height))$/);
+    if (!match) return '';
+    return _readFile({ key: `--page-text${match[1]}`, type: field.type }, adapter);
+  }
+
+  function _readFileWithInheritance(field, adapter) {
+    const value = _readFile(field, adapter);
+    if (value !== undefined && value !== null && value !== '') return value;
+    return field ? _inheritedFileFieldValue(field, adapter) : '';
   }
 
   function _replaceFilePreview(anchorEl, rowData, adapter) {
@@ -145004,7 +145138,10 @@ function hideBoardNoteTab() {
           : prop;
         const result = _setFileField(map[key], key, value, adapter);
         const refresh = saved => {
-          if (saved !== false && adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+          if (saved !== false && adapter.isCurrent?.() !== false) {
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          }
         };
         if (result?.then) result.then(refresh).catch(error => {
           console.warn('テーマ書式の保存に失敗:', error);
@@ -145015,23 +145152,38 @@ function hideBoardNoteTab() {
       onReset: async () => {
         try {
           for (const [prop, field] of Object.entries(map)) {
-            if (await _setFileField(field, prop, '', adapter) === false) return;
+            if (await _setFileField(field, prop, '', adapter, { clear: true }) === false) return;
           }
           for (const field of extraFields) {
-            if (await _setFileField(field, '', '', adapter) === false) return;
+            if (await _setFileField(field, '', '', adapter, { clear: true }) === false) return;
           }
-          if (adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+          if (adapter.isCurrent?.() !== false) {
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          }
         } catch (error) {
           console.warn('テーマ書式のリセットに失敗:', error);
           if (typeof showStatus === 'function') showStatus('テーマ書式をリセットできませんでした', true);
         }
       },
     });
+    // 開いた直後にプレビューの「クリックで書式設定」ツールチップがポップアップ見出しへ重ならないようにする。
+    if (popup) window.GBTooltip?.hide?.({ suppressUntilLeave: true });
     // 元の保存・履歴ハンドラーを使い、行間や余白も同じ書式編集へ集約する。
+    // 数値は見出しのフォントサイズと同じ「数値入力＋単位」で表示し、スライダーは出さない。
     if (popup && extraFields.length) {
       const row = document.createElement('div');
-      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap';
-      extraFields.forEach(field => row.appendChild(_fsBuildFieldInline(field, adapter, rowData.label)));
+      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-fmt-popup-row--file-extra';
+      extraFields.forEach(field => {
+        const control = _isFileNumberField(field)
+          ? _makeFileNumberGroup(field, adapter, rowData, () => {
+            if (adapter.isCurrent?.() === false) return;
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          })
+          : _fsBuildFieldInline(field, adapter, rowData.label);
+        row.appendChild(control);
+      });
       row.querySelectorAll('input').forEach(input => {
         input._gbFmtCommittedValue = input.value;
         input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
@@ -145041,9 +145193,79 @@ function hideBoardNoteTab() {
           input.dispatchEvent(new Event('change', { bubbles:true }));
         };
       });
-      popup.insertBefore(row, popup.querySelector('.gb-fmt-footer'));
+      const before = popup.querySelector(':scope > .gb-fmt-popup-row--specific, :scope > .gb-fmt-footer-actions-row, :scope > .gb-fmt-footer');
+      if (extraFields.every(_isFileNumberField)) {
+        const sectionTitle = document.createElement('div');
+        sectionTitle.className = 'gb-fmt-section-title';
+        sectionTitle.textContent = extraFields.some(field => /line-height|space-|行間|余白/i.test(`${field.key || ''} ${field.label || ''}`)) ? '行間・余白' : '数値';
+        popup.insertBefore(sectionTitle, before);
+      }
+      popup.insertBefore(row, before);
       if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
     }
+  }
+
+  function _isFileNumberField(field) {
+    return field?.type === 'rangeNumber' || field?.type === 'number';
+  }
+
+  function _makeFileNumberGroup(field, adapter, rowData, onCommitted) {
+    const parse = raw => parseFloat(String(raw ?? '').replace(/[a-z%]+$/i, '').trim());
+    const clamp = n => {
+      let value = n;
+      if (field.min !== undefined) value = Math.max(field.min, value);
+      if (field.max !== undefined) value = Math.min(field.max, value);
+      return value;
+    };
+    const unitText = field.unit || '';
+    const current = parse(_readFileWithInheritance({ ...field, fallback: undefined }, adapter));
+    const fallback = parse(field.fallback);
+    const group = document.createElement('span');
+    group.className = 'gb-fmt-popup-group gb-fmt-popup-group--number';
+    const label = document.createElement('span');
+    label.className = 'gb-fmt-label';
+    label.textContent = _fsShortLabel(field, rowData?.label || '');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'gb-fmt-num gb-fmt-num--w54';
+    if (field.min !== undefined) input.min = String(field.min);
+    if (field.max !== undefined) input.max = String(field.max);
+    input.step = String(field.step ?? 1);
+    // 未設定は空欄にして既定値を薄く示す（入力欄の初期値を保存値と誤認させない）。
+    input.value = Number.isFinite(current) ? String(current) : '';
+    input.placeholder = Number.isFinite(fallback) ? String(fallback) : '—';
+    input.title = field.label || '';
+    input.setAttribute('aria-label', `${rowData?.label || ''} ${label.textContent || field.label || ''}`.trim());
+    input.dataset.e2eId = _e2eId('file-style-field', rowData?.label || '', field.key || '', 'number');
+    input.addEventListener('change', () => {
+      const s = input.value.trim();
+      const n = parse(s);
+      let raw = '';
+      if (s && Number.isFinite(n)) {
+        const value = clamp(n);
+        input.value = String(value);
+        raw = String(value) + (field.type === 'rangeNumber' ? unitText : '');
+      }
+      const result = adapter.set(field, raw);
+      const done = saved => {
+        if (saved === false || adapter.isCurrent?.() === false) return;
+        adapter.applyCss(field, raw);
+        onCommitted?.();
+      };
+      if (result?.then) result.then(done).catch(error => {
+        console.warn('テーマ書式の保存に失敗:', error);
+        if (typeof showStatus === 'function') showStatus('テーマ書式を保存できませんでした', true);
+      });
+      else done(result);
+    });
+    group.append(label, input);
+    if (unitText) {
+      const unit = document.createElement('span');
+      unit.className = 'gb-fmt-label';
+      unit.textContent = unitText;
+      group.appendChild(unit);
+    }
+    return group;
   }
 
   function _rowLabel(rowData) {
@@ -149146,14 +149368,28 @@ function hideBoardNoteTab() {
         applyCalendarPanelStyle(_calWriteStyle(style || {}));
       },
       set(field, val) {
+        const themeKeys = ['__themeId', '__themeName', '__themeSourceId', '__useOsAccentColor'];
+        const current = _calReadStyle();
+        // カスタムテーマの自動作成と項目の変更をまとめて1回の取り消しで戻せるよう、変更前を控える。
+        const before = typeof _fsStyleSnapshot === 'function' ? _fsStyleSnapshot(current) : { ...current };
+        // プリセット参照中の変更は、カレンダー用に展開した配色を基にカスタムテーマを自動作成する。
+        if (!themeKeys.includes(field?.key) && current.__themeId && !_calIsLocalCustomThemeId(current.__themeId)) {
+          const localCustom = _calLocalCustomStyleFromThemeId(current.__themeId);
+          const kept = typeof _fsThemeIndependentStyle === 'function' ? _fsThemeIndependentStyle(CALENDAR_CTX, current.__themeId) : {};
+          if (localCustom) _calWriteStyle({ ...localCustom, ...kept, __useOsAccentColor: current.__useOsAccentColor });
+        }
         if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
-          _fsEnsureLocalCustomThemeBeforeFieldSet(CALENDAR_CTX, field, this);
+          _fsEnsureLocalCustomThemeBeforeFieldSet(CALENDAR_CTX, field, this, { skipHistory: true });
         }
         const normalized = _calNormalizeFieldValue(field, val);
         const next = { ..._calReadStyle() };
         if (normalized === null || normalized === undefined || normalized === '') delete next[field.key];
         else next[field.key] = normalized;
         applyCalendarPanelStyle(_calWriteStyle(next));
+        if (typeof _fsPushStyleHistory === 'function') {
+          _fsPushStyleHistory(CALENDAR_CTX, before, _calReadStyle(), '書式設定変更', field?.label || field?.key || '');
+        }
+        if (typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(CALENDAR_CTX);
       },
       applyCss() {
         applyCalendarPanelStyle();
@@ -149309,12 +149545,14 @@ function hideBoardNoteTab() {
         const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(CALENDAR_CTX) : _calGetAdapter();
         if (!adapter) return;
         const nextId = String(id || '');
+        if (_calIsLocalCustomThemeId(nextId)) return;
+        // テーマと関係のない設定（イベント右余白など）は、テーマを切り替えても保つ。
+        const kept = typeof _fsThemeIndependentStyle === 'function' ? _fsThemeIndependentStyle(CALENDAR_CTX, nextId) : {};
         if (!nextId) {
-          return _fsCommitThemeStyle(CALENDAR_CTX, adapter, null, { label: 'テーマ解除' });
+          return _fsCommitThemeStyle(CALENDAR_CTX, adapter, Object.keys(kept).length ? kept : null, { label: 'テーマ解除' });
         }
-        const nextStyle = _calLocalCustomStyleFromThemeId(nextId);
-        if (!nextStyle) return;
-        return _fsCommitThemeStyle(CALENDAR_CTX, adapter, nextStyle, { label: 'テーマ変更' });
+        // プリセットは参照として保存し、選択欄にもプリセット名を表示する。
+        return _fsCommitThemeStyle(CALENDAR_CTX, adapter, { ...kept, __themeId: nextId }, { label: 'テーマ変更' });
       };
     }
 

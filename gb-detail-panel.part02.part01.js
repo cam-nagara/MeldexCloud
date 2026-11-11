@@ -131,7 +131,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '本文',     fields: pick(['--page-text-fg', '--page-text-bold', '--page-text-italic', '--page-text-font']) },
           ...['ul', 'ol'].flatMap(kind => Array.from({ length: 6 }, (_, i) => ({
             label: `${kind === 'ul' ? '箇条書き' : '番号付きリスト'} 階層${i + 1}`,
-            fields: pick(['fg', 'bg', 'bold', 'italic', 'font', 'font-size', 'line-height', 'space-before', 'space-after'].map(suffix => `--page-${kind}-${i + 1}-${suffix}`)),
+            fields: pick(['fg', 'bg', 'bold', 'italic', 'font', 'line-height', 'space-before', 'space-after'].map(suffix => `--page-${kind}-${i + 1}-${suffix}`)),
           }))),
           { label: 'リンク',   fields: pick(['--page-link-fg', '--page-link-bold', '--page-link-italic']) },
           { label: '引用ブロック', fields: pick(['--page-quote-fg', '--page-quote-bg', '--page-quote-bold', '--page-quote-italic']) },
@@ -453,7 +453,14 @@ function _fsThemeColorSlots(themeDef) {
 }
 
 function _fsComputedThemeColorSet(themeDef) {
-  if (!themeDef || typeof computeThemeColorSetFromSlots !== 'function') return null;
+  if (!themeDef) return null;
+  // アプリ全体のテーマ・プリセット参照の表示と同じ解決（テーマ固有の配色 → スロットからの生成）に揃える。
+  // ここだけ別の計算をすると、プリセットから作ったカスタムテーマで見出し等の色が入れ替わる。
+  if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeColorSet === 'function') {
+    const resolved = MeldexThemeManager.getThemeColorSet(themeDef, { ignoreOsAccent: true });
+    if (Array.isArray(resolved) && resolved.length) return resolved.slice();
+  }
+  if (typeof computeThemeColorSetFromSlots !== 'function') return null;
   const shouldUseGeneratedPalette = !!themeDef.builtIn
     || Object.prototype.hasOwnProperty.call(themeDef?.ui || {}, 'standardPaletteAdjust')
     || Object.prototype.hasOwnProperty.call(themeDef || {}, 'standardPaletteAdjust')
@@ -569,6 +576,9 @@ function _fsBuildLocalCustomThemeStyle(ctx, options = {}) {
     : String(current[_fsLocalCustomThemeSourceKey()] || currentThemeId || defaultThemeId || '');
   if (_fsIsLocalCustomThemeId(sourceId)) sourceId = defaultThemeId;
   const useDocumentSourceValues = !explicitSource && !String(currentThemeId || '').trim();
+  // プリセット参照中の書式変更では、画面全体（アプリ設定）の値ではなく参照先プリセットの値を写す。
+  const readFromSource = explicitSource || (!useDocumentSourceValues
+    && !_fsIsLocalCustomThemeId(currentThemeId) && String(currentThemeId) === String(sourceId));
   const sourceTheme = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
     ? MeldexThemeManager.getThemeById(sourceId || defaultThemeId)
     : null;
@@ -585,11 +595,13 @@ function _fsBuildLocalCustomThemeStyle(ctx, options = {}) {
     if (!key || key === _fsThemeIdField(ctx).key) return;
     let value = '';
     const sourceKey = key.startsWith('--') ? key : field.cssVar;
-    if (explicitSource && sourceKey) {
+    if (readFromSource && sourceKey) {
       value = _fsReadSourceThemeVar(sourceTheme, sourceKey, false);
       if (field.type === 'number' && value !== '') value = parseFloat(value);
     }
-    if (!value) value = _fsReadFieldValue(field, adapter);
+    // 入力欄の表示用初期値（field.fallback）は実際の既定値と異なることがあるため、
+    // 自動作成するカスタムテーマへは書き込まない（未設定のまま既定の見た目を保つ）。
+    if (!value) value = _fsReadFieldValue(field.fallback !== undefined ? { ...field, fallback: undefined } : field, adapter);
     if (!value && !useDocumentSourceValues && key.startsWith('--')) value = _fsReadSourceThemeVar(sourceTheme, key, false);
     if (value !== undefined && value !== null && value !== '') next[key] = value;
   });
@@ -745,11 +757,19 @@ function _fsRefreshThemePanels(ctx) {
 function _fsBindThemeColorSetEditor(root, ctx) {
   if (!root || typeof MeldexThemeManager === 'undefined') return;
   const adapter = _fsGetAdapter(ctx);
-  const id = _fsCurrentThemeId(ctx, adapter);
-  const key = _fsThemeColorSetKey(ctx, id);
-  const isLocalCustom = _fsIsLocalCustomThemeId(id);
-  const isCustom = isLocalCustom || !!(id && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
-  const currentColors = () => _fsPendingThemeColorSets[key]?.slice() || _fsThemeColorSetForCurrent(ctx, adapter) || [];
+  // 書式変更でファイル内カスタムテーマへ切り替わってもパネルは描き直さないため、
+  // 現在のテーマはクリック時に読み直す。
+  const themeState = () => {
+    const id = _fsCurrentThemeId(ctx, adapter);
+    const isLocalCustom = _fsIsLocalCustomThemeId(id);
+    return {
+      id,
+      key: _fsThemeColorSetKey(ctx, id),
+      isLocalCustom,
+      isCustom: isLocalCustom || !!(id && MeldexThemeManager.getCustomThemes().some(t => t.id === id)),
+    };
+  };
+  const currentColors = () => _fsPendingThemeColorSets[themeState().key]?.slice() || _fsThemeColorSetForCurrent(ctx, adapter) || [];
   const saveLocalPalette = async (colors) => {
     const current = _fsGetStyleForContext(ctx) || {};
     const source = _fsIsLocalCustomThemeStyle(current)
@@ -776,6 +796,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
         if (!color || color === 'transparent') return;
         const next = currentColors();
         next[index] = color;
+        const { id, key, isCustom, isLocalCustom } = themeState();
         if (!id || !isCustom || isLocalCustom) {
           _fsRunThemeAction(ctx, () => saveLocalPalette(next));
           return;
@@ -786,6 +807,7 @@ function _fsBindThemeColorSetEditor(root, ctx) {
     });
   });
   root.querySelector('[data-theme-color-reset]')?.addEventListener('click', () => {
+    const { id, key, isCustom, isLocalCustom } = themeState();
     if (!id || !isCustom || isLocalCustom) {
       const sourceId = (_fsGetStyleForContext(ctx) || {})[_fsLocalCustomThemeSourceKey()] || MeldexThemeManager.getDefaultThemeId?.();
       const colors = _fsThemeColorSetForThemeId(sourceId);
@@ -797,18 +819,77 @@ function _fsBindThemeColorSetEditor(root, ctx) {
   });
 }
 
+// テーマ（配色・フォント・太字/斜体）ではなく、ファイルごとの配置・寸法・動作の設定か。
+function _fsIsThemeIndependentField(field) {
+  if (!field || !field.key) return false;
+  if (['color', 'select', 'boardBgColorReset'].includes(field.type)) return false;
+  if (field.type === 'toggle' && ['bold', 'italic'].includes(field.on)) return false;
+  return true;
+}
+
+// テーマを切り替えても保つ設定（余白・内容最大幅・リストの行間、シナリオの折り返しや行間、
+// ボードの背景画像や隙間・自動整列など）。切替先のテーマが値を持つ項目はテーマの値を優先する。
+const _FS_THEME_INDEPENDENT_EXTRA_KEYS = { board: ['--bd-bg-image-scale'] };
+function _fsThemeIndependentStyle(ctx, targetThemeId) {
+  const current = _fsGetStyleForContext(ctx) || {};
+  const spec = _FS_FIELDS[ctx] || {};
+  let targetVars = {};
+  if (typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
+    && typeof MeldexThemeManager.getThemeStyleVars === 'function') {
+    const theme = MeldexThemeManager.getThemeById(targetThemeId || MeldexThemeManager.getDefaultThemeId?.());
+    targetVars = (theme && MeldexThemeManager.getThemeStyleVars(theme)) || {};
+  }
+  const has = value => value !== undefined && value !== null && value !== '';
+  const kept = {};
+  [...(spec.display || []), ...(spec.editOps || [])].forEach(field => {
+    if (!_fsIsThemeIndependentField(field)) return;
+    const key = _fsStyleStorageKeyForField(ctx, field);
+    if (!key || !has(current[key])) return;
+    const varKey = key.startsWith('--') ? key : field.cssVar;
+    if (varKey && has(targetVars[varKey])) return;
+    kept[key] = current[key];
+  });
+  (_FS_THEME_INDEPENDENT_EXTRA_KEYS[ctx] || []).forEach(key => {
+    if (has(current[key])) kept[key] = current[key];
+  });
+  return kept;
+}
+
 function fileThemeSelect(ctx, id) {
   const adapter = _fsGetAdapter(ctx);
   if (!adapter) return;
   const nextId = String(id || '');
+  if (_fsIsLocalCustomThemeId(nextId)) return;
+  // テーマと関係のないファイル固有の設定は、テーマを切り替えても保つ。
+  const kept = _fsThemeIndependentStyle(ctx, nextId);
   if (!nextId) {
     if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = '';
-    return _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマ解除' });
+    return _fsCommitThemeStyle(ctx, adapter, Object.keys(kept).length ? kept : null, { label: 'テーマ解除' });
   }
-  if (_fsIsLocalCustomThemeId(nextId)) return;
-  const next = _fsBuildLocalCustomThemeStyle(ctx, { adapter, sourceId: nextId, name: 'カスタムテーマ' });
-  return _fsCommitThemeStyle(ctx, adapter, next);
+  // プリセットは参照として保存し、選択欄にもそのプリセット名を表示する。
+  // 書式を変更した時点で、このプリセットを基にしたファイル内カスタムテーマが自動作成される。
+  if (ctx === 'board' && typeof bd !== 'undefined') bd.themeId = nextId;
+  return _fsCommitThemeStyle(ctx, adapter, { ...kept, [_fsThemeIdField(ctx).key]: nextId }, { label: 'テーマ変更' });
 }
+
+// 書式変更でファイル内カスタムテーマへ切り替わった時など、選択欄だけを現在値へ揃える。
+// パネル全体を描き直すと開いている書式ポップアップの基準要素が消えるため、選択欄とパレットだけ更新する。
+function _fsSyncThemeSelect(ctx) {
+  if (typeof document === 'undefined' || !ctx) return;
+  document.querySelectorAll(`.fs-theme-management[data-file-theme-panel="${ctx}"]`).forEach(section => {
+    const select = section.querySelector('[data-fs-theme-select]');
+    if (!select) return;
+    const adapter = _fsGetAdapter(ctx);
+    if (!adapter) return;
+    const current = _fsCurrentThemeId(ctx, adapter);
+    if (select.dataset.fsThemeSyncedId === current && select.value === current) return;
+    select.innerHTML = _fsThemeOptionsHtml(current, ctx);
+    select.value = current;
+    select.dataset.fsThemeSyncedId = current;
+    if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
+  });
+}
+if (typeof window !== 'undefined') window._fsSyncThemeSelect = _fsSyncThemeSelect;
 
 function _fsThemeAdapterIsCurrent(ctx, adapter) {
   if (!adapter || adapter.isCurrent?.() === false || (typeof _railStyleIsReadOnly === 'function' && _railStyleIsReadOnly(ctx))) return false;
@@ -889,13 +970,10 @@ async function fileThemeReset(ctx) {
     showStatus('デフォルトに戻しました');
     return;
   }
-  if (ctx === 'board' && typeof bd !== 'undefined') {
-    if (!await _fsCommitThemeStyle(ctx, adapter, null, { label: 'テーマリセット' })) return false;
-  } else if (ctx === 'scriptnote') {
-    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
-  } else {
-    if (!await _fsCommitThemeStyle(ctx, adapter, id ? { [_fsThemeIdField(ctx).key]: id } : null, { label: 'テーマリセット' })) return false;
-  }
+  // テーマの書式だけを戻し、余白・背景画像などファイル固有の設定は保つ。
+  const kept = _fsThemeIndependentStyle(ctx, id);
+  const next = ctx !== 'board' && id ? { ...kept, [_fsThemeIdField(ctx).key]: id } : kept;
+  if (!await _fsCommitThemeStyle(ctx, adapter, Object.keys(next).length ? next : null, { label: 'テーマリセット' })) return false;
   if (ctx !== 'scriptnote') {
     const panelId = _fsThemePanelId(ctx);
     if (panelId && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel(panelId);

@@ -488,10 +488,16 @@
         summary.innerHTML = typeof global.lucide === 'function' ? global.lucide('moreHorizontal', 14) : '…';
         summary.dataset.e2eId = `board-common-view-menu-trigger-${refToken}`;
         summary.setAttribute('aria-label', `${entry.name}のビュー操作`); menu.appendChild(summary);
-        const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; menu.appendChild(panel);
+        const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu bd-view-tab-menu';
+        menu.appendChild(panel);
         bindMenu(menu, panel);
+        const separator = () => {
+          const sep = document.createElement('div'); sep.className = 'gb-context-menu-sep'; sep.setAttribute('role', 'separator');
+          panel.appendChild(sep);
+        };
         const action = (text, run, disabled, actionId, refreshAfter = true) => {
           const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+          button.className = 'gb-context-menu-item';
           button.dataset.bdTopicViewMutation = actionId;
           button.dataset.e2eId = `board-common-view-${actionId}-${refToken}`;
           button.disabled = settings.readOnly === true || !!disabled;
@@ -500,10 +506,12 @@
             if (refreshAfter) refresh();
           }); panel.appendChild(button);
         };
-        action('名前変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
+        action('名前を変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
         action('複製', () => controller.duplicateMixed(ref), false, 'duplicate');
+        separator();
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
+        separator();
         action('削除', async () => {
           const confirmed = typeof global.cfConfirm === 'function'
             ? await global.cfConfirm(`「${entry.name}」を削除します。トピック本体は残り、このビュー固有の配置・ライン・グループ・表示設定だけが削除されます。`)
@@ -529,17 +537,20 @@
       addSummary.innerHTML = typeof global.lucide === 'function' ? global.lucide('plus', 16) : '＋';
       addSummary.dataset.e2eId = 'board-common-view-add-trigger';
       addSummary.setAttribute('aria-label', 'ビューを追加'); add.appendChild(addSummary);
-      const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu'; add.appendChild(addMenu);
+      const addMenu = document.createElement('div'); addMenu.className = 'bd-topic-view-overflow-menu bd-view-tab-menu';
+      add.appendChild(addMenu);
       bindMenu(add, addMenu);
       [['board', 'ボード', () => controller.add()], ['pivot', 'テーブル', () => controller.addSheet({ viewMode: 'pivot', name: 'テーブル' })],
         ['tree', 'ツリー', () => controller.addSheet({ viewMode: 'tree', name: 'ツリー' })]].forEach(([kind, text, run]) => {
         const button = document.createElement('button'); button.type = 'button'; button.disabled = settings.readOnly === true;
+        button.className = 'gb-context-menu-item';
         button.dataset.bdTopicViewMutation = `add-${kind}`;
         button.dataset.e2eId = `board-common-view-add-${kind}`;
         button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
         button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
       });
-      root.appendChild(add);
+      // 再描画でも「＋」はタブ列の直後に戻す（末尾へ足すと後付けのシャッフル等と順序が入れ替わる）。
+      root.insertBefore(add, select.nextSibling);
       addElement = add;
     };
     select.addEventListener('change', () => {

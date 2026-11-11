@@ -14814,6 +14814,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-1-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-1-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-1-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-1-space-before, 0.4em) var(--page-ul-1-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-1-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-1-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-1-left-accent, 0px)) 0 0 0 var(--page-ul-1-accent-color, currentColor);
+  border-block-end: var(--page-ul-1-underline, 0px) solid var(--page-ul-1-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) ol > li {
   color: var(--page-ol-1-fg, var(--page-text-fg)); background: var(--page-ol-1-bg, transparent);
@@ -14821,6 +14824,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-1-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-1-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-1-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-1-space-before, 0.4em) var(--page-ol-1-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-1-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-1-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-1-left-accent, 0px)) 0 0 0 var(--page-ol-1-accent-color, currentColor);
+  border-block-end: var(--page-ol-1-underline, 0px) solid var(--page-ol-1-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) ul > li {
   color: var(--page-ul-2-fg, var(--page-text-fg)); background: var(--page-ul-2-bg, transparent);
@@ -14828,6 +14834,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-2-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-2-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-2-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-2-space-before, 0.4em) var(--page-ul-2-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-2-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-2-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-2-left-accent, 0px)) 0 0 0 var(--page-ul-2-accent-color, currentColor);
+  border-block-end: var(--page-ul-2-underline, 0px) solid var(--page-ul-2-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) ol > li {
   color: var(--page-ol-2-fg, var(--page-text-fg)); background: var(--page-ol-2-bg, transparent);
@@ -14835,6 +14844,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-2-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-2-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-2-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-2-space-before, 0.4em) var(--page-ol-2-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-2-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-2-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-2-left-accent, 0px)) 0 0 0 var(--page-ol-2-accent-color, currentColor);
+  border-block-end: var(--page-ol-2-underline, 0px) solid var(--page-ol-2-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-3-fg, var(--page-text-fg)); background: var(--page-ul-3-bg, transparent);
@@ -14842,6 +14854,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-3-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-3-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-3-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-3-space-before, 0.4em) var(--page-ul-3-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-3-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-3-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-3-left-accent, 0px)) 0 0 0 var(--page-ul-3-accent-color, currentColor);
+  border-block-end: var(--page-ul-3-underline, 0px) solid var(--page-ul-3-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-3-fg, var(--page-text-fg)); background: var(--page-ol-3-bg, transparent);
@@ -14849,6 +14864,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-3-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-3-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-3-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-3-space-before, 0.4em) var(--page-ol-3-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-3-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-3-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-3-left-accent, 0px)) 0 0 0 var(--page-ol-3-accent-color, currentColor);
+  border-block-end: var(--page-ol-3-underline, 0px) solid var(--page-ol-3-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-4-fg, var(--page-text-fg)); background: var(--page-ul-4-bg, transparent);
@@ -14856,6 +14874,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-4-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-4-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-4-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-4-space-before, 0.4em) var(--page-ul-4-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-4-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-4-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-4-left-accent, 0px)) 0 0 0 var(--page-ul-4-accent-color, currentColor);
+  border-block-end: var(--page-ul-4-underline, 0px) solid var(--page-ul-4-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-4-fg, var(--page-text-fg)); background: var(--page-ol-4-bg, transparent);
@@ -14863,6 +14884,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-4-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-4-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-4-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-4-space-before, 0.4em) var(--page-ol-4-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-4-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-4-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-4-left-accent, 0px)) 0 0 0 var(--page-ol-4-accent-color, currentColor);
+  border-block-end: var(--page-ol-4-underline, 0px) solid var(--page-ol-4-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-5-fg, var(--page-text-fg)); background: var(--page-ul-5-bg, transparent);
@@ -14870,6 +14894,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-5-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-5-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-5-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-5-space-before, 0.4em) var(--page-ul-5-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-5-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-5-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-5-left-accent, 0px)) 0 0 0 var(--page-ul-5-accent-color, currentColor);
+  border-block-end: var(--page-ul-5-underline, 0px) solid var(--page-ul-5-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-5-fg, var(--page-text-fg)); background: var(--page-ol-5-bg, transparent);
@@ -14877,6 +14904,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-5-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-5-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-5-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-5-space-before, 0.4em) var(--page-ol-5-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-5-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-5-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-5-left-accent, 0px)) 0 0 0 var(--page-ol-5-accent-color, currentColor);
+  border-block-end: var(--page-ol-5-underline, 0px) solid var(--page-ol-5-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-6-fg, var(--page-text-fg)); background: var(--page-ul-6-bg, transparent);
@@ -14884,6 +14914,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-6-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-6-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-6-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-6-space-before, 0.4em) var(--page-ul-6-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-6-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-6-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-6-left-accent, 0px)) 0 0 0 var(--page-ul-6-accent-color, currentColor);
+  border-block-end: var(--page-ul-6-underline, 0px) solid var(--page-ul-6-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-6-fg, var(--page-text-fg)); background: var(--page-ol-6-bg, transparent);
@@ -14891,6 +14924,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-6-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-6-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-6-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-6-space-before, 0.4em) var(--page-ol-6-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-6-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-6-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-6-left-accent, 0px)) 0 0 0 var(--page-ol-6-accent-color, currentColor);
+  border-block-end: var(--page-ol-6-underline, 0px) solid var(--page-ol-6-accent-color, currentColor);
 }
 
 /* ノート縦書き
@@ -14976,6 +15012,19 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
 :is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
 :is(#page-content,[data-editor-local-id="page-content"]).vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
 :is(#page-content,[data-editor-local-id="page-content"]).vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
+/* 箇条書き・番号付きリストの左アクセントバーも縦書きでは上側へ鏡映する。 */
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing ul > li { box-shadow: 0 calc(-1 * var(--page-ul-1-left-accent, 0px)) 0 0 var(--page-ul-1-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing ol > li { box-shadow: 0 calc(-1 * var(--page-ol-1-left-accent, 0px)) 0 0 var(--page-ol-1-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) ul > li { box-shadow: 0 calc(-1 * var(--page-ul-2-left-accent, 0px)) 0 0 var(--page-ul-2-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) ol > li { box-shadow: 0 calc(-1 * var(--page-ol-2-left-accent, 0px)) 0 0 var(--page-ol-2-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) ul > li { box-shadow: 0 calc(-1 * var(--page-ul-3-left-accent, 0px)) 0 0 var(--page-ul-3-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) ol > li { box-shadow: 0 calc(-1 * var(--page-ol-3-left-accent, 0px)) 0 0 var(--page-ol-3-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li { box-shadow: 0 calc(-1 * var(--page-ul-4-left-accent, 0px)) 0 0 var(--page-ul-4-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li { box-shadow: 0 calc(-1 * var(--page-ol-4-left-accent, 0px)) 0 0 var(--page-ol-4-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li { box-shadow: 0 calc(-1 * var(--page-ul-5-left-accent, 0px)) 0 0 var(--page-ul-5-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li { box-shadow: 0 calc(-1 * var(--page-ol-5-left-accent, 0px)) 0 0 var(--page-ol-5-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li { box-shadow: 0 calc(-1 * var(--page-ul-6-left-accent, 0px)) 0 0 var(--page-ul-6-accent-color, currentColor); }
+:is(#page-content,[data-editor-local-id="page-content"]).vertical-writing :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li { box-shadow: 0 calc(-1 * var(--page-ol-6-left-accent, 0px)) 0 0 var(--page-ol-6-accent-color, currentColor); }
 
 /* ルビ */
 /* ルビ: data-ruby属性でCSS疑似要素として表示（ContentEditable互換） */
@@ -20780,20 +20829,40 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   color: var(--cal-fg, var(--fg));
 }
 
-/* 作品ごとのボタンは別シートではなく、同じタスクシートの保存ビューとして表示する。 */
+/* 作品ごとのボタンは別シートではなく、同じタスクシートの保存ビューとして表示する。
+   行の高さ・余白はシートのビュータブ行（.db-view-switcher: 上下2px＋タブ高 --ui-h-xs）に揃える。
+   タッチ環境の44pxは下の @media 側（!important）が優先する。 */
 .gb-production-list-switch.db-view-tabs {
-  padding: 0 8px;
-  gap: 0;
+  padding: 2px 6px;
+  gap: 2px;
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn {
-  min-height: 32px;
-  padding: 5px 12px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  padding: 0 8px;
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-radius: var(--ui-radius-xs);
   background: transparent;
   color: var(--cal-muted-fg, var(--fg2));
+}
+
+@media (pointer: fine) and (min-width: 721px) {
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-form input,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-cancel {
+    box-sizing: border-box;
+    height: var(--ui-h-xs);
+    min-height: var(--ui-h-xs);
+  }
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-confirm,
+  .gb-production-list-switch.db-view-tabs .gb-production-list-switch-add-cancel {
+    min-width: var(--ui-h-xs);
+  }
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn.is-active {
@@ -29329,10 +29398,7 @@ input.gb-fmt-num { min-width: 64px; }
   max-width: 100%;
 }
 
-.db-pane-view-switcher {
-  padding: 0;
-}
-
+/* 分割表示のペインでも、ビュータブ行の上下余白はメインのシート（.db-view-switcher）と同じにする。 */
 .db-pane-view-switcher .db-view-tabs {
   border-bottom: 0;
 }
@@ -31392,7 +31458,8 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   border-bottom: 1px solid var(--ui-border, var(--border));
   background: var(--bg2);
 }
-.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; }
+/* 行の下線と背景は外側の .bd-view-tabs-row が持つ。内側にも下線があると二重になりシートより1px高くなる。 */
+.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; border-bottom: 0; }
 .bd-view-tabs-row .bd-common-view-tabs { flex: 1 1 auto; border-bottom: 0; }
 .bd-view-tabs-row .bd-topic-view-controls > select { display: none; }
 @media (max-width: 768px) {
@@ -31422,12 +31489,18 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   text-align: center;
 }
 
+/* 外観は共通コンテキストメニュー(.gb-context-menu)と同じテーマトークンを使う。
+   Meldexに存在しない変数(--panel-bg等)を参照すると白背景に化けるため使わない。
+   .gb-context-menu クラス自体は付けない（各所の「開いているメニューを全部消す」処理で
+   常設のパネルDOMごと削除されるため）。 */
 .bd-topic-view-overflow-menu {
-  background: var(--panel-bg, #fff);
-  border: 1px solid var(--border-color, #cbd5e1);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  background: var(--ui-popup-bg, var(--ui-bg-control));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  color: var(--ui-fg-default);
   display: grid;
+  font-size: var(--ui-font-13);
   gap: 4px;
   inset-inline-end: 0;
   min-width: 144px;
@@ -31436,6 +31509,21 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   top: calc(100% + 4px);
   z-index: 40;
 }
+
+/* ビュータブの操作・追加メニュー: 項目は共通の button.gb-context-menu-item を使う */
+.bd-topic-view-overflow-menu.bd-view-tab-menu {
+  font-weight: normal;
+  gap: 0;
+  min-width: 160px;
+  padding: var(--ui-space-2) 0;
+}
+.bd-view-tab-menu > .gb-context-menu-item:disabled {
+  opacity: 0.55;
+  color: var(--ui-fg-muted);
+  cursor: default;
+  background: transparent;
+}
+.bd-view-tab-menu > .gb-context-menu-item svg { flex-shrink: 0; }
 
 .bd-topic-view-overflow:not([open]) > .bd-topic-view-overflow-menu {
   display: none;
@@ -31557,8 +31645,9 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 .bd-common-view-tab:focus-within .bd-common-view-menu > .view-tab-more,
 .bd-common-view-menu[open] > .view-tab-more { opacity: 1; }
 .bd-common-view-tab.active { background: var(--ui-bg-control-active); color: var(--ui-fg-strong); }
-.bd-common-view-add { display: block; flex: 0 0 auto; }
-.bd-common-view-add > .view-tab-add { display: inline-flex; align-items: center; justify-content: center; width: var(--ui-h-xs); height: var(--ui-h-xs); min-width: var(--ui-h-xs); padding: 0; border-radius: var(--ui-radius-xs); box-sizing: border-box; }
+.bd-common-view-add { display: flex; align-items: center; flex: 0 0 auto; }
+/* min-height は .bd-topic-view-overflow > summary の32pxを打ち消す（残すと行がシートより高くなる）。 */
+.bd-common-view-add > .view-tab-add { display: inline-flex; align-items: center; justify-content: center; width: var(--ui-h-xs); height: var(--ui-h-xs); min-width: var(--ui-h-xs); min-height: var(--ui-h-xs); padding: 0; border-radius: var(--ui-radius-xs); box-sizing: border-box; }
 .bd-common-view-add > .view-tab-add svg { width: 16px; height: 16px; }
 .bd-common-view-empty { padding: 4px 8px; color: var(--ui-fg-muted, var(--fg2)); white-space: nowrap; }
 .bd-group-style-manager { display: grid; gap: 6px; min-width: 220px; border: 1px solid var(--ui-border); }

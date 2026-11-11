@@ -9,7 +9,8 @@
   const TEXT_RE = /fg|textColor|baseTextColor|文字|本文|リンク|タイトル|見出し|セル|ヘッダー|エントリ|メタ|アイコン/i;
   const STYLE_LEFT_ACCENT_WIDTH = '6px';
   const STYLE_UNDERLINE_WIDTH = '2px';
-  const SETTINGS_GENERATED_STYLE_BASE_RE = /^--(?:page-(?:title|text|h[1-6]|quote|quote-cite|link)|db-(?:th|entity|cell))$/;
+  // 箇条書き・番号付きリストの階層も見出しと同じ書式（サイズ・フチ・アクセント等）を持つ。
+  const SETTINGS_GENERATED_STYLE_BASE_RE = /^--(?:page-(?:title|text|h[1-6]|quote|quote-cite|link|(?:ul|ol)-[1-6])|db-(?:th|entity|cell))$/;
   let _settingsStyleRowSeq = 0;
   const _settingsStyleDefs = new Map();
 
@@ -1142,21 +1143,21 @@
 
   function _fileValues(rowData, adapter, map) {
     return {
-      textColor: _readFile(map.textColor, adapter),
-      bgColor: _readFile(map.bgColor, adapter),
-      fontWeight: _readFile(map.fontWeight, adapter) === 'bold' ? 'bold' : '',
-      fontStyle: _readFile(map.fontStyle, adapter) === 'italic' ? 'italic' : '',
-      fontSize: _pxNumber(_readFile(map.fontSize, adapter), _previewFontSize(rowData.label) || ''),
-      fontFamily: _readFile(map.fontFamily, adapter),
-      textStrokeColor: _readFile(map.textStrokeColor, adapter),
-      textStrokeWidth: _pxNumber(_readFile(map.textStrokeWidth, adapter), 0),
-      leftAccent: _activeFlag(_readFile(map.leftAccent, adapter)),
-      underline: _activeFlag(_readFile(map.underline, adapter)),
-      accentColor: _readFile(map.accentColor, adapter),
-      borderColor: _readFile(map.borderColor, adapter),
-      borderWidth: _pxNumber(_readFile(map.borderWidth, adapter), ''),
-      caretColor: _readFile(map.caretColor, adapter),
-      caretWidth: _pxNumber(_readFile(map.caretWidth, adapter), ''),
+      textColor: _readFileWithInheritance(map.textColor, adapter),
+      bgColor: _readFileWithInheritance(map.bgColor, adapter),
+      fontWeight: _readFileWithInheritance(map.fontWeight, adapter) === 'bold' ? 'bold' : '',
+      fontStyle: _readFileWithInheritance(map.fontStyle, adapter) === 'italic' ? 'italic' : '',
+      fontSize: _pxNumber(_readFileWithInheritance(map.fontSize, adapter), _previewFontSize(rowData.label) || ''),
+      fontFamily: _readFileWithInheritance(map.fontFamily, adapter),
+      textStrokeColor: _readFileWithInheritance(map.textStrokeColor, adapter),
+      textStrokeWidth: _pxNumber(_readFileWithInheritance(map.textStrokeWidth, adapter), 0),
+      leftAccent: _activeFlag(_readFileWithInheritance(map.leftAccent, adapter)),
+      underline: _activeFlag(_readFileWithInheritance(map.underline, adapter)),
+      accentColor: _readFileWithInheritance(map.accentColor, adapter),
+      borderColor: _readFileWithInheritance(map.borderColor, adapter),
+      borderWidth: _pxNumber(_readFileWithInheritance(map.borderWidth, adapter), ''),
+      caretColor: _readFileWithInheritance(map.caretColor, adapter),
+      caretWidth: _pxNumber(_readFileWithInheritance(map.caretWidth, adapter), ''),
     };
   }
 
@@ -1238,8 +1239,24 @@
     return el;
   }
 
-  function _rawForField(field, prop, value) {
+  // トグルをオフにした値。空にすると親テーマ（アプリ設定やプリセット）の太字・斜体などへ
+  // 戻ってしまい「オフにできない」ため、オフは明示値として保存する。
+  function _toggleOffValue(field, prop) {
+    if (field?.off !== undefined && field.off !== null && field.off !== '') return field.off;
+    if (prop === 'fontWeight' || prop === 'fontStyle') return 'normal';
+    if (prop === 'leftAccent' || prop === 'underline') return '0px';
+    return '';
+  }
+
+  function _rawForField(field, prop, value, options = {}) {
+    if (field?.type === 'toggle' && !options.clear && (value == null || value === '' || value === false)) {
+      return _toggleOffValue(field, prop);
+    }
     if (value == null || value === '') return '';
+    // 表示切替（例: シートの罫線 1px/0px）を線の太さ欄で編集する場合は、入力した太さをそのまま保存する。
+    if (field.type === 'toggle' && prop === 'borderWidth' && Number.isFinite(Number(value))) {
+      return `${Math.max(0, Number(value))}px`;
+    }
     if (field.type === 'toggle') {
       if (prop === 'fontWeight') return value === 'bold' ? field.on : field.off;
       if (prop === 'fontStyle') return value === 'italic' ? field.on : field.off;
@@ -1249,9 +1266,9 @@
     return value;
   }
 
-  function _setFileField(field, prop, value, adapter) {
+  function _setFileField(field, prop, value, adapter, options = {}) {
     if (!field || !adapter) return;
-    const raw = _rawForField(field, prop, value);
+    const raw = _rawForField(field, prop, value, options);
     const normalized = typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
     const result = adapter.set(field, normalized || '');
     const apply = saved => {
@@ -1260,6 +1277,26 @@
       return true;
     };
     return result?.then ? result.then(apply) : apply(result);
+  }
+
+  // 書式を変えるとファイル内カスタムテーマが自動作成されるため、テーマ選択欄も追従させる。
+  function _syncFileThemeSelect(adapter) {
+    const ctx = adapter?.ctx || adapter?.kind || '';
+    if (ctx && typeof window._fsSyncThemeSelect === 'function') window._fsSyncThemeSelect(ctx);
+  }
+
+  // 箇条書き・番号付きリストは未設定の項目が本文の書式を継承する（CSSと同じ順序）。
+  function _inheritedFileFieldValue(field, adapter) {
+    const key = String(field?.key || '');
+    const match = key.match(/^--page-(?:ul|ol)-[1-6](-(?:fg|font-size|font|bold|italic|line-height))$/);
+    if (!match) return '';
+    return _readFile({ key: `--page-text${match[1]}`, type: field.type }, adapter);
+  }
+
+  function _readFileWithInheritance(field, adapter) {
+    const value = _readFile(field, adapter);
+    if (value !== undefined && value !== null && value !== '') return value;
+    return field ? _inheritedFileFieldValue(field, adapter) : '';
   }
 
   function _replaceFilePreview(anchorEl, rowData, adapter) {
@@ -1284,7 +1321,10 @@
           : prop;
         const result = _setFileField(map[key], key, value, adapter);
         const refresh = saved => {
-          if (saved !== false && adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+          if (saved !== false && adapter.isCurrent?.() !== false) {
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          }
         };
         if (result?.then) result.then(refresh).catch(error => {
           console.warn('テーマ書式の保存に失敗:', error);
@@ -1295,23 +1335,38 @@
       onReset: async () => {
         try {
           for (const [prop, field] of Object.entries(map)) {
-            if (await _setFileField(field, prop, '', adapter) === false) return;
+            if (await _setFileField(field, prop, '', adapter, { clear: true }) === false) return;
           }
           for (const field of extraFields) {
-            if (await _setFileField(field, '', '', adapter) === false) return;
+            if (await _setFileField(field, '', '', adapter, { clear: true }) === false) return;
           }
-          if (adapter.isCurrent?.() !== false) anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+          if (adapter.isCurrent?.() !== false) {
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          }
         } catch (error) {
           console.warn('テーマ書式のリセットに失敗:', error);
           if (typeof showStatus === 'function') showStatus('テーマ書式をリセットできませんでした', true);
         }
       },
     });
+    // 開いた直後にプレビューの「クリックで書式設定」ツールチップがポップアップ見出しへ重ならないようにする。
+    if (popup) window.GBTooltip?.hide?.({ suppressUntilLeave: true });
     // 元の保存・履歴ハンドラーを使い、行間や余白も同じ書式編集へ集約する。
+    // 数値は見出しのフォントサイズと同じ「数値入力＋単位」で表示し、スライダーは出さない。
     if (popup && extraFields.length) {
       const row = document.createElement('div');
-      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap';
-      extraFields.forEach(field => row.appendChild(_fsBuildFieldInline(field, adapter, rowData.label)));
+      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--wrap gb-fmt-popup-row--file-extra';
+      extraFields.forEach(field => {
+        const control = _isFileNumberField(field)
+          ? _makeFileNumberGroup(field, adapter, rowData, () => {
+            if (adapter.isCurrent?.() === false) return;
+            anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
+            _syncFileThemeSelect(adapter);
+          })
+          : _fsBuildFieldInline(field, adapter, rowData.label);
+        row.appendChild(control);
+      });
       row.querySelectorAll('input').forEach(input => {
         input._gbFmtCommittedValue = input.value;
         input.addEventListener('change', () => { input._gbFmtCommittedValue = input.value; }, true);
@@ -1321,9 +1376,79 @@
           input.dispatchEvent(new Event('change', { bubbles:true }));
         };
       });
-      popup.insertBefore(row, popup.querySelector('.gb-fmt-footer'));
+      const before = popup.querySelector(':scope > .gb-fmt-popup-row--specific, :scope > .gb-fmt-footer-actions-row, :scope > .gb-fmt-footer');
+      if (extraFields.every(_isFileNumberField)) {
+        const sectionTitle = document.createElement('div');
+        sectionTitle.className = 'gb-fmt-section-title';
+        sectionTitle.textContent = extraFields.some(field => /line-height|space-|行間|余白/i.test(`${field.key || ''} ${field.label || ''}`)) ? '行間・余白' : '数値';
+        popup.insertBefore(sectionTitle, before);
+      }
+      popup.insertBefore(row, before);
       if (typeof positionPopup === 'function') positionPopup(popup, anchorEl.getBoundingClientRect());
     }
+  }
+
+  function _isFileNumberField(field) {
+    return field?.type === 'rangeNumber' || field?.type === 'number';
+  }
+
+  function _makeFileNumberGroup(field, adapter, rowData, onCommitted) {
+    const parse = raw => parseFloat(String(raw ?? '').replace(/[a-z%]+$/i, '').trim());
+    const clamp = n => {
+      let value = n;
+      if (field.min !== undefined) value = Math.max(field.min, value);
+      if (field.max !== undefined) value = Math.min(field.max, value);
+      return value;
+    };
+    const unitText = field.unit || '';
+    const current = parse(_readFileWithInheritance({ ...field, fallback: undefined }, adapter));
+    const fallback = parse(field.fallback);
+    const group = document.createElement('span');
+    group.className = 'gb-fmt-popup-group gb-fmt-popup-group--number';
+    const label = document.createElement('span');
+    label.className = 'gb-fmt-label';
+    label.textContent = _fsShortLabel(field, rowData?.label || '');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'gb-fmt-num gb-fmt-num--w54';
+    if (field.min !== undefined) input.min = String(field.min);
+    if (field.max !== undefined) input.max = String(field.max);
+    input.step = String(field.step ?? 1);
+    // 未設定は空欄にして既定値を薄く示す（入力欄の初期値を保存値と誤認させない）。
+    input.value = Number.isFinite(current) ? String(current) : '';
+    input.placeholder = Number.isFinite(fallback) ? String(fallback) : '—';
+    input.title = field.label || '';
+    input.setAttribute('aria-label', `${rowData?.label || ''} ${label.textContent || field.label || ''}`.trim());
+    input.dataset.e2eId = _e2eId('file-style-field', rowData?.label || '', field.key || '', 'number');
+    input.addEventListener('change', () => {
+      const s = input.value.trim();
+      const n = parse(s);
+      let raw = '';
+      if (s && Number.isFinite(n)) {
+        const value = clamp(n);
+        input.value = String(value);
+        raw = String(value) + (field.type === 'rangeNumber' ? unitText : '');
+      }
+      const result = adapter.set(field, raw);
+      const done = saved => {
+        if (saved === false || adapter.isCurrent?.() === false) return;
+        adapter.applyCss(field, raw);
+        onCommitted?.();
+      };
+      if (result?.then) result.then(done).catch(error => {
+        console.warn('テーマ書式の保存に失敗:', error);
+        if (typeof showStatus === 'function') showStatus('テーマ書式を保存できませんでした', true);
+      });
+      else done(result);
+    });
+    group.append(label, input);
+    if (unitText) {
+      const unit = document.createElement('span');
+      unit.className = 'gb-fmt-label';
+      unit.textContent = unitText;
+      group.appendChild(unit);
+    }
+    return group;
   }
 
   function _rowLabel(rowData) {

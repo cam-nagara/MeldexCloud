@@ -107,7 +107,7 @@ function _saveFileThemeToDbFolderNote(theme) {
         theme: null,
       });
       _syncDbMetadataFileStyle(themeSnapshot, dbPath);
-      showStatus('DBテーマを保存しました');
+      showStatus('シートのテーマを保存しました');
     } catch (e) {
       showStatus('テーマ保存に失敗しました', true);
       throw e;

@@ -166,18 +166,15 @@
   function attachShuffleAction(container, onShuffle) {
     if (!container?.appendChild || typeof onShuffle !== 'function') return null;
     const button = document.createElement('button'); button.type = 'button';
-    button.textContent = 'シャッフル'; button.className = 'bd-board-shuffle-action bd-topic-view-wide-action';
+    // アイコンボタン。幅を取らないためモバイルでも隠さず、ビュータブの「⋯」メニューへの
+    // 複製も置かない（以前は先頭タブのメニューへ紛れ込み、タブ再描画で消えていた）。
+    button.className = 'bd-board-shuffle-action tb-icon-btn';
+    button.innerHTML = typeof global.lucide === 'function' ? global.lucide('shuffle', 16) : '⇄';
+    button.title = 'トピックをシャッフル';
     button.dataset.bdTopicViewAction = 'shuffle';
     button.dataset.bdAction = 'topic-view-shuffle';
     button.setAttribute('aria-label', 'トピックを重ならないようにシャッフル');
     button.addEventListener('click', () => onShuffle()); container.appendChild(button);
-    const overflow = container.querySelector?.('.bd-topic-view-overflow-menu');
-    if (overflow) {
-      const compact = button.cloneNode(true); compact.className = 'bd-board-shuffle-overflow-action';
-      compact.dataset.bdTopicViewAction = 'shuffle-compact';
-      compact.dataset.bdAction = 'topic-view-shuffle-compact';
-      compact.addEventListener('click', () => onShuffle()); overflow.appendChild(compact);
-    }
     return button;
   }
 

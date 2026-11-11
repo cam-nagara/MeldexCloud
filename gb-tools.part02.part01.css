@@ -1776,6 +1776,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-1-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-1-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-1-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-1-space-before, 0.4em) var(--page-ul-1-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-1-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-1-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-1-left-accent, 0px)) 0 0 0 var(--page-ul-1-accent-color, currentColor);
+  border-block-end: var(--page-ul-1-underline, 0px) solid var(--page-ul-1-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) ol > li {
   color: var(--page-ol-1-fg, var(--page-text-fg)); background: var(--page-ol-1-bg, transparent);
@@ -1783,6 +1786,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-1-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-1-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-1-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-1-space-before, 0.4em) var(--page-ol-1-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-1-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-1-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-1-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-1-left-accent, 0px)) 0 0 0 var(--page-ol-1-accent-color, currentColor);
+  border-block-end: var(--page-ol-1-underline, 0px) solid var(--page-ol-1-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) ul > li {
   color: var(--page-ul-2-fg, var(--page-text-fg)); background: var(--page-ul-2-bg, transparent);
@@ -1790,6 +1796,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-2-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-2-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-2-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-2-space-before, 0.4em) var(--page-ul-2-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-2-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-2-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-2-left-accent, 0px)) 0 0 0 var(--page-ul-2-accent-color, currentColor);
+  border-block-end: var(--page-ul-2-underline, 0px) solid var(--page-ul-2-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) ol > li {
   color: var(--page-ol-2-fg, var(--page-text-fg)); background: var(--page-ol-2-bg, transparent);
@@ -1797,6 +1806,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-2-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-2-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-2-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-2-space-before, 0.4em) var(--page-ol-2-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-2-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-2-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-2-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-2-left-accent, 0px)) 0 0 0 var(--page-ol-2-accent-color, currentColor);
+  border-block-end: var(--page-ol-2-underline, 0px) solid var(--page-ol-2-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-3-fg, var(--page-text-fg)); background: var(--page-ul-3-bg, transparent);
@@ -1804,6 +1816,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-3-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-3-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-3-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-3-space-before, 0.4em) var(--page-ul-3-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-3-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-3-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-3-left-accent, 0px)) 0 0 0 var(--page-ul-3-accent-color, currentColor);
+  border-block-end: var(--page-ul-3-underline, 0px) solid var(--page-ul-3-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-3-fg, var(--page-text-fg)); background: var(--page-ol-3-bg, transparent);
@@ -1811,6 +1826,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-3-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-3-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-3-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-3-space-before, 0.4em) var(--page-ol-3-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-3-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-3-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-3-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-3-left-accent, 0px)) 0 0 0 var(--page-ol-3-accent-color, currentColor);
+  border-block-end: var(--page-ol-3-underline, 0px) solid var(--page-ol-3-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-4-fg, var(--page-text-fg)); background: var(--page-ul-4-bg, transparent);
@@ -1818,6 +1836,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-4-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-4-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-4-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-4-space-before, 0.4em) var(--page-ul-4-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-4-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-4-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-4-left-accent, 0px)) 0 0 0 var(--page-ul-4-accent-color, currentColor);
+  border-block-end: var(--page-ul-4-underline, 0px) solid var(--page-ul-4-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-4-fg, var(--page-text-fg)); background: var(--page-ol-4-bg, transparent);
@@ -1825,6 +1846,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-4-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-4-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-4-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-4-space-before, 0.4em) var(--page-ol-4-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-4-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-4-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-4-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-4-left-accent, 0px)) 0 0 0 var(--page-ol-4-accent-color, currentColor);
+  border-block-end: var(--page-ol-4-underline, 0px) solid var(--page-ol-4-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-5-fg, var(--page-text-fg)); background: var(--page-ul-5-bg, transparent);
@@ -1832,6 +1856,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-5-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-5-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-5-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-5-space-before, 0.4em) var(--page-ul-5-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-5-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-5-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-5-left-accent, 0px)) 0 0 0 var(--page-ul-5-accent-color, currentColor);
+  border-block-end: var(--page-ul-5-underline, 0px) solid var(--page-ul-5-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-5-fg, var(--page-text-fg)); background: var(--page-ol-5-bg, transparent);
@@ -1839,6 +1866,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-5-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-5-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-5-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-5-space-before, 0.4em) var(--page-ol-5-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-5-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-5-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-5-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-5-left-accent, 0px)) 0 0 0 var(--page-ol-5-accent-color, currentColor);
+  border-block-end: var(--page-ol-5-underline, 0px) solid var(--page-ol-5-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ul > li {
   color: var(--page-ul-6-fg, var(--page-text-fg)); background: var(--page-ul-6-bg, transparent);
@@ -1846,6 +1876,9 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ul-6-bold, var(--page-text-bold, normal)); font-style: var(--page-ul-6-italic, var(--page-text-italic, normal));
   line-height: var(--page-ul-6-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ul-6-space-before, 0.4em) var(--page-ul-6-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ul-6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ul-6-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ul-6-left-accent, 0px); box-shadow: calc(-1 * var(--page-ul-6-left-accent, 0px)) 0 0 0 var(--page-ul-6-accent-color, currentColor);
+  border-block-end: var(--page-ul-6-underline, 0px) solid var(--page-ul-6-accent-color, currentColor);
 }
 :is(#page-content,[data-editor-local-id="page-content"],#entity-freetext,#dp-editable,#board-note-editable,.gb-subpanel-note-content,.gb-preview-entity-note) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) :where(ul,ol) ol > li {
   color: var(--page-ol-6-fg, var(--page-text-fg)); background: var(--page-ol-6-bg, transparent);
@@ -1853,4 +1886,7 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
   font-weight: var(--page-ol-6-bold, var(--page-text-bold, normal)); font-style: var(--page-ol-6-italic, var(--page-text-italic, normal));
   line-height: var(--page-ol-6-line-height, var(--page-text-line-height, 160%));
   margin-block: var(--page-ol-6-space-before, 0.4em) var(--page-ol-6-space-after, 0.4em);
+  -webkit-text-stroke-color: var(--page-ol-6-stroke-color, transparent); -webkit-text-stroke-width: var(--page-ol-6-stroke-width, 0px); paint-order: stroke fill;
+  padding-inline-start: var(--page-ol-6-left-accent, 0px); box-shadow: calc(-1 * var(--page-ol-6-left-accent, 0px)) 0 0 0 var(--page-ol-6-accent-color, currentColor);
+  border-block-end: var(--page-ol-6-underline, 0px) solid var(--page-ol-6-accent-color, currentColor);
 }

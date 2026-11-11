@@ -12,7 +12,8 @@
   border-bottom: 1px solid var(--ui-border, var(--border));
   background: var(--bg2);
 }
-.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; }
+/* 行の下線と背景は外側の .bd-view-tabs-row が持つ。内側にも下線があると二重になりシートより1px高くなる。 */
+.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; border-bottom: 0; }
 .bd-view-tabs-row .bd-common-view-tabs { flex: 1 1 auto; border-bottom: 0; }
 .bd-view-tabs-row .bd-topic-view-controls > select { display: none; }
 @media (max-width: 768px) {
@@ -42,12 +43,18 @@
   text-align: center;
 }
 
+/* 外観は共通コンテキストメニュー(.gb-context-menu)と同じテーマトークンを使う。
+   Meldexに存在しない変数(--panel-bg等)を参照すると白背景に化けるため使わない。
+   .gb-context-menu クラス自体は付けない（各所の「開いているメニューを全部消す」処理で
+   常設のパネルDOMごと削除されるため）。 */
 .bd-topic-view-overflow-menu {
-  background: var(--panel-bg, #fff);
-  border: 1px solid var(--border-color, #cbd5e1);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  background: var(--ui-popup-bg, var(--ui-bg-control));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  color: var(--ui-fg-default);
   display: grid;
+  font-size: var(--ui-font-13);
   gap: 4px;
   inset-inline-end: 0;
   min-width: 144px;
@@ -56,6 +63,21 @@
   top: calc(100% + 4px);
   z-index: 40;
 }
+
+/* ビュータブの操作・追加メニュー: 項目は共通の button.gb-context-menu-item を使う */
+.bd-topic-view-overflow-menu.bd-view-tab-menu {
+  font-weight: normal;
+  gap: 0;
+  min-width: 160px;
+  padding: var(--ui-space-2) 0;
+}
+.bd-view-tab-menu > .gb-context-menu-item:disabled {
+  opacity: 0.55;
+  color: var(--ui-fg-muted);
+  cursor: default;
+  background: transparent;
+}
+.bd-view-tab-menu > .gb-context-menu-item svg { flex-shrink: 0; }
 
 .bd-topic-view-overflow:not([open]) > .bd-topic-view-overflow-menu {
   display: none;
@@ -177,8 +199,9 @@
 .bd-common-view-tab:focus-within .bd-common-view-menu > .view-tab-more,
 .bd-common-view-menu[open] > .view-tab-more { opacity: 1; }
 .bd-common-view-tab.active { background: var(--ui-bg-control-active); color: var(--ui-fg-strong); }
-.bd-common-view-add { display: block; flex: 0 0 auto; }
-.bd-common-view-add > .view-tab-add { display: inline-flex; align-items: center; justify-content: center; width: var(--ui-h-xs); height: var(--ui-h-xs); min-width: var(--ui-h-xs); padding: 0; border-radius: var(--ui-radius-xs); box-sizing: border-box; }
+.bd-common-view-add { display: flex; align-items: center; flex: 0 0 auto; }
+/* min-height は .bd-topic-view-overflow > summary の32pxを打ち消す（残すと行がシートより高くなる）。 */
+.bd-common-view-add > .view-tab-add { display: inline-flex; align-items: center; justify-content: center; width: var(--ui-h-xs); height: var(--ui-h-xs); min-width: var(--ui-h-xs); min-height: var(--ui-h-xs); padding: 0; border-radius: var(--ui-radius-xs); box-sizing: border-box; }
 .bd-common-view-add > .view-tab-add svg { width: 16px; height: 16px; }
 .bd-common-view-empty { padding: 4px 8px; color: var(--ui-fg-muted, var(--fg2)); white-space: nowrap; }
 .bd-group-style-manager { display: grid; gap: 6px; min-width: 220px; border: 1px solid var(--ui-border); }

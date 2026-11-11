@@ -331,14 +331,28 @@
         applyCalendarPanelStyle(_calWriteStyle(style || {}));
       },
       set(field, val) {
+        const themeKeys = ['__themeId', '__themeName', '__themeSourceId', '__useOsAccentColor'];
+        const current = _calReadStyle();
+        // カスタムテーマの自動作成と項目の変更をまとめて1回の取り消しで戻せるよう、変更前を控える。
+        const before = typeof _fsStyleSnapshot === 'function' ? _fsStyleSnapshot(current) : { ...current };
+        // プリセット参照中の変更は、カレンダー用に展開した配色を基にカスタムテーマを自動作成する。
+        if (!themeKeys.includes(field?.key) && current.__themeId && !_calIsLocalCustomThemeId(current.__themeId)) {
+          const localCustom = _calLocalCustomStyleFromThemeId(current.__themeId);
+          const kept = typeof _fsThemeIndependentStyle === 'function' ? _fsThemeIndependentStyle(CALENDAR_CTX, current.__themeId) : {};
+          if (localCustom) _calWriteStyle({ ...localCustom, ...kept, __useOsAccentColor: current.__useOsAccentColor });
+        }
         if (typeof _fsEnsureLocalCustomThemeBeforeFieldSet === 'function') {
-          _fsEnsureLocalCustomThemeBeforeFieldSet(CALENDAR_CTX, field, this);
+          _fsEnsureLocalCustomThemeBeforeFieldSet(CALENDAR_CTX, field, this, { skipHistory: true });
         }
         const normalized = _calNormalizeFieldValue(field, val);
         const next = { ..._calReadStyle() };
         if (normalized === null || normalized === undefined || normalized === '') delete next[field.key];
         else next[field.key] = normalized;
         applyCalendarPanelStyle(_calWriteStyle(next));
+        if (typeof _fsPushStyleHistory === 'function') {
+          _fsPushStyleHistory(CALENDAR_CTX, before, _calReadStyle(), '書式設定変更', field?.label || field?.key || '');
+        }
+        if (typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(CALENDAR_CTX);
       },
       applyCss() {
         applyCalendarPanelStyle();
@@ -494,12 +508,14 @@
         const adapter = typeof _fsGetAdapter === 'function' ? _fsGetAdapter(CALENDAR_CTX) : _calGetAdapter();
         if (!adapter) return;
         const nextId = String(id || '');
+        if (_calIsLocalCustomThemeId(nextId)) return;
+        // テーマと関係のない設定（イベント右余白など）は、テーマを切り替えても保つ。
+        const kept = typeof _fsThemeIndependentStyle === 'function' ? _fsThemeIndependentStyle(CALENDAR_CTX, nextId) : {};
         if (!nextId) {
-          return _fsCommitThemeStyle(CALENDAR_CTX, adapter, null, { label: 'テーマ解除' });
+          return _fsCommitThemeStyle(CALENDAR_CTX, adapter, Object.keys(kept).length ? kept : null, { label: 'テーマ解除' });
         }
-        const nextStyle = _calLocalCustomStyleFromThemeId(nextId);
-        if (!nextStyle) return;
-        return _fsCommitThemeStyle(CALENDAR_CTX, adapter, nextStyle, { label: 'テーマ変更' });
+        // プリセットは参照として保存し、選択欄にもプリセット名を表示する。
+        return _fsCommitThemeStyle(CALENDAR_CTX, adapter, { ...kept, __themeId: nextId }, { label: 'テーマ変更' });
       };
     }
 
