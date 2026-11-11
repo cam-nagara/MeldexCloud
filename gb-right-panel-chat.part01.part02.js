@@ -64,7 +64,7 @@ function _syncTeamRoomSelect(rooms) {
     const roomPath = String(room.path || '');
     const modifiedMs = Date.parse(room.last?.timestamp || room.modified || '') || 0;
     const readMs = Number(localStorage.getItem('meldex-team-room-read:' + encodeURIComponent(roomPath)) || 0);
-    const working = String(_chatState.activeExecution?.targetPath || '') === roomPath;
+    const working = !!roomPath && typeof _chatExecutionList === 'function' && _chatExecutionList().some(execution => String(execution.targetPath || '') === roomPath);
     const unread = modifiedMs > readMs && roomPath !== current;
     const label = `${baseLabel}${unread ? '  • 未読' : ''}${working ? '  ● 作業中' : ''}`;
     return `<option value="${esc(room.path)}" ${room.path===current?'selected':''}>${esc(label)}</option>`;

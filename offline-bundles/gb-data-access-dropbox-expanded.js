@@ -6504,9 +6504,9 @@
     const key = String(provider || '').toLowerCase();
     // Desktopの推奨一覧と同じ候補を返す。Cloudでは常にこの経路を使う。
     const catalog = {
-      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-      anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
-      openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash'],
+      anthropic: ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+      openai: ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5'],
       local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
     };
     return (catalog[key] || catalog.gemini).map(id => ({ id, name: id }));

@@ -21651,6 +21651,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // 進捗から開ける作業対象（チャット、ファイル等）。open は呼出し元が渡す関数。
+  function _links(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 4).filter(function (item) {
+      return item && typeof item.open === 'function' && String(item.label || '').trim();
+    }).map(function (item) {
+      return { label: String(item.label), title: String(item.title || item.label), open: item.open };
+    });
+  }
+
   function _snapshot(record) {
     if (!record) return null;
     const state = record.state;
@@ -21672,6 +21682,7 @@ document.addEventListener('DOMContentLoaded', () => {
       error: state.error,
       summary: state.summary,
       details: state.details.map(function (item) { return Object.assign({}, item); }),
+      links: state.links.map(function (item) { return Object.assign({}, item); }),
       detailCount: state.detailCount,
       startedAt: state.startedAt,
       updatedAt: state.updatedAt,
@@ -21755,6 +21766,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
     if (next.message !== undefined) record.state.message = String(next.message || '');
     if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.links !== undefined) record.state.links = _links(next.links);
     if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
     if (next.status && !TERMINAL.has(next.status)) record.state.status = String(next.status);
     if (next.total !== undefined) {
@@ -21874,6 +21886,7 @@ document.addEventListener('DOMContentLoaded', () => {
         error: '',
         summary: '',
         details: _details(opts.details),
+        links: _links(opts.links),
         detailCount: Math.max(_details(opts.details).length, _number(opts.detailCount, 0)),
         startedAt: Date.now(),
         updatedAt: Date.now(),
@@ -21995,6 +22008,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let trayLayoutRoot = null;
   let trayLayoutObserver = null;
   let trayPositionFrame = 0;
+  const TRAY_MINIMIZED_KEY = 'meldex-operation-tray-minimized';
+  let trayMinimized = (function () {
+    try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
+  })();
+  let lastOperations = [];
 
   function _text(value) { return String(value == null ? '' : value); }
 
@@ -22102,7 +22120,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 前面表示を維持したまま、設定の「閉じる」等の操作を覆わない。
     const box = tray.getBoundingClientRect();
     let actionTop = window.innerHeight;
-    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button')) {
+    // 画面右下に浮かぶ操作ボタン（アノテートツール等）も覆わず、その上へ逃がす。
+    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button, .annotation-fab')) {
       const action = button.getBoundingClientRect();
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
@@ -22201,6 +22220,27 @@ document.addEventListener('DOMContentLoaded', () => {
       row.appendChild(disclosure);
     }
 
+    if (!compact && operation.links?.length) {
+      const links = document.createElement('div');
+      links.className = 'meldex-operation-links';
+      operation.links.forEach(function (link, index) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'meldex-operation-link';
+        button.dataset.action = 'open-operation-link-' + index;
+        button.textContent = link.label;
+        button.title = link.title || link.label;
+        button.addEventListener('click', function () {
+          Promise.resolve().then(function () { return link.open(); }).catch(function (error) {
+            console.error('進捗の対象を開けませんでした', error);
+            if (typeof showStatus === 'function') showStatus('対象を開けませんでした', true);
+          });
+        });
+        links.appendChild(button);
+      });
+      row.appendChild(links);
+    }
+
     if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
@@ -22252,6 +22292,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const active = document.activeElement;
     const focusedId = el.contains(active) ? active.closest('.meldex-operation-row')?.dataset.operationId : null;
     const focusedAction = focusedId ? (active.dataset.action || (active.tagName === 'SUMMARY' ? 'summary' : '')) : '';
+    const toggleFocused = el.contains(active) && active.dataset?.action === 'toggle-operation-tray';
+    lastOperations = operations;
     const visible = operations.filter(function (operation) { return operation.showInTray; });
     if (!visible.length) {
       el.hidden = true;
@@ -22268,7 +22310,46 @@ document.addEventListener('DOMContentLoaded', () => {
     title.textContent = needsAttention
       ? '確認が必要な処理'
       : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
-    header.appendChild(title);
+    if (trayMinimized && needsAttention && visible.length > 1) title.textContent += ' ' + visible.length + '件';
+    title.className = 'meldex-operation-tray-title';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'meldex-operation-tray-toggle';
+    toggle.dataset.action = 'toggle-operation-tray';
+    toggle.dataset.e2eId = 'operation-progress-tray-toggle';
+    toggle.setAttribute('aria-expanded', trayMinimized ? 'false' : 'true');
+    toggle.setAttribute('aria-label', trayMinimized ? '進捗表示を広げる' : '進捗表示を最小化');
+    toggle.title = trayMinimized ? '広げる' : '最小化';
+    toggle.innerHTML = trayMinimized
+      ? '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    toggle.addEventListener('click', function () {
+      trayMinimized = !trayMinimized;
+      try { localStorage.setItem(TRAY_MINIMIZED_KEY, trayMinimized ? '1' : '0'); } catch (_) {}
+      _renderTray(lastOperations);
+      el.querySelector('[data-action="toggle-operation-tray"]')?.focus({ preventScroll: true });
+    });
+    if (hasActive) {
+      const ring = document.createElement('span');
+      ring.className = 'meldex-segmented-ring meldex-segmented-ring--small';
+      ring.setAttribute('aria-hidden', 'true');
+      header.appendChild(ring);
+    }
+    header.append(title, toggle);
+    el.classList.toggle('is-minimized', trayMinimized);
+    if (trayMinimized) {
+      // 最小化中は件数と状態だけを小さく出し、見出しのクリックで広げる。
+      header.addEventListener('click', function (event) {
+        if (event.target.closest('button')) return;
+        toggle.click();
+      });
+      el.replaceChildren(header);
+      el.hidden = false;
+      _watchTrayLayout();
+      _syncTrayPosition();
+      if (toggleFocused) toggle.focus({ preventScroll: true });
+      return;
+    }
     const list = document.createElement('div');
     list.className = 'meldex-operation-list';
     visible.slice(0, 6).forEach(function (operation) {
@@ -22282,6 +22363,7 @@ document.addEventListener('DOMContentLoaded', () => {
     _watchTrayLayout();
     _syncTrayPosition();
     list.scrollTop = previousScroll;
+    if (toggleFocused) toggle.focus({ preventScroll: true });
     if (focusedAction) {
       const row = Array.from(list.children).find(function (node) { return node.dataset.operationId === focusedId; });
       const control = focusedAction === 'summary' ? row?.querySelector('summary')

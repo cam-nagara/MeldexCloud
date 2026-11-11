@@ -96,6 +96,7 @@ function _chatResetCurrentSession(options = {}) {
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : _chatState.targetPath);
+  if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
 }
 
 function _chatAddSourceOption(options, seen, option) {
@@ -237,6 +238,11 @@ function _syncChatWorkspaceTabs() {
   });
 }
 
+// 裏で続くチャットを含め、どれか1件でもAI応答中か。部分読込の画面でも落ちないよう存在を確かめる。
+function _chatAnyExecutionRunning() {
+  return typeof _chatExecutionList === 'function' && _chatExecutionList().length > 0;
+}
+
 function _syncChatSourceFolderUi() {
   _syncChatWorkspaceTabs();
   const select = document.getElementById('chat-source-folder');
@@ -245,7 +251,7 @@ function _syncChatSourceFolderUi() {
   const hasSource = !!(_chatWorkspaceIdValue() || _chatSourceFolderValue());
   if (select) {
     select.value = _chatTargetSelectorValue();
-    select.disabled = !!_chatState.streaming || !_chatSourceOptions().length;
+    select.disabled = !!_chatState.streaming || _chatAnyExecutionRunning() || !_chatSourceOptions().length;
   }
   if (badge) {
     badge.textContent = hasSource && selected ? '対象' : '未選択';
@@ -259,7 +265,17 @@ function _syncChatSourceFolderUi() {
 
 function _chatSyncStreamingControls() {
   const sendBtn = document.getElementById('chat-send-btn');
-  if (!sendBtn || !_chatState.streaming) return;
+  if (!sendBtn) return;
+  if (!_chatState.streaming) {
+    // 別チャットの応答は裏で続く。表示中のチャットが待機中なら送信ボタンへ戻す。
+    if (sendBtn.textContent === '停止' || sendBtn.textContent === '停止中...') {
+      sendBtn.textContent = '送信';
+      sendBtn.title = typeof _chatSendShortcutTitle === 'function' ? _chatSendShortcutTitle() : '送信';
+      sendBtn.disabled = false;
+      if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+    }
+    return;
+  }
   const isCli = typeof _chatIsCliProvider === 'function' && _chatIsCliProvider(_chatState.streamingProvider || _chatState.provider);
   sendBtn.textContent = '停止';
   sendBtn.title = isCli ? 'CLIの実行を停止' : '応答生成を停止';
@@ -360,7 +376,8 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
     _syncChatSourceFolderUi();
     return true;
   }
-  if (_chatState.streaming) {
+  // 裏で続くチャットも切替前の保存先・対象で動いているため、どれか1件でも応答中なら切り替えない。
+  if (_chatState.streaming || _chatAnyExecutionRunning()) {
     _syncChatSourceFolderUi();
     if (typeof showStatus === 'function') showStatus('応答生成中は対象を切り替えられません', true);
     return false;
@@ -455,13 +472,18 @@ function _chatRenderQueuedMessageBubbles() {
 function _chatRenderStoredMessages() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
+  if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
   container.innerHTML = '';
   _ensureChatMessageIds(_chatState.messages).forEach((message, index) => {
     if (!message || typeof message !== 'object') return;
     chatAddMessage(message.role || 'assistant', message.content, _chatMessageRenderOptions(message, index));
   });
   _chatRenderQueuedMessageBubbles();
-  window.GBChatCliRestoreActivity?.();
+  // CLI側の復元口は表示中チャットの実行（API/CLIとも）を描き直す。未読込の画面では直接呼ぶ。
+  if (window.GBChatCliRestoreActivity) window.GBChatCliRestoreActivity?.();
+  else { try { _chatVisibleExecution()?.restore?.(); } catch {} }
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
 }
 
 function _chatApplyCompression(data, options = {}) {
@@ -556,6 +578,11 @@ function _chatRefreshMessageDeleteButtons() {
 async function _chatApplyMessagesSnapshot(messages, options = {}) {
   if (options.scope && !_chatSessionScopeMatches(options.scope)) {
     if (typeof showStatus === 'function') showStatus('別チャットの履歴操作は適用できません', true);
+    return false;
+  }
+  // 応答中に会話を差し替えると、実行中の応答が古い会話へ書き込まれ、取り消しが保存で上書きされる。
+  if (_chatState.streaming || (typeof _chatExecutionForSession === 'function' && _chatExecutionForSession(_chatState.sessionId))) {
+    if (typeof showStatus === 'function') showStatus('応答生成中はチャットの取り消し・やり直しを実行できません', true);
     return false;
   }
   const previous = _chatCloneMessages(_chatState.messages);

@@ -11,6 +11,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
   codex: [
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
@@ -23,6 +24,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
     { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
     { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },

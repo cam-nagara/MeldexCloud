@@ -7692,7 +7692,10 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-4-carbon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-4-argon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
+      // 未登録の同系統モデルは既定値で過小見積りしないよう、系統の通常料金で見積もる。
+      'gemini-4': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
@@ -7706,7 +7709,9 @@
     },
     anthropic: {
       'claude-haiku-5-5': { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
+      'claude-fable-5-2': { input: 8, output: 40, cache_read: 0.2, cache_write: 10 },
       'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
+      'claude-fable': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
       'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
       'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
       default: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
@@ -7716,8 +7721,10 @@
     },
     openai: {
       'gpt-6-astra': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+      'gpt-6.1-terra': { input: 1, output: 5, cache_read: 0.05, cache_write: 1.25 },
       'gpt-6.1-sol': { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
       'gpt-6-luna': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+      'gpt-6': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
       default: { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
       'gpt-5.5': { input: 5.00, output: 30.00, cache_read: 0.50, cache_write: 5.00 },
       'gpt-5.4-mini': { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
@@ -8359,7 +8366,7 @@
     if (reasoningLevel !== 'off') payload.reasoning = { effort: _openAiReasoningEffort(reasoningLevel) };
     if (model.startsWith('gpt-6')) {
       let effort = reasoningLevel === 'off' ? 'none' : _openAiReasoningEffort(reasoningLevel);
-      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol'))) effort = 'low';
+      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol') || model.startsWith('gpt-6.1-terra'))) effort = 'low';
       if (['max', 'ultracode'].includes(reasoningLevel)) effort = 'max';
       payload.reasoning = { effort };
       payload.store = false;
@@ -31821,9 +31828,9 @@
     const key = String(provider || '').toLowerCase();
     // Desktopの推奨一覧と同じ候補を返す。Cloudでは常にこの経路を使う。
     const catalog = {
-      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-      anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
-      openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+      gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash'],
+      anthropic: ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+      openai: ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5'],
       local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
     };
     return (catalog[key] || catalog.gemini).map(id => ({ id, name: id }));
@@ -53604,6 +53611,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // 進捗から開ける作業対象（チャット、ファイル等）。open は呼出し元が渡す関数。
+  function _links(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 4).filter(function (item) {
+      return item && typeof item.open === 'function' && String(item.label || '').trim();
+    }).map(function (item) {
+      return { label: String(item.label), title: String(item.title || item.label), open: item.open };
+    });
+  }
+
   function _snapshot(record) {
     if (!record) return null;
     const state = record.state;
@@ -53625,6 +53642,7 @@ document.addEventListener('DOMContentLoaded', () => {
       error: state.error,
       summary: state.summary,
       details: state.details.map(function (item) { return Object.assign({}, item); }),
+      links: state.links.map(function (item) { return Object.assign({}, item); }),
       detailCount: state.detailCount,
       startedAt: state.startedAt,
       updatedAt: state.updatedAt,
@@ -53708,6 +53726,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
     if (next.message !== undefined) record.state.message = String(next.message || '');
     if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.links !== undefined) record.state.links = _links(next.links);
     if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
     if (next.status && !TERMINAL.has(next.status)) record.state.status = String(next.status);
     if (next.total !== undefined) {
@@ -53827,6 +53846,7 @@ document.addEventListener('DOMContentLoaded', () => {
         error: '',
         summary: '',
         details: _details(opts.details),
+        links: _links(opts.links),
         detailCount: Math.max(_details(opts.details).length, _number(opts.detailCount, 0)),
         startedAt: Date.now(),
         updatedAt: Date.now(),
@@ -53948,6 +53968,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let trayLayoutRoot = null;
   let trayLayoutObserver = null;
   let trayPositionFrame = 0;
+  const TRAY_MINIMIZED_KEY = 'meldex-operation-tray-minimized';
+  let trayMinimized = (function () {
+    try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
+  })();
+  let lastOperations = [];
 
   function _text(value) { return String(value == null ? '' : value); }
 
@@ -54055,7 +54080,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 前面表示を維持したまま、設定の「閉じる」等の操作を覆わない。
     const box = tray.getBoundingClientRect();
     let actionTop = window.innerHeight;
-    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button')) {
+    // 画面右下に浮かぶ操作ボタン（アノテートツール等）も覆わず、その上へ逃がす。
+    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button, .annotation-fab')) {
       const action = button.getBoundingClientRect();
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
@@ -54154,6 +54180,27 @@ document.addEventListener('DOMContentLoaded', () => {
       row.appendChild(disclosure);
     }
 
+    if (!compact && operation.links?.length) {
+      const links = document.createElement('div');
+      links.className = 'meldex-operation-links';
+      operation.links.forEach(function (link, index) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'meldex-operation-link';
+        button.dataset.action = 'open-operation-link-' + index;
+        button.textContent = link.label;
+        button.title = link.title || link.label;
+        button.addEventListener('click', function () {
+          Promise.resolve().then(function () { return link.open(); }).catch(function (error) {
+            console.error('進捗の対象を開けませんでした', error);
+            if (typeof showStatus === 'function') showStatus('対象を開けませんでした', true);
+          });
+        });
+        links.appendChild(button);
+      });
+      row.appendChild(links);
+    }
+
     if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
@@ -54205,6 +54252,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const active = document.activeElement;
     const focusedId = el.contains(active) ? active.closest('.meldex-operation-row')?.dataset.operationId : null;
     const focusedAction = focusedId ? (active.dataset.action || (active.tagName === 'SUMMARY' ? 'summary' : '')) : '';
+    const toggleFocused = el.contains(active) && active.dataset?.action === 'toggle-operation-tray';
+    lastOperations = operations;
     const visible = operations.filter(function (operation) { return operation.showInTray; });
     if (!visible.length) {
       el.hidden = true;
@@ -54221,7 +54270,46 @@ document.addEventListener('DOMContentLoaded', () => {
     title.textContent = needsAttention
       ? '確認が必要な処理'
       : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
-    header.appendChild(title);
+    if (trayMinimized && needsAttention && visible.length > 1) title.textContent += ' ' + visible.length + '件';
+    title.className = 'meldex-operation-tray-title';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'meldex-operation-tray-toggle';
+    toggle.dataset.action = 'toggle-operation-tray';
+    toggle.dataset.e2eId = 'operation-progress-tray-toggle';
+    toggle.setAttribute('aria-expanded', trayMinimized ? 'false' : 'true');
+    toggle.setAttribute('aria-label', trayMinimized ? '進捗表示を広げる' : '進捗表示を最小化');
+    toggle.title = trayMinimized ? '広げる' : '最小化';
+    toggle.innerHTML = trayMinimized
+      ? '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    toggle.addEventListener('click', function () {
+      trayMinimized = !trayMinimized;
+      try { localStorage.setItem(TRAY_MINIMIZED_KEY, trayMinimized ? '1' : '0'); } catch (_) {}
+      _renderTray(lastOperations);
+      el.querySelector('[data-action="toggle-operation-tray"]')?.focus({ preventScroll: true });
+    });
+    if (hasActive) {
+      const ring = document.createElement('span');
+      ring.className = 'meldex-segmented-ring meldex-segmented-ring--small';
+      ring.setAttribute('aria-hidden', 'true');
+      header.appendChild(ring);
+    }
+    header.append(title, toggle);
+    el.classList.toggle('is-minimized', trayMinimized);
+    if (trayMinimized) {
+      // 最小化中は件数と状態だけを小さく出し、見出しのクリックで広げる。
+      header.addEventListener('click', function (event) {
+        if (event.target.closest('button')) return;
+        toggle.click();
+      });
+      el.replaceChildren(header);
+      el.hidden = false;
+      _watchTrayLayout();
+      _syncTrayPosition();
+      if (toggleFocused) toggle.focus({ preventScroll: true });
+      return;
+    }
     const list = document.createElement('div');
     list.className = 'meldex-operation-list';
     visible.slice(0, 6).forEach(function (operation) {
@@ -54235,6 +54323,7 @@ document.addEventListener('DOMContentLoaded', () => {
     _watchTrayLayout();
     _syncTrayPosition();
     list.scrollTop = previousScroll;
+    if (toggleFocused) toggle.focus({ preventScroll: true });
     if (focusedAction) {
       const row = Array.from(list.children).find(function (node) { return node.dataset.operationId === focusedId; });
       const control = focusedAction === 'summary' ? row?.querySelector('summary')

@@ -13,6 +13,259 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-top-p',
 ];
 const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', versionTargetPath: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
+// AI応答の実行はチャットごとに独立して持つ（複数チャットの並行実行・閉じた後の継続）。
+// _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
+const _chatExecutions = new Map();
+const _chatLegacyStreamState = { streaming: false, abortController: null, streamingProvider: '', streamingTargetPath: '', activeExecution: null };
+
+function _chatExecutionList() {
+  return Array.from(_chatExecutions.values());
+}
+
+function _chatExecutionForMessages(messages) {
+  if (!messages) return null;
+  return _chatExecutionList().find(execution => execution.messages === messages) || null;
+}
+
+function _chatExecutionForSession(sessionId) {
+  const wanted = String(sessionId || '');
+  if (!wanted) return null;
+  return _chatExecutionList().find(execution => String(execution.sessionId || '') === wanted) || null;
+}
+
+function _chatVisibleExecution() {
+  return _chatExecutionForMessages(_chatState.messages);
+}
+
+function _chatExecutionIsActive(controller) {
+  return !!controller && _chatExecutions.has(controller);
+}
+
+function _chatScopeIsStreaming(messages) {
+  if (!messages || messages === _chatState.messages) return !!_chatState.streaming;
+  return !!_chatExecutionForMessages(messages);
+}
+
+// 応答中のチャットを履歴から開き直した時は、実行中の会話へ再接続して表示を続ける。
+function _chatAdoptRunningExecution() {
+  const execution = _chatExecutionForSession(_chatState.sessionId);
+  if (!execution || execution.messages === _chatState.messages) return false;
+  _chatState.messages = execution.messages;
+  return true;
+}
+
+// 表示中チャットが応答中なら、途中までの応答・作業表示・停止ボタンを描き直す。
+function _chatResumeVisibleExecution() {
+  try { _chatVisibleExecution()?.restore?.(); } catch {}
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
+}
+
+// 作業表示（思考内容・ツール実行の記録）は、常に最新のAI発言の直後に置く。
+// 発言の吹き出しは作業表示より後から追加されるため、追加・更新のたびに位置を直す。
+function _chatPlaceLiveActivity(container, wrapper, assistantEl) {
+  if (!container || !wrapper) return;
+  let row = assistantEl && assistantEl.isConnected ? assistantEl : null;
+  while (row && row.parentElement !== container) row = row.parentElement;
+  const alreadyPlaced = row
+    ? wrapper.parentElement === container && wrapper.previousElementSibling === row
+    : wrapper.parentElement === container;
+  if (alreadyPlaced) return;
+  // 移動すると内側のスクロール位置が戻るため、記録欄の位置を保って付け替える。
+  const scrollers = Array.from(wrapper.querySelectorAll('*')).filter(el => el.scrollTop > 0)
+    .map(el => [el, el.scrollTop]);
+  if (row) row.insertAdjacentElement('afterend', wrapper);
+  else container.appendChild(wrapper);
+  scrollers.forEach(([el, top]) => { el.scrollTop = top; });
+}
+
+function _chatExecutionTitle(execution) {
+  const title = String(execution?.sessionTitle || '').trim();
+  if (title) return title;
+  // 無題のチャットは依頼文の冒頭で見分けられるようにする。
+  const lastUser = (Array.isArray(execution?.messages) ? execution.messages : [])
+    .filter(message => message?.role === 'user' && message.origin !== 'meldex-control').pop();
+  const content = lastUser?.content;
+  const text = (typeof content === 'string' ? content
+    : (Array.isArray(content) ? content.map(part => part?.text || '').join(' ') : '')).replace(/\s+/g, ' ').trim();
+  if (text) return text.length > 30 ? text.slice(0, 30) + '…' : text;
+  const target = String(execution?.targetPath || '').split('/').pop() || '';
+  return target ? target.replace(/\.[^.]+$/, '') + 'のチャット' : 'AIチャット';
+}
+
+async function _chatOpenExecution(execution) {
+  if (!execution) return false;
+  if (typeof openRightPanelTab === 'function') openRightPanelTab('chat');
+  if (execution.messages === _chatState.messages) {
+    if (typeof switchChatMode === 'function' && typeof _chatMode !== 'undefined' && _chatMode !== 'llm') switchChatMode('llm');
+    return true;
+  }
+  const sessionId = String(execution.sessionId || '');
+  if (!sessionId || typeof openSavedChat !== 'function' || typeof _chatSavedPathForSession !== 'function') return false;
+  // 初回応答の完了前は履歴ファイルが無いため、実行中の内容を先に保存してから開く。
+  // 終わった実行は完了時に保存済み。終了後に残った進捗行から開く時に保存すると、
+  // その後の発言や削除を実行時点の古い会話で上書きしてしまうため、保存しない。
+  if (typeof chatAutoSave === 'function' && _chatExecutionIsActive(execution.controller)) {
+    await chatAutoSave({
+      messages: execution.messages,
+      sessionId,
+      sessionTitle: execution.sessionTitle,
+      targetPath: execution.targetPath,
+      targets: execution.targets,
+      sourceFolder: execution.sourceFolder,
+      workspaceId: execution.workspaceId,
+      provider: execution.provider,
+      model: execution.model,
+    }).catch(() => false);
+  }
+  return openSavedChat(_chatSavedPathForSession(sessionId));
+}
+
+function _chatExecutionProgressLinks(execution) {
+  const links = [{
+    label: 'チャットを開く',
+    title: _chatExecutionTitle(execution) + ' を開く',
+    open: () => _chatOpenExecution(execution),
+  }];
+  const targetPath = String(execution.targetPath || '');
+  if (targetPath && typeof openLink === 'function') {
+    const name = targetPath.split('/').pop() || targetPath;
+    links.push({ label: name, title: targetPath + ' を開く', open: () => openLink(targetPath, name) });
+  }
+  return links;
+}
+
+// 待機カードの送信中・停止要求の印はチャットごとに持つ。全体で1つだと、別チャットの
+// 送信中に待機カードが送られない・別チャットの停止で連続送信が止まる、といった巻き込みが起きる。
+const _chatQueuedSendKeys = new Set();
+const _chatStopSerials = new Map();
+const _chatLegacyQueueState = { queuedSendRunning: false };
+
+function _chatQueueControlKey(scope) {
+  const sessionId = String(scope?.sessionId || '');
+  if (sessionId) return 'session:' + sessionId;
+  return 'scope:' + (typeof _chatQueueScopeKey === 'function' ? _chatQueueScopeKey(scope || {}) : '');
+}
+
+function _chatStopSerialFor(key) {
+  return Number(_chatStopSerials.get(key) || 0);
+}
+
+function _chatMarkStopRequested(key) {
+  _chatStopSerials.set(key, _chatStopSerialFor(key) + 1);
+}
+
+function _chatVisibleQueueControlKey() {
+  const scope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : { sessionId: _chatState.sessionId };
+  return _chatQueueControlKey(scope);
+}
+
+function _chatRegisterExecution(execution) {
+  const controller = execution?.controller;
+  if (!controller) return null;
+  _chatExecutions.set(controller, execution);
+  const progressApi = window.MeldexOperationProgress;
+  if (progressApi?.begin) {
+    try {
+      execution.progress = progressApi.begin({
+        kind: 'ai-chat',
+        label: _chatExecutionTitle(execution),
+        phase: 'AIが作業中',
+        mode: 'indeterminate',
+        background: true,
+        showInTray: true,
+        priority: 30,
+        cancellable: true,
+        // 進捗表示の「中止」も停止ボタンと同じ扱いにし、待機カードの続き送信を止める。
+        cancel: () => { _chatStopExecution(controller); },
+        cancelCompletes: false,
+        links: _chatExecutionProgressLinks(execution),
+      });
+    } catch (error) {
+      console.warn('AIチャットの進捗表示を開始できませんでした', error);
+    }
+  }
+  window.MeldexChatListbox?.decorateHistory?.();
+  return execution;
+}
+
+function _chatUpdateExecutionPhase(controller, phase) {
+  const execution = _chatExecutions.get(controller);
+  const label = String(phase || '').trim();
+  if (!execution?.progress || !label || execution.lastPhase === label) return;
+  execution.lastPhase = label;
+  execution.progress.update({ phase: label });
+}
+
+function _chatUnregisterExecution(controller, outcome = {}) {
+  const execution = _chatExecutions.get(controller);
+  if (!execution) return false;
+  _chatExecutions.delete(controller);
+  const progress = execution.progress;
+  if (progress) {
+    const status = String(outcome.status || 'succeeded');
+    if (status === 'failed') progress.fail({ error: outcome.message || 'AIの応答を完了できませんでした' });
+    else if (status === 'cancelled') progress.cancelled({ summary: outcome.message || '中止しました' });
+    else progress.succeed({ summary: outcome.message || '応答が完了しました' });
+  }
+  window.MeldexChatListbox?.decorateHistory?.();
+  return true;
+}
+
+function _chatStopExecution(controller) {
+  if (!_chatExecutionIsActive(controller)) return false;
+  _chatMarkStopRequested(_chatQueueControlKey(_chatExecutions.get(controller)));
+  try { controller.abort(); } catch {}
+  return true;
+}
+
+Object.defineProperties(_chatState, {
+  streaming: {
+    configurable: true,
+    enumerable: true,
+    get() { return !!_chatVisibleExecution() || !!_chatLegacyStreamState.streaming; },
+    set(value) { _chatLegacyStreamState.streaming = !!value; },
+  },
+  abortController: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.controller || _chatLegacyStreamState.abortController; },
+    set(value) { _chatLegacyStreamState.abortController = value || null; },
+  },
+  streamingProvider: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.provider || _chatLegacyStreamState.streamingProvider; },
+    set(value) { _chatLegacyStreamState.streamingProvider = String(value || ''); },
+  },
+  streamingTargetPath: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.targetPath || _chatLegacyStreamState.streamingTargetPath; },
+    set(value) { _chatLegacyStreamState.streamingTargetPath = String(value || ''); },
+  },
+  activeExecution: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution() || _chatLegacyStreamState.activeExecution; },
+    set(value) { _chatLegacyStreamState.activeExecution = value || null; },
+  },
+  // 表示中チャットの待機カードを送信中か（取消ボタンの無効化に使う）。
+  queuedSendRunning: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatQueuedSendKeys.has(_chatVisibleQueueControlKey()) || !!_chatLegacyQueueState.queuedSendRunning; },
+    set(value) { _chatLegacyQueueState.queuedSendRunning = !!value; },
+  },
+});
+
+window.MeldexChatExecutions = {
+  list: _chatExecutionList,
+  forSession: _chatExecutionForSession,
+  open: _chatOpenExecution,
+  stop: _chatStopExecution,
+};
+
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';
@@ -170,6 +423,7 @@ const CHAT_CLI_MODEL_CATALOG = {
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
@@ -181,6 +435,7 @@ const CHAT_CLI_MODEL_CATALOG = {
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
     { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
@@ -193,9 +448,9 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
-  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
-  openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash'],
+  anthropic: ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+  openai: ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
   claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
@@ -217,10 +472,13 @@ const CHAT_CLI_PROVIDERS = {
   antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 8;
+const CHAT_MODELS_CACHE_VERSION = 9;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
+    'gemini-4-carbon': { input: 4, output: 20 },
     'gemini-4-argon': { input: 4, output: 20 },
+    // 未登録の同系統モデルは既定値で過小見積りしないよう、系統の通常料金で見積もる。
+    'gemini-4': { input: 4, output: 20 },
     'gemini-3.8-flash': { input: 1.5, output: 7.5 },
     'gemini-3.7-flash': { input: 1.5, output: 7.5 },
     'gemini-3.6-flash': { input: 1.5, output: 7.5 },
@@ -231,7 +489,9 @@ const CHAT_COST_TABLE_PER_MILLION = {
   },
   anthropic: {
     'claude-haiku-5-5': { input: 0.5, output: 2.5 },
+    'claude-fable-5-2': { input: 8, output: 40 },
     'claude-fable-5-1': { input: 10, output: 50 },
+    'claude-fable': { input: 10, output: 50 },
     'claude-opus-5-5': { input: 4, output: 20 },
     'claude-sonnet-5-5': { input: 2, output: 10 },
     default: { input: 3.00, output: 15.00 },
@@ -240,8 +500,10 @@ const CHAT_COST_TABLE_PER_MILLION = {
   },
   openai: {
     'gpt-6-astra': { input: 10, output: 50 },
+    'gpt-6.1-terra': { input: 1, output: 5 },
     'gpt-6.1-sol': { input: 2, output: 10 },
     'gpt-6-luna': { input: 0.1, output: 0.5 },
+    'gpt-6': { input: 10, output: 50 },
     default: { input: 0.75, output: 4.50 },
     'gpt-5.5': { input: 5.00, output: 30.00 },
     'gpt-5.4-mini': { input: 0.75, output: 4.50 },

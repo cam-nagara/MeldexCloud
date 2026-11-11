@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.453",
+  "manual_version": "0.7.454",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "7644ae6c9d304ac60cbe10c1376c12c670f847e0b3372ad514bcc407b779fc52",
+  "source_digest": "3877ecf991a5a7f136e5ff9954fff86df4ce076aea96c3b2aeb910d53d71e078",
   "document_count": 204,
   "chunk_count": 1955,
   "documents": [
@@ -256,7 +256,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "f8731348c5223710272d5dcdd8b47e2c4f569867be7df28fc2f735df332c469d",
+      "source_sha256": "f1f783a539a6bbb05b16555881081a02c99360ef66ac5732c6d7e2d90bc11b08",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -312,7 +312,7 @@
       "path": "03_設定と連携/LLM設定.md",
       "title": "AIキーとLLM設定",
       "category": "チャット・AI",
-      "source_sha256": "c0effa89d47688d2d08d68559b62edb6534c655d8817be640b6987fb78c0b720",
+      "source_sha256": "63a655c7dd05e108c4a4a8433600a94f528bb1b26af5f2bd6b6e17d3b7a11ed6",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md"
     },
     {
@@ -9764,7 +9764,7 @@
       "category": "チャット・AI",
       "heading": "Antigravity CLI",
       "anchor": "antigravity-cli",
-      "text": "モデル候補にはGemini 4 ArgonとGemini 3.8 Flashを含みます。思考の深さは low / medium / high へ対応させてCLIに渡します。利用できるモデルはCLIのバージョンと契約プランに依存します。CLI既定 を選ぶとCLI自身のモデル設定を使います。\nirm https://antigravity.google/cli/install.ps1 | iex\nインストール後は、いったんターミナルを閉じて開き直してください。確認:\nagy --version\nagy\n初回起動時に、配色の選択、利用規約の確認、フォルダの信頼確認が順に出たあと、ブラウザが開いてGoogleアカウントでログインします。\n公式手順: https://antigravity.google/docs/cli/install\n現行版でチャット送信先として選べるCLIは Codex CLI / Claude Code / Antigravity CLI です。Gemini CLIは送信先には表示されませんが、過去ログはチャットの 履歴 → 外部CLI取り込み から読み取り専用で取り込めます。",
+      "text": "モデル候補にはGemini 4 Carbon・Gemini 4 Argon・Gemini 3.8 Flashを含みます。思考の深さは low / medium / high へ対応させてCLIに渡します。利用できるモデルはCLIのバージョンと契約プランに依存します。CLI既定 を選ぶとCLI自身のモデル設定を使います。\nirm https://antigravity.google/cli/install.ps1 | iex\nインストール後は、いったんターミナルを閉じて開き直してください。確認:\nagy --version\nagy\n初回起動時に、配色の選択、利用規約の確認、フォルダの信頼確認が順に出たあと、ブラウザが開いてGoogleアカウントでログインします。\n公式手順: https://antigravity.google/docs/cli/install\n現行版でチャット送信先として選べるCLIは Codex CLI / Claude Code / Antigravity CLI です。Gemini CLIは送信先には表示されませんが、過去ログはチャットの 履歴 → 外部CLI取り込み から読み取り専用で取り込めます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli"
     },
     {
@@ -9794,7 +9794,7 @@
       "category": "チャット・AI",
       "heading": "モデルを選ぶ",
       "anchor": "_7",
-      "text": "チャット下部でCodex CLI / Claude Code / Antigravity CLIのいずれかを選ぶと、モデル欄の一覧から候補を選べます。\nプロバイダ\n主な候補\nClaude Code\nCLI既定（推奨）/ Opus（最新版）/ Sonnet（最新版）/ Haiku（最新版）/ Fable（最新版）\nCodex CLI\nCLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna\nAntigravity CLI\nCLI既定（推奨）/ Gemini 3.8 Flash / Gemini 3.7 Flash / Gemini 3.6 Flash / Gemini 3.1 Pro / Claude Sonnet 4.6 / Claude Opus 4.6 / GPT-OSS 120B\n一覧の一番上にある CLI既定（推奨） を選ぶと、Meldexは特定のモデルを指定せず、CLI自身が選ぶ既定モデルで動作します。\n迷ったときや、CLI側が新しいモデルへ切り替わったことをそのまま使いたいときは、CLI既定を選んでおくのがおすすめです。\n設定ダイアログの 設定 → AI → CLI でも、プロバイダごとに使うモデルを選べます。ここで選んだ値は、チャット側のモデル一覧にも反映され、初回はその値が自動的に選ばれた状態になります。「CLI既定（推奨）」のままにすると、CLI側の既定モデルが使われます。",
+      "text": "チャット下部でCodex CLI / Claude Code / Antigravity CLIのいずれかを選ぶと、モデル欄の一覧から候補を選べます。\nプロバイダ\n主な候補\nClaude Code\nCLI既定（推奨）/ Opus（最新版）/ Sonnet（最新版）/ Haiku（最新版）/ Fable（最新版）\nCodex CLI\nCLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna\nAntigravity CLI\nCLI既定（推奨）/ Gemini 4 Carbon / Gemini 4 Argon / Gemini 3.8 Flash / Claude Sonnet 5.5 / Claude Opus 5.5 / GPT-OSS 120B\n一覧の一番上にある CLI既定（推奨） を選ぶと、Meldexは特定のモデルを指定せず、CLI自身が選ぶ既定モデルで動作します。\n迷ったときや、CLI側が新しいモデルへ切り替わったことをそのまま使いたいときは、CLI既定を選んでおくのがおすすめです。\n設定ダイアログの 設定 → AI → CLI でも、プロバイダごとに使うモデルを選べます。ここで選んだ値は、チャット側のモデル一覧にも反映され、初回はその値が自動的に選ばれた状態になります。「CLI既定（推奨）」のままにすると、CLI側の既定モデルが使われます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_7"
     },
     {
@@ -11094,7 +11094,7 @@
       "category": "チャット・AI",
       "heading": "対応プロバイダ",
       "anchor": "_2",
-      "text": "プロバイダ\n主なモデル\nClaude（Anthropic）\nClaude Opus / Sonnet / Haiku 系\nGemini（Google）\nGemini Pro / Flash 系\nChatGPT（OpenAI）\nGPT 系\n実際に使えるモデルは、APIキー、契約、利用枠に応じてチャット上部のモデル一覧へ表示されます。\n2026年10月18日現在、ChatGPTは GPT-6 Astra / GPT-6.1 Sol / GPT-6 Luna、Claudeは Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5、Geminiは 4 Argon / 3.8 Flash / 3.5 Flash-Lite / 3.1 Pro（プレビュー）などに対応しています。モデル一覧を更新すると、利用できる最新の候補を取得します。取得した一覧にある選択済みモデルは維持します。選択済みモデルが一覧にない場合は、案内を表示して利用可能な候補へ切り替えます。\nGemini 4 Argonは思考の深さを low / medium / high で指定します。temperatureとtop-pは送信しません。Claude Haiku 5.5には自動思考と深さの指定を使い、旧Haiku用の思考トークン数やサンプリング設定は送信しません。料金見積りは割引終了後や長文時も不足しないよう保守的な単価を使います。\nGPT-6 Astra / GPT-6.1 Solは思考を無効にできないため、思考の深さを「オフ」にしても最小の深さで動作します。Gemini 3系とClaudeの新しいモデルも、「オフ」でモデル自身の既定の思考が動作する場合があります。",
+      "text": "プロバイダ\n主なモデル\nClaude（Anthropic）\nClaude Opus / Sonnet / Haiku 系\nGemini（Google）\nGemini Pro / Flash 系\nChatGPT（OpenAI）\nGPT 系\n実際に使えるモデルは、APIキー、契約、利用枠に応じてチャット上部のモデル一覧へ表示されます。\n2026年11月11日現在、ChatGPTは GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna、Claudeは Fable 5.2 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5、Geminiは 4 Carbon / 4 Argon / 3.8 Flash / 3.5 Flash-Lite / 3.1 Pro（プレビュー）などに対応しています。モデル一覧を更新すると、利用できる最新の候補を取得します。取得した一覧にある選択済みモデルは維持します。選択済みモデルが一覧にない場合は、案内を表示して利用可能な候補へ切り替えます。\nGemini 4 Carbon / Gemini 4 Argonは思考の深さを low / medium / high で指定します。temperatureとtop-pは送信しません。Claude Haiku 5.5には自動思考と深さの指定を使い、旧Haiku用の思考トークン数やサンプリング設定は送信しません。料金見積りは割引終了後や長文時も不足しないよう保守的な単価を使います。\nGPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terraは思考を無効にできないため、思考の深さを「オフ」にしても最小の深さで動作します。Gemini 3系とClaudeの新しいモデルも、「オフ」でモデル自身の既定の思考が動作する場合があります。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/LLM%E8%A8%AD%E5%AE%9A.md&section=_2"
     },
     {

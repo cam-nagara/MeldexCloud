@@ -191,7 +191,10 @@
   const CLIENT_BUDGET_KEY = 'meldex-cloud-chat-budget';
   const CLIENT_PRICE_PER_MILLION = {
     gemini: {
+      'gemini-4-carbon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-4-argon': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
+      // 未登録の同系統モデルは既定値で過小見積りしないよう、系統の通常料金で見積もる。
+      'gemini-4': { input: 4, output: 20, cache_read: 0.2, cache_write: 4 },
       'gemini-3.8-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.7-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
       'gemini-3.6-flash': { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: 1.5 },
@@ -205,7 +208,9 @@
     },
     anthropic: {
       'claude-haiku-5-5': { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
+      'claude-fable-5-2': { input: 8, output: 40, cache_read: 0.2, cache_write: 10 },
       'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
+      'claude-fable': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
       'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
       'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
       default: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
@@ -215,8 +220,10 @@
     },
     openai: {
       'gpt-6-astra': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+      'gpt-6.1-terra': { input: 1, output: 5, cache_read: 0.05, cache_write: 1.25 },
       'gpt-6.1-sol': { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
       'gpt-6-luna': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+      'gpt-6': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
       default: { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
       'gpt-5.5': { input: 5.00, output: 30.00, cache_read: 0.50, cache_write: 5.00 },
       'gpt-5.4-mini': { input: 0.75, output: 4.50, cache_read: 0.10, cache_write: 0.75 },
@@ -858,7 +865,7 @@
     if (reasoningLevel !== 'off') payload.reasoning = { effort: _openAiReasoningEffort(reasoningLevel) };
     if (model.startsWith('gpt-6')) {
       let effort = reasoningLevel === 'off' ? 'none' : _openAiReasoningEffort(reasoningLevel);
-      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol'))) effort = 'low';
+      if (effort === 'none' && (model.startsWith('gpt-6-astra') || model.startsWith('gpt-6.1-sol') || model.startsWith('gpt-6.1-terra'))) effort = 'low';
       if (['max', 'ultracode'].includes(reasoningLevel)) effort = 'max';
       payload.reasoning = { effort };
       payload.store = false;

@@ -102,13 +102,17 @@ function _chatPromoteQueuedMessagesToHistory() {
 }
 
 async function _chatSendQueuedMessagesAfterStream(options = {}) {
-  if (_chatState.streaming || _chatState.queuedSendRunning) return false;
+  const scopeMessages = Object.prototype.hasOwnProperty.call(options || {}, 'messages') ? options.messages : null;
+  const sendScope = _chatQueueScopeFromOptions(options);
+  const controlKey = _chatQueueControlKey(sendScope);
+  // 送信中の判定はこのチャットの分だけを見る（別チャットの送信中でも、こちらは送る）。
+  if (_chatScopeIsStreaming(scopeMessages) || _chatQueuedSendKeys.has(controlKey) || _chatLegacyQueueState.queuedSendRunning) return false;
   const queue = _chatQueuedMessages();
   if (!queue.length) return false;
-  const sendScope = _chatQueueScopeFromOptions(options);
   let queued = _chatDrainQueuedMessagesForScope(sendScope);
   if (!queued.length) return false;
-  const interruptId = String(_chatState.interruptDraftId || '');
+  // 割り込み対象は、割り込みを受けた実行から渡されたものだけを使う（別チャットへ混入させない）。
+  const interruptId = String(options.interruptDraftId || '');
   if (interruptId) {
     const chosen = queued.find(item => String(item?.msg_id || '') === interruptId);
     const rest = queued.filter(item => item !== chosen);
@@ -117,7 +121,7 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
       _chatPersistQueuedMessages();
     }
     queued = chosen ? [chosen] : queued.slice(0, 1);
-    _chatState.interruptDraftId = '';
+    if (String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
   }
   const sendMode = interruptId ? 'one-by-one' : _chatQueueSendMode();
   if (sendMode === 'one-by-one' && queued.length > 1) {
@@ -141,8 +145,8 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
       timestamp: _chatLocalTimestamp(),
     });
   }
-  _chatState.queuedSendRunning = true;
-  const stopSerial = Number(_chatState.stopSerial || 0);
+  _chatQueuedSendKeys.add(controlKey);
+  const stopSerial = _chatStopSerialFor(controlKey);
   let sent = false;
   try {
     if (typeof showStatus === 'function') showStatus(`保留メッセージ ${queued.length} 件を送信します`);
@@ -171,15 +175,16 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
     const cliProvider = deferredOptions.provider && window.GBChatCli?.isCliChatProvider?.(deferredOptions.provider);
     const sendQueued = cliProvider && window.GBChatCli?.sendCliChat ? window.GBChatCli.sendCliChat : chatSend;
     sent = await sendQueued(deferredOptions);
-    if (!sent && !_chatState.streaming) {
+    if (!sent && !_chatScopeIsStreaming(scopeMessages)) {
       _chatState.queuedMessages = queued.filter(item => item.origin !== 'meldex-control').concat(_chatQueuedMessages());
       _chatState.queuedScope = sendScope;
       _chatPersistQueuedMessages();
     }
     return sent;
   } finally {
-    _chatState.queuedSendRunning = false;
-    if (sent && !_chatState.streaming && _chatQueuedMessagesForScope(sendScope).length && Number(_chatState.stopSerial || 0) === stopSerial) {
+    _chatQueuedSendKeys.delete(controlKey);
+    if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
+    if (sent && !_chatScopeIsStreaming(scopeMessages) && _chatQueuedMessagesForScope(sendScope).length && _chatStopSerialFor(controlKey) === stopSerial) {
       setTimeout(() => { _chatSendQueuedMessagesAfterStream(options).catch(() => {}); }, 0);
     }
   }
@@ -253,7 +258,11 @@ function chatToggleVoiceInput() {
 }
 
 async function chatSend(options = {}) {
-  if (_chatState.streaming) {
+  const requestedStreamMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
+  if (requestedStreamMessages && requestedStreamMessages !== _chatState.messages) {
+    // 裏で続くチャットの自動送信。そのチャット自身が応答中の時だけ見送る。
+    if (_chatExecutionForMessages(requestedStreamMessages)) return false;
+  } else if (_chatState.streaming) {
     return _chatQueueUserInputForNextTurn(options);
   }
   const effectiveProvider = _chatProviderKey(options.provider || _chatState.provider);
@@ -274,7 +283,8 @@ async function chatSend(options = {}) {
   if (!usingDeferredMessages) _captureChatSessionTitleFromInput();
   const input = document.getElementById('chat-input');
   const msgContainer = _chatLiveMessagesContainer();
-  if (!msgContainer && !detachedScope) {
+  // チャットを閉じた後も、実行中の会話から続く自動送信は表示なしで続ける。
+  if (!msgContainer && !scopedMessages) {
     if (typeof showStatus === 'function') showStatus('チャット表示を準備中です', true);
     return false;
   }
@@ -423,12 +433,8 @@ async function chatSend(options = {}) {
     streamSystemPrompt = await window.GBMeldexManualGrounding.groundSystemPrompt(text, streamSystemPrompt);
   }
   const streamController = new AbortController();
-  _chatState.streaming = true;
-  _chatState.abortController = streamController;
-  _chatState.streamingProvider = streamProvider;
-  _chatState.streamingTargetPath = streamTargetPath;
   _chatState.lastImplicitTargetPath = streamTargetPath;
-  _chatState.activeExecution = {
+  _chatRegisterExecution({
     messages: streamMessages,
     sessionId: streamSessionId,
     sessionTitle: streamSessionTitle,
@@ -440,8 +446,7 @@ async function chatSend(options = {}) {
     model: streamModel,
     mode: Object.prototype.hasOwnProperty.call(options || {}, 'mode') ? String(options.mode || '') : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || '')),
     controller: streamController,
-  };
-  window.MeldexChatListbox?.decorateHistory?.();
+  });
   _syncChatSourceFolderUi();
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn && !detachedScope) {
@@ -484,10 +489,7 @@ async function chatSend(options = {}) {
       timestamp: assistantTimestamp,
     };
   };
-  const streamToken = (_chatState.streamToken || 0) + 1;
-  _chatState.streamToken = streamToken;
-  const isCurrentStream = () => _chatState.streamToken === streamToken
-    && _chatState.abortController === streamController;
+  const isCurrentStream = () => _chatExecutionIsActive(streamController);
   const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
     && (_chatState.sessionId || '') === streamSessionId;
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
@@ -516,11 +518,12 @@ async function chatSend(options = {}) {
   const setLiveActivityStatus = (label) => {
     const st = spinnerWrapper.querySelector('#_chat-thinking-status');
     if (st) st.textContent = label || '考え中...';
+    _chatUpdateExecutionPhase(streamController, String(label || '').replace(/[.。…]+$/, ''));
   };
   const showLiveActivity = (label = '考え中...') => {
     setLiveActivityStatus(label);
     const liveContainer = streamLiveContainer();
-    if (liveContainer && !liveContainer.contains(spinnerWrapper)) liveContainer.appendChild(spinnerWrapper);
+    if (liveContainer) _chatPlaceLiveActivity(liveContainer, spinnerWrapper, assistantDiv);
     scrollStreamContainer();
   };
   const showLiveActivityLog = (label = '考え中...') => {
@@ -543,6 +546,23 @@ async function chatSend(options = {}) {
     scrollStreamContainer();
   };
   const hideLiveActivity = () => spinnerWrapper.remove();
+  const streamExecution = _chatExecutions.get(streamController);
+  if (streamExecution) {
+    // 応答中に別チャットへ移って戻った時、途中までの本文と作業表示を描き直す。
+    streamExecution.restore = () => {
+      if (!streamVisibleInCurrentChat()) return;
+      if (fullText) {
+        assistantDiv = null;
+        assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
+        if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
+        else if (assistantDiv) assistantDiv.textContent = fullText;
+        if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
+      } else {
+        showLiveActivity(spinnerWrapper.querySelector('#_chat-thinking-status')?.textContent || '考え中...');
+      }
+      scrollStreamContainer();
+    };
+  }
 
   try {
     const _streamHeaders = { 'Content-Type': 'application/json' };

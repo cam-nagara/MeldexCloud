@@ -30,6 +30,11 @@ function chatStopStreaming() {
   const controller = _chatState.abortController;
   if (!controller) return;
   _chatState.stopSerial = Number(_chatState.stopSerial || 0) + 1;
+  // 停止はこのチャットだけに効かせる（別チャットの待機カードの連続送信は止めない）。
+  const stoppedExecution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
+  if (typeof _chatMarkStopRequested === 'function') {
+    _chatMarkStopRequested(stoppedExecution ? _chatQueueControlKey(stoppedExecution) : _chatVisibleQueueControlKey());
+  }
   try { controller.abort(); } catch {}
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn) {
@@ -252,9 +257,15 @@ function _chatEditQueuedMessage(msgId) {
 
 function _chatInterruptWithQueuedMessage(msgId) {
   const message = _chatQueuedMessages().find(item => String(item?.msg_id || '') === String(msgId || ''));
-  if (!message || !_chatState.abortController) return false;
+  const execution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
+  const controller = execution?.controller || _chatState.abortController;
+  if (!message || !controller) return false;
   _chatState.interruptDraftId = String(message.msg_id || '');
-  try { _chatState.abortController.abort(); } catch {}
+  if (execution) {
+    execution.interruptRequested = true;
+    execution.interruptDraftId = String(message.msg_id || '');
+  }
+  try { controller.abort(); } catch {}
   if (typeof showStatus === 'function') showStatus('現在の応答を中断して待機カードを送信します');
   return true;
 }
@@ -340,7 +351,7 @@ function _chatDecorateHistoryList() {
   list.querySelectorAll('[data-chat-session-id]').forEach(row => {
     row.setAttribute('role', 'option');
     const sessionId = String(row.dataset.chatSessionId || '');
-    const working = String(_chatState.activeExecution?.sessionId || '') === sessionId;
+    const working = typeof _chatExecutionForSession === 'function' && !!_chatExecutionForSession(sessionId);
     const unread = row.dataset.chatUnread === '1';
     row.querySelector('.chat-list-state-icons')?.remove();
     if (!working && !unread) return;

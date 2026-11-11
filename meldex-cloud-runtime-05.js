@@ -88042,6 +88042,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
   codex: [
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
@@ -88054,6 +88055,7 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
     { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
     { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
@@ -211925,6 +211927,259 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-top-p',
 ];
 const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', versionTargetPath: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
+// AI応答の実行はチャットごとに独立して持つ（複数チャットの並行実行・閉じた後の継続）。
+// _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
+const _chatExecutions = new Map();
+const _chatLegacyStreamState = { streaming: false, abortController: null, streamingProvider: '', streamingTargetPath: '', activeExecution: null };
+
+function _chatExecutionList() {
+  return Array.from(_chatExecutions.values());
+}
+
+function _chatExecutionForMessages(messages) {
+  if (!messages) return null;
+  return _chatExecutionList().find(execution => execution.messages === messages) || null;
+}
+
+function _chatExecutionForSession(sessionId) {
+  const wanted = String(sessionId || '');
+  if (!wanted) return null;
+  return _chatExecutionList().find(execution => String(execution.sessionId || '') === wanted) || null;
+}
+
+function _chatVisibleExecution() {
+  return _chatExecutionForMessages(_chatState.messages);
+}
+
+function _chatExecutionIsActive(controller) {
+  return !!controller && _chatExecutions.has(controller);
+}
+
+function _chatScopeIsStreaming(messages) {
+  if (!messages || messages === _chatState.messages) return !!_chatState.streaming;
+  return !!_chatExecutionForMessages(messages);
+}
+
+// 応答中のチャットを履歴から開き直した時は、実行中の会話へ再接続して表示を続ける。
+function _chatAdoptRunningExecution() {
+  const execution = _chatExecutionForSession(_chatState.sessionId);
+  if (!execution || execution.messages === _chatState.messages) return false;
+  _chatState.messages = execution.messages;
+  return true;
+}
+
+// 表示中チャットが応答中なら、途中までの応答・作業表示・停止ボタンを描き直す。
+function _chatResumeVisibleExecution() {
+  try { _chatVisibleExecution()?.restore?.(); } catch {}
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
+}
+
+// 作業表示（思考内容・ツール実行の記録）は、常に最新のAI発言の直後に置く。
+// 発言の吹き出しは作業表示より後から追加されるため、追加・更新のたびに位置を直す。
+function _chatPlaceLiveActivity(container, wrapper, assistantEl) {
+  if (!container || !wrapper) return;
+  let row = assistantEl && assistantEl.isConnected ? assistantEl : null;
+  while (row && row.parentElement !== container) row = row.parentElement;
+  const alreadyPlaced = row
+    ? wrapper.parentElement === container && wrapper.previousElementSibling === row
+    : wrapper.parentElement === container;
+  if (alreadyPlaced) return;
+  // 移動すると内側のスクロール位置が戻るため、記録欄の位置を保って付け替える。
+  const scrollers = Array.from(wrapper.querySelectorAll('*')).filter(el => el.scrollTop > 0)
+    .map(el => [el, el.scrollTop]);
+  if (row) row.insertAdjacentElement('afterend', wrapper);
+  else container.appendChild(wrapper);
+  scrollers.forEach(([el, top]) => { el.scrollTop = top; });
+}
+
+function _chatExecutionTitle(execution) {
+  const title = String(execution?.sessionTitle || '').trim();
+  if (title) return title;
+  // 無題のチャットは依頼文の冒頭で見分けられるようにする。
+  const lastUser = (Array.isArray(execution?.messages) ? execution.messages : [])
+    .filter(message => message?.role === 'user' && message.origin !== 'meldex-control').pop();
+  const content = lastUser?.content;
+  const text = (typeof content === 'string' ? content
+    : (Array.isArray(content) ? content.map(part => part?.text || '').join(' ') : '')).replace(/\s+/g, ' ').trim();
+  if (text) return text.length > 30 ? text.slice(0, 30) + '…' : text;
+  const target = String(execution?.targetPath || '').split('/').pop() || '';
+  return target ? target.replace(/\.[^.]+$/, '') + 'のチャット' : 'AIチャット';
+}
+
+async function _chatOpenExecution(execution) {
+  if (!execution) return false;
+  if (typeof openRightPanelTab === 'function') openRightPanelTab('chat');
+  if (execution.messages === _chatState.messages) {
+    if (typeof switchChatMode === 'function' && typeof _chatMode !== 'undefined' && _chatMode !== 'llm') switchChatMode('llm');
+    return true;
+  }
+  const sessionId = String(execution.sessionId || '');
+  if (!sessionId || typeof openSavedChat !== 'function' || typeof _chatSavedPathForSession !== 'function') return false;
+  // 初回応答の完了前は履歴ファイルが無いため、実行中の内容を先に保存してから開く。
+  // 終わった実行は完了時に保存済み。終了後に残った進捗行から開く時に保存すると、
+  // その後の発言や削除を実行時点の古い会話で上書きしてしまうため、保存しない。
+  if (typeof chatAutoSave === 'function' && _chatExecutionIsActive(execution.controller)) {
+    await chatAutoSave({
+      messages: execution.messages,
+      sessionId,
+      sessionTitle: execution.sessionTitle,
+      targetPath: execution.targetPath,
+      targets: execution.targets,
+      sourceFolder: execution.sourceFolder,
+      workspaceId: execution.workspaceId,
+      provider: execution.provider,
+      model: execution.model,
+    }).catch(() => false);
+  }
+  return openSavedChat(_chatSavedPathForSession(sessionId));
+}
+
+function _chatExecutionProgressLinks(execution) {
+  const links = [{
+    label: 'チャットを開く',
+    title: _chatExecutionTitle(execution) + ' を開く',
+    open: () => _chatOpenExecution(execution),
+  }];
+  const targetPath = String(execution.targetPath || '');
+  if (targetPath && typeof openLink === 'function') {
+    const name = targetPath.split('/').pop() || targetPath;
+    links.push({ label: name, title: targetPath + ' を開く', open: () => openLink(targetPath, name) });
+  }
+  return links;
+}
+
+// 待機カードの送信中・停止要求の印はチャットごとに持つ。全体で1つだと、別チャットの
+// 送信中に待機カードが送られない・別チャットの停止で連続送信が止まる、といった巻き込みが起きる。
+const _chatQueuedSendKeys = new Set();
+const _chatStopSerials = new Map();
+const _chatLegacyQueueState = { queuedSendRunning: false };
+
+function _chatQueueControlKey(scope) {
+  const sessionId = String(scope?.sessionId || '');
+  if (sessionId) return 'session:' + sessionId;
+  return 'scope:' + (typeof _chatQueueScopeKey === 'function' ? _chatQueueScopeKey(scope || {}) : '');
+}
+
+function _chatStopSerialFor(key) {
+  return Number(_chatStopSerials.get(key) || 0);
+}
+
+function _chatMarkStopRequested(key) {
+  _chatStopSerials.set(key, _chatStopSerialFor(key) + 1);
+}
+
+function _chatVisibleQueueControlKey() {
+  const scope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : { sessionId: _chatState.sessionId };
+  return _chatQueueControlKey(scope);
+}
+
+function _chatRegisterExecution(execution) {
+  const controller = execution?.controller;
+  if (!controller) return null;
+  _chatExecutions.set(controller, execution);
+  const progressApi = window.MeldexOperationProgress;
+  if (progressApi?.begin) {
+    try {
+      execution.progress = progressApi.begin({
+        kind: 'ai-chat',
+        label: _chatExecutionTitle(execution),
+        phase: 'AIが作業中',
+        mode: 'indeterminate',
+        background: true,
+        showInTray: true,
+        priority: 30,
+        cancellable: true,
+        // 進捗表示の「中止」も停止ボタンと同じ扱いにし、待機カードの続き送信を止める。
+        cancel: () => { _chatStopExecution(controller); },
+        cancelCompletes: false,
+        links: _chatExecutionProgressLinks(execution),
+      });
+    } catch (error) {
+      console.warn('AIチャットの進捗表示を開始できませんでした', error);
+    }
+  }
+  window.MeldexChatListbox?.decorateHistory?.();
+  return execution;
+}
+
+function _chatUpdateExecutionPhase(controller, phase) {
+  const execution = _chatExecutions.get(controller);
+  const label = String(phase || '').trim();
+  if (!execution?.progress || !label || execution.lastPhase === label) return;
+  execution.lastPhase = label;
+  execution.progress.update({ phase: label });
+}
+
+function _chatUnregisterExecution(controller, outcome = {}) {
+  const execution = _chatExecutions.get(controller);
+  if (!execution) return false;
+  _chatExecutions.delete(controller);
+  const progress = execution.progress;
+  if (progress) {
+    const status = String(outcome.status || 'succeeded');
+    if (status === 'failed') progress.fail({ error: outcome.message || 'AIの応答を完了できませんでした' });
+    else if (status === 'cancelled') progress.cancelled({ summary: outcome.message || '中止しました' });
+    else progress.succeed({ summary: outcome.message || '応答が完了しました' });
+  }
+  window.MeldexChatListbox?.decorateHistory?.();
+  return true;
+}
+
+function _chatStopExecution(controller) {
+  if (!_chatExecutionIsActive(controller)) return false;
+  _chatMarkStopRequested(_chatQueueControlKey(_chatExecutions.get(controller)));
+  try { controller.abort(); } catch {}
+  return true;
+}
+
+Object.defineProperties(_chatState, {
+  streaming: {
+    configurable: true,
+    enumerable: true,
+    get() { return !!_chatVisibleExecution() || !!_chatLegacyStreamState.streaming; },
+    set(value) { _chatLegacyStreamState.streaming = !!value; },
+  },
+  abortController: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.controller || _chatLegacyStreamState.abortController; },
+    set(value) { _chatLegacyStreamState.abortController = value || null; },
+  },
+  streamingProvider: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.provider || _chatLegacyStreamState.streamingProvider; },
+    set(value) { _chatLegacyStreamState.streamingProvider = String(value || ''); },
+  },
+  streamingTargetPath: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution()?.targetPath || _chatLegacyStreamState.streamingTargetPath; },
+    set(value) { _chatLegacyStreamState.streamingTargetPath = String(value || ''); },
+  },
+  activeExecution: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatVisibleExecution() || _chatLegacyStreamState.activeExecution; },
+    set(value) { _chatLegacyStreamState.activeExecution = value || null; },
+  },
+  // 表示中チャットの待機カードを送信中か（取消ボタンの無効化に使う）。
+  queuedSendRunning: {
+    configurable: true,
+    enumerable: true,
+    get() { return _chatQueuedSendKeys.has(_chatVisibleQueueControlKey()) || !!_chatLegacyQueueState.queuedSendRunning; },
+    set(value) { _chatLegacyQueueState.queuedSendRunning = !!value; },
+  },
+});
+
+window.MeldexChatExecutions = {
+  list: _chatExecutionList,
+  forSession: _chatExecutionForSession,
+  open: _chatOpenExecution,
+  stop: _chatStopExecution,
+};
+
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';
@@ -212082,6 +212337,7 @@ const CHAT_CLI_MODEL_CATALOG = {
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
@@ -212093,6 +212349,7 @@ const CHAT_CLI_MODEL_CATALOG = {
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
+    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
     { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
     { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
@@ -212105,9 +212362,9 @@ const CHAT_CLI_MODEL_CATALOG = {
 // 更新して新バージョンとしてリリースする。更新時は CHAT_MODELS_CACHE_VERSION も上げ、
 // 端末に残る旧世代のキャッシュ済みモデル一覧を破棄させること。
 const CHAT_DEFAULT_MODELS = {
-  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'],
-  anthropic: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
-  openai: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
+  gemini: ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-3.6-flash'],
+  anthropic: ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001'],
+  openai: ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.5'],
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
   claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
@@ -212129,10 +212386,13 @@ const CHAT_CLI_PROVIDERS = {
   antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 8;
+const CHAT_MODELS_CACHE_VERSION = 9;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
+    'gemini-4-carbon': { input: 4, output: 20 },
     'gemini-4-argon': { input: 4, output: 20 },
+    // 未登録の同系統モデルは既定値で過小見積りしないよう、系統の通常料金で見積もる。
+    'gemini-4': { input: 4, output: 20 },
     'gemini-3.8-flash': { input: 1.5, output: 7.5 },
     'gemini-3.7-flash': { input: 1.5, output: 7.5 },
     'gemini-3.6-flash': { input: 1.5, output: 7.5 },
@@ -212143,7 +212403,9 @@ const CHAT_COST_TABLE_PER_MILLION = {
   },
   anthropic: {
     'claude-haiku-5-5': { input: 0.5, output: 2.5 },
+    'claude-fable-5-2': { input: 8, output: 40 },
     'claude-fable-5-1': { input: 10, output: 50 },
+    'claude-fable': { input: 10, output: 50 },
     'claude-opus-5-5': { input: 4, output: 20 },
     'claude-sonnet-5-5': { input: 2, output: 10 },
     default: { input: 3.00, output: 15.00 },
@@ -212152,8 +212414,10 @@ const CHAT_COST_TABLE_PER_MILLION = {
   },
   openai: {
     'gpt-6-astra': { input: 10, output: 50 },
+    'gpt-6.1-terra': { input: 1, output: 5 },
     'gpt-6.1-sol': { input: 2, output: 10 },
     'gpt-6-luna': { input: 0.1, output: 0.5 },
+    'gpt-6': { input: 10, output: 50 },
     default: { input: 0.75, output: 4.50 },
     'gpt-5.5': { input: 5.00, output: 30.00 },
     'gpt-5.4-mini': { input: 0.75, output: 4.50 },
@@ -213069,7 +213333,7 @@ function _syncTeamRoomSelect(rooms) {
     const roomPath = String(room.path || '');
     const modifiedMs = Date.parse(room.last?.timestamp || room.modified || '') || 0;
     const readMs = Number(localStorage.getItem('meldex-team-room-read:' + encodeURIComponent(roomPath)) || 0);
-    const working = String(_chatState.activeExecution?.targetPath || '') === roomPath;
+    const working = !!roomPath && typeof _chatExecutionList === 'function' && _chatExecutionList().some(execution => String(execution.targetPath || '') === roomPath);
     const unread = modifiedMs > readMs && roomPath !== current;
     const label = `${baseLabel}${unread ? '  • 未読' : ''}${working ? '  ● 作業中' : ''}`;
     return `<option value="${esc(room.path)}" ${room.path===current?'selected':''}>${esc(label)}</option>`;
@@ -214761,6 +215025,7 @@ function _chatResetCurrentSession(options = {}) {
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : _chatState.targetPath);
+  if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
 }
 
 function _chatAddSourceOption(options, seen, option) {
@@ -214902,6 +215167,11 @@ function _syncChatWorkspaceTabs() {
   });
 }
 
+// 裏で続くチャットを含め、どれか1件でもAI応答中か。部分読込の画面でも落ちないよう存在を確かめる。
+function _chatAnyExecutionRunning() {
+  return typeof _chatExecutionList === 'function' && _chatExecutionList().length > 0;
+}
+
 function _syncChatSourceFolderUi() {
   _syncChatWorkspaceTabs();
   const select = document.getElementById('chat-source-folder');
@@ -214910,7 +215180,7 @@ function _syncChatSourceFolderUi() {
   const hasSource = !!(_chatWorkspaceIdValue() || _chatSourceFolderValue());
   if (select) {
     select.value = _chatTargetSelectorValue();
-    select.disabled = !!_chatState.streaming || !_chatSourceOptions().length;
+    select.disabled = !!_chatState.streaming || _chatAnyExecutionRunning() || !_chatSourceOptions().length;
   }
   if (badge) {
     badge.textContent = hasSource && selected ? '対象' : '未選択';
@@ -214924,7 +215194,17 @@ function _syncChatSourceFolderUi() {
 
 function _chatSyncStreamingControls() {
   const sendBtn = document.getElementById('chat-send-btn');
-  if (!sendBtn || !_chatState.streaming) return;
+  if (!sendBtn) return;
+  if (!_chatState.streaming) {
+    // 別チャットの応答は裏で続く。表示中のチャットが待機中なら送信ボタンへ戻す。
+    if (sendBtn.textContent === '停止' || sendBtn.textContent === '停止中...') {
+      sendBtn.textContent = '送信';
+      sendBtn.title = typeof _chatSendShortcutTitle === 'function' ? _chatSendShortcutTitle() : '送信';
+      sendBtn.disabled = false;
+      if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+    }
+    return;
+  }
   const isCli = typeof _chatIsCliProvider === 'function' && _chatIsCliProvider(_chatState.streamingProvider || _chatState.provider);
   sendBtn.textContent = '停止';
   sendBtn.title = isCli ? 'CLIの実行を停止' : '応答生成を停止';
@@ -215025,7 +215305,8 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
     _syncChatSourceFolderUi();
     return true;
   }
-  if (_chatState.streaming) {
+  // 裏で続くチャットも切替前の保存先・対象で動いているため、どれか1件でも応答中なら切り替えない。
+  if (_chatState.streaming || _chatAnyExecutionRunning()) {
     _syncChatSourceFolderUi();
     if (typeof showStatus === 'function') showStatus('応答生成中は対象を切り替えられません', true);
     return false;
@@ -215120,13 +215401,18 @@ function _chatRenderQueuedMessageBubbles() {
 function _chatRenderStoredMessages() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
+  if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
   container.innerHTML = '';
   _ensureChatMessageIds(_chatState.messages).forEach((message, index) => {
     if (!message || typeof message !== 'object') return;
     chatAddMessage(message.role || 'assistant', message.content, _chatMessageRenderOptions(message, index));
   });
   _chatRenderQueuedMessageBubbles();
-  window.GBChatCliRestoreActivity?.();
+  // CLI側の復元口は表示中チャットの実行（API/CLIとも）を描き直す。未読込の画面では直接呼ぶ。
+  if (window.GBChatCliRestoreActivity) window.GBChatCliRestoreActivity?.();
+  else { try { _chatVisibleExecution()?.restore?.(); } catch {} }
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
 }
 
 function _chatApplyCompression(data, options = {}) {
@@ -215221,6 +215507,11 @@ function _chatRefreshMessageDeleteButtons() {
 async function _chatApplyMessagesSnapshot(messages, options = {}) {
   if (options.scope && !_chatSessionScopeMatches(options.scope)) {
     if (typeof showStatus === 'function') showStatus('別チャットの履歴操作は適用できません', true);
+    return false;
+  }
+  // 応答中に会話を差し替えると、実行中の応答が古い会話へ書き込まれ、取り消しが保存で上書きされる。
+  if (_chatState.streaming || (typeof _chatExecutionForSession === 'function' && _chatExecutionForSession(_chatState.sessionId))) {
+    if (typeof showStatus === 'function') showStatus('応答生成中はチャットの取り消し・やり直しを実行できません', true);
     return false;
   }
   const previous = _chatCloneMessages(_chatState.messages);
@@ -215775,6 +216066,11 @@ function chatStopStreaming() {
   const controller = _chatState.abortController;
   if (!controller) return;
   _chatState.stopSerial = Number(_chatState.stopSerial || 0) + 1;
+  // 停止はこのチャットだけに効かせる（別チャットの待機カードの連続送信は止めない）。
+  const stoppedExecution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
+  if (typeof _chatMarkStopRequested === 'function') {
+    _chatMarkStopRequested(stoppedExecution ? _chatQueueControlKey(stoppedExecution) : _chatVisibleQueueControlKey());
+  }
   try { controller.abort(); } catch {}
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn) {
@@ -215997,9 +216293,15 @@ function _chatEditQueuedMessage(msgId) {
 
 function _chatInterruptWithQueuedMessage(msgId) {
   const message = _chatQueuedMessages().find(item => String(item?.msg_id || '') === String(msgId || ''));
-  if (!message || !_chatState.abortController) return false;
+  const execution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
+  const controller = execution?.controller || _chatState.abortController;
+  if (!message || !controller) return false;
   _chatState.interruptDraftId = String(message.msg_id || '');
-  try { _chatState.abortController.abort(); } catch {}
+  if (execution) {
+    execution.interruptRequested = true;
+    execution.interruptDraftId = String(message.msg_id || '');
+  }
+  try { controller.abort(); } catch {}
   if (typeof showStatus === 'function') showStatus('現在の応答を中断して待機カードを送信します');
   return true;
 }
@@ -216085,7 +216387,7 @@ function _chatDecorateHistoryList() {
   list.querySelectorAll('[data-chat-session-id]').forEach(row => {
     row.setAttribute('role', 'option');
     const sessionId = String(row.dataset.chatSessionId || '');
-    const working = String(_chatState.activeExecution?.sessionId || '') === sessionId;
+    const working = typeof _chatExecutionForSession === 'function' && !!_chatExecutionForSession(sessionId);
     const unread = row.dataset.chatUnread === '1';
     row.querySelector('.chat-list-state-icons')?.remove();
     if (!working && !unread) return;
@@ -216222,13 +216524,17 @@ function _chatPromoteQueuedMessagesToHistory() {
 }
 
 async function _chatSendQueuedMessagesAfterStream(options = {}) {
-  if (_chatState.streaming || _chatState.queuedSendRunning) return false;
+  const scopeMessages = Object.prototype.hasOwnProperty.call(options || {}, 'messages') ? options.messages : null;
+  const sendScope = _chatQueueScopeFromOptions(options);
+  const controlKey = _chatQueueControlKey(sendScope);
+  // 送信中の判定はこのチャットの分だけを見る（別チャットの送信中でも、こちらは送る）。
+  if (_chatScopeIsStreaming(scopeMessages) || _chatQueuedSendKeys.has(controlKey) || _chatLegacyQueueState.queuedSendRunning) return false;
   const queue = _chatQueuedMessages();
   if (!queue.length) return false;
-  const sendScope = _chatQueueScopeFromOptions(options);
   let queued = _chatDrainQueuedMessagesForScope(sendScope);
   if (!queued.length) return false;
-  const interruptId = String(_chatState.interruptDraftId || '');
+  // 割り込み対象は、割り込みを受けた実行から渡されたものだけを使う（別チャットへ混入させない）。
+  const interruptId = String(options.interruptDraftId || '');
   if (interruptId) {
     const chosen = queued.find(item => String(item?.msg_id || '') === interruptId);
     const rest = queued.filter(item => item !== chosen);
@@ -216237,7 +216543,7 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
       _chatPersistQueuedMessages();
     }
     queued = chosen ? [chosen] : queued.slice(0, 1);
-    _chatState.interruptDraftId = '';
+    if (String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
   }
   const sendMode = interruptId ? 'one-by-one' : _chatQueueSendMode();
   if (sendMode === 'one-by-one' && queued.length > 1) {
@@ -216261,8 +216567,8 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
       timestamp: _chatLocalTimestamp(),
     });
   }
-  _chatState.queuedSendRunning = true;
-  const stopSerial = Number(_chatState.stopSerial || 0);
+  _chatQueuedSendKeys.add(controlKey);
+  const stopSerial = _chatStopSerialFor(controlKey);
   let sent = false;
   try {
     if (typeof showStatus === 'function') showStatus(`保留メッセージ ${queued.length} 件を送信します`);
@@ -216291,15 +216597,16 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
     const cliProvider = deferredOptions.provider && window.GBChatCli?.isCliChatProvider?.(deferredOptions.provider);
     const sendQueued = cliProvider && window.GBChatCli?.sendCliChat ? window.GBChatCli.sendCliChat : chatSend;
     sent = await sendQueued(deferredOptions);
-    if (!sent && !_chatState.streaming) {
+    if (!sent && !_chatScopeIsStreaming(scopeMessages)) {
       _chatState.queuedMessages = queued.filter(item => item.origin !== 'meldex-control').concat(_chatQueuedMessages());
       _chatState.queuedScope = sendScope;
       _chatPersistQueuedMessages();
     }
     return sent;
   } finally {
-    _chatState.queuedSendRunning = false;
-    if (sent && !_chatState.streaming && _chatQueuedMessagesForScope(sendScope).length && Number(_chatState.stopSerial || 0) === stopSerial) {
+    _chatQueuedSendKeys.delete(controlKey);
+    if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
+    if (sent && !_chatScopeIsStreaming(scopeMessages) && _chatQueuedMessagesForScope(sendScope).length && _chatStopSerialFor(controlKey) === stopSerial) {
       setTimeout(() => { _chatSendQueuedMessagesAfterStream(options).catch(() => {}); }, 0);
     }
   }
@@ -216373,7 +216680,11 @@ function chatToggleVoiceInput() {
 }
 
 async function chatSend(options = {}) {
-  if (_chatState.streaming) {
+  const requestedStreamMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
+  if (requestedStreamMessages && requestedStreamMessages !== _chatState.messages) {
+    // 裏で続くチャットの自動送信。そのチャット自身が応答中の時だけ見送る。
+    if (_chatExecutionForMessages(requestedStreamMessages)) return false;
+  } else if (_chatState.streaming) {
     return _chatQueueUserInputForNextTurn(options);
   }
   const effectiveProvider = _chatProviderKey(options.provider || _chatState.provider);
@@ -216394,7 +216705,8 @@ async function chatSend(options = {}) {
   if (!usingDeferredMessages) _captureChatSessionTitleFromInput();
   const input = document.getElementById('chat-input');
   const msgContainer = _chatLiveMessagesContainer();
-  if (!msgContainer && !detachedScope) {
+  // チャットを閉じた後も、実行中の会話から続く自動送信は表示なしで続ける。
+  if (!msgContainer && !scopedMessages) {
     if (typeof showStatus === 'function') showStatus('チャット表示を準備中です', true);
     return false;
   }
@@ -216543,12 +216855,8 @@ async function chatSend(options = {}) {
     streamSystemPrompt = await window.GBMeldexManualGrounding.groundSystemPrompt(text, streamSystemPrompt);
   }
   const streamController = new AbortController();
-  _chatState.streaming = true;
-  _chatState.abortController = streamController;
-  _chatState.streamingProvider = streamProvider;
-  _chatState.streamingTargetPath = streamTargetPath;
   _chatState.lastImplicitTargetPath = streamTargetPath;
-  _chatState.activeExecution = {
+  _chatRegisterExecution({
     messages: streamMessages,
     sessionId: streamSessionId,
     sessionTitle: streamSessionTitle,
@@ -216560,8 +216868,7 @@ async function chatSend(options = {}) {
     model: streamModel,
     mode: Object.prototype.hasOwnProperty.call(options || {}, 'mode') ? String(options.mode || '') : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || '')),
     controller: streamController,
-  };
-  window.MeldexChatListbox?.decorateHistory?.();
+  });
   _syncChatSourceFolderUi();
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn && !detachedScope) {
@@ -216604,10 +216911,7 @@ async function chatSend(options = {}) {
       timestamp: assistantTimestamp,
     };
   };
-  const streamToken = (_chatState.streamToken || 0) + 1;
-  _chatState.streamToken = streamToken;
-  const isCurrentStream = () => _chatState.streamToken === streamToken
-    && _chatState.abortController === streamController;
+  const isCurrentStream = () => _chatExecutionIsActive(streamController);
   const streamVisibleInCurrentChat = () => _chatState.messages === streamMessages
     && (_chatState.sessionId || '') === streamSessionId;
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
@@ -216636,11 +216940,12 @@ async function chatSend(options = {}) {
   const setLiveActivityStatus = (label) => {
     const st = spinnerWrapper.querySelector('#_chat-thinking-status');
     if (st) st.textContent = label || '考え中...';
+    _chatUpdateExecutionPhase(streamController, String(label || '').replace(/[.。…]+$/, ''));
   };
   const showLiveActivity = (label = '考え中...') => {
     setLiveActivityStatus(label);
     const liveContainer = streamLiveContainer();
-    if (liveContainer && !liveContainer.contains(spinnerWrapper)) liveContainer.appendChild(spinnerWrapper);
+    if (liveContainer) _chatPlaceLiveActivity(liveContainer, spinnerWrapper, assistantDiv);
     scrollStreamContainer();
   };
   const showLiveActivityLog = (label = '考え中...') => {
@@ -216663,6 +216968,23 @@ async function chatSend(options = {}) {
     scrollStreamContainer();
   };
   const hideLiveActivity = () => spinnerWrapper.remove();
+  const streamExecution = _chatExecutions.get(streamController);
+  if (streamExecution) {
+    // 応答中に別チャットへ移って戻った時、途中までの本文と作業表示を描き直す。
+    streamExecution.restore = () => {
+      if (!streamVisibleInCurrentChat()) return;
+      if (fullText) {
+        assistantDiv = null;
+        assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
+        if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
+        else if (assistantDiv) assistantDiv.textContent = fullText;
+        if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
+      } else {
+        showLiveActivity(spinnerWrapper.querySelector('#_chat-thinking-status')?.textContent || '考え中...');
+      }
+      scrollStreamContainer();
+    };
+  }
 
   try {
     const _streamHeaders = { 'Content-Type': 'application/json' };
@@ -216743,12 +217065,13 @@ async function chatSend(options = {}) {
             const chunk = data.content == null ? '' : String(data.content);
             if (!chunk) continue;
             // 思考内容がない場合は一時表示を消し、ある場合は完了までライブ欄を残す。
-            if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
-            else hideLiveActivity();
+            if (!responseThinking.trim()) hideLiveActivity();
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
             if (!assistantDiv || !assistantDiv.isConnected) {
               assistantDiv = addAssistantToVisibleStream('', _assistantRenderOptions());
             }
+            // 発言の吹き出しを作った後に置き直し、思考内容を最新発言の後ろへ表示する。
+            if (responseThinking.trim()) showLiveActivityLog('応答を生成中...');
             fullText += chunk;
             if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, responseCitations);
             else if (assistantDiv) { let s = esc(fullText); s = s.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code style="background:var(--bg2);padding:1px 4px;border-radius:3px;">$1</code>').replace(/\n/g,'<br>'); assistantDiv.innerHTML = s; }
@@ -216918,22 +217241,23 @@ async function chatSend(options = {}) {
     }
   } finally {
     spinnerWrapper.remove();
-    if (_chatState.streamToken === streamToken && _chatState.abortController === streamController) {
-      _chatState.streaming = false;
-      _chatState.abortController = null;
-      _chatState.streamingProvider = '';
-      _chatState.streamingTargetPath = '';
+    const interruptDraftId = String(streamExecution?.interruptDraftId || '');
+    const interruptedByDraft = !!interruptDraftId;
+    if (_chatUnregisterExecution(streamController, {
+      status: streamController.signal.aborted ? 'cancelled' : (streamCompleted ? 'succeeded' : 'failed'),
+      message: streamController.signal.aborted ? '応答を停止しました' : '',
+    })) {
       _syncChatSourceFolderUi();
       if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
       const liveSendBtn = document.getElementById('chat-send-btn') || sendBtn;
-      if (liveSendBtn && !detachedScope) {
+      if (liveSendBtn && !_chatState.streaming) {
         liveSendBtn.textContent = '送信';
         liveSendBtn.title = _chatSendShortcutTitle();
         liveSendBtn.disabled = false;
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-      if (!detachedScope && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-      const shouldInterruptSend = !!_chatState.interruptDraftId;
+      if (streamVisibleInCurrentChat() && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+      const shouldInterruptSend = interruptedByDraft;
       if ((streamCompleted || shouldInterruptSend) && typeof _chatSendQueuedMessagesAfterStream === 'function') {
         setTimeout(() => {
           _chatSendQueuedMessagesAfterStream({
@@ -216946,14 +217270,13 @@ async function chatSend(options = {}) {
             workspaceId: streamWorkspaceId,
             provider: streamProvider,
             model: streamModel,
+            interruptDraftId,
             mode: Object.prototype.hasOwnProperty.call(options || {}, 'mode')
               ? options.mode
               : (typeof _chatMode === 'undefined' ? '' : _chatMode || ''),
           }).catch(() => {});
         }, 0);
       }
-      if (_chatState.activeExecution?.controller === streamController) _chatState.activeExecution = null;
-      window.MeldexChatListbox?.decorateHistory?.();
     }
     if (msgContainer && !detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
   }
@@ -217147,11 +217470,13 @@ async function openFileChat(targetPath) {
             _safeSetValue('chat-model', data.frontmatter.model);
           }
         }
+        if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
         const container = _chatLiveMessagesContainer();
         if (container) container.innerHTML = '';
         _chatState.messages.forEach((m, index) => {
           chatAddMessage(m.role, m.content, _chatMessageRenderOptions(m, index));
         });
+        if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
         restored = true;
         break;
       }
@@ -217187,11 +217512,13 @@ async function openFileChat(targetPath) {
                 _safeSetValue('chat-model', data.frontmatter.model);
               }
             }
+            if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
             const container = _chatLiveMessagesContainer();
             if (container) container.innerHTML = '';
             _chatState.messages.forEach((m, index) => {
               chatAddMessage(m.role, m.content, _chatMessageRenderOptions(m, index));
             });
+            if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
             restored = true;
             break;
           }
@@ -217227,6 +217554,7 @@ async function openFileChat(targetPath) {
       placeholder.append(label, createBtn);
       container.appendChild(placeholder);
     }
+    if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
   }
 
   if (!restoreStillCurrent()) return false;
@@ -217239,6 +217567,8 @@ async function openFileChat(targetPath) {
 }
 
 function _createFileChat(targetPath) {
+  const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
+  const previousWasStreaming = !!_chatState.streaming;
   _chatState.messages = [];
   if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
   _chatState.sessionId = '';
@@ -217250,14 +217580,19 @@ function _createFileChat(targetPath) {
   } else {
     _chatState.pendingAttachments = [];
   }
-  if (!_chatState.streaming && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
-  else if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
+  // 裏で応答中のチャットがあれば、その待機カードを残す。
+  if (!_chatState.streaming && !_chatAnyExecutionRunning() && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  else {
+    if (!previousWasStreaming && previousQueueScope && typeof _chatDrainQueuedMessagesForScope === 'function') _chatDrainQueuedMessagesForScope(previousQueueScope);
+    if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
+  }
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
   const fileName = targetPath.split('/').pop();
   chatAddSystem(`「${fileName}」のチャットを作成しました`);
   _showChatTargetBadge(targetPath);
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
 }
 
 function _showChatTargetBadge(targetPath) {
@@ -217443,6 +217778,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     } catch {}
     const fileName = (path || '').split('/').pop() || '';
     chatAddSystem('チャット履歴が見つかりませんでした' + (fileName ? '（' + fileName + '）' : '') + '。新しいチャットを開始するか、履歴タブから既存のチャットを選んでください。');
+    if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
     if (typeof showStatus === 'function') showStatus('チャット履歴が見つかりませんでした');
     if (typeof renderChatHistory === 'function') renderChatHistory();
     return false;
@@ -217480,6 +217816,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
       _safeSetValue('chat-model', data.frontmatter.model);
     }
   }
+  // 応答中のチャットを開き直した時は、実行中の会話へ再接続する。
+  if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
   // メッセージをレンダリング
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
@@ -217490,6 +217828,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     if (m.role === 'user') chatAddMessage('user', m.content, _chatMessageRenderOptions(m, index));
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
+  if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
   if (anchor) _chatScrollToMessage(anchor);
   else _chatRevealLatest('llm');
   return true;
@@ -217499,6 +217838,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
 }
 
 function chatClear() {
+  const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
+  const previousWasStreaming = !!_chatState.streaming;
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
@@ -217513,14 +217854,19 @@ function chatClear() {
     _chatState.pendingAttachments = [];
   }
   if (typeof _chatCleanupDraftUploads === 'function') _chatCleanupDraftUploads('chat-input', { force: true });
-  if (!_chatState.streaming && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
-  else if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
+  // 裏で応答中のチャットがあれば、その待機カードを残す。
+  if (!_chatState.streaming && !_chatAnyExecutionRunning() && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  else {
+    if (!previousWasStreaming && previousQueueScope && typeof _chatDrainQueuedMessagesForScope === 'function') _chatDrainQueuedMessagesForScope(previousQueueScope);
+    if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
+  }
   if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '');
   chatAddSystem('新しいチャットを開始しました');
+  if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
   renderChatHistory();
 }
 
@@ -219544,10 +219890,10 @@ _chatInstallTabActivationHook();
         id: 'sheet-gaps',
         icon: 'tableProperties',
         label: '設定の抜けを探す',
-        reason: 'シートの列とエントリから、未入力や矛盾しそうな点を探せます。',
+        reason: 'シートの列とトピックから、未入力や矛盾しそうな点を探せます。',
         priority: 92,
         prompt: targetLine(ctx)
-          + '現在開いているシートを読み、未入力、矛盾しそうな項目、次に整えるべきエントリを3つ提案してください。必要なら確認に使った列名も示してください。',
+          + '現在開いているシートを読み、未入力、矛盾しそうな項目、次に整えるべきトピックを3つ提案してください。必要なら確認に使った列名も示してください。',
       });
     } else if (ctx.feature === 'board') {
       addAction(actions, {
@@ -223899,12 +224245,19 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   }
 
   function restoreActiveCliChatActivity() {
-    try { activeCliChatStream?.restore?.(); } catch {}
+    try {
+      if (typeof _chatVisibleExecution === 'function') _chatVisibleExecution()?.restore?.();
+      else activeCliChatStream?.restore?.();
+    } catch {}
   }
   window.GBChatCliRestoreActivity = restoreActiveCliChatActivity;
 
   async function sendCliChat(options = {}) {
-    if (_chatState.streaming) {
+    const requestedStreamMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
+    if (requestedStreamMessages && requestedStreamMessages !== _chatState.messages) {
+      // 裏で続くチャットの自動送信・自動継続。そのチャット自身が実行中の時だけ見送る。
+      if (typeof _chatExecutionForMessages === 'function' && _chatExecutionForMessages(requestedStreamMessages)) return false;
+    } else if (_chatState.streaming) {
       if (typeof _chatQueueUserInputForNextTurn === 'function') return _chatQueueUserInputForNextTurn(options);
       if (options?.fromButton || options?.stopRequested) {
         if (typeof chatStopStreaming === 'function') chatStopStreaming();
@@ -223931,7 +224284,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     if (typeof _captureChatSessionTitleFromInput === 'function') _captureChatSessionTitleFromInput();
     const input = document.getElementById('chat-input');
     const msgContainer = typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages');
-    if (!input || !msgContainer) return false;
+    // チャットを閉じた後も、実行中の会話から続く自動送信は表示なしで続ける。
+    if (!requestedStreamMessages && (!input || !msgContainer)) return false;
     const deferredMessages = Array.isArray(options.deferredMessages)
       ? (typeof _chatCloneMessages === 'function' ? _chatCloneMessages(options.deferredMessages) : JSON.parse(JSON.stringify(options.deferredMessages))).filter(message => message?.role === 'user')
       : [];
@@ -224051,12 +224405,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         : null
     );
 
-    _chatState.streaming = true;
-    _chatState.abortController = streamController;
-    _chatState.streamingProvider = provider;
-    _chatState.streamingTargetPath = streamTargetPath;
     _chatState.lastImplicitTargetPath = streamTargetPath;
-    _chatState.activeExecution = {
+    const streamExecution = _chatRegisterExecution({
       messages: streamMessages,
       sessionId: streamSessionId,
       sessionTitle: streamSessionTitle,
@@ -224068,9 +224418,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       model: streamModelSelection,
       mode: streamMode,
       controller: streamController,
-    };
-    window.MeldexChatListbox?.decorateHistory?.();
-    cliChatSetSendButtonStreaming(true);
+    });
+    if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
     const _scrollHandler = () => {
@@ -224078,8 +224427,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         ? _chatIsScrolledNearBottom(msgContainer)
         : (msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 48);
     };
-    if (!detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
-    if (!detachedScope) {
+    if (!detachedScope && msgContainer) msgContainer.addEventListener('scroll', _scrollHandler);
+    if (!detachedScope && msgContainer) {
       msgContainer.appendChild(activity.wrapper);
       if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(msgContainer);
       else msgContainer.scrollTop = msgContainer.scrollHeight;
@@ -224136,6 +224485,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     };
     const refreshActivityStatus = (label = lastStatusText) => {
       lastStatusText = String(label || 'CLIを実行中...');
+      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
       if (!activity.status) return;
       const elapsed = formatCliChatDuration(Date.now() - streamStartedAt);
       const idle = lastCliOutputAt
@@ -224146,7 +224496,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const ensureActivityVisible = () => {
       const liveContainer = streamLiveContainer();
       if (!liveContainer) return;
-      if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
+      if (typeof _chatPlaceLiveActivity === 'function') _chatPlaceLiveActivity(liveContainer, activity.wrapper, assistantDiv);
+      else if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
       refreshActivityStatus();
       if (_autoScroll) {
         if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
@@ -224172,13 +224523,13 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     let lastServerEventAt = Date.now();
     const maybeAbortIdleCliStream = () => {
       if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
-          && _chatState.streaming && _chatState.abortController === streamController) {
+          && _chatExecutionIsActive(streamController)) {
         clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
         try { streamController.abort(); } catch {}
         return true;
       }
       if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
-      if (clientIdleAbortMessage || !_chatState.streaming || _chatState.abortController !== streamController) return false;
+      if (clientIdleAbortMessage || !_chatExecutionIsActive(streamController)) return false;
       if (cliResponseIdleMs() < CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
       clientIdleAbortMessage = 'CLIから一定時間返答がないため、自動停止しました。必要なら内容を絞って再送信してください。';
       refreshActivityStatus('CLI応答を自動停止中...');
@@ -224198,6 +224549,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         ensureActivityVisible();
       },
     };
+    if (streamExecution) streamExecution.restore = activeCliChatStream.restore;
     const saveStreamMessages = async (throwOnError = false) => {
       if (typeof chatAutoSave !== 'function') return false;
       const saved = await chatAutoSave({
@@ -224426,18 +224778,20 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       }
     } finally {
       clearInterval(activityTimer);
-      if (activeCliChatStream?.restore) activeCliChatStream = null;
+      if (activeCliChatStream?.restore === streamExecution?.restore) activeCliChatStream = null;
       activity.wrapper.remove();
-      if (_chatState.abortController === streamController) {
-        _chatState.streaming = false;
-        _chatState.abortController = null;
-        _chatState.streamingProvider = '';
-        _chatState.streamingTargetPath = '';
-        cliChatSetSendButtonStreaming(false);
+      const interruptDraftId = String(streamExecution?.interruptDraftId || '');
+      const interruptedByDraft = !!interruptDraftId;
+      if (_chatUnregisterExecution(streamController, {
+        status: clientIdleAbortMessage ? 'failed'
+          : (streamController.signal.aborted ? 'cancelled' : (cliCompleted ? 'succeeded' : 'failed')),
+        message: clientIdleAbortMessage || (streamController.signal.aborted ? '実行を停止しました' : ''),
+      })) {
+        if (!_chatState.streaming) cliChatSetSendButtonStreaming(false);
         if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-        if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-        if (_chatState.interruptDraftId && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        if (streamVisibleInCurrentChat() && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+        if (interruptedByDraft && typeof _chatSendQueuedMessagesAfterStream === 'function') {
           setTimeout(() => {
             _chatSendQueuedMessagesAfterStream({
               messages: streamMessages,
@@ -224450,6 +224804,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
               provider,
               model: streamModelSelection,
               mode: streamMode,
+              interruptDraftId,
             }).catch(() => {});
           }, 0);
         } else if (autoContinueRequest) {
@@ -224492,10 +224847,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             }).catch(() => {});
           }, 0);
         }
-        if (_chatState.activeExecution?.controller === streamController) _chatState.activeExecution = null;
-        window.MeldexChatListbox?.decorateHistory?.();
       }
-      if (!detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
+      if (!detachedScope && msgContainer) msgContainer.removeEventListener('scroll', _scrollHandler);
     }
     return sendOk;
   }
@@ -233125,6 +233478,46 @@ function _installFolderBlankContextMenu(container) {
     return slash > 0 ? normalized.slice(0, slash) : '';
   }
 
+  // フォルダツリーの最上位（ソースフォルダ・ワークスペース・ホーム）。これより上へは移動しない。
+  function _folderToolbarTopFolderPaths() {
+    const paths = [];
+    document.querySelectorAll('#outliner-tree .tree-root-row').forEach(row => {
+      const node = row.closest('.tree-node');
+      const path = node?._nodeData?._isRoot ? node._nodeData.path : '';
+      if (path) paths.push(path);
+    });
+    if (typeof _homeFolderPath === 'string' && _homeFolderPath) paths.push(_homeFolderPath);
+    return paths;
+  }
+
+  // 上のフォルダ: 区切り文字は元のパスの書式（\ と /）を保ったまま親を求める。
+  function _folderToolbarUpTarget() {
+    const current = _folderToolbarCurrentPath();
+    if (!current) return null;
+    const currentKey = _folderToolbarNormalizePath(current);
+    const tops = _folderToolbarTopFolderPaths();
+    if (tops.some(top => _folderToolbarNormalizePath(top).toLowerCase() === currentKey.toLowerCase())) return null;
+    const inside = tops.some(top => {
+      const topKey = _folderToolbarNormalizePath(top);
+      return topKey && currentKey !== topKey && _folderToolbarPathWithin(current, top);
+    });
+    if (!inside) return null;
+    const trimmed = String(current).replace(/[\\/]+$/, '');
+    const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    if (cut <= 0) return null;
+    const path = trimmed.slice(0, cut);
+    const node = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null;
+    const name = node?._nodeData?.name || path.split(/[\\/]/).pop() || path;
+    return { path, name };
+  }
+
+  async function folderToolbarGoUp() {
+    const target = _folderToolbarUpTarget();
+    if (!target || typeof openFolder !== 'function') return false;
+    await openFolder(target.name, target.path);
+    return true;
+  }
+
   function _folderToolbarSelectionItems() {
     try {
       if (typeof _normalizeFolderSelectionForVisibleItems === 'function') _normalizeFolderSelectionForVisibleItems();
@@ -233171,6 +233564,7 @@ function _installFolderBlankContextMenu(container) {
       cut: document.getElementById('folder-toolbar-cut'),
       paste: document.getElementById('folder-toolbar-paste'),
       delete: document.getElementById('folder-toolbar-delete'),
+      up: document.getElementById('folder-toolbar-up'),
       undo: document.getElementById('folder-toolbar-undo'),
       redo: document.getElementById('folder-toolbar-redo'),
     };
@@ -233205,6 +233599,7 @@ function _installFolderBlankContextMenu(container) {
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
     buttons.paste.disabled = (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
+    if (buttons.up) buttons.up.disabled = !_folderToolbarUpTarget();
     buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
     // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
     // ここでも一緒に有効/無効を更新する（data-undo-button/data-redo-button経由の一括更新と重複してもよい）
@@ -233731,6 +234126,7 @@ function _installFolderBlankContextMenu(container) {
   function initFolderToolbarActions() {
     const buttons = _folderToolbarButtons();
     if (!buttons.add) return;
+    _folderToolbarBindButton(buttons.up, 'folderUp', folderToolbarGoUp);
     _folderToolbarBindButton(buttons.add, 'plus', showFolderToolbarAddMenu);
     _folderToolbarBindButton(buttons.copy, 'copy', folderToolbarCopySelection);
     _folderToolbarBindButton(buttons.cut, 'scissors', folderToolbarCutSelection);
@@ -233766,6 +234162,7 @@ function _installFolderBlankContextMenu(container) {
     });
   };
   global.showFolderToolbarAddMenu = showFolderToolbarAddMenu;
+  global.folderToolbarGoUp = folderToolbarGoUp;
   global.folderToolbarCopySelection = folderToolbarCopySelection;
   global.folderToolbarCutSelection = folderToolbarCutSelection;
   global.folderToolbarPasteSelection = folderToolbarPasteSelection;

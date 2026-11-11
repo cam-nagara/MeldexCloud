@@ -964,12 +964,19 @@
   }
 
   function restoreActiveCliChatActivity() {
-    try { activeCliChatStream?.restore?.(); } catch {}
+    try {
+      if (typeof _chatVisibleExecution === 'function') _chatVisibleExecution()?.restore?.();
+      else activeCliChatStream?.restore?.();
+    } catch {}
   }
   window.GBChatCliRestoreActivity = restoreActiveCliChatActivity;
 
   async function sendCliChat(options = {}) {
-    if (_chatState.streaming) {
+    const requestedStreamMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
+    if (requestedStreamMessages && requestedStreamMessages !== _chatState.messages) {
+      // 裏で続くチャットの自動送信・自動継続。そのチャット自身が実行中の時だけ見送る。
+      if (typeof _chatExecutionForMessages === 'function' && _chatExecutionForMessages(requestedStreamMessages)) return false;
+    } else if (_chatState.streaming) {
       if (typeof _chatQueueUserInputForNextTurn === 'function') return _chatQueueUserInputForNextTurn(options);
       if (options?.fromButton || options?.stopRequested) {
         if (typeof chatStopStreaming === 'function') chatStopStreaming();
@@ -996,7 +1003,8 @@
     if (typeof _captureChatSessionTitleFromInput === 'function') _captureChatSessionTitleFromInput();
     const input = document.getElementById('chat-input');
     const msgContainer = typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages');
-    if (!input || !msgContainer) return false;
+    // チャットを閉じた後も、実行中の会話から続く自動送信は表示なしで続ける。
+    if (!requestedStreamMessages && (!input || !msgContainer)) return false;
     const deferredMessages = Array.isArray(options.deferredMessages)
       ? (typeof _chatCloneMessages === 'function' ? _chatCloneMessages(options.deferredMessages) : JSON.parse(JSON.stringify(options.deferredMessages))).filter(message => message?.role === 'user')
       : [];
@@ -1116,12 +1124,8 @@
         : null
     );
 
-    _chatState.streaming = true;
-    _chatState.abortController = streamController;
-    _chatState.streamingProvider = provider;
-    _chatState.streamingTargetPath = streamTargetPath;
     _chatState.lastImplicitTargetPath = streamTargetPath;
-    _chatState.activeExecution = {
+    const streamExecution = _chatRegisterExecution({
       messages: streamMessages,
       sessionId: streamSessionId,
       sessionTitle: streamSessionTitle,
@@ -1133,9 +1137,8 @@
       model: streamModelSelection,
       mode: streamMode,
       controller: streamController,
-    };
-    window.MeldexChatListbox?.decorateHistory?.();
-    cliChatSetSendButtonStreaming(true);
+    });
+    if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
     const _scrollHandler = () => {
@@ -1143,8 +1146,8 @@
         ? _chatIsScrolledNearBottom(msgContainer)
         : (msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 48);
     };
-    if (!detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
-    if (!detachedScope) {
+    if (!detachedScope && msgContainer) msgContainer.addEventListener('scroll', _scrollHandler);
+    if (!detachedScope && msgContainer) {
       msgContainer.appendChild(activity.wrapper);
       if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(msgContainer);
       else msgContainer.scrollTop = msgContainer.scrollHeight;
@@ -1201,6 +1204,7 @@
     };
     const refreshActivityStatus = (label = lastStatusText) => {
       lastStatusText = String(label || 'CLIを実行中...');
+      if (typeof _chatUpdateExecutionPhase === 'function') _chatUpdateExecutionPhase(streamController, lastStatusText.replace(/[.。…]+$/, ''));
       if (!activity.status) return;
       const elapsed = formatCliChatDuration(Date.now() - streamStartedAt);
       const idle = lastCliOutputAt
@@ -1211,7 +1215,8 @@
     const ensureActivityVisible = () => {
       const liveContainer = streamLiveContainer();
       if (!liveContainer) return;
-      if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
+      if (typeof _chatPlaceLiveActivity === 'function') _chatPlaceLiveActivity(liveContainer, activity.wrapper, assistantDiv);
+      else if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
       refreshActivityStatus();
       if (_autoScroll) {
         if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
@@ -1237,13 +1242,13 @@
     let lastServerEventAt = Date.now();
     const maybeAbortIdleCliStream = () => {
       if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
-          && _chatState.streaming && _chatState.abortController === streamController) {
+          && _chatExecutionIsActive(streamController)) {
         clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
         try { streamController.abort(); } catch {}
         return true;
       }
       if (!CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
-      if (clientIdleAbortMessage || !_chatState.streaming || _chatState.abortController !== streamController) return false;
+      if (clientIdleAbortMessage || !_chatExecutionIsActive(streamController)) return false;
       if (cliResponseIdleMs() < CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS) return false;
       clientIdleAbortMessage = 'CLIから一定時間返答がないため、自動停止しました。必要なら内容を絞って再送信してください。';
       refreshActivityStatus('CLI応答を自動停止中...');
@@ -1263,6 +1268,7 @@
         ensureActivityVisible();
       },
     };
+    if (streamExecution) streamExecution.restore = activeCliChatStream.restore;
     const saveStreamMessages = async (throwOnError = false) => {
       if (typeof chatAutoSave !== 'function') return false;
       const saved = await chatAutoSave({
@@ -1491,18 +1497,20 @@
       }
     } finally {
       clearInterval(activityTimer);
-      if (activeCliChatStream?.restore) activeCliChatStream = null;
+      if (activeCliChatStream?.restore === streamExecution?.restore) activeCliChatStream = null;
       activity.wrapper.remove();
-      if (_chatState.abortController === streamController) {
-        _chatState.streaming = false;
-        _chatState.abortController = null;
-        _chatState.streamingProvider = '';
-        _chatState.streamingTargetPath = '';
-        cliChatSetSendButtonStreaming(false);
+      const interruptDraftId = String(streamExecution?.interruptDraftId || '');
+      const interruptedByDraft = !!interruptDraftId;
+      if (_chatUnregisterExecution(streamController, {
+        status: clientIdleAbortMessage ? 'failed'
+          : (streamController.signal.aborted ? 'cancelled' : (cliCompleted ? 'succeeded' : 'failed')),
+        message: clientIdleAbortMessage || (streamController.signal.aborted ? '実行を停止しました' : ''),
+      })) {
+        if (!_chatState.streaming) cliChatSetSendButtonStreaming(false);
         if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-        if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-        if (_chatState.interruptDraftId && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        if (streamVisibleInCurrentChat() && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+        if (interruptedByDraft && typeof _chatSendQueuedMessagesAfterStream === 'function') {
           setTimeout(() => {
             _chatSendQueuedMessagesAfterStream({
               messages: streamMessages,
@@ -1515,6 +1523,7 @@
               provider,
               model: streamModelSelection,
               mode: streamMode,
+              interruptDraftId,
             }).catch(() => {});
           }, 0);
         } else if (autoContinueRequest) {
@@ -1557,10 +1566,8 @@
             }).catch(() => {});
           }, 0);
         }
-        if (_chatState.activeExecution?.controller === streamController) _chatState.activeExecution = null;
-        window.MeldexChatListbox?.decorateHistory?.();
       }
-      if (!detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
+      if (!detachedScope && msgContainer) msgContainer.removeEventListener('scroll', _scrollHandler);
     }
     return sendOk;
   }

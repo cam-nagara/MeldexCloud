@@ -32689,6 +32689,73 @@ img.meldex-image-load-error {
   font-weight: 600;
 }
 
+.meldex-operation-tray-header { gap: 7px; }
+.meldex-operation-tray-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meldex-operation-tray-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-inline-end: -4px;
+  padding: 0;
+  color: var(--fg2, #b8bec7);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.meldex-operation-tray-toggle:hover,
+.meldex-operation-tray-toggle:focus-visible { color: var(--fg, #e7e9ec); background: var(--bg3, #303641); }
+
+/* 最小化: 件数と状態だけの小さな帯にする。 */
+.meldex-operation-tray.is-minimized {
+  width: auto;
+  max-width: min(260px, calc(100vw - 28px - var(--meldex-operation-right-inset)));
+  border-radius: 999px;
+}
+
+.meldex-operation-tray.is-minimized .meldex-operation-tray-header {
+  min-height: 30px;
+  padding: 3px 8px 3px 12px;
+  border-bottom: 0;
+  cursor: pointer;
+}
+
+.meldex-operation-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.meldex-operation-link {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  color: var(--accent, #6aa7ff);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  text-align: start;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.meldex-operation-link:hover { text-decoration-thickness: 2px; }
+
 .meldex-operation-list {
   display: grid;
   min-height: 0;
@@ -32829,6 +32896,10 @@ img.meldex-image-load-error {
     min-width: 44px;
     min-height: 44px;
   }
+
+  .meldex-operation-tray.is-minimized { left: auto; }
+  .meldex-operation-tray-toggle { width: 40px; height: 40px; }
+  .meldex-operation-link { min-height: 32px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

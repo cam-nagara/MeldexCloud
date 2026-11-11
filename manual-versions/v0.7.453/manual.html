@@ -10525,7 +10525,7 @@ claude
 <li>公式手順: https://code.claude.com/docs/en/quickstart</li>
 </ul>
 </div></section><section class="manual-outline-section manual-outline-level-3" data-outline-level="3"><h3 id="manual-78a2b0cc653a--antigravity-cli" data-manual-anchor="antigravity-cli">Antigravity CLI</h3><div class="manual-outline-content">
-<p>モデル候補にはGemini 4 ArgonとGemini 3.8 Flashを含みます。思考の深さは low / medium / high へ対応させてCLIに渡します。利用できるモデルはCLIのバージョンと契約プランに依存します。<strong>CLI既定</strong> を選ぶとCLI自身のモデル設定を使います。</p>
+<p>モデル候補にはGemini 4 Carbon・Gemini 4 Argon・Gemini 3.8 Flashを含みます。思考の深さは low / medium / high へ対応させてCLIに渡します。利用できるモデルはCLIのバージョンと契約プランに依存します。<strong>CLI既定</strong> を選ぶとCLI自身のモデル設定を使います。</p>
 <pre><code class="language-powershell">irm https://antigravity.google/cli/install.ps1 | iex
 </code></pre>
 <p>インストール後は、いったんターミナルを閉じて開き直してください。確認:</p>
@@ -10585,11 +10585,11 @@ MeldexがCLIを起動し、必要に応じてMeldexのナレッジ層やロー�
 </tr>
 <tr>
 <td>Codex CLI</td>
-<td>CLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna</td>
+<td>CLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna</td>
 </tr>
 <tr>
 <td>Antigravity CLI</td>
-<td>CLI既定（推奨）/ Gemini 3.8 Flash / Gemini 3.7 Flash / Gemini 3.6 Flash / Gemini 3.1 Pro / Claude Sonnet 4.6 / Claude Opus 4.6 / GPT-OSS 120B</td>
+<td>CLI既定（推奨）/ Gemini 4 Carbon / Gemini 4 Argon / Gemini 3.8 Flash / Claude Sonnet 5.5 / Claude Opus 5.5 / GPT-OSS 120B</td>
 </tr>
 </tbody>
 </table>
@@ -12026,8 +12026,8 @@ App secretは不要です。
 </tbody>
 </table>
 <p>実際に使えるモデルは、APIキー、契約、利用枠に応じてチャット上部のモデル一覧へ表示されます。</p>
-<p>2026年10月18日現在、ChatGPTは GPT-6 Astra / GPT-6.1 Sol / GPT-6 Luna、Claudeは Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5、Geminiは 4 Argon / 3.8 Flash / 3.5 Flash-Lite / 3.1 Pro（プレビュー）などに対応しています。モデル一覧を更新すると、利用できる最新の候補を取得します。取得した一覧にある選択済みモデルは維持します。選択済みモデルが一覧にない場合は、案内を表示して利用可能な候補へ切り替えます。</p>
-<p>Gemini 4 Argonは思考の深さを low / medium / high で指定します。temperatureとtop-pは送信しません。Claude Haiku 5.5には自動思考と深さの指定を使い、旧Haiku用の思考トークン数やサンプリング設定は送信しません。料金見積りは割引終了後や長文時も不足しないよう保守的な単価を使います。</p>
+<p>2026年11月11日現在、ChatGPTは GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna、Claudeは Fable 5.2 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5、Geminiは 4 Carbon / 4 Argon / 3.8 Flash / 3.5 Flash-Lite / 3.1 Pro（プレビュー）などに対応しています。モデル一覧を更新すると、利用できる最新の候補を取得します。取得した一覧にある選択済みモデルは維持します。選択済みモデルが一覧にない場合は、案内を表示して利用可能な候補へ切り替えます。</p>
+<p>Gemini 4 Carbon / Gemini 4 Argonは思考の深さを low / medium / high で指定します。temperatureとtop-pは送信しません。Claude Haiku 5.5には自動思考と深さの指定を使い、旧Haiku用の思考トークン数やサンプリング設定は送信しません。料金見積りは割引終了後や長文時も不足しないよう保守的な単価を使います。</p>
 <p>GPT-6 Astra / GPT-6.1 Solは思考を無効にできないため、思考の深さを「オフ」にしても最小の深さで動作します。Gemini 3系とClaudeの新しいモデルも、「オフ」でモデル自身の既定の思考が動作する場合があります。</p>
 <hr>
 </div></section><section class="manual-outline-section manual-outline-level-2" data-outline-level="2"><h2 id="manual-d3343a5ce2ce--api" data-manual-anchor="api">API キーの取得</h2><div class="manual-outline-content">

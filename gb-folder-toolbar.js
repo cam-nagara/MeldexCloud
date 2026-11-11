@@ -51,6 +51,46 @@
     return slash > 0 ? normalized.slice(0, slash) : '';
   }
 
+  // フォルダツリーの最上位（ソースフォルダ・ワークスペース・ホーム）。これより上へは移動しない。
+  function _folderToolbarTopFolderPaths() {
+    const paths = [];
+    document.querySelectorAll('#outliner-tree .tree-root-row').forEach(row => {
+      const node = row.closest('.tree-node');
+      const path = node?._nodeData?._isRoot ? node._nodeData.path : '';
+      if (path) paths.push(path);
+    });
+    if (typeof _homeFolderPath === 'string' && _homeFolderPath) paths.push(_homeFolderPath);
+    return paths;
+  }
+
+  // 上のフォルダ: 区切り文字は元のパスの書式（\ と /）を保ったまま親を求める。
+  function _folderToolbarUpTarget() {
+    const current = _folderToolbarCurrentPath();
+    if (!current) return null;
+    const currentKey = _folderToolbarNormalizePath(current);
+    const tops = _folderToolbarTopFolderPaths();
+    if (tops.some(top => _folderToolbarNormalizePath(top).toLowerCase() === currentKey.toLowerCase())) return null;
+    const inside = tops.some(top => {
+      const topKey = _folderToolbarNormalizePath(top);
+      return topKey && currentKey !== topKey && _folderToolbarPathWithin(current, top);
+    });
+    if (!inside) return null;
+    const trimmed = String(current).replace(/[\\/]+$/, '');
+    const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    if (cut <= 0) return null;
+    const path = trimmed.slice(0, cut);
+    const node = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null;
+    const name = node?._nodeData?.name || path.split(/[\\/]/).pop() || path;
+    return { path, name };
+  }
+
+  async function folderToolbarGoUp() {
+    const target = _folderToolbarUpTarget();
+    if (!target || typeof openFolder !== 'function') return false;
+    await openFolder(target.name, target.path);
+    return true;
+  }
+
   function _folderToolbarSelectionItems() {
     try {
       if (typeof _normalizeFolderSelectionForVisibleItems === 'function') _normalizeFolderSelectionForVisibleItems();
@@ -97,6 +137,7 @@
       cut: document.getElementById('folder-toolbar-cut'),
       paste: document.getElementById('folder-toolbar-paste'),
       delete: document.getElementById('folder-toolbar-delete'),
+      up: document.getElementById('folder-toolbar-up'),
       undo: document.getElementById('folder-toolbar-undo'),
       redo: document.getElementById('folder-toolbar-redo'),
     };
@@ -131,6 +172,7 @@
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
     buttons.paste.disabled = (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
+    if (buttons.up) buttons.up.disabled = !_folderToolbarUpTarget();
     buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
     // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
     // ここでも一緒に有効/無効を更新する（data-undo-button/data-redo-button経由の一括更新と重複してもよい）
@@ -657,6 +699,7 @@
   function initFolderToolbarActions() {
     const buttons = _folderToolbarButtons();
     if (!buttons.add) return;
+    _folderToolbarBindButton(buttons.up, 'folderUp', folderToolbarGoUp);
     _folderToolbarBindButton(buttons.add, 'plus', showFolderToolbarAddMenu);
     _folderToolbarBindButton(buttons.copy, 'copy', folderToolbarCopySelection);
     _folderToolbarBindButton(buttons.cut, 'scissors', folderToolbarCutSelection);
@@ -692,6 +735,7 @@
     });
   };
   global.showFolderToolbarAddMenu = showFolderToolbarAddMenu;
+  global.folderToolbarGoUp = folderToolbarGoUp;
   global.folderToolbarCopySelection = folderToolbarCopySelection;
   global.folderToolbarCutSelection = folderToolbarCutSelection;
   global.folderToolbarPasteSelection = folderToolbarPasteSelection;

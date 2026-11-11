@@ -34,6 +34,16 @@
     });
   }
 
+  // 進捗から開ける作業対象（チャット、ファイル等）。open は呼出し元が渡す関数。
+  function _links(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 4).filter(function (item) {
+      return item && typeof item.open === 'function' && String(item.label || '').trim();
+    }).map(function (item) {
+      return { label: String(item.label), title: String(item.title || item.label), open: item.open };
+    });
+  }
+
   function _snapshot(record) {
     if (!record) return null;
     const state = record.state;
@@ -55,6 +65,7 @@
       error: state.error,
       summary: state.summary,
       details: state.details.map(function (item) { return Object.assign({}, item); }),
+      links: state.links.map(function (item) { return Object.assign({}, item); }),
       detailCount: state.detailCount,
       startedAt: state.startedAt,
       updatedAt: state.updatedAt,
@@ -138,6 +149,7 @@
     if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
     if (next.message !== undefined) record.state.message = String(next.message || '');
     if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.links !== undefined) record.state.links = _links(next.links);
     if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
     if (next.status && !TERMINAL.has(next.status)) record.state.status = String(next.status);
     if (next.total !== undefined) {
@@ -257,6 +269,7 @@
         error: '',
         summary: '',
         details: _details(opts.details),
+        links: _links(opts.links),
         detailCount: Math.max(_details(opts.details).length, _number(opts.detailCount, 0)),
         startedAt: Date.now(),
         updatedAt: Date.now(),
