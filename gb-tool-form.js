@@ -406,7 +406,7 @@ class FormAppComponent extends ToolComponent {
     const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
     const menu = this._button('メニュー', event => showToolMenu(event, 'form-app', this));
     menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-label', 'メニュー'); menu.setAttribute('aria-haspopup', 'menu'); menu.innerHTML = lucide('menu', 16); bar.appendChild(menu);
-    const source = document.createElement('label'); source.textContent = '参照先シート';
+    const source = document.createElement('label'); source.className = 'gb-form-source-sheet'; source.textContent = '参照先シート';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
     select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
@@ -432,6 +432,8 @@ class FormAppComponent extends ToolComponent {
       if (this.store.dirty && !await cfConfirm('未保存のフォーム定義を破棄して読み直しますか？')) return;
       await this.load(this.path, { discardDraft: true });
     }));
+    // 参照先シートはフォームの中心となる操作なので、幅が狭くても「隠れている操作（▼）」へ移さない。
+    window.MeldexToolbarOverflow?.setup?.({ toolbar: bar, keep: ['.gb-form-source-sheet'] });
     const saveBar = document.createElement('div'); saveBar.className = 'gb-form-app-save'; this.el.appendChild(saveBar);
     this.status = document.createElement('span'); this.status.setAttribute('role', 'status'); saveBar.appendChild(this.status);
     this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
