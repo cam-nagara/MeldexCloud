@@ -60,6 +60,8 @@ function _bdPresetThemeIndex(style, fallbackIndex) {
 
 function _bdPresetThemeColorForStyle(style, fallbackIndex, palette) {
   const colors = Array.isArray(palette) && palette.length ? palette : BD_PRESET_THEME_COLORS;
+  // 役割（_themeTone）付きの初期搭載スタイルは、並び順ではなく色相でテーマ色を選ぶ。
+  if (style && style._themeTone && typeof bdThemeRoleColor === 'function') return bdThemeRoleColor(_bdPresetThemeIndex(style, fallbackIndex), colors);
   return colors[_bdPresetThemeIndex(style, fallbackIndex) % colors.length] || style?.bgColor || style?.color || '';
 }
 
@@ -74,13 +76,27 @@ function _bdApplyThemeColorToCardStyle(style, color) {
   return style;
 }
 
+function _bdPresetTone(color, tone) {
+  if (typeof bdThemeTone === 'function') return bdThemeTone(color, tone || 'solid');
+  const text = _bdPresetReadableTextColor(color);
+  return { bgColor: color, borderColor: color, textColor: text, lineColor: color };
+}
+
+// 初期搭載スタイルは「役割」で色を選ぶ。_themeColorIndex はテーマ色セットの位置
+// （0赤 1橙 2黄 3緑 4水 5青 6紫 7桃）、_themeTone は塗り方
+// （solid=塗りつぶし / tint=淡い色 / outline=枠だけ / plain=枠なし / muted=控えめ）。
 function bdDefaultCardStylesForBoard(board) {
   const palette = _bdPresetBoardThemeColors(board);
   return (BD_DEFAULT_CARD_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
+    const toned = _bdPresetTone(color, style._themeTone);
     delete style._themeColorIndex;
-    return _bdApplyThemeColorToCardStyle(style, color);
+    delete style._themeTone;
+    style.bgColor = toned.bgColor;
+    style.borderColor = toned.borderColor;
+    style.textColor = toned.textColor || '';
+    return style;
   });
 }
 
@@ -89,314 +105,64 @@ function bdDefaultLineStylesForBoard(board) {
   return (BD_DEFAULT_LINE_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
+    const toned = _bdPresetTone(color, style._themeTone);
     delete style._themeColorIndex;
-    if (color) style.color = color;
+    delete style._themeTone;
+    if (toned.lineColor) style.color = toned.lineColor;
     return style;
   });
 }
 
+function _bdPresetCard(id, name, themeIndex, tone, fields) {
+  const toned = _bdPresetTone(_bdPresetThemeColor(themeIndex), tone);
+  return {
+    id, name, _themeColorIndex: themeIndex, _themeTone: tone,
+    bgColor: toned.bgColor, textColor: toned.textColor || '', borderColor: toned.borderColor,
+    borderWidth: 1, borderRadius: 8, fontSize: 14, fontBold: false, fontItalic: false,
+    shape: 'rect', width: 180, textStrokeColor: '', textStrokeWidth: 0,
+    ...fields,
+  };
+}
+
+function _bdPresetLine(id, name, themeIndex, tone, fields) {
+  return {
+    id, name, _themeColorIndex: themeIndex, _themeTone: tone,
+    color: _bdPresetTone(_bdPresetThemeColor(themeIndex), tone).lineColor,
+    width: 2, style: '', arrow: 'end', pathType: 'curve',
+    labelBorderWidth: 0, textShadowWidth: 0, textShadowColor: '',
+    ...fields,
+  };
+}
+
+// トピックスタイル: 先頭が新しいトピックの既定。用途ごとに1つずつ。
 const BD_DEFAULT_CARD_STYLES = [
-  {
-    id: 'card-theme-rect',
-    name: '矩形',
-    _themeColorIndex: 5,
-    bgColor: _bdPresetThemeColor(5),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(5)),
-    borderColor: _bdPresetThemeColor(5),
-    borderWidth: 2,
-    borderRadius: 8,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'rect',
-    width: 180,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-ellipse',
-    name: '楕円',
-    _themeColorIndex: 3,
-    bgColor: _bdPresetThemeColor(3),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(3)),
-    borderColor: _bdPresetThemeColor(3),
-    borderWidth: 2,
-    borderRadius: 999,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'ellipse',
-    width: 180,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-pill',
-    name: 'ピル',
-    _themeColorIndex: 4,
-    bgColor: _bdPresetThemeColor(4),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(4)),
-    borderColor: _bdPresetThemeColor(4),
-    borderWidth: 2,
-    borderRadius: 999,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'pill',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-octagon',
-    name: '八角',
-    _themeColorIndex: 6,
-    bgColor: _bdPresetThemeColor(6),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(6)),
-    borderColor: _bdPresetThemeColor(6),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'octagon',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-cloud',
-    name: '雲',
-    _themeColorIndex: 7,
-    bgColor: _bdPresetThemeColor(7),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(7)),
-    borderColor: _bdPresetThemeColor(7),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'cloud',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 44,
-    cloudBumpHeight: 16,
-    cloudSideWidth: 14,
-    cloudOffset: 0.45,
-    cloudSubWidthRatio: 55,
-    cloudSubHeightRatio: 50,
-  },
-  {
-    id: 'card-theme-fluffy',
-    name: 'もやもや',
-    _themeColorIndex: 4,
-    bgColor: _bdPresetThemeColor(4),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(4)),
-    borderColor: _bdPresetThemeColor(4),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'fluffy',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 38,
-    cloudBumpHeight: 14,
-    cloudSideWidth: 12,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 45,
-    cloudSubHeightRatio: 45,
-  },
-  {
-    id: 'card-theme-thorn',
-    name: 'トゲ直線',
-    _themeColorIndex: 0,
-    bgColor: _bdPresetThemeColor(0),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(0)),
-    borderColor: _bdPresetThemeColor(0),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'thorn',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 28,
-    cloudBumpHeight: 18,
-    cloudSideWidth: 10,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 0,
-    cloudSubHeightRatio: 0,
-  },
-  {
-    id: 'card-theme-thorn-curve',
-    name: 'トゲ曲線',
-    _themeColorIndex: 6,
-    bgColor: _bdPresetThemeColor(6),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(6)),
-    borderColor: _bdPresetThemeColor(6),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'thorn-curve',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 30,
-    cloudBumpHeight: 18,
-    cloudSideWidth: 10,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 0,
-    cloudSubHeightRatio: 0,
-  },
+  _bdPresetCard('card-std-topic', 'トピック', 5, 'tint', {}),
+  _bdPresetCard('card-std-central', '中心テーマ', 5, 'solid', { borderWidth: 2, borderRadius: 12, fontSize: 20, fontBold: true, width: 240 }),
+  _bdPresetCard('card-std-main', 'メイントピック', 5, 'tint', { borderWidth: 2, borderRadius: 10, fontSize: 16, fontBold: true, width: 200 }),
+  _bdPresetCard('card-std-sub', 'サブトピック', 5, 'outline', { borderRadius: 6, fontSize: 13, width: 170 }),
+  _bdPresetCard('card-std-label', '見出し（枠なし）', 5, 'plain', { borderWidth: 0, borderRadius: 0, fontSize: 16, fontBold: true, width: 200 }),
+  _bdPresetCard('card-std-note', '付箋', 2, 'tint', { borderWidth: 0, borderRadius: 2, fontSize: 13, width: 160 }),
+  _bdPresetCard('card-std-highlight', '強調', 1, 'solid', { borderWidth: 2, borderRadius: 8, fontBold: true }),
+  _bdPresetCard('card-std-issue', '課題・注意', 0, 'tint', { borderWidth: 2, borderRadius: 6 }),
+  _bdPresetCard('card-std-done', '完了・良い点', 3, 'tint', { borderWidth: 2, borderRadius: 6 }),
+  _bdPresetCard('card-std-milestone', '開始・終了／節目', 4, 'solid', { borderWidth: 2, borderRadius: 999, fontBold: true, shape: 'pill', width: 170 }),
+  _bdPresetCard('card-std-idea', 'アイデア（雲）', 6, 'tint', {
+    borderWidth: 2, borderRadius: 0, shape: 'cloud', width: 190,
+    cloudBumpWidth: 40, cloudBumpHeight: 14, cloudSideWidth: 12, cloudOffset: 0.45, cloudSubWidthRatio: 50, cloudSubHeightRatio: 45,
+  }),
 ];
 
+// ラインスタイル: 先頭が手で引くラインの既定。
 const BD_DEFAULT_LINE_STYLES = [
-  {
-    id: 'line-theme-standard',
-    name: '標準',
-    _themeColorIndex: 5,
-    color: _bdPresetThemeColor(5),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-straight',
-    name: '直線',
-    _themeColorIndex: 3,
-    color: _bdPresetThemeColor(3),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-curve',
-    name: '曲線',
-    _themeColorIndex: 4,
-    color: _bdPresetThemeColor(4),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-dashed',
-    name: '破線',
-    _themeColorIndex: 1,
-    color: _bdPresetThemeColor(1),
-    width: 2,
-    style: 'dashed',
-    arrow: '',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-emphasis',
-    name: '強調',
-    _themeColorIndex: 6,
-    color: _bdPresetThemeColor(6),
-    width: 5,
-    style: '',
-    arrow: 'both',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-reference',
-    name: '参照',
-    _themeColorIndex: 7,
-    color: _bdPresetThemeColor(7),
-    width: 2,
-    style: 'dashed',
-    arrow: 'start',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-alert',
-    name: '注意',
-    _themeColorIndex: 0,
-    color: _bdPresetThemeColor(0),
-    width: 4,
-    style: '',
-    arrow: 'end',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-thin',
-    name: '細線',
-    _themeColorIndex: 2,
-    color: _bdPresetThemeColor(2),
-    width: 1,
-    style: '',
-    arrow: '',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-loop',
-    name: '往復',
-    _themeColorIndex: 6,
-    color: _bdPresetThemeColor(6),
-    width: 3,
-    style: '',
-    arrow: 'both',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-manual-curve',
-    name: '手動曲線',
-    _themeColorIndex: 4,
-    color: _bdPresetThemeColor(4),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
+  _bdPresetLine('line-std-arrow', '矢印', 5, 'solid', {}),
+  _bdPresetLine('line-std-branch', '枝線（矢印なし）', 5, 'solid', { arrow: '' }),
+  _bdPresetLine('line-std-flow', '流れ（直角）', 5, 'solid', { pathType: 'orthogonal', branchRatio: 0.5, cornerRadius: 6 }),
+  _bdPresetLine('line-std-relation', '関連（破線）', 6, 'solid', { style: 'dashed', width: 1.5 }),
+  _bdPresetLine('line-std-mutual', '双方向', 4, 'solid', { arrow: 'both' }),
+  _bdPresetLine('line-std-emphasis', '強調', 1, 'solid', { width: 4 }),
+  _bdPresetLine('line-std-conflict', '対立・問題', 0, 'solid', { width: 2.5 }),
+  _bdPresetLine('line-std-time', '時系列', 5, 'solid', { pathType: 'straight', width: 3 }),
+  _bdPresetLine('line-std-guide', '補助線', 5, 'muted', { arrow: '', pathType: 'straight', width: 1 }),
 ];
 
 const BD_DEFAULT_DISPLAY_FILTERS = {

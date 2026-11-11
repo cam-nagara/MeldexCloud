@@ -65,17 +65,17 @@ function _bdBuiltinLineStylesForBoard() {
 }
 
 const BD_LEGACY_CARD_STYLE_ID_MAP = {
-  'card-default': 'card-theme-rect',
-  'card-accent': 'card-theme-pill',
-  'card-outline': 'card-theme-octagon',
-  'card-note': 'card-theme-cloud',
-  'card-dark': 'card-theme-octagon',
-  'card-danger': 'card-theme-rect',
-  'card-soft': 'card-theme-ellipse',
-  'card-octagon': 'card-theme-octagon',
-  'card-theme-diamond': 'card-theme-rect',
-  'card-theme-hexagon': 'card-theme-octagon',
-  'card-theme-star': 'card-theme-cloud',
+  'card-default': 'card-std-topic',
+  'card-accent': 'card-std-highlight',
+  'card-outline': 'card-std-sub',
+  'card-note': 'card-std-note',
+  'card-dark': 'card-std-central',
+  'card-danger': 'card-std-issue',
+  'card-soft': 'card-std-done',
+  'card-octagon': 'card-std-topic',
+  'card-theme-diamond': 'card-std-topic',
+  'card-theme-hexagon': 'card-std-topic',
+  'card-theme-star': 'card-std-idea',
 };
 
 const BD_REMOVED_CARD_SHAPES = new Set(['diamond', 'hexagon', 'star']);
@@ -104,15 +104,15 @@ function _bdNormalizeRemovedCardShapesInBoard() {
 }
 
 const BD_LEGACY_LINE_STYLE_ID_MAP = {
-  'line-default': 'line-theme-standard',
-  'line-dashed': 'line-theme-dashed',
-  'line-emphasis': 'line-theme-emphasis',
-  'line-curve': 'line-theme-curve',
-  'line-reference': 'line-theme-reference',
-  'line-warning': 'line-theme-alert',
-  'line-thin': 'line-theme-thin',
-  'line-loop': 'line-theme-loop',
-  'line-manual-curve': 'line-theme-manual-curve',
+  'line-default': 'line-std-arrow',
+  'line-dashed': 'line-std-relation',
+  'line-emphasis': 'line-std-emphasis',
+  'line-curve': 'line-std-branch',
+  'line-reference': 'line-std-relation',
+  'line-warning': 'line-std-conflict',
+  'line-thin': 'line-std-guide',
+  'line-loop': 'line-std-mutual',
+  'line-manual-curve': 'line-std-arrow',
 };
 
 const BD_LEGACY_CARD_STYLE_DEFAULTS = Object.fromEntries([

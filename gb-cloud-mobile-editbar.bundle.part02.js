@@ -1,3 +1,7 @@
+      // ツールへ切り替わっても、直前にこのグループ内で選んでいたツールの見た目を保つ
+      // （本体 gb-annotations の _annotationSelectTool と同じ設計）。
+      if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
+    });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
   }

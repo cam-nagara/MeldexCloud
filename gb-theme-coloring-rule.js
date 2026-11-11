@@ -187,7 +187,10 @@
     if (!board || !node) return base;
     const theme = global.MeldexThemeManager?.getActiveBoardTheme?.(board);
     const boardTheme = theme?.board || {};
-    const color = computeNodeColor(board, node, theme);
+    // トピックスタイルを明示的に選んだトピック（スタイル選択・テンプレートで指定）は、そのスタイルの
+    // 色を優先する。テーマの色分けは、スタイルを選んでいない既定のトピックだけに当てる。
+    const explicitStyle = !!node._userCardStyle && !!node.cardStyle && !!base.bgColor;
+    const color = explicitStyle ? '' : computeNodeColor(board, node, theme);
     const applyTo = boardTheme.coloringRule?.applyTo || 'background';
 
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;

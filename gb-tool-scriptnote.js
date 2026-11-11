@@ -196,7 +196,8 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
-  <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート">
+  <button type="button" class="tb-text-btn sn2-template-button" data-sn-action="templatePicker" title="テンプレート" aria-label="テンプレート" aria-haspopup="dialog"><span class="ico ico-layoutTemplate"></span><span class="sn2-template-button-label">マンガシナリオ</span></button>
+  <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート" hidden>
     <option value="manga">マンガシナリオ</option>
     <option value="drama">ドラマ・映画シナリオ</option>
     <option value="afureko">アフレコシナリオ</option>
@@ -537,6 +538,7 @@ class ScriptNoteComponent extends ToolComponent {
     });
     // 現在のlayoutModeに合わせて選択
     if (this._editor?.doc?.layoutMode) sel.value = this._editor.doc.layoutMode;
+    this._syncTemplateButton?.();
   }
 
   _showTitleRenameModal() {
@@ -607,6 +609,7 @@ class ScriptNoteComponent extends ToolComponent {
 
   _showTemplateSelectModal() {
     this._refreshTemplateSelect();
+    if (typeof this._showTemplatePicker === 'function') return this._showTemplatePicker();
     return this._showToolbarSelectModal({
       sourceSelector: '#scenario-note-layout-select',
       title: 'テンプレート選択',
@@ -737,8 +740,9 @@ class ScriptNoteComponent extends ToolComponent {
         this._addTemplatePreset({ allowOverwrite: true });
         return;
       }
-      if (action === 'manageTemplates') {
-        this._showPresetManager('template');
+      if (action === 'manageTemplates' || action === 'templatePicker') {
+        if (typeof this._showTemplatePicker === 'function') this._showTemplatePicker();
+        else this._showPresetManager('template');
         return;
       }
     });
@@ -777,6 +781,7 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor._render();
         this._editor._markDirty();
         this._syncDetailPanel();
+        this._syncTemplateButton?.();
       });
     }
     const titleInput = this.el.querySelector('#title-input');

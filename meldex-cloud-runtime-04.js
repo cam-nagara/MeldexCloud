@@ -10561,7 +10561,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'board-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -73408,7 +73408,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!board || !node) return base;
     const theme = global.MeldexThemeManager?.getActiveBoardTheme?.(board);
     const boardTheme = theme?.board || {};
-    const color = computeNodeColor(board, node, theme);
+    // トピックスタイルを明示的に選んだトピック（スタイル選択・テンプレートで指定）は、そのスタイルの
+    // 色を優先する。テーマの色分けは、スタイルを選んでいない既定のトピックだけに当てる。
+    const explicitStyle = !!node._userCardStyle && !!node.cardStyle && !!base.bgColor;
+    const color = explicitStyle ? '' : computeNodeColor(board, node, theme);
     const applyTo = boardTheme.coloringRule?.applyTo || 'background';
 
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;

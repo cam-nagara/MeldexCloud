@@ -67,6 +67,57 @@
       modal.open();
     });
   }
+  // 本文のMarkdownから、サムネイル用の縮小ページを作る（見出し・箇条書き・チェック・本文を数行）。
+  function renderDocThumbnail(content, host) {
+    const page = document.createElement('div'); page.className = 'gb-tpl-doc';
+    const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 14);
+    if (!lines.length) { const empty = document.createElement('div'); empty.className = 'gb-tpl-doc-line'; empty.textContent = '（本文なし）'; page.appendChild(empty); }
+    lines.forEach(line => {
+      const row = document.createElement('div');
+      let text = line;
+      if (/^#\s/.test(line)) { row.className = 'gb-tpl-doc-h1'; text = line.replace(/^#\s+/, ''); }
+      else if (/^#{2,6}\s/.test(line)) { row.className = 'gb-tpl-doc-h2'; text = line.replace(/^#{2,6}\s+/, ''); }
+      else if (/^[-*+]\s+\[[ xX]\]\s/.test(line)) { row.className = 'gb-tpl-doc-line gb-tpl-doc-check'; text = line.replace(/^[-*+]\s+\[[ xX]\]\s+/, ''); }
+      else if (/^([-*+]|\d+\.)\s/.test(line)) { row.className = 'gb-tpl-doc-line gb-tpl-doc-bullet'; text = line.replace(/^([-*+]|\d+\.)\s+/, ''); }
+      else { row.className = 'gb-tpl-doc-line'; }
+      row.textContent = text.replace(/[*_`~]/g, '');
+      page.appendChild(row);
+    });
+    host.appendChild(page);
+  }
+  // 名前と本文（Markdown）を編集する小さなダイアログ。保存したテンプレートを返す（取消は null）。
+  function openEditor(library, initial, options = {}) {
+    return new Promise(resolve => {
+      let saved = null;
+      let busy = false;
+      const body = document.createElement('div'); body.className = 'note-template-dialog';
+      const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
+      const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
+      content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
+      const status = document.createElement('p'); status.setAttribute('role', 'status');
+      const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末');
+      name.value = initial?.name || ''; content.value = initial?.content || '';
+      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }), GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
+      const cancel = button('キャンセル', () => modal.close('cancel'));
+      const save = button('テンプレートを保存', async () => {
+        if (busy) return; busy = true; save.disabled = true; status.textContent = '';
+        try {
+          const item = validate({ ...(initial?.id ? library.templates.find(other => other.id === initial.id) : {}), schemaVersion: 1,
+            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value });
+          if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
+          const exists = library.templates.some(other => other.id === item.id);
+          await persist(library, exists ? library.templates.map(other => other.id === item.id ? item : other) : [...library.templates, item]);
+          saved = item; status.textContent = '保存しました';
+        } catch (error) { status.textContent = error.userMessage || error.message; }
+        finally { busy = false; save.disabled = false; }
+        if (saved) modal.close('saved');
+      });
+      save.classList.add('gb-btn-primary');
+      const modal = GBUI.createModal({ id: 'note-template-editor', title: options.title || 'テンプレートの編集', body, footer: [cancel, save],
+        variant: 'standard', geometryKey: 'note-template-editor', initialFocus: name, onBeforeClose: () => !busy, onClose: () => resolve(saved) });
+      modal.open();
+    });
+  }
   async function show(options = {}) {
     const editor = options.editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
     const path = editor?.dataset.path;
@@ -74,91 +125,85 @@
     const sourceContent = options.registerCurrent && editor ? currentContent(editor) : '';
     const sourceName = String(path || '').split(/[\\/]/).pop()?.replace(/\.md$/i, '') || 'ノート';
     const library = await load({ deviceOnly: options.deviceOnly });
+    if (options.registerCurrent) {
+      const saved = await openEditor(library, { name: sourceName, content: sourceContent }, { title: 'テンプレートに登録' });
+      if (saved) showStatus(`ノートテンプレート「${saved.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
+      return saved;
+    }
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
-    const body = document.createElement('div'); body.className = 'note-template-dialog';
-    const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', 'ノートテンプレート');
-    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
-    const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
-    content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
-    const status = document.createElement('p'); status.setAttribute('role', 'status');
-    const help = document.createElement('p'); help.textContent = options.dbPath
-      ? 'このシートで今後作成するトピックに、選択したノートの内容をコピーします。既存トピックは変更しません。'
-      : '現在のノートから登録できます。本文はMarkdownで編集できます。';
-    body.append(help, GBUI.createField({ label: 'ノートテンプレート', input: select }),
-      GBUI.createField({ label: 'テンプレート名', input: name }),
-      GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
-    const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末'); body.prepend(location);
-    const fill = id => {
-      select.replaceChildren(new Option('新しいテンプレート', ''));
-      library.templates.forEach(item => select.add(new Option(item.name, item.id)));
-      select.value = id || '';
-    };
-    fill();
-    if (options.registerCurrent) { name.value = sourceName; content.value = sourceContent; }
-    select.addEventListener('change', () => {
-      const item = library.templates.find(item => item.id === select.value);
-      name.value = item?.name || ''; content.value = item?.content || '';
-    });
-    let busy = false;
-    const run = fn => async () => {
-      if (busy) return; busy = true; status.textContent = '';
-      const controls = [...modal.modal.querySelectorAll('input,textarea,select,button')].map(control => [control, control.disabled]);
-      controls.forEach(([control]) => { control.disabled = true; });
-      try { await fn(); } catch (error) { status.textContent = error.userMessage || error.message; }
-      finally { busy = false; controls.forEach(([control, disabled]) => { control.disabled = disabled; }); }
-    };
-    const save = button('テンプレートを保存', run(async () => {
-      const item = validate({ ...library.templates.find(item => item.id === select.value), schemaVersion: 1,
-        id: select.value || crypto.randomUUID(), name: name.value.trim(), content: content.value });
-      if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
-      await persist(library, [...library.templates.filter(other => other.id !== item.id), item]); fill(item.id); status.textContent = '保存しました';
+    const items = () => library.templates.map(item => ({
+      ...item, builtin: false, badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
+      description: item.content.split('\n').find(line => line.trim())?.replace(/^#+\s*/, '').slice(0, 80) || '',
+      renderThumbnail: host => renderDocThumbnail(item.content, host),
     }));
-    const remove = button('テンプレートを削除', run(async () => {
-      if (!select.value) return;
-      if (!await confirmAction('選択したノートテンプレートを削除しますか？')) return;
-      await persist(library, library.templates.filter(item => item.id !== select.value));
-      fill(); name.value = ''; content.value = ''; status.textContent = '削除しました';
-    }));
-    const use = button(options.dbPath ? 'シートに設定' : 'ノートに適用', run(async () => {
-      const item = library.templates.find(item => item.id === select.value);
-      if (!item) throw new Error('保存済みのテンプレートを選択してください');
-      if (name.value.trim() !== item.name || content.value !== item.content) throw new Error('変更したテンプレートを保存してから適用してください');
-      if (options.dbPath) {
-        await saveSheetDefault(options.dbPath, item, metadata.schema_revision || 0);
-      } else {
+    const footerActions = [];
+    if (library.deviceAvailable || options.deviceOnly) {
+      footerActions.push({ label: options.deviceOnly ? '個人設定のテンプレートに戻る' : 'この端末のテンプレートを開く', e2eId: 'note-templates-switch', run: async ctx => {
+        ctx.close('switched');
+        await show({ ...options, deviceOnly: !options.deviceOnly });
+        return false;
+      } });
+    }
+    if (editor && !options.dbPath) {
+      footerActions.push({ label: '現在のノートから作成', e2eId: 'note-templates-from-current', run: async ctx => {
+        const saved = await openEditor(library, { name: sourceName, content: currentContent(editor) }, { title: '現在のノートから作成' });
+        if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+        return false;
+      } });
+    }
+    footerActions.push({ label: '新しいテンプレート', e2eId: 'note-templates-new', run: async ctx => {
+      const saved = await openEditor(library, { name: '', content: '' }, { title: '新しいテンプレート' });
+      if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+      return false;
+    } });
+    if (options.dbPath) {
+      footerActions.push({ label: 'シートの設定を解除', e2eId: 'note-templates-clear-sheet', run: async () => {
+        await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0);
+        return true;
+      } });
+    }
+    const picker = window.MeldexTemplatePicker.open({
+      id: 'note-templates',
+      title: options.dbPath ? 'シートのノートテンプレート' : 'ノートテンプレート',
+      items: items(),
+      selectedId: options.dbPath ? metadata?.note_template?.id : undefined,
+      emptyText: '登録済みのテンプレートはありません。「現在のノートから作成」か「新しいテンプレート」で作成できます。',
+      primaryAction: { label: options.dbPath ? 'シートに設定' : 'ノートに適用', run: async item => {
+        const current = library.templates.find(other => other.id === item.id);
+        if (!current) throw new Error('保存済みのテンプレートを選択してください');
+        if (options.dbPath) {
+          await saveSheetDefault(options.dbPath, current, metadata.schema_revision || 0);
+          return true;
+        }
         if (!editor?.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先のノートを開き直してください');
-        if (!await confirmAction('ノート本文を選択したテンプレートに置き換えますか？')) return;
+        if (!await confirmAction('ノート本文を選択したテンプレートに置き換えますか？')) return false;
         if (!editor.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先が変わりました');
         editor.focus(); const range = document.createRange(); range.selectNodeContents(editor);
         const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-        document.execCommand('insertHTML', false, mdToHtml(item.content, { basePath: path }));
+        document.execCommand('insertHTML', false, mdToHtml(current.content, { basePath: path }));
         editor.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      modal.close('applied');
-    }));
-    const footer = [save, remove];
-    if (library.deviceAvailable || options.deviceOnly) {
-      footer.unshift(button(options.deviceOnly ? '個人設定のテンプレートに戻る' : 'この端末のテンプレートを開く', run(async () => {
-        const item = library.templates.find(item => item.id === select.value);
-        const dirty = name.value.trim() !== (item?.name || '') || content.value !== (item?.content || '');
-        if (dirty && !await confirmAction('保存していないテンプレートの変更を破棄して保存先を切り替えますか？')) return;
-        await modal.close('switched');
-        await show({ ...options, deviceOnly: !options.deviceOnly, registerCurrent: false });
-      })));
-    }
-    if (options.dbPath) {
-      status.textContent = '設定中: ' + (metadata.note_template?.name || 'なし');
-      footer.push(button('シートの設定を解除', run(async () => { await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0); modal.close('applied'); })));
-    } else if (editor) {
-      footer.unshift(button('現在のノートから作成', () => {
-        select.value = ''; name.value = ''; content.value = currentContent(editor); name.focus();
-      }));
-    }
-    footer.push(use);
-    const modal = GBUI.createModal({ id: 'note-templates', title: options.dbPath ? 'シートのノートテンプレート' : options.registerCurrent ? 'テンプレートに登録' : 'ノートテンプレート',
-      body, footer, variant: 'standard', geometryKey: 'note-templates', initialFocus: options.registerCurrent ? name : select,
-      onBeforeClose: reason => !busy || reason === 'applied' || reason === 'switched' });
-    modal.open();
+        return true;
+      } },
+      itemActions: [
+        { label: '編集', e2eId: 'note-templates-edit', run: async (item, ctx) => {
+          const current = library.templates.find(other => other.id === item.id);
+          const saved = await openEditor(library, current, { title: 'テンプレートの編集' });
+          if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+          return false;
+        } },
+        { label: '削除', danger: true, e2eId: 'note-templates-delete', run: async (item, ctx) => {
+          if (!await confirmAction(`ノートテンプレート「${item.name}」を削除しますか？`)) return false;
+          await persist(library, library.templates.filter(other => other.id !== item.id));
+          await ctx.refresh(items()); ctx.setStatus('削除しました');
+          return false;
+        } },
+      ],
+      footerActions,
+    });
+    picker.setStatus(options.dbPath
+      ? '設定中: ' + (metadata?.note_template?.name || 'なし') + ' ／ 保存先: ' + (library.remote ? '個人設定' : 'この端末')
+      : '保存先: ' + (library.remote ? '個人設定' : 'この端末'));
+    return picker;
   }
   async function saveSheetDefault(path, template, revision) {
     const payload = { note_template: template ? validate(template) : null };

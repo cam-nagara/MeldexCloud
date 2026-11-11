@@ -1,4 +1,4 @@
-/* BoardGroup model, templates, line impact, and options-panel adapter. */
+/* BoardGroup model, named group styles, line impact, and options-panel adapter. */
 (function initMeldexBoardGroups(global) {
   'use strict';
 
@@ -217,90 +217,6 @@
     return { boardView: result, removed: true, confirmationRequired: false, ...plan };
   }
 
-  function normalizeLibraries(libraries) {
-    const result = clone(libraries || {});
-    result.file = Array.isArray(result.file) ? result.file : [];
-    result.common = Array.isArray(result.common) ? result.common : [];
-    return result;
-  }
-
-  function templateFromGroup(group, value) {
-    const settings = value || {};
-    return {
-      templateId: String(settings.templateId),
-      name: String(settings.name || group.name || 'グループテンプレート'),
-      styleRef: group.styleRef,
-      styleOverrides: clone(group.styleOverrides),
-      locked: !!group.locked,
-      collapsed: !!group.collapsed,
-      updatedAt: settings.updatedAt || null,
-    };
-  }
-
-  function normalizedTemplateName(value) {
-    return String(value || '').trim().toLocaleLowerCase();
-  }
-
-  function assertUniqueTemplateName(libraries, scope, name, exceptTemplateId) {
-    const wanted = normalizedTemplateName(name);
-    if (!wanted) throw new TypeError('template name is required');
-    const duplicate = normalizeLibraries(libraries)[scope].some((item) => (
-      item.templateId !== exceptTemplateId && normalizedTemplateName(item.name) === wanted
-    ));
-    if (duplicate) throw new Error('同名のグループテンプレートは上書きできません');
-  }
-
-  function saveTemplate(libraries, scope, groupValue, options) {
-    if (!['file', 'common'].includes(scope)) throw new TypeError('template scope is invalid');
-    const result = normalizeLibraries(libraries);
-    const group = normalizeGroup(groupValue);
-    const makeId = options?.idFactory;
-    const templateId = options?.templateId || makeId?.('group-template');
-    if (!templateId) throw new TypeError('templateId is required');
-    const template = templateFromGroup(group, { ...options, templateId });
-    assertUniqueTemplateName(result, scope, template.name);
-    result[scope].push(template);
-    return { libraries: result, template: clone(template) };
-  }
-
-  function updateTemplate(libraries, scope, templateId, changes) {
-    const result = normalizeLibraries(libraries);
-    const index = result[scope]?.findIndex((item) => item.templateId === templateId) ?? -1;
-    if (index < 0) throw new RangeError('group template was not found');
-    if (Object.prototype.hasOwnProperty.call(changes || {}, 'name')) {
-      assertUniqueTemplateName(result, scope, changes.name, templateId);
-    }
-    result[scope][index] = { ...result[scope][index], ...clone(changes || {}), templateId };
-    delete result[scope][index].topicRefs;
-    return result;
-  }
-
-  function duplicateTemplate(libraries, scope, templateId, options) {
-    const source = normalizeLibraries(libraries)[scope]?.find((item) => item.templateId === templateId);
-    if (!source) throw new RangeError('group template was not found');
-    const group = normalizeGroup({ groupId: 'template-source', ...source });
-    return saveTemplate(libraries, scope, group, {
-      ...options, name: options?.name || `${source.name} のコピー`,
-    });
-  }
-
-  function removeTemplate(libraries, scope, templateId) {
-    const result = normalizeLibraries(libraries);
-    const before = result[scope]?.length ?? 0;
-    result[scope] = result[scope].filter((item) => item.templateId !== templateId);
-    if (result[scope].length === before) throw new RangeError('group template was not found');
-    return result;
-  }
-
-  function applyTemplate(boardView, groupId, template) {
-    return updateGroup(boardView, groupId, {
-      styleRef: template?.styleRef ?? null,
-      styleOverrides: clone(template?.styleOverrides || {}),
-      locked: !!template?.locked,
-      collapsed: !!template?.collapsed,
-    });
-  }
-
   function renderOptionsTab(container, groupValue, callbacks) {
     if (!container?.appendChild) return null;
     const group = normalizeGroup(groupValue);
@@ -322,7 +238,6 @@
     GROUP_VISUAL_FIELDS, normalizeGroupStyle, normalizeGroupStyles, resolveGroupStyle,
     createGroupStyle, updateGroupStyle, duplicateGroupStyle, applyGroupStyle, removeGroupStyle,
     lineImpactForGroup, planGroupRemoval,
-    removeGroupFrame, normalizeLibraries, saveTemplate, updateTemplate, duplicateTemplate,
-    removeTemplate, applyTemplate, renderOptionsTab, assertUniqueTemplateName,
+    removeGroupFrame, renderOptionsTab,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));

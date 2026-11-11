@@ -411,6 +411,10 @@
       comp._addTemplatePreset({ allowOverwrite: true });
       return true;
     }
+    if (action === 'manageTemplates' && typeof comp._showTemplatePicker === 'function') {
+      comp._showTemplatePicker();
+      return true;
+    }
     if (action === 'manageTemplates' && typeof comp._showPresetManager === 'function') {
       comp._showPresetManager('template');
       return true;
@@ -894,7 +898,3 @@
       const isActive = groupMembers.some(member => member.tool === tool);
       button.classList.toggle('active', isActive);
       // 選択中ツールがこのグループに属する時だけアイコンを更新する。他グループの
-      // ツールへ切り替わっても、直前にこのグループ内で選んでいたツールの見た目を保つ
-      // （本体 gb-annotations の _annotationSelectTool と同じ設計）。
-      if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
-    });

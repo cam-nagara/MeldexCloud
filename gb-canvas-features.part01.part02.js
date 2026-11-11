@@ -2,18 +2,14 @@
     ...overrides,
   };
 }
+// 初期搭載の階層別スタイル（標準）: 中心テーマ → メイントピック → サブトピック → 詳細。
+// 主役の青1色で、階層が深くなるほど塗りを弱め、文字と線を細くする。形は四角に統一し、
+// 意味のない形・色の切り替えをしない（_themeTone は gb-canvas-features.part00.js の塗り方）。
 const BD_DEFAULT_DEPTH_STYLES = [
-  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'トピック', line: _BD_DEPTH_LINE(5) }),
-  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(3) }),
-  _BD_DEPTH_CARD(0, { name: '階層3 矩形強調', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-alert', fontSize: 13, fontBold: true, width: 180, shape: 'rect', borderRadius: 8, defaultText: '項目', line: _BD_DEPTH_LINE(0, { width: 4 }) }),
-  _BD_DEPTH_CARD(1, { name: '階層4 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-dashed', fontSize: 13, fontBold: false, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '詳細', line: _BD_DEPTH_LINE(1, { width: 2, style: 'dashed' }) }),
-  _BD_DEPTH_CARD(4, { name: '階層5 ピル', cardStyleRef: 'card-theme-pill', lineStyleRef: 'line-theme-straight', fontSize: 12, fontBold: true, width: 180, shape: 'pill', borderRadius: 999, defaultText: 'メモ', line: _BD_DEPTH_LINE(4, { pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(6, { name: '階層6 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-emphasis', fontSize: 12, fontBold: true, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '補足', line: _BD_DEPTH_LINE(6, { width: 5, arrow: 'both' }) }),
-  _BD_DEPTH_CARD(2, { name: '階層7 雲', cardStyleRef: 'card-theme-cloud', lineStyleRef: 'line-theme-thin', fontSize: 12, fontBold: true, width: 190, shape: 'cloud', borderRadius: 0, defaultText: '注目', cloudBumpWidth: 44, cloudBumpHeight: 16, cloudSideWidth: 14, cloudOffset: 0.45, cloudSubWidthRatio: 55, cloudSubHeightRatio: 50, line: _BD_DEPTH_LINE(2, { width: 1, arrow: '', pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(7, { name: '階層8 雲', cardStyleRef: 'card-theme-cloud', lineStyleRef: 'line-theme-reference', fontSize: 12, fontBold: false, width: 190, shape: 'cloud', borderRadius: 0, defaultText: 'メモ', cloudBumpWidth: 44, cloudBumpHeight: 16, cloudSideWidth: 14, cloudOffset: 0.45, cloudSubWidthRatio: 55, cloudSubHeightRatio: 50, line: _BD_DEPTH_LINE(7, { width: 2, style: 'dashed', arrow: 'start', pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(4, { name: '階層9 もやもや', cardStyleRef: 'card-theme-fluffy', lineStyleRef: 'line-theme-curve', fontSize: 12, fontBold: false, width: 190, shape: 'fluffy', borderRadius: 0, defaultText: '補足', cloudBumpWidth: 38, cloudBumpHeight: 14, cloudSideWidth: 12, cloudOffset: 0.5, cloudSubWidthRatio: 45, cloudSubHeightRatio: 45, line: _BD_DEPTH_LINE(4, { pathType: 'curve' }) }),
-  _BD_DEPTH_CARD(0, { name: '階層10 トゲ直線', cardStyleRef: 'card-theme-thorn', lineStyleRef: 'line-theme-alert', fontSize: 12, fontBold: true, width: 190, shape: 'thorn', borderRadius: 0, defaultText: '注意', cloudBumpWidth: 28, cloudBumpHeight: 18, cloudSideWidth: 10, cloudOffset: 0.5, cloudSubWidthRatio: 0, cloudSubHeightRatio: 0, line: _BD_DEPTH_LINE(0, { width: 4 }) }),
-  _BD_DEPTH_CARD(6, { name: '階層11 トゲ曲線', cardStyleRef: 'card-theme-thorn-curve', lineStyleRef: 'line-theme-loop', fontSize: 12, fontBold: true, width: 190, shape: 'thorn-curve', borderRadius: 0, defaultText: '分岐', cloudBumpWidth: 30, cloudBumpHeight: 18, cloudSideWidth: 10, cloudOffset: 0.5, cloudSubWidthRatio: 0, cloudSubHeightRatio: 0, line: _BD_DEPTH_LINE(6, { arrow: 'both', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'solid', name: '中心テーマ', cardStyleRef: 'card-std-central', lineStyleRef: 'line-std-branch', fontSize: 20, fontBold: true, width: 240, shape: 'rect', borderRadius: 12, defaultText: '中心テーマ', line: _BD_DEPTH_LINE(5, { width: 3, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'tint', name: 'メイントピック', cardStyleRef: 'card-std-main', lineStyleRef: 'line-std-branch', fontSize: 16, fontBold: true, width: 200, shape: 'rect', borderRadius: 10, defaultText: 'メイントピック', line: _BD_DEPTH_LINE(5, { width: 2, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'outline', name: 'サブトピック', cardStyleRef: 'card-std-sub', lineStyleRef: 'line-std-branch', fontSize: 14, fontBold: false, width: 180, shape: 'rect', borderWidth: 1, borderRadius: 8, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(5, { width: 1.5, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'outline', name: '詳細', cardStyleRef: 'card-std-sub', lineStyleRef: 'line-std-guide', fontSize: 13, fontBold: false, width: 170, shape: 'rect', borderWidth: 1, borderRadius: 6, defaultText: '詳細', line: _BD_DEPTH_LINE(5, { _themeTone: 'muted', width: 1, arrow: '', pathType: 'curve' }) }),
 ];
 
 function _bdDefaultDepthStyles() {
@@ -37,9 +33,9 @@ const _BD_DEPTH_CLOUD_FIELDS = [
 ];
 const _BD_CLOUD_SHAPES = new Set(['cloud', 'thorn', 'thorn-curve', 'fluffy']);
 const _BD_REMOVED_DEPTH_CARD_STYLE_REFS = {
-  'card-theme-diamond': 'card-theme-rect',
-  'card-theme-hexagon': 'card-theme-octagon',
-  'card-theme-star': 'card-theme-cloud',
+  'card-theme-diamond': 'card-std-topic',
+  'card-theme-hexagon': 'card-std-topic',
+  'card-theme-star': 'card-std-idea',
 };
 
 function _bdNormalizeDepthCardStyleRef(value) {

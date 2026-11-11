@@ -13,6 +13,101 @@
     return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? '#1e1e1e' : '#ffffff';
   }
 
+  // --- 役割色の塗り方（初期搭載スタイル用） ---
+  // テーマ色セットのどの色を使うか（_themeColorIndex）に加え、塗り方（_themeTone）で
+  // 「塗りつぶし / 淡い色 / 枠だけ / 枠なし」を表す。淡い色はボード背景の明暗に合わせて作る。
+  function parseColor(value) {
+    const raw = String(value || '').trim();
+    let m = raw.match(/^#([0-9a-f]{3})$/i);
+    if (m) return m[1].split('').map(ch => parseInt(ch + ch, 16));
+    m = raw.match(/^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+    if (m) return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16));
+    m = raw.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+    if (m) return [1, 2, 3].map(i => Math.max(0, Math.min(255, Math.round(+m[i]))));
+    return null;
+  }
+
+  function toHex(rgb) {
+    return '#' + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  }
+
+  function mixColor(color, base, ratioToBase) {
+    const a = parseColor(color);
+    const b = parseColor(base);
+    if (!a || !b) return color || '';
+    const t = Math.max(0, Math.min(1, ratioToBase));
+    return toHex(a.map((v, i) => v * (1 - t) + b[i] * t));
+  }
+
+  function boardBackgroundColor() {
+    let bg = '';
+    try { if (typeof global._bdBoardThemeBackgroundColor === 'function') bg = global._bdBoardThemeBackgroundColor(); } catch (_) { bg = ''; }
+    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = global.getCssVar('--bd-bg') || global.getCssVar('--bg') || '';
+    return parseColor(bg) ? bg : '';
+  }
+
+  function isDarkColor(color) {
+    const rgb = parseColor(color);
+    if (!rgb) return false;
+    return (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) < 128;
+  }
+
+  function themeTone(color, tone, options = {}) {
+    const bg = options.background || boardBackgroundColor();
+    const dark = options.dark != null ? !!options.dark : isDarkColor(bg);
+    const base = parseColor(bg) ? bg : (dark ? '#111419' : '#ffffff');
+    const ink = dark ? '#e5e7eb' : '#1f2937';
+    switch (tone) {
+      case 'tint':
+        return { bgColor: dark ? mixColor(color, base, 0.72) : mixColor(color, '#ffffff', 0.84), borderColor: color, textColor: ink, lineColor: color };
+      case 'outline':
+        return { bgColor: dark ? mixColor(color, base, 0.9) : '#ffffff', borderColor: color, textColor: ink, lineColor: color };
+      case 'plain':
+        return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
+      case 'muted':
+        return { bgColor: mixColor(color, base, 0.6), borderColor: mixColor(color, base, 0.45), textColor: ink, lineColor: mixColor(color, base, 0.45) };
+      default:
+        return { bgColor: color, borderColor: color, textColor: readableTextColor(color) || ink, lineColor: color };
+    }
+  }
+
+  // 役割色: 0赤 1橙 2黄 3緑 4水 5青 6紫 7桃 の色相を、テーマ色セットの中から最も近い色で解決する。
+  // テーマごとに色の並び順が違うため、位置（palette[index]）で選ぶと「課題＝赤」等の意味が崩れる。
+  const ROLE_HUES = [2, 30, 50, 130, 185, 215, 270, 325];
+
+  function hueSat(color) {
+    const rgb = parseColor(color);
+    if (!rgb) return null;
+    const [r, g, b] = rgb.map(v => v / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    const l = (max + min) / 2;
+    const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    let h = 0;
+    if (d) {
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+    }
+    return { h: (h + 360) % 360, s };
+  }
+
+  function themeRoleColor(index, palette) {
+    const colors = Array.isArray(palette) && palette.length ? palette : FALLBACK_THEME_COLORS;
+    const target = ROLE_HUES[Math.abs(Math.floor(+index || 0)) % ROLE_HUES.length];
+    let best = '';
+    let bestScore = Infinity;
+    colors.forEach(color => {
+      const hs = hueSat(color);
+      if (!hs) return;
+      const diff = Math.abs(hs.h - target);
+      const score = Math.min(diff, 360 - diff) + (hs.s < 0.18 ? 400 : 0);
+      if (score < bestScore) { bestScore = score; best = color; }
+    });
+    return best || colors[Math.abs(Math.floor(+index || 0)) % colors.length] || '#3b82f6';
+  }
+
   function getThemeColorSet(board) {
     if (global.MeldexThemeManager && typeof global.MeldexThemeManager.getBoardThemeColorSet === 'function') {
       const palette = global.MeldexThemeManager.getBoardThemeColorSet(board);
@@ -28,15 +123,23 @@
       const rawValue = style && style._themeColorIndex;
       const rawThemeIndex = Number.isFinite(+rawValue) ? +rawValue : index;
       const themeIndex = Math.max(0, Math.floor(rawThemeIndex));
-      const color = palette[themeIndex % palette.length] || style.bgColor || '';
-      const line = style?.line && typeof style.line === 'object' ? style.line : {};
-      return {
+      const color = (style._themeTone ? themeRoleColor(themeIndex, palette) : palette[themeIndex % palette.length]) || style.bgColor || '';
+      const line = style?.line && typeof style.line === 'object' ? { ...style.line } : {};
+      const toned = themeTone(color, style._themeTone || 'solid');
+      const lineIndex = Number.isFinite(+line._themeColorIndex) ? Math.max(0, Math.floor(+line._themeColorIndex)) : themeIndex;
+      const lineBase = (style._themeTone ? themeRoleColor(lineIndex, palette) : palette[lineIndex % palette.length]) || color;
+      const lineColor = themeTone(lineBase, line._themeTone || 'solid').lineColor || line.color || '';
+      delete line._themeColorIndex;
+      delete line._themeTone;
+      const next = {
         ...style,
-        bgColor: color,
-        textColor: readableTextColor(color) || style.textColor || '',
-        borderColor: color,
-        line: { ...emptyLine(), ...line, color: color || line.color || '' },
+        bgColor: toned.bgColor,
+        textColor: toned.textColor || style.textColor || '',
+        borderColor: toned.borderColor,
+        line: { ...emptyLine(), ...line, color: lineColor },
       };
+      delete next._themeTone;
+      return next;
     });
   }
 
@@ -225,6 +328,9 @@
 
   global.bdGetThemeColorSet = getThemeColorSet;
   global.bdReadableTextColor = readableTextColor;
+  global.bdThemeTone = themeTone;
+  global.bdThemeRoleColor = themeRoleColor;
+  global.bdMixColor = mixColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;
   global.bdDefaultStructureArrow = defaultStructureArrow;
   global.bdCreateStructureConnection = createStructureConnection;

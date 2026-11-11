@@ -138,9 +138,11 @@ function buildToolMenuItems(toolType, component) {
     ],
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
+      { label: 'テンプレート...', action: () => { const comp = formComponent; if (comp && typeof comp._showTemplatePicker === 'function') comp._showTemplatePicker(); else showStatus('シナリオを開いてから選んでください', true); }, disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
+      { label: 'シートテンプレート...', action: context => { if (typeof showTemplateGalleryModal === 'function') showTemplateGalleryModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },
       { label: '新規トピックのノートテンプレート...', action: () => MeldexNoteTemplates.show({ dbPath: currentPath }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
@@ -153,6 +155,8 @@ function buildToolMenuItems(toolType, component) {
     ],
     board: [
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('board', { trigger: context?.trigger }); }, disabled: !hasFile },
+      { label: 'テンプレート...', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.open().catch?.(error => showStatus(error.message, true)); }, disabled: !hasFile },
+      { label: 'テンプレートに登録', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.registerCurrent().catch(error => showStatus(error.message, true)); }, disabled: !hasFile },
       { label: '新規リンクトピック: ノート', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };

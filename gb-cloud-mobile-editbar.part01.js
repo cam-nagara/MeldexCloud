@@ -407,6 +407,10 @@
       comp._addTemplatePreset({ allowOverwrite: true });
       return true;
     }
+    if (action === 'manageTemplates' && typeof comp._showTemplatePicker === 'function') {
+      comp._showTemplatePicker();
+      return true;
+    }
     if (action === 'manageTemplates' && typeof comp._showPresetManager === 'function') {
       comp._showPresetManager('template');
       return true;

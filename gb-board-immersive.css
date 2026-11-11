@@ -140,6 +140,34 @@
   font-size: 12px;
 }
 
+.bd-empty-guide > div {
+  pointer-events: none;
+}
+
+.bd-empty-guide-template {
+  pointer-events: auto;
+  margin-top: 14px;
+  padding: 6px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg2));
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  min-height: 32px;
+}
+
+.bd-empty-guide-template:hover,
+.bd-empty-guide-template:focus-visible {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg2));
+  outline: none;
+}
+
+@media (pointer: coarse) {
+  .bd-empty-guide-template { min-height: 44px; }
+}
+
 /* 幅の狭い画面では 1 行に収まらないため、折り返しと文字サイズを詰める。 */
 @media (max-width: 640px) {
   .bd-empty-guide {

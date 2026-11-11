@@ -4,7 +4,6 @@
 
   const FIELD = 'topicViewDocument';
   const REFS_FIELD = 'topicRefs';
-  const COMMON_GROUP_TEMPLATES_KEY = 'meldex-board-group-templates-common-v1';
   const openBoards = new Set();
   let topicRecordListenerInstalled = false;
 
@@ -681,52 +680,9 @@
     return true;
   }
 
-  function readCommonGroupTemplates() {
-    try {
-      const parsed = JSON.parse(global.localStorage?.getItem(COMMON_GROUP_TEMPLATES_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function writeCommonGroupTemplates(values) {
-    global.localStorage?.setItem(COMMON_GROUP_TEMPLATES_KEY, JSON.stringify(values || []));
-  }
-
-  function groupTemplateLibraries(board) {
-    const embedded = board?.topicViewDocument?.groupTemplateLibraries || {};
-    const common = readCommonGroupTemplates();
-    return {
-      file: clone(Array.isArray(embedded.file) ? embedded.file : []),
-      common: clone(common.length ? common : (Array.isArray(embedded.common) ? embedded.common : [])),
-    };
-  }
-
-  function setGroupTemplateLibraries(board, libraries, changedScope, historyLabel) {
-    const normalized = global.MeldexBoardGroups.normalizeLibraries(libraries);
-    if (changedScope === 'common') {
-      const before = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
-      writeCommonGroupTemplates(normalized.common);
-      const after = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
-      global.pushLocalStorageSettingsHistory?.(
-        historyLabel || '共通グループテンプレートを変更',
-        before,
-        after,
-        '全ボード共通のテンプレート設定',
-        redraw,
-      );
-      return;
-    }
-    global.bdPushUndo?.(historyLabel || 'グループテンプレートを変更');
-    const existing = clone(board.topicViewDocument.groupTemplateLibraries || {});
-    board.topicViewDocument.groupTemplateLibraries = { ...existing, file: clone(normalized.file) };
-    global.bdDirty?.();
-  }
-
-  function createTemplateId() {
+  function createGroupStyleId() {
     if (global.crypto?.randomUUID) return global.crypto.randomUUID();
-    return `group-template-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    return `group-style-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   }
 
   function showGroupMessage(message, error) {
@@ -782,7 +738,7 @@
           const saved = groupsApi.createGroupStyle(board.topicViewDocument, {
             name: String(name || 'グループスタイル').trim(),
             visualStyle: group ? groupsApi.resolveGroupStyle(board.topicViewDocument, group) : {},
-          }, options?.idFactory || createTemplateId);
+          }, options?.idFactory || createGroupStyleId);
           commitDocument(saved.document, 'グループスタイルを作成');
           return { ok: true, groupStyle: saved.groupStyle };
         });
@@ -796,7 +752,7 @@
       duplicateGroupStyle(groupStyleId) {
         if (readOnly) return rejectReadOnly();
         return attempt(() => {
-          const saved = groupsApi.duplicateGroupStyle(board.topicViewDocument, groupStyleId, {}, options?.idFactory || createTemplateId);
+          const saved = groupsApi.duplicateGroupStyle(board.topicViewDocument, groupStyleId, {}, options?.idFactory || createGroupStyleId);
           commitDocument(saved.document, 'グループスタイルを複製');
           return { ok: true, groupStyle: saved.groupStyle };
         });
@@ -844,64 +800,6 @@
         return attempt(() => {
           const view = groupsApi.updateGroup(active(), groupId, changes);
           return { ok: commitView(view, 'グループ設定を変更'), group: clone(selectedGroup(groupId)) };
-        });
-      },
-      listTemplates() {
-        const libraries = groupTemplateLibraries(board);
-        return ['file', 'common'].flatMap((scope) => libraries[scope].map((template) => ({ scope, ...clone(template) })));
-      },
-      getTemplate(scope, templateId) {
-        return this.listTemplates().find((template) => template.scope === scope && template.templateId === templateId) || null;
-      },
-      saveGroupTemplate(scope, groupId, name) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const group = selectedGroup(groupId);
-          if (!group) throw new Error('グループが見つかりません');
-          const saved = groupsApi.saveTemplate(groupTemplateLibraries(board), scope, group, {
-            idFactory: options?.idFactory || createTemplateId,
-            name: String(name || group.name || 'グループテンプレート').trim(),
-          });
-          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを保存');
-          showGroupMessage('グループテンプレートを保存しました');
-          return { ok: true, template: saved.template };
-        });
-      },
-      renameTemplate(scope, templateId, name) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const libraries = groupsApi.updateTemplate(groupTemplateLibraries(board), scope, templateId, { name: String(name || '').trim() });
-          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレート名を変更');
-          return { ok: true };
-        });
-      },
-      deleteTemplate(scope, templateId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const libraries = groupsApi.removeTemplate(groupTemplateLibraries(board), scope, templateId);
-          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレートを削除');
-          return { ok: true };
-        });
-      },
-      duplicateTemplate(scope, templateId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const source = this.getTemplate(scope, templateId);
-          const saved = groupsApi.duplicateTemplate(groupTemplateLibraries(board), scope, templateId, {
-            idFactory: options?.idFactory || createTemplateId,
-            name: `${source?.name || 'グループ'} のコピー`,
-          });
-          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを複製');
-          return { ok: true, template: saved.template };
-        });
-      },
-      applyGroupTemplate(scope, templateId, groupId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const template = this.getTemplate(scope, templateId);
-          if (!template) throw new Error('グループテンプレートが見つかりません');
-          const view = groupsApi.applyTemplate(active(), groupId, template);
-          return { ok: commitView(view, 'グループテンプレートを適用') };
         });
       },
     };
@@ -1003,16 +901,6 @@
     };
     const groupSelect = document.createElement('select'); groupSelect.setAttribute('aria-label', '編集するグループ');
     groupSelect.dataset.e2eId = 'board-group-manager-group';
-    const templateSelect = document.createElement('select'); templateSelect.setAttribute('aria-label', 'グループテンプレート');
-    templateSelect.dataset.e2eId = 'board-group-manager-template';
-    const templateName = document.createElement('input'); templateName.placeholder = 'テンプレート名';
-    templateName.dataset.e2eId = 'board-group-manager-template-name';
-    const scopeSelect = document.createElement('select');
-    scopeSelect.setAttribute('aria-label', 'テンプレートの保存範囲');
-    scopeSelect.dataset.e2eId = 'board-group-manager-scope';
-    [['file', 'このファイル'], ['common', '共通']].forEach(([value, label]) => {
-      const option = document.createElement('option'); option.value = value; option.textContent = label; scopeSelect.appendChild(option);
-    });
     const optionsHost = document.createElement('div');
     const styleManager = document.createElement('fieldset');
     styleManager.className = 'bd-group-style-manager';
@@ -1029,17 +917,6 @@
       labeledControl('名前', styleName),
       styleFields,
       styleActions,
-    );
-    const templateManager = document.createElement('fieldset');
-    templateManager.className = 'bd-group-template-manager';
-    const templateLegend = document.createElement('legend'); templateLegend.textContent = 'グループテンプレート';
-    const templateActions = document.createElement('div'); templateActions.className = 'bd-group-template-actions';
-    templateManager.append(
-      templateLegend,
-      labeledControl('保存範囲', scopeSelect),
-      labeledControl('名前', templateName),
-      labeledControl('テンプレート', templateSelect),
-      templateActions,
     );
     const refreshOptions = () => {
       const group = controller.getGroup(groupSelect.value);
@@ -1071,17 +948,6 @@
       groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
       groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
       compactGroupStyleFields(section, effectiveStyle);
-    };
-    const refreshTemplates = () => {
-      templateSelect.replaceChildren();
-      controller.listTemplates().forEach((template) => {
-        const option = document.createElement('option');
-        option.value = `${template.scope}:${template.templateId}`;
-        option.textContent = `${template.scope === 'file' ? 'ファイル' : '共通'}: ${template.name}`;
-        templateSelect.appendChild(option);
-      });
-      const selected = controller.listTemplates().find((template) => `${template.scope}:${template.templateId}` === templateSelect.value);
-      templateName.value = selected?.name || templateName.value;
     };
     const refreshStyles = () => {
       const previous = styleSelect.value;
@@ -1118,20 +984,10 @@
         groupSelect.appendChild(option);
       });
       if (controller.getGroup(selectedId)) groupSelect.value = selectedId;
-      refreshTemplates(); refreshStyles(); refreshOptions();
+      refreshStyles(); refreshOptions();
     };
-    const selectedTemplate = () => {
-      const [scope, ...parts] = String(templateSelect.value || '').split(':');
-      return { scope, templateId: parts.join(':') };
-    };
-    const button = (text, e2eId, action) => {
-      const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
-      element.dataset.e2eId = e2eId;
-      element.addEventListener('click', async () => { await action(); refreshAll(); }); templateActions.appendChild(element);
-    };
-    panel.append(labeledControl('編集するグループ', groupSelect), optionsHost, styleManager, templateManager);
+    panel.append(labeledControl('編集するグループ', groupSelect), optionsHost, styleManager);
     groupSelect.addEventListener('change', refreshOptions);
-    templateSelect.addEventListener('change', () => { templateName.value = controller.getTemplate(selectedTemplate().scope, selectedTemplate().templateId)?.name || ''; });
     styleSelect.addEventListener('change', refreshStyles);
     const styleButton = (text, e2eId, action) => {
       const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
@@ -1156,19 +1012,6 @@
           : false;
         if (confirmed) controller.removeGroupStyle(style.groupStyleId, 'preserve');
       }
-    });
-    button('現在値を保存', 'board-group-template-save', () => controller.saveGroupTemplate(scopeSelect.value, groupSelect.value, templateName.value));
-    button('適用', 'board-group-template-apply', () => { const value = selectedTemplate(); controller.applyGroupTemplate(value.scope, value.templateId, groupSelect.value); });
-    button('名前変更', 'board-group-template-rename', () => { const value = selectedTemplate(); controller.renameTemplate(value.scope, value.templateId, templateName.value); });
-    button('複製', 'board-group-template-duplicate', () => { const value = selectedTemplate(); controller.duplicateTemplate(value.scope, value.templateId); });
-    button('削除', 'board-group-template-delete', async () => {
-      const value = selectedTemplate();
-      const template = controller.getTemplate(value.scope, value.templateId);
-      if (!template) return;
-      const confirmed = typeof global.cfConfirm === 'function'
-        ? await global.cfConfirm(`グループテンプレート「${template.name}」を削除しますか？`)
-        : false;
-      if (confirmed) controller.deleteTemplate(value.scope, value.templateId);
     });
     root.appendChild(details);
     refreshAll();

@@ -188,10 +188,8 @@
 .bd-group-manager--panel { position: static; padding: 12px; }
 .bd-group-manager-panel { display: grid; gap: 12px; min-width: 0; }
 .bd-group-manager-panel .bd-group-options,
-.bd-group-manager-panel .bd-group-style-manager,
-.bd-group-manager-panel .bd-group-template-manager { min-width: 0; }
-.bd-group-manager-panel .bd-group-style-manager,
-.bd-group-manager-panel .bd-group-template-manager { display: grid; gap: 8px; padding: 10px; border-color: var(--ui-border, var(--border)); border-radius: var(--ui-radius-sm, 6px); }
+.bd-group-manager-panel .bd-group-style-manager { min-width: 0; }
+.bd-group-manager-panel .bd-group-style-manager { display: grid; gap: 8px; padding: 10px; border-color: var(--ui-border, var(--border)); border-radius: var(--ui-radius-sm, 6px); }
 .bd-group-manager-panel .bd-group-manager-field { display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr); align-items: center; gap: 8px; }
 .bd-group-manager-panel .bd-group-style-fields > label,
 .bd-group-manager-panel .bd-group-options > label { display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr); align-items: center; gap: 8px; }
@@ -200,7 +198,6 @@
 .bd-group-manager-panel .bd-group-style-fields input,
 .bd-group-manager-panel .bd-group-options input,
 .bd-group-manager-panel .bd-group-options select { width: 100%; min-width: 0; box-sizing: border-box; }
-.bd-group-manager-panel .bd-group-template-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 @media (pointer: coarse), (max-width: 640px) {
   .bd-common-view-tab > .view-tab-label,
   .bd-common-view-menu > .view-tab-more,

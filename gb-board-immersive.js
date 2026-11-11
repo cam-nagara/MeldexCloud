@@ -370,7 +370,7 @@
     const canvas = boardRoot.querySelector('[data-bd-role="canvas"]');
     const guide = document.createElement('div');
     guide.className = 'bd-empty-guide';
-    guide.setAttribute('aria-hidden', 'true');
+    guide.setAttribute('role', 'note');
     guide.dataset.e2eId = `board-${identity}-empty-guide`;
     const touchGuide = root.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
     guide.innerHTML = touchGuide
@@ -379,6 +379,21 @@
       : '<div class="bd-empty-guide-title">ダブルクリックでトピックを追加</div>'
       + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
       + '<div class="bd-empty-guide-hint">トピックを選んで Tab でサブトピックを追加</div>';
+    // 空のボードでは、ここからサムネイル付きのテンプレート選択を開ける（自動では開かない）。
+    if (root.MeldexBoardTemplates?.open) {
+      const templateButton = document.createElement('button');
+      templateButton.type = 'button';
+      templateButton.className = 'bd-empty-guide-template';
+      templateButton.textContent = 'テンプレートから始める';
+      templateButton.dataset.e2eId = `board-${identity}-empty-guide-template`;
+      templateButton.addEventListener('pointerdown', event => event.stopPropagation());
+      templateButton.addEventListener('dblclick', event => event.stopPropagation());
+      templateButton.addEventListener('click', event => {
+        event.stopPropagation();
+        root.MeldexBoardTemplates.open().catch?.(error => root.showStatus?.(error.message, true));
+      });
+      guide.appendChild(templateButton);
+    }
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);

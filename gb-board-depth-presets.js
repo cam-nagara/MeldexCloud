@@ -69,65 +69,152 @@
   // cardStyleRef / lineStyleRef は「どのスタイルから値を取り込んだか」の目印でしかないため、
   // 値を作り変える派生プリセットでは空にして、実際の値と食い違わないようにする。
 
-  function derive(styles, fn) {
-    return styles.map((style, index) => {
-      const next = fn({ ...style, line: { ...(style.line || {}) } }, index);
-      next.cardStyleRef = '';
-      next.lineStyleRef = '';
-      return next;
-    });
+
+  // 用途ごとの初期搭載プリセット。色はテーマ色セットの位置（0赤 1橙 2黄 3緑 4水 5青 6紫 7桃）と
+  // 塗り方（solid=塗りつぶし / tint=淡い色 / outline=枠だけ / plain=枠なし / muted=控えめ）で指定する。
+  function level(palette, spec) {
+    const pick = index => (typeof bdThemeRoleColor === 'function' ? bdThemeRoleColor(index, palette) : palette[index % palette.length]) || '#3b82f6';
+    const color = pick(spec.idx);
+    const toned = typeof bdThemeTone === 'function'
+      ? bdThemeTone(color, spec.tone)
+      : { bgColor: color, borderColor: color, textColor: '#ffffff', lineColor: color };
+    const lineColorBase = pick(spec.lineIdx ?? spec.idx) || color;
+    const lineColor = typeof bdThemeTone === 'function'
+      ? bdThemeTone(lineColorBase, spec.lineTone || 'solid').lineColor
+      : lineColorBase;
+    return {
+      name: spec.name,
+      cardStyleRef: '',
+      lineStyleRef: '',
+      fontSize: spec.fontSize,
+      fontBold: !!spec.bold,
+      fontItalic: false,
+      width: spec.width || 180,
+      bgColor: toned.bgColor,
+      textColor: toned.textColor || '',
+      borderColor: toned.borderColor,
+      borderWidth: spec.borderWidth ?? (spec.tone === 'plain' ? 0 : 1),
+      borderRadius: spec.radius ?? 8,
+      shape: spec.shape || 'rect',
+      defaultText: spec.text || spec.name,
+      line: {
+        color: lineColor,
+        width: spec.line?.width ?? 2,
+        style: spec.line?.style || '',
+        arrow: spec.line?.arrow || '',
+        pathType: spec.line?.pathType || 'curve',
+        branchRatio: 0.5,
+        cornerRadius: 6,
+      },
+    };
+  }
+
+  function levels(specs) {
+    return (base, palette) => specs.map(spec => level(palette, spec));
   }
 
   const BUILTIN_DEFS = [
     {
       id: 'depth-preset-standard',
       name: '標準',
+      description: '中心テーマから詳細まで、主役の色を段階的に弱める汎用の組み合わせ',
       build: base => base,
     },
     {
-      id: 'depth-preset-simple',
-      name: 'シンプル（角丸・直角線）',
-      build: base => derive(base, (style, index) => {
-        style.name = `階層${index + 1}`;
-        style.shape = 'rect';
-        style.borderRadius = 8;
-        style.borderWidth = 2;
-        style.fontSize = Math.max(11, 17 - index);
-        style.fontBold = index === 0;
-        style.line.pathType = 'orthogonal';
-        style.line.style = '';
-        style.line.arrow = 'end';
-        style.line.width = 2;
-        return style;
-      }),
+      id: 'depth-preset-logic',
+      name: 'ロジック・資料（直角線）',
+      description: '論点整理や資料向け。角を控えめにし、直角線で階層を揃える',
+      build: levels([
+        { name: '結論', idx: 5, tone: 'solid', fontSize: 18, bold: true, width: 220, radius: 6, borderWidth: 2, line: { width: 2, pathType: 'orthogonal' } },
+        { name: '論点', idx: 5, tone: 'tint', fontSize: 15, bold: true, width: 200, radius: 4, line: { width: 1.5, pathType: 'orthogonal' } },
+        { name: '根拠', idx: 5, tone: 'outline', fontSize: 13, width: 190, radius: 4, line: { width: 1, pathType: 'orthogonal' } },
+        { name: '補足', idx: 5, tone: 'outline', fontSize: 12, width: 180, radius: 4, lineTone: 'muted', line: { width: 1, pathType: 'orthogonal' } },
+      ]),
     },
     {
-      id: 'depth-preset-mindmap',
-      name: 'マインドマップ（曲線）',
-      build: base => derive(base, (style, index) => {
-        style.name = index === 0 ? '中心テーマ' : `枝${index}`;
-        style.shape = index === 0 ? 'rect' : 'pill';
-        style.borderRadius = index === 0 ? 10 : 999;
-        style.borderWidth = index === 0 ? 3 : 2;
-        style.fontSize = Math.max(11, 18 - index * 2);
-        style.fontBold = index <= 1;
-        style.line.pathType = 'curve';
-        style.line.style = '';
-        style.line.arrow = '';
-        style.line.width = Math.max(1, 4 - index);
-        return style;
-      }),
+      id: 'depth-preset-org',
+      name: '組織図・分類',
+      description: '上から下へ分ける組織図や分類ツリー向け。上位ほど濃く塗る',
+      build: levels([
+        { name: '全体', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 8, borderWidth: 2, line: { width: 2, pathType: 'orthogonal' } },
+        { name: '部門', idx: 4, tone: 'solid', fontSize: 15, bold: true, width: 180, radius: 8, line: { width: 1.5, pathType: 'orthogonal' } },
+        { name: 'チーム', idx: 4, tone: 'tint', fontSize: 13, width: 160, radius: 6, line: { width: 1, pathType: 'orthogonal' } },
+        { name: '担当', idx: 4, tone: 'outline', fontSize: 12, width: 150, radius: 6, lineTone: 'muted', line: { width: 1, pathType: 'orthogonal' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-rainbow',
+      name: '階層で色分け',
+      description: '深い階層でも何段目かを色で見分けられる。分類の多いマップ向け',
+      build: levels([
+        { name: '階層1', idx: 5, tone: 'solid', fontSize: 18, bold: true, width: 220, radius: 10, borderWidth: 2, line: { width: 3 } },
+        { name: '階層2', idx: 4, tone: 'tint', fontSize: 15, bold: true, width: 190, radius: 8, borderWidth: 2, line: { width: 2 } },
+        { name: '階層3', idx: 3, tone: 'tint', fontSize: 14, width: 180, radius: 8, line: { width: 1.5 } },
+        { name: '階層4', idx: 2, tone: 'tint', fontSize: 13, width: 170, radius: 8, line: { width: 1 } },
+        { name: '階層5', idx: 1, tone: 'tint', fontSize: 12, width: 160, radius: 8, line: { width: 1 } },
+      ]),
+    },
+    {
+      id: 'depth-preset-sticky',
+      name: '付箋（アイデア出し）',
+      description: 'ブレインストーミングやKJ法向け。テーマ以外は付箋の見た目にそろえる',
+      build: levels([
+        { name: 'テーマ', idx: 1, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 4, borderWidth: 2, lineTone: 'muted', line: { width: 1.5, pathType: 'straight' } },
+        { name: '付箋', idx: 2, tone: 'tint', fontSize: 13, width: 160, radius: 2, borderWidth: 0, lineTone: 'muted', line: { width: 1, pathType: 'straight' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-timeline',
+      name: 'タイムライン',
+      description: '年表や予定向け。節目を丸い札、作業を枠で表す',
+      build: levels([
+        { name: '期間', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 999, shape: 'pill', borderWidth: 2, line: { width: 3, pathType: 'straight', arrow: 'end' } },
+        { name: '節目', idx: 4, tone: 'solid', fontSize: 14, bold: true, width: 160, radius: 999, shape: 'pill', line: { width: 1.5, pathType: 'straight' } },
+        { name: '作業', idx: 4, tone: 'outline', fontSize: 13, width: 160, radius: 6, lineTone: 'muted', line: { width: 1, pathType: 'straight' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-minimal',
+      name: '線のみ（メモ）',
+      description: '枠を使わず文字と線だけで書く。手早いメモや下書き向け',
+      build: levels([
+        { name: '題', idx: 5, tone: 'plain', fontSize: 19, bold: true, width: 220, radius: 0, line: { width: 2 } },
+        { name: '項目', idx: 5, tone: 'plain', fontSize: 15, bold: true, width: 190, radius: 0, line: { width: 1.5 } },
+        { name: '詳細', idx: 5, tone: 'plain', fontSize: 13, width: 180, radius: 0, lineTone: 'muted', line: { width: 1 } },
+      ]),
+    },
+    {
+      id: 'depth-preset-presentation',
+      name: 'プレゼン（高コントラスト）',
+      description: '画面共有や発表向け。すべて塗りつぶし、文字と線を太めにする',
+      build: levels([
+        { name: '主題', idx: 6, tone: 'solid', fontSize: 22, bold: true, width: 260, radius: 12, borderWidth: 2, line: { width: 4 } },
+        { name: '要点', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 220, radius: 10, line: { width: 3 } },
+        { name: '説明', idx: 4, tone: 'solid', fontSize: 15, width: 200, radius: 8, line: { width: 2 } },
+      ]),
     },
   ];
+
+  // 旧版の初期搭載プリセットIDを、役割の近い現行プリセットへ読み替える
+  // （起点トピックの depthStyleRef や「適用中」記録に旧IDが残っていても見失わない）。
+  const LEGACY_BUILTIN_ALIASES = Object.freeze({
+    'depth-preset-simple': 'depth-preset-logic',
+    'depth-preset-mindmap': 'depth-preset-standard',
+  });
 
   function builtinPresets() {
     const base = normalizeStyles([]);
     if (!base.length) return [];
+    const palette = typeof bdGetThemeColorSet === 'function' ? bdGetThemeColorSet(boardState() || undefined) : [];
+    const colors = Array.isArray(palette) && palette.length
+      ? palette
+      : ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
     return BUILTIN_DEFS.map(def => ({
       id: def.id,
       name: def.name,
+      description: def.description || '',
       builtin: true,
-      styles: normalizeStyles(def.build(base.map(style => ({ ...style, line: { ...(style.line || {}) } })))),
+      styles: normalizeStyles(def.build(base.map(style => ({ ...style, line: { ...(style.line || {}) } })), colors)),
     }));
   }
 
@@ -173,7 +260,8 @@
   }
 
   function findPreset(id) {
-    return listPresets().find(entry => entry.id === id) || null;
+    const key = LEGACY_BUILTIN_ALIASES[id] || id;
+    return listPresets().find(entry => entry.id === key) || null;
   }
 
   function uniqueName(baseName, excludeId) {

@@ -7021,7 +7021,7 @@
 
 /* === gb-board-groups.js === */
 ;
-/* BoardGroup model, templates, line impact, and options-panel adapter. */
+/* BoardGroup model, named group styles, line impact, and options-panel adapter. */
 (function initMeldexBoardGroups(global) {
   'use strict';
 
@@ -7240,90 +7240,6 @@
     return { boardView: result, removed: true, confirmationRequired: false, ...plan };
   }
 
-  function normalizeLibraries(libraries) {
-    const result = clone(libraries || {});
-    result.file = Array.isArray(result.file) ? result.file : [];
-    result.common = Array.isArray(result.common) ? result.common : [];
-    return result;
-  }
-
-  function templateFromGroup(group, value) {
-    const settings = value || {};
-    return {
-      templateId: String(settings.templateId),
-      name: String(settings.name || group.name || 'グループテンプレート'),
-      styleRef: group.styleRef,
-      styleOverrides: clone(group.styleOverrides),
-      locked: !!group.locked,
-      collapsed: !!group.collapsed,
-      updatedAt: settings.updatedAt || null,
-    };
-  }
-
-  function normalizedTemplateName(value) {
-    return String(value || '').trim().toLocaleLowerCase();
-  }
-
-  function assertUniqueTemplateName(libraries, scope, name, exceptTemplateId) {
-    const wanted = normalizedTemplateName(name);
-    if (!wanted) throw new TypeError('template name is required');
-    const duplicate = normalizeLibraries(libraries)[scope].some((item) => (
-      item.templateId !== exceptTemplateId && normalizedTemplateName(item.name) === wanted
-    ));
-    if (duplicate) throw new Error('同名のグループテンプレートは上書きできません');
-  }
-
-  function saveTemplate(libraries, scope, groupValue, options) {
-    if (!['file', 'common'].includes(scope)) throw new TypeError('template scope is invalid');
-    const result = normalizeLibraries(libraries);
-    const group = normalizeGroup(groupValue);
-    const makeId = options?.idFactory;
-    const templateId = options?.templateId || makeId?.('group-template');
-    if (!templateId) throw new TypeError('templateId is required');
-    const template = templateFromGroup(group, { ...options, templateId });
-    assertUniqueTemplateName(result, scope, template.name);
-    result[scope].push(template);
-    return { libraries: result, template: clone(template) };
-  }
-
-  function updateTemplate(libraries, scope, templateId, changes) {
-    const result = normalizeLibraries(libraries);
-    const index = result[scope]?.findIndex((item) => item.templateId === templateId) ?? -1;
-    if (index < 0) throw new RangeError('group template was not found');
-    if (Object.prototype.hasOwnProperty.call(changes || {}, 'name')) {
-      assertUniqueTemplateName(result, scope, changes.name, templateId);
-    }
-    result[scope][index] = { ...result[scope][index], ...clone(changes || {}), templateId };
-    delete result[scope][index].topicRefs;
-    return result;
-  }
-
-  function duplicateTemplate(libraries, scope, templateId, options) {
-    const source = normalizeLibraries(libraries)[scope]?.find((item) => item.templateId === templateId);
-    if (!source) throw new RangeError('group template was not found');
-    const group = normalizeGroup({ groupId: 'template-source', ...source });
-    return saveTemplate(libraries, scope, group, {
-      ...options, name: options?.name || `${source.name} のコピー`,
-    });
-  }
-
-  function removeTemplate(libraries, scope, templateId) {
-    const result = normalizeLibraries(libraries);
-    const before = result[scope]?.length ?? 0;
-    result[scope] = result[scope].filter((item) => item.templateId !== templateId);
-    if (result[scope].length === before) throw new RangeError('group template was not found');
-    return result;
-  }
-
-  function applyTemplate(boardView, groupId, template) {
-    return updateGroup(boardView, groupId, {
-      styleRef: template?.styleRef ?? null,
-      styleOverrides: clone(template?.styleOverrides || {}),
-      locked: !!template?.locked,
-      collapsed: !!template?.collapsed,
-    });
-  }
-
   function renderOptionsTab(container, groupValue, callbacks) {
     if (!container?.appendChild) return null;
     const group = normalizeGroup(groupValue);
@@ -7345,8 +7261,7 @@
     GROUP_VISUAL_FIELDS, normalizeGroupStyle, normalizeGroupStyles, resolveGroupStyle,
     createGroupStyle, updateGroupStyle, duplicateGroupStyle, applyGroupStyle, removeGroupStyle,
     lineImpactForGroup, planGroupRemoval,
-    removeGroupFrame, normalizeLibraries, saveTemplate, updateTemplate, duplicateTemplate,
-    removeTemplate, applyTemplate, renderOptionsTab, assertUniqueTemplateName,
+    removeGroupFrame, renderOptionsTab,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
 
@@ -7708,7 +7623,6 @@
 
   const FIELD = 'topicViewDocument';
   const REFS_FIELD = 'topicRefs';
-  const COMMON_GROUP_TEMPLATES_KEY = 'meldex-board-group-templates-common-v1';
   const openBoards = new Set();
   let topicRecordListenerInstalled = false;
 
@@ -8385,52 +8299,9 @@
     return true;
   }
 
-  function readCommonGroupTemplates() {
-    try {
-      const parsed = JSON.parse(global.localStorage?.getItem(COMMON_GROUP_TEMPLATES_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function writeCommonGroupTemplates(values) {
-    global.localStorage?.setItem(COMMON_GROUP_TEMPLATES_KEY, JSON.stringify(values || []));
-  }
-
-  function groupTemplateLibraries(board) {
-    const embedded = board?.topicViewDocument?.groupTemplateLibraries || {};
-    const common = readCommonGroupTemplates();
-    return {
-      file: clone(Array.isArray(embedded.file) ? embedded.file : []),
-      common: clone(common.length ? common : (Array.isArray(embedded.common) ? embedded.common : [])),
-    };
-  }
-
-  function setGroupTemplateLibraries(board, libraries, changedScope, historyLabel) {
-    const normalized = global.MeldexBoardGroups.normalizeLibraries(libraries);
-    if (changedScope === 'common') {
-      const before = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
-      writeCommonGroupTemplates(normalized.common);
-      const after = global.captureLocalStorageSettings?.([COMMON_GROUP_TEMPLATES_KEY]);
-      global.pushLocalStorageSettingsHistory?.(
-        historyLabel || '共通グループテンプレートを変更',
-        before,
-        after,
-        '全ボード共通のテンプレート設定',
-        redraw,
-      );
-      return;
-    }
-    global.bdPushUndo?.(historyLabel || 'グループテンプレートを変更');
-    const existing = clone(board.topicViewDocument.groupTemplateLibraries || {});
-    board.topicViewDocument.groupTemplateLibraries = { ...existing, file: clone(normalized.file) };
-    global.bdDirty?.();
-  }
-
-  function createTemplateId() {
+  function createGroupStyleId() {
     if (global.crypto?.randomUUID) return global.crypto.randomUUID();
-    return `group-template-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    return `group-style-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   }
 
   function showGroupMessage(message, error) {
@@ -8486,7 +8357,7 @@
           const saved = groupsApi.createGroupStyle(board.topicViewDocument, {
             name: String(name || 'グループスタイル').trim(),
             visualStyle: group ? groupsApi.resolveGroupStyle(board.topicViewDocument, group) : {},
-          }, options?.idFactory || createTemplateId);
+          }, options?.idFactory || createGroupStyleId);
           commitDocument(saved.document, 'グループスタイルを作成');
           return { ok: true, groupStyle: saved.groupStyle };
         });
@@ -8500,7 +8371,7 @@
       duplicateGroupStyle(groupStyleId) {
         if (readOnly) return rejectReadOnly();
         return attempt(() => {
-          const saved = groupsApi.duplicateGroupStyle(board.topicViewDocument, groupStyleId, {}, options?.idFactory || createTemplateId);
+          const saved = groupsApi.duplicateGroupStyle(board.topicViewDocument, groupStyleId, {}, options?.idFactory || createGroupStyleId);
           commitDocument(saved.document, 'グループスタイルを複製');
           return { ok: true, groupStyle: saved.groupStyle };
         });
@@ -8548,64 +8419,6 @@
         return attempt(() => {
           const view = groupsApi.updateGroup(active(), groupId, changes);
           return { ok: commitView(view, 'グループ設定を変更'), group: clone(selectedGroup(groupId)) };
-        });
-      },
-      listTemplates() {
-        const libraries = groupTemplateLibraries(board);
-        return ['file', 'common'].flatMap((scope) => libraries[scope].map((template) => ({ scope, ...clone(template) })));
-      },
-      getTemplate(scope, templateId) {
-        return this.listTemplates().find((template) => template.scope === scope && template.templateId === templateId) || null;
-      },
-      saveGroupTemplate(scope, groupId, name) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const group = selectedGroup(groupId);
-          if (!group) throw new Error('グループが見つかりません');
-          const saved = groupsApi.saveTemplate(groupTemplateLibraries(board), scope, group, {
-            idFactory: options?.idFactory || createTemplateId,
-            name: String(name || group.name || 'グループテンプレート').trim(),
-          });
-          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを保存');
-          showGroupMessage('グループテンプレートを保存しました');
-          return { ok: true, template: saved.template };
-        });
-      },
-      renameTemplate(scope, templateId, name) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const libraries = groupsApi.updateTemplate(groupTemplateLibraries(board), scope, templateId, { name: String(name || '').trim() });
-          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレート名を変更');
-          return { ok: true };
-        });
-      },
-      deleteTemplate(scope, templateId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const libraries = groupsApi.removeTemplate(groupTemplateLibraries(board), scope, templateId);
-          setGroupTemplateLibraries(board, libraries, scope, 'グループテンプレートを削除');
-          return { ok: true };
-        });
-      },
-      duplicateTemplate(scope, templateId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const source = this.getTemplate(scope, templateId);
-          const saved = groupsApi.duplicateTemplate(groupTemplateLibraries(board), scope, templateId, {
-            idFactory: options?.idFactory || createTemplateId,
-            name: `${source?.name || 'グループ'} のコピー`,
-          });
-          setGroupTemplateLibraries(board, saved.libraries, scope, 'グループテンプレートを複製');
-          return { ok: true, template: saved.template };
-        });
-      },
-      applyGroupTemplate(scope, templateId, groupId) {
-        if (readOnly) return rejectReadOnly();
-        return attempt(() => {
-          const template = this.getTemplate(scope, templateId);
-          if (!template) throw new Error('グループテンプレートが見つかりません');
-          const view = groupsApi.applyTemplate(active(), groupId, template);
-          return { ok: commitView(view, 'グループテンプレートを適用') };
         });
       },
     };
@@ -8707,16 +8520,6 @@
     };
     const groupSelect = document.createElement('select'); groupSelect.setAttribute('aria-label', '編集するグループ');
     groupSelect.dataset.e2eId = 'board-group-manager-group';
-    const templateSelect = document.createElement('select'); templateSelect.setAttribute('aria-label', 'グループテンプレート');
-    templateSelect.dataset.e2eId = 'board-group-manager-template';
-    const templateName = document.createElement('input'); templateName.placeholder = 'テンプレート名';
-    templateName.dataset.e2eId = 'board-group-manager-template-name';
-    const scopeSelect = document.createElement('select');
-    scopeSelect.setAttribute('aria-label', 'テンプレートの保存範囲');
-    scopeSelect.dataset.e2eId = 'board-group-manager-scope';
-    [['file', 'このファイル'], ['common', '共通']].forEach(([value, label]) => {
-      const option = document.createElement('option'); option.value = value; option.textContent = label; scopeSelect.appendChild(option);
-    });
     const optionsHost = document.createElement('div');
     const styleManager = document.createElement('fieldset');
     styleManager.className = 'bd-group-style-manager';
@@ -8733,17 +8536,6 @@
       labeledControl('名前', styleName),
       styleFields,
       styleActions,
-    );
-    const templateManager = document.createElement('fieldset');
-    templateManager.className = 'bd-group-template-manager';
-    const templateLegend = document.createElement('legend'); templateLegend.textContent = 'グループテンプレート';
-    const templateActions = document.createElement('div'); templateActions.className = 'bd-group-template-actions';
-    templateManager.append(
-      templateLegend,
-      labeledControl('保存範囲', scopeSelect),
-      labeledControl('名前', templateName),
-      labeledControl('テンプレート', templateSelect),
-      templateActions,
     );
     const refreshOptions = () => {
       const group = controller.getGroup(groupSelect.value);
@@ -8775,17 +8567,6 @@
       groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
       groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
       compactGroupStyleFields(section, effectiveStyle);
-    };
-    const refreshTemplates = () => {
-      templateSelect.replaceChildren();
-      controller.listTemplates().forEach((template) => {
-        const option = document.createElement('option');
-        option.value = `${template.scope}:${template.templateId}`;
-        option.textContent = `${template.scope === 'file' ? 'ファイル' : '共通'}: ${template.name}`;
-        templateSelect.appendChild(option);
-      });
-      const selected = controller.listTemplates().find((template) => `${template.scope}:${template.templateId}` === templateSelect.value);
-      templateName.value = selected?.name || templateName.value;
     };
     const refreshStyles = () => {
       const previous = styleSelect.value;
@@ -8822,20 +8603,10 @@
         groupSelect.appendChild(option);
       });
       if (controller.getGroup(selectedId)) groupSelect.value = selectedId;
-      refreshTemplates(); refreshStyles(); refreshOptions();
+      refreshStyles(); refreshOptions();
     };
-    const selectedTemplate = () => {
-      const [scope, ...parts] = String(templateSelect.value || '').split(':');
-      return { scope, templateId: parts.join(':') };
-    };
-    const button = (text, e2eId, action) => {
-      const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
-      element.dataset.e2eId = e2eId;
-      element.addEventListener('click', async () => { await action(); refreshAll(); }); templateActions.appendChild(element);
-    };
-    panel.append(labeledControl('編集するグループ', groupSelect), optionsHost, styleManager, templateManager);
+    panel.append(labeledControl('編集するグループ', groupSelect), optionsHost, styleManager);
     groupSelect.addEventListener('change', refreshOptions);
-    templateSelect.addEventListener('change', () => { templateName.value = controller.getTemplate(selectedTemplate().scope, selectedTemplate().templateId)?.name || ''; });
     styleSelect.addEventListener('change', refreshStyles);
     const styleButton = (text, e2eId, action) => {
       const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
@@ -8860,19 +8631,6 @@
           : false;
         if (confirmed) controller.removeGroupStyle(style.groupStyleId, 'preserve');
       }
-    });
-    button('現在値を保存', 'board-group-template-save', () => controller.saveGroupTemplate(scopeSelect.value, groupSelect.value, templateName.value));
-    button('適用', 'board-group-template-apply', () => { const value = selectedTemplate(); controller.applyGroupTemplate(value.scope, value.templateId, groupSelect.value); });
-    button('名前変更', 'board-group-template-rename', () => { const value = selectedTemplate(); controller.renameTemplate(value.scope, value.templateId, templateName.value); });
-    button('複製', 'board-group-template-duplicate', () => { const value = selectedTemplate(); controller.duplicateTemplate(value.scope, value.templateId); });
-    button('削除', 'board-group-template-delete', async () => {
-      const value = selectedTemplate();
-      const template = controller.getTemplate(value.scope, value.templateId);
-      if (!template) return;
-      const confirmed = typeof global.cfConfirm === 'function'
-        ? await global.cfConfirm(`グループテンプレート「${template.name}」を削除しますか？`)
-        : false;
-      if (confirmed) controller.deleteTemplate(value.scope, value.templateId);
     });
     root.appendChild(details);
     refreshAll();
@@ -10620,6 +10378,343 @@
 
 ;
 
+/* === gb-template-picker.js === */
+;
+/* gb-template-picker.js: 全アプリ共通のテンプレート選択画面（サムネイル一覧＋プレビュー）。
+ *
+ * ノート・シナリオ・シート・ボードのテンプレート選択は、すべてこの画面を使う。
+ * 各アプリは「項目一覧」「サムネイルの描き方」「適用などの操作」だけを渡す。
+ *
+ * MeldexTemplatePicker.open({
+ *   id, title, searchPlaceholder, emptyText,
+ *   items: [{ id, name, description, category, categoryLabel, builtin, badge,
+ *             renderThumbnail(host, { size: 'card' | 'large' }), details(host) }],
+ *   loadItems: async () => items,            // items の代わりに非同期で読む場合
+ *   selectedId,                              // 開いた時に選ぶ項目
+ *   currentId,                               // 「使用中」を表示する項目
+ *   primaryAction: { label, run(item, ctx) },// 決定ボタン（カードのダブルクリックでも実行）
+ *   itemActions: [{ label, run(item, ctx), when(item), danger }],
+ *   footerActions: [{ label, run(ctx), e2eId }],
+ *   e2e: { dialog, grid, preview, search, card, categoryPrefix, apply, close },  // 既存テストの識別子を保つ時
+ *   cardClass,                               // カードに足すクラス
+ * })
+ * run が true を返すと閉じる。ctx = { close, refresh, setStatus, select }。
+ */
+(function initMeldexTemplatePicker(global) {
+  'use strict';
+
+  const CATEGORY_ALL = '__all__';
+
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = String(text);
+    return node;
+  }
+
+  function button(label, cls, e2eId) {
+    const node = el('button', cls || 'gb-btn', label);
+    node.type = 'button';
+    if (e2eId) node.dataset.e2eId = e2eId;
+    return node;
+  }
+
+  function normalizeItems(items) {
+    const seen = new Set();
+    return (Array.isArray(items) ? items : []).filter(item => {
+      if (!item || item.id == null || seen.has(String(item.id))) return false;
+      seen.add(String(item.id));
+      return true;
+    }).map(item => ({ ...item, id: String(item.id), name: String(item.name || '名前のないテンプレート') }));
+  }
+
+  function categoriesOf(items) {
+    const result = [];
+    const seen = new Set();
+    items.forEach(item => {
+      const key = String(item.category || '');
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      result.push({ key, label: String(item.categoryLabel || key) });
+    });
+    return result;
+  }
+
+  function matches(item, query, category) {
+    if (category !== CATEGORY_ALL && String(item.category || '') !== category) return false;
+    if (!query) return true;
+    const hay = [item.name, item.description, item.categoryLabel, item.badge].join(' ').toLocaleLowerCase();
+    return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).every(part => hay.includes(part));
+  }
+
+  function renderThumb(item, host, size) {
+    host.replaceChildren();
+    try {
+      if (typeof item.renderThumbnail === 'function') item.renderThumbnail(host, { size });
+    } catch (error) {
+      host.replaceChildren(el('span', 'gb-tpl-thumb-fallback', 'プレビューを表示できません'));
+      console.warn('[template-picker] thumbnail failed', error);
+    }
+    if (!host.childNodes.length) host.appendChild(el('span', 'gb-tpl-thumb-fallback', item.name));
+  }
+
+  function isMobileSheetMode() {
+    const body = document.body?.dataset || {};
+    return body.cloudMobile === '1' || body.mobileUi === '1' || body.mobileUiLocal === '1'
+      || global.MeldexCloudMobileState?.mobile === true;
+  }
+
+  // ダイアログ共通の枠は最初に測った寸法で固定するため、中身が描画される前の小さい寸法に
+  // ならないよう、パソコン幅では開く前に大きさを決めておく（利用者が変えた寸法は枠側が復元する）。
+  function sizeModal(modal) {
+    if (!modal || isMobileSheetMode()) return;
+    const zoom = typeof global._getZoom === 'function' ? Math.max(0.1, global._getZoom() || 1) : 1;
+    const width = (global.visualViewport?.width || global.innerWidth || 1024) / zoom;
+    const height = (global.visualViewport?.height || global.innerHeight || 768) / zoom;
+    modal.style.width = Math.round(Math.max(320, Math.min(1080, width - 48))) + 'px';
+    modal.style.height = Math.round(Math.max(420, Math.min(760, height - 64))) + 'px';
+  }
+
+  function open(options = {}) {
+    if (!global.GBUI?.createModal) throw new Error('ダイアログ部品を読み込めませんでした');
+
+    const pickerId = String(options.id || 'template-picker');
+    let items = normalizeItems(options.items);
+    let selectedId = options.selectedId != null ? String(options.selectedId) : '';
+    let category = CATEGORY_ALL;
+    let query = '';
+    let busy = false;
+    let forceClose = false;
+
+    const root = el('div', 'gb-tpl-picker');
+    root.dataset.templatePicker = pickerId;
+    const toolbar = el('div', 'gb-tpl-toolbar');
+    const search = el('input', 'gb-input gb-tpl-search');
+    search.type = 'search';
+    search.placeholder = options.searchPlaceholder || 'テンプレートを検索';
+    search.setAttribute('aria-label', 'テンプレートを検索');
+    const e2e = options.e2e || {};
+    search.dataset.e2eId = e2e.search || `${pickerId}-search`;
+    const chips = el('div', 'gb-tpl-chips');
+    chips.setAttribute('role', 'tablist');
+    chips.setAttribute('aria-label', 'テンプレートの分類');
+    toolbar.append(search, chips);
+
+    const body = el('div', 'gb-tpl-body');
+    const grid = el('div', 'gb-tpl-grid');
+    grid.setAttribute('role', 'listbox');
+    grid.setAttribute('aria-label', options.title || 'テンプレート');
+    grid.dataset.e2eId = e2e.grid || `${pickerId}-grid`;
+    const preview = el('section', 'gb-tpl-preview');
+    preview.setAttribute('aria-live', 'polite');
+    preview.dataset.e2eId = e2e.preview || `${pickerId}-preview`;
+    body.append(grid, preview);
+    const status = el('p', 'gb-tpl-status');
+    status.setAttribute('role', 'status');
+    root.append(toolbar, body, status);
+
+    const footer = [];
+    (options.footerActions || []).forEach(action => {
+      const node = button(action.label, 'gb-btn', action.e2eId);
+      node.addEventListener('click', () => runAction(() => action.run(ctx)));
+      footer.push(node);
+    });
+
+    const modal = global.GBUI.createModal({
+      id: pickerId,
+      title: options.title || 'テンプレート',
+      body: root,
+      footer,
+      variant: 'standard',
+      geometryKey: pickerId,
+      extraClass: 'gb-tpl-picker-modal',
+      initialFocus: () => grid.querySelector('.gb-tpl-card.is-selected') || search,
+      onBeforeClose: () => !busy || forceClose,
+      onClose: options.onClose,
+    });
+
+    const ctx = {
+      close(reason) { forceClose = true; return modal.close(reason || 'done'); },
+      async refresh(nextItems) {
+        if (nextItems) items = normalizeItems(nextItems);
+        else if (typeof options.loadItems === 'function') items = normalizeItems(await options.loadItems());
+        if (!items.some(item => item.id === selectedId)) selectedId = items[0]?.id || '';
+        render();
+      },
+      setStatus(message, isError) {
+        status.textContent = String(message || '');
+        status.classList.toggle('is-error', !!isError);
+      },
+      select(id) { selectedId = String(id || ''); render(); },
+      get selected() { return items.find(item => item.id === selectedId) || null; },
+      overlay: modal.overlay,
+      modal: modal.modal,
+    };
+
+    async function runAction(fn) {
+      if (busy) return;
+      busy = true;
+      root.classList.add('is-busy');
+      // 処理中は二重送信を防ぎ、支援技術にも処理中であることを伝える（Escape等でも閉じない）。
+      modal.modal.setAttribute('aria-busy', 'true');
+      const controls = [...modal.modal.querySelectorAll('button, input')].map(control => [control, control.disabled]);
+      controls.forEach(([control]) => { control.disabled = true; });
+      ctx.setStatus('');
+      let result = false;
+      try {
+        result = await fn();
+      } catch (error) {
+        ctx.setStatus(error?.userMessage || error?.message || String(error), true);
+      } finally {
+        busy = false;
+        root.classList.remove('is-busy');
+        modal.modal.setAttribute('aria-busy', 'false');
+        controls.forEach(([control, disabled]) => { if (control.isConnected) control.disabled = disabled; });
+      }
+      if (result === true) modal.close('applied');
+    }
+
+    function selectedItem() {
+      return items.find(item => item.id === selectedId) || null;
+    }
+
+    function runPrimary(item) {
+      if (!item || !options.primaryAction) return;
+      runAction(() => options.primaryAction.run(item, ctx));
+    }
+
+    function renderChips() {
+      const cats = categoriesOf(items);
+      chips.replaceChildren();
+      chips.hidden = cats.length < 2;
+      [{ key: CATEGORY_ALL, label: 'すべて' }, ...cats].forEach(cat => {
+        const chipKey = cat.key === CATEGORY_ALL ? 'all' : cat.key;
+        const chip = button(cat.label, 'gb-tpl-chip' + (cat.key === category ? ' is-active' : ''), (e2e.categoryPrefix || `${pickerId}-category-`) + chipKey);
+        chip.dataset.category = chipKey;
+        chip.setAttribute('role', 'tab');
+        chip.setAttribute('aria-selected', cat.key === category ? 'true' : 'false');
+        chip.addEventListener('click', () => { category = cat.key; render(); });
+        chips.appendChild(chip);
+      });
+    }
+
+    function renderGrid() {
+      const visible = items.filter(item => matches(item, query, category));
+      grid.replaceChildren();
+      if (!visible.length) {
+        grid.appendChild(el('p', 'gb-tpl-empty', items.length ? '一致するテンプレートはありません' : (options.emptyText || 'テンプレートはありません')));
+        return visible;
+      }
+      if (!visible.some(item => item.id === selectedId)) selectedId = visible[0].id;
+      visible.forEach(item => {
+        const card = el('button', 'gb-tpl-card' + (options.cardClass ? ' ' + options.cardClass : '') + (item.id === selectedId ? ' is-selected' : ''));
+        card.type = 'button';
+        card.setAttribute('role', 'option');
+        card.setAttribute('aria-selected', item.id === selectedId ? 'true' : 'false');
+        card.dataset.templateId = item.id;
+        card.dataset.e2eId = e2e.card || `${pickerId}-card`;
+        const thumb = el('span', 'gb-tpl-thumb');
+        thumb.setAttribute('aria-hidden', 'true');
+        renderThumb(item, thumb, 'card');
+        const label = el('span', 'gb-tpl-card-label');
+        label.appendChild(el('span', 'gb-tpl-card-name', item.name));
+        const badgeText = item.id === options.currentId ? '使用中' : (item.badge || (item.builtin ? '' : 'カスタム'));
+        if (badgeText) label.appendChild(el('span', 'gb-tpl-card-badge', badgeText));
+        card.append(thumb, label);
+        if (item.description) card.title = item.description;
+        card.addEventListener('click', () => {
+          if (selectedId === item.id) return;
+          selectedId = item.id;
+          grid.querySelectorAll('.gb-tpl-card').forEach(node => {
+            const on = node.dataset.templateId === item.id;
+            node.classList.toggle('is-selected', on);
+            node.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+          renderPreview();
+        });
+        card.addEventListener('dblclick', () => runPrimary(item));
+        grid.appendChild(card);
+      });
+      return visible;
+    }
+
+    function renderPreview() {
+      const item = selectedItem();
+      preview.replaceChildren();
+      if (item) preview.dataset.templateId = item.id; else delete preview.dataset.templateId;
+      if (!item) {
+        preview.appendChild(el('p', 'gb-tpl-empty', 'テンプレートを選んでください'));
+        return;
+      }
+      const large = el('div', 'gb-tpl-thumb gb-tpl-thumb--large');
+      large.setAttribute('aria-hidden', 'true');
+      renderThumb(item, large, 'large');
+      const head = el('div', 'gb-tpl-preview-head');
+      head.appendChild(el('h3', 'gb-tpl-preview-name', item.name));
+      if (item.categoryLabel) head.appendChild(el('span', 'gb-tpl-card-badge', item.categoryLabel));
+      preview.append(large, head);
+      if (item.description) preview.appendChild(el('p', 'gb-tpl-preview-desc', item.description));
+      if (typeof item.details === 'function') {
+        const details = el('div', 'gb-tpl-preview-details');
+        try { item.details(details); } catch (error) { console.warn('[template-picker] details failed', error); }
+        if (details.childNodes.length) preview.appendChild(details);
+      }
+      const actions = el('div', 'gb-tpl-preview-actions');
+      (options.itemActions || []).forEach((action, index) => {
+        if (typeof action.when === 'function' && !action.when(item)) return;
+        const node = button(action.label, 'gb-btn' + (action.danger ? ' gb-btn-danger' : ''), action.e2eId || `${pickerId}-action-${index}`);
+        node.addEventListener('click', () => runAction(() => action.run(item, ctx)));
+        actions.appendChild(node);
+      });
+      if (options.primaryAction && (typeof options.primaryAction.when !== 'function' || options.primaryAction.when(item))) {
+        const primary = button(options.primaryAction.label || '適用', 'gb-btn gb-btn-primary', e2e.apply || `${pickerId}-apply`);
+        primary.addEventListener('click', () => runPrimary(item));
+        actions.appendChild(primary);
+      }
+      if (actions.childNodes.length) preview.appendChild(actions);
+    }
+
+    function render() {
+      renderChips();
+      renderGrid();
+      renderPreview();
+    }
+
+    search.addEventListener('input', () => { query = search.value.trim(); renderGrid(); renderPreview(); });
+    grid.addEventListener('keydown', event => {
+      const cards = [...grid.querySelectorAll('.gb-tpl-card')];
+      const index = cards.indexOf(document.activeElement);
+      if (index < 0) return;
+      // Enter/Space はカードの選択（ボタンの既定動作）。適用はプレビュー欄の決定ボタンかダブルクリックで行い、
+      // キー操作だけで内容を書き換えない。
+      const columns = Math.max(1, Math.round(grid.clientWidth / Math.max(1, cards[0].offsetWidth || 1)));
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const next = cards[Math.max(0, Math.min(cards.length - 1, index + step))];
+      next.focus();
+      next.click();
+    });
+
+    sizeModal(modal.modal);
+    if (e2e.dialog) modal.modal.dataset.e2eId = e2e.dialog;
+    if (e2e.close) { const closeBtn = modal.header?.querySelector('.gb-modal-close'); if (closeBtn) closeBtn.dataset.e2eId = e2e.close; }
+    modal.open();
+    if (typeof options.loadItems === 'function' && !options.items) {
+      grid.appendChild(el('p', 'gb-tpl-empty', '読み込み中…'));
+      ctx.refresh().catch(error => ctx.setStatus(error?.message || String(error), true));
+    } else {
+      render();
+    }
+    return ctx;
+  }
+
+  global.MeldexTemplatePicker = Object.freeze({ open });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
 /* === gb-note-templates.js === */
 ;
 /* Reusable Markdown notes. Sheet defaults are durable snapshots of a template. */
@@ -10691,6 +10786,57 @@
       modal.open();
     });
   }
+  // 本文のMarkdownから、サムネイル用の縮小ページを作る（見出し・箇条書き・チェック・本文を数行）。
+  function renderDocThumbnail(content, host) {
+    const page = document.createElement('div'); page.className = 'gb-tpl-doc';
+    const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 14);
+    if (!lines.length) { const empty = document.createElement('div'); empty.className = 'gb-tpl-doc-line'; empty.textContent = '（本文なし）'; page.appendChild(empty); }
+    lines.forEach(line => {
+      const row = document.createElement('div');
+      let text = line;
+      if (/^#\s/.test(line)) { row.className = 'gb-tpl-doc-h1'; text = line.replace(/^#\s+/, ''); }
+      else if (/^#{2,6}\s/.test(line)) { row.className = 'gb-tpl-doc-h2'; text = line.replace(/^#{2,6}\s+/, ''); }
+      else if (/^[-*+]\s+\[[ xX]\]\s/.test(line)) { row.className = 'gb-tpl-doc-line gb-tpl-doc-check'; text = line.replace(/^[-*+]\s+\[[ xX]\]\s+/, ''); }
+      else if (/^([-*+]|\d+\.)\s/.test(line)) { row.className = 'gb-tpl-doc-line gb-tpl-doc-bullet'; text = line.replace(/^([-*+]|\d+\.)\s+/, ''); }
+      else { row.className = 'gb-tpl-doc-line'; }
+      row.textContent = text.replace(/[*_`~]/g, '');
+      page.appendChild(row);
+    });
+    host.appendChild(page);
+  }
+  // 名前と本文（Markdown）を編集する小さなダイアログ。保存したテンプレートを返す（取消は null）。
+  function openEditor(library, initial, options = {}) {
+    return new Promise(resolve => {
+      let saved = null;
+      let busy = false;
+      const body = document.createElement('div'); body.className = 'note-template-dialog';
+      const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
+      const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
+      content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
+      const status = document.createElement('p'); status.setAttribute('role', 'status');
+      const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末');
+      name.value = initial?.name || ''; content.value = initial?.content || '';
+      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }), GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
+      const cancel = button('キャンセル', () => modal.close('cancel'));
+      const save = button('テンプレートを保存', async () => {
+        if (busy) return; busy = true; save.disabled = true; status.textContent = '';
+        try {
+          const item = validate({ ...(initial?.id ? library.templates.find(other => other.id === initial.id) : {}), schemaVersion: 1,
+            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value });
+          if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
+          const exists = library.templates.some(other => other.id === item.id);
+          await persist(library, exists ? library.templates.map(other => other.id === item.id ? item : other) : [...library.templates, item]);
+          saved = item; status.textContent = '保存しました';
+        } catch (error) { status.textContent = error.userMessage || error.message; }
+        finally { busy = false; save.disabled = false; }
+        if (saved) modal.close('saved');
+      });
+      save.classList.add('gb-btn-primary');
+      const modal = GBUI.createModal({ id: 'note-template-editor', title: options.title || 'テンプレートの編集', body, footer: [cancel, save],
+        variant: 'standard', geometryKey: 'note-template-editor', initialFocus: name, onBeforeClose: () => !busy, onClose: () => resolve(saved) });
+      modal.open();
+    });
+  }
   async function show(options = {}) {
     const editor = options.editor || window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
     const path = editor?.dataset.path;
@@ -10698,91 +10844,85 @@
     const sourceContent = options.registerCurrent && editor ? currentContent(editor) : '';
     const sourceName = String(path || '').split(/[\\/]/).pop()?.replace(/\.md$/i, '') || 'ノート';
     const library = await load({ deviceOnly: options.deviceOnly });
+    if (options.registerCurrent) {
+      const saved = await openEditor(library, { name: sourceName, content: sourceContent }, { title: 'テンプレートに登録' });
+      if (saved) showStatus(`ノートテンプレート「${saved.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
+      return saved;
+    }
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
-    const body = document.createElement('div'); body.className = 'note-template-dialog';
-    const select = document.createElement('select'); select.className = 'gb-select gb-select-column'; select.setAttribute('aria-label', 'ノートテンプレート');
-    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
-    const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
-    content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
-    const status = document.createElement('p'); status.setAttribute('role', 'status');
-    const help = document.createElement('p'); help.textContent = options.dbPath
-      ? 'このシートで今後作成するトピックに、選択したノートの内容をコピーします。既存トピックは変更しません。'
-      : '現在のノートから登録できます。本文はMarkdownで編集できます。';
-    body.append(help, GBUI.createField({ label: 'ノートテンプレート', input: select }),
-      GBUI.createField({ label: 'テンプレート名', input: name }),
-      GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
-    const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末'); body.prepend(location);
-    const fill = id => {
-      select.replaceChildren(new Option('新しいテンプレート', ''));
-      library.templates.forEach(item => select.add(new Option(item.name, item.id)));
-      select.value = id || '';
-    };
-    fill();
-    if (options.registerCurrent) { name.value = sourceName; content.value = sourceContent; }
-    select.addEventListener('change', () => {
-      const item = library.templates.find(item => item.id === select.value);
-      name.value = item?.name || ''; content.value = item?.content || '';
-    });
-    let busy = false;
-    const run = fn => async () => {
-      if (busy) return; busy = true; status.textContent = '';
-      const controls = [...modal.modal.querySelectorAll('input,textarea,select,button')].map(control => [control, control.disabled]);
-      controls.forEach(([control]) => { control.disabled = true; });
-      try { await fn(); } catch (error) { status.textContent = error.userMessage || error.message; }
-      finally { busy = false; controls.forEach(([control, disabled]) => { control.disabled = disabled; }); }
-    };
-    const save = button('テンプレートを保存', run(async () => {
-      const item = validate({ ...library.templates.find(item => item.id === select.value), schemaVersion: 1,
-        id: select.value || crypto.randomUUID(), name: name.value.trim(), content: content.value });
-      if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
-      await persist(library, [...library.templates.filter(other => other.id !== item.id), item]); fill(item.id); status.textContent = '保存しました';
+    const items = () => library.templates.map(item => ({
+      ...item, builtin: false, badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
+      description: item.content.split('\n').find(line => line.trim())?.replace(/^#+\s*/, '').slice(0, 80) || '',
+      renderThumbnail: host => renderDocThumbnail(item.content, host),
     }));
-    const remove = button('テンプレートを削除', run(async () => {
-      if (!select.value) return;
-      if (!await confirmAction('選択したノートテンプレートを削除しますか？')) return;
-      await persist(library, library.templates.filter(item => item.id !== select.value));
-      fill(); name.value = ''; content.value = ''; status.textContent = '削除しました';
-    }));
-    const use = button(options.dbPath ? 'シートに設定' : 'ノートに適用', run(async () => {
-      const item = library.templates.find(item => item.id === select.value);
-      if (!item) throw new Error('保存済みのテンプレートを選択してください');
-      if (name.value.trim() !== item.name || content.value !== item.content) throw new Error('変更したテンプレートを保存してから適用してください');
-      if (options.dbPath) {
-        await saveSheetDefault(options.dbPath, item, metadata.schema_revision || 0);
-      } else {
+    const footerActions = [];
+    if (library.deviceAvailable || options.deviceOnly) {
+      footerActions.push({ label: options.deviceOnly ? '個人設定のテンプレートに戻る' : 'この端末のテンプレートを開く', e2eId: 'note-templates-switch', run: async ctx => {
+        ctx.close('switched');
+        await show({ ...options, deviceOnly: !options.deviceOnly });
+        return false;
+      } });
+    }
+    if (editor && !options.dbPath) {
+      footerActions.push({ label: '現在のノートから作成', e2eId: 'note-templates-from-current', run: async ctx => {
+        const saved = await openEditor(library, { name: sourceName, content: currentContent(editor) }, { title: '現在のノートから作成' });
+        if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+        return false;
+      } });
+    }
+    footerActions.push({ label: '新しいテンプレート', e2eId: 'note-templates-new', run: async ctx => {
+      const saved = await openEditor(library, { name: '', content: '' }, { title: '新しいテンプレート' });
+      if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+      return false;
+    } });
+    if (options.dbPath) {
+      footerActions.push({ label: 'シートの設定を解除', e2eId: 'note-templates-clear-sheet', run: async () => {
+        await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0);
+        return true;
+      } });
+    }
+    const picker = window.MeldexTemplatePicker.open({
+      id: 'note-templates',
+      title: options.dbPath ? 'シートのノートテンプレート' : 'ノートテンプレート',
+      items: items(),
+      selectedId: options.dbPath ? metadata?.note_template?.id : undefined,
+      emptyText: '登録済みのテンプレートはありません。「現在のノートから作成」か「新しいテンプレート」で作成できます。',
+      primaryAction: { label: options.dbPath ? 'シートに設定' : 'ノートに適用', run: async item => {
+        const current = library.templates.find(other => other.id === item.id);
+        if (!current) throw new Error('保存済みのテンプレートを選択してください');
+        if (options.dbPath) {
+          await saveSheetDefault(options.dbPath, current, metadata.schema_revision || 0);
+          return true;
+        }
         if (!editor?.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先のノートを開き直してください');
-        if (!await confirmAction('ノート本文を選択したテンプレートに置き換えますか？')) return;
+        if (!await confirmAction('ノート本文を選択したテンプレートに置き換えますか？')) return false;
         if (!editor.isConnected || editor.dataset.path !== path || editor.contentEditable === 'false') throw new Error('適用先が変わりました');
         editor.focus(); const range = document.createRange(); range.selectNodeContents(editor);
         const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-        document.execCommand('insertHTML', false, mdToHtml(item.content, { basePath: path }));
+        document.execCommand('insertHTML', false, mdToHtml(current.content, { basePath: path }));
         editor.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      modal.close('applied');
-    }));
-    const footer = [save, remove];
-    if (library.deviceAvailable || options.deviceOnly) {
-      footer.unshift(button(options.deviceOnly ? '個人設定のテンプレートに戻る' : 'この端末のテンプレートを開く', run(async () => {
-        const item = library.templates.find(item => item.id === select.value);
-        const dirty = name.value.trim() !== (item?.name || '') || content.value !== (item?.content || '');
-        if (dirty && !await confirmAction('保存していないテンプレートの変更を破棄して保存先を切り替えますか？')) return;
-        await modal.close('switched');
-        await show({ ...options, deviceOnly: !options.deviceOnly, registerCurrent: false });
-      })));
-    }
-    if (options.dbPath) {
-      status.textContent = '設定中: ' + (metadata.note_template?.name || 'なし');
-      footer.push(button('シートの設定を解除', run(async () => { await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0); modal.close('applied'); })));
-    } else if (editor) {
-      footer.unshift(button('現在のノートから作成', () => {
-        select.value = ''; name.value = ''; content.value = currentContent(editor); name.focus();
-      }));
-    }
-    footer.push(use);
-    const modal = GBUI.createModal({ id: 'note-templates', title: options.dbPath ? 'シートのノートテンプレート' : options.registerCurrent ? 'テンプレートに登録' : 'ノートテンプレート',
-      body, footer, variant: 'standard', geometryKey: 'note-templates', initialFocus: options.registerCurrent ? name : select,
-      onBeforeClose: reason => !busy || reason === 'applied' || reason === 'switched' });
-    modal.open();
+        return true;
+      } },
+      itemActions: [
+        { label: '編集', e2eId: 'note-templates-edit', run: async (item, ctx) => {
+          const current = library.templates.find(other => other.id === item.id);
+          const saved = await openEditor(library, current, { title: 'テンプレートの編集' });
+          if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+          return false;
+        } },
+        { label: '削除', danger: true, e2eId: 'note-templates-delete', run: async (item, ctx) => {
+          if (!await confirmAction(`ノートテンプレート「${item.name}」を削除しますか？`)) return false;
+          await persist(library, library.templates.filter(other => other.id !== item.id));
+          await ctx.refresh(items()); ctx.setStatus('削除しました');
+          return false;
+        } },
+      ],
+      footerActions,
+    });
+    picker.setStatus(options.dbPath
+      ? '設定中: ' + (metadata?.note_template?.name || 'なし') + ' ／ 保存先: ' + (library.remote ? '個人設定' : 'この端末')
+      : '保存先: ' + (library.remote ? '個人設定' : 'この端末'));
+    return picker;
   }
   async function saveSheetDefault(path, template, revision) {
     const payload = { note_template: template ? validate(template) : null };
@@ -36089,6 +36229,101 @@ function _bdMinimapBounds() {
     return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? '#1e1e1e' : '#ffffff';
   }
 
+  // --- 役割色の塗り方（初期搭載スタイル用） ---
+  // テーマ色セットのどの色を使うか（_themeColorIndex）に加え、塗り方（_themeTone）で
+  // 「塗りつぶし / 淡い色 / 枠だけ / 枠なし」を表す。淡い色はボード背景の明暗に合わせて作る。
+  function parseColor(value) {
+    const raw = String(value || '').trim();
+    let m = raw.match(/^#([0-9a-f]{3})$/i);
+    if (m) return m[1].split('').map(ch => parseInt(ch + ch, 16));
+    m = raw.match(/^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+    if (m) return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16));
+    m = raw.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+    if (m) return [1, 2, 3].map(i => Math.max(0, Math.min(255, Math.round(+m[i]))));
+    return null;
+  }
+
+  function toHex(rgb) {
+    return '#' + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  }
+
+  function mixColor(color, base, ratioToBase) {
+    const a = parseColor(color);
+    const b = parseColor(base);
+    if (!a || !b) return color || '';
+    const t = Math.max(0, Math.min(1, ratioToBase));
+    return toHex(a.map((v, i) => v * (1 - t) + b[i] * t));
+  }
+
+  function boardBackgroundColor() {
+    let bg = '';
+    try { if (typeof global._bdBoardThemeBackgroundColor === 'function') bg = global._bdBoardThemeBackgroundColor(); } catch (_) { bg = ''; }
+    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = global.getCssVar('--bd-bg') || global.getCssVar('--bg') || '';
+    return parseColor(bg) ? bg : '';
+  }
+
+  function isDarkColor(color) {
+    const rgb = parseColor(color);
+    if (!rgb) return false;
+    return (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) < 128;
+  }
+
+  function themeTone(color, tone, options = {}) {
+    const bg = options.background || boardBackgroundColor();
+    const dark = options.dark != null ? !!options.dark : isDarkColor(bg);
+    const base = parseColor(bg) ? bg : (dark ? '#111419' : '#ffffff');
+    const ink = dark ? '#e5e7eb' : '#1f2937';
+    switch (tone) {
+      case 'tint':
+        return { bgColor: dark ? mixColor(color, base, 0.72) : mixColor(color, '#ffffff', 0.84), borderColor: color, textColor: ink, lineColor: color };
+      case 'outline':
+        return { bgColor: dark ? mixColor(color, base, 0.9) : '#ffffff', borderColor: color, textColor: ink, lineColor: color };
+      case 'plain':
+        return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
+      case 'muted':
+        return { bgColor: mixColor(color, base, 0.6), borderColor: mixColor(color, base, 0.45), textColor: ink, lineColor: mixColor(color, base, 0.45) };
+      default:
+        return { bgColor: color, borderColor: color, textColor: readableTextColor(color) || ink, lineColor: color };
+    }
+  }
+
+  // 役割色: 0赤 1橙 2黄 3緑 4水 5青 6紫 7桃 の色相を、テーマ色セットの中から最も近い色で解決する。
+  // テーマごとに色の並び順が違うため、位置（palette[index]）で選ぶと「課題＝赤」等の意味が崩れる。
+  const ROLE_HUES = [2, 30, 50, 130, 185, 215, 270, 325];
+
+  function hueSat(color) {
+    const rgb = parseColor(color);
+    if (!rgb) return null;
+    const [r, g, b] = rgb.map(v => v / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    const l = (max + min) / 2;
+    const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    let h = 0;
+    if (d) {
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+    }
+    return { h: (h + 360) % 360, s };
+  }
+
+  function themeRoleColor(index, palette) {
+    const colors = Array.isArray(palette) && palette.length ? palette : FALLBACK_THEME_COLORS;
+    const target = ROLE_HUES[Math.abs(Math.floor(+index || 0)) % ROLE_HUES.length];
+    let best = '';
+    let bestScore = Infinity;
+    colors.forEach(color => {
+      const hs = hueSat(color);
+      if (!hs) return;
+      const diff = Math.abs(hs.h - target);
+      const score = Math.min(diff, 360 - diff) + (hs.s < 0.18 ? 400 : 0);
+      if (score < bestScore) { bestScore = score; best = color; }
+    });
+    return best || colors[Math.abs(Math.floor(+index || 0)) % colors.length] || '#3b82f6';
+  }
+
   function getThemeColorSet(board) {
     if (global.MeldexThemeManager && typeof global.MeldexThemeManager.getBoardThemeColorSet === 'function') {
       const palette = global.MeldexThemeManager.getBoardThemeColorSet(board);
@@ -36104,15 +36339,23 @@ function _bdMinimapBounds() {
       const rawValue = style && style._themeColorIndex;
       const rawThemeIndex = Number.isFinite(+rawValue) ? +rawValue : index;
       const themeIndex = Math.max(0, Math.floor(rawThemeIndex));
-      const color = palette[themeIndex % palette.length] || style.bgColor || '';
-      const line = style?.line && typeof style.line === 'object' ? style.line : {};
-      return {
+      const color = (style._themeTone ? themeRoleColor(themeIndex, palette) : palette[themeIndex % palette.length]) || style.bgColor || '';
+      const line = style?.line && typeof style.line === 'object' ? { ...style.line } : {};
+      const toned = themeTone(color, style._themeTone || 'solid');
+      const lineIndex = Number.isFinite(+line._themeColorIndex) ? Math.max(0, Math.floor(+line._themeColorIndex)) : themeIndex;
+      const lineBase = (style._themeTone ? themeRoleColor(lineIndex, palette) : palette[lineIndex % palette.length]) || color;
+      const lineColor = themeTone(lineBase, line._themeTone || 'solid').lineColor || line.color || '';
+      delete line._themeColorIndex;
+      delete line._themeTone;
+      const next = {
         ...style,
-        bgColor: color,
-        textColor: readableTextColor(color) || style.textColor || '',
-        borderColor: color,
-        line: { ...emptyLine(), ...line, color: color || line.color || '' },
+        bgColor: toned.bgColor,
+        textColor: toned.textColor || style.textColor || '',
+        borderColor: toned.borderColor,
+        line: { ...emptyLine(), ...line, color: lineColor },
       };
+      delete next._themeTone;
+      return next;
     });
   }
 
@@ -36301,6 +36544,9 @@ function _bdMinimapBounds() {
 
   global.bdGetThemeColorSet = getThemeColorSet;
   global.bdReadableTextColor = readableTextColor;
+  global.bdThemeTone = themeTone;
+  global.bdThemeRoleColor = themeRoleColor;
+  global.bdMixColor = mixColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;
   global.bdDefaultStructureArrow = defaultStructureArrow;
   global.bdCreateStructureConnection = createStructureConnection;
@@ -37308,18 +37554,14 @@ function _BD_DEPTH_CARD(themeIndex, overrides = {}) {
     ...overrides,
   };
 }
+// 初期搭載の階層別スタイル（標準）: 中心テーマ → メイントピック → サブトピック → 詳細。
+// 主役の青1色で、階層が深くなるほど塗りを弱め、文字と線を細くする。形は四角に統一し、
+// 意味のない形・色の切り替えをしない（_themeTone は gb-canvas-features.part00.js の塗り方）。
 const BD_DEFAULT_DEPTH_STYLES = [
-  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'トピック', line: _BD_DEPTH_LINE(5) }),
-  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(3) }),
-  _BD_DEPTH_CARD(0, { name: '階層3 矩形強調', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-alert', fontSize: 13, fontBold: true, width: 180, shape: 'rect', borderRadius: 8, defaultText: '項目', line: _BD_DEPTH_LINE(0, { width: 4 }) }),
-  _BD_DEPTH_CARD(1, { name: '階層4 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-dashed', fontSize: 13, fontBold: false, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '詳細', line: _BD_DEPTH_LINE(1, { width: 2, style: 'dashed' }) }),
-  _BD_DEPTH_CARD(4, { name: '階層5 ピル', cardStyleRef: 'card-theme-pill', lineStyleRef: 'line-theme-straight', fontSize: 12, fontBold: true, width: 180, shape: 'pill', borderRadius: 999, defaultText: 'メモ', line: _BD_DEPTH_LINE(4, { pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(6, { name: '階層6 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-emphasis', fontSize: 12, fontBold: true, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '補足', line: _BD_DEPTH_LINE(6, { width: 5, arrow: 'both' }) }),
-  _BD_DEPTH_CARD(2, { name: '階層7 雲', cardStyleRef: 'card-theme-cloud', lineStyleRef: 'line-theme-thin', fontSize: 12, fontBold: true, width: 190, shape: 'cloud', borderRadius: 0, defaultText: '注目', cloudBumpWidth: 44, cloudBumpHeight: 16, cloudSideWidth: 14, cloudOffset: 0.45, cloudSubWidthRatio: 55, cloudSubHeightRatio: 50, line: _BD_DEPTH_LINE(2, { width: 1, arrow: '', pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(7, { name: '階層8 雲', cardStyleRef: 'card-theme-cloud', lineStyleRef: 'line-theme-reference', fontSize: 12, fontBold: false, width: 190, shape: 'cloud', borderRadius: 0, defaultText: 'メモ', cloudBumpWidth: 44, cloudBumpHeight: 16, cloudSideWidth: 14, cloudOffset: 0.45, cloudSubWidthRatio: 55, cloudSubHeightRatio: 50, line: _BD_DEPTH_LINE(7, { width: 2, style: 'dashed', arrow: 'start', pathType: 'straight' }) }),
-  _BD_DEPTH_CARD(4, { name: '階層9 もやもや', cardStyleRef: 'card-theme-fluffy', lineStyleRef: 'line-theme-curve', fontSize: 12, fontBold: false, width: 190, shape: 'fluffy', borderRadius: 0, defaultText: '補足', cloudBumpWidth: 38, cloudBumpHeight: 14, cloudSideWidth: 12, cloudOffset: 0.5, cloudSubWidthRatio: 45, cloudSubHeightRatio: 45, line: _BD_DEPTH_LINE(4, { pathType: 'curve' }) }),
-  _BD_DEPTH_CARD(0, { name: '階層10 トゲ直線', cardStyleRef: 'card-theme-thorn', lineStyleRef: 'line-theme-alert', fontSize: 12, fontBold: true, width: 190, shape: 'thorn', borderRadius: 0, defaultText: '注意', cloudBumpWidth: 28, cloudBumpHeight: 18, cloudSideWidth: 10, cloudOffset: 0.5, cloudSubWidthRatio: 0, cloudSubHeightRatio: 0, line: _BD_DEPTH_LINE(0, { width: 4 }) }),
-  _BD_DEPTH_CARD(6, { name: '階層11 トゲ曲線', cardStyleRef: 'card-theme-thorn-curve', lineStyleRef: 'line-theme-loop', fontSize: 12, fontBold: true, width: 190, shape: 'thorn-curve', borderRadius: 0, defaultText: '分岐', cloudBumpWidth: 30, cloudBumpHeight: 18, cloudSideWidth: 10, cloudOffset: 0.5, cloudSubWidthRatio: 0, cloudSubHeightRatio: 0, line: _BD_DEPTH_LINE(6, { arrow: 'both', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'solid', name: '中心テーマ', cardStyleRef: 'card-std-central', lineStyleRef: 'line-std-branch', fontSize: 20, fontBold: true, width: 240, shape: 'rect', borderRadius: 12, defaultText: '中心テーマ', line: _BD_DEPTH_LINE(5, { width: 3, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'tint', name: 'メイントピック', cardStyleRef: 'card-std-main', lineStyleRef: 'line-std-branch', fontSize: 16, fontBold: true, width: 200, shape: 'rect', borderRadius: 10, defaultText: 'メイントピック', line: _BD_DEPTH_LINE(5, { width: 2, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'outline', name: 'サブトピック', cardStyleRef: 'card-std-sub', lineStyleRef: 'line-std-branch', fontSize: 14, fontBold: false, width: 180, shape: 'rect', borderWidth: 1, borderRadius: 8, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(5, { width: 1.5, arrow: '', pathType: 'curve' }) }),
+  _BD_DEPTH_CARD(5, { _themeTone: 'outline', name: '詳細', cardStyleRef: 'card-std-sub', lineStyleRef: 'line-std-guide', fontSize: 13, fontBold: false, width: 170, shape: 'rect', borderWidth: 1, borderRadius: 6, defaultText: '詳細', line: _BD_DEPTH_LINE(5, { _themeTone: 'muted', width: 1, arrow: '', pathType: 'curve' }) }),
 ];
 
 function _bdDefaultDepthStyles() {
@@ -37343,9 +37585,9 @@ const _BD_DEPTH_CLOUD_FIELDS = [
 ];
 const _BD_CLOUD_SHAPES = new Set(['cloud', 'thorn', 'thorn-curve', 'fluffy']);
 const _BD_REMOVED_DEPTH_CARD_STYLE_REFS = {
-  'card-theme-diamond': 'card-theme-rect',
-  'card-theme-hexagon': 'card-theme-octagon',
-  'card-theme-star': 'card-theme-cloud',
+  'card-theme-diamond': 'card-std-topic',
+  'card-theme-hexagon': 'card-std-topic',
+  'card-theme-star': 'card-std-idea',
 };
 
 function _bdNormalizeDepthCardStyleRef(value) {
@@ -42819,6 +43061,8 @@ function _bdPresetThemeIndex(style, fallbackIndex) {
 
 function _bdPresetThemeColorForStyle(style, fallbackIndex, palette) {
   const colors = Array.isArray(palette) && palette.length ? palette : BD_PRESET_THEME_COLORS;
+  // 役割（_themeTone）付きの初期搭載スタイルは、並び順ではなく色相でテーマ色を選ぶ。
+  if (style && style._themeTone && typeof bdThemeRoleColor === 'function') return bdThemeRoleColor(_bdPresetThemeIndex(style, fallbackIndex), colors);
   return colors[_bdPresetThemeIndex(style, fallbackIndex) % colors.length] || style?.bgColor || style?.color || '';
 }
 
@@ -42833,13 +43077,27 @@ function _bdApplyThemeColorToCardStyle(style, color) {
   return style;
 }
 
+function _bdPresetTone(color, tone) {
+  if (typeof bdThemeTone === 'function') return bdThemeTone(color, tone || 'solid');
+  const text = _bdPresetReadableTextColor(color);
+  return { bgColor: color, borderColor: color, textColor: text, lineColor: color };
+}
+
+// 初期搭載スタイルは「役割」で色を選ぶ。_themeColorIndex はテーマ色セットの位置
+// （0赤 1橙 2黄 3緑 4水 5青 6紫 7桃）、_themeTone は塗り方
+// （solid=塗りつぶし / tint=淡い色 / outline=枠だけ / plain=枠なし / muted=控えめ）。
 function bdDefaultCardStylesForBoard(board) {
   const palette = _bdPresetBoardThemeColors(board);
   return (BD_DEFAULT_CARD_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
+    const toned = _bdPresetTone(color, style._themeTone);
     delete style._themeColorIndex;
-    return _bdApplyThemeColorToCardStyle(style, color);
+    delete style._themeTone;
+    style.bgColor = toned.bgColor;
+    style.borderColor = toned.borderColor;
+    style.textColor = toned.textColor || '';
+    return style;
   });
 }
 
@@ -42848,314 +43106,64 @@ function bdDefaultLineStylesForBoard(board) {
   return (BD_DEFAULT_LINE_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
+    const toned = _bdPresetTone(color, style._themeTone);
     delete style._themeColorIndex;
-    if (color) style.color = color;
+    delete style._themeTone;
+    if (toned.lineColor) style.color = toned.lineColor;
     return style;
   });
 }
 
+function _bdPresetCard(id, name, themeIndex, tone, fields) {
+  const toned = _bdPresetTone(_bdPresetThemeColor(themeIndex), tone);
+  return {
+    id, name, _themeColorIndex: themeIndex, _themeTone: tone,
+    bgColor: toned.bgColor, textColor: toned.textColor || '', borderColor: toned.borderColor,
+    borderWidth: 1, borderRadius: 8, fontSize: 14, fontBold: false, fontItalic: false,
+    shape: 'rect', width: 180, textStrokeColor: '', textStrokeWidth: 0,
+    ...fields,
+  };
+}
+
+function _bdPresetLine(id, name, themeIndex, tone, fields) {
+  return {
+    id, name, _themeColorIndex: themeIndex, _themeTone: tone,
+    color: _bdPresetTone(_bdPresetThemeColor(themeIndex), tone).lineColor,
+    width: 2, style: '', arrow: 'end', pathType: 'curve',
+    labelBorderWidth: 0, textShadowWidth: 0, textShadowColor: '',
+    ...fields,
+  };
+}
+
+// トピックスタイル: 先頭が新しいトピックの既定。用途ごとに1つずつ。
 const BD_DEFAULT_CARD_STYLES = [
-  {
-    id: 'card-theme-rect',
-    name: '矩形',
-    _themeColorIndex: 5,
-    bgColor: _bdPresetThemeColor(5),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(5)),
-    borderColor: _bdPresetThemeColor(5),
-    borderWidth: 2,
-    borderRadius: 8,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'rect',
-    width: 180,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-ellipse',
-    name: '楕円',
-    _themeColorIndex: 3,
-    bgColor: _bdPresetThemeColor(3),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(3)),
-    borderColor: _bdPresetThemeColor(3),
-    borderWidth: 2,
-    borderRadius: 999,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'ellipse',
-    width: 180,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-pill',
-    name: 'ピル',
-    _themeColorIndex: 4,
-    bgColor: _bdPresetThemeColor(4),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(4)),
-    borderColor: _bdPresetThemeColor(4),
-    borderWidth: 2,
-    borderRadius: 999,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'pill',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-octagon',
-    name: '八角',
-    _themeColorIndex: 6,
-    bgColor: _bdPresetThemeColor(6),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(6)),
-    borderColor: _bdPresetThemeColor(6),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'octagon',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-  },
-  {
-    id: 'card-theme-cloud',
-    name: '雲',
-    _themeColorIndex: 7,
-    bgColor: _bdPresetThemeColor(7),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(7)),
-    borderColor: _bdPresetThemeColor(7),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'cloud',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 44,
-    cloudBumpHeight: 16,
-    cloudSideWidth: 14,
-    cloudOffset: 0.45,
-    cloudSubWidthRatio: 55,
-    cloudSubHeightRatio: 50,
-  },
-  {
-    id: 'card-theme-fluffy',
-    name: 'もやもや',
-    _themeColorIndex: 4,
-    bgColor: _bdPresetThemeColor(4),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(4)),
-    borderColor: _bdPresetThemeColor(4),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: false,
-    fontItalic: false,
-    shape: 'fluffy',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 38,
-    cloudBumpHeight: 14,
-    cloudSideWidth: 12,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 45,
-    cloudSubHeightRatio: 45,
-  },
-  {
-    id: 'card-theme-thorn',
-    name: 'トゲ直線',
-    _themeColorIndex: 0,
-    bgColor: _bdPresetThemeColor(0),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(0)),
-    borderColor: _bdPresetThemeColor(0),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'thorn',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 28,
-    cloudBumpHeight: 18,
-    cloudSideWidth: 10,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 0,
-    cloudSubHeightRatio: 0,
-  },
-  {
-    id: 'card-theme-thorn-curve',
-    name: 'トゲ曲線',
-    _themeColorIndex: 6,
-    bgColor: _bdPresetThemeColor(6),
-    textColor: _bdPresetReadableTextColor(_bdPresetThemeColor(6)),
-    borderColor: _bdPresetThemeColor(6),
-    borderWidth: 2,
-    borderRadius: 0,
-    fontSize: 13,
-    fontBold: true,
-    fontItalic: false,
-    shape: 'thorn-curve',
-    width: 190,
-    textStrokeColor: '',
-    textStrokeWidth: 0,
-    cloudBumpWidth: 30,
-    cloudBumpHeight: 18,
-    cloudSideWidth: 10,
-    cloudOffset: 0.5,
-    cloudSubWidthRatio: 0,
-    cloudSubHeightRatio: 0,
-  },
+  _bdPresetCard('card-std-topic', 'トピック', 5, 'tint', {}),
+  _bdPresetCard('card-std-central', '中心テーマ', 5, 'solid', { borderWidth: 2, borderRadius: 12, fontSize: 20, fontBold: true, width: 240 }),
+  _bdPresetCard('card-std-main', 'メイントピック', 5, 'tint', { borderWidth: 2, borderRadius: 10, fontSize: 16, fontBold: true, width: 200 }),
+  _bdPresetCard('card-std-sub', 'サブトピック', 5, 'outline', { borderRadius: 6, fontSize: 13, width: 170 }),
+  _bdPresetCard('card-std-label', '見出し（枠なし）', 5, 'plain', { borderWidth: 0, borderRadius: 0, fontSize: 16, fontBold: true, width: 200 }),
+  _bdPresetCard('card-std-note', '付箋', 2, 'tint', { borderWidth: 0, borderRadius: 2, fontSize: 13, width: 160 }),
+  _bdPresetCard('card-std-highlight', '強調', 1, 'solid', { borderWidth: 2, borderRadius: 8, fontBold: true }),
+  _bdPresetCard('card-std-issue', '課題・注意', 0, 'tint', { borderWidth: 2, borderRadius: 6 }),
+  _bdPresetCard('card-std-done', '完了・良い点', 3, 'tint', { borderWidth: 2, borderRadius: 6 }),
+  _bdPresetCard('card-std-milestone', '開始・終了／節目', 4, 'solid', { borderWidth: 2, borderRadius: 999, fontBold: true, shape: 'pill', width: 170 }),
+  _bdPresetCard('card-std-idea', 'アイデア（雲）', 6, 'tint', {
+    borderWidth: 2, borderRadius: 0, shape: 'cloud', width: 190,
+    cloudBumpWidth: 40, cloudBumpHeight: 14, cloudSideWidth: 12, cloudOffset: 0.45, cloudSubWidthRatio: 50, cloudSubHeightRatio: 45,
+  }),
 ];
 
+// ラインスタイル: 先頭が手で引くラインの既定。
 const BD_DEFAULT_LINE_STYLES = [
-  {
-    id: 'line-theme-standard',
-    name: '標準',
-    _themeColorIndex: 5,
-    color: _bdPresetThemeColor(5),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-straight',
-    name: '直線',
-    _themeColorIndex: 3,
-    color: _bdPresetThemeColor(3),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-curve',
-    name: '曲線',
-    _themeColorIndex: 4,
-    color: _bdPresetThemeColor(4),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-dashed',
-    name: '破線',
-    _themeColorIndex: 1,
-    color: _bdPresetThemeColor(1),
-    width: 2,
-    style: 'dashed',
-    arrow: '',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-emphasis',
-    name: '強調',
-    _themeColorIndex: 6,
-    color: _bdPresetThemeColor(6),
-    width: 5,
-    style: '',
-    arrow: 'both',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-reference',
-    name: '参照',
-    _themeColorIndex: 7,
-    color: _bdPresetThemeColor(7),
-    width: 2,
-    style: 'dashed',
-    arrow: 'start',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-alert',
-    name: '注意',
-    _themeColorIndex: 0,
-    color: _bdPresetThemeColor(0),
-    width: 4,
-    style: '',
-    arrow: 'end',
-    pathType: 'orthogonal',
-    branchRatio: 0.3,
-    cornerRadius: 5,
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-thin',
-    name: '細線',
-    _themeColorIndex: 2,
-    color: _bdPresetThemeColor(2),
-    width: 1,
-    style: '',
-    arrow: '',
-    pathType: 'straight',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-loop',
-    name: '往復',
-    _themeColorIndex: 6,
-    color: _bdPresetThemeColor(6),
-    width: 3,
-    style: '',
-    arrow: 'both',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
-  {
-    id: 'line-theme-manual-curve',
-    name: '手動曲線',
-    _themeColorIndex: 4,
-    color: _bdPresetThemeColor(4),
-    width: 3,
-    style: '',
-    arrow: 'end',
-    pathType: 'curve',
-    labelBorderWidth: 0,
-    textShadowWidth: 0,
-    textShadowColor: '',
-  },
+  _bdPresetLine('line-std-arrow', '矢印', 5, 'solid', {}),
+  _bdPresetLine('line-std-branch', '枝線（矢印なし）', 5, 'solid', { arrow: '' }),
+  _bdPresetLine('line-std-flow', '流れ（直角）', 5, 'solid', { pathType: 'orthogonal', branchRatio: 0.5, cornerRadius: 6 }),
+  _bdPresetLine('line-std-relation', '関連（破線）', 6, 'solid', { style: 'dashed', width: 1.5 }),
+  _bdPresetLine('line-std-mutual', '双方向', 4, 'solid', { arrow: 'both' }),
+  _bdPresetLine('line-std-emphasis', '強調', 1, 'solid', { width: 4 }),
+  _bdPresetLine('line-std-conflict', '対立・問題', 0, 'solid', { width: 2.5 }),
+  _bdPresetLine('line-std-time', '時系列', 5, 'solid', { pathType: 'straight', width: 3 }),
+  _bdPresetLine('line-std-guide', '補助線', 5, 'muted', { arrow: '', pathType: 'straight', width: 1 }),
 ];
 
 const BD_DEFAULT_DISPLAY_FILTERS = {
@@ -46243,17 +46251,17 @@ function _bdBuiltinLineStylesForBoard() {
 }
 
 const BD_LEGACY_CARD_STYLE_ID_MAP = {
-  'card-default': 'card-theme-rect',
-  'card-accent': 'card-theme-pill',
-  'card-outline': 'card-theme-octagon',
-  'card-note': 'card-theme-cloud',
-  'card-dark': 'card-theme-octagon',
-  'card-danger': 'card-theme-rect',
-  'card-soft': 'card-theme-ellipse',
-  'card-octagon': 'card-theme-octagon',
-  'card-theme-diamond': 'card-theme-rect',
-  'card-theme-hexagon': 'card-theme-octagon',
-  'card-theme-star': 'card-theme-cloud',
+  'card-default': 'card-std-topic',
+  'card-accent': 'card-std-highlight',
+  'card-outline': 'card-std-sub',
+  'card-note': 'card-std-note',
+  'card-dark': 'card-std-central',
+  'card-danger': 'card-std-issue',
+  'card-soft': 'card-std-done',
+  'card-octagon': 'card-std-topic',
+  'card-theme-diamond': 'card-std-topic',
+  'card-theme-hexagon': 'card-std-topic',
+  'card-theme-star': 'card-std-idea',
 };
 
 const BD_REMOVED_CARD_SHAPES = new Set(['diamond', 'hexagon', 'star']);
@@ -46282,15 +46290,15 @@ function _bdNormalizeRemovedCardShapesInBoard() {
 }
 
 const BD_LEGACY_LINE_STYLE_ID_MAP = {
-  'line-default': 'line-theme-standard',
-  'line-dashed': 'line-theme-dashed',
-  'line-emphasis': 'line-theme-emphasis',
-  'line-curve': 'line-theme-curve',
-  'line-reference': 'line-theme-reference',
-  'line-warning': 'line-theme-alert',
-  'line-thin': 'line-theme-thin',
-  'line-loop': 'line-theme-loop',
-  'line-manual-curve': 'line-theme-manual-curve',
+  'line-default': 'line-std-arrow',
+  'line-dashed': 'line-std-relation',
+  'line-emphasis': 'line-std-emphasis',
+  'line-curve': 'line-std-branch',
+  'line-reference': 'line-std-relation',
+  'line-warning': 'line-std-conflict',
+  'line-thin': 'line-std-guide',
+  'line-loop': 'line-std-mutual',
+  'line-manual-curve': 'line-std-arrow',
 };
 
 const BD_LEGACY_CARD_STYLE_DEFAULTS = Object.fromEntries([
@@ -53546,65 +53554,152 @@ function bdOpenFilterMenu(anchor) {
   // cardStyleRef / lineStyleRef は「どのスタイルから値を取り込んだか」の目印でしかないため、
   // 値を作り変える派生プリセットでは空にして、実際の値と食い違わないようにする。
 
-  function derive(styles, fn) {
-    return styles.map((style, index) => {
-      const next = fn({ ...style, line: { ...(style.line || {}) } }, index);
-      next.cardStyleRef = '';
-      next.lineStyleRef = '';
-      return next;
-    });
+
+  // 用途ごとの初期搭載プリセット。色はテーマ色セットの位置（0赤 1橙 2黄 3緑 4水 5青 6紫 7桃）と
+  // 塗り方（solid=塗りつぶし / tint=淡い色 / outline=枠だけ / plain=枠なし / muted=控えめ）で指定する。
+  function level(palette, spec) {
+    const pick = index => (typeof bdThemeRoleColor === 'function' ? bdThemeRoleColor(index, palette) : palette[index % palette.length]) || '#3b82f6';
+    const color = pick(spec.idx);
+    const toned = typeof bdThemeTone === 'function'
+      ? bdThemeTone(color, spec.tone)
+      : { bgColor: color, borderColor: color, textColor: '#ffffff', lineColor: color };
+    const lineColorBase = pick(spec.lineIdx ?? spec.idx) || color;
+    const lineColor = typeof bdThemeTone === 'function'
+      ? bdThemeTone(lineColorBase, spec.lineTone || 'solid').lineColor
+      : lineColorBase;
+    return {
+      name: spec.name,
+      cardStyleRef: '',
+      lineStyleRef: '',
+      fontSize: spec.fontSize,
+      fontBold: !!spec.bold,
+      fontItalic: false,
+      width: spec.width || 180,
+      bgColor: toned.bgColor,
+      textColor: toned.textColor || '',
+      borderColor: toned.borderColor,
+      borderWidth: spec.borderWidth ?? (spec.tone === 'plain' ? 0 : 1),
+      borderRadius: spec.radius ?? 8,
+      shape: spec.shape || 'rect',
+      defaultText: spec.text || spec.name,
+      line: {
+        color: lineColor,
+        width: spec.line?.width ?? 2,
+        style: spec.line?.style || '',
+        arrow: spec.line?.arrow || '',
+        pathType: spec.line?.pathType || 'curve',
+        branchRatio: 0.5,
+        cornerRadius: 6,
+      },
+    };
+  }
+
+  function levels(specs) {
+    return (base, palette) => specs.map(spec => level(palette, spec));
   }
 
   const BUILTIN_DEFS = [
     {
       id: 'depth-preset-standard',
       name: '標準',
+      description: '中心テーマから詳細まで、主役の色を段階的に弱める汎用の組み合わせ',
       build: base => base,
     },
     {
-      id: 'depth-preset-simple',
-      name: 'シンプル（角丸・直角線）',
-      build: base => derive(base, (style, index) => {
-        style.name = `階層${index + 1}`;
-        style.shape = 'rect';
-        style.borderRadius = 8;
-        style.borderWidth = 2;
-        style.fontSize = Math.max(11, 17 - index);
-        style.fontBold = index === 0;
-        style.line.pathType = 'orthogonal';
-        style.line.style = '';
-        style.line.arrow = 'end';
-        style.line.width = 2;
-        return style;
-      }),
+      id: 'depth-preset-logic',
+      name: 'ロジック・資料（直角線）',
+      description: '論点整理や資料向け。角を控えめにし、直角線で階層を揃える',
+      build: levels([
+        { name: '結論', idx: 5, tone: 'solid', fontSize: 18, bold: true, width: 220, radius: 6, borderWidth: 2, line: { width: 2, pathType: 'orthogonal' } },
+        { name: '論点', idx: 5, tone: 'tint', fontSize: 15, bold: true, width: 200, radius: 4, line: { width: 1.5, pathType: 'orthogonal' } },
+        { name: '根拠', idx: 5, tone: 'outline', fontSize: 13, width: 190, radius: 4, line: { width: 1, pathType: 'orthogonal' } },
+        { name: '補足', idx: 5, tone: 'outline', fontSize: 12, width: 180, radius: 4, lineTone: 'muted', line: { width: 1, pathType: 'orthogonal' } },
+      ]),
     },
     {
-      id: 'depth-preset-mindmap',
-      name: 'マインドマップ（曲線）',
-      build: base => derive(base, (style, index) => {
-        style.name = index === 0 ? '中心テーマ' : `枝${index}`;
-        style.shape = index === 0 ? 'rect' : 'pill';
-        style.borderRadius = index === 0 ? 10 : 999;
-        style.borderWidth = index === 0 ? 3 : 2;
-        style.fontSize = Math.max(11, 18 - index * 2);
-        style.fontBold = index <= 1;
-        style.line.pathType = 'curve';
-        style.line.style = '';
-        style.line.arrow = '';
-        style.line.width = Math.max(1, 4 - index);
-        return style;
-      }),
+      id: 'depth-preset-org',
+      name: '組織図・分類',
+      description: '上から下へ分ける組織図や分類ツリー向け。上位ほど濃く塗る',
+      build: levels([
+        { name: '全体', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 8, borderWidth: 2, line: { width: 2, pathType: 'orthogonal' } },
+        { name: '部門', idx: 4, tone: 'solid', fontSize: 15, bold: true, width: 180, radius: 8, line: { width: 1.5, pathType: 'orthogonal' } },
+        { name: 'チーム', idx: 4, tone: 'tint', fontSize: 13, width: 160, radius: 6, line: { width: 1, pathType: 'orthogonal' } },
+        { name: '担当', idx: 4, tone: 'outline', fontSize: 12, width: 150, radius: 6, lineTone: 'muted', line: { width: 1, pathType: 'orthogonal' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-rainbow',
+      name: '階層で色分け',
+      description: '深い階層でも何段目かを色で見分けられる。分類の多いマップ向け',
+      build: levels([
+        { name: '階層1', idx: 5, tone: 'solid', fontSize: 18, bold: true, width: 220, radius: 10, borderWidth: 2, line: { width: 3 } },
+        { name: '階層2', idx: 4, tone: 'tint', fontSize: 15, bold: true, width: 190, radius: 8, borderWidth: 2, line: { width: 2 } },
+        { name: '階層3', idx: 3, tone: 'tint', fontSize: 14, width: 180, radius: 8, line: { width: 1.5 } },
+        { name: '階層4', idx: 2, tone: 'tint', fontSize: 13, width: 170, radius: 8, line: { width: 1 } },
+        { name: '階層5', idx: 1, tone: 'tint', fontSize: 12, width: 160, radius: 8, line: { width: 1 } },
+      ]),
+    },
+    {
+      id: 'depth-preset-sticky',
+      name: '付箋（アイデア出し）',
+      description: 'ブレインストーミングやKJ法向け。テーマ以外は付箋の見た目にそろえる',
+      build: levels([
+        { name: 'テーマ', idx: 1, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 4, borderWidth: 2, lineTone: 'muted', line: { width: 1.5, pathType: 'straight' } },
+        { name: '付箋', idx: 2, tone: 'tint', fontSize: 13, width: 160, radius: 2, borderWidth: 0, lineTone: 'muted', line: { width: 1, pathType: 'straight' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-timeline',
+      name: 'タイムライン',
+      description: '年表や予定向け。節目を丸い札、作業を枠で表す',
+      build: levels([
+        { name: '期間', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 200, radius: 999, shape: 'pill', borderWidth: 2, line: { width: 3, pathType: 'straight', arrow: 'end' } },
+        { name: '節目', idx: 4, tone: 'solid', fontSize: 14, bold: true, width: 160, radius: 999, shape: 'pill', line: { width: 1.5, pathType: 'straight' } },
+        { name: '作業', idx: 4, tone: 'outline', fontSize: 13, width: 160, radius: 6, lineTone: 'muted', line: { width: 1, pathType: 'straight' } },
+      ]),
+    },
+    {
+      id: 'depth-preset-minimal',
+      name: '線のみ（メモ）',
+      description: '枠を使わず文字と線だけで書く。手早いメモや下書き向け',
+      build: levels([
+        { name: '題', idx: 5, tone: 'plain', fontSize: 19, bold: true, width: 220, radius: 0, line: { width: 2 } },
+        { name: '項目', idx: 5, tone: 'plain', fontSize: 15, bold: true, width: 190, radius: 0, line: { width: 1.5 } },
+        { name: '詳細', idx: 5, tone: 'plain', fontSize: 13, width: 180, radius: 0, lineTone: 'muted', line: { width: 1 } },
+      ]),
+    },
+    {
+      id: 'depth-preset-presentation',
+      name: 'プレゼン（高コントラスト）',
+      description: '画面共有や発表向け。すべて塗りつぶし、文字と線を太めにする',
+      build: levels([
+        { name: '主題', idx: 6, tone: 'solid', fontSize: 22, bold: true, width: 260, radius: 12, borderWidth: 2, line: { width: 4 } },
+        { name: '要点', idx: 5, tone: 'solid', fontSize: 17, bold: true, width: 220, radius: 10, line: { width: 3 } },
+        { name: '説明', idx: 4, tone: 'solid', fontSize: 15, width: 200, radius: 8, line: { width: 2 } },
+      ]),
     },
   ];
+
+  // 旧版の初期搭載プリセットIDを、役割の近い現行プリセットへ読み替える
+  // （起点トピックの depthStyleRef や「適用中」記録に旧IDが残っていても見失わない）。
+  const LEGACY_BUILTIN_ALIASES = Object.freeze({
+    'depth-preset-simple': 'depth-preset-logic',
+    'depth-preset-mindmap': 'depth-preset-standard',
+  });
 
   function builtinPresets() {
     const base = normalizeStyles([]);
     if (!base.length) return [];
+    const palette = typeof bdGetThemeColorSet === 'function' ? bdGetThemeColorSet(boardState() || undefined) : [];
+    const colors = Array.isArray(palette) && palette.length
+      ? palette
+      : ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
     return BUILTIN_DEFS.map(def => ({
       id: def.id,
       name: def.name,
+      description: def.description || '',
       builtin: true,
-      styles: normalizeStyles(def.build(base.map(style => ({ ...style, line: { ...(style.line || {}) } })))),
+      styles: normalizeStyles(def.build(base.map(style => ({ ...style, line: { ...(style.line || {}) } })), colors)),
     }));
   }
 
@@ -53650,7 +53745,8 @@ function bdOpenFilterMenu(anchor) {
   }
 
   function findPreset(id) {
-    return listPresets().find(entry => entry.id === id) || null;
+    const key = LEGACY_BUILTIN_ALIASES[id] || id;
+    return listPresets().find(entry => entry.id === key) || null;
   }
 
   function uniqueName(baseName, excludeId) {
@@ -54149,6 +54245,1055 @@ function bdOpenFilterMenu(anchor) {
     storageKey: STORAGE_KEY,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-board-template-library.js === */
+;
+/* gb-board-template-library.js: ボードの初期搭載テンプレート・グループスタイル・サムネイル。
+ *
+ * テンプレートはボード1枚分の「見た目一式＋トピックの構造」を表す。
+ *   style:   { depthPresetId | depthStyles, cardStyles?, lineStyles?, groupStyles?,
+ *              activeCardStyle?, activeLineStyle?, bgColor?, fontFamily?, showShadow?, gapSiblings?, gapLevels? }
+ *   content: { nodes: [{ key, text, parent, x, y, w, structure, autoStyle, cardStyle, overrides }],
+ *              lines: [{ from, to, label, styleRef }], groups: [{ name, nodeKeys, styleRef }] }
+ * 適用時は必ず新しいトピックとして作り直す（他のボードとトピックを共有しない）。
+ */
+(function initMeldexBoardTemplateLibrary(global) {
+  'use strict';
+
+  const FALLBACK_PALETTE = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+  const NODE_H = 40;
+
+  function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
+
+  function boardState() {
+    try { if (typeof bd !== 'undefined' && bd && Array.isArray(bd.nodes)) return bd; } catch (_) { /* no board */ }
+    return null;
+  }
+
+  function palette() {
+    const colors = typeof global.bdGetThemeColorSet === 'function' ? global.bdGetThemeColorSet(boardState() || undefined) : null;
+    return Array.isArray(colors) && colors.length ? colors : FALLBACK_PALETTE.slice();
+  }
+
+  function tone(index, kind) {
+    const colors = palette();
+    const color = (typeof global.bdThemeRoleColor === 'function' ? global.bdThemeRoleColor(index, colors) : colors[index % colors.length]) || '#3b82f6';
+    if (typeof global.bdThemeTone === 'function') return global.bdThemeTone(color, kind);
+    return { bgColor: color, borderColor: color, textColor: '#ffffff', lineColor: color };
+  }
+
+  // ---------------------------------------------------------------
+  //  グループスタイル（初期搭載）
+  // ---------------------------------------------------------------
+  const GROUP_STYLE_DEFS = [
+    { id: 'group-std-frame', name: '標準の枠', idx: 5, kind: 'tint', fields: { backgroundOpacity: 0.35, borderWidth: 1.5, borderStyle: 'solid' } },
+    { id: 'group-std-boundary', name: '破線の境界', idx: 5, kind: 'muted', fields: { background: 'transparent', backgroundOpacity: 0, borderWidth: 1.5, borderStyle: 'dashed' } },
+    { id: 'group-std-sticky', name: '付箋の島', idx: 2, kind: 'tint', fields: { backgroundOpacity: 0.45, borderWidth: 0, borderStyle: 'solid' } },
+    { id: 'group-std-zone', name: '強調ゾーン', idx: 1, kind: 'tint', fields: { backgroundOpacity: 0.4, borderWidth: 2, borderStyle: 'solid' } },
+    { id: 'group-std-good', name: '良い点（緑）', idx: 3, kind: 'tint', fields: { backgroundOpacity: 0.4, borderWidth: 1.5, borderStyle: 'solid' } },
+    { id: 'group-std-bad', name: '課題（赤）', idx: 0, kind: 'tint', fields: { backgroundOpacity: 0.4, borderWidth: 1.5, borderStyle: 'solid' } },
+  ];
+
+  function defaultGroupStyles() {
+    return GROUP_STYLE_DEFS.map(def => {
+      const toned = tone(def.idx, def.kind);
+      return {
+        groupStyleId: def.id,
+        name: def.name,
+        builtin: true,
+        visualStyle: {
+          background: toned.bgColor, borderColor: toned.borderColor, borderRadius: 12, padding: 18,
+          labelColor: toned.borderColor, labelFontSize: 13, labelBold: true, shadow: '',
+          ...def.fields,
+        },
+      };
+    });
+  }
+
+  // ---------------------------------------------------------------
+  //  初期搭載テンプレート
+  // ---------------------------------------------------------------
+  const CATEGORIES = { basic: '基本', think: '考える・整理', plan: '計画・記録', creative: '創作' };
+
+  // [text, children] 形式の木を content.nodes へ展開する。
+  function tree(rootText, children, options = {}) {
+    const nodes = [];
+    let seq = 0;
+    const walk = (entry, parentKey, depth) => {
+      const [text, kids, extra] = Array.isArray(entry) ? entry : [entry, [], null];
+      const key = `${options.prefix || 't'}${seq++}`;
+      nodes.push({ key, text, parent: parentKey, depth, ...(extra || {}) });
+      (kids || []).forEach(child => walk(child, key, depth + 1));
+    };
+    walk([rootText, children, { structure: options.structure || 'mindmap', autoStyle: options.autoStyle !== false, ...(options.root || {}) }], '', 0);
+    return nodes;
+  }
+
+  // 番号付きの連鎖（フローチャート）: 各手順を前の手順の子にする。
+  function chain(steps, options = {}) {
+    const nodes = [];
+    steps.forEach((step, index) => {
+      const [text, extra] = Array.isArray(step) ? step : [step, null];
+      nodes.push({
+        key: `f${index}`, text, parent: index ? `f${index - 1}` : '', depth: index,
+        ...(index === 0 ? { structure: options.structure || 'flowchart', autoStyle: false } : {}),
+        ...(extra || {}),
+      });
+    });
+    return nodes;
+  }
+
+  const BUILTIN_TEMPLATES = [
+    {
+      id: 'board-tpl-blank', name: '空白', category: 'basic',
+      description: '標準の見た目だけを用意した空のボード。自由に書き始めたい時に。',
+      style: { depthPresetId: 'depth-preset-standard' },
+      content: { nodes: [] },
+    },
+    {
+      id: 'board-tpl-mindmap', name: 'マインドマップ', category: 'basic', isDefault: true,
+      description: '中心テーマから放射状に広げる汎用の型。考えを広げる・全体像を掴む時に。',
+      style: { depthPresetId: 'depth-preset-standard' },
+      content: { nodes: tree('中心テーマ', [
+        ['メイントピック 1', ['サブトピック', 'サブトピック']],
+        ['メイントピック 2', ['サブトピック', 'サブトピック']],
+        ['メイントピック 3', ['サブトピック']],
+        ['メイントピック 4', ['サブトピック']],
+      ], { structure: 'mindmap' }) },
+    },
+    {
+      id: 'board-tpl-logic', name: 'ロジック図（論点整理）', category: 'think',
+      description: '結論→理由→根拠を左から右へ並べる。主張の筋道を確かめる・説明を組み立てる時に。',
+      style: { depthPresetId: 'depth-preset-logic' },
+      content: { nodes: tree('結論・主張', [
+        ['理由 1', ['根拠', '具体例']],
+        ['理由 2', ['根拠', '具体例']],
+        ['理由 3', ['根拠']],
+      ], { structure: 'logic' }) },
+    },
+    {
+      id: 'board-tpl-org', name: '組織図・分類ツリー', category: 'think',
+      description: '上から下へ分類する。組織・チーム構成、カテゴリ分け、目次づくりに。',
+      style: { depthPresetId: 'depth-preset-org' },
+      content: { nodes: tree('全体', [
+        ['部門 A', ['チーム 1', 'チーム 2']],
+        ['部門 B', ['チーム 3', 'チーム 4']],
+        ['部門 C', ['チーム 5']],
+      ], { structure: 'orgchart' }) },
+    },
+    {
+      id: 'board-tpl-flow', name: '手順・フローチャート', category: 'think',
+      description: '開始から完了までの手順を矢印でつなぐ。作業手順や処理の流れの説明に。',
+      style: { depthPresetId: 'depth-preset-logic', activeLineStyle: 'line-std-flow' },
+      content: { nodes: chain([
+        ['開始', { cardStyle: 'card-std-milestone' }],
+        ['手順 1', { cardStyle: 'card-std-topic' }],
+        ['手順 2', { cardStyle: 'card-std-topic' }],
+        ['確認', { cardStyle: 'card-std-highlight' }],
+        ['完了', { cardStyle: 'card-std-milestone' }],
+      ]) },
+    },
+    {
+      id: 'board-tpl-timeline', name: 'タイムライン（予定・年表）', category: 'plan',
+      description: '時間の流れに沿って節目と作業を並べる。制作スケジュールや年表に。',
+      style: { depthPresetId: 'depth-preset-timeline' },
+      content: { nodes: tree('プロジェクト', [
+        ['第 1 週', ['企画', '資料集め']],
+        ['第 2 週', ['制作']],
+        ['第 3 週', ['確認・修正']],
+        ['第 4 週', ['公開']],
+      ], { structure: 'timeline' }) },
+    },
+    {
+      id: 'board-tpl-meeting', name: '会議メモ', category: 'plan',
+      description: '議題・決定事項・課題・次の行動を一枚にまとめる。打ち合わせの記録に。',
+      style: { depthPresetId: 'depth-preset-standard' },
+      content: { nodes: tree('会議名（日付）', [
+        ['議題', ['議題 1', '議題 2']],
+        ['決定事項', ['決定 1']],
+        ['課題', ['課題 1']],
+        ['次の行動', ['担当・期限']],
+      ], { structure: 'mindmap' }) },
+    },
+    {
+      id: 'board-tpl-kj', name: 'ブレインストーミング（KJ法）', category: 'think',
+      description: '思いつきを付箋に書き出し、近いものを島にまとめる。アイデア出しと整理に。',
+      style: { depthPresetId: 'depth-preset-sticky', activeCardStyle: 'card-std-note', activeGroupStyle: 'group-std-sticky' },
+      content: {
+        nodes: [
+          { key: 'title', text: 'テーマ：〇〇を考える', x: 0, y: -60, w: 320, cardStyle: 'card-std-label' },
+          { key: 'a1', text: 'アイデア', x: 0, y: 40, cardStyle: 'card-std-note' },
+          { key: 'a2', text: 'アイデア', x: 0, y: 110, cardStyle: 'card-std-note' },
+          { key: 'a3', text: 'アイデア', x: 0, y: 180, cardStyle: 'card-std-note' },
+          { key: 'b1', text: 'アイデア', x: 240, y: 40, cardStyle: 'card-std-note' },
+          { key: 'b2', text: 'アイデア', x: 240, y: 110, cardStyle: 'card-std-note' },
+          { key: 'c1', text: 'アイデア', x: 480, y: 40, cardStyle: 'card-std-note' },
+          { key: 'c2', text: 'アイデア', x: 480, y: 110, cardStyle: 'card-std-note' },
+          { key: 'c3', text: 'アイデア', x: 480, y: 180, cardStyle: 'card-std-note' },
+          { key: 'u1', text: '未分類', x: 720, y: 40, cardStyle: 'card-std-note' },
+        ],
+        groups: [
+          { name: 'まとまり A', nodeKeys: ['a1', 'a2', 'a3'], styleRef: 'group-std-sticky' },
+          { name: 'まとまり B', nodeKeys: ['b1', 'b2'], styleRef: 'group-std-sticky' },
+          { name: 'まとまり C', nodeKeys: ['c1', 'c2', 'c3'], styleRef: 'group-std-sticky' },
+        ],
+      },
+    },
+    {
+      id: 'board-tpl-swot', name: 'SWOT分析', category: 'think',
+      description: '強み・弱み・機会・脅威の4つの枠で現状を整理する。企画や戦略の検討に。',
+      style: { depthPresetId: 'depth-preset-standard', activeCardStyle: 'card-std-topic' },
+      content: {
+        nodes: [
+          { key: 'title', text: 'SWOT分析：対象', x: 120, y: -70, w: 320, cardStyle: 'card-std-label' },
+          { key: 's1', text: '強み', x: 0, y: 30, cardStyle: 'card-std-done' },
+          { key: 's2', text: '強み', x: 0, y: 95, cardStyle: 'card-std-done' },
+          { key: 'w1', text: '弱み', x: 300, y: 30, cardStyle: 'card-std-issue' },
+          { key: 'w2', text: '弱み', x: 300, y: 95, cardStyle: 'card-std-issue' },
+          { key: 'o1', text: '機会', x: 0, y: 230, cardStyle: 'card-std-topic' },
+          { key: 'o2', text: '機会', x: 0, y: 295, cardStyle: 'card-std-topic' },
+          { key: 't1', text: '脅威', x: 300, y: 230, cardStyle: 'card-std-highlight' },
+          { key: 't2', text: '脅威', x: 300, y: 295, cardStyle: 'card-std-highlight' },
+        ],
+        groups: [
+          { name: '強み（S）', nodeKeys: ['s1', 's2'], styleRef: 'group-std-good' },
+          { name: '弱み（W）', nodeKeys: ['w1', 'w2'], styleRef: 'group-std-bad' },
+          { name: '機会（O）', nodeKeys: ['o1', 'o2'], styleRef: 'group-std-frame' },
+          { name: '脅威（T）', nodeKeys: ['t1', 't2'], styleRef: 'group-std-zone' },
+        ],
+      },
+    },
+    {
+      id: 'board-tpl-relations', name: 'キャラクター相関図', category: 'creative',
+      description: '人物を配置し、関係をラベル付きのラインで結ぶ。登場人物の関係整理に。',
+      style: { depthPresetId: 'depth-preset-standard', activeCardStyle: 'card-std-main', activeLineStyle: 'line-std-relation' },
+      content: {
+        nodes: [
+          { key: 'hero', text: '主人公', x: 260, y: 170, cardStyle: 'card-std-central', w: 200 },
+          { key: 'heroine', text: 'ヒロイン', x: 0, y: 0, cardStyle: 'card-std-main' },
+          { key: 'rival', text: 'ライバル', x: 560, y: 0, cardStyle: 'card-std-main' },
+          { key: 'mentor', text: '師匠', x: 0, y: 350, cardStyle: 'card-std-main' },
+          { key: 'enemy', text: '敵', x: 560, y: 350, cardStyle: 'card-std-issue' },
+        ],
+        lines: [
+          { from: 'hero', to: 'heroine', label: '幼なじみ', styleRef: 'line-std-mutual' },
+          { from: 'hero', to: 'rival', label: 'ライバル視', styleRef: 'line-std-emphasis' },
+          { from: 'mentor', to: 'hero', label: '導く', styleRef: 'line-std-arrow' },
+          { from: 'enemy', to: 'hero', label: '狙う', styleRef: 'line-std-conflict' },
+          { from: 'rival', to: 'enemy', label: '因縁', styleRef: 'line-std-relation' },
+        ],
+      },
+    },
+    {
+      id: 'board-tpl-story', name: 'ストーリー構成（起承転結）', category: 'creative',
+      description: '起・承・転・結ごとに場面を並べる。話のプロットや構成案づくりに。',
+      style: { depthPresetId: 'depth-preset-rainbow' },
+      content: { nodes: tree('作品タイトル', [
+        ['起', ['導入', '事件の発端']],
+        ['承', ['展開']],
+        ['転', ['山場']],
+        ['結', ['結末']],
+      ], { structure: 'logic' }) },
+    },
+  ].map(template => ({
+    schemaVersion: 1, builtin: true, categoryLabel: CATEGORIES[template.category] || '', ...template,
+  }));
+
+  // ---------------------------------------------------------------
+  //  見た目の解決（サムネイル・適用の共通）
+  // ---------------------------------------------------------------
+  function depthStylesFor(template) {
+    if (Array.isArray(template?.style?.depthStyles) && template.style.depthStyles.length) return template.style.depthStyles;
+    const id = template?.style?.depthPresetId;
+    const preset = id && global.MeldexBoardDepthPresets?.find ? global.MeldexBoardDepthPresets.find(id) : null;
+    if (preset?.styles?.length) return preset.styles;
+    return typeof global.bdNormalizeDepthStyles === 'function' ? global.bdNormalizeDepthStyles([]) : [];
+  }
+
+  function cardStylesFor(template) {
+    if (Array.isArray(template?.style?.cardStyles) && template.style.cardStyles.length) return template.style.cardStyles;
+    return typeof global.bdDefaultCardStylesForBoard === 'function' ? global.bdDefaultCardStylesForBoard(boardState() || undefined) : [];
+  }
+
+  function lineStylesFor(template) {
+    if (Array.isArray(template?.style?.lineStyles) && template.style.lineStyles.length) return template.style.lineStyles;
+    return typeof global.bdDefaultLineStylesForBoard === 'function' ? global.bdDefaultLineStylesForBoard(boardState() || undefined) : [];
+  }
+
+  function groupStylesFor(template) {
+    if (Array.isArray(template?.style?.groupStyles) && template.style.groupStyles.length) return template.style.groupStyles;
+    return defaultGroupStyles();
+  }
+
+  // ---------------------------------------------------------------
+  //  配置（構造ごとの簡易レイアウト。適用直後の仮配置とサムネイルに使う）
+  // ---------------------------------------------------------------
+  function layout(template) {
+    const nodes = clone(template?.content?.nodes || []);
+    const byKey = new Map(nodes.map(node => [node.key, node]));
+    const childrenOf = key => nodes.filter(node => node.parent === key);
+    const depthStyles = depthStylesFor(template);
+    const widthAt = node => +node.w || +depthStyles[Math.min(node.depth || 0, Math.max(0, depthStyles.length - 1))]?.width || 170;
+    const roots = nodes.filter(node => !node.parent || !byKey.has(node.parent));
+    roots.forEach(root => {
+      if (Number.isFinite(+root.x) && Number.isFinite(+root.y) && !root.structure) return;
+      const structure = root.structure || 'logic';
+      const gapL = 56;
+      const gapS = 16;
+      if (['orgchart', 'tree', 'flowchart'].includes(structure)) {
+        if (structure === 'flowchart') {
+          let y = 0;
+          let node = root;
+          while (node) {
+            node.x = 0; node.y = y; y += NODE_H + gapL;
+            node = childrenOf(node.key)[0];
+          }
+          return;
+        }
+        let cursor = 0;
+        const place = (node, depth) => {
+          const kids = childrenOf(node.key);
+          node.y = depth * (NODE_H + gapL);
+          if (!kids.length) { node.x = cursor; cursor += widthAt(node) + gapS; return; }
+          kids.forEach(kid => place(kid, depth + 1));
+          const first = kids[0];
+          const last = kids[kids.length - 1];
+          node.x = (first.x + last.x + widthAt(last)) / 2 - widthAt(node) / 2;
+        };
+        place(root, 0);
+        return;
+      }
+      const placeSide = (list, dir, xStart) => {
+        let cursor = 0;
+        const place = (node, x) => {
+          const kids = childrenOf(node.key);
+          node.x = dir > 0 ? x : x - widthAt(node);
+          if (!kids.length) { node.y = cursor; cursor += NODE_H + gapS; return; }
+          const nextX = dir > 0 ? x + widthAt(node) + gapL : x - widthAt(node) - gapL;
+          kids.forEach(kid => place(kid, nextX));
+          node.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+        };
+        list.forEach(node => place(node, xStart));
+        return cursor;
+      };
+      const kids = childrenOf(root.key);
+      root.x = 0;
+      if (structure === 'mindmap' && kids.length > 1) {
+        const right = kids.slice(0, Math.ceil(kids.length / 2));
+        const left = kids.slice(Math.ceil(kids.length / 2));
+        const rightH = placeSide(right, 1, widthAt(root) + gapL);
+        const leftH = placeSide(left, -1, -gapL);
+        const shift = (rightH - leftH) / 2;
+        const leftSet = new Set();
+        const collect = node => { leftSet.add(node.key); childrenOf(node.key).forEach(collect); };
+        left.forEach(collect);
+        nodes.forEach(node => { if (leftSet.has(node.key)) node.y += shift; });
+        root.y = (rightH - NODE_H - gapS) / 2;
+      } else {
+        const h = placeSide(kids, 1, widthAt(root) + gapL);
+        root.y = Math.max(0, (h - NODE_H - gapS) / 2);
+      }
+    });
+    nodes.forEach(node => {
+      node.x = Number.isFinite(+node.x) ? +node.x : 0;
+      node.y = Number.isFinite(+node.y) ? +node.y : 0;
+      node.w = widthAt(node);
+      node.h = +node.h || NODE_H;
+    });
+    return nodes;
+  }
+
+  // ---------------------------------------------------------------
+  //  サムネイル（SVG）
+  // ---------------------------------------------------------------
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function svgEl(tag, attrs) {
+    const node = document.createElementNS(SVG_NS, tag);
+    Object.entries(attrs || {}).forEach(([key, value]) => {
+      if (value != null && value !== '') node.setAttribute(key, String(value));
+    });
+    return node;
+  }
+
+  function safeColor(value, fallback) {
+    const raw = String(value == null ? '' : value).trim();
+    if (/^#[0-9a-f]{3,8}$/i.test(raw) || /^(?:rgba?|hsla?)\([0-9.,%\s/]+\)$/i.test(raw) || raw === 'transparent') return raw;
+    return fallback;
+  }
+
+  function nodeLook(template, node, depthStyles, cardStyles) {
+    if (node.cardStyle) {
+      const card = cardStyles.find(style => style.id === node.cardStyle);
+      if (card) return { ...card, ...(node.overrides || {}) };
+    }
+    const depth = depthStyles[Math.min(node.depth || 0, Math.max(0, depthStyles.length - 1))] || {};
+    return { ...depth, ...(node.overrides || {}) };
+  }
+
+  function backgroundFor(template) {
+    const own = template?.style?.bgColor;
+    if (own) return safeColor(own, '#ffffff');
+    let bg = '';
+    try { if (typeof global._bdBoardThemeBackgroundColor === 'function') bg = global._bdBoardThemeBackgroundColor(); } catch (_) { bg = ''; }
+    if (!bg && typeof global.getCssVar === 'function') bg = global.getCssVar('--bd-bg') || global.getCssVar('--bg3') || '';
+    return safeColor(bg, '#f8fafc');
+  }
+
+  function renderThumbnail(template, host, options = {}) {
+    const large = options.size === 'large';
+    const nodes = layout(template);
+    const depthStyles = depthStylesFor(template);
+    const cardStyles = cardStylesFor(template);
+    const lineStyles = lineStylesFor(template);
+    const groupStyles = groupStylesFor(template);
+    const bg = backgroundFor(template);
+    const svg = svgEl('svg', { viewBox: '0 0 320 200', preserveAspectRatio: 'xMidYMid meet', role: 'img' });
+    svg.appendChild(svgEl('rect', { x: 0, y: 0, width: 320, height: 200, fill: bg }));
+    if (!nodes.length) {
+      const dark = typeof global.bdReadableTextColor === 'function' && global.bdReadableTextColor(/^#/.test(bg) ? bg : '#ffffff') === '#ffffff';
+      const ink = dark ? '#94a3b8' : '#64748b';
+      svg.appendChild(svgEl('rect', { x: 120, y: 82, width: 80, height: 36, rx: 8, fill: 'none', stroke: ink, 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }));
+      const plus = svgEl('text', { x: 160, y: 106, 'text-anchor': 'middle', 'font-size': 20, fill: ink });
+      plus.textContent = '+';
+      svg.appendChild(plus);
+      host.appendChild(svg);
+      return svg;
+    }
+    const groups = template?.content?.groups || [];
+    const keyed = new Map(nodes.map(node => [node.key, node]));
+    const boxes = [];
+    groups.forEach(group => {
+      const members = (group.nodeKeys || []).map(key => keyed.get(key)).filter(Boolean);
+      if (!members.length) return;
+      const pad = 18;
+      boxes.push({ group, x1: Math.min(...members.map(n => n.x)) - pad, y1: Math.min(...members.map(n => n.y)) - pad - 16,
+        x2: Math.max(...members.map(n => n.x + n.w)) + pad, y2: Math.max(...members.map(n => n.y + n.h)) + pad });
+    });
+    const xs = nodes.flatMap(node => [node.x, node.x + node.w]).concat(boxes.flatMap(b => [b.x1, b.x2]));
+    const ys = nodes.flatMap(node => [node.y, node.y + node.h]).concat(boxes.flatMap(b => [b.y1, b.y2]));
+    const minX = Math.min(...xs); const maxX = Math.max(...xs);
+    const minY = Math.min(...ys); const maxY = Math.max(...ys);
+    const margin = 14;
+    const scale = Math.min((320 - margin * 2) / Math.max(1, maxX - minX), (200 - margin * 2) / Math.max(1, maxY - minY), 0.9);
+    const ox = (320 - (maxX - minX) * scale) / 2 - minX * scale;
+    const oy = (200 - (maxY - minY) * scale) / 2 - minY * scale;
+    const tx = x => ox + x * scale;
+    const ty = y => oy + y * scale;
+    boxes.forEach(box => {
+      const style = groupStyles.find(item => item.groupStyleId === box.group.styleRef)?.visualStyle || {};
+      const fill = safeColor(style.background, 'transparent');
+      svg.appendChild(svgEl('rect', {
+        x: tx(box.x1), y: ty(box.y1), width: (box.x2 - box.x1) * scale, height: (box.y2 - box.y1) * scale, rx: 6,
+        fill, 'fill-opacity': fill === 'transparent' ? 0 : (style.backgroundOpacity ?? 0.4),
+        stroke: safeColor(style.borderColor, '#94a3b8'), 'stroke-width': Math.max(0.6, (+style.borderWidth || 1) * scale),
+        'stroke-dasharray': style.borderStyle === 'dashed' ? '4 3' : '',
+      }));
+    });
+    const center = node => ({ x: tx(node.x + node.w / 2), y: ty(node.y + node.h / 2) });
+    const drawLine = (from, to, look) => {
+      const a = center(from);
+      const b = center(to);
+      const color = safeColor(look.color, '#94a3b8');
+      const width = Math.max(0.7, Math.min(3, (+look.width || 1.5) * scale * 1.2));
+      const path = look.pathType === 'orthogonal'
+        ? `M${a.x},${a.y} L${(a.x + b.x) / 2},${a.y} L${(a.x + b.x) / 2},${b.y} L${b.x},${b.y}`
+        : look.pathType === 'straight'
+          ? `M${a.x},${a.y} L${b.x},${b.y}`
+          : `M${a.x},${a.y} C${(a.x + b.x) / 2},${a.y} ${(a.x + b.x) / 2},${b.y} ${b.x},${b.y}`;
+      svg.appendChild(svgEl('path', { d: path, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-dasharray': look.style === 'dashed' ? '4 3' : '' }));
+    };
+    nodes.forEach(node => {
+      const parent = node.parent ? keyed.get(node.parent) : null;
+      if (!parent) return;
+      const parentLook = parent.cardStyle ? lineStyles.find(style => style.id === 'line-std-flow') || {}
+        : (depthStyles[Math.min(parent.depth || 0, Math.max(0, depthStyles.length - 1))]?.line || {});
+      drawLine(parent, node, parentLook);
+    });
+    (template?.content?.lines || []).forEach(line => {
+      const from = keyed.get(line.from);
+      const to = keyed.get(line.to);
+      if (from && to) drawLine(from, to, lineStyles.find(style => style.id === line.styleRef) || lineStyles[0] || {});
+    });
+    nodes.forEach(node => {
+      const look = nodeLook(template, node, depthStyles, cardStyles);
+      const w = node.w * scale;
+      const h = node.h * scale;
+      const x = tx(node.x);
+      const y = ty(node.y);
+      const radius = Math.min(h / 2, (+look.borderRadius || 0) * scale);
+      const fill = safeColor(look.bgColor, '#e2e8f0');
+      svg.appendChild(svgEl('rect', {
+        x, y, width: w, height: h, rx: look.shape === 'pill' || look.shape === 'cloud' ? h / 2 : radius,
+        fill, stroke: safeColor(look.borderColor, 'transparent'),
+        'stroke-width': Math.max(0, Math.min(2.5, (+look.borderWidth || 0) * scale)),
+      }));
+      const fontSize = Math.max(5, Math.min(large ? 14 : 11, (+look.fontSize || 13) * scale));
+      if (fontSize * (large ? 1 : 1.4) < 6.5 && !large) return;
+      const text = svgEl('text', {
+        x: x + w / 2, y: y + h / 2 + fontSize * 0.35, 'text-anchor': 'middle', 'font-size': fontSize,
+        'font-weight': look.fontBold ? 700 : 400,
+        fill: safeColor(look.textColor, /^#/.test(bg) && global.bdReadableTextColor ? global.bdReadableTextColor(bg) || '#1f2937' : '#1f2937'),
+      });
+      const maxChars = Math.max(2, Math.floor(w / (fontSize * 0.95)));
+      const label = String(node.text || '');
+      text.textContent = label.length > maxChars ? label.slice(0, Math.max(1, maxChars - 1)) + '…' : label;
+      svg.appendChild(text);
+    });
+    host.appendChild(svg);
+    return svg;
+  }
+
+  global.MeldexBoardTemplateLibrary = Object.freeze({
+    CATEGORIES,
+    builtinTemplates: () => clone(BUILTIN_TEMPLATES),
+    defaultTemplateId: () => (BUILTIN_TEMPLATES.find(item => item.isDefault) || BUILTIN_TEMPLATES[0]).id,
+    defaultGroupStyles,
+    depthStylesFor, cardStylesFor, lineStylesFor, groupStylesFor,
+    layout,
+    renderThumbnail,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-templates.js === */
+;
+/* gb-board-templates.js: ボードのファイル単位テンプレート（保存・適用・選択画面）。
+ *
+ * - 初期搭載テンプレートは gb-board-template-library.js、選択画面は gb-template-picker.js。
+ * - 自分のテンプレートは個人設定（Dropboxの個人領域）へ、使えない環境では端末内へ保存する。
+ * - 適用は1回の取り消しで元に戻せる。既存のトピックは削除しない
+ *   （内容のあるボードには「スタイルだけ適用」か「内容を横に追加」を選ぶ）。
+ */
+(function initMeldexBoardTemplates(global) {
+  'use strict';
+
+  const SCHEMA_VERSION = 1;
+  const DOCUMENT = 'board-templates';
+  const STORAGE_KEY = 'meldex-board-templates-v1';
+  const MAX_TEMPLATES = 80;
+  const NODE_OVERRIDE_KEYS = [
+    'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
+    'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape',
+    'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset', 'cloudSubWidthRatio', 'cloudSubHeightRatio',
+  ];
+  const LINE_KEYS = ['label', 'styleRef', 'arrow', 'style', 'pathType', 'width', 'color', 'colorOpacity'];
+
+  function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
+  function lib() { return global.MeldexBoardTemplateLibrary; }
+  function status(message, isError) { if (typeof global.showStatus === 'function') global.showStatus(message, !!isError); }
+
+  function boardState() {
+    try { if (typeof bd !== 'undefined' && bd && Array.isArray(bd.nodes)) return bd; } catch (_) { /* no board */ }
+    return null;
+  }
+
+  function newId(prefix) {
+    if (global.crypto?.randomUUID) return `${prefix}-${global.crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  // ---------------------------------------------------------------
+  //  検証
+  // ---------------------------------------------------------------
+  function validateTemplate(value) {
+    if (!value || typeof value !== 'object') throw new Error('不正なボードテンプレートです');
+    if (value.schemaVersion !== SCHEMA_VERSION) throw new Error('未対応のボードテンプレートです');
+    const id = String(value.id || '').trim();
+    const name = String(value.name || '').trim();
+    if (!id || !name) throw new Error('ボードテンプレートの名前またはIDがありません');
+    const nodes = Array.isArray(value.content?.nodes) ? value.content.nodes : [];
+    const keys = new Set();
+    nodes.forEach(node => {
+      const key = String(node?.key || '');
+      if (!key || keys.has(key)) throw new Error('ボードテンプレートのトピック構成が壊れています');
+      keys.add(key);
+    });
+    return { ...clone(value), id, name, builtin: false };
+  }
+
+  function validateList(list) {
+    if (!Array.isArray(list)) throw new Error('ボードテンプレート一覧が不正です');
+    const result = list.map(validateTemplate);
+    if (new Set(result.map(item => item.id)).size !== result.length) throw new Error('ボードテンプレートのIDが重複しています');
+    return result;
+  }
+
+  // ---------------------------------------------------------------
+  //  保存先（個人設定 → 端末内）
+  // ---------------------------------------------------------------
+  async function loadLibrary() {
+    let remote = { available: false };
+    if (typeof global.apiFetch === 'function') {
+      remote = await global.apiFetch(`/personal-preferences/${DOCUMENT}`, { silentError: true }).catch(error => {
+        const code = Number(error?.status || error?.statusCode || error?.response?.status);
+        if (code === 404 || code === 401 || code === 0 || !code) return { available: false };
+        throw error;
+      });
+    }
+    if (remote?.available) {
+      if (remote.payload && remote.payload.schemaVersion !== SCHEMA_VERSION) throw new Error('未対応のボードテンプレート一覧です');
+      return { remote: true, revision: remote.revision || null, payload: remote.payload || {}, templates: validateList(remote.payload?.templates || []) };
+    }
+    const raw = global.localStorage?.getItem(STORAGE_KEY);
+    let saved = { templates: [] };
+    try { saved = JSON.parse(raw || '{"templates":[]}'); } catch (_) { throw new Error('端末内のボードテンプレート一覧を読み取れません'); }
+    return { remote: false, storageRevision: raw, payload: saved, templates: validateList(saved.templates || []) };
+  }
+
+  async function persistLibrary(library, templates) {
+    if (library?.failed) throw new Error('テンプレート一覧を読み込めていないため保存できません。開き直してください');
+    const list = templates.slice(0, MAX_TEMPLATES);
+    if (library.remote) {
+      const result = await global.apiFetch(`/personal-preferences/${DOCUMENT}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: { ...library.payload, schemaVersion: SCHEMA_VERSION, templates: list }, expectedRevision: library.revision || null }),
+      });
+      if (!result?.ok) throw new Error('テンプレートを保存できませんでした。一覧を開き直してください');
+      library.revision = result.revision;
+    } else {
+      const write = () => {
+        if ((global.localStorage.getItem(STORAGE_KEY) ?? null) !== (library.storageRevision ?? null)) {
+          throw new Error('テンプレート一覧が別の画面で変更されています。開き直してください');
+        }
+        const text = JSON.stringify({ ...library.payload, schemaVersion: SCHEMA_VERSION, templates: list });
+        global.localStorage.setItem(STORAGE_KEY, text);
+        library.storageRevision = text;
+      };
+      if (global.navigator?.locks?.request) await global.navigator.locks.request(STORAGE_KEY, write); else write();
+    }
+    library.templates = list;
+    return list;
+  }
+
+  // ---------------------------------------------------------------
+  //  現在のボード → テンプレート
+  // ---------------------------------------------------------------
+  function fileStyleValue(board, key) {
+    const style = board._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : {};
+    return style[key] != null ? String(style[key]) : '';
+  }
+
+  function captureStyle(board) {
+    const doc = board.topicViewDocument;
+    const groupStyles = Array.isArray(doc?.groupStyles) ? doc.groupStyles : [];
+    return {
+      cardStyles: clone(board.cardStyles || []),
+      lineStyles: clone(board.lineStyles || []),
+      depthStyles: clone(typeof global.bdEnsureDepthStyles === 'function' ? global.bdEnsureDepthStyles() : (board.depthStyles || [])),
+      groupStyles: clone(groupStyles),
+      activeCardStyle: board.activeCardStyle || '',
+      activeLineStyle: board.activeLineStyle || '',
+      activeGroupStyle: doc?.activeGroupStyleId || '',
+      bgColor: board._bgColor || fileStyleValue(board, '--bd-bg'),
+      fontFamily: fileStyleValue(board, '--bd-default-font-family'),
+      showShadow: !!board._showShadow,
+      gapSiblings: Number.isFinite(+board.gapSiblings) ? +board.gapSiblings : null,
+      gapLevels: Number.isFinite(+board.gapLevels) ? +board.gapLevels : null,
+    };
+  }
+
+  function captureContent(board) {
+    const nodes = (board.nodes || []).filter(node => node && node.id && !node.contained);
+    if (!nodes.length) return { nodes: [], lines: [], groups: [] };
+    const keyOf = new Map(nodes.map((node, index) => [node.id, `n${index}`]));
+    const minX = Math.min(...nodes.map(node => +node.x || 0));
+    const minY = Math.min(...nodes.map(node => +node.y || 0));
+    const depthOf = node => {
+      let depth = 0; let cur = node; const seen = new Set();
+      while (cur?.parent && keyOf.has(cur.parent) && !seen.has(cur.id)) {
+        seen.add(cur.id); depth += 1; cur = nodes.find(item => item.id === cur.parent);
+      }
+      return depth;
+    };
+    const outNodes = nodes.map(node => {
+      const overrides = {};
+      NODE_OVERRIDE_KEYS.forEach(key => { if (node[key] !== undefined && node[key] !== null) overrides[key] = clone(node[key]); });
+      return {
+        key: keyOf.get(node.id),
+        text: String(node.text || ''),
+        parent: node.parent && keyOf.has(node.parent) ? keyOf.get(node.parent) : '',
+        depth: depthOf(node),
+        x: Math.round((+node.x || 0) - minX),
+        y: Math.round((+node.y || 0) - minY),
+        w: +node.w || 0,
+        h: +node.h || 0,
+        structure: node.structure || '',
+        autoStyle: !!node._autoStyle,
+        cardStyle: node._userCardStyle ? (node.cardStyle || '') : '',
+        collapsed: !!node.collapsed,
+        overrides,
+      };
+    });
+    const parentPairs = new Set(nodes.filter(node => node.parent && keyOf.has(node.parent)).map(node => `${node.parent}->${node.id}`));
+    const lines = (board.connections || []).filter(conn => keyOf.has(conn.from) && keyOf.has(conn.to)
+      && !parentPairs.has(`${conn.from}->${conn.to}`) && !parentPairs.has(`${conn.to}->${conn.from}`))
+      .map(conn => {
+        const line = { from: keyOf.get(conn.from), to: keyOf.get(conn.to) };
+        LINE_KEYS.forEach(key => { if (conn[key] !== undefined && conn[key] !== null && conn[key] !== '') line[key] = clone(conn[key]); });
+        return line;
+      });
+    const groups = (board.groups || []).map(group => ({
+      name: String(group.name || 'グループ'),
+      nodeKeys: (group.nodeIds || []).filter(id => keyOf.has(id)).map(id => keyOf.get(id)),
+      styleRef: group.styleRef || '',
+      styleOverrides: clone(group.styleOverrides || {}),
+    })).filter(group => group.nodeKeys.length);
+    return { nodes: outNodes, lines, groups };
+  }
+
+  function captureTemplate(board, options = {}) {
+    if (!board) throw new Error('ボードが開かれていません');
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      id: newId('board-template'),
+      name: String(options.name || '').trim() || 'マイテンプレート',
+      description: String(options.description || '').trim(),
+      category: 'custom',
+      categoryLabel: 'マイテンプレート',
+      createdAt: new Date().toISOString(),
+      style: captureStyle(board),
+      content: options.includeContent === false ? { nodes: [], lines: [], groups: [] } : captureContent(board),
+    };
+  }
+
+  // ---------------------------------------------------------------
+  //  テンプレート → ボード
+  // ---------------------------------------------------------------
+  function isBoardEditable(board) {
+    if (!board?.path) return false;
+    if (board.readOnly || board.readonly || board.isReadOnly) return false;
+    if (typeof global._bdIsBoardWritablePath === 'function' && !global._bdIsBoardWritablePath(board.path)) return false;
+    return true;
+  }
+
+  function hasContent(board) {
+    return (board?.nodes || []).length > 0;
+  }
+
+  function setFileStyle(board, key, value) {
+    const style = board._fileStyle && typeof board._fileStyle === 'object' ? { ...board._fileStyle } : {};
+    if (value == null || value === '') delete style[key]; else style[key] = String(value);
+    board._fileStyle = Object.keys(style).length ? style : null;
+  }
+
+  function applyStyle(board, template) {
+    const library = lib();
+    const style = template.style || {};
+    const cardStyles = clone(library.cardStylesFor(template));
+    const lineStyles = clone(library.lineStylesFor(template));
+    const depthStyles = clone(library.depthStylesFor(template));
+    board.cardStyles = cardStyles;
+    board.lineStyles = lineStyles;
+    board.depthStyles = typeof global.bdNormalizeDepthStyles === 'function' ? global.bdNormalizeDepthStyles(depthStyles) : depthStyles;
+    board.activeDepthStylePreset = style.depthPresetId || '';
+    board.activeCardStyle = cardStyles.some(item => item.id === style.activeCardStyle) ? style.activeCardStyle : (cardStyles[0]?.id || '');
+    board.activeLineStyle = lineStyles.some(item => item.id === style.activeLineStyle) ? style.activeLineStyle : (lineStyles[0]?.id || '');
+    // テンプレートの見た目を、全ボード共通の既定値や旧版の初期スタイル投入で上書きさせない。
+    board._stylePresetSeedVersion = typeof global.BD_STYLE_PRESET_VERSION === 'number'
+      ? global.BD_STYLE_PRESET_VERSION
+      : (typeof BD_STYLE_PRESET_VERSION === 'number' ? BD_STYLE_PRESET_VERSION : board._stylePresetSeedVersion);
+    board._globalStyleDefaultsApplied = true;
+    const cardIds = new Set(cardStyles.map(item => item.id));
+    const lineIds = new Set(lineStyles.map(item => item.id));
+    (board.nodes || []).forEach(node => {
+      if (node.cardStyle && !cardIds.has(node.cardStyle)) { node.cardStyle = ''; delete node._userCardStyle; }
+    });
+    (board.connections || []).forEach(conn => {
+      if (conn.styleRef && !lineIds.has(conn.styleRef)) conn.styleRef = '';
+    });
+    board._bgColor = style.bgColor || '';
+    setFileStyle(board, '--bd-bg', style.bgColor || '');
+    setFileStyle(board, '--bd-default-font-family', style.fontFamily || '');
+    setFileStyle(board, '--bd-shadow', style.showShadow ? '1' : '');
+    board._showShadow = !!style.showShadow;
+    board.gapSiblings = Number.isFinite(+style.gapSiblings) && style.gapSiblings !== null ? +style.gapSiblings : null;
+    board.gapLevels = Number.isFinite(+style.gapLevels) && style.gapLevels !== null ? +style.gapLevels : null;
+    setFileStyle(board, '--bd-gap-siblings', board.gapSiblings);
+    setFileStyle(board, '--bd-gap-levels', board.gapLevels);
+    const groupStyles = clone(library.groupStylesFor(template)).map(item => { delete item.builtin; return item; });
+    if (board.topicViewDocument && global.MeldexBoardGroups?.normalizeGroupStyles) {
+      const doc = { ...board.topicViewDocument, groupStyles };
+      doc.activeGroupStyleId = groupStyles.some(item => item.groupStyleId === style.activeGroupStyle)
+        ? style.activeGroupStyle : (groupStyles[0]?.groupStyleId || null);
+      board.topicViewDocument = global.MeldexBoardGroups.normalizeGroupStyles(doc);
+      const groupIds = new Set(groupStyles.map(item => item.groupStyleId));
+      (board.groups || []).forEach(group => { if (group.styleRef && !groupIds.has(group.styleRef)) group.styleRef = null; });
+    }
+  }
+
+  function visualStyleFor(template, styleRef) {
+    return clone(lib().groupStylesFor(template).find(item => item.groupStyleId === styleRef)?.visualStyle || {});
+  }
+
+  function contentOrigin(board, nodes, mode) {
+    const minX = Math.min(...nodes.map(node => node.x));
+    const minY = Math.min(...nodes.map(node => node.y));
+    if (mode === 'append' && hasContent(board)) {
+      const right = Math.max(...board.nodes.map(node => (+node.x || 0) + (+node.w || 160)));
+      const top = Math.min(...board.nodes.map(node => +node.y || 0));
+      return { x: right + 200 - minX, y: top - minY };
+    }
+    const center = typeof global.bdGetCanvasCenterWorld === 'function' ? global.bdGetCanvasCenterWorld() : { x: 120, y: 120 };
+    const width = Math.max(...nodes.map(node => node.x + node.w)) - minX;
+    const height = Math.max(...nodes.map(node => node.y + node.h)) - minY;
+    return { x: Math.round(center.x - width / 2 - minX), y: Math.round(center.y - height / 2 - minY) };
+  }
+
+  function applyContent(board, template, mode) {
+    const nodes = lib().layout(template);
+    if (!nodes.length) return [];
+    const origin = contentOrigin(board, nodes, mode);
+    const idOf = new Map();
+    const created = [];
+    const rootStructure = new Map();
+    nodes.forEach(spec => {
+      const opts = {
+        parent: '',
+        structure: spec.structure || '',
+        _autoStyle: !!spec.autoStyle,
+        w: spec.w,
+      };
+      if (spec.cardStyle) { opts.cardStyle = spec.cardStyle; opts._userCardStyle = true; }
+      const node = typeof global.bdCreateNodeWithStyle === 'function'
+        ? global.bdCreateNodeWithStyle(spec.text, origin.x + spec.x, origin.y + spec.y, opts)
+        : global.bdNode(spec.text, origin.x + spec.x, origin.y + spec.y, spec.w, spec.h, opts);
+      if (!spec.autoStyle) node._autoStyle = false;
+      if (spec.cardStyle) { node.cardStyle = spec.cardStyle; node._userCardStyle = true; }
+      Object.entries(spec.overrides || {}).forEach(([key, value]) => { if (NODE_OVERRIDE_KEYS.includes(key)) node[key] = clone(value); });
+      if (spec.collapsed) node.collapsed = true;
+      idOf.set(spec.key, node.id);
+      created.push({ spec, node });
+    });
+    created.forEach(({ spec, node }) => {
+      if (spec.parent && idOf.has(spec.parent)) node.parent = idOf.get(spec.parent);
+    });
+    board.nodes.push(...created.map(item => item.node));
+    const byId = new Map(board.nodes.map(node => [node.id, node]));
+    const rootOf = node => { let cur = node; const seen = new Set(); while (cur?.parent && byId.has(cur.parent) && !seen.has(cur.id)) { seen.add(cur.id); cur = byId.get(cur.parent); } return cur; };
+    created.forEach(({ node }) => {
+      if (!node.parent) return;
+      const root = rootOf(node);
+      if (!rootStructure.has(root.id)) rootStructure.set(root.id, root.structure || '');
+      const conn = typeof global.bdCreateStructureConnection === 'function'
+        ? global.bdCreateStructureConnection(node.parent, node.id, rootStructure.get(root.id))
+        : { id: global.bdId(), from: node.parent, to: node.id, arrow: '' };
+      board.connections.push(conn);
+    });
+    (template.content?.lines || []).forEach(line => {
+      if (!idOf.has(line.from) || !idOf.has(line.to)) return;
+      const extra = {};
+      LINE_KEYS.forEach(key => { if (line[key] !== undefined && key !== 'styleRef') extra[key] = clone(line[key]); });
+      const conn = typeof global.bdCreateConnectionWithStyle === 'function'
+        ? global.bdCreateConnectionWithStyle(idOf.get(line.from), idOf.get(line.to), extra)
+        : { id: global.bdId(), from: idOf.get(line.from), to: idOf.get(line.to), ...extra };
+      if (line.styleRef) conn.styleRef = line.styleRef;
+      if (line.label) conn.label = String(line.label);
+      board.connections.push(conn);
+    });
+    if (!Array.isArray(board.groups)) board.groups = [];
+    const docStyles = new Set((board.topicViewDocument?.groupStyles || []).map(item => item.groupStyleId));
+    (template.content?.groups || []).forEach(group => {
+      const nodeIds = (group.nodeKeys || []).filter(key => idOf.has(key)).map(key => idOf.get(key));
+      if (!nodeIds.length) return;
+      const useRef = group.styleRef && docStyles.has(group.styleRef);
+      board.groups.push({
+        id: typeof global.bdId === 'function' ? global.bdId() : newId('group'),
+        name: String(group.name || 'グループ'),
+        nodeIds,
+        styleRef: useRef ? group.styleRef : null,
+        styleOverrides: useRef ? clone(group.styleOverrides || {}) : { ...visualStyleFor(template, group.styleRef), ...clone(group.styleOverrides || {}) },
+      });
+    });
+    return created.map(item => item.node);
+  }
+
+  function refreshBoard(board, createdNodes) {
+    if (typeof global.bdApplyBoardFileStyleAndTheme === 'function') global.bdApplyBoardFileStyleAndTheme();
+    (board.nodes || []).filter(node => node._autoStyle && !node.parent).forEach(root => {
+      if (typeof global.bdApplyAutoStyle === 'function') global.bdApplyAutoStyle(root.id);
+    });
+    if (typeof global.bdRequestFullRender === 'function') global.bdRequestFullRender('board-template');
+    else if (typeof global.bdRender === 'function') global.bdRender();
+    if (typeof global._bdRelayoutAllStructureTrees === 'function' && board.autoAlign !== false) global._bdRelayoutAllStructureTrees();
+    if (typeof global.bdMarkExtrasDirty === 'function') global.bdMarkExtrasDirty({ minimap: true, boardUi: true, frames: true }, 'board-template');
+    if (typeof global.bdDirty === 'function') global.bdDirty();
+    if (typeof global.bdRefreshBoardOptionPanels === 'function') global.bdRefreshBoardOptionPanels();
+    if (typeof global.refreshDetailPanel === 'function') { try { global.refreshDetailPanel(); } catch (_) { /* optional */ } }
+    global.MeldexBoardImmersive?.updateEmptyGuide?.();
+    if (createdNodes?.length && typeof global.bdFitAll === 'function') setTimeout(() => global.bdFitAll(), 260);
+  }
+
+  // mode: 'full'（見た目＋内容） / 'style'（見た目だけ） / 'append'（見た目はそのまま、内容だけ横に追加）
+  function applyTemplate(template, mode = 'full', options = {}) {
+    const board = options.board || boardState();
+    if (!board) throw new Error('ボードを開いてから適用してください');
+    if (!isBoardEditable(board)) throw new Error('このボードは編集できないため、テンプレートを適用できません');
+    if (mode === 'full' && hasContent(board)) throw new Error('内容のあるボードには「スタイルだけ適用」か「内容を追加」を選んでください');
+    if (board.editing && typeof global.bdFinishEdit === 'function') global.bdFinishEdit();
+    const label = mode === 'style' ? 'テンプレートのスタイルを適用' : mode === 'append' ? 'テンプレートの内容を追加' : 'テンプレートを適用';
+    if (typeof global.bdPushUndo === 'function') global.bdPushUndo(`${label}: ${template.name}`);
+    if (mode !== 'append') applyStyle(board, template);
+    const created = mode === 'style' ? [] : applyContent(board, template, mode);
+    refreshBoard(board, created);
+    return { created: created.length };
+  }
+
+  // ---------------------------------------------------------------
+  //  選択画面
+  // ---------------------------------------------------------------
+  function toPickerItem(template) {
+    const nodes = template.content?.nodes || [];
+    return {
+      ...template,
+      renderThumbnail: (host, opts) => lib().renderThumbnail(template, host, opts),
+      details: host => {
+        const list = document.createElement('ul');
+        const add = text => { const li = document.createElement('li'); li.textContent = text; list.appendChild(li); };
+        add(nodes.length ? `トピック ${nodes.length} 件` : 'トピックなし（見た目だけ）');
+        if (template.content?.groups?.length) add(`グループ ${template.content.groups.length} 件`);
+        const presetId = template.style?.depthPresetId;
+        const preset = presetId && global.MeldexBoardDepthPresets?.find ? global.MeldexBoardDepthPresets.find(presetId) : null;
+        add(`階層別スタイル: ${preset?.name || (template.style?.depthStyles ? 'テンプレート独自' : '標準')}`);
+        if (template.style?.fontFamily) add(`フォント: ${template.style.fontFamily}`);
+        if (template.style?.bgColor) add(`背景色: ${template.style.bgColor}`);
+        host.appendChild(list);
+      },
+    };
+  }
+
+  async function askName(defaultName) {
+    if (typeof global.cfPrompt === 'function') return global.cfPrompt('テンプレート名', defaultName);
+    return global.prompt?.('テンプレート名', defaultName) ?? null;
+  }
+
+  async function askConfirm(message, options) {
+    if (typeof global.cfConfirm === 'function') return global.cfConfirm(message, options);
+    return !!global.confirm?.(message);
+  }
+
+  async function chooseApplyMode(template) {
+    const board = boardState();
+    if (!hasContent(board)) return 'full';
+    if (!(template.content?.nodes || []).length) return 'style';
+    if (typeof global.GBUI?.createModal !== 'function') return 'style';
+    return new Promise(resolve => {
+      let result = null;
+      const body = document.createElement('p');
+      body.textContent = 'このボードには既に内容があります。既存のトピックは削除しません。どのように適用しますか？';
+      const mk = (label, value, primary) => {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = primary ? 'gb-btn gb-btn-primary' : 'gb-btn'; btn.textContent = label;
+        btn.dataset.e2eId = `board-template-mode-${value || 'cancel'}`;
+        btn.addEventListener('click', () => { result = value; modal.close(value || 'cancel'); });
+        return btn;
+      };
+      const modal = global.GBUI.createModal({
+        id: 'board-template-apply-mode', title: `「${template.name}」を適用`, body,
+        footer: [mk('キャンセル', null), mk('内容を横に追加', 'append'), mk('スタイルだけ適用', 'style', true)],
+        variant: 'standard', onClose: () => resolve(result),
+      });
+      modal.open();
+    });
+  }
+
+  async function open(options = {}) {
+    if (!global.MeldexTemplatePicker) throw new Error('テンプレート選択画面を読み込めませんでした');
+    let library = null;
+    const loadItems = async () => {
+      // 読めない時は空の一覧で表示だけ続け、保存操作は読み直してから行う（空で上書きしない）。
+      library = await loadLibrary().catch(error => { status(error.message, true); return { failed: true, remote: false, templates: [], payload: {} }; });
+      return [...lib().builtinTemplates(), ...library.templates].map(toPickerItem);
+    };
+    const board = boardState();
+    const editable = isBoardEditable(board);
+    return global.MeldexTemplatePicker.open({
+      id: 'board-templates',
+      title: 'ボードテンプレート',
+      loadItems,
+      selectedId: options.selectedId || lib().defaultTemplateId(),
+      emptyText: 'テンプレートはありません',
+      primaryAction: {
+        label: hasContent(board) ? '適用…' : 'このテンプレートで始める',
+        when: () => editable,
+        run: async (item) => {
+          const mode = await chooseApplyMode(item);
+          if (!mode) return false;
+          const result = applyTemplate(item, mode);
+          status(mode === 'style' ? `「${item.name}」のスタイルを適用しました`
+            : `「${item.name}」を適用しました（トピック ${result.created} 件）`);
+          return true;
+        },
+      },
+      itemActions: [
+        { label: '名前を変更', when: item => !item.builtin, e2eId: 'board-templates-rename', run: async (item, ctx) => {
+          const name = String(await askName(item.name) || '').trim();
+          if (!name || name === item.name) return false;
+          if (library.templates.some(other => other.name === name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
+          await persistLibrary(library, library.templates.map(other => other.id === item.id ? { ...other, name } : other));
+          await ctx.refresh();
+          ctx.select(item.id);
+          ctx.setStatus('名前を変更しました');
+          return false;
+        } },
+        { label: '削除', danger: true, when: item => !item.builtin, e2eId: 'board-templates-delete', run: async (item, ctx) => {
+          if (!await askConfirm(`テンプレート「${item.name}」を削除しますか？\nこのテンプレートから作ったボードは変わりません。`)) return false;
+          await persistLibrary(library, library.templates.filter(other => other.id !== item.id));
+          await ctx.refresh();
+          ctx.setStatus('削除しました');
+          return false;
+        } },
+      ],
+      footerActions: board ? [{
+        label: '現在のボードから作成', e2eId: 'board-templates-create', run: async (ctx) => {
+          if (!library || library.failed) library = await loadLibrary();
+          const template = await createFromCurrent(library);
+          if (!template) return false;
+          await ctx.refresh();
+          ctx.select(template.id);
+          ctx.setStatus(`「${template.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
+          return false;
+        },
+      }] : [],
+    });
+  }
+
+  async function createFromCurrent(library) {
+    const current = boardState();
+    if (!current) throw new Error('ボードを開いてから作成してください');
+    const base = String(current.path || '').split(/[\\/]/).pop().replace(/\.(mel-board|board\.md|md)$/i, '') || 'マイテンプレート';
+    const name = String(await askName(base) || '').trim();
+    if (!name) return null;
+    if (library.templates.some(other => other.name === name)) throw new Error('同名のテンプレートがあります');
+    const includeContent = hasContent(current)
+      ? await askConfirm('トピックの構成もテンプレートに含めますか？', { okLabel: '構成も含める', cancelLabel: '見た目だけ保存', danger: false })
+      : false;
+    const template = validateTemplate(captureTemplate(current, { name, includeContent }));
+    await persistLibrary(library, [...library.templates, template]);
+    return template;
+  }
+
+  async function registerCurrent() {
+    const library = await loadLibrary();
+    const template = await createFromCurrent(library);
+    if (template) status(`ボードテンプレート「${template.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
+    return template;
+  }
+
+  global.MeldexBoardTemplates = Object.freeze({
+    SCHEMA_VERSION,
+    open,
+    registerCurrent,
+    captureTemplate,
+    applyTemplate,
+    validateTemplate,
+    loadLibrary,
+    isBoardEditable,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
 
@@ -65706,7 +66851,7 @@ function _sn2StopSep() {
     const canvas = boardRoot.querySelector('[data-bd-role="canvas"]');
     const guide = document.createElement('div');
     guide.className = 'bd-empty-guide';
-    guide.setAttribute('aria-hidden', 'true');
+    guide.setAttribute('role', 'note');
     guide.dataset.e2eId = `board-${identity}-empty-guide`;
     const touchGuide = root.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
     guide.innerHTML = touchGuide
@@ -65715,6 +66860,21 @@ function _sn2StopSep() {
       : '<div class="bd-empty-guide-title">ダブルクリックでトピックを追加</div>'
       + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
       + '<div class="bd-empty-guide-hint">トピックを選んで Tab でサブトピックを追加</div>';
+    // 空のボードでは、ここからサムネイル付きのテンプレート選択を開ける（自動では開かない）。
+    if (root.MeldexBoardTemplates?.open) {
+      const templateButton = document.createElement('button');
+      templateButton.type = 'button';
+      templateButton.className = 'bd-empty-guide-template';
+      templateButton.textContent = 'テンプレートから始める';
+      templateButton.dataset.e2eId = `board-${identity}-empty-guide-template`;
+      templateButton.addEventListener('pointerdown', event => event.stopPropagation());
+      templateButton.addEventListener('dblclick', event => event.stopPropagation());
+      templateButton.addEventListener('click', event => {
+        event.stopPropagation();
+        root.MeldexBoardTemplates.open().catch?.(error => root.showStatus?.(error.message, true));
+      });
+      guide.appendChild(templateButton);
+    }
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);
@@ -67591,7 +68751,8 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
-  <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート">
+  <button type="button" class="tb-text-btn sn2-template-button" data-sn-action="templatePicker" title="テンプレート" aria-label="テンプレート" aria-haspopup="dialog"><span class="ico ico-layoutTemplate"></span><span class="sn2-template-button-label">マンガシナリオ</span></button>
+  <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート" hidden>
     <option value="manga">マンガシナリオ</option>
     <option value="drama">ドラマ・映画シナリオ</option>
     <option value="afureko">アフレコシナリオ</option>
@@ -67932,6 +69093,7 @@ class ScriptNoteComponent extends ToolComponent {
     });
     // 現在のlayoutModeに合わせて選択
     if (this._editor?.doc?.layoutMode) sel.value = this._editor.doc.layoutMode;
+    this._syncTemplateButton?.();
   }
 
   _showTitleRenameModal() {
@@ -68002,6 +69164,7 @@ class ScriptNoteComponent extends ToolComponent {
 
   _showTemplateSelectModal() {
     this._refreshTemplateSelect();
+    if (typeof this._showTemplatePicker === 'function') return this._showTemplatePicker();
     return this._showToolbarSelectModal({
       sourceSelector: '#scenario-note-layout-select',
       title: 'テンプレート選択',
@@ -68132,8 +69295,9 @@ class ScriptNoteComponent extends ToolComponent {
         this._addTemplatePreset({ allowOverwrite: true });
         return;
       }
-      if (action === 'manageTemplates') {
-        this._showPresetManager('template');
+      if (action === 'manageTemplates' || action === 'templatePicker') {
+        if (typeof this._showTemplatePicker === 'function') this._showTemplatePicker();
+        else this._showPresetManager('template');
         return;
       }
     });
@@ -68172,6 +69336,7 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor._render();
         this._editor._markDirty();
         this._syncDetailPanel();
+        this._syncTemplateButton?.();
       });
     }
     const titleInput = this.el.querySelector('#title-input');
@@ -68831,6 +69996,189 @@ class ScriptNoteComponent extends ToolComponent {
 }
 
 registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenText', label: 'シナリオ', multi: true, requiresViewLock: true });
+
+;
+
+/* === gb-scriptnote-template-picker.js === */
+;
+/* gb-scriptnote-template-picker.js: シナリオのテンプレート選択（共通のサムネイル選択画面）。
+ *
+ * ツールバーのテンプレートボタン・管理ボタン・モバイル編集バーのどこから開いても、この画面を使う。
+ * 適用は従来の #scenario-note-layout-select の change 経路（取り消し記録・再描画込み）へ渡す。
+ * 自分のテンプレートの保存・複製・並べ替え・削除は既存の保存処理（設定の取り消し記録つき）を使う。
+ */
+(function initScriptNoteTemplatePicker(global) {
+  'use strict';
+
+  const BUILTIN = [
+    { id: 'manga', name: 'マンガシナリオ', description: 'ページとコマで区切り、セリフ・ト書き・モノローグを書き分けるマンガ向けの書式。',
+      sample: [['h2', 'P1'], ['line', 'コマ1　教室・放課後'], ['line', 'ト書き：窓の外を見る主人公'], ['say', '主人公「……まだ帰らないの？」'], ['line', 'コマ2'], ['say', 'ヒロイン「もう少しだけ」']] },
+    { id: 'drama', name: 'ドラマ・映画シナリオ', description: '柱（場所・時間）、ト書き、台詞で構成する映像向けの書式。',
+      sample: [['h2', '○ 駅前・夜'], ['line', '　雨が降っている。'], ['say', '主人公「待った？」'], ['say', 'ヒロイン「ううん、今来たところ」'], ['line', '　二人、歩き出す。']] },
+    { id: 'afureko', name: 'アフレコシナリオ', description: 'タイムと役名を左に置き、収録で読みやすい台詞の並びにする書式。',
+      sample: [['h2', 'Aパート'], ['say', '00:12　主人公　行くぞ！'], ['say', '00:15　相棒　　おう！'], ['line', '00:18　（SE：爆発音）'], ['say', '00:20　主人公　間に合え……！']] },
+    { id: 'stage', name: '舞台シナリオ', description: '場・登場人物・台詞・動作の指示（ト書き）を舞台上演向けに並べる書式。',
+      sample: [['h2', '第一場　公園'], ['line', '（明転。ベンチに主人公）'], ['say', '主人公　ここに来るのも久しぶりだ。'], ['line', '（ヒロイン、上手より登場）'], ['say', 'ヒロイン　やっぱりここにいた。']] },
+  ];
+
+  function readCustom() {
+    const names = typeof global._snToolPresetNames === 'function'
+      ? global._snToolPresetNames(global.SN2_TEMPLATE_STORAGE_KEY || 'sn2-templates', global.SN2_TEMPLATE_ORDER_STORAGE_KEY || 'sn2-templates-order')
+      : [];
+    const data = typeof global._snToolReadJsonObject === 'function' ? global._snToolReadJsonObject('sn2-templates') : {};
+    return names.filter(name => Object.prototype.hasOwnProperty.call(data, name)).map(name => ({ name, value: data[name] || {} }));
+  }
+
+  function renderSample(host, sample, options = {}) {
+    const page = document.createElement('div');
+    page.className = 'gb-tpl-doc';
+    if (options.vertical) {
+      page.style.writingMode = 'vertical-rl';
+      page.style.padding = '7% 8%';
+    }
+    sample.forEach(([kind, text]) => {
+      const row = document.createElement('div');
+      row.className = kind === 'h2' ? 'gb-tpl-doc-h2' : 'gb-tpl-doc-line';
+      if (kind === 'say') row.style.fontWeight = '600';
+      row.textContent = text;
+      page.appendChild(row);
+    });
+    host.appendChild(page);
+  }
+
+  // 名前入力ダイアログを二重に開かない（連打・二度押し対策）。
+  function nameDialogOpen() {
+    return !!document.querySelector('[data-e2e-id="scriptnote-name-overlay"]');
+  }
+
+  function items() {
+    const builtins = BUILTIN.map(item => ({
+      id: item.id, name: item.name, description: item.description, builtin: true, badge: '初期搭載',
+      category: 'builtin', categoryLabel: '初期搭載',
+      renderThumbnail: host => renderSample(host, item.sample),
+    }));
+    const custom = readCustom().map(({ name, value }) => {
+      const base = BUILTIN.find(item => item.id === value.layoutMode) || BUILTIN[0];
+      const vertical = (value.editor?.viewMode || value.viewMode || value.rubyPresentation?.writingMode) === 'vertical';
+      return {
+        id: 'custom:' + name, name, builtin: false, badge: 'カスタム', category: 'custom', categoryLabel: 'カスタム',
+        description: `「${base.name}」をもとにした書式${vertical ? '（縦書き）' : ''}。タイプの書式とエディタ設定を保存しています。`,
+        renderThumbnail: host => renderSample(host, base.sample, { vertical }),
+      };
+    });
+    return [...builtins, ...custom];
+  }
+
+  function install() {
+    // class 宣言はwindowのプロパティにならないため、素の識別子で参照する。
+    const Component = typeof ScriptNoteComponent !== 'undefined' ? ScriptNoteComponent : global.ScriptNoteComponent;
+    if (!Component?.prototype || Component.prototype._showTemplatePicker) return;
+
+    Component.prototype._currentTemplateId = function currentTemplateId() {
+      const select = this.el?.querySelector('#scenario-note-layout-select');
+      return select?.value || this._editor?.doc?.layoutMode || 'manga';
+    };
+
+    Component.prototype._syncTemplateButton = function syncTemplateButton() {
+      const button = this.el?.querySelector('[data-sn-action="templatePicker"]');
+      if (!button) return;
+      const id = this._currentTemplateId();
+      const label = id.startsWith('custom:') ? id.slice(7) : (BUILTIN.find(item => item.id === id)?.name || 'テンプレート');
+      const text = button.querySelector('.sn2-template-button-label');
+      if (text) text.textContent = label;
+      button.title = `テンプレート: ${label}`;
+      button.setAttribute('aria-label', `テンプレート: ${label}`);
+    };
+
+    Component.prototype._showTemplatePicker = function showTemplatePicker() {
+      if (!global.MeldexTemplatePicker) {
+        if (typeof global.showStatus === 'function') global.showStatus('テンプレート選択画面を読み込めませんでした', true);
+        return false;
+      }
+      this._refreshTemplateSelect?.();
+      const cfgKind = 'template';
+      const custom = item => !item.builtin;
+      const nameOf = item => item.id.slice(7);
+      const after = ctx => { ctx.refresh(items()); this._syncTemplateButton(); };
+      global.MeldexTemplatePicker.open({
+        id: 'scriptnote-templates',
+        title: 'シナリオテンプレート',
+        items: items(),
+        selectedId: this._currentTemplateId(),
+        currentId: this._currentTemplateId(),
+        primaryAction: {
+          label: '適用',
+          when: () => !!this._editor?.doc,
+          run: item => {
+            const select = this.el?.querySelector('#scenario-note-layout-select');
+            if (!select || !this._editor?.doc) throw new Error('シナリオを開いてから適用してください');
+            if (![...select.options].some(option => option.value === item.id)) this._refreshTemplateSelect?.();
+            select.value = item.id;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            this._syncTemplateButton();
+            if (typeof global.showStatus === 'function') global.showStatus(`テンプレート「${item.name}」を適用しました`);
+            return true;
+          },
+        },
+        itemActions: [
+          { label: '複製', when: custom, e2eId: 'scriptnote-templates-duplicate', run: (item, ctx) => {
+            if (nameDialogOpen()) return false;
+            this._duplicateManagedPreset(cfgKind, nameOf(item), () => after(ctx));
+            return false;
+          } },
+          { label: '前へ', when: custom, e2eId: 'scriptnote-templates-up', run: (item, ctx) => {
+            this._moveManagedPreset(cfgKind, nameOf(item), -1, () => after(ctx));
+            ctx.select(item.id);
+            return false;
+          } },
+          { label: '後へ', when: custom, e2eId: 'scriptnote-templates-down', run: (item, ctx) => {
+            this._moveManagedPreset(cfgKind, nameOf(item), 1, () => after(ctx));
+            ctx.select(item.id);
+            return false;
+          } },
+          { label: '削除', danger: true, when: custom, e2eId: 'scriptnote-templates-delete', run: async (item, ctx) => {
+            await this._deleteManagedPreset(cfgKind, nameOf(item), () => after(ctx));
+            return false;
+          } },
+        ],
+        footerActions: [{
+          label: '現在の設定から作成', e2eId: 'scriptnote-templates-create',
+          run: ctx => {
+            if (!this._editor?.doc) throw new Error('シナリオを開いてから作成してください');
+            if (nameDialogOpen()) return false;
+            this._addTemplatePreset({ allowOverwrite: false, okText: '登録', onSaved: () => after(ctx) });
+            return false;
+          },
+        }],
+      });
+      return true;
+    };
+  }
+
+  // 取り消し・やり直しで書式が戻った時、ツールバーの表示（隠れた選択欄とボタン）を本体へ合わせる。
+  global.addEventListener?.('meldex:scriptnote-history-restored', event => {
+    const editor = event?.detail?.editor;
+    const layoutMode = editor?.doc?.layoutMode;
+    if (!layoutMode || !editor?.host) return;
+    const roots = [...document.querySelectorAll('[data-sn-action="templatePicker"]')]
+      .map(button => button.closest('.gb-pane-content, [data-pane-id], .tab-content') || button.parentElement?.parentElement)
+      .filter(root => root && root.contains(editor.host));
+    roots.forEach(root => {
+      const select = root.querySelector('#scenario-note-layout-select');
+      if (select && [...select.options].some(option => option.value === layoutMode)) select.value = layoutMode;
+      const button = root.querySelector('[data-sn-action="templatePicker"]');
+      const label = BUILTIN.find(item => item.id === (select?.value || layoutMode))?.name
+        || (String(select?.value || '').startsWith('custom:') ? select.value.slice(7) : 'テンプレート');
+      const text = button?.querySelector('.sn2-template-button-label');
+      if (text) text.textContent = label;
+      button?.setAttribute('title', `テンプレート: ${label}`);
+      button?.setAttribute('aria-label', `テンプレート: ${label}`);
+    });
+  });
+
+  install();
+  global.MeldexScriptNoteTemplatePicker = Object.freeze({ install, builtins: () => BUILTIN.map(item => ({ ...item })) });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
 
@@ -144856,6 +146204,10 @@ function hideBoardNoteTab() {
       comp._addTemplatePreset({ allowOverwrite: true });
       return true;
     }
+    if (action === 'manageTemplates' && typeof comp._showTemplatePicker === 'function') {
+      comp._showTemplatePicker();
+      return true;
+    }
     if (action === 'manageTemplates' && typeof comp._showPresetManager === 'function') {
       comp._showPresetManager('template');
       return true;
@@ -193839,118 +195191,6 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
   return true;
 }
 
-/* --- テンプレートプレビューモーダル（モバイル: 重ねモーダルとして継続使用） --- */
-
-function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null, opts = {}) {
-  const trigger = _dbTemplateTrigger(triggerEl);
-  const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
-  const descId = `db-template-preview-desc-${seq}`;
-  const body = document.createElement('div');
-  body.className = 'db-template-preview-content';
-
-  const desc = document.createElement('p');
-  desc.id = descId;
-  desc.textContent = tmpl.description;
-  desc.className = 'db-template-description';
-  body.appendChild(desc);
-
-  // ビュー一覧（savedViews があれば詳細表示、無ければ旧形式の推奨ビュー表示）
-  body.appendChild(_buildDbTemplateViewsSummarySection(tmpl));
-
-  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
-    const layoutsDiv = document.createElement('div');
-    layoutsDiv.className = 'db-template-mode-summary';
-    layoutsDiv.textContent = 'トピックレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
-    body.appendChild(layoutsDiv);
-  }
-
-  // プロパティ一覧テーブル（デスクトップのプレビューペインと共通の構築関数を使用）
-  body.appendChild(_buildDbTemplatePropTable(tmpl));
-
-  // ボタン（カード側の操作ボタン廃止に伴い、カスタムテンプレートの編集/削除もここへ集約）
-  const cancelBtn = document.createElement('button');
-  _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-preview-back');
-  cancelBtn.textContent = '戻る';
-  const applyBtn = document.createElement('button');
-  _setupDbTemplateButton(applyBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-preview-apply');
-  applyBtn.textContent = '適用';
-  applyBtn.addEventListener('click', async () => {
-    const applied = await _doApplyTemplate(dbPath, tmpl, overlay, trigger);
-    if (applied) {
-      _closeDbTemplateOverlay(parentOverlay, parentOverlay?._dbTemplateTrigger || trigger, { reason: 'applied' });
-    }
-  });
-  const footerButtons = [cancelBtn];
-  if (tmpl.tier === 0) {
-    const editBtn = document.createElement('button');
-    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-preview-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
-    editBtn.textContent = '編集';
-    editBtn.addEventListener('click', () => {
-      const editTrigger = parentOverlay?._dbTemplateTrigger || trigger;
-      _closeDbTemplateOverlay(overlay, editTrigger, { restoreFocus: false });
-      _closeDbTemplateOverlay(parentOverlay, editTrigger, { restoreFocus: false });
-      showEditTemplateModal(tmpl, dbPath, editTrigger);
-    });
-    footerButtons.push(editBtn);
-
-    const delBtn = document.createElement('button');
-    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-preview-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
-    delBtn.textContent = '削除';
-    delBtn.addEventListener('click', async () => {
-      const deleted = await _deleteDbCustomTemplateWithConfirm(tmpl, opts.onChanged, delBtn);
-      if (deleted) {
-        _closeDbTemplateOverlay(overlay, parentOverlay?._dbTemplateTrigger || trigger, { restoreFocus: false });
-      }
-    });
-    footerButtons.push(delBtn);
-  }
-  footerButtons.push(applyBtn);
-  let busy = false;
-  const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
-  const modalApi = window.GBUI.createModal({
-    id: `db-template-preview-${seq}`,
-    title: tmpl.name,
-    body,
-    footer: footerButtons,
-    variant: 'standard',
-    extraClass: 'db-template-preview-modal',
-    geometryKey: 'db-template-preview',
-    minWidth: '0',
-    initialFocus: cancelBtn,
-    returnFocus: trigger || undefined,
-    closeLabel: 'テンプレートプレビューを閉じる',
-    onBeforeClose: reason => !busy || reason === 'applied' || reason === 'superseded',
-    onClose: () => {
-      releaseOverflowLock();
-      // スマホの重ね下シートを閉じた直後は、親ギャラリーの再有効化が
-      // MutationObserverの次周期になる。親カードが再び操作可能になった時点でも
-      // フォーカスを補完し、戻る先を本文や背面toolbarへ流さない。
-      requestAnimationFrame(() => _focusDbTemplateTrigger(trigger));
-      setTimeout(() => _focusDbTemplateTrigger(trigger), 60);
-    },
-  });
-  const overlay = modalApi.overlay;
-  const modal = modalApi.modal;
-  modal.classList.add('modal', 'db-template-modal');
-  overlay.classList.add('modal-overlay');
-  overlay.dataset.dbTemplateModal = 'preview';
-  overlay._dbTemplateTrigger = trigger;
-  overlay._dbTemplateClose = modalApi.close;
-  overlay._dbTemplateSetBusy = (next) => {
-    busy = !!next;
-    modal.setAttribute('aria-busy', busy ? 'true' : 'false');
-    [...footerButtons, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
-      .forEach(control => { control.disabled = busy; });
-  };
-  modal.dataset.e2eId = 'db-template-preview-dialog';
-  modal.setAttribute('aria-describedby', descId);
-  modalApi.footer.classList.add('db-template-footer');
-  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
-  if (closeBtn) closeBtn.dataset.e2eId = 'db-template-preview-close';
-  cancelBtn.addEventListener('click', () => modalApi.close('back'));
-  _setDbTemplateModalSize(modal, { maxWidth: 500, maxHeight: 680, heightRatio: 0.74, minHeight: 360 });
-  modalApi.open();
-}
 /* ==============================
    gb-db-template-views.js: シートテンプレートのビュー包含
    savedViews（フィルタ/ソート/型別設定を含む）のサニタイズ・エクスポート・マージ適用を担当する。
@@ -194296,10 +195536,9 @@ function _applyDbTemplateEntityLayouts(cfg, template, overwrite, appliedViews = 
 /* ==============================
    gb-db-template-gallery-ui.js: シートテンプレートギャラリー（刷新UI）
    検索付きヘッダー + Tierチップ行 + カードグリッド/プレビューペインの2ペイン構成。
-   モーダル共通プラミング（開閉・フォーカス復帰・サイズ調整）と、
-   プロパティ表・ビュー一覧のプレビュー描画を担当する。
-   モバイルでは重ねプレビューモーダル（gb-db-templates.part02.js の showTemplatePreviewModal）を
-   引き続き使用する。
+   一覧・検索・分類・プレビューは全アプリ共通のテンプレート選択画面（gb-template-picker.js）を使い、
+   ここではシート用のサムネイル（列見出し付きの小さな表）と、列表・ビュー一覧の詳細描画、
+   作成・編集ダイアログ共通のプラミングを担当する（2026-11-11 全アプリのテンプレート画面を統一）。
 
    設計意図（UI共通ルールとの整合、2026-08-19 UI統一）:
    - カードは「クリックで選択のみ」。適用/編集/削除はデスクトップ=プレビューペイン、
@@ -194522,7 +195761,7 @@ function _dbTemplateIconHtml(icon, size) {
   return typeof lucide === 'function' ? lucide(spec, size) : '';
 }
 
-/* --- プロパティ表（デスクトップのプレビューペイン・モバイルの重ねモーダルで共用） --- */
+/* --- 列表（テンプレート選択画面のプレビュー詳細で使用） --- */
 
 function _typeLabel(type) {
   const labels = {
@@ -194635,364 +195874,142 @@ function _buildDbTemplateViewsSummarySection(tmpl) {
   return wrap;
 }
 
-/* --- テンプレートカード --- */
+/* --- サムネイル（列見出し付きの小さな表） --- */
 
-/**
- * テンプレートカードを構築する。
- * デスクトップ: クリック/Enter/Space でプレビューペインを更新（重ねモーダルは開かない）。
- * モバイル: クリック/Enter/Space で重ねプレビューモーダル（showTemplatePreviewModal）を開く。
- */
-function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
-  const card = document.createElement('div');
-  card.className = 'template-card' + (ctx.selected ? ' is-selected' : '');
-  card.dataset.e2eId = 'db-template-card';
-  card.dataset.templateId = tmpl.id;
-  card.tabIndex = 0;
-  card.setAttribute('role', 'button');
-  card.setAttribute('aria-label', 'テンプレート「' + (tmpl.name || '') + '」を確認');
-  if (!ctx.mobile) card.setAttribute('aria-pressed', ctx.selected ? 'true' : 'false');
+const _DB_TEMPLATE_TIER_LABELS = { 1: '基本', 2: '標準', 3: 'ジャンル別', custom: 'カスタム' };
 
-  const titleRow = document.createElement('div');
-  titleRow.className = 'template-card-title-row';
+function _renderDbTemplateThumbnail(tmpl, host, size) {
+  const large = size === 'large';
+  const wrap = document.createElement('div');
+  wrap.className = 'gb-tpl-sheet';
+  const head = document.createElement('div');
+  head.className = 'gb-tpl-sheet-title';
   const icon = document.createElement('span');
-  icon.innerHTML = _dbTemplateIconHtml(tmpl.icon, 18);
-  icon.className = 'template-card-icon';
-  titleRow.appendChild(icon);
-  const name = document.createElement('span');
-  name.textContent = tmpl.name;
-  name.className = 'template-card-name';
-  titleRow.appendChild(name);
-  if (tmpl.tier > 0) {
-    const badge = document.createElement('span');
-    badge.textContent = 'T' + tmpl.tier;
-    badge.className = 'template-card-badge';
-    titleRow.appendChild(badge);
-  }
-  card.appendChild(titleRow);
-
-  // 説明文はカードへ常時表示せず、ツールチップ（ホバー/フォーカス/長押し）へ集約する
-  if (tmpl.description) card.dataset.gbTooltip = tmpl.description;
-
-  const meta = document.createElement('div');
-  meta.className = 'template-card-meta';
-  const propCount = (tmpl.properties || []).length;
-  const viewCount = Array.isArray(tmpl.savedViews) && tmpl.savedViews.length
-    ? tmpl.savedViews.length
-    : (Array.isArray(tmpl.enabledModes) ? tmpl.enabledModes.length : 0);
-  meta.textContent = propCount + '列 · ' + viewCount + 'ビュー';
-  card.appendChild(meta);
-
-  const activate = () => {
-    if (ctx.mobile) {
-      showTemplatePreviewModal(tmpl, dbPath, ctx.overlay, card, { onChanged: ctx.onChanged });
-    } else if (typeof ctx.onSelect === 'function') {
-      ctx.onSelect();
-    }
-  };
-  card.addEventListener('click', activate);
-  card.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    e.preventDefault();
-    activate();
+  icon.className = 'gb-tpl-sheet-icon';
+  icon.innerHTML = _dbTemplateIconHtml(tmpl.icon, large ? 16 : 12);
+  const title = document.createElement('span');
+  title.textContent = tmpl.name || '';
+  head.append(icon, title);
+  const table = document.createElement('div');
+  table.className = 'gb-tpl-sheet-table';
+  const columns = ['名前', ...(tmpl.properties || []).map(prop => prop?.name || '').filter(Boolean)].slice(0, large ? 6 : 4);
+  table.style.gridTemplateColumns = `repeat(${columns.length}, minmax(0, 1fr))`;
+  columns.forEach(name => {
+    const cell = document.createElement('span');
+    cell.className = 'gb-tpl-sheet-th';
+    cell.textContent = name;
+    table.appendChild(cell);
   });
-
-  return card;
+  for (let row = 0; row < (large ? 5 : 3); row += 1) {
+    columns.forEach(() => {
+      const cell = document.createElement('span');
+      cell.className = 'gb-tpl-sheet-td';
+      table.appendChild(cell);
+    });
+  }
+  wrap.append(head, table);
+  host.appendChild(wrap);
 }
 
-/* --- デスクトップ用プレビューペイン --- */
-
-function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
-  if (!pane) return;
-  pane.innerHTML = '';
-  pane.dataset.templateId = tmpl.id;
-
-  const header = document.createElement('div');
-  header.className = 'db-template-preview-pane-header';
-  const icon = document.createElement('span');
-  icon.className = 'db-template-preview-pane-icon';
-  icon.innerHTML = _dbTemplateIconHtml(tmpl.icon, 22);
-  header.appendChild(icon);
-  const name = document.createElement('span');
-  name.className = 'db-template-preview-pane-name';
-  name.textContent = tmpl.name;
-  header.appendChild(name);
-  pane.appendChild(header);
-
-  if (tmpl.description) {
-    const desc = document.createElement('p');
-    desc.className = 'db-template-description';
-    desc.textContent = tmpl.description;
-    pane.appendChild(desc);
-  }
-
-  pane.appendChild(_buildDbTemplateViewsSummarySection(tmpl));
-
-  const propScroll = document.createElement('div');
-  propScroll.className = 'db-template-preview-pane-props';
-  propScroll.appendChild(_buildDbTemplatePropTable(tmpl));
-  pane.appendChild(propScroll);
-
-  if (Array.isArray(tmpl.entityTemplates) && tmpl.entityTemplates.length) {
-    const entityDiv = document.createElement('div');
-    entityDiv.className = 'db-template-preview-pane-entities';
-    entityDiv.textContent = 'トピック雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
-    pane.appendChild(entityDiv);
-  }
-
-  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
-    const layoutsDiv = document.createElement('div');
-    layoutsDiv.className = 'db-template-preview-pane-entities';
-    layoutsDiv.textContent = 'トピックレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
-    pane.appendChild(layoutsDiv);
-  }
-
-  const actions = document.createElement('div');
-  actions.className = 'db-template-preview-pane-actions';
-  const applyBtn = document.createElement('button');
-  _setupDbTemplateButton(applyBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-preview-pane-apply', 'テンプレート「' + (tmpl.name || '') + '」を適用');
-  applyBtn.textContent = '適用';
-  applyBtn.addEventListener('click', () => {
-    _doApplyTemplate(dbPath, tmpl, ctx.overlay, ctx.overlay?._dbTemplateTrigger || applyBtn);
+function _dbTemplatePickerItems() {
+  return getAllTemplates().map(tmpl => {
+    const tierKey = tmpl.tier === 0 ? 'custom' : String(tmpl.tier || '');
+    const viewCount = Array.isArray(tmpl.savedViews) ? tmpl.savedViews.length : (tmpl.enabledModes || []).length;
+    return {
+      ...tmpl,
+      builtin: tmpl.tier !== 0,
+      category: tierKey,
+      categoryLabel: _DB_TEMPLATE_TIER_LABELS[tierKey] || '',
+      badge: `${(tmpl.properties || []).length}列・${viewCount}ビュー`,
+      renderThumbnail: (host, options) => _renderDbTemplateThumbnail(tmpl, host, options?.size),
+      details: host => {
+        host.appendChild(_buildDbTemplateViewsSummarySection(tmpl));
+        host.appendChild(_buildDbTemplatePropTable(tmpl));
+        if (Array.isArray(tmpl.entityTemplates) && tmpl.entityTemplates.length) {
+          const entityDiv = document.createElement('div');
+          entityDiv.className = 'db-template-preview-pane-entities';
+          entityDiv.textContent = 'トピック雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
+          host.appendChild(entityDiv);
+        }
+        if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
+          const layoutsDiv = document.createElement('div');
+          layoutsDiv.className = 'db-template-preview-pane-entities';
+          layoutsDiv.textContent = 'トピックレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+          host.appendChild(layoutsDiv);
+        }
+      },
+    };
   });
-  actions.appendChild(applyBtn);
-
-  if (tmpl.tier === 0) {
-    const editBtn = document.createElement('button');
-    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-preview-pane-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
-    editBtn.textContent = '編集';
-    editBtn.addEventListener('click', () => {
-      _closeDbTemplateOverlay(ctx.overlay, ctx.overlay?._dbTemplateTrigger || editBtn, { restoreFocus: false });
-      showEditTemplateModal(tmpl, dbPath, ctx.overlay?._dbTemplateTrigger || editBtn);
-    });
-    actions.appendChild(editBtn);
-
-    const delBtn = document.createElement('button');
-    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-preview-pane-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
-    delBtn.textContent = '削除';
-    delBtn.addEventListener('click', async () => {
-      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onDeleted, delBtn);
-    });
-    actions.appendChild(delBtn);
-  }
-  pane.appendChild(actions);
 }
 
-/* --- テンプレートギャラリーモーダル本体 --- */
+/* --- テンプレートギャラリー（全アプリ共通のサムネイル選択画面） --- */
 
 /**
- * テンプレートギャラリーモーダルを表示する。
- * ヘッダー（タイトル+検索+閉じる）→ Tierチップ行 → 本体（カードグリッド+プレビューペイン）→ フッター。
- * モバイルではプレビューペインを出さず、カード選択で重ねプレビューモーダルを開く。
+ * シートテンプレートの選択画面を開く。ノート・シナリオ・ボードと同じ共通画面
+ * （gb-template-picker.js）を使い、適用・編集・削除・現在のシートから作成を行う。
  */
 function showTemplateGalleryModal(dbPath, triggerEl = null) {
   const trigger = _dbTemplateTrigger(triggerEl);
-  const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
-  const descId = `db-template-gallery-desc-${seq}`;
-  const isMobile = _isDbTemplateMobileSheetMode();
-  const content = document.createElement('div');
-  content.className = 'db-template-modal-content';
-  content.style.cssText = 'display:flex;flex-direction:column;min-height:0;height:100%;';
-
-  // 検索
-  const searchInput = document.createElement('input');
-  searchInput.type = 'search';
-  searchInput.className = 'gb-input db-template-search-input';
-  searchInput.dataset.e2eId = 'db-template-search-input';
-  searchInput.placeholder = 'テンプレートを検索';
-  searchInput.setAttribute('aria-label', 'テンプレートを検索（名前・説明・列名）');
-  searchInput.style.flex = '0 0 auto';
-  content.appendChild(searchInput);
-  const desc = document.createElement('div');
-  desc.id = descId;
-  desc.className = 'gb-visually-hidden';
-  desc.textContent = 'シートに適用するテンプレートを選ぶダイアログ';
-  content.appendChild(desc);
-
-  // Tierチップ行（旧: 左サイドバー）
-  const tierRow = document.createElement('div');
-  tierRow.className = 'db-template-tier-row';
-  tierRow.style.flex = '0 0 auto';
-  tierRow.setAttribute('role', 'group');
-  tierRow.setAttribute('aria-label', 'テンプレート種別');
-  let currentTier = 'all';
-  const tierFilters = [
-    { key: 'all', label: 'すべて' },
-    { key: '1', label: '基本' },
-    { key: '2', label: '標準' },
-    { key: '3', label: 'ジャンル別' },
-    { key: 'custom', label: 'カスタム' },
-  ];
-  tierFilters.forEach(tf => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = tf.label;
-    btn.className = 'gb-btn gb-btn-sm template-tier-btn' + (tf.key === 'all' ? ' active' : '');
-    btn.dataset.tier = tf.key;
-    btn.dataset.e2eId = `db-template-tier-${tf.key}`;
-    btn.setAttribute('aria-pressed', tf.key === 'all' ? 'true' : 'false');
-    btn.addEventListener('click', () => {
-      currentTier = tf.key;
-      tierRow.querySelectorAll('.template-tier-btn').forEach(b => {
-        b.classList.remove('active');
-        b.setAttribute('aria-pressed', 'false');
-      });
-      btn.classList.add('active');
-      btn.setAttribute('aria-pressed', 'true');
-      renderTemplateCards();
-    });
-    tierRow.appendChild(btn);
-  });
-  content.appendChild(tierRow);
-
-  // 本体: カードグリッド + プレビューペイン
-  const body = document.createElement('div');
-  body.className = 'db-template-body';
-  body.style.overflowX = 'hidden';
-  const cardCol = document.createElement('div');
-  cardCol.className = 'db-template-card-col';
-  const grid = document.createElement('div');
-  grid.className = 'template-grid';
-  grid.dataset.e2eId = 'db-template-grid';
-  grid.style.overflowX = 'hidden';
-  cardCol.appendChild(grid);
-  body.appendChild(cardCol);
-
-  let previewPane = null;
-  if (!isMobile) {
-    previewPane = document.createElement('div');
-    previewPane.className = 'db-template-preview-pane';
-    previewPane.dataset.e2eId = 'db-template-preview-pane';
-    body.appendChild(previewPane);
+  if (!window.MeldexTemplatePicker) {
+    showStatus('テンプレート選択画面を読み込めませんでした', true);
+    return null;
   }
-  content.appendChild(body);
-
-  // フッター: カスタムテンプレート作成
-  const createBtn = document.createElement('button');
-  _setupDbTemplateButton(createBtn, 'gb-btn gb-btn-sm', 'db-template-create-open');
-  createBtn.textContent = '+ 現在のシートからテンプレート作成';
-  createBtn.addEventListener('click', () => {
-    _closeDbTemplateOverlay(overlay, trigger, { restoreFocus: false, reason: 'create' });
-    showCreateTemplateModal(dbPath, trigger);
-  });
-  const cancelBtn = document.createElement('button');
-  _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-gallery-cancel');
-  cancelBtn.textContent = '閉じる';
-  let busy = false;
   const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
-  const modalApi = window.GBUI.createModal({
-    id: `db-template-gallery-${seq}`,
+  const findTemplate = id => getAllTemplates().find(tmpl => tmpl.id === id) || null;
+  const picker = window.MeldexTemplatePicker.open({
+    id: 'sheet-templates',
     title: 'シートテンプレート',
-    body: content,
-    footer: [createBtn, cancelBtn],
-    variant: 'standard',
-    extraClass: 'db-template-gallery-modal',
-    geometryKey: 'db-template-gallery',
-    minWidth: '0',
-    initialFocus: dialog => dialog,
-    returnFocus: trigger || undefined,
-    closeLabel: 'シートテンプレートを閉じる',
-    onBeforeClose: reason => !busy || reason === 'applied' || reason === 'superseded',
+    items: _dbTemplatePickerItems(),
+    searchPlaceholder: 'テンプレートを検索（名前・説明・列名）',
+    emptyText: 'テンプレートがありません',
+    cardClass: 'template-card',
+    e2e: {
+      dialog: 'db-template-gallery-dialog', grid: 'db-template-grid', preview: 'db-template-preview-pane',
+      search: 'db-template-search-input', card: 'db-template-card', categoryPrefix: 'db-template-tier-',
+      apply: 'db-template-preview-pane-apply', close: 'db-template-gallery-close',
+    },
     onClose: releaseOverflowLock,
+    primaryAction: {
+      label: '適用',
+      run: async item => {
+        const tmpl = findTemplate(item.id);
+        if (!tmpl) throw new Error('テンプレートが見つかりません');
+        return _doApplyTemplate(dbPath, tmpl, null, trigger);
+      },
+    },
+    itemActions: [
+      { label: '編集', e2eId: 'db-template-preview-pane-edit', when: item => !item.builtin, run: (item, ctx) => {
+        const tmpl = findTemplate(item.id);
+        if (!tmpl) throw new Error('テンプレートが見つかりません');
+        ctx.close('edit');
+        showEditTemplateModal(tmpl, dbPath, trigger);
+        return false;
+      } },
+      { label: '削除', danger: true, e2eId: 'db-template-preview-pane-delete', when: item => !item.builtin, run: async (item, ctx) => {
+        const tmpl = findTemplate(item.id);
+        if (!tmpl) throw new Error('テンプレートが見つかりません');
+        await _deleteDbCustomTemplateWithConfirm(tmpl, () => ctx.refresh(_dbTemplatePickerItems()), null);
+        return false;
+      } },
+    ],
+    footerActions: [{
+      label: '+ 現在のシートからテンプレート作成', e2eId: 'db-template-create-open',
+      run: ctx => {
+        ctx.close('create');
+        showCreateTemplateModal(dbPath, trigger);
+        return false;
+      },
+    }],
   });
-  const overlay = modalApi.overlay;
-  const modal = modalApi.modal;
-  modal.classList.add('modal', 'db-template-modal');
-  overlay.classList.add('modal-overlay');
-  overlay.dataset.dbTemplateModal = 'gallery';
-  overlay._dbTemplateTrigger = trigger;
-  overlay._dbTemplateClose = modalApi.close;
-  overlay._dbTemplateSetBusy = (next) => {
-    busy = !!next;
-    modal.setAttribute('aria-busy', busy ? 'true' : 'false');
-    modal.querySelectorAll('button, input').forEach(control => { control.disabled = busy; });
-  };
-  modal.dataset.e2eId = 'db-template-gallery-dialog';
-  modal.setAttribute('aria-describedby', descId);
-  modalApi.body.style.cssText = 'display:flex;flex-direction:column;min-height:0;overflow:hidden;';
-  modalApi.footer.classList.add('db-template-footer');
-  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
-  if (closeBtn) closeBtn.dataset.e2eId = 'db-template-gallery-close';
-  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
-  _setDbTemplateModalSize(modal, { maxWidth: 1040, maxHeight: 820, heightRatio: 0.85, minHeight: 480 });
-  modalApi.open();
-
-  let searchQuery = '';
-  let selectedTemplateId = '';
-
-  searchInput.addEventListener('input', () => {
-    searchQuery = searchInput.value.trim();
-    renderTemplateCards();
-  });
-
-  function matchesSearch(tmpl, query) {
-    if (!query) return true;
-    const q = query.toLowerCase();
-    if ((tmpl.name || '').toLowerCase().includes(q)) return true;
-    if ((tmpl.description || '').toLowerCase().includes(q)) return true;
-    return (tmpl.properties || []).some(p => (p.name || '').toLowerCase().includes(q));
+  // 作成・編集ダイアログや後始末が使う、シートテンプレート画面の共通目印。
+  if (picker?.overlay) {
+    picker.overlay.classList.add('modal-overlay');
+    picker.overlay.dataset.dbTemplateModal = 'gallery';
+    picker.overlay._dbTemplateTrigger = trigger;
+    picker.overlay._dbTemplateClose = reason => picker.close(reason);
+    picker.modal?.classList.add('modal', 'db-template-modal');
   }
-
-  function selectTemplate(tmpl) {
-    selectedTemplateId = tmpl.id;
-    grid.querySelectorAll('.template-card').forEach(cardEl => {
-      const isSelected = cardEl.dataset.templateId === tmpl.id;
-      cardEl.classList.toggle('is-selected', isSelected);
-      cardEl.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
-    });
-    if (previewPane) {
-      _renderDbTemplatePreviewPane(previewPane, tmpl, dbPath, {
-        overlay,
-        onDeleted: () => renderTemplateCards(),
-      });
-    }
-  }
-
-  function renderTemplateCards() {
-    grid.innerHTML = '';
-    const templates = getAllTemplates();
-    const filtered = templates.filter(t => {
-      if (currentTier === 'custom') { if (t.tier !== 0) return false; }
-      else if (currentTier !== 'all' && t.tier !== Number(currentTier)) return false;
-      return matchesSearch(t, searchQuery);
-    });
-
-    if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'db-template-empty';
-      empty.dataset.e2eId = 'db-template-empty';
-      empty.textContent = searchQuery
-        ? '該当するテンプレートがありません'
-        : (currentTier === 'custom' ? 'カスタムテンプレートはまだありません' : 'テンプレートがありません');
-      grid.appendChild(empty);
-      if (previewPane) {
-        previewPane.innerHTML = '';
-        delete previewPane.dataset.templateId;
-        const hint = document.createElement('div');
-        hint.className = 'db-template-preview-empty';
-        hint.textContent = 'テンプレートを選ぶとここにプレビューが表示されます';
-        previewPane.appendChild(hint);
-      }
-      return;
-    }
-
-    filtered.forEach(tmpl => {
-      const card = _buildTemplateCard(tmpl, dbPath, {
-        overlay,
-        mobile: isMobile,
-        selected: tmpl.id === selectedTemplateId,
-        onSelect: () => selectTemplate(tmpl),
-        onChanged: () => renderTemplateCards(),
-      });
-      grid.appendChild(card);
-    });
-
-    if (!isMobile) {
-      const target = filtered.find(t => t.id === selectedTemplateId) || filtered[0];
-      if (target) selectTemplate(target);
-    }
-  }
-
-  renderTemplateCards();
+  return picker;
 }
 /* ==============================
    gb-db-template-editor-ui.js: カスタムテンプレートの作成・編集
@@ -264350,9 +265367,11 @@ function buildToolMenuItems(toolType, component) {
     ],
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
+      { label: 'テンプレート...', action: () => { const comp = formComponent; if (comp && typeof comp._showTemplatePicker === 'function') comp._showTemplatePicker(); else showStatus('シナリオを開いてから選んでください', true); }, disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
+      { label: 'シートテンプレート...', action: context => { if (typeof showTemplateGalleryModal === 'function') showTemplateGalleryModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },
       { label: '新規トピックのノートテンプレート...', action: () => MeldexNoteTemplates.show({ dbPath: currentPath }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
@@ -264365,6 +265384,8 @@ function buildToolMenuItems(toolType, component) {
     ],
     board: [
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('board', { trigger: context?.trigger }); }, disabled: !hasFile },
+      { label: 'テンプレート...', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.open().catch?.(error => showStatus(error.message, true)); }, disabled: !hasFile },
+      { label: 'テンプレートに登録', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.registerCurrent().catch(error => showStatus(error.message, true)); }, disabled: !hasFile },
       { label: '新規リンクトピック: ノート', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
