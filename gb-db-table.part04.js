@@ -3,6 +3,9 @@
 const DB_VIRTUAL_ROW_TASK_THRESHOLD = 900;
 const DB_VIRTUAL_CELL_TASK_THRESHOLD = 80000;
 const DB_VIRTUAL_ROW_OVERSCAN = 24;
+// 前後の余分の高さ（標準の行高38px×24行相当）と、行が高くても最低限確保する行数。
+const DB_VIRTUAL_OVERSCAN_PX = DB_VIRTUAL_ROW_OVERSCAN * 38;
+const DB_VIRTUAL_MIN_OVERSCAN_ROWS = 3;
 const DB_VIRTUAL_MAX_RENDERED_TASKS = 220;
 const DB_VIRTUAL_BACKLINK_DEBOUNCE_MS = 180;
 
@@ -220,11 +223,23 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     const scrollTop = scroller.scrollTop || 0;
     const anchorIndex = indexAtOffset(scrollTop);
     const anchorOffset = scrollTop - offsetFor(anchorIndex);
-    const first = Math.max(0, anchorIndex - DB_VIRTUAL_ROW_OVERSCAN);
+    // 前後の余分の行数は、表示中の行の平均の高さから約900px分にする（3〜24行）。
+    // 画像が縦に並ぶ行（1行300px以上）で常に24行ずつ確保すると、表示に必要な数の数倍を描き、
+    // パネル幅を変えるたびの測り直しが重くなる。標準の高さの行（38px）では従来どおり24行。
+    let measuredSum = 0;
+    let measuredCount = 0;
+    vState.renderedRows.forEach((row, offset) => {
+      const height = measuredHeights.get(vState.start + offset);
+      if (height) { measuredSum += height; measuredCount += 1; }
+    });
+    const averageHeight = measuredCount ? measuredSum / measuredCount : rowHeight;
+    const overscan = Math.max(DB_VIRTUAL_MIN_OVERSCAN_ROWS,
+      Math.min(DB_VIRTUAL_ROW_OVERSCAN, Math.ceil(DB_VIRTUAL_OVERSCAN_PX / Math.max(1, averageHeight))));
+    const first = Math.max(0, anchorIndex - overscan);
     const visibleCount = Math.min(
       DB_VIRTUAL_MAX_RENDERED_TASKS,
-      Math.max(Math.ceil(viewportHeight / rowHeight),
-        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + DB_VIRTUAL_ROW_OVERSCAN * 2,
+      Math.max(Math.ceil(viewportHeight / Math.max(rowHeight, averageHeight)),
+        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + overscan * 2,
     );
     const last = Math.min(rowTasks.length, first + visibleCount);
     if (!force && !remeasure && first === vState.start && last === vState.end) return;

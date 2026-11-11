@@ -5,6 +5,8 @@
   const PHONE_QUERY = '(max-width: 640px)';
   const LEFT_ZONE = 28;
   const SWIPE_DISTANCE = 72;
+  // あふれ表示を解除するのに必要な余白（px）。境目の幅で表示が反転し続けないための遊び。
+  const OVERFLOW_RELEASE_PX = 12;
   const BLOCKED = [
     'input', 'textarea', 'select', '[contenteditable="true"]',
     '[role="dialog"]', '.modal-overlay', '.gb-modal-overlay', '.gb-cal-modal-overlay',
@@ -184,7 +186,14 @@
     const { trigger } = state;
     // Compare against the space without the trigger to avoid show/hide oscillation.
     const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
-    const overflow = !isPhone() && scroll.scrollWidth > scroll.clientWidth + reserved + 1;
+    // あふれ表示へ切り替えると「＋」をスクロール枠の外へ移すため、枠の幅と中身の幅が同時に変わる。
+    // 整数（scrollWidth/clientWidth）と小数（getBoundingClientRect）の丸め差で、境目の幅では
+    // 判定が毎回反転し、下の MutationObserver 経由で同期が止まらなくなる（2026-11-11 実測:
+    // パネル幅130pxで画面全体が停止、左サイドバーの境界線ドラッグ中・起動直後に発生）。
+    // 一度あふれた後は、十分な余裕ができるまであふれ表示を保つ（ヒステリシス）。
+    const slack = scroll.scrollWidth - (scroll.clientWidth + reserved);
+    const wasOverflow = !trigger.hidden;
+    const overflow = !isPhone() && (wasOverflow ? slack > -OVERFLOW_RELEASE_PX : slack > 1);
     if (trigger.hidden === overflow) trigger.hidden = !overflow;
     // Keep creation available when the final tab and its following + are clipped.
     if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
@@ -382,7 +391,14 @@
   function scheduleSync() {
     if (syncQueued) return;
     syncQueued = true;
-    const run = () => { syncQueued = false; syncAll(); };
+    const run = () => {
+      syncQueued = false;
+      syncAll();
+      // 同期処理そのものが行ったDOM変更（ボタンの出し入れ・表示切替）の通知は捨てる。
+      // 捨てないと、その通知で同じ同期がマイクロタスクのまま再実行され、条件次第で
+      // 描画へ一度も戻らない無限連鎖になる（画面は止まるがウィンドウは閉じられる状態）。
+      observer?.takeRecords();
+    };
     if (typeof queueMicrotask === 'function') queueMicrotask(run);
     else setTimeout(run, 0);
   }

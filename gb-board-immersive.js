@@ -438,7 +438,15 @@
       ['top', 'bottom', 'right'].forEach(edge => hide(instance, edge));
     });
   });
-  new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+  // 文書内の追加・削除はシートの描画などで大量に起きる。そのたびに文書全体を検索すると
+  // パネル幅の変更（境界線ドラッグ）が重くなるため、同じ処理単位の変化は1回の走査にまとめる。
+  let scanQueued = false;
+  const scheduleScan = () => {
+    if (scanQueued) return;
+    scanQueued = true;
+    setTimeout(() => { scanQueued = false; scan(); }, 0);
+  };
+  new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
   setInterval(scan, 350);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scan, { once: true });
   else scan();

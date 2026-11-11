@@ -195,7 +195,9 @@
   function _refresh() {
     if (!document.body) return;
     const enabled = _isEnabled();
-    const modalOpen = _hasBlockingModal();
+    // 無効（パソコン表示）の時はどのバーも出さないため、文書全体からダイアログを探す重い判定を省く。
+    // パネル幅の変更や大きなシートの描画のたびに走り、境界線ドラッグを重くしていた（2026-11-11）。
+    const modalOpen = enabled && _hasBlockingModal();
     const keyboardOpen = document.body.dataset.cloudMobileKeyboard === '1';
     const annotationTextInput = _annotationTextInputFromNode(document.activeElement);
     const annotationActive = _isAnnotationActive();

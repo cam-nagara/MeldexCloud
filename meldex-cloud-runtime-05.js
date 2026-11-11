@@ -66919,7 +66919,15 @@ function _sn2StopSep() {
       ['top', 'bottom', 'right'].forEach(edge => hide(instance, edge));
     });
   });
-  new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+  // 文書内の追加・削除はシートの描画などで大量に起きる。そのたびに文書全体を検索すると
+  // パネル幅の変更（境界線ドラッグ）が重くなるため、同じ処理単位の変化は1回の走査にまとめる。
+  let scanQueued = false;
+  const scheduleScan = () => {
+    if (scanQueued) return;
+    scanQueued = true;
+    setTimeout(() => { scanQueued = false; scan(); }, 0);
+  };
+  new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
   setInterval(scan, 350);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scan, { once: true });
   else scan();
@@ -147346,7 +147354,9 @@ function hideBoardNoteTab() {
   function _refresh() {
     if (!document.body) return;
     const enabled = _isEnabled();
-    const modalOpen = _hasBlockingModal();
+    // 無効（パソコン表示）の時はどのバーも出さないため、文書全体からダイアログを探す重い判定を省く。
+    // パネル幅の変更や大きなシートの描画のたびに走り、境界線ドラッグを重くしていた（2026-11-11）。
+    const modalOpen = enabled && _hasBlockingModal();
     const keyboardOpen = document.body.dataset.cloudMobileKeyboard === '1';
     const annotationTextInput = _annotationTextInputFromNode(document.activeElement);
     const annotationActive = _isAnnotationActive();
@@ -172652,6 +172662,8 @@ if (typeof window !== 'undefined') {
   const PHONE_QUERY = '(max-width: 640px)';
   const LEFT_ZONE = 28;
   const SWIPE_DISTANCE = 72;
+  // あふれ表示を解除するのに必要な余白（px）。境目の幅で表示が反転し続けないための遊び。
+  const OVERFLOW_RELEASE_PX = 12;
   const BLOCKED = [
     'input', 'textarea', 'select', '[contenteditable="true"]',
     '[role="dialog"]', '.modal-overlay', '.gb-modal-overlay', '.gb-cal-modal-overlay',
@@ -172831,7 +172843,14 @@ if (typeof window !== 'undefined') {
     const { trigger } = state;
     // Compare against the space without the trigger to avoid show/hide oscillation.
     const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
-    const overflow = !isPhone() && scroll.scrollWidth > scroll.clientWidth + reserved + 1;
+    // あふれ表示へ切り替えると「＋」をスクロール枠の外へ移すため、枠の幅と中身の幅が同時に変わる。
+    // 整数（scrollWidth/clientWidth）と小数（getBoundingClientRect）の丸め差で、境目の幅では
+    // 判定が毎回反転し、下の MutationObserver 経由で同期が止まらなくなる（2026-11-11 実測:
+    // パネル幅130pxで画面全体が停止、左サイドバーの境界線ドラッグ中・起動直後に発生）。
+    // 一度あふれた後は、十分な余裕ができるまであふれ表示を保つ（ヒステリシス）。
+    const slack = scroll.scrollWidth - (scroll.clientWidth + reserved);
+    const wasOverflow = !trigger.hidden;
+    const overflow = !isPhone() && (wasOverflow ? slack > -OVERFLOW_RELEASE_PX : slack > 1);
     if (trigger.hidden === overflow) trigger.hidden = !overflow;
     // Keep creation available when the final tab and its following + are clipped.
     if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
@@ -173029,7 +173048,14 @@ if (typeof window !== 'undefined') {
   function scheduleSync() {
     if (syncQueued) return;
     syncQueued = true;
-    const run = () => { syncQueued = false; syncAll(); };
+    const run = () => {
+      syncQueued = false;
+      syncAll();
+      // 同期処理そのものが行ったDOM変更（ボタンの出し入れ・表示切替）の通知は捨てる。
+      // 捨てないと、その通知で同じ同期がマイクロタスクのまま再実行され、条件次第で
+      // 描画へ一度も戻らない無限連鎖になる（画面は止まるがウィンドウは閉じられる状態）。
+      observer?.takeRecords();
+    };
     if (typeof queueMicrotask === 'function') queueMicrotask(run);
     else setTimeout(run, 0);
   }
@@ -184088,6 +184114,9 @@ function _refreshSheetBadges(ctx) {
 const DB_VIRTUAL_ROW_TASK_THRESHOLD = 900;
 const DB_VIRTUAL_CELL_TASK_THRESHOLD = 80000;
 const DB_VIRTUAL_ROW_OVERSCAN = 24;
+// 前後の余分の高さ（標準の行高38px×24行相当）と、行が高くても最低限確保する行数。
+const DB_VIRTUAL_OVERSCAN_PX = DB_VIRTUAL_ROW_OVERSCAN * 38;
+const DB_VIRTUAL_MIN_OVERSCAN_ROWS = 3;
 const DB_VIRTUAL_MAX_RENDERED_TASKS = 220;
 const DB_VIRTUAL_BACKLINK_DEBOUNCE_MS = 180;
 
@@ -184305,11 +184334,23 @@ function _dbRunVirtualRowRenderer(ctx, config) {
     const scrollTop = scroller.scrollTop || 0;
     const anchorIndex = indexAtOffset(scrollTop);
     const anchorOffset = scrollTop - offsetFor(anchorIndex);
-    const first = Math.max(0, anchorIndex - DB_VIRTUAL_ROW_OVERSCAN);
+    // 前後の余分の行数は、表示中の行の平均の高さから約900px分にする（3〜24行）。
+    // 画像が縦に並ぶ行（1行300px以上）で常に24行ずつ確保すると、表示に必要な数の数倍を描き、
+    // パネル幅を変えるたびの測り直しが重くなる。標準の高さの行（38px）では従来どおり24行。
+    let measuredSum = 0;
+    let measuredCount = 0;
+    vState.renderedRows.forEach((row, offset) => {
+      const height = measuredHeights.get(vState.start + offset);
+      if (height) { measuredSum += height; measuredCount += 1; }
+    });
+    const averageHeight = measuredCount ? measuredSum / measuredCount : rowHeight;
+    const overscan = Math.max(DB_VIRTUAL_MIN_OVERSCAN_ROWS,
+      Math.min(DB_VIRTUAL_ROW_OVERSCAN, Math.ceil(DB_VIRTUAL_OVERSCAN_PX / Math.max(1, averageHeight))));
+    const first = Math.max(0, anchorIndex - overscan);
     const visibleCount = Math.min(
       DB_VIRTUAL_MAX_RENDERED_TASKS,
-      Math.max(Math.ceil(viewportHeight / rowHeight),
-        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + DB_VIRTUAL_ROW_OVERSCAN * 2,
+      Math.max(Math.ceil(viewportHeight / Math.max(rowHeight, averageHeight)),
+        indexAtOffset(scrollTop + viewportHeight - 1) - anchorIndex + 1) + overscan * 2,
     );
     const last = Math.min(rowTasks.length, first + visibleCount);
     if (!force && !remeasure && first === vState.start && last === vState.end) return;
