@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.465",
+  "manual_version": "0.7.466",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "f3ed9ae9bff28e7cd75e0f067130b47931e3f9c3c68ea7cd3a07eea0182ad6eb",
+  "source_digest": "c8c7d6196e9abaa478ec827ab7265809102870ee7e5198fb0eec482c0c7b2049",
   "document_count": 204,
-  "chunk_count": 1957,
+  "chunk_count": 1958,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -256,7 +256,7 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "source_sha256": "501df7322903e07d195116fb71fe390ada4990b45bf7744eac8c41903ef3a2ce",
+      "source_sha256": "9a781f2f68eef3116641e99b2cfbd6b10fd726fca557948905dff8300a335ca6",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md"
     },
     {
@@ -9812,9 +9812,9 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "モデルを選ぶ",
+      "heading": "大量の画像ファイル名をまとめて変更する",
       "anchor": "_7",
-      "text": "チャット下部でCodex CLI / Claude Code / Antigravity CLIのいずれかを選ぶと、モデル欄の一覧から候補を選べます。\nプロバイダ\n主な候補\nClaude Code\nCLI既定（推奨）/ Opus（最新版）/ Sonnet（最新版）/ Haiku（最新版）/ Fable（最新版）\nCodex CLI\nCLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna\nAntigravity CLI\nCLI既定（推奨）/ Gemini 4 Carbon / Gemini 4 Argon / Gemini 3.8 Flash / Claude Sonnet 5.5 / Claude Opus 5.5 / GPT-OSS 120B\n一覧の一番上にある CLI既定（推奨） を選ぶと、Meldexは特定のモデルを指定せず、CLI自身が選ぶ既定モデルで動作します。\n迷ったときや、CLI側が新しいモデルへ切り替わったことをそのまま使いたいときは、CLI既定を選んでおくのがおすすめです。\n設定ダイアログの 設定 → AI → CLI でも、プロバイダごとに使うモデルを選べます。ここで選んだ値は、チャット側のモデル一覧にも反映され、初回はその値が自動的に選ばれた状態になります。「CLI既定（推奨）」のままにすると、CLI側の既定モデルが使われます。",
+      "text": "デスクトップ版のCLIチャットでは、同じ規則で複数の画像ファイル名を変更する依頼を、Meldexの一括改名機能で処理できます。たとえば、対象フォルダを選び、次のように依頼します。\nこのフォルダ直下の画像ファイル名から、先頭の日時と区切りをすべて削除してください。\nCLIはファイルを1件ずつ変更せず、Meldexへ一括操作を1回依頼します。実行前に変更後の名前を全件確認し、既存ファイルは上書きしません。同名になる場合は変更前に停止するか、依頼内容に応じて (2)、(3) の連番を付けます。すでに日時が無い名前は変更しないため、途中で停止した後も同じ依頼を再実行できます。\n成功時の返答には操作IDが含まれます。同じチャットで「今の一括改名を元に戻して」「もう一度やり直して」と依頼すると、その操作IDを使って一括Undo／Redoします。Undo／Redoの前にも、現在の名前、同名衝突、編集ロックを再確認します。\n対象は既定では選択フォルダ直下の一般的な画像形式です。サブフォルダまで含めたい場合は、その旨を明記してください。この機能はPC内のファイルを扱うためデスクトップ版専用です。Cloud PWA版だけを開いている端末から、端末内ファイルを直接変更することはできません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_7"
     },
     {
@@ -9822,9 +9822,9 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "思考の深さ",
+      "heading": "モデルを選ぶ",
       "anchor": "_8",
-      "text": "Claude Code・Codex CLI・Antigravity CLI は、LLM設定ポップアップ（チャット画面の歯車アイコン）の 思考の深さ に対応しています。選択肢はモデルごとに変わり、設定はモデル別・チャットルーム別に記憶されます。深さを上げるほど、応答までの時間や利用量が増える傾向があります。既定 はCLI側の設定を使います。\n見出し横の ？ にポインターを重ねるか、キーボードでフォーカスすると調整のヒントが表示されます。クリックやタップでも確認できます。\nClaude Codeを選んでいる間だけ、最上位の選択肢として Ultracode が追加で表示されます。Claude Code 2.1.203以降へ正式な --effort ultracode として渡されます。\nCodex CLI の対応モデルでは Ultra も選べます。Antigravity CLI はモデルが提供する「低・中・高」などの段階だけを表示します。たとえばGemini 3.1 Proは「低・高」、GPT-OSS 120Bは「中」です。Antigravityで特定モデルを選んだ場合の 既定 はMeldexの既定値「高」（GPT-OSS 120Bは「中」）を使います。",
+      "text": "チャット下部でCodex CLI / Claude Code / Antigravity CLIのいずれかを選ぶと、モデル欄の一覧から候補を選べます。\nプロバイダ\n主な候補\nClaude Code\nCLI既定（推奨）/ Opus（最新版）/ Sonnet（最新版）/ Haiku（最新版）/ Fable（最新版）\nCodex CLI\nCLI既定（推奨）/ GPT-6 Astra / GPT-6.1 Sol / GPT-6.1 Terra / GPT-6 Luna / GPT-5.6 Sol / GPT-5.6 Terra / GPT-5.6 Luna\nAntigravity CLI\nCLI既定（推奨）/ Gemini 4 Carbon / Gemini 4 Argon / Gemini 3.8 Flash / Claude Sonnet 5.5 / Claude Opus 5.5 / GPT-OSS 120B\n一覧の一番上にある CLI既定（推奨） を選ぶと、Meldexは特定のモデルを指定せず、CLI自身が選ぶ既定モデルで動作します。\n迷ったときや、CLI側が新しいモデルへ切り替わったことをそのまま使いたいときは、CLI既定を選んでおくのがおすすめです。\n設定ダイアログの 設定 → AI → CLI でも、プロバイダごとに使うモデルを選べます。ここで選んだ値は、チャット側のモデル一覧にも反映され、初回はその値が自動的に選ばれた状態になります。「CLI既定（推奨）」のままにすると、CLI側の既定モデルが使われます。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_8"
     },
     {
@@ -9832,9 +9832,9 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "応答速度",
+      "heading": "思考の深さ",
       "anchor": "_9",
-      "text": "Codex CLI では 既定・標準・高速、GPT-6 AstraとGPT-6.1 Solでは 超高速 も選べます。Claude Code では高速モードに対応するOpusモデルを選んだ時に、既定・標準・高速 が表示されます。対応しないモデルへ切り替えた時に、別のモデルへ自動変更して高速化することはありません。\n高速・超高速は、契約によって利用枠の消費や料金が増えます。利用可否はCLI・モデル・契約・組織設定によって異なります。既定 はCLI側へ任せ、標準 は今回の実行だけ高速モードを無効にします。MeldexからCodexやClaude Codeの個人設定ファイルは変更しません。",
+      "text": "Claude Code・Codex CLI・Antigravity CLI は、LLM設定ポップアップ（チャット画面の歯車アイコン）の 思考の深さ に対応しています。選択肢はモデルごとに変わり、設定はモデル別・チャットルーム別に記憶されます。深さを上げるほど、応答までの時間や利用量が増える傾向があります。既定 はCLI側の設定を使います。\n見出し横の ？ にポインターを重ねるか、キーボードでフォーカスすると調整のヒントが表示されます。クリックやタップでも確認できます。\nClaude Codeを選んでいる間だけ、最上位の選択肢として Ultracode が追加で表示されます。Claude Code 2.1.203以降へ正式な --effort ultracode として渡されます。\nCodex CLI の対応モデルでは Ultra も選べます。Antigravity CLI はモデルが提供する「低・中・高」などの段階だけを表示します。たとえばGemini 3.1 Proは「低・高」、GPT-OSS 120Bは「中」です。Antigravityで特定モデルを選んだ場合の 既定 はMeldexの既定値「高」（GPT-OSS 120Bは「中」）を使います。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_9"
     },
     {
@@ -9842,13 +9842,23 @@
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "モデル・思考の深さの制限事項",
+      "heading": "応答速度",
       "anchor": "_10",
-      "text": "モデル一覧はこのバージョン時点の代表的な候補です。 各CLIのモデルは今後も世代交代します。一覧に無いモデルを使いたくなった場合は、Meldexの更新をお待ちください。\n指定したモデル名が古くなってCLI側で使えなくなると、送信がエラーになります。その場合はモデルを CLI既定（推奨） に戻してください。\n応答速度の選択肢は対応するCLI・モデルでだけ表示します。 Antigravity CLIなどで応答速度の欄がない場合は、モデルと 思考の深さ で調整してください。\nUltracode は Claude Code を選択中だけ表示されます。 実際の処理内容、応答時間、利用枠はClaude Code側の仕様と契約に従います。\nCodex CLI で「最大」を選んだ場合は、Codexが対応する最高段階として実行されます（Claude Codeの「最大」と完全に同じ段階ではありません）。\nAntigravity CLI の思考の深さは3段階です。 「最高」以上を選んでも「高」として実行されます。\nモデルと思考の深さは会話の途中でも変更でき、変更後の送信から反映されます。",
+      "text": "Codex CLI では 既定・標準・高速、GPT-6 AstraとGPT-6.1 Solでは 超高速 も選べます。Claude Code では高速モードに対応するOpusモデルを選んだ時に、既定・標準・高速 が表示されます。対応しないモデルへ切り替えた時に、別のモデルへ自動変更して高速化することはありません。\n高速・超高速は、契約によって利用枠の消費や料金が増えます。利用可否はCLI・モデル・契約・組織設定によって異なります。既定 はCLI側へ任せ、標準 は今回の実行だけ高速モードを無効にします。MeldexからCodexやClaude Codeの個人設定ファイルは変更しません。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_10"
     },
     {
-      "id": "manual-chunk-56b8bc1d68af667b",
+      "id": "manual-chunk-ccc2a08f19ff4306",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "モデル・思考の深さの制限事項",
+      "anchor": "_11",
+      "text": "モデル一覧はこのバージョン時点の代表的な候補です。 各CLIのモデルは今後も世代交代します。一覧に無いモデルを使いたくなった場合は、Meldexの更新をお待ちください。\n指定したモデル名が古くなってCLI側で使えなくなると、送信がエラーになります。その場合はモデルを CLI既定（推奨） に戻してください。\n応答速度の選択肢は対応するCLI・モデルでだけ表示します。 Antigravity CLIなどで応答速度の欄がない場合は、モデルと 思考の深さ で調整してください。\nUltracode は Claude Code を選択中だけ表示されます。 実際の処理内容、応答時間、利用枠はClaude Code側の仕様と契約に従います。\nCodex CLI で「最大」を選んだ場合は、Codexが対応する最高段階として実行されます（Claude Codeの「最大」と完全に同じ段階ではありません）。\nAntigravity CLI の思考の深さは3段階です。 「最高」以上を選んでも「高」として実行されます。\nモデルと思考の深さは会話の途中でも変更でき、変更後の送信から反映されます。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_11"
+    },
+    {
+      "id": "manual-chunk-f61a301e632bf6fe",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9858,7 +9868,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli_2"
     },
     {
-      "id": "manual-chunk-d452b63bd65d2116",
+      "id": "manual-chunk-52cc71eb9ed8c8f2",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9868,7 +9878,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=cli_3"
     },
     {
-      "id": "manual-chunk-66f453d86e8c24ef",
+      "id": "manual-chunk-b069ac1cffe9f566",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9878,7 +9888,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=meldex"
     },
     {
-      "id": "manual-chunk-01e921f6d3668335",
+      "id": "manual-chunk-43ab232658476a48",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9888,27 +9898,27 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=api"
     },
     {
-      "id": "manual-chunk-c5d017b2828c6132",
-      "path": "03_設定と連携/CLIチャット連携.md",
-      "title": "CLIチャット連携",
-      "category": "チャット・AI",
-      "heading": "送信される情報",
-      "anchor": "_11",
-      "text": "CLIチャットでも、AIが返答するためにチャット本文やMeldex内の情報をCLI側へ渡すことがあります。\nCLI側が外部サービスへ送信する範囲は、選んだCLIとログイン先の規約・設定に従います。\n送られる可能性があるもの:\nチャット入力欄に書いた文章\n直近の会話履歴\n古い会話の要約や抜粋\n現在開いているファイル名や内容\n参照コンテキストとして渡したノート、シート、ナレッジ\nCLIがMeldex MCP/APIで読み取った内容\nCLIは送信のたびにPC上で起動されます。\nCLIの会話を継続 が使えるCLIでは、同じチャット内のCLI会話IDも一緒に使います。\nそれ以外のCLIでも、Meldexは現在の依頼を理解するための直近履歴を一緒に渡します。\n長くなった古い履歴や過去の長い出力は、そのまま丸ごとではなく、要約や抜粋として小さくしてから渡します。\n機密情報を扱う場合は、送信前に内容を確認してください。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_11"
-    },
-    {
       "id": "manual-chunk-10d2b98497a77667",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "よくあるトラブル",
+      "heading": "送信される情報",
       "anchor": "_12",
-      "text": "",
+      "text": "CLIチャットでも、AIが返答するためにチャット本文やMeldex内の情報をCLI側へ渡すことがあります。\nCLI側が外部サービスへ送信する範囲は、選んだCLIとログイン先の規約・設定に従います。\n送られる可能性があるもの:\nチャット入力欄に書いた文章\n直近の会話履歴\n古い会話の要約や抜粋\n現在開いているファイル名や内容\n参照コンテキストとして渡したノート、シート、ナレッジ\nCLIがMeldex MCP/APIで読み取った内容\nCLIは送信のたびにPC上で起動されます。\nCLIの会話を継続 が使えるCLIでは、同じチャット内のCLI会話IDも一緒に使います。\nそれ以外のCLIでも、Meldexは現在の依頼を理解するための直近履歴を一緒に渡します。\n長くなった古い履歴や過去の長い出力は、そのまま丸ごとではなく、要約や抜粋として小さくしてから渡します。\n機密情報を扱う場合は、送信前に内容を確認してください。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_12"
     },
     {
-      "id": "manual-chunk-a46c09cc3152570f",
+      "id": "manual-chunk-cc506de781b8510a",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "よくあるトラブル",
+      "anchor": "_13",
+      "text": "",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_13"
+    },
+    {
+      "id": "manual-chunk-5f69af2e673870dd",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9918,7 +9928,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=oauth-access-token-has-expired"
     },
     {
-      "id": "manual-chunk-72c8f38c53ab1bf0",
+      "id": "manual-chunk-f54e390041a7443d",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9928,7 +9938,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=codex-claude-agy"
     },
     {
-      "id": "manual-chunk-3f6ef1eed2ddc150",
+      "id": "manual-chunk-7f52998985874b87",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9938,7 +9948,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=powershellmeldex"
     },
     {
-      "id": "manual-chunk-c8297d0cf3fe718c",
+      "id": "manual-chunk-22f35662c4c5c727",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9948,7 +9958,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli_1"
     },
     {
-      "id": "manual-chunk-1df75c5faffdd480",
+      "id": "manual-chunk-aa68743472fb2379",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9958,27 +9968,27 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=antigravity-cli-agy"
     },
     {
-      "id": "manual-chunk-919383b66f2c5403",
-      "path": "03_設定と連携/CLIチャット連携.md",
-      "title": "CLIチャット連携",
-      "category": "チャット・AI",
-      "heading": "長い会話でも送れる？",
-      "anchor": "_13",
-      "text": "送れます。Antigravity CLI 1.2以降では依頼文を公式の stream-json 形式で標準入力へ渡すため、\nWindowsのコマンドライン長上限や一時ファイルを使わず、内容を省略せずに送信します。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_13"
-    },
-    {
       "id": "manual-chunk-ff8a3ffe690311da",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "フォルダを信頼するか聞かれる",
+      "heading": "長い会話でも送れる？",
       "anchor": "_14",
-      "text": "CLIが、そのフォルダ内の設定を読んでよいか確認しています。\n自分の作業フォルダなら Trust folder を選びます。\n知らないフォルダ、共有元が不明なフォルダでは信頼しないでください。",
+      "text": "送れます。Antigravity CLI 1.2以降では依頼文を公式の stream-json 形式で標準入力へ渡すため、\nWindowsのコマンドライン長上限や一時ファイルを使わず、内容を省略せずに送信します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_14"
     },
     {
-      "id": "manual-chunk-a08bea7b9cf8600b",
+      "id": "manual-chunk-009105b3614b1b16",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "フォルダを信頼するか聞かれる",
+      "anchor": "_15",
+      "text": "CLIが、そのフォルダ内の設定を読んでよいか確認しています。\n自分の作業フォルダなら Trust folder を選びます。\n知らないフォルダ、共有元が不明なフォルダでは信頼しないでください。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_15"
+    },
+    {
+      "id": "manual-chunk-60822920a07a36b4",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
@@ -9988,24 +9998,24 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=codex-cli_1"
     },
     {
-      "id": "manual-chunk-f4b08193e3d29e45",
-      "path": "03_設定と連携/CLIチャット連携.md",
-      "title": "CLIチャット連携",
-      "category": "チャット・AI",
-      "heading": "関連ページ",
-      "anchor": "_15",
-      "text": "チャットLLM ツールガイド\nCLI MCP連携\nAIキーとLLM設定\nAI使用量と予算管理\nLLMプライバシーガイド",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_15"
-    },
-    {
       "id": "manual-chunk-d4615d5b03284985",
       "path": "03_設定と連携/CLIチャット連携.md",
       "title": "CLIチャット連携",
       "category": "チャット・AI",
-      "heading": "送信直後の待ち時間",
+      "heading": "関連ページ",
       "anchor": "_16",
-      "text": "送信直後は参照資料の準備、CLIへの接続、応答の処理を区別して表示します。参照資料の準備中も他のファイル操作を妨げないようにし、CLIの版確認は同じ実行ファイルなら短時間再利用します。各送信でCLIのプロセスは起動するため、外部サービスの接続や応答にかかる時間は利用環境によって異なります。\n資料の準備が45秒以内に完了しない場合は、CLIを開始せずに停止した準備工程を表示します。表示された工程と診断情報を確認してください。送信中に資料全体の索引を作り直すことはありません。統合索引の自動参照は短時間・件数・容量の上限内で行い、部分検索であることをAIへ伝えます。自動取得できなかった資料を参照済みとして扱わせず、必要に応じて専用の読取・検索を使います。ユーザーのルールと固定ナレッジの注入は維持します。\nCLIが120秒以内に応答を開始しない場合は停止します。思考や操作の開始を確認した後は、設定した実行時間に従います。通信が途切れた場合は操作結果が未確認なので、対象の保存状態を確認してから再送してください。自動で同じ依頼を繰り返したり、課金APIへ切り替えたりしません。\nCodexの「会話を継続」をOFFにしても、質問の処理開始を表示します。処理開始後は初期化待ちへ表示を戻しません。処理開始の通知と、本文が届き始める時刻は別です。CLIが思考の通知を返さない場合、Meldexから内部の思考開始時刻を確定することはできません。\n診断ログには、資料準備・プロセス起動・処理開始・最初の本文までの所要時間を記録します。受信した会話の発言数・文字数と、実際にCLIへ渡した文字数・バイト数も区別します。長い履歴は既存の要約・抜粋の上限に従い、確認済みの継続会話では今回の依頼と変更された文脈を渡します。全履歴を毎回そのまま送ったという意味ではありません。質問本文、参照先のパスや内容、認証情報はこの計測記録へ含めません。",
+      "text": "チャットLLM ツールガイド\nCLI MCP連携\nAIキーとLLM設定\nAI使用量と予算管理\nLLMプライバシーガイド",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_16"
+    },
+    {
+      "id": "manual-chunk-7ab47457678d37db",
+      "path": "03_設定と連携/CLIチャット連携.md",
+      "title": "CLIチャット連携",
+      "category": "チャット・AI",
+      "heading": "送信直後の待ち時間",
+      "anchor": "_17",
+      "text": "送信直後は参照資料の準備、CLIへの接続、応答の処理を区別して表示します。参照資料の準備中も他のファイル操作を妨げないようにし、CLIの版確認は同じ実行ファイルなら短時間再利用します。各送信でCLIのプロセスは起動するため、外部サービスの接続や応答にかかる時間は利用環境によって異なります。\n資料の準備が45秒以内に完了しない場合は、CLIを開始せずに停止した準備工程を表示します。表示された工程と診断情報を確認してください。送信中に資料全体の索引を作り直すことはありません。統合索引の自動参照は短時間・件数・容量の上限内で行い、部分検索であることをAIへ伝えます。自動取得できなかった資料を参照済みとして扱わせず、必要に応じて専用の読取・検索を使います。ユーザーのルールと固定ナレッジの注入は維持します。\nCLIが120秒以内に応答を開始しない場合は停止します。思考や操作の開始を確認した後は、設定した実行時間に従います。通信が途切れた場合は操作結果が未確認なので、対象の保存状態を確認してから再送してください。自動で同じ依頼を繰り返したり、課金APIへ切り替えたりしません。\nCodexの「会話を継続」をOFFにしても、質問の処理開始を表示します。処理開始後は初期化待ちへ表示を戻しません。処理開始の通知と、本文が届き始める時刻は別です。CLIが思考の通知を返さない場合、Meldexから内部の思考開始時刻を確定することはできません。\n診断ログには、資料準備・プロセス起動・処理開始・最初の本文までの所要時間を記録します。受信した会話の発言数・文字数と、実際にCLIへ渡した文字数・バイト数も区別します。長い履歴は既存の要約・抜粋の上限に従い、確認済みの継続会話では今回の依頼と変更された文脈を渡します。全履歴を毎回そのまま送ったという意味ではありません。質問本文、参照先のパスや内容、認証情報はこの計測記録へ含めません。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/CLI%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E9%80%A3%E6%90%BA.md&section=_17"
     },
     {
       "id": "manual-chunk-08889844c7617a3c",

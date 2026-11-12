@@ -218185,6 +218185,9 @@ const CHAT_WORKSPACE_REFRESH_TOOLS = new Set([
   'configure_form_view',
   'update_knowledge',
   'create_folder',
+  'batch_rename',
+  'batch_rename_undo',
+  'batch_rename_redo',
   'rename',
   'delete',
   'add_debug_report',
@@ -218204,7 +218207,7 @@ function _chatToolResultSucceeded(parsed) {
   return !!parsed && !parsed.error && parsed.ok !== false;
 }
 
-const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
+const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'batch_rename', 'batch_rename_undo', 'batch_rename_redo', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
 const CHAT_NONEMPTY_RESULT_TOOLS = new Set(['search', 'search_knowledge', 'llm_list_ui_controls']);
 
 function _chatToolResultHasMatches(parsed) {
