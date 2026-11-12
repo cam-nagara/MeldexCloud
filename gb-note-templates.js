@@ -144,13 +144,6 @@
         return false;
       } });
     }
-    if (editor && !options.dbPath) {
-      footerActions.push({ label: '現在のノートから作成', e2eId: 'note-templates-from-current', run: async ctx => {
-        const saved = await openEditor(library, { name: sourceName, content: currentContent(editor) }, { title: '現在のノートから作成' });
-        if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
-        return false;
-      } });
-    }
     footerActions.push({ label: '新しいテンプレート', e2eId: 'note-templates-new', run: async ctx => {
       const saved = await openEditor(library, { name: '', content: '' }, { title: '新しいテンプレート' });
       if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
@@ -167,7 +160,7 @@
       title: options.dbPath ? 'シートのノートテンプレート' : 'ノートテンプレート',
       items: items(),
       selectedId: options.dbPath ? metadata?.note_template?.id : undefined,
-      emptyText: '登録済みのテンプレートはありません。「現在のノートから作成」か「新しいテンプレート」で作成できます。',
+      emptyText: '登録済みのテンプレートはありません。「新しいテンプレート」で作成できます。',
       primaryAction: { label: options.dbPath ? 'シートに設定' : 'ノートに適用', run: async item => {
         const current = library.templates.find(other => other.id === item.id);
         if (!current) throw new Error('保存済みのテンプレートを選択してください');

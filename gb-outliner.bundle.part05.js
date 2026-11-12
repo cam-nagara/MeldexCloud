@@ -1,3 +1,5 @@
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
         if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
       },
     });
@@ -896,5 +898,3 @@ function _outlinerApplyCreateSuccess(pendingNode, found, options) {
   pendingNode.replaceWith(newNode);
   _selectOutlinerCreateNode(newNode);
 }
-
-// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）

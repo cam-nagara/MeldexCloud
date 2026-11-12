@@ -1,3 +1,5 @@
+  };
+
   function addDocumentPointerEndHandlers() {
     document.addEventListener('pointerup', endLasso, true);
     document.addEventListener('pointercancel', endLasso, true);

@@ -290,7 +290,8 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     : String(oldName || 'entry').replace(/\s+/g, '-').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'entry';
   inp.dataset.e2eId = `db-entity-rename-${renameToken}`;
   inp.setAttribute('aria-label', `トピック名を変更: ${oldName || '無題'}`);
-  inp.style.cssText = 'width:calc(100% - 24px);padding:2px 4px;margin-left:20px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  // 表示ラベルと同じホスト・左余白を使い、編集開始時に文字が右へ跳ねないようにする。
+  inp.style.cssText = 'width:100%;min-width:0;box-sizing:border-box;padding:0 4px;margin:0;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font:inherit;line-height:1.4;';
   const inputHost = nameSpan.parentElement || td;
   inputHost.insertBefore(inp, nameSpan.parentElement ? nameSpan : td.firstChild);
   inp.focus();

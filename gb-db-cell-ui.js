@@ -1081,11 +1081,15 @@ function startInlineEdit(span, val, entityPath, propName) {
   const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
+  // 表示中のセル高を編集面へ引き継ぐ。contenteditable の既定 min-height や
+  // autosize で、編集開始/終了のたびに行が上下へ跳ねるのを防ぐ。
+  const stableEditorHeight = Math.max(1, Math.ceil(span.getBoundingClientRect?.().height || span.offsetHeight || 0));
   const input = document.createElement('span');
   input.className = 'value-input value-input--textarea value-rich-editor';
   input.setAttribute('contenteditable', 'true');
   input.setAttribute('role', 'textbox');
   input.setAttribute('aria-multiline', 'true');
+  input.dataset.dbFixedEditorHeight = String(stableEditorHeight);
   input.addEventListener('dragstart', e => {
     const selection = window.getSelection?.();
     if (!selection || selection.isCollapsed || !input.contains(selection.anchorNode) || !input.contains(selection.focusNode)) return;
@@ -1307,6 +1311,14 @@ function startInlineEdit(span, val, entityPath, propName) {
 
 function _cellUiAutosizeTextarea(input) {
   if (!input) return;
+  const fixedHeight = Number(input.dataset?.dbFixedEditorHeight || 0);
+  if (fixedHeight > 0) {
+    input.style.height = fixedHeight + 'px';
+    input.style.minHeight = fixedHeight + 'px';
+    input.style.maxHeight = fixedHeight + 'px';
+    input.style.overflowY = input.scrollHeight > fixedHeight ? 'auto' : 'hidden';
+    return;
+  }
   const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 18;
   const maxHeight = Math.max(lineHeight * 10 + 8, 80);
   input.style.height = 'auto';

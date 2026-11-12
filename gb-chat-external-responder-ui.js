@@ -16,8 +16,10 @@
   const OS_NOTICE_KEY = 'meldex-external-responder-os-notices-v1';
   const DB_NAME = 'meldex-external-responder-keys-v1';
   let readiness = null;
+  let readinessRequestId = 0;
   let pollTimer = null;
   let settingsTimer = null;
+  let providerInitializationSettled = false;
 
   const text = (value) => String(value == null ? '' : value);
   const currentWorkspaceId = () => {
@@ -32,10 +34,24 @@
   const visibleAiPanels = () => [...document.querySelectorAll('[id="chat-llm-panel"]')]
     .filter(panel => !panel.closest('[data-gb-snapshot="true"]'));
 
-  function usesLocalCli() {
+  function selectedChatProvider(providerOverride) {
+    const override = text(providerOverride).trim();
+    if (override) return override;
+    let stored = '';
+    try { stored = text(localStorage.getItem('chat-provider')).trim(); } catch {}
+    // DOMContentLoadedでは、このスクリプトのlistenerがチャット本体の復元処理より先に走る。
+    // その間だけは、HTMLの既定値ではなく保存済みproviderを正とする。
+    if (!providerInitializationSettled && stored) return stored;
+    const selected = text(document.getElementById('chat-provider')?.value).trim();
+    if (selected) return selected;
+    const stateProvider = text(typeof _chatState !== 'undefined' ? _chatState.provider : '').trim();
+    return stateProvider || stored;
+  }
+
+  function usesLocalCli(providerOverride) {
     const runtime = window.MeldexRuntimeAdapter;
     if (runtime?.isPwaMode?.() || runtime?.isDropboxMode?.() || runtime?.isServerMode?.()) return false;
-    const provider = typeof _chatState !== 'undefined' ? _chatState.provider : '';
+    const provider = selectedChatProvider(providerOverride);
     return window.GBChatCli?.isCliChatProvider?.(provider) === true;
   }
 
@@ -159,15 +175,20 @@
     });
   }
 
-  async function refreshReadiness() {
+  async function refreshReadiness(providerOverride) {
+    const requestId = ++readinessRequestId;
     const workspaceId = currentWorkspaceId();
     // このPCで直接実行するCLIと、別PCへ依頼する署名済み返答AIは別の経路。
-    if (usesLocalCli()) { readiness = { workspaceId, snapshot: null, error: null }; renderReadiness(); return readiness; }
+    if (usesLocalCli(providerOverride)) { readiness = { workspaceId, snapshot: null, error: null }; renderReadiness(); return readiness; }
     if (!workspaceId) { readiness = { workspaceId: '', snapshot: null, error: null }; renderReadiness(); return readiness; }
     try {
       const snapshot = await apiFetch('/workspace-cli/phase4a/presence' + query(workspaceId), { silentError: true });
+      if (requestId !== readinessRequestId || usesLocalCli()) return readiness;
       readiness = { workspaceId, snapshot, error: null };
-    } catch (error) { readiness = { workspaceId, snapshot: null, error }; }
+    } catch (error) {
+      if (requestId !== readinessRequestId || usesLocalCli()) return readiness;
+      readiness = { workspaceId, snapshot: null, error };
+    }
     renderReadiness();
     return readiness;
   }
@@ -440,7 +461,10 @@
     document.querySelectorAll('#settings-workspace-cli-relay-container').forEach(renderSecuritySettings);
     document.addEventListener('click', handleClick, true); document.addEventListener('click', clearUnreadOnAiTab, true);
     document.addEventListener('change', event => {
-      if (event.target?.matches?.('#chat-provider')) refreshReadiness();
+      if (event.target?.matches?.('#chat-provider')) {
+        providerInitializationSettled = true;
+        refreshReadiness(event.target.value);
+      }
     });
     const observer = new MutationObserver((records) => {
       const added = records.flatMap(record => [...record.addedNodes]).filter(node => node.nodeType === 1);
@@ -452,7 +476,9 @@
       }, 80);
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    refreshReadiness(); pollAttempts(); pollTimer = setInterval(() => { refreshReadiness(); pollAttempts(); }, 30000);
+    // チャット本体が保存済みproviderをselectへ復元してから初回状態を確定する。
+    setTimeout(() => { providerInitializationSettled = true; refreshReadiness(); }, 0);
+    pollAttempts(); pollTimer = setInterval(() => { refreshReadiness(); pollAttempts(); }, 30000);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();

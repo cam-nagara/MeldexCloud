@@ -1633,6 +1633,24 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange, item)
   }, 50);
 }
 
+// contenteditable=false の外枠に入れ子にした編集領域では、ブラウザの既定 Enter が
+// まれに新しい行を外枠の外へ生成する。保存後にその行が通常引用として解釈されるため、
+// コールアウト本文内の改行は明示的に本文へ挿入する。
+if (!window.__meldexCalloutEnterGuardInstalled) {
+  window.__meldexCalloutEnterGuardInstalled = true;
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    const body = event.target?.closest?.('.callout-body[contenteditable="true"]');
+    if (!body) return;
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount || !body.contains(selection.anchorNode)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    document.execCommand('insertLineBreak', false, null);
+    body.dispatchEvent(new Event('input', { bubbles: true }));
+  }, true);
+}
+
 function _calloutPresetForSpec(spec) {
   if (typeof GBIconAssets === 'undefined') {
     return CALLOUT_PRESETS.find(p => p.icon === spec) || null;

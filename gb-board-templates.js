@@ -484,17 +484,6 @@
           return false;
         } },
       ],
-      footerActions: board ? [{
-        label: '現在のボードから作成', e2eId: 'board-templates-create', run: async (ctx) => {
-          if (!library || library.failed) library = await loadLibrary();
-          const template = await createFromCurrent(library);
-          if (!template) return false;
-          await ctx.refresh();
-          ctx.select(template.id);
-          ctx.setStatus(`「${template.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
-          return false;
-        },
-      }] : [],
     });
   }
 

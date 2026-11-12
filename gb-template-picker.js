@@ -138,6 +138,10 @@
       node.addEventListener('click', () => runAction(() => action.run(ctx)));
       footer.push(node);
     });
+    const primaryFooter = options.primaryAction
+      ? button(options.primaryAction.label || '適用', 'gb-btn gb-btn-primary', e2e.apply || `${pickerId}-apply`)
+      : null;
+    if (primaryFooter) footer.push(primaryFooter);
 
     const modal = global.GBUI.createModal({
       id: pickerId,
@@ -201,6 +205,7 @@
       if (!item || !options.primaryAction) return;
       runAction(() => options.primaryAction.run(item, ctx));
     }
+    primaryFooter?.addEventListener('click', () => runPrimary(selectedItem()));
 
     function renderChips() {
       const cats = categoriesOf(items);
@@ -259,6 +264,11 @@
 
     function renderPreview() {
       const item = selectedItem();
+      if (primaryFooter) {
+        const available = !!item && (typeof options.primaryAction.when !== 'function' || options.primaryAction.when(item));
+        primaryFooter.hidden = !available;
+        primaryFooter.disabled = !available;
+      }
       preview.replaceChildren();
       if (item) preview.dataset.templateId = item.id; else delete preview.dataset.templateId;
       if (!item) {
@@ -285,11 +295,6 @@
         node.addEventListener('click', () => runAction(() => action.run(item, ctx)));
         actions.appendChild(node);
       });
-      if (options.primaryAction && (typeof options.primaryAction.when !== 'function' || options.primaryAction.when(item))) {
-        const primary = button(options.primaryAction.label || '適用', 'gb-btn gb-btn-primary', e2e.apply || `${pickerId}-apply`);
-        primary.addEventListener('click', () => runPrimary(item));
-        actions.appendChild(primary);
-      }
       if (actions.childNodes.length) preview.appendChild(actions);
     }
 

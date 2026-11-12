@@ -956,6 +956,11 @@ button.pt-chip-style-sample--relation,
   display: none; margin-left: auto; flex-shrink: 0; gap: 1px; align-items: center;
 }
 .tree-node-row:hover .tree-hover-btns { display: flex; }
+.tree-node-row:hover:has(.tree-hover-btns) :is(.tree-lock-badge, .tree-feature-badge) { visibility: hidden; }
+.tree-node-row:hover .tree-hover-btns {
+  background: var(--outliner-item-hover-bg, var(--outliner-item-bg));
+  border-radius: 4px;
+}
 @media (hover: hover) and (pointer: fine) {
   .tree-hover-btns { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
   .tree-node-row:has(.tree-hover-btns) .tree-label { padding-right: 40px; }

@@ -648,6 +648,9 @@ document.addEventListener('keydown', (e) => {
     }
   }
   if (e.defaultPrevented) return;
+  // 列ヘッダーは下段の専用ナビゲーションへ渡す。直前のセル選択が残っていても、
+  // Enter を古いセルの編集開始として誤処理しない。
+  if (e.target?.closest?.('thead th.db-keyboard-header')) return;
   const table = _dbKeyboardActiveTable();
   const keyCell = _dbKeyboardActiveCell(table, e.target);
   if (!table || !keyCell) return;
@@ -655,6 +658,22 @@ document.addEventListener('keydown', (e) => {
   const tr = keyCell.parentElement;
   if (!tr || !table.contains(tr)) return;
   const colIdx = Array.from(tr.children).indexOf(keyCell);
+  // ハンドル列の行選択・並べ替えは、通常セルの範囲選択やアプリ共通ショートカット
+  // より先に確定する。後段だけに置くと Shift+矢印が先行ハンドラに消費される。
+  if (keyCell.classList.contains('col-row-controls') && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const rows = _dbVisibleDataRows(table);
+    const rowIdx = rows.indexOf(tr);
+    if (rowIdx >= 0 && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      e.preventDefault(); e.stopPropagation();
+      _dbMoveRowsByKeyboard(table, keyCell, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    if (rowIdx >= 0 && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); e.stopPropagation();
+      _dbSelectRowRangeByKeyboard(table, keyCell, Math.max(0, Math.min(rows.length - 1, rowIdx + (e.key === 'ArrowUp' ? -1 : 1))));
+      return;
+    }
+  }
   // エントリ名セルの Enter → インライン名称編集開始 (通常セルの Enter/F2 編集と対称)。
   // 既存の Enter 処理 (_dbHandleCellEditorKey) より前で分岐し、非該当時はそのまま下へ流す。
   if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && keyCell.classList.contains('col-entity')
@@ -671,6 +690,138 @@ document.addEventListener('keydown', (e) => {
   }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
+
+function _dbSetActiveHeader(th) {
+  if (!th) return;
+  const table = th.closest('table');
+  table?.querySelectorAll('thead th.active-cell').forEach(node => node.classList.remove('active-cell'));
+  if (activeCell) _dbDeactivateActiveCell(activeCell);
+  activeCell = null;
+  rangeAnchorCell = null;
+  th.classList.add('active-cell');
+  th.focus({ preventScroll: true });
+  th.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+}
+
+function _dbStartEntityHeaderInlineRename(th) {
+  const label = th?.querySelector('.th-label');
+  if (!label || th.querySelector('.th-rename-input')) return;
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const oldName = label.textContent || 'トピック名';
+  const input = document.createElement('input');
+  input.className = 'th-rename-input';
+  input.value = oldName;
+  label.hidden = true;
+  th.appendChild(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (cancel) => {
+    if (done) return;
+    done = true;
+    const next = input.value.trim();
+    input.remove(); label.hidden = false;
+    if (!cancel && next && next !== oldName && typeof setEntityColumnLabel === 'function') {
+      setEntityColumnLabel(dbPath, next, { ctx });
+      renderPivot(ctx);
+    } else {
+      _dbSetActiveHeader(th);
+    }
+  };
+  input.addEventListener('blur', () => finish(false));
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(false); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(true); }
+  });
+}
+
+function _dbHandleHeaderNavigation(e, table) {
+  const th = e.target?.closest?.('thead th.db-keyboard-header') || document.activeElement?.closest?.('thead th.db-keyboard-header');
+  if (!th || !table.contains(th)) return false;
+  if (e.target?.closest?.('input,select,textarea,[contenteditable="true"]')) return false;
+  const headers = [...table.querySelectorAll('thead th.db-keyboard-header:not(.col-add-prop)')];
+  const index = headers.indexOf(th);
+  if (index < 0) return false;
+  if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault(); e.stopPropagation();
+    if (th.classList.contains('col-entity-header')) _dbStartEntityHeaderInlineRename(th);
+    else if (th.dataset.prop && typeof startHeaderInlineRename === 'function') {
+      const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath }) : _currentPaneState();
+      startHeaderInlineRename(th, th.dataset.prop, ctx?.dbPath || state.currentDbPath, ctx);
+    }
+    return true;
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    _dbSetActiveHeader(headers[Math.max(0, Math.min(headers.length - 1, index + (e.key === 'ArrowRight' ? 1 : -1)))]);
+    return true;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const row = _dbVisibleDataRows(table)[0];
+    if (row?.children[index]) setActiveCell(row.children[index]);
+    return true;
+  }
+  return false;
+}
+
+function _dbSelectRowRangeByKeyboard(table, keyCell, targetIndex) {
+  const rows = _dbVisibleDataRows(table);
+  const current = rows.indexOf(keyCell.closest('tr'));
+  if (current < 0 || targetIndex < 0 || targetIndex >= rows.length) return;
+  const anchor = Number.isInteger(table._dbKeyboardRowAnchor) ? table._dbKeyboardRowAnchor : current;
+  table._dbKeyboardRowAnchor = anchor;
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const selected = typeof _ensureSelectedEntities === 'function' ? _ensureSelectedEntities(ctx) : ctx._selectedEntities;
+  selected?.clear?.();
+  const lo = Math.min(anchor, targetIndex), hi = Math.max(anchor, targetIndex);
+  rows.forEach((row, index) => {
+    const checked = index >= lo && index <= hi;
+    const name = row.dataset.entityName;
+    if (checked && name) selected?.add?.(name);
+    row.classList.toggle('row-selected', checked);
+    const cb = row.querySelector('.row-select-cb');
+    if (cb) cb.checked = checked;
+  });
+  if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+  setActiveCell(rows[targetIndex].querySelector('td.col-row-controls'), { preserveRange: true });
+}
+
+function _dbMoveRowsByKeyboard(table, keyCell, direction) {
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const dbPath = ctx?.dbPath || state.currentDbPath;
+  if (!ctx || !dbPath) return;
+  const rows = _dbVisibleDataRows(table);
+  const currentName = keyCell.closest('tr')?.dataset?.entityName;
+  const selected = ctx._selectedEntities;
+  const moving = new Set(selected?.has?.(currentName) ? [...selected] : [currentName]);
+  const cfg = getDbViewConfig(dbPath);
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function' ? _getCurrentDbViewConfigEntryFromConfig(cfg, { ctx }) : null;
+  const target = view || cfg;
+  const oldOrder = Array.isArray(target.manualOrder) ? [...target.manualOrder] : null;
+  const oldSortConfig = target.sortConfig ? { ...target.sortConfig } : null;
+  const visible = rows.map(row => row.dataset.entityName).filter(Boolean);
+  const order = Array.isArray(target.manualOrder) ? [...target.manualOrder] : [...visible];
+  Object.keys(ctx.pivotData?.entities || {}).forEach(name => { if (!order.includes(name)) order.push(name); });
+  let changed = false;
+  if (direction < 0) {
+    for (let i = 1; i < order.length; i++) if (moving.has(order[i]) && !moving.has(order[i - 1])) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; changed = true; }
+  } else {
+    for (let i = order.length - 2; i >= 0; i--) if (moving.has(order[i]) && !moving.has(order[i + 1])) { [order[i], order[i + 1]] = [order[i + 1], order[i]]; changed = true; }
+  }
+  if (!changed) return;
+  target.manualOrder = order;
+  target.sortConfig = { key: 'manual', dir: 'asc' };
+  saveDbViewConfig(dbPath, cfg);
+  renderPivot(ctx);
+  if (typeof _dbUndoManualOrder === 'function') _dbUndoManualOrder(dbPath, [...moving], oldOrder, oldSortConfig, order, ctx);
+  setTimeout(() => {
+    const nextRow = [...(_paneEl(ctx, '#' + (ctx.tableId || 'pivot-table'))?.querySelectorAll('tr[data-entity-name]') || [])]
+      .find(row => row.dataset.entityName === currentName);
+    const next = nextRow?.querySelector('td.col-row-controls');
+    if (next) setActiveCell(next);
+  }, 0);
+}
 
 // テーブルキーボードナビゲーション
 // セル単位のキー操作。Enter/F2 は分割パネル中でもアクティブセルの型別エディタを直接開く。
@@ -716,6 +867,7 @@ document.addEventListener('keydown', (e) => {
     setNavDebug({ phase: 'table', reason: 'no-table', view: state.view || '' });
     return;
   }
+  if (_dbHandleHeaderNavigation(e, table)) return;
   let dataRows = _dbVisibleDataRows(table);
 
   let keyCell = _dbKeyboardActiveCell(table, e.target);
@@ -757,6 +909,22 @@ document.addEventListener('keydown', (e) => {
     entityName: tr?.dataset?.entityName || '',
     propName: keyCell?.dataset?.propName || '',
   });
+
+  if (keyCell.classList.contains('col-row-controls')) {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      _dbMoveRowsByKeyboard(table, keyCell, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      _dbSelectRowRangeByKeyboard(table, keyCell, Math.max(0, Math.min(dataRows.length - 1, rowIdx + (e.key === 'ArrowUp' ? -1 : 1))));
+      return;
+    }
+    table._dbKeyboardRowAnchor = rowIdx;
+  } else {
+    delete table._dbKeyboardRowAnchor;
+  }
 
   if (_dbHandleCellEditorKey(e, colIdx, keyCell)) return;
 
@@ -822,12 +990,19 @@ document.addEventListener('keydown', (e) => {
   let nextRow = rowIdx, nextCol = colIdx;
 
   if (e.key === 'ArrowUp') {
+    if (rowIdx === 0) {
+      e.preventDefault();
+      const header = table.querySelector('thead tr')?.children?.[colIdx];
+      if (header?.classList.contains('db-keyboard-header')) _dbSetActiveHeader(header);
+      return;
+    }
     nextRow = Math.max(0, rowIdx - 1);
     e.preventDefault();
   }
   else if (e.key === 'ArrowDown') {
     if (isLastRow) {
       e.preventDefault();
+      if (keyCell.classList.contains('col-row-controls')) return;
       try {
         window.__meldexLastSheetNavDebug = {
           action: 'arrow-down-create',
@@ -843,7 +1018,7 @@ document.addEventListener('keydown', (e) => {
     nextRow = rowIdx + 1;
     e.preventDefault();
   }
-  else if (e.key === 'ArrowLeft') { nextCol = Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { nextCol = Math.max(keyCell.classList.contains('col-row-controls') ? 0 : DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { nextCol = Math.min(maxCol, colIdx + 1); e.preventDefault(); }
   else if (e.key === 'Tab') {
     e.preventDefault();
@@ -871,7 +1046,7 @@ document.addEventListener('keydown', (e) => {
   const targetRow = dataRows[nextRow];
   if (targetRow) {
     const targetCell = targetRow.children[nextCol];
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) setActiveCell(targetCell);
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) setActiveCell(targetCell);
   }
 }, true);
 

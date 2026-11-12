@@ -1147,6 +1147,33 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const isCalendarCapable = calendarInfo.kind !== 'none';
   const currentView = getSavedViews(dbPath)[idx];
   const currentType = currentView?.viewMode || 'pivot';
+  const allColumns = (() => {
+    const data = ctx.pivotData || state.pivotData || {};
+    const names = [...(data.properties || [])];
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {};
+    Object.keys(types || {}).forEach(name => { if (!names.includes(name)) names.push(name); });
+    const propertyNames = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
+    return ['__entity__', ...propertyNames];
+  })();
+  const columnDisplayName = name => name === '__entity__'
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
+    : name;
+
+  const setVisibleColumns = (nextHidden, detail) => {
+    const cfg = getDbViewConfig(dbPath);
+    const views = cfg.savedViews || [];
+    const target = views[idx];
+    if (!target) return;
+    const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+    target.hiddenCols = [...new Set(nextHidden)].filter(name => allColumns.includes(name));
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+    if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+      pushDbViewConfigHistory(dbPath, 'シート表示: 表示列切替', before, captureDbViewConfigHistory(dbPath), detail || '');
+    }
+    const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+    if (activeIdx === idx) loadSavedView(idx, ctx, { skipHistory: true });
+    else renderDbViewTabs(ctx);
+  };
 
   const swapViews = (fromIdx, toIdx) => {
     const cfg = getDbViewConfig(dbPath);
@@ -1177,4 +1204,24 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
     { type: 'sep' },
+    {
+      type: 'submenu',
+      label: lucide('columns3', 14) + ' 表示列を切替',
+      children: [
+        { label: 'すべて表示', action: () => setVisibleColumns([], 'すべて表示') },
+        { label: 'すべて非表示', action: () => setVisibleColumns(allColumns, 'すべて非表示') },
+        { type: 'sep' },
+        ...allColumns.map(name => {
+          const hidden = (currentView?.hiddenCols || []).includes(name);
+          return {
+            label: (hidden ? '<span style="display:inline-block;width:14px"></span>' : lucide('check', 14)) + ' ' + columnDisplayName(name),
+            action: () => {
+              const next = new Set(currentView?.hiddenCols || []);
+              if (next.has(name)) next.delete(name); else next.add(name);
+              setVisibleColumns([...next], columnDisplayName(name));
+            },
+          };
+        }),
+      ],
+    },
     {

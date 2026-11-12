@@ -1436,6 +1436,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     inp.type = 'number';
     inp.placeholder = '数値';
     inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    _fixInlineEditorHeight(inp);
     container.insertBefore(inp, addBtn);
     inp.focus();
     _attachCommitHandlers(inp, saveAndRestore, cancel);
@@ -1451,6 +1452,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (isPlainText) inp.rows = 1;
     inp.placeholder = forType === 'url' ? 'https://...' : forType === 'multi-select' ? '値1, 値2, ...' : '値を入力';
     inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    _fixInlineEditorHeight(inp);
     container.insertBefore(inp, addBtn);
     if (isPlainText) _autosizeInlineTextarea(inp);
     inp.focus();
@@ -1458,11 +1460,29 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   }
   function _autosizeInlineTextarea(inp) {
     if (!inp || inp.tagName !== 'TEXTAREA') return;
+    const fixedHeight = Number(inp.dataset?.dbFixedEditorHeight || 0);
+    if (fixedHeight > 0) {
+      inp.style.height = fixedHeight + 'px';
+      inp.style.minHeight = fixedHeight + 'px';
+      inp.style.maxHeight = fixedHeight + 'px';
+      inp.style.overflowY = inp.scrollHeight > fixedHeight ? 'auto' : 'hidden';
+      return;
+    }
     const lineHeight = parseFloat(getComputedStyle(inp).lineHeight) || 18;
     const maxHeight = Math.max(lineHeight * 10 + 8, 80);
     inp.style.height = 'auto';
     inp.style.height = Math.min(inp.scrollHeight, maxHeight) + 'px';
     inp.style.overflowY = inp.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }
+  function _fixInlineEditorHeight(inp) {
+    const td = container.closest('td');
+    const style = td ? getComputedStyle(td) : null;
+    const verticalPadding = style ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) : 0;
+    const height = Math.max(20, Math.floor((td?.getBoundingClientRect?.().height || container.getBoundingClientRect?.().height || 0) - verticalPadding));
+    if (inp.dataset) inp.dataset.dbFixedEditorHeight = String(height);
+    inp.style.height = height + 'px';
+    inp.style.minHeight = height + 'px';
+    inp.style.maxHeight = height + 'px';
   }
   function _attachCommitHandlers(inp, save, cancelFn) {
     let committed = false;

@@ -488,7 +488,7 @@ async function selectDatabase(dbPath, ctx, opts) {
 
   // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
   // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
-  if (!openOpts.silent && _isDbSwitch) {
+  if (_isDbSwitch) {
     clearPivot(ctx);
     const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
     const _containerScope = ctx?.containerEl || null;

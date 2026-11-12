@@ -515,10 +515,33 @@
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
     }
-    const currentColumns = columnsForDocument(
-      view.document, options.viewId || options.ctx?.currentViewId,
-    );
-    const current = currentColumns.find(column => column.name === options.oldName);
+    const requestedViewId = options.viewId || options.ctx?.currentViewId;
+    const currentColumns = columnsForDocument(view.document, requestedViewId);
+    let current = currentColumns.find(column => column.name === options.oldName);
+    // テンプレート適用直後など、画面側の viewId と canonical 側の active view が
+    // 一時的にずれていても、同じ文書内の列の安定IDを失わないよう全ビューを探す。
+    if (!current) {
+      for (const sheetView of (view.document.sheetViews || [])) {
+        const id = sheetView?.viewId || sheetView?.sheetViewId;
+        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
+        if (current) break;
+      }
+    }
+    // 旧シートには存在するが、移行済みビューの columns へまだ投影されていない列も
+    // legacy の型と決定的IDから安全に補完する。
+    if (!current) {
+      const legacyConfig = view.document.legacySheet?.propertyTypes?.[options.oldName];
+      if (legacyConfig) {
+        current = global.MeldexTopicPropertyFamily.normalizeColumn({
+          ...clone(legacyConfig),
+          name: options.oldName,
+          columnId: String(legacyConfig.columnId || legacyConfig.propertyId || options.oldName),
+          columnType: legacyConfig.columnType || legacyConfig.type || 'text',
+          propertyFamilyId: legacyConfig.propertyFamilyId
+            || global.MeldexTopicPropertyFamily.legacyPropertyFamilyId(view.document.documentId, options.oldName),
+        });
+      }
+    }
     if (!current) throw new Error('変更する列の型と安定IDを確認できません');
     const params = new URLSearchParams({
       name: options.newName,

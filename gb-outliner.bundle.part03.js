@@ -95,7 +95,9 @@
     menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!treeSelection.has(div)) { treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div; }
+      treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
+      document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
+      row.classList.add('active');
       const r = menuBtn.getBoundingClientRect();
       const z = parseFloat(document.documentElement.style.zoom) || 1;
       showTreeContextMenu(r.left / z, r.bottom / z, div, item, label);
@@ -896,5 +898,3 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       while (_outlinerWarmQueue.length) {
         const next = _outlinerWarmQueue.shift();
         try {
-          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
-            background: true, silentError: true,

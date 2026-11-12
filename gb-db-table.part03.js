@@ -22,6 +22,7 @@ function _setupDbColumnHeaderA11y(th, label) {
   th.setAttribute('role', 'columnheader');
   th.setAttribute('scope', 'col');
   th.tabIndex = 0;
+  th.classList.add('db-keyboard-header');
   th.setAttribute('aria-label', label || th.textContent?.trim() || '列');
 }
 
@@ -518,14 +519,15 @@ function renderPivot(ctx) {
   }
   if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
+  const showEntityColumn = !hiddenCols.includes('__entity__');
 
   // 列の描画順序（'__entity__' を含む）。フェーズ2でエントリ名列もD&D並べ替え対象化。
   // colOrder に '__entity__' が無い(=未保存/旧データ)場合は先頭補完し、従来の見た目を維持する。
   const entityOrderRaw = colOrder ? [...colOrder] : [];
   const renderedCols = entityOrderRaw.includes('__entity__')
-    ? entityOrderRaw.filter(p => p === '__entity__' || visibleProps.includes(p))
+    ? entityOrderRaw.filter(p => (p === '__entity__' && showEntityColumn) || visibleProps.includes(p))
     : [];
-  if (!renderedCols.includes('__entity__')) renderedCols.unshift('__entity__');
+  if (showEntityColumn && !renderedCols.includes('__entity__')) renderedCols.unshift('__entity__');
   visibleProps.forEach(p => { if (!renderedCols.includes(p)) renderedCols.push(p); });
   // 固定列は現在の表示順における左端から固定終端までの連続範囲に正規化する。
   // 旧版の飛び飛び固定設定や列D&D後も、固定列間にスクロールする列を残さない。
@@ -621,6 +623,8 @@ function renderPivot(ctx) {
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
   thControls.setAttribute('aria-label', '行操作とトピック選択');
+  thControls.tabIndex = 0;
+  thControls.classList.add('db-keyboard-header');
   if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
     thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
   }

@@ -457,14 +457,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
         return false;
       } },
     ],
-    footerActions: [{
-      label: '+ 現在のシートからテンプレート作成', e2eId: 'db-template-create-open',
-      run: ctx => {
-        ctx.close('create');
-        showCreateTemplateModal(dbPath, trigger);
-        return false;
-      },
-    }],
   });
   // 作成・編集ダイアログや後始末が使う、シートテンプレート画面の共通目印。
   if (picker?.overlay) {

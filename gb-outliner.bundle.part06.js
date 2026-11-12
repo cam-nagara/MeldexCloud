@@ -1,3 +1,5 @@
+
+// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
 async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
@@ -896,4 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
     // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
     if (!wasActive && selectionMode === 'replace') treeSelection.clear();
-  };

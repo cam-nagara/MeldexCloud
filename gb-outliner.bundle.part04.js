@@ -1,3 +1,5 @@
+          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
+            background: true, silentError: true,
             ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
           });
         } catch (_) { /* A foreground click retries through the normal error path. */ }
@@ -896,5 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         _removeOutlinerNodesForPaths([item.path]);
       },
       refresh: async () => {
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();

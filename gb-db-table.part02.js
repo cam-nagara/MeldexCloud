@@ -1174,11 +1174,16 @@ function renderEntityRow(entityName, ctx, options) {
   // 中身（addRowBtn/dragHandle/cb）は既存のまま下方で生成し、controlsMain へ追加する。
   const tdControls = document.createElement('td');
   tdControls.className = 'col-row-controls';
+  tdControls.tabIndex = -1;
   tdControls.dataset.e2eId = _dbE2eId(ctx, 'row-controls-cell', entityName);
   tdControls.setAttribute('role', 'cell');
   const controlsMain = document.createElement('div');
   controlsMain.className = 'row-controls-main';
   tdControls.appendChild(controlsMain);
+  tdControls.addEventListener('click', (event) => {
+    if (event.target.closest('input,button,[role="button"]')) return;
+    if (typeof setActiveCell === 'function') setActiveCell(tdControls);
+  });
   tr.appendChild(tdControls);
 
   const tdName = document.createElement('td');

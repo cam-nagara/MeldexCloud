@@ -138,15 +138,6 @@
             return false;
           } },
         ],
-        footerActions: [{
-          label: '現在の設定から作成', e2eId: 'scriptnote-templates-create',
-          run: ctx => {
-            if (!this._editor?.doc) throw new Error('シナリオを開いてから作成してください');
-            if (nameDialogOpen()) return false;
-            this._addTemplatePreset({ allowOverwrite: false, okText: '登録', onSaved: () => after(ctx) });
-            return false;
-          },
-        }],
       });
       return true;
     };

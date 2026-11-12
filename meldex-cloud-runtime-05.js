@@ -5225,10 +5225,33 @@
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
     }
-    const currentColumns = columnsForDocument(
-      view.document, options.viewId || options.ctx?.currentViewId,
-    );
-    const current = currentColumns.find(column => column.name === options.oldName);
+    const requestedViewId = options.viewId || options.ctx?.currentViewId;
+    const currentColumns = columnsForDocument(view.document, requestedViewId);
+    let current = currentColumns.find(column => column.name === options.oldName);
+    // テンプレート適用直後など、画面側の viewId と canonical 側の active view が
+    // 一時的にずれていても、同じ文書内の列の安定IDを失わないよう全ビューを探す。
+    if (!current) {
+      for (const sheetView of (view.document.sheetViews || [])) {
+        const id = sheetView?.viewId || sheetView?.sheetViewId;
+        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
+        if (current) break;
+      }
+    }
+    // 旧シートには存在するが、移行済みビューの columns へまだ投影されていない列も
+    // legacy の型と決定的IDから安全に補完する。
+    if (!current) {
+      const legacyConfig = view.document.legacySheet?.propertyTypes?.[options.oldName];
+      if (legacyConfig) {
+        current = global.MeldexTopicPropertyFamily.normalizeColumn({
+          ...clone(legacyConfig),
+          name: options.oldName,
+          columnId: String(legacyConfig.columnId || legacyConfig.propertyId || options.oldName),
+          columnType: legacyConfig.columnType || legacyConfig.type || 'text',
+          propertyFamilyId: legacyConfig.propertyFamilyId
+            || global.MeldexTopicPropertyFamily.legacyPropertyFamilyId(view.document.documentId, options.oldName),
+        });
+      }
+    }
     if (!current) throw new Error('変更する列の型と安定IDを確認できません');
     const params = new URLSearchParams({
       name: options.newName,
@@ -10528,6 +10551,10 @@
       node.addEventListener('click', () => runAction(() => action.run(ctx)));
       footer.push(node);
     });
+    const primaryFooter = options.primaryAction
+      ? button(options.primaryAction.label || '適用', 'gb-btn gb-btn-primary', e2e.apply || `${pickerId}-apply`)
+      : null;
+    if (primaryFooter) footer.push(primaryFooter);
 
     const modal = global.GBUI.createModal({
       id: pickerId,
@@ -10591,6 +10618,7 @@
       if (!item || !options.primaryAction) return;
       runAction(() => options.primaryAction.run(item, ctx));
     }
+    primaryFooter?.addEventListener('click', () => runPrimary(selectedItem()));
 
     function renderChips() {
       const cats = categoriesOf(items);
@@ -10649,6 +10677,11 @@
 
     function renderPreview() {
       const item = selectedItem();
+      if (primaryFooter) {
+        const available = !!item && (typeof options.primaryAction.when !== 'function' || options.primaryAction.when(item));
+        primaryFooter.hidden = !available;
+        primaryFooter.disabled = !available;
+      }
       preview.replaceChildren();
       if (item) preview.dataset.templateId = item.id; else delete preview.dataset.templateId;
       if (!item) {
@@ -10675,11 +10708,6 @@
         node.addEventListener('click', () => runAction(() => action.run(item, ctx)));
         actions.appendChild(node);
       });
-      if (options.primaryAction && (typeof options.primaryAction.when !== 'function' || options.primaryAction.when(item))) {
-        const primary = button(options.primaryAction.label || '適用', 'gb-btn gb-btn-primary', e2e.apply || `${pickerId}-apply`);
-        primary.addEventListener('click', () => runPrimary(item));
-        actions.appendChild(primary);
-      }
       if (actions.childNodes.length) preview.appendChild(actions);
     }
 
@@ -10871,13 +10899,6 @@
         return false;
       } });
     }
-    if (editor && !options.dbPath) {
-      footerActions.push({ label: '現在のノートから作成', e2eId: 'note-templates-from-current', run: async ctx => {
-        const saved = await openEditor(library, { name: sourceName, content: currentContent(editor) }, { title: '現在のノートから作成' });
-        if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
-        return false;
-      } });
-    }
     footerActions.push({ label: '新しいテンプレート', e2eId: 'note-templates-new', run: async ctx => {
       const saved = await openEditor(library, { name: '', content: '' }, { title: '新しいテンプレート' });
       if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
@@ -10894,7 +10915,7 @@
       title: options.dbPath ? 'シートのノートテンプレート' : 'ノートテンプレート',
       items: items(),
       selectedId: options.dbPath ? metadata?.note_template?.id : undefined,
-      emptyText: '登録済みのテンプレートはありません。「現在のノートから作成」か「新しいテンプレート」で作成できます。',
+      emptyText: '登録済みのテンプレートはありません。「新しいテンプレート」で作成できます。',
       primaryAction: { label: options.dbPath ? 'シートに設定' : 'ノートに適用', run: async item => {
         const current = library.templates.find(other => other.id === item.id);
         if (!current) throw new Error('保存済みのテンプレートを選択してください');
@@ -55537,17 +55558,6 @@ function bdOpenFilterMenu(anchor) {
           return false;
         } },
       ],
-      footerActions: board ? [{
-        label: '現在のボードから作成', e2eId: 'board-templates-create', run: async (ctx) => {
-          if (!library || library.failed) library = await loadLibrary();
-          const template = await createFromCurrent(library);
-          if (!template) return false;
-          await ctx.refresh();
-          ctx.select(template.id);
-          ctx.setStatus(`「${template.name}」を${library.remote ? '個人設定' : 'この端末'}に保存しました`);
-          return false;
-        },
-      }] : [],
     });
   }
 
@@ -70481,15 +70491,6 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
             return false;
           } },
         ],
-        footerActions: [{
-          label: '現在の設定から作成', e2eId: 'scriptnote-templates-create',
-          run: ctx => {
-            if (!this._editor?.doc) throw new Error('シナリオを開いてから作成してください');
-            if (nameDialogOpen()) return false;
-            this._addTemplatePreset({ allowOverwrite: false, okText: '登録', onSaved: () => after(ctx) });
-            return false;
-          },
-        }],
       });
       return true;
     };
@@ -110150,6 +110151,24 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange, item)
       if (body) { body.focus(); const s = window.getSelection(); s.selectAllChildren(body); s.collapseToEnd(); }
     }
   }, 50);
+}
+
+// contenteditable=false の外枠に入れ子にした編集領域では、ブラウザの既定 Enter が
+// まれに新しい行を外枠の外へ生成する。保存後にその行が通常引用として解釈されるため、
+// コールアウト本文内の改行は明示的に本文へ挿入する。
+if (!window.__meldexCalloutEnterGuardInstalled) {
+  window.__meldexCalloutEnterGuardInstalled = true;
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    const body = event.target?.closest?.('.callout-body[contenteditable="true"]');
+    if (!body) return;
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount || !body.contains(selection.anchorNode)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    document.execCommand('insertLineBreak', false, null);
+    body.dispatchEvent(new Event('input', { bubbles: true }));
+  }, true);
 }
 
 function _calloutPresetForSpec(spec) {
@@ -164013,7 +164032,8 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     : String(oldName || 'entry').replace(/\s+/g, '-').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'entry';
   inp.dataset.e2eId = `db-entity-rename-${renameToken}`;
   inp.setAttribute('aria-label', `トピック名を変更: ${oldName || '無題'}`);
-  inp.style.cssText = 'width:calc(100% - 24px);padding:2px 4px;margin-left:20px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  // 表示ラベルと同じホスト・左余白を使い、編集開始時に文字が右へ跳ねないようにする。
+  inp.style.cssText = 'width:100%;min-width:0;box-sizing:border-box;padding:0 4px;margin:0;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font:inherit;line-height:1.4;';
   const inputHost = nameSpan.parentElement || td;
   inputHost.insertBefore(inp, nameSpan.parentElement ? nameSpan : td.firstChild);
   inp.focus();
@@ -165734,6 +165754,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     inp.type = 'number';
     inp.placeholder = '数値';
     inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    _fixInlineEditorHeight(inp);
     container.insertBefore(inp, addBtn);
     inp.focus();
     _attachCommitHandlers(inp, saveAndRestore, cancel);
@@ -165749,6 +165770,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (isPlainText) inp.rows = 1;
     inp.placeholder = forType === 'url' ? 'https://...' : forType === 'multi-select' ? '値1, 値2, ...' : '値を入力';
     inp.style.cssText = 'width:100%;padding:3px 6px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:12px;box-sizing:border-box;';
+    _fixInlineEditorHeight(inp);
     container.insertBefore(inp, addBtn);
     if (isPlainText) _autosizeInlineTextarea(inp);
     inp.focus();
@@ -165756,11 +165778,29 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   }
   function _autosizeInlineTextarea(inp) {
     if (!inp || inp.tagName !== 'TEXTAREA') return;
+    const fixedHeight = Number(inp.dataset?.dbFixedEditorHeight || 0);
+    if (fixedHeight > 0) {
+      inp.style.height = fixedHeight + 'px';
+      inp.style.minHeight = fixedHeight + 'px';
+      inp.style.maxHeight = fixedHeight + 'px';
+      inp.style.overflowY = inp.scrollHeight > fixedHeight ? 'auto' : 'hidden';
+      return;
+    }
     const lineHeight = parseFloat(getComputedStyle(inp).lineHeight) || 18;
     const maxHeight = Math.max(lineHeight * 10 + 8, 80);
     inp.style.height = 'auto';
     inp.style.height = Math.min(inp.scrollHeight, maxHeight) + 'px';
     inp.style.overflowY = inp.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }
+  function _fixInlineEditorHeight(inp) {
+    const td = container.closest('td');
+    const style = td ? getComputedStyle(td) : null;
+    const verticalPadding = style ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) : 0;
+    const height = Math.max(20, Math.floor((td?.getBoundingClientRect?.().height || container.getBoundingClientRect?.().height || 0) - verticalPadding));
+    if (inp.dataset) inp.dataset.dbFixedEditorHeight = String(height);
+    inp.style.height = height + 'px';
+    inp.style.minHeight = height + 'px';
+    inp.style.maxHeight = height + 'px';
   }
   function _attachCommitHandlers(inp, save, cancelFn) {
     let committed = false;
@@ -166660,7 +166700,7 @@ function _dbDeactivateActiveCell(cell) {
 }
 
 function _dbCurrentVisualActiveCell() {
-  const focused = document.activeElement?.closest?.('td.col-entity,td[data-prop-name]');
+  const focused = document.activeElement?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
   if (focused?.isConnected && focused.classList.contains('active-cell')) return focused;
   const visual = Array.from(document.querySelectorAll('td.active-cell'))
     .filter(cell => cell?.isConnected)
@@ -166918,12 +166958,12 @@ function _dbKeyboardActiveTable(options = {}) {
 }
 
 function _dbKeyboardActiveCell(table, eventTarget = null) {
+  const eventCell = eventTarget?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
+  if (eventCell && table?.contains?.(eventCell)) return eventCell;
+  const focused = document.activeElement?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
+  if (focused && table?.contains?.(focused)) return focused;
   const visual = _dbCurrentVisualActiveCell();
   if (visual && (!table || table.contains(visual))) return visual;
-  const eventCell = eventTarget?.closest?.('td.col-entity,td[data-prop-name]');
-  if (eventCell && table?.contains?.(eventCell)) return eventCell;
-  const focused = document.activeElement?.closest?.('td.col-entity,td[data-prop-name]');
-  if (focused && table?.contains?.(focused)) return focused;
   const selected = table?.querySelector?.('tbody td.db-range-selected[data-prop-name]');
   if (selected) return selected;
   return activeCell && table?.contains?.(activeCell) ? activeCell : null;
@@ -167610,6 +167650,9 @@ document.addEventListener('keydown', (e) => {
     }
   }
   if (e.defaultPrevented) return;
+  // 列ヘッダーは下段の専用ナビゲーションへ渡す。直前のセル選択が残っていても、
+  // Enter を古いセルの編集開始として誤処理しない。
+  if (e.target?.closest?.('thead th.db-keyboard-header')) return;
   const table = _dbKeyboardActiveTable();
   const keyCell = _dbKeyboardActiveCell(table, e.target);
   if (!table || !keyCell) return;
@@ -167617,6 +167660,22 @@ document.addEventListener('keydown', (e) => {
   const tr = keyCell.parentElement;
   if (!tr || !table.contains(tr)) return;
   const colIdx = Array.from(tr.children).indexOf(keyCell);
+  // ハンドル列の行選択・並べ替えは、通常セルの範囲選択やアプリ共通ショートカット
+  // より先に確定する。後段だけに置くと Shift+矢印が先行ハンドラに消費される。
+  if (keyCell.classList.contains('col-row-controls') && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const rows = _dbVisibleDataRows(table);
+    const rowIdx = rows.indexOf(tr);
+    if (rowIdx >= 0 && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      e.preventDefault(); e.stopPropagation();
+      _dbMoveRowsByKeyboard(table, keyCell, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    if (rowIdx >= 0 && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); e.stopPropagation();
+      _dbSelectRowRangeByKeyboard(table, keyCell, Math.max(0, Math.min(rows.length - 1, rowIdx + (e.key === 'ArrowUp' ? -1 : 1))));
+      return;
+    }
+  }
   // エントリ名セルの Enter → インライン名称編集開始 (通常セルの Enter/F2 編集と対称)。
   // 既存の Enter 処理 (_dbHandleCellEditorKey) より前で分岐し、非該当時はそのまま下へ流す。
   if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && keyCell.classList.contains('col-entity')
@@ -167633,6 +167692,138 @@ document.addEventListener('keydown', (e) => {
   }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
+
+function _dbSetActiveHeader(th) {
+  if (!th) return;
+  const table = th.closest('table');
+  table?.querySelectorAll('thead th.active-cell').forEach(node => node.classList.remove('active-cell'));
+  if (activeCell) _dbDeactivateActiveCell(activeCell);
+  activeCell = null;
+  rangeAnchorCell = null;
+  th.classList.add('active-cell');
+  th.focus({ preventScroll: true });
+  th.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+}
+
+function _dbStartEntityHeaderInlineRename(th) {
+  const label = th?.querySelector('.th-label');
+  if (!label || th.querySelector('.th-rename-input')) return;
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const dbPath = ctx?.dbPath || state.currentDbPath || '';
+  const oldName = label.textContent || 'トピック名';
+  const input = document.createElement('input');
+  input.className = 'th-rename-input';
+  input.value = oldName;
+  label.hidden = true;
+  th.appendChild(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (cancel) => {
+    if (done) return;
+    done = true;
+    const next = input.value.trim();
+    input.remove(); label.hidden = false;
+    if (!cancel && next && next !== oldName && typeof setEntityColumnLabel === 'function') {
+      setEntityColumnLabel(dbPath, next, { ctx });
+      renderPivot(ctx);
+    } else {
+      _dbSetActiveHeader(th);
+    }
+  };
+  input.addEventListener('blur', () => finish(false));
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(false); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(true); }
+  });
+}
+
+function _dbHandleHeaderNavigation(e, table) {
+  const th = e.target?.closest?.('thead th.db-keyboard-header') || document.activeElement?.closest?.('thead th.db-keyboard-header');
+  if (!th || !table.contains(th)) return false;
+  if (e.target?.closest?.('input,select,textarea,[contenteditable="true"]')) return false;
+  const headers = [...table.querySelectorAll('thead th.db-keyboard-header:not(.col-add-prop)')];
+  const index = headers.indexOf(th);
+  if (index < 0) return false;
+  if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault(); e.stopPropagation();
+    if (th.classList.contains('col-entity-header')) _dbStartEntityHeaderInlineRename(th);
+    else if (th.dataset.prop && typeof startHeaderInlineRename === 'function') {
+      const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(th, { dbPath: state.currentDbPath }) : _currentPaneState();
+      startHeaderInlineRename(th, th.dataset.prop, ctx?.dbPath || state.currentDbPath, ctx);
+    }
+    return true;
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    _dbSetActiveHeader(headers[Math.max(0, Math.min(headers.length - 1, index + (e.key === 'ArrowRight' ? 1 : -1)))]);
+    return true;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const row = _dbVisibleDataRows(table)[0];
+    if (row?.children[index]) setActiveCell(row.children[index]);
+    return true;
+  }
+  return false;
+}
+
+function _dbSelectRowRangeByKeyboard(table, keyCell, targetIndex) {
+  const rows = _dbVisibleDataRows(table);
+  const current = rows.indexOf(keyCell.closest('tr'));
+  if (current < 0 || targetIndex < 0 || targetIndex >= rows.length) return;
+  const anchor = Number.isInteger(table._dbKeyboardRowAnchor) ? table._dbKeyboardRowAnchor : current;
+  table._dbKeyboardRowAnchor = anchor;
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const selected = typeof _ensureSelectedEntities === 'function' ? _ensureSelectedEntities(ctx) : ctx._selectedEntities;
+  selected?.clear?.();
+  const lo = Math.min(anchor, targetIndex), hi = Math.max(anchor, targetIndex);
+  rows.forEach((row, index) => {
+    const checked = index >= lo && index <= hi;
+    const name = row.dataset.entityName;
+    if (checked && name) selected?.add?.(name);
+    row.classList.toggle('row-selected', checked);
+    const cb = row.querySelector('.row-select-cb');
+    if (cb) cb.checked = checked;
+  });
+  if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+  setActiveCell(rows[targetIndex].querySelector('td.col-row-controls'), { preserveRange: true });
+}
+
+function _dbMoveRowsByKeyboard(table, keyCell, direction) {
+  const ctx = typeof _dbPaneContextFromEvent === 'function' ? _dbPaneContextFromEvent(table, { dbPath: state.currentDbPath }) : _currentPaneState();
+  const dbPath = ctx?.dbPath || state.currentDbPath;
+  if (!ctx || !dbPath) return;
+  const rows = _dbVisibleDataRows(table);
+  const currentName = keyCell.closest('tr')?.dataset?.entityName;
+  const selected = ctx._selectedEntities;
+  const moving = new Set(selected?.has?.(currentName) ? [...selected] : [currentName]);
+  const cfg = getDbViewConfig(dbPath);
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function' ? _getCurrentDbViewConfigEntryFromConfig(cfg, { ctx }) : null;
+  const target = view || cfg;
+  const oldOrder = Array.isArray(target.manualOrder) ? [...target.manualOrder] : null;
+  const oldSortConfig = target.sortConfig ? { ...target.sortConfig } : null;
+  const visible = rows.map(row => row.dataset.entityName).filter(Boolean);
+  const order = Array.isArray(target.manualOrder) ? [...target.manualOrder] : [...visible];
+  Object.keys(ctx.pivotData?.entities || {}).forEach(name => { if (!order.includes(name)) order.push(name); });
+  let changed = false;
+  if (direction < 0) {
+    for (let i = 1; i < order.length; i++) if (moving.has(order[i]) && !moving.has(order[i - 1])) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; changed = true; }
+  } else {
+    for (let i = order.length - 2; i >= 0; i--) if (moving.has(order[i]) && !moving.has(order[i + 1])) { [order[i], order[i + 1]] = [order[i + 1], order[i]]; changed = true; }
+  }
+  if (!changed) return;
+  target.manualOrder = order;
+  target.sortConfig = { key: 'manual', dir: 'asc' };
+  saveDbViewConfig(dbPath, cfg);
+  renderPivot(ctx);
+  if (typeof _dbUndoManualOrder === 'function') _dbUndoManualOrder(dbPath, [...moving], oldOrder, oldSortConfig, order, ctx);
+  setTimeout(() => {
+    const nextRow = [...(_paneEl(ctx, '#' + (ctx.tableId || 'pivot-table'))?.querySelectorAll('tr[data-entity-name]') || [])]
+      .find(row => row.dataset.entityName === currentName);
+    const next = nextRow?.querySelector('td.col-row-controls');
+    if (next) setActiveCell(next);
+  }, 0);
+}
 
 // テーブルキーボードナビゲーション
 // セル単位のキー操作。Enter/F2 は分割パネル中でもアクティブセルの型別エディタを直接開く。
@@ -167678,6 +167869,7 @@ document.addEventListener('keydown', (e) => {
     setNavDebug({ phase: 'table', reason: 'no-table', view: state.view || '' });
     return;
   }
+  if (_dbHandleHeaderNavigation(e, table)) return;
   let dataRows = _dbVisibleDataRows(table);
 
   let keyCell = _dbKeyboardActiveCell(table, e.target);
@@ -167719,6 +167911,22 @@ document.addEventListener('keydown', (e) => {
     entityName: tr?.dataset?.entityName || '',
     propName: keyCell?.dataset?.propName || '',
   });
+
+  if (keyCell.classList.contains('col-row-controls')) {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      _dbMoveRowsByKeyboard(table, keyCell, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      _dbSelectRowRangeByKeyboard(table, keyCell, Math.max(0, Math.min(dataRows.length - 1, rowIdx + (e.key === 'ArrowUp' ? -1 : 1))));
+      return;
+    }
+    table._dbKeyboardRowAnchor = rowIdx;
+  } else {
+    delete table._dbKeyboardRowAnchor;
+  }
 
   if (_dbHandleCellEditorKey(e, colIdx, keyCell)) return;
 
@@ -167784,12 +167992,19 @@ document.addEventListener('keydown', (e) => {
   let nextRow = rowIdx, nextCol = colIdx;
 
   if (e.key === 'ArrowUp') {
+    if (rowIdx === 0) {
+      e.preventDefault();
+      const header = table.querySelector('thead tr')?.children?.[colIdx];
+      if (header?.classList.contains('db-keyboard-header')) _dbSetActiveHeader(header);
+      return;
+    }
     nextRow = Math.max(0, rowIdx - 1);
     e.preventDefault();
   }
   else if (e.key === 'ArrowDown') {
     if (isLastRow) {
       e.preventDefault();
+      if (keyCell.classList.contains('col-row-controls')) return;
       try {
         window.__meldexLastSheetNavDebug = {
           action: 'arrow-down-create',
@@ -167805,7 +168020,7 @@ document.addEventListener('keydown', (e) => {
     nextRow = rowIdx + 1;
     e.preventDefault();
   }
-  else if (e.key === 'ArrowLeft') { nextCol = Math.max(DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { nextCol = Math.max(keyCell.classList.contains('col-row-controls') ? 0 : DB_ROW_CONTROLS_COL_COUNT, colIdx - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { nextCol = Math.min(maxCol, colIdx + 1); e.preventDefault(); }
   else if (e.key === 'Tab') {
     e.preventDefault();
@@ -167833,7 +168048,7 @@ document.addEventListener('keydown', (e) => {
   const targetRow = dataRows[nextRow];
   if (targetRow) {
     const targetCell = targetRow.children[nextCol];
-    if (targetCell && !targetCell.classList.contains('col-add-prop-cell') && !targetCell.classList.contains('col-row-controls')) setActiveCell(targetCell);
+    if (targetCell && !targetCell.classList.contains('col-add-prop-cell')) setActiveCell(targetCell);
   }
 }, true);
 
@@ -169451,11 +169666,15 @@ function startInlineEdit(span, val, entityPath, propName) {
   const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
+  // 表示中のセル高を編集面へ引き継ぐ。contenteditable の既定 min-height や
+  // autosize で、編集開始/終了のたびに行が上下へ跳ねるのを防ぐ。
+  const stableEditorHeight = Math.max(1, Math.ceil(span.getBoundingClientRect?.().height || span.offsetHeight || 0));
   const input = document.createElement('span');
   input.className = 'value-input value-input--textarea value-rich-editor';
   input.setAttribute('contenteditable', 'true');
   input.setAttribute('role', 'textbox');
   input.setAttribute('aria-multiline', 'true');
+  input.dataset.dbFixedEditorHeight = String(stableEditorHeight);
   input.addEventListener('dragstart', e => {
     const selection = window.getSelection?.();
     if (!selection || selection.isCollapsed || !input.contains(selection.anchorNode) || !input.contains(selection.focusNode)) return;
@@ -169677,6 +169896,14 @@ function startInlineEdit(span, val, entityPath, propName) {
 
 function _cellUiAutosizeTextarea(input) {
   if (!input) return;
+  const fixedHeight = Number(input.dataset?.dbFixedEditorHeight || 0);
+  if (fixedHeight > 0) {
+    input.style.height = fixedHeight + 'px';
+    input.style.minHeight = fixedHeight + 'px';
+    input.style.maxHeight = fixedHeight + 'px';
+    input.style.overflowY = input.scrollHeight > fixedHeight ? 'auto' : 'hidden';
+    return;
+  }
   const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 18;
   const maxHeight = Math.max(lineHeight * 10 + 8, 80);
   input.style.height = 'auto';
@@ -183303,11 +183530,16 @@ function renderEntityRow(entityName, ctx, options) {
   // 中身（addRowBtn/dragHandle/cb）は既存のまま下方で生成し、controlsMain へ追加する。
   const tdControls = document.createElement('td');
   tdControls.className = 'col-row-controls';
+  tdControls.tabIndex = -1;
   tdControls.dataset.e2eId = _dbE2eId(ctx, 'row-controls-cell', entityName);
   tdControls.setAttribute('role', 'cell');
   const controlsMain = document.createElement('div');
   controlsMain.className = 'row-controls-main';
   tdControls.appendChild(controlsMain);
+  tdControls.addEventListener('click', (event) => {
+    if (event.target.closest('input,button,[role="button"]')) return;
+    if (typeof setActiveCell === 'function') setActiveCell(tdControls);
+  });
   tr.appendChild(tdControls);
 
   const tdName = document.createElement('td');
@@ -183580,6 +183812,7 @@ function _setupDbColumnHeaderA11y(th, label) {
   th.setAttribute('role', 'columnheader');
   th.setAttribute('scope', 'col');
   th.tabIndex = 0;
+  th.classList.add('db-keyboard-header');
   th.setAttribute('aria-label', label || th.textContent?.trim() || '列');
 }
 
@@ -184076,14 +184309,15 @@ function renderPivot(ctx) {
   }
   if (typeof filterDeletedDbProperties === 'function') props = filterDeletedDbProperties(dbPath, props);
   const visibleProps = props.filter(p => !hiddenCols.includes(p));
+  const showEntityColumn = !hiddenCols.includes('__entity__');
 
   // 列の描画順序（'__entity__' を含む）。フェーズ2でエントリ名列もD&D並べ替え対象化。
   // colOrder に '__entity__' が無い(=未保存/旧データ)場合は先頭補完し、従来の見た目を維持する。
   const entityOrderRaw = colOrder ? [...colOrder] : [];
   const renderedCols = entityOrderRaw.includes('__entity__')
-    ? entityOrderRaw.filter(p => p === '__entity__' || visibleProps.includes(p))
+    ? entityOrderRaw.filter(p => (p === '__entity__' && showEntityColumn) || visibleProps.includes(p))
     : [];
-  if (!renderedCols.includes('__entity__')) renderedCols.unshift('__entity__');
+  if (showEntityColumn && !renderedCols.includes('__entity__')) renderedCols.unshift('__entity__');
   visibleProps.forEach(p => { if (!renderedCols.includes(p)) renderedCols.push(p); });
   // 固定列は現在の表示順における左端から固定終端までの連続範囲に正規化する。
   // 旧版の飛び飛び固定設定や列D&D後も、固定列間にスクロールする列を残さない。
@@ -184179,6 +184413,8 @@ function renderPivot(ctx) {
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
   thControls.setAttribute('aria-label', '行操作とトピック選択');
+  thControls.tabIndex = 0;
+  thControls.classList.add('db-keyboard-header');
   if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
     thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
   }
@@ -185596,7 +185832,7 @@ async function selectDatabase(dbPath, ctx, opts) {
 
   // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
   // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
-  if (!openOpts.silent && _isDbSwitch) {
+  if (_isDbSwitch) {
     clearPivot(ctx);
     const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
     const _containerScope = ctx?.containerEl || null;
@@ -193191,6 +193427,33 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const isCalendarCapable = calendarInfo.kind !== 'none';
   const currentView = getSavedViews(dbPath)[idx];
   const currentType = currentView?.viewMode || 'pivot';
+  const allColumns = (() => {
+    const data = ctx.pivotData || state.pivotData || {};
+    const names = [...(data.properties || [])];
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {};
+    Object.keys(types || {}).forEach(name => { if (!names.includes(name)) names.push(name); });
+    const propertyNames = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
+    return ['__entity__', ...propertyNames];
+  })();
+  const columnDisplayName = name => name === '__entity__'
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
+    : name;
+
+  const setVisibleColumns = (nextHidden, detail) => {
+    const cfg = getDbViewConfig(dbPath);
+    const views = cfg.savedViews || [];
+    const target = views[idx];
+    if (!target) return;
+    const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+    target.hiddenCols = [...new Set(nextHidden)].filter(name => allColumns.includes(name));
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+    if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+      pushDbViewConfigHistory(dbPath, 'シート表示: 表示列切替', before, captureDbViewConfigHistory(dbPath), detail || '');
+    }
+    const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+    if (activeIdx === idx) loadSavedView(idx, ctx, { skipHistory: true });
+    else renderDbViewTabs(ctx);
+  };
 
   const swapViews = (fromIdx, toIdx) => {
     const cfg = getDbViewConfig(dbPath);
@@ -193221,6 +193484,26 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
     { type: 'sep' },
+    {
+      type: 'submenu',
+      label: lucide('columns3', 14) + ' 表示列を切替',
+      children: [
+        { label: 'すべて表示', action: () => setVisibleColumns([], 'すべて表示') },
+        { label: 'すべて非表示', action: () => setVisibleColumns(allColumns, 'すべて非表示') },
+        { type: 'sep' },
+        ...allColumns.map(name => {
+          const hidden = (currentView?.hiddenCols || []).includes(name);
+          return {
+            label: (hidden ? '<span style="display:inline-block;width:14px"></span>' : lucide('check', 14)) + ' ' + columnDisplayName(name),
+            action: () => {
+              const next = new Set(currentView?.hiddenCols || []);
+              if (next.has(name)) next.delete(name); else next.add(name);
+              setVisibleColumns([...next], columnDisplayName(name));
+            },
+          };
+        }),
+      ],
+    },
     {
       type: 'submenu',
       label: lucide('layoutDashboard', 14) + ' ビュータイプを変更',
@@ -196667,14 +196950,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
         return false;
       } },
     ],
-    footerActions: [{
-      label: '+ 現在のシートからテンプレート作成', e2eId: 'db-template-create-open',
-      run: ctx => {
-        ctx.close('create');
-        showCreateTemplateModal(dbPath, trigger);
-        return false;
-      },
-    }],
   });
   // 作成・編集ダイアログや後始末が使う、シートテンプレート画面の共通目印。
   if (picker?.overlay) {
@@ -240121,7 +240396,9 @@ function createTreeNodeFromBrowse(item, rootPath) {
     menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!treeSelection.has(div)) { treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div; }
+      treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
+      document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
+      row.classList.add('active');
       const r = menuBtn.getBoundingClientRect();
       const z = parseFloat(document.documentElement.style.zoom) || 1;
       showTreeContextMenu(r.left / z, r.bottom / z, div, item, label);
@@ -266256,7 +266533,7 @@ function buildToolMenuItems(toolType, component) {
   // --- ツール固有の項目（サブメニュー以外） ---
   const specific = {
     page: [
-      { label: 'テンプレートに登録', action: () => MeldexNoteTemplates.show({ registerCurrent: true }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
+      { label: '現在のノートからテンプレートを作成...', action: () => MeldexNoteTemplates.show({ registerCurrent: true }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: 'ノートテンプレート...', action: () => MeldexNoteTemplates.show().catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('page', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: 'オプションを表示', action: context => { if (typeof _openDetailRightPanel === 'function') _openDetailRightPanel(context?.trigger); else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', context?.trigger); }, disabled: !hasFile },
@@ -266271,10 +266548,12 @@ function buildToolMenuItems(toolType, component) {
     scriptnote: [
       { label: '開く...', action: context => showScriptNoteOpenModal('open', { trigger: context?.trigger }) },
       { label: 'テンプレート...', action: () => { const comp = formComponent; if (comp && typeof comp._showTemplatePicker === 'function') comp._showTemplatePicker(); else showStatus('シナリオを開いてから選んでください', true); }, disabled: !hasFile },
+      { label: '現在のシナリオからテンプレートを作成...', action: () => { const comp = formComponent; if (comp && typeof comp._addTemplatePreset === 'function') comp._addTemplatePreset({ allowOverwrite: false, okText: '登録' }); else showStatus('シナリオを開いてから作成してください', true); }, disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
     ],
     database: [
       { label: 'シートテンプレート...', action: context => { if (typeof showTemplateGalleryModal === 'function') showTemplateGalleryModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },
+      { label: '現在のシートからテンプレートを作成...', action: context => { if (typeof showCreateTemplateModal === 'function') showCreateTemplateModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },
       { label: '新規トピックのノートテンプレート...', action: () => MeldexNoteTemplates.show({ dbPath: currentPath }).catch(error => showStatus(error.message, true)), disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('database', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
@@ -266288,7 +266567,7 @@ function buildToolMenuItems(toolType, component) {
     board: [
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('board', { trigger: context?.trigger }); }, disabled: !hasFile },
       { label: 'テンプレート...', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.open().catch?.(error => showStatus(error.message, true)); }, disabled: !hasFile },
-      { label: 'テンプレートに登録', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.registerCurrent().catch(error => showStatus(error.message, true)); }, disabled: !hasFile },
+      { label: '現在のボードからテンプレートを作成...', action: () => { if (!window.MeldexBoardTemplates) { showStatus('ボードテンプレートを読み込めませんでした', true); return; } MeldexBoardTemplates.registerCurrent().catch(error => showStatus(error.message, true)); }, disabled: !hasFile },
       { label: '新規リンクトピック: ノート', action: () => {
         if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };

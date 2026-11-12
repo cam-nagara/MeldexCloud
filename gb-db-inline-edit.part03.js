@@ -874,7 +874,7 @@ function _dbDeactivateActiveCell(cell) {
 }
 
 function _dbCurrentVisualActiveCell() {
-  const focused = document.activeElement?.closest?.('td.col-entity,td[data-prop-name]');
+  const focused = document.activeElement?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
   if (focused?.isConnected && focused.classList.contains('active-cell')) return focused;
   const visual = Array.from(document.querySelectorAll('td.active-cell'))
     .filter(cell => cell?.isConnected)
@@ -1132,12 +1132,12 @@ function _dbKeyboardActiveTable(options = {}) {
 }
 
 function _dbKeyboardActiveCell(table, eventTarget = null) {
+  const eventCell = eventTarget?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
+  if (eventCell && table?.contains?.(eventCell)) return eventCell;
+  const focused = document.activeElement?.closest?.('td.col-row-controls,td.col-entity,td[data-prop-name]');
+  if (focused && table?.contains?.(focused)) return focused;
   const visual = _dbCurrentVisualActiveCell();
   if (visual && (!table || table.contains(visual))) return visual;
-  const eventCell = eventTarget?.closest?.('td.col-entity,td[data-prop-name]');
-  if (eventCell && table?.contains?.(eventCell)) return eventCell;
-  const focused = document.activeElement?.closest?.('td.col-entity,td[data-prop-name]');
-  if (focused && table?.contains?.(focused)) return focused;
   const selected = table?.querySelector?.('tbody td.db-range-selected[data-prop-name]');
   if (selected) return selected;
   return activeCell && table?.contains?.(activeCell) ? activeCell : null;
