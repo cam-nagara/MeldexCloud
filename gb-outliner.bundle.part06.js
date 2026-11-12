@@ -1,4 +1,13 @@
 
+// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
+function _outlinerApplyCreateSuccess(pendingNode, found, options) {
+  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
+  if (!pendingNode || !pendingNode.parentNode) return;
+  const newNode = createTreeNodeFromBrowse(found);
+  pendingNode.replaceWith(newNode);
+  _selectOutlinerCreateNode(newNode);
+}
+
 // 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
 async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
@@ -889,12 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
       try { scroller.releasePointerCapture(pointerId); } catch {}
     }
     pointerId = null;
-    pointerCaptured = false;
-    // pointerdown で設定した inline position を元に戻す
-    if (_savedScrollerPosition !== null) {
-      scroller.style.position = _savedScrollerPosition;
-      _savedScrollerPosition = null;
-    }
-    // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
-    // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
-    if (!wasActive && selectionMode === 'replace') treeSelection.clear();

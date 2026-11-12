@@ -705,10 +705,18 @@ function _updateFolderBulkBar() {
     const cnt = bar.querySelector('.fv-bulk-count');
     if (cnt) cnt.textContent = selectedCount + ' 件選択中';
     const readOnlyArchive = !!window._archiveBrowseContext;
-    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"],[data-action^="fvBulkDelete"]').forEach(button => {
+    const hasLockedItems = _folderSelectedItems.some(item => _folderMenuItemLocked(item));
+    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"]').forEach(button => {
       button.disabled = readOnlyArchive;
       button.title = readOnlyArchive ? 'ZIP内は読み取り専用です' : '';
     });
+    const deleteButton = bar.querySelector('[data-action^="fvBulkDelete"]');
+    if (deleteButton) {
+      deleteButton.disabled = readOnlyArchive || hasLockedItems;
+      deleteButton.title = readOnlyArchive
+        ? 'ZIP内は読み取り専用です'
+        : hasLockedItems ? '読み取り専用の参照リンクは削除できません' : '';
+    }
     _positionFolderBulkPopup();
     _setFolderBulkPopupTracking(true);
   } else {

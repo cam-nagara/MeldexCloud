@@ -160,6 +160,15 @@
     addSep();
   }
 
+  if (!isMulti && nodeData.path && !nodeData._isRoot
+      && typeof canShowContainedFiles === 'function' && canShowContainedFiles(nodeData)) {
+    addMenuItem('ファイル内のファイルを表示', () => {
+      closeTreeContextMenu();
+      showContainedFiles(nodeData);
+    }, null, 'files');
+    addSep();
+  }
+
   // --- 編集ロック ---
   if (!isMulti && window.MeldexFileIcons?.canEdit(nodeData) && !isItemLocked(nodeData.path)) {
     addMenuItem('アイコンを変更', () => {
@@ -888,13 +897,4 @@ function _outlinerFindNewItemInListing(items, type, existingNames) {
     const identity = _outlinerCreateItemIdentity(it.type, it.name);
     return identity && !existingNames.has(identity);
   }) || null;
-}
-
-// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found, options) {
-  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
-  if (!pendingNode || !pendingNode.parentNode) return;
-  const newNode = createTreeNodeFromBrowse(found);
-  pendingNode.replaceWith(newNode);
-  _selectOutlinerCreateNode(newNode);
 }

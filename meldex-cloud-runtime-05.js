@@ -57349,7 +57349,7 @@ function renderScriptNoteRulesTab(targetEl = null) {
   html += `<div class="rules-action-row">
     <input id="rules-new-chara" class="rules-input" placeholder="キャラ名..." aria-label="追加するキャラ名">
     <button type="button" class="rules-add-btn" ${_rulesNamedActionAttrs('add-chara', 'chara', 'new')}>追加</button>
-    <button type="button" class="rules-secondary-btn" ${_rulesNamedActionAttrs('open-character-db-import', 'chara', 'db')} title="シートからキャラを読み込み">DB読込</button>
+    <button type="button" class="rules-secondary-btn" ${_rulesNamedActionAttrs('open-character-db-import', 'chara', 'db')} title="シートからキャラを読み込み">シート読込</button>
   </div>`;
   if (doc.characterDb && doc.characterDb.length > 0) {
     const avail = doc.characterDb.filter(name => !doc.characters.some(c => c.name === name));
@@ -59978,11 +59978,27 @@ function _sn2StopSep() {
         frame.title = '保存したHTML';
         frame.src = fileRawUrl(snapshotPath);
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
+        const missing = document.createElement('div');
+        missing.className = 'meldex-entity-detail-webclip-missing';
+        missing.dataset.e2eId = 'entity-topic-html-missing';
+        missing.hidden = true;
+        missing.textContent = '保存したHTMLファイルが見つかりません。シート内のファイル表示で保存先を確認してください。';
         previewBar.append(previewLabel, openSnapshot);
-        preview.append(previewBar, frame);
+        preview.append(previewBar, frame, missing);
         preview.setAttribute('role', 'tabpanel');
         preview.setAttribute('aria-label', 'HTML');
         state.htmlPanel = preview;
+        Promise.resolve(typeof apiPost === 'function'
+          ? apiPost('/paths/exist', { paths: [snapshotPath] })
+          : null).then(result => {
+            if (state.disposed || !preview.isConnected || result?.results?.[snapshotPath] !== false) return;
+            frame.remove();
+            missing.hidden = false;
+            openSnapshot.removeAttribute('href');
+            openSnapshot.setAttribute('aria-disabled', 'true');
+          }).catch(() => {
+            // 存在確認自体が失敗した場合は、従来どおりiframe側の応答を表示する。
+          });
 
       }
 
@@ -172961,6 +172977,58 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   return current;
 }
 
+async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
+  if (typeof MeldexDnD === 'undefined' || typeof MeldexDnD.resolveDropData !== 'function') return null;
+  const resolved = await MeldexDnD.resolveDropData(event, 'node');
+  const payload = resolved?.payload;
+  if (!payload) return null;
+  const options = _imagePropOptions(ptc);
+  const current = parseImagePropertyValue(val?.value);
+  const candidates = (Array.isArray(payload.items) && payload.items.length ? payload.items : [payload])
+    .filter(item => item?.path && ['image', 'video', 'pdf', 'file'].includes(String(item.type || 'file').toLowerCase()));
+  const room = Math.max(0, options.maxCount - current.length);
+  if (!candidates.length || room <= 0) {
+    MeldexDnD.failDrop?.(resolved);
+    showStatus(room <= 0 ? '画像数の上限に達しています' : '画像・動画・PDFだけを追加できます', true);
+    return current;
+  }
+  const sheetPath = _imagePropDbPathForEntity(entityPath) || '';
+  let added = 0;
+  let failed = 0;
+  for (const item of candidates.slice(0, room)) {
+    try {
+      const meta = await apiPost('/media/import-path', {
+        source_path: item.path,
+        sheet_path: sheetPath,
+        filename: item.name || '',
+        thumbnail_size: options.thumbSize,
+      });
+      current.push({
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID() : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
+        content_hash: meta.content_hash || meta.hash,
+        filename: meta.filename || item.name || String(item.path).split(/[\\/]/).pop(),
+        path: meta.path || '', kind: meta.kind || item.type || '', src: meta.src, thumb: meta.thumb,
+        url: meta.url, thumb_url: meta.thumb_url, width: meta.width || null, height: meta.height || null,
+        size: meta.size || null, added_at: new Date().toISOString(), caption: '',
+      });
+      added += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn('[image-property] internal drop failed:', error);
+    }
+  }
+  if (added) {
+    await saveImagePropertyItems(entityPath, propName, val, current);
+    MeldexDnD.completeDrop?.(resolved);
+  } else {
+    MeldexDnD.failDrop?.(resolved);
+  }
+  if (candidates.length > room) showStatus('画像数の上限を超えた分は追加しませんでした');
+  if (failed) showStatus(added ? `一部を追加できませんでした（成功 ${added} 件 / 失敗 ${failed} 件）` : '画像追加に失敗しました', true);
+  return current;
+}
+
 async function saveImagePropertyItems(entityPath, propName, val, items) {
   const newValue = stringifyImagePropertyValue(items);
   const oldValue = typeof val?.value === 'string'
@@ -173156,7 +173224,12 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     const lockMsg = _imagePropLockMessage(entityPath, propName);
     if (lockMsg) { showStatus(lockMsg); return; }
     try {
-      await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+      const beforeCount = parseImagePropertyValue(val?.value).length;
+      const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
+      const updated = internal
+        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc)
+        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+      if (!updated || updated.length <= beforeCount) return;
       showStatus('画像を追加しました');
       if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
     } catch (err) {
@@ -173357,7 +173430,15 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
   });
   list.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.add('gb-cell-dropzone-active'); });
   list.addEventListener('dragleave', (e) => { e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); });
-  list.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); addFiles(e.dataTransfer.files); });
+  list.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active');
+    const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
+    if (!internal) { await addFiles(e.dataTransfer.files); return; }
+    if (!canEdit) { if (lockMsg) showStatus(lockMsg, true); return; }
+    setBusy(true);
+    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc) || items; }
+    finally { setBusy(false); render(); }
+  });
   render();
 }
 
@@ -192807,7 +192888,9 @@ async function _showDbConfigModal(dbPath, ctx) {
       <div class="field">
         <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
         <div class="dbcfg-display-actions dbcfg-section-content">
+          <button type="button" id="dbcfg-view-files" class="gb-btn gb-btn-sm">シート内のファイルを表示</button>
           <button type="button" id="dbcfg-attachments" class="gb-btn gb-btn-sm">添付ファイルを整理...</button>
+          <button type="button" id="dbcfg-migrate-media" class="gb-btn gb-btn-sm">古い画像参照を移行...</button>
         </div>
       </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>`;
@@ -192871,6 +192954,86 @@ async function _showDbConfigModal(dbPath, ctx) {
   } else if (attachBtn) {
     attachBtn.style.display = 'none';
   }
+  const viewFilesBtn = o.querySelector('#dbcfg-view-files');
+  viewFilesBtn?.addEventListener('click', async () => {
+    if (busy || childOpen) return;
+    busy = true;
+    try {
+      modalApi.close('view-files');
+      if (typeof showContainedFiles === 'function') {
+        await showContainedFiles({ path: dbPath, name: dbPath.split(/[\\/]/).pop() || 'シート', type: 'database' });
+      } else {
+        const result = await apiFetch('/contained-files?path=' + encodeURIComponent(dbPath) + '&type=database');
+        await openFolder((dbPath.split(/[\\/]/).pop() || 'シート') + ' 内のファイル', dbPath, {
+          items: Array.isArray(result?.items) ? result.items : [], skipHighlight: true,
+        });
+      }
+    } catch (error) {
+      showStatus(error?.message || 'シート内のファイルを表示できませんでした', true);
+    } finally {
+      busy = false;
+    }
+  });
+
+  const migrateMediaBtn = o.querySelector('#dbcfg-migrate-media');
+  migrateMediaBtn?.addEventListener('click', async () => {
+    if (busy || childOpen) return;
+    const accepted = await cfConfirm('このシートの画像列にある古い外部参照を、シートの添付ファイルへ複製して置き換えます。続行しますか？');
+    if (!accepted) return;
+    busy = true;
+    migrateMediaBtn.disabled = true;
+    let migrated = 0;
+    let failed = 0;
+    try {
+      const data = pivotData || await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+      const propertyTypes = getPropertyTypes(dbPath, localCtx) || {};
+      for (const [entityName, entity] of Object.entries(data?.entities || {})) {
+        const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, data) : `${dbPath}/${entityName}`;
+        for (const [propName, values] of Object.entries(entity || {})) {
+          if (!Array.isArray(values) || propertyTypes[propName]?.type !== 'image') continue;
+          for (const candidate of values) {
+            const original = parseImagePropertyValue(candidate?.value);
+            let changed = false;
+            const next = [];
+            for (const item of original) {
+              const sourcePath = String(item?.path || item?.src || '').replace(/\\/g, '/');
+              const sheetPrefix = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+              if (!sourcePath || sourcePath.startsWith(sheetPrefix)) { next.push(item); continue; }
+              try {
+                const meta = await apiPost('/media/import-path', {
+                  source_path: sourcePath, sheet_path: dbPath,
+                  filename: item.filename || sourcePath.split('/').pop(), thumbnail_size: 256,
+                });
+                next.push({ ...item, content_hash: meta.content_hash || meta.hash, filename: meta.filename,
+                  path: meta.path, kind: meta.kind || item.kind, src: meta.src, thumb: meta.thumb,
+                  url: meta.url, thumb_url: meta.thumb_url, width: meta.width || item.width || null,
+                  height: meta.height || item.height || null, size: meta.size || item.size || null });
+                migrated += 1;
+                changed = true;
+              } catch (error) {
+                next.push(item);
+                failed += 1;
+              }
+            }
+            if (changed) {
+              const newValue = stringifyImagePropertyValue(next);
+              await _apiPutValue(candidate, { new_value: newValue });
+              candidate.value = newValue;
+            }
+          }
+        }
+      }
+      const browserDataMode = window.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+      if (migrated && !browserDataMode && typeof apiPost === 'function') await apiPost('/media/rebuild-refs', {});
+      showStatus(failed ? `${migrated}件を移行し、${failed}件は元ファイルが見つからず残しました` : `${migrated}件の画像参照を移行しました`, failed > 0);
+      if (migrated) await selectDatabase(dbPath, undefined, { silent: true, forceReload: true });
+    } catch (error) {
+      showStatus(error?.message || '画像参照の移行に失敗しました', true);
+    } finally {
+      busy = false;
+      migrateMediaBtn.disabled = false;
+    }
+  });
 
   // テンプレートボタン
   const tmplBtn = templateButton;
@@ -192976,7 +193139,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   saveButton.addEventListener('click', async () => {
     if (busy || childOpen) return;
     busy = true;
-    [templateButton, cancelButton, saveButton, attachBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
+    [templateButton, cancelButton, saveButton, attachBtn, viewFilesBtn, migrateMediaBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
       .filter(Boolean).forEach(button => { button.disabled = true; });
     const finishRetry = () => {
       busy = false;
@@ -229406,6 +229569,10 @@ async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}
 
 async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
   const targets = Array.isArray(items) ? items : [];
+  if (targets.some(item => item?.contained_reference)) {
+    showStatus('ファイル内参照のリンクは、参照元の文書で変更してください', true);
+    return { handled: true, result: null };
+  }
   const linked = targets.filter(item => item?.linked);
   if (!linked.length) return { handled: false, result: null };
   if (linked.length !== targets.length) {
@@ -230347,6 +230514,35 @@ function setFolderSubfolderContentsEnabled(enabled) {
   if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
 }
 
+function canShowContainedFiles(item) {
+  const type = String(item?.type || '').toLowerCase();
+  if (['database','sheet','page','note','board','scriptnote','scenario','form-app','calendar','schedule','map'].includes(type)) return true;
+  const path = String(item?.path || '').toLowerCase();
+  return ['.md','.mel-board','.board.md','.mel-scenario','.scriptnote.json','.mel-form','.mel-map']
+    .some(suffix => path.endsWith(suffix));
+}
+
+async function showContainedFiles(item) {
+  if (!item?.path || !canShowContainedFiles(item)) return false;
+  try {
+    const query = '/contained-files?path=' + encodeURIComponent(item.path)
+      + '&type=' + encodeURIComponent(item.type || '');
+    const result = await apiFetch(query);
+    const label = (item.name || String(item.path).split(/[\\/]/).pop() || 'ファイル') + ' 内のファイル';
+    await openFolder(label, item.path, {
+      items: Array.isArray(result?.items) ? result.items : [],
+      skipHighlight: true,
+      skipSaveLastView: true,
+      skipNavPush: true,
+    });
+    if (!result?.items?.length) showStatus('このファイルが参照する表示可能なファイルはありません');
+    return true;
+  } catch (error) {
+    showStatus(error?.message || 'ファイル内のファイルを表示できませんでした', true);
+    return false;
+  }
+}
+
 async function _folderFetchBrowseItems(path, options = {}) {
   const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
   if (options.isCurrent?.() === false) return [];
@@ -230378,6 +230574,32 @@ async function _folderFetchBrowseItems(path, options = {}) {
     } catch (error) {
       failedCount += 1;
       console.warn('サブフォルダの読み込みに失敗しました', folderPath, error);
+    }
+  }
+  // 明示的に再帰表示を有効にした時だけ、配下の主要アプリ文書が内包・参照する
+  // 画像・動画等も仮想リンクとして加える。HTTPは一括し、通常表示の負荷は増やさない。
+  const containedTargets = result.filter(item => canShowContainedFiles(item) && item?.path);
+  if (containedTargets.length) {
+    try {
+      const contained = await apiPost('/contained-files/batch', {
+        targets: containedTargets.map(item => ({ path: item.path, type: item.type || '' })),
+      });
+      if (options.isCurrent?.() === false) return [];
+      (contained?.items || []).forEach(child => {
+        if (!child?.path) return;
+        result.push({
+          ...child,
+          linked: true,
+          contained_reference: true,
+          _subfolderContent: true,
+          _subfolderParentPath: child.contained_by || path,
+        });
+      });
+      if (contained?.failed?.length) failedCount += contained.failed.length;
+      if (contained?.truncated) queue.push('__contained_files_truncated__');
+    } catch (error) {
+      failedCount += 1;
+      console.warn('ファイル内の参照ファイル読み込みに失敗しました', error);
     }
   }
   result._folderBrowseIncomplete = (failedCount || queue.length)
@@ -230514,9 +230736,11 @@ async function openFolder(label, path, opts) {
     }
     if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
-    let fetchedItems = typeof _folderFetchBrowseItems === 'function'
-      ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
-      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
+    let fetchedItems = Array.isArray(openOpts.items)
+      ? openOpts.items.slice()
+      : (typeof _folderFetchBrowseItems === 'function'
+        ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
+        : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true'));
     const browseIncomplete = fetchedItems._folderBrowseIncomplete || null;
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
@@ -231138,7 +231362,8 @@ function renderFolderGrid(opts) {
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
-    const itemLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
+    const fileLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
+    const itemLocked = !!item.contained_reference || fileLocked;
     el.draggable = !itemLocked;
     if (preserveSelectedPaths.has(item.path)) {
       el.classList.add('selected');
@@ -231182,7 +231407,7 @@ function renderFolderGrid(opts) {
     });
     el.appendChild(moreBtn);
 
-    if (itemLocked) {
+    if (fileLocked) {
       const lockBadge = document.createElement('span');
       lockBadge.className = 'fv-lock-badge';
       lockBadge.innerHTML = lucide('lock', 12);
@@ -231259,7 +231484,9 @@ function renderFolderGrid(opts) {
         badge.innerHTML = lucide('externalLink', 10);
         badge.style.color = 'var(--accent)';
         badge.title = 'リンクファイル';
-        badge.dataset.gbTooltip = '別のフォルダにも登録されているリンクファイルです';
+        badge.dataset.gbTooltip = item.contained_reference
+          ? `${item.contained_by_name || '文書'} が参照しているリンクファイルです`
+          : '別のフォルダにも登録されているリンクファイルです';
         thumb.style.position = 'relative';
         thumb.appendChild(badge);
       }
@@ -231269,6 +231496,14 @@ function renderFolderGrid(opts) {
     let folderMetaHost = null;
     if (isListLayout) {
       const nameCell = _folderAppendListCells(el, item);
+      if (nameCell && item.linked && !showThumbForLayout) {
+        const linkMark = document.createElement('span');
+        linkMark.className = 'fv-link-file-mark';
+        linkMark.innerHTML = lucide('externalLink', 11);
+        linkMark.title = item.contained_reference ? `${item.contained_by_name || '文書'} が参照しているリンクファイル` : 'リンクファイル';
+        linkMark.dataset.gbTooltip = linkMark.title;
+        nameCell.appendChild(linkMark);
+      }
       if (nameCell && ((item.type === 'image' && (showDimensions || showRating)) || showTags)) {
         folderMetaHost = document.createElement('div');
         folderMetaHost.className = 'fv-list-extra-meta';
@@ -231278,8 +231513,15 @@ function renderFolderGrid(opts) {
       const name = document.createElement('div');
       name.className = 'fv-name';
       name.textContent = item.name;
-      name.title = item.name;
-      name.dataset.gbTooltip = item.name;
+      name.title = item.contained_reference ? `${item.name} — ${item.contained_by_name || '文書'} からのリンク` : item.name;
+      name.dataset.gbTooltip = name.title;
+      if (item.linked && !showThumbForLayout) {
+        const linkMark = document.createElement('span');
+        linkMark.className = 'fv-link-file-mark';
+        linkMark.style.marginLeft = '4px';
+        linkMark.innerHTML = lucide('externalLink', 11);
+        name.appendChild(linkMark);
+      }
       el.appendChild(name);
     }
 
@@ -231467,6 +231709,18 @@ function renderFolderGrid(opts) {
       e.preventDefault();
       showFolderItemContextMenu(e, item);
     };
+    if (typeof addLongPressHandler === 'function') {
+      addLongPressHandler(el, (e) => {
+        e.preventDefault?.();
+        showFolderItemContextMenu(e, item);
+      });
+    }
+    if (typeof addLongPressHandler === 'function') {
+      addLongPressHandler(el, (e) => {
+        e.preventDefault?.();
+        showFolderItemContextMenu(e, item);
+      });
+    }
 
     if (item.type === 'form-app' && Array.isArray(item.children)) {
       const children = document.createElement('div'); children.className = 'fv-form-sheets';
@@ -231495,7 +231749,8 @@ function renderFolderGrid(opts) {
 }
 
 function _folderMenuItemLocked(item) {
-  return !!(item?.path && typeof isItemLocked === 'function' && isItemLocked(item.path));
+  return !!item?.contained_reference
+    || !!(item?.path && typeof isItemLocked === 'function' && isItemLocked(item.path));
 }
 
 function _folderMenuLockStatusLabel(item) {
@@ -231561,7 +231816,7 @@ function refreshVisibleFolderLockState() {
     const idx = parseInt(el.dataset.idx, 10);
     const item = (_folderVisibleItems.length ? _folderVisibleItems : _getFolderFilteredItems())[idx];
     if (!item?.path || typeof isItemLocked !== 'function') return;
-    const locked = isItemLocked(item.path);
+    const locked = !!item.contained_reference || isItemLocked(item.path);
     el.draggable = !locked;
     el.querySelector('.fv-lock-badge')?.remove();
     if (!locked) return;
@@ -231569,7 +231824,9 @@ function refreshVisibleFolderLockState() {
     lockBadge.className = 'fv-lock-badge';
     lockBadge.innerHTML = lucide('lock', 12);
     const lockReason = typeof getItemLockReason === 'function' ? getItemLockReason(item.path) : '';
-    lockBadge.title = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path)
+    lockBadge.title = item.contained_reference
+      ? '参照元の文書で管理される読み取り専用リンクです'
+      : typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path)
       ? 'システム保護中です'
       : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
     lockBadge.dataset.gbTooltip = lockBadge.title;
@@ -231808,6 +232065,10 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
     addSep();
   }
+  if (!blankTarget && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
+    addItem('ファイル内のファイルを表示', () => showContainedFiles(item), null, 'files');
+    addSep();
+  }
   if (_isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
@@ -231875,7 +232136,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path) {
+  if (item.path && !item.contained_reference) {
     addSep();
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path);
     const canEditLock = typeof isFileLockOwner === 'function' && isFileLockOwner();
@@ -232639,10 +232900,18 @@ function _updateFolderBulkBar() {
     const cnt = bar.querySelector('.fv-bulk-count');
     if (cnt) cnt.textContent = selectedCount + ' 件選択中';
     const readOnlyArchive = !!window._archiveBrowseContext;
-    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"],[data-action^="fvBulkDelete"]').forEach(button => {
+    const hasLockedItems = _folderSelectedItems.some(item => _folderMenuItemLocked(item));
+    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"]').forEach(button => {
       button.disabled = readOnlyArchive;
       button.title = readOnlyArchive ? 'ZIP内は読み取り専用です' : '';
     });
+    const deleteButton = bar.querySelector('[data-action^="fvBulkDelete"]');
+    if (deleteButton) {
+      deleteButton.disabled = readOnlyArchive || hasLockedItems;
+      deleteButton.title = readOnlyArchive
+        ? 'ZIP内は読み取り専用です'
+        : hasLockedItems ? '読み取り専用の参照リンクは削除できません' : '';
+    }
     _positionFolderBulkPopup();
     _setFolderBulkPopupTracking(true);
   } else {
@@ -233145,6 +233414,10 @@ async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}
 
 async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
   const targets = Array.isArray(items) ? items : [];
+  if (targets.some(item => item?.contained_reference)) {
+    showStatus('ファイル内参照のリンクは、参照元の文書で変更してください', true);
+    return { handled: true, result: null };
+  }
   const linked = targets.filter(item => item?.linked);
   if (!linked.length) return { handled: false, result: null };
   if (linked.length !== targets.length) {
@@ -242256,6 +242529,15 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         },
       });
     }
+    addSep();
+  }
+
+  if (!isMulti && nodeData.path && !nodeData._isRoot
+      && typeof canShowContainedFiles === 'function' && canShowContainedFiles(nodeData)) {
+    addMenuItem('ファイル内のファイルを表示', () => {
+      closeTreeContextMenu();
+      showContainedFiles(nodeData);
+    }, null, 'files');
     addSep();
   }
 

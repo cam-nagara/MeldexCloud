@@ -988,7 +988,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         selected.forEach(character => adapter.setCharacterType(character, bulk.value || null));
         rerender();
       }, 'scriptnote-character-bulk-type'));
-      toolbar.appendChild(this._roleManagementButton('DB読込', 'DBからキャラを読み込む', () => {
+      toolbar.appendChild(this._roleManagementButton('シート読込', 'シートからキャラを読み込む', () => {
         this._showDbImportModal(panelContainer);
       }, 'scriptnote-character-import-db'));
     }

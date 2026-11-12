@@ -28,7 +28,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       return b;
     };
 
-    // ツールバー（タイトルバーなし、適用・DB読込を右寄せ）
+    // ツールバー（タイトルバーなし、適用・シート読込を右寄せ）
     const toolbar = document.createElement('div');
     toolbar.className = 'sn2-detail-toolbar';
     toolbar.appendChild(mkBtn('＋追加', '新規タイプ追加', () => {
@@ -121,11 +121,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     const bulkAllBtn = mkBtn('一括設定…', '全プロパティ一括変更', () => this._showBulkEditPopup(container), 'scriptnote-detail-bulk-settings');
     bulkAllBtn.className += ' sn2-detail-bulk-btn';
     toolbar.appendChild(bulkAllBtn);
-    // 右寄せスペーサー + DB読込
+    // 右寄せスペーサー + シート読込
     const spacer = document.createElement('span');
     spacer.className = 'sn2-detail-toolbar-spacer';
     toolbar.appendChild(spacer);
-    toolbar.appendChild(mkBtn('DB読込', 'DBからキャラ読み込み', () => this._showDbImportModal(container), 'scriptnote-detail-import-db'));
+    toolbar.appendChild(mkBtn('シート読込', 'シートからキャラ読み込み', () => this._showDbImportModal(container), 'scriptnote-detail-import-db'));
     this._detailBulkBar = toolbar;
 
     // キャラクターリスト（列×タイプ表形式）
@@ -757,26 +757,48 @@ Object.assign(ScriptNoteEditor.prototype, {
     }, 0);
   },
 
-  // DB読み込みモーダル
+  // シート読み込みモーダル
   async _showDbImportModal(panelContainer) {
-    if (!globalThis.GBUI?.createModal) return;
+    if (!globalThis.GBUI?.createModal || typeof globalThis.MeldexProductionSheetEmbed?.create !== 'function') {
+      if (typeof showStatus === 'function') showStatus('シート表示を初期化できませんでした', true);
+      return;
+    }
     const owner = document.activeElement;
     const body = document.createElement('div');
     body.className = 'sn2-db-import-content';
-    body.innerHTML = `<div id="sn2-db-status" class="sn2-db-import-status" role="status" aria-live="polite"></div>
+    body.innerHTML = `<label class="sn2-db-import-picker">読み込むシート
+        <select id="sn2-db-sheet" class="gb-select" disabled>
+          <option value="">シートを選択してください</option>
+        </select>
+      </label>
+      <div id="sn2-db-status" class="sn2-db-import-status" role="status" aria-live="polite"></div>
       <button type="button" class="gb-btn gb-btn-sm sn2-db-import-retry" data-sn2-db-retry hidden>再試行</button>
-      <div id="sn2-db-tree" class="sn2-db-import-tree" tabindex="0"></div>
-      <div id="sn2-db-selected" class="sn2-db-import-selected">選択: 0件</div>`;
+      <div id="sn2-db-tree" class="sn2-db-import-sheet" tabindex="0">
+        <div class="sn2-db-import-empty">シートを選択すると、ここに内容を表示します</div>
+      </div>
+      <div id="sn2-db-selected" class="sn2-db-import-selected">読込対象: 0件</div>`;
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button'; cancelButton.id = 'sn2-db-cancel'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
     const importButton = document.createElement('button');
     importButton.type = 'button'; importButton.id = 'sn2-db-ok'; importButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; importButton.textContent = '読み込み';
     let busy = false;
+    let embed = null;
+    let sheetObserver = null;
+    let selectedSheetPath = '';
+    let selectionUpdateQueued = false;
+    let sheetLoadSeq = 0;
     const modalApi = globalThis.GBUI.createModal({
-      id: 'scriptnote-db-import', title: 'DBからキャラ読み込み', body, footer: [cancelButton, importButton],
+      id: 'scriptnote-db-import', title: 'シートからキャラ読み込み', body, footer: [cancelButton, importButton],
       variant: 'standard', geometryKey: 'scriptnote-db-import', minWidth: '0', initialFocus: '#sn2-db-tree',
-      returnFocus: owner, closeLabel: 'DBからキャラ読み込みを閉じる', closeOnEsc: true, closeOnOverlay: true,
+      returnFocus: owner, closeLabel: 'シートからキャラ読み込みを閉じる', closeOnEsc: true, closeOnOverlay: true,
       onBeforeClose: () => !busy,
+      onClose: () => {
+        sheetLoadSeq += 1;
+        sheetObserver?.disconnect();
+        sheetObserver = null;
+        embed?.destroy?.();
+        embed = null;
+      },
     });
     const overlay = modalApi.overlay;
     const dialog = modalApi.modal;
@@ -787,66 +809,104 @@ Object.assign(ScriptNoteEditor.prototype, {
     dialog.classList.add('sn2-db-import-modal');
     modalApi.body.classList.add('sn2-db-import-body');
     const treeHost = dialog.querySelector('#sn2-db-tree');
+    const sheetSelect = dialog.querySelector('#sn2-db-sheet');
     const status = dialog.querySelector('#sn2-db-status');
     const selectedLabel = dialog.querySelector('#sn2-db-selected');
     const retryButton = dialog.querySelector('[data-sn2-db-retry]');
-    const selectedNames = new Set();
+    const visibleNames = () => {
+      if (!embed?.ctx || !selectedSheetPath) return [];
+      const source = Array.isArray(embed.ctx._lastEntityNames) ? embed.ctx._lastEntityNames : [];
+      return [...new Set(source.map(name => String(name || '').trim()).filter(Boolean))];
+    };
     const setBusy = (next) => {
       busy = next;
       dialog.setAttribute('aria-busy', next ? 'true' : 'false');
       cancelButton.disabled = next;
-      importButton.disabled = next || selectedNames.size === 0;
+      sheetSelect.disabled = next || sheetSelect.options.length <= 1;
+      importButton.disabled = next || visibleNames().length === 0;
       retryButton.disabled = next;
     };
     const updateSelection = () => {
-      selectedLabel.textContent = `選択: ${selectedNames.size}件`;
-      importButton.disabled = busy || selectedNames.size === 0;
+      const count = visibleNames().length;
+      selectedLabel.textContent = selectedSheetPath ? `現在の表示から読み込む: ${count}件` : '読込対象: 0件';
+      importButton.disabled = busy || count === 0;
     };
-    const isCharacterDbFolder = (item) => /キャラ|キャラクター|登場人物|人物|character|chara|cast/i.test(String(item?.name || item?.path || ''));
+    const queueSelectionUpdate = () => {
+      if (selectionUpdateQueued) return;
+      selectionUpdateQueued = true;
+      requestAnimationFrame(() => {
+        selectionUpdateQueued = false;
+        if (dialog.isConnected) updateSelection();
+      });
+    };
+    const showSheet = async path => {
+      const loadSeq = ++sheetLoadSeq;
+      selectedSheetPath = String(path || '');
+      sheetObserver?.disconnect();
+      sheetObserver = null;
+      embed?.destroy?.();
+      embed = null;
+      treeHost.replaceChildren();
+      if (!selectedSheetPath) {
+        const empty = document.createElement('div');
+        empty.className = 'sn2-db-import-empty';
+        empty.textContent = 'シートを選択すると、ここに内容を表示します';
+        treeHost.appendChild(empty);
+        updateSelection();
+        return;
+      }
+      setBusy(true);
+      status.textContent = 'シートを読み込んでいます...';
+      retryButton.hidden = true;
+      let nextEmbed = null;
+      try {
+        nextEmbed = globalThis.MeldexProductionSheetEmbed.create({ idSuffix: `scriptnote-character-import-${Date.now()}-${loadSeq}` });
+        embed = nextEmbed;
+        if (!nextEmbed.mount(treeHost) || await nextEmbed.open(selectedSheetPath, { silent: true }) === false) {
+          throw new Error('シートを表示できませんでした');
+        }
+        if (loadSeq !== sheetLoadSeq) {
+          nextEmbed.destroy?.();
+          return;
+        }
+        const switcher = nextEmbed.containerEl?.querySelector('.db-view-switcher');
+        const viewSelect = switcher?.querySelector('.db-view-select');
+        const viewTabs = switcher?.querySelector('.db-view-tabs');
+        if (switcher) switcher.style.display = 'flex';
+        if (viewTabs) viewTabs.style.display = 'none';
+        if (viewSelect) {
+          viewSelect.style.display = 'inline-block';
+          viewSelect.setAttribute('aria-label', '読み込み対象を絞り込むビュー');
+        }
+        sheetObserver = new MutationObserver(queueSelectionUpdate);
+        sheetObserver.observe(nextEmbed.containerEl, { childList: true, subtree: true, attributes: true });
+        status.textContent = 'ビューや列ヘッダのフィルターで絞り込み、現在表示されているトピックを読み込みます。';
+      } catch (error) {
+        if (loadSeq !== sheetLoadSeq) return;
+        nextEmbed?.destroy?.();
+        if (embed === nextEmbed) embed = null;
+        console.error('シートからのキャラ読み込みに失敗しました:', error);
+        status.textContent = `シートを読み込めませんでした。再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        retryButton.hidden = false;
+      } finally {
+        if (loadSeq === sheetLoadSeq) {
+          setBusy(false);
+          updateSelection();
+        }
+      }
+    };
     const loadTree = async () => {
       setBusy(true);
-      status.textContent = 'フォルダツリーを読み込んでいます...';
+      status.textContent = 'シート一覧を読み込んでいます...';
       retryButton.hidden = true;
-      treeHost.replaceChildren();
       const visited = new Set();
-      const addPageGroup = (folder, pages) => {
-        const groupEl = document.createElement('div');
-        groupEl.className = 'sn2-db-import-group';
-        const groupLabel = document.createElement('div');
-        groupLabel.className = 'sn2-db-import-group-label';
-        groupLabel.textContent = folder.name || folder.path;
-        groupEl.appendChild(groupLabel);
-        pages.forEach(p => {
-          const label = document.createElement('label');
-          label.className = 'sn2-db-import-item';
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.checked = selectedNames.has(p.name);
-          cb.addEventListener('change', () => {
-            if (cb.checked) selectedNames.add(p.name); else selectedNames.delete(p.name);
-            updateSelection();
-          });
-          label.appendChild(cb);
-          label.appendChild(document.createTextNode(p.name || p.path));
-          groupEl.appendChild(label);
-        });
-        treeHost.appendChild(groupEl);
-      };
+      const sheets = [];
       const scanFolder = async (folder, depth = 0) => {
         const path = String(folder?.path || '');
         if (visited.has(path) || depth > 4) return;
         visited.add(path);
+        if (folder.type === 'database') sheets.push({ path, name: folder.name || path });
         const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true');
-        if ((folder.type === 'database' || folder.type === 'folder') && isCharacterDbFolder(folder)) {
-          // browseの物理ファイル一覧ではSQLite内のエントリを取得できない。
-          // 新旧シート共通のpivotから名前を読み、説明ファイルを候補に含めない。
-          const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(path) + '&tree_only=true');
-          if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) {
-            throw new Error('シートのトピックを取得できませんでした');
-          }
-          const pages = Object.keys(pivot.entities).filter(name => name.trim()).map(name => ({ name }));
-          if (pages.length) addPageGroup(folder, pages);
-        }
         const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
         for (const child of childFolders) await scanFolder(child, depth + 1);
       };
@@ -856,16 +916,19 @@ Object.assign(ScriptNoteEditor.prototype, {
         for (const root of roots) {
           await scanFolder({ ...root, type: root.type || 'folder' }, -1);
         }
-        if (!treeHost.children.length) {
-          const empty = document.createElement('div');
-          empty.className = 'sn2-db-import-empty';
-          empty.textContent = 'キャラ用のシートが見つかりませんでした';
-          treeHost.appendChild(empty);
-        }
-        status.textContent = '';
+        const previousPath = selectedSheetPath;
+        sheetSelect.replaceChildren(new Option('シートを選択してください', ''));
+        sheets.sort((a, b) => a.path.localeCompare(b.path, 'ja')).forEach(sheet => {
+          const option = new Option(sheet.name === sheet.path ? sheet.name : `${sheet.name} — ${sheet.path}`, sheet.path);
+          sheetSelect.appendChild(option);
+        });
+        sheetSelect.value = sheets.some(sheet => sheet.path === previousPath) ? previousPath : '';
+        if (!sheets.length) status.textContent = 'シートが見つかりませんでした';
+        else status.textContent = '読み込むシートを選択してください';
+        if (sheetSelect.value) await showSheet(sheetSelect.value);
       } catch (error) {
-        console.error('DBからのキャラ読み込みに失敗しました:', error);
-        status.textContent = `読み込めませんでした。選択内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        console.error('シート一覧の読み込みに失敗しました:', error);
+        status.textContent = `シート一覧を読み込めませんでした。再試行できます。${error?.message ? ` ${error.message}` : ''}`;
         retryButton.hidden = false;
       } finally {
         globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
@@ -874,9 +937,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
     cancelButton.addEventListener('click', () => modalApi.close('cancel'));
-    retryButton.addEventListener('click', loadTree);
+    sheetSelect.addEventListener('change', () => showSheet(sheetSelect.value));
+    retryButton.addEventListener('click', () => selectedSheetPath ? showSheet(selectedSheetPath) : loadTree());
     importButton.addEventListener('click', () => {
-      if (busy || selectedNames.size === 0) return;
+      const selectedNames = visibleNames();
+      if (busy || selectedNames.length === 0) return;
       let beforeSnapshot = '';
       let beforeCharacters = null;
       let beforeDirty = this._dirty;
@@ -903,7 +968,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           this._lastPushedSnap = beforeSnapshot;
           if (typeof historyPush === 'function') {
             const scope = typeof this._historyScope === 'function' ? this._historyScope() : '';
-            historyPush('DBインポート', () => { this._applySnapshot(beforeSnapshot); }, null, scope);
+            historyPush('シートからキャラ読み込み', () => { this._applySnapshot(beforeSnapshot); }, null, scope);
           }
         }
         modalApi.close('submit');
@@ -917,10 +982,10 @@ Object.assign(ScriptNoteEditor.prototype, {
           this._render();
           this.renderDetailPanel(panelContainer);
         } catch (renderError) {
-          console.error('DBからのキャラ取り込み失敗後の表示復元に失敗しました:', renderError);
+          console.error('シートからのキャラ取り込み失敗後の表示復元に失敗しました:', renderError);
         }
-        console.warn('DBからのキャラ取り込みに失敗しました:', error);
-        status.textContent = `取り込めませんでした。選択内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        console.warn('シートからのキャラ取り込みに失敗しました:', error);
+        status.textContent = `取り込めませんでした。表示中の絞り込み状態を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
       }
     });
     modalApi.open();

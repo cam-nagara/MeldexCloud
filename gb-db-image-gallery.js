@@ -359,6 +359,58 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   return current;
 }
 
+async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
+  if (typeof MeldexDnD === 'undefined' || typeof MeldexDnD.resolveDropData !== 'function') return null;
+  const resolved = await MeldexDnD.resolveDropData(event, 'node');
+  const payload = resolved?.payload;
+  if (!payload) return null;
+  const options = _imagePropOptions(ptc);
+  const current = parseImagePropertyValue(val?.value);
+  const candidates = (Array.isArray(payload.items) && payload.items.length ? payload.items : [payload])
+    .filter(item => item?.path && ['image', 'video', 'pdf', 'file'].includes(String(item.type || 'file').toLowerCase()));
+  const room = Math.max(0, options.maxCount - current.length);
+  if (!candidates.length || room <= 0) {
+    MeldexDnD.failDrop?.(resolved);
+    showStatus(room <= 0 ? '画像数の上限に達しています' : '画像・動画・PDFだけを追加できます', true);
+    return current;
+  }
+  const sheetPath = _imagePropDbPathForEntity(entityPath) || '';
+  let added = 0;
+  let failed = 0;
+  for (const item of candidates.slice(0, room)) {
+    try {
+      const meta = await apiPost('/media/import-path', {
+        source_path: item.path,
+        sheet_path: sheetPath,
+        filename: item.name || '',
+        thumbnail_size: options.thumbSize,
+      });
+      current.push({
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID() : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
+        content_hash: meta.content_hash || meta.hash,
+        filename: meta.filename || item.name || String(item.path).split(/[\\/]/).pop(),
+        path: meta.path || '', kind: meta.kind || item.type || '', src: meta.src, thumb: meta.thumb,
+        url: meta.url, thumb_url: meta.thumb_url, width: meta.width || null, height: meta.height || null,
+        size: meta.size || null, added_at: new Date().toISOString(), caption: '',
+      });
+      added += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn('[image-property] internal drop failed:', error);
+    }
+  }
+  if (added) {
+    await saveImagePropertyItems(entityPath, propName, val, current);
+    MeldexDnD.completeDrop?.(resolved);
+  } else {
+    MeldexDnD.failDrop?.(resolved);
+  }
+  if (candidates.length > room) showStatus('画像数の上限を超えた分は追加しませんでした');
+  if (failed) showStatus(added ? `一部を追加できませんでした（成功 ${added} 件 / 失敗 ${failed} 件）` : '画像追加に失敗しました', true);
+  return current;
+}
+
 async function saveImagePropertyItems(entityPath, propName, val, items) {
   const newValue = stringifyImagePropertyValue(items);
   const oldValue = typeof val?.value === 'string'
@@ -554,7 +606,12 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     const lockMsg = _imagePropLockMessage(entityPath, propName);
     if (lockMsg) { showStatus(lockMsg); return; }
     try {
-      await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+      const beforeCount = parseImagePropertyValue(val?.value).length;
+      const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
+      const updated = internal
+        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc)
+        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+      if (!updated || updated.length <= beforeCount) return;
       showStatus('画像を追加しました');
       if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
     } catch (err) {
@@ -755,6 +812,14 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
   });
   list.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.add('gb-cell-dropzone-active'); });
   list.addEventListener('dragleave', (e) => { e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); });
-  list.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active'); addFiles(e.dataTransfer.files); });
+  list.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation(); list.classList.remove('gb-cell-dropzone-active');
+    const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
+    if (!internal) { await addFiles(e.dataTransfer.files); return; }
+    if (!canEdit) { if (lockMsg) showStatus(lockMsg, true); return; }
+    setBusy(true);
+    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc) || items; }
+    finally { setBusy(false); render(); }
+  });
   render();
 }

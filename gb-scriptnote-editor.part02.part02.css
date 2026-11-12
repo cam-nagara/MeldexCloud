@@ -100,31 +100,45 @@
   flex-wrap: wrap;
 }
 
-/* DB 読み込みモーダル内 */
+/* シートからキャラ読み込みモーダル内 */
 .sn2-db-import-modal {
-  min-width: 400px;
-  max-width: 600px;
+  width: min(1100px, calc(100vw - 48px));
+  max-width: 1100px;
 }
 .sn2-db-import-body {
-  min-height: 200px;
-  max-height: 400px;
-  overflow: auto;
+  min-height: min(560px, calc(100vh - 220px));
+  max-height: calc(100vh - 180px);
+  overflow: hidden;
 }
-.sn2-db-import-group { margin-bottom: var(--ui-space-4); }
-.sn2-db-import-group-label {
-  font-weight: 600;
-  padding: var(--ui-space-2) 0;
+.sn2-db-import-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  gap: var(--ui-space-3);
 }
-.sn2-db-import-item {
+.sn2-db-import-picker {
   display: flex;
   align-items: center;
   gap: var(--ui-space-3);
-  padding: 2px var(--ui-space-4);
-  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: var(--ui-font-12);
 }
-.sn2-db-import-tree { font-size: var(--ui-font-13); }
+.sn2-db-import-picker select {
+  min-width: min(520px, 70vw);
+}
+.sn2-db-import-sheet {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 280px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+}
+.sn2-db-import-sheet > .gb-production-sheet-embed { flex: 1 1 auto; }
+.sn2-db-import-empty { margin: auto; color: var(--ui-fg-muted); }
 .sn2-db-import-selected {
-  padding: var(--ui-space-4);
+  padding: var(--ui-space-2) 0;
   font-size: var(--ui-font-12);
   color: var(--ui-fg-muted);
 }

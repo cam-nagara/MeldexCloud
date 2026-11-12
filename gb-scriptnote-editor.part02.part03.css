@@ -1063,19 +1063,22 @@
     width: min(520px, calc(100vw - 16px));
     max-width: calc(100vw - 16px);
     max-height: calc(100dvh - 16px);
-    overflow-y: auto;
+    overflow: hidden;
   }
   .sn2-db-import-body {
+    min-height: min(420px, calc(100dvh - 180px));
     max-height: min(420px, calc(100dvh - 180px));
   }
-  .sn2-db-import-item {
-    min-height: 44px;
-    align-items: center;
+  .sn2-db-import-picker {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
     font-size: 15px;
   }
-  .sn2-db-import-item input[type="checkbox"] {
-    width: 20px;
-    height: 20px;
+  .sn2-db-import-picker select {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
   }
   .sn2-db-import-modal .btn-row button {
     min-height: 44px;

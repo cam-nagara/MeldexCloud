@@ -277,7 +277,7 @@ function renderScriptNoteRulesTab(targetEl = null) {
   html += `<div class="rules-action-row">
     <input id="rules-new-chara" class="rules-input" placeholder="キャラ名..." aria-label="追加するキャラ名">
     <button type="button" class="rules-add-btn" ${_rulesNamedActionAttrs('add-chara', 'chara', 'new')}>追加</button>
-    <button type="button" class="rules-secondary-btn" ${_rulesNamedActionAttrs('open-character-db-import', 'chara', 'db')} title="シートからキャラを読み込み">DB読込</button>
+    <button type="button" class="rules-secondary-btn" ${_rulesNamedActionAttrs('open-character-db-import', 'chara', 'db')} title="シートからキャラを読み込み">シート読込</button>
   </div>`;
   if (doc.characterDb && doc.characterDb.length > 0) {
     const avail = doc.characterDb.filter(name => !doc.characters.some(c => c.name === name));

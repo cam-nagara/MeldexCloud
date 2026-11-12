@@ -94,6 +94,10 @@ async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}
 
 async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
   const targets = Array.isArray(items) ? items : [];
+  if (targets.some(item => item?.contained_reference)) {
+    showStatus('ファイル内参照のリンクは、参照元の文書で変更してください', true);
+    return { handled: true, result: null };
+  }
   const linked = targets.filter(item => item?.linked);
   if (!linked.length) return { handled: false, result: null };
   if (linked.length !== targets.length) {

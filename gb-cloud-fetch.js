@@ -458,6 +458,232 @@
     });
   }
 
+  async function mediaImportPathResponse(body) {
+    const payload = body && typeof body === 'object' ? body : {};
+    const sourcePath = String(payload.source_path || '').trim();
+    const sheetPath = String(payload.sheet_path || '').trim();
+    if (!sourcePath || !sheetPath) throw new Error('元ファイルと添付先シートを指定してください');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.downloadAsFile) throw new Error('ブラウザの保存先が未初期化です');
+    const source = await provider.downloadAsFile(sourcePath);
+    const filename = String(payload.filename || source?.name || _basename(sourcePath));
+    const file = source instanceof File && source.name === filename
+      ? source : new File([source], filename, { type: source?.type || 'application/octet-stream' });
+    const form = new FormData();
+    form.append('file', file);
+    form.append('sheet_path', sheetPath);
+    form.append('thumbnail_size', String(payload.thumbnail_size || 256));
+    return mediaUploadResponse(form);
+  }
+
+  async function sheetFilesResponse(apiUrl) {
+    const sheetPath = String(apiUrl.searchParams.get('path') || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!sheetPath) throw new Error('シートを指定してください');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.listEntries) throw new Error('ブラウザの保存先が未初期化です');
+    const attachment = await _cloudAttachmentTarget(provider, sheetPath);
+    const roots = [attachment?.dir, sheetPath + '/_assets'].filter(Boolean);
+    const allowed = new Set(['png','jpg','jpeg','gif','webp','bmp','avif','mp4','webm','mov','pdf','html','htm']);
+    const items = [];
+    for (const root of roots) {
+      const queue = [root];
+      while (queue.length) {
+        const folder = queue.shift();
+        let entries;
+        try { entries = await provider.listEntries(folder); } catch (_) { continue; }
+        for (const entry of entries || []) {
+          if (!entry?.name || entry.name.startsWith('.')) continue;
+          const path = folder + '/' + entry.name;
+          if (entry.kind === 'directory') { queue.push(path); continue; }
+          if (entry.kind !== 'file') continue;
+          const ext = entry.name.includes('.') ? entry.name.split('.').pop().toLowerCase() : '';
+          if (!allowed.has(ext)) continue;
+          items.push({
+            name: entry.name,
+            type: ['mp4','webm','mov'].includes(ext) ? 'video'
+              : ext === 'pdf' ? 'document' : ['html','htm'].includes(ext) ? 'html' : 'image',
+            path,
+            size: entry.size ?? null,
+            modified: entry.modified || entry.server_modified || entry.client_modified || '',
+            sheet_file_group: root.split('/').pop(),
+          });
+        }
+      }
+    }
+    items.sort((left, right) => String(left.sheet_file_group).localeCompare(String(right.sheet_file_group))
+      || String(left.name).localeCompare(String(right.name)));
+    return jsonResponse({ items, sheet_path: sheetPath, count: items.length });
+  }
+
+  function _cloudContainedTargetSupported(path, type) {
+    if (['database','sheet','page','note','board','scriptnote','scenario','form-app','calendar','schedule','map'].includes(String(type || '').toLowerCase())) return true;
+    return ['.md','.mel-board','.board.md','.mel-scenario','.scriptnote.json','.mel-form','.mel-map']
+      .some(suffix => String(path || '').toLowerCase().endsWith(suffix));
+  }
+
+  function _cloudContainedType(path) {
+    const lower = String(path || '').toLowerCase();
+    const ext = lower.includes('.') ? lower.split('.').pop() : '';
+    if (['png','apng','jpg','jpeg','gif','bmp','webp','svg','ico','avif','tif','tiff','heic','heif','psd','psb'].includes(ext)) return 'image';
+    if (['mp4','webm','mov','avi','mkv','m4v'].includes(ext)) return 'video';
+    if (['mp3','wav','ogg','flac','m4a','aac'].includes(ext)) return 'audio';
+    if (ext === 'pdf' || ['doc','docx','xls','xlsx','ppt','pptx'].includes(ext)) return 'document';
+    if (['html','htm'].includes(ext)) return 'html';
+    return 'file';
+  }
+
+  function _cloudContainedStrings(value, parentKey = '', out = []) {
+    const pathKey = /path|src|href|url|file|image|video|audio|media|asset|attachment|thumbnail|poster|background|cover/i;
+    if (Array.isArray(value)) {
+      value.forEach(child => {
+        if (typeof child === 'string') {
+          if (pathKey.test(parentKey)) out.push(child);
+          else if (/^\s*[\[{]/.test(child)) {
+            try { _cloudContainedStrings(JSON.parse(child), parentKey, out); } catch (_) {}
+          }
+        } else if (child && typeof child === 'object') _cloudContainedStrings(child, parentKey, out);
+      });
+    } else if (value && typeof value === 'object') {
+      Object.entries(value).forEach(([key, child]) => {
+        if (typeof child === 'string') {
+          if (pathKey.test(key)) out.push(child);
+          else if (/^\s*[\[{]/.test(child)) {
+            try { _cloudContainedStrings(JSON.parse(child), key, out); } catch (_) {}
+          }
+        } else if (child && typeof child === 'object') _cloudContainedStrings(child, key, out);
+      });
+    }
+    return out;
+  }
+
+  function _cloudContainedReferencePath(raw, documentPath) {
+    let value = String(raw || '').trim().replace(/\\/g, '/');
+    if (!value || /^(?:data:|blob:|#|mailto:|https?:)/i.test(value)) return [];
+    try {
+      const url = new URL(value, 'http://local/');
+      if (url.searchParams.get('path')) value = decodeURIComponent(url.searchParams.get('path'));
+      else value = decodeURIComponent(url.pathname).replace(/^\//, '');
+    } catch (_) {
+      value = value.split(/[?#]/)[0];
+    }
+    const parent = String(documentPath || '').replace(/\/[^/]*$/, '');
+    const candidates = [];
+    if (parent && !value.includes(':') && !value.startsWith('/')) candidates.push(parent + '/' + value.replace(/^\.\//, ''));
+    candidates.push(value.replace(/^\//, ''));
+    return [...new Set(candidates.map(path => path.split('/').reduce((parts, part) => {
+      if (!part || part === '.') return parts;
+      if (part === '..') parts.pop(); else parts.push(part);
+      return parts;
+    }, []).join('/')).filter(Boolean))];
+  }
+
+  async function containedFilesData(path, type) {
+    path = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    type = String(type || '').toLowerCase();
+    if (!path || !_cloudContainedTargetSupported(path, type)) throw new Error('ファイル内表示に対応する対象が見つかりません');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.statPath || !provider?.downloadAsFile) throw new Error('ブラウザの保存先が未初期化です');
+    const containerName = path.split('/').pop() || path;
+    const byPath = new Map();
+    const add = async (candidate, reference, group = '') => {
+      for (const resolved of _cloudContainedReferencePath(candidate, path)) {
+        let stat;
+        try { stat = await provider.statPath(resolved); } catch (_) { stat = null; }
+        if (!stat || stat.kind === 'directory') continue;
+        const existing = byPath.get(resolved);
+        if (existing && (!existing.contained_reference || reference)) return;
+        byPath.set(resolved, {
+          name: resolved.split('/').pop() || resolved,
+          type: _cloudContainedType(resolved),
+          path: resolved,
+          size: stat.size ?? null,
+          modified: stat.modified || stat.server_modified || stat.client_modified || '',
+          linked: !!reference,
+          contained_reference: !!reference,
+          contained_by: path,
+          contained_by_name: containerName,
+          contained_file_group: group || containerName,
+          membership_id: path + '::' + resolved,
+        });
+        return;
+      }
+    };
+    if (['database','sheet'].includes(type)) {
+      if (!provider.listEntries) throw new Error('ブラウザの保存先でフォルダ一覧を取得できません');
+      const attachment = await _cloudAttachmentTarget(provider, path);
+      const roots = [attachment?.dir, path + '/_assets'].filter(Boolean);
+      for (const root of roots) {
+        const queue = [root];
+        while (queue.length) {
+          const folder = queue.shift();
+          let entries;
+          try { entries = await provider.listEntries(folder); } catch (_) { continue; }
+          for (const entry of entries || []) {
+            if (!entry?.name || entry.name.startsWith('.')) continue;
+            const childPath = folder + '/' + entry.name;
+            if (entry.kind === 'directory') queue.push(childPath);
+            else if (entry.kind === 'file') await add(childPath, false, root.split('/').pop() || '添付ファイル');
+          }
+        }
+      }
+      try {
+        const pivot = await window.MeldexDataAccess.requestJson('/pivot?path=' + encodeURIComponent(path), { method: 'GET' });
+        for (const ref of _cloudContainedStrings(pivot)) await add(ref, true, '参照ファイル');
+      } catch (_) {}
+    } else {
+      const file = await provider.downloadAsFile(path);
+      if ((file?.size || 0) > 16 * 1024 * 1024) return { items: [], container_path: path, count: 0 };
+      const text = await file.text();
+      const refs = [];
+      const markdown = /!?\[[^\]]*\]\((?:<)?([^)>\s]+)(?:>)?(?:\s+["'][^"']*["'])?\)/g;
+      const html = /\b(?:src|href|poster)\s*=\s*["']([^"']+)["']/gi;
+      const css = /\burl\(\s*["']?([^"')]+)/gi;
+      for (const pattern of [markdown, html, css]) {
+        let match;
+        while ((match = pattern.exec(text))) refs.push(match[1]);
+      }
+      if (/^\s*[\[{]/.test(text)) {
+        try { refs.push(..._cloudContainedStrings(JSON.parse(text))); } catch (_) {}
+      }
+      for (const ref of refs) await add(ref, true, '参照ファイル');
+    }
+    const items = Array.from(byPath.values()).sort((a, b) => String(a.contained_file_group).localeCompare(String(b.contained_file_group)) || String(a.name).localeCompare(String(b.name)));
+    return { items: items.slice(0, 2000), container_path: path, count: Math.min(items.length, 2000) };
+  }
+
+  async function containedFilesResponse(apiUrl) {
+    return jsonResponse(await containedFilesData(apiUrl.searchParams.get('path'), apiUrl.searchParams.get('type')));
+  }
+
+  async function containedFilesBatchResponse(body) {
+    const targets = Array.isArray(body?.targets) ? body.targets.slice(0, 5000) : [];
+    const items = [];
+    const failed = [];
+    for (const target of targets) {
+      if (!_cloudContainedTargetSupported(target?.path, target?.type)) continue;
+      try {
+        const result = await containedFilesData(target.path, target.type);
+        items.push(...result.items);
+      } catch (_) { failed.push({ path: target?.path || '', status: 404 }); }
+      if (items.length >= 10000) break;
+    }
+    return jsonResponse({ items: items.slice(0, 10000), count: Math.min(items.length, 10000), failed: failed.slice(0, 100), truncated: targets.length >= 5000 || items.length >= 10000 });
+  }
+
+  async function pathsExistResponse(body) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.statPath) throw new Error('ブラウザの保存先が未初期化です');
+    const paths = Array.isArray(body?.paths) ? body.paths.slice(0, 500) : [];
+    const results = {};
+    await Promise.all(paths.map(async raw => {
+      const path = String(raw || '').trim();
+      if (!path || Object.prototype.hasOwnProperty.call(results, path)) return;
+      try { results[path] = !!(await provider.statPath(path)); }
+      catch (_) { results[path] = false; }
+    }));
+    return jsonResponse({ results });
+  }
+
   function apiRequestPath(url) {
     const pathname = String(url?.pathname || '');
     const marker = pathname.lastIndexOf('/api');
@@ -486,6 +712,21 @@
       const apiUrl = new URL('http://local' + apiPath);
       if (apiUrl.pathname === '/media/upload' && String(method || 'GET').toUpperCase() === 'POST') {
         return await mediaUploadResponse(body);
+      }
+      if (apiUrl.pathname === '/media/import-path' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await mediaImportPathResponse(body);
+      }
+      if (apiUrl.pathname === '/sheet-files' && String(method || 'GET').toUpperCase() === 'GET') {
+        return await sheetFilesResponse(apiUrl);
+      }
+      if (apiUrl.pathname === '/contained-files' && String(method || 'GET').toUpperCase() === 'GET') {
+        return await containedFilesResponse(apiUrl);
+      }
+      if (apiUrl.pathname === '/contained-files/batch' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await containedFilesBatchResponse(body);
+      }
+      if (apiUrl.pathname === '/paths/exist' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await pathsExistResponse(body);
       }
       if (apiUrl.pathname === '/chat/stream' && String(method || 'GET').toUpperCase() === 'POST' && window.MeldexLlmClient?.streamChatAsResponse) {
         const payload = typeof body === 'string' ? JSON.parse(body || '{}') : (body || {});

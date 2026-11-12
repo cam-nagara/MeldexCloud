@@ -554,11 +554,27 @@
         frame.title = '保存したHTML';
         frame.src = fileRawUrl(snapshotPath);
         frame.setAttribute('sandbox', 'allow-same-origin allow-popups');
+        const missing = document.createElement('div');
+        missing.className = 'meldex-entity-detail-webclip-missing';
+        missing.dataset.e2eId = 'entity-topic-html-missing';
+        missing.hidden = true;
+        missing.textContent = '保存したHTMLファイルが見つかりません。シート内のファイル表示で保存先を確認してください。';
         previewBar.append(previewLabel, openSnapshot);
-        preview.append(previewBar, frame);
+        preview.append(previewBar, frame, missing);
         preview.setAttribute('role', 'tabpanel');
         preview.setAttribute('aria-label', 'HTML');
         state.htmlPanel = preview;
+        Promise.resolve(typeof apiPost === 'function'
+          ? apiPost('/paths/exist', { paths: [snapshotPath] })
+          : null).then(result => {
+            if (state.disposed || !preview.isConnected || result?.results?.[snapshotPath] !== false) return;
+            frame.remove();
+            missing.hidden = false;
+            openSnapshot.removeAttribute('href');
+            openSnapshot.setAttribute('aria-disabled', 'true');
+          }).catch(() => {
+            // 存在確認自体が失敗した場合は、従来どおりiframe側の応答を表示する。
+          });
 
       }
 

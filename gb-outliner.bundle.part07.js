@@ -1,3 +1,12 @@
+    pointerCaptured = false;
+    // pointerdown で設定した inline position を元に戻す
+    if (_savedScrollerPosition !== null) {
+      scroller.style.position = _savedScrollerPosition;
+      _savedScrollerPosition = null;
+    }
+    // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
+    // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
+    if (!wasActive && selectionMode === 'replace') treeSelection.clear();
   };
 
   function addDocumentPointerEndHandlers() {

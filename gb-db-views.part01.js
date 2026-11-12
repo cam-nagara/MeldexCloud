@@ -527,7 +527,9 @@ async function _showDbConfigModal(dbPath, ctx) {
       <div class="field">
         <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
         <div class="dbcfg-display-actions dbcfg-section-content">
+          <button type="button" id="dbcfg-view-files" class="gb-btn gb-btn-sm">シート内のファイルを表示</button>
           <button type="button" id="dbcfg-attachments" class="gb-btn gb-btn-sm">添付ファイルを整理...</button>
+          <button type="button" id="dbcfg-migrate-media" class="gb-btn gb-btn-sm">古い画像参照を移行...</button>
         </div>
       </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>`;
@@ -591,6 +593,86 @@ async function _showDbConfigModal(dbPath, ctx) {
   } else if (attachBtn) {
     attachBtn.style.display = 'none';
   }
+  const viewFilesBtn = o.querySelector('#dbcfg-view-files');
+  viewFilesBtn?.addEventListener('click', async () => {
+    if (busy || childOpen) return;
+    busy = true;
+    try {
+      modalApi.close('view-files');
+      if (typeof showContainedFiles === 'function') {
+        await showContainedFiles({ path: dbPath, name: dbPath.split(/[\\/]/).pop() || 'シート', type: 'database' });
+      } else {
+        const result = await apiFetch('/contained-files?path=' + encodeURIComponent(dbPath) + '&type=database');
+        await openFolder((dbPath.split(/[\\/]/).pop() || 'シート') + ' 内のファイル', dbPath, {
+          items: Array.isArray(result?.items) ? result.items : [], skipHighlight: true,
+        });
+      }
+    } catch (error) {
+      showStatus(error?.message || 'シート内のファイルを表示できませんでした', true);
+    } finally {
+      busy = false;
+    }
+  });
+
+  const migrateMediaBtn = o.querySelector('#dbcfg-migrate-media');
+  migrateMediaBtn?.addEventListener('click', async () => {
+    if (busy || childOpen) return;
+    const accepted = await cfConfirm('このシートの画像列にある古い外部参照を、シートの添付ファイルへ複製して置き換えます。続行しますか？');
+    if (!accepted) return;
+    busy = true;
+    migrateMediaBtn.disabled = true;
+    let migrated = 0;
+    let failed = 0;
+    try {
+      const data = pivotData || await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+      const propertyTypes = getPropertyTypes(dbPath, localCtx) || {};
+      for (const [entityName, entity] of Object.entries(data?.entities || {})) {
+        const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, data) : `${dbPath}/${entityName}`;
+        for (const [propName, values] of Object.entries(entity || {})) {
+          if (!Array.isArray(values) || propertyTypes[propName]?.type !== 'image') continue;
+          for (const candidate of values) {
+            const original = parseImagePropertyValue(candidate?.value);
+            let changed = false;
+            const next = [];
+            for (const item of original) {
+              const sourcePath = String(item?.path || item?.src || '').replace(/\\/g, '/');
+              const sheetPrefix = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+              if (!sourcePath || sourcePath.startsWith(sheetPrefix)) { next.push(item); continue; }
+              try {
+                const meta = await apiPost('/media/import-path', {
+                  source_path: sourcePath, sheet_path: dbPath,
+                  filename: item.filename || sourcePath.split('/').pop(), thumbnail_size: 256,
+                });
+                next.push({ ...item, content_hash: meta.content_hash || meta.hash, filename: meta.filename,
+                  path: meta.path, kind: meta.kind || item.kind, src: meta.src, thumb: meta.thumb,
+                  url: meta.url, thumb_url: meta.thumb_url, width: meta.width || item.width || null,
+                  height: meta.height || item.height || null, size: meta.size || item.size || null });
+                migrated += 1;
+                changed = true;
+              } catch (error) {
+                next.push(item);
+                failed += 1;
+              }
+            }
+            if (changed) {
+              const newValue = stringifyImagePropertyValue(next);
+              await _apiPutValue(candidate, { new_value: newValue });
+              candidate.value = newValue;
+            }
+          }
+        }
+      }
+      const browserDataMode = window.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+      if (migrated && !browserDataMode && typeof apiPost === 'function') await apiPost('/media/rebuild-refs', {});
+      showStatus(failed ? `${migrated}件を移行し、${failed}件は元ファイルが見つからず残しました` : `${migrated}件の画像参照を移行しました`, failed > 0);
+      if (migrated) await selectDatabase(dbPath, undefined, { silent: true, forceReload: true });
+    } catch (error) {
+      showStatus(error?.message || '画像参照の移行に失敗しました', true);
+    } finally {
+      busy = false;
+      migrateMediaBtn.disabled = false;
+    }
+  });
 
   // テンプレートボタン
   const tmplBtn = templateButton;
@@ -696,7 +778,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   saveButton.addEventListener('click', async () => {
     if (busy || childOpen) return;
     busy = true;
-    [templateButton, cancelButton, saveButton, attachBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
+    [templateButton, cancelButton, saveButton, attachBtn, viewFilesBtn, migrateMediaBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
       .filter(Boolean).forEach(button => { button.disabled = true; });
     const finishRetry = () => {
       busy = false;

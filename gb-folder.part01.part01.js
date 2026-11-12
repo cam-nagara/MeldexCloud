@@ -128,9 +128,11 @@ async function openFolder(label, path, opts) {
     }
     if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
-    let fetchedItems = typeof _folderFetchBrowseItems === 'function'
-      ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
-      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
+    let fetchedItems = Array.isArray(openOpts.items)
+      ? openOpts.items.slice()
+      : (typeof _folderFetchBrowseItems === 'function'
+        ? await _folderFetchBrowseItems(path, { isCurrent: () => !isStaleFolderLoad() })
+        : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true'));
     const browseIncomplete = fetchedItems._folderBrowseIncomplete || null;
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
@@ -752,7 +754,8 @@ function renderFolderGrid(opts) {
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
-    const itemLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
+    const fileLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
+    const itemLocked = !!item.contained_reference || fileLocked;
     el.draggable = !itemLocked;
     if (preserveSelectedPaths.has(item.path)) {
       el.classList.add('selected');
@@ -796,7 +799,7 @@ function renderFolderGrid(opts) {
     });
     el.appendChild(moreBtn);
 
-    if (itemLocked) {
+    if (fileLocked) {
       const lockBadge = document.createElement('span');
       lockBadge.className = 'fv-lock-badge';
       lockBadge.innerHTML = lucide('lock', 12);
@@ -873,7 +876,9 @@ function renderFolderGrid(opts) {
         badge.innerHTML = lucide('externalLink', 10);
         badge.style.color = 'var(--accent)';
         badge.title = 'リンクファイル';
-        badge.dataset.gbTooltip = '別のフォルダにも登録されているリンクファイルです';
+        badge.dataset.gbTooltip = item.contained_reference
+          ? `${item.contained_by_name || '文書'} が参照しているリンクファイルです`
+          : '別のフォルダにも登録されているリンクファイルです';
         thumb.style.position = 'relative';
         thumb.appendChild(badge);
       }
@@ -883,6 +888,14 @@ function renderFolderGrid(opts) {
     let folderMetaHost = null;
     if (isListLayout) {
       const nameCell = _folderAppendListCells(el, item);
+      if (nameCell && item.linked && !showThumbForLayout) {
+        const linkMark = document.createElement('span');
+        linkMark.className = 'fv-link-file-mark';
+        linkMark.innerHTML = lucide('externalLink', 11);
+        linkMark.title = item.contained_reference ? `${item.contained_by_name || '文書'} が参照しているリンクファイル` : 'リンクファイル';
+        linkMark.dataset.gbTooltip = linkMark.title;
+        nameCell.appendChild(linkMark);
+      }
       if (nameCell && ((item.type === 'image' && (showDimensions || showRating)) || showTags)) {
         folderMetaHost = document.createElement('div');
         folderMetaHost.className = 'fv-list-extra-meta';
@@ -892,8 +905,15 @@ function renderFolderGrid(opts) {
       const name = document.createElement('div');
       name.className = 'fv-name';
       name.textContent = item.name;
-      name.title = item.name;
-      name.dataset.gbTooltip = item.name;
+      name.title = item.contained_reference ? `${item.name} — ${item.contained_by_name || '文書'} からのリンク` : item.name;
+      name.dataset.gbTooltip = name.title;
+      if (item.linked && !showThumbForLayout) {
+        const linkMark = document.createElement('span');
+        linkMark.className = 'fv-link-file-mark';
+        linkMark.style.marginLeft = '4px';
+        linkMark.innerHTML = lucide('externalLink', 11);
+        name.appendChild(linkMark);
+      }
       el.appendChild(name);
     }
 
@@ -1081,6 +1101,18 @@ function renderFolderGrid(opts) {
       e.preventDefault();
       showFolderItemContextMenu(e, item);
     };
+    if (typeof addLongPressHandler === 'function') {
+      addLongPressHandler(el, (e) => {
+        e.preventDefault?.();
+        showFolderItemContextMenu(e, item);
+      });
+    }
+    if (typeof addLongPressHandler === 'function') {
+      addLongPressHandler(el, (e) => {
+        e.preventDefault?.();
+        showFolderItemContextMenu(e, item);
+      });
+    }
 
     if (item.type === 'form-app' && Array.isArray(item.children)) {
       const children = document.createElement('div'); children.className = 'fv-form-sheets';
@@ -1109,7 +1141,8 @@ function renderFolderGrid(opts) {
 }
 
 function _folderMenuItemLocked(item) {
-  return !!(item?.path && typeof isItemLocked === 'function' && isItemLocked(item.path));
+  return !!item?.contained_reference
+    || !!(item?.path && typeof isItemLocked === 'function' && isItemLocked(item.path));
 }
 
 function _folderMenuLockStatusLabel(item) {
@@ -1175,7 +1208,7 @@ function refreshVisibleFolderLockState() {
     const idx = parseInt(el.dataset.idx, 10);
     const item = (_folderVisibleItems.length ? _folderVisibleItems : _getFolderFilteredItems())[idx];
     if (!item?.path || typeof isItemLocked !== 'function') return;
-    const locked = isItemLocked(item.path);
+    const locked = !!item.contained_reference || isItemLocked(item.path);
     el.draggable = !locked;
     el.querySelector('.fv-lock-badge')?.remove();
     if (!locked) return;
@@ -1183,7 +1216,9 @@ function refreshVisibleFolderLockState() {
     lockBadge.className = 'fv-lock-badge';
     lockBadge.innerHTML = lucide('lock', 12);
     const lockReason = typeof getItemLockReason === 'function' ? getItemLockReason(item.path) : '';
-    lockBadge.title = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path)
+    lockBadge.title = item.contained_reference
+      ? '参照元の文書で管理される読み取り専用リンクです'
+      : typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path)
       ? 'システム保護中です'
       : ('編集ロック中' + (lockReason ? ': ' + lockReason : ''));
     lockBadge.dataset.gbTooltip = lockBadge.title;
@@ -1422,6 +1457,10 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
     addSep();
   }
+  if (!blankTarget && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
+    addItem('ファイル内のファイルを表示', () => showContainedFiles(item), null, 'files');
+    addSep();
+  }
   if (_isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
@@ -1489,7 +1528,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path) {
+  if (item.path && !item.contained_reference) {
     addSep();
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path);
     const canEditLock = typeof isFileLockOwner === 'function' && isFileLockOwner();

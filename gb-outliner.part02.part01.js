@@ -960,6 +960,15 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
   }
 
+  if (!isMulti && nodeData.path && !nodeData._isRoot
+      && typeof canShowContainedFiles === 'function' && canShowContainedFiles(nodeData)) {
+    addMenuItem('ファイル内のファイルを表示', () => {
+      closeTreeContextMenu();
+      showContainedFiles(nodeData);
+    }, null, 'files');
+    addSep();
+  }
+
   // --- 編集ロック ---
   if (!isMulti && window.MeldexFileIcons?.canEdit(nodeData) && !isItemLocked(nodeData.path)) {
     addMenuItem('アイコンを変更', () => {

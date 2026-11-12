@@ -915,6 +915,35 @@ function setFolderSubfolderContentsEnabled(enabled) {
   if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
 }
 
+function canShowContainedFiles(item) {
+  const type = String(item?.type || '').toLowerCase();
+  if (['database','sheet','page','note','board','scriptnote','scenario','form-app','calendar','schedule','map'].includes(type)) return true;
+  const path = String(item?.path || '').toLowerCase();
+  return ['.md','.mel-board','.board.md','.mel-scenario','.scriptnote.json','.mel-form','.mel-map']
+    .some(suffix => path.endsWith(suffix));
+}
+
+async function showContainedFiles(item) {
+  if (!item?.path || !canShowContainedFiles(item)) return false;
+  try {
+    const query = '/contained-files?path=' + encodeURIComponent(item.path)
+      + '&type=' + encodeURIComponent(item.type || '');
+    const result = await apiFetch(query);
+    const label = (item.name || String(item.path).split(/[\\/]/).pop() || 'ファイル') + ' 内のファイル';
+    await openFolder(label, item.path, {
+      items: Array.isArray(result?.items) ? result.items : [],
+      skipHighlight: true,
+      skipSaveLastView: true,
+      skipNavPush: true,
+    });
+    if (!result?.items?.length) showStatus('このファイルが参照する表示可能なファイルはありません');
+    return true;
+  } catch (error) {
+    showStatus(error?.message || 'ファイル内のファイルを表示できませんでした', true);
+    return false;
+  }
+}
+
 async function _folderFetchBrowseItems(path, options = {}) {
   const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true&form_hierarchy=true');
   if (options.isCurrent?.() === false) return [];
@@ -946,6 +975,32 @@ async function _folderFetchBrowseItems(path, options = {}) {
     } catch (error) {
       failedCount += 1;
       console.warn('サブフォルダの読み込みに失敗しました', folderPath, error);
+    }
+  }
+  // 明示的に再帰表示を有効にした時だけ、配下の主要アプリ文書が内包・参照する
+  // 画像・動画等も仮想リンクとして加える。HTTPは一括し、通常表示の負荷は増やさない。
+  const containedTargets = result.filter(item => canShowContainedFiles(item) && item?.path);
+  if (containedTargets.length) {
+    try {
+      const contained = await apiPost('/contained-files/batch', {
+        targets: containedTargets.map(item => ({ path: item.path, type: item.type || '' })),
+      });
+      if (options.isCurrent?.() === false) return [];
+      (contained?.items || []).forEach(child => {
+        if (!child?.path) return;
+        result.push({
+          ...child,
+          linked: true,
+          contained_reference: true,
+          _subfolderContent: true,
+          _subfolderParentPath: child.contained_by || path,
+        });
+      });
+      if (contained?.failed?.length) failedCount += contained.failed.length;
+      if (contained?.truncated) queue.push('__contained_files_truncated__');
+    } catch (error) {
+      failedCount += 1;
+      console.warn('ファイル内の参照ファイル読み込みに失敗しました', error);
     }
   }
   result._folderBrowseIncomplete = (failedCount || queue.length)
