@@ -33,7 +33,7 @@ async function _flushPendingEditorVersionTarget(path, folderPath) {
 async function _flushOpenAppVersionTarget(path, folderPath) {
   let count = await _flushPendingEditorVersionTarget(path, folderPath);
   const matches = p => folderPath ? _historyPathUnderFolder(p, folderPath) : _sameVersionTargetPath(p, path);
-  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+  for (const adapter of [window.GBQuickMemoPanel]) {
     if (!folderPath && typeof adapter?.flushVersionTarget === 'function' && await adapter.flushVersionTarget(path)) count++;
   }
   if (typeof bd !== 'undefined' && bd?.path && matches(bd.path) && typeof bdSave === 'function') {

@@ -82,7 +82,7 @@ html[data-standalone-cloud] body {
   box-shadow: var(--sa-workspace-shadow);
   overflow: hidden;
   overscroll-behavior: contain;
-  color-scheme: dark;
+  color-scheme: inherit;
   font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -100,7 +100,7 @@ html[data-standalone-cloud] body {
   min-height: 56px;
   padding: 8px 10px 8px 16px;
   border-bottom: 1px solid var(--sa-workspace-border);
-  background: #24262b;
+  background: var(--sa-workspace-panel-strong);
 }
 
 .sa-workspace-header h2 {
@@ -143,13 +143,13 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-primary {
-  border-color: #3f8ed4;
-  background: #286faa;
+  border-color: var(--sa-workspace-accent);
+  background: var(--sa-workspace-accent);color:var(--ui-accent-fg);
 }
 
 .sa-workspace-danger {
-  border-color: #9c4d53;
-  background: #713a3f;
+  border-color: var(--sa-workspace-danger);
+  background: color-mix(in srgb,var(--sa-workspace-danger) 25%,var(--sa-workspace-panel));
 }
 
 .sa-workspace-close:hover,
@@ -157,15 +157,15 @@ html[data-standalone-cloud] body {
 .sa-workspace-secondary:hover,
 .sa-workspace-crumb:hover,
 .sa-workspace-row-button:hover {
-  background: #3b3f48;
+  background: var(--ui-hover-bg);
 }
 
 .sa-workspace-primary:hover {
-  background: #3482c1;
+  background: var(--sa-workspace-accent-strong);
 }
 
 .sa-workspace-danger:hover {
-  background: #87444a;
+  background: color-mix(in srgb,var(--sa-workspace-danger) 40%,var(--sa-workspace-panel));
 }
 
 .sa-workspace-drawer button:disabled {
@@ -233,7 +233,7 @@ html[data-standalone-cloud] body {
   border: 1px solid var(--sa-workspace-border);
   border-radius: 8px;
   padding: 8px 10px;
-  background: #191b20;
+  background: var(--ui-bg-control,var(--bg3));
   color: var(--sa-workspace-text);
   font: inherit;
 }
@@ -242,7 +242,7 @@ html[data-standalone-cloud] body {
   min-height: 44px;
   display: inline-flex;
   align-items: center;
-  color: #95caff;
+  color: var(--link-fg,var(--sa-workspace-accent));
 }
 
 .sa-workspace-auth-link[hidden] {
@@ -261,7 +261,7 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-source-bar {
-  border-bottom: 1px solid #383b43;
+  border-bottom: 1px solid var(--sa-workspace-border);
 }
 
 .sa-workspace-source-bar label {
@@ -285,7 +285,7 @@ html[data-standalone-cloud] body {
   min-height: 48px;
   padding: 4px 10px;
   overflow-x: auto;
-  border-bottom: 1px solid #383b43;
+  border-bottom: 1px solid var(--sa-workspace-border);
   scrollbar-width: thin;
 }
 
@@ -295,7 +295,7 @@ html[data-standalone-cloud] body {
   padding: 6px 9px;
   border-color: transparent;
   background: transparent;
-  color: #b7d9fa;
+  color: var(--sa-workspace-accent);
 }
 
 .sa-workspace-search input {
@@ -304,7 +304,7 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-create-bar {
-  border-bottom: 1px solid #383b43;
+  border-bottom: 1px solid var(--sa-workspace-border);
 }
 
 .sa-workspace-status {
@@ -315,7 +315,7 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-status.is-error {
-  color: #ff9ca2;
+  color: var(--sa-workspace-danger);
 }
 
 .sa-workspace-list {
@@ -335,7 +335,7 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-row.is-selected {
-  background: rgb(71 137 199 / 24%);
+  background: var(--ui-selection-bg);
 }
 
 .sa-workspace-row-button {
@@ -351,8 +351,8 @@ html[data-standalone-cloud] body {
 }
 
 .sa-workspace-row.is-selected .sa-workspace-row-button {
-  border-color: #4f7fa9;
-  background: rgb(59 111 158 / 32%);
+  border-color: var(--ui-accent);
+  background: var(--ui-selection-bg);color:var(--ui-selection-fg);
 }
 
 .sa-workspace-row-icon {
@@ -432,7 +432,7 @@ html[data-standalone-cloud] body {
   flex-wrap: wrap;
   padding-block-end: max(10px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--sa-workspace-border);
-  background: #24262b;
+  background: var(--sa-workspace-panel-strong);
 }
 
 .sa-workspace-picker[hidden] {
@@ -472,10 +472,10 @@ html[data-standalone-cloud] body {
   overflow: auto;
   border: 1px solid var(--sa-workspace-border);
   border-radius: 14px;
-  background: #25272d;
+  background: var(--ui-modal-bg,var(--bg2));
   color: var(--sa-workspace-text);
   box-shadow: var(--sa-workspace-shadow);
-  color-scheme: dark;
+  color-scheme: inherit;
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 

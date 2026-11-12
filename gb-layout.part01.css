@@ -1106,7 +1106,7 @@ body.chat-composer-resizing {
 .tl-bar-label { flex: 1; overflow: hidden; overflow-wrap: anywhere; pointer-events: none; }
 .tl-bar-handle {
   width: 6px; min-height: 18px; cursor: ew-resize; border-radius: 2px;
-  background: rgba(255,255,255,0.3); flex-shrink: 0;
+  background: color-mix(in srgb, var(--ui-selection-fg) 30%, transparent); flex-shrink: 0;
   opacity: 0; transition: opacity 0.15s;
 }
 .tl-bar:hover .tl-bar-handle { opacity: 1; }

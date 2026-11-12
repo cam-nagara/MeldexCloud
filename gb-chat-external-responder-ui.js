@@ -32,6 +32,13 @@
   const visibleAiPanels = () => [...document.querySelectorAll('[id="chat-llm-panel"]')]
     .filter(panel => !panel.closest('[data-gb-snapshot="true"]'));
 
+  function usesLocalCli() {
+    const runtime = window.MeldexRuntimeAdapter;
+    if (runtime?.isPwaMode?.() || runtime?.isDropboxMode?.() || runtime?.isServerMode?.()) return false;
+    const provider = typeof _chatState !== 'undefined' ? _chatState.provider : '';
+    return window.GBChatCli?.isCliChatProvider?.(provider) === true;
+  }
+
   function element(tag, className, value) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -145,6 +152,7 @@
     const view = currentReadinessView();
     visibleAiPanels().forEach(panel => {
       const root = ensureStatusUi(panel);
+      root.hidden = usesLocalCli();
       root.dataset.state = view.state;
       root.querySelector('.external-responder-status-value').textContent = view.label;
       root.querySelector('.external-responder-status-chip').title = view.action || 'ワークスペースチャットへ返答する管理者PCのAI';
@@ -153,6 +161,8 @@
 
   async function refreshReadiness() {
     const workspaceId = currentWorkspaceId();
+    // このPCで直接実行するCLIと、別PCへ依頼する署名済み返答AIは別の経路。
+    if (usesLocalCli()) { readiness = { workspaceId, snapshot: null, error: null }; renderReadiness(); return readiness; }
     if (!workspaceId) { readiness = { workspaceId: '', snapshot: null, error: null }; renderReadiness(); return readiness; }
     try {
       const snapshot = await apiFetch('/workspace-cli/phase4a/presence' + query(workspaceId), { silentError: true });
@@ -429,6 +439,9 @@
     visibleAiPanels().forEach(ensureStatusUi); renderReadiness(); renderRequestCards();
     document.querySelectorAll('#settings-workspace-cli-relay-container').forEach(renderSecuritySettings);
     document.addEventListener('click', handleClick, true); document.addEventListener('click', clearUnreadOnAiTab, true);
+    document.addEventListener('change', event => {
+      if (event.target?.matches?.('#chat-provider')) refreshReadiness();
+    });
     const observer = new MutationObserver((records) => {
       const added = records.flatMap(record => [...record.addedNodes]).filter(node => node.nodeType === 1);
       if (!added.some(node => node.matches?.('#chat-llm-panel,#chat-team-panel,#settings-workspace-cli-relay-container')

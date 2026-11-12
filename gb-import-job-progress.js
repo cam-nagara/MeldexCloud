@@ -141,6 +141,7 @@
   function _operationLabel(startPath, options) {
     if (options?.operationLabel || options?.label) return String(options.operationLabel || options.label);
     const path = String(startPath || '').toLowerCase();
+    if (path.includes('duplicate-resolve')) return '重複ファイルを整理しています';
     if (path.includes('duplicate')) return '重複を確認しています';
     if (path.includes('tag')) return 'タグを処理しています';
     if (path.includes('import') || path.includes('sync')) return 'データを取り込んでいます';
@@ -244,8 +245,11 @@
     } catch (error) {
       if (error?.name === 'AbortError') {
         const partial = error.jobStatus?.result;
-        operation?.cancelled({ summary: partial?.unprocessed !== undefined
-          ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message });
+        const cleanupSummary = String(startPath || '').includes('duplicate-resolve') && partial
+          ? `重複ファイルの整理を中止しました。整理済み${(partial.results || []).filter(item => item.status === 'replaced').length}件 / 未処理${Number(partial.unprocessed) || 0}件`
+          : '';
+        operation?.cancelled({ summary: cleanupSummary || (partial?.unprocessed !== undefined
+          ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message) });
       }
       else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
       else if (error?.name === 'LongRunningJobError' || [400, 401, 403, 404].includes(Number(error?.status)) || /HTTP 404/.test(error?.message || '')) operation?.unknown({ summary: '進捗を確認できないため、処理の結果は未確認です。取り込みの前回結果を確認してください。' });

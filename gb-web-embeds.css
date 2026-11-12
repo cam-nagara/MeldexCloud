@@ -51,7 +51,7 @@
   height: 44px;
   transform: translate(-50%, -50%);
   border-radius: 12px;
-  background: rgba(0, 0, 0, 0.68);
+  background: var(--ui-button-bg);
   transition: background 0.12s;
 }
 .gb-web-embed-play::after {
@@ -62,9 +62,9 @@
   transform: translate(-35%, -50%);
   border-style: solid;
   border-width: 10px 0 10px 17px;
-  border-color: transparent transparent transparent #fff;
+  border-color: transparent transparent transparent var(--ui-button-fg);
 }
-.gb-web-embed-poster:hover .gb-web-embed-play { background: rgba(220, 30, 30, 0.9); }
+.gb-web-embed-poster:hover .gb-web-embed-play { background: var(--ui-hover-bg); }
 /* サービス名（擬似要素なので本文テキスト・コピーへ混ざらない） */
 .gb-web-embed-poster::before {
   content: attr(aria-label);
@@ -75,8 +75,8 @@
   max-width: calc(100% - 16px);
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  background: var(--ui-popup-bg);
+  color: var(--ui-popup-fg, var(--fg));
   font-size: 11px;
   line-height: 1.5;
   overflow: hidden;
@@ -84,6 +84,6 @@
   white-space: nowrap;
 }
 .gb-web-embed-poster.is-thumb-missing::before { content: attr(aria-label) '  ' attr(title); }
-.gb-web-embed.is-failed .gb-web-embed-play { background: rgba(120, 120, 120, 0.7); }
+.gb-web-embed.is-failed .gb-web-embed-play { background: var(--ui-bg-control, var(--bg3)); }
 .gb-web-embed--chat { margin: 4px 0 8px; max-width: min(100%, 420px); }
 .gb-web-embed--chat.gb-web-embed--post { max-width: min(100%, 480px); }

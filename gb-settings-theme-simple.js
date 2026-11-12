@@ -15,6 +15,7 @@ const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
   '--ui-bg-selected': 'selected', '--ui-control-active-bg': 'selected',
   '--ui-border-focus': 'accent', '--ui-border-subtle': 'border', '--ui-focus': 'accent', '--ui-focus-ring': 'accent',
   '--ui-disabled-bg': 'control', '--ui-disabled-border': 'border',
+  '--ui-disabled-accent': 'muted', '--ui-fg-subtle': 'muted',
   '--ui-scrollbar-track-bg': 'surface', '--ui-scrollbar-thumb-bg': 'muted', '--ui-scrollbar-thumb-hover-bg': 'hover',
 });
 const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([

@@ -18,7 +18,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 1;
+  const THEME_UI_DEFAULTS_VERSION = 2;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -321,7 +321,7 @@
     ['.sidebar-section-header, .sidebar-header', 'folder-section'],
     ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item', 'folder'],
     ['.tree-node-row[data-item-type="folder"]', 'folder-tree-folder'],
-    ['#folder-grid .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
+    ['#folder-grid .fv-item[data-item-type="folder"], .gb-subpanel-folder-root .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
     ['#page-content h1, #page-content h2, #page-content h3, #page-content h4, #page-content h5, #page-content h6, #entity-freetext h1, #entity-freetext h2, #entity-freetext h3, #entity-freetext h4, #entity-freetext h5, #entity-freetext h6, #dp-editable h1, #dp-editable h2, #dp-editable h3, #dp-editable h4, #dp-editable h5, #dp-editable h6', 'note-heading'],
     ['#note-toc .note-toc-item', 'note-toc-item'],
     ['.sn2-detail-item[data-kind="dialogue"]', 'scriptnote-type-dialogue'],

@@ -88,7 +88,7 @@ function doFileSearch(direction) {
     range.setEnd(m.node, m.pos + m.len);
     const mark = document.createElement('mark');
     mark.className = 'file-search-highlight';
-    mark.style.cssText = 'background:var(--orange);color:#000;border-radius:1px;';
+    mark.style.cssText = 'background:var(--ui-selection-bg);color:var(--ui-selection-fg);border-radius:1px;';
     try { range.surroundContents(mark); } catch (e) { /* クロスエレメント範囲はスキップ */ }
   }
 

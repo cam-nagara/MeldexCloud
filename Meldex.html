@@ -85,7 +85,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
     const panel = document.createElement('div');
     panel.id = 'meldex-startup-recovery';
     panel.setAttribute('role', 'alert');
-    panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#1e1e1e;color:#eee;font:16px system-ui;text-align:center;padding:24px';
+    panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg,#1e1e1e);color:var(--fg,#eee);font:16px system-ui;text-align:center;padding:24px';
     const title = document.createElement('strong');
     title.textContent = 'Meldexの起動を完了できませんでした';
     const message = document.createElement('div');
@@ -250,7 +250,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=64c9542e9ede00e1"></script><script src="gb-cloud-runtime-config.js?v=bd9c46862e040e7f"></script><script src="meldex-cloud-runtime-04.js?v=0af1e8270c8102e2"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=e32ce9c28bdd3984"></script><script src="gb-cloud-runtime-config.js?v=d2f34a38ea23d310"></script><script src="meldex-cloud-runtime-04.js?v=1e4e9001b5c1ac0f"></script>
 
 
 
@@ -328,14 +328,14 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
-<link rel="stylesheet" href="meldex-cloud-core.css?v=6109cd944b33ae6c">
+<link rel="stylesheet" href="meldex-cloud-core.css?v=9eaef427d3c04a95">
 </head>
 <body>
-<div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:#1e1e1e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+<div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:var(--bg,#1e1e1e);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
   <img src="Meldex_icon_192.png" alt="" width="64" height="64" style="opacity:0.8;">
-  <div style="color:#888;font-size:14px;font-family:system-ui,sans-serif;">Meldex を起動しています...</div>
-  <div style="width:120px;height:2px;background:#333;border-radius:1px;overflow:hidden;">
-    <div style="width:40%;height:100%;background:#666;border-radius:1px;animation:gb-splash-bar 1.2s ease-in-out infinite;"></div>
+  <div style="color:var(--fg2,#888);font-size:14px;font-family:system-ui,sans-serif;">Meldex を起動しています...</div>
+  <div style="width:120px;height:2px;background:var(--border,#333);border-radius:1px;overflow:hidden;">
+    <div style="width:40%;height:100%;background:var(--fg2,#666);border-radius:1px;animation:gb-splash-bar 1.2s ease-in-out infinite;"></div>
   </div>
   <style>@keyframes gb-splash-bar{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}</style>
 </div>
@@ -650,7 +650,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <option value="hflow">横並び（高さ揃え）</option>
           <option value="list">リスト</option>
         </select>
-        <button id="folder-display-btn" class="tb-icon-btn" type="button" title="表示" aria-label="表示設定" data-action="showFolderDisplaySettings()"><span id="folder-display-icon" class="ico ico-grid3x3"></span></button>
+        <button id="folder-display-btn" class="tb-icon-btn" type="button" title="表示設定" aria-label="表示設定" aria-haspopup="menu" data-action="showFolderDisplaySettings()"><span id="folder-display-icon" class="ico ico-layoutGrid"></span></button>
         <button id="folder-filter-btn" class="tb-icon-btn" type="button" title="フィルタ" aria-label="フィルタ設定" data-action="showFolderFilterSettings()"><span class="ico ico-filter"></span><span id="folder-filter-count" hidden></span></button>
         <button type="button" class="tb-icon-btn" data-e2e-id="folder-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
         <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('folder')"><span class="ico ico-search"></span></button>
@@ -782,7 +782,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <span data-chat-current-target-icon style="width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"></span>
           <span style="flex-shrink:0;">対象:</span>
           <span id="chat-current-target-path" data-chat-current-target-path title="対象なしでもAIチャットを利用できます">対象なし</span>
-          <span id="chat-debug-available" style="display:none;font-size:10px;color:var(--accent2);padding:1px 6px;background:rgba(78,201,176,0.1);border:1px solid var(--accent2);border-radius:3px;white-space:nowrap;" title="このフォルダにdebug-report DBあり">デバッグ可</span>
+          <span id="chat-debug-available" style="display:none;font-size:10px;color:var(--accent2);padding:1px 6px;background:color-mix(in srgb,var(--accent2) 10%,transparent);border:1px solid var(--accent2);border-radius:3px;white-space:nowrap;" title="このフォルダにdebug-report DBあり">デバッグ可</span>
           <span class="chat-target-actions">
             <button type="button" class="chat-target-action chat-target-clear" title="対象を解除" aria-label="対象を解除" aria-disabled="true" disabled data-chat-target-clear data-action="chatClearCurrentTarget()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
             <button type="button" class="chat-target-action chat-target-pick" title="対象を一覧から選択" aria-label="対象を一覧から選択" data-chat-target-pick data-action="chatPickCurrentTarget()"><span class="ico ico-folderTree" style="width:14px;height:14px;"></span></button>
@@ -796,7 +796,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end;">
             <button id="chat-voice-btn" type="button" title="音声入力" aria-label="音声入力" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;line-height:1;" data-action="chatToggleVoiceInput()"><span class="ico ico-mic"></span></button>
             <button type="button" class="stamp-btn" title="スタンプ" aria-label="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('chat-input', chatSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
-            <button id="chat-send-btn" type="button" title="送信 (Enter)" aria-label="送信" style="min-width:52px;white-space:nowrap;word-break:keep-all;flex-shrink:0;text-align:center;padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="chatSend" data-args='{"fromButton":true}'>送信</button>
+            <button id="chat-send-btn" type="button" title="送信 (Enter)" aria-label="送信" style="min-width:52px;white-space:nowrap;word-break:keep-all;flex-shrink:0;text-align:center;padding:8px 12px;background:var(--accent);color:var(--ui-accent-fg);border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="chatSend" data-args='{"fromButton":true}'>送信</button>
           </div>
         </div>
         <div class="chat-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
@@ -838,7 +838,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
               <textarea id="team-input" data-e2e-id="team-input" aria-label="ワークスペースチャットのメッセージ" placeholder="メッセージを入力... (Enter送信, Shift+Enter改行)" rows="5" style="flex:1;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;resize:none;outline:none;font-family:inherit;"></textarea>
               <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end;">
                 <button type="button" class="stamp-btn team-composer-action-btn" data-e2e-id="team-stamp-button" title="スタンプ" aria-label="スタンプ" style="padding:6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="onStampSend('team-input', teamSend)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
-                <button id="team-send-btn" type="button" class="team-composer-action-btn" data-e2e-id="team-send-button" title="送信 (Enter)" style="padding:8px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="teamSend()">送信</button>
+                <button id="team-send-btn" type="button" class="team-composer-action-btn" data-e2e-id="team-send-button" title="送信 (Enter)" style="padding:8px 12px;background:var(--accent);color:var(--ui-accent-fg);border:none;border-radius:6px;cursor:pointer;font-size:13px;" data-action="teamSend()">送信</button>
               </div>
             </div>
             <div class="team-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
@@ -893,7 +893,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-05.js?v=8a2682b4bfbec5c7"></script>
+<script src="meldex-cloud-runtime-05.js?v=d660b1d926db887a"></script>
 
 
 
@@ -1016,7 +1016,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-06.js?v=267bc42f2aa93f81"></script>
+<script src="meldex-cloud-runtime-06.js?v=949166e83a741d93"></script>
 
 
 

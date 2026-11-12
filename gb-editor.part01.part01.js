@@ -508,7 +508,7 @@ function _renderNoteConflictDiff(host, mine, other) {
     const leftLine = document.createElement('div');
     const rightLine = document.createElement('div');
     [leftLine, rightLine].forEach(el => {
-      el.style.cssText = (row.same ? '' : 'background:rgba(220,80,80,.16);') + 'padding:1px 4px;border-radius:3px;';
+      el.style.cssText = (row.same ? '' : 'background:color-mix(in srgb,var(--red) 16%,transparent);') + 'padding:1px 4px;border-radius:3px;';
     });
     leftLine.textContent = `${i + 1}: ${row.left || ' '}`;
     rightLine.textContent = `${i + 1}: ${row.right || ' '}`;

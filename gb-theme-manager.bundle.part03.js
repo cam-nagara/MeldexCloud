@@ -1,3 +1,5 @@
+        try {
+          return node.matches?.(selector) || !!node.querySelector?.(selector);
         } catch {
           return true;
         }
@@ -271,7 +273,7 @@
       document.head.appendChild(style);
     }
     const rules = [];
-    const autoTone = getThemeUiAutoTone();
+    const autoTone = options.autoTone ? normalizeThemeUiAutoTone(options.autoTone) : getThemeUiAutoTone();
     document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
     document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     THEME_UI_TARGETS.forEach(target => {
@@ -791,6 +793,16 @@
     });
     if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
+    if (options.runtimeOnly === true) {
+      // Auxiliary windows render a saved snapshot without changing the main
+      // window's preferences or publishing theme-change events.
+      const defaults = getBuiltInThemes().find(theme => theme.id === themeDef.id) || themeDef;
+      _activeThemeColorSet = paintThemeColorSet(resolveThemeColorSet(themeDef), { themeDef, bindTargets: false });
+      applyThemeUiApplications(resolveSavedThemeUiApplications(defaults, themeDef.ui?.themeUiApplications), {
+        autoTone: themeDef.ui?.themeUiAutoTone, forceTargets: true,
+      });
+      return;
+    }
     const preservePresetAccent = getThemeAccentPolicy(themeDef).kind === 'system-or-default';
     const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, {
       preserveStored: preservePresetAccent || options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true,
@@ -886,15 +898,3 @@
       if (typeof global.bdApplyCanvasBackground === 'function') {
         global.bdApplyCanvasBackground(canvas, bg);
       } else {
-        canvas.style.background = board?._bgColor || bg;
-      }
-      canvas.style.setProperty('--bd-theme-line-color', themeDef?.board?.lineColor || '');
-    }
-    if (world) world.style.filter = themeDef?.board?.globalFilter || '';
-    // ファイル固有値が未設定のキーは、テーマ変数を bd プロパティに再同期する
-    // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
-    if (board) {
-      const readBoardThemeVar = (key) => {
-        const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
-        if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
-        const local = canvas?.style?.getPropertyValue?.(key)?.trim();

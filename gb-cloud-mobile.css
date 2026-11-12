@@ -177,7 +177,7 @@
     justify-content: center;
     border: 1px solid var(--border, #333);
     border-radius: 8px;
-    background: rgba(45, 45, 45, 0.94);
+    background: color-mix(in srgb, var(--ui-popup-bg, var(--bg2)) 94%, transparent);
     color: var(--fg, #d4d4d4);
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
     cursor: ew-resize;
@@ -541,11 +541,12 @@
     display: none;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-select {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-select,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-menu-btn {
     grid-column: 1 / 3;
     grid-row: 3;
     min-width: 0;
-    width: 100%;
+    width: 100% !important;
     height: 44px;
     min-height: 44px;
     box-sizing: border-box;
@@ -556,6 +557,10 @@
     color: var(--fg, #d4d4d4) !important;
     font-size: var(--cloud-mobile-ui-meta-font-size, 14px) !important;
     touch-action: manipulation;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-menu-btn {
+    padding-right: 12px !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-display-btn,
@@ -1416,7 +1421,7 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.gb-publish-settings-modal .gb-btn-primary:not(:disabled) {
-    color: #fff !important;
+    color: var(--ui-selection-fg) !important;
     background: var(--ui-accent, #3478c8) !important;
     border-color: var(--ui-accent, #3478c8) !important;
   }

@@ -448,8 +448,8 @@
 .bd-find-bar .bd-find-btn:hover { background: var(--bg3); }
 /* 検索マッチのワードハイライト (カード全体ではなく、該当ワード部分だけに mark を挿入)。
    text-shadow によるテキストフチがハイライトの背景を覆い隠すため、mark 部分のフチを無効化する。 */
-.bd-find-hl { background: rgba(255, 220, 50, 0.50); color: inherit; padding: 0 1px; border-radius: 2px; text-shadow: none !important; }
-.bd-find-hl-current { background: rgba(255, 140, 0, 0.80); color: #1a1a1a; text-shadow: none !important; }
+.bd-find-hl { background: color-mix(in srgb, var(--ui-selection-bg) 50%, transparent); color: inherit; padding: 0 1px; border-radius: 2px; text-shadow: none !important; }
+.bd-find-hl-current { background: var(--ui-selection-bg); color: var(--ui-selection-fg); text-shadow: none !important; }
 /* overflow は visible (基底に合わせる)。高さの制御は下の中身側クリップだけで完結する:
    本文は nowrap+ellipsis で常に1行、画像・見つからない画像プレースホルダーは非表示にする。 */
 .bd-node.bd-minimized { max-height: 32px; overflow: visible; opacity: 0.8; }

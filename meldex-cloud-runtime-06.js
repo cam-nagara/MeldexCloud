@@ -4256,7 +4256,7 @@
       header.innerHTML = `
         <div>
           <strong style="font-size:16px;">制作日次記録（${esc(snapshot.target_date)}）</strong>
-          <span style="display:inline-block;margin-left:8px;font-size:11px;padding:2px 6px;background:#e2e8f0;border-radius:4px;">読み取り専用</span>
+          <span style="display:inline-block;margin-left:8px;font-size:11px;padding:2px 6px;background:var(--ui-bg-control,var(--bg3));color:var(--ui-fg-default,var(--fg));border-radius:4px;">読み取り専用</span>
         </div>
       `;
 

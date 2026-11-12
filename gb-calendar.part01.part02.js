@@ -5,7 +5,7 @@
     });
     if(dayEvs.length>3){const more=document.createElement('div');more.className='cal-month-more';more.textContent=`+${dayEvs.length-3}`;cell.appendChild(more);}
     if (canEditDates) {
-      cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+      cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
       cell.addEventListener('dragleave',()=>{cell.style.background='';});
       // 月ビューの drop: ターゲットセルは 00:00。_handleEventDrop 側で元の時刻を復元する
       cell.addEventListener('drop',e2=>{e2.preventDefault();cell.style.background='';_handleEventDrop(dbPath,e2,cellDate,{preserveTime:true});});
@@ -102,7 +102,7 @@ function _renderWeek(container, dbPath, events) {
         cell.addEventListener('pointerup',async()=>{if(!dragState)return;const current=dragState;if(current.pv)current.pv.remove();dragState=null;document.body.style.userSelect='';if(!current.moved)return;const endH=hour+1;const minH=Math.min(current.startHour,endH-1),maxH=Math.max(current.startHour+1,endH);const ds=current.startDate;const s=new Date(ds+'T'+_p2(minH)+':00:00'),e=new Date(ds+'T'+_p2(maxH)+':00:00');await _quickCreateCalendarEvent(dbPath,{start:s,end:e,allDay:false});});
       }
       if (canEditDates) {
-        cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+        cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
         cell.addEventListener('dragleave',()=>{cell.style.background='';});
         cell.addEventListener('drop',e2=>{e2.preventDefault();cell.style.background='';_handleEventDrop(dbPath,e2,cd);});
       }
@@ -276,7 +276,7 @@ function _renderDay(container, dbPath, events) {
       });
     }
     if (canEditDates) {
-      cell.addEventListener('dragover',e=>{e.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+      cell.addEventListener('dragover',e=>{e.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
       cell.addEventListener('dragleave',()=>{cell.style.background='';});
       cell.addEventListener('drop',e=>{e.preventDefault();cell.style.background='';const cd=new Date(curDate);cd.setHours(hour,0,0,0);_handleEventDrop(dbPath,e,cd);});
     }

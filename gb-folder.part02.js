@@ -623,7 +623,7 @@ function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
       el.style.background = '';
     });
     row.classList.add('link-tree-selected');
-    row.style.background = 'rgba(86,156,214,0.2)';
+    row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)';
     // 展開/折りたたみもトリガー
     await _toggleExpand();
   });
@@ -870,7 +870,10 @@ function openViewer(url, opts) {
 
 // フォルダビュー表示設定
 function getFolderDisplayConfig() {
-  try { return JSON.parse(localStorage.getItem('folder-display-config') || '{}'); } catch { return {}; }
+  const defaults = { showName: true, showDate: true, showType: true,
+    showSize: false, showDimensions: false, showRating: false, showTags: false };
+  try { return { ...defaults, ...JSON.parse(localStorage.getItem('folder-display-config') || '{}') }; }
+  catch { return defaults; }
 }
 function saveFolderDisplayConfig(cfg) { localStorage.setItem('folder-display-config', JSON.stringify(cfg)); }
 

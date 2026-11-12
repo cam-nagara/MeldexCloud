@@ -354,13 +354,15 @@ const GBTabs = (() => {
     if (idx < 0) return false;
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
-    // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
+    // 競合中でも端末への下書き保管が完了したシナリオは閉じられる。
     if (['scriptnote', 'form-app', 'map'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;
         try {
-          flushed = (await component.flush()) !== false;
+          const prepare = closedTab.type === 'scriptnote' && typeof component.prepareForClose === 'function'
+            ? component.prepareForClose : component.flush;
+          flushed = (await prepare.call(component)) !== false;
         } catch (_) {
           flushed = false;
         }

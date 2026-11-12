@@ -1,3 +1,13 @@
+// ============================================================
+// ローディング表示
+// ============================================================
+let _loadingCount = 0;
+let _loadingTimer = null;
+let _loadingVisible = false;
+let _loadingMessage = '';
+const _loadingOperations = [];
+const _loadingGroups = new Map();
+const _iframeLoadingTrackers = new Map();
 
 function _commonLoadingProgress() {
   return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'

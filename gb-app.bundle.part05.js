@@ -1,3 +1,13 @@
+  function addItem(label, fn, mode) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    if (mode) item.dataset.screenshotMode = mode;
+    item.textContent = label;
+    item.addEventListener('click', () => { closeMenu(false); fn(); });
+    menu.appendChild(item);
+  }
   function addSep() {
     const s = document.createElement('div');
     s.className = 'ab-dropdown-sep';
@@ -888,13 +898,3 @@ function _viewerFolderNavPathMatches(nodePath, targetPath) {
 
 function _viewerFolderNavIsFolderNode(node) {
   const data = node?._nodeData || {};
-  if (!node || node.style?.display === 'none') return false;
-  return data.type === 'folder' || data._isRoot === true;
-}
-
-function _viewerFolderNavFolderNodes() {
-  const candidates = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
-  return candidates.filter(node => _viewerFolderNavIsFolderNode(node) && _viewerFolderNavNodePath(node));
-}
-
-function _viewerFolderNavFindIndex(nodes, targetPath) {

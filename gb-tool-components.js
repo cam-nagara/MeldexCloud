@@ -615,6 +615,20 @@ class VersionComponent extends ToolComponent {
   async _loadVersions(path, vType) {
     const loadSeq = (this._loadSeq || 0) + 1;
     this._loadSeq = loadSeq;
+    // 旧レイアウトに残ったチャット用タブも履歴を取得しない。
+    if (/(^|\/)_chat\/llm(?:\/|$)/i.test(String(path || '').replace(/\\/g, '/'))) {
+      if (this.el) this.el.textContent = 'チャットはバージョン管理の対象外です';
+      setTimeout(() => {
+        if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return;
+        const pane = GBLayout.getAllPanes(GBLayout.root).find(item => (item.tabs || []).some(tab => tab.id === this.tabId));
+        const tab = pane?.tabs.find(item => item.id === this.tabId);
+        const currentPath = String(tab?.path || tab?.state?.versionPath || '').replace(/\\/g, '/');
+        if (!pane || GBLayout.isFixedRailPane?.(pane.id) || GBLayout.isPaneLocked?.(pane.id)
+            || !/(^|\/)_chat\/llm(?:\/|$)/i.test(currentPath)) return;
+        Promise.resolve(GBTabs.closeTab(pane.id, this.tabId)).catch(() => {});
+      }, 0);
+      return;
+    }
     if (this.state.versionPath !== path || this.state.versionType !== vType) this._timelineOffset = 0;
     this.state.versionPath = path;
     this.state.versionType = vType;

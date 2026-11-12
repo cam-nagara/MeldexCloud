@@ -5,8 +5,23 @@
 }
 
 .dup-monitor-modal .gb-modal-body {
-  overflow: auto;
-  scroll-padding-bottom: 72px;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  padding-block: 0;
+}
+
+.dup-monitor-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dup-monitor-content > .dup-progress {
+  flex-shrink: 0;
+  margin-block: 12px;
 }
 
 .dup-monitor-footer {
@@ -160,19 +175,21 @@
 }
 
 .dup-results {
-  min-height: 160px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-block: 12px;
+  scroll-padding-bottom: 12px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dup-result-tools[hidden] { display: none; }
 
 .dup-result-tools {
-  position: sticky;
-  top: -4px;
-  z-index: 2;
+  flex-shrink: 0;
   display: grid;
   gap: 10px;
   padding: 12px 0;
-  margin-bottom: 12px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--bg2);
 }

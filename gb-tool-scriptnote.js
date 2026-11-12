@@ -347,6 +347,18 @@ class ScriptNoteComponent extends ToolComponent {
     return this._editor.flush();
   }
 
+  async prepareForClose() {
+    const editor = this._editor;
+    if (!editor) return true;
+    const path = editor._path;
+    let saved = false;
+    try { saved = await editor.flush(); } catch (_) {}
+    if (this._editor !== editor || editor._path !== path) return false;
+    if (saved !== false && !editor._dirty) return true;
+    // サーバ保存とは区別する。端末への保管が完了した場合だけ破棄を許可する。
+    return editor.preserveDraftForClose();
+  }
+
   handleKeyDown(e) {
     // 軽量エディタはブラウザデフォルト動作を活用するため、ここでは何もしない
     return false;
@@ -786,24 +798,26 @@ class ScriptNoteComponent extends ToolComponent {
     }
     const titleInput = this.el.querySelector('#title-input');
     if (titleInput) titleInput.addEventListener('change', async () => {
-      if (this._editor?.doc) {
-        this._editor._pushUndo('タイトル変更');
-        this._editor.doc.title = titleInput.value;
-        this._editor._markDirty();
+      const editor = this._editor;
+      if (editor?.doc) {
+        editor._pushUndo('タイトル変更');
+        editor.doc.title = titleInput.value;
+        editor._markDirty();
         // タイトル変更をファイル名にも反映
         const newTitle = titleInput.value.trim();
-        const oldPath = this._editor._path;
+        const oldPath = editor._path;
         if (newTitle && oldPath) {
           try {
-            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true });
+            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
+            if (this._editor !== editor || editor._path !== oldPath || editor.doc?.title !== newTitle) return;
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
               if (typeof _sn2Editors !== 'undefined') {
                 delete _sn2Editors[oldPath];
-                _sn2Editors[res.new_path] = this._editor;
-                if (this._editor._historyScopeId) _sn2Editors[this._editor._historyScopeId] = this._editor;
+                _sn2Editors[res.new_path] = editor;
+                if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
               }
-              this._editor._path = res.new_path;
+              editor._path = res.new_path;
               this.state.scenarioPath = res.new_path;
               window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
                 detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
@@ -1360,7 +1374,30 @@ class ScriptNoteComponent extends ToolComponent {
         await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...', { loading });
         if (isStaleLoad()) return false;
       }
-      const parsed = JSON.parse(content);
+      let parsed = JSON.parse(content);
+      let etag = data.etag || '';
+      let identity = data;
+      let restoredDraft = false;
+      const key = coordinator?.bindDocumentIdentity?.(nextPath, data) || documentKey;
+      const pending = conflictGeneration == null ? coordinator?.getConflict?.(key) : null;
+      if (pending) {
+        // 閉じた競合タブを開き直した時も、レビュー対象は利用者の未保存内容。
+        // 最新サーバ本文をローカル内容として上書き候補にしない。
+        const current = this._editor?._path === nextPath && this._editor?._dirty ? this._editor : null;
+        const drafts = current ? [] : await window.MeldexDraftRecovery?.listDrafts?.() || [];
+        if (isStaleLoad()) return false;
+        const draft = drafts.find(item => (coordinator?.documentKeyForPath?.(item.path) || item.path) === key);
+        const local = current ? JSON.stringify(current.collectDoc()) : draft?.content || pending.localMd;
+        if (local) {
+          const recovered = JSON.parse(local);
+          if (typeof isScriptNoteFileDoc !== 'function' || isScriptNoteFileDoc(recovered)) {
+            parsed = recovered;
+            etag = current?._lastSavedEtag || draft?.lastSyncedAt || pending.localEtag || '';
+            identity = { ...data, transport_revision: current?._lastSavedTransportRevision || pending.localEtag || etag };
+            restoredDraft = true;
+          }
+        }
+      }
       _sn2ExpandDefaultFileStyle(parsed);
 
       if (typeof isScriptNoteFileDoc === 'function' && !isScriptNoteFileDoc(parsed)) {
@@ -1376,10 +1413,11 @@ class ScriptNoteComponent extends ToolComponent {
       } else {
         this._editor.host = host;
       }
-      const loaded = this._editor.loadDoc(parsed, nextPath, data.etag || '', conflictGeneration, data);
+      const loaded = this._editor.loadDoc(parsed, nextPath, etag, conflictGeneration, identity);
       if (!loaded) {
         throw new Error('競合状態が更新されたため、再読込を中止しました');
       }
+      if (restoredDraft) this._editor._dirty = true;
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
       this._syncReadOnlyFromFileLock();

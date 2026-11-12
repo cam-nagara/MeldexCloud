@@ -1,3 +1,4 @@
+  colorSwatch.style.background = markup.ann.color || PALETTE_COLORS[0];
   colorBtn.appendChild(colorSwatch);
   colorBtn.onclick = () => {
     if (palette) { closePalette(); return; }
@@ -127,6 +128,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;

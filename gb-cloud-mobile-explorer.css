@@ -608,12 +608,12 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-action-danger {
-    color: #f08a8a;
+    color: var(--red);
     border-color: color-mix(in srgb, #f08a8a 38%, var(--border, #333));
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-action-danger span {
-    color: #f08a8a;
+    color: var(--red);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-rename-input {

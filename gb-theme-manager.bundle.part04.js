@@ -1,3 +1,15 @@
+        canvas.style.background = board?._bgColor || bg;
+      }
+      canvas.style.setProperty('--bd-theme-line-color', themeDef?.board?.lineColor || '');
+    }
+    if (world) world.style.filter = themeDef?.board?.globalFilter || '';
+    // ファイル固有値が未設定のキーは、テーマ変数を bd プロパティに再同期する
+    // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
+    if (board) {
+      const readBoardThemeVar = (key) => {
+        const themed = !boardUsesDocumentTheme(board) && themeDef?.ui?.cssVars?.[key];
+        if (themed !== undefined && themed !== null && themed !== false && themed !== '') return String(themed).trim();
+        const local = canvas?.style?.getPropertyValue?.(key)?.trim();
         if (local) return local;
         return typeof global.getCssVar === 'function' ? (global.getCssVar(key) || '').trim() : '';
       };
@@ -199,16 +211,8 @@
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
-          const previous = clone(applications);
-          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
-          const normalized = normalizeThemeUiApplications(stored);
-          // Only migrate an exact former builtin default, never a user's
-          // different colors or an explicitly saved auto-color preference.
-          const unchangedBuiltin = themeDef.builtIn === true
-            && [previous, _defaultThemeUiApplications()].some(legacy =>
-              JSON.stringify(normalized) === JSON.stringify(legacy));
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
           wroteApplications = true;
         }
       }
@@ -231,6 +235,27 @@
         dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });
       }
     }
+  }
+
+  function resolveSavedThemeUiApplications(themeDef, stored) {
+    const applications = normalizeThemeUiApplications(themeDef?.ui?.themeUiApplications);
+    if (!stored || !Object.keys(stored).length) return applications;
+    const normalized = normalizeThemeUiApplications(stored);
+    if (stored._defaultsVersion === THEME_UI_DEFAULTS_VERSION || themeDef?.builtIn !== true) return normalized;
+    const previous = clone(applications);
+    previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+    const legacyDefaults = [previous];
+    if (stored._defaultsVersion == null) {
+      const oldTreeDefaults = clone(previous);
+      oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      const treeOnlyDefaults = clone(applications);
+      treeOnlyDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      legacyDefaults.push(oldTreeDefaults, treeOnlyDefaults, _defaultThemeUiApplications());
+    }
+    // Only exact former builtin defaults migrate. Explicit current auto colors
+    // and customized legacy applications retain their original values.
+    return legacyDefaults.some(legacy => JSON.stringify(normalized) === JSON.stringify(legacy))
+      ? applications : normalized;
   }
 
   function normalizeCustomThemePayload(themeDef, fallbackName) {

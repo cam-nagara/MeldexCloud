@@ -165,7 +165,7 @@
 
 .shortcut-key.is-capturing {
   background: var(--ui-accent, var(--accent));
-  color: #fff;
+  color: var(--ui-selection-fg);
 }
 
 .shortcut-row .shortcut-reset,

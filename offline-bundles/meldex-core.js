@@ -389,6 +389,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   const MARGIN = 4;
@@ -3452,7 +3453,7 @@ const STANDALONE_MARKUP_TOOLBAR_CSS = `
 .sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
   background: var(--accent, #569cd6);
   border-color: var(--accent, #569cd6);
-  color: #fff;
+  color: var(--ui-accent-fg, var(--ui-selection-fg));
 }
 .sa-markup-toolbar .sa-tb-btn svg {
   width: 18px;
@@ -3719,6 +3720,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;

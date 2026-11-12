@@ -5,6 +5,9 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data: https://www.youtube-nocookie.com https://player.vimeo.com https://embed.nicovideo.jp https://geo.dailymotion.com https://www.tiktok.com https://platform.twitter.com https://www.instagram.com https://embed.bsky.app https://www.threads.com https://open.spotify.com https://w.soundcloud.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
 <title>Meldex スライドショー</title>
 <script src="gb-split-loader.js"></script><script src="gb-escape.js"></script>
+<script src="gb-theme-migration.js"></script>
+<script src="gb-theme-manager.js"></script>
+<script src="gb-theme-document.js"></script>
 <script src="gb-runtime-adapter.js"></script>
 <script src="gb-resource-url.js"></script>
 <script src="gb-config.js"></script>
@@ -20,6 +23,7 @@
 <script src="gb-data-access-dropbox-fileops.js"></script>
 <script src="gb-cloud-fetch.js"></script>
 <script src="gb-cloud-file-url.js"></script>
+<link rel="stylesheet" href="gb-theme.css">
 <style>
 :root {
   --fade-ms: 800ms;
@@ -74,11 +78,11 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg);
   background: none; border: 1px solid var(--border); color: var(--fg); padding: 4px 10px;
   border-radius: 4px; cursor: pointer; font-size: 12px;
 }
-#controls button:hover { background: rgba(255,255,255,0.08); border-color: var(--accent); }
-#controls button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-#controls select { background: #1a1e26; color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+#controls button:hover { background: var(--ui-hover-bg, var(--bg4)); border-color: var(--accent); }
+#controls button.active { background: var(--accent); color: var(--ui-selection-fg); border-color: var(--accent); }
+#controls select { background: var(--ui-bg-control, var(--bg3)); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
 #controls input[type=range] { width: 80px; accent-color: var(--accent); }
-#progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; cursor: pointer; position: relative; }
+#progress-bar { flex: 1; height: 4px; background: var(--border); border-radius: 2px; cursor: pointer; position: relative; }
 #progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
 #counter { color: var(--fg2); font-size: 11px; white-space: nowrap; }
 </style>

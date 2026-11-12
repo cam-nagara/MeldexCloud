@@ -1009,6 +1009,16 @@ function _scheduleLinkDictionaryRefreshForMutation(path) {
 }
 
 async function apiPost(path, body, options = {}) {
+  // 開いているシナリオの表示名は、本文と同じCAS保存キューで確定する。
+  // 別のタイトル書込とautosaveを並走させると、自分の変更が409になる。
+  if (String(path || '').split('?')[0] === '/outliner/rename' && body?.title_only === true
+      && ['scriptnote', 'scenario'].includes(body?.type) && window.MeldexScriptNoteTitleSave) {
+    const saved = await window.MeldexScriptNoteTitleSave(body, options?.scriptnoteEditor);
+    if (saved) {
+      _scheduleLinkDictionaryRefreshForMutation(path);
+      return saved;
+    }
+  }
   let stableCopyKey = '';
   if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
       && body && typeof body === 'object' && !body.operation_id) {

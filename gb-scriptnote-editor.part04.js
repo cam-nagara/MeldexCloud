@@ -891,6 +891,8 @@
     if (this._textInputUndoTimer) { clearTimeout(this._textInputUndoTimer); this._textInputUndoTimer = null; }
     if (typeof this._teardownWrapResizeObserver === 'function') this._teardownWrapResizeObserver();
     if (typeof this._stopRowBulkBarGuard === 'function') this._stopRowBulkBarGuard();
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    if (this._path && coordinator) coordinator.unregisterParticipant(coordinator.documentKeyForPath(this._path), this);
     // エディタレジストリから除去
     if (typeof _sn2Editors !== 'undefined') {
       const registeredPath = this._sn2RegisteredPath || this._path;
@@ -914,5 +916,30 @@
     this._bound = false;
   }
 }
+
+// 未表示のファイルは通常のrename APIへ委譲する。表示中の文書は自動保存と
+// 同じ参加者で直列化し、タイトル変更だけで別ペインの古い本文をrebaseしない。
+window.MeldexScriptNoteTitleSave = async function (body, preferredEditor = null) {
+  if (typeof _sn2Editors === 'undefined') return null;
+  const normalize = value => String(value || '').replace(/\\/g, '/');
+  const path = String(body.old_path || '');
+  const active = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+  const editor = [preferredEditor, active, ...new Set(Object.values(_sn2Editors))].find(item =>
+    item?.doc && normalize(item._path) === normalize(path));
+  if (!editor) return null;
+  if (editor._readOnly) throw new Error('編集ロック中のため名前を変更できません');
+  const title = String(body.new_name || '').trim();
+  if (!title) throw new Error('名前を入力してください');
+  editor._syncAllFromDom();
+  if (editor.doc.title !== title) {
+    editor._pushUndo('タイトル変更');
+    editor.doc.title = title;
+    editor._markDirty();
+  }
+  if (await editor.flush() === false) throw new Error('名前を保存できませんでした。編集内容は保持しています');
+  // etagを全参加者へ配らない。保存した参加者だけが新revisionを取得済み。
+  return { ok: true, new_path: path, new_name: title, title_only: true,
+    file_id: typeof _pathToFileId === 'function' ? _pathToFileId(path) : '' };
+};
 
 // Clip Studio / SEP 連携は gb-scriptnote-clipstudio.js に分離

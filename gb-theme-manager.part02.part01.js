@@ -132,7 +132,7 @@
       document.head.appendChild(style);
     }
     const rules = [];
-    const autoTone = getThemeUiAutoTone();
+    const autoTone = options.autoTone ? normalizeThemeUiAutoTone(options.autoTone) : getThemeUiAutoTone();
     document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
     document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     THEME_UI_TARGETS.forEach(target => {
@@ -652,6 +652,16 @@
     });
     if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
+    if (options.runtimeOnly === true) {
+      // Auxiliary windows render a saved snapshot without changing the main
+      // window's preferences or publishing theme-change events.
+      const defaults = getBuiltInThemes().find(theme => theme.id === themeDef.id) || themeDef;
+      _activeThemeColorSet = paintThemeColorSet(resolveThemeColorSet(themeDef), { themeDef, bindTargets: false });
+      applyThemeUiApplications(resolveSavedThemeUiApplications(defaults, themeDef.ui?.themeUiApplications), {
+        autoTone: themeDef.ui?.themeUiAutoTone, forceTargets: true,
+      });
+      return;
+    }
     const preservePresetAccent = getThemeAccentPolicy(themeDef).kind === 'system-or-default';
     const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, {
       preserveStored: preservePresetAccent || options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true,
@@ -960,16 +970,8 @@
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
-          const previous = clone(applications);
-          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
-          const normalized = normalizeThemeUiApplications(stored);
-          // Only migrate an exact former builtin default, never a user's
-          // different colors or an explicitly saved auto-color preference.
-          const unchangedBuiltin = themeDef.builtIn === true
-            && [previous, _defaultThemeUiApplications()].some(legacy =>
-              JSON.stringify(normalized) === JSON.stringify(legacy));
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
           wroteApplications = true;
         }
       }

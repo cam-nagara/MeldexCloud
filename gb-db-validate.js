@@ -352,7 +352,7 @@ function showValidationResults(results, dbPath, dialogFlow) {
 
       const icon = r.severity === 'error'
         ? `<span style="color:var(--red);">${lucide('circleX', 14)}</span>`
-        : `<span style="color:#e6a700;">${lucide('circleAlert', 14)}</span>`;
+        : `<span style="color:var(--orange);">${lucide('circleAlert', 14)}</span>`;
       const header = document.createElement('div');
       header.style.cssText = 'font-size:13px;font-weight:bold;display:flex;align-items:center;gap:4px;';
       header.innerHTML = icon + ' ' + esc(r.entityName) + ' — ' + esc(r.ruleLabel);

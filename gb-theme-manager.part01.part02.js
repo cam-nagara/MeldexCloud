@@ -163,6 +163,7 @@
       }
     }
     cfg['folder-tree-folder'].selected.bg = cfg.folder.selected.bg;
+    cfg['folder-panel-folder'].selected.bg = cfg.folder.selected.bg;
     return cfg;
   }
 
@@ -552,6 +553,7 @@
         if (/-(?:selected|selection|active)-fg$/.test(key)) theme.ui.cssVars[key] = '#ffffff';
       }
       theme.ui.cssVars['--ui-accent-fg'] = '#ffffff';
+      if (isThemeLight(theme)) theme.ui.cssVars['--ui-fg-strong'] = theme.ui.cssVars['--fg'];
       for (const states of Object.values(theme.ui.themeUiApplications || {})) {
         if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
       }

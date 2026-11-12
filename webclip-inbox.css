@@ -5,7 +5,7 @@
 .webclip-inbox input, .webclip-inbox select { display:block; width:100%; margin-top:5px; }
 .webclip-inbox button { margin:6px 8px 6px 0; cursor:pointer; }
 .webclip-inbox button:disabled { opacity:.55; cursor:default; }
-.webclip-inbox #clip-send { background:var(--accent,#397bc9); color:white; }
+.webclip-inbox #clip-send { background:var(--accent,#397bc9); color:var(--ui-accent-fg); }
 .webclip-inbox #clip-status { min-height:48px; padding:10px; background:var(--bg2,#202328); border-radius:6px; }
 .webclip-inbox #clip-status[data-error="1"] { color:var(--danger,#ff8e8e); }
 .webclip-inbox details { margin:12px 0; }

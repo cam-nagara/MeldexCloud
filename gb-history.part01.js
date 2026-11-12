@@ -401,7 +401,7 @@ async function _flushOpenVersionTarget(path, type) {
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
   if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
-  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+  for (const adapter of [window.GBQuickMemoPanel]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
   if (_isScriptNoteVersionPath(path)) {

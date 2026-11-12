@@ -644,6 +644,36 @@ class ScriptNoteEditor {
     }
   }
 
+  async preserveDraftForClose() {
+    if (!this._path || !this.doc) return false;
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    try {
+      this._syncAllFromDom();
+      const path = this._path;
+      const json = JSON.stringify(this.collectDoc(), null, 2);
+      const saved = await window.MeldexDraftRecovery?.saveDraft?.(path, json, this._lastSavedEtag || '');
+      this._syncAllFromDom();
+      if (!saved?.ok || this._path !== path || JSON.stringify(this.collectDoc(), null, 2) !== json) return false;
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      const key = coordinator?.documentKeyForPath?.(path) || path;
+      if (coordinator?.getConflict?.(key)) coordinator.reportConflict(key, {
+        path, localMd: json, localEtag: this._lastSavedTransportRevision || this._lastSavedEtag || '',
+      });
+      window.MeldexConflictPendingBanner?.show?.(key, {
+        label: 'シナリオの下書きをこの端末に保管しました',
+        onConfirm: async () => {
+          if (coordinator?.isConflictPending?.(key) && typeof openScenarioInScriptNote === 'function') {
+            await openScenarioInScriptNote(path, this.doc?.title || 'シナリオ');
+          } else await window.MeldexDraftRecovery?.showRecoveryDialog?.();
+        },
+      });
+      if (typeof showStatus === 'function') showStatus('未保存のシナリオをこの端末の下書きに保管して閉じます');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   flush() {
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     this._syncAllFromDom();
@@ -3761,7 +3791,7 @@ class ScriptNoteEditor {
         pdragGhost = document.createElement('div');
         pdragGhost.className = 'sn2-pdrag-ghost';
         pdragGhost.textContent = pdragRowIds.length > 1 ? `${pdragRowIds.length} 行を移動` : '行を移動';
-        pdragGhost.style.cssText = 'position:fixed;pointer-events:none;z-index:10000;background:var(--accent, #4a90d9);color:white;padding:4px 10px;border-radius:4px;font-size:12px;opacity:0.9;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        pdragGhost.style.cssText = 'position:fixed;pointer-events:none;z-index:10000;background:var(--accent, #4a90d9);color:var(--ui-accent-fg, var(--ui-selection-fg));padding:4px 10px;border-radius:4px;font-size:12px;opacity:0.9;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
         document.body.appendChild(pdragGhost);
       }
       if (!pdragActive) return;
@@ -4821,6 +4851,8 @@ class ScriptNoteEditor {
     if (this._textInputUndoTimer) { clearTimeout(this._textInputUndoTimer); this._textInputUndoTimer = null; }
     if (typeof this._teardownWrapResizeObserver === 'function') this._teardownWrapResizeObserver();
     if (typeof this._stopRowBulkBarGuard === 'function') this._stopRowBulkBarGuard();
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    if (this._path && coordinator) coordinator.unregisterParticipant(coordinator.documentKeyForPath(this._path), this);
     // エディタレジストリから除去
     if (typeof _sn2Editors !== 'undefined') {
       const registeredPath = this._sn2RegisteredPath || this._path;
@@ -4844,6 +4876,31 @@ class ScriptNoteEditor {
     this._bound = false;
   }
 }
+
+// 未表示のファイルは通常のrename APIへ委譲する。表示中の文書は自動保存と
+// 同じ参加者で直列化し、タイトル変更だけで別ペインの古い本文をrebaseしない。
+window.MeldexScriptNoteTitleSave = async function (body, preferredEditor = null) {
+  if (typeof _sn2Editors === 'undefined') return null;
+  const normalize = value => String(value || '').replace(/\\/g, '/');
+  const path = String(body.old_path || '');
+  const active = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+  const editor = [preferredEditor, active, ...new Set(Object.values(_sn2Editors))].find(item =>
+    item?.doc && normalize(item._path) === normalize(path));
+  if (!editor) return null;
+  if (editor._readOnly) throw new Error('編集ロック中のため名前を変更できません');
+  const title = String(body.new_name || '').trim();
+  if (!title) throw new Error('名前を入力してください');
+  editor._syncAllFromDom();
+  if (editor.doc.title !== title) {
+    editor._pushUndo('タイトル変更');
+    editor.doc.title = title;
+    editor._markDirty();
+  }
+  if (await editor.flush() === false) throw new Error('名前を保存できませんでした。編集内容は保持しています');
+  // etagを全参加者へ配らない。保存した参加者だけが新revisionを取得済み。
+  return { ok: true, new_path: path, new_name: title, title_only: true,
+    file_id: typeof _pathToFileId === 'function' ? _pathToFileId(path) : '' };
+};
 
 // Clip Studio / SEP 連携は gb-scriptnote-clipstudio.js に分離
 

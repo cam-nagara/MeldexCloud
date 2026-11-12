@@ -259,7 +259,7 @@ iframe.meldex-entity-linked-media {
 
 .meldex-entity-attachment-del-btn:hover {
   color: var(--danger, #ef4444);
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
 }
 
 /* The linked application owns the space remaining below topic properties. */

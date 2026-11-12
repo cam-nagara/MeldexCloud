@@ -1030,9 +1030,47 @@
     const storageContext = window.GBChatStorageContext?.requireForAi
       ? await window.GBChatStorageContext.requireForAi(storageOptions)
       : null;
-    const requestWorkspaceId = String(storageContext?.workspaceId || '');
-    const requestSourceFolder = String(storageContext?.sourceFolder || '');
+    let requestWorkspaceId = String(storageContext?.workspaceId || '');
+    let requestSourceFolder = String(storageContext?.sourceFolder || '');
     if (!storageContext || (!requestWorkspaceId && !requestSourceFolder)) return false;
+    const referenceTarget = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : '';
+    if (referenceTarget && !(typeof _chatIsPseudoTargetPath === 'function' && _chatIsPseudoTargetPath(referenceTarget))) {
+      const roomMessages = _chatState.messages;
+      const roomId = _chatState.sessionId;
+      const inputBeforeResolve = input?.value;
+      let context;
+      try {
+        const workFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(referenceTarget, options) : '';
+        const absoluteTarget = /^(?:[a-z]:\/|\/)/i.test(String(referenceTarget).replace(/\\/g, '/'));
+        const source = absoluteTarget && typeof _detectSourceFolderFromPath === 'function'
+          ? _detectSourceFolderFromPath(referenceTarget) : '';
+        if (source) {
+          // 実パスへ復旧済みなら既存の登録済みルート情報を使う。実行APIは毎回範囲を再検証する。
+          context = { target_path: referenceTarget, work_folder: workFolder,
+            source_folder: source.startsWith('workspace:') ? '' : source,
+            workspace_id: source.startsWith('workspace:') ? source.slice('workspace:'.length) : '' };
+        } else {
+          context = await apiPost('/cli-chat/resolve-target', {
+            source_folder: requestSourceFolder, workspace_id: requestWorkspaceId,
+            target_path: referenceTarget, work_folder: workFolder,
+          });
+        }
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus('チャットの対象を確認できません: ' + (error?.message || error), true);
+        return false;
+      }
+      if (!requestedStreamMessages && (_chatState.messages !== roomMessages || _chatState.sessionId !== roomId
+          || input?.value !== inputBeforeResolve || _chatEffectiveTargetPath(options) !== referenceTarget)) return false;
+      requestWorkspaceId = String(context.workspace_id || '');
+      requestSourceFolder = String(context.source_folder || '');
+      if ((!requestedStreamMessages || requestedStreamMessages === _chatState.messages)
+          && typeof _chatSetCurrentTargetPath === 'function') {
+        _chatSetCurrentTargetPath(context.target_path, _chatState.currentTargetKind || '', { mode: 'manual' });
+      }
+      options = { ...options, targetPath: context.target_path, workFolder: context.work_folder,
+        ...(Array.isArray(options.targets) ? { targets: options.targets.map(item =>
+          item.path === referenceTarget ? { ...item, path: context.target_path } : item) } : {}) };
+    }
     if (!usingDeferredMessages && attachments.length > 0) {
       if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
         const readyAttachments = await _chatWaitForPendingAttachmentUploads(attachments);

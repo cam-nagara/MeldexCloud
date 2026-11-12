@@ -31,7 +31,7 @@
 .gb-map-app .gb-map-places .gb-btn:hover,.gb-map-app .gb-map-layer>.gb-btn:hover{background:var(--ui-hover-bg);color:var(--ui-hover-fg)}
 .gb-map-app .gb-map-places .gb-btn[aria-pressed=true],.gb-map-app .gb-map-layer>.gb-btn[aria-pressed=true]{background:var(--ui-control-active-bg,var(--ui-bg-control-active));color:var(--ui-control-active-fg,var(--ui-fg-default));border-color:var(--ui-accent)}
 .gb-map-app .gb-map-viewport,.gb-map-app .gb-map-surface{background:var(--bd-bg,var(--content-bg,var(--bg)))!important}
-.gb-map-empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;max-width:420px;width:calc(100% - 48px);color:#515b61;pointer-events:none;z-index:401;font-size:13px;line-height:1.5}
+.gb-map-empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;max-width:420px;width:calc(100% - 48px);color:var(--ui-fg-muted,var(--fg2));pointer-events:none;z-index:401;font-size:13px;line-height:1.5}
 .gb-map-empty strong{font-size:16px}.gb-map-empty p{margin:8px 0 12px}.gb-map-empty button{pointer-events:auto;margin:0 4px}
 .gb-map-generator.gb-map-modal-content{position:static;transform:none;width:auto;max-height:none;overflow:visible;border:0;box-shadow:none;padding:0;background:transparent;color:inherit}
 .gb-map-modal-content>h3{display:none}.gb-map-modal-content .gb-map-generator-preview{height:240px;position:relative}

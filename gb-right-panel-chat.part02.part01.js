@@ -463,7 +463,6 @@ async function openFileChat(targetPath) {
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
         _chatState.historySourceFolder = window.GBChatStorageContext.peekHistory()?.sourceFolder || '';
-        _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
         if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
@@ -505,7 +504,6 @@ async function openFileChat(targetPath) {
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
             _chatState.historySourceFolder = historyContext.sourceFolder;
-            _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
             if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
@@ -747,10 +745,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     // 404フォールバック: 存在しないチャット → 穏やかに通知してリセット
     _chatState.messages = [];
     _chatState.sessionId = '';
-    _chatState.versionTargetPath = '';
     _chatState.targetPath = '';
     _chatState.lastImplicitTargetPath = '';
-    _chatState.versionTargetPath = '';
     window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
@@ -803,7 +799,6 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
   _chatState.historySourceFolder = legacySource ? explicitSourceFolder : historyContext.sourceFolder;
-  _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
   if (typeof _chatRestoreSessionTargets === 'function') {
@@ -850,11 +845,9 @@ function chatClear() {
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
-  _chatState.versionTargetPath = '';
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
   if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
-  _chatState.versionTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -931,7 +924,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    const result = await apiPost('/chat/save', _chatPostPayload({
+    await apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -947,9 +940,6 @@ async function chatAutoSave(options = {}) {
     }));
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
-      _chatState.versionTargetPath = String(result?.versionTargetPath || _chatState.versionTargetPath || '');
-      _chatState.lastAutoVersionCreated = !!result?.autoVersionCreated;
-      _chatState.lastAutoVersionName = String(result?.autoVersionName || '');
     }
     return true;
   } catch (e) {
@@ -970,71 +960,6 @@ function _chatYamlQuote(value) {
 function _chatHtmlEscape(value) {
   return MeldexEscape.html(value);
 }
-
-async function openCurrentChatVersions() {
-  if (!_chatState.messages.length) {
-    if (typeof showStatus === 'function') showStatus('版を表示するチャットがありません', true);
-    return false;
-  }
-  const saved = await chatAutoSave({ silent: false });
-  const path = String(_chatState.versionTargetPath || '');
-  if (!saved || !path) {
-    if (typeof showStatus === 'function') showStatus('チャットを保存してからバージョン管理を開いてください', true);
-    return false;
-  }
-  if (typeof openVersionTab !== 'function') {
-    if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
-    return false;
-  }
-  openVersionTab(path, 'file');
-  return true;
-}
-
-(function _installChatVersionButton() {
-  const install = () => {
-    if (document.querySelector('[data-chat-version-button]')) return;
-    const title = document.getElementById('chat-title-combo');
-    const header = title?.parentElement;
-    if (!header) return;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-btn gb-btn-xs';
-    button.dataset.chatVersionButton = '';
-    button.dataset.e2eId = 'chat-open-version-history';
-    button.title = 'このチャットのバージョン管理';
-    button.setAttribute('aria-label', 'このチャットのバージョン管理');
-    button.innerHTML = typeof lucide === 'function' ? lucide('gitBranch', 12) : '版';
-    button.addEventListener('click', async () => {
-      try {
-        await openCurrentChatVersions();
-      } catch (error) {
-        if (typeof showStatus === 'function') {
-          showStatus('チャットのバージョン管理を開けませんでした: ' + (error?.message || error), true);
-        }
-      }
-    });
-    title.insertAdjacentElement('afterend', button);
-  };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
-  else install();
-})();
-
-window.MeldexChatVersionTarget = Object.freeze({
-  async flushVersionTarget(path) {
-    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath)) return false;
-    return !!(await chatAutoSave({ silent: false }));
-  },
-  async reloadVersionTarget(path) {
-    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath) || !_chatState.sessionId) return false;
-    return !!(await openSavedChat(
-      _chatSavedPathForSession(_chatState.sessionId),
-      '',
-      _chatState.historySourceFolder || (await window.GBChatStorageContext.resolveForHistory()).sourceFolder,
-    ));
-  },
-});
 
 function _chatExportRoleLabel(message) {
   const role = String(message?.role || '').toLowerCase();

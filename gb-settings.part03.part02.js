@@ -804,7 +804,7 @@ async function _installExtension(key, btn) {
     if (res.ok) {
       btn.innerHTML = lucide('check', 12) + ' 完了（再起動で有効）';
       btn.style.background = 'var(--green)';
-      btn.style.color = '#fff';
+      btn.style.color = 'var(--ui-selection-fg)';
       if (message) {
         message.textContent = res.message || 'Meldexを終了して、もう一度起動すると使えるようになります。';
         message.style.color = 'var(--green)';

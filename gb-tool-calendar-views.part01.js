@@ -530,7 +530,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
     evEl.addEventListener('dragend', () => { evEl.style.opacity = ''; });
   });
   rootEl.querySelectorAll('.gb-cal-all-day-cell').forEach(cell => {
-    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.12)'; });
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 12%, transparent)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
     cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
@@ -850,7 +850,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       self._openEventInPanel(null, startDate + 'T' + String(minH).padStart(2,'0') + ':00', endStr);
     });
     // D&Dドロップ受け入れ
-    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.15)'; });
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
     cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
@@ -1007,7 +1007,7 @@ CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
       if (ci && co) at = (Math.max(0, new Date(co.timestamp) - new Date(ci.timestamp) - breakMs) / 3600000).toFixed(1) + 'h';
       else if (ci) at = ci.timestamp.substring(11,16)+'-';
       const sh = this._shifts.find(s => s.user === user && s.date === ds);
-      const cb = sh && sh.type === 'work' && !ci ? 'background:rgba(244,71,71,0.15);' : '';
+      const cb = sh && sh.type === 'work' && !ci ? 'background:color-mix(in srgb, var(--red) 15%, transparent);' : '';
       html += `<td style="padding:2px;border:1px solid var(--cal-grid-line, var(--border));text-align:center;font-size:10px;color:var(--cal-muted-fg, var(--fg2));background:var(--cal-cell-bg, var(--bg));${cb}">${at}</td>`;
     }
     html += '</tr>';

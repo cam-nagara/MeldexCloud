@@ -1518,7 +1518,7 @@ function renderFavorites() {
       div.appendChild(childDiv);
       (node.children || []).forEach(c => _renderFavNode(c, childDiv, depth + 1));
       // D&Dドロップ先
-      row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'rgba(86,156,214,0.2)'; });
+      row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)'; });
       row.addEventListener('dragleave', () => { row.style.background = ''; });
       row.addEventListener('drop', (e) => {
         e.preventDefault(); row.style.background = '';

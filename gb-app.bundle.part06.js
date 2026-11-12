@@ -1,3 +1,13 @@
+  if (!node || node.style?.display === 'none') return false;
+  return data.type === 'folder' || data._isRoot === true;
+}
+
+function _viewerFolderNavFolderNodes() {
+  const candidates = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node')];
+  return candidates.filter(node => _viewerFolderNavIsFolderNode(node) && _viewerFolderNavNodePath(node));
+}
+
+function _viewerFolderNavFindIndex(nodes, targetPath) {
   if (!targetPath) return -1;
   return nodes.findIndex(node => _viewerFolderNavPathMatches(_viewerFolderNavNodePath(node), targetPath));
 }
@@ -887,14 +897,3 @@ function renderEmptyState(container, icon, message, hint) {
       ${hint ? `<div class="gb-empty-hint">${esc(hint)}</div>` : ''}
     </div>`;
 }
-
-// ============================================================
-// ローディング表示
-// ============================================================
-let _loadingCount = 0;
-let _loadingTimer = null;
-let _loadingVisible = false;
-let _loadingMessage = '';
-const _loadingOperations = [];
-const _loadingGroups = new Map();
-const _iframeLoadingTrackers = new Map();

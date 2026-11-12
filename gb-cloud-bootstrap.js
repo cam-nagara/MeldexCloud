@@ -97,7 +97,7 @@
     const opts = options || {};
     const level = isError === 'warning' ? 'warning' : (isError ? 'error' : 'ok');
     bar.style.background = level === 'error' ? '#7a2f2f' : (level === 'warning' ? '#6b4d1f' : '#234d2f');
-    bar.style.color = '#fff';
+    bar.style.color = 'var(--ui-accent-fg)';
     bar.dataset.cloudPersistent = level === 'ok' ? '0' : '1';
     bar.dataset.cloudBannerKind = opts.kind || '';
     bar.textContent = '';
@@ -644,7 +644,7 @@
       const body = document.createElement('div');
       body.className = 'meldex-retired-server-body';
       body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">Meldex共有サーバー機能は終了しました。共同ワークスペースはDropboxへ一本化されます。</div>
-        <div style="margin-top:12px;padding:10px 12px;border:1px solid #4b4433;border-radius:8px;background:#2d291f;color:#e1cf9b;font-size:12px;line-height:1.7;">
+        <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--orange);border-radius:8px;background:color-mix(in srgb,var(--orange) 15%,var(--bg2));color:var(--fg);font-size:12px;line-height:1.7;">
           管理者PCやNASにある既存ファイルは移動・削除されません。NAS内のファイルは、デスクトップ版のソースフォルダとして引き続き参照できます。
         </div>`;
       const localButton = document.createElement('button');
@@ -819,7 +819,7 @@
           </div>
           <div style="font-size:12px;color:var(--fg2);line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
         </div>
-        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
+        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--orange) 15%,var(--bg2));color:var(--fg);font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:var(--fg2);">
           <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">1. Dropboxに接続</div>
           <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">2. フォルダを選ぶ</div>
@@ -874,7 +874,7 @@
             <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
         </details>
-        <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
+        <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--red) 15%,var(--bg2));color:var(--red);font-size:12px;line-height:1.6;"></div>
       `;
       const localButton = document.createElement('button');
       localButton.id = 'cloud-switch-legacy';

@@ -115,7 +115,7 @@ button {
   padding: 6px 10px;
   cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: #626262; }
+button:hover:not(:disabled) { border-color: var(--qm-muted); }
 button:active:not(:disabled), button.is-active {
   border-color: var(--qm-accent);
   color: var(--qm-strong);
@@ -191,7 +191,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-profile-slot .sa-profile-badge { width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
 .qm-profile-slot .sa-profile-badge > img,
 .qm-profile-slot .sa-profile-badge > span { width: 100% !important; height: 100% !important; border-radius: inherit; }
-.qm-primary { background: var(--qm-blue); border-color: var(--qm-blue); color: #fff; }
+.qm-primary { background: var(--qm-blue); border-color: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-icon {
   display: inline-grid;
   place-items: center;
@@ -372,7 +372,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   padding: 12px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
   border-radius: 8px;
-  background: #292929;
+  background: var(--qm-panel-2);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
 }
 .qm-color-popover[hidden] { display: none; }
@@ -429,8 +429,8 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   display: block;
   touch-action: none;
   background:
-    linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb,var(--border) 30%,transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb,var(--border) 30%,transparent) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 .qm-editor img, .qm-editor video { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
@@ -442,7 +442,7 @@ body[data-memo-mode="pen"] .qm-editor,
 body[data-memo-mode="voice"] .qm-editor { flex: 0 1 30%; min-height: 60px; }
 #attachmentDoneBtn { margin-left: auto; min-height: 32px; }
 .qm-save-wrap { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 10010; }
-.qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 48px; min-width: 80px; padding: 0 16px; border-radius: 24px; background: var(--qm-blue); color: #fff; }
+.qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 48px; min-width: 80px; padding: 0 16px; border-radius: 24px; background: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-save-dialog { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; min-width: 200px; max-width: calc(100vw - 32px); border: 1px solid var(--qm-border); border-radius: 10px; padding: 20px; background: var(--qm-panel); color: var(--qm-fg); text-align: center; }
 .qm-save-dialog::backdrop { background: rgb(0 0 0 / 55%); }
 .qm-save-dialog button { min-width: 80px; min-height: 44px; }
@@ -457,7 +457,7 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
   padding: 5px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
   border-radius: 8px;
-  background: #292929;
+  background: var(--qm-panel-2);
   box-shadow: 0 10px 26px rgba(0,0,0,.42);
 }
 .qm-format-popup[hidden] { display: none; }
@@ -468,7 +468,7 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-voice-timer { font-size: 48px; font-weight: 300; color: var(--qm-strong); font-variant-numeric: tabular-nums; }
 .qm-voice-controls { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
 .qm-voice-btn { min-width: 100px; min-height: 44px; border-radius: 22px; font-size: 15px; }
-.qm-voice-record { background: var(--qm-danger); border-color: var(--qm-danger); color: #fff; }
+.qm-voice-record { background: var(--qm-danger); border-color: var(--qm-danger); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-voice-stop { background: var(--qm-panel-2); border-color: var(--qm-muted); }
 .qm-voice-transcript {
   width: 100%;
@@ -507,7 +507,7 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-list-state { margin-left: auto; color: var(--qm-accent); }
 .qm-list-empty { text-align: center; padding: 40px 20px; color: var(--qm-muted); }
 .qm-list-more { flex: 0 0 auto; align-self: center; }
-.qm-toast-error { color: #ffb3b3; }
+.qm-toast-error { color: var(--qm-danger); }
 
 .qm-tag-picker-overlay {
   position: fixed;

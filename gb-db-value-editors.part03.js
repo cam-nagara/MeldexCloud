@@ -381,9 +381,9 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
       const item = document.createElement('div');
       item.className = 'dd-nav-item';
       item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-      if (isSelected) item.style.background = 'rgba(86,156,214,0.15)';
+      if (isSelected) item.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';
       item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
-      item.onmouseleave = () => { item.style.background = isSelected ? 'rgba(86,156,214,0.15)' : ''; };
+      item.onmouseleave = () => { item.style.background = isSelected ? 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)' : ''; };
       if (isMulti) {
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = isSelected;
         item.appendChild(cb);

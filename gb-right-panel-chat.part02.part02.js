@@ -278,7 +278,7 @@ async function renderChatHistory() {
       div.dataset.chatUnread = isUnread ? '1' : '0';
       div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
-      div.onmouseover = () => div.style.background = 'rgba(255,255,255,0.03)';
+      div.onmouseover = () => div.style.background = 'var(--ui-hover-bg)';
       div.onmouseout = () => div.style.background = '';
       const isActive = _chatState.sessionId && item.name === _chatState.sessionId;
       const targetName = item.targetPath ? item.targetPath.split('/').pop() : '';

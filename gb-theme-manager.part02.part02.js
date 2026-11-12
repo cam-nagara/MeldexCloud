@@ -17,6 +17,27 @@
     }
   }
 
+  function resolveSavedThemeUiApplications(themeDef, stored) {
+    const applications = normalizeThemeUiApplications(themeDef?.ui?.themeUiApplications);
+    if (!stored || !Object.keys(stored).length) return applications;
+    const normalized = normalizeThemeUiApplications(stored);
+    if (stored._defaultsVersion === THEME_UI_DEFAULTS_VERSION || themeDef?.builtIn !== true) return normalized;
+    const previous = clone(applications);
+    previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+    const legacyDefaults = [previous];
+    if (stored._defaultsVersion == null) {
+      const oldTreeDefaults = clone(previous);
+      oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      const treeOnlyDefaults = clone(applications);
+      treeOnlyDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      legacyDefaults.push(oldTreeDefaults, treeOnlyDefaults, _defaultThemeUiApplications());
+    }
+    // Only exact former builtin defaults migrate. Explicit current auto colors
+    // and customized legacy applications retain their original values.
+    return legacyDefaults.some(legacy => JSON.stringify(normalized) === JSON.stringify(legacy))
+      ? applications : normalized;
+  }
+
   function normalizeCustomThemePayload(themeDef, fallbackName) {
     const src = themeDef && typeof themeDef === 'object' ? clone(themeDef) : {};
     const topLevelCssVars = {};

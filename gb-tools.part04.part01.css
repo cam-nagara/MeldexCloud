@@ -17,6 +17,11 @@
 }
 .gb-select:hover { background: var(--bg4); }
 .gb-select:focus { border-color: var(--accent); }
+.folder-layout-trigger { display:inline-flex; align-items:center; justify-content:space-between; gap:var(--ui-space-4); min-width:0; flex-shrink:0; }
+.folder-layout-trigger .folder-layout-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.folder-layout-trigger svg { flex-shrink:0; }
+#folder-toolbar #folder-layout-select.gb-folder-layout-native { display:none !important; }
+.folder-toolbar-menu-check { display:inline-flex; margin-left:auto; }
 .gb-select-sm { font-size: 11px; padding: 1px 4px; }
 
 /* ============================================================
@@ -122,7 +127,7 @@ button.gb-context-menu-item {
 }
 /* 危険項目 (列削除等) */
 .gb-context-menu-item.danger { color: var(--ui-danger); }
-.gb-context-menu-item.danger:hover { background: rgba(244,71,71,0.15); }
+.gb-context-menu-item.danger:hover { background: color-mix(in srgb, var(--red) 15%, transparent); }
 
 .gb-context-menu.note-ruby-popup {
   min-width: min(280px, calc(100vw - 16px));

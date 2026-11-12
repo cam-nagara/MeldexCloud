@@ -826,7 +826,7 @@
         pdragGhost = document.createElement('div');
         pdragGhost.className = 'sn2-pdrag-ghost';
         pdragGhost.textContent = pdragRowIds.length > 1 ? `${pdragRowIds.length} 行を移動` : '行を移動';
-        pdragGhost.style.cssText = 'position:fixed;pointer-events:none;z-index:10000;background:var(--accent, #4a90d9);color:white;padding:4px 10px;border-radius:4px;font-size:12px;opacity:0.9;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        pdragGhost.style.cssText = 'position:fixed;pointer-events:none;z-index:10000;background:var(--accent, #4a90d9);color:var(--ui-accent-fg, var(--ui-selection-fg));padding:4px 10px;border-radius:4px;font-size:12px;opacity:0.9;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
         document.body.appendChild(pdragGhost);
       }
       if (!pdragActive) return;

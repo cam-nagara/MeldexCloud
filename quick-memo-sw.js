@@ -1,4 +1,4 @@
-const QUICK_MEMO_CACHE = 'meldex-quick-memo-v8';
+const QUICK_MEMO_CACHE = 'meldex-quick-memo-v9';
 const QUICK_MEMO_CACHE_PREFIX = 'meldex-quick-memo-';
 const QUICK_MEMO_ASSETS = [
   'quick-memo.html',
@@ -10,6 +10,20 @@ const QUICK_MEMO_ASSETS = [
   'gb-fonts.css',
   'gb-icon-assets.css',
   'gb-theme.css',
+  'gb-theme-document.js',
+  'gb-theme-migration.js',
+  'gb-theme-manager.js',
+  'gb-theme-manager.part01.js',
+  'gb-theme-manager.part01.part01.js',
+  'gb-theme-manager.part01.part02.js',
+  'gb-theme-manager.part02.js',
+  'gb-theme-manager.part02.part01.js',
+  'gb-theme-manager.part02.part02.js',
+  'gb-theme-manager.bundle.js',
+  'gb-theme-manager.bundle.part01.js',
+  'gb-theme-manager.bundle.part02.js',
+  'gb-theme-manager.bundle.part03.js',
+  'gb-theme-manager.bundle.part04.js',
   'gb-ui.css',
   'gb-toolbar-overflow.css',
   'gb-toolbar-overflow.js',

@@ -671,7 +671,7 @@
       .tag-maintenance-candidate{border:1px solid var(--border,#3b3b3b);border-radius:10px;padding:12px;margin-top:9px;overflow-wrap:anywhere}
       .tag-maintenance-candidate-head,.tag-maintenance-event{display:flex;align-items:center;justify-content:space-between;gap:10px}
       .tag-maintenance-confidence{font-size:.78rem;border-radius:999px;padding:3px 8px;background:var(--bg-tertiary,#303030)}
-      .tag-maintenance-confidence.is-exact{color:#82d69b}.tag-maintenance-confidence.is-ambiguous{color:#f2c66d}
+      .tag-maintenance-confidence.is-exact{color:var(--green)}.tag-maintenance-confidence.is-ambiguous{color:var(--orange)}
       .tag-maintenance-path{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.86rem;margin-top:7px}
       .tag-maintenance-event{min-height:44px;border-top:1px solid var(--border,#3b3b3b);padding:8px 0}
       .tag-maintenance-event .gb-btn{min-height:44px}

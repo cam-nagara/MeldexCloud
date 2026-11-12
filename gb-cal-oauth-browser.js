@@ -84,7 +84,10 @@
     }
     try {
       popup.document.title = 'Meldex 認証';
-      popup.document.body.innerHTML = '<p style="font-family:sans-serif;color:#888;text-align:center;margin-top:40vh;">読み込み中…</p>';
+      const colors = getComputedStyle(document.documentElement);
+      popup.document.body.style.background = colors.getPropertyValue('--bg');
+      popup.document.body.style.color = colors.getPropertyValue('--fg2');
+      popup.document.body.innerHTML = '<p style="font-family:sans-serif;text-align:center;margin-top:40vh;">読み込み中…</p>';
     } catch {}
     return popup;
   }

@@ -92,8 +92,8 @@ input[type=number] { -moz-appearance: textfield; }
   --chat-fg: #d4d4d4; --chat-muted-fg: #969696; --chat-border: #333333; --chat-hover-bg: #3e3e3e; --chat-active-bg: #569cd6; --chat-active-fg: #ffffff; --chat-accent: #569cd6;
   --chat-user-bg: color-mix(in srgb, var(--chat-accent) calc(100% - var(--theme-ui-auto-dark-percent, 30%)), black var(--theme-ui-auto-dark-percent, 30%)); --chat-user-fg: #ffffff;
   --chat-message-fg: var(--chat-fg);
-  --timer-bg: var(--content-bg); --timer-panel-bg: #252525; --timer-display-bg: var(--content-bg); --timer-fg: #d4d4d4; --timer-muted-fg: #969696;
-  --timer-border: #333333; --timer-hover-bg: #3e3e3e; --timer-active-bg: #569cd6; --timer-active-fg: #ffffff; --timer-accent: #569cd6;
+  --timer-bg: var(--content-bg); --timer-panel-bg: var(--bg2); --timer-display-bg: var(--content-bg); --timer-fg: var(--fg); --timer-muted-fg: var(--fg2);
+  --timer-border: var(--border); --timer-hover-bg: var(--ui-hover-bg); --timer-active-bg: var(--ui-selection-bg); --timer-active-fg: var(--ui-selection-fg); --timer-accent: var(--ui-accent);
   --history-bg: var(--content-bg); --history-row-bg: #252525; --history-fg: #d4d4d4; --history-muted-fg: #969696;
   --history-border: #333333; --history-hover-bg: #3e3e3e; --history-active-bg: #264f78; --history-active-fg: #ffffff; --history-accent: #569cd6;
   --annotation-bg: var(--content-bg); --annotation-card-bg: #252525; --annotation-fg: #d4d4d4; --annotation-muted-fg: #969696;

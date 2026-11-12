@@ -13,7 +13,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--ui-space-3);
-  padding: var(--ui-space-3);
+  padding: var(--ui-space-3) var(--ui-popup-padding-inline, 12px);
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
   border-radius: var(--ui-radius-sm);
@@ -412,7 +412,7 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
     overflow-y: auto;
     box-sizing: border-box;
     gap: var(--ui-space-3);
-    padding: var(--ui-space-3);
+    padding: var(--ui-space-3) var(--ui-popup-padding-inline, 12px);
   }
 
   .gb-fmt-popup-row {

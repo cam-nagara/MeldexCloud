@@ -275,11 +275,13 @@
 
     if (ok > 0) {
       if (typeof loadOutliner === 'function') {
-        loadOutliner({ force: true, reason: 'sheet-entry-intake' });
+        await loadOutliner({ force: true, reason: 'sheet-entry-intake' });
       }
       // 開いているシートがあれば再読込
-      if (typeof selectDatabase === 'function' && window.activeDatabasePath === normSheet) {
-        selectDatabase(normSheet, { silent: true });
+      if (typeof options.refreshView === 'function') {
+        await options.refreshView();
+      } else if (typeof selectDatabase === 'function' && window.activeDatabasePath === normSheet) {
+        await selectDatabase(normSheet, undefined, { silent: true, forceReload: true });
       }
     }
 

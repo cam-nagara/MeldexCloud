@@ -81,7 +81,7 @@
     button.id = id;
     button.type = 'button';
     button.className = `gb-btn meldex-offline-choice-button${primary ? ' meldex-offline-choice-button-primary' : ''}`;
-    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
+    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:var(--ui-accent);background:var(--ui-bg-control-active,var(--ui-selection-bg));' : ''}`;
     const strong = document.createElement('strong');
     strong.textContent = title;
     strong.style.cssText = 'display:block;font-size:16px;line-height:1.5;margin-bottom:5px;';
@@ -200,7 +200,7 @@
         busy = false;
         _setChoiceBusy(enableButton, onlineButton, overlay, false);
         statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}　オンライン時だけ使うことはできます。`;
-        statusElement.style.color = '#f7b4c0';
+        statusElement.style.color = 'var(--red)';
       }
     });
     onlineButton.addEventListener('click', () => {

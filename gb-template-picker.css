@@ -40,7 +40,7 @@
   cursor: pointer;
 }
 .gb-tpl-chip:hover { color: var(--fg); border-color: var(--accent); }
-.gb-tpl-chip.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gb-tpl-chip.is-active { background: var(--accent); border-color: var(--accent); color: var(--ui-selection-fg); }
 .gb-tpl-body {
   display: flex;
   gap: 14px;

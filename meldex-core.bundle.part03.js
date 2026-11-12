@@ -1,3 +1,4 @@
+  }
 
   function _deleteBoardAnnotation(annId, onDeleted, onError) {
     if (!boardMode || !annId || typeof apiDelete !== 'function') return false;
@@ -897,4 +898,3 @@
       lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
       observedNode: nodeEl,
     });
-    _ensureAnchoredMutationObserver();

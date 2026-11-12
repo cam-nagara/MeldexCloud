@@ -904,8 +904,8 @@
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
     row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
     if (isSelected(key)) {
-      row.style.background = 'rgba(86,156,214,0.22)';
-      row.style.outline = '1px solid rgba(86,156,214,0.55)';
+      row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 22%, transparent)';
+      row.style.outline = '1px solid color-mix(in srgb, var(--ui-selection-bg) 55%, transparent)';
     }
     row.addEventListener('mouseenter', () => { if (!isSelected(key)) row.style.background = 'var(--bg3)'; });
     row.addEventListener('mouseleave', () => { if (!isSelected(key)) row.style.background = ''; });

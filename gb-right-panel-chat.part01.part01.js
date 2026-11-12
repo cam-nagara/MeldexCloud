@@ -12,7 +12,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', versionTargetPath: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
 // AI応答の実行はチャットごとに独立して持つ（複数チャットの並行実行・閉じた後の継続）。
 // _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
 const _chatExecutions = new Map();
@@ -832,7 +832,7 @@ function _chatRenderToolAuditWarning(el, warning) {
   if (!text) return;
   const box = document.createElement('div');
   box.className = 'chat-tool-audit-warning';
-  box.style.cssText = 'margin:0 0 8px;padding:6px 8px;border-left:3px solid var(--red,#d9534f);background:rgba(217,83,79,0.12);color:var(--red,#ff8a80);font-weight:600;white-space:pre-wrap;';
+  box.style.cssText = 'margin:0 0 8px;padding:6px 8px;border-left:3px solid var(--red,#d9534f);background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red,#ff8a80);font-weight:600;white-space:pre-wrap;';
   box.textContent = text;
   el.insertBefore(box, el.firstChild || null);
 }

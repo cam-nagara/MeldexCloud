@@ -267,6 +267,7 @@
       button.textContent = `選択した${count.toLocaleString('ja-JP')}グループをまとめて整理`;
       button.disabled = view.busy || count === 0;
       button.hidden = groups.length < 2;
+      overlay.querySelector('[data-dup-keep-all]').disabled = view.busy;
       const pending = visible.filter(index => !states[index].resolved);
       const toggle = tools.querySelector('[data-dup-page-include]');
       toggle.checked = pending.length > 0 && pending.every(index => states[index].included);

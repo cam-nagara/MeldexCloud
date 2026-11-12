@@ -640,6 +640,36 @@ class ScriptNoteEditor {
     }
   }
 
+  async preserveDraftForClose() {
+    if (!this._path || !this.doc) return false;
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    try {
+      this._syncAllFromDom();
+      const path = this._path;
+      const json = JSON.stringify(this.collectDoc(), null, 2);
+      const saved = await window.MeldexDraftRecovery?.saveDraft?.(path, json, this._lastSavedEtag || '');
+      this._syncAllFromDom();
+      if (!saved?.ok || this._path !== path || JSON.stringify(this.collectDoc(), null, 2) !== json) return false;
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      const key = coordinator?.documentKeyForPath?.(path) || path;
+      if (coordinator?.getConflict?.(key)) coordinator.reportConflict(key, {
+        path, localMd: json, localEtag: this._lastSavedTransportRevision || this._lastSavedEtag || '',
+      });
+      window.MeldexConflictPendingBanner?.show?.(key, {
+        label: 'シナリオの下書きをこの端末に保管しました',
+        onConfirm: async () => {
+          if (coordinator?.isConflictPending?.(key) && typeof openScenarioInScriptNote === 'function') {
+            await openScenarioInScriptNote(path, this.doc?.title || 'シナリオ');
+          } else await window.MeldexDraftRecovery?.showRecoveryDialog?.();
+        },
+      });
+      if (typeof showStatus === 'function') showStatus('未保存のシナリオをこの端末の下書きに保管して閉じます');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   flush() {
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     this._syncAllFromDom();

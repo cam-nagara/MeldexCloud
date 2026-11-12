@@ -240,7 +240,7 @@
     overlay._dupView.busy = true;
     overlay._dupView.render();
     try {
-      if (await cfConfirm(message)) return true;
+      if (await cfConfirm(message) && overlay.isConnected) return true;
     } catch (error) {
       showStatus('整理の確認画面を開けませんでした: ' + userError(error), true);
     }
@@ -274,7 +274,7 @@
         replace: replaceFiles.map(filePath),
         match_type: group.type,
         threshold: 10,
-      });
+      }, { operationLabel: '重複ファイルを整理しています' });
       const results = Array.isArray(res?.results) ? res.results : [];
       const succeeded = results.filter(result => result.status === 'replaced').length;
       const failed = replaceFiles.length - succeeded;
@@ -292,6 +292,7 @@
       }
       await refreshFolder(overlay.dataset.folderPath || '');
     } catch (error) {
+      overlay._dupView.recordRemoved(error?.jobStatus?.result?.results || []);
       state.failed = true;
       button.disabled = false;
       button.textContent = '失敗したため再試行';
@@ -332,45 +333,28 @@
     let succeeded = 0;
     let failed = 0;
     try {
-      for (const plan of plans) {
-        plan.replaceFiles = plan.replaceFiles.filter(file => !plan.state.removed.has(filePath(file)));
-        if (!plan.replaceFiles.length) continue;
-        const groupButton = plan.groupElement?.querySelector('[data-dup-resolve]');
-        if (groupButton) groupButton.disabled = true;
-        try {
-          const res = await runBackgroundJob('/duplicate-resolve', {
-            background: true,
-            keep: filePath(plan.keepFile),
-            replace: plan.replaceFiles.map(filePath),
-            match_type: plan.group.type,
-            threshold: 10,
-          });
-          const results = Array.isArray(res?.results) ? res.results : [];
-          const groupSucceeded = results.filter(result => result.status === 'replaced').length;
-          const groupFailed = plan.replaceFiles.length - groupSucceeded;
-          overlay._dupView.recordRemoved(results);
-          plan.state.failed = groupFailed > 0;
-          succeeded += groupSucceeded;
-          failed += groupFailed;
-          if (groupFailed === 0 && groupSucceeded === plan.replaceFiles.length) {
-            plan.state.resolved = true;
-            if (groupButton) groupButton.innerHTML = lucide('check', 12) + ' 解決済み';
-          } else if (groupButton) {
-            groupButton.disabled = false;
-            groupButton.textContent = '失敗したため再試行';
-          }
-        } catch (_) {
-          plan.state.failed = true;
-          failed += plan.replaceFiles.length;
-          if (groupButton) {
-            groupButton.disabled = false;
-            groupButton.textContent = '失敗したため再試行';
-          }
-        }
-        const status = overlay.querySelector('[data-dup-status]');
-        if (status) status.textContent = `${plans.indexOf(plan) + 1} / ${plans.length}グループを整理中`;
-      }
+      // 全選択を1ジョブへ渡す。画面を閉じても次グループへの依頼を待たずに続行できる。
+      const res = await runBackgroundJob('/duplicate-resolve', {
+        background: true,
+        groups: plans.map(plan => ({
+          keep: filePath(plan.keepFile), replace: plan.replaceFiles.map(filePath),
+          match_type: plan.group.type, threshold: 10,
+        })),
+      }, { operationLabel: '重複ファイルを整理しています',
+        onProgress: progress => setProgress(overlay, progress) });
+      const results = Array.isArray(res?.results) ? res.results : [];
+      overlay._dupView.recordRemoved(results);
+      succeeded = results.filter(result => result.status === 'replaced').length;
+      failed = deleteCount - succeeded;
+      for (const plan of plans) plan.state.failed = !plan.state.resolved;
       showStatus(`${succeeded}件を整理${failed ? ` / ${failed}件は整理できませんでした` : 'しました'}`, failed > 0);
+      await refreshFolder(overlay.dataset.folderPath || '');
+    } catch (error) {
+      const results = error?.jobStatus?.result?.results || [];
+      overlay._dupView.recordRemoved(results);
+      for (const plan of plans) plan.state.failed = !plan.state.resolved;
+      showStatus(error?.name === 'AbortError' ? '重複ファイルの整理を中止しました'
+        : '重複ファイルを整理できませんでした: ' + userError(error), true);
       await refreshFolder(overlay.dataset.folderPath || '');
     } finally {
       overlay._dupView.busy = false;
@@ -409,7 +393,15 @@
       return true;
     };
     const close = reason => overlay._dupModalApi?.close(reason || 'button');
-    overlay._dupOnBeforeClose = () => !overlay._dupView?.busy && !requestCancellation();
+    overlay._dupOnBeforeClose = () => {
+      // 整理ジョブはサーバーが所有する。閉じる操作で取り消したり完了を待たせない。
+      if (overlay._dupView?.busy) {
+        showStatus('整理はバックグラウンドで続行します。進捗・中止は右下で確認できます');
+        return true;
+      }
+      requestCancellation();
+      return true;
+    };
     overlay._dupOnClose = () => {
       if (!overlay._dupCloseHandled) {
         overlay._dupCloseHandled = true;

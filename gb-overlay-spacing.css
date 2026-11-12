@@ -1,0 +1,113 @@
+/* ポップアップ12px / ダイアログ16px。上下の密度・内部の段組みは各UIが持つ。 */
+:root {
+  --ui-popup-padding-inline: 12px;
+  --ui-dialog-padding-inline: 16px;
+}
+
+/* 共通位置補正を通る動的な面と、独立して配置される現役の面。 */
+:is(
+  .gb-popup-surface, .gb-fmt-popup, .gb-format-popup, .gb-context-menu,
+  .gb-palette, .gb-palette-popup, .color-picker-popup, .stamp-picker,
+  .gb-inline-comment-popup, .sa-palette,
+  .gb-inline-comment-popup, .sa-palette,
+  .gb-icon-picker-popup, .gb-icon-picker, .db-picker-popup,
+  .db-column-filter-popover, .db-date-popover, .db-date-popup-editor,
+  .status-dropdown, .ab-dropdown, .cell-inline-dd, .tree-menu, .dd-menu,
+  .col-header-menu, .cal-popover, .count-type-dropdown, .csv-column-menu,
+  .sn2-filter-popup, .sn2-header-popup, .sn2-header-sub-popup, .sn2-role-menu,
+  .sn2-ruby-popup, .sn2-search-popup, .cs-theme-color-slot-popup,
+  .cs-theme-ui-picker-menu, .bd-style-picker-menu, .bd-style-manager-popup,
+  .bd-common-view-menu, .bd-topic-view-overflow-menu, .ann-tool-popup,
+  .gb-production-lock-menu, .gb-cal-calendar-menu, .gb-cal-create-menu,
+  .gb-cal-event-card-menu, .gb-cal-time-picker, .gb-cal-shift-template-picker,
+  .gb-chat-copy-popup, .gb-mobile-tab-dropdown, .gb-mobile-tab-menu,
+  .gb-tag-management-menu, .gb-toolbar-overflow-popup, .gb-tpl-picker,
+  .gb-map-context-menu, .sa-profile-popover, .sa-menu, .sa-context-menu,
+  .qm-color-popover, .qm-format-popup, .qm-create-menu, .qm-menu,
+  .bsa-menu-dropdown, .nav-menu, .note-block-menu, .note-status-filter-popup,
+  .folder-toolbar-create-menu, .pt-type-menu, .tb-new-dropdown,
+  .gf-filter-popup, .el-chart-popup, .el-edit-popup, .el-field-picker,
+  .el-preset-popup, .el-tab-menu, .topic-layout-cell-style-popup,
+  .meldex-chat-listbox-popup, .settings-theme-preview-popup,
+  #chat-title-dropdown, #slash-menu, [role="menu"], [role="listbox"]
+) {
+  padding-inline: var(--ui-popup-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* roleを持つ非modal編集ポップアップも同じ規則。常設ドロワーは除く。 */
+[role="dialog"][aria-modal="false"]:not(.cloud-mobile-side-drawer, .gb-dock-popup) {
+  padding-inline: var(--ui-popup-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* roleを持つ非modal編集ポップアップも同じ規則。常設ドロワーは除く。 */
+[role="dialog"][aria-modal="false"]:not(.cloud-mobile-side-drawer, .gb-dock-popup) {
+  padding-inline: var(--ui-popup-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* シェルの外側へ足さず、見出し・本文・下端バーを同じ位置へ揃える。
+   full-bleedも左右は確保し、上下0pxという用途は維持する。 */
+:is(.gb-modal, .gb-modal-shell, .modal, .gb-cal-modal, .link-modal) > :is(
+  .gb-modal-header, .gb-modal-shell-header,
+  .gb-modal-body, .gb-modal-shell-body, .modal-body,
+  .gb-modal-footer, .gb-modal-shell-footer, .btn-row
+) {
+  padding-inline: var(--ui-dialog-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* 単独アプリのnative dialogとシェルを持たないダイアログ。 */
+:is(dialog, [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]):not(
+  .gb-modal, .gb-modal-shell, .modal, .gb-cal-modal, .link-modal, .gb-popup-surface
+) {
+  padding-inline: var(--ui-dialog-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* パネルをそのまま開くポップアップもシェル内の列に一度だけ適用する。 */
+.gb-dock-popup > :is(.gb-dock-popup-header, .gb-dock-popup-body) {
+  padding-inline: var(--ui-popup-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* roleが背景に付く既存UIでは、背景でなく内側の面へ余白を置く。 */
+:is(#cmd-palette-overlay, #sn2-sep-running-overlay) {
+  padding-inline: 0 !important;
+}
+:is(#cmd-palette-overlay > .cmd-palette, #sn2-sep-running-overlay > .sn2-sep-running-box,
+  #meldex-error-support-notice) {
+  padding-inline: var(--ui-dialog-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* 外周16pxを持つ単独ダイアログの見出しと本文へ重ねて足さない。 */
+:is(.sa-tags-dialog, .sa-version-dialog, .external-responder-dialog,
+  .csv-convert-dialog, .cloud-conflict-resolver, .sa-default-apps-dialog,
+  .sa-workspace-dialog, .sa-pwa-install-dialog) > :is(
+  header, main, footer, [class$="-head"], [class$="-header"], [class$="-body"],
+  [class$="-footer"], [class$="-actions"], [class$="-tabs"]
+) {
+  padding-inline: 0 !important;
+}
+
+/* roleが背景に付く既存UIでは、背景でなく内側の面へ余白を置く。 */
+:is(#cmd-palette-overlay, #sn2-sep-running-overlay) {
+  padding-inline: 0 !important;
+}
+:is(#cmd-palette-overlay > .cmd-palette, #sn2-sep-running-overlay > .sn2-sep-running-box,
+  #meldex-error-support-notice) {
+  padding-inline: var(--ui-dialog-padding-inline) !important;
+  box-sizing: border-box;
+}
+
+/* 外周16pxを持つ単独ダイアログの見出しと本文へ重ねて足さない。 */
+:is(.sa-tags-dialog, .sa-version-dialog, .external-responder-dialog,
+  .csv-convert-dialog, .cloud-conflict-resolver, .sa-default-apps-dialog,
+  .sa-workspace-dialog, .sa-pwa-install-dialog) > :is(
+  header, main, footer, [class$="-head"], [class$="-header"], [class$="-body"],
+  [class$="-footer"], [class$="-actions"], [class$="-tabs"]
+) {
+  padding-inline: 0 !important;
+}

@@ -295,7 +295,7 @@
       this.sheetFeatures.clearLayers();
       for (const place of places.slice(0, 10000)) {
         const el = document.createElement('span'); el.className = 'gb-map-pin';
-        const icon = document.createElement('b'); icon.textContent = '◇'; icon.style.color = '#b46c22';
+        const icon = document.createElement('b'); icon.textContent = '◇'; icon.style.color = 'var(--ui-accent)';
         const label = document.createElement('span'); label.textContent = place.label; el.append(icon, label);
         const marker = L.marker(this.latlng(place.point), { keyboard: true, title: place.label,
           icon: L.divIcon({ html: el, className: 'gb-map-marker gb-map-sheet-place', iconSize: [24, 28], iconAnchor: [12, 26] }) }).addTo(this.sheetFeatures);
@@ -313,8 +313,8 @@
       this.drafts?.clearLayers();
       if (!this.draft.length) { this.callbacks.draft?.(0, ''); return; }
       const points = this.draft.map(p => this.latlng(p));
-      L.polyline(points, { color: '#d87923', dashArray: '5 5', weight: 3 }).addTo(this.drafts);
-      for (const point of points) L.circleMarker(point, { radius: 4, color: '#d87923' }).addTo(this.drafts);
+      L.polyline(points, { color: 'var(--ui-accent)', dashArray: '5 5', weight: 3 }).addTo(this.drafts);
+      for (const point of points) L.circleMarker(point, { radius: 4, color: 'var(--ui-accent)' }).addTo(this.drafts);
       this.callbacks.draft?.(this.draft.length, D().distanceLabel(D().distance(this.draft, this.doc), this.doc));
     }
     finish() {

@@ -18795,13 +18795,15 @@ const GBTabs = (() => {
     if (idx < 0) return false;
     let closedTab = pane.tabs[idx];
     // シナリオはDOM入力・autosave・回復用下書きの確定を待ってから破棄する。
-    // flush失敗（409を含む）時はタブとコンポーネントをそのまま保持する。
+    // 競合中でも端末への下書き保管が完了したシナリオは閉じられる。
     if (['scriptnote', 'form-app', 'map'].includes(closedTab?.type) && typeof getComponentInstance === 'function') {
       const component = getComponentInstance(tabId);
       if (component && typeof component.flush === 'function') {
         let flushed = false;
         try {
-          flushed = (await component.flush()) !== false;
+          const prepare = closedTab.type === 'scriptnote' && typeof component.prepareForClose === 'function'
+            ? component.prepareForClose : component.flush;
+          flushed = (await prepare.call(component)) !== false;
         } catch (_) {
           flushed = false;
         }
@@ -20939,14 +20941,17 @@ function removeComponentInstance(tabId, options = {}) {
 }
 
 // 保存を持つコンポーネントを破棄する全画面共通境界。複数タブは全件の
-// flush成功を確認してから破棄へ進めるため、途中失敗で一部だけ消さない。
+// 保存または回復用下書きの保管を確認してから破棄し、途中失敗で一部だけ消さない。
 async function flushComponentInstancesBeforeRemoval(tabIds) {
   const ids = [...new Set((Array.isArray(tabIds) ? tabIds : [tabIds]).filter(Boolean))];
   for (const tabId of ids) {
     const inst = _componentInstances[tabId];
     if (!inst || typeof inst.flush !== 'function') continue;
     let flushed = false;
-    try { flushed = (await inst.flush()) !== false; }
+    try {
+      const prepare = typeof inst.prepareForClose === 'function' ? inst.prepareForClose : inst.flush;
+      flushed = (await prepare.call(inst)) !== false;
+    }
     catch (_) { flushed = false; }
     if (!flushed) {
       if (typeof showStatus === 'function') {
@@ -21591,6 +21596,20 @@ class VersionComponent extends ToolComponent {
   async _loadVersions(path, vType) {
     const loadSeq = (this._loadSeq || 0) + 1;
     this._loadSeq = loadSeq;
+    // 旧レイアウトに残ったチャット用タブも履歴を取得しない。
+    if (/(^|\/)_chat\/llm(?:\/|$)/i.test(String(path || '').replace(/\\/g, '/'))) {
+      if (this.el) this.el.textContent = 'チャットはバージョン管理の対象外です';
+      setTimeout(() => {
+        if (typeof GBLayout === 'undefined' || typeof GBTabs === 'undefined') return;
+        const pane = GBLayout.getAllPanes(GBLayout.root).find(item => (item.tabs || []).some(tab => tab.id === this.tabId));
+        const tab = pane?.tabs.find(item => item.id === this.tabId);
+        const currentPath = String(tab?.path || tab?.state?.versionPath || '').replace(/\\/g, '/');
+        if (!pane || GBLayout.isFixedRailPane?.(pane.id) || GBLayout.isPaneLocked?.(pane.id)
+            || !/(^|\/)_chat\/llm(?:\/|$)/i.test(currentPath)) return;
+        Promise.resolve(GBTabs.closeTab(pane.id, this.tabId)).catch(() => {});
+      }, 0);
+      return;
+    }
     if (this.state.versionPath !== path || this.state.versionType !== vType) this._timelineOffset = 0;
     this.state.versionPath = path;
     this.state.versionType = vType;
@@ -23719,7 +23738,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
     evEl.addEventListener('dragend', () => { evEl.style.opacity = ''; });
   });
   rootEl.querySelectorAll('.gb-cal-all-day-cell').forEach(cell => {
-    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.12)'; });
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 12%, transparent)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
     cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
@@ -24039,7 +24058,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       self._openEventInPanel(null, startDate + 'T' + String(minH).padStart(2,'0') + ':00', endStr);
     });
     // D&Dドロップ受け入れ
-    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'rgba(86,156,214,0.15)'; });
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)'; });
     cell.addEventListener('dragleave', () => { cell.style.background = ''; });
     cell.addEventListener('drop', async (e) => {
       e.preventDefault(); cell.style.background = '';
@@ -24196,7 +24215,7 @@ CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
       if (ci && co) at = (Math.max(0, new Date(co.timestamp) - new Date(ci.timestamp) - breakMs) / 3600000).toFixed(1) + 'h';
       else if (ci) at = ci.timestamp.substring(11,16)+'-';
       const sh = this._shifts.find(s => s.user === user && s.date === ds);
-      const cb = sh && sh.type === 'work' && !ci ? 'background:rgba(244,71,71,0.15);' : '';
+      const cb = sh && sh.type === 'work' && !ci ? 'background:color-mix(in srgb, var(--red) 15%, transparent);' : '';
       html += `<td style="padding:2px;border:1px solid var(--cal-grid-line, var(--border));text-align:center;font-size:10px;color:var(--cal-muted-fg, var(--fg2));background:var(--cal-cell-bg, var(--bg));${cb}">${at}</td>`;
     }
     html += '</tr>';
@@ -60591,6 +60610,7 @@ function _sn2StopSep() {
   function _operationLabel(startPath, options) {
     if (options?.operationLabel || options?.label) return String(options.operationLabel || options.label);
     const path = String(startPath || '').toLowerCase();
+    if (path.includes('duplicate-resolve')) return '重複ファイルを整理しています';
     if (path.includes('duplicate')) return '重複を確認しています';
     if (path.includes('tag')) return 'タグを処理しています';
     if (path.includes('import') || path.includes('sync')) return 'データを取り込んでいます';
@@ -60694,8 +60714,11 @@ function _sn2StopSep() {
     } catch (error) {
       if (error?.name === 'AbortError') {
         const partial = error.jobStatus?.result;
-        operation?.cancelled({ summary: partial?.unprocessed !== undefined
-          ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message });
+        const cleanupSummary = String(startPath || '').includes('duplicate-resolve') && partial
+          ? `重複ファイルの整理を中止しました。整理済み${(partial.results || []).filter(item => item.status === 'replaced').length}件 / 未処理${Number(partial.unprocessed) || 0}件`
+          : '';
+        operation?.cancelled({ summary: cleanupSummary || (partial?.unprocessed !== undefined
+          ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message) });
       }
       else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
       else if (error?.name === 'LongRunningJobError' || [400, 401, 403, 404].includes(Number(error?.status)) || /HTTP 404/.test(error?.message || '')) operation?.unknown({ summary: '進捗を確認できないため、処理の結果は未確認です。取り込みの前回結果を確認してください。' });
@@ -69181,6 +69204,18 @@ class ScriptNoteComponent extends ToolComponent {
     return this._editor.flush();
   }
 
+  async prepareForClose() {
+    const editor = this._editor;
+    if (!editor) return true;
+    const path = editor._path;
+    let saved = false;
+    try { saved = await editor.flush(); } catch (_) {}
+    if (this._editor !== editor || editor._path !== path) return false;
+    if (saved !== false && !editor._dirty) return true;
+    // サーバ保存とは区別する。端末への保管が完了した場合だけ破棄を許可する。
+    return editor.preserveDraftForClose();
+  }
+
   handleKeyDown(e) {
     // 軽量エディタはブラウザデフォルト動作を活用するため、ここでは何もしない
     return false;
@@ -69620,24 +69655,26 @@ class ScriptNoteComponent extends ToolComponent {
     }
     const titleInput = this.el.querySelector('#title-input');
     if (titleInput) titleInput.addEventListener('change', async () => {
-      if (this._editor?.doc) {
-        this._editor._pushUndo('タイトル変更');
-        this._editor.doc.title = titleInput.value;
-        this._editor._markDirty();
+      const editor = this._editor;
+      if (editor?.doc) {
+        editor._pushUndo('タイトル変更');
+        editor.doc.title = titleInput.value;
+        editor._markDirty();
         // タイトル変更をファイル名にも反映
         const newTitle = titleInput.value.trim();
-        const oldPath = this._editor._path;
+        const oldPath = editor._path;
         if (newTitle && oldPath) {
           try {
-            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true });
+            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
+            if (this._editor !== editor || editor._path !== oldPath || editor.doc?.title !== newTitle) return;
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
               if (typeof _sn2Editors !== 'undefined') {
                 delete _sn2Editors[oldPath];
-                _sn2Editors[res.new_path] = this._editor;
-                if (this._editor._historyScopeId) _sn2Editors[this._editor._historyScopeId] = this._editor;
+                _sn2Editors[res.new_path] = editor;
+                if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
               }
-              this._editor._path = res.new_path;
+              editor._path = res.new_path;
               this.state.scenarioPath = res.new_path;
               window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
                 detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
@@ -70194,7 +70231,30 @@ class ScriptNoteComponent extends ToolComponent {
         await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...', { loading });
         if (isStaleLoad()) return false;
       }
-      const parsed = JSON.parse(content);
+      let parsed = JSON.parse(content);
+      let etag = data.etag || '';
+      let identity = data;
+      let restoredDraft = false;
+      const key = coordinator?.bindDocumentIdentity?.(nextPath, data) || documentKey;
+      const pending = conflictGeneration == null ? coordinator?.getConflict?.(key) : null;
+      if (pending) {
+        // 閉じた競合タブを開き直した時も、レビュー対象は利用者の未保存内容。
+        // 最新サーバ本文をローカル内容として上書き候補にしない。
+        const current = this._editor?._path === nextPath && this._editor?._dirty ? this._editor : null;
+        const drafts = current ? [] : await window.MeldexDraftRecovery?.listDrafts?.() || [];
+        if (isStaleLoad()) return false;
+        const draft = drafts.find(item => (coordinator?.documentKeyForPath?.(item.path) || item.path) === key);
+        const local = current ? JSON.stringify(current.collectDoc()) : draft?.content || pending.localMd;
+        if (local) {
+          const recovered = JSON.parse(local);
+          if (typeof isScriptNoteFileDoc !== 'function' || isScriptNoteFileDoc(recovered)) {
+            parsed = recovered;
+            etag = current?._lastSavedEtag || draft?.lastSyncedAt || pending.localEtag || '';
+            identity = { ...data, transport_revision: current?._lastSavedTransportRevision || pending.localEtag || etag };
+            restoredDraft = true;
+          }
+        }
+      }
       _sn2ExpandDefaultFileStyle(parsed);
 
       if (typeof isScriptNoteFileDoc === 'function' && !isScriptNoteFileDoc(parsed)) {
@@ -70210,10 +70270,11 @@ class ScriptNoteComponent extends ToolComponent {
       } else {
         this._editor.host = host;
       }
-      const loaded = this._editor.loadDoc(parsed, nextPath, data.etag || '', conflictGeneration, data);
+      const loaded = this._editor.loadDoc(parsed, nextPath, etag, conflictGeneration, identity);
       if (!loaded) {
         throw new Error('競合状態が更新されたため、再読込を中止しました');
       }
+      if (restoredDraft) this._editor._dirty = true;
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
       this._syncReadOnlyFromFileLock();
@@ -71882,7 +71943,7 @@ async function _flushOpenVersionTarget(path, type) {
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
   if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
-  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+  for (const adapter of [window.GBQuickMemoPanel]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
   if (_isScriptNoteVersionPath(path)) {
@@ -72812,7 +72873,7 @@ async function _flushPendingEditorVersionTarget(path, folderPath) {
 async function _flushOpenAppVersionTarget(path, folderPath) {
   let count = await _flushPendingEditorVersionTarget(path, folderPath);
   const matches = p => folderPath ? _historyPathUnderFolder(p, folderPath) : _sameVersionTargetPath(p, path);
-  for (const adapter of [window.GBQuickMemoPanel, window.MeldexChatVersionTarget]) {
+  for (const adapter of [window.GBQuickMemoPanel]) {
     if (!folderPath && typeof adapter?.flushVersionTarget === 'function' && await adapter.flushVersionTarget(path)) count++;
   }
   if (typeof bd !== 'undefined' && bd?.path && matches(bd.path) && typeof bdSave === 'function') {
@@ -80002,7 +80063,7 @@ ${spEsc(actionText)}</pre>
       .tag-maintenance-candidate{border:1px solid var(--border,#3b3b3b);border-radius:10px;padding:12px;margin-top:9px;overflow-wrap:anywhere}
       .tag-maintenance-candidate-head,.tag-maintenance-event{display:flex;align-items:center;justify-content:space-between;gap:10px}
       .tag-maintenance-confidence{font-size:.78rem;border-radius:999px;padding:3px 8px;background:var(--bg-tertiary,#303030)}
-      .tag-maintenance-confidence.is-exact{color:#82d69b}.tag-maintenance-confidence.is-ambiguous{color:#f2c66d}
+      .tag-maintenance-confidence.is-exact{color:var(--green)}.tag-maintenance-confidence.is-ambiguous{color:var(--orange)}
       .tag-maintenance-path{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.86rem;margin-top:7px}
       .tag-maintenance-event{min-height:44px;border-top:1px solid var(--border,#3b3b3b);padding:8px 0}
       .tag-maintenance-event .gb-btn{min-height:44px}
@@ -85976,6 +86037,7 @@ const SETTINGS_SIMPLE_THEME_EXTRA_ROLES = Object.freeze({
   '--ui-bg-selected': 'selected', '--ui-control-active-bg': 'selected',
   '--ui-border-focus': 'accent', '--ui-border-subtle': 'border', '--ui-focus': 'accent', '--ui-focus-ring': 'accent',
   '--ui-disabled-bg': 'control', '--ui-disabled-border': 'border',
+  '--ui-disabled-accent': 'muted', '--ui-fg-subtle': 'muted',
   '--ui-scrollbar-track-bg': 'surface', '--ui-scrollbar-thumb-bg': 'muted', '--ui-scrollbar-thumb-hover-bg': 'hover',
 });
 const SETTINGS_SIMPLE_THEME_BASE_KEYS = Object.freeze([
@@ -88207,7 +88269,7 @@ async function _installExtension(key, btn) {
     if (res.ok) {
       btn.innerHTML = lucide('check', 12) + ' 完了（再起動で有効）';
       btn.style.background = 'var(--green)';
-      btn.style.color = '#fff';
+      btn.style.color = 'var(--ui-selection-fg)';
       if (message) {
         message.textContent = res.message || 'Meldexを終了して、もう一度起動すると使えるようになります。';
         message.style.color = 'var(--green)';
@@ -103758,8 +103820,8 @@ async function resetLayoutToDefault() {
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
     row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
     if (isSelected(key)) {
-      row.style.background = 'rgba(86,156,214,0.22)';
-      row.style.outline = '1px solid rgba(86,156,214,0.55)';
+      row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 22%, transparent)';
+      row.style.outline = '1px solid color-mix(in srgb, var(--ui-selection-bg) 55%, transparent)';
     }
     row.addEventListener('mouseenter', () => { if (!isSelected(key)) row.style.background = 'var(--bg3)'; });
     row.addEventListener('mouseleave', () => { if (!isSelected(key)) row.style.background = ''; });
@@ -106721,7 +106783,7 @@ function _renderNoteConflictDiff(host, mine, other) {
     const leftLine = document.createElement('div');
     const rightLine = document.createElement('div');
     [leftLine, rightLine].forEach(el => {
-      el.style.cssText = (row.same ? '' : 'background:rgba(220,80,80,.16);') + 'padding:1px 4px;border-radius:3px;';
+      el.style.cssText = (row.same ? '' : 'background:color-mix(in srgb,var(--red) 16%,transparent);') + 'padding:1px 4px;border-radius:3px;';
     });
     leftLine.textContent = `${i + 1}: ${row.left || ' '}`;
     rightLine.textContent = `${i + 1}: ${row.right || ' '}`;
@@ -112594,7 +112656,7 @@ function doFileSearch(direction) {
     range.setEnd(m.node, m.pos + m.len);
     const mark = document.createElement('mark');
     mark.className = 'file-search-highlight';
-    mark.style.cssText = 'background:var(--orange);color:#000;border-radius:1px;';
+    mark.style.cssText = 'background:var(--ui-selection-bg);color:var(--ui-selection-fg);border-radius:1px;';
     try { range.surroundContents(mark); } catch (e) { /* クロスエレメント範囲はスキップ */ }
   }
 
@@ -170766,7 +170828,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       if (propTypeConfig.cascadeFrom) {
         _validateCascadeValue(v, entityPath, propTypeConfig).then(valid => {
           if (!valid) {
-            span.style.background = 'rgba(255,100,100,0.15)';
+            span.style.background = 'color-mix(in srgb, var(--red) 15%, transparent)';
             span.title = '依存元（' + propTypeConfig.cascadeFrom + '）の値と一致しません';
           }
         });
@@ -171129,9 +171191,9 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
         const item = document.createElement('div');
         item.className = 'dd-nav-item';
         item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-        if (sel) item.style.background = 'rgba(86,156,214,0.15)';
+        if (sel) item.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';
         item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
-        item.onmouseleave = () => { item.style.background = sel ? 'rgba(86,156,214,0.15)' : ''; };
+        item.onmouseleave = () => { item.style.background = sel ? 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)' : ''; };
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sel;
         item.appendChild(cb);
         item.appendChild(document.createTextNode(entry.name + (entry.dangling ? '（現在の値・候補外）' : '')));
@@ -171838,9 +171900,9 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
       const item = document.createElement('div');
       item.className = 'dd-nav-item';
       item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-      if (isSelected) item.style.background = 'rgba(86,156,214,0.15)';
+      if (isSelected) item.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';
       item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
-      item.onmouseleave = () => { item.style.background = isSelected ? 'rgba(86,156,214,0.15)' : ''; };
+      item.onmouseleave = () => { item.style.background = isSelected ? 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)' : ''; };
       if (isMulti) {
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = isSelected;
         item.appendChild(cb);
@@ -176911,7 +176973,7 @@ const MeldexMapRelations = (() => {
       this.sheetFeatures.clearLayers();
       for (const place of places.slice(0, 10000)) {
         const el = document.createElement('span'); el.className = 'gb-map-pin';
-        const icon = document.createElement('b'); icon.textContent = '◇'; icon.style.color = '#b46c22';
+        const icon = document.createElement('b'); icon.textContent = '◇'; icon.style.color = 'var(--ui-accent)';
         const label = document.createElement('span'); label.textContent = place.label; el.append(icon, label);
         const marker = L.marker(this.latlng(place.point), { keyboard: true, title: place.label,
           icon: L.divIcon({ html: el, className: 'gb-map-marker gb-map-sheet-place', iconSize: [24, 28], iconAnchor: [12, 26] }) }).addTo(this.sheetFeatures);
@@ -176929,8 +176991,8 @@ const MeldexMapRelations = (() => {
       this.drafts?.clearLayers();
       if (!this.draft.length) { this.callbacks.draft?.(0, ''); return; }
       const points = this.draft.map(p => this.latlng(p));
-      L.polyline(points, { color: '#d87923', dashArray: '5 5', weight: 3 }).addTo(this.drafts);
-      for (const point of points) L.circleMarker(point, { radius: 4, color: '#d87923' }).addTo(this.drafts);
+      L.polyline(points, { color: 'var(--ui-accent)', dashArray: '5 5', weight: 3 }).addTo(this.drafts);
+      for (const point of points) L.circleMarker(point, { radius: 4, color: 'var(--ui-accent)' }).addTo(this.drafts);
       this.callbacks.draft?.(this.draft.length, D().distanceLabel(D().distance(this.draft, this.doc), this.doc));
     }
     finish() {
@@ -180006,7 +180068,7 @@ async function openFormApp(path, label, options = {}) {
       badge = document.createElement('span');
       badge.dataset.chatAnnotationBadge = 'true';
       badge.textContent = 'アノテートあり';
-      badge.style.cssText = 'position:absolute;right:6px;bottom:6px;padding:2px 6px;border-radius:999px;background:rgba(20,20,20,.78);color:#fff;font-size:11px;pointer-events:none;';
+      badge.style.cssText = 'position:absolute;right:6px;bottom:6px;padding:2px 6px;border-radius:999px;background:var(--ui-popup-bg);color:var(--ui-popup-fg, var(--fg));font-size:11px;pointer-events:none;';
       wrapper.style.position = wrapper.style.position || 'relative';
       wrapper.appendChild(badge);
     }
@@ -202818,7 +202880,7 @@ function showValidationResults(results, dbPath, dialogFlow) {
 
       const icon = r.severity === 'error'
         ? `<span style="color:var(--red);">${lucide('circleX', 14)}</span>`
-        : `<span style="color:#e6a700;">${lucide('circleAlert', 14)}</span>`;
+        : `<span style="color:var(--orange);">${lucide('circleAlert', 14)}</span>`;
       const header = document.createElement('div');
       header.style.cssText = 'font-size:13px;font-weight:bold;display:flex;align-items:center;gap:4px;';
       header.innerHTML = icon + ' ' + esc(r.entityName) + ' — ' + esc(r.ruleLabel);
@@ -207746,7 +207808,7 @@ function _renderMonth(container, dbPath, events) {
     });
     if(dayEvs.length>3){const more=document.createElement('div');more.className='cal-month-more';more.textContent=`+${dayEvs.length-3}`;cell.appendChild(more);}
     if (canEditDates) {
-      cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+      cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
       cell.addEventListener('dragleave',()=>{cell.style.background='';});
       // 月ビューの drop: ターゲットセルは 00:00。_handleEventDrop 側で元の時刻を復元する
       cell.addEventListener('drop',e2=>{e2.preventDefault();cell.style.background='';_handleEventDrop(dbPath,e2,cellDate,{preserveTime:true});});
@@ -207843,7 +207905,7 @@ function _renderWeek(container, dbPath, events) {
         cell.addEventListener('pointerup',async()=>{if(!dragState)return;const current=dragState;if(current.pv)current.pv.remove();dragState=null;document.body.style.userSelect='';if(!current.moved)return;const endH=hour+1;const minH=Math.min(current.startHour,endH-1),maxH=Math.max(current.startHour+1,endH);const ds=current.startDate;const s=new Date(ds+'T'+_p2(minH)+':00:00'),e=new Date(ds+'T'+_p2(maxH)+':00:00');await _quickCreateCalendarEvent(dbPath,{start:s,end:e,allDay:false});});
       }
       if (canEditDates) {
-        cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+        cell.addEventListener('dragover',e2=>{e2.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
         cell.addEventListener('dragleave',()=>{cell.style.background='';});
         cell.addEventListener('drop',e2=>{e2.preventDefault();cell.style.background='';_handleEventDrop(dbPath,e2,cd);});
       }
@@ -208017,7 +208079,7 @@ function _renderDay(container, dbPath, events) {
       });
     }
     if (canEditDates) {
-      cell.addEventListener('dragover',e=>{e.preventDefault();cell.style.background='rgba(86,156,214,0.15)';});
+      cell.addEventListener('dragover',e=>{e.preventDefault();cell.style.background='color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';});
       cell.addEventListener('dragleave',()=>{cell.style.background='';});
       cell.addEventListener('drop',e=>{e.preventDefault();cell.style.background='';const cd=new Date(curDate);cd.setHours(hour,0,0,0);_handleEventDrop(dbPath,e,cd);});
     }
@@ -208603,7 +208665,7 @@ function _renderTaskBoard(container, dbPath, events) {
     hdr.append(statusLabel,statusCount);
     col.appendChild(hdr);
     const body=document.createElement('div');body.style.cssText='flex:1;padding:4px;overflow-y:auto;min-height:100px;';
-    body.addEventListener('dragover',e=>{e.preventDefault();body.style.background='rgba(86,156,214,0.08)';});
+    body.addEventListener('dragover',e=>{e.preventDefault();body.style.background='color-mix(in srgb, var(--ui-selection-bg) 8%, transparent)';});
     body.addEventListener('dragleave',()=>{body.style.background='';});
     body.addEventListener('drop',async e=>{e.preventDefault();body.style.background='';let data;try{data=JSON.parse(e.dataTransfer.getData('text/plain'));}catch{return;}if(!data||!data.name)return;
       _calPushUndo('タスク移動');
@@ -208789,7 +208851,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
   evHdr.textContent=`今日のイベント (${todayEvs.filter(e=>!_isTask(e)).length})`;evSection.appendChild(evHdr);
   const pureEvents=todayEvs.filter(e=>!_isTask(e));
   if(!pureEvents.length){const e=document.createElement('div');e.style.cssText='font-size:10px;color:var(--fg2);';e.textContent='イベントなし';evSection.appendChild(e);}
-  else pureEvents.forEach(ev=>{const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;border-radius:3px;cursor:pointer;color:#fff;';el.style.background=ev.color;
+  else pureEvents.forEach(ev=>{const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;border-radius:3px;cursor:pointer;color:var(--cal-event-fg);';el.style.background=ev.color;
     const timeStr=ev.allDay?'終日':`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}`;
     el.textContent=`${timeStr} ${ev.name}`;el.addEventListener('click', ()=>{if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_showCalendarEventDetailPanel(dbPath,ev);});evSection.appendChild(el);});
   box.appendChild(evSection);
@@ -213673,7 +213735,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', versionTargetPath: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
 // AI応答の実行はチャットごとに独立して持つ（複数チャットの並行実行・閉じた後の継続）。
 // _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
 const _chatExecutions = new Map();
@@ -214493,7 +214555,7 @@ function _chatRenderToolAuditWarning(el, warning) {
   if (!text) return;
   const box = document.createElement('div');
   box.className = 'chat-tool-audit-warning';
-  box.style.cssText = 'margin:0 0 8px;padding:6px 8px;border-left:3px solid var(--red,#d9534f);background:rgba(217,83,79,0.12);color:var(--red,#ff8a80);font-weight:600;white-space:pre-wrap;';
+  box.style.cssText = 'margin:0 0 8px;padding:6px 8px;border-left:3px solid var(--red,#d9534f);background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red,#ff8a80);font-weight:600;white-space:pre-wrap;';
   box.textContent = text;
   el.insertBefore(box, el.firstChild || null);
 }
@@ -219228,7 +219290,6 @@ async function openFileChat(targetPath) {
         _chatState.messages = _ensureChatMessageIds(data.messages);
         _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
         _chatState.historySourceFolder = window.GBChatStorageContext.peekHistory()?.sourceFolder || '';
-        _chatState.versionTargetPath = String(data.versionTargetPath || item.versionTargetPath || '');
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
         if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
@@ -219270,7 +219331,6 @@ async function openFileChat(targetPath) {
             _chatState.messages = _ensureChatMessageIds(data.messages);
             _chatState.sessionId = item.name.replace('.md', '');
             _chatState.historySourceFolder = historyContext.sourceFolder;
-            _chatState.versionTargetPath = String(data.versionTargetPath || '');
             _chatState.targetPath = targetPath;
             _chatState.lastImplicitTargetPath = '';
             if (typeof _chatRestoreSessionTargets === 'function') _chatRestoreSessionTargets(data.frontmatter || { targetPath });
@@ -219512,10 +219572,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     // 404フォールバック: 存在しないチャット → 穏やかに通知してリセット
     _chatState.messages = [];
     _chatState.sessionId = '';
-    _chatState.versionTargetPath = '';
     _chatState.targetPath = '';
     _chatState.lastImplicitTargetPath = '';
-    _chatState.versionTargetPath = '';
     window.MeldexChatCurrentTarget?.restore?.({ mode: 'detached', path: '', kind: '' });
     _setChatSessionTitle('');
     const container = _chatLiveMessagesContainer();
@@ -219568,7 +219626,6 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   const fname = path.split('/').pop().replace('.md', '');
   _chatState.sessionId = fname;
   _chatState.historySourceFolder = legacySource ? explicitSourceFolder : historyContext.sourceFolder;
-  _chatState.versionTargetPath = String(data.versionTargetPath || '');
   _chatState.targetPath = data.frontmatter?.targetPath || '';
   _chatState.lastImplicitTargetPath = '';
   if (typeof _chatRestoreSessionTargets === 'function') {
@@ -219615,11 +219672,9 @@ function chatClear() {
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
   _chatState.messages = [];
   _chatState.sessionId = '';
-  _chatState.versionTargetPath = '';
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
   if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
-  _chatState.versionTargetPath = '';
   if (typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
   } else {
@@ -219696,7 +219751,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    const result = await apiPost('/chat/save', _chatPostPayload({
+    await apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -219712,9 +219767,6 @@ async function chatAutoSave(options = {}) {
     }));
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
-      _chatState.versionTargetPath = String(result?.versionTargetPath || _chatState.versionTargetPath || '');
-      _chatState.lastAutoVersionCreated = !!result?.autoVersionCreated;
-      _chatState.lastAutoVersionName = String(result?.autoVersionName || '');
     }
     return true;
   } catch (e) {
@@ -219735,71 +219787,6 @@ function _chatYamlQuote(value) {
 function _chatHtmlEscape(value) {
   return MeldexEscape.html(value);
 }
-
-async function openCurrentChatVersions() {
-  if (!_chatState.messages.length) {
-    if (typeof showStatus === 'function') showStatus('版を表示するチャットがありません', true);
-    return false;
-  }
-  const saved = await chatAutoSave({ silent: false });
-  const path = String(_chatState.versionTargetPath || '');
-  if (!saved || !path) {
-    if (typeof showStatus === 'function') showStatus('チャットを保存してからバージョン管理を開いてください', true);
-    return false;
-  }
-  if (typeof openVersionTab !== 'function') {
-    if (typeof showStatus === 'function') showStatus('バージョン管理を開けませんでした', true);
-    return false;
-  }
-  openVersionTab(path, 'file');
-  return true;
-}
-
-(function _installChatVersionButton() {
-  const install = () => {
-    if (document.querySelector('[data-chat-version-button]')) return;
-    const title = document.getElementById('chat-title-combo');
-    const header = title?.parentElement;
-    if (!header) return;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-btn gb-btn-xs';
-    button.dataset.chatVersionButton = '';
-    button.dataset.e2eId = 'chat-open-version-history';
-    button.title = 'このチャットのバージョン管理';
-    button.setAttribute('aria-label', 'このチャットのバージョン管理');
-    button.innerHTML = typeof lucide === 'function' ? lucide('gitBranch', 12) : '版';
-    button.addEventListener('click', async () => {
-      try {
-        await openCurrentChatVersions();
-      } catch (error) {
-        if (typeof showStatus === 'function') {
-          showStatus('チャットのバージョン管理を開けませんでした: ' + (error?.message || error), true);
-        }
-      }
-    });
-    title.insertAdjacentElement('afterend', button);
-  };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
-  else install();
-})();
-
-window.MeldexChatVersionTarget = Object.freeze({
-  async flushVersionTarget(path) {
-    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath)) return false;
-    return !!(await chatAutoSave({ silent: false }));
-  },
-  async reloadVersionTarget(path) {
-    const normalize = value => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-    if (!normalize(path) || normalize(path) !== normalize(_chatState.versionTargetPath) || !_chatState.sessionId) return false;
-    return !!(await openSavedChat(
-      _chatSavedPathForSession(_chatState.sessionId),
-      '',
-      _chatState.historySourceFolder || (await window.GBChatStorageContext.resolveForHistory()).sourceFolder,
-    ));
-  },
-});
 
 function _chatExportRoleLabel(message) {
   const role = String(message?.role || '').toLowerCase();
@@ -220091,7 +220078,7 @@ async function renderChatHistory() {
       div.dataset.chatUnread = isUnread ? '1' : '0';
       div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
-      div.onmouseover = () => div.style.background = 'rgba(255,255,255,0.03)';
+      div.onmouseover = () => div.style.background = 'var(--ui-hover-bg)';
       div.onmouseout = () => div.style.background = '';
       const isActive = _chatState.sessionId && item.name === _chatState.sessionId;
       const targetName = item.targetPath ? item.targetPath.split('/').pop() : '';
@@ -226083,9 +226070,47 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const storageContext = window.GBChatStorageContext?.requireForAi
       ? await window.GBChatStorageContext.requireForAi(storageOptions)
       : null;
-    const requestWorkspaceId = String(storageContext?.workspaceId || '');
-    const requestSourceFolder = String(storageContext?.sourceFolder || '');
+    let requestWorkspaceId = String(storageContext?.workspaceId || '');
+    let requestSourceFolder = String(storageContext?.sourceFolder || '');
     if (!storageContext || (!requestWorkspaceId && !requestSourceFolder)) return false;
+    const referenceTarget = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : '';
+    if (referenceTarget && !(typeof _chatIsPseudoTargetPath === 'function' && _chatIsPseudoTargetPath(referenceTarget))) {
+      const roomMessages = _chatState.messages;
+      const roomId = _chatState.sessionId;
+      const inputBeforeResolve = input?.value;
+      let context;
+      try {
+        const workFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(referenceTarget, options) : '';
+        const absoluteTarget = /^(?:[a-z]:\/|\/)/i.test(String(referenceTarget).replace(/\\/g, '/'));
+        const source = absoluteTarget && typeof _detectSourceFolderFromPath === 'function'
+          ? _detectSourceFolderFromPath(referenceTarget) : '';
+        if (source) {
+          // 実パスへ復旧済みなら既存の登録済みルート情報を使う。実行APIは毎回範囲を再検証する。
+          context = { target_path: referenceTarget, work_folder: workFolder,
+            source_folder: source.startsWith('workspace:') ? '' : source,
+            workspace_id: source.startsWith('workspace:') ? source.slice('workspace:'.length) : '' };
+        } else {
+          context = await apiPost('/cli-chat/resolve-target', {
+            source_folder: requestSourceFolder, workspace_id: requestWorkspaceId,
+            target_path: referenceTarget, work_folder: workFolder,
+          });
+        }
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus('チャットの対象を確認できません: ' + (error?.message || error), true);
+        return false;
+      }
+      if (!requestedStreamMessages && (_chatState.messages !== roomMessages || _chatState.sessionId !== roomId
+          || input?.value !== inputBeforeResolve || _chatEffectiveTargetPath(options) !== referenceTarget)) return false;
+      requestWorkspaceId = String(context.workspace_id || '');
+      requestSourceFolder = String(context.source_folder || '');
+      if ((!requestedStreamMessages || requestedStreamMessages === _chatState.messages)
+          && typeof _chatSetCurrentTargetPath === 'function') {
+        _chatSetCurrentTargetPath(context.target_path, _chatState.currentTargetKind || '', { mode: 'manual' });
+      }
+      options = { ...options, targetPath: context.target_path, workFolder: context.work_folder,
+        ...(Array.isArray(options.targets) ? { targets: options.targets.map(item =>
+          item.path === referenceTarget ? { ...item, path: context.target_path } : item) } : {}) };
+    }
     if (!usingDeferredMessages && attachments.length > 0) {
       if (typeof _chatWaitForPendingAttachmentUploads === 'function') {
         const readyAttachments = await _chatWaitForPendingAttachmentUploads(attachments);
@@ -230631,12 +230656,16 @@ function _updateFolderDisplayFilterButton(cfg) {
   const displayIcon = document.getElementById('folder-display-icon');
   const filterBtn = document.getElementById('folder-filter-btn');
   const filterCount = document.getElementById('folder-filter-count');
-  const layoutIcons = { list: 'list', grid: 'grid3x3', waterfall: 'layoutGrid', hflow: 'galleryHorizontal' };
-  const icon = layoutIcons[_folderLayout] || 'grid3x3';
-  if (displayIcon) displayIcon.className = 'ico ico-' + icon;
+  const layoutIcons = { list: 'list', grid: 'layoutGrid', waterfall: 'layoutDashboard', hflow: 'columns' };
+  const icon = layoutIcons[_folderLayout] || 'layoutGrid';
+  if (displayIcon) {
+    displayIcon.className = 'ico';
+    displayIcon.innerHTML = lucide(icon, 16);
+  }
+  window.syncFolderLayoutControl?.();
   if (displayBtn) {
     displayBtn.dataset.layout = _folderLayout || 'grid';
-    displayBtn.title = '表示: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
+    displayBtn.title = '表示設定: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
   }
   if (!filterBtn) return;
   const active = _folderHasActiveFilters(current);
@@ -233919,7 +233948,7 @@ function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
       el.style.background = '';
     });
     row.classList.add('link-tree-selected');
-    row.style.background = 'rgba(86,156,214,0.2)';
+    row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)';
     // 展開/折りたたみもトリガー
     await _toggleExpand();
   });
@@ -234166,7 +234195,10 @@ function openViewer(url, opts) {
 
 // フォルダビュー表示設定
 function getFolderDisplayConfig() {
-  try { return JSON.parse(localStorage.getItem('folder-display-config') || '{}'); } catch { return {}; }
+  const defaults = { showName: true, showDate: true, showType: true,
+    showSize: false, showDimensions: false, showRating: false, showTags: false };
+  try { return { ...defaults, ...JSON.parse(localStorage.getItem('folder-display-config') || '{}') }; }
+  catch { return defaults; }
 }
 function saveFolderDisplayConfig(cfg) { localStorage.setItem('folder-display-config', JSON.stringify(cfg)); }
 
@@ -235265,6 +235297,7 @@ function _installFolderBlankContextMenu(container) {
   let _folderToolbarUpdateRaf = 0;
   let _folderToolbarWrappedBulkBar = false;
   let _folderToolbarSortCleanup = null;
+  let _folderToolbarChoiceTrigger = null;
 
   function _folderToolbarIcon(name, size = 16) {
     return typeof lucide === 'function' ? lucide(name, size) : '';
@@ -235806,7 +235839,9 @@ function _installFolderBlankContextMenu(container) {
   function _folderToolbarCloseExtraMenu() {
     _folderToolbarSortCleanup?.();
     _folderToolbarSortCleanup = null;
-    document.querySelectorAll('.folder-toolbar-sort-menu').forEach(menu => menu.remove());
+    document.querySelectorAll('.folder-toolbar-sort-menu, .folder-toolbar-layout-menu').forEach(menu => menu.remove());
+    _folderToolbarChoiceTrigger?.setAttribute('aria-expanded', 'false');
+    _folderToolbarChoiceTrigger = null;
   }
 
   function _folderToolbarMenuItem(menu, label, icon, action, active) {
@@ -235816,7 +235851,8 @@ function _installFolderBlankContextMenu(container) {
     button.setAttribute('role', 'menuitemradio');
     button.setAttribute('aria-checked', active ? 'true' : 'false');
     button.innerHTML = _folderToolbarIcon(icon || 'arrowUpDown', 14)
-      + '<span>' + (active ? '✓ ' : '') + (typeof esc === 'function' ? esc(label) : label) + '</span>';
+      + '<span>' + (typeof esc === 'function' ? esc(label) : label) + '</span>'
+      + (active ? '<span class="folder-toolbar-menu-check">' + _folderToolbarIcon('check', 14) + '</span>' : '');
     button.addEventListener('click', async event => {
       event.preventDefault();
       event.stopPropagation();
@@ -235860,6 +235896,14 @@ function _installFolderBlankContextMenu(container) {
         if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-toolbar-sort' });
       }, active);
     });
+    _folderToolbarMountChoiceMenu(menu, trigger);
+  }
+
+  function _folderToolbarMountChoiceMenu(menu, trigger) {
+    _folderToolbarChoiceTrigger = trigger;
+    menu._requestClose = _folderToolbarCloseExtraMenu;
+    trigger.setAttribute('aria-expanded', 'true');
+    window.attachMeldexDropdownCloseButton?.(menu, {trigger, close: _folderToolbarCloseExtraMenu});
     document.body.appendChild(menu);
     const rect = trigger.getBoundingClientRect();
     if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below', gap: 4 });
@@ -235875,7 +235919,7 @@ function _installFolderBlankContextMenu(container) {
       if (menu.contains(document.activeElement) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(keyEvent.key)) {
         keyEvent.preventDefault();
         keyEvent.stopPropagation();
-        const items = Array.from(menu.querySelectorAll('button:not(:disabled)'));
+        const items = Array.from(menu.querySelectorAll('[role="menuitemradio"]:not(:disabled)'));
         const index = items.indexOf(document.activeElement);
         const next = keyEvent.key === 'Home' ? 0 : keyEvent.key === 'End' ? items.length - 1
           : (index + (keyEvent.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
@@ -235896,6 +235940,39 @@ function _installFolderBlankContextMenu(container) {
       document.removeEventListener('pointerdown', closer, true);
       document.removeEventListener('keydown', keyboard, true);
     };
+  }
+
+  function syncFolderLayoutControl() {
+    const select = document.getElementById('folder-layout-select');
+    const trigger = document.getElementById('folder-layout-menu-btn');
+    const label = trigger?.querySelector('.folder-layout-label');
+    if (label && select) {
+      label.textContent = select.selectedOptions[0]?.textContent || '表示形式';
+      trigger.setAttribute('aria-label', '表示形式: ' + label.textContent);
+    }
+  }
+
+  function showFolderToolbarLayoutMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = event.currentTarget;
+    const wasOpen = !!document.querySelector('.folder-toolbar-layout-menu');
+    _folderToolbarCloseExtraMenu();
+    if (wasOpen) return;
+    const select = document.getElementById('folder-layout-select');
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu folder-toolbar-layout-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'フォルダの表示形式');
+    const icons = {grid:'layoutGrid', waterfall:'layoutDashboard', hflow:'columns', list:'list'};
+    Array.from(select.options).forEach(option => {
+      _folderToolbarMenuItem(menu, option.textContent, icons[option.value], () => {
+        setFolderLayout(option.value);
+        syncFolderLayoutControl();
+        trigger.focus({preventScroll:true});
+      }, select.value === option.value);
+    });
+    _folderToolbarMountChoiceMenu(menu, trigger);
   }
 
   async function toggleFolderSubfolderContents() {
@@ -235940,6 +236017,24 @@ function _installFolderBlankContextMenu(container) {
       sortButton.innerHTML = _folderToolbarIcon('arrowUpDown', 16);
       sortButton.addEventListener('click', showFolderToolbarSortMenu);
       layout.parentElement.insertBefore(sortButton, layout);
+    }
+    if (layout && !document.getElementById('folder-layout-menu-btn')) {
+      const trigger = document.createElement('button');
+      trigger.id = 'folder-layout-menu-btn';
+      trigger.type = 'button';
+      trigger.className = 'gb-select folder-layout-trigger';
+      trigger.title = '表示形式';
+      trigger.setAttribute('aria-label', '表示形式');
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.innerHTML = '<span class="folder-layout-label"></span>' + _folderToolbarIcon('chevronDown', 14);
+      trigger.addEventListener('click', showFolderToolbarLayoutMenu);
+      layout.insertAdjacentElement('afterend', trigger);
+      layout.classList.add('gb-folder-layout-native');
+      layout.tabIndex = -1;
+      layout.setAttribute('aria-hidden', 'true');
+      layout.addEventListener('change', syncFolderLayoutControl);
+      syncFolderLayoutControl();
     }
     syncFolderSubfolderContentsButtons();
   }
@@ -235994,6 +236089,7 @@ function _installFolderBlankContextMenu(container) {
   global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
   global.appendFolderOperationButtons = appendFolderOperationButtons;
   global.showFolderToolbarSortMenu = showFolderToolbarSortMenu;
+  global.syncFolderLayoutControl = syncFolderLayoutControl;
   global.toggleFolderSubfolderContents = toggleFolderSubfolderContents;
   global.syncFolderSubfolderContentsButtons = syncFolderSubfolderContentsButtons;
 
@@ -245186,7 +245282,7 @@ function renderFavorites() {
       div.appendChild(childDiv);
       (node.children || []).forEach(c => _renderFavNode(c, childDiv, depth + 1));
       // D&Dドロップ先
-      row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'rgba(86,156,214,0.2)'; });
+      row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)'; });
       row.addEventListener('dragleave', () => { row.style.background = ''; });
       row.addEventListener('drop', (e) => {
         e.preventDefault(); row.style.background = '';
@@ -249562,6 +249658,7 @@ _bindClipSearchResultDelegation();
       button.textContent = `選択した${count.toLocaleString('ja-JP')}グループをまとめて整理`;
       button.disabled = view.busy || count === 0;
       button.hidden = groups.length < 2;
+      overlay.querySelector('[data-dup-keep-all]').disabled = view.busy;
       const pending = visible.filter(index => !states[index].resolved);
       const toggle = tools.querySelector('[data-dup-page-include]');
       toggle.checked = pending.length > 0 && pending.every(index => states[index].included);
@@ -249912,7 +250009,7 @@ _bindClipSearchResultDelegation();
     overlay._dupView.busy = true;
     overlay._dupView.render();
     try {
-      if (await cfConfirm(message)) return true;
+      if (await cfConfirm(message) && overlay.isConnected) return true;
     } catch (error) {
       showStatus('整理の確認画面を開けませんでした: ' + userError(error), true);
     }
@@ -249946,7 +250043,7 @@ _bindClipSearchResultDelegation();
         replace: replaceFiles.map(filePath),
         match_type: group.type,
         threshold: 10,
-      });
+      }, { operationLabel: '重複ファイルを整理しています' });
       const results = Array.isArray(res?.results) ? res.results : [];
       const succeeded = results.filter(result => result.status === 'replaced').length;
       const failed = replaceFiles.length - succeeded;
@@ -249964,6 +250061,7 @@ _bindClipSearchResultDelegation();
       }
       await refreshFolder(overlay.dataset.folderPath || '');
     } catch (error) {
+      overlay._dupView.recordRemoved(error?.jobStatus?.result?.results || []);
       state.failed = true;
       button.disabled = false;
       button.textContent = '失敗したため再試行';
@@ -250004,45 +250102,28 @@ _bindClipSearchResultDelegation();
     let succeeded = 0;
     let failed = 0;
     try {
-      for (const plan of plans) {
-        plan.replaceFiles = plan.replaceFiles.filter(file => !plan.state.removed.has(filePath(file)));
-        if (!plan.replaceFiles.length) continue;
-        const groupButton = plan.groupElement?.querySelector('[data-dup-resolve]');
-        if (groupButton) groupButton.disabled = true;
-        try {
-          const res = await runBackgroundJob('/duplicate-resolve', {
-            background: true,
-            keep: filePath(plan.keepFile),
-            replace: plan.replaceFiles.map(filePath),
-            match_type: plan.group.type,
-            threshold: 10,
-          });
-          const results = Array.isArray(res?.results) ? res.results : [];
-          const groupSucceeded = results.filter(result => result.status === 'replaced').length;
-          const groupFailed = plan.replaceFiles.length - groupSucceeded;
-          overlay._dupView.recordRemoved(results);
-          plan.state.failed = groupFailed > 0;
-          succeeded += groupSucceeded;
-          failed += groupFailed;
-          if (groupFailed === 0 && groupSucceeded === plan.replaceFiles.length) {
-            plan.state.resolved = true;
-            if (groupButton) groupButton.innerHTML = lucide('check', 12) + ' 解決済み';
-          } else if (groupButton) {
-            groupButton.disabled = false;
-            groupButton.textContent = '失敗したため再試行';
-          }
-        } catch (_) {
-          plan.state.failed = true;
-          failed += plan.replaceFiles.length;
-          if (groupButton) {
-            groupButton.disabled = false;
-            groupButton.textContent = '失敗したため再試行';
-          }
-        }
-        const status = overlay.querySelector('[data-dup-status]');
-        if (status) status.textContent = `${plans.indexOf(plan) + 1} / ${plans.length}グループを整理中`;
-      }
+      // 全選択を1ジョブへ渡す。画面を閉じても次グループへの依頼を待たずに続行できる。
+      const res = await runBackgroundJob('/duplicate-resolve', {
+        background: true,
+        groups: plans.map(plan => ({
+          keep: filePath(plan.keepFile), replace: plan.replaceFiles.map(filePath),
+          match_type: plan.group.type, threshold: 10,
+        })),
+      }, { operationLabel: '重複ファイルを整理しています',
+        onProgress: progress => setProgress(overlay, progress) });
+      const results = Array.isArray(res?.results) ? res.results : [];
+      overlay._dupView.recordRemoved(results);
+      succeeded = results.filter(result => result.status === 'replaced').length;
+      failed = deleteCount - succeeded;
+      for (const plan of plans) plan.state.failed = !plan.state.resolved;
       showStatus(`${succeeded}件を整理${failed ? ` / ${failed}件は整理できませんでした` : 'しました'}`, failed > 0);
+      await refreshFolder(overlay.dataset.folderPath || '');
+    } catch (error) {
+      const results = error?.jobStatus?.result?.results || [];
+      overlay._dupView.recordRemoved(results);
+      for (const plan of plans) plan.state.failed = !plan.state.resolved;
+      showStatus(error?.name === 'AbortError' ? '重複ファイルの整理を中止しました'
+        : '重複ファイルを整理できませんでした: ' + userError(error), true);
       await refreshFolder(overlay.dataset.folderPath || '');
     } finally {
       overlay._dupView.busy = false;
@@ -250081,7 +250162,15 @@ _bindClipSearchResultDelegation();
       return true;
     };
     const close = reason => overlay._dupModalApi?.close(reason || 'button');
-    overlay._dupOnBeforeClose = () => !overlay._dupView?.busy && !requestCancellation();
+    overlay._dupOnBeforeClose = () => {
+      // 整理ジョブはサーバーが所有する。閉じる操作で取り消したり完了を待たせない。
+      if (overlay._dupView?.busy) {
+        showStatus('整理はバックグラウンドで続行します。進捗・中止は右下で確認できます');
+        return true;
+      }
+      requestCancellation();
+      return true;
+    };
     overlay._dupOnClose = () => {
       if (!overlay._dupCloseHandled) {
         overlay._dupCloseHandled = true;
@@ -260627,6 +260716,16 @@ function _scheduleLinkDictionaryRefreshForMutation(path) {
 }
 
 async function apiPost(path, body, options = {}) {
+  // 開いているシナリオの表示名は、本文と同じCAS保存キューで確定する。
+  // 別のタイトル書込とautosaveを並走させると、自分の変更が409になる。
+  if (String(path || '').split('?')[0] === '/outliner/rename' && body?.title_only === true
+      && ['scriptnote', 'scenario'].includes(body?.type) && window.MeldexScriptNoteTitleSave) {
+    const saved = await window.MeldexScriptNoteTitleSave(body, options?.scriptnoteEditor);
+    if (saved) {
+      _scheduleLinkDictionaryRefreshForMutation(path);
+      return saved;
+    }
+  }
   let stableCopyKey = '';
   if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
       && body && typeof body === 'object' && !body.operation_id) {

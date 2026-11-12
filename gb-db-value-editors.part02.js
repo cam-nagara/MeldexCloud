@@ -700,7 +700,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       if (propTypeConfig.cascadeFrom) {
         _validateCascadeValue(v, entityPath, propTypeConfig).then(valid => {
           if (!valid) {
-            span.style.background = 'rgba(255,100,100,0.15)';
+            span.style.background = 'color-mix(in srgb, var(--red) 15%, transparent)';
             span.title = '依存元（' + propTypeConfig.cascadeFrom + '）の値と一致しません';
           }
         });
@@ -1063,9 +1063,9 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
         const item = document.createElement('div');
         item.className = 'dd-nav-item';
         item.style.cssText = 'padding:4px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';
-        if (sel) item.style.background = 'rgba(86,156,214,0.15)';
+        if (sel) item.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)';
         item.onmouseenter = () => { item.style.background = 'var(--bg4)'; };
-        item.onmouseleave = () => { item.style.background = sel ? 'rgba(86,156,214,0.15)' : ''; };
+        item.onmouseleave = () => { item.style.background = sel ? 'color-mix(in srgb, var(--ui-selection-bg) 15%, transparent)' : ''; };
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sel;
         item.appendChild(cb);
         item.appendChild(document.createTextNode(entry.name + (entry.dangling ? '（現在の値・候補外）' : '')));

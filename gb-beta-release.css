@@ -946,7 +946,7 @@
   }
 
   body[data-cloud-mobile="1"] .meldex-dropbox-setup-modal > .gb-modal-footer .gb-btn-primary:not(:disabled) {
-    color: #fff !important;
+    color: var(--ui-accent-fg) !important;
     background: var(--ui-accent, #3478c8) !important;
     border-color: var(--ui-accent, #3478c8) !important;
   }

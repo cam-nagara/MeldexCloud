@@ -1,3 +1,4 @@
+    _ensureAnchoredMutationObserver();
     if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
     _scheduleAnchoredAnnotationRefresh();
   }
@@ -760,7 +761,7 @@ const STANDALONE_MARKUP_TOOLBAR_CSS = `
 .sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
   background: var(--accent, #569cd6);
   border-color: var(--accent, #569cd6);
-  color: #fff;
+  color: var(--ui-accent-fg, var(--ui-selection-fg));
 }
 .sa-markup-toolbar .sa-tb-btn svg {
   width: 18px;
@@ -897,4 +898,3 @@ function createMarkupToolbar(markup, parentEl) {
   colorBtn.setAttribute('aria-expanded', 'false');
   const colorSwatch = document.createElement('span');
   colorSwatch.className = 'sa-markup-color-swatch';
-  colorSwatch.style.background = markup.ann.color || PALETTE_COLORS[0];

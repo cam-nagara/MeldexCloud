@@ -634,7 +634,10 @@
     const epoch = state.memoEpoch;
     try {
       if ((await state.attachmentPromise) === false) return;
-      if (!await saveNow({ manual: true }) || epoch !== state.memoEpoch) return;
+      if (!await saveNow({ manual: true, localOnly: true }) || epoch !== state.memoEpoch) return;
+      els.memoSavedDialog.querySelector('p').textContent = isCloudMode()
+        ? '端末に保存しました。Dropboxへはバックグラウンドで送信します。'
+        : '端末に保存しました。Meldexへはバックグラウンドで送信します。';
       await new Promise(resolve => {
         els.memoSavedDialog.addEventListener('close', resolve, { once: true });
         els.memoSavedDialog.showModal();
@@ -916,7 +919,7 @@
     if (opts?.manual && (state.recording || state.speech) && !await finalizeVoiceForClose()) return false;
     await drawingController.flush?.();
     const memo = collectMemo();
-    if (!memo.server_path && !draftHasContent(memo)) return flushPendingQueue();
+    if (!memo.server_path && !draftHasContent(memo)) return opts?.localOnly ? ensureDurableRecords() : flushPendingQueue();
     const storedDraft = persistDraft(memo);
     const queued = enqueueMemo(memo);
     if (!storedDraft || !queued) {
@@ -933,6 +936,11 @@
     }
     if (!await ensureDurableRecords()) return false;
     state.flushRequested = true;
+    if (opts?.localOnly) {
+      // 入力と送信待ちは端末へ確定済み。通信待ちで次のメモを妨げない。
+      drainQueue(opts).catch(error => setStatus('送信待ちを保持しています: ' + syncFailureDetail(error), true));
+      return true;
+    }
     return drainQueue(opts);
   }
 
@@ -1051,7 +1059,7 @@
     }
     state.saving = true;
     state.savePromise = (async () => {
-      setStatus(opts && opts.manual ? '保存中...' : '自動保存中...');
+      setStatus(isCloudMode() ? '端末に保存済み・Dropboxへ送信中...' : '端末に保存済み・Meldexへ送信中...');
       try {
         let ok = false;
         do {
@@ -1169,6 +1177,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {}),
+      ...(path === '/api/quick-memo' ? { signal: AbortSignal.timeout(20000) } : {}),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || data.detail || res.statusText);
@@ -1936,6 +1945,8 @@
         : '共通タグを読み込めませんでした: ' + detail.slice(0, 160);
       state.tagCatalogError = message;
       setStatus(message, !/接続すると利用できます/.test(message));
+    } finally {
+      window.dispatchEvent(new Event('meldex:quick-memo-tags-loaded'));
     }
   }
 
@@ -2038,7 +2049,9 @@
 
   async function addNewTag() {
     try {
-      await loadTags();
+      if (document.querySelector('.qm-tag-picker-overlay')) return;
+      // 手元のタグで先に開く。遅い辞書同期は表示後に反映する。
+      loadTags();
       await showTagPicker();
     } catch (error) {
       setStatus('タグを開けませんでした: ' + (error?.message || error), true);
@@ -2507,6 +2520,7 @@
         overlay.remove();
         document.removeEventListener('keydown', onKeydown, true);
         window.removeEventListener('meldex:quick-memo-tag-sync', updateSyncStatus);
+        window.removeEventListener('meldex:quick-memo-tags-loaded', refreshCatalog);
         els.addTagBtn?.focus?.();
         resolve();
       };
@@ -2750,6 +2764,15 @@
         if (event.target === overlay) finish();
       });
       document.addEventListener('keydown', onKeydown, true);
+      const refreshCatalog = () => {
+        const active = document.activeElement;
+        const label = tree.contains(active) ? active.getAttribute('aria-label') : '';
+        const scroll = tree.scrollTop;
+        renderTree();
+        if (label) tree.querySelector('[aria-label="' + CSS.escape(label) + '"]')?.focus({ preventScroll: true });
+        tree.scrollTop = scroll;
+      };
+      window.addEventListener('meldex:quick-memo-tags-loaded', refreshCatalog);
       renderTree();
       search.focus();
     });

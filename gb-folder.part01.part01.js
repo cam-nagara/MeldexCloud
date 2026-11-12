@@ -545,12 +545,16 @@ function _updateFolderDisplayFilterButton(cfg) {
   const displayIcon = document.getElementById('folder-display-icon');
   const filterBtn = document.getElementById('folder-filter-btn');
   const filterCount = document.getElementById('folder-filter-count');
-  const layoutIcons = { list: 'list', grid: 'grid3x3', waterfall: 'layoutGrid', hflow: 'galleryHorizontal' };
-  const icon = layoutIcons[_folderLayout] || 'grid3x3';
-  if (displayIcon) displayIcon.className = 'ico ico-' + icon;
+  const layoutIcons = { list: 'list', grid: 'layoutGrid', waterfall: 'layoutDashboard', hflow: 'columns' };
+  const icon = layoutIcons[_folderLayout] || 'layoutGrid';
+  if (displayIcon) {
+    displayIcon.className = 'ico';
+    displayIcon.innerHTML = lucide(icon, 16);
+  }
+  window.syncFolderLayoutControl?.();
   if (displayBtn) {
     displayBtn.dataset.layout = _folderLayout || 'grid';
-    displayBtn.title = '表示: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
+    displayBtn.title = '表示設定: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
   }
   if (!filterBtn) return;
   const active = _folderHasActiveFilters(current);

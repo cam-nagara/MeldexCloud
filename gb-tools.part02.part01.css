@@ -1217,7 +1217,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 }
 .gb-context-menu > div:hover { background: var(--bg4); }
 .gb-context-menu > div.danger { color: var(--red); }
-.gb-context-menu > div.danger:hover { background: rgba(244,71,71,0.15); }
+.gb-context-menu > div.danger:hover { background: color-mix(in srgb,var(--red) 15%,transparent); }
 .tree-node-row.drag-over-above { box-shadow: inset 0 2px 0 var(--outliner-accent); }
 .tree-node-row.drag-over-below { box-shadow: inset 0 -2px 0 var(--outliner-accent); }
 .tree-node-row.drag-over-inside { background: color-mix(in srgb, var(--outliner-item-selected-bg) 45%, transparent); }
@@ -1378,7 +1378,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .sp-file:hover { background: var(--search-hover-bg); color: var(--search-fg); }
 .sp-match { display:block; width:100%; padding:2px 8px 2px 20px; font:inherit; font-size:12px; text-align:left; background:transparent; cursor:pointer; color:var(--search-fg); border:0; border-bottom:1px solid color-mix(in srgb, var(--search-border) 45%, transparent); }
 .sp-match:hover { background: var(--search-hover-bg); color: var(--search-fg); }
-.sp-match .sp-highlight { background: var(--orange); color: #000; border-radius: 1px; }
+.sp-match .sp-highlight { background: var(--ui-selection-bg); color: var(--ui-selection-fg); border-radius: 1px; }
 .sp-match .sp-line { color: var(--search-muted-fg); margin-right: 6px; font-size: 11px; }
 #search-panel .sp-status { padding: 4px 8px; font-size: 11px; color: var(--search-muted-fg); border-top: 1px solid var(--search-border); }
 .sp-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid var(--search-border); border-radius:4px; color:var(--search-muted-fg); cursor:pointer; flex-shrink:0; }

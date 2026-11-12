@@ -17675,6 +17675,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   const MARGIN = 4;
@@ -20738,7 +20739,7 @@ const STANDALONE_MARKUP_TOOLBAR_CSS = `
 .sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
   background: var(--accent, #569cd6);
   border-color: var(--accent, #569cd6);
-  color: #fff;
+  color: var(--ui-accent-fg, var(--ui-selection-fg));
 }
 .sa-markup-toolbar .sa-tb-btn svg {
   width: 18px;
@@ -21005,6 +21006,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;
@@ -23788,7 +23790,7 @@ document.addEventListener('DOMContentLoaded', () => {
 .sa-default-apps-body{padding:14px 18px 16px}
 .sa-default-apps-desc{font-size:13px;line-height:1.65;color:var(--fg2,#969696);margin:0 0 12px}
 .sa-default-apps-list{display:grid;gap:8px;margin:10px 0 12px}
-.sa-default-apps-row{display:flex;gap:10px;align-items:flex-start;min-height:44px;box-sizing:border-box;border:1px solid var(--border,rgba(255,255,255,.14));background:rgba(255,255,255,.035);border-radius:7px;padding:10px 11px;cursor:pointer}
+.sa-default-apps-row{display:flex;gap:10px;align-items:flex-start;min-height:44px;box-sizing:border-box;border:1px solid var(--border,rgba(255,255,255,.14));background:var(--ui-bg-control,var(--bg3));border-radius:7px;padding:10px 11px;cursor:pointer}
 .sa-default-apps-row input{margin-top:3px;accent-color:var(--accent,#569cd6)}
 .sa-default-apps-row-main{display:grid;gap:3px;min-width:0}
 .sa-default-apps-row-title{font-size:13px;font-weight:600}
@@ -23798,7 +23800,7 @@ document.addEventListener('DOMContentLoaded', () => {
 .sa-default-apps-message.error{color:var(--red,#f44747)}
 .sa-default-apps-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
 .sa-default-apps-actions button{min-height:34px;border:1px solid var(--border,rgba(255,255,255,.16));background:var(--bg3,#181c22);color:inherit;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer}
-.sa-default-apps-actions button.primary{background:var(--accent,#569cd6);border-color:var(--accent,#569cd6);color:#07110f;font-weight:650}
+.sa-default-apps-actions button.primary{background:var(--accent,#569cd6);border-color:var(--accent,#569cd6);color:var(--ui-accent-fg,var(--fg));font-weight:650}
 .sa-default-apps-actions button:disabled{opacity:.55;cursor:not-allowed}
 @media(max-width:520px){.sa-default-apps-overlay{align-items:flex-end;padding:8px}.sa-default-apps-dialog{width:100%;max-height:92vh}.sa-default-apps-close{width:44px;height:44px}.sa-default-apps-row{min-height:44px}.sa-default-apps-row input{min-width:20px;min-height:20px}.sa-default-apps-actions button{flex:1 1 auto;min-height:44px}}
 `;

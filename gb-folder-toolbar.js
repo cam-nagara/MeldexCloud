@@ -17,6 +17,7 @@
   let _folderToolbarUpdateRaf = 0;
   let _folderToolbarWrappedBulkBar = false;
   let _folderToolbarSortCleanup = null;
+  let _folderToolbarChoiceTrigger = null;
 
   function _folderToolbarIcon(name, size = 16) {
     return typeof lucide === 'function' ? lucide(name, size) : '';
@@ -558,7 +559,9 @@
   function _folderToolbarCloseExtraMenu() {
     _folderToolbarSortCleanup?.();
     _folderToolbarSortCleanup = null;
-    document.querySelectorAll('.folder-toolbar-sort-menu').forEach(menu => menu.remove());
+    document.querySelectorAll('.folder-toolbar-sort-menu, .folder-toolbar-layout-menu').forEach(menu => menu.remove());
+    _folderToolbarChoiceTrigger?.setAttribute('aria-expanded', 'false');
+    _folderToolbarChoiceTrigger = null;
   }
 
   function _folderToolbarMenuItem(menu, label, icon, action, active) {
@@ -568,7 +571,8 @@
     button.setAttribute('role', 'menuitemradio');
     button.setAttribute('aria-checked', active ? 'true' : 'false');
     button.innerHTML = _folderToolbarIcon(icon || 'arrowUpDown', 14)
-      + '<span>' + (active ? '✓ ' : '') + (typeof esc === 'function' ? esc(label) : label) + '</span>';
+      + '<span>' + (typeof esc === 'function' ? esc(label) : label) + '</span>'
+      + (active ? '<span class="folder-toolbar-menu-check">' + _folderToolbarIcon('check', 14) + '</span>' : '');
     button.addEventListener('click', async event => {
       event.preventDefault();
       event.stopPropagation();
@@ -612,6 +616,14 @@
         if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-toolbar-sort' });
       }, active);
     });
+    _folderToolbarMountChoiceMenu(menu, trigger);
+  }
+
+  function _folderToolbarMountChoiceMenu(menu, trigger) {
+    _folderToolbarChoiceTrigger = trigger;
+    menu._requestClose = _folderToolbarCloseExtraMenu;
+    trigger.setAttribute('aria-expanded', 'true');
+    window.attachMeldexDropdownCloseButton?.(menu, {trigger, close: _folderToolbarCloseExtraMenu});
     document.body.appendChild(menu);
     const rect = trigger.getBoundingClientRect();
     if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below', gap: 4 });
@@ -627,7 +639,7 @@
       if (menu.contains(document.activeElement) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(keyEvent.key)) {
         keyEvent.preventDefault();
         keyEvent.stopPropagation();
-        const items = Array.from(menu.querySelectorAll('button:not(:disabled)'));
+        const items = Array.from(menu.querySelectorAll('[role="menuitemradio"]:not(:disabled)'));
         const index = items.indexOf(document.activeElement);
         const next = keyEvent.key === 'Home' ? 0 : keyEvent.key === 'End' ? items.length - 1
           : (index + (keyEvent.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
@@ -648,6 +660,39 @@
       document.removeEventListener('pointerdown', closer, true);
       document.removeEventListener('keydown', keyboard, true);
     };
+  }
+
+  function syncFolderLayoutControl() {
+    const select = document.getElementById('folder-layout-select');
+    const trigger = document.getElementById('folder-layout-menu-btn');
+    const label = trigger?.querySelector('.folder-layout-label');
+    if (label && select) {
+      label.textContent = select.selectedOptions[0]?.textContent || '表示形式';
+      trigger.setAttribute('aria-label', '表示形式: ' + label.textContent);
+    }
+  }
+
+  function showFolderToolbarLayoutMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = event.currentTarget;
+    const wasOpen = !!document.querySelector('.folder-toolbar-layout-menu');
+    _folderToolbarCloseExtraMenu();
+    if (wasOpen) return;
+    const select = document.getElementById('folder-layout-select');
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu folder-toolbar-layout-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'フォルダの表示形式');
+    const icons = {grid:'layoutGrid', waterfall:'layoutDashboard', hflow:'columns', list:'list'};
+    Array.from(select.options).forEach(option => {
+      _folderToolbarMenuItem(menu, option.textContent, icons[option.value], () => {
+        setFolderLayout(option.value);
+        syncFolderLayoutControl();
+        trigger.focus({preventScroll:true});
+      }, select.value === option.value);
+    });
+    _folderToolbarMountChoiceMenu(menu, trigger);
   }
 
   async function toggleFolderSubfolderContents() {
@@ -692,6 +737,24 @@
       sortButton.innerHTML = _folderToolbarIcon('arrowUpDown', 16);
       sortButton.addEventListener('click', showFolderToolbarSortMenu);
       layout.parentElement.insertBefore(sortButton, layout);
+    }
+    if (layout && !document.getElementById('folder-layout-menu-btn')) {
+      const trigger = document.createElement('button');
+      trigger.id = 'folder-layout-menu-btn';
+      trigger.type = 'button';
+      trigger.className = 'gb-select folder-layout-trigger';
+      trigger.title = '表示形式';
+      trigger.setAttribute('aria-label', '表示形式');
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.innerHTML = '<span class="folder-layout-label"></span>' + _folderToolbarIcon('chevronDown', 14);
+      trigger.addEventListener('click', showFolderToolbarLayoutMenu);
+      layout.insertAdjacentElement('afterend', trigger);
+      layout.classList.add('gb-folder-layout-native');
+      layout.tabIndex = -1;
+      layout.setAttribute('aria-hidden', 'true');
+      layout.addEventListener('change', syncFolderLayoutControl);
+      syncFolderLayoutControl();
     }
     syncFolderSubfolderContentsButtons();
   }
@@ -746,6 +809,7 @@
   global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
   global.appendFolderOperationButtons = appendFolderOperationButtons;
   global.showFolderToolbarSortMenu = showFolderToolbarSortMenu;
+  global.syncFolderLayoutControl = syncFolderLayoutControl;
   global.toggleFolderSubfolderContents = toggleFolderSubfolderContents;
   global.syncFolderSubfolderContentsButtons = syncFolderSubfolderContentsButtons;
 

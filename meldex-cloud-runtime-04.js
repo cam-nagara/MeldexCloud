@@ -22765,6 +22765,13 @@
   const visibleAiPanels = () => [...document.querySelectorAll('[id="chat-llm-panel"]')]
     .filter(panel => !panel.closest('[data-gb-snapshot="true"]'));
 
+  function usesLocalCli() {
+    const runtime = window.MeldexRuntimeAdapter;
+    if (runtime?.isPwaMode?.() || runtime?.isDropboxMode?.() || runtime?.isServerMode?.()) return false;
+    const provider = typeof _chatState !== 'undefined' ? _chatState.provider : '';
+    return window.GBChatCli?.isCliChatProvider?.(provider) === true;
+  }
+
   function element(tag, className, value) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -22878,6 +22885,7 @@
     const view = currentReadinessView();
     visibleAiPanels().forEach(panel => {
       const root = ensureStatusUi(panel);
+      root.hidden = usesLocalCli();
       root.dataset.state = view.state;
       root.querySelector('.external-responder-status-value').textContent = view.label;
       root.querySelector('.external-responder-status-chip').title = view.action || 'ワークスペースチャットへ返答する管理者PCのAI';
@@ -22886,6 +22894,8 @@
 
   async function refreshReadiness() {
     const workspaceId = currentWorkspaceId();
+    // このPCで直接実行するCLIと、別PCへ依頼する署名済み返答AIは別の経路。
+    if (usesLocalCli()) { readiness = { workspaceId, snapshot: null, error: null }; renderReadiness(); return readiness; }
     if (!workspaceId) { readiness = { workspaceId: '', snapshot: null, error: null }; renderReadiness(); return readiness; }
     try {
       const snapshot = await apiFetch('/workspace-cli/phase4a/presence' + query(workspaceId), { silentError: true });
@@ -23162,6 +23172,9 @@
     visibleAiPanels().forEach(ensureStatusUi); renderReadiness(); renderRequestCards();
     document.querySelectorAll('#settings-workspace-cli-relay-container').forEach(renderSecuritySettings);
     document.addEventListener('click', handleClick, true); document.addEventListener('click', clearUnreadOnAiTab, true);
+    document.addEventListener('change', event => {
+      if (event.target?.matches?.('#chat-provider')) refreshReadiness();
+    });
     const observer = new MutationObserver((records) => {
       const added = records.flatMap(record => [...record.addedNodes]).filter(node => node.nodeType === 1);
       if (!added.some(node => node.matches?.('#chat-llm-panel,#chat-team-panel,#settings-workspace-cli-relay-container')
@@ -23281,7 +23294,10 @@
     }
     try {
       popup.document.title = 'Meldex 認証';
-      popup.document.body.innerHTML = '<p style="font-family:sans-serif;color:#888;text-align:center;margin-top:40vh;">読み込み中…</p>';
+      const colors = getComputedStyle(document.documentElement);
+      popup.document.body.style.background = colors.getPropertyValue('--bg');
+      popup.document.body.style.color = colors.getPropertyValue('--fg2');
+      popup.document.body.innerHTML = '<p style="font-family:sans-serif;text-align:center;margin-top:40vh;">読み込み中…</p>';
     } catch {}
     return popup;
   }
@@ -43009,11 +43025,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     if (ok > 0) {
       if (typeof loadOutliner === 'function') {
-        loadOutliner({ force: true, reason: 'sheet-entry-intake' });
+        await loadOutliner({ force: true, reason: 'sheet-entry-intake' });
       }
       // 開いているシートがあれば再読込
-      if (typeof selectDatabase === 'function' && window.activeDatabasePath === normSheet) {
-        selectDatabase(normSheet, { silent: true });
+      if (typeof options.refreshView === 'function') {
+        await options.refreshView();
+      } else if (typeof selectDatabase === 'function' && window.activeDatabasePath === normSheet) {
+        await selectDatabase(normSheet, undefined, { silent: true, forceReload: true });
       }
     }
 
@@ -46144,7 +46162,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const opts = options || {};
     const level = isError === 'warning' ? 'warning' : (isError ? 'error' : 'ok');
     bar.style.background = level === 'error' ? '#7a2f2f' : (level === 'warning' ? '#6b4d1f' : '#234d2f');
-    bar.style.color = '#fff';
+    bar.style.color = 'var(--ui-accent-fg)';
     bar.dataset.cloudPersistent = level === 'ok' ? '0' : '1';
     bar.dataset.cloudBannerKind = opts.kind || '';
     bar.textContent = '';
@@ -46691,7 +46709,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const body = document.createElement('div');
       body.className = 'meldex-retired-server-body';
       body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">Meldex共有サーバー機能は終了しました。共同ワークスペースはDropboxへ一本化されます。</div>
-        <div style="margin-top:12px;padding:10px 12px;border:1px solid #4b4433;border-radius:8px;background:#2d291f;color:#e1cf9b;font-size:12px;line-height:1.7;">
+        <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--orange);border-radius:8px;background:color-mix(in srgb,var(--orange) 15%,var(--bg2));color:var(--fg);font-size:12px;line-height:1.7;">
           管理者PCやNASにある既存ファイルは移動・削除されません。NAS内のファイルは、デスクトップ版のソースフォルダとして引き続き参照できます。
         </div>`;
       const localButton = document.createElement('button');
@@ -46866,7 +46884,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           </div>
           <div style="font-size:12px;color:var(--fg2);line-height:1.7;margin-top:8px;">この端末だけで使う場合は、下の「この端末に保存して使う」に切り替えられます。</div>
         </div>
-        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
+        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--orange) 15%,var(--bg2));color:var(--fg);font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <div class="meldex-cloud-step-grid" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;font-size:12px;color:var(--fg2);">
           <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">1. Dropboxに接続</div>
           <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--ui-bg-control,var(--bg3));">2. フォルダを選ぶ</div>
@@ -46921,7 +46939,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             <div style="margin-top:8px;font-size:12px;color:var(--fg2);line-height:1.6;">必要権限: <code>account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read</code></div>
           </div>
         </details>
-        <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
+        <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--red) 15%,var(--bg2));color:var(--red);font-size:12px;line-height:1.6;"></div>
       `;
       const localButton = document.createElement('button');
       localButton.id = 'cloud-switch-legacy';
@@ -49635,6 +49653,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   const MARGIN = 4;
@@ -52698,7 +52717,7 @@ const STANDALONE_MARKUP_TOOLBAR_CSS = `
 .sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
   background: var(--accent, #569cd6);
   border-color: var(--accent, #569cd6);
-  color: #fff;
+  color: var(--ui-accent-fg, var(--ui-selection-fg));
 }
 .sa-markup-toolbar .sa-tb-btn svg {
   width: 18px;
@@ -52965,6 +52984,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
   const vw = document.documentElement.clientWidth;
@@ -57972,6 +57992,280 @@ const MeldexDnD = (() => {
   };
   window.MeldexOsFileIntake = { isSupported, pasteIntoFolder, dispatchFiles, markInternalCopy };
 })();
+
+;
+
+/* === gb-external-file-drop.js === */
+;
+/* External drops share destination routing; app editors retain their own saves. */
+(function (global) {
+  'use strict';
+  if (global.MeldexExternalFileDrop) return;
+  const internal = type => /^application\/(?:x-meldex-|meldex-|x-gb-)/i.test(type)
+    || ['text/x-tree-path','application/x-annotation','application/x-cal-event','application/x-tab-idx'].includes(type);
+  const list = values => Object.assign(Array.from(values || []), {item(index) { return this[index] || null; }});
+  const parent = path => { const value = String(path || '').replace(/\\/g, '/'); return value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : ''; };
+  const shown = element => element?.isConnected && element.getClientRects().length > 0;
+  let highlighted = null;
+  function clearHighlight() {
+    highlighted?.removeAttribute('data-meldex-external-drop-active'); highlighted = null;
+  }
+
+  // Chromium protects the original store as soon as the drop callback returns.
+  // Acquire files, directory entries and strings before any receiver can await.
+  function snapshot(transfer) {
+    const types = Array.from(transfer?.types || []);
+    const strings = Object.fromEntries(types.filter(type => type !== 'Files').map(type => [type.toLowerCase(), transfer.getData(type)]));
+    const items = list(Array.from(transfer?.items || []).map(item => {
+      const file = item.kind === 'file' ? item.getAsFile?.() : null;
+      const entry = item.kind === 'file' ? item.webkitGetAsEntry?.() : null;
+      return {kind:item.kind, type:item.type, getAsFile:() => file, webkitGetAsEntry:() => entry,
+        getAsString:callback => callback(strings[item.type.toLowerCase()] || '')};
+    }));
+    const result = {types, items, files:list(transfer?.files), effectAllowed:transfer.effectAllowed,
+      getData:type => strings[String(type).toLowerCase()] || ''};
+    Object.defineProperty(result, 'dropEffect', {get:() => transfer.dropEffect, set:value => { transfer.dropEffect = value; }});
+    return result;
+  }
+  function external(transfer) {
+    const types = Array.from(transfer?.types || []);
+    return !types.some(internal) && (types.includes('Files') || types.includes('text/uri-list')
+      || types.some(type => type.toLowerCase() === 'downloadurl') || types.includes('text/x-moz-url') || types.includes('text/html'));
+  }
+  function componentFor(element) {
+    const host = element.closest('[data-tab-id]');
+    const pane = element.closest('.gb-pane');
+    const tab = pane && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(pane.dataset.paneId) : null;
+    const component = typeof getComponentInstance === 'function' ? getComponentInstance(host?.dataset.tabId || tab?.id) : null;
+    return {tab, component, pane, state:component?.state || {}};
+  }
+  function defaultFolder() {
+    if (typeof _homeFolderPath !== 'undefined' && _homeFolderPath) return _homeFolderPath;
+    return typeof state !== 'undefined' ? state.vaultPath || '' : '';
+  }
+  function routeFor(element) {
+    if (!element?.closest) return null;
+    const fileInput = element.closest('input[type="file"]');
+    if (fileInput) return {kind:'input', target:fileInput};
+    if (element.closest('.modal-overlay,[role="dialog"][aria-modal="true"]')) return null;
+    const {tab, component, pane, state:local} = componentFor(element);
+    const auxiliary = element.closest('.gb-subpanel') ? global.GBSubPanel?.getCurrentTarget?.() : null;
+    const filePath = auxiliary?.path || tab?.path || local.scenarioPath || local.path || local.filePath
+      || local.mediaPath || local.pagePath || local.boardPath || local.mapPath || '';
+    const tree = element.closest('#outliner-tree');
+    const folder = element.closest('#folder-view,.gb-subpanel-folder-root,.gb-folder-root');
+    if (tree || folder) {
+      const node = element.closest('.tree-node')?._nodeData;
+      const card = element.closest('.fv-item');
+      let path = node?.path || card?.dataset.path || '';
+      const type = node?.type || card?.dataset.itemType || '';
+      if (path && type !== 'folder' && type !== 'database') path = parent(path);
+      if (!path) path = auxiliary?.path || local.folderPath || local.path || tab?.path
+        || (folder && typeof _folderPath !== 'undefined' ? _folderPath : '') || defaultFolder();
+      return {kind:'folder', path, type:type === 'database' ? 'database' : 'folder'};
+    }
+    const imageCell = element.closest('.gb-image-cell');
+    if (imageCell) return {kind:'native', target:imageCell};
+    const note = element.closest('#page-content,#entity-freetext,.gb-subpanel-note-content,[data-editor-local-id="page-content"]');
+    const noteRoot = element.closest('#page-view,.gb-note-root,.gb-tool-editor');
+    const editable = note || noteRoot?.querySelector('#page-content,[contenteditable="true"]');
+    if (editable) return {kind:'native', target:editable, editable:true};
+    const canvas = element.closest('#bd-canvas') || element.closest('.gb-board-root,.gb-tool-board')?.querySelector('#bd-canvas');
+    if (canvas) return {kind:'native', target:canvas};
+    const sheet = element.closest('#db-view-container,.gb-database-root');
+    if (sheet || (tab?.type === 'database' && !auxiliary)) {
+      const path = auxiliary?.path || local.dbPath || tab?.path || global.activeDatabasePath || global.currentDbPath || '';
+      return {kind:'sheet', path, refreshView:async () => {
+        if (sheet && !shown(sheet)) return;
+        if (tab && pane && GBTabs.getActiveTab(pane.dataset.paneId)?.id !== tab.id) return;
+        if (component?._embeddedSheet?.open) await component._embeddedSheet.open(path, {silent:true, forceReload:true});
+        else if (typeof selectDatabase === 'function') {
+          const context = pane && typeof getPaneContext === 'function' ? getPaneContext(pane.dataset.paneId) : undefined;
+          await selectDatabase(path, context, {silent:true, forceReload:true});
+        }
+      }};
+    }
+    const chat = element.closest('.gb-chat-sidebar,#rp-chat,#chat-messages,#chat-input,#chat-rich-input,#team-messages,#team-input');
+    if (chat && !auxiliary) {
+      const mode = element.closest('#team-messages,#team-input') || (typeof _chatMode !== 'undefined' && _chatMode === 'team') ? 'team' : 'llm';
+      return {kind:'chat', mode, input:mode === 'team' ? 'team-input' : 'chat-input'};
+    }
+    // Scenario, calendar, map, viewer, app toolbars and empty panel areas accept
+    // a file beside their current document (or in Home for a documentless app).
+    if (tab?.type === 'folder' && !auxiliary) {
+      return {kind:'folder', type:'folder', path:local.folderPath || tab.path || defaultFolder()};
+    }
+    const virtualPath = /^[a-z][a-z0-9+.-]*:/i.test(filePath) && !/^[a-z]:[\\/]/i.test(filePath);
+    return {kind:'folder', type:'folder', path:(!virtualPath && filePath && parent(filePath)) || defaultFolder()};
+  }
+  function eventFor(event, transfer) {
+    return {target:event.target, dataTransfer:transfer, clientX:event.clientX, clientY:event.clientY,
+      altKey:event.altKey, ctrlKey:event.ctrlKey, metaKey:event.metaKey, shiftKey:event.shiftKey,
+      preventDefault() {}, stopPropagation() {}};
+  }
+  function pinReceiver(route) {
+    if (route.kind === 'native') {
+      const target = route.target, path = target.dataset.path || target.dataset.entityPath || '';
+      const generation = target._openPageLoadSeq;
+      const board = target.id === 'bd-canvas' && typeof bd !== 'undefined' ? [bd.path, bd._openSeq] : null;
+      route.isCurrent = () => shown(target) && path === (target.dataset.path || target.dataset.entityPath || '')
+        && generation === target._openPageLoadSeq && (!board || (bd.path === board[0] && bd._openSeq === board[1]));
+    } else if (route.kind === 'chat') {
+      const messages = typeof _chatState !== 'undefined' ? _chatState.messages : null;
+      const room = typeof _teamCurrentRoom !== 'undefined' ? _teamCurrentRoom : null;
+      route.isCurrent = () => (route.mode !== 'llm' || typeof _chatState === 'undefined' || _chatState.messages === messages)
+        && (route.mode !== 'team' || _teamCurrentRoom === room);
+    }
+    return route;
+  }
+  function filename(value, fallback) {
+    const name = String(value || '').split(/[/\\]/).pop().replace(/[<>:"|?*\x00-\x1f]/g, '_').trim();
+    return name && name !== '.' && name !== '..' ? name.slice(0, 180) : fallback;
+  }
+  function webItem(transfer) {
+    let image = '';
+    const html = transfer.getData('text/html');
+    if (html) {
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      image = parsed.querySelector('img[src]')?.getAttribute('src') || '';
+    }
+    const download = transfer.getData('DownloadURL').match(/^([^:]+):([^:]*):(https?:\/\/.*)$/i);
+    const uri = transfer.getData('text/uri-list').split(/\r?\n/).find(line => line.trim() && !line.startsWith('#'));
+    const moz = transfer.getData('text/x-moz-url').split(/\r?\n/)[0];
+    if (!image && !download && !uri && !moz) return null;
+    const raw = image || download?.[3] || uri || moz || transfer.getData('text/plain');
+    let url;
+    try { url = new URL(raw.trim()); } catch { return null; }
+    if (!['http:', 'https:', 'data:', 'blob:'].includes(url.protocol)) return null;
+    let basename = url.pathname.split('/').pop() || '';
+    try { basename = decodeURIComponent(basename); } catch {}
+    basename = filename(basename, 'download');
+    const extension = url.pathname.match(/\.([a-z0-9-]{1,24})$/i)?.[1]?.toLowerCase();
+    const downloadable = !!image || !!download || url.protocol === 'data:' || url.protocol === 'blob:'
+      || (!!extension && !['html','htm','xhtml','php','asp','aspx','jsp'].includes(extension));
+    return {url:url.href, image:!!image, downloadable, name:filename(download?.[2], basename),
+      label:url.hostname || 'リンク'};
+  }
+  async function webFiles(item) {
+    if (!item.downloadable) {
+      return [new File(['[InternetShortcut]\r\nURL=' + item.url + '\r\n'], filename(item.label, 'リンク') + '.url', {type:'application/internet-shortcut'})];
+    }
+    let blob, name = item.name;
+    if (/^https?:/i.test(item.url)) {
+      let result;
+      try { result = await apiPost('/external-drop/file', {url:item.url, filename:name, image:item.image}); }
+      catch (error) { throw new Error('ドロップしたファイルを取得できませんでした: ' + (error?.userMessage || error?.message || '通信エラー')); }
+      if (!result?.ok || !result.data) throw new Error('ドロップしたファイルを取得できませんでした');
+      const bytes = Uint8Array.from(atob(result.data), char => char.charCodeAt(0));
+      blob = new Blob([bytes], {type:result.content_type}); name = result.filename;
+    } else {
+      const response = await fetch(item.url);
+      if (!response.ok) throw new Error('ドロップした画像を取得できませんでした');
+      blob = await response.blob();
+    }
+    if (blob.size > 25 * 1024 * 1024) throw new Error('ドロップしたファイルは25MB以下にしてください');
+    if (!/\.[\w-]+$/.test(name) && blob.type.startsWith('image/')) name += '.' + ({'image/jpeg':'jpg','image/svg+xml':'svg'}[blob.type] || blob.type.split('/')[1] || 'png');
+    return [new File([blob], filename(name, 'download'), {type:blob.type})];
+  }
+  function fileTransfer(files) {
+    const transfer = new DataTransfer();
+    files.forEach(file => transfer.items.add(file));
+    return snapshot(transfer);
+  }
+  function dispatchNative(route, transfer, event) {
+    if (!shown(route.target)) throw new Error('ドロップ先が閉じられたため取り込みを中止しました');
+    if (route.editable && !route.target.isContentEditable) throw new Error('読み取り専用のノートへは取り込めません');
+    const nativeTransfer = new DataTransfer();
+    transfer.files.forEach(file => nativeTransfer.items.add(file));
+    if (route.kind === 'input') {
+      if (route.target.disabled) throw new Error('このファイル選択は利用できません');
+      route.target.files = nativeTransfer.files;
+      route.target.dispatchEvent(new Event('change', {bubbles:true}));
+      return;
+    }
+    const rect = route.target.getBoundingClientRect();
+    const drop = new DragEvent('drop', {bubbles:true, cancelable:true, dataTransfer:nativeTransfer,
+      clientX:event.clientX >= rect.left && event.clientX <= rect.right ? event.clientX : rect.left + rect.width / 2,
+      clientY:event.clientY >= rect.top && event.clientY <= rect.bottom ? event.clientY : rect.top + rect.height / 2});
+    Object.defineProperty(drop, 'meldexExternalFileDrop', {value:true});
+    Object.defineProperty(drop, 'dataTransfer', {value:transfer});
+    route.target.dispatchEvent(drop);
+  }
+  async function receive(route, transfer, event) {
+    if (route.isCurrent && !route.isCurrent()) throw new Error('ドロップ先が切り替わったため取り込みを中止しました');
+    if (route.kind === 'native' || route.kind === 'input') { dispatchNative(route, transfer, event); return; }
+    if (route.kind === 'chat') {
+      if (typeof _chatMessageDropHandle !== 'function') throw new Error('チャットを開いてからドロップしてください');
+      await _chatMessageDropHandle(eventFor(event, transfer), route.input, route.mode); return;
+    }
+    if (!route.path) throw new Error('先に保存先のフォルダを選択してください');
+    if (typeof isItemLocked === 'function' && isItemLocked(route.path)) throw new Error('編集ロック中の保存先へは取り込めません');
+    if (route.kind === 'sheet') {
+      await global.MeldexSheetEntryAttachments.intakeDropToSheet(route.path, eventFor(event, transfer), {refreshView:route.refreshView}); return;
+    }
+    if (typeof _folderImportOsDrop !== 'function') throw new Error('ファイルの取り込み処理を利用できません');
+    await _folderImportOsDrop(eventFor(event, transfer), {type:route.type, path:route.path});
+  }
+  function fail(error) { global.showStatus?.(error?.userMessage || error?.message || 'ファイルの取り込みに失敗しました', true); }
+  document.addEventListener('dragover', event => {
+    if (!external(event.dataTransfer)) return;
+    const route = routeFor(event.target);
+    if (!route) return;
+    event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+    if (route.kind !== 'native' && route.kind !== 'input') event.stopPropagation();
+    const target = event.target.closest('.tree-node-row,.fv-item,#folder-grid,#chat-messages,#chat-rich-input,#db-view-container');
+    if (highlighted !== target) { clearHighlight(); highlighted = target; highlighted?.setAttribute('data-meldex-external-drop-active', '1'); }
+  }, true);
+  document.addEventListener('dragleave', event => { if (!highlighted?.contains(event.relatedTarget)) clearHighlight(); }, true);
+  document.addEventListener('dragend', clearHighlight, true);
+  document.addEventListener('drop', event => {
+    if (event.meldexExternalFileDrop || !external(event.dataTransfer)) return;
+    clearHighlight();
+    const transfer = snapshot(event.dataTransfer);
+    Object.defineProperty(event, 'dataTransfer', {value:transfer});
+    const route = routeFor(event.target);
+    if (!route) return;
+    pinReceiver(route);
+    // Ordinary editor file drops keep their actual target and existing handler.
+    if (transfer.files.length && route.kind === 'native' && route.target.contains(event.target)) return;
+    const item = transfer.files.length || transfer.items.some(entry => entry.kind === 'file') ? null : webItem(transfer);
+    if (!transfer.files.length && !transfer.items.some(entry => entry.kind === 'file') && !item) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    // Pin destination now: a later app/tab change cannot redirect the write.
+    global.MeldexExternalFileDrop.pending = Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer)
+      .then(data => receive(route, data, event)).catch(fail);
+  }, true);
+  // Trusted Meldex viewers use a separate document, so their drops do not
+  // bubble into the app. Import beside the viewer's current file in its parent.
+  function bindViewer(frame) {
+    if (frame?.tagName !== 'IFRAME') return;
+    let child;
+    try {
+      const url = new URL(frame.src, location.href);
+      if (url.origin !== location.origin || !['viewer','viewer.html','pdf-viewer.html','slideshow.html'].includes(url.pathname.split('/').pop())) return;
+      child = frame.contentDocument;
+    } catch { return; }
+    if (!child || child.meldexExternalFileDropBound) return;
+    child.meldexExternalFileDropBound = true;
+    child.addEventListener('dragover', event => {
+      if (!external(event.dataTransfer)) return;
+      event.preventDefault(); event.stopImmediatePropagation(); event.dataTransfer.dropEffect = 'copy';
+    }, true);
+    child.addEventListener('drop', event => {
+      if (!external(event.dataTransfer)) return;
+      const transfer = snapshot(event.dataTransfer), route = routeFor(frame);
+      if (!route) return;
+      const item = transfer.files.length ? null : webItem(transfer);
+      if (!transfer.files.length && !item) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      global.MeldexExternalFileDrop.pending = Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer)
+        .then(data => receive(route, data, event)).catch(fail);
+    }, true);
+  }
+  document.addEventListener('load', event => bindViewer(event.target), true);
+  document.querySelectorAll('iframe').forEach(bindViewer);
+  global.MeldexExternalFileDrop = {snapshot, routeFor, webItem, pending:null};
+}(window));
 
 ;
 
@@ -69396,6 +69690,8 @@ ${reason.message}`
 
   // フォルダ表示レイアウト
   regId('folder-layout-select', { label: 'フォルダ表示', desc: 'フォルダビューの表示形式（リスト/グリッド等）を選びます' });
+  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リストから表示方法を選びます' });
+  regId('folder-display-btn', { label: '表示設定', desc: 'フォルダパネルのサムネイルサイズや表示項目を変更します' });
 
   // チャットモデル選択
   regId('chat-search-scope',  { label: '検索範囲', desc: 'チャット内検索の対象範囲を選びます' });
@@ -73622,7 +73918,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 1;
+  const THEME_UI_DEFAULTS_VERSION = 2;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -73925,7 +74221,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     ['.sidebar-section-header, .sidebar-header', 'folder-section'],
     ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item', 'folder'],
     ['.tree-node-row[data-item-type="folder"]', 'folder-tree-folder'],
-    ['#folder-grid .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
+    ['#folder-grid .fv-item[data-item-type="folder"], .gb-subpanel-folder-root .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
     ['#page-content h1, #page-content h2, #page-content h3, #page-content h4, #page-content h5, #page-content h6, #entity-freetext h1, #entity-freetext h2, #entity-freetext h3, #entity-freetext h4, #entity-freetext h5, #entity-freetext h6, #dp-editable h1, #dp-editable h2, #dp-editable h3, #dp-editable h4, #dp-editable h5, #dp-editable h6', 'note-heading'],
     ['#note-toc .note-toc-item', 'note-toc-item'],
     ['.sn2-detail-item[data-kind="dialogue"]', 'scriptnote-type-dialogue'],
@@ -74842,6 +75138,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
     }
     cfg['folder-tree-folder'].selected.bg = cfg.folder.selected.bg;
+    cfg['folder-panel-folder'].selected.bg = cfg.folder.selected.bg;
     return cfg;
   }
 
@@ -75231,6 +75528,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (/-(?:selected|selection|active)-fg$/.test(key)) theme.ui.cssVars[key] = '#ffffff';
       }
       theme.ui.cssVars['--ui-accent-fg'] = '#ffffff';
+      if (isThemeLight(theme)) theme.ui.cssVars['--ui-fg-strong'] = theme.ui.cssVars['--fg'];
       for (const states of Object.values(theme.ui.themeUiApplications || {})) {
         if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
       }
@@ -75669,7 +75967,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       document.head.appendChild(style);
     }
     const rules = [];
-    const autoTone = getThemeUiAutoTone();
+    const autoTone = options.autoTone ? normalizeThemeUiAutoTone(options.autoTone) : getThemeUiAutoTone();
     document.documentElement.style.setProperty('--theme-ui-auto-light-percent', `${autoTone.light}%`);
     document.documentElement.style.setProperty('--theme-ui-auto-dark-percent', `${autoTone.dark}%`);
     THEME_UI_TARGETS.forEach(target => {
@@ -76189,6 +76487,16 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
     if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
+    if (options.runtimeOnly === true) {
+      // Auxiliary windows render a saved snapshot without changing the main
+      // window's preferences or publishing theme-change events.
+      const defaults = getBuiltInThemes().find(theme => theme.id === themeDef.id) || themeDef;
+      _activeThemeColorSet = paintThemeColorSet(resolveThemeColorSet(themeDef), { themeDef, bindTargets: false });
+      applyThemeUiApplications(resolveSavedThemeUiApplications(defaults, themeDef.ui?.themeUiApplications), {
+        autoTone: themeDef.ui?.themeUiAutoTone, forceTargets: true,
+      });
+      return;
+    }
     const preservePresetAccent = getThemeAccentPolicy(themeDef).kind === 'system-or-default';
     const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, {
       preserveStored: preservePresetAccent || options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true,
@@ -76497,16 +76805,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
-          const previous = clone(applications);
-          previous['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
-          const normalized = normalizeThemeUiApplications(stored);
-          // Only migrate an exact former builtin default, never a user's
-          // different colors or an explicitly saved auto-color preference.
-          const unchangedBuiltin = themeDef.builtIn === true
-            && [previous, _defaultThemeUiApplications()].some(legacy =>
-              JSON.stringify(normalized) === JSON.stringify(legacy));
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(unchangedBuiltin ? applications : normalized));
+            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
           wroteApplications = true;
         }
       }
@@ -76529,6 +76829,27 @@ async function _applyImportedCustomColors(rawColors, mode) {
         dispatchThemeUiAutoToneChange({ tone: autoTone, fromTheme: true });
       }
     }
+  }
+
+  function resolveSavedThemeUiApplications(themeDef, stored) {
+    const applications = normalizeThemeUiApplications(themeDef?.ui?.themeUiApplications);
+    if (!stored || !Object.keys(stored).length) return applications;
+    const normalized = normalizeThemeUiApplications(stored);
+    if (stored._defaultsVersion === THEME_UI_DEFAULTS_VERSION || themeDef?.builtIn !== true) return normalized;
+    const previous = clone(applications);
+    previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+    const legacyDefaults = [previous];
+    if (stored._defaultsVersion == null) {
+      const oldTreeDefaults = clone(previous);
+      oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      const treeOnlyDefaults = clone(applications);
+      treeOnlyDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
+      legacyDefaults.push(oldTreeDefaults, treeOnlyDefaults, _defaultThemeUiApplications());
+    }
+    // Only exact former builtin defaults migrate. Explicit current auto colors
+    // and customized legacy applications retain their original values.
+    return legacyDefaults.some(legacy => JSON.stringify(normalized) === JSON.stringify(legacy))
+      ? applications : normalized;
   }
 
   function normalizeCustomThemePayload(themeDef, fallbackName) {
@@ -81783,7 +82104,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     button.id = id;
     button.type = 'button';
     button.className = `gb-btn meldex-offline-choice-button${primary ? ' meldex-offline-choice-button-primary' : ''}`;
-    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
+    button.style.cssText = `display:block;height:auto;min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;${primary ? 'border-color:var(--ui-accent);background:var(--ui-bg-control-active,var(--ui-selection-bg));' : ''}`;
     const strong = document.createElement('strong');
     strong.textContent = title;
     strong.style.cssText = 'display:block;font-size:16px;line-height:1.5;margin-bottom:5px;';
@@ -81902,7 +82223,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         busy = false;
         _setChoiceBusy(enableButton, onlineButton, overlay, false);
         statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}　オンライン時だけ使うことはできます。`;
-        statusElement.style.color = '#f7b4c0';
+        statusElement.style.color = 'var(--red)';
       }
     });
     onlineButton.addEventListener('click', () => {

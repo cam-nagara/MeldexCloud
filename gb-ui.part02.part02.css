@@ -313,16 +313,16 @@
   font-size: var(--ui-font-12);
   min-height: 18px;
 }
-.gb-diff-add { background: rgba(106, 153, 85, 0.2); }
-.gb-diff-del { background: rgba(244, 71, 71, 0.2); }
+.gb-diff-add { background: color-mix(in srgb,var(--green) 20%,transparent); }
+.gb-diff-del { background: color-mix(in srgb,var(--red) 20%,transparent); }
 .gb-diff-prefix {
   color: var(--gb-history-muted-fg, var(--ui-fg-muted));
   min-width: 12px;
   display: inline-block;
 }
-.gb-diff-row-add > td { background: rgba(106, 153, 85, 0.15); }
-.gb-diff-row-del > td { background: rgba(244, 71, 71, 0.15); }
-.gb-diff-row-mod > td { background: rgba(234, 179, 8, 0.15); }
+.gb-diff-row-add > td { background: color-mix(in srgb,var(--green) 15%,transparent); }
+.gb-diff-row-del > td { background: color-mix(in srgb,var(--red) 15%,transparent); }
+.gb-diff-row-mod > td { background: color-mix(in srgb,var(--orange) 15%,transparent); }
 
 /* バージョン管理パネル (VersionComponent) */
 .gb-version-panel {

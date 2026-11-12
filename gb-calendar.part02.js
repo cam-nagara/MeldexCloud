@@ -549,7 +549,7 @@ function _renderTaskBoard(container, dbPath, events) {
     hdr.append(statusLabel,statusCount);
     col.appendChild(hdr);
     const body=document.createElement('div');body.style.cssText='flex:1;padding:4px;overflow-y:auto;min-height:100px;';
-    body.addEventListener('dragover',e=>{e.preventDefault();body.style.background='rgba(86,156,214,0.08)';});
+    body.addEventListener('dragover',e=>{e.preventDefault();body.style.background='color-mix(in srgb, var(--ui-selection-bg) 8%, transparent)';});
     body.addEventListener('dragleave',()=>{body.style.background='';});
     body.addEventListener('drop',async e=>{e.preventDefault();body.style.background='';let data;try{data=JSON.parse(e.dataTransfer.getData('text/plain'));}catch{return;}if(!data||!data.name)return;
       _calPushUndo('タスク移動');
@@ -735,7 +735,7 @@ function _renderTodayWidget(sidebar,dbPath,events) {
   evHdr.textContent=`今日のイベント (${todayEvs.filter(e=>!_isTask(e)).length})`;evSection.appendChild(evHdr);
   const pureEvents=todayEvs.filter(e=>!_isTask(e));
   if(!pureEvents.length){const e=document.createElement('div');e.style.cssText='font-size:10px;color:var(--fg2);';e.textContent='イベントなし';evSection.appendChild(e);}
-  else pureEvents.forEach(ev=>{const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;border-radius:3px;cursor:pointer;color:#fff;';el.style.background=ev.color;
+  else pureEvents.forEach(ev=>{const el=document.createElement('div');el.style.cssText='font-size:10px;padding:2px 4px;margin:2px 0;border-radius:3px;cursor:pointer;color:var(--cal-event-fg);';el.style.background=ev.color;
     const timeStr=ev.allDay?'終日':`${_p2(ev.start.getHours())}:${_p2(ev.start.getMinutes())}`;
     el.textContent=`${timeStr} ${ev.name}`;el.addEventListener('click', ()=>{if(ev._mapped&&typeof _openMappedCalendarEventPanel==='function'){_openMappedCalendarEventPanel(dbPath,ev,el);return;}_showCalendarEventDetailPanel(dbPath,ev);});evSection.appendChild(el);});
   box.appendChild(evSection);
