@@ -13,12 +13,30 @@
       skipGlobalUi: true,
     });
   }
+  const mutationPaths = Array.isArray(_chatPendingMutationPaths) ? _chatPendingMutationPaths.splice(0) : [];
+  if (typeof window.reloadOpenFilesAfterExternalMutation === 'function') {
+    await window.reloadOpenFilesAfterExternalMutation(mutationPaths);
+  }
 }
 
+let _chatPendingMutationPaths = [];
 function _handleChatToolWorkspaceEffect(name, result) {
   const toolName = String(name || '');
   const parsed = _parseChatToolResult(result);
   if (!CHAT_WORKSPACE_REFRESH_TOOLS.has(toolName) || !_chatToolResultSucceeded(parsed)) return;
+  const mutationPaths = _chatToolMutationPaths(parsed);
+  _chatPendingMutationPaths.push(...mutationPaths);
+  if (/rename/.test(toolName) && typeof renameAppPathReferences === 'function') {
+    const changes = Array.isArray(parsed.changes) ? parsed.changes : [];
+    for (const row of changes) {
+      const oldPath = row?.old_path || row?.source;
+      const newPath = row?.new_path || row?.destination;
+      if (oldPath && newPath) renameAppPathReferences(oldPath, newPath, { label: String(newPath).split('/').pop() });
+    }
+    if (!changes.length && parsed.old_path && parsed.new_path) {
+      renameAppPathReferences(parsed.old_path, parsed.new_path, { label: String(parsed.new_path).split('/').pop() });
+    }
+  }
   clearTimeout(_chatToolRefreshTimer);
   _chatToolRefreshTimer = setTimeout(() => {
     _chatToolRefreshTimer = null;

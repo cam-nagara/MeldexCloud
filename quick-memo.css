@@ -436,11 +436,10 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-editor img, .qm-editor video { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
 .qm-attachment-preview { flex: 0 0 auto; max-height: 180px; overflow: auto; padding: 8px 16px; }
 .qm-attachment-preview[hidden] { display: none; }
-.qm-attachment-preview img { max-width: 100%; max-height: 160px; }
+.qm-attachment-preview img, .qm-attachment-preview video { display: block; max-width: 100%; max-height: 160px; margin: 0 auto 8px; }
 .qm-attachment-preview audio { display: block; width: 100%; }
 body[data-memo-mode="pen"] .qm-editor,
 body[data-memo-mode="voice"] .qm-editor { flex: 0 1 30%; min-height: 60px; }
-#attachmentDoneBtn { margin-left: auto; min-height: 32px; }
 .qm-save-wrap { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 10010; }
 .qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 48px; min-width: 80px; padding: 0 16px; border-radius: 24px; background: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-save-dialog { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; min-width: 200px; max-width: calc(100vw - 32px); border: 1px solid var(--qm-border); border-radius: 10px; padding: 20px; background: var(--qm-panel); color: var(--qm-fg); text-align: center; }

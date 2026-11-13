@@ -1317,15 +1317,41 @@
     return JSON.stringify([account?.account_id || '', provider.getVaultPath?.() || '']);
   }
 
-  async function _quickMemoTarget(provider) {
-    const roots = await _quickMemoRoots();
+  const _QUICK_MEMO_TARGET_CACHE_PREFIX = 'meldex-quick-memo-target:v2:';
+  const _quickMemoTargetMemory = new Map();
+  const _quickMemoTargetInflight = new Map();
+  let _quickMemoTargetCacheGeneration = 0;
+
+  function _quickMemoTargetCacheKey(scope) {
+    let hash = 2166136261;
+    for (const ch of String(scope || '')) hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619);
+    return _QUICK_MEMO_TARGET_CACHE_PREFIX + (hash >>> 0).toString(16);
+  }
+
+  async function _validateQuickMemoTarget(provider, roots, cached) {
+    const path = String(cached?.quick_memo_folder || '');
+    const root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
+    if (!path || !root) return null;
+    try {
+      const noteName = _quickMemoFolderName(path, roots) + '.md';
+      const entries = await provider.listEntries(path);
+      if (!entries.some(entry => entry.kind === 'file' && entry.name === noteName)) return null;
+      const fm = _parseFrontmatter(await provider.readText(_joinPath(path, noteName))).frontmatter;
+      if (fm.type !== 'settings-db' || fm.meldex_registry !== 'quick-memo-v1') return null;
+      return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+    } catch {
+      return null;
+    }
+  }
+
+  async function _discoverQuickMemoTarget(provider, roots) {
     const marked = [], legacy = [], visited = new Set();
     const queue = roots.map(root => root.path);
     while (queue.length) {
       const folder = queue.shift();
       if (visited.has(folder)) continue;
       visited.add(folder);
-      if (visited.size > 1000) throw new Error('クイックメモの保存先を特定できません。Meldexファイルで本体のシートがあるフォルダを登録してください');
+      if (visited.size > 10000) throw new Error('クイックメモの保存先を特定できません。Meldexファイルで本体のシートがあるフォルダを登録してください');
       // 読取失敗を「存在しない」に置き換えると、別の保存先を選んでしまう。
       const entries = await provider.listEntries(folder);
       const noteName = _quickMemoFolderName(folder, roots) + '.md';
@@ -1354,6 +1380,39 @@
     }
     const path = candidates[0], root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
     return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+  }
+
+  async function _quickMemoTarget(provider) {
+    const scope = await _quickMemoScope(provider);
+    const memory = _quickMemoTargetMemory.get(scope);
+    if (memory) return { ...memory };
+    if (_quickMemoTargetInflight.has(scope)) return _quickMemoTargetInflight.get(scope);
+    const generation = _quickMemoTargetCacheGeneration;
+    const task = (async () => {
+      const roots = await _quickMemoRoots();
+      const key = _quickMemoTargetCacheKey(scope);
+      let cached = null;
+      try { cached = JSON.parse(window.localStorage?.getItem(key) || 'null'); } catch {}
+      const validated = await _validateQuickMemoTarget(provider, roots, cached);
+      const target = validated || await _discoverQuickMemoTarget(provider, roots);
+      if (generation === _quickMemoTargetCacheGeneration) {
+        _quickMemoTargetMemory.set(scope, target);
+        try { window.localStorage?.setItem(key, JSON.stringify(target)); } catch {}
+      }
+      return { ...target };
+    })().finally(() => _quickMemoTargetInflight.delete(scope));
+    _quickMemoTargetInflight.set(scope, task);
+    return task;
+  }
+
+  function _invalidateQuickMemoTargetCache() {
+    _quickMemoTargetCacheGeneration += 1;
+    _quickMemoTargetMemory.clear();
+    _quickMemoTargetInflight.clear();
+  }
+  if (typeof window.addEventListener === 'function') {
+    ['meldex:batch-paths-renamed', 'meldex:file-path-renamed', 'meldex:dropbox-auth-session-changed', 'meldex:workspaces-changed']
+      .forEach(type => window.addEventListener(type, _invalidateQuickMemoTargetCache));
   }
 
   async function _quickMemoFolder(provider, rawPath, file) {

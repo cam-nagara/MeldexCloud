@@ -782,6 +782,7 @@ async function openLinkedPathInMainPane(path, label, options) {
   if (!path) return false;
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   const paneId = _bdMainPaneIdForLinkedOpen();
   if (!paneId) {
     if (typeof navOpen === 'function') {

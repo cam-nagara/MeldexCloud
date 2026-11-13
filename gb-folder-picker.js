@@ -219,6 +219,9 @@
 
     const row = document.createElement('div');
     row.className = 'gb-folder-picker-row';
+    row.dataset.gbPickerKind = isFile ? 'file' : 'folder';
+    row.dataset.gbPickerName = String(name || '').toLocaleLowerCase('ja');
+    row.dataset.gbPickerPath = String(path || '').toLocaleLowerCase('ja');
     row.style.cssText = `display:flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px 4px ${8 + depth * 16}px;border-radius:4px;cursor:pointer;font-size:12px;`;
 
     const toggle = document.createElement('button');
@@ -301,7 +304,8 @@
           const aFolder = a.type === 'folder' ? 0 : 1;
           const bFolder = b.type === 'folder' ? 0 : 1;
           if (aFolder !== bFolder) return aFolder - bFolder;
-          return String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          return state.sortDirection === 'desc' ? -order : order;
         });
         children.innerHTML = '';
         if (!rows.length) {
@@ -313,6 +317,7 @@
           return;
         }
         rows.forEach(item => children.appendChild(_createFolderNode(root, item, depth + 1, state)));
+        state.applyTreeView?.();
       } catch (error) {
         children.innerHTML = '';
         const failed = document.createElement('div');
@@ -398,16 +403,30 @@
       currentRow.appendChild(current);
       body.appendChild(currentRow);
 
-      let searchInput = null;
-      if (typeof options.searchProvider === 'function') {
-        searchInput = document.createElement('input');
-        searchInput.type = 'text';
-        searchInput.className = 'gb-input gb-folder-picker-search';
-        searchInput.dataset.e2eId = 'gb-folder-picker-search';
-        searchInput.placeholder = options.searchPlaceholder || '検索...';
-        searchInput.style.cssText = 'margin-bottom:8px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;';
-        body.appendChild(searchInput);
-      }
+      const tools = document.createElement('div');
+      tools.className = 'gb-folder-picker-tools';
+      const searchInput = document.createElement('input');
+      searchInput.type = 'search';
+      searchInput.className = 'gb-input gb-folder-picker-search';
+      searchInput.dataset.e2eId = 'gb-folder-picker-search';
+      searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
+      searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
+      const sortSelect = document.createElement('select');
+      sortSelect.className = 'gb-input gb-folder-picker-sort';
+      sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
+      sortSelect.setAttribute('aria-label', '並び順');
+      sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
+      const filterSelect = document.createElement('select');
+      filterSelect.className = 'gb-input gb-folder-picker-filter';
+      filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
+      filterSelect.setAttribute('aria-label', '表示する種類');
+      filterSelect.innerHTML = options.selectFiles
+        ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
+        : '<option value="folder">フォルダ</option>';
+      [searchInput, sortSelect, filterSelect].forEach(control => {
+        tools.appendChild(control);
+      });
+      body.appendChild(tools);
 
       const tree = document.createElement('div');
       tree.className = 'gb-folder-picker-tree';
@@ -417,7 +436,7 @@
       body.appendChild(tree);
 
       let searchResults = null;
-      if (searchInput) {
+      if (typeof options.searchProvider === 'function') {
         searchResults = document.createElement('div');
         searchResults.className = 'gb-folder-picker-search-results';
         searchResults.style.cssText = tree.style.cssText;
@@ -498,6 +517,8 @@
         emptyText: options.emptyText || '',
         nodeByPath: new Map(),
         searchResultsEl: searchResults,
+        sortDirection: 'asc',
+        filterKind: options.selectFiles ? 'all' : 'folder',
         roots: null,
         close: value => close(value),
       };
@@ -568,8 +589,30 @@
         });
       }
 
-      if (searchInput) {
-        searchInput.addEventListener('input', async () => {
+      function _applyLocalTreeView() {
+        if (typeof options.searchProvider === 'function') return;
+        const query = searchInput.value.toLocaleLowerCase('ja').trim();
+        const visit = node => {
+          const row = node.querySelector(':scope > .gb-folder-picker-row');
+          const children = node.querySelector(':scope > .gb-folder-picker-children');
+          const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
+          const descendantVisible = childNodes.some(visit);
+          const kind = row?.dataset.gbPickerKind || 'folder';
+          const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
+          const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
+          const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
+          node.hidden = !visible;
+          return visible;
+        };
+        tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
+      }
+      state.applyTreeView = _applyLocalTreeView;
+
+      searchInput.addEventListener('input', async () => {
+        if (typeof options.searchProvider !== 'function') {
+          _applyLocalTreeView();
+          return;
+        }
           const query = searchInput.value;
           if (!query.trim()) {
             searchResults.style.display = 'none';
@@ -582,12 +625,29 @@
           const items = await _ensureSearchItems();
           if (searchInput.value !== query) return;
           _renderSearchResults(items, query);
-        });
-      }
+      });
+      filterSelect.addEventListener('change', () => {
+        state.filterKind = filterSelect.value;
+        if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
+          _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
+        } else _applyLocalTreeView();
+      });
+      sortSelect.addEventListener('change', () => {
+        state.sortDirection = sortSelect.value;
+        state.nodeByPath.clear();
+        searchItemsCache = null;
+        searchInput.value = '';
+        searchResults && (searchResults.style.display = 'none');
+        tree.style.display = '';
+        renderRoots();
+      });
 
-      tree.textContent = 'フォルダを読み込み中...';
-      try {
-        const roots = await loadRoots(options);
+      let loadedRoots = null;
+      async function renderRoots() {
+        tree.textContent = 'フォルダを読み込み中...';
+        try {
+        const roots = loadedRoots || await loadRoots(options);
+        loadedRoots = roots;
         state.roots = roots;
         tree.innerHTML = '';
         if (!roots.length) {
@@ -595,7 +655,11 @@
           return;
         }
         let lastSection = '';
-        roots.forEach(root => {
+        const orderedRoots = roots.slice().sort((a, b) => {
+          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          return state.sortDirection === 'desc' ? -order : order;
+        });
+        orderedRoots.forEach(root => {
           const section = _rootSectionLabel(_rootKind(root));
           if (section !== lastSection) {
             const heading = document.createElement('div');
@@ -615,6 +679,8 @@
         status.textContent = 'フォルダ一覧を読み込めませんでした。';
         status.style.color = 'var(--red)';
       }
+      }
+      await renderRoots();
     });
   }
 

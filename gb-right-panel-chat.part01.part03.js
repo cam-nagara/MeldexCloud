@@ -1031,6 +1031,18 @@ function _chatToolResultSucceeded(parsed) {
   return !!parsed && !parsed.error && parsed.ok !== false;
 }
 
+function _chatToolMutationPaths(parsed) {
+  if (!parsed || typeof parsed !== 'object') return [];
+  const values = [];
+  const add = value => { if (typeof value === 'string' && value.trim()) values.push(value.trim()); };
+  ['path', 'old_path', 'new_path', 'target_path', 'db_path'].forEach(key => add(parsed[key]));
+  for (const row of Array.isArray(parsed.changes) ? parsed.changes : []) {
+    add(row?.old_path || row?.source);
+    add(row?.new_path || row?.destination);
+  }
+  return [...new Set(values)];
+}
+
 const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'batch_rename', 'batch_rename_undo', 'batch_rename_redo', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
 const CHAT_NONEMPTY_RESULT_TOOLS = new Set(['search', 'search_knowledge', 'llm_list_ui_controls']);
 

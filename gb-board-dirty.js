@@ -68,6 +68,7 @@ function bdApplySelectionDomClass() {
 
 function bdCreateEmptyDirtyState() {
   return {
+    scopeKey: '',
     dirtyNodeIds: new Set(),
     dirtyMovedNodeIds: new Set(),
     dirtyConnIds: new Set(),
@@ -87,8 +88,22 @@ function bdCreateEmptyDirtyState() {
   };
 }
 
+function bdCurrentDirtyScopeKey() {
+  if (typeof bd === 'undefined' || !bd) return '';
+  return String(bd.documentId || '') + '\n' + String(bd.path || '');
+}
+
+function bdPrepareDirtyScope() {
+  const scopeKey = bdCurrentDirtyScopeKey();
+  if (_bdDirtyState.scopeKey && _bdDirtyState.scopeKey !== scopeKey) {
+    _bdDirtyState = bdCreateEmptyDirtyState();
+  }
+  _bdDirtyState.scopeKey = scopeKey;
+}
+
 function bdMarkNodeDirty(nodeId, reason) {
   if (!nodeId) return;
+  bdPrepareDirtyScope();
   if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   _bdDirtyState.dirtyNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
@@ -102,6 +117,7 @@ function bdMarkNodeDirty(nodeId, reason) {
 
 function bdMarkNodeMoved(nodeId, reason) {
   if (!nodeId) return;
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtyMovedNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
   bdMarkFramesDirtyByNodes([nodeId]);
@@ -129,6 +145,7 @@ function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
 
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
+  bdPrepareDirtyScope();
   bdInvalidateConnectionRuntimeIndex();
   _bdDirtyState.dirtyConnIds.add(connId);
   _bdDirtyState.dirtyMinimap = true;
@@ -139,6 +156,7 @@ function bdMarkConnectionDirty(connId, reason) {
 function bdMarkConnectionsDirtyByNodes(nodeIds, reason) {
   const ids = new Set([...(nodeIds || [])].filter(Boolean));
   if (!ids.size || typeof bd === 'undefined') return;
+  bdPrepareDirtyScope();
   if (typeof bdEnsureConnectionRuntime === 'function') bdEnsureConnectionRuntime(bd.connections);
   ids.forEach(id => _bdDirtyState.dirtyConnNodeIds.add(id));
   const index = bdEnsureConnectionNodeIndex();
@@ -160,6 +178,7 @@ function bdMarkFramesDirtyByNodes(nodeIds) {
 }
 
 function bdMarkSelectionDirty(nodeIds, reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtySelection = true;
   [...(nodeIds || [])].filter(Boolean).forEach(id => _bdDirtyState.dirtySelectionIds.add(id));
   bdDirtyRememberReason(reason || 'selection');
@@ -167,12 +186,14 @@ function bdMarkSelectionDirty(nodeIds, reason) {
 }
 
 function bdMarkBoardUiDirty(reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtyBoardUi = true;
   bdDirtyRememberReason(reason || 'board-ui');
   bdScheduleBoardUpdates();
 }
 
 function bdMarkExtrasDirty(flags = {}, reason) {
+  bdPrepareDirtyScope();
   if (flags === true) {
     _bdDirtyState.dirtySelection = true;
     _bdDirtyState.dirtyFrames = true;
@@ -198,6 +219,7 @@ function bdMarkExtrasDirty(flags = {}, reason) {
 }
 
 function bdRequestFullRender(reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.needsFullRender = true;
   _bdDirtyState.fullRenderReason = reason || _bdDirtyState.fullRenderReason || 'unspecified';
   bdDirtyRememberReason('full:' + (_bdDirtyState.fullRenderReason || 'unspecified'));
@@ -242,6 +264,7 @@ function bdFlushBoardUpdates() {
   const state = _bdDirtyState;
   if (!bdDirtyHasWork(state)) return;
   _bdDirtyState = bdCreateEmptyDirtyState();
+  if (state.scopeKey !== bdCurrentDirtyScopeKey()) return;
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdFlushBoardUpdates') : 0;
   if (state.needsFullRender) {
     bdFlushDirtyFullRender(state, started);

@@ -121,10 +121,10 @@
   function bindElements() {
     [
       'syncStatus', 'menuBtn', 'quickMemoMenu', 'listBtn', 'menuListBtn', 'workspaceBtn',
-      'installBtn', 'newMemoBtn', 'saveBtn', 'storageLocation',
+      'installBtn', 'saveBtn', 'storageLocation',
       'titleInput', 'tagChips', 'addTagBtn', 'tagSelector', 'editor', 'drawingCanvas',
       'createMemoBtn', 'createMemoMenu', 'completeMemoBtn', 'memoSavedDialog', 'memoSavedCloseBtn',
-      'imageAttachmentInput', 'videoAttachmentInput', 'attachmentDoneBtn', 'attachmentPreview',
+      'imageAttachmentInput', 'videoAttachmentInput', 'attachmentPreview',
       'undoBtn', 'redoBtn', 'colorSwatchBtn', 'colorPopover',
       'colorInput', 'opacityInput', 'opacityValue', 'widthInput', 'penBtn', 'fillBtn', 'eraserBtn', 'clearDrawingBtn',
       'voiceRecordBtn', 'voicePauseBtn', 'voiceResumeBtn', 'voiceStopBtn',
@@ -315,7 +315,6 @@
     on(els.saveBtn, 'click', () => { closeMenu({ restoreFocus: true }); saveNow({ manual: true }); });
     on(els.completeMemoBtn, 'click', completeMemo);
     on(els.memoSavedCloseBtn, 'click', () => els.memoSavedDialog.close());
-    on(els.newMemoBtn, 'click', () => { closeMenu(); startNewMemo('text'); });
     on(els.createMemoBtn, 'click', () => {
       closeMenu();
       libraryController.hide();
@@ -323,42 +322,36 @@
       else closeCreateMenu(true);
     });
     on(els.createMemoMenu, 'click', async event => {
-      const button = event.target.closest('[data-attach-memo-mode]');
+      const button = event.target.closest('[data-create-memo-mode]');
       if (!button || button.disabled || state.completingMemo || state.creatingMemo) return;
       closeCreateMenu();
-      const mode = button.dataset.attachMemoMode;
+      const mode = button.dataset.createMemoMode;
+      if (!await startNewMemo(mode)) return;
       if (mode === 'image' || mode === 'video') {
         (mode === 'image' ? els.imageAttachmentInput : els.videoAttachmentInput).click();
-      } else {
-        if (!await finalizeVoiceForClose()) return;
-        switchMode(mode);
-        if (mode === 'pen') els.drawingCanvas.focus({ preventScroll: true });
-        if (mode === 'voice') els.voiceRecordBtn.focus({ preventScroll: true });
       }
     });
     [els.imageAttachmentInput, els.videoAttachmentInput].forEach(input => on(input, 'change', () => {
       attachMemoFiles(Array.from(input.files || []));
       input.value = '';
     }));
-    on(els.editor, 'paste', event => {
+    on(els.editor, 'paste', async event => {
       if (!event.clipboardData?.files?.length) return;
       event.preventDefault();
-      attachMemoFiles(Array.from(event.clipboardData.files));
+      const files = Array.from(event.clipboardData.files);
+      const mode = files[0]?.type?.startsWith('video/') ? 'video' : 'image';
+      if (await startNewMemo(mode)) attachMemoFiles(files);
     });
     const attachmentSurface = els.editor.closest('.qm-surface');
     on(attachmentSurface, 'dragover', event => {
       if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault();
     });
-    on(attachmentSurface, 'drop', event => {
+    on(attachmentSurface, 'drop', async event => {
       if (!event.dataTransfer?.files?.length) return;
       event.preventDefault(); event.stopPropagation();
-      attachMemoFiles(Array.from(event.dataTransfer.files));
-    });
-    on(els.attachmentDoneBtn, 'click', async () => {
-      if (!await finalizeVoiceForClose()) return;
-      await drawingController.flush?.();
-      switchMode('text');
-      scheduleSave();
+      const files = Array.from(event.dataTransfer.files);
+      const mode = files[0]?.type?.startsWith('video/') ? 'video' : 'image';
+      if (await startNewMemo(mode)) attachMemoFiles(files);
     });
     on(document, 'pointerdown', event => {
       if (!els.createMemoMenu.contains(event.target) && !els.createMemoBtn.contains(event.target)) closeCreateMenu();
@@ -426,7 +419,7 @@
 
   function openCreateMenu() {
     if (state.creatingMemo) return;
-    const voice = els.createMemoMenu.querySelector('[data-attach-memo-mode="voice"]');
+    const voice = els.createMemoMenu.querySelector('[data-create-memo-mode="voice"]');
     voice.hidden = !voiceAvailable();
     els.createMemoMenu.hidden = false;
     els.createMemoBtn.setAttribute('aria-expanded', 'true');
@@ -442,14 +435,14 @@
 
   function switchMode(mode) {
     const speechAvailable = voiceAvailable();
-    const nextMode = ['text', 'pen', 'voice'].includes(mode)
+    const nextMode = ['text', 'pen', 'voice', 'image', 'video'].includes(mode)
       && !(mode === 'voice' && isCloudMode() && !speechAvailable && !state.audioClips.length)
       ? mode
       : 'text';
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
     state.currentMode = nextMode;
     document.body.dataset.memoMode = state.currentMode;
-    els.editor.style.display = '';
+    els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
     els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
     els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
     els.voiceRecordBtn.disabled = !speechAvailable;
@@ -459,14 +452,13 @@
       group.style.display = shown ? '' : 'none';
       if (shown) hasToolbarForMode = true;
     });
-    if (els.toolbar) els.toolbar.style.display = hasToolbarForMode || state.currentMode !== 'text' ? '' : 'none';
-    editorController.setActive(true);
+    if (els.toolbar) els.toolbar.style.display = hasToolbarForMode ? '' : 'none';
+    editorController.setActive(state.currentMode === 'text');
     drawingController.setActive(state.currentMode === 'pen');
-    const historyVisible = state.currentMode !== 'voice';
+    const historyVisible = state.currentMode === 'text' || state.currentMode === 'pen';
     els.undoBtn.style.display = historyVisible ? '' : 'none';
     els.redoBtn.style.display = historyVisible ? '' : 'none';
     updateHistoryButtons();
-    if (els.attachmentDoneBtn) els.attachmentDoneBtn.hidden = state.currentMode === 'text';
     renderAttachmentPreview();
     if (state.currentMode === 'text') focusEditorSoon();
   }
@@ -656,19 +648,11 @@
     const host = els.attachmentPreview;
     if (!host) return;
     host.replaceChildren();
-    if (state.currentMode !== 'text') { host.hidden = true; return; }
-    const drawing = drawingController.toDataURL();
-    if (drawing) {
-      const image = document.createElement('img');
-      image.src = drawing;
-      image.alt = '添付した手書きメモ';
-      host.appendChild(image);
-    }
-    state.audioClips.forEach((src, index) => {
-      const audio = document.createElement('audio');
-      audio.src = src; audio.controls = true; audio.preload = 'metadata';
-      audio.setAttribute('aria-label', `添付した録音 ${index + 1}`);
-      host.appendChild(audio);
+    if (!['image', 'video'].includes(state.currentMode)) { host.hidden = true; return; }
+    els.editor.querySelectorAll(state.currentMode === 'image' ? 'img[src]' : 'video[src]').forEach(source => {
+      const media = source.cloneNode(true);
+      if (media instanceof HTMLVideoElement) { media.controls = true; media.playsInline = true; }
+      host.appendChild(media);
     });
     host.hidden = !host.childNodes.length;
   }
@@ -680,6 +664,8 @@
     const maxTotal = 64 * 1024 * 1024;
     state.attachmentPromise = (async () => {
       const allowed = /^(?:image\/(?:png|jpeg|webp|gif|avif|heic|heif)|video\/(?:mp4|webm|ogg|quicktime|3gpp))$/;
+      const expectedPrefix = state.currentMode === 'video' ? 'video/' : state.currentMode === 'image' ? 'image/' : '';
+      if (!expectedPrefix) throw new Error('＋から画像または動画の新規メモを選択してください');
       const existing = Array.from(els.editor.querySelectorAll('img[src], video[src]'))
         .reduce((size, node) => size + (node.getAttribute('src') || '').length * .75, 0);
       if (files.some(file => file.size > maxFile) || files.reduce((size, file) => size + file.size, existing) > maxTotal) {
@@ -690,8 +676,10 @@
         const extensionMime = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp',
           avif:'image/avif', heic:'image/heic', heif:'image/heif', mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', '3gp':'video/3gpp' };
         const mime = String(file.type || extensionMime[file.name.split('.').pop().toLowerCase()] || '').toLowerCase();
-        if (!allowed.test(mime)) throw new Error('添付できる画像または動画を選択してください');
-        setStatus('添付ファイルを読み込み中...');
+        if (!allowed.test(mime) || !mime.startsWith(expectedPrefix)) {
+          throw new Error(state.currentMode === 'image' ? '画像だけを選択してください' : '動画だけを選択してください');
+        }
+        setStatus('メディアを読み込み中...');
         const raw = await blobToDataUrl(file);
         const data = raw.replace(/^data:[^,]*,/, 'data:' + mime + ';base64,');
         const name = escAttr(file.name || (mime.startsWith('image/') ? '画像' : '動画'));
@@ -701,7 +689,7 @@
       }
       if (epoch !== state.memoEpoch) return;
       editorController.mutate(() => els.editor.insertAdjacentHTML('beforeend', fragments.join('')));
-      switchMode('text');
+      renderAttachmentPreview();
       scheduleSave();
       return true;
     })().catch(error => { setStatus('添付できませんでした: ' + (error?.message || error), true); return false; })
@@ -1473,7 +1461,7 @@
     }
     // Cloudはブラウザ内で録音し、有料の文字起こしAPIへ自動送信しない。
     if (!voiceAvailable()) {
-      const voiceOption = els.createMemoMenu.querySelector('[data-attach-memo-mode="voice"]');
+      const voiceOption = els.createMemoMenu.querySelector('[data-create-memo-mode="voice"]');
       if (voiceOption) {
         voiceOption.disabled = true;
         voiceOption.hidden = true;
@@ -1946,7 +1934,9 @@
       state.tagCatalogError = message;
       setStatus(message, !/接続すると利用できます/.test(message));
     } finally {
-      window.dispatchEvent(new Event('meldex:quick-memo-tags-loaded'));
+      if (typeof window.dispatchEvent === 'function' && typeof window.Event === 'function') {
+        window.dispatchEvent(new window.Event('meldex:quick-memo-tags-loaded'));
+      }
     }
   }
 

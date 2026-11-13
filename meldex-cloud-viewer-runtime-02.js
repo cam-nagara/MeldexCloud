@@ -22807,6 +22807,12 @@ document.addEventListener('DOMContentLoaded', () => {
       : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
     if (trayMinimized && needsAttention && visible.length > 1) title.textContent += ' ' + visible.length + '件';
     title.className = 'meldex-operation-tray-title';
+    let hint = null;
+    if (hasActive) {
+      hint = document.createElement('span');
+      hint.className = 'meldex-operation-tray-hint';
+      hint.textContent = '他のファイルで作業できます';
+    }
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'meldex-operation-tray-toggle';
@@ -22830,7 +22836,9 @@ document.addEventListener('DOMContentLoaded', () => {
       ring.setAttribute('aria-hidden', 'true');
       header.appendChild(ring);
     }
-    header.append(title, toggle);
+    header.append(title);
+    if (hint) header.append(hint);
+    header.append(toggle);
     el.classList.toggle('is-minimized', trayMinimized);
     if (trayMinimized) {
       // 最小化中は件数と状態だけを小さく出し、見出しのクリックで広げる。

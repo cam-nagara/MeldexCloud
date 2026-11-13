@@ -37,7 +37,6 @@
       <div class="qm-menu-wrap">
         <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false" aria-controls="quickMemoMenu"><span class="ico ico-menu"></span></button>
         <div id="quickMemoMenu" class="qm-menu" role="dialog" aria-label="クイックメモの操作" hidden>
-          <button id="newMemoBtn" type="button"><span class="ico ico-filePlus"></span>新規メモ</button>
           <button id="saveBtn" type="button"><span class="ico ico-save"></span>端末へ保存</button>
           <button id="menuListBtn" type="button"><span class="ico ico-history"></span>過去のメモ</button>
           <button id="workspaceBtn" type="button" data-cloud-workspace><span class="ico ico-folderOpen"></span>Meldexファイル</button>
@@ -89,13 +88,6 @@
         <button id="eraserBtn" class="qm-icon qm-lucide-button" type="button" title="消しゴム" aria-label="消しゴム"></button>
         <button id="clearDrawingBtn" class="qm-icon qm-lucide-button" type="button" title="描画を消去" aria-label="消去"></button>
       </div>
-      <div class="qm-toolbar-group" data-for="voice" style="display:none;">
-        <button id="voiceRecordBtn" class="qm-icon qm-lucide-button" type="button" title="録音開始" aria-label="録音開始"></button>
-        <button id="voicePauseBtn" class="qm-icon qm-lucide-button" type="button" title="一時停止" aria-label="一時停止" style="display:none;"></button>
-        <button id="voiceResumeBtn" class="qm-icon qm-lucide-button" type="button" title="録音再開" aria-label="録音再開" style="display:none;"></button>
-        <button id="voiceStopBtn" class="qm-icon qm-lucide-button" type="button" title="録音終了" aria-label="録音終了" style="display:none;"></button>
-      </div>
-      <button id="attachmentDoneBtn" type="button" hidden>添付を確定</button>
     </nav>
 
     <section class="qm-surface">
@@ -105,6 +97,12 @@
       <div id="voicePanel" class="qm-voice" style="display:none;">
         <div class="qm-voice-status" id="voiceStatus">マイクの準備ができています</div>
         <div class="qm-voice-timer" id="voiceTimer">00:00</div>
+        <div class="qm-voice-controls" aria-label="録音操作">
+          <button id="voiceRecordBtn" class="qm-icon qm-lucide-button" type="button" title="録音開始" aria-label="録音開始"></button>
+          <button id="voicePauseBtn" class="qm-icon qm-lucide-button" type="button" title="一時停止" aria-label="一時停止" style="display:none;"></button>
+          <button id="voiceResumeBtn" class="qm-icon qm-lucide-button" type="button" title="録音再開" aria-label="録音再開" style="display:none;"></button>
+          <button id="voiceStopBtn" class="qm-icon qm-lucide-button" type="button" title="録音終了" aria-label="録音終了" style="display:none;"></button>
+        </div>
         <div id="voiceTranscript" class="qm-voice-transcript"></div>
       </div>
     </section>
@@ -129,18 +127,19 @@
   </section>
 
   <div class="qm-create-wrap">
-    <button id="createMemoBtn" class="qm-create-button" type="button" title="メモに添付" aria-label="メモに添付" aria-haspopup="menu" aria-expanded="false" aria-controls="createMemoMenu"><span class="ico ico-plus" aria-hidden="true"></span></button>
-    <div id="createMemoMenu" class="qm-menu qm-create-menu" role="menu" aria-label="メモに添付する内容" hidden>
-      <button type="button" role="menuitem" data-attach-memo-mode="pen"><span class="ico ico-pencil" aria-hidden="true"></span>ペン</button>
-      <button type="button" role="menuitem" data-attach-memo-mode="voice"><span class="ico ico-mic" aria-hidden="true"></span>ボイス</button>
-      <button type="button" role="menuitem" data-attach-memo-mode="image"><span class="ico ico-image" aria-hidden="true"></span>画像</button>
-      <button type="button" role="menuitem" data-attach-memo-mode="video"><span class="ico ico-video" aria-hidden="true"></span>動画</button>
+    <button id="createMemoBtn" class="qm-create-button" type="button" title="新規メモ" aria-label="新規メモ" aria-haspopup="menu" aria-expanded="false" aria-controls="createMemoMenu"><span class="ico ico-plus" aria-hidden="true"></span></button>
+    <div id="createMemoMenu" class="qm-menu qm-create-menu" role="menu" aria-label="新しいメモの種類" hidden>
+      <button type="button" role="menuitem" data-create-memo-mode="text"><span class="ico ico-fileText" aria-hidden="true"></span>テキスト</button>
+      <button type="button" role="menuitem" data-create-memo-mode="pen"><span class="ico ico-pencil" aria-hidden="true"></span>ペン</button>
+      <button type="button" role="menuitem" data-create-memo-mode="voice"><span class="ico ico-mic" aria-hidden="true"></span>ボイス</button>
+      <button type="button" role="menuitem" data-create-memo-mode="image"><span class="ico ico-image" aria-hidden="true"></span>画像</button>
+      <button type="button" role="menuitem" data-create-memo-mode="video"><span class="ico ico-video" aria-hidden="true"></span>動画</button>
     </div>
   </div>
 
   <div class="qm-save-wrap"><button id="completeMemoBtn" class="qm-complete-button" type="button"><span class="ico ico-save" aria-hidden="true"></span>保存</button></div>
-  <input id="imageAttachmentInput" type="file" accept="image/*" aria-label="画像を添付" multiple hidden>
-  <input id="videoAttachmentInput" type="file" accept="video/*" aria-label="動画を添付" multiple hidden>
+  <input id="imageAttachmentInput" type="file" accept="image/*" aria-label="画像メモを選択" multiple hidden>
+  <input id="videoAttachmentInput" type="file" accept="video/*" aria-label="動画メモを選択" multiple hidden>
   <dialog id="memoSavedDialog" class="qm-save-dialog" aria-label="保存完了"><p>保存しました</p><button id="memoSavedCloseBtn" type="button" autofocus>閉じる</button></dialog>
 
   <span id="syncStatus" data-status-owner="quick-memo" class="qm-sr-status" role="status" aria-live="polite">端末に保存済み</span>
@@ -150,7 +149,7 @@
 <script src="gb-theme-migration.js"></script>
 <script src="offline-bundles/gb-theme-manager.js"></script>
 <script src="gb-theme-document.js"></script>
-  <script src="gb-cloud-runtime-config.js?v=cb5bfbdcb2173447"></script>
+  <script src="gb-cloud-runtime-config.js?v=4d152af7ae49d797"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
   <script src="gb-resource-url.js"></script>

@@ -45257,6 +45257,7 @@ async function openLinkedPathInMainPane(path, label, options) {
   if (!path) return false;
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   const paneId = _bdMainPaneIdForLinkedOpen();
   if (!paneId) {
     if (typeof navOpen === 'function') {
@@ -50741,6 +50742,7 @@ function bdApplySelectionDomClass() {
 
 function bdCreateEmptyDirtyState() {
   return {
+    scopeKey: '',
     dirtyNodeIds: new Set(),
     dirtyMovedNodeIds: new Set(),
     dirtyConnIds: new Set(),
@@ -50760,8 +50762,22 @@ function bdCreateEmptyDirtyState() {
   };
 }
 
+function bdCurrentDirtyScopeKey() {
+  if (typeof bd === 'undefined' || !bd) return '';
+  return String(bd.documentId || '') + '\n' + String(bd.path || '');
+}
+
+function bdPrepareDirtyScope() {
+  const scopeKey = bdCurrentDirtyScopeKey();
+  if (_bdDirtyState.scopeKey && _bdDirtyState.scopeKey !== scopeKey) {
+    _bdDirtyState = bdCreateEmptyDirtyState();
+  }
+  _bdDirtyState.scopeKey = scopeKey;
+}
+
 function bdMarkNodeDirty(nodeId, reason) {
   if (!nodeId) return;
+  bdPrepareDirtyScope();
   if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   _bdDirtyState.dirtyNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
@@ -50775,6 +50791,7 @@ function bdMarkNodeDirty(nodeId, reason) {
 
 function bdMarkNodeMoved(nodeId, reason) {
   if (!nodeId) return;
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtyMovedNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
   bdMarkFramesDirtyByNodes([nodeId]);
@@ -50802,6 +50819,7 @@ function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
 
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
+  bdPrepareDirtyScope();
   bdInvalidateConnectionRuntimeIndex();
   _bdDirtyState.dirtyConnIds.add(connId);
   _bdDirtyState.dirtyMinimap = true;
@@ -50812,6 +50830,7 @@ function bdMarkConnectionDirty(connId, reason) {
 function bdMarkConnectionsDirtyByNodes(nodeIds, reason) {
   const ids = new Set([...(nodeIds || [])].filter(Boolean));
   if (!ids.size || typeof bd === 'undefined') return;
+  bdPrepareDirtyScope();
   if (typeof bdEnsureConnectionRuntime === 'function') bdEnsureConnectionRuntime(bd.connections);
   ids.forEach(id => _bdDirtyState.dirtyConnNodeIds.add(id));
   const index = bdEnsureConnectionNodeIndex();
@@ -50833,6 +50852,7 @@ function bdMarkFramesDirtyByNodes(nodeIds) {
 }
 
 function bdMarkSelectionDirty(nodeIds, reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtySelection = true;
   [...(nodeIds || [])].filter(Boolean).forEach(id => _bdDirtyState.dirtySelectionIds.add(id));
   bdDirtyRememberReason(reason || 'selection');
@@ -50840,12 +50860,14 @@ function bdMarkSelectionDirty(nodeIds, reason) {
 }
 
 function bdMarkBoardUiDirty(reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.dirtyBoardUi = true;
   bdDirtyRememberReason(reason || 'board-ui');
   bdScheduleBoardUpdates();
 }
 
 function bdMarkExtrasDirty(flags = {}, reason) {
+  bdPrepareDirtyScope();
   if (flags === true) {
     _bdDirtyState.dirtySelection = true;
     _bdDirtyState.dirtyFrames = true;
@@ -50871,6 +50893,7 @@ function bdMarkExtrasDirty(flags = {}, reason) {
 }
 
 function bdRequestFullRender(reason) {
+  bdPrepareDirtyScope();
   _bdDirtyState.needsFullRender = true;
   _bdDirtyState.fullRenderReason = reason || _bdDirtyState.fullRenderReason || 'unspecified';
   bdDirtyRememberReason('full:' + (_bdDirtyState.fullRenderReason || 'unspecified'));
@@ -50915,6 +50938,7 @@ function bdFlushBoardUpdates() {
   const state = _bdDirtyState;
   if (!bdDirtyHasWork(state)) return;
   _bdDirtyState = bdCreateEmptyDirtyState();
+  if (state.scopeKey !== bdCurrentDirtyScopeKey()) return;
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdFlushBoardUpdates') : 0;
   if (state.needsFullRender) {
     bdFlushDirtyFullRender(state, started);
@@ -95768,7 +95792,47 @@ async function resetLayoutToDefault() {
     return promise;
   }
 
+  function _normalizedMutationPaths(paths) {
+    return [...new Set((Array.isArray(paths) ? paths : [paths])
+      .map(path => String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean))];
+  }
+
+  function _tabAffectedByPaths(tab, paths) {
+    if (!paths.length) return true;
+    const tabPath = String(_tabPath(tab) || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!tabPath) return false;
+    return paths.some(path => path === tabPath || path.startsWith(tabPath + '/') || tabPath.startsWith(path + '/'));
+  }
+
+  async function reloadOpenFilesAfterExternalMutation(paths) {
+    const normalized = _normalizedMutationPaths(paths);
+    const paneIds = [...new Set(Array.from(document.querySelectorAll('.gb-pane[data-pane-id]'))
+      .map(pane => pane.dataset.paneId).filter(Boolean))];
+    const targets = paneIds.map(paneId => ({ paneId, tab: _tabFromPaneId(paneId) }))
+      .filter(target => target.tab && _tabAffectedByPaths(target.tab, normalized));
+    const originalPane = _activePaneId();
+    let refreshed = 0;
+    try {
+      for (const target of targets) {
+        const path = _tabPath(target.tab);
+        const label = _tabLabel(target.tab, path);
+        await _flushPendingEditorBeforeReload(target.tab.type || '', path);
+        const handled = await _reloadComponent(target.tab)
+          || (path ? await _reloadLegacyTab(target.tab, path, label, target.paneId) : false);
+        if (handled) refreshed += 1;
+      }
+    } finally {
+      if (originalPane && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function'
+        && GBLayout.activePane !== originalPane) {
+        GBLayout.setActivePane(originalPane, { sync: true });
+      }
+    }
+    return refreshed;
+  }
+
   window.reloadCurrentOpenFile = reloadCurrentOpenFile;
+  window.reloadOpenFilesAfterExternalMutation = reloadOpenFilesAfterExternalMutation;
 })();
 
 ;
@@ -96430,6 +96494,9 @@ async function resetLayoutToDefault() {
 
     const row = document.createElement('div');
     row.className = 'gb-folder-picker-row';
+    row.dataset.gbPickerKind = isFile ? 'file' : 'folder';
+    row.dataset.gbPickerName = String(name || '').toLocaleLowerCase('ja');
+    row.dataset.gbPickerPath = String(path || '').toLocaleLowerCase('ja');
     row.style.cssText = `display:flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px 4px ${8 + depth * 16}px;border-radius:4px;cursor:pointer;font-size:12px;`;
 
     const toggle = document.createElement('button');
@@ -96512,7 +96579,8 @@ async function resetLayoutToDefault() {
           const aFolder = a.type === 'folder' ? 0 : 1;
           const bFolder = b.type === 'folder' ? 0 : 1;
           if (aFolder !== bFolder) return aFolder - bFolder;
-          return String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          return state.sortDirection === 'desc' ? -order : order;
         });
         children.innerHTML = '';
         if (!rows.length) {
@@ -96524,6 +96592,7 @@ async function resetLayoutToDefault() {
           return;
         }
         rows.forEach(item => children.appendChild(_createFolderNode(root, item, depth + 1, state)));
+        state.applyTreeView?.();
       } catch (error) {
         children.innerHTML = '';
         const failed = document.createElement('div');
@@ -96609,16 +96678,30 @@ async function resetLayoutToDefault() {
       currentRow.appendChild(current);
       body.appendChild(currentRow);
 
-      let searchInput = null;
-      if (typeof options.searchProvider === 'function') {
-        searchInput = document.createElement('input');
-        searchInput.type = 'text';
-        searchInput.className = 'gb-input gb-folder-picker-search';
-        searchInput.dataset.e2eId = 'gb-folder-picker-search';
-        searchInput.placeholder = options.searchPlaceholder || '検索...';
-        searchInput.style.cssText = 'margin-bottom:8px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;';
-        body.appendChild(searchInput);
-      }
+      const tools = document.createElement('div');
+      tools.className = 'gb-folder-picker-tools';
+      const searchInput = document.createElement('input');
+      searchInput.type = 'search';
+      searchInput.className = 'gb-input gb-folder-picker-search';
+      searchInput.dataset.e2eId = 'gb-folder-picker-search';
+      searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
+      searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
+      const sortSelect = document.createElement('select');
+      sortSelect.className = 'gb-input gb-folder-picker-sort';
+      sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
+      sortSelect.setAttribute('aria-label', '並び順');
+      sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
+      const filterSelect = document.createElement('select');
+      filterSelect.className = 'gb-input gb-folder-picker-filter';
+      filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
+      filterSelect.setAttribute('aria-label', '表示する種類');
+      filterSelect.innerHTML = options.selectFiles
+        ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
+        : '<option value="folder">フォルダ</option>';
+      [searchInput, sortSelect, filterSelect].forEach(control => {
+        tools.appendChild(control);
+      });
+      body.appendChild(tools);
 
       const tree = document.createElement('div');
       tree.className = 'gb-folder-picker-tree';
@@ -96628,7 +96711,7 @@ async function resetLayoutToDefault() {
       body.appendChild(tree);
 
       let searchResults = null;
-      if (searchInput) {
+      if (typeof options.searchProvider === 'function') {
         searchResults = document.createElement('div');
         searchResults.className = 'gb-folder-picker-search-results';
         searchResults.style.cssText = tree.style.cssText;
@@ -96709,6 +96792,8 @@ async function resetLayoutToDefault() {
         emptyText: options.emptyText || '',
         nodeByPath: new Map(),
         searchResultsEl: searchResults,
+        sortDirection: 'asc',
+        filterKind: options.selectFiles ? 'all' : 'folder',
         roots: null,
         close: value => close(value),
       };
@@ -96779,8 +96864,30 @@ async function resetLayoutToDefault() {
         });
       }
 
-      if (searchInput) {
-        searchInput.addEventListener('input', async () => {
+      function _applyLocalTreeView() {
+        if (typeof options.searchProvider === 'function') return;
+        const query = searchInput.value.toLocaleLowerCase('ja').trim();
+        const visit = node => {
+          const row = node.querySelector(':scope > .gb-folder-picker-row');
+          const children = node.querySelector(':scope > .gb-folder-picker-children');
+          const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
+          const descendantVisible = childNodes.some(visit);
+          const kind = row?.dataset.gbPickerKind || 'folder';
+          const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
+          const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
+          const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
+          node.hidden = !visible;
+          return visible;
+        };
+        tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
+      }
+      state.applyTreeView = _applyLocalTreeView;
+
+      searchInput.addEventListener('input', async () => {
+        if (typeof options.searchProvider !== 'function') {
+          _applyLocalTreeView();
+          return;
+        }
           const query = searchInput.value;
           if (!query.trim()) {
             searchResults.style.display = 'none';
@@ -96793,12 +96900,29 @@ async function resetLayoutToDefault() {
           const items = await _ensureSearchItems();
           if (searchInput.value !== query) return;
           _renderSearchResults(items, query);
-        });
-      }
+      });
+      filterSelect.addEventListener('change', () => {
+        state.filterKind = filterSelect.value;
+        if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
+          _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
+        } else _applyLocalTreeView();
+      });
+      sortSelect.addEventListener('change', () => {
+        state.sortDirection = sortSelect.value;
+        state.nodeByPath.clear();
+        searchItemsCache = null;
+        searchInput.value = '';
+        searchResults && (searchResults.style.display = 'none');
+        tree.style.display = '';
+        renderRoots();
+      });
 
-      tree.textContent = 'フォルダを読み込み中...';
-      try {
-        const roots = await loadRoots(options);
+      let loadedRoots = null;
+      async function renderRoots() {
+        tree.textContent = 'フォルダを読み込み中...';
+        try {
+        const roots = loadedRoots || await loadRoots(options);
+        loadedRoots = roots;
         state.roots = roots;
         tree.innerHTML = '';
         if (!roots.length) {
@@ -96806,7 +96930,11 @@ async function resetLayoutToDefault() {
           return;
         }
         let lastSection = '';
-        roots.forEach(root => {
+        const orderedRoots = roots.slice().sort((a, b) => {
+          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
+          return state.sortDirection === 'desc' ? -order : order;
+        });
+        orderedRoots.forEach(root => {
           const section = _rootSectionLabel(_rootKind(root));
           if (section !== lastSection) {
             const heading = document.createElement('div');
@@ -96826,6 +96954,8 @@ async function resetLayoutToDefault() {
         status.textContent = 'フォルダ一覧を読み込めませんでした。';
         status.style.color = 'var(--red)';
       }
+      }
+      await renderRoots();
     });
   }
 
@@ -112370,6 +112500,10 @@ async function openLink(filePath, name, options) {
     return;
   }
   if (/^(https?:|mailto:)/i.test(filePath)) {
+    if (/^https?:/i.test(filePath) && typeof openExternalBrowserUrl === 'function') {
+      await openExternalBrowserUrl(filePath);
+      return;
+    }
     if (typeof window !== 'undefined' && typeof window.open === 'function') {
       window.open(filePath, '_blank', 'noopener');
     } else if (typeof location !== 'undefined') {
@@ -152483,6 +152617,16 @@ const DB_CACHE_TTL_MS = {
 // including related rows in another sheet and files displayed in image columns.
 async function _dbOpenConfiguredTarget(path, label, options = {}) {
   if (!path) return false;
+  if (/^https?:\/\//i.test(String(path).trim())) {
+    if (typeof openExternalBrowserUrl === 'function') return (await openExternalBrowserUrl(path)) !== false;
+    if (typeof apiPost === 'function') {
+      await apiPost('/open-external-url', { url: path }, { silentError: true })
+        .catch(() => window.open?.(path, '_blank', 'noopener'));
+      return true;
+    }
+    window.open?.(path, '_blank', 'noopener');
+    return true;
+  }
   const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(options.sourceEl, { dbPath: options.dbPath }) : null);
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
@@ -219074,6 +219218,18 @@ function _chatToolResultSucceeded(parsed) {
   return !!parsed && !parsed.error && parsed.ok !== false;
 }
 
+function _chatToolMutationPaths(parsed) {
+  if (!parsed || typeof parsed !== 'object') return [];
+  const values = [];
+  const add = value => { if (typeof value === 'string' && value.trim()) values.push(value.trim()); };
+  ['path', 'old_path', 'new_path', 'target_path', 'db_path'].forEach(key => add(parsed[key]));
+  for (const row of Array.isArray(parsed.changes) ? parsed.changes : []) {
+    add(row?.old_path || row?.source);
+    add(row?.new_path || row?.destination);
+  }
+  return [...new Set(values)];
+}
+
 const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'batch_rename', 'batch_rename_undo', 'batch_rename_redo', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
 const CHAT_NONEMPTY_RESULT_TOOLS = new Set(['search', 'search_knowledge', 'llm_list_ui_controls']);
 
@@ -219166,12 +219322,30 @@ async function _refreshWorkspaceAfterChatToolEffect() {
       skipGlobalUi: true,
     });
   }
+  const mutationPaths = Array.isArray(_chatPendingMutationPaths) ? _chatPendingMutationPaths.splice(0) : [];
+  if (typeof window.reloadOpenFilesAfterExternalMutation === 'function') {
+    await window.reloadOpenFilesAfterExternalMutation(mutationPaths);
+  }
 }
 
+let _chatPendingMutationPaths = [];
 function _handleChatToolWorkspaceEffect(name, result) {
   const toolName = String(name || '');
   const parsed = _parseChatToolResult(result);
   if (!CHAT_WORKSPACE_REFRESH_TOOLS.has(toolName) || !_chatToolResultSucceeded(parsed)) return;
+  const mutationPaths = _chatToolMutationPaths(parsed);
+  _chatPendingMutationPaths.push(...mutationPaths);
+  if (/rename/.test(toolName) && typeof renameAppPathReferences === 'function') {
+    const changes = Array.isArray(parsed.changes) ? parsed.changes : [];
+    for (const row of changes) {
+      const oldPath = row?.old_path || row?.source;
+      const newPath = row?.new_path || row?.destination;
+      if (oldPath && newPath) renameAppPathReferences(oldPath, newPath, { label: String(newPath).split('/').pop() });
+    }
+    if (!changes.length && parsed.old_path && parsed.new_path) {
+      renameAppPathReferences(parsed.old_path, parsed.new_path, { label: String(parsed.new_path).split('/').pop() });
+    }
+  }
   clearTimeout(_chatToolRefreshTimer);
   _chatToolRefreshTimer = setTimeout(() => {
     _chatToolRefreshTimer = null;

@@ -15921,11 +15921,28 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   min-height: 0;
 }
 .gb-folder-picker-current-row,
+.gb-folder-picker-tools,
 .gb-folder-picker-tree,
 .gb-folder-picker-search-results,
 .gb-folder-picker-status {
   max-width: 100%;
   box-sizing: border-box;
+}
+.gb-folder-picker-tools {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.gb-folder-picker-tools .gb-input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
 }
 .gb-folder-picker-actions .gb-btn-primary:not(:disabled) {
   background: var(--accent);
@@ -15953,6 +15970,15 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   }
   .gb-folder-picker-modal .gb-folder-picker-toggle {
     min-width: 44px !important;
+  }
+  .gb-folder-picker-tools {
+    grid-template-columns: minmax(0, 1fr) minmax(110px, auto);
+  }
+  .gb-folder-picker-search {
+    grid-column: 1 / -1;
+  }
+  .gb-folder-picker-tools .gb-input {
+    min-height: 44px;
   }
   .gb-folder-picker-actions .gb-btn {
     min-height: 44px;
@@ -33248,9 +33274,20 @@ img.meldex-image-load-error {
 
 .meldex-operation-tray-header { gap: 7px; }
 .meldex-operation-tray-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meldex-operation-tray-hint {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  color: var(--fg3, #8f98a5);
+  font-size: 10px;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

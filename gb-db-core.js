@@ -15,6 +15,16 @@ const DB_CACHE_TTL_MS = {
 // including related rows in another sheet and files displayed in image columns.
 async function _dbOpenConfiguredTarget(path, label, options = {}) {
   if (!path) return false;
+  if (/^https?:\/\//i.test(String(path).trim())) {
+    if (typeof openExternalBrowserUrl === 'function') return (await openExternalBrowserUrl(path)) !== false;
+    if (typeof apiPost === 'function') {
+      await apiPost('/open-external-url', { url: path }, { silentError: true })
+        .catch(() => window.open?.(path, '_blank', 'noopener'));
+      return true;
+    }
+    window.open?.(path, '_blank', 'noopener');
+    return true;
+  }
   const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(options.sourceEl, { dbPath: options.dbPath }) : null);
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';

@@ -231,5 +231,45 @@
     return promise;
   }
 
+  function _normalizedMutationPaths(paths) {
+    return [...new Set((Array.isArray(paths) ? paths : [paths])
+      .map(path => String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean))];
+  }
+
+  function _tabAffectedByPaths(tab, paths) {
+    if (!paths.length) return true;
+    const tabPath = String(_tabPath(tab) || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!tabPath) return false;
+    return paths.some(path => path === tabPath || path.startsWith(tabPath + '/') || tabPath.startsWith(path + '/'));
+  }
+
+  async function reloadOpenFilesAfterExternalMutation(paths) {
+    const normalized = _normalizedMutationPaths(paths);
+    const paneIds = [...new Set(Array.from(document.querySelectorAll('.gb-pane[data-pane-id]'))
+      .map(pane => pane.dataset.paneId).filter(Boolean))];
+    const targets = paneIds.map(paneId => ({ paneId, tab: _tabFromPaneId(paneId) }))
+      .filter(target => target.tab && _tabAffectedByPaths(target.tab, normalized));
+    const originalPane = _activePaneId();
+    let refreshed = 0;
+    try {
+      for (const target of targets) {
+        const path = _tabPath(target.tab);
+        const label = _tabLabel(target.tab, path);
+        await _flushPendingEditorBeforeReload(target.tab.type || '', path);
+        const handled = await _reloadComponent(target.tab)
+          || (path ? await _reloadLegacyTab(target.tab, path, label, target.paneId) : false);
+        if (handled) refreshed += 1;
+      }
+    } finally {
+      if (originalPane && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function'
+        && GBLayout.activePane !== originalPane) {
+        GBLayout.setActivePane(originalPane, { sync: true });
+      }
+    }
+    return refreshed;
+  }
+
   window.reloadCurrentOpenFile = reloadCurrentOpenFile;
+  window.reloadOpenFilesAfterExternalMutation = reloadOpenFilesAfterExternalMutation;
 })();

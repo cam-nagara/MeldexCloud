@@ -867,6 +867,10 @@ async function openLink(filePath, name, options) {
     return;
   }
   if (/^(https?:|mailto:)/i.test(filePath)) {
+    if (/^https?:/i.test(filePath) && typeof openExternalBrowserUrl === 'function') {
+      await openExternalBrowserUrl(filePath);
+      return;
+    }
     if (typeof window !== 'undefined' && typeof window.open === 'function') {
       window.open(filePath, '_blank', 'noopener');
     } else if (typeof location !== 'undefined') {
