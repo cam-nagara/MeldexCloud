@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.474-70329cba35d08e2df39b",
+  "version": "0.7.475-8d76982838de61a337c7",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -45,7 +45,7 @@
     },
     {
       "path": "dropbox-session-bridge.html",
-      "sha256": "44c25a2971a12157ac2668b27b6addcfd0007d14fbcd5eeb20f6654cbb7c2767"
+      "sha256": "1588d0ed9cde6e3f809a4df5d651391f3c675aa2207530c3fcdcbbb3ee304791"
     },
     {
       "path": "dropbox-session-bridge.js",
@@ -825,7 +825,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "941d3cca37f5d396fe8dac63a6415be5b42ee6b99e8f7da8d1d30f4174f6d78e"
+      "sha256": "a1b9e847c9d49f77924e4da708e8f380bb7b18e2075ada361ffa65e51796aebc"
     },
     {
       "path": "gb-color-palette.js",
@@ -3865,7 +3865,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "347f0c6e8ed16a5499f7fc4411ff8ba51a81de295de51c58f4c273b56ae84a97"
+      "sha256": "f46972dde818560631b7dc32ffced2b9ef1ccf3cd0697c31ba6b58f3ad8becf7"
     },
     {
       "path": "legacy-meldex-handoff.js",
@@ -3877,15 +3877,15 @@
     },
     {
       "path": "manual-corpus.json",
-      "sha256": "34bf38c9965a3dd7926a68d8d0daaa485c452dca92849389e9a22e6ffa750c61"
+      "sha256": "95f39d083c1ab707b8cb0f08a916a54a9aeb19e045b5b457786566d3c2d66397"
     },
     {
       "path": "manual-versions.json",
-      "sha256": "62be30d42a4840d921e07bb038728311474148269013ac09668b9f10aabb8fd3"
+      "sha256": "a9d88285c1fe87064e9b3dcdf2877af22c654e38f4a4524c59d08dab89227906"
     },
     {
       "path": "manual.html",
-      "sha256": "9f641c055d1325b0c6788d049a13977ff4ad38a2daa04e2124f550f8eb517ea6"
+      "sha256": "0dc41c5eb4394863c01c586aa8c5b4606f20b4958d2db73ec9c53ae511596167"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -4001,7 +4001,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "8911020cb8c2d0c1a4fa0713c5b5a1706d343d1d149b85a320583de4f3ee1378"
+      "sha256": "e4f750847d1560bdce23c8c587384d55353f60b53377fe310d7bcacc95b1239b"
     },
     {
       "path": "Meldex.ico",
@@ -4173,7 +4173,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "1518e27a51476022b4a7a11be51d2dad6745de6937db8d2db0e3303bb4893e99"
+      "sha256": "9dd8d0f160730ee71ba971db3fab677796417a8420e190e80608eb94724bfe37"
     },
     {
       "path": "public-legal.css",
@@ -4221,7 +4221,7 @@
     },
     {
       "path": "quick-memo.html",
-      "sha256": "8aa0db0f1aa5bca003e537251d3a3bb3942e96eb5a4190d25ed12ec0daac9bdd"
+      "sha256": "20b5b4b9b5dce5b66f3bc2cdaf6eb251e304b9e2f8ff559523cf88ee8234234d"
     },
     {
       "path": "quick-memo.js",
@@ -4381,7 +4381,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "1d62c659baf2ee0a8954f50ad4edeb98c32deb05ba88026564eb68b4d92b5c59"
+      "sha256": "8d8586b1761289a339359dfa38e7f8a0f598d4883ff433f47ed9279db09cd18f"
     },
     {
       "path": "viewer-annotation-legacy.js",
@@ -4453,7 +4453,7 @@
     },
     {
       "path": "viewer.html",
-      "sha256": "193ab9cb83f0c84bd8d794217dfaa6410975ed506afef9ba6a7980f95d263281"
+      "sha256": "bc9ed051468e53b194df63db0a0a24e91b9d2d1fb8d53d643a39e37d0d5b1130"
     },
     {
       "path": "webclip-inbox.css",
