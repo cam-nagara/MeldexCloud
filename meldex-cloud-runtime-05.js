@@ -220356,6 +220356,10 @@ async function chatSend(options = {}) {
   try {
     const _streamHeaders = { 'Content-Type': 'application/json' };
     if (_authToken) _streamHeaders['Authorization'] = 'Bearer ' + _authToken;
+    const streamActiveLocks = window.MeldexActiveLocks;
+    if (streamActiveLocks?.header && typeof streamActiveLocks.token === 'function') {
+      _streamHeaders[streamActiveLocks.header] = streamActiveLocks.token();
+    }
     const res = await fetch(API_BASE + '/chat/stream', {
       method: 'POST',
       headers: _streamHeaders,
@@ -228019,6 +228023,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (typeof _authToken !== 'undefined' && _authToken) headers.Authorization = 'Bearer ' + _authToken;
+      const activeLocks = window.MeldexActiveLocks;
+      if (activeLocks?.header && typeof activeLocks.token === 'function') {
+        headers[activeLocks.header] = activeLocks.token();
+      }
       const response = await fetch(API_BASE + '/cli-chat/stream', {
         method: 'POST',
         headers,

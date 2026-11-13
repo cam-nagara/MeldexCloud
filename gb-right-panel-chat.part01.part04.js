@@ -643,6 +643,10 @@ async function chatSend(options = {}) {
   try {
     const _streamHeaders = { 'Content-Type': 'application/json' };
     if (_authToken) _streamHeaders['Authorization'] = 'Bearer ' + _authToken;
+    const streamActiveLocks = window.MeldexActiveLocks;
+    if (streamActiveLocks?.header && typeof streamActiveLocks.token === 'function') {
+      _streamHeaders[streamActiveLocks.header] = streamActiveLocks.token();
+    }
     const res = await fetch(API_BASE + '/chat/stream', {
       method: 'POST',
       headers: _streamHeaders,

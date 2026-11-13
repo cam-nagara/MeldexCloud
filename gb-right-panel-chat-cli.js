@@ -1380,6 +1380,10 @@
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (typeof _authToken !== 'undefined' && _authToken) headers.Authorization = 'Bearer ' + _authToken;
+      const activeLocks = window.MeldexActiveLocks;
+      if (activeLocks?.header && typeof activeLocks.token === 'function') {
+        headers[activeLocks.header] = activeLocks.token();
+      }
       const response = await fetch(API_BASE + '/cli-chat/stream', {
         method: 'POST',
         headers,
