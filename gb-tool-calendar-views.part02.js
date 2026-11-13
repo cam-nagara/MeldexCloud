@@ -508,7 +508,11 @@ CalendarComponent.prototype._deleteShift = async function(id, options = {}) {
 // === テンプレートモーダル ===
 CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFocus) {
   const owner = returnFocus?.focus ? returnFocus : document.activeElement;
-  let allTemplates = [], templates = [];
+  if (!window.MeldexTemplatePicker?.open) {
+    this._showStatus('テンプレート画面を読み込めませんでした', true);
+    return;
+  }
+  let allTemplates = [];
   const dl = ['日','月','火','水','木','金','土'];
   const addMin = (ts, min) => {
     const match = /^(\d{1,2}):(\d{2})$/.exec(String(ts || ''));
@@ -518,96 +522,94 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
     const t = parseInt(match[1], 10) * 60 + parseInt(match[2], 10) + duration;
     return String(Math.floor(((t % 1440) + 1440) % 1440 / 60)).padStart(2,'0')+':'+String(((t % 60) + 60) % 60).padStart(2,'0');
   };
-  const content = document.createElement('div');
-  content.innerHTML = '<div id="tmpl-status" role="status" aria-live="polite"></div><div id="tmpl-list" class="tmpl-list"></div>';
-  const createButton = document.createElement('button');
-  createButton.type = 'button'; createButton.id = 'tmpl-create'; createButton.className = 'tmpl-create gb-btn gb-btn-sm'; createButton.textContent = '新規テンプレート';
-  const closeButton = document.createElement('button');
-  closeButton.type = 'button'; closeButton.id = 'tmpl-close'; closeButton.className = 'tmpl-close gb-btn gb-btn-sm'; closeButton.textContent = '閉じる';
-  let busy = false, deleteConfirmPending = false;
-  const modalApi = window.GBUI.createModal({
-    id: 'calendar-tool-template-list', title: '週間テンプレート', body: [...content.childNodes], footer: [createButton, closeButton],
-    variant: 'standard', geometryKey: 'calendar-tool-template-list', minWidth: '0', initialFocus: '#tmpl-create', returnFocus: owner,
-    closeLabel: '週間テンプレートを閉じる', closeOnEsc: true, closeOnOverlay: true, onBeforeClose: () => !busy,
-  });
-  const o = modalApi.overlay, panel = modalApi.modal, list = panel.querySelector('#tmpl-list'), status = panel.querySelector('#tmpl-status');
-  o.classList.add('gb-cal-modal-overlay'); o.dataset.e2eId = 'calendar-tool-template-list-overlay'; o._calendarClose = modalApi.close;
-  panel.classList.add('gb-cal-modal'); panel.dataset.e2eId = 'calendar-tool-template-list-dialog'; panel.style.cssText = _gbCalModalSizeStyle(600, 'overflow:hidden;');
-  const setBusy = (next) => {
-    busy = next; panel.setAttribute('aria-busy', next ? 'true' : 'false');
-    panel.querySelectorAll('button').forEach(button => { if (button !== closeButton) button.disabled = next; });
+  const entriesFor = template => Array.isArray(template?.entries) ? template.entries : [];
+  const renderEntries = (template, host, limit = Infinity) => {
+    const list = document.createElement('div');
+    list.className = 'gb-tpl-calendar-entries';
+    entriesFor(template).slice(0, limit).forEach(entry => {
+      const row = document.createElement('div');
+      row.className = 'gb-tpl-calendar-entry';
+      row.textContent = `${dl[entry.dayOfWeek] || ''} ${entry.startTime || ''}〜${addMin(entry.startTime, entry.duration)} ${entry.title || ''}`.trim();
+      list.appendChild(row);
+    });
+    if (!list.childNodes.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-tpl-calendar-empty';
+      empty.textContent = '登録された予定はありません';
+      list.appendChild(empty);
+    }
+    host.appendChild(list);
   };
-  let firstLoad = true;
-  const render = () => {
-    if (!templates.length) {
-      list.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));font-size:12px;padding:8px;">テンプレートがありません</div>';
-      return;
-    }
-    list.innerHTML = templates.map(t => {
-      const entries = (t.entries || []).map(e => `<div style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));padding:1px 0;">${esc(dl[e.dayOfWeek] || '')} ${esc(e.startTime || '')}〜${esc(addMin(e.startTime,e.duration))} ${esc(e.title || '')}</div>`).join('');
-      return `<div style="border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-panel-bg, transparent);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div><button type="button" class="tmpl-edit gb-btn gb-btn-sm" data-action="edit" data-tid="${esc(t.id)}">編集</button><button type="button" class="tmpl-del gb-btn gb-btn-sm" data-action="delete" data-tid="${esc(t.id)}" style="color:var(--red);">削除</button><button type="button" class="tmpl-gen gb-btn gb-btn-sm gb-btn-primary primary" data-action="generate" data-tid="${esc(t.id)}">一括生成</button></div></div>${entries}</div>`;
-    }).join('');
+  const loadItems = async () => {
+    allTemplates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+    return (allTemplates || [])
+      .filter(template => !(typeof this._isShiftScheduleTemplate === 'function' && this._isShiftScheduleTemplate(template)))
+      .map(template => ({
+        ...template,
+        id: String(template.id),
+        name: template.name || '名前のないテンプレート',
+        category: 'custom',
+        categoryLabel: 'マイテンプレート',
+        builtin: false,
+        badge: `${entriesFor(template).length}件`,
+        description: '1週間分の予定を、指定した週数へまとめて追加します。',
+        createdAt: template.createdAt || template.created_at || template.created,
+        updatedAt: template.updatedAt || template.updated_at || template.modifiedAt || template.modified_at,
+        renderThumbnail: host => renderEntries(template, host, 4),
+        details: host => renderEntries(template, host),
+      }));
   };
-  const loadTemplates = async () => {
-    createButton.disabled = true; status.textContent = '読み込み中...';
-    try {
-      allTemplates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
-      templates = (allTemplates || []).filter(template => !(typeof this._isShiftScheduleTemplate === 'function' && this._isShiftScheduleTemplate(template)));
-      status.textContent = ''; render();
-    } catch {
-      status.innerHTML = 'テンプレートを読み込めませんでした。<button id="tmpl-retry" type="button">再試行</button>';
-      status.querySelector('#tmpl-retry')?.addEventListener('click', loadTemplates);
-    } finally {
-      createButton.disabled = false;
-      if (firstLoad && modalApi.isOpen() && (document.activeElement === panel || !panel.contains(document.activeElement))) {
-        try { createButton.focus({ preventScroll: true }); } catch { createButton.focus(); }
-      }
-      firstLoad = false;
-    }
-  };
-  modalApi.open();
-  closeButton.addEventListener('click', () => modalApi.close('close-button'));
-  createButton.addEventListener('click', async () => {
-    if (busy) return;
-    setBusy(true); status.textContent = '作成中...';
-    try {
-      const id = await this._createTemplate(allTemplates);
-      setBusy(false); _gbCalTransitionDialog(modalApi, 'created', () => this._editTemplate(id, owner));
-    } catch {
-      status.textContent = '作成に失敗しました。もう一度お試しください。';
-      if (modalApi.isOpen()) setBusy(false);
-    }
+  return window.MeldexTemplatePicker.open({
+    id: 'calendar-tool-template-list',
+    title: '週間テンプレート',
+    loadItems,
+    returnFocus: owner,
+    primaryAction: {
+      label: '一括生成',
+      run: item => this._generateFromTemplate(String(item.id), null),
+    },
+    itemActions: [
+      {
+        label: '編集',
+        run: (item, ctx) => {
+          ctx.close('edit');
+          queueMicrotask(() => this._editTemplate(String(item.id), owner));
+          return false;
+        },
+      },
+      {
+        label: '削除',
+        danger: true,
+        run: async (item, ctx) => {
+          const confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？');
+          if (!confirmed) return false;
+          await apiFetch('/cal/schedule-templates/' + encodeURIComponent(item.id), { method: 'DELETE' });
+          await ctx.refresh();
+          ctx.setStatus('削除しました');
+          return false;
+        },
+      },
+    ],
+    footerActions: [{
+      label: '新規テンプレート',
+      e2eId: 'tmpl-create',
+      run: async ctx => {
+        const id = await this._createTemplate();
+        ctx.close('created');
+        queueMicrotask(() => this._editTemplate(id, owner));
+        return false;
+      },
+    }],
+    e2e: {
+      dialog: 'calendar-tool-template-list-dialog',
+      grid: 'tmpl-list',
+      preview: 'calendar-tool-template-preview',
+      search: 'calendar-tool-template-search',
+      card: 'calendar-tool-template-card',
+      apply: 'tmpl-generate',
+      close: 'tmpl-close',
+    },
   });
-  list.addEventListener('click', async event => {
-    const button = event.target.closest('button[data-action]');
-    if (!button || busy) return;
-    const action = button.dataset.action, tid = button.dataset.tid;
-    if (action === 'edit') { _gbCalTransitionDialog(modalApi, 'edit', () => this._editTemplate(tid, owner)); return; }
-    if (action === 'delete') {
-      if (deleteConfirmPending) return;
-      deleteConfirmPending = true;
-      let confirmed = false;
-      try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？'); }
-      catch {} finally { deleteConfirmPending = false; }
-      if (!confirmed) return;
-      setBusy(true); status.textContent = '削除中...';
-      try {
-        await apiFetch('/cal/schedule-templates/' + encodeURIComponent(tid), { method: 'DELETE' });
-        templates = templates.filter(template => String(template.id) !== String(tid)); status.textContent = ''; render();
-      } catch { status.textContent = '削除に失敗しました。もう一度お試しください。'; }
-      finally { if (modalApi.isOpen()) setBusy(false); }
-      return;
-    }
-    if (action === 'generate') {
-      setBusy(true);
-      try {
-        const generated = await this._generateFromTemplate(tid, null);
-        if (generated) { setBusy(false); modalApi.close('generated'); }
-      }
-      finally { if (modalApi.isOpen()) setBusy(false); }
-    }
-  });
-  await loadTemplates();
 };
 
 CalendarComponent.prototype._createTemplate = async function(knownTemplates) {
@@ -688,7 +690,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
 
 CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay) {
   const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
-  const t = templates.find(x => x.id === tid);
+  const t = templates.find(x => String(x.id) === String(tid));
   if (!t || !t.entries?.length) { this._showStatus('トピックがありません', true); return false; }
   // cfPromptで週数を取得
   const weeksStr = await cfPrompt('何週間分生成しますか？', '4');

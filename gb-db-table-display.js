@@ -437,11 +437,7 @@ function _dbAutoWidthCharsForTexts(texts, headerText) {
 }
 
 function _dbAutoWidthCharsForEntryNames(entityNames, headerText = 'トピック名') {
-  const base = _dbAutoWidthCharsForTexts(entityNames, headerText);
-  const maxNameLen = entityNames.length
-    ? Math.max(...entityNames.map(name => _dbTextLengthForWidth(name)))
-    : 0;
-  return Math.max(base, Math.min(36, maxNameLen));
+  return _dbAutoWidthCharsForTexts(entityNames, headerText);
 }
 
 function _dbWidthPxFromChars(chars) {
@@ -449,18 +445,15 @@ function _dbWidthPxFromChars(chars) {
 }
 
 // 通常テキスト列の自動列幅の上限（計画: 「最大268px程度に制限し、長文や改行を含む値は
-// 折り返す」）。エントリ名列・画像列は別の専用算出規則（_dbEntityWidthPxFromChars /
-// _dbAutoImageColumnWidth）を維持し、この上限の対象外とする。
+// 折り返す」）。トピック名列にも同じ上限を使い、画像列だけ専用算出規則を使う。
 const DB_TEXT_AUTO_WIDTH_MAX_PX = 268;
 
 function _dbTextAutoWidthPxFromChars(chars) {
   return Math.min(DB_TEXT_AUTO_WIDTH_MAX_PX, _dbWidthPxFromChars(chars));
 }
 
-const DB_ENTITY_AUTO_WIDTH_CHROME_PX = 74;
-
 function _dbEntityWidthPxFromChars(chars) {
-  return Math.max(120, Math.min(640, _dbWidthPxFromChars(chars) + DB_ENTITY_AUTO_WIDTH_CHROME_PX));
+  return Math.max(120, _dbTextAutoWidthPxFromChars(chars));
 }
 
 function _dbAutoImageColumnWidth(propName, ptc) {

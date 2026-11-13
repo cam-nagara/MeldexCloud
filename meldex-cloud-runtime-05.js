@@ -10413,7 +10413,8 @@
 ;
 /* gb-template-picker.js: 全アプリ共通のテンプレート選択画面（サムネイル一覧＋プレビュー）。
  *
- * ノート・シナリオ・シート・ボードのテンプレート選択は、すべてこの画面を使う。
+ * ノート・シナリオ・シート・ボード・スケジュール・フォームのテンプレート選択は、
+ * すべてこの画面を使う。
  * 各アプリは「項目一覧」「サムネイルの描き方」「適用などの操作」だけを渡す。
  *
  * MeldexTemplatePicker.open({
@@ -10435,6 +10436,8 @@
   'use strict';
 
   const CATEGORY_ALL = '__all__';
+  const CATEGORY_FAVORITES = '__favorites__';
+  const SORT_DEFAULT = 'recommended';
 
 
   function el(tag, cls, text) {
@@ -10472,8 +10475,37 @@
     return result;
   }
 
-  function matches(item, query, category) {
-    if (category !== CATEGORY_ALL && String(item.category || '') !== category) return false;
+  function readPreference(key, fallback) {
+    try {
+      const value = global.localStorage?.getItem(key);
+      return value == null ? fallback : JSON.parse(value);
+    } catch (_) { return fallback; }
+  }
+
+  function writePreference(key, value) {
+    try { global.localStorage?.setItem(key, JSON.stringify(value)); } catch (_) {}
+  }
+
+  function itemDate(item, kind) {
+    const candidates = kind === 'created'
+      ? [item.createdAt, item.created_at, item.addedAt, item.added_at]
+      : [item.updatedAt, item.updated_at, item.modifiedAt, item.modified_at];
+    for (const value of candidates) {
+      const time = Date.parse(value || '');
+      if (Number.isFinite(time)) return time;
+    }
+    return 0;
+  }
+
+  function formatItemDate(value) {
+    const time = Date.parse(value || '');
+    if (!Number.isFinite(time)) return '';
+    return new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(time));
+  }
+
+  function matches(item, query, category, favorites) {
+    if (category === CATEGORY_FAVORITES && !favorites.has(item.id)) return false;
+    if (category !== CATEGORY_ALL && category !== CATEGORY_FAVORITES && String(item.category || '') !== category) return false;
     if (!query) return true;
     const hay = [item.name, item.description, item.categoryLabel, item.badge].join(' ').toLocaleLowerCase();
     return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).every(part => hay.includes(part));
@@ -10511,10 +10543,15 @@
     if (!global.GBUI?.createModal) throw new Error('ダイアログ部品を読み込めませんでした');
 
     const pickerId = String(options.id || 'template-picker');
+    const favoritesKey = `meldex-template-picker-favorites-v1:${pickerId}`;
+    const sortKey = `meldex-template-picker-sort-v1:${pickerId}`;
     let items = normalizeItems(options.items);
     let selectedId = options.selectedId != null ? String(options.selectedId) : '';
     let category = CATEGORY_ALL;
     let query = '';
+    const storedFavorites = readPreference(favoritesKey, []);
+    let favorites = new Set((Array.isArray(storedFavorites) ? storedFavorites : []).map(String));
+    let sortMode = String(readPreference(sortKey, SORT_DEFAULT) || SORT_DEFAULT);
     let busy = false;
     let forceClose = false;
 
@@ -10527,10 +10564,22 @@
     search.setAttribute('aria-label', 'テンプレートを検索');
     const e2e = options.e2e || {};
     search.dataset.e2eId = e2e.search || `${pickerId}-search`;
+    const sort = el('select', 'gb-select gb-tpl-sort');
+    sort.setAttribute('aria-label', 'テンプレートの並び順');
+    sort.dataset.e2eId = `${pickerId}-sort`;
+    [
+      ['recommended', 'おすすめ順'], ['name-asc', '名前順（昇順）'], ['name-desc', '名前順（降順）'],
+      ['created-desc', '追加日（新しい順）'], ['created-asc', '追加日（古い順）'],
+      ['updated-desc', '更新日（新しい順）'], ['updated-asc', '更新日（古い順）'],
+    ].forEach(([value, label]) => {
+      const option = el('option', '', label); option.value = value; sort.appendChild(option);
+    });
+    if (![...sort.options].some(option => option.value === sortMode)) sortMode = SORT_DEFAULT;
+    sort.value = sortMode;
     const chips = el('div', 'gb-tpl-chips');
     chips.setAttribute('role', 'tablist');
     chips.setAttribute('aria-label', 'テンプレートの分類');
-    toolbar.append(search, chips);
+    toolbar.append(search, sort, chips);
 
     const body = el('div', 'gb-tpl-body');
     const grid = el('div', 'gb-tpl-grid');
@@ -10565,6 +10614,7 @@
       geometryKey: pickerId,
       extraClass: 'gb-tpl-picker-modal',
       initialFocus: () => grid.querySelector('.gb-tpl-card.is-selected') || search,
+      returnFocus: options.returnFocus,
       onBeforeClose: () => !busy || forceClose,
       onClose: options.onClose,
     });
@@ -10593,7 +10643,7 @@
       root.classList.add('is-busy');
       // 処理中は二重送信を防ぎ、支援技術にも処理中であることを伝える（Escape等でも閉じない）。
       modal.modal.setAttribute('aria-busy', 'true');
-      const controls = [...modal.modal.querySelectorAll('button, input')].map(control => [control, control.disabled]);
+      const controls = [...modal.modal.querySelectorAll('button, input, select')].map(control => [control, control.disabled]);
       controls.forEach(([control]) => { control.disabled = true; });
       ctx.setStatus('');
       let result = false;
@@ -10623,9 +10673,9 @@
     function renderChips() {
       const cats = categoriesOf(items);
       chips.replaceChildren();
-      chips.hidden = cats.length < 2;
-      [{ key: CATEGORY_ALL, label: 'すべて' }, ...cats].forEach(cat => {
-        const chipKey = cat.key === CATEGORY_ALL ? 'all' : cat.key;
+      chips.hidden = items.length === 0;
+      [{ key: CATEGORY_FAVORITES, label: '★ お気に入り' }, { key: CATEGORY_ALL, label: 'すべて' }, ...cats].forEach(cat => {
+        const chipKey = cat.key === CATEGORY_ALL ? 'all' : (cat.key === CATEGORY_FAVORITES ? 'favorites' : cat.key);
         const chip = button(cat.label, 'gb-tpl-chip' + (cat.key === category ? ' is-active' : ''), (e2e.categoryPrefix || `${pickerId}-category-`) + chipKey);
         chip.dataset.category = chipKey;
         chip.setAttribute('role', 'tab');
@@ -10636,7 +10686,21 @@
     }
 
     function renderGrid() {
-      const visible = items.filter(item => matches(item, query, category));
+      const originalOrder = new Map(items.map((item, index) => [item.id, index]));
+      const visible = items.filter(item => matches(item, query, category, favorites)).sort((a, b) => {
+        const favoriteOrder = Number(favorites.has(b.id)) - Number(favorites.has(a.id));
+        if (favoriteOrder) return favoriteOrder;
+        if (sortMode.startsWith('name-')) {
+          const result = a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' });
+          if (result) return sortMode.endsWith('desc') ? -result : result;
+        }
+        if (sortMode.startsWith('created-') || sortMode.startsWith('updated-')) {
+          const kind = sortMode.startsWith('created-') ? 'created' : 'updated';
+          const result = itemDate(a, kind) - itemDate(b, kind);
+          if (result) return sortMode.endsWith('desc') ? -result : result;
+        }
+        return (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0);
+      });
       grid.replaceChildren();
       if (!visible.length) {
         grid.appendChild(el('p', 'gb-tpl-empty', items.length ? '一致するテンプレートはありません' : (options.emptyText || 'テンプレートはありません')));
@@ -10644,6 +10708,8 @@
       }
       if (!visible.some(item => item.id === selectedId)) selectedId = visible[0].id;
       visible.forEach(item => {
+        const wrap = el('div', 'gb-tpl-card-wrap');
+        wrap.setAttribute('role', 'presentation');
         const card = el('button', 'gb-tpl-card' + (options.cardClass ? ' ' + options.cardClass : '') + (item.id === selectedId ? ' is-selected' : ''));
         card.type = 'button';
         card.setAttribute('role', 'option');
@@ -10657,7 +10723,10 @@
         label.appendChild(el('span', 'gb-tpl-card-name', item.name));
         const badgeText = item.id === options.currentId ? '使用中' : (item.badge || (item.builtin ? '' : 'カスタム'));
         if (badgeText) label.appendChild(el('span', 'gb-tpl-card-badge', badgeText));
-        card.append(thumb, label);
+        const dateText = formatItemDate(item.updatedAt || item.updated_at || item.modifiedAt || item.modified_at)
+          || formatItemDate(item.createdAt || item.created_at || item.addedAt || item.added_at);
+        if (dateText) label.appendChild(el('span', 'gb-tpl-card-date', dateText));
+        card.append(label, thumb);
         if (item.description) card.title = item.description;
         card.addEventListener('click', () => {
           if (selectedId === item.id) return;
@@ -10670,7 +10739,18 @@
           renderPreview();
         });
         card.addEventListener('dblclick', () => runPrimary(item));
-        grid.appendChild(card);
+        const favorite = button(favorites.has(item.id) ? '★' : '☆', 'gb-tpl-favorite', `${pickerId}-favorite`);
+        favorite.dataset.templateId = item.id;
+        favorite.setAttribute('aria-label', favorites.has(item.id) ? `${item.name}をお気に入りから外す` : `${item.name}をお気に入りに追加`);
+        favorite.setAttribute('aria-pressed', favorites.has(item.id) ? 'true' : 'false');
+        favorite.addEventListener('click', event => {
+          event.stopPropagation();
+          if (favorites.has(item.id)) favorites.delete(item.id); else favorites.add(item.id);
+          writePreference(favoritesKey, [...favorites]);
+          render();
+        });
+        wrap.append(card, favorite);
+        grid.appendChild(wrap);
       });
       return visible;
     }
@@ -10694,7 +10774,7 @@
       const head = el('div', 'gb-tpl-preview-head');
       head.appendChild(el('h3', 'gb-tpl-preview-name', item.name));
       if (item.categoryLabel) head.appendChild(el('span', 'gb-tpl-card-badge', item.categoryLabel));
-      preview.append(large, head);
+      preview.append(head, large);
       if (item.description) preview.appendChild(el('p', 'gb-tpl-preview-desc', item.description));
       if (typeof item.details === 'function') {
         const details = el('div', 'gb-tpl-preview-details');
@@ -10718,6 +10798,11 @@
     }
 
     search.addEventListener('input', () => { query = search.value.trim(); renderGrid(); renderPreview(); });
+    sort.addEventListener('change', () => {
+      sortMode = sort.value;
+      writePreference(sortKey, sortMode);
+      renderGrid(); renderPreview();
+    });
     grid.addEventListener('keydown', event => {
       const cards = [...grid.querySelectorAll('.gb-tpl-card')];
       const index = cards.indexOf(document.activeElement);
@@ -10847,18 +10932,26 @@
       let busy = false;
       const body = document.createElement('div'); body.className = 'note-template-dialog';
       const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
+      const category = document.createElement('input'); category.className = 'gb-input'; category.setAttribute('aria-label', '分類');
       const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
       content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
       const status = document.createElement('p'); status.setAttribute('role', 'status');
       const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末');
-      name.value = initial?.name || ''; content.value = initial?.content || '';
-      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }), GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
+      name.value = initial?.name || ''; category.value = initial?.categoryLabel || initial?.category || 'カスタム'; content.value = initial?.content || '';
+      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }),
+        GBUI.createField({ label: '分類', input: category }),
+        GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
       const cancel = button('キャンセル', () => modal.close('cancel'));
       const save = button('テンプレートを保存', async () => {
         if (busy) return; busy = true; save.disabled = true; status.textContent = '';
         try {
-          const item = validate({ ...(initial?.id ? library.templates.find(other => other.id === initial.id) : {}), schemaVersion: 1,
-            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value });
+          const previous = initial?.id ? library.templates.find(other => other.id === initial.id) : null;
+          const now = new Date().toISOString();
+          const categoryName = category.value.trim() || 'カスタム';
+          const item = validate({ ...(previous || {}), schemaVersion: 1,
+            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value,
+            category: categoryName, categoryLabel: categoryName,
+            createdAt: previous?.createdAt || now, updatedAt: now });
           if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
           const exists = library.templates.some(other => other.id === item.id);
           await persist(library, exists ? library.templates.map(other => other.id === item.id ? item : other) : [...library.templates, item]);
@@ -10887,7 +10980,8 @@
     }
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
     const items = () => library.templates.map(item => ({
-      ...item, builtin: false, badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
+      ...item, builtin: false, category: item.category || 'カスタム', categoryLabel: item.categoryLabel || item.category || 'カスタム',
+      badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
       description: item.content.split('\n').find(line => line.trim())?.replace(/^#+\s*/, '').slice(0, 80) || '',
       renderThumbnail: host => renderDocThumbnail(item.content, host),
     }));
@@ -25474,7 +25568,11 @@ CalendarComponent.prototype._deleteShift = async function(id, options = {}) {
 // === テンプレートモーダル ===
 CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFocus) {
   const owner = returnFocus?.focus ? returnFocus : document.activeElement;
-  let allTemplates = [], templates = [];
+  if (!window.MeldexTemplatePicker?.open) {
+    this._showStatus('テンプレート画面を読み込めませんでした', true);
+    return;
+  }
+  let allTemplates = [];
   const dl = ['日','月','火','水','木','金','土'];
   const addMin = (ts, min) => {
     const match = /^(\d{1,2}):(\d{2})$/.exec(String(ts || ''));
@@ -25484,96 +25582,94 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
     const t = parseInt(match[1], 10) * 60 + parseInt(match[2], 10) + duration;
     return String(Math.floor(((t % 1440) + 1440) % 1440 / 60)).padStart(2,'0')+':'+String(((t % 60) + 60) % 60).padStart(2,'0');
   };
-  const content = document.createElement('div');
-  content.innerHTML = '<div id="tmpl-status" role="status" aria-live="polite"></div><div id="tmpl-list" class="tmpl-list"></div>';
-  const createButton = document.createElement('button');
-  createButton.type = 'button'; createButton.id = 'tmpl-create'; createButton.className = 'tmpl-create gb-btn gb-btn-sm'; createButton.textContent = '新規テンプレート';
-  const closeButton = document.createElement('button');
-  closeButton.type = 'button'; closeButton.id = 'tmpl-close'; closeButton.className = 'tmpl-close gb-btn gb-btn-sm'; closeButton.textContent = '閉じる';
-  let busy = false, deleteConfirmPending = false;
-  const modalApi = window.GBUI.createModal({
-    id: 'calendar-tool-template-list', title: '週間テンプレート', body: [...content.childNodes], footer: [createButton, closeButton],
-    variant: 'standard', geometryKey: 'calendar-tool-template-list', minWidth: '0', initialFocus: '#tmpl-create', returnFocus: owner,
-    closeLabel: '週間テンプレートを閉じる', closeOnEsc: true, closeOnOverlay: true, onBeforeClose: () => !busy,
-  });
-  const o = modalApi.overlay, panel = modalApi.modal, list = panel.querySelector('#tmpl-list'), status = panel.querySelector('#tmpl-status');
-  o.classList.add('gb-cal-modal-overlay'); o.dataset.e2eId = 'calendar-tool-template-list-overlay'; o._calendarClose = modalApi.close;
-  panel.classList.add('gb-cal-modal'); panel.dataset.e2eId = 'calendar-tool-template-list-dialog'; panel.style.cssText = _gbCalModalSizeStyle(600, 'overflow:hidden;');
-  const setBusy = (next) => {
-    busy = next; panel.setAttribute('aria-busy', next ? 'true' : 'false');
-    panel.querySelectorAll('button').forEach(button => { if (button !== closeButton) button.disabled = next; });
+  const entriesFor = template => Array.isArray(template?.entries) ? template.entries : [];
+  const renderEntries = (template, host, limit = Infinity) => {
+    const list = document.createElement('div');
+    list.className = 'gb-tpl-calendar-entries';
+    entriesFor(template).slice(0, limit).forEach(entry => {
+      const row = document.createElement('div');
+      row.className = 'gb-tpl-calendar-entry';
+      row.textContent = `${dl[entry.dayOfWeek] || ''} ${entry.startTime || ''}〜${addMin(entry.startTime, entry.duration)} ${entry.title || ''}`.trim();
+      list.appendChild(row);
+    });
+    if (!list.childNodes.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-tpl-calendar-empty';
+      empty.textContent = '登録された予定はありません';
+      list.appendChild(empty);
+    }
+    host.appendChild(list);
   };
-  let firstLoad = true;
-  const render = () => {
-    if (!templates.length) {
-      list.innerHTML = '<div style="color:var(--cal-muted-fg, var(--fg2));font-size:12px;padding:8px;">テンプレートがありません</div>';
-      return;
-    }
-    list.innerHTML = templates.map(t => {
-      const entries = (t.entries || []).map(e => `<div style="font-size:11px;color:var(--cal-muted-fg, var(--fg2));padding:1px 0;">${esc(dl[e.dayOfWeek] || '')} ${esc(e.startTime || '')}〜${esc(addMin(e.startTime,e.duration))} ${esc(e.title || '')}</div>`).join('');
-      return `<div style="border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-panel-bg, transparent);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div><button type="button" class="tmpl-edit gb-btn gb-btn-sm" data-action="edit" data-tid="${esc(t.id)}">編集</button><button type="button" class="tmpl-del gb-btn gb-btn-sm" data-action="delete" data-tid="${esc(t.id)}" style="color:var(--red);">削除</button><button type="button" class="tmpl-gen gb-btn gb-btn-sm gb-btn-primary primary" data-action="generate" data-tid="${esc(t.id)}">一括生成</button></div></div>${entries}</div>`;
-    }).join('');
+  const loadItems = async () => {
+    allTemplates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
+    return (allTemplates || [])
+      .filter(template => !(typeof this._isShiftScheduleTemplate === 'function' && this._isShiftScheduleTemplate(template)))
+      .map(template => ({
+        ...template,
+        id: String(template.id),
+        name: template.name || '名前のないテンプレート',
+        category: 'custom',
+        categoryLabel: 'マイテンプレート',
+        builtin: false,
+        badge: `${entriesFor(template).length}件`,
+        description: '1週間分の予定を、指定した週数へまとめて追加します。',
+        createdAt: template.createdAt || template.created_at || template.created,
+        updatedAt: template.updatedAt || template.updated_at || template.modifiedAt || template.modified_at,
+        renderThumbnail: host => renderEntries(template, host, 4),
+        details: host => renderEntries(template, host),
+      }));
   };
-  const loadTemplates = async () => {
-    createButton.disabled = true; status.textContent = '読み込み中...';
-    try {
-      allTemplates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
-      templates = (allTemplates || []).filter(template => !(typeof this._isShiftScheduleTemplate === 'function' && this._isShiftScheduleTemplate(template)));
-      status.textContent = ''; render();
-    } catch {
-      status.innerHTML = 'テンプレートを読み込めませんでした。<button id="tmpl-retry" type="button">再試行</button>';
-      status.querySelector('#tmpl-retry')?.addEventListener('click', loadTemplates);
-    } finally {
-      createButton.disabled = false;
-      if (firstLoad && modalApi.isOpen() && (document.activeElement === panel || !panel.contains(document.activeElement))) {
-        try { createButton.focus({ preventScroll: true }); } catch { createButton.focus(); }
-      }
-      firstLoad = false;
-    }
-  };
-  modalApi.open();
-  closeButton.addEventListener('click', () => modalApi.close('close-button'));
-  createButton.addEventListener('click', async () => {
-    if (busy) return;
-    setBusy(true); status.textContent = '作成中...';
-    try {
-      const id = await this._createTemplate(allTemplates);
-      setBusy(false); _gbCalTransitionDialog(modalApi, 'created', () => this._editTemplate(id, owner));
-    } catch {
-      status.textContent = '作成に失敗しました。もう一度お試しください。';
-      if (modalApi.isOpen()) setBusy(false);
-    }
+  return window.MeldexTemplatePicker.open({
+    id: 'calendar-tool-template-list',
+    title: '週間テンプレート',
+    loadItems,
+    returnFocus: owner,
+    primaryAction: {
+      label: '一括生成',
+      run: item => this._generateFromTemplate(String(item.id), null),
+    },
+    itemActions: [
+      {
+        label: '編集',
+        run: (item, ctx) => {
+          ctx.close('edit');
+          queueMicrotask(() => this._editTemplate(String(item.id), owner));
+          return false;
+        },
+      },
+      {
+        label: '削除',
+        danger: true,
+        run: async (item, ctx) => {
+          const confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？');
+          if (!confirmed) return false;
+          await apiFetch('/cal/schedule-templates/' + encodeURIComponent(item.id), { method: 'DELETE' });
+          await ctx.refresh();
+          ctx.setStatus('削除しました');
+          return false;
+        },
+      },
+    ],
+    footerActions: [{
+      label: '新規テンプレート',
+      e2eId: 'tmpl-create',
+      run: async ctx => {
+        const id = await this._createTemplate();
+        ctx.close('created');
+        queueMicrotask(() => this._editTemplate(id, owner));
+        return false;
+      },
+    }],
+    e2e: {
+      dialog: 'calendar-tool-template-list-dialog',
+      grid: 'tmpl-list',
+      preview: 'calendar-tool-template-preview',
+      search: 'calendar-tool-template-search',
+      card: 'calendar-tool-template-card',
+      apply: 'tmpl-generate',
+      close: 'tmpl-close',
+    },
   });
-  list.addEventListener('click', async event => {
-    const button = event.target.closest('button[data-action]');
-    if (!button || busy) return;
-    const action = button.dataset.action, tid = button.dataset.tid;
-    if (action === 'edit') { _gbCalTransitionDialog(modalApi, 'edit', () => this._editTemplate(tid, owner)); return; }
-    if (action === 'delete') {
-      if (deleteConfirmPending) return;
-      deleteConfirmPending = true;
-      let confirmed = false;
-      try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？'); }
-      catch {} finally { deleteConfirmPending = false; }
-      if (!confirmed) return;
-      setBusy(true); status.textContent = '削除中...';
-      try {
-        await apiFetch('/cal/schedule-templates/' + encodeURIComponent(tid), { method: 'DELETE' });
-        templates = templates.filter(template => String(template.id) !== String(tid)); status.textContent = ''; render();
-      } catch { status.textContent = '削除に失敗しました。もう一度お試しください。'; }
-      finally { if (modalApi.isOpen()) setBusy(false); }
-      return;
-    }
-    if (action === 'generate') {
-      setBusy(true);
-      try {
-        const generated = await this._generateFromTemplate(tid, null);
-        if (generated) { setBusy(false); modalApi.close('generated'); }
-      }
-      finally { if (modalApi.isOpen()) setBusy(false); }
-    }
-  });
-  await loadTemplates();
 };
 
 CalendarComponent.prototype._createTemplate = async function(knownTemplates) {
@@ -25654,7 +25750,7 @@ CalendarComponent.prototype._editTemplate = async function(tid, returnFocus) {
 
 CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay) {
   const templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(this._getUser()));
-  const t = templates.find(x => x.id === tid);
+  const t = templates.find(x => String(x.id) === String(tid));
   if (!t || !t.entries?.length) { this._showStatus('トピックがありません', true); return false; }
   // cfPromptで週数を取得
   const weeksStr = await cfPrompt('何週間分生成しますか？', '4');
@@ -43880,6 +43976,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム" aria-label="消しゴム">${_bdIcon('eraser', 16)}</button>
       <div class="tb-spacer"></div>
       <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" aria-label="フィルタ" aria-haspopup="menu" aria-expanded="false" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
+      <button type="button" data-bd-action="templates" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="テンプレート" aria-label="テンプレート">${_bdIcon('layoutTemplate', 16)}</button>
       <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み" aria-label="再読み込み">${_bdIcon('refreshCw', 16)}</button>
       <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換" aria-label="検索と置換">${_bdIcon('search', 16)}</button>
       <button type="button" data-bd-action="detail" data-gb-tooltip-key="panel.right.toggle" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false">${_bdIcon('panelRight', 16)}</button>
@@ -48379,6 +48476,11 @@ function bdInitBoardShell(root) {
         break;
       case 'find-replace':
         if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
+        break;
+      case 'templates':
+        if (window.MeldexBoardTemplates?.open) {
+          window.MeldexBoardTemplates.open().catch(error => window.showStatus?.(error?.message || error, true));
+        }
         break;
       case 'reload':
         if (typeof reloadCurrentOpenFile === 'function') reloadCurrentOpenFile(event);
@@ -55737,6 +55839,7 @@ function bdOpenFilterMenu(anchor) {
       category: 'custom',
       categoryLabel: 'マイテンプレート',
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       style: captureStyle(board),
       content: options.includeContent === false ? { nodes: [], lines: [], groups: [] } : captureContent(board),
     };
@@ -56029,7 +56132,9 @@ function bdOpenFilterMenu(anchor) {
           const name = String(await askName(item.name) || '').trim();
           if (!name || name === item.name) return false;
           if (library.templates.some(other => other.name === name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
-          await persistLibrary(library, library.templates.map(other => other.id === item.id ? { ...other, name } : other));
+          await persistLibrary(library, library.templates.map(other => other.id === item.id
+            ? { ...other, name, updatedAt: new Date().toISOString() }
+            : other));
           await ctx.refresh();
           ctx.select(item.id);
           ctx.setStatus('名前を変更しました');
@@ -70585,7 +70690,13 @@ class ScriptNoteComponent extends ToolComponent {
     if (!allowOverwrite && Object.prototype.hasOwnProperty.call(data, name)) { if (typeof showStatus === 'function') showStatus('同じ名前がすでにあります', true); return false; }
     const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
     const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
-    data[name] = _snToolClone(value);
+    const storedValue = _snToolClone(value);
+    if (kind === 'template') {
+      const now = new Date().toISOString();
+      storedValue.createdAt = data[name]?.createdAt || now;
+      storedValue.updatedAt = now;
+    }
+    data[name] = storedValue;
     if (!order.includes(name)) order.push(name);
     _snToolWriteStorageAtomically([
       [cfg.storageKey, JSON.stringify(data)],
@@ -70813,6 +70924,11 @@ class ScriptNoteComponent extends ToolComponent {
         const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey).filter(item => item !== copyName);
         order.splice(Math.max(0, order.indexOf(name)) + 1, 0, copyName);
         nextData[copyName] = _snToolClone(nextData[name]);
+        if (kind === 'template') {
+          const now = new Date().toISOString();
+          nextData[copyName].createdAt = now;
+          nextData[copyName].updatedAt = now;
+        }
         _snToolWriteStorageAtomically([
           [cfg.storageKey, JSON.stringify(nextData)],
           [cfg.orderKey, JSON.stringify(_snToolFilteredPresetOrder(order, nextData))],
@@ -71138,6 +71254,7 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
       const vertical = (value.editor?.viewMode || value.viewMode || value.rubyPresentation?.writingMode) === 'vertical';
       return {
         id: 'custom:' + name, name, builtin: false, badge: 'カスタム', category: 'custom', categoryLabel: 'カスタム',
+        createdAt: value.createdAt, updatedAt: value.updatedAt,
         description: `「${base.name}」をもとにした書式${vertical ? '（縦書き）' : ''}。タイプの書式とエディタ設定を保存しています。`,
         renderThumbnail: host => renderSample(host, base.sample, { vertical }),
       };
@@ -152613,6 +152730,109 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// Start a topic read at the beginning of a Sheet open gesture, before editor
+// flushing and pane retargeting. selectEntity() consumes the same promise once;
+// this overlaps one request and deliberately does not become a stale data cache.
+const _dbEntityOpenLoads = new Map();
+
+function _dbWarmEntityForOpen(entityPath) {
+  const path = String(entityPath || '').trim();
+  if (!path || typeof apiFetch !== 'function') return null;
+  const existing = _dbEntityOpenLoads.get(path);
+  if (existing?.promise) return existing.promise;
+  const entry = { promise: null, cleanupTimer: null };
+  entry.promise = Promise.resolve().then(() => apiFetch(
+    '/entity?path=' + encodeURIComponent(path),
+    { foreground: true },
+  )).catch((error) => {
+    if (_dbEntityOpenLoads.get(path) === entry) _dbEntityOpenLoads.delete(path);
+    throw error;
+  });
+  entry.cleanupTimer = setTimeout(() => {
+    if (_dbEntityOpenLoads.get(path) === entry) _dbEntityOpenLoads.delete(path);
+  }, 5000);
+  _dbEntityOpenLoads.set(path, entry);
+  return entry.promise;
+}
+
+async function _dbFetchEntityForOpen(entityPath) {
+  const path = String(entityPath || '').trim();
+  const entry = _dbEntityOpenLoads.get(path);
+  const promise = entry?.promise || _dbWarmEntityForOpen(path);
+  try {
+    return await promise;
+  } finally {
+    const activeEntry = _dbEntityOpenLoads.get(path);
+    if (activeEntry?.promise === promise) {
+      if (activeEntry.cleanupTimer) clearTimeout(activeEntry.cleanupTimer);
+      _dbEntityOpenLoads.delete(path);
+    }
+  }
+}
+
+function _dbForgetEntityOpenLoad(entityPath) {
+  const path = String(entityPath || '').trim();
+  const entry = _dbEntityOpenLoads.get(path);
+  if (entry?.cleanupTimer) clearTimeout(entry.cleanupTimer);
+  _dbEntityOpenLoads.delete(path);
+}
+
+function _dbEntityHasPendingEditorFlush(entityPath) {
+  const path = String(entityPath || '').replace(/\\/g, '/');
+  if (!path) return false;
+  const pendingNotePath = window._noteAutoSaveTimer
+    ? String(window._pendingNoteAutoSavePc?.dataset?.path || '').replace(/\\/g, '/')
+    : '';
+  const entityEditor = document.getElementById('entity-freetext');
+  const pendingEntityPath = window._ftAutoSaveTimer
+    ? String(entityEditor?.dataset?.entityPath || '').replace(/\\/g, '/')
+    : '';
+  return pendingNotePath === path || pendingEntityPath === path;
+}
+
+function _dbSheetTransitionRoot(ctx) {
+  return (typeof _paneElById === 'function' ? _paneElById(ctx, 'db-view-container') : null)
+    || (!ctx ? document.getElementById('db-view-container') : null);
+}
+
+// Sheet surfaces are shared between pane tabs. Mask and clear them before an
+// async open so a previous Sheet or view cannot be painted as the destination.
+function _dbBeginSheetTransition(ctx, dbPath) {
+  const root = _dbSheetTransitionRoot(ctx);
+  if (!root) return 0;
+  const requestedPath = String(dbPath || '');
+  const token = (Number(ctx?._dbTransitionSeq || root.dataset.dbTransitionToken || 0) || 0) + 1;
+  if (ctx) ctx._dbTransitionSeq = token;
+  root.dataset.dbTransitionToken = String(token);
+  root.dataset.dbTransitionPath = requestedPath;
+  root.setAttribute('aria-busy', 'true');
+
+  if (typeof clearPivot === 'function') clearPivot(ctx);
+  const surfaces = ['tree-view', 'gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
+  for (const id of surfaces) {
+    const surface = root.querySelector('#' + id + ', .' + id);
+    if (surface) surface.replaceChildren();
+  }
+  root.querySelectorAll(':scope > .db-sheet-transition-mask').forEach(el => el.remove());
+  const mask = document.createElement('div');
+  mask.className = 'db-sheet-transition-mask';
+  mask.dataset.transitionToken = String(token);
+  mask.setAttribute('role', 'status');
+  mask.setAttribute('aria-live', 'polite');
+  mask.innerHTML = (typeof lucide === 'function' ? lucide('loaderCircle', 17) : '') + '<span>シートを読み込み中...</span>';
+  root.appendChild(mask);
+  return token;
+}
+
+function _dbEndSheetTransition(ctx, token) {
+  if (!token) return;
+  const root = _dbSheetTransitionRoot(ctx);
+  if (!root || Number(root.dataset.dbTransitionToken || 0) !== Number(token)) return;
+  root.querySelectorAll(':scope > .db-sheet-transition-mask').forEach(el => el.remove());
+  root.removeAttribute('aria-busy');
+  delete root.dataset.dbTransitionPath;
+}
+
 // All ordinary opens originating in a sheet use the source sheet's preference,
 // including related rows in another sheet and files displayed in image columns.
 async function _dbOpenConfiguredTarget(path, label, options = {}) {
@@ -152632,6 +152852,16 @@ async function _dbOpenConfiguredTarget(path, label, options = {}) {
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
   const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
   const target = cfg.defaultPanel === 'main' ? 'main' : 'right-sidebar';
+  if (target === 'main' && options.linkType === 'entity') {
+    if (_dbEntityHasPendingEditorFlush(path)) {
+      // A previous gesture may still have left a fulfilled read in the short
+      // hand-off cache. Never consume it after saving newer editor contents.
+      _dbForgetEntityOpenLoad(path);
+    } else {
+      // Do not await: overlap the read with the flush and pane transition below.
+      _dbWarmEntityForOpen(path)?.catch(() => {});
+    }
+  }
   try {
     if (typeof flushPendingEditorAutosave === 'function') {
       const saved = await flushPendingEditorAutosave();
@@ -163880,7 +164110,14 @@ async function _dbLinkOpen(link, sourceEl, options = {}) {
     return _dbOpenConfiguredTarget(link.target, link.label, { ...options, sourceEl, entry, linkType: 'link' });
   }
   if (link.kind === 'web') {
-    window.open(link.target, '_blank', 'noopener');
+    if (typeof openExternalBrowserUrl === 'function') {
+      await openExternalBrowserUrl(link.target);
+    } else if (typeof apiPost === 'function') {
+      await apiPost('/open-external-url', { url: link.target }, { silentError: true })
+        .catch(() => window.open?.(link.target, '_blank', 'noopener'));
+    } else {
+      window.open?.(link.target, '_blank', 'noopener');
+    }
     return true;
   }
   if (link.kind === 'meldex') {
@@ -170156,6 +170393,27 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   const actionSep = document.createElement('div');
   actionSep.className = 'gb-context-menu-sep';
   menu.appendChild(actionSep);
+  const browserUrl = _cellUiValueToString(val?.value).trim();
+  if (/^https?:\/\/\S+$/i.test(browserUrl)) {
+    const browserItem = document.createElement('div');
+    browserItem.className = 'gb-context-menu-item';
+    browserItem.dataset.e2eId = 'db-url-open-browser';
+    browserItem.innerHTML = lucide('externalLink', 14) + ' ブラウザで開く';
+    browserItem.addEventListener('click', () => {
+      menu.remove();
+      // URLセルの通常クリックと同じ共通経路を使い、デスクトップ版では
+      // OSの既定ブラウザ、Cloud版では安全な新規タブへ開く。
+      _dbOpenConfiguredTarget(browserUrl, browserUrl, {
+        dbPath: currentDbPath,
+        sourceEl: e?.target || null,
+        entry: { type: 'html', path: browserUrl, label: browserUrl, urlExternal: true },
+      });
+    });
+    menu.appendChild(browserItem);
+    const browserSep = document.createElement('div');
+    browserSep.className = 'gb-context-menu-sep';
+    menu.appendChild(browserSep);
+  }
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
     const old = _cellUiValueToString(val.value);
@@ -180712,29 +180970,51 @@ class FormAppComponent extends ToolComponent {
       select.value = this.ctx.dbPath || '';
     } catch (error) { this.status.textContent = 'シート一覧を取得できません: ' + error.message; }
   }
-  async _presetOptions(select) {
+  async _collectPresetChoices() {
     const choices = [];
-    const add = (name, items, layouts = false) => {
-      const group = document.createElement('optgroup'); group.label = name;
-      items.forEach(item => {
-        const option = document.createElement('option'); option.value = String(choices.length); option.textContent = layouts ? item.name : item.layout.name;
-        choices.push({ item, layout: layouts }); group.appendChild(option);
+    const add = (categoryLabel, category, items, layouts = false, builtin = false) => {
+      (Array.isArray(items) ? items : []).forEach(item => {
+        const name = layouts ? item?.name : item?.layout?.name;
+        if (!item || !name) return;
+        choices.push({ item, layout: layouts, name, category, categoryLabel, builtin });
       });
-      select.appendChild(group);
     };
-    select._templateChoices = choices;
-    add('標準テンプレート', MeldexDbTopicLayoutPresets.getTemplates());
-    add('シートのレイアウト', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true);
+    add('標準', 'standard', MeldexDbTopicLayoutPresets.getTemplates(), false, true);
+    add('シートのレイアウト', 'sheet', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true, false);
     try {
       const library = await MeldexDbTopicLayoutStyle.loadSharedTemplateLibrary();
-      if (select.isConnected && select._templateChoices === choices) add('ユーザーテンプレート', library.templates || []);
+      add('マイテンプレート', 'custom', library.templates || [], false, false);
     } catch (_) { /* Built-in and sheet layouts remain available offline. */ }
+    return choices;
+  }
+  async _presetOptions(select) {
+    const choices = await this._collectPresetChoices();
+    if (!select.isConnected) return;
+    select.querySelectorAll('optgroup').forEach(group => group.remove());
+    select._templateChoices = choices;
+    const groups = new Map();
+    choices.forEach((choice, index) => {
+      let group = groups.get(choice.category);
+      if (!group) {
+        group = document.createElement('optgroup');
+        group.label = choice.categoryLabel;
+        groups.set(choice.category, group);
+        select.appendChild(group);
+      }
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = choice.name;
+      group.appendChild(option);
+    });
   }
   async _usePreset(select) {
     if (select.value === '') return;
     const choice = select._templateChoices?.[Number(select.value)]; select.value = '';
+    await this._applyPresetChoice(choice);
+  }
+  async _applyPresetChoice(choice) {
     const store = this.store, generation = this._generation;
-    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return;
+    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return false;
     this._mode = 'entry';
     let layout;
     if (choice.layout) layout = _elNormalizeLayout(MeldexFormDocument.clone(choice.item));
@@ -180745,6 +181025,62 @@ class FormAppComponent extends ToolComponent {
     layout.formConfig = MeldexDbFormModel.forLayout(layout);
     this._update(doc => { doc.layout = layout; doc.formConfig = { ...doc.formConfig, ...layout.formConfig, mode: 'entry' }; });
     this._render();
+    return true;
+  }
+  async _openTemplatePicker(returnFocus) {
+    if (!window.MeldexTemplatePicker?.open) throw new Error('テンプレート画面を読み込めませんでした');
+    const owner = returnFocus?.focus ? returnFocus : document.activeElement;
+    const loadItems = async () => {
+      const seen = new Map();
+      return (await this._collectPresetChoices()).map(choice => {
+        const source = choice.layout ? choice.item : (choice.item?.layout || choice.item);
+        const baseId = choice.item?.id || choice.item?.template_id || source?.id || choice.name;
+        const stem = `${choice.category}:${String(baseId)}`;
+        const suffix = seen.get(stem) || 0;
+        seen.set(stem, suffix + 1);
+        const id = suffix ? `${stem}:${suffix + 1}` : stem;
+        return {
+          id,
+          name: choice.name,
+          category: choice.category,
+          categoryLabel: choice.categoryLabel,
+          builtin: choice.builtin,
+          badge: choice.categoryLabel,
+          createdAt: choice.item?.createdAt || choice.item?.created_at || choice.item?.created,
+          updatedAt: choice.item?.updatedAt || choice.item?.updated_at || choice.item?.modifiedAt || choice.item?.modified_at,
+          description: '配置・書式・入力設定を現在のフォームへ適用します。',
+          renderThumbnail: host => {
+            const preview = document.createElement('div');
+            preview.className = 'gb-tpl-form-preview';
+            const cells = Array.isArray(source?.cells) ? source.cells.filter(cell => cell?.type === 'field').slice(0, 4) : [];
+            (cells.length ? cells : [{ prop: choice.name }]).forEach(cell => {
+              const row = document.createElement('div');
+              row.className = 'gb-tpl-form-row';
+              row.textContent = cell.prop || cell.label || cell.name || '入力項目';
+              preview.appendChild(row);
+            });
+            host.appendChild(preview);
+          },
+          details: host => { host.textContent = `${choice.categoryLabel}。適用前のフォーム内容は履歴から元に戻せます。`; },
+          _choice: choice,
+        };
+      });
+    };
+    return window.MeldexTemplatePicker.open({
+      id: 'form-template-picker',
+      title: 'フォームテンプレート',
+      loadItems,
+      returnFocus: owner,
+      primaryAction: { label: '適用', run: item => this._applyPresetChoice(item._choice) },
+      e2e: {
+        dialog: `form-${this.tabId}-template-dialog`,
+        grid: `form-${this.tabId}-template-grid`,
+        preview: `form-${this.tabId}-template-preview`,
+        search: `form-${this.tabId}-template-search`,
+        card: `form-${this.tabId}-template-card`,
+        apply: `form-${this.tabId}-template-apply`,
+      },
+    });
   }
   async _automaticLayout() {
     const store = this.store, generation = this._generation;
@@ -180837,11 +181173,19 @@ class FormAppComponent extends ToolComponent {
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const templateLabel = document.createElement('label'); templateLabel.textContent = 'テンプレートを適用';
+      const templateButton = this._button('テンプレート', event => this._openTemplatePicker(event.currentTarget));
+      templateButton.classList.add('tb-icon-btn');
+      templateButton.innerHTML = lucide('layoutTemplate', 16);
+      templateButton.title = 'テンプレート';
+      templateButton.setAttribute('aria-label', 'テンプレート');
+      templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
+      templateButton.disabled = this.definitionReadOnly;
+      bar.appendChild(templateButton);
       const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
+      presets.hidden = true; presets.tabIndex = -1; presets.setAttribute('aria-hidden', 'true');
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
-      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); templateLabel.appendChild(presets); bar.appendChild(templateLabel); this._presetOptions(presets);
+      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
       const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }
@@ -182163,11 +182507,7 @@ function _dbAutoWidthCharsForTexts(texts, headerText) {
 }
 
 function _dbAutoWidthCharsForEntryNames(entityNames, headerText = 'トピック名') {
-  const base = _dbAutoWidthCharsForTexts(entityNames, headerText);
-  const maxNameLen = entityNames.length
-    ? Math.max(...entityNames.map(name => _dbTextLengthForWidth(name)))
-    : 0;
-  return Math.max(base, Math.min(36, maxNameLen));
+  return _dbAutoWidthCharsForTexts(entityNames, headerText);
 }
 
 function _dbWidthPxFromChars(chars) {
@@ -182175,18 +182515,15 @@ function _dbWidthPxFromChars(chars) {
 }
 
 // 通常テキスト列の自動列幅の上限（計画: 「最大268px程度に制限し、長文や改行を含む値は
-// 折り返す」）。エントリ名列・画像列は別の専用算出規則（_dbEntityWidthPxFromChars /
-// _dbAutoImageColumnWidth）を維持し、この上限の対象外とする。
+// 折り返す」）。トピック名列にも同じ上限を使い、画像列だけ専用算出規則を使う。
 const DB_TEXT_AUTO_WIDTH_MAX_PX = 268;
 
 function _dbTextAutoWidthPxFromChars(chars) {
   return Math.min(DB_TEXT_AUTO_WIDTH_MAX_PX, _dbWidthPxFromChars(chars));
 }
 
-const DB_ENTITY_AUTO_WIDTH_CHROME_PX = 74;
-
 function _dbEntityWidthPxFromChars(chars) {
-  return Math.max(120, Math.min(640, _dbWidthPxFromChars(chars) + DB_ENTITY_AUTO_WIDTH_CHROME_PX));
+  return Math.max(120, _dbTextAutoWidthPxFromChars(chars));
 }
 
 function _dbAutoImageColumnWidth(propName, ptc) {
@@ -186649,6 +186986,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     && typeof hideLoading === 'function';
   let loadingShown = false;
   let loading = null;
+  let sheetTransitionToken = 0;
   const endLoading = () => { if (loadingShown) { hideLoading(loading); loadingShown = false; } };
   try {
     if (showOpenLoading) {
@@ -186657,6 +186995,12 @@ async function selectDatabase(dbPath, ctx, opts) {
       dbLoadController.signal.addEventListener('abort', endLoading, { once: true });
     }
     const _isDbSwitch = (syncGlobalState ? state.currentDbPath : ctx.dbPath) !== dbPath;
+    const _returningToSheet = !['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts']
+      .includes(String(syncGlobalState ? state.view : ctx.viewMode || ''));
+    if ((_isDbSwitch || _returningToSheet || !ctx.pivotData || openOpts.forceReload)
+        && typeof _dbBeginSheetTransition === 'function') {
+      sheetTransitionToken = _dbBeginSheetTransition(ctx, dbPath);
+    }
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
     if (_isDbSwitch) {
       const _ctxClear = ctx || _currentPaneState();
@@ -186780,20 +187124,6 @@ async function selectDatabase(dbPath, ctx, opts) {
   let dbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
-
-  // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
-  // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
-  if (_isDbSwitch) {
-    clearPivot(ctx);
-    const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
-    const _containerScope = ctx?.containerEl || null;
-    for (const _cid of _clearIds) {
-      const _cel = _containerScope
-        ? (_containerScope.querySelector('#' + _cid) || _containerScope.querySelector('.' + _cid))
-        : document.getElementById(_cid);
-      if (_cel) _cel.innerHTML = '';
-    }
-  }
 
   // テーマ適用: クリア → DB自身のテーマ
   if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('db-view-container');
@@ -186998,6 +187328,11 @@ async function selectDatabase(dbPath, ctx, opts) {
       });
     }
     _restoreDbViewScrollState(ctx, dbViewMode, openOpts.restoreScrollState);
+    if (sheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+      _dbEndSheetTransition(ctx, sheetTransitionToken);
+      sheetTransitionToken = 0;
+    }
+    window.MeldexViewerPrewarm?.schedule?.();
 
     const entityNames = Object.keys(ctx.pivotData.entities || {}).sort();
     if (!openOpts.skipGlobalUi) showStatus(`${entityNames.length} 件のトピック`);
@@ -187041,6 +187376,9 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     dbLoadController.signal.removeEventListener('abort', endLoading);
     endLoading();
+    if (sheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+      _dbEndSheetTransition(ctx, sheetTransitionToken);
+    }
     if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
@@ -187086,7 +187424,9 @@ async function selectEntity(entityPath, opts) {
   if (!openOpts.skipShowView) showView('entity');
 
   try {
-    const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+    const data = typeof _dbFetchEntityForOpen === 'function'
+      ? await _dbFetchEntityForOpen(entityPath)
+      : await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
     if (window._selectEntityLoadSeq !== entityLoadSeq || state.currentEntityPath !== entityPath) return;
     renderEntityPage(data);
     const entityName = _entityDisplayName;
@@ -198021,12 +198361,13 @@ function _renderDbTemplateThumbnail(tmpl, host, size) {
 function _dbTemplatePickerItems() {
   return getAllTemplates().map(tmpl => {
     const tierKey = tmpl.tier === 0 ? 'custom' : String(tmpl.tier || '');
+    const customCategory = String(tmpl.categoryLabel || tmpl.category || 'カスタム').trim() || 'カスタム';
     const viewCount = Array.isArray(tmpl.savedViews) ? tmpl.savedViews.length : (tmpl.enabledModes || []).length;
     return {
       ...tmpl,
       builtin: tmpl.tier !== 0,
-      category: tierKey,
-      categoryLabel: _DB_TEMPLATE_TIER_LABELS[tierKey] || '',
+      category: tmpl.tier === 0 ? customCategory : tierKey,
+      categoryLabel: tmpl.tier === 0 ? customCategory : (_DB_TEMPLATE_TIER_LABELS[tierKey] || ''),
       badge: `${(tmpl.properties || []).length}列・${viewCount}ビュー`,
       renderThumbnail: (host, options) => _renderDbTemplateThumbnail(tmpl, host, options?.size),
       details: host => {
@@ -198196,7 +198537,7 @@ function _buildDbTemplateIconField(initialIcon) {
 /**
  * カスタムテンプレートの作成/編集フォームモーダル本体（両モード共用）。
  * @param {object} options - { mode: 'create'|'edit', dbPath, triggerEl, initialName, initialDescription,
- *   initialIcon, previewText, editNote, onSave(fields): boolean|void }
+ *   initialCategory, initialIcon, previewText, editNote, onSave(fields): boolean|void }
  */
 function _showDbTemplateFormModal(options) {
   const trigger = _dbTemplateTrigger(options.triggerEl);
@@ -198236,6 +198577,22 @@ function _showDbTemplateFormModal(options) {
   nameInput.value = options.initialName || '';
   nameField.appendChild(nameInput);
   body.appendChild(nameField);
+
+  // 利用者が追加したテンプレートの分類。固定の初期搭載分類とは独立して自由に設定できる。
+  const categoryField = document.createElement('div');
+  categoryField.className = 'field gb-field';
+  const categoryLabel = document.createElement('label');
+  categoryLabel.className = 'gb-label';
+  categoryLabel.textContent = '分類';
+  const categoryInput = document.createElement('input');
+  categoryInput.className = 'gb-input';
+  categoryInput.dataset.e2eId = 'db-template-category-input';
+  categoryInput.type = 'text';
+  categoryInput.placeholder = '例: キャラクター、企画、資料';
+  categoryInput.value = options.initialCategory || 'カスタム';
+  categoryLabel.htmlFor = categoryInput.id = `db-template-category-${seq}`;
+  categoryField.append(categoryLabel, categoryInput);
+  body.appendChild(categoryField);
 
   // 説明入力
   const descField = document.createElement('div');
@@ -198301,6 +198658,7 @@ function _showDbTemplateFormModal(options) {
       const result = await Promise.resolve(options.onSave({
         name,
         description: descInput.value.trim(),
+        category: categoryInput.value.trim() || 'カスタム',
         icon: iconField.getIcon(),
       }));
       if (result === false) return;
@@ -198397,12 +198755,17 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
     triggerEl,
     initialName: '',
     initialDescription: '',
+    initialCategory: 'カスタム',
     initialIcon: exported.icon || 'file',
     previewText,
     extraBody,
-    onSave: async ({ name, description, icon }) => {
+    onSave: async ({ name, description, category, icon }) => {
       exported.name = name;
       exported.description = description;
+      exported.category = category;
+      exported.categoryLabel = category;
+      exported.createdAt = new Date().toISOString();
+      exported.updatedAt = exported.createdAt;
       exported.icon = icon;
       if (extraBody && typeof embedDbTemplateEntityLayoutImages === 'function') {
         const selectedIds = Array.from(extraBody.querySelectorAll('input[type="checkbox"][data-cell-id]'))
@@ -198437,13 +198800,19 @@ function showEditTemplateModal(tmpl, dbPath, triggerEl = null) {
     triggerEl,
     initialName: tmpl.name || '',
     initialDescription: tmpl.description || '',
+    initialCategory: tmpl.categoryLabel || tmpl.category || 'カスタム',
     initialIcon: tmpl.icon || 'file',
     previewText,
-    onSave: ({ name, description, icon }) => {
+    onSave: ({ name, description, category, icon }) => {
       const customs = getCustomTemplates();
       const idx = customs.findIndex(c => c.id === tmpl.id);
       if (idx < 0) { showStatus('カスタムテンプレートが見つかりません', true); return false; }
-      customs[idx] = { ...customs[idx], name, description, icon };
+      customs[idx] = {
+        ...customs[idx], name, description, icon,
+        category, categoryLabel: category,
+        createdAt: customs[idx].createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
       if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート編集', detail: name })) return false;
       showStatus('カスタムテンプレート「' + name + '」を更新しました');
     },
@@ -224370,15 +224739,88 @@ _chatInstallTabActivationHook();
     return group;
   }
 
-  function _openPopup(target, rect, valueElement, avoidRect) {
-    if (Date.now() < _suppressUntil) return;
+  function _replaceActiveInputRange(replacement) {
+    const input = _chatInput();
+    const target = _activeTarget;
+    if (!input || target?.kind !== 'input') return false;
+    const source = String(input.value || '').replace(/\r\n?/g, '\n');
+    const range = _clampRange(source, target.start, target.end);
+    const insert = String(replacement || '').replace(/\r\n?/g, '\n');
+    const editor = _chatRichInput();
+
+    // The visible composer is contenteditable. Apply the edit there first so
+    // Chromium/Electron records cut, paste, and delete in its native undo
+    // transaction. Directly replacing the hidden textarea value works visually
+    // but makes Ctrl+Z unable to restore a context-menu edit.
+    if (editor && typeof document.execCommand === 'function') {
+      _setRichSelectionFromSourceRange(editor, source, range.start, range.end);
+      let edited = false;
+      try { edited = document.execCommand('insertText', false, insert); } catch (_) {}
+      if (edited) {
+        _syncPlainFromRich();
+        const nextSource = String(input.value || '').replace(/\r\n?/g, '\n');
+        const caret = Math.min(nextSource.length, range.start + insert.length);
+        target.start = caret;
+        target.end = caret;
+        return true;
+      }
+    }
+
+    // Fallback for the plain textarea or engines without insertText support.
+    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const caret = range.start + insert.length;
+    target.start = caret;
+    target.end = caret;
+    if (editor) _renderRichInputFromSource(caret, caret);
+    else {
+      input.focus();
+      input.setSelectionRange?.(caret, caret);
+    }
+    _updatingFromPlain = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    _updatingFromPlain = false;
+    return true;
+  }
+
+  async function _runInputContextCommand(command) {
+    const input = _chatInput();
+    const target = _activeTarget;
+    if (!input || target?.kind !== 'input') return false;
+    const source = String(input.value || '').replace(/\r\n?/g, '\n');
+    const range = _clampRange(source, target.start, target.end);
+    const selected = _visibleTextForSourceRange(source, range) || source.slice(range.start, range.end);
+    try {
+      if (command === 'copy' || command === 'cut') {
+        if (!selected) return false;
+        const copied = await _copyTextToClipboard(selected);
+        if (!copied) return false;
+        if (command === 'cut') _replaceActiveInputRange('');
+      } else if (command === 'paste') {
+        if (!navigator.clipboard?.readText) throw new Error('clipboard read unavailable');
+        const text = await navigator.clipboard.readText();
+        _replaceActiveInputRange(text);
+      } else if (command === 'delete') {
+        if (range.end <= range.start) return false;
+        _replaceActiveInputRange('');
+      } else {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      if (typeof showStatus === 'function') showStatus('クリップボードを操作できませんでした', true);
+      return false;
+    }
+  }
+
+  function _openPopup(target, rect, valueElement, avoidRect, options = {}) {
+    if (Date.now() < _suppressUntil && !options.force) return;
     if (typeof openFormatPopup !== 'function' || !rect) return;
     _activeTarget = target;
     const anchor = { getBoundingClientRect: () => rect };
     const source = target.kind === 'input'
       ? String(_chatInput()?.value || '')
       : _messageContentString(target.index);
-    openFormatPopup(anchor, {
+    const popup = openFormatPopup(anchor, {
       fields: FORMAT_FIELDS,
       values: _computedValues(valueElement),
       className: POPUP_CLASS,
@@ -224386,6 +224828,21 @@ _chatInstallTabActivationHook();
       closeButton: false,
       avoidRect: avoidRect || rect,
       extraRow3: [_makeHeadingControl(_headingLevelAt(source, target.start))],
+      footerActions: options.inputContextMenu ? {
+        commands: ['copy', 'cut', 'paste', 'delete'],
+        onCommand: async (command) => {
+          await _runInputContextCommand(command);
+          _suppressUntil = Date.now() + 350;
+          if (window.gbFmt?.closePopup) window.gbFmt.closePopup(popup);
+          else popup.remove();
+          _activeTarget = null;
+        },
+        onClose: () => {
+          if (window.gbFmt?.closePopup) window.gbFmt.closePopup(popup);
+          else popup.remove();
+          _activeTarget = null;
+        },
+      } : null,
       onChange: _applyFormat,
     });
   }
@@ -224911,20 +225368,25 @@ _chatInstallTabActivationHook();
 
   function _handleContextMenu(event) {
     if (event.target?.closest?.('.gb-fmt-popup, .gb-palette-popup')) return;
+    clearTimeout(_timer);
     const editor = event.target?.closest?.('#' + RICH_INPUT_ID);
     if (editor) {
       event.preventDefault();
       const rect = _eventRect(event);
       const target = _richInputTargetFromSelection(editor, rect, true);
       const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
-      if (target) _openPopup(target, rect, editor, _selectionAvoidRect(range, editor));
+      if (target) {
+        _openPopup(target, rect, editor, _selectionAvoidRect(range, editor), { inputContextMenu: true, force: true });
+        _suppressUntil = Date.now() + 800;
+      }
       return;
     }
     const input = event.target?.closest?.('#chat-input');
     if (input) {
       event.preventDefault();
       const rect = _eventRect(event);
-      _openPopup(_inputTargetFromSelection(input, rect), rect, input, input.getBoundingClientRect());
+      _openPopup(_inputTargetFromSelection(input, rect), rect, input, input.getBoundingClientRect(), { inputContextMenu: true, force: true });
+      _suppressUntil = Date.now() + 800;
       return;
     }
     const copyTarget = _chatCopyTargetFromSelection();
@@ -235779,12 +236241,14 @@ function _syncViewerInitialPathToOutliner(url, openOpts) {
 // 差し替え、{type:'viewer-open-ack', requestId} を返す（対応不能なら 'viewer-open-nack'）。
 // これはビューワー担当と並行実装中の契約。この応答が来た場合のみ iframe.src の
 // 再代入（=viewer.htmlのフルナビゲーション、スクリプト再実行を伴う重い処理）を回避する。
-const _gbViewerFastPathState = new WeakMap(); // iframe要素 -> {ready, seq, bound}
+const _gbViewerFastPathState = new WeakMap(); // iframe要素 -> {ready, readySrc, seq, bound}
+const _gbViewerFastPathByWindow = new WeakMap(); // WindowProxy -> {iframe, state}
+let _gbViewerReadyListenerBound = false;
 
 function _gbViewerFastPathStateFor(iframe) {
   let st = _gbViewerFastPathState.get(iframe);
   if (!st) {
-    st = { ready: false, seq: 0, bound: false };
+    st = { ready: false, readySrc: '', seq: 0, bound: false };
     _gbViewerFastPathState.set(iframe, st);
   }
   return st;
@@ -235802,24 +236266,53 @@ function _gbIsViewerRouteUrl(url) {
   }
 }
 
-// このiframeにビューワーが生きているか（同一オリジンの直接プローブ）。
-// 当初は viewer-ready メッセージ + load イベントのフラグ管理だったが、viewer-ready は
-// スクリプト初期化完了時（loadより先）に届くことがあり、後から来る load がフラグを
-// リセットして高速パスが一度も成立しなくなる競合があった（v0.7.139検証で実測）。
-// 同一オリジンなので contentWindow を直接見るのが最も確実。open-request リスナーが
-// まだ未登録の初期化途中でも、ackが250ms以内に来なければ従来のsrc差し替えへ落ちる。
+// このiframeにビューワーが生きているか。同一オリジンなら直接確認し、sandbox等で
+// contentWindowへアクセスできない場合は viewer-ready の受信状態を使う。
+// readySrcも照合することで、外部HTMLへ遷移した後に古いreadyを再利用しない。
 function _gbViewerFrameLive(iframe) {
+  if (!iframe) return false;
   try {
-    return !!(iframe && iframe.contentWindow && iframe.contentWindow.MeldexViewerScene);
-  } catch {
-    return false;
-  }
+    if (iframe.contentWindow?.MeldexViewerScene) return true;
+  } catch {}
+  const st = _gbViewerFastPathState.get(iframe);
+  const currentSrc = iframe.getAttribute('src') || '';
+  return !!(st?.ready && st.readySrc === currentSrc && _gbIsViewerRouteUrl(currentSrc));
 }
 
-// requestId 採番用の状態を保持する（生成直後・高速切替直前のどちらから呼んでもよい）。
+// requestId採番とready通知を保持する（生成直後・高速切替直前のどちらから呼んでもよい）。
+// loadではreadyを落とさない。viewer-readyがloadより先に届く環境があるため、srcの照合で
+// 新旧ナビゲーションを区別する。
 function _gbBindViewerFastPathListeners(iframe) {
   if (!iframe) return null;
-  return _gbViewerFastPathStateFor(iframe);
+  const st = _gbViewerFastPathStateFor(iframe);
+  if (!st.bound) st.bound = true;
+  const bindFrameWindow = () => {
+    if (iframe.contentWindow) _gbViewerFastPathByWindow.set(iframe.contentWindow, { iframe, state: st });
+  };
+  bindFrameWindow();
+  if (!iframe.contentWindow) queueMicrotask(bindFrameWindow);
+  if (!_gbViewerReadyListenerBound) {
+    _gbViewerReadyListenerBound = true;
+    window.addEventListener('message', ev => {
+      if (ev.data?.type !== 'viewer-ready') return;
+      const binding = _gbViewerFastPathByWindow.get(ev.source);
+      if (!binding || binding.iframe.contentWindow !== ev.source) return;
+      const currentSrc = binding.iframe.getAttribute('src') || '';
+      if (!_gbIsViewerRouteUrl(currentSrc)) return;
+      binding.state.ready = true;
+      binding.state.readySrc = currentSrc;
+    });
+  }
+  return st;
+}
+
+function _gbViewerMessageTargetOrigin(iframe) {
+  try {
+    if (iframe?.contentWindow?.location?.origin === window.location.origin) return window.location.origin;
+  } catch {}
+  // sandboxでopaque originになった内部ビューワーにも届ける。受信側はparent windowだけを
+  // 許可し、親側もiframe.contentWindowとrequestIdを照合する。
+  return '*';
 }
 
 // resolvedUrl へ、可能ならページ遷移なしで切り替える。250ms以内にackが来なければ
@@ -235848,7 +236341,10 @@ function _gbTryFastViewerSwitch(iframe, resolvedUrl) {
     }
     window.addEventListener('message', onMessage);
     try {
-      iframe.contentWindow.postMessage({ type: 'viewer-open-request', requestId, url: resolvedUrl }, window.location.origin);
+      iframe.contentWindow.postMessage(
+        { type: 'viewer-open-request', requestId, url: resolvedUrl },
+        _gbViewerMessageTargetOrigin(iframe)
+      );
     } catch {
       finish(false);
     }
@@ -235856,6 +236352,11 @@ function _gbTryFastViewerSwitch(iframe, resolvedUrl) {
 }
 
 function _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts) {
+  const frameState = _gbBindViewerFastPathListeners(iframe);
+  if (frameState) {
+    frameState.ready = false;
+    frameState.readySrc = '';
+  }
   if (typeof trackIframeLoading === 'function') {
     const inferredType = _inferViewerFileType(url);
     const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
@@ -235899,6 +236400,58 @@ if (document.readyState === 'loading') {
 } else {
   _gbInitMainViewerIframeFastPath();
 }
+
+// Keep the empty viewer shell ready while a Sheet is idle. The first image
+// open can then use the existing postMessage fast path instead of navigating
+// and initializing viewer.html after the click.
+let _gbViewerPrewarmHandle = null;
+function _gbPrewarmMainViewerIframe() {
+  _gbViewerPrewarmHandle = null;
+  const iframe = document.getElementById('html-iframe');
+  if (!iframe || !iframe.isConnected || iframe.getAttribute('src') || iframe.dataset.gbViewerCurrentUrl) return false;
+  const htmlView = iframe.closest('#html-view');
+  const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
+  const paneContent = paneId ? GBLayout?.paneMap?.[paneId]?.contentEl : null;
+  const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(paneId) : null;
+  const sheetTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
+  // Put the hidden shell beside the active Sheet once. Keeping the same parent
+  // is what prevents Chromium from reloading the iframe when the image opens.
+  if (htmlView && paneContent && sheetTypes.has(activeTab?.type) && htmlView.parentNode !== paneContent) {
+    if (htmlView.getClientRects().length) return false;
+    htmlView.style.display = 'none';
+    paneContent.appendChild(htmlView);
+  }
+  const logicalUrl = '/viewer';
+  const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(logicalUrl) || logicalUrl;
+  const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
+    ? _gbPrepareUntrustedIframe(iframe, resolvedUrl)
+    : iframe;
+  const target = preparedIframe || iframe;
+  const frameState = _gbBindViewerFastPathListeners(target);
+  if (frameState) {
+    frameState.ready = false;
+    frameState.readySrc = '';
+  }
+  target.dataset.gbViewerCurrentUrl = logicalUrl;
+  target.dataset.gbViewerPrewarmed = '1';
+  target.src = resolvedUrl;
+  return true;
+}
+
+function _gbScheduleMainViewerPrewarm() {
+  if (_gbViewerPrewarmHandle != null) return;
+  const run = () => _gbPrewarmMainViewerIframe();
+  if (typeof requestIdleCallback === 'function') {
+    _gbViewerPrewarmHandle = requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    _gbViewerPrewarmHandle = setTimeout(run, 180);
+  }
+}
+
+window.MeldexViewerPrewarm = {
+  prepare: _gbPrewarmMainViewerIframe,
+  schedule: _gbScheduleMainViewerPrewarm,
+};
 
 function openViewer(url, opts) {
   const openOpts = opts || {};
@@ -253788,6 +254341,9 @@ const GBPaneBridge = (() => {
       && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path))
       // A tab can retain its data/marker after another view cleared the shared DOM.
       || (sheetView && (!paneRenderCtx?.pivotData || !renderedSheet?.firstElementChild));
+    const earlySheetTransitionToken = sheetView && needsLiveReload && typeof _dbBeginSheetTransition === 'function'
+      ? _dbBeginSheetTransition(paneRenderCtx, path)
+      : 0;
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
@@ -253888,6 +254444,9 @@ const GBPaneBridge = (() => {
         // （state更新前に走ってしまう）。実際に state が確定したこの完了時点で追従を同期する。
         if (typeof _syncFollowingVersionTabs === 'function') _syncFollowingVersionTabs();
       } finally {
+        if (earlySheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+          _dbEndSheetTransition(paneRenderCtx, earlySheetTransitionToken);
+        }
         _endBridgeUpdate();
       }
     };
@@ -255218,6 +255777,14 @@ const GBPaneBridge = (() => {
       if (id === exceptId) return;
       const el = document.getElementById(id);
       if (el && el.parentNode === contentEl) {
+        // Keep the already initialized viewer shell beside the active Sheet,
+        // only hidden. Reparenting its iframe through #legacy-views forces a
+        // full viewer reload and defeats the postMessage fast-open path.
+        if (id === 'html-view' && exceptId === 'db-view-container'
+            && el.querySelector('#html-iframe')?.dataset?.gbViewerPrewarmed === '1') {
+          el.style.display = 'none';
+          return;
+        }
         if (id === 'media-view') _gbPauseMediaContentPlayback();
         el.style.display = 'none';
         storage.appendChild(el);

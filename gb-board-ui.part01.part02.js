@@ -464,6 +464,11 @@ function bdInitBoardShell(root) {
       case 'find-replace':
         if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
         break;
+      case 'templates':
+        if (window.MeldexBoardTemplates?.open) {
+          window.MeldexBoardTemplates.open().catch(error => window.showStatus?.(error?.message || error, true));
+        }
+        break;
       case 'reload':
         if (typeof reloadCurrentOpenFile === 'function') reloadCurrentOpenFile(event);
         else if (typeof bd !== 'undefined' && bd.path && typeof bdOpenBoard === 'function') bdOpenBoard(bd.label || '', bd.path);

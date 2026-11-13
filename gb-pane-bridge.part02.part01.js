@@ -771,6 +771,14 @@
       if (id === exceptId) return;
       const el = document.getElementById(id);
       if (el && el.parentNode === contentEl) {
+        // Keep the already initialized viewer shell beside the active Sheet,
+        // only hidden. Reparenting its iframe through #legacy-views forces a
+        // full viewer reload and defeats the postMessage fast-open path.
+        if (id === 'html-view' && exceptId === 'db-view-container'
+            && el.querySelector('#html-iframe')?.dataset?.gbViewerPrewarmed === '1') {
+          el.style.display = 'none';
+          return;
+        }
         if (id === 'media-view') _gbPauseMediaContentPlayback();
         el.style.display = 'none';
         storage.appendChild(el);

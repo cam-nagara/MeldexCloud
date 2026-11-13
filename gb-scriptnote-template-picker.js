@@ -64,6 +64,7 @@
       const vertical = (value.editor?.viewMode || value.viewMode || value.rubyPresentation?.writingMode) === 'vertical';
       return {
         id: 'custom:' + name, name, builtin: false, badge: 'カスタム', category: 'custom', categoryLabel: 'カスタム',
+        createdAt: value.createdAt, updatedAt: value.updatedAt,
         description: `「${base.name}」をもとにした書式${vertical ? '（縦書き）' : ''}。タイプの書式とエディタ設定を保存しています。`,
         renderThumbnail: host => renderSample(host, base.sample, { vertical }),
       };

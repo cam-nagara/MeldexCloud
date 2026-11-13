@@ -216,6 +216,7 @@
       category: 'custom',
       categoryLabel: 'マイテンプレート',
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       style: captureStyle(board),
       content: options.includeContent === false ? { nodes: [], lines: [], groups: [] } : captureContent(board),
     };
@@ -508,7 +509,9 @@
           const name = String(await askName(item.name) || '').trim();
           if (!name || name === item.name) return false;
           if (library.templates.some(other => other.name === name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
-          await persistLibrary(library, library.templates.map(other => other.id === item.id ? { ...other, name } : other));
+          await persistLibrary(library, library.templates.map(other => other.id === item.id
+            ? { ...other, name, updatedAt: new Date().toISOString() }
+            : other));
           await ctx.refresh();
           ctx.select(item.id);
           ctx.setStatus('名前を変更しました');

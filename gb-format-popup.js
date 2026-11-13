@@ -402,7 +402,7 @@
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
    * @param {HTMLElement[]} [options.extraRow4] row4（リセット行）のリセット直前に追加する要素
    * @param {Object} [options.footerActions] 最下段1行へ右寄せ配置するコピー/切り取り/
-   *   貼り付け/閉じる。{ commands?: ('copy'|'cut'|'paste')[], onCommand(command),
+   *   貼り付け/削除/閉じる。{ commands?: ('copy'|'cut'|'paste'|'delete')[], onCommand(command),
    *   onClose?(), closeLabel? }。onClose を渡すと既定の右下floating close button の
    *   代わりにこの行の右端へ閉じるボタンを出す（二重表示防止）。専用のクリップボード行を
    *   個別に作らないための共通化オプション（呼び出し元は既存の位置決め・選択保持・
@@ -698,6 +698,7 @@
         copy: { icon: 'copy', label: 'コピー' },
         cut: { icon: 'scissors', label: '切り取り' },
         paste: { icon: 'clipboardPaste', label: '貼り付け' },
+        delete: { icon: 'trash2', label: '削除' },
       };
       const footerRow = document.createElement('div');
       footerRow.className = 'gb-fmt-popup-row gb-fmt-footer-actions-row';

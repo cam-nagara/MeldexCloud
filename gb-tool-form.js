@@ -294,29 +294,51 @@ class FormAppComponent extends ToolComponent {
       select.value = this.ctx.dbPath || '';
     } catch (error) { this.status.textContent = 'シート一覧を取得できません: ' + error.message; }
   }
-  async _presetOptions(select) {
+  async _collectPresetChoices() {
     const choices = [];
-    const add = (name, items, layouts = false) => {
-      const group = document.createElement('optgroup'); group.label = name;
-      items.forEach(item => {
-        const option = document.createElement('option'); option.value = String(choices.length); option.textContent = layouts ? item.name : item.layout.name;
-        choices.push({ item, layout: layouts }); group.appendChild(option);
+    const add = (categoryLabel, category, items, layouts = false, builtin = false) => {
+      (Array.isArray(items) ? items : []).forEach(item => {
+        const name = layouts ? item?.name : item?.layout?.name;
+        if (!item || !name) return;
+        choices.push({ item, layout: layouts, name, category, categoryLabel, builtin });
       });
-      select.appendChild(group);
     };
-    select._templateChoices = choices;
-    add('標準テンプレート', MeldexDbTopicLayoutPresets.getTemplates());
-    add('シートのレイアウト', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true);
+    add('標準', 'standard', MeldexDbTopicLayoutPresets.getTemplates(), false, true);
+    add('シートのレイアウト', 'sheet', this.ctx.dbMetadata?.view_config?.entityLayouts || [], true, false);
     try {
       const library = await MeldexDbTopicLayoutStyle.loadSharedTemplateLibrary();
-      if (select.isConnected && select._templateChoices === choices) add('ユーザーテンプレート', library.templates || []);
+      add('マイテンプレート', 'custom', library.templates || [], false, false);
     } catch (_) { /* Built-in and sheet layouts remain available offline. */ }
+    return choices;
+  }
+  async _presetOptions(select) {
+    const choices = await this._collectPresetChoices();
+    if (!select.isConnected) return;
+    select.querySelectorAll('optgroup').forEach(group => group.remove());
+    select._templateChoices = choices;
+    const groups = new Map();
+    choices.forEach((choice, index) => {
+      let group = groups.get(choice.category);
+      if (!group) {
+        group = document.createElement('optgroup');
+        group.label = choice.categoryLabel;
+        groups.set(choice.category, group);
+        select.appendChild(group);
+      }
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = choice.name;
+      group.appendChild(option);
+    });
   }
   async _usePreset(select) {
     if (select.value === '') return;
     const choice = select._templateChoices?.[Number(select.value)]; select.value = '';
+    await this._applyPresetChoice(choice);
+  }
+  async _applyPresetChoice(choice) {
     const store = this.store, generation = this._generation;
-    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return;
+    if (!choice || !await this._leave() || store !== this.store || generation !== this._generation || this.definitionReadOnly) return false;
     this._mode = 'entry';
     let layout;
     if (choice.layout) layout = _elNormalizeLayout(MeldexFormDocument.clone(choice.item));
@@ -327,6 +349,62 @@ class FormAppComponent extends ToolComponent {
     layout.formConfig = MeldexDbFormModel.forLayout(layout);
     this._update(doc => { doc.layout = layout; doc.formConfig = { ...doc.formConfig, ...layout.formConfig, mode: 'entry' }; });
     this._render();
+    return true;
+  }
+  async _openTemplatePicker(returnFocus) {
+    if (!window.MeldexTemplatePicker?.open) throw new Error('テンプレート画面を読み込めませんでした');
+    const owner = returnFocus?.focus ? returnFocus : document.activeElement;
+    const loadItems = async () => {
+      const seen = new Map();
+      return (await this._collectPresetChoices()).map(choice => {
+        const source = choice.layout ? choice.item : (choice.item?.layout || choice.item);
+        const baseId = choice.item?.id || choice.item?.template_id || source?.id || choice.name;
+        const stem = `${choice.category}:${String(baseId)}`;
+        const suffix = seen.get(stem) || 0;
+        seen.set(stem, suffix + 1);
+        const id = suffix ? `${stem}:${suffix + 1}` : stem;
+        return {
+          id,
+          name: choice.name,
+          category: choice.category,
+          categoryLabel: choice.categoryLabel,
+          builtin: choice.builtin,
+          badge: choice.categoryLabel,
+          createdAt: choice.item?.createdAt || choice.item?.created_at || choice.item?.created,
+          updatedAt: choice.item?.updatedAt || choice.item?.updated_at || choice.item?.modifiedAt || choice.item?.modified_at,
+          description: '配置・書式・入力設定を現在のフォームへ適用します。',
+          renderThumbnail: host => {
+            const preview = document.createElement('div');
+            preview.className = 'gb-tpl-form-preview';
+            const cells = Array.isArray(source?.cells) ? source.cells.filter(cell => cell?.type === 'field').slice(0, 4) : [];
+            (cells.length ? cells : [{ prop: choice.name }]).forEach(cell => {
+              const row = document.createElement('div');
+              row.className = 'gb-tpl-form-row';
+              row.textContent = cell.prop || cell.label || cell.name || '入力項目';
+              preview.appendChild(row);
+            });
+            host.appendChild(preview);
+          },
+          details: host => { host.textContent = `${choice.categoryLabel}。適用前のフォーム内容は履歴から元に戻せます。`; },
+          _choice: choice,
+        };
+      });
+    };
+    return window.MeldexTemplatePicker.open({
+      id: 'form-template-picker',
+      title: 'フォームテンプレート',
+      loadItems,
+      returnFocus: owner,
+      primaryAction: { label: '適用', run: item => this._applyPresetChoice(item._choice) },
+      e2e: {
+        dialog: `form-${this.tabId}-template-dialog`,
+        grid: `form-${this.tabId}-template-grid`,
+        preview: `form-${this.tabId}-template-preview`,
+        search: `form-${this.tabId}-template-search`,
+        card: `form-${this.tabId}-template-card`,
+        apply: `form-${this.tabId}-template-apply`,
+      },
+    });
   }
   async _automaticLayout() {
     const store = this.store, generation = this._generation;
@@ -419,11 +497,19 @@ class FormAppComponent extends ToolComponent {
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
       bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const templateLabel = document.createElement('label'); templateLabel.textContent = 'テンプレートを適用';
+      const templateButton = this._button('テンプレート', event => this._openTemplatePicker(event.currentTarget));
+      templateButton.classList.add('tb-icon-btn');
+      templateButton.innerHTML = lucide('layoutTemplate', 16);
+      templateButton.title = 'テンプレート';
+      templateButton.setAttribute('aria-label', 'テンプレート');
+      templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
+      templateButton.disabled = this.definitionReadOnly;
+      bar.appendChild(templateButton);
       const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
+      presets.hidden = true; presets.tabIndex = -1; presets.setAttribute('aria-hidden', 'true');
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
-      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); templateLabel.appendChild(presets); bar.appendChild(templateLabel); this._presetOptions(presets);
+      presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
       const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
       const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }

@@ -394,6 +394,17 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   margin-left: var(--ui-space-1);
 }
 
+/* チャット入力の選択書式はポインター移動だけで見た目が明滅しないよう、
+   共通部品の短いホバー遷移とスピナーの遅延表示をこのポップアップ内だけ無効化する。 */
+.gb-chat-format-popup :is(.gb-fmt-btn, .gb-fmt-reset, .gb-fmt-style-copy) {
+  transition: none;
+}
+.gb-chat-format-popup input.gb-fmt-num::-webkit-outer-spin-button,
+.gb-chat-format-popup input.gb-fmt-num::-webkit-inner-spin-button {
+  opacity: 1;
+  transition: none;
+}
+
 /* 共通フッター行（コピー・切り取り・貼り付け・閉じる）
    計画書2026-08-04版§2.4: 最下段1行へ右寄せ配置し、閉じるを右端にする。 */
 .gb-fmt-footer-actions-row {

@@ -89,20 +89,25 @@
 
   function _handleContextMenu(event) {
     if (event.target?.closest?.('.gb-fmt-popup, .gb-palette-popup')) return;
+    clearTimeout(_timer);
     const editor = event.target?.closest?.('#' + RICH_INPUT_ID);
     if (editor) {
       event.preventDefault();
       const rect = _eventRect(event);
       const target = _richInputTargetFromSelection(editor, rect, true);
       const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
-      if (target) _openPopup(target, rect, editor, _selectionAvoidRect(range, editor));
+      if (target) {
+        _openPopup(target, rect, editor, _selectionAvoidRect(range, editor), { inputContextMenu: true, force: true });
+        _suppressUntil = Date.now() + 800;
+      }
       return;
     }
     const input = event.target?.closest?.('#chat-input');
     if (input) {
       event.preventDefault();
       const rect = _eventRect(event);
-      _openPopup(_inputTargetFromSelection(input, rect), rect, input, input.getBoundingClientRect());
+      _openPopup(_inputTargetFromSelection(input, rect), rect, input, input.getBoundingClientRect(), { inputContextMenu: true, force: true });
+      _suppressUntil = Date.now() + 800;
       return;
     }
     const copyTarget = _chatCopyTargetFromSelection();

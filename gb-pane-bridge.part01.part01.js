@@ -909,6 +909,9 @@ const GBPaneBridge = (() => {
       && (_normalizeDbPaneView(liveView) !== _normalizeDbPaneView(viewName) || livePath !== path))
       // A tab can retain its data/marker after another view cleared the shared DOM.
       || (sheetView && (!paneRenderCtx?.pivotData || !renderedSheet?.firstElementChild));
+    const earlySheetTransitionToken = sheetView && needsLiveReload && typeof _dbBeginSheetTransition === 'function'
+      ? _dbBeginSheetTransition(paneRenderCtx, path)
+      : 0;
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
@@ -1009,6 +1012,9 @@ const GBPaneBridge = (() => {
         // （state更新前に走ってしまう）。実際に state が確定したこの完了時点で追従を同期する。
         if (typeof _syncFollowingVersionTabs === 'function') _syncFollowingVersionTabs();
       } finally {
+        if (earlySheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+          _dbEndSheetTransition(paneRenderCtx, earlySheetTransitionToken);
+        }
         _endBridgeUpdate();
       }
     };

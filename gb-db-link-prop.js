@@ -182,7 +182,14 @@ async function _dbLinkOpen(link, sourceEl, options = {}) {
     return _dbOpenConfiguredTarget(link.target, link.label, { ...options, sourceEl, entry, linkType: 'link' });
   }
   if (link.kind === 'web') {
-    window.open(link.target, '_blank', 'noopener');
+    if (typeof openExternalBrowserUrl === 'function') {
+      await openExternalBrowserUrl(link.target);
+    } else if (typeof apiPost === 'function') {
+      await apiPost('/open-external-url', { url: link.target }, { silentError: true })
+        .catch(() => window.open?.(link.target, '_blank', 'noopener'));
+    } else {
+      window.open?.(link.target, '_blank', 'noopener');
+    }
     return true;
   }
   if (link.kind === 'meldex') {

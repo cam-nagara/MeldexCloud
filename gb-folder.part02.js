@@ -720,12 +720,14 @@ function _syncViewerInitialPathToOutliner(url, openOpts) {
 // 差し替え、{type:'viewer-open-ack', requestId} を返す（対応不能なら 'viewer-open-nack'）。
 // これはビューワー担当と並行実装中の契約。この応答が来た場合のみ iframe.src の
 // 再代入（=viewer.htmlのフルナビゲーション、スクリプト再実行を伴う重い処理）を回避する。
-const _gbViewerFastPathState = new WeakMap(); // iframe要素 -> {ready, seq, bound}
+const _gbViewerFastPathState = new WeakMap(); // iframe要素 -> {ready, readySrc, seq, bound}
+const _gbViewerFastPathByWindow = new WeakMap(); // WindowProxy -> {iframe, state}
+let _gbViewerReadyListenerBound = false;
 
 function _gbViewerFastPathStateFor(iframe) {
   let st = _gbViewerFastPathState.get(iframe);
   if (!st) {
-    st = { ready: false, seq: 0, bound: false };
+    st = { ready: false, readySrc: '', seq: 0, bound: false };
     _gbViewerFastPathState.set(iframe, st);
   }
   return st;
@@ -743,24 +745,53 @@ function _gbIsViewerRouteUrl(url) {
   }
 }
 
-// このiframeにビューワーが生きているか（同一オリジンの直接プローブ）。
-// 当初は viewer-ready メッセージ + load イベントのフラグ管理だったが、viewer-ready は
-// スクリプト初期化完了時（loadより先）に届くことがあり、後から来る load がフラグを
-// リセットして高速パスが一度も成立しなくなる競合があった（v0.7.139検証で実測）。
-// 同一オリジンなので contentWindow を直接見るのが最も確実。open-request リスナーが
-// まだ未登録の初期化途中でも、ackが250ms以内に来なければ従来のsrc差し替えへ落ちる。
+// このiframeにビューワーが生きているか。同一オリジンなら直接確認し、sandbox等で
+// contentWindowへアクセスできない場合は viewer-ready の受信状態を使う。
+// readySrcも照合することで、外部HTMLへ遷移した後に古いreadyを再利用しない。
 function _gbViewerFrameLive(iframe) {
+  if (!iframe) return false;
   try {
-    return !!(iframe && iframe.contentWindow && iframe.contentWindow.MeldexViewerScene);
-  } catch {
-    return false;
-  }
+    if (iframe.contentWindow?.MeldexViewerScene) return true;
+  } catch {}
+  const st = _gbViewerFastPathState.get(iframe);
+  const currentSrc = iframe.getAttribute('src') || '';
+  return !!(st?.ready && st.readySrc === currentSrc && _gbIsViewerRouteUrl(currentSrc));
 }
 
-// requestId 採番用の状態を保持する（生成直後・高速切替直前のどちらから呼んでもよい）。
+// requestId採番とready通知を保持する（生成直後・高速切替直前のどちらから呼んでもよい）。
+// loadではreadyを落とさない。viewer-readyがloadより先に届く環境があるため、srcの照合で
+// 新旧ナビゲーションを区別する。
 function _gbBindViewerFastPathListeners(iframe) {
   if (!iframe) return null;
-  return _gbViewerFastPathStateFor(iframe);
+  const st = _gbViewerFastPathStateFor(iframe);
+  if (!st.bound) st.bound = true;
+  const bindFrameWindow = () => {
+    if (iframe.contentWindow) _gbViewerFastPathByWindow.set(iframe.contentWindow, { iframe, state: st });
+  };
+  bindFrameWindow();
+  if (!iframe.contentWindow) queueMicrotask(bindFrameWindow);
+  if (!_gbViewerReadyListenerBound) {
+    _gbViewerReadyListenerBound = true;
+    window.addEventListener('message', ev => {
+      if (ev.data?.type !== 'viewer-ready') return;
+      const binding = _gbViewerFastPathByWindow.get(ev.source);
+      if (!binding || binding.iframe.contentWindow !== ev.source) return;
+      const currentSrc = binding.iframe.getAttribute('src') || '';
+      if (!_gbIsViewerRouteUrl(currentSrc)) return;
+      binding.state.ready = true;
+      binding.state.readySrc = currentSrc;
+    });
+  }
+  return st;
+}
+
+function _gbViewerMessageTargetOrigin(iframe) {
+  try {
+    if (iframe?.contentWindow?.location?.origin === window.location.origin) return window.location.origin;
+  } catch {}
+  // sandboxでopaque originになった内部ビューワーにも届ける。受信側はparent windowだけを
+  // 許可し、親側もiframe.contentWindowとrequestIdを照合する。
+  return '*';
 }
 
 // resolvedUrl へ、可能ならページ遷移なしで切り替える。250ms以内にackが来なければ
@@ -789,7 +820,10 @@ function _gbTryFastViewerSwitch(iframe, resolvedUrl) {
     }
     window.addEventListener('message', onMessage);
     try {
-      iframe.contentWindow.postMessage({ type: 'viewer-open-request', requestId, url: resolvedUrl }, window.location.origin);
+      iframe.contentWindow.postMessage(
+        { type: 'viewer-open-request', requestId, url: resolvedUrl },
+        _gbViewerMessageTargetOrigin(iframe)
+      );
     } catch {
       finish(false);
     }
@@ -797,6 +831,11 @@ function _gbTryFastViewerSwitch(iframe, resolvedUrl) {
 }
 
 function _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts) {
+  const frameState = _gbBindViewerFastPathListeners(iframe);
+  if (frameState) {
+    frameState.ready = false;
+    frameState.readySrc = '';
+  }
   if (typeof trackIframeLoading === 'function') {
     const inferredType = _inferViewerFileType(url);
     const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
@@ -840,6 +879,58 @@ if (document.readyState === 'loading') {
 } else {
   _gbInitMainViewerIframeFastPath();
 }
+
+// Keep the empty viewer shell ready while a Sheet is idle. The first image
+// open can then use the existing postMessage fast path instead of navigating
+// and initializing viewer.html after the click.
+let _gbViewerPrewarmHandle = null;
+function _gbPrewarmMainViewerIframe() {
+  _gbViewerPrewarmHandle = null;
+  const iframe = document.getElementById('html-iframe');
+  if (!iframe || !iframe.isConnected || iframe.getAttribute('src') || iframe.dataset.gbViewerCurrentUrl) return false;
+  const htmlView = iframe.closest('#html-view');
+  const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
+  const paneContent = paneId ? GBLayout?.paneMap?.[paneId]?.contentEl : null;
+  const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(paneId) : null;
+  const sheetTypes = new Set(['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']);
+  // Put the hidden shell beside the active Sheet once. Keeping the same parent
+  // is what prevents Chromium from reloading the iframe when the image opens.
+  if (htmlView && paneContent && sheetTypes.has(activeTab?.type) && htmlView.parentNode !== paneContent) {
+    if (htmlView.getClientRects().length) return false;
+    htmlView.style.display = 'none';
+    paneContent.appendChild(htmlView);
+  }
+  const logicalUrl = '/viewer';
+  const resolvedUrl = window.MeldexResourceUrl?.rewriteInternalUrl?.(logicalUrl) || logicalUrl;
+  const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
+    ? _gbPrepareUntrustedIframe(iframe, resolvedUrl)
+    : iframe;
+  const target = preparedIframe || iframe;
+  const frameState = _gbBindViewerFastPathListeners(target);
+  if (frameState) {
+    frameState.ready = false;
+    frameState.readySrc = '';
+  }
+  target.dataset.gbViewerCurrentUrl = logicalUrl;
+  target.dataset.gbViewerPrewarmed = '1';
+  target.src = resolvedUrl;
+  return true;
+}
+
+function _gbScheduleMainViewerPrewarm() {
+  if (_gbViewerPrewarmHandle != null) return;
+  const run = () => _gbPrewarmMainViewerIframe();
+  if (typeof requestIdleCallback === 'function') {
+    _gbViewerPrewarmHandle = requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    _gbViewerPrewarmHandle = setTimeout(run, 180);
+  }
+}
+
+window.MeldexViewerPrewarm = {
+  prepare: _gbPrewarmMainViewerIframe,
+  schedule: _gbScheduleMainViewerPrewarm,
+};
 
 function openViewer(url, opts) {
   const openOpts = opts || {};

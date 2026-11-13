@@ -92,18 +92,26 @@
       let busy = false;
       const body = document.createElement('div'); body.className = 'note-template-dialog';
       const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
+      const category = document.createElement('input'); category.className = 'gb-input'; category.setAttribute('aria-label', '分類');
       const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
       content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
       const status = document.createElement('p'); status.setAttribute('role', 'status');
       const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末');
-      name.value = initial?.name || ''; content.value = initial?.content || '';
-      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }), GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
+      name.value = initial?.name || ''; category.value = initial?.categoryLabel || initial?.category || 'カスタム'; content.value = initial?.content || '';
+      body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }),
+        GBUI.createField({ label: '分類', input: category }),
+        GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
       const cancel = button('キャンセル', () => modal.close('cancel'));
       const save = button('テンプレートを保存', async () => {
         if (busy) return; busy = true; save.disabled = true; status.textContent = '';
         try {
-          const item = validate({ ...(initial?.id ? library.templates.find(other => other.id === initial.id) : {}), schemaVersion: 1,
-            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value });
+          const previous = initial?.id ? library.templates.find(other => other.id === initial.id) : null;
+          const now = new Date().toISOString();
+          const categoryName = category.value.trim() || 'カスタム';
+          const item = validate({ ...(previous || {}), schemaVersion: 1,
+            id: initial?.id || crypto.randomUUID(), name: name.value.trim(), content: content.value,
+            category: categoryName, categoryLabel: categoryName,
+            createdAt: previous?.createdAt || now, updatedAt: now });
           if (library.templates.some(other => other.name === item.name && other.id !== item.id)) throw new Error('同名のテンプレートがあります');
           const exists = library.templates.some(other => other.id === item.id);
           await persist(library, exists ? library.templates.map(other => other.id === item.id ? item : other) : [...library.templates, item]);
@@ -132,7 +140,8 @@
     }
     const metadata = options.dbPath ? await apiFetch('/db-metadata?path=' + encodeURIComponent(options.dbPath)) : null;
     const items = () => library.templates.map(item => ({
-      ...item, builtin: false, badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
+      ...item, builtin: false, category: item.category || 'カスタム', categoryLabel: item.categoryLabel || item.category || 'カスタム',
+      badge: options.dbPath && metadata?.note_template?.id === item.id ? '設定中' : 'ノート',
       description: item.content.split('\n').find(line => line.trim())?.replace(/^#+\s*/, '').slice(0, 80) || '',
       renderThumbnail: host => renderDocThumbnail(item.content, host),
     }));

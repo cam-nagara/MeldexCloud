@@ -1717,7 +1717,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 }
 .gallery-card {
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 12px; cursor: pointer; transition: border-color 0.15s;
+  padding: 12px; cursor: pointer;
   overflow: hidden;
 }
 .gallery-card:hover { border-color: var(--accent); }
@@ -1768,7 +1768,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .kanban-column-body.drag-over { background: color-mix(in srgb, var(--ui-selection-bg) 22%, transparent); }
 .kanban-card {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; cursor: grab; font-size: 13px; transition: border-color 0.1s;
+  padding: 8px 10px; cursor: grab; font-size: 13px;
 }
 .kanban-card:hover { border-color: var(--accent); }
 .kanban-card.dragging { opacity: 0.5; }

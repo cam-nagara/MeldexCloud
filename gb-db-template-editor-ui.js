@@ -84,7 +84,7 @@ function _buildDbTemplateIconField(initialIcon) {
 /**
  * カスタムテンプレートの作成/編集フォームモーダル本体（両モード共用）。
  * @param {object} options - { mode: 'create'|'edit', dbPath, triggerEl, initialName, initialDescription,
- *   initialIcon, previewText, editNote, onSave(fields): boolean|void }
+ *   initialCategory, initialIcon, previewText, editNote, onSave(fields): boolean|void }
  */
 function _showDbTemplateFormModal(options) {
   const trigger = _dbTemplateTrigger(options.triggerEl);
@@ -124,6 +124,22 @@ function _showDbTemplateFormModal(options) {
   nameInput.value = options.initialName || '';
   nameField.appendChild(nameInput);
   body.appendChild(nameField);
+
+  // 利用者が追加したテンプレートの分類。固定の初期搭載分類とは独立して自由に設定できる。
+  const categoryField = document.createElement('div');
+  categoryField.className = 'field gb-field';
+  const categoryLabel = document.createElement('label');
+  categoryLabel.className = 'gb-label';
+  categoryLabel.textContent = '分類';
+  const categoryInput = document.createElement('input');
+  categoryInput.className = 'gb-input';
+  categoryInput.dataset.e2eId = 'db-template-category-input';
+  categoryInput.type = 'text';
+  categoryInput.placeholder = '例: キャラクター、企画、資料';
+  categoryInput.value = options.initialCategory || 'カスタム';
+  categoryLabel.htmlFor = categoryInput.id = `db-template-category-${seq}`;
+  categoryField.append(categoryLabel, categoryInput);
+  body.appendChild(categoryField);
 
   // 説明入力
   const descField = document.createElement('div');
@@ -189,6 +205,7 @@ function _showDbTemplateFormModal(options) {
       const result = await Promise.resolve(options.onSave({
         name,
         description: descInput.value.trim(),
+        category: categoryInput.value.trim() || 'カスタム',
         icon: iconField.getIcon(),
       }));
       if (result === false) return;
@@ -285,12 +302,17 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
     triggerEl,
     initialName: '',
     initialDescription: '',
+    initialCategory: 'カスタム',
     initialIcon: exported.icon || 'file',
     previewText,
     extraBody,
-    onSave: async ({ name, description, icon }) => {
+    onSave: async ({ name, description, category, icon }) => {
       exported.name = name;
       exported.description = description;
+      exported.category = category;
+      exported.categoryLabel = category;
+      exported.createdAt = new Date().toISOString();
+      exported.updatedAt = exported.createdAt;
       exported.icon = icon;
       if (extraBody && typeof embedDbTemplateEntityLayoutImages === 'function') {
         const selectedIds = Array.from(extraBody.querySelectorAll('input[type="checkbox"][data-cell-id]'))
@@ -325,13 +347,19 @@ function showEditTemplateModal(tmpl, dbPath, triggerEl = null) {
     triggerEl,
     initialName: tmpl.name || '',
     initialDescription: tmpl.description || '',
+    initialCategory: tmpl.categoryLabel || tmpl.category || 'カスタム',
     initialIcon: tmpl.icon || 'file',
     previewText,
-    onSave: ({ name, description, icon }) => {
+    onSave: ({ name, description, category, icon }) => {
       const customs = getCustomTemplates();
       const idx = customs.findIndex(c => c.id === tmpl.id);
       if (idx < 0) { showStatus('カスタムテンプレートが見つかりません', true); return false; }
-      customs[idx] = { ...customs[idx], name, description, icon };
+      customs[idx] = {
+        ...customs[idx], name, description, icon,
+        category, categoryLabel: category,
+        createdAt: customs[idx].createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
       if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート編集', detail: name })) return false;
       showStatus('カスタムテンプレート「' + name + '」を更新しました');
     },

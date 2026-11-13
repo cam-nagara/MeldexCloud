@@ -685,6 +685,27 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   const actionSep = document.createElement('div');
   actionSep.className = 'gb-context-menu-sep';
   menu.appendChild(actionSep);
+  const browserUrl = _cellUiValueToString(val?.value).trim();
+  if (/^https?:\/\/\S+$/i.test(browserUrl)) {
+    const browserItem = document.createElement('div');
+    browserItem.className = 'gb-context-menu-item';
+    browserItem.dataset.e2eId = 'db-url-open-browser';
+    browserItem.innerHTML = lucide('externalLink', 14) + ' ブラウザで開く';
+    browserItem.addEventListener('click', () => {
+      menu.remove();
+      // URLセルの通常クリックと同じ共通経路を使い、デスクトップ版では
+      // OSの既定ブラウザ、Cloud版では安全な新規タブへ開く。
+      _dbOpenConfiguredTarget(browserUrl, browserUrl, {
+        dbPath: currentDbPath,
+        sourceEl: e?.target || null,
+        entry: { type: 'html', path: browserUrl, label: browserUrl, urlExternal: true },
+      });
+    });
+    menu.appendChild(browserItem);
+    const browserSep = document.createElement('div');
+    browserSep.className = 'gb-context-menu-sep';
+    menu.appendChild(browserSep);
+  }
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
     const old = _cellUiValueToString(val.value);

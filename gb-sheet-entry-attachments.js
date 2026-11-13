@@ -1276,35 +1276,13 @@
       let kind = 'file';
       let linkMode = false;
 
-      if (itemType === 'folder') {
-        const name = await uniqueName(label, '');
-        createdPath = `${attachmentDir}/${name}`;
-        kind = 'folder';
-        await provider.mkdir(createdPath);
-      } else if (itemType === 'note') {
+      if (itemType === 'note') {
         const name = await uniqueName(label, '.md');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'note';
         linkMode = true;
         const documentId = global.crypto?.randomUUID ? global.crypto.randomUUID() : `note-${Date.now()}`;
         createdContent = `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(documentId)}\n---\n# ${name.replace(/\.md$/, '')}\n\n`;
-        await provider.writeText(createdPath, createdContent);
-      } else if (itemType === 'chat') {
-        const rawUser = String(global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous');
-        const safeUser = rawUser.replace(/[\\/:*?"<>|]/g, '_') || 'anonymous';
-        const safeLabel = label.replace(/[\\/:*?"<>|]/g, '_') || 'チャット';
-        const chatDir = `_chat/llm/${safeUser}`;
-        let chatName = `${safeLabel}.md`;
-        let chatIndex = 1;
-        while (await provider.statPath(`${chatDir}/${chatName}`).catch(() => null)) {
-          chatName = `${safeLabel} (${chatIndex}).md`;
-          chatIndex += 1;
-        }
-        createdPath = `${chatDir}/${chatName}`;
-        kind = 'chat';
-        linkMode = true;
-        const created = new Date().toISOString();
-        createdContent = `---\ntype: chat\nprovider: ''\nmodel: ''\ncreated: ${created}\ntags: []\nuser: ${JSON.stringify(safeUser)}\nowner: ${JSON.stringify(safeUser)}\ntitle: ${JSON.stringify(safeLabel)}\nmessages: []\n---\n\n`;
         await provider.writeText(createdPath, createdContent);
       } else if (itemType === 'database') {
         const name = await uniqueName(label, '');

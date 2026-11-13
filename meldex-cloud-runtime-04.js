@@ -44289,35 +44289,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       let kind = 'file';
       let linkMode = false;
 
-      if (itemType === 'folder') {
-        const name = await uniqueName(label, '');
-        createdPath = `${attachmentDir}/${name}`;
-        kind = 'folder';
-        await provider.mkdir(createdPath);
-      } else if (itemType === 'note') {
+      if (itemType === 'note') {
         const name = await uniqueName(label, '.md');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'note';
         linkMode = true;
         const documentId = global.crypto?.randomUUID ? global.crypto.randomUUID() : `note-${Date.now()}`;
         createdContent = `---\nmeldex:\n  metadata_version: 1\n  document_id: ${JSON.stringify(documentId)}\n---\n# ${name.replace(/\.md$/, '')}\n\n`;
-        await provider.writeText(createdPath, createdContent);
-      } else if (itemType === 'chat') {
-        const rawUser = String(global.state?.currentUser?.name || global.currentUser?.name || global.currentUser || 'anonymous');
-        const safeUser = rawUser.replace(/[\\/:*?"<>|]/g, '_') || 'anonymous';
-        const safeLabel = label.replace(/[\\/:*?"<>|]/g, '_') || 'チャット';
-        const chatDir = `_chat/llm/${safeUser}`;
-        let chatName = `${safeLabel}.md`;
-        let chatIndex = 1;
-        while (await provider.statPath(`${chatDir}/${chatName}`).catch(() => null)) {
-          chatName = `${safeLabel} (${chatIndex}).md`;
-          chatIndex += 1;
-        }
-        createdPath = `${chatDir}/${chatName}`;
-        kind = 'chat';
-        linkMode = true;
-        const created = new Date().toISOString();
-        createdContent = `---\ntype: chat\nprovider: ''\nmodel: ''\ncreated: ${created}\ntags: []\nuser: ${JSON.stringify(safeUser)}\nowner: ${JSON.stringify(safeUser)}\ntitle: ${JSON.stringify(safeLabel)}\nmessages: []\n---\n\n`;
         await provider.writeText(createdPath, createdContent);
       } else if (itemType === 'database') {
         const name = await uniqueName(label, '');
@@ -78485,7 +78463,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
    * @param {HTMLElement[]} [options.extraRow4] row4（リセット行）のリセット直前に追加する要素
    * @param {Object} [options.footerActions] 最下段1行へ右寄せ配置するコピー/切り取り/
-   *   貼り付け/閉じる。{ commands?: ('copy'|'cut'|'paste')[], onCommand(command),
+   *   貼り付け/削除/閉じる。{ commands?: ('copy'|'cut'|'paste'|'delete')[], onCommand(command),
    *   onClose?(), closeLabel? }。onClose を渡すと既定の右下floating close button の
    *   代わりにこの行の右端へ閉じるボタンを出す（二重表示防止）。専用のクリップボード行を
    *   個別に作らないための共通化オプション（呼び出し元は既存の位置決め・選択保持・
@@ -78781,6 +78759,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         copy: { icon: 'copy', label: 'コピー' },
         cut: { icon: 'scissors', label: '切り取り' },
         paste: { icon: 'clipboardPaste', label: '貼り付け' },
+        delete: { icon: 'trash2', label: '削除' },
       };
       const footerRow = document.createElement('div');
       footerRow.className = 'gb-fmt-popup-row gb-fmt-footer-actions-row';

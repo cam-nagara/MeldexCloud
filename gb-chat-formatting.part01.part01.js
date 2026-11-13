@@ -778,15 +778,88 @@
     return group;
   }
 
-  function _openPopup(target, rect, valueElement, avoidRect) {
-    if (Date.now() < _suppressUntil) return;
+  function _replaceActiveInputRange(replacement) {
+    const input = _chatInput();
+    const target = _activeTarget;
+    if (!input || target?.kind !== 'input') return false;
+    const source = String(input.value || '').replace(/\r\n?/g, '\n');
+    const range = _clampRange(source, target.start, target.end);
+    const insert = String(replacement || '').replace(/\r\n?/g, '\n');
+    const editor = _chatRichInput();
+
+    // The visible composer is contenteditable. Apply the edit there first so
+    // Chromium/Electron records cut, paste, and delete in its native undo
+    // transaction. Directly replacing the hidden textarea value works visually
+    // but makes Ctrl+Z unable to restore a context-menu edit.
+    if (editor && typeof document.execCommand === 'function') {
+      _setRichSelectionFromSourceRange(editor, source, range.start, range.end);
+      let edited = false;
+      try { edited = document.execCommand('insertText', false, insert); } catch (_) {}
+      if (edited) {
+        _syncPlainFromRich();
+        const nextSource = String(input.value || '').replace(/\r\n?/g, '\n');
+        const caret = Math.min(nextSource.length, range.start + insert.length);
+        target.start = caret;
+        target.end = caret;
+        return true;
+      }
+    }
+
+    // Fallback for the plain textarea or engines without insertText support.
+    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const caret = range.start + insert.length;
+    target.start = caret;
+    target.end = caret;
+    if (editor) _renderRichInputFromSource(caret, caret);
+    else {
+      input.focus();
+      input.setSelectionRange?.(caret, caret);
+    }
+    _updatingFromPlain = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    _updatingFromPlain = false;
+    return true;
+  }
+
+  async function _runInputContextCommand(command) {
+    const input = _chatInput();
+    const target = _activeTarget;
+    if (!input || target?.kind !== 'input') return false;
+    const source = String(input.value || '').replace(/\r\n?/g, '\n');
+    const range = _clampRange(source, target.start, target.end);
+    const selected = _visibleTextForSourceRange(source, range) || source.slice(range.start, range.end);
+    try {
+      if (command === 'copy' || command === 'cut') {
+        if (!selected) return false;
+        const copied = await _copyTextToClipboard(selected);
+        if (!copied) return false;
+        if (command === 'cut') _replaceActiveInputRange('');
+      } else if (command === 'paste') {
+        if (!navigator.clipboard?.readText) throw new Error('clipboard read unavailable');
+        const text = await navigator.clipboard.readText();
+        _replaceActiveInputRange(text);
+      } else if (command === 'delete') {
+        if (range.end <= range.start) return false;
+        _replaceActiveInputRange('');
+      } else {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      if (typeof showStatus === 'function') showStatus('クリップボードを操作できませんでした', true);
+      return false;
+    }
+  }
+
+  function _openPopup(target, rect, valueElement, avoidRect, options = {}) {
+    if (Date.now() < _suppressUntil && !options.force) return;
     if (typeof openFormatPopup !== 'function' || !rect) return;
     _activeTarget = target;
     const anchor = { getBoundingClientRect: () => rect };
     const source = target.kind === 'input'
       ? String(_chatInput()?.value || '')
       : _messageContentString(target.index);
-    openFormatPopup(anchor, {
+    const popup = openFormatPopup(anchor, {
       fields: FORMAT_FIELDS,
       values: _computedValues(valueElement),
       className: POPUP_CLASS,
@@ -794,6 +867,21 @@
       closeButton: false,
       avoidRect: avoidRect || rect,
       extraRow3: [_makeHeadingControl(_headingLevelAt(source, target.start))],
+      footerActions: options.inputContextMenu ? {
+        commands: ['copy', 'cut', 'paste', 'delete'],
+        onCommand: async (command) => {
+          await _runInputContextCommand(command);
+          _suppressUntil = Date.now() + 350;
+          if (window.gbFmt?.closePopup) window.gbFmt.closePopup(popup);
+          else popup.remove();
+          _activeTarget = null;
+        },
+        onClose: () => {
+          if (window.gbFmt?.closePopup) window.gbFmt.closePopup(popup);
+          else popup.remove();
+          _activeTarget = null;
+        },
+      } : null,
       onChange: _applyFormat,
     });
   }

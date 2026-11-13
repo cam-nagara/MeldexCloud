@@ -323,10 +323,10 @@
   box-sizing: border-box;
 }
 .gallery-grid {
-  align-content: start; grid-auto-rows: minmax(188px, auto);
+  align-content: start; align-items: start; grid-auto-rows: max-content; row-gap: 12px;
 }
 .gallery-card {
-  min-height: 188px; box-sizing: border-box; height: max-content;
+  min-height: 188px; box-sizing: border-box; height: auto; align-self: start;
   display: flex; flex-direction: column; gap: 8px;
 }
 .gallery-card-title {

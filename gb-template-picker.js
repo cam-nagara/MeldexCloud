@@ -1,6 +1,7 @@
 /* gb-template-picker.js: 全アプリ共通のテンプレート選択画面（サムネイル一覧＋プレビュー）。
  *
- * ノート・シナリオ・シート・ボードのテンプレート選択は、すべてこの画面を使う。
+ * ノート・シナリオ・シート・ボード・スケジュール・フォームのテンプレート選択は、
+ * すべてこの画面を使う。
  * 各アプリは「項目一覧」「サムネイルの描き方」「適用などの操作」だけを渡す。
  *
  * MeldexTemplatePicker.open({
@@ -22,6 +23,8 @@
   'use strict';
 
   const CATEGORY_ALL = '__all__';
+  const CATEGORY_FAVORITES = '__favorites__';
+  const SORT_DEFAULT = 'recommended';
 
 
   function el(tag, cls, text) {
@@ -59,8 +62,37 @@
     return result;
   }
 
-  function matches(item, query, category) {
-    if (category !== CATEGORY_ALL && String(item.category || '') !== category) return false;
+  function readPreference(key, fallback) {
+    try {
+      const value = global.localStorage?.getItem(key);
+      return value == null ? fallback : JSON.parse(value);
+    } catch (_) { return fallback; }
+  }
+
+  function writePreference(key, value) {
+    try { global.localStorage?.setItem(key, JSON.stringify(value)); } catch (_) {}
+  }
+
+  function itemDate(item, kind) {
+    const candidates = kind === 'created'
+      ? [item.createdAt, item.created_at, item.addedAt, item.added_at]
+      : [item.updatedAt, item.updated_at, item.modifiedAt, item.modified_at];
+    for (const value of candidates) {
+      const time = Date.parse(value || '');
+      if (Number.isFinite(time)) return time;
+    }
+    return 0;
+  }
+
+  function formatItemDate(value) {
+    const time = Date.parse(value || '');
+    if (!Number.isFinite(time)) return '';
+    return new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(time));
+  }
+
+  function matches(item, query, category, favorites) {
+    if (category === CATEGORY_FAVORITES && !favorites.has(item.id)) return false;
+    if (category !== CATEGORY_ALL && category !== CATEGORY_FAVORITES && String(item.category || '') !== category) return false;
     if (!query) return true;
     const hay = [item.name, item.description, item.categoryLabel, item.badge].join(' ').toLocaleLowerCase();
     return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).every(part => hay.includes(part));
@@ -98,10 +130,15 @@
     if (!global.GBUI?.createModal) throw new Error('ダイアログ部品を読み込めませんでした');
 
     const pickerId = String(options.id || 'template-picker');
+    const favoritesKey = `meldex-template-picker-favorites-v1:${pickerId}`;
+    const sortKey = `meldex-template-picker-sort-v1:${pickerId}`;
     let items = normalizeItems(options.items);
     let selectedId = options.selectedId != null ? String(options.selectedId) : '';
     let category = CATEGORY_ALL;
     let query = '';
+    const storedFavorites = readPreference(favoritesKey, []);
+    let favorites = new Set((Array.isArray(storedFavorites) ? storedFavorites : []).map(String));
+    let sortMode = String(readPreference(sortKey, SORT_DEFAULT) || SORT_DEFAULT);
     let busy = false;
     let forceClose = false;
 
@@ -114,10 +151,22 @@
     search.setAttribute('aria-label', 'テンプレートを検索');
     const e2e = options.e2e || {};
     search.dataset.e2eId = e2e.search || `${pickerId}-search`;
+    const sort = el('select', 'gb-select gb-tpl-sort');
+    sort.setAttribute('aria-label', 'テンプレートの並び順');
+    sort.dataset.e2eId = `${pickerId}-sort`;
+    [
+      ['recommended', 'おすすめ順'], ['name-asc', '名前順（昇順）'], ['name-desc', '名前順（降順）'],
+      ['created-desc', '追加日（新しい順）'], ['created-asc', '追加日（古い順）'],
+      ['updated-desc', '更新日（新しい順）'], ['updated-asc', '更新日（古い順）'],
+    ].forEach(([value, label]) => {
+      const option = el('option', '', label); option.value = value; sort.appendChild(option);
+    });
+    if (![...sort.options].some(option => option.value === sortMode)) sortMode = SORT_DEFAULT;
+    sort.value = sortMode;
     const chips = el('div', 'gb-tpl-chips');
     chips.setAttribute('role', 'tablist');
     chips.setAttribute('aria-label', 'テンプレートの分類');
-    toolbar.append(search, chips);
+    toolbar.append(search, sort, chips);
 
     const body = el('div', 'gb-tpl-body');
     const grid = el('div', 'gb-tpl-grid');
@@ -152,6 +201,7 @@
       geometryKey: pickerId,
       extraClass: 'gb-tpl-picker-modal',
       initialFocus: () => grid.querySelector('.gb-tpl-card.is-selected') || search,
+      returnFocus: options.returnFocus,
       onBeforeClose: () => !busy || forceClose,
       onClose: options.onClose,
     });
@@ -180,7 +230,7 @@
       root.classList.add('is-busy');
       // 処理中は二重送信を防ぎ、支援技術にも処理中であることを伝える（Escape等でも閉じない）。
       modal.modal.setAttribute('aria-busy', 'true');
-      const controls = [...modal.modal.querySelectorAll('button, input')].map(control => [control, control.disabled]);
+      const controls = [...modal.modal.querySelectorAll('button, input, select')].map(control => [control, control.disabled]);
       controls.forEach(([control]) => { control.disabled = true; });
       ctx.setStatus('');
       let result = false;
@@ -210,9 +260,9 @@
     function renderChips() {
       const cats = categoriesOf(items);
       chips.replaceChildren();
-      chips.hidden = cats.length < 2;
-      [{ key: CATEGORY_ALL, label: 'すべて' }, ...cats].forEach(cat => {
-        const chipKey = cat.key === CATEGORY_ALL ? 'all' : cat.key;
+      chips.hidden = items.length === 0;
+      [{ key: CATEGORY_FAVORITES, label: '★ お気に入り' }, { key: CATEGORY_ALL, label: 'すべて' }, ...cats].forEach(cat => {
+        const chipKey = cat.key === CATEGORY_ALL ? 'all' : (cat.key === CATEGORY_FAVORITES ? 'favorites' : cat.key);
         const chip = button(cat.label, 'gb-tpl-chip' + (cat.key === category ? ' is-active' : ''), (e2e.categoryPrefix || `${pickerId}-category-`) + chipKey);
         chip.dataset.category = chipKey;
         chip.setAttribute('role', 'tab');
@@ -223,7 +273,21 @@
     }
 
     function renderGrid() {
-      const visible = items.filter(item => matches(item, query, category));
+      const originalOrder = new Map(items.map((item, index) => [item.id, index]));
+      const visible = items.filter(item => matches(item, query, category, favorites)).sort((a, b) => {
+        const favoriteOrder = Number(favorites.has(b.id)) - Number(favorites.has(a.id));
+        if (favoriteOrder) return favoriteOrder;
+        if (sortMode.startsWith('name-')) {
+          const result = a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' });
+          if (result) return sortMode.endsWith('desc') ? -result : result;
+        }
+        if (sortMode.startsWith('created-') || sortMode.startsWith('updated-')) {
+          const kind = sortMode.startsWith('created-') ? 'created' : 'updated';
+          const result = itemDate(a, kind) - itemDate(b, kind);
+          if (result) return sortMode.endsWith('desc') ? -result : result;
+        }
+        return (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0);
+      });
       grid.replaceChildren();
       if (!visible.length) {
         grid.appendChild(el('p', 'gb-tpl-empty', items.length ? '一致するテンプレートはありません' : (options.emptyText || 'テンプレートはありません')));
@@ -231,6 +295,8 @@
       }
       if (!visible.some(item => item.id === selectedId)) selectedId = visible[0].id;
       visible.forEach(item => {
+        const wrap = el('div', 'gb-tpl-card-wrap');
+        wrap.setAttribute('role', 'presentation');
         const card = el('button', 'gb-tpl-card' + (options.cardClass ? ' ' + options.cardClass : '') + (item.id === selectedId ? ' is-selected' : ''));
         card.type = 'button';
         card.setAttribute('role', 'option');
@@ -244,7 +310,10 @@
         label.appendChild(el('span', 'gb-tpl-card-name', item.name));
         const badgeText = item.id === options.currentId ? '使用中' : (item.badge || (item.builtin ? '' : 'カスタム'));
         if (badgeText) label.appendChild(el('span', 'gb-tpl-card-badge', badgeText));
-        card.append(thumb, label);
+        const dateText = formatItemDate(item.updatedAt || item.updated_at || item.modifiedAt || item.modified_at)
+          || formatItemDate(item.createdAt || item.created_at || item.addedAt || item.added_at);
+        if (dateText) label.appendChild(el('span', 'gb-tpl-card-date', dateText));
+        card.append(label, thumb);
         if (item.description) card.title = item.description;
         card.addEventListener('click', () => {
           if (selectedId === item.id) return;
@@ -257,7 +326,18 @@
           renderPreview();
         });
         card.addEventListener('dblclick', () => runPrimary(item));
-        grid.appendChild(card);
+        const favorite = button(favorites.has(item.id) ? '★' : '☆', 'gb-tpl-favorite', `${pickerId}-favorite`);
+        favorite.dataset.templateId = item.id;
+        favorite.setAttribute('aria-label', favorites.has(item.id) ? `${item.name}をお気に入りから外す` : `${item.name}をお気に入りに追加`);
+        favorite.setAttribute('aria-pressed', favorites.has(item.id) ? 'true' : 'false');
+        favorite.addEventListener('click', event => {
+          event.stopPropagation();
+          if (favorites.has(item.id)) favorites.delete(item.id); else favorites.add(item.id);
+          writePreference(favoritesKey, [...favorites]);
+          render();
+        });
+        wrap.append(card, favorite);
+        grid.appendChild(wrap);
       });
       return visible;
     }
@@ -281,7 +361,7 @@
       const head = el('div', 'gb-tpl-preview-head');
       head.appendChild(el('h3', 'gb-tpl-preview-name', item.name));
       if (item.categoryLabel) head.appendChild(el('span', 'gb-tpl-card-badge', item.categoryLabel));
-      preview.append(large, head);
+      preview.append(head, large);
       if (item.description) preview.appendChild(el('p', 'gb-tpl-preview-desc', item.description));
       if (typeof item.details === 'function') {
         const details = el('div', 'gb-tpl-preview-details');
@@ -305,6 +385,11 @@
     }
 
     search.addEventListener('input', () => { query = search.value.trim(); renderGrid(); renderPreview(); });
+    sort.addEventListener('change', () => {
+      sortMode = sort.value;
+      writePreference(sortKey, sortMode);
+      renderGrid(); renderPreview();
+    });
     grid.addEventListener('keydown', event => {
       const cards = [...grid.querySelectorAll('.gb-tpl-card')];
       const index = cards.indexOf(document.activeElement);

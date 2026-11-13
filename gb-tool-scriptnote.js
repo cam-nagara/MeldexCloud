@@ -977,7 +977,13 @@ class ScriptNoteComponent extends ToolComponent {
     if (!allowOverwrite && Object.prototype.hasOwnProperty.call(data, name)) { if (typeof showStatus === 'function') showStatus('同じ名前がすでにあります', true); return false; }
     const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
     const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
-    data[name] = _snToolClone(value);
+    const storedValue = _snToolClone(value);
+    if (kind === 'template') {
+      const now = new Date().toISOString();
+      storedValue.createdAt = data[name]?.createdAt || now;
+      storedValue.updatedAt = now;
+    }
+    data[name] = storedValue;
     if (!order.includes(name)) order.push(name);
     _snToolWriteStorageAtomically([
       [cfg.storageKey, JSON.stringify(data)],
@@ -1205,6 +1211,11 @@ class ScriptNoteComponent extends ToolComponent {
         const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey).filter(item => item !== copyName);
         order.splice(Math.max(0, order.indexOf(name)) + 1, 0, copyName);
         nextData[copyName] = _snToolClone(nextData[name]);
+        if (kind === 'template') {
+          const now = new Date().toISOString();
+          nextData[copyName].createdAt = now;
+          nextData[copyName].updatedAt = now;
+        }
         _snToolWriteStorageAtomically([
           [cfg.storageKey, JSON.stringify(nextData)],
           [cfg.orderKey, JSON.stringify(_snToolFilteredPresetOrder(order, nextData))],

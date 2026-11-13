@@ -354,6 +354,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     && typeof hideLoading === 'function';
   let loadingShown = false;
   let loading = null;
+  let sheetTransitionToken = 0;
   const endLoading = () => { if (loadingShown) { hideLoading(loading); loadingShown = false; } };
   try {
     if (showOpenLoading) {
@@ -362,6 +363,12 @@ async function selectDatabase(dbPath, ctx, opts) {
       dbLoadController.signal.addEventListener('abort', endLoading, { once: true });
     }
     const _isDbSwitch = (syncGlobalState ? state.currentDbPath : ctx.dbPath) !== dbPath;
+    const _returningToSheet = !['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts']
+      .includes(String(syncGlobalState ? state.view : ctx.viewMode || ''));
+    if ((_isDbSwitch || _returningToSheet || !ctx.pivotData || openOpts.forceReload)
+        && typeof _dbBeginSheetTransition === 'function') {
+      sheetTransitionToken = _dbBeginSheetTransition(ctx, dbPath);
+    }
     // 別DBへの切替時は一括編集バーを閉じる + 選択 Set をクリア (D-5)
     if (_isDbSwitch) {
       const _ctxClear = ctx || _currentPaneState();
@@ -485,20 +492,6 @@ async function selectDatabase(dbPath, ctx, opts) {
   let dbViewMode = _resolveDbOpenViewMode(dbPath, ctx, requestedViewMode);
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
-
-  // 非同期フェッチ中に前のシートの古いコンテンツが見えないよう、
-  // サブビューの中身を即座にクリアする。renderXxx() が後で再描画する。
-  if (_isDbSwitch) {
-    clearPivot(ctx);
-    const _clearIds = ['gallery-view', 'kanban-view', 'chart-view', 'graph-view', 'form-view'];
-    const _containerScope = ctx?.containerEl || null;
-    for (const _cid of _clearIds) {
-      const _cel = _containerScope
-        ? (_containerScope.querySelector('#' + _cid) || _containerScope.querySelector('.' + _cid))
-        : document.getElementById(_cid);
-      if (_cel) _cel.innerHTML = '';
-    }
-  }
 
   // テーマ適用: クリア → DB自身のテーマ
   if (!openOpts.skipGlobalUi && typeof clearFileStyleForPanel === 'function') clearFileStyleForPanel('db-view-container');
@@ -703,6 +696,11 @@ async function selectDatabase(dbPath, ctx, opts) {
       });
     }
     _restoreDbViewScrollState(ctx, dbViewMode, openOpts.restoreScrollState);
+    if (sheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+      _dbEndSheetTransition(ctx, sheetTransitionToken);
+      sheetTransitionToken = 0;
+    }
+    window.MeldexViewerPrewarm?.schedule?.();
 
     const entityNames = Object.keys(ctx.pivotData.entities || {}).sort();
     if (!openOpts.skipGlobalUi) showStatus(`${entityNames.length} 件のトピック`);
@@ -746,6 +744,9 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     dbLoadController.signal.removeEventListener('abort', endLoading);
     endLoading();
+    if (sheetTransitionToken && typeof _dbEndSheetTransition === 'function') {
+      _dbEndSheetTransition(ctx, sheetTransitionToken);
+    }
     if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
@@ -791,7 +792,9 @@ async function selectEntity(entityPath, opts) {
   if (!openOpts.skipShowView) showView('entity');
 
   try {
-    const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+    const data = typeof _dbFetchEntityForOpen === 'function'
+      ? await _dbFetchEntityForOpen(entityPath)
+      : await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
     if (window._selectEntityLoadSeq !== entityLoadSeq || state.currentEntityPath !== entityPath) return;
     renderEntityPage(data);
     const entityName = _entityDisplayName;

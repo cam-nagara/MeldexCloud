@@ -1215,6 +1215,19 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 #db-view-container {
   min-width: 0;
   min-height: 0;
+  position: relative;
+}
+.db-sheet-transition-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: var(--bg);
+  color: var(--fg2);
+  font-size: 13px;
 }
 
 /* ==============================
@@ -11882,7 +11895,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 }
 .gallery-card {
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 12px; cursor: pointer; transition: border-color 0.15s;
+  padding: 12px; cursor: pointer;
   overflow: hidden;
 }
 .gallery-card:hover { border-color: var(--accent); }
@@ -11933,7 +11946,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .kanban-column-body.drag-over { background: color-mix(in srgb, var(--ui-selection-bg) 22%, transparent); }
 .kanban-card {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; cursor: grab; font-size: 13px; transition: border-color 0.1s;
+  padding: 8px 10px; cursor: grab; font-size: 13px;
 }
 .kanban-card:hover { border-color: var(--accent); }
 .kanban-card.dragging { opacity: 0.5; }
@@ -12334,10 +12347,10 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   box-sizing: border-box;
 }
 .gallery-grid {
-  align-content: start; grid-auto-rows: minmax(188px, auto);
+  align-content: start; align-items: start; grid-auto-rows: max-content; row-gap: 12px;
 }
 .gallery-card {
-  min-height: 188px; box-sizing: border-box; height: max-content;
+  min-height: 188px; box-sizing: border-box; height: auto; align-self: start;
   display: flex; flex-direction: column; gap: 8px;
 }
 .gallery-card-title {
@@ -31497,6 +31510,7 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   gap: 8px;
 }
 .gb-tpl-search { flex: 0 1 240px; min-width: 140px; }
+.gb-tpl-sort { flex: 0 0 auto; min-width: 156px; }
 .gb-tpl-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .gb-tpl-chip {
   border: 1px solid var(--border);
@@ -31542,6 +31556,25 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   height: auto;
   font: inherit;
 }
+.gb-tpl-card-wrap { position: relative; min-width: 0; }
+.gb-tpl-card-wrap > .gb-tpl-card { width: 100%; }
+.gb-tpl-favorite {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg2) 88%, transparent);
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.gb-tpl-favorite:hover, .gb-tpl-favorite:focus-visible { background: var(--bg4); outline: 2px solid var(--accent); }
 .gb-tpl-card:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
 .gb-tpl-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .gb-tpl-card.is-selected {
@@ -31564,7 +31597,7 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 }
 .gb-tpl-thumb > svg { width: 100%; height: 100%; display: block; }
 .gb-tpl-thumb-fallback { color: var(--fg2); font-size: 12px; padding: 8px; text-align: center; }
-.gb-tpl-card-label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 2px 2px; }
+.gb-tpl-card-label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 32px 0 2px; }
 .gb-tpl-card-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -31583,6 +31616,7 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   background: var(--bg4);
   color: var(--fg2);
 }
+.gb-tpl-card-date { flex: 0 0 auto; color: var(--fg2); font-size: 10px; white-space: nowrap; }
 .gb-tpl-preview {
   flex: 0 0 320px;
   width: 320px;
@@ -31616,6 +31650,39 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 .gb-tpl-empty { grid-column: 1 / -1; color: var(--fg2); font-size: 13px; padding: 16px 4px; margin: 0; }
 .gb-tpl-status { margin: 0; min-height: 1.4em; font-size: 12px; color: var(--fg2); }
 .gb-tpl-status.is-error { color: var(--danger, #e5484d); }
+.gb-tpl-calendar-entries {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+}
+.gb-tpl-calendar-entry {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg2);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-tpl-calendar-empty { color: var(--fg2); font-size: 11px; }
+.gb-tpl-form-preview {
+  display: grid;
+  gap: 6px;
+  width: 78%;
+  min-width: 0;
+}
+.gb-tpl-form-row {
+  overflow: hidden;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+  color: var(--fg2);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* 文字ベースのサムネイル（ノート・シナリオ・シート） */
 .gb-tpl-doc {
   width: 100%;
@@ -31637,13 +31704,16 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 .gb-tpl-doc-check::before { content: '\2610'; margin-right: 0.5em; opacity: 0.7; }
 @media (max-width: 760px) {
   .gb-tpl-picker-modal.gb-modal { width: 100vw; max-width: 100vw; height: calc(100vh - 24px); }
-  .gb-tpl-body { flex-direction: column; overflow-y: auto; }
-  .gb-tpl-grid { overflow: visible; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; flex: 0 0 auto; }
+  .gb-tpl-body { flex-direction: column; overflow-x: hidden; overflow-y: auto; }
+  .gb-tpl-grid { width: 100%; box-sizing: border-box; overflow: visible; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; flex: 0 0 auto; }
   .gb-tpl-preview { flex: 0 0 auto; width: auto; border-left: 0; border-top: 1px solid var(--border); padding: 12px 2px 4px; overflow: visible; }
   .gb-tpl-preview .gb-tpl-thumb--large { max-height: 200px; }
   .gb-tpl-search { flex: 1 1 100%; }
+  .gb-tpl-sort { flex: 1 1 auto; }
   .gb-tpl-preview-actions .gb-btn { min-height: 44px; }
   .gb-tpl-card { min-height: 44px; }
+  .gb-tpl-favorite { width: 44px; height: 44px; top: 0; right: 0; }
+  .gb-tpl-card-label { min-height: 44px; padding-right: 46px; }
 }
 /* シートのサムネイル（列見出し付きの小さな表） */
 .gb-tpl-sheet {
@@ -32799,6 +32869,17 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
 /* 最初のコピー系ボタンを左端グループとして右寄せリセットから分離 */
 .gb-fmt-style-copy + .gb-fmt-style-copy {
   margin-left: var(--ui-space-1);
+}
+
+/* チャット入力の選択書式はポインター移動だけで見た目が明滅しないよう、
+   共通部品の短いホバー遷移とスピナーの遅延表示をこのポップアップ内だけ無効化する。 */
+.gb-chat-format-popup :is(.gb-fmt-btn, .gb-fmt-reset, .gb-fmt-style-copy) {
+  transition: none;
+}
+.gb-chat-format-popup input.gb-fmt-num::-webkit-outer-spin-button,
+.gb-chat-format-popup input.gb-fmt-num::-webkit-inner-spin-button {
+  opacity: 1;
+  transition: none;
 }
 
 /* 共通フッター行（コピー・切り取り・貼り付け・閉じる）

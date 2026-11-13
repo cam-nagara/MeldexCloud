@@ -11,6 +11,109 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// Start a topic read at the beginning of a Sheet open gesture, before editor
+// flushing and pane retargeting. selectEntity() consumes the same promise once;
+// this overlaps one request and deliberately does not become a stale data cache.
+const _dbEntityOpenLoads = new Map();
+
+function _dbWarmEntityForOpen(entityPath) {
+  const path = String(entityPath || '').trim();
+  if (!path || typeof apiFetch !== 'function') return null;
+  const existing = _dbEntityOpenLoads.get(path);
+  if (existing?.promise) return existing.promise;
+  const entry = { promise: null, cleanupTimer: null };
+  entry.promise = Promise.resolve().then(() => apiFetch(
+    '/entity?path=' + encodeURIComponent(path),
+    { foreground: true },
+  )).catch((error) => {
+    if (_dbEntityOpenLoads.get(path) === entry) _dbEntityOpenLoads.delete(path);
+    throw error;
+  });
+  entry.cleanupTimer = setTimeout(() => {
+    if (_dbEntityOpenLoads.get(path) === entry) _dbEntityOpenLoads.delete(path);
+  }, 5000);
+  _dbEntityOpenLoads.set(path, entry);
+  return entry.promise;
+}
+
+async function _dbFetchEntityForOpen(entityPath) {
+  const path = String(entityPath || '').trim();
+  const entry = _dbEntityOpenLoads.get(path);
+  const promise = entry?.promise || _dbWarmEntityForOpen(path);
+  try {
+    return await promise;
+  } finally {
+    const activeEntry = _dbEntityOpenLoads.get(path);
+    if (activeEntry?.promise === promise) {
+      if (activeEntry.cleanupTimer) clearTimeout(activeEntry.cleanupTimer);
+      _dbEntityOpenLoads.delete(path);
+    }
+  }
+}
+
+function _dbForgetEntityOpenLoad(entityPath) {
+  const path = String(entityPath || '').trim();
+  const entry = _dbEntityOpenLoads.get(path);
+  if (entry?.cleanupTimer) clearTimeout(entry.cleanupTimer);
+  _dbEntityOpenLoads.delete(path);
+}
+
+function _dbEntityHasPendingEditorFlush(entityPath) {
+  const path = String(entityPath || '').replace(/\\/g, '/');
+  if (!path) return false;
+  const pendingNotePath = window._noteAutoSaveTimer
+    ? String(window._pendingNoteAutoSavePc?.dataset?.path || '').replace(/\\/g, '/')
+    : '';
+  const entityEditor = document.getElementById('entity-freetext');
+  const pendingEntityPath = window._ftAutoSaveTimer
+    ? String(entityEditor?.dataset?.entityPath || '').replace(/\\/g, '/')
+    : '';
+  return pendingNotePath === path || pendingEntityPath === path;
+}
+
+function _dbSheetTransitionRoot(ctx) {
+  return (typeof _paneElById === 'function' ? _paneElById(ctx, 'db-view-container') : null)
+    || (!ctx ? document.getElementById('db-view-container') : null);
+}
+
+// Sheet surfaces are shared between pane tabs. Mask and clear them before an
+// async open so a previous Sheet or view cannot be painted as the destination.
+function _dbBeginSheetTransition(ctx, dbPath) {
+  const root = _dbSheetTransitionRoot(ctx);
+  if (!root) return 0;
+  const requestedPath = String(dbPath || '');
+  const token = (Number(ctx?._dbTransitionSeq || root.dataset.dbTransitionToken || 0) || 0) + 1;
+  if (ctx) ctx._dbTransitionSeq = token;
+  root.dataset.dbTransitionToken = String(token);
+  root.dataset.dbTransitionPath = requestedPath;
+  root.setAttribute('aria-busy', 'true');
+
+  if (typeof clearPivot === 'function') clearPivot(ctx);
+  const surfaces = ['tree-view', 'gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
+  for (const id of surfaces) {
+    const surface = root.querySelector('#' + id + ', .' + id);
+    if (surface) surface.replaceChildren();
+  }
+  root.querySelectorAll(':scope > .db-sheet-transition-mask').forEach(el => el.remove());
+  const mask = document.createElement('div');
+  mask.className = 'db-sheet-transition-mask';
+  mask.dataset.transitionToken = String(token);
+  mask.setAttribute('role', 'status');
+  mask.setAttribute('aria-live', 'polite');
+  mask.innerHTML = (typeof lucide === 'function' ? lucide('loaderCircle', 17) : '') + '<span>シートを読み込み中...</span>';
+  root.appendChild(mask);
+  return token;
+}
+
+function _dbEndSheetTransition(ctx, token) {
+  if (!token) return;
+  const root = _dbSheetTransitionRoot(ctx);
+  if (!root || Number(root.dataset.dbTransitionToken || 0) !== Number(token)) return;
+  root.querySelectorAll(':scope > .db-sheet-transition-mask').forEach(el => el.remove());
+  root.removeAttribute('aria-busy');
+  delete root.dataset.dbTransitionPath;
+}
+
 // All ordinary opens originating in a sheet use the source sheet's preference,
 // including related rows in another sheet and files displayed in image columns.
 async function _dbOpenConfiguredTarget(path, label, options = {}) {
@@ -30,6 +133,16 @@ async function _dbOpenConfiguredTarget(path, label, options = {}) {
   const dbPath = options.dbPath || ctx?.dbPath || state.currentDbPath || '';
   const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
   const target = cfg.defaultPanel === 'main' ? 'main' : 'right-sidebar';
+  if (target === 'main' && options.linkType === 'entity') {
+    if (_dbEntityHasPendingEditorFlush(path)) {
+      // A previous gesture may still have left a fulfilled read in the short
+      // hand-off cache. Never consume it after saving newer editor contents.
+      _dbForgetEntityOpenLoad(path);
+    } else {
+      // Do not await: overlap the read with the flush and pane transition below.
+      _dbWarmEntityForOpen(path)?.catch(() => {});
+    }
+  }
   try {
     if (typeof flushPendingEditorAutosave === 'function') {
       const saved = await flushPendingEditorAutosave();

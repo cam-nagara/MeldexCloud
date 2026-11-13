@@ -225,6 +225,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム" aria-label="消しゴム">${_bdIcon('eraser', 16)}</button>
       <div class="tb-spacer"></div>
       <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" aria-label="フィルタ" aria-haspopup="menu" aria-expanded="false" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
+      <button type="button" data-bd-action="templates" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="テンプレート" aria-label="テンプレート">${_bdIcon('layoutTemplate', 16)}</button>
       <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み" aria-label="再読み込み">${_bdIcon('refreshCw', 16)}</button>
       <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換" aria-label="検索と置換">${_bdIcon('search', 16)}</button>
       <button type="button" data-bd-action="detail" data-gb-tooltip-key="panel.right.toggle" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false">${_bdIcon('panelRight', 16)}</button>

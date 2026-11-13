@@ -379,12 +379,13 @@ function _renderDbTemplateThumbnail(tmpl, host, size) {
 function _dbTemplatePickerItems() {
   return getAllTemplates().map(tmpl => {
     const tierKey = tmpl.tier === 0 ? 'custom' : String(tmpl.tier || '');
+    const customCategory = String(tmpl.categoryLabel || tmpl.category || 'カスタム').trim() || 'カスタム';
     const viewCount = Array.isArray(tmpl.savedViews) ? tmpl.savedViews.length : (tmpl.enabledModes || []).length;
     return {
       ...tmpl,
       builtin: tmpl.tier !== 0,
-      category: tierKey,
-      categoryLabel: _DB_TEMPLATE_TIER_LABELS[tierKey] || '',
+      category: tmpl.tier === 0 ? customCategory : tierKey,
+      categoryLabel: tmpl.tier === 0 ? customCategory : (_DB_TEMPLATE_TIER_LABELS[tierKey] || ''),
       badge: `${(tmpl.properties || []).length}列・${viewCount}ビュー`,
       renderThumbnail: (host, options) => _renderDbTemplateThumbnail(tmpl, host, options?.size),
       details: host => {

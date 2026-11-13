@@ -356,6 +356,19 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 #db-view-container {
   min-width: 0;
   min-height: 0;
+  position: relative;
+}
+.db-sheet-transition-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: var(--bg);
+  color: var(--fg2);
+  font-size: 13px;
 }
 
 /* ==============================
