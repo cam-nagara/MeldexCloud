@@ -154,13 +154,18 @@ async function bdDeleteSelected(options = {}) {
   if (!selectedConnIdsBeforeDelete.length && bd.selected.size===0) return;
   bdPushUndo();
   if (bd.selected.size === 0 && selectedConnIdsBeforeDelete.length) {
+    const removedConnections = (bd.connections || []).filter(conn => selectedConnIdsBeforeDelete.includes(conn?.id));
+    const previousEndpointPairs = removedConnections.map(conn => ({ from: conn.from, to: conn.to }));
     selectedConnIdsBeforeDelete.forEach(connId => {
       if (typeof bdRemoveConnection === 'function') bdRemoveConnection(connId, { skipRender: true, skipDirty: true, skipSelection: true });
     });
+    if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
     bdClearConnectionSelection();
-    bdDrawConns();
+    bdDrawConns({ connIds: selectedConnIdsBeforeDelete, previousEndpointPairs, reason: 'delete-lines' });
     bdDirty();
-    if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ minimap: true, boardUi: true, detailPanel: true }, 'delete-lines');
+    } else if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     return;
   }
   const deletedIds = [...bd.selected];
@@ -173,10 +178,20 @@ async function bdDeleteSelected(options = {}) {
   } : null;
   // Phase 4: カード/ライン混在選択時、単独選択されたラインも削除する
   const selectedConnIds = new Set(selectedConnIdsBeforeDelete);
-  const removedConnIds = bd.connections
-    .filter(c => !c || bd.selected.has(c.from) || bd.selected.has(c.to) || selectedConnIds.has(c.id))
-    .map(c => c?.id)
+  const removedConnections = bd.connections
+    .filter(c => c && (bd.selected.has(c.from) || bd.selected.has(c.to) || selectedConnIds.has(c.id)));
+  const removedConnIds = removedConnections
+    .map(c => c.id)
     .filter(Boolean);
+  const previousEndpointPairs = removedConnections.map(conn => ({ from: conn.from, to: conn.to }));
+  const affectedNodeIds = new Set();
+  const affectedFrameIds = new Set();
+  (bd.groups || []).forEach(group => {
+    if ((group.nodeIds || []).some(id => bd.selected.has(id))) {
+      const groupId = group.groupId || group.id;
+      if (groupId) affectedFrameIds.add(groupId);
+    }
+  });
   if (removedConnIds.length && typeof apiPost === 'function' && bd?.path) {
     removedConnIds.forEach(connId => {
       apiPost('/annotations/orphan-by-target', {
@@ -189,6 +204,8 @@ async function bdDeleteSelected(options = {}) {
   }
   bd.connections = bd.connections.filter(c =>
     !bd.selected.has(c.from) && !bd.selected.has(c.to) && !selectedConnIds.has(c.id));
+  if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   // 削除されるコンテナノードに contained されていた子を外に出す
   // (contained のままだとレンダ時に非表示になるため)
   const _deletedContainers = bd.nodes.filter(n => bd.selected.has(n.id) && n.container);

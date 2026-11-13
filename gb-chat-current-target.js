@@ -111,6 +111,32 @@ function _chatCurrentOpenTarget() {
   return { path: '', kind: '', resolved: false };
 }
 
+function _chatCurrentVisiblePanelTarget() {
+  // Explicit action: prefer the most recently active content pane, including subpanels.
+  try {
+    if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentOpenTargetInfo === 'function') {
+      const info = GBPaneBridge.getCurrentOpenTargetInfo();
+      if (info?.activeTab) {
+        const target = _chatCurrentTargetFromTab(info.activeTab);
+        const path = _chatNormalizePath(target.path);
+        if (path && (target.kind === 'file' || target.kind === 'folder')) {
+          return { path, kind: target.kind, resolved: true };
+        }
+      }
+    }
+  } catch {}
+  try {
+    if (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function' && typeof GBLayout !== 'undefined') {
+      const target = _chatCurrentTargetFromTab(GBTabs.getActiveTab(GBLayout.activePane));
+      const path = _chatNormalizePath(target.path);
+      if (path && (target.kind === 'file' || target.kind === 'folder')) {
+        return { path, kind: target.kind, resolved: true };
+      }
+    }
+  } catch {}
+  return _chatCurrentOpenTarget();
+}
+
 function _chatTargetFromViewObject(view) {
   if (!view || typeof view !== 'object') return { path: '', kind: '' };
   const type = String(view.type || '');
@@ -224,11 +250,11 @@ function _chatTargetUpdateMode(options = {}) {
     return _chatTargetHasStarted() || reason === 'open-saved-chat' ? 'manual' : 'follow-main';
   }
   if (reason === 'tree-click' || reason === 'tree-select' || reason === 'tree-activate') {
-    if (_chatTargetHasStarted() && !options.force) return '';
+    if ((_chatTargetHasStarted() || currentMode === 'manual') && !options.force) return '';
     return 'follow-main';
   }
   if (reason === 'last-view') {
-    if ((_chatTargetHasStarted() || currentMode === 'detached') && !options.force) return '';
+    if ((_chatTargetHasStarted() || currentMode === 'manual' || currentMode === 'detached') && !options.force) return '';
     return 'follow-main';
   }
   return currentMode;
@@ -349,7 +375,9 @@ function _chatRenderTargetLabels(label, targets) {
 function _chatFollowCurrentOpenTarget(options = {}) {
   const chatState = _chatRuntimeState();
   if (!chatState) return _chatTargetSnapshot();
-  if (_chatTargetHasStarted() || _chatCurrentTargetMode() === 'detached') return _chatTargetSnapshot();
+  if (_chatTargetHasStarted() || _chatCurrentTargetMode() === 'manual' || _chatCurrentTargetMode() === 'detached') {
+    return _chatTargetSnapshot();
+  }
   _chatSetCurrentTargetMode('follow-main');
   const target = _chatCurrentOpenTarget();
   if (target.resolved) {
@@ -447,6 +475,34 @@ async function _chatPickCurrentTarget() {
   return selection;
 }
 
+function _chatUseCurrentOpenTarget() {
+  if (_chatState.streaming) {
+    if (typeof showStatus === 'function') showStatus('応答生成中は対象を変更できません', true);
+    return null;
+  }
+  const target = _chatCurrentVisiblePanelTarget();
+  if (!target.resolved || !target.path || !['file', 'folder'].includes(target.kind)) {
+    if (typeof showStatus === 'function') showStatus('メインパネルまたはサブパネルでファイルかフォルダを開いてください', true);
+    return null;
+  }
+  const started = _chatTargetHasStarted();
+  let status = '開いている項目をチャットの対象にしました';
+  if (!started) {
+    // An explicit click pins the visible item instead of leaving a follow-main
+    // target that could drift when the user changes panes before the first send.
+    _chatSetCurrentTargetPath(target.path, target.kind, { reason: 'chat-current-open-target', mode: 'manual' });
+  } else if (!_chatEffectiveTargets().some(item => _chatTargetKey(item.path) === _chatTargetKey(target.path))) {
+    _chatState.additionalTargets = [...(_chatState.additionalTargets || []), { path: target.path, kind: target.kind }];
+    status = '開いている項目をチャットの対象に追加しました';
+  } else {
+    status = '開いている項目はすでにチャットの対象です';
+  }
+  _chatRefreshCurrentTargetDisplay();
+  _chatPersistTargetSnapshot();
+  if (typeof showStatus === 'function') showStatus(status);
+  return target;
+}
+
 function _chatRestoreTargetSnapshot(snapshot) {
   const started = !!snapshot?.started || (_chatState.messages || []).some(message => message.role === 'user');
   let mode = _CHAT_TARGET_MODES.has(String(snapshot?.mode || '')) ? String(snapshot.mode) : 'follow-main';
@@ -475,11 +531,13 @@ function _chatRestoreTargetSnapshot(snapshot) {
 
 window.chatClearCurrentTarget = _chatClearCurrentTarget;
 window.chatPickCurrentTarget = _chatPickCurrentTarget;
+window.chatUseCurrentOpenTarget = _chatUseCurrentOpenTarget;
 window.MeldexChatCurrentTarget = {
   setPath: _chatSetCurrentTargetPath,
   setFromView: _chatSetCurrentTargetFromView,
   clear: _chatClearCurrentTarget,
   pick: _chatPickCurrentTarget,
+  useCurrent: _chatUseCurrentOpenTarget,
   followMain: _chatFollowCurrentOpenTarget,
   refresh: _chatRefreshCurrentTargetDisplay,
   snapshot: _chatTargetSnapshot,

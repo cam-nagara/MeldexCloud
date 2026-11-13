@@ -1,16 +1,3 @@
-
-// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found, options) {
-  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
-  if (!pendingNode || !pendingNode.parentNode) return;
-  const newNode = createTreeNodeFromBrowse(found);
-  pendingNode.replaceWith(newNode);
-  _selectOutlinerCreateNode(newNode);
-}
-
-// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
-  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
   _openOutlinerCreatedNode(nd, name);
 }
@@ -261,24 +248,50 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
+  const aliasPairs = (Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : [])
+    .filter(alias => alias && alias !== oldPath)
+    .map(alias => {
+      const normalized = String(alias).replace(/[\\/]+$/, '');
+      const cut = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + newName };
+    });
+  const applyPathReferences = (fromPath, toPath, label, response) => {
+    if (typeof renameAppPathReferences !== 'function') return;
+    renameAppPathReferences(fromPath, toPath, {
+      preserveMountedViews: true,
+      label,
+      fileId: response?.file_id,
+      etag: response?.etag,
+      titleOnly: response?.title_only,
+      type: nodeData.type || 'page',
+    });
+  };
   _renameTreeNode(oldPath, newPath, newName, fileId);
+  aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
   nodeData.path = newPath;
   nodeData.name = newName;
+  nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
       const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(newPath, oldPath, { preserveMountedViews: true, label: oldName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
+      aliasPairs.forEach(pair => _renameTreeNode(pair.newPath, pair.oldPath, oldName, r2?.file_id));
+      applyPathReferences(newPath, oldPath, oldName, r2);
+      aliasPairs.forEach(pair => applyPathReferences(pair.newPath, pair.oldPath, oldName, r2));
+      nodeData.pathAliases = aliasPairs.map(pair => pair.oldPath);
     },
     async () => {
       const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
+      aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, r2?.file_id));
+      applyPathReferences(oldPath, newPath, newName, r2);
+      aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, r2));
+      nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
     }
   );
-  if (typeof renameAppPathReferences === 'function') {
-    renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId, type: nodeData.type || 'page', etag:options?.etag, titleOnly:options?.titleOnly });
-  }
+  const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
+  applyPathReferences(oldPath, newPath, newName, initialResponse);
+  aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
   if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
@@ -340,6 +353,16 @@ function backToPivot() {
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
+  const resolvedOldPath = window.GBOutlinerVirtualRender?.resolveUniquePath?.(oldPath) || '';
+  if (resolvedOldPath) {
+    const normalizedNewPath = String(newPath || '').replace(/\\/g, '/');
+    const isAbsoluteNewPath = /^(?:[a-z]:\/|\/)/i.test(normalizedNewPath);
+    const cut = Math.max(resolvedOldPath.lastIndexOf('/'), resolvedOldPath.lastIndexOf('\\'));
+    oldPath = resolvedOldPath;
+    newPath = isAbsoluteNewPath
+      ? normalizedNewPath
+      : (cut >= 0 ? resolvedOldPath.slice(0, cut + 1) : '') + (newName || normalizedNewPath);
+  }
   window.GBOutlinerVirtualRender?.renamePath?.(oldPath, newPath, newName, fileId);
   const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
   const oldPrefix = oldPath + '/';
@@ -875,26 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
       try {
         scroller.setPointerCapture(pointerId);
         pointerCaptured = true;
-      } catch {}
-    }
-    box = document.createElement('div');
-    box.className = 'outliner-lasso-box';
-    _savedScrollerPosition = scroller.style.position;
-    scroller.style.position = 'relative';
-    scroller.appendChild(box);
-    if (selectionMode === 'replace') treeSelection.clear();
-    updateSelection(_outlinerLassoRectForEvent(event));
-  };
-
-  const endLasso = () => {
-    if (!tracking && !active) return;
-    const wasActive = active;
-    active = false;
-    tracking = false;
-    removeDocumentPointerEndHandlers();
-    box?.remove();
-    box = null;
-    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
-      try { scroller.releasePointerCapture(pointerId); } catch {}
-    }
-    pointerId = null;

@@ -36,7 +36,9 @@ function bdEditConnLabel(conn) {
         const wasInlineNoChange = !!conn._editingInline;
         lbl.style.pointerEvents = '';
         cleanupLabelEditFlags();
-        if (wasInlineNoChange && typeof bdDrawConns === 'function') bdDrawConns();
+        if (wasInlineNoChange && typeof bdDrawConns === 'function') {
+          bdDrawConns({ connIds: [conn.id], reason: 'conn-label-inline-no-change' });
+        }
         return;
       }
       if (placeholderAdd && !changedFromOriginal) {
@@ -54,7 +56,9 @@ function bdEditConnLabel(conn) {
       const wasInline = !!conn._editingInline;
       cleanupLabelEditFlags();
       bdDirty();
-      if (!conn.label || wasInline) bdDrawConns();
+      if ((!conn.label || wasInline) && typeof bdDrawConns === 'function') {
+        bdDrawConns({ connIds: [conn.id], reason: 'conn-label-edit-finish' });
+      }
     };
     lbl.onblur = finish;
     lbl.onkeydown = (ke) => {
@@ -857,6 +861,20 @@ function _bdClearStatusOnNodes(statusName) {
   });
 }
 
+function _bdRefreshStatusNodesPartial(nodeIds, reason) {
+  const ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
+  if (!ids.length) return;
+  if (typeof bdRefreshNodesPartial === 'function') {
+    bdRefreshNodesPartial(ids, reason || 'status-definition', {
+      selection: true,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+    });
+  } else if (typeof bdRunFullRender === 'function') bdRunFullRender((reason || 'status-definition') + '-fallback');
+  else bdRender();
+}
+
 function bdManageStatuses() {
   if (!window.GBUI?.createModal) throw new Error('ステータス管理ダイアログを初期化できませんでした');
   const existing = document.querySelector('[data-e2e-id="board-status-manager-dialog"]');
@@ -886,6 +904,8 @@ function bdManageStatuses() {
         captureUndo();
         setColorSwatchValue(swatch, appliedColor);
         if (Number.isFinite(idx) && bd.statuses[idx]) bd.statuses[idx].color = appliedColor;
+        const statusName = bd.statuses[idx]?.name || '';
+        _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-color');
         bdDirty();
       });
     });
@@ -985,9 +1005,10 @@ function bdManageStatuses() {
       if (ev.target.value !== nextName) ev.target.value = nextName;
       if (nextName === oldName) return;
       captureUndo();
+      const affectedIds = (bd.nodes || []).filter(node => node.status === oldName).map(node => node.id);
       _bdRenameStatusOnNodes(oldName, nextName);
       bd.statuses[i].name = nextName;
-      bdRender();
+      _bdRefreshStatusNodesPartial(affectedIds, 'status-rename');
       bdDirty();
       return;
     }
@@ -1001,7 +1022,8 @@ function bdManageStatuses() {
     } else {
       bd.statuses[i][f] = ev.target.value;
     }
-    bdRender();
+    const statusName = bd.statuses[i]?.name || '';
+    _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-style');
     bdDirty();
   });
   content.addEventListener('click', async (ev) => {
@@ -1027,9 +1049,10 @@ function bdManageStatuses() {
         }));
         undoCapturedBefore = undoCaptured;
         captureUndo();
+        const affectedIds = (bd.nodes || []).filter(node => node.status === label).map(node => node.id);
         bd.statuses.splice(idx,1);
         _bdClearStatusOnNodes(label);
-        bdRender();
+        _bdRefreshStatusNodesPartial(affectedIds, 'status-delete');
         bdDirty();
         render();
       } catch (error) {
@@ -1040,7 +1063,9 @@ function bdManageStatuses() {
           });
           undoCaptured = undoCapturedBefore;
           _bdDialogRestoreMutationCheckpoint(mutationCheckpoint);
-          try { bdRender(); } catch (renderError) { console.error('ステータス削除復元後の再描画に失敗しました:', renderError); }
+          try {
+            _bdRefreshStatusNodesPartial(nodeStatusesBefore.filter(entry => entry.status === label).map(entry => entry.node?.id), 'status-delete-rollback');
+          } catch (renderError) { console.error('ステータス削除復元後の再描画に失敗しました:', renderError); }
           render();
         }
         console.error('ステータスを削除できませんでした:', error);
@@ -1060,7 +1085,6 @@ function bdManageStatuses() {
   });
   closeButton.addEventListener('click', () => {
     if (actionPending) return;
-    bdRender();
     bdDirty();
     modalApi.close('footer-close');
   });

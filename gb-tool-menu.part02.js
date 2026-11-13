@@ -47,6 +47,11 @@ function buildToolMenuItems(toolType, component) {
         { label: '旧シナリオからインポート...', action: context => showScriptNoteImportModal({ trigger: context?.trigger }) },
       ],
       export: [
+        { label: '印刷...', action: () => {
+          const editor = formComponent?._editor;
+          if (editor?.doc && window.MeldexScriptNotePrint?.open) window.MeldexScriptNotePrint.open(editor);
+          else _showUnavailableToolMenuAction('シナリオ印刷');
+        }, disabled: !hasFile },
         { label: 'シナリオ形式として保存...', action: () => { if (typeof promptSaveCurrentScriptNoteAs === 'function') promptSaveCurrentScriptNoteAs(); }, disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('scriptnote'); }, disabled: !hasFile },
         { label: 'HTMLとして保存...', action: () => { if (typeof exportCurrentScriptNoteAsHtml === 'function') exportCurrentScriptNoteAsHtml(); }, disabled: !hasFile },

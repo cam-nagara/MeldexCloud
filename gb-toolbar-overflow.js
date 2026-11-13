@@ -217,7 +217,9 @@
     more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
     const symbol = document.createElement('span');
     symbol.className = 'gb-toolbar-overflow-symbol';
-    symbol.textContent = '▼';
+    symbol.innerHTML = typeof lucide === 'function'
+      ? lucide('chevronDown', 16)
+      : '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     symbol.setAttribute('aria-hidden', 'true');
     more.appendChild(symbol);
     more.title = '隠れている操作を表示';

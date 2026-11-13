@@ -313,7 +313,20 @@
     });
     if (bd.autoAlign !== false && hasAnyStructure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
     else if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
-    bdRender();
+    const changedIds = [...visited];
+    if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+    if (typeof bdRefreshNodesPartial === 'function') {
+      bdRefreshNodesPartial(changedIds, 'parent-child-convert', {
+        moved: true,
+        selection: true,
+        connections: true,
+        frames: true,
+        minimap: true,
+        boardUi: true,
+        detailPanel: true,
+      });
+    } else if (typeof bdRunFullRender === 'function') bdRunFullRender('parent-child-convert-fallback');
+    else bdRender();
     bdDirty();
     if (assigned === 0) {
       showStatus('選択内にラインがないため親子化できませんでした', true);

@@ -6,6 +6,33 @@ const BD_DIRTY_FULL_DRAW_CONN_RATIO = 0.30;
 let _bdDirtyUpdateTimer = 0;
 let _bdDirtyUpdateRaf = 0;
 let _bdDirtyState = bdCreateEmptyDirtyState();
+let _bdConnectionNodeIndex = null;
+let _bdConnectionIndexSource = null;
+let _bdConnectionIndexLength = -1;
+
+function bdInvalidateConnectionRuntimeIndex() {
+  _bdConnectionNodeIndex = null;
+  _bdConnectionIndexSource = null;
+  _bdConnectionIndexLength = -1;
+}
+
+function bdEnsureConnectionNodeIndex() {
+  const connections = (typeof bd !== 'undefined' && Array.isArray(bd.connections)) ? bd.connections : [];
+  if (_bdConnectionNodeIndex && _bdConnectionIndexSource === connections
+    && _bdConnectionIndexLength === connections.length) return _bdConnectionNodeIndex;
+  const index = new Map();
+  connections.forEach(conn => {
+    if (!conn?.id) return;
+    [conn.from, conn.to].filter(Boolean).forEach(nodeId => {
+      if (!index.has(nodeId)) index.set(nodeId, new Set());
+      index.get(nodeId).add(conn.id);
+    });
+  });
+  _bdConnectionNodeIndex = index;
+  _bdConnectionIndexSource = connections;
+  _bdConnectionIndexLength = connections.length;
+  return index;
+}
 
 // DOM 上に .bd-selected を付与済みのノード ID を記録し、差分で class を付け外しする。
 // v0.5.318: querySelectorAll('.bd-node').forEach(...) で全ノード走査していた箇所の置換用。
@@ -47,6 +74,7 @@ function bdCreateEmptyDirtyState() {
     dirtyConnNodeIds: new Set(),
     dirtySelectionIds: new Set(),
     dirtyCommentNodeIds: new Set(),
+    dirtyFrameIds: new Set(),
     dirtySelection: false,
     dirtyFrames: false,
     dirtyMinimap: false,
@@ -61,10 +89,11 @@ function bdCreateEmptyDirtyState() {
 
 function bdMarkNodeDirty(nodeId, reason) {
   if (!nodeId) return;
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   _bdDirtyState.dirtyNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
   _bdDirtyState.dirtyCommentNodeIds.add(nodeId);
-  _bdDirtyState.dirtyFrames = true;
+  bdMarkFramesDirtyByNodes([nodeId]);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'node');
   bdMarkConnectionsDirtyByNodes([nodeId], reason || 'node');
@@ -75,7 +104,7 @@ function bdMarkNodeMoved(nodeId, reason) {
   if (!nodeId) return;
   _bdDirtyState.dirtyMovedNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
-  _bdDirtyState.dirtyFrames = true;
+  bdMarkFramesDirtyByNodes([nodeId]);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'move');
   bdMarkConnectionsDirtyByNodes([nodeId], reason || 'move');
@@ -100,6 +129,7 @@ function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
 
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
+  bdInvalidateConnectionRuntimeIndex();
   _bdDirtyState.dirtyConnIds.add(connId);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection');
@@ -111,12 +141,22 @@ function bdMarkConnectionsDirtyByNodes(nodeIds, reason) {
   if (!ids.size || typeof bd === 'undefined') return;
   if (typeof bdEnsureConnectionRuntime === 'function') bdEnsureConnectionRuntime(bd.connections);
   ids.forEach(id => _bdDirtyState.dirtyConnNodeIds.add(id));
-  (bd.connections || []).forEach(conn => {
-    if ((ids.has(conn.from) || ids.has(conn.to)) && conn.id) _bdDirtyState.dirtyConnIds.add(conn.id);
-  });
+  const index = bdEnsureConnectionNodeIndex();
+  ids.forEach(id => (index.get(id) || []).forEach(connId => _bdDirtyState.dirtyConnIds.add(connId)));
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection-by-node');
   bdScheduleBoardUpdates();
+}
+
+function bdMarkFramesDirtyByNodes(nodeIds) {
+  const ids = new Set([...(nodeIds || [])].filter(Boolean));
+  if (!ids.size || typeof bd === 'undefined' || !Array.isArray(bd.groups)) return;
+  bd.groups.forEach(group => {
+    if ((group.nodeIds || []).some(id => ids.has(id))) {
+      const groupId = group.groupId || group.id;
+      if (groupId) _bdDirtyState.dirtyFrameIds.add(groupId);
+    }
+  });
 }
 
 function bdMarkSelectionDirty(nodeIds, reason) {
@@ -142,6 +182,9 @@ function bdMarkExtrasDirty(flags = {}, reason) {
   } else {
     if (flags.selection) _bdDirtyState.dirtySelection = true;
     if (flags.frames) _bdDirtyState.dirtyFrames = true;
+    if (Array.isArray(flags.frameIds) || flags.frameIds instanceof Set) {
+      [...flags.frameIds].filter(Boolean).forEach(id => _bdDirtyState.dirtyFrameIds.add(id));
+    }
     if (flags.minimap) _bdDirtyState.dirtyMinimap = true;
     if (flags.boardUi) _bdDirtyState.dirtyBoardUi = true;
     if (flags.detailPanel) _bdDirtyState.dirtyDetailPanel = true;
@@ -159,6 +202,16 @@ function bdRequestFullRender(reason) {
   _bdDirtyState.fullRenderReason = reason || _bdDirtyState.fullRenderReason || 'unspecified';
   bdDirtyRememberReason('full:' + (_bdDirtyState.fullRenderReason || 'unspecified'));
   bdScheduleBoardUpdates();
+}
+
+function bdRunFullRender(reason) {
+  const why = reason || 'unspecified';
+  bdDirtyRememberReason('full-now:' + why);
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+  bdInvalidateConnectionRuntimeIndex();
+  const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdRunFullRender:' + why) : 0;
+  if (typeof bdRender === 'function') bdRender();
+  if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRunFullRender:' + why, started);
 }
 
 function bdDirtyRememberReason(reason) {
@@ -220,6 +273,7 @@ function bdDirtyHasWork(state) {
     || state.dirtyConnNodeIds.size
     || state.dirtySelectionIds.size
     || state.dirtyCommentNodeIds.size
+    || state.dirtyFrameIds.size
     || state.dirtySelection
     || state.dirtyFrames
     || state.dirtyMinimap
@@ -231,15 +285,14 @@ function bdDirtyHasWork(state) {
 function bdDirtyShouldUseFullRender(state) {
   const total = (typeof bd !== 'undefined' && bd?.nodes) ? bd.nodes.length : 0;
   if (!total) return false;
-  return state.dirtyNodeIds.size > Math.max(40, Math.ceil(total * BD_DIRTY_FULL_RENDER_NODE_RATIO));
+  return state.dirtyNodeIds.size >= Math.max(1, Math.ceil(total * BD_DIRTY_FULL_RENDER_NODE_RATIO));
 }
 
 function bdFlushDirtyFullRender(state, started) {
   const reason = state.fullRenderReason || [...state.reasons][0] || 'dirty-fallback';
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdFlushBoardUpdates', started, 'full-render reason=' + reason);
-  const renderStarted = typeof bdPerfStart === 'function' ? bdPerfStart('bdRequestFullRender:' + reason) : 0;
-  if (typeof bdRender === 'function') bdRender();
-  if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRequestFullRender:' + reason, renderStarted);
+  if (typeof bdRunFullRender === 'function') bdRunFullRender(reason);
+  else if (typeof bdRender === 'function') bdRender();
 }
 
 function bdFlushDirtyNodes(state) {
@@ -285,7 +338,7 @@ function bdFlushDirtySelection(state, rendered) {
 function bdFlushDirtyConnections(state) {
   const connCount = (typeof bd !== 'undefined' && bd?.connections) ? bd.connections.length : 0;
   const connIds = new Set(state.dirtyConnIds);
-  if (connIds.size && connCount && connIds.size > Math.max(50, Math.ceil(connCount * BD_DIRTY_FULL_DRAW_CONN_RATIO))) {
+  if (connIds.size && connCount && connIds.size >= Math.max(1, Math.ceil(connCount * BD_DIRTY_FULL_DRAW_CONN_RATIO))) {
     if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'dirty-conn-threshold' });
     return;
   }
@@ -299,7 +352,12 @@ function bdFlushDirtyConnections(state) {
 }
 
 function bdFlushDirtyFrames(state) {
-  if (state.dirtyFrames && typeof bdDrawFrames === 'function') bdDrawFrames();
+  if (typeof bdDrawFrames !== 'function') return;
+  if (state.dirtyFrames) {
+    bdDrawFrames();
+    return;
+  }
+  if (state.dirtyFrameIds.size) bdDrawFrames({ groupIds: [...state.dirtyFrameIds] });
 }
 
 function bdFlushDirtyComments(state) {
@@ -327,10 +385,14 @@ function bdFlushDirtyMinimap(dirtyState) {
 
 function bdFlushDirtyBoardUi(state) {
   if (!state.dirtyBoardUi && !state.dirtyDetailPanel) return;
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
+  if (state.dirtyDetailPanel && typeof bdSyncBoardUi === 'function') {
+    bdSyncBoardUi(false);
+    return;
+  }
+  if (state.dirtyBoardUi && typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
 }
 
 function bdDirtyMeta(state) {
   const reasons = [...state.reasons].slice(0, 5).join(',');
-  return `nodes=${state.dirtyNodeIds.size} moved=${state.dirtyMovedNodeIds.size} conns=${state.dirtyConnIds.size} selection=${state.dirtySelectionIds.size} reasons=${reasons}`;
+  return `nodes=${state.dirtyNodeIds.size} moved=${state.dirtyMovedNodeIds.size} conns=${state.dirtyConnIds.size} frames=${state.dirtyFrameIds.size} selection=${state.dirtySelectionIds.size} reasons=${reasons}`;
 }

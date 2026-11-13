@@ -1096,6 +1096,34 @@
     await _writeFolderLinks(provider, nextLinks);
   }
 
+  function _rewriteByPathMap(value, mappings) {
+    let next = _normalizeFolderPath(value);
+    for (const mapping of mappings) next = _rewritePath(next, mapping.oldPath, mapping.newPath, !!mapping.isFolder);
+    return next;
+  }
+
+  async function _rewriteStoredPathsBatchForProvider(provider, mappings) {
+    const normalized = (mappings || []).map(row => ({ oldPath: _normalizeFolderPath(row.oldPath), newPath: _normalizeFolderPath(row.newPath), isFolder: !!row.isFolder }));
+    const roots = _safeReadJson(PWA_ROOTS_KEY, []);
+    if (Array.isArray(roots) && roots.length) _safeWriteJson(PWA_ROOTS_KEY, roots.map(root => ({ ...root, path: _rewriteByPathMap(root?.path || '.', normalized) || '.' })));
+    const homeFolder = _safeReadJson(PWA_HOME_KEY, null);
+    if (homeFolder?.path) {
+      const rewritten = _rewriteByPathMap(homeFolder.path, normalized);
+      if (rewritten !== _normalizeFolderPath(homeFolder.path)) _safeWriteJson(PWA_HOME_KEY, { ...homeFolder, path: rewritten, name: _basename(rewritten) || homeFolder.name || '' });
+    }
+    const rewriteLinks = links => links.map(link => {
+      const nextPath = _rewriteByPathMap(link.path, normalized);
+      const nextFolderPath = _rewriteByPathMap(link.folder_path, normalized);
+      return { ...link, path: nextPath, folder_path: nextFolderPath, file_id: _fnvFileId(nextPath), folder_id: _fnvFileId(nextFolderPath), name: _displayLabelForPath(nextPath, '') };
+    }).filter(link => link.path && link.folder_path);
+    const localLinks = _folderLinksStore();
+    if (localLinks.length) _writeFolderLinksStore(rewriteLinks(localLinks));
+    if (provider) {
+      const managedLinks = await _readFolderLinks(provider);
+      if (managedLinks.length) await _writeFolderLinks(provider, rewriteLinks(managedLinks));
+    }
+  }
+
   function _removeStoredPathEntries(targetPath, isFolder) {
     const normalizedTarget = _normalizeFolderPath(targetPath);
     const roots = _safeReadJson(PWA_ROOTS_KEY, []);
@@ -1218,6 +1246,39 @@
       rewritten_paths: rewrittenPaths.slice(0, 50),
       truncated: rewrittenPaths.length > 50,
     };
+  }
+
+  async function _relocateReferencesBatch(provider, mappings) {
+    const normalized = (mappings || []).map(row => ({ oldPath: _normalizeFolderPath(row.oldPath), newPath: _normalizeFolderPath(row.newPath), isFolder: !!row.isFolder }));
+    const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
+    const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
+    const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
+    const rewriteValue = value => _rewriteByPathMap(value, normalized);
+    const rewrittenPaths = []; let failedCount = 0;
+    await _iterateAllWorkspaceFiles(provider, async filePath => {
+      if (!_isTextLikePath(filePath)) return;
+      try {
+        const original = await _readTextSafe(provider, filePath, '');
+        if (!original || !normalized.some(row => original.includes(row.oldPath))) return;
+        let next = original.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
+          const rewritten = rewriteValue(target); return rewritten === target ? match : prefix + rewritten + suffix;
+        });
+        next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
+          if (!isReferenceKey(keyName)) return match;
+          const trimmed = String(target).trim(); const rewritten = rewriteValue(trimmed);
+          return rewritten === trimmed ? match : `${prefix}${valueQuote}${rewritten}${valueQuote}`;
+        });
+        next = next.replace(looseKeyPattern, (match, prefix, keyName, quote, target) => {
+          if (!isReferenceKey(keyName)) return match;
+          const trimmed = String(target).trim(); const rewritten = rewriteValue(trimmed);
+          return rewritten === trimmed ? match : `${prefix}${quote}${rewritten}${quote}`;
+        });
+        if (next === original) return;
+        await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
+        await provider.writeText(filePath, next); rewrittenPaths.push(filePath);
+      } catch { failedCount += 1; }
+    });
+    return { rewritten_count: rewrittenPaths.length, failed_count: failedCount, rewritten_paths: rewrittenPaths.slice(0, 50), truncated: rewrittenPaths.length > 50 };
   }
 
   async function _queryBacklinks(provider, targetPath) {

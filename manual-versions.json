@@ -1,13 +1,37 @@
 {
   "type": "meldex-public-manual-versions",
   "schema_version": 1,
-  "latest": "0.7.466",
+  "latest": "0.7.472",
   "versions": [
     {
-      "version": "0.7.466",
-      "label": "v0.7.466（最新版）",
+      "version": "0.7.472",
+      "label": "v0.7.472（最新版）",
       "url": "manual.html",
       "latest": true
+    },
+    {
+      "version": "0.7.471",
+      "label": "v0.7.471",
+      "url": "manual-versions/v0.7.471/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.470",
+      "label": "v0.7.470",
+      "url": "manual-versions/v0.7.470/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.469",
+      "label": "v0.7.469",
+      "url": "manual-versions/v0.7.469/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.466",
+      "label": "v0.7.466",
+      "url": "manual-versions/v0.7.466/manual.html",
+      "latest": false
     },
     {
       "version": "0.7.465",

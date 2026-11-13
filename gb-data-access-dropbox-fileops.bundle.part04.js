@@ -1,3 +1,5 @@
+
+function _versionLabelFromName(path, name) {
   return _fileVersionInfoFromName(name).label || '';
 }
 
@@ -896,5 +898,3 @@ window.MeldexFileVersionProviderOps = Object.freeze({
 
     if (pathname === '/add-outliner-root' && method === 'POST') {
       const provider = await _requirePwaProvider('read');
-      const rawPath = _normalizeFolderPath(body?.path || '');
-      if (!rawPath) return { ok: false, needManualInput: true };

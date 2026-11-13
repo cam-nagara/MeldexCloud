@@ -83,10 +83,12 @@
     _linkedItemsForFolder,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
+    _rewriteStoredPathsBatchForProvider,
     _removeStoredPathEntries,
     _removeStoredPathEntriesForProvider,
     _iterateWorkspaceFiles,
     _relocateReferences,
+    _relocateReferencesBatch,
     _queryBacklinks,
     _queryDeleteImpact,
     _fnvFileId,
@@ -896,5 +898,3 @@
     let selected = result;
     await _updateFolderLinksStateForProvider(provider, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
-      const index = operations.findIndex(row => row.operation_id === operationId);
-      const previous = index < 0 ? null : operations[index];

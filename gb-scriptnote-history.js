@@ -138,6 +138,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.version = data.version;
       this.doc.title = data.title;
       this.doc.layoutMode = data.layoutMode;
+      // 版付きテンプレートと紙面設定も本文と同じ履歴単位で復元する。
+      // 欠けている旧文書へ戻す時は、現在値を残さず明示的に取り除く。
+      ['templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs', 'pageSettings'].forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(data, key)) this.doc[key] = data[key];
+        else delete this.doc[key];
+      });
       this.doc.editor = data.editor;
       this.doc.scenarioTypes = data.scenarioTypes;
       this.doc.characters = data.characters;

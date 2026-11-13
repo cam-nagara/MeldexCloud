@@ -323,10 +323,10 @@
   box-sizing: border-box;
 }
 .gallery-grid {
-  align-content: start; grid-auto-rows: max-content;
+  align-content: start; grid-auto-rows: minmax(188px, auto);
 }
 .gallery-card {
-  min-height: 188px; height: max-content; box-sizing: border-box;
+  min-height: 188px; box-sizing: border-box; height: max-content;
   display: flex; flex-direction: column; gap: 8px;
 }
 .gallery-card-title {
@@ -417,6 +417,57 @@
 .gallery-card-image-preview .db-card-image-host { aspect-ratio: 16 / 10; }
 .kanban-card-image-preview {
   margin-bottom: 6px;
+}
+.gallery-grid.db-fixed-content-thumbnail-grid {
+  grid-template-columns: repeat(auto-fill, calc(var(--db-content-thumbnail-size, 256px) + 26px));
+}
+.kanban-board.db-fixed-content-thumbnail-grid .kanban-column {
+  min-width: calc(var(--db-content-thumbnail-size, 256px) + 34px);
+  width: calc(var(--db-content-thumbnail-size, 256px) + 34px);
+}
+.db-fixed-content-thumbnail .gallery-card-image-preview,
+.db-fixed-content-thumbnail .kanban-card-image-preview,
+.db-fixed-content-thumbnail .db-body-excerpt {
+  width: var(--db-content-thumbnail-size, 256px);
+  max-width: 100%;
+  height: var(--db-content-thumbnail-size, 256px);
+  min-height: var(--db-content-thumbnail-size, 256px);
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--bg4);
+}
+.db-fixed-content-thumbnail .gallery-card-image-preview .db-card-image-host,
+.db-fixed-content-thumbnail .kanban-card-image-preview .db-card-image-host,
+.db-fixed-content-thumbnail .gallery-card-image-preview img,
+.db-fixed-content-thumbnail .kanban-card-image-preview img {
+  height: var(--db-content-thumbnail-size, 256px);
+  aspect-ratio: auto;
+  object-fit: cover;
+}
+.db-fixed-content-thumbnail .db-body-excerpt-value,
+.db-fixed-content-thumbnail .db-body-excerpt-value > img,
+.db-fixed-content-thumbnail .db-body-audio-preview {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+.db-fixed-content-thumbnail .db-body-excerpt-value {
+  padding: 14px;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.db-fixed-content-thumbnail .db-body-excerpt-value > img {
+  margin: -14px;
+  width: calc(100% + 28px);
+  height: calc(100% + 28px);
+  object-fit: cover;
+}
+.db-fixed-content-thumbnail .db-body-audio-preview {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg2);
 }
 .db-card-image-more {
   position: absolute; right: 5px; bottom: 5px; min-width: 24px; height: 20px;

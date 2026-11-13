@@ -369,6 +369,56 @@ async function chatSend(options = {}) {
     return;
   }
 
+  // Cloudの一括改名はAPIキーやローカルCLIへ依存しないnative toolとして先に処理する。
+  // 実行はdry-runダイアログの利用者確認後で、AIが単件renameを反復しない。
+  const cloudBatchUndoIntent = /(?:一括改名|一括変更).*(?:元に戻|取り消)/.test(text);
+  const cloudBatchRedoIntent = /(?:一括改名|一括変更).*(?:やり直|再実行)/.test(text);
+  const cloudBatchRenameIntent = !cloudBatchUndoIntent && !cloudBatchRedoIntent
+    && window.MeldexCloudBatchRename?.openDialog
+    && /(?:一括|すべて|全部|このフォルダ).*(?:ファイル名|名前).*(?:先頭|日時|日付).*(?:削除|除去|消して|変更)/.test(text);
+  if (!usingDeferredMessages && window.MeldexCloudBatchRename && (cloudBatchRenameIntent || cloudBatchUndoIntent || cloudBatchRedoIntent)) {
+    let targetFolder = String((typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : '') || (typeof _folderPath !== 'undefined' ? _folderPath : '') || requestSourceFolder || '');
+    const targetStat = await window.MeldexStorageAdapter?.getProvider?.()?.statPath?.(targetFolder).catch?.(() => null);
+    if (targetStat?.kind === 'file') targetFolder = targetFolder.replace(/\/[^/]+$/, '');
+    const userTimestamp = _chatLocalTimestamp();
+    const userMessage = { role: 'user', content: text, timestamp: userTimestamp };
+    _ensureChatMessageId(userMessage);
+    chatAddMessage('user', text, { messageIndex: targetMessages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
+    targetMessages.push(userMessage);
+    if (!detachedScope) _ensureSessionId();
+    try {
+      let answer = '';
+      let toolName = 'batch_rename';
+      let toolResult = { ok: true, dry_run: true };
+      if (cloudBatchRenameIntent) {
+        await window.MeldexCloudBatchRename.openDialog(targetFolder, { fromChat: true });
+        answer = 'Cloud一括改名のdry-runを開きました。変更前後と同名衝突を確認し、「実行」を選ぶと同じ操作IDで一括適用します。';
+      } else {
+        const explicitId = text.match(/\b[a-f0-9]{32}\b/i)?.[0] || '';
+        const recent = explicitId ? null : await window.MeldexCloudBatchRename.recentOperation(targetFolder).catch(() => null);
+        const operationId = explicitId || window.MeldexCloudBatchRename.latestOperationId || recent?.documentId || '';
+        if (!operationId) throw new Error('このフォルダの一括改名操作が見つかりません');
+        if (cloudBatchUndoIntent) {
+          toolName = 'batch_rename_undo'; toolResult = await window.MeldexCloudBatchRename.undo(operationId);
+          answer = `Cloud一括改名を元に戻しました（操作ID: ${operationId}）。`;
+        } else {
+          toolName = 'batch_rename_redo'; toolResult = await window.MeldexCloudBatchRename.redo(operationId);
+          answer = `Cloud一括改名をやり直しました（操作ID: ${operationId}）。`;
+        }
+        window.refreshOutliner?.();
+      }
+      const assistant = { role: 'assistant', content: answer, timestamp: _chatLocalTimestamp(), tool_events: [{ name: toolName, result: JSON.stringify(toolResult) }] };
+      _ensureChatMessageId(assistant); targetMessages.push(assistant);
+      chatAddMessage('assistant', answer, { messageIndex: targetMessages.length - 1, msg_id: assistant.msg_id, timestamp: assistant.timestamp });
+      if (!detachedScope) saveChatHistory();
+    } catch (error) {
+      const answer = `Cloud一括改名を処理できませんでした: ${error?.message || error}`;
+      const assistant = { role: 'assistant', content: answer, timestamp: _chatLocalTimestamp() };
+      _ensureChatMessageId(assistant); targetMessages.push(assistant); chatAddMessage('assistant', answer, { messageIndex: targetMessages.length - 1, msg_id: assistant.msg_id, timestamp: assistant.timestamp });
+    }
+    return true;
+  }
+
   const providerStatus = await _chatProviderReadyStatus(effectiveProvider);
   if (!providerStatus.configured) {
     if (!usingDeferredMessages) {
@@ -390,6 +440,9 @@ async function chatSend(options = {}) {
   }
 
   // ユーザーメッセージ表示・記録（画像添付があれば構造化コンテンツにする）
+  if (!detachedScope && typeof _chatEnsureAutomaticSessionTitle === 'function') {
+    _chatEnsureAutomaticSessionTitle(text, _pendingAtts);
+  }
   if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
   if (usingDeferredMessages) {
     deferredMessages.forEach(message => {

@@ -525,13 +525,19 @@ function _dbTemplatePropertyTypesFromSnapshot(snapshot, dbPath) {
   return _cloneTemplateData(cfg.propertyTypes || {});
 }
 
-function _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes) {
+function _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes, propertyIds, schemaRevision) {
   const nextTypes = _cloneTemplateData(propertyTypes || {});
   const targetMetadata = typeof _ptMetadataForDbPath === 'function'
     ? _ptMetadataForDbPath(dbPath)
     : ((typeof state !== 'undefined' && state.currentDbPath === dbPath) ? state.dbMetadata : null);
   if (targetMetadata) {
     targetMetadata.property_types = nextTypes;
+    if (propertyIds && typeof propertyIds === 'object') {
+      targetMetadata.property_ids = _cloneTemplateData(propertyIds);
+    }
+    if (Number.isInteger(Number(schemaRevision))) {
+      targetMetadata.schema_revision = Number(schemaRevision);
+    }
     if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.dbMetadata = targetMetadata;
   }
 }
@@ -706,16 +712,53 @@ function _applyDbTemplateViewFields(cfg, template, overwrite) {
   });
 }
 
-function _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes) {
+function _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes, options = {}) {
   _dbTemplateAssertProductionPropertyTypesUnchanged(dbPath, propertyTypes);
+  const schemaMutation = globalThis.GbDbSchemaMutation;
+  const targetMetadata = typeof _ptMetadataForDbPath === 'function'
+    ? (_ptMetadataForDbPath(dbPath) || {})
+    : ((typeof state !== 'undefined' && state.currentDbPath === dbPath) ? (state.dbMetadata || {}) : {});
+  const nextTypes = _cloneTemplateData(propertyTypes || {});
+  const ensured = schemaMutation?.ensurePropertyIds
+    ? schemaMutation.ensurePropertyIds(dbPath, _cloneTemplateData(targetMetadata), nextTypes)
+    : { metadata: targetMetadata, propertyTypes: nextTypes, propertyIds: _cloneTemplateData(targetMetadata.property_ids || {}) };
   if (typeof apiPut !== 'function') {
-    _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes);
+    _setDbTemplateMetadataPropertyTypes(
+      dbPath,
+      ensured.propertyTypes,
+      ensured.propertyIds,
+      ensured.metadata?.schema_revision,
+    );
     return Promise.resolve(true);
   }
-  const nextTypes = _cloneTemplateData(propertyTypes || {});
-  return apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_types: nextTypes })
-    .then(() => {
-      _setDbTemplateMetadataPropertyTypes(dbPath, nextTypes);
+  if (!schemaMutation?.saveMetadata) {
+    const fallbackPayload = { property_types: ensured.propertyTypes };
+    if (ensured.propertyIds && Object.keys(ensured.propertyIds).length > 0) {
+      fallbackPayload.property_ids = ensured.propertyIds;
+    }
+    return apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), fallbackPayload)
+      .then(result => {
+        _setDbTemplateMetadataPropertyTypes(
+          dbPath,
+          result?.property_types || ensured.propertyTypes,
+          result?.property_ids || ensured.propertyIds,
+          result?.schema_revision ?? ensured.metadata?.schema_revision,
+        );
+        return true;
+      });
+  }
+  const context = { dbPath, dbMetadata: targetMetadata };
+  return schemaMutation.saveMetadata(dbPath, {
+    property_types: ensured.propertyTypes,
+    property_ids: ensured.propertyIds,
+  }, context, { operationId: options.operationId })
+    .then(result => {
+      _setDbTemplateMetadataPropertyTypes(
+        dbPath,
+        result?.property_types || ensured.propertyTypes,
+        result?.property_ids || ensured.propertyIds,
+        result?.schema_revision,
+      );
       return true;
     });
 }
@@ -748,6 +791,9 @@ function applyDbTemplate(dbPath, template, opts) {
   const skipped = [];
   const historyKeys = _dbTemplateStorageKeys(dbPath, !!(template.entityTemplates && template.entityTemplates.length > 0));
   const historyBefore = opts?.skipHistory ? null : _captureDbTemplateStorage(historyKeys);
+  const operationId = opts?.operationId
+    || globalThis.GbDbSchemaMutation?.newId?.('template_op')
+    || `template_op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 
   // 1. プロパティ型を設定
   if (!c.propertyTypes) c.propertyTypes = {};
@@ -830,7 +876,7 @@ function applyDbTemplate(dbPath, template, opts) {
   try {
     if (nextEntityTemplates) saveEntityTemplates(dbPath, nextEntityTemplates);
     saveDbViewConfig(dbPath, c);
-    backendSavePromise = _saveDbTemplatePropertyTypesToBackend(dbPath, c.propertyTypes)
+    backendSavePromise = _saveDbTemplatePropertyTypesToBackend(dbPath, c.propertyTypes, { operationId })
       .then(result => {
         if (!opts?.skipHistory) {
           _pushDbTemplateStorageHistory(
@@ -858,7 +904,7 @@ function applyDbTemplate(dbPath, template, opts) {
     throw e;
   }
 
-  return { applied, skipped, viewsResult, entityLayoutsResult, backendSavePromise };
+  return { applied, skipped, viewsResult, entityLayoutsResult, operationId, backendSavePromise };
 }
 
 /**

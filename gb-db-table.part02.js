@@ -766,7 +766,7 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   addBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : `${dbPath}/${entityName}.md`;
+    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : `${dbPath}/${entityName}.md`;
     startCellInlineAdd(relationCell, entityPath, entityName, relationProp);
   });
   cellValues.appendChild(addBtn);
@@ -1305,7 +1305,7 @@ function renderEntityRow(entityName, ctx, options) {
     e.preventDefault();
     e.stopImmediatePropagation();
     e.stopPropagation();
-    const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
+    const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : '';
     if (!ep) return;
     _dbOpenConfiguredEntity(ep, entityName, ctx, e.currentTarget);
   });

@@ -57,7 +57,7 @@
     const paths = [];
     document.querySelectorAll('#outliner-tree .tree-root-row').forEach(row => {
       const node = row.closest('.tree-node');
-      const path = node?._nodeData?._isRoot ? node._nodeData.path : '';
+      const path = node?._nodeData?._isRoot ? node._nodeData.path : (node?.dataset?.path || '');
       if (path) paths.push(path);
     });
     if (typeof _homeFolderPath === 'string' && _homeFolderPath) paths.push(_homeFolderPath);
@@ -158,6 +158,59 @@
     _folderToolbarUpdateRaf = requestAnimationFrame(() => {
       _folderToolbarUpdateRaf = 0;
       updateFolderToolbarActions();
+    });
+  }
+
+  function _folderToolbarResolveRenamePath(path) {
+    const resolved = window.GBOutlinerVirtualRender?.resolveUniquePath?.(path);
+    if (resolved) return resolved;
+    const wanted = _folderToolbarNormalizePath(path).toLowerCase();
+    const matches = new Set();
+    document.querySelectorAll('#outliner-tree .tree-node[data-path]').forEach(node => {
+      const candidate = String(node.dataset.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const key = candidate.toLowerCase();
+      if (key === wanted || key.endsWith('/' + wanted)) matches.add(candidate);
+    });
+    return matches.size === 1 ? Array.from(matches)[0] : path;
+  }
+
+  function _folderToolbarStartTitleRename() {
+    const title = document.getElementById('folder-title');
+    const path = _folderToolbarCurrentPath();
+    if (!title || !path || title.querySelector('input') || typeof startTreeLabelEdit !== 'function') return false;
+    const renamePath = _folderToolbarResolveRenamePath(path);
+    if (_folderToolbarIsLockedPath(path) || _folderToolbarIsLockedPath(renamePath)) {
+      if (typeof showStatus === 'function') showStatus('編集ロック中のフォルダ名は変更できません', true);
+      return false;
+    }
+    const normalizedPaths = new Set([path, renamePath].map(candidate => _folderToolbarNormalizePath(candidate).toLowerCase()));
+    if (_folderToolbarTopFolderPaths().some(top => normalizedPaths.has(_folderToolbarNormalizePath(top).toLowerCase()))) return false;
+    startTreeLabelEdit(title, {
+      path: renamePath,
+      pathAliases: renamePath !== path ? [path] : [],
+      name: title.textContent || path.split(/[\\/]/).pop() || path,
+      type: 'folder',
+    }, _folderToolbarScheduleUpdate);
+    return true;
+  }
+
+  function _folderToolbarBindEditableTitle() {
+    const title = document.getElementById('folder-title');
+    if (!title || title.dataset.inlineRenameBound === '1') return;
+    title.dataset.inlineRenameBound = '1';
+    title.tabIndex = 0;
+    title.title = 'ダブルクリックまたはF2でフォルダ名を変更';
+    title.dataset.gbTooltip = title.title;
+    title.addEventListener('dblclick', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarStartTitleRename();
+    });
+    title.addEventListener('keydown', event => {
+      if (event.key !== 'F2' && event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarStartTitleRename();
     });
   }
 
@@ -771,6 +824,7 @@
     _folderToolbarBindButton(buttons.undo, 'undo2', folderToolbarUndo);
     _folderToolbarBindButton(buttons.redo, 'redo2', folderToolbarRedo);
     _folderToolbarInstallExtraControls();
+    _folderToolbarBindEditableTitle();
     _folderToolbarWrapBulkBarUpdate();
     const grid = document.getElementById('folder-grid');
     if (grid && grid.dataset.folderToolbarSelectionBound !== '1') {

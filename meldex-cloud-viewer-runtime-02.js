@@ -1473,6 +1473,9 @@
     PORTABLE_KNOWLEDGE_DEVICES: 'portable-knowledge-devices',
     // Web Clipper owner鍵の一回限り端末登録と、所有者が失効できる端末台帳。
     WEBCLIP_OWNER_DEVICES: 'webclip-owner-devices',
+    // Cloud一括ファイル操作のwrite-ahead journal。作品ファイルやフォルダ関連付けへ
+    // 混在させず、適用・Undo・Redo・障害復旧を操作ID単位でCAS更新する。
+    BATCH_FILE_OPERATIONS: 'batch-file-operations',
   });
 
   const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
@@ -1637,6 +1640,7 @@
     [SystemStorageKind.PORTABLE_KNOWLEDGE_ARTIFACTS]: { maxDocumentBytes: 8_000_000, maxTotalBytes: 2_000_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PORTABLE_KNOWLEDGE_DEVICES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.WEBCLIP_OWNER_DEVICES]: { maxDocumentBytes: 500_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.BATCH_FILE_OPERATIONS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 500_000_000, maxGenerations: null, retentionDays: 30 },
   });
 
   function retentionPolicyFor(kind) {
@@ -8268,6 +8272,34 @@
     await _writeFolderLinks(provider, nextLinks);
   }
 
+  function _rewriteByPathMap(value, mappings) {
+    let next = _normalizeFolderPath(value);
+    for (const mapping of mappings) next = _rewritePath(next, mapping.oldPath, mapping.newPath, !!mapping.isFolder);
+    return next;
+  }
+
+  async function _rewriteStoredPathsBatchForProvider(provider, mappings) {
+    const normalized = (mappings || []).map(row => ({ oldPath: _normalizeFolderPath(row.oldPath), newPath: _normalizeFolderPath(row.newPath), isFolder: !!row.isFolder }));
+    const roots = _safeReadJson(PWA_ROOTS_KEY, []);
+    if (Array.isArray(roots) && roots.length) _safeWriteJson(PWA_ROOTS_KEY, roots.map(root => ({ ...root, path: _rewriteByPathMap(root?.path || '.', normalized) || '.' })));
+    const homeFolder = _safeReadJson(PWA_HOME_KEY, null);
+    if (homeFolder?.path) {
+      const rewritten = _rewriteByPathMap(homeFolder.path, normalized);
+      if (rewritten !== _normalizeFolderPath(homeFolder.path)) _safeWriteJson(PWA_HOME_KEY, { ...homeFolder, path: rewritten, name: _basename(rewritten) || homeFolder.name || '' });
+    }
+    const rewriteLinks = links => links.map(link => {
+      const nextPath = _rewriteByPathMap(link.path, normalized);
+      const nextFolderPath = _rewriteByPathMap(link.folder_path, normalized);
+      return { ...link, path: nextPath, folder_path: nextFolderPath, file_id: _fnvFileId(nextPath), folder_id: _fnvFileId(nextFolderPath), name: _displayLabelForPath(nextPath, '') };
+    }).filter(link => link.path && link.folder_path);
+    const localLinks = _folderLinksStore();
+    if (localLinks.length) _writeFolderLinksStore(rewriteLinks(localLinks));
+    if (provider) {
+      const managedLinks = await _readFolderLinks(provider);
+      if (managedLinks.length) await _writeFolderLinks(provider, rewriteLinks(managedLinks));
+    }
+  }
+
   function _removeStoredPathEntries(targetPath, isFolder) {
     const normalizedTarget = _normalizeFolderPath(targetPath);
     const roots = _safeReadJson(PWA_ROOTS_KEY, []);
@@ -8392,6 +8424,39 @@
     };
   }
 
+  async function _relocateReferencesBatch(provider, mappings) {
+    const normalized = (mappings || []).map(row => ({ oldPath: _normalizeFolderPath(row.oldPath), newPath: _normalizeFolderPath(row.newPath), isFolder: !!row.isFolder }));
+    const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
+    const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
+    const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
+    const rewriteValue = value => _rewriteByPathMap(value, normalized);
+    const rewrittenPaths = []; let failedCount = 0;
+    await _iterateAllWorkspaceFiles(provider, async filePath => {
+      if (!_isTextLikePath(filePath)) return;
+      try {
+        const original = await _readTextSafe(provider, filePath, '');
+        if (!original || !normalized.some(row => original.includes(row.oldPath))) return;
+        let next = original.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
+          const rewritten = rewriteValue(target); return rewritten === target ? match : prefix + rewritten + suffix;
+        });
+        next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
+          if (!isReferenceKey(keyName)) return match;
+          const trimmed = String(target).trim(); const rewritten = rewriteValue(trimmed);
+          return rewritten === trimmed ? match : `${prefix}${valueQuote}${rewritten}${valueQuote}`;
+        });
+        next = next.replace(looseKeyPattern, (match, prefix, keyName, quote, target) => {
+          if (!isReferenceKey(keyName)) return match;
+          const trimmed = String(target).trim(); const rewritten = rewriteValue(trimmed);
+          return rewritten === trimmed ? match : `${prefix}${quote}${rewritten}${quote}`;
+        });
+        if (next === original) return;
+        await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
+        await provider.writeText(filePath, next); rewrittenPaths.push(filePath);
+      } catch { failedCount += 1; }
+    });
+    return { rewritten_count: rewrittenPaths.length, failed_count: failedCount, rewritten_paths: rewrittenPaths.slice(0, 50), truncated: rewrittenPaths.length > 50 };
+  }
+
   async function _queryBacklinks(provider, targetPath) {
     const normalizedTarget = _normalizeFolderPath(targetPath);
     const items = [];
@@ -8495,11 +8560,13 @@
     _linkedItemsForFolder,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
+    _rewriteStoredPathsBatchForProvider,
     _removeStoredPathEntries,
     _removeStoredPathEntriesForProvider,
     _iterateWorkspaceFiles,
     _requireUnlockedPath,
     _relocateReferences,
+    _relocateReferencesBatch,
     _queryBacklinks,
     _queryDeleteImpact,
     _fnvFileId,
@@ -10267,10 +10334,12 @@
     _linkedItemsForFolder,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
+    _rewriteStoredPathsBatchForProvider,
     _removeStoredPathEntries,
     _removeStoredPathEntriesForProvider,
     _iterateWorkspaceFiles,
     _relocateReferences,
+    _relocateReferencesBatch,
     _queryBacklinks,
     _queryDeleteImpact,
     _fnvFileId,
@@ -15017,6 +15086,97 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ..._resultWarnings(warnings),
       };
     }
+
+    // 一括改名の物理移動はproviderがまとめて行い、副作用はこの同一操作IDの
+    // aftercareへ集約する。単件/outliner/moveをファイル数分呼ばない。
+    if (!window.MeldexCloudBatchRenameAftercare) {
+      window.MeldexCloudBatchRenameAftercare = {
+        async prepare({ provider, entries, direction }) {
+          const plans = new Map();
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+            });
+            plans.set(oldPath, annotationPlan);
+          }
+          return plans;
+        },
+        async apply({ provider, entries, operationId, direction, prepared }) {
+          const warnings = [];
+          const mappings = (entries || []).map(entry => ({
+            oldPath: direction === 'reverse' ? entry.destination : entry.source,
+            newPath: direction === 'reverse' ? entry.source : entry.destination,
+            isFolder: false,
+          }));
+          await _runPostMutationStep(warnings, 'version-history', async () => {
+            if (!mappings.length) return;
+            await _awaitPendingEditFinalizations();
+            const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+            const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);
+            const records = await adapter.listDocuments(kind);
+            for (const record of records) {
+              const current = _normalizeFolderPath(record?.payload?.original_relative_path || '');
+              const mapping = mappings.find(row => row.oldPath === current);
+              if (!mapping) continue;
+              await adapter.save(kind, record.documentId, { ...record.payload, original_relative_path: mapping.newPath }, { expectedRevision: record.revision });
+            }
+          });
+          await _runPostMutationStep(warnings, 'stored-paths', () => (
+            typeof _rewriteStoredPathsBatchForProvider === 'function'
+              ? _rewriteStoredPathsBatchForProvider(provider, mappings)
+              : Promise.all(mappings.map(row => _rewriteStoredPathsForProvider(provider, row.oldPath, row.newPath, false)))
+          ));
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            await _runPostMutationStep(warnings, 'csv-sidecars', () => _relocateCsvSidecars(provider, oldPath, newPath, false, false));
+            await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: false, operationId }, warnings);
+            await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+              annotationPlan: prepared?.get?.(oldPath),
+            }));
+          }
+          let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+          await _runPostMutationStep(warnings, 'references', async () => {
+            relocate = typeof _relocateReferencesBatch === 'function'
+              ? await _relocateReferencesBatch(provider, mappings)
+              : await _relocateReferences(provider, mappings[0]?.oldPath, mappings[0]?.newPath, false);
+          });
+          for (const mapping of mappings) {
+            window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(mapping.oldPath, mapping.newPath);
+          }
+          window.dispatchEvent(new CustomEvent('meldex:batch-paths-renamed', {
+            detail: { operationId, direction, entries: (entries || []).map(entry => ({ source: entry.source, destination: entry.destination })) },
+          }));
+          return { ok: warnings.length === 0, warnings, relocate };
+        },
+      };
+    }
+    if (pathname === '/outliner/batch-rename-aftercare' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const entries = Array.isArray(body?.entries) ? body.entries : [];
+      if (!entries.length || entries.length > 10000) throw new Error('一括変更mapが不正です');
+      const operationId = String(body?.operation_id || '');
+      if (!/^[a-f0-9]{32}$/.test(operationId)) throw new Error('一括変更の操作IDが不正です');
+      const direction = body?.direction === 'reverse' ? 'reverse' : 'forward';
+      if (body?.phase === 'prepare') {
+        const token = await window.MeldexCloudBatchRenameAftercare.prepare({ provider, entries, operationId, direction });
+        // 同一タブ内だけで物理移動直後まで保持する。永続化すべき計画・状態は
+        // typed journal側が正本で、アノテートのCAS読取結果は短命である。
+        window.__MeldexBatchRenameAftercareTokens ||= new Map();
+        window.__MeldexBatchRenameAftercareTokens.set(operationId + ':' + direction, token);
+        return { ok: true, token: operationId + ':' + direction };
+      }
+      if (body?.phase === 'apply') {
+        const key = operationId + ':' + direction;
+        const prepared = window.__MeldexBatchRenameAftercareTokens?.get?.(key) || null;
+        window.__MeldexBatchRenameAftercareTokens?.delete?.(key);
+        return window.MeldexCloudBatchRenameAftercare.apply({ provider, entries, operationId, direction, prepared });
+      }
+      throw new Error('一括変更aftercareの段階が不正です');
+    }
 /* gb-data-access-dropbox-fileops identity claim continuation. */
     function _settingsEntryIdForClaim(text) {
       const normalized = String(text || '').replace(/\r\n/g, '\n').replace(/^\ufeff/, '');
@@ -16542,13 +16702,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   }
 
   async function mediaImportPathResponse(body) {
-    const payload = body && typeof body === 'object' ? body : {};
+    const payload = typeof body === 'string' ? JSON.parse(body || '{}')
+      : (body && typeof body === 'object' ? body : {});
     const sourcePath = String(payload.source_path || '').trim();
     const sheetPath = String(payload.sheet_path || '').trim();
     if (!sourcePath || !sheetPath) throw new Error('元ファイルと添付先シートを指定してください');
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider?.downloadAsFile) throw new Error('ブラウザの保存先が未初期化です');
-    const source = await provider.downloadAsFile(sourcePath);
+    // `_media/...` と Web Clipper の `_assets/...` はホームフォルダ相対で
+    // 保存されることがある。表示時と同じ候補順で読むことで、Cloud の
+    // D&D 保持コピーだけがソースフォルダ直下を見て失敗する経路を作らない。
+    const source = await _downloadMediaFile(provider, sourcePath);
     const filename = String(payload.filename || source?.name || _basename(sourcePath));
     const file = source instanceof File && source.name === filename
       ? source : new File([source], filename, { type: source?.type || 'application/octet-stream' });
@@ -16557,6 +16721,73 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     form.append('sheet_path', sheetPath);
     form.append('thumbnail_size', String(payload.thumbnail_size || 256));
     return mediaUploadResponse(form);
+  }
+
+  async function mediaPreservePathResponse(body) {
+    const payload = typeof body === 'string' ? JSON.parse(body || '{}')
+      : (body && typeof body === 'object' ? body : {});
+    const sourcePath = String(payload.source_path || payload.path || '').trim();
+    if (!sourcePath) throw new Error('元ファイルを指定してください');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.downloadAsFile || !provider?.uploadBytes || !provider?.statPath) {
+      throw new Error('ブラウザの保存先が未初期化です');
+    }
+    const attachments = window.MeldexSheetAttachments;
+    if (!attachments?.detectContentExt || !attachments?.sha256Hex) {
+      throw new Error('添付ファイル処理を利用できません');
+    }
+    // `_media/...` と Web Clipper の `_assets/...` はホームフォルダ相対で
+    // 保存されることがある。表示時と同じ候補順で読むことで、Cloud の
+    // D&D 保持コピーだけがソースフォルダ直下を見て失敗する経路を作らない。
+    const source = await _downloadMediaFile(provider, sourcePath);
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    if (!bytes.length) throw new Error('空のファイルは保存できません');
+    const displayName = String(payload.filename || source?.name || _basename(sourcePath));
+    const ext = attachments.detectContentExt(bytes, displayName, source?.type || '');
+    const kind = attachments.mediaKindForExt(ext);
+    if (kind !== 'image' && kind !== 'video') {
+      throw new Error('貼り付けメディアとして保存できるのは画像と動画だけです');
+    }
+    const hash = await attachments.sha256Hex(bytes);
+    const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const dir = home ? home + '/貼り付けメディア' : '貼り付けメディア';
+    // Cloudはprovider横断でprefix列挙を仮定せず、完全hashを保存名にして
+    // 元の表示名が違う同一内容も同じ実体へ収束させる。
+    const desired = hash + '.' + ext;
+    const probe = await _cloudAttachmentProbe(provider, dir, hash, bytes.length);
+    const resolved = await attachments.resolveAttachmentFilename(desired, probe);
+    const path = dir + '/' + resolved.filename;
+    const identityAftercare = window.MeldexCreatedImageIdentityAftercare;
+    const prepared = kind === 'image' && !resolved.reused && identityAftercare?.prepare
+      ? await identityAftercare.prepare(provider, path, bytes, {
+        source: 'pasted-media', filename: resolved.filename,
+      })
+      : null;
+    if (!resolved.reused && (!prepared || prepared.publish_required)) {
+      try {
+        await provider.uploadBytes(path, bytes);
+      } catch (error) {
+        if (prepared && identityAftercare?.cancel) {
+          await identityAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+        }
+        throw error;
+      }
+    }
+    const identity = prepared && identityAftercare?.record
+      ? await identityAftercare.record(provider, path, bytes, { source: 'pasted-media', prepared })
+      : null;
+    return jsonResponse({
+      ok: true,
+      path,
+      filename: resolved.filename,
+      display_name: displayName,
+      kind,
+      content_hash: hash,
+      size: bytes.length,
+      reused: !!resolved.reused,
+      url: attachments.rawUrlForPath(path),
+      aftercare_pending: !!identity?.aftercare_pending,
+    });
   }
 
   async function sheetFilesResponse(apiUrl) {
@@ -16798,6 +17029,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       }
       if (apiUrl.pathname === '/media/import-path' && String(method || 'GET').toUpperCase() === 'POST') {
         return await mediaImportPathResponse(body);
+      }
+      if (apiUrl.pathname === '/media/preserve' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await mediaPreservePathResponse(body);
       }
       if (apiUrl.pathname === '/sheet-files' && String(method || 'GET').toUpperCase() === 'GET') {
         return await sheetFilesResponse(apiUrl);
@@ -21788,7 +22022,9 @@ document.addEventListener('DOMContentLoaded', () => {
     more.dataset.e2eId = 'toolbar-overflow-' + (toolbar.dataset.e2eId || toolbar.id || ('host-' + (++hostSequence)));
     const symbol = document.createElement('span');
     symbol.className = 'gb-toolbar-overflow-symbol';
-    symbol.textContent = '▼';
+    symbol.innerHTML = typeof lucide === 'function'
+      ? lucide('chevronDown', 16)
+      : '<svg viewBox="0 0 16 16" width="16" height="16"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     symbol.setAttribute('aria-hidden', 'true');
     more.appendChild(symbol);
     more.title = '隠れている操作を表示';
@@ -22581,7 +22817,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toggle.title = trayMinimized ? '広げる' : '最小化';
     toggle.innerHTML = trayMinimized
       ? '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-      : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 11.5h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
     toggle.addEventListener('click', function () {
       trayMinimized = !trayMinimized;
       try { localStorage.setItem(TRAY_MINIMIZED_KEY, trayMinimized ? '1' : '0'); } catch (_) {}

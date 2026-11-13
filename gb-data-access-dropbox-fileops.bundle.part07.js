@@ -1,3 +1,96 @@
+        const physicalKey = String(trashRoot.physicalPath || trashRoot.path).toLowerCase();
+        if (listedPhysicalRoots.has(physicalKey)) continue;
+        try {
+          const trashEntry = await _resolveEntryHandle(provider, trashRoot.path);
+          if (!trashEntry || trashEntry.kind !== 'directory') {
+            listedPhysicalRoots.add(physicalKey);
+            continue;
+          }
+          const entries = await _listDirectoryEntries(provider, trashRoot.path);
+          listedPhysicalRoots.add(physicalKey);
+          for (const entry of entries) {
+            if (entry.name.endsWith('._trash_meta.json')) continue;
+            const entryPath = _joinPath(trashRoot.path, entry.name);
+            const meta = await _readJsonSafe(provider, entryPath + '._trash_meta.json', {});
+            let size = 1;
+            if (entry.handle.kind === 'directory') {
+              size = await _countFolderEntriesIncludingTrash(provider, entryPath).catch(() => 0);
+            }
+            const metaHasVirtualSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(
+              meta?.trash_root || meta?.original_path || '',
+            );
+            const declaredTrashRoot = rootsByPath.get(_normalizeFolderPath(meta?.trash_root || ''));
+            const declaredPhysicalKey = String(declaredTrashRoot?.physicalPath || declaredTrashRoot?.path || '').toLowerCase();
+            const itemTrashRoot = (declaredTrashRoot && declaredPhysicalKey === physicalKey ? declaredTrashRoot : null)
+              || (metaHasVirtualSource ? sourceRootsByPhysical.get(physicalKey) : null)
+              || trashRoot;
+            items.push({
+              name: entry.name,
+              type: entry.handle.kind === 'directory' ? 'folder' : 'file',
+              size,
+              original_path: String(meta?.original_path || ''),
+              deleted_at: String(meta?.deleted_at || ''),
+              trash_root: itemTrashRoot.path,
+              trash_root_name: itemTrashRoot.name,
+              trash_path: entryPath,
+            });
+          }
+        } catch (error) {
+          warnings.push({
+            trash_root: trashRoot.path, trash_root_name: trashRoot.name, stage: 'trash-list',
+            message: error?.message || String(error), code: error?.code || '',
+          });
+        }
+      }
+      return warnings.length
+        ? { items, warnings, partial: true, failed: warnings.length }
+        : { items };
+    }
+
+    if (pathname === '/trash/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const name = _validateItemName(body?.name || '', 'name');
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, name);
+      const metaPath = trashPath + '._trash_meta.json';
+      const source = await _resolveEntryHandle(provider, trashPath);
+      if (!source) throw new Error('ゴミ箱に見つかりません');
+      const meta = await _readJsonSafe(provider, metaPath, {});
+      const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
+      let destPath = baseDest;
+      if (await _pathExists(provider, destPath)) {
+        const split = _splitNameAndExt(_basename(baseDest));
+        const baseDir = _dirname(baseDest);
+        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
+          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
+          const nextName = source.kind === 'directory'
+            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
+            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
+          destPath = _joinPath(baseDir, nextName);
+        }
+      }
+      await _moveEntry(provider, trashPath, destPath);
+      const warnings = [];
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_to: destPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+    }
+
+    if (pathname === '/trash/delete' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const name = _validateItemName(body?.name || '', 'name');
+      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
+      const trashPath = _joinPath(trashRoot.path, name);
+      const metaPath = trashPath + '._trash_meta.json';
+      const durable = window.MeldexCloudIdentityClaimAftercare?.durableDelete;
+      if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
+      const result = await durable(provider, {
+        operationId: body?.confirmationToken || body?.confirmation_token,
         operation: 'permanent-delete', payload: { name, trash_root: trashRoot.path },
         prepare: async () => {
           const entry = await _resolveEntryHandle(provider, trashPath);

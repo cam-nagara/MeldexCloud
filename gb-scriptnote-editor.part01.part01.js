@@ -157,6 +157,7 @@ function _sn2ReplaceRawTextByVisibleRange(rawText, startOffset, endOffset, repla
 class ScriptNoteEditor {
   constructor(hostEl) {
     this.host = hostEl;
+    if (this.host) this.host.__meldexScriptNoteEditor = this;
     this.doc = null;
     this._path = '';
     // 工程2-C項目3: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。

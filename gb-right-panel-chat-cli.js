@@ -1096,6 +1096,9 @@
     const targetMessages = scopedMessages || _chatState.messages;
     const detachedScope = !!scopedMessages && scopedMessages !== _chatState.messages;
 
+    if (!detachedScope && typeof _chatEnsureAutomaticSessionTitle === 'function') {
+      _chatEnsureAutomaticSessionTitle(textValue, attachments);
+    }
     if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
 
     if (usingDeferredMessages) {

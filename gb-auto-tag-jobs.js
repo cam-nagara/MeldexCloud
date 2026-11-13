@@ -230,7 +230,7 @@
         <span>${activeJobIds().length ? `${activeJobIds().length}件実行中` : (hasFailures ? '要確認' : '完了')}</span>
         <button type="button" class="gb-btn gb-btn-icon gb-btn-xs" data-at-job-minimize
           aria-label="${minimized ? '進捗を展開' : '進捗を折りたたむ'}">
-          ${icon(minimized ? 'chevronUp' : 'chevronDown', 14)}
+            ${icon(minimized ? 'chevronUp' : 'minus', 14)}
         </button>
       </header>
       <div class="at-job-list">${rows.map(jobRowHtml).join('')}</div>

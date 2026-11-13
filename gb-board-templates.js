@@ -47,7 +47,31 @@
     nodes.forEach(node => {
       const key = String(node?.key || '');
       if (!key || keys.has(key)) throw new Error('ボードテンプレートのトピック構成が壊れています');
+      if (![node.x, node.y, node.w, node.h].filter(item => item != null).every(item => Number.isFinite(Number(item)))) {
+        throw new Error('ボードテンプレートの座標または大きさが不正です');
+      }
       keys.add(key);
+    });
+    nodes.forEach(node => {
+      const parent = String(node?.parent || '');
+      if (parent && !keys.has(parent)) throw new Error(`親トピックが見つかりません: ${parent}`);
+      const seen = new Set([String(node.key)]);
+      let current = parent;
+      while (current) {
+        if (seen.has(current)) throw new Error('ボードテンプレートの親子関係が循環しています');
+        seen.add(current);
+        current = String(nodes.find(item => String(item?.key || '') === current)?.parent || '');
+      }
+    });
+    (Array.isArray(value.content?.lines) ? value.content.lines : []).forEach(line => {
+      if (!keys.has(String(line?.from || '')) || !keys.has(String(line?.to || ''))) {
+        throw new Error('ボードテンプレートの接続先が見つかりません');
+      }
+    });
+    (Array.isArray(value.content?.groups) ? value.content.groups : []).forEach(group => {
+      if (!Array.isArray(group?.nodeKeys) || group.nodeKeys.some(key => !keys.has(String(key)))) {
+        throw new Error('ボードテンプレートのグループ参照が壊れています');
+      }
     });
     return { ...clone(value), id, name, builtin: false };
   }
@@ -369,12 +393,26 @@
     const board = options.board || boardState();
     if (!board) throw new Error('ボードを開いてから適用してください');
     if (!isBoardEditable(board)) throw new Error('このボードは編集できないため、テンプレートを適用できません');
+    if (!['full', 'style', 'append'].includes(mode)) throw new Error('未対応のテンプレート適用方法です');
     if (mode === 'full' && hasContent(board)) throw new Error('内容のあるボードには「スタイルだけ適用」か「内容を追加」を選んでください');
+    const prepared = validateTemplate({ ...clone(template), schemaVersion: template?.schemaVersion ?? SCHEMA_VERSION });
+    const working = clone(board);
+    if (!working || typeof working !== 'object') throw new Error('ボードの作業コピーを作成できませんでした');
     if (board.editing && typeof global.bdFinishEdit === 'function') global.bdFinishEdit();
     const label = mode === 'style' ? 'テンプレートのスタイルを適用' : mode === 'append' ? 'テンプレートの内容を追加' : 'テンプレートを適用';
+    if (mode !== 'append') applyStyle(working, prepared);
+    const created = mode === 'style' ? [] : applyContent(working, prepared, mode);
+    const mutableKeys = [
+      'nodes', 'connections', 'groups', 'cardStyles', 'lineStyles', 'depthStyles',
+      'activeDepthStylePreset', 'activeCardStyle', 'activeLineStyle', '_stylePresetSeedVersion',
+      '_globalStyleDefaultsApplied', '_bgColor', '_fileStyle', '_showShadow', 'gapSiblings',
+      'gapLevels', 'topicViewDocument',
+    ];
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo(`${label}: ${template.name}`);
-    if (mode !== 'append') applyStyle(board, template);
-    const created = mode === 'style' ? [] : applyContent(board, template, mode);
+    mutableKeys.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(working, key)) board[key] = clone(working[key]);
+      else delete board[key];
+    });
     refreshBoard(board, created);
     return { created: created.length };
   }

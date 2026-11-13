@@ -970,6 +970,19 @@ function bdUpdateNodePosition(nodeOrId) {
   return true;
 }
 
+function bdRemoveNodeRender(nodeId) {
+  if (!nodeId || typeof document === 'undefined') return false;
+  const element = document.getElementById('bdn-' + nodeId);
+  if (element) element.remove();
+  const layer = document.getElementById('bd-resize-layer');
+  if (layer) {
+    layer.querySelectorAll('.bd-resize[data-node-id], .bd-selection-rect[data-node-id]').forEach(item => {
+      if (String(item.dataset.nodeId || '') === String(nodeId)) item.remove();
+    });
+  }
+  return !!element;
+}
+
 function bdSyncNodeDomOrder() {
   const container = document.getElementById('bd-nodes');
   if (!container || typeof bd === 'undefined') return;

@@ -71,7 +71,11 @@
           draggedNode = null;
           return;
         }
-        const { name, path, type } = nodeItems[0];
+        let nodeItem = nodeItems[0];
+        if (typeof MeldexDnD !== 'undefined' && MeldexDnD.preserveMediaItem) {
+          nodeItem = await MeldexDnD.preserveMediaItem(nodeItem);
+        }
+        const { name, path, type } = nodeItem;
         if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
             && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
           draggedNode = null;

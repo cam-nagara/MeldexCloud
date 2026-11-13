@@ -172,6 +172,20 @@
     return frontmatter.join('\n') + '\n' + bodyLines.join('\n');
   }
 
+  function _chatTitleFromPayload(body) {
+    const messages = Array.isArray(body?.messages) ? body.messages : [];
+    for (const message of messages) {
+      if (!message || message.role !== 'user' || message.origin === 'meldex-control') continue;
+      let title = _chatMessageText(message.content).replace(/\s+/g, ' ').trim();
+      title = title.replace(/^(?:[#>*+\-]|\d+[.)])\s*/, '').trim();
+      if (!title) continue;
+      return title.length > 48 ? title.slice(0, 47).trimEnd() + '…' : title;
+    }
+    const targetPath = String(body?.targetPath || body?.target_path || '').replace(/\\/g, '/');
+    const leaf = targetPath.split('/').filter(Boolean).pop() || '';
+    return leaf ? leaf + 'のチャット' : '新しいチャット';
+  }
+
   function _chatArchivedHistory(messages, existing) {
     const archived = Array.isArray(existing) ? existing.filter(item => item && typeof item === 'object') : [];
     const seen = new Set(archived.map(item => String(item.summary_msg_id || '')).filter(Boolean));
@@ -387,15 +401,19 @@
     await _directoryHandle(provider, _dirname(savePath), true);
     let preservedCreated = '';
     let preservedTargets;
+    let preservedTitle = '';
     try {
       const existing = _parsePwaChatFrontmatter(await provider.readText(savePath));
       preservedCreated = String(existing.frontmatter.created || '');
       preservedTargets = existing.frontmatter.targets;
+      preservedTitle = String(existing.frontmatter.title || '').trim();
     } catch {
       // 初回保存では既存ファイルがないため、そのまま新しい作成日時を使う。
     }
-    await provider.writeText(savePath, _chatDocumentFromPayload({ ...(body || {}), targets: body?.targets ?? preservedTargets, _preservedCreated: preservedCreated }));
-    const result = { ok: true, path: _clientPath(sourceFolder, savePath), user: String(body?.user || '') };
+    const title = String(body?.title || '').trim() || preservedTitle || _chatTitleFromPayload(body);
+    const payload = { ...(body || {}), title, targets: body?.targets ?? preservedTargets, _preservedCreated: preservedCreated };
+    await provider.writeText(savePath, _chatDocumentFromPayload(payload));
+    const result = { ok: true, path: _clientPath(sourceFolder, savePath), user: String(body?.user || ''), title };
     const extractor = window.MeldexKnowledgeCloudExtractor;
     if (typeof extractor?.extractAfterChatSave === 'function') {
       try {

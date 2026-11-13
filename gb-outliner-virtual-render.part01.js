@@ -404,7 +404,9 @@
     if (managesExpansion) delete item._gbVirtualExpansionManaged;
     rowEl.style.position = 'absolute';
     rowEl.style.top = state.offsets[index] + 'px';
-    rowEl.style.left = (entry.depth * 14) + 'px';
+    // 絶対配置行は .tree-children の padding-left:14px を通常フローの子のようには
+    // 受けないため、直下(depth=0)にも基準インデントを明示する。
+    rowEl.style.left = ((entry.depth + 1) * 14) + 'px';
     rowEl.style.right = '0';
     rowEl.dataset.gbVirtualIndex = String(index);
     _appendDepthLines(rowEl, entry.depth);

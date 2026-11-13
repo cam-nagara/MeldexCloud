@@ -1,3 +1,5 @@
+      return _readFolderVersionFile(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', url.searchParams.get('file') || '');
+    }
     if (pathname === '/version/save-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const actor = _versionActor(url, body);
@@ -521,6 +523,97 @@
       };
     }
 
+    // 一括改名の物理移動はproviderがまとめて行い、副作用はこの同一操作IDの
+    // aftercareへ集約する。単件/outliner/moveをファイル数分呼ばない。
+    if (!window.MeldexCloudBatchRenameAftercare) {
+      window.MeldexCloudBatchRenameAftercare = {
+        async prepare({ provider, entries, direction }) {
+          const plans = new Map();
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+            });
+            plans.set(oldPath, annotationPlan);
+          }
+          return plans;
+        },
+        async apply({ provider, entries, operationId, direction, prepared }) {
+          const warnings = [];
+          const mappings = (entries || []).map(entry => ({
+            oldPath: direction === 'reverse' ? entry.destination : entry.source,
+            newPath: direction === 'reverse' ? entry.source : entry.destination,
+            isFolder: false,
+          }));
+          await _runPostMutationStep(warnings, 'version-history', async () => {
+            if (!mappings.length) return;
+            await _awaitPendingEditFinalizations();
+            const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+            const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);
+            const records = await adapter.listDocuments(kind);
+            for (const record of records) {
+              const current = _normalizeFolderPath(record?.payload?.original_relative_path || '');
+              const mapping = mappings.find(row => row.oldPath === current);
+              if (!mapping) continue;
+              await adapter.save(kind, record.documentId, { ...record.payload, original_relative_path: mapping.newPath }, { expectedRevision: record.revision });
+            }
+          });
+          await _runPostMutationStep(warnings, 'stored-paths', () => (
+            typeof _rewriteStoredPathsBatchForProvider === 'function'
+              ? _rewriteStoredPathsBatchForProvider(provider, mappings)
+              : Promise.all(mappings.map(row => _rewriteStoredPathsForProvider(provider, row.oldPath, row.newPath, false)))
+          ));
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            await _runPostMutationStep(warnings, 'csv-sidecars', () => _relocateCsvSidecars(provider, oldPath, newPath, false, false));
+            await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: false, operationId }, warnings);
+            await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+              annotationPlan: prepared?.get?.(oldPath),
+            }));
+          }
+          let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+          await _runPostMutationStep(warnings, 'references', async () => {
+            relocate = typeof _relocateReferencesBatch === 'function'
+              ? await _relocateReferencesBatch(provider, mappings)
+              : await _relocateReferences(provider, mappings[0]?.oldPath, mappings[0]?.newPath, false);
+          });
+          for (const mapping of mappings) {
+            window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(mapping.oldPath, mapping.newPath);
+          }
+          window.dispatchEvent(new CustomEvent('meldex:batch-paths-renamed', {
+            detail: { operationId, direction, entries: (entries || []).map(entry => ({ source: entry.source, destination: entry.destination })) },
+          }));
+          return { ok: warnings.length === 0, warnings, relocate };
+        },
+      };
+    }
+    if (pathname === '/outliner/batch-rename-aftercare' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const entries = Array.isArray(body?.entries) ? body.entries : [];
+      if (!entries.length || entries.length > 10000) throw new Error('一括変更mapが不正です');
+      const operationId = String(body?.operation_id || '');
+      if (!/^[a-f0-9]{32}$/.test(operationId)) throw new Error('一括変更の操作IDが不正です');
+      const direction = body?.direction === 'reverse' ? 'reverse' : 'forward';
+      if (body?.phase === 'prepare') {
+        const token = await window.MeldexCloudBatchRenameAftercare.prepare({ provider, entries, operationId, direction });
+        // 同一タブ内だけで物理移動直後まで保持する。永続化すべき計画・状態は
+        // typed journal側が正本で、アノテートのCAS読取結果は短命である。
+        window.__MeldexBatchRenameAftercareTokens ||= new Map();
+        window.__MeldexBatchRenameAftercareTokens.set(operationId + ':' + direction, token);
+        return { ok: true, token: operationId + ':' + direction };
+      }
+      if (body?.phase === 'apply') {
+        const key = operationId + ':' + direction;
+        const prepared = window.__MeldexBatchRenameAftercareTokens?.get?.(key) || null;
+        window.__MeldexBatchRenameAftercareTokens?.delete?.(key);
+        return window.MeldexCloudBatchRenameAftercare.apply({ provider, entries, operationId, direction, prepared });
+      }
+      throw new Error('一括変更aftercareの段階が不正です');
+    }
+
 /* === gb-data-access-dropbox-fileops-identity-claims.js === */
 /* gb-data-access-dropbox-fileops identity claim continuation. */
     function _settingsEntryIdForClaim(text) {
@@ -805,96 +898,3 @@
       )).map((root) => [String(root.physicalPath || root.path).toLowerCase(), root]));
       const listedPhysicalRoots = new Set();
       for (const trashRoot of allowedRoots) {
-        const physicalKey = String(trashRoot.physicalPath || trashRoot.path).toLowerCase();
-        if (listedPhysicalRoots.has(physicalKey)) continue;
-        try {
-          const trashEntry = await _resolveEntryHandle(provider, trashRoot.path);
-          if (!trashEntry || trashEntry.kind !== 'directory') {
-            listedPhysicalRoots.add(physicalKey);
-            continue;
-          }
-          const entries = await _listDirectoryEntries(provider, trashRoot.path);
-          listedPhysicalRoots.add(physicalKey);
-          for (const entry of entries) {
-            if (entry.name.endsWith('._trash_meta.json')) continue;
-            const entryPath = _joinPath(trashRoot.path, entry.name);
-            const meta = await _readJsonSafe(provider, entryPath + '._trash_meta.json', {});
-            let size = 1;
-            if (entry.handle.kind === 'directory') {
-              size = await _countFolderEntriesIncludingTrash(provider, entryPath).catch(() => 0);
-            }
-            const metaHasVirtualSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(
-              meta?.trash_root || meta?.original_path || '',
-            );
-            const declaredTrashRoot = rootsByPath.get(_normalizeFolderPath(meta?.trash_root || ''));
-            const declaredPhysicalKey = String(declaredTrashRoot?.physicalPath || declaredTrashRoot?.path || '').toLowerCase();
-            const itemTrashRoot = (declaredTrashRoot && declaredPhysicalKey === physicalKey ? declaredTrashRoot : null)
-              || (metaHasVirtualSource ? sourceRootsByPhysical.get(physicalKey) : null)
-              || trashRoot;
-            items.push({
-              name: entry.name,
-              type: entry.handle.kind === 'directory' ? 'folder' : 'file',
-              size,
-              original_path: String(meta?.original_path || ''),
-              deleted_at: String(meta?.deleted_at || ''),
-              trash_root: itemTrashRoot.path,
-              trash_root_name: itemTrashRoot.name,
-              trash_path: entryPath,
-            });
-          }
-        } catch (error) {
-          warnings.push({
-            trash_root: trashRoot.path, trash_root_name: trashRoot.name, stage: 'trash-list',
-            message: error?.message || String(error), code: error?.code || '',
-          });
-        }
-      }
-      return warnings.length
-        ? { items, warnings, partial: true, failed: warnings.length }
-        : { items };
-    }
-
-    if (pathname === '/trash/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const name = _validateItemName(body?.name || '', 'name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, name);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error('ゴミ箱に見つかりません');
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
-      let destPath = baseDest;
-      if (await _pathExists(provider, destPath)) {
-        const split = _splitNameAndExt(_basename(baseDest));
-        const baseDir = _dirname(baseDest);
-        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
-          const nextName = source.kind === 'directory'
-            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
-            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
-          destPath = _joinPath(baseDir, nextName);
-        }
-      }
-      await _moveEntry(provider, trashPath, destPath);
-      const warnings = [];
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: destPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_to: destPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/trash/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const name = _validateItemName(body?.name || '', 'name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, name);
-      const metaPath = trashPath + '._trash_meta.json';
-      const durable = window.MeldexCloudIdentityClaimAftercare?.durableDelete;
-      if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
-      const result = await durable(provider, {
-        operationId: body?.confirmationToken || body?.confirmation_token,

@@ -1,3 +1,8 @@
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    if (restoreFocus) btn?.focus?.();
+  };
   function addItem(label, fn, mode) {
     const item = document.createElement('button');
     item.type = 'button';
@@ -893,8 +898,3 @@ function _viewerFolderNavPathMatches(nodePath, targetPath) {
   if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
   const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
   const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();
-  return !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a));
-}
-
-function _viewerFolderNavIsFolderNode(node) {
-  const data = node?._nodeData || {};

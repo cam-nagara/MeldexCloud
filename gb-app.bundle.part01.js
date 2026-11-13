@@ -755,7 +755,12 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
   if (typeof _folderPath !== 'undefined' && _folderPath) {
+    const previousFolderPath = _folderPath;
     _folderPath = _mapRenamedPath(_folderPath, oldPath, newPath);
+    if (_folderPath !== previousFolderPath && previousFolderPath === oldPath && exactLabel != null) {
+      const folderTitle = document.getElementById('folder-title');
+      if (folderTitle && !folderTitle.querySelector('input')) folderTitle.textContent = exactLabel;
+    }
   }
   if (typeof bd !== 'undefined' && bd) {
     if (bd.path) bd.path = _mapRenamedPath(bd.path, oldPath, newPath);
@@ -893,8 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
           }
         }
         // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 各タブの navHistory も追随させる
-        if (Array.isArray(tab.navHistory)) {
-          tab.navHistory.forEach(entry => {
-            if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
-            if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
-          });

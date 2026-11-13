@@ -7,7 +7,7 @@
 (function initScriptNoteTemplatePicker(global) {
   'use strict';
 
-  const BUILTIN = [
+  const FALLBACK_BUILTIN = [
     { id: 'manga', name: 'マンガシナリオ', description: 'ページとコマで区切り、セリフ・ト書き・モノローグを書き分けるマンガ向けの書式。',
       sample: [['h2', 'P1'], ['line', 'コマ1　教室・放課後'], ['line', 'ト書き：窓の外を見る主人公'], ['say', '主人公「……まだ帰らないの？」'], ['line', 'コマ2'], ['say', 'ヒロイン「もう少しだけ」']] },
     { id: 'drama', name: 'ドラマ・映画シナリオ', description: '柱（場所・時間）、ト書き、台詞で構成する映像向けの書式。',
@@ -17,6 +17,7 @@
     { id: 'stage', name: '舞台シナリオ', description: '場・登場人物・台詞・動作の指示（ト書き）を舞台上演向けに並べる書式。',
       sample: [['h2', '第一場　公園'], ['line', '（明転。ベンチに主人公）'], ['say', '主人公　ここに来るのも久しぶりだ。'], ['line', '（ヒロイン、上手より登場）'], ['say', 'ヒロイン　やっぱりここにいた。']] },
   ];
+  const BUILTIN = global.MeldexScriptNoteTemplateDefinitions?.all?.() || FALLBACK_BUILTIN;
 
   function readCustom() {
     const names = typeof global._snToolPresetNames === 'function'
@@ -52,7 +53,11 @@
     const builtins = BUILTIN.map(item => ({
       id: item.id, name: item.name, description: item.description, builtin: true, badge: '初期搭載',
       category: 'builtin', categoryLabel: '初期搭載',
-      renderThumbnail: host => renderSample(host, item.sample),
+      renderThumbnail: host => {
+        if (global.MeldexScriptNoteTemplateDefinitions?.get?.(item.id)) {
+          global.MeldexScriptNoteTemplateDefinitions.renderThumbnail(item.id, host);
+        } else renderSample(host, item.sample || []);
+      },
     }));
     const custom = readCustom().map(({ name, value }) => {
       const base = BUILTIN.find(item => item.id === value.layoutMode) || BUILTIN[0];
@@ -87,6 +92,37 @@
       button.setAttribute('aria-label', `テンプレート: ${label}`);
     };
 
+    Component.prototype._applyScriptNoteTemplate = async function applyScriptNoteTemplate(id) {
+      const editor = this._editor;
+      if (!editor?.doc) throw new Error('シナリオを開いてから適用してください');
+      if (editor._readOnly) throw new Error('このシナリオは読取専用のためテンプレートを適用できません');
+      const engine = global.MeldexScriptNoteTemplateDefinitions;
+      if (!engine) throw new Error('シナリオテンプレート定義を読み込めませんでした');
+      let prepared;
+      if (String(id).startsWith('custom:')) {
+        const templates = typeof global._snToolReadJsonObject === 'function'
+          ? global._snToolReadJsonObject(global.SN2_TEMPLATE_STORAGE_KEY || 'sn2-templates')
+          : {};
+        const name = String(id).slice(7);
+        if (!Object.prototype.hasOwnProperty.call(templates, name)) throw new Error(`カスタムテンプレート「${name}」が見つかりません`);
+        prepared = engine.prepareCustom(editor.doc, templates[name]);
+      } else {
+        prepared = engine.prepareBuiltin(editor.doc, id);
+      }
+      // 検証済み作業コピーが完成してから履歴を積み、文書参照を保ったまま一括差し替えする。
+      editor._pushUndo('テンプレート適用');
+      engine.commit(editor.doc, prepared);
+      this.state.noteLayoutMode = editor.doc.layoutMode;
+      editor._calcCache = null;
+      editor._render();
+      editor._markDirty();
+      this._syncDetailPanel?.();
+      this._syncTemplateButton?.();
+      const select = this.el?.querySelector('#scenario-note-layout-select');
+      if (select) select.value = id;
+      return { ok: true, templateId: id, templateVersion: prepared.definition?.templateVersion || null };
+    };
+
     Component.prototype._showTemplatePicker = function showTemplatePicker() {
       if (!global.MeldexTemplatePicker) {
         if (typeof global.showStatus === 'function') global.showStatus('テンプレート選択画面を読み込めませんでした', true);
@@ -106,12 +142,11 @@
         primaryAction: {
           label: '適用',
           when: () => !!this._editor?.doc,
-          run: item => {
+          run: async item => {
             const select = this.el?.querySelector('#scenario-note-layout-select');
             if (!select || !this._editor?.doc) throw new Error('シナリオを開いてから適用してください');
             if (![...select.options].some(option => option.value === item.id)) this._refreshTemplateSelect?.();
-            select.value = item.id;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await this._applyScriptNoteTemplate(item.id);
             this._syncTemplateButton();
             if (typeof global.showStatus === 'function') global.showStatus(`テンプレート「${item.name}」を適用しました`);
             return true;

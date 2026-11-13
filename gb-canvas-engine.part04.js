@@ -1,7 +1,8 @@
 /* gb-canvas-engine.part04.js */
   // 接続線もコピー（選択ノード間のもの）
   (_bdClipboardConnections || []).forEach(c => {
-    if (idMap[c.from] && idMap[c.to]) bd.connections.push({
+    if (idMap[c.from] && idMap[c.to]) {
+      const copiedConnection = {
       id: bdId(),
       from:idMap[c.from],
       to:idMap[c.to],
@@ -35,12 +36,28 @@
         ? [{ dx: c.controlPoints[0].dx, dy: c.controlPoints[0].dy },
            { dx: c.controlPoints[1].dx, dy: c.controlPoints[1].dy }]
         : undefined,
-    });
+      };
+      bd.connections.push(copiedConnection);
+      newConnectionIds.push(copiedConnection.id);
+    }
   });
   // 新ノードを選択
   bd.selected = new Set(newNodes.map(n=>n.id));
   bdClearConnectionSelection();
-  bdRender(); bdDirty();
+  if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
+  if (typeof bdRefreshNodesPartial === 'function') {
+    bdRefreshNodesPartial(newNodes.map(node => node.id), 'paste-nodes', {
+      frames: true,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+    });
+    newConnectionIds.forEach(id => {
+      if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(id, 'paste-connections');
+    });
+  } else if (typeof bdRunFullRender === 'function') bdRunFullRender('paste-fallback');
+  else bdRender();
+  bdDirty();
   showStatus(newNodes.length + '\u500b\u306e\u30ce\u30fc\u30c9\u3092\u30da\u30fc\u30b9\u30c8\u3057\u307e\u3057\u305f');
 }
 
@@ -101,7 +118,8 @@ function bdPushUndo(label) {
     const snap = _bdSnapshot();
     historyPush(label || 'ボード編集', () => {
       _bdApplySnapshot(JSON.parse(snap));
-      if (typeof bdRender === 'function') bdRender();
+      if (typeof bdRunFullRender === 'function') bdRunFullRender('history-undo-common');
+      else if (typeof bdRender === 'function') bdRender();
       if (typeof bdDirty === 'function') bdDirty();
     }, null, _bdHistoryScope());
   } else {
@@ -198,7 +216,9 @@ function bdUndo() {
   if (!_bdUndoStack.length) return;
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
-  bdRender(); bdDirty();
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('history-undo-local');
+  else bdRender();
+  bdDirty();
   showStatus('\u5143\u306b\u623b\u3057\u307e\u3057\u305f');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
@@ -207,7 +227,9 @@ function bdRedo() {
   if (!_bdRedoStack.length) return;
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
-  bdRender(); bdDirty();
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('history-redo-local');
+  else bdRender();
+  bdDirty();
   showStatus('\u3084\u308a\u76f4\u3057\u307e\u3057\u305f');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
@@ -485,9 +507,8 @@ async function bdOpenBoard(label, path, opts) {
     if (typeof bdApplyAutoStyle === 'function') {
       bd.nodes.forEach(n => { if (n._autoStyle) bdApplyAutoStyle(n.id); });
     }
-    bdRender();
-    bdDrawConns();
-    bdDrawFrames();
+    if (typeof bdRunFullRender === 'function') bdRunFullRender('board-open');
+    else bdRender();
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     if (typeof MeldexBoardTopicIntegration !== 'undefined') MeldexBoardTopicIntegration.mountToolbar(bd);
     // ノードが多い場合のみフィット（少ない場合はズーム100%で表示）
@@ -514,10 +535,6 @@ async function bdOpenBoard(label, path, opts) {
     window.MeldexFileLockBadge?.apply?.(titleEl, prevPath);
     if (prevDump && typeof bdLoadState === 'function') {
       bdLoadState(prevDump);
-      if (typeof bdRender === 'function') bdRender();
-      if (typeof bdDrawConns === 'function') bdDrawConns();
-      if (typeof bdDrawFrames === 'function') bdDrawFrames();
-      if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     } else {
       const nodesEl = document.getElementById('bd-nodes');
       if (nodesEl) {
@@ -617,10 +634,8 @@ function bdLoadState(dump) {
   const titleEl = document.getElementById('bd-title');
   if (titleEl && bd.path) titleEl.textContent = bd.path.split('/').pop() || '';
   bdTransform();
-  bdRender();
-  bdDrawConns();
-  if (typeof bdDrawFrames === 'function') bdDrawFrames();
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('board-state-restore');
+  else bdRender();
 }
 
 // ==============================

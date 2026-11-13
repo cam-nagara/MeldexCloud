@@ -8,11 +8,18 @@ function _bdNormalizeLineWidth(value, fallback = 0) {
 }
 
 // --- フレーム描画 ---
-function bdDrawFrames() {
-  document.querySelectorAll('.bd-frame').forEach(f=>f.remove());
+function bdDrawFrames(options = {}) {
+  const groupIds = Array.isArray(options?.groupIds) || options?.groupIds instanceof Set
+    ? new Set([...(options.groupIds || [])].filter(Boolean).map(String))
+    : null;
+  document.querySelectorAll('.bd-frame').forEach(frame => {
+    if (!groupIds || groupIds.has(String(frame.dataset.groupId || ''))) frame.remove();
+  });
   const container = document.getElementById('bd-nodes');
   if (!bd.groups || !container) return;
   bd.groups.forEach(g => {
+    const resolvedGroupId = String(g.groupId || g.id || '');
+    if (groupIds && !groupIds.has(resolvedGroupId)) return;
     const gNodes = (g.nodeIds || []).map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
     if (!gNodes.length && ![g.x, g.y, g.w, g.h].every(Number.isFinite)) return;
     let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
@@ -104,7 +111,7 @@ function bdDrawFrames() {
         });
         const movedIds = startPositions.map(p => p.node.id);
         if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
-        if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'frame-drag' });
+        if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: movedIds, reason: 'frame-drag' });
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
@@ -135,8 +142,9 @@ function bdUpdateFramesForNodes(nodeIds) {
   if (!changed.size || !Array.isArray(bd.groups)) return;
   bd.groups.forEach(group => {
     if (!(group.nodeIds || []).some(id => changed.has(id))) return;
+    const groupId = String(group.groupId || group.id || '');
     const frame = [...document.querySelectorAll('.bd-frame')]
-      .find(candidate => candidate.dataset.groupId === group.id);
+      .find(candidate => candidate.dataset.groupId === groupId);
     if (!frame) return;
     const nodes = (group.nodeIds || []).map(id => bd.nodes.find(node => node.id === id))
       .filter(node => node && !node.contained);

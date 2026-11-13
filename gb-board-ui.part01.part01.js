@@ -873,7 +873,8 @@ function bdAddChildToSelected() {
       else bdRender();
     }
     if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(child.id, 'add-child');
-    if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([parentId, child.id], 'add-child');
+    if (conn?.id && typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'add-child');
+    else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([child.id], 'add-child');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([parentId, child.id], 'add-child');
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [child.id] }, 'add-child');
     // ルート構造 or 中間カード構造のいずれかがあれば自動整列をリクエスト。
@@ -959,7 +960,8 @@ function bdAddSiblingToSelected() {
       else bdRender();
     }
     if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(sib.id, 'add-sibling');
-    if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([parentId, sib.id], 'add-sibling');
+    if (conn?.id && typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'add-sibling');
+    else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([sib.id], 'add-sibling');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([selId, sib.id], 'add-sibling');
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [sib.id] }, 'add-sibling');
     let diffLayoutApplied = false;
@@ -979,10 +981,13 @@ function bdAddSiblingToSelected() {
       if (!diffLayoutApplied && typeof bdDrawConns === 'function') {
         bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling-fallback' });
       }
-      // 差分レイアウトで位置確保した後も、カード高さ差による整列ズレを解消するため
-      // 常に全体整列をリクエストする（bdRequestAutoLayout はデバウンス+rAFされる）。
-      if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(root.id, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS);
-      else bdAutoLayout(root.id);
+      // 差分レイアウトが成立した場合は、その結果を確定値として扱う。ここで遅延の全体整列を
+      // 予約すると、追加から数百ms後に全カード・全ライン更新へ戻って入力を止めてしまう。
+      // DOM計測不能などで差分化できなかった時だけ、互換fallbackとして全体整列を使う。
+      if (!diffLayoutApplied) {
+        if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(root.id, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS);
+        else bdAutoLayout(root.id);
+      }
     } else if (typeof bdDrawConns === 'function') {
       bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling' });
     }

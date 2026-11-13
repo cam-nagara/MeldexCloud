@@ -459,13 +459,17 @@
   }
 
   async function mediaImportPathResponse(body) {
-    const payload = body && typeof body === 'object' ? body : {};
+    const payload = typeof body === 'string' ? JSON.parse(body || '{}')
+      : (body && typeof body === 'object' ? body : {});
     const sourcePath = String(payload.source_path || '').trim();
     const sheetPath = String(payload.sheet_path || '').trim();
     if (!sourcePath || !sheetPath) throw new Error('元ファイルと添付先シートを指定してください');
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider?.downloadAsFile) throw new Error('ブラウザの保存先が未初期化です');
-    const source = await provider.downloadAsFile(sourcePath);
+    // `_media/...` と Web Clipper の `_assets/...` はホームフォルダ相対で
+    // 保存されることがある。表示時と同じ候補順で読むことで、Cloud の
+    // D&D 保持コピーだけがソースフォルダ直下を見て失敗する経路を作らない。
+    const source = await _downloadMediaFile(provider, sourcePath);
     const filename = String(payload.filename || source?.name || _basename(sourcePath));
     const file = source instanceof File && source.name === filename
       ? source : new File([source], filename, { type: source?.type || 'application/octet-stream' });
@@ -474,6 +478,73 @@
     form.append('sheet_path', sheetPath);
     form.append('thumbnail_size', String(payload.thumbnail_size || 256));
     return mediaUploadResponse(form);
+  }
+
+  async function mediaPreservePathResponse(body) {
+    const payload = typeof body === 'string' ? JSON.parse(body || '{}')
+      : (body && typeof body === 'object' ? body : {});
+    const sourcePath = String(payload.source_path || payload.path || '').trim();
+    if (!sourcePath) throw new Error('元ファイルを指定してください');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.downloadAsFile || !provider?.uploadBytes || !provider?.statPath) {
+      throw new Error('ブラウザの保存先が未初期化です');
+    }
+    const attachments = window.MeldexSheetAttachments;
+    if (!attachments?.detectContentExt || !attachments?.sha256Hex) {
+      throw new Error('添付ファイル処理を利用できません');
+    }
+    // `_media/...` と Web Clipper の `_assets/...` はホームフォルダ相対で
+    // 保存されることがある。表示時と同じ候補順で読むことで、Cloud の
+    // D&D 保持コピーだけがソースフォルダ直下を見て失敗する経路を作らない。
+    const source = await _downloadMediaFile(provider, sourcePath);
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    if (!bytes.length) throw new Error('空のファイルは保存できません');
+    const displayName = String(payload.filename || source?.name || _basename(sourcePath));
+    const ext = attachments.detectContentExt(bytes, displayName, source?.type || '');
+    const kind = attachments.mediaKindForExt(ext);
+    if (kind !== 'image' && kind !== 'video') {
+      throw new Error('貼り付けメディアとして保存できるのは画像と動画だけです');
+    }
+    const hash = await attachments.sha256Hex(bytes);
+    const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const dir = home ? home + '/貼り付けメディア' : '貼り付けメディア';
+    // Cloudはprovider横断でprefix列挙を仮定せず、完全hashを保存名にして
+    // 元の表示名が違う同一内容も同じ実体へ収束させる。
+    const desired = hash + '.' + ext;
+    const probe = await _cloudAttachmentProbe(provider, dir, hash, bytes.length);
+    const resolved = await attachments.resolveAttachmentFilename(desired, probe);
+    const path = dir + '/' + resolved.filename;
+    const identityAftercare = window.MeldexCreatedImageIdentityAftercare;
+    const prepared = kind === 'image' && !resolved.reused && identityAftercare?.prepare
+      ? await identityAftercare.prepare(provider, path, bytes, {
+        source: 'pasted-media', filename: resolved.filename,
+      })
+      : null;
+    if (!resolved.reused && (!prepared || prepared.publish_required)) {
+      try {
+        await provider.uploadBytes(path, bytes);
+      } catch (error) {
+        if (prepared && identityAftercare?.cancel) {
+          await identityAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+        }
+        throw error;
+      }
+    }
+    const identity = prepared && identityAftercare?.record
+      ? await identityAftercare.record(provider, path, bytes, { source: 'pasted-media', prepared })
+      : null;
+    return jsonResponse({
+      ok: true,
+      path,
+      filename: resolved.filename,
+      display_name: displayName,
+      kind,
+      content_hash: hash,
+      size: bytes.length,
+      reused: !!resolved.reused,
+      url: attachments.rawUrlForPath(path),
+      aftercare_pending: !!identity?.aftercare_pending,
+    });
   }
 
   async function sheetFilesResponse(apiUrl) {
@@ -715,6 +786,9 @@
       }
       if (apiUrl.pathname === '/media/import-path' && String(method || 'GET').toUpperCase() === 'POST') {
         return await mediaImportPathResponse(body);
+      }
+      if (apiUrl.pathname === '/media/preserve' && String(method || 'GET').toUpperCase() === 'POST') {
+        return await mediaPreservePathResponse(body);
       }
       if (apiUrl.pathname === '/sheet-files' && String(method || 'GET').toUpperCase() === 'GET') {
         return await sheetFilesResponse(apiUrl);

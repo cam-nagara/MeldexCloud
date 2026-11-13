@@ -1,16 +1,3 @@
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-      },
-    });
-    _removeOutlinerNodesForPaths(result.deletedPaths);
-    if (result.failedCount) {
-      const reason = result.failed?.[0]?.error;
-      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
-      loadOutliner();
-    } else if (result.succeeded.length) {
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
     } else if (result.skipped.length) {
       showStatus('削除対象が見つからなかったため、表示を更新しました', true);
       loadOutliner();
@@ -898,3 +885,16 @@ function _outlinerFindNewItemInListing(items, type, existingNames) {
     return identity && !existingNames.has(identity);
   }) || null;
 }
+
+// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
+function _outlinerApplyCreateSuccess(pendingNode, found, options) {
+  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
+  if (!pendingNode || !pendingNode.parentNode) return;
+  const newNode = createTreeNodeFromBrowse(found);
+  pendingNode.replaceWith(newNode);
+  _selectOutlinerCreateNode(newNode);
+}
+
+// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+  if (pendingNode && pendingNode.parentNode) pendingNode.remove();

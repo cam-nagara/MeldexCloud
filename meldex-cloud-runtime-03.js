@@ -25,10 +25,10 @@
   });
   const PREBUILT_SPLIT_BUNDLES = {
     'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '8a5cb9fa18a0', parts: { 'meldex-core.bundle.part01.js': 'f3ad185b4a49', 'meldex-core.bundle.part02.js': 'a80b640781e2', 'meldex-core.bundle.part03.js': '94e32f812e07', 'meldex-core.bundle.part04.js': 'ef4bd068ca64', 'meldex-core.bundle.part05.js': 'a208b4e6673d' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'c6d23730e57a', parts: { 'gb-app.bundle.part01.js': '6b07166ced7e', 'gb-app.bundle.part02.js': 'f08c68823983', 'gb-app.bundle.part03.js': '00dc6053c4e4', 'gb-app.bundle.part04.js': '3883486a53f0', 'gb-app.bundle.part05.js': '5a77cda01a7e', 'gb-app.bundle.part06.js': 'df7e9c71326f', 'gb-app.bundle.part07.js': 'a2f6e520af9b' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '933c1d68ebac', parts: { 'gb-app.bundle.part01.js': 'fd4e4d6461f1', 'gb-app.bundle.part02.js': 'e374de370927', 'gb-app.bundle.part03.js': '46f200eae257', 'gb-app.bundle.part04.js': '488ba063d52c', 'gb-app.bundle.part05.js': '8b52af3670b6', 'gb-app.bundle.part06.js': 'e85cdd632390', 'gb-app.bundle.part07.js': '5b107ce891f3' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '47197f4d01b4', parts: { 'gb-theme-manager.bundle.part01.js': '29d330501f88', 'gb-theme-manager.bundle.part02.js': '9bc030516ac9', 'gb-theme-manager.bundle.part03.js': '1cb58589e2b6', 'gb-theme-manager.bundle.part04.js': '08a7a2f05f3f' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '1567c6ca0896', parts: { 'gb-outliner.bundle.part01.js': '9ecffddd736c', 'gb-outliner.bundle.part02.js': '0341772dd208', 'gb-outliner.bundle.part03.js': 'cb4ffe254238', 'gb-outliner.bundle.part04.js': '69d2898e2585', 'gb-outliner.bundle.part05.js': 'aaaca8ebb52a', 'gb-outliner.bundle.part06.js': '9db7222f538a', 'gb-outliner.bundle.part07.js': '072acb00d46d' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '05629a1784f9', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': 'b8eb7566ddaf', 'gb-data-access-dropbox-fileops.bundle.part02.js': '0e9f98d8227e', 'gb-data-access-dropbox-fileops.bundle.part03.js': '900af9b37599', 'gb-data-access-dropbox-fileops.bundle.part04.js': '347d8f319c85', 'gb-data-access-dropbox-fileops.bundle.part05.js': 'be7b96e661f8', 'gb-data-access-dropbox-fileops.bundle.part06.js': '6f91aa1e9bb7', 'gb-data-access-dropbox-fileops.bundle.part07.js': '54d414d4140a' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '4a661ebcf61e', parts: { 'gb-outliner.bundle.part01.js': '9ecffddd736c', 'gb-outliner.bundle.part02.js': '0341772dd208', 'gb-outliner.bundle.part03.js': '21dc6e0f43bc', 'gb-outliner.bundle.part04.js': '64a9bd758eab', 'gb-outliner.bundle.part05.js': 'c98a63bdc5c3', 'gb-outliner.bundle.part06.js': '172dd6d8d2e0', 'gb-outliner.bundle.part07.js': '91c1a92cd08b' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '9b9a5be44143', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '22d3b2347d99', 'gb-data-access-dropbox-fileops.bundle.part02.js': '1b9a372c58d1', 'gb-data-access-dropbox-fileops.bundle.part03.js': '8f401580ae12', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'b7d8debd6a84', 'gb-data-access-dropbox-fileops.bundle.part05.js': 'd5877d288600', 'gb-data-access-dropbox-fileops.bundle.part06.js': 'dfd06cf3b329', 'gb-data-access-dropbox-fileops.bundle.part07.js': '80f1b0d07479' } },
     'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '0e64b1e45f57', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '9edf34ed3c11', 'gb-cloud-mobile-editbar.bundle.part02.js': '962cc03502e9' } },
   };
 
@@ -697,7 +697,7 @@
 /* === gb-cloud-asset-loader.js === */
 ;
 (function(){
-const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=a8777c4bd3c856a6", "meldex-cloud-scenario.css?v=88dad900b0ca3376"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
+const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=408252e53aa38658", "meldex-cloud-scenario.css?v=88dad900b0ca3376"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
 window.MeldexCloudAssets={load(name){
  if(!groups[name])return Promise.resolve();
  if(pending.has(name))return pending.get(name);

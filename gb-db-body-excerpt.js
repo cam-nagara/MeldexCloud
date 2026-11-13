@@ -3,6 +3,7 @@
   'use strict';
   const LIMIT = 200;
   const pending = new Map();
+  const previewPending = new Map();
   const queue = [];
   let active = 0;
   const observed = new Set();
@@ -118,18 +119,45 @@
     return pending.get(key);
   }
 
+  function safeEmbeddedImage(raw) {
+    const template = document.createElement('template');
+    template.innerHTML = String(raw || '');
+    template.content.querySelectorAll('script,style,iframe,object').forEach(el => el.remove());
+    const src = String(template.content.querySelector('img[src]')?.getAttribute('src') || '').trim();
+    return /^(?:data:image\/(?:png|jpeg|jpg|gif|webp);base64,|blob:|\/)/i.test(src) ? src : '';
+  }
+
+  function hasAudio(raw) {
+    const text = String(raw || '');
+    return /<(?:audio|source)\b/i.test(text) || /quick[_-]memo[_-]audio|音声メモ/i.test(text);
+  }
+
+  async function readPreview(path) {
+    const data = await request('/entity?path=' + encodeURIComponent(path));
+    const raw = String(data?.page_content || '');
+    const image = safeEmbeddedImage(raw);
+    const audio = hasAudio(raw);
+    let text = take(plain(raw));
+    if (!image && !audio && !text) text = await load(path);
+    return { image, audio, text };
+  }
+
+  function loadPreview(path) {
+    const key = scope() + ':' + path;
+    if (!previewPending.has(key)) previewPending.set(key, readPreview(path).finally(() => previewPending.delete(key)));
+    return previewPending.get(key);
+  }
+
   function append(root, path) {
     if (!root || !path) return;
     const row = document.createElement('div');
     row.className = 'db-body-excerpt';
     row.dataset.dbBodyExcerpt = path;
-    row.setAttribute('aria-label', '本文冒頭');
+    row.setAttribute('aria-label', '内容のプレビュー');
     row.style.cssText = 'font-size:inherit;line-height:1.5;white-space:normal;overflow-wrap:anywhere;';
-    const label = document.createElement('span');
-    label.textContent = '本文冒頭: ';
-    label.style.color = 'var(--fg2)';
     const value = document.createElement('span');
-    row.append(label, value);
+    value.className = 'db-body-excerpt-value';
+    row.append(value);
     root.appendChild(row);
     let generation = 0;
     const refresh = async () => {
@@ -137,10 +165,24 @@
       value.textContent = '読込中…';
       row.removeAttribute('title');
       try {
-        const text = await load(path);
+        const preview = await loadPreview(path);
         if (!row.isConnected || ticket !== generation) return;
         if (scope() !== requestedScope) throw new Error('保存先が変わりました。ビューを開き直してください');
-        value.textContent = text || '—';
+        value.replaceChildren();
+        if (preview.image) {
+          const image = document.createElement('img');
+          image.src = preview.image;
+          image.alt = '内容のサムネイル';
+          image.loading = 'lazy';
+          value.appendChild(image);
+        } else if (preview.audio) {
+          const media = document.createElement('span');
+          media.className = 'db-body-audio-preview';
+          media.innerHTML = (typeof lucide === 'function' ? lucide('audioLines', 32) : '&#9835;') + '<span>音声</span>';
+          value.appendChild(media);
+        } else {
+          value.textContent = preview.text || '—';
+        }
       } catch (error) {
         if (!row.isConnected || ticket !== generation) return;
         value.textContent = '';
@@ -159,5 +201,5 @@
     return row;
   }
 
-  window.MeldexDbBodyExcerpt = Object.freeze({ append, load, plain, take, sheetText });
+  window.MeldexDbBodyExcerpt = Object.freeze({ append, load, loadPreview, plain, take, sheetText });
 })();

@@ -1,16 +1,3 @@
-          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
-            background: true, silentError: true,
-            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
-          });
-        } catch (_) { /* A foreground click retries through the normal error path. */ }
-        finally { _outlinerWarmKeys.delete(next.path); }
-      }
-    } finally { _outlinerWarmRunning = false; }
-  }, 0);
-}
-
-function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
-  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
     child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
   const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
   // Navigation must paint before a migration reads/writes the entire Topic store.
@@ -898,3 +885,16 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         _removeOutlinerNodesForPaths([item.path]);
       },
       refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    _removeOutlinerNodesForPaths(result.deletedPaths);
+    if (result.failedCount) {
+      const reason = result.failed?.[0]?.error;
+      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
+      loadOutliner();
+    } else if (result.succeeded.length) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);

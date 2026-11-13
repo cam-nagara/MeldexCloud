@@ -1188,12 +1188,37 @@ function _syncChatSessionTitleInput() {
   if (!input) return;
   input.value = _chatState.sessionTitle || '';
   const fallbackTitle = _chatFallbackTitle('', _chatState.targetPath);
-  input.placeholder = _chatState.targetPath ? `チャット名（既定: ${fallbackTitle}）` : 'チャット名（任意）';
+  input.placeholder = _chatState.targetPath
+    ? `チャット名（自動: ${fallbackTitle}）`
+    : 'チャット名（最初の依頼から自動）';
 }
 
 function _setChatSessionTitle(title) {
   _chatState.sessionTitle = String(title || '').trim();
   _syncChatSessionTitleInput();
+}
+
+function _chatAutomaticTitleFromText(text, attachments = []) {
+  let title = String(text || '').replace(/\s+/g, ' ').trim();
+  title = title.replace(/^(?:[#>*+\-]|\d+[.)])\s*/, '').trim();
+  if (!title && Array.isArray(attachments)) {
+    title = String(attachments.find(item => item?.name || item?.path)?.name
+      || attachments.find(item => item?.path)?.path?.split(/[\\/]/).pop()
+      || '').trim();
+  }
+  if (!title) {
+    const target = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.targetPath || '');
+    const leaf = String(target || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    title = leaf ? leaf + 'のチャット' : '新しいチャット';
+  }
+  return title.length > 48 ? title.slice(0, 47).trimEnd() + '…' : title;
+}
+
+function _chatEnsureAutomaticSessionTitle(text, attachments = []) {
+  if (String(_chatState.sessionTitle || '').trim()) return _chatState.sessionTitle;
+  const title = _chatAutomaticTitleFromText(text, attachments);
+  _setChatSessionTitle(title);
+  return title;
 }
 
 function _captureChatSessionTitleFromInput() {

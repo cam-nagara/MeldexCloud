@@ -61,6 +61,7 @@
 }
 
 .chat-target-clear,
+.chat-target-current,
 .chat-target-pick {
   width: 26px;
   padding: 2px;

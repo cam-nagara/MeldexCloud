@@ -1,3 +1,5 @@
+  // Finish that work before reporting a startup failure. Bound the work and
+  // stop on stalled coverage; storage/CAS errors still propagate unchanged.
   const seen = new Set();
   let coverage;
   for (let batch = 0; batch < 200; batch++) {
@@ -896,5 +898,3 @@ function _fileVersionInfoFromName(name) {
     created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
   };
 }
-
-function _versionLabelFromName(path, name) {

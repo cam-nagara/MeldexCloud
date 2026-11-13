@@ -89,6 +89,9 @@
     PORTABLE_KNOWLEDGE_DEVICES: 'portable-knowledge-devices',
     // Web Clipper owner鍵の一回限り端末登録と、所有者が失効できる端末台帳。
     WEBCLIP_OWNER_DEVICES: 'webclip-owner-devices',
+    // Cloud一括ファイル操作のwrite-ahead journal。作品ファイルやフォルダ関連付けへ
+    // 混在させず、適用・Undo・Redo・障害復旧を操作ID単位でCAS更新する。
+    BATCH_FILE_OPERATIONS: 'batch-file-operations',
   });
 
   const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
@@ -253,6 +256,7 @@
     [SystemStorageKind.PORTABLE_KNOWLEDGE_ARTIFACTS]: { maxDocumentBytes: 8_000_000, maxTotalBytes: 2_000_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.PORTABLE_KNOWLEDGE_DEVICES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.WEBCLIP_OWNER_DEVICES]: { maxDocumentBytes: 500_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.BATCH_FILE_OPERATIONS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 500_000_000, maxGenerations: null, retentionDays: 30 },
   });
 
   function retentionPolicyFor(kind) {

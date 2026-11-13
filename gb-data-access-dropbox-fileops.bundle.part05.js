@@ -1,3 +1,5 @@
+      const rawPath = _normalizeFolderPath(body?.path || '');
+      if (!rawPath) return { ok: false, needManualInput: true };
       const entry = await _resolveEntryHandle(provider, rawPath);
       if (!entry || entry.kind !== 'directory') return { ok: false, error: 'フォルダが見つかりません' };
       return { ok: true, path: rawPath, name: _basename(rawPath) || rawPath || 'vault' };
@@ -896,5 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/read-folder-file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      return _readFolderVersionFile(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', url.searchParams.get('file') || '');
-    }

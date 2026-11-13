@@ -11077,6 +11077,7 @@
   ]);
   const TEMPLATE_ROOT_FIELDS = [
     'layoutMode', 'rubyPresentation', 'viewMode', 'pageSettings',
+    'templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs',
   ];
 
   function plain(value) {
@@ -11717,6 +11718,179 @@
     prepareForSave,
   });
 })(typeof globalThis !== 'undefined' ? globalThis : window);
+
+;
+
+/* === gb-scriptnote-template-definitions.js === */
+;
+/* gb-scriptnote-template-definitions.js: 版付きシナリオ書式の正本。
+ * 編集画面、テンプレートカード、印刷レイアウトは同じ定義を参照する。
+ */
+(function initScriptNoteTemplateDefinitions(global) {
+  'use strict';
+
+  const VERSION = 1;
+  const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+  const sources = {
+    drama: ['https://www.eiren.org/kido/', 'data/page-setup-presets/scriptnote/drama-kido-a4l-20x40.json'],
+    afureko: ['https://www.scenarioprint.com/dubbing.html', 'data/page-setup-presets/scriptnote/afureko-b5-2col.json'],
+    stage: ['https://www.scenario.co.jp/online/37018/', 'data/page-setup-presets/scriptnote/stage-print-b5-20x20.json'],
+    manga: ['data/page-setup-presets/scriptnote/manga-a4-h-modern.json'],
+  };
+
+  const common = {
+    templateVersion: VERSION,
+    binding: 'right',
+    writingMode: 'vertical-rl',
+    textOrientation: 'mixed',
+    punctuation: 'ja',
+    pageNumber: { enabled: true, position: 'outside-bottom', start: 1 },
+    pagination: { avoidOrphanHeading: true, keepRoleWithDialogue: true, manualBreakKind: 'pageBreak' },
+  };
+
+  const definitions = [
+    {
+      id: 'manga', name: 'マンガシナリオ', purpose: 'マンガのページ・コマ構成', sourceRefs: sources.manga,
+      description: 'ページとコマ、セリフ、ト書き、モノローグを編集する横書き中心の書式。',
+      layoutMode: 'manga', writingMode: 'horizontal-tb', binding: 'left',
+      paper: { size: 'A4', orientation: 'portrait', widthMm: 210, heightMm: 297 },
+      margin: { topMm: 18, bottomMm: 18, innerMm: 18, outerMm: 18 },
+      grid: { charsPerLine: 40, linesPerPage: 36, fontSizePt: 10.5, lineSpacingPt: 16 },
+      fonts: { body: 'Yu Gothic', heading: 'Yu Gothic', fallback: ['Noto Sans JP', 'sans-serif'] },
+      sample: [['heading', 'P1'], ['cut', 'コマ1　教室・放課後'], ['action', '窓の外を見る主人公'], ['dialogue', '主人公「……まだ帰らないの？」']],
+    },
+    {
+      id: 'drama', name: 'ドラマ・映画シナリオ', purpose: '劇場映画・映像脚本の応募／決定稿', sourceRefs: sources.drama,
+      description: 'A4横、右綴じ、縦書き20字×40行。柱、ト書き、役名、台詞を一括設定します。',
+      layoutMode: 'drama',
+      paper: { size: 'A4', orientation: 'landscape', widthMm: 297, heightMm: 210 },
+      margin: { topMm: 33, bottomMm: 33, innerMm: 36, outerMm: 33 },
+      grid: { charsPerLine: 20, linesPerPage: 40, fontSizePt: 10.5, lineSpacingPt: 16.35 },
+      fonts: { body: 'Yu Mincho', heading: 'HG Gothic M', fallback: ['Noto Serif JP', 'MS Mincho', 'serif'] },
+      paragraph: { pillarIndentChars: 0, actionIndentChars: 3, roleIndentChars: 0, dialogueWrapIndentChars: 1 },
+      sections: ['cover', 'synopsis', 'characterList', 'body'],
+      sample: [['heading', '○ 駅前・夜'], ['action', '　雨が降っている。'], ['dialogue', '主人公「待った？」'], ['dialogue', 'ヒロイン「ううん、今来たところ」']],
+    },
+    {
+      id: 'afureko', name: 'アフレコシナリオ', purpose: '声優収録用アフレコ台本', sourceRefs: sources.afureko,
+      description: 'B5縦、右綴じ、縦書き。C／画面／M／音声の区画とカット罫線を適用します。',
+      layoutMode: 'afureko',
+      paper: { size: 'B5', orientation: 'portrait', widthMm: 182, heightMm: 257 },
+      margin: { topMm: 25, bottomMm: 30, innerMm: 24, outerMm: 24 },
+      grid: { charsPerLine: 18, linesPerPage: 18, fontSizePt: 12, lineSpacingPt: 28 },
+      fonts: { body: 'Noto Serif JP', heading: 'Noto Sans JP', fallback: ['Yu Mincho', 'MS Mincho', 'serif'] },
+      bands: [
+        { id: 'cut', label: 'C', ratio: 0.10 }, { id: 'picture', label: '画面', ratio: 0.30 },
+        { id: 'music', label: 'M', ratio: 0.10 }, { id: 'voice', label: '音声', ratio: 0.50 },
+      ],
+      rules: { cutBorder: true, repeatBandHeader: true, repeatRoleOnPageBreak: true },
+      sample: [['heading', 'C 12'], ['picture', '主人公が振り向く'], ['music', 'M IN'], ['dialogue', '主人公「行くぞ！」']],
+    },
+    {
+      id: 'stage', name: '舞台シナリオ', purpose: '舞台脚本の応募原稿／製本台本', sourceRefs: sources.stage,
+      description: 'B5横、右綴じ、縦書き20字×20行。幕／場、ト書き、役名、音響・照明指示を適用します。',
+      layoutMode: 'stage',
+      paper: { size: 'B5', orientation: 'landscape', widthMm: 257, heightMm: 182 },
+      margin: { topMm: 29, bottomMm: 29, innerMm: 26, outerMm: 26 },
+      grid: { charsPerLine: 20, linesPerPage: 20, fontSizePt: 10.5, lineSpacingPt: 16 },
+      fonts: { body: 'Yu Mincho', heading: 'Yu Mincho', fallback: ['Noto Serif JP', 'MS Mincho', 'serif'] },
+      paragraph: { headingIndentChars: 0, actionIndentChars: 4, roleIndentChars: 0, dialogueWrapIndentChars: 1 },
+      marks: { stageLeft: '上手', stageRight: '下手', music: 'M', sound: 'SE', lighting: '照明' },
+      sample: [['heading', '第一幕　第一場'], ['action', '（明転。主人公、上手より登場）'], ['dialogue', '主人公「ここにいたのか」'], ['cue', 'SE　遠雷']],
+    },
+  ].map(item => Object.freeze({ ...common, ...item, templateVersion: VERSION }));
+
+  const byId = new Map(definitions.map(item => [item.id, item]));
+
+  function validate(definition) {
+    if (!definition || !definition.id || !definition.layoutMode) throw new Error('シナリオテンプレートの識別情報がありません');
+    if (!Number.isInteger(definition.templateVersion) || definition.templateVersion < 1) throw new Error('シナリオテンプレートの版が不正です');
+    if (!definition.paper || !Number.isFinite(definition.paper.widthMm) || !Number.isFinite(definition.paper.heightMm)) throw new Error('シナリオテンプレートの用紙設定が不正です');
+    if (!definition.grid || !Number.isFinite(definition.grid.charsPerLine) || !Number.isFinite(definition.grid.linesPerPage)) throw new Error('シナリオテンプレートの文字数・行数が不正です');
+    if (!['vertical-rl', 'horizontal-tb'].includes(definition.writingMode)) throw new Error('シナリオテンプレートの組方向が不正です');
+    if (!Array.isArray(definition.sourceRefs) || !definition.sourceRefs.length) throw new Error('シナリオテンプレートの根拠資料がありません');
+    return definition;
+  }
+
+  function definition(id) {
+    const value = byId.get(String(id || ''));
+    return value ? clone(validate(value)) : null;
+  }
+
+  function prepareBuiltin(doc, id) {
+    const spec = definition(id);
+    if (!spec) throw new Error('指定された初期搭載テンプレートが見つかりません');
+    const next = clone(doc || {});
+    next.layoutMode = spec.layoutMode;
+    next.templateId = spec.id;
+    next.templateVersion = spec.templateVersion;
+    next.templatePurpose = spec.purpose;
+    next.templateSourceRefs = clone(spec.sourceRefs);
+    next.pageSettings = clone(spec);
+    next.editor = { ...(next.editor || {}), viewMode: spec.writingMode === 'vertical-rl' ? 'vertical' : 'horizontal' };
+    next.rubyPresentation = { ...(next.rubyPresentation || {}), writingMode: next.editor.viewMode };
+    const validation = global.GBScriptNoteRoleModel?.validateDocument?.(next);
+    if (validation && !validation.valid) throw new Error(`テンプレート検査に失敗しました: ${validation.errors.join(' / ')}`);
+    return { doc: next, definition: spec };
+  }
+
+  function prepareCustom(doc, template) {
+    if (!template || typeof template !== 'object' || Array.isArray(template)) throw new Error('カスタムテンプレートが壊れています');
+    const next = clone(doc || {});
+    if (global.GBScriptNoteRoleModel?.applyTemplate) global.GBScriptNoteRoleModel.applyTemplate(next, clone(template));
+    else {
+      if (template.layoutMode) next.layoutMode = String(template.layoutMode);
+      if (template.editor && typeof template.editor === 'object') next.editor = clone(template.editor);
+      if (template.rubyPresentation && typeof template.rubyPresentation === 'object') next.rubyPresentation = clone(template.rubyPresentation);
+    }
+    const validation = global.GBScriptNoteRoleModel?.validateDocument?.(next);
+    if (validation && !validation.valid) throw new Error(`カスタムテンプレート検査に失敗しました: ${validation.errors.join(' / ')}`);
+    return { doc: next, definition: null };
+  }
+
+  function commit(target, prepared) {
+    if (!target || !prepared?.doc) throw new Error('テンプレートの適用先を確認できません');
+    const next = clone(prepared.doc);
+    Object.keys(target).forEach(key => delete target[key]);
+    Object.assign(target, next);
+    return target;
+  }
+
+  function renderThumbnail(specOrId, host) {
+    const spec = typeof specOrId === 'string' ? definition(specOrId) : clone(specOrId);
+    validate(spec);
+    const page = document.createElement('div');
+    page.className = 'gb-tpl-doc sn-print-paper';
+    page.dataset.templateId = spec.id;
+    page.dataset.templateVersion = String(spec.templateVersion);
+    page.style.aspectRatio = `${spec.paper.widthMm} / ${spec.paper.heightMm}`;
+    page.style.writingMode = spec.writingMode;
+    page.style.fontFamily = [spec.fonts?.body, ...(spec.fonts?.fallback || [])].filter(Boolean).join(',');
+    page.style.setProperty('--sn-page-inner-mm', String(spec.margin?.innerMm || 20));
+    (spec.bands || []).forEach(band => {
+      const label = document.createElement('span'); label.className = 'sn-print-band-label'; label.textContent = band.label; page.appendChild(label);
+    });
+    (spec.sample || []).forEach(([kind, text]) => {
+      const row = document.createElement('div');
+      row.className = `gb-tpl-doc-line sn-print-row sn-print-row--${kind}`;
+      row.textContent = text;
+      page.appendChild(row);
+    });
+    host.appendChild(page);
+  }
+
+  definitions.forEach(validate);
+  global.MeldexScriptNoteTemplateDefinitions = Object.freeze({
+    VERSION,
+    all: () => definitions.map(clone),
+    get: definition,
+    validate,
+    prepareBuiltin,
+    prepareCustom,
+    commit,
+    renderThumbnail,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
 
@@ -27368,19 +27542,58 @@ function bdAppendFastNode(node) {
   const ok = typeof bdReplaceNodeElement === 'function'
     ? bdReplaceNodeElement(node, { fastCardRender })
     : false;
-  if (ok && fastCardRender) bdMarkFastCardRenderUsed();
+  if (ok && fastCardRender) {
+    bdMarkFastCardRenderUsed();
+    // 軽量DOMは入力直後だけに限定し、呼び出し元が予約を忘れても次のflushで必ず
+    // 通常のbdRenderNodeへ置き換える。常設アンカーは復活させない。
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, 'fast-node-normalize');
+  }
   bdPerfEnd('bdAppendFastNode', started, fastCardRender ? 'fast-card-render=1' : '');
   return !!ok;
 }
 
+let _bdFastNodeIndex = null;
+let _bdFastChildrenIndex = null;
+let _bdFastIndexSource = null;
+let _bdFastIndexLength = -1;
+
+function bdInvalidateFastBoardIndexes() {
+  _bdFastNodeIndex = null;
+  _bdFastChildrenIndex = null;
+  _bdFastIndexSource = null;
+  _bdFastIndexLength = -1;
+}
+
+function bdEnsureFastBoardIndexes() {
+  const nodes = (typeof bd !== 'undefined' && Array.isArray(bd.nodes)) ? bd.nodes : [];
+  if (_bdFastNodeIndex && _bdFastIndexSource === nodes && _bdFastIndexLength === nodes.length) {
+    return { nodes: _bdFastNodeIndex, children: _bdFastChildrenIndex };
+  }
+  const nodeIndex = new Map();
+  const childIndex = new Map();
+  nodes.forEach(node => {
+    if (!node?.id) return;
+    nodeIndex.set(node.id, node);
+    if (!node.contained && node.parent) {
+      if (!childIndex.has(node.parent)) childIndex.set(node.parent, []);
+      childIndex.get(node.parent).push(node);
+    }
+  });
+  _bdFastNodeIndex = nodeIndex;
+  _bdFastChildrenIndex = childIndex;
+  _bdFastIndexSource = nodes;
+  _bdFastIndexLength = nodes.length;
+  return { nodes: nodeIndex, children: childIndex };
+}
+
 function bdFastNodeById(nodeId) {
   if (typeof bd === 'undefined' || !nodeId) return null;
-  return bd.nodes.find(node => node?.id === nodeId) || null;
+  return bdEnsureFastBoardIndexes().nodes.get(nodeId) || null;
 }
 
 function bdFastChildren(parentId) {
   if (typeof bd === 'undefined') return [];
-  return bd.nodes.filter(node => node?.parent === parentId && !node.contained);
+  return bdEnsureFastBoardIndexes().children.get(parentId) || [];
 }
 
 function bdFastSubtreeIds(rootId) {
@@ -30764,11 +30977,18 @@ function _bdNormalizeLineWidth(value, fallback = 0) {
 }
 
 // --- フレーム描画 ---
-function bdDrawFrames() {
-  document.querySelectorAll('.bd-frame').forEach(f=>f.remove());
+function bdDrawFrames(options = {}) {
+  const groupIds = Array.isArray(options?.groupIds) || options?.groupIds instanceof Set
+    ? new Set([...(options.groupIds || [])].filter(Boolean).map(String))
+    : null;
+  document.querySelectorAll('.bd-frame').forEach(frame => {
+    if (!groupIds || groupIds.has(String(frame.dataset.groupId || ''))) frame.remove();
+  });
   const container = document.getElementById('bd-nodes');
   if (!bd.groups || !container) return;
   bd.groups.forEach(g => {
+    const resolvedGroupId = String(g.groupId || g.id || '');
+    if (groupIds && !groupIds.has(resolvedGroupId)) return;
     const gNodes = (g.nodeIds || []).map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
     if (!gNodes.length && ![g.x, g.y, g.w, g.h].every(Number.isFinite)) return;
     let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
@@ -30860,7 +31080,7 @@ function bdDrawFrames() {
         });
         const movedIds = startPositions.map(p => p.node.id);
         if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
-        if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'frame-drag' });
+        if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: movedIds, reason: 'frame-drag' });
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
@@ -30891,8 +31111,9 @@ function bdUpdateFramesForNodes(nodeIds) {
   if (!changed.size || !Array.isArray(bd.groups)) return;
   bd.groups.forEach(group => {
     if (!(group.nodeIds || []).some(id => changed.has(id))) return;
+    const groupId = String(group.groupId || group.id || '');
     const frame = [...document.querySelectorAll('.bd-frame')]
-      .find(candidate => candidate.dataset.groupId === group.id);
+      .find(candidate => candidate.dataset.groupId === groupId);
     if (!frame) return;
     const nodes = (group.nodeIds || []).map(id => bd.nodes.find(node => node.id === id))
       .filter(node => node && !node.contained);
@@ -33242,13 +33463,18 @@ async function bdDeleteSelected(options = {}) {
   if (!selectedConnIdsBeforeDelete.length && bd.selected.size===0) return;
   bdPushUndo();
   if (bd.selected.size === 0 && selectedConnIdsBeforeDelete.length) {
+    const removedConnections = (bd.connections || []).filter(conn => selectedConnIdsBeforeDelete.includes(conn?.id));
+    const previousEndpointPairs = removedConnections.map(conn => ({ from: conn.from, to: conn.to }));
     selectedConnIdsBeforeDelete.forEach(connId => {
       if (typeof bdRemoveConnection === 'function') bdRemoveConnection(connId, { skipRender: true, skipDirty: true, skipSelection: true });
     });
+    if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
     bdClearConnectionSelection();
-    bdDrawConns();
+    bdDrawConns({ connIds: selectedConnIdsBeforeDelete, previousEndpointPairs, reason: 'delete-lines' });
     bdDirty();
-    if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ minimap: true, boardUi: true, detailPanel: true }, 'delete-lines');
+    } else if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     return;
   }
   const deletedIds = [...bd.selected];
@@ -33261,10 +33487,20 @@ async function bdDeleteSelected(options = {}) {
   } : null;
   // Phase 4: カード/ライン混在選択時、単独選択されたラインも削除する
   const selectedConnIds = new Set(selectedConnIdsBeforeDelete);
-  const removedConnIds = bd.connections
-    .filter(c => !c || bd.selected.has(c.from) || bd.selected.has(c.to) || selectedConnIds.has(c.id))
-    .map(c => c?.id)
+  const removedConnections = bd.connections
+    .filter(c => c && (bd.selected.has(c.from) || bd.selected.has(c.to) || selectedConnIds.has(c.id)));
+  const removedConnIds = removedConnections
+    .map(c => c.id)
     .filter(Boolean);
+  const previousEndpointPairs = removedConnections.map(conn => ({ from: conn.from, to: conn.to }));
+  const affectedNodeIds = new Set();
+  const affectedFrameIds = new Set();
+  (bd.groups || []).forEach(group => {
+    if ((group.nodeIds || []).some(id => bd.selected.has(id))) {
+      const groupId = group.groupId || group.id;
+      if (groupId) affectedFrameIds.add(groupId);
+    }
+  });
   if (removedConnIds.length && typeof apiPost === 'function' && bd?.path) {
     removedConnIds.forEach(connId => {
       apiPost('/annotations/orphan-by-target', {
@@ -33277,6 +33513,8 @@ async function bdDeleteSelected(options = {}) {
   }
   bd.connections = bd.connections.filter(c =>
     !bd.selected.has(c.from) && !bd.selected.has(c.to) && !selectedConnIds.has(c.id));
+  if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   // 削除されるコンテナノードに contained されていた子を外に出す
   // (contained のままだとレンダ時に非表示になるため)
   const _deletedContainers = bd.nodes.filter(n => bd.selected.has(n.id) && n.container);
@@ -33289,11 +33527,17 @@ async function bdDeleteSelected(options = {}) {
         ch.contained = false;
         ch.x = pos.x;
         ch.y = pos.y;
+        affectedNodeIds.add(ch.id);
       }
     });
   }
   // 削除されるノードを親に持つ子のparent参照をクリア
-  bd.nodes.forEach(n => { if (n.parent && bd.selected.has(n.parent)) n.parent = ''; });
+  bd.nodes.forEach(n => {
+    if (n.parent && bd.selected.has(n.parent)) {
+      n.parent = '';
+      affectedNodeIds.add(n.id);
+    }
+  });
   // グループから削除ノードを除去
   if (bd.groups) bd.groups.forEach(g => { if (g.nodeIds) g.nodeIds = g.nodeIds.filter(id => !bd.selected.has(id)); });
   // ドリルダウン中のルートが削除対象なら解除（そのまま描画すると全カードが消える）
@@ -33301,6 +33545,7 @@ async function bdDeleteSelected(options = {}) {
     _bdDrillRoot = null;
   }
   bd.nodes = bd.nodes.filter(n => !bd.selected.has(n.id));
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   // 空になったグループを除去
   if (bd.groups) bd.groups = bd.groups.filter(g => g.nodeIds && g.nodeIds.length > 0);
   bd.selected.clear();
@@ -33308,9 +33553,31 @@ async function bdDeleteSelected(options = {}) {
   bd._activeNode = nextSelectedId || null;
   if (nextSelectedId) bd.selected.add(nextSelectedId);
   bdClearConnectionSelection();
-  bdRender();
+  deletedIds.forEach(id => {
+    if (typeof bdRemoveNodeRender === 'function') bdRemoveNodeRender(id);
+    else document.getElementById('bdn-' + id)?.remove();
+  });
+  if (typeof bdDrawConns === 'function') {
+    bdDrawConns({ connIds: removedConnIds, previousEndpointPairs, reason: 'delete-nodes' });
+  }
+  affectedNodeIds.forEach(id => {
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'delete-parent');
+  });
+  if (typeof bdMarkSelectionDirty === 'function') {
+    bdMarkSelectionDirty(nextSelectedId ? [nextSelectedId] : [], 'delete-selection');
+  }
+  if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({
+      frameIds: affectedFrameIds,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+      comments: [...affectedNodeIds],
+    }, 'delete-nodes');
+  }
   bdDirty();
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+  if (typeof bdMarkExtrasDirty !== 'function' && typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
 }
 
 // --- ステータス定義 ---
@@ -34042,10 +34309,13 @@ function bdPaste() {
   const offset = 30;
   const { newNodes, idMap } = bdCloneNodesWithOffset(_bdClipboard, offset);
   bd.nodes.push(...newNodes);
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+  const newConnectionIds = [];
 /* gb-canvas-engine.part04.js */
   // 接続線もコピー（選択ノード間のもの）
   (_bdClipboardConnections || []).forEach(c => {
-    if (idMap[c.from] && idMap[c.to]) bd.connections.push({
+    if (idMap[c.from] && idMap[c.to]) {
+      const copiedConnection = {
       id: bdId(),
       from:idMap[c.from],
       to:idMap[c.to],
@@ -34079,12 +34349,28 @@ function bdPaste() {
         ? [{ dx: c.controlPoints[0].dx, dy: c.controlPoints[0].dy },
            { dx: c.controlPoints[1].dx, dy: c.controlPoints[1].dy }]
         : undefined,
-    });
+      };
+      bd.connections.push(copiedConnection);
+      newConnectionIds.push(copiedConnection.id);
+    }
   });
   // 新ノードを選択
   bd.selected = new Set(newNodes.map(n=>n.id));
   bdClearConnectionSelection();
-  bdRender(); bdDirty();
+  if (typeof bdInvalidateConnectionRuntimeIndex === 'function') bdInvalidateConnectionRuntimeIndex();
+  if (typeof bdRefreshNodesPartial === 'function') {
+    bdRefreshNodesPartial(newNodes.map(node => node.id), 'paste-nodes', {
+      frames: true,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+    });
+    newConnectionIds.forEach(id => {
+      if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(id, 'paste-connections');
+    });
+  } else if (typeof bdRunFullRender === 'function') bdRunFullRender('paste-fallback');
+  else bdRender();
+  bdDirty();
   showStatus(newNodes.length + '\u500b\u306e\u30ce\u30fc\u30c9\u3092\u30da\u30fc\u30b9\u30c8\u3057\u307e\u3057\u305f');
 }
 
@@ -34145,7 +34431,8 @@ function bdPushUndo(label) {
     const snap = _bdSnapshot();
     historyPush(label || 'ボード編集', () => {
       _bdApplySnapshot(JSON.parse(snap));
-      if (typeof bdRender === 'function') bdRender();
+      if (typeof bdRunFullRender === 'function') bdRunFullRender('history-undo-common');
+      else if (typeof bdRender === 'function') bdRender();
       if (typeof bdDirty === 'function') bdDirty();
     }, null, _bdHistoryScope());
   } else {
@@ -34242,7 +34529,9 @@ function bdUndo() {
   if (!_bdUndoStack.length) return;
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
-  bdRender(); bdDirty();
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('history-undo-local');
+  else bdRender();
+  bdDirty();
   showStatus('\u5143\u306b\u623b\u3057\u307e\u3057\u305f');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
@@ -34251,7 +34540,9 @@ function bdRedo() {
   if (!_bdRedoStack.length) return;
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
-  bdRender(); bdDirty();
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('history-redo-local');
+  else bdRender();
+  bdDirty();
   showStatus('\u3084\u308a\u76f4\u3057\u307e\u3057\u305f');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
@@ -34529,9 +34820,8 @@ async function bdOpenBoard(label, path, opts) {
     if (typeof bdApplyAutoStyle === 'function') {
       bd.nodes.forEach(n => { if (n._autoStyle) bdApplyAutoStyle(n.id); });
     }
-    bdRender();
-    bdDrawConns();
-    bdDrawFrames();
+    if (typeof bdRunFullRender === 'function') bdRunFullRender('board-open');
+    else bdRender();
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     if (typeof MeldexBoardTopicIntegration !== 'undefined') MeldexBoardTopicIntegration.mountToolbar(bd);
     // ノードが多い場合のみフィット（少ない場合はズーム100%で表示）
@@ -34558,10 +34848,6 @@ async function bdOpenBoard(label, path, opts) {
     window.MeldexFileLockBadge?.apply?.(titleEl, prevPath);
     if (prevDump && typeof bdLoadState === 'function') {
       bdLoadState(prevDump);
-      if (typeof bdRender === 'function') bdRender();
-      if (typeof bdDrawConns === 'function') bdDrawConns();
-      if (typeof bdDrawFrames === 'function') bdDrawFrames();
-      if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     } else {
       const nodesEl = document.getElementById('bd-nodes');
       if (nodesEl) {
@@ -34661,10 +34947,8 @@ function bdLoadState(dump) {
   const titleEl = document.getElementById('bd-title');
   if (titleEl && bd.path) titleEl.textContent = bd.path.split('/').pop() || '';
   bdTransform();
-  bdRender();
-  bdDrawConns();
-  if (typeof bdDrawFrames === 'function') bdDrawFrames();
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+  if (typeof bdRunFullRender === 'function') bdRunFullRender('board-state-restore');
+  else bdRender();
 }
 
 // ==============================
@@ -36228,7 +36512,19 @@ function _bdMinimapBounds() {
       bdPaste();
       return { handled: true, ids: [...(bd.selected || [])], kind: 'board' };
     }
-    const meldexNodes = parseMeldexNodes(dataTransferText(transfer, NODE_MIME));
+    let meldexNodes = parseMeldexNodes(dataTransferText(transfer, NODE_MIME));
+    if (meldexNodes.length && global.MeldexDnD?.preserveMediaItem) {
+      meldexNodes = await Promise.all(meldexNodes.map(async spec => {
+        const type = spec.kind === 'image' ? 'image' : spec.linkType;
+        if (type !== 'image' && type !== 'video') return spec;
+        const preserved = await global.MeldexDnD.preserveMediaItem({
+          path: spec.path,
+          name: spec.label || filename(spec.path),
+          type,
+        });
+        return specFromMeldexItem(preserved);
+      }));
+    }
     if (meldexNodes.length) {
       return {
         handled: true,
@@ -36840,7 +37136,20 @@ function _bdMinimapBounds() {
     });
     if (bd.autoAlign !== false && hasAnyStructure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
     else if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
-    bdRender();
+    const changedIds = [...visited];
+    if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+    if (typeof bdRefreshNodesPartial === 'function') {
+      bdRefreshNodesPartial(changedIds, 'parent-child-convert', {
+        moved: true,
+        selection: true,
+        connections: true,
+        frames: true,
+        minimap: true,
+        boardUi: true,
+        detailPanel: true,
+      });
+    } else if (typeof bdRunFullRender === 'function') bdRunFullRender('parent-child-convert-fallback');
+    else bdRender();
     bdDirty();
     if (assigned === 0) {
       showStatus('選択内にラインがないため親子化できませんでした', true);
@@ -39594,7 +39903,9 @@ function bdEditConnLabel(conn) {
         const wasInlineNoChange = !!conn._editingInline;
         lbl.style.pointerEvents = '';
         cleanupLabelEditFlags();
-        if (wasInlineNoChange && typeof bdDrawConns === 'function') bdDrawConns();
+        if (wasInlineNoChange && typeof bdDrawConns === 'function') {
+          bdDrawConns({ connIds: [conn.id], reason: 'conn-label-inline-no-change' });
+        }
         return;
       }
       if (placeholderAdd && !changedFromOriginal) {
@@ -39612,7 +39923,9 @@ function bdEditConnLabel(conn) {
       const wasInline = !!conn._editingInline;
       cleanupLabelEditFlags();
       bdDirty();
-      if (!conn.label || wasInline) bdDrawConns();
+      if ((!conn.label || wasInline) && typeof bdDrawConns === 'function') {
+        bdDrawConns({ connIds: [conn.id], reason: 'conn-label-edit-finish' });
+      }
     };
     lbl.onblur = finish;
     lbl.onkeydown = (ke) => {
@@ -40415,6 +40728,20 @@ function _bdClearStatusOnNodes(statusName) {
   });
 }
 
+function _bdRefreshStatusNodesPartial(nodeIds, reason) {
+  const ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
+  if (!ids.length) return;
+  if (typeof bdRefreshNodesPartial === 'function') {
+    bdRefreshNodesPartial(ids, reason || 'status-definition', {
+      selection: true,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+    });
+  } else if (typeof bdRunFullRender === 'function') bdRunFullRender((reason || 'status-definition') + '-fallback');
+  else bdRender();
+}
+
 function bdManageStatuses() {
   if (!window.GBUI?.createModal) throw new Error('ステータス管理ダイアログを初期化できませんでした');
   const existing = document.querySelector('[data-e2e-id="board-status-manager-dialog"]');
@@ -40444,6 +40771,8 @@ function bdManageStatuses() {
         captureUndo();
         setColorSwatchValue(swatch, appliedColor);
         if (Number.isFinite(idx) && bd.statuses[idx]) bd.statuses[idx].color = appliedColor;
+        const statusName = bd.statuses[idx]?.name || '';
+        _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-color');
         bdDirty();
       });
     });
@@ -40543,9 +40872,10 @@ function bdManageStatuses() {
       if (ev.target.value !== nextName) ev.target.value = nextName;
       if (nextName === oldName) return;
       captureUndo();
+      const affectedIds = (bd.nodes || []).filter(node => node.status === oldName).map(node => node.id);
       _bdRenameStatusOnNodes(oldName, nextName);
       bd.statuses[i].name = nextName;
-      bdRender();
+      _bdRefreshStatusNodesPartial(affectedIds, 'status-rename');
       bdDirty();
       return;
     }
@@ -40559,7 +40889,8 @@ function bdManageStatuses() {
     } else {
       bd.statuses[i][f] = ev.target.value;
     }
-    bdRender();
+    const statusName = bd.statuses[i]?.name || '';
+    _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-style');
     bdDirty();
   });
   content.addEventListener('click', async (ev) => {
@@ -40585,9 +40916,10 @@ function bdManageStatuses() {
         }));
         undoCapturedBefore = undoCaptured;
         captureUndo();
+        const affectedIds = (bd.nodes || []).filter(node => node.status === label).map(node => node.id);
         bd.statuses.splice(idx,1);
         _bdClearStatusOnNodes(label);
-        bdRender();
+        _bdRefreshStatusNodesPartial(affectedIds, 'status-delete');
         bdDirty();
         render();
       } catch (error) {
@@ -40598,7 +40930,9 @@ function bdManageStatuses() {
           });
           undoCaptured = undoCapturedBefore;
           _bdDialogRestoreMutationCheckpoint(mutationCheckpoint);
-          try { bdRender(); } catch (renderError) { console.error('ステータス削除復元後の再描画に失敗しました:', renderError); }
+          try {
+            _bdRefreshStatusNodesPartial(nodeStatusesBefore.filter(entry => entry.status === label).map(entry => entry.node?.id), 'status-delete-rollback');
+          } catch (renderError) { console.error('ステータス削除復元後の再描画に失敗しました:', renderError); }
           render();
         }
         console.error('ステータスを削除できませんでした:', error);
@@ -40618,7 +40952,6 @@ function bdManageStatuses() {
   });
   closeButton.addEventListener('click', () => {
     if (actionPending) return;
-    bdRender();
     bdDirty();
     modalApi.close('footer-close');
   });
@@ -42201,18 +42534,28 @@ function bdInitInteraction(root) {
     }
     if (drag && dragOffsets && !bd._dragExtracted) {
       if (!dragMoved) return;
-      let extractedAny = false;
+      const extractedIds = [];
       Object.keys(dragOffsets).forEach(id => {
         if (dragOffsets[id]?.followOnly) return;
         const n = bd.nodes.find(v => v.id === id);
         if (n && n.contained) {
           n.contained = false;
           n.parent = '';
-          extractedAny = true;
+          extractedIds.push(id);
         }
       });
       bd._dragExtracted = true;
-      if (extractedAny && typeof bdRender === 'function') bdRender();
+      if (extractedIds.length) {
+        if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+        extractedIds.forEach(id => {
+          if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(id);
+        });
+        if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(extractedIds, 'drag-extract-contained');
+        if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(extractedIds, 'drag-extract-contained');
+        if (typeof bdMarkExtrasDirty === 'function') {
+          bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'drag-extract-contained');
+        }
+      }
     }
     if (drag && dragOffsets) {
       if (!dragMoved) return;
@@ -47370,7 +47713,8 @@ function bdAddChildToSelected() {
       else bdRender();
     }
     if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(child.id, 'add-child');
-    if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([parentId, child.id], 'add-child');
+    if (conn?.id && typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'add-child');
+    else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([child.id], 'add-child');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([parentId, child.id], 'add-child');
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [child.id] }, 'add-child');
     // ルート構造 or 中間カード構造のいずれかがあれば自動整列をリクエスト。
@@ -47456,7 +47800,8 @@ function bdAddSiblingToSelected() {
       else bdRender();
     }
     if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(sib.id, 'add-sibling');
-    if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([parentId, sib.id], 'add-sibling');
+    if (conn?.id && typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'add-sibling');
+    else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([sib.id], 'add-sibling');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([selId, sib.id], 'add-sibling');
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [sib.id] }, 'add-sibling');
     let diffLayoutApplied = false;
@@ -47476,10 +47821,13 @@ function bdAddSiblingToSelected() {
       if (!diffLayoutApplied && typeof bdDrawConns === 'function') {
         bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling-fallback' });
       }
-      // 差分レイアウトで位置確保した後も、カード高さ差による整列ズレを解消するため
-      // 常に全体整列をリクエストする（bdRequestAutoLayout はデバウンス+rAFされる）。
-      if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(root.id, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS);
-      else bdAutoLayout(root.id);
+      // 差分レイアウトが成立した場合は、その結果を確定値として扱う。ここで遅延の全体整列を
+      // 予約すると、追加から数百ms後に全カード・全ライン更新へ戻って入力を止めてしまう。
+      // DOM計測不能などで差分化できなかった時だけ、互換fallbackとして全体整列を使う。
+      if (!diffLayoutApplied) {
+        if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(root.id, BD_FAST_SIBLING_AUTO_LAYOUT_DELAY_MS);
+        else bdAutoLayout(root.id);
+      }
     } else if (typeof bdDrawConns === 'function') {
       bdDrawConns({ nodeIds: [parentId, sib.id], reason: 'add-sibling' });
     }
@@ -50252,6 +50600,19 @@ function bdUpdateNodePosition(nodeOrId) {
   return true;
 }
 
+function bdRemoveNodeRender(nodeId) {
+  if (!nodeId || typeof document === 'undefined') return false;
+  const element = document.getElementById('bdn-' + nodeId);
+  if (element) element.remove();
+  const layer = document.getElementById('bd-resize-layer');
+  if (layer) {
+    layer.querySelectorAll('.bd-resize[data-node-id], .bd-selection-rect[data-node-id]').forEach(item => {
+      if (String(item.dataset.nodeId || '') === String(nodeId)) item.remove();
+    });
+  }
+  return !!element;
+}
+
 function bdSyncNodeDomOrder() {
   const container = document.getElementById('bd-nodes');
   if (!container || typeof bd === 'undefined') return;
@@ -50318,6 +50679,33 @@ const BD_DIRTY_FULL_DRAW_CONN_RATIO = 0.30;
 let _bdDirtyUpdateTimer = 0;
 let _bdDirtyUpdateRaf = 0;
 let _bdDirtyState = bdCreateEmptyDirtyState();
+let _bdConnectionNodeIndex = null;
+let _bdConnectionIndexSource = null;
+let _bdConnectionIndexLength = -1;
+
+function bdInvalidateConnectionRuntimeIndex() {
+  _bdConnectionNodeIndex = null;
+  _bdConnectionIndexSource = null;
+  _bdConnectionIndexLength = -1;
+}
+
+function bdEnsureConnectionNodeIndex() {
+  const connections = (typeof bd !== 'undefined' && Array.isArray(bd.connections)) ? bd.connections : [];
+  if (_bdConnectionNodeIndex && _bdConnectionIndexSource === connections
+    && _bdConnectionIndexLength === connections.length) return _bdConnectionNodeIndex;
+  const index = new Map();
+  connections.forEach(conn => {
+    if (!conn?.id) return;
+    [conn.from, conn.to].filter(Boolean).forEach(nodeId => {
+      if (!index.has(nodeId)) index.set(nodeId, new Set());
+      index.get(nodeId).add(conn.id);
+    });
+  });
+  _bdConnectionNodeIndex = index;
+  _bdConnectionIndexSource = connections;
+  _bdConnectionIndexLength = connections.length;
+  return index;
+}
 
 // DOM 上に .bd-selected を付与済みのノード ID を記録し、差分で class を付け外しする。
 // v0.5.318: querySelectorAll('.bd-node').forEach(...) で全ノード走査していた箇所の置換用。
@@ -50359,6 +50747,7 @@ function bdCreateEmptyDirtyState() {
     dirtyConnNodeIds: new Set(),
     dirtySelectionIds: new Set(),
     dirtyCommentNodeIds: new Set(),
+    dirtyFrameIds: new Set(),
     dirtySelection: false,
     dirtyFrames: false,
     dirtyMinimap: false,
@@ -50373,10 +50762,11 @@ function bdCreateEmptyDirtyState() {
 
 function bdMarkNodeDirty(nodeId, reason) {
   if (!nodeId) return;
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   _bdDirtyState.dirtyNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
   _bdDirtyState.dirtyCommentNodeIds.add(nodeId);
-  _bdDirtyState.dirtyFrames = true;
+  bdMarkFramesDirtyByNodes([nodeId]);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'node');
   bdMarkConnectionsDirtyByNodes([nodeId], reason || 'node');
@@ -50387,7 +50777,7 @@ function bdMarkNodeMoved(nodeId, reason) {
   if (!nodeId) return;
   _bdDirtyState.dirtyMovedNodeIds.add(nodeId);
   _bdDirtyState.dirtySelectionIds.add(nodeId);
-  _bdDirtyState.dirtyFrames = true;
+  bdMarkFramesDirtyByNodes([nodeId]);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'move');
   bdMarkConnectionsDirtyByNodes([nodeId], reason || 'move');
@@ -50412,6 +50802,7 @@ function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
 
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
+  bdInvalidateConnectionRuntimeIndex();
   _bdDirtyState.dirtyConnIds.add(connId);
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection');
@@ -50423,12 +50814,22 @@ function bdMarkConnectionsDirtyByNodes(nodeIds, reason) {
   if (!ids.size || typeof bd === 'undefined') return;
   if (typeof bdEnsureConnectionRuntime === 'function') bdEnsureConnectionRuntime(bd.connections);
   ids.forEach(id => _bdDirtyState.dirtyConnNodeIds.add(id));
-  (bd.connections || []).forEach(conn => {
-    if ((ids.has(conn.from) || ids.has(conn.to)) && conn.id) _bdDirtyState.dirtyConnIds.add(conn.id);
-  });
+  const index = bdEnsureConnectionNodeIndex();
+  ids.forEach(id => (index.get(id) || []).forEach(connId => _bdDirtyState.dirtyConnIds.add(connId)));
   _bdDirtyState.dirtyMinimap = true;
   bdDirtyRememberReason(reason || 'connection-by-node');
   bdScheduleBoardUpdates();
+}
+
+function bdMarkFramesDirtyByNodes(nodeIds) {
+  const ids = new Set([...(nodeIds || [])].filter(Boolean));
+  if (!ids.size || typeof bd === 'undefined' || !Array.isArray(bd.groups)) return;
+  bd.groups.forEach(group => {
+    if ((group.nodeIds || []).some(id => ids.has(id))) {
+      const groupId = group.groupId || group.id;
+      if (groupId) _bdDirtyState.dirtyFrameIds.add(groupId);
+    }
+  });
 }
 
 function bdMarkSelectionDirty(nodeIds, reason) {
@@ -50454,6 +50855,9 @@ function bdMarkExtrasDirty(flags = {}, reason) {
   } else {
     if (flags.selection) _bdDirtyState.dirtySelection = true;
     if (flags.frames) _bdDirtyState.dirtyFrames = true;
+    if (Array.isArray(flags.frameIds) || flags.frameIds instanceof Set) {
+      [...flags.frameIds].filter(Boolean).forEach(id => _bdDirtyState.dirtyFrameIds.add(id));
+    }
     if (flags.minimap) _bdDirtyState.dirtyMinimap = true;
     if (flags.boardUi) _bdDirtyState.dirtyBoardUi = true;
     if (flags.detailPanel) _bdDirtyState.dirtyDetailPanel = true;
@@ -50471,6 +50875,16 @@ function bdRequestFullRender(reason) {
   _bdDirtyState.fullRenderReason = reason || _bdDirtyState.fullRenderReason || 'unspecified';
   bdDirtyRememberReason('full:' + (_bdDirtyState.fullRenderReason || 'unspecified'));
   bdScheduleBoardUpdates();
+}
+
+function bdRunFullRender(reason) {
+  const why = reason || 'unspecified';
+  bdDirtyRememberReason('full-now:' + why);
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+  bdInvalidateConnectionRuntimeIndex();
+  const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdRunFullRender:' + why) : 0;
+  if (typeof bdRender === 'function') bdRender();
+  if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRunFullRender:' + why, started);
 }
 
 function bdDirtyRememberReason(reason) {
@@ -50532,6 +50946,7 @@ function bdDirtyHasWork(state) {
     || state.dirtyConnNodeIds.size
     || state.dirtySelectionIds.size
     || state.dirtyCommentNodeIds.size
+    || state.dirtyFrameIds.size
     || state.dirtySelection
     || state.dirtyFrames
     || state.dirtyMinimap
@@ -50543,15 +50958,14 @@ function bdDirtyHasWork(state) {
 function bdDirtyShouldUseFullRender(state) {
   const total = (typeof bd !== 'undefined' && bd?.nodes) ? bd.nodes.length : 0;
   if (!total) return false;
-  return state.dirtyNodeIds.size > Math.max(40, Math.ceil(total * BD_DIRTY_FULL_RENDER_NODE_RATIO));
+  return state.dirtyNodeIds.size >= Math.max(1, Math.ceil(total * BD_DIRTY_FULL_RENDER_NODE_RATIO));
 }
 
 function bdFlushDirtyFullRender(state, started) {
   const reason = state.fullRenderReason || [...state.reasons][0] || 'dirty-fallback';
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdFlushBoardUpdates', started, 'full-render reason=' + reason);
-  const renderStarted = typeof bdPerfStart === 'function' ? bdPerfStart('bdRequestFullRender:' + reason) : 0;
-  if (typeof bdRender === 'function') bdRender();
-  if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRequestFullRender:' + reason, renderStarted);
+  if (typeof bdRunFullRender === 'function') bdRunFullRender(reason);
+  else if (typeof bdRender === 'function') bdRender();
 }
 
 function bdFlushDirtyNodes(state) {
@@ -50597,7 +51011,7 @@ function bdFlushDirtySelection(state, rendered) {
 function bdFlushDirtyConnections(state) {
   const connCount = (typeof bd !== 'undefined' && bd?.connections) ? bd.connections.length : 0;
   const connIds = new Set(state.dirtyConnIds);
-  if (connIds.size && connCount && connIds.size > Math.max(50, Math.ceil(connCount * BD_DIRTY_FULL_DRAW_CONN_RATIO))) {
+  if (connIds.size && connCount && connIds.size >= Math.max(1, Math.ceil(connCount * BD_DIRTY_FULL_DRAW_CONN_RATIO))) {
     if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'dirty-conn-threshold' });
     return;
   }
@@ -50611,7 +51025,12 @@ function bdFlushDirtyConnections(state) {
 }
 
 function bdFlushDirtyFrames(state) {
-  if (state.dirtyFrames && typeof bdDrawFrames === 'function') bdDrawFrames();
+  if (typeof bdDrawFrames !== 'function') return;
+  if (state.dirtyFrames) {
+    bdDrawFrames();
+    return;
+  }
+  if (state.dirtyFrameIds.size) bdDrawFrames({ groupIds: [...state.dirtyFrameIds] });
 }
 
 function bdFlushDirtyComments(state) {
@@ -50639,12 +51058,16 @@ function bdFlushDirtyMinimap(dirtyState) {
 
 function bdFlushDirtyBoardUi(state) {
   if (!state.dirtyBoardUi && !state.dirtyDetailPanel) return;
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
+  if (state.dirtyDetailPanel && typeof bdSyncBoardUi === 'function') {
+    bdSyncBoardUi(false);
+    return;
+  }
+  if (state.dirtyBoardUi && typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
 }
 
 function bdDirtyMeta(state) {
   const reasons = [...state.reasons].slice(0, 5).join(',');
-  return `nodes=${state.dirtyNodeIds.size} moved=${state.dirtyMovedNodeIds.size} conns=${state.dirtyConnIds.size} selection=${state.dirtySelectionIds.size} reasons=${reasons}`;
+  return `nodes=${state.dirtyNodeIds.size} moved=${state.dirtyMovedNodeIds.size} conns=${state.dirtyConnIds.size} frames=${state.dirtyFrameIds.size} selection=${state.dirtySelectionIds.size} reasons=${reasons}`;
 }
 
 ;
@@ -55121,7 +55544,31 @@ function bdOpenFilterMenu(anchor) {
     nodes.forEach(node => {
       const key = String(node?.key || '');
       if (!key || keys.has(key)) throw new Error('ボードテンプレートのトピック構成が壊れています');
+      if (![node.x, node.y, node.w, node.h].filter(item => item != null).every(item => Number.isFinite(Number(item)))) {
+        throw new Error('ボードテンプレートの座標または大きさが不正です');
+      }
       keys.add(key);
+    });
+    nodes.forEach(node => {
+      const parent = String(node?.parent || '');
+      if (parent && !keys.has(parent)) throw new Error(`親トピックが見つかりません: ${parent}`);
+      const seen = new Set([String(node.key)]);
+      let current = parent;
+      while (current) {
+        if (seen.has(current)) throw new Error('ボードテンプレートの親子関係が循環しています');
+        seen.add(current);
+        current = String(nodes.find(item => String(item?.key || '') === current)?.parent || '');
+      }
+    });
+    (Array.isArray(value.content?.lines) ? value.content.lines : []).forEach(line => {
+      if (!keys.has(String(line?.from || '')) || !keys.has(String(line?.to || ''))) {
+        throw new Error('ボードテンプレートの接続先が見つかりません');
+      }
+    });
+    (Array.isArray(value.content?.groups) ? value.content.groups : []).forEach(group => {
+      if (!Array.isArray(group?.nodeKeys) || group.nodeKeys.some(key => !keys.has(String(key)))) {
+        throw new Error('ボードテンプレートのグループ参照が壊れています');
+      }
     });
     return { ...clone(value), id, name, builtin: false };
   }
@@ -55443,12 +55890,26 @@ function bdOpenFilterMenu(anchor) {
     const board = options.board || boardState();
     if (!board) throw new Error('ボードを開いてから適用してください');
     if (!isBoardEditable(board)) throw new Error('このボードは編集できないため、テンプレートを適用できません');
+    if (!['full', 'style', 'append'].includes(mode)) throw new Error('未対応のテンプレート適用方法です');
     if (mode === 'full' && hasContent(board)) throw new Error('内容のあるボードには「スタイルだけ適用」か「内容を追加」を選んでください');
+    const prepared = validateTemplate({ ...clone(template), schemaVersion: template?.schemaVersion ?? SCHEMA_VERSION });
+    const working = clone(board);
+    if (!working || typeof working !== 'object') throw new Error('ボードの作業コピーを作成できませんでした');
     if (board.editing && typeof global.bdFinishEdit === 'function') global.bdFinishEdit();
     const label = mode === 'style' ? 'テンプレートのスタイルを適用' : mode === 'append' ? 'テンプレートの内容を追加' : 'テンプレートを適用';
+    if (mode !== 'append') applyStyle(working, prepared);
+    const created = mode === 'style' ? [] : applyContent(working, prepared, mode);
+    const mutableKeys = [
+      'nodes', 'connections', 'groups', 'cardStyles', 'lineStyles', 'depthStyles',
+      'activeDepthStylePreset', 'activeCardStyle', 'activeLineStyle', '_stylePresetSeedVersion',
+      '_globalStyleDefaultsApplied', '_bgColor', '_fileStyle', '_showShadow', 'gapSiblings',
+      'gapLevels', 'topicViewDocument',
+    ];
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo(`${label}: ${template.name}`);
-    if (mode !== 'append') applyStyle(board, template);
-    const created = mode === 'style' ? [] : applyContent(board, template, mode);
+    mutableKeys.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(working, key)) board[key] = clone(working[key]);
+      else delete board[key];
+    });
     refreshBoard(board, created);
     return { created: created.length };
   }
@@ -58730,6 +59191,11 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
     version: src.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(src.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(src.layoutMode),
+    ...(src.templateId ? { templateId: String(src.templateId) } : {}),
+    ...(Number.isInteger(Number(src.templateVersion)) ? { templateVersion: Number(src.templateVersion) } : {}),
+    ...(src.templatePurpose ? { templatePurpose: String(src.templatePurpose) } : {}),
+    ...(Array.isArray(src.templateSourceRefs) ? { templateSourceRefs: src.templateSourceRefs.map(String) } : {}),
+    ...(_scriptNotePlainObject(src.pageSettings).paper ? { pageSettings: JSON.parse(JSON.stringify(src.pageSettings)) } : {}),
     // wrapMode の既定値は true。ツールバー状態と保存形式を一致させる。
     editor,
     scenarioTypes: Array.isArray(src.scenarioTypes) ? src.scenarioTypes : [],
@@ -58843,6 +59309,11 @@ function serializeScriptNoteDoc(doc) {
     version: doc.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(doc.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(doc.layoutMode),
+    ...(doc.templateId ? { templateId: String(doc.templateId) } : {}),
+    ...(Number.isInteger(Number(doc.templateVersion)) ? { templateVersion: Number(doc.templateVersion) } : {}),
+    ...(doc.templatePurpose ? { templatePurpose: String(doc.templatePurpose) } : {}),
+    ...(Array.isArray(doc.templateSourceRefs) ? { templateSourceRefs: doc.templateSourceRefs.map(String) } : {}),
+    ...(_scriptNotePlainObject(doc.pageSettings).paper ? { pageSettings: JSON.parse(JSON.stringify(doc.pageSettings)) } : {}),
     editor: { ..._scriptNotePlainObject(doc.editor) },
     // 全体既定は editor.columnStyles、タイプ別上書きは各タイプのスタイルへ分離して保存する。
     scenarioTypes: _scriptNoteSerializedTypes(doc),
@@ -59417,6 +59888,236 @@ function _sn2StopSep() {
   if (dialogOverlay?._sn2ModalApi) dialogOverlay._sn2ModalApi.close('stop');
   else dialogOverlay?.remove();
 }
+
+;
+
+/* === gb-scriptnote-print-layout.js === */
+;
+/* gb-scriptnote-print-layout.js: シナリオの論理ページ表示と印刷DOM。 */
+(function initScriptNotePrintLayout(global) {
+  'use strict';
+
+  const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+  let printRoot = null;
+  let printStyle = null;
+
+  function settingsFor(doc) {
+    const own = doc?.pageSettings;
+    if (own?.paper && own?.grid) return clone(own);
+    return global.MeldexScriptNoteTemplateDefinitions?.get?.(doc?.layoutMode || 'manga')
+      || global.MeldexScriptNoteTemplateDefinitions?.get?.('manga');
+  }
+
+  function rowText(row) {
+    return String(row?.text ?? row?.body ?? row?.content ?? row?.value ?? '');
+  }
+
+  function rowKind(row) {
+    const raw = String(row?.kind || row?.type || row?.role || '').toLowerCase();
+    if (row?.isBreak || /pagebreak|改ページ|めくり|白紙/.test(raw)) return 'pageBreak';
+    if (/heading|pillar|scene|幕|場|柱/.test(raw)) return 'heading';
+    if (/action|ト書き|画面/.test(raw)) return 'action';
+    if (/music|sound|se|音響|照明/.test(raw)) return 'cue';
+    return 'dialogue';
+  }
+
+  function logicalPages(doc) {
+    const settings = settingsFor(doc);
+    if (!settings) throw new Error('紙面設定がありません');
+    const capacity = Math.max(1, Math.floor(Number(settings.grid?.linesPerPage) || 36));
+    const pages = [];
+    let page = [];
+    const flush = () => {
+      if (page.length || !pages.length) pages.push(page);
+      page = [];
+    };
+    (Array.isArray(doc?.rows) ? doc.rows : []).forEach((row, rowIndex) => {
+      const kind = rowKind(row);
+      if (kind === 'pageBreak') {
+        flush();
+        return;
+      }
+      if (kind === 'heading' && page.length === capacity - 1) flush();
+      if (page.length >= capacity) flush();
+      page.push({ row: clone(row), rowIndex, kind, text: rowText(row) });
+    });
+    if (page.length || !pages.length) flush();
+    return { settings, pages };
+  }
+
+  function parseRange(value, pageCount, currentPage = 1) {
+    const raw = String(value || 'all').trim().toLowerCase();
+    if (!raw || raw === 'all') return Array.from({ length: pageCount }, (_, index) => index + 1);
+    if (raw === 'current') return [Math.max(1, Math.min(pageCount, currentPage))];
+    const result = new Set();
+    raw.split(',').forEach(part => {
+      const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      if (!match) throw new Error('ページ範囲は「1-3,5」の形式で入力してください');
+      let start = Number(match[1]);
+      let end = Number(match[2] || match[1]);
+      if (start > end) [start, end] = [end, start];
+      if (start < 1 || end > pageCount) throw new Error(`ページ範囲は1〜${pageCount}で指定してください`);
+      for (let page = start; page <= end; page += 1) result.add(page);
+    });
+    return [...result].sort((a, b) => a - b);
+  }
+
+  function renderPage(settings, entries, pageNumber) {
+    const page = document.createElement('section');
+    page.className = 'sn-print-page';
+    page.dataset.pageNumber = String(pageNumber);
+    page.dataset.templateId = settings.id || '';
+    page.dataset.templateVersion = String(settings.templateVersion || '');
+    page.style.setProperty('--sn-page-width', `${settings.paper.widthMm}mm`);
+    page.style.setProperty('--sn-page-height', `${settings.paper.heightMm}mm`);
+    page.style.setProperty('--sn-margin-top', `${settings.margin?.topMm || 20}mm`);
+    page.style.setProperty('--sn-margin-bottom', `${settings.margin?.bottomMm || 20}mm`);
+    page.style.setProperty('--sn-margin-inner', `${settings.margin?.innerMm || settings.margin?.rightMm || 20}mm`);
+    page.style.setProperty('--sn-margin-outer', `${settings.margin?.outerMm || settings.margin?.leftMm || 20}mm`);
+    page.style.setProperty('--sn-font-size', `${settings.grid?.fontSizePt || 10.5}pt`);
+    page.style.setProperty('--sn-line-height', `${settings.grid?.lineSpacingPt || 16}pt`);
+    page.style.setProperty('--sn-body-font', [settings.fonts?.body, ...(settings.fonts?.fallback || [])].filter(Boolean).join(','));
+    page.style.writingMode = settings.writingMode || 'horizontal-tb';
+    if (Array.isArray(settings.bands) && settings.bands.length) {
+      const bands = document.createElement('div');
+      bands.className = 'sn-print-band-head';
+      settings.bands.forEach(band => {
+        const cell = document.createElement('span');
+        cell.textContent = band.label;
+        cell.style.flex = String(Number(band.ratio) || 1);
+        bands.appendChild(cell);
+      });
+      page.appendChild(bands);
+    }
+    const content = document.createElement('div');
+    content.className = 'sn-print-page-content';
+    entries.forEach(entry => {
+      const row = document.createElement('div');
+      row.className = `sn-print-row sn-print-row--${entry.kind}`;
+      row.dataset.sourceRow = String(entry.rowIndex);
+      row.textContent = entry.text || '\u3000';
+      content.appendChild(row);
+    });
+    page.appendChild(content);
+    const number = document.createElement('span');
+    number.className = 'sn-print-page-number';
+    number.textContent = String(pageNumber + Number(settings.pageNumber?.start || 1) - 1);
+    page.appendChild(number);
+    return page;
+  }
+
+  function render(doc, options = {}) {
+    const { settings, pages } = logicalPages(doc);
+    const selected = parseRange(options.range || 'all', pages.length, options.currentPage || 1);
+    const root = document.createElement('div');
+    root.className = 'sn-print-document';
+    root.dataset.templateId = settings.id || doc?.templateId || '';
+    root.dataset.templateVersion = String(settings.templateVersion || doc?.templateVersion || '');
+    selected.forEach(pageNumber => root.appendChild(renderPage(settings, pages[pageNumber - 1], pageNumber)));
+    return { root, settings, pageCount: pages.length, selected };
+  }
+
+  function currentPageForEditor(editor, pages) {
+    const activeId = editor?._activeRowId || editor?._activeCell?.rowId || '';
+    if (!activeId) return 1;
+    const rowIndex = (editor.doc?.rows || []).findIndex(row => row?.id === activeId);
+    const page = pages.findIndex(entries => entries.some(entry => entry.rowIndex === rowIndex));
+    return page >= 0 ? page + 1 : 1;
+  }
+
+  function ensureCss() {
+    if (document.getElementById('meldex-scriptnote-print-css')) return;
+    const style = document.createElement('style');
+    style.id = 'meldex-scriptnote-print-css';
+    style.textContent = `
+.sn-print-preview{display:flex;flex-wrap:wrap;gap:24px;justify-content:center;align-items:flex-start;max-height:70vh;overflow:auto;padding:20px;background:#d7dbe2}
+.sn-print-page{box-sizing:border-box;position:relative;width:var(--sn-page-width);height:var(--sn-page-height);padding:var(--sn-margin-top) var(--sn-margin-outer) var(--sn-margin-bottom) var(--sn-margin-inner);background:#fff;color:#111;box-shadow:0 2px 12px #0003;font-family:var(--sn-body-font);font-size:var(--sn-font-size);line-height:var(--sn-line-height);overflow:hidden;text-orientation:mixed}
+.sn-print-page:nth-child(even){padding-left:var(--sn-margin-inner);padding-right:var(--sn-margin-outer)}
+.sn-print-page-content{block-size:100%;inline-size:100%;overflow:hidden}
+.sn-print-row{break-inside:avoid;white-space:pre-wrap}.sn-print-row--heading{font-weight:700;font-family:sans-serif}.sn-print-row--action{font-weight:400}.sn-print-row--cue{font-weight:600}.sn-print-row--dialogue{font-weight:400}
+.sn-print-band-head{position:absolute;inset-block-start:4mm;inset-inline:8mm;display:flex;writing-mode:horizontal-tb;border-block-end:.4pt solid #777;font:8pt sans-serif}.sn-print-band-head span{text-align:center;border-inline-end:.4pt solid #777}
+.sn-print-page-number{position:absolute;inset-block-end:5mm;inset-inline-end:50%;writing-mode:horizontal-tb;font:8pt sans-serif}
+.sn-print-controls{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px}.sn-print-controls label{display:grid;gap:4px}
+#meldex-scriptnote-print-root{display:none}
+@media print{body.meldex-scriptnote-printing>*:not(#meldex-scriptnote-print-root){display:none!important}#meldex-scriptnote-print-root{display:block!important}.sn-print-page{box-shadow:none;margin:0;break-after:page}.sn-print-page:last-child{break-after:auto}}
+`;
+    document.head.appendChild(style);
+  }
+
+  function cleanupPrint() {
+    document.body.classList.remove('meldex-scriptnote-printing');
+    printRoot?.remove();
+    printStyle?.remove();
+    printRoot = null;
+    printStyle = null;
+  }
+
+  function print(editor, options = {}) {
+    if (!editor?.doc) throw new Error('シナリオを開いてから印刷してください');
+    ensureCss();
+    cleanupPrint();
+    const data = logicalPages(editor.doc);
+    const currentPage = currentPageForEditor(editor, data.pages);
+    const rendered = render(editor.doc, { ...options, currentPage });
+    printRoot = rendered.root;
+    printRoot.id = 'meldex-scriptnote-print-root';
+    printStyle = document.createElement('style');
+    printStyle.textContent = `@page{size:${rendered.settings.paper.widthMm}mm ${rendered.settings.paper.heightMm}mm;margin:0}`;
+    document.head.appendChild(printStyle);
+    document.body.appendChild(printRoot);
+    document.body.classList.add('meldex-scriptnote-printing');
+    global.addEventListener('afterprint', cleanupPrint, { once: true });
+    global.print();
+    global.setTimeout(cleanupPrint, 30000);
+    return rendered;
+  }
+
+  function open(editor) {
+    if (!editor?.doc) throw new Error('シナリオを開いてから印刷してください');
+    ensureCss();
+    const data = logicalPages(editor.doc);
+    const currentPage = currentPageForEditor(editor, data.pages);
+    if (!global.GBUI?.createModal) return print(editor, { range: 'all' });
+    const body = document.createElement('div');
+    const controls = document.createElement('div'); controls.className = 'sn-print-controls';
+    const mode = document.createElement('select'); mode.className = 'gb-select'; mode.setAttribute('aria-label', '印刷するページ');
+    mode.innerHTML = '<option value="all">全ページ</option><option value="current">現在のページ</option><option value="range">ページ範囲</option>';
+    const range = document.createElement('input'); range.className = 'gb-input'; range.placeholder = `1-${data.pages.length}`; range.disabled = true; range.setAttribute('aria-label', 'ページ範囲');
+    controls.append(mode, range);
+    const preview = document.createElement('div'); preview.className = 'sn-print-preview';
+    body.append(controls, preview);
+    const refresh = () => {
+      range.disabled = mode.value !== 'range';
+      const value = mode.value === 'range' ? (range.value || `1-${data.pages.length}`) : mode.value;
+      try { preview.replaceChildren(render(editor.doc, { range: value, currentPage }).root); range.setCustomValidity(''); }
+      catch (error) { range.setCustomValidity(error.message); }
+    };
+    mode.addEventListener('change', refresh); range.addEventListener('input', refresh);
+    const cancel = document.createElement('button'); cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+    const action = document.createElement('button'); action.className = 'gb-btn gb-btn-primary'; action.textContent = '印刷…';
+    const modal = global.GBUI.createModal({ id: 'scriptnote-print-layout', title: '印刷レイアウト', body, footer: [cancel, action], variant: 'standard', extraClass: 'gb-scriptnote-print-modal' });
+    cancel.addEventListener('click', () => modal.close('cancel'));
+    action.addEventListener('click', () => {
+      const value = mode.value === 'range' ? range.value : mode.value;
+      parseRange(value, data.pages.length, currentPage);
+      modal.close('print');
+      print(editor, { range: value });
+    });
+    modal.open(); refresh();
+    return modal;
+  }
+
+  global.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'p') return;
+    const host = [...document.querySelectorAll('#scenario-note-surface')].find(node => node.offsetParent !== null && node.__meldexScriptNoteEditor?.doc);
+    if (!host) return;
+    event.preventDefault();
+    open(host.__meldexScriptNoteEditor);
+  });
+
+  ensureCss();
+  global.MeldexScriptNotePrint = Object.freeze({ settingsFor, logicalPages, parseRange, render, open, print });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
 
@@ -63453,7 +64154,7 @@ function _sn2StopSep() {
         <span>${activeJobIds().length ? `${activeJobIds().length}件実行中` : (hasFailures ? '要確認' : '完了')}</span>
         <button type="button" class="gb-btn gb-btn-icon gb-btn-xs" data-at-job-minimize
           aria-label="${minimized ? '進捗を展開' : '進捗を折りたたむ'}">
-          ${icon(minimized ? 'chevronUp' : 'chevronDown', 14)}
+            ${icon(minimized ? 'chevronUp' : 'minus', 14)}
         </button>
       </header>
       <div class="at-job-list">${rows.map(jobRowHtml).join('')}</div>
@@ -69644,39 +70345,18 @@ class ScriptNoteComponent extends ToolComponent {
     const noteLayoutSel = this.el.querySelector('#scenario-note-layout-select');
     if (noteLayoutSel) {
       this._refreshTemplateSelect();
-      noteLayoutSel.addEventListener('change', () => {
+      noteLayoutSel.addEventListener('change', async () => {
         const val = noteLayoutSel.value;
-        this.state.noteLayoutMode = val;
         if (!this._editor?.doc) return;
-        this._editor._pushUndo('レイアウト変更');
-        if (val.startsWith('custom:')) {
-          // カスタムテンプレート適用
-          try {
-            const templates = _snToolReadJsonObject(SN2_TEMPLATE_STORAGE_KEY);
-            const tpl = templates[val.slice(7)];
-            if (tpl) {
-              const result = globalThis.GBScriptNoteRoleModel?.applyTemplate
-                ? globalThis.GBScriptNoteRoleModel.applyTemplate(this._editor.doc, tpl)
-                : null;
-              if (!result) {
-                if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
-                if (tpl.editor) Object.assign(this._editor.doc.editor, JSON.parse(JSON.stringify(tpl.editor)));
-                if (tpl.rubyPresentation && typeof tpl.rubyPresentation === 'object') {
-                  this._editor.doc.rubyPresentation = JSON.parse(JSON.stringify(tpl.rubyPresentation));
-                }
-              }
-              if (typeof showStatus === 'function' && result?.message) showStatus(result.message);
-            }
-          } catch {}
-        } else {
-          this._editor.doc.layoutMode = val;
-          if (this._editor.doc.editor?.countConfig) delete this._editor.doc.editor.countConfig;
+        const previous = this._editor.doc.templateId || this._editor.doc.layoutMode || 'manga';
+        try {
+          if (typeof this._applyScriptNoteTemplate !== 'function') throw new Error('テンプレート適用処理を読み込めませんでした');
+          await this._applyScriptNoteTemplate(val);
+          if (typeof showStatus === 'function') showStatus('シナリオテンプレートを適用しました');
+        } catch (error) {
+          noteLayoutSel.value = previous;
+          if (typeof showStatus === 'function') showStatus('テンプレートを適用できませんでした: ' + (error?.message || error), true);
         }
-        this._editor._calcCache = null;
-        this._editor._render();
-        this._editor._markDirty();
-        this._syncDetailPanel();
-        this._syncTemplateButton?.();
       });
     }
     const titleInput = this.el.querySelector('#title-input');
@@ -70295,6 +70975,7 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor = new ScriptNoteEditor(host);
       } else {
         this._editor.host = host;
+        host.__meldexScriptNoteEditor = this._editor;
       }
       const loaded = this._editor.loadDoc(parsed, nextPath, etag, conflictGeneration, identity);
       if (!loaded) {
@@ -70376,7 +71057,7 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
 (function initScriptNoteTemplatePicker(global) {
   'use strict';
 
-  const BUILTIN = [
+  const FALLBACK_BUILTIN = [
     { id: 'manga', name: 'マンガシナリオ', description: 'ページとコマで区切り、セリフ・ト書き・モノローグを書き分けるマンガ向けの書式。',
       sample: [['h2', 'P1'], ['line', 'コマ1　教室・放課後'], ['line', 'ト書き：窓の外を見る主人公'], ['say', '主人公「……まだ帰らないの？」'], ['line', 'コマ2'], ['say', 'ヒロイン「もう少しだけ」']] },
     { id: 'drama', name: 'ドラマ・映画シナリオ', description: '柱（場所・時間）、ト書き、台詞で構成する映像向けの書式。',
@@ -70386,6 +71067,7 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
     { id: 'stage', name: '舞台シナリオ', description: '場・登場人物・台詞・動作の指示（ト書き）を舞台上演向けに並べる書式。',
       sample: [['h2', '第一場　公園'], ['line', '（明転。ベンチに主人公）'], ['say', '主人公　ここに来るのも久しぶりだ。'], ['line', '（ヒロイン、上手より登場）'], ['say', 'ヒロイン　やっぱりここにいた。']] },
   ];
+  const BUILTIN = global.MeldexScriptNoteTemplateDefinitions?.all?.() || FALLBACK_BUILTIN;
 
   function readCustom() {
     const names = typeof global._snToolPresetNames === 'function'
@@ -70421,7 +71103,11 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
     const builtins = BUILTIN.map(item => ({
       id: item.id, name: item.name, description: item.description, builtin: true, badge: '初期搭載',
       category: 'builtin', categoryLabel: '初期搭載',
-      renderThumbnail: host => renderSample(host, item.sample),
+      renderThumbnail: host => {
+        if (global.MeldexScriptNoteTemplateDefinitions?.get?.(item.id)) {
+          global.MeldexScriptNoteTemplateDefinitions.renderThumbnail(item.id, host);
+        } else renderSample(host, item.sample || []);
+      },
     }));
     const custom = readCustom().map(({ name, value }) => {
       const base = BUILTIN.find(item => item.id === value.layoutMode) || BUILTIN[0];
@@ -70456,6 +71142,37 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
       button.setAttribute('aria-label', `テンプレート: ${label}`);
     };
 
+    Component.prototype._applyScriptNoteTemplate = async function applyScriptNoteTemplate(id) {
+      const editor = this._editor;
+      if (!editor?.doc) throw new Error('シナリオを開いてから適用してください');
+      if (editor._readOnly) throw new Error('このシナリオは読取専用のためテンプレートを適用できません');
+      const engine = global.MeldexScriptNoteTemplateDefinitions;
+      if (!engine) throw new Error('シナリオテンプレート定義を読み込めませんでした');
+      let prepared;
+      if (String(id).startsWith('custom:')) {
+        const templates = typeof global._snToolReadJsonObject === 'function'
+          ? global._snToolReadJsonObject(global.SN2_TEMPLATE_STORAGE_KEY || 'sn2-templates')
+          : {};
+        const name = String(id).slice(7);
+        if (!Object.prototype.hasOwnProperty.call(templates, name)) throw new Error(`カスタムテンプレート「${name}」が見つかりません`);
+        prepared = engine.prepareCustom(editor.doc, templates[name]);
+      } else {
+        prepared = engine.prepareBuiltin(editor.doc, id);
+      }
+      // 検証済み作業コピーが完成してから履歴を積み、文書参照を保ったまま一括差し替えする。
+      editor._pushUndo('テンプレート適用');
+      engine.commit(editor.doc, prepared);
+      this.state.noteLayoutMode = editor.doc.layoutMode;
+      editor._calcCache = null;
+      editor._render();
+      editor._markDirty();
+      this._syncDetailPanel?.();
+      this._syncTemplateButton?.();
+      const select = this.el?.querySelector('#scenario-note-layout-select');
+      if (select) select.value = id;
+      return { ok: true, templateId: id, templateVersion: prepared.definition?.templateVersion || null };
+    };
+
     Component.prototype._showTemplatePicker = function showTemplatePicker() {
       if (!global.MeldexTemplatePicker) {
         if (typeof global.showStatus === 'function') global.showStatus('テンプレート選択画面を読み込めませんでした', true);
@@ -70475,12 +71192,11 @@ registerToolComponent('scriptnote', { cls: ScriptNoteComponent, icon: 'bookOpenT
         primaryAction: {
           label: '適用',
           when: () => !!this._editor?.doc,
-          run: item => {
+          run: async item => {
             const select = this.el?.querySelector('#scenario-note-layout-select');
             if (!select || !this._editor?.doc) throw new Error('シナリオを開いてから適用してください');
             if (![...select.options].some(option => option.value === item.id)) this._refreshTemplateSelect?.();
-            select.value = item.id;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await this._applyScriptNoteTemplate(item.id);
             this._syncTemplateButton();
             if (typeof global.showStatus === 'function') global.showStatus(`テンプレート「${item.name}」を適用しました`);
             return true;
@@ -95102,7 +95818,13 @@ async function resetLayoutToDefault() {
     if (type === 'board') return _tabPath(tab, 'boardPath') || _statePath('currentBoardPath');
     if (type === 'scriptnote') return _tabPath(tab, 'scenarioPath', 'scriptnotePath');
     if (DB_VIEW_TYPES.has(type)) return _tabPath(tab, 'dbPath') || _statePath('currentDbPath');
-    if (type === 'folder') return _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
+    if (type === 'folder') {
+      // フォルダパネルで項目が選択されている時は、その項目（ファイルを含む）を
+      // 明示的な「フォルダツリーで表示」の対象にする。通常の選択だけではツリーを
+      // 展開せず、この操作を行った時だけ親を展開して対象位置へスクロールする。
+      const selectedPath = typeof _folderSelected !== 'undefined' ? _folderSelected?.path || '' : '';
+      return selectedPath || _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
+    }
     if (type === 'csv') return _tabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');
     if (type === 'media') return _tabPath(tab, 'mediaPath', 'pagePath') || _statePath('currentPagePath');
     if (type === 'calendar') return _tabPath(tab, 'calendarPath', 'dbPath')
@@ -95411,7 +96133,7 @@ async function resetLayoutToDefault() {
     const row = node.querySelector('.tree-node-row');
     if (row) {
       row.classList.add('active');
-      row.scrollIntoView({ block: 'nearest' });
+      row.scrollIntoView({ block: 'center' });
       if (!options?.preserveFocus) row.focus?.({ preventScroll: true });
     }
     if (typeof treeSelection !== 'undefined' && treeSelection) {
@@ -108414,7 +109136,11 @@ function setupEditableDropHandler(el) {
           draggedNode = null;
           return;
         }
-        const { name, path, type } = nodeItems[0];
+        let nodeItem = nodeItems[0];
+        if (typeof MeldexDnD !== 'undefined' && MeldexDnD.preserveMediaItem) {
+          nodeItem = await MeldexDnD.preserveMediaItem(nodeItem);
+        }
+        const { name, path, type } = nodeItem;
         if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
             && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
           draggedNode = null;
@@ -183203,7 +183929,7 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   addBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : `${dbPath}/${entityName}.md`;
+    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : `${dbPath}/${entityName}.md`;
     startCellInlineAdd(relationCell, entityPath, entityName, relationProp);
   });
   cellValues.appendChild(addBtn);
@@ -183742,7 +184468,7 @@ function renderEntityRow(entityName, ctx, options) {
     e.preventDefault();
     e.stopImmediatePropagation();
     e.stopPropagation();
-    const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
+    const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : '';
     if (!ep) return;
     _dbOpenConfiguredEntity(ep, entityName, ctx, e.currentTarget);
   });
@@ -188079,6 +188805,7 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
   'use strict';
   const LIMIT = 200;
   const pending = new Map();
+  const previewPending = new Map();
   const queue = [];
   let active = 0;
   const observed = new Set();
@@ -188194,18 +188921,45 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
     return pending.get(key);
   }
 
+  function safeEmbeddedImage(raw) {
+    const template = document.createElement('template');
+    template.innerHTML = String(raw || '');
+    template.content.querySelectorAll('script,style,iframe,object').forEach(el => el.remove());
+    const src = String(template.content.querySelector('img[src]')?.getAttribute('src') || '').trim();
+    return /^(?:data:image\/(?:png|jpeg|jpg|gif|webp);base64,|blob:|\/)/i.test(src) ? src : '';
+  }
+
+  function hasAudio(raw) {
+    const text = String(raw || '');
+    return /<(?:audio|source)\b/i.test(text) || /quick[_-]memo[_-]audio|音声メモ/i.test(text);
+  }
+
+  async function readPreview(path) {
+    const data = await request('/entity?path=' + encodeURIComponent(path));
+    const raw = String(data?.page_content || '');
+    const image = safeEmbeddedImage(raw);
+    const audio = hasAudio(raw);
+    let text = take(plain(raw));
+    if (!image && !audio && !text) text = await load(path);
+    return { image, audio, text };
+  }
+
+  function loadPreview(path) {
+    const key = scope() + ':' + path;
+    if (!previewPending.has(key)) previewPending.set(key, readPreview(path).finally(() => previewPending.delete(key)));
+    return previewPending.get(key);
+  }
+
   function append(root, path) {
     if (!root || !path) return;
     const row = document.createElement('div');
     row.className = 'db-body-excerpt';
     row.dataset.dbBodyExcerpt = path;
-    row.setAttribute('aria-label', '本文冒頭');
+    row.setAttribute('aria-label', '内容のプレビュー');
     row.style.cssText = 'font-size:inherit;line-height:1.5;white-space:normal;overflow-wrap:anywhere;';
-    const label = document.createElement('span');
-    label.textContent = '本文冒頭: ';
-    label.style.color = 'var(--fg2)';
     const value = document.createElement('span');
-    row.append(label, value);
+    value.className = 'db-body-excerpt-value';
+    row.append(value);
     root.appendChild(row);
     let generation = 0;
     const refresh = async () => {
@@ -188213,10 +188967,24 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
       value.textContent = '読込中…';
       row.removeAttribute('title');
       try {
-        const text = await load(path);
+        const preview = await loadPreview(path);
         if (!row.isConnected || ticket !== generation) return;
         if (scope() !== requestedScope) throw new Error('保存先が変わりました。ビューを開き直してください');
-        value.textContent = text || '—';
+        value.replaceChildren();
+        if (preview.image) {
+          const image = document.createElement('img');
+          image.src = preview.image;
+          image.alt = '内容のサムネイル';
+          image.loading = 'lazy';
+          value.appendChild(image);
+        } else if (preview.audio) {
+          const media = document.createElement('span');
+          media.className = 'db-body-audio-preview';
+          media.innerHTML = (typeof lucide === 'function' ? lucide('audioLines', 32) : '&#9835;') + '<span>音声</span>';
+          value.appendChild(media);
+        } else {
+          value.textContent = preview.text || '—';
+        }
       } catch (error) {
         if (!row.isConnected || ticket !== generation) return;
         value.textContent = '';
@@ -188235,7 +189003,7 @@ async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propN
     return row;
   }
 
-  window.MeldexDbBodyExcerpt = Object.freeze({ append, load, plain, take, sheetText });
+  window.MeldexDbBodyExcerpt = Object.freeze({ append, load, loadPreview, plain, take, sheetText });
 })();
 
 ;
@@ -194077,6 +194845,8 @@ function _getGalleryConfig(dbPath, ctx) {
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   return {
     showEntryName: cfg.showEntryName !== false,
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
+    thumbnailSizePx: Number(cfg.thumbnailSizePx) || 0,
     cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
     ...displayCfg,
   };
@@ -194286,6 +195056,10 @@ function renderGallery(ctx) {
   const toolbar = _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx);
   const grid = document.createElement('div');
   grid.className = 'gallery-grid';
+  if (galleryCfg.thumbnailSizePx > 0) {
+    grid.classList.add('db-fixed-content-thumbnail-grid');
+    grid.style.setProperty('--db-content-thumbnail-size', galleryCfg.thumbnailSizePx + 'px');
+  }
 
   entityNames.forEach(entityName => {
     const entityData = entitiesMap[entityName];
@@ -194324,6 +195098,10 @@ function renderGallery(ctx) {
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, entityName); });
     card.style.position = 'relative';
     card.style.setProperty('--db-card-prop-lines', String(galleryCfg.cardPropLineCount));
+    if (galleryCfg.thumbnailSizePx > 0) {
+      card.classList.add('db-fixed-content-thumbnail');
+      card.style.setProperty('--db-content-thumbnail-size', galleryCfg.thumbnailSizePx + 'px');
+    }
     card.appendChild(moreBtn);
 
     let title = null;
@@ -194335,7 +195113,6 @@ function renderGallery(ctx) {
     }
 
     // プロパティ一覧（先頭4件）
-    if (galleryCfg.showBodyExcerpt === true) window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
@@ -194394,10 +195171,12 @@ function renderGallery(ctx) {
     }
     // 有効な画像型列が無ければ画像領域は表示しない。列の表示順（cardPropNames の順序）で、
     // 各列ごとに独立したサムネブロックを追加する（列ごとに cardImageThumbCount 枚まで）。
+    let hasContentImage = false;
     selectedImageCols.forEach(propName => {
       const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
       const imageItems = _dbCardImageItemsFromValues(vals);
       if (!imageItems.length) {
+        if (galleryCfg.showBodyExcerpt === true) return;
         const empty = document.createElement('span');
         empty.className = 'gallery-card-image-preview';
         empty.textContent = '画像を追加';
@@ -194408,14 +195187,17 @@ function renderGallery(ctx) {
         card.appendChild(empty);
         return;
       }
-      _appendDbCardImagePreview(card, imageItems, {
+      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
         className: 'gallery-card-image-preview',
         entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
         thumbCount: galleryCfg.cardImageThumbCount,
         columns: Math.min(2, galleryCfg.cardImageThumbCount),
         propName,
-      });
+      }) || hasContentImage;
     });
+    if (galleryCfg.showBodyExcerpt === true && !hasContentImage) {
+      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
+    }
     card.appendChild(propsDiv);
 
     // リレーション表示
@@ -194475,6 +195257,8 @@ function _getKanbanConfig(dbPath, ctx) {
   return {
     groupBy: cfg.groupBy || '_status',
     showEntryName: cfg.showEntryName !== false,
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
+    thumbnailSizePx: Number(cfg.thumbnailSizePx) || 0,
     cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
     ...displayCfg,
   };
@@ -194502,19 +195286,21 @@ function _kanbanDefaultCardProps(visibleProps, groupByProp) {
 function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   const propTypes = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
+  let hasContentImage = false;
   propNames.forEach(propName => {
     const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
     const ptc = propTypes[propName] || {};
     if (ptc?.type === 'image') {
       const imageItems = _dbCardImageItemsFromValues(vals);
       if (imageItems.length) {
-        _appendDbCardImagePreview(root, imageItems, {
+        hasContentImage = _appendDbCardImagePreview(root, imageItems, {
           className: 'kanban-card-image-preview',
           entityPath: _entityPath(dbPath, card.name, ctx?.pivotData), ctx, ptc, viewType: 'kanban',
           propName,
           thumbCount: options.cardImageThumbCount,
-        });
+        }) || hasContentImage;
       } else {
+        if (options.contentFallback) return;
         const empty = document.createElement('span');
         empty.className = 'kanban-card-image-preview';
         empty.dataset.e2eId = ['kanban-card-property', dbPath, card.name, propName]
@@ -194550,6 +195336,7 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
     });
     root.appendChild(propRow);
   });
+  return hasContentImage;
 }
 
 function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
@@ -194739,6 +195526,10 @@ function renderKanban(ctx) {
   // ボード描画
   const board = document.createElement('div');
   board.className = 'kanban-board';
+  if (kanbanCfg.thumbnailSizePx > 0) {
+    board.classList.add('db-fixed-content-thumbnail-grid');
+    board.style.setProperty('--db-content-thumbnail-size', kanbanCfg.thumbnailSizePx + 'px');
+  }
 
   const statusColors = new Map(_kanbanStatusDefs(dbPath).map(st => [st.name, st.color]));
 
@@ -194945,6 +195736,10 @@ function renderKanban(ctx) {
       moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, card.name); });
       cardEl.style.position = 'relative';
       cardEl.style.setProperty('--db-card-prop-lines', String(kanbanCfg.cardPropLineCount));
+      if (kanbanCfg.thumbnailSizePx > 0) {
+        cardEl.classList.add('db-fixed-content-thumbnail');
+        cardEl.style.setProperty('--db-content-thumbnail-size', kanbanCfg.thumbnailSizePx + 'px');
+      }
       cardEl.appendChild(moreBtn);
 
       if (kanbanCfg.showEntryName !== false) {
@@ -194954,17 +195749,18 @@ function renderKanban(ctx) {
         cardEl.appendChild(title);
       }
 
-      if (kanbanCfg.showBodyExcerpt === true) {
-        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
-      }
       const propsDiv = document.createElement('div');
       propsDiv.className = 'kanban-card-props';
       const cardPropNames = Array.isArray(kanbanCfg.cardProps)
         ? kanbanCfg.cardProps.filter(propName => visibleProps.includes(propName) && propName !== groupByProp)
         : _kanbanDefaultCardProps(visibleProps, groupByProp);
-      _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx, {
+      const hasContentImage = _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx, {
         cardImageThumbCount: kanbanCfg.cardImageThumbCount,
+        contentFallback: kanbanCfg.showBodyExcerpt === true,
       });
+      if (kanbanCfg.showBodyExcerpt === true && !hasContentImage) {
+        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
+      }
       cardEl.appendChild(propsDiv);
 
       colBody.appendChild(cardEl);
@@ -195866,13 +196662,19 @@ function _dbTemplatePropertyTypesFromSnapshot(snapshot, dbPath) {
   return _cloneTemplateData(cfg.propertyTypes || {});
 }
 
-function _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes) {
+function _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes, propertyIds, schemaRevision) {
   const nextTypes = _cloneTemplateData(propertyTypes || {});
   const targetMetadata = typeof _ptMetadataForDbPath === 'function'
     ? _ptMetadataForDbPath(dbPath)
     : ((typeof state !== 'undefined' && state.currentDbPath === dbPath) ? state.dbMetadata : null);
   if (targetMetadata) {
     targetMetadata.property_types = nextTypes;
+    if (propertyIds && typeof propertyIds === 'object') {
+      targetMetadata.property_ids = _cloneTemplateData(propertyIds);
+    }
+    if (Number.isInteger(Number(schemaRevision))) {
+      targetMetadata.schema_revision = Number(schemaRevision);
+    }
     if (typeof state !== 'undefined' && state.currentDbPath === dbPath) state.dbMetadata = targetMetadata;
   }
 }
@@ -196047,16 +196849,53 @@ function _applyDbTemplateViewFields(cfg, template, overwrite) {
   });
 }
 
-function _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes) {
+function _saveDbTemplatePropertyTypesToBackend(dbPath, propertyTypes, options = {}) {
   _dbTemplateAssertProductionPropertyTypesUnchanged(dbPath, propertyTypes);
+  const schemaMutation = globalThis.GbDbSchemaMutation;
+  const targetMetadata = typeof _ptMetadataForDbPath === 'function'
+    ? (_ptMetadataForDbPath(dbPath) || {})
+    : ((typeof state !== 'undefined' && state.currentDbPath === dbPath) ? (state.dbMetadata || {}) : {});
+  const nextTypes = _cloneTemplateData(propertyTypes || {});
+  const ensured = schemaMutation?.ensurePropertyIds
+    ? schemaMutation.ensurePropertyIds(dbPath, _cloneTemplateData(targetMetadata), nextTypes)
+    : { metadata: targetMetadata, propertyTypes: nextTypes, propertyIds: _cloneTemplateData(targetMetadata.property_ids || {}) };
   if (typeof apiPut !== 'function') {
-    _setDbTemplateMetadataPropertyTypes(dbPath, propertyTypes);
+    _setDbTemplateMetadataPropertyTypes(
+      dbPath,
+      ensured.propertyTypes,
+      ensured.propertyIds,
+      ensured.metadata?.schema_revision,
+    );
     return Promise.resolve(true);
   }
-  const nextTypes = _cloneTemplateData(propertyTypes || {});
-  return apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { property_types: nextTypes })
-    .then(() => {
-      _setDbTemplateMetadataPropertyTypes(dbPath, nextTypes);
+  if (!schemaMutation?.saveMetadata) {
+    const fallbackPayload = { property_types: ensured.propertyTypes };
+    if (ensured.propertyIds && Object.keys(ensured.propertyIds).length > 0) {
+      fallbackPayload.property_ids = ensured.propertyIds;
+    }
+    return apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), fallbackPayload)
+      .then(result => {
+        _setDbTemplateMetadataPropertyTypes(
+          dbPath,
+          result?.property_types || ensured.propertyTypes,
+          result?.property_ids || ensured.propertyIds,
+          result?.schema_revision ?? ensured.metadata?.schema_revision,
+        );
+        return true;
+      });
+  }
+  const context = { dbPath, dbMetadata: targetMetadata };
+  return schemaMutation.saveMetadata(dbPath, {
+    property_types: ensured.propertyTypes,
+    property_ids: ensured.propertyIds,
+  }, context, { operationId: options.operationId })
+    .then(result => {
+      _setDbTemplateMetadataPropertyTypes(
+        dbPath,
+        result?.property_types || ensured.propertyTypes,
+        result?.property_ids || ensured.propertyIds,
+        result?.schema_revision,
+      );
       return true;
     });
 }
@@ -196089,6 +196928,9 @@ function applyDbTemplate(dbPath, template, opts) {
   const skipped = [];
   const historyKeys = _dbTemplateStorageKeys(dbPath, !!(template.entityTemplates && template.entityTemplates.length > 0));
   const historyBefore = opts?.skipHistory ? null : _captureDbTemplateStorage(historyKeys);
+  const operationId = opts?.operationId
+    || globalThis.GbDbSchemaMutation?.newId?.('template_op')
+    || `template_op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 
   // 1. プロパティ型を設定
   if (!c.propertyTypes) c.propertyTypes = {};
@@ -196171,7 +197013,7 @@ function applyDbTemplate(dbPath, template, opts) {
   try {
     if (nextEntityTemplates) saveEntityTemplates(dbPath, nextEntityTemplates);
     saveDbViewConfig(dbPath, c);
-    backendSavePromise = _saveDbTemplatePropertyTypesToBackend(dbPath, c.propertyTypes)
+    backendSavePromise = _saveDbTemplatePropertyTypesToBackend(dbPath, c.propertyTypes, { operationId })
       .then(result => {
         if (!opts?.skipHistory) {
           _pushDbTemplateStorageHistory(
@@ -196199,7 +197041,7 @@ function applyDbTemplate(dbPath, template, opts) {
     throw e;
   }
 
-  return { applied, skipped, viewsResult, entityLayoutsResult, backendSavePromise };
+  return { applied, skipped, viewsResult, entityLayoutsResult, operationId, backendSavePromise };
 }
 
 /**
@@ -215349,12 +216191,37 @@ function _syncChatSessionTitleInput() {
   if (!input) return;
   input.value = _chatState.sessionTitle || '';
   const fallbackTitle = _chatFallbackTitle('', _chatState.targetPath);
-  input.placeholder = _chatState.targetPath ? `チャット名（既定: ${fallbackTitle}）` : 'チャット名（任意）';
+  input.placeholder = _chatState.targetPath
+    ? `チャット名（自動: ${fallbackTitle}）`
+    : 'チャット名（最初の依頼から自動）';
 }
 
 function _setChatSessionTitle(title) {
   _chatState.sessionTitle = String(title || '').trim();
   _syncChatSessionTitleInput();
+}
+
+function _chatAutomaticTitleFromText(text, attachments = []) {
+  let title = String(text || '').replace(/\s+/g, ' ').trim();
+  title = title.replace(/^(?:[#>*+\-]|\d+[.)])\s*/, '').trim();
+  if (!title && Array.isArray(attachments)) {
+    title = String(attachments.find(item => item?.name || item?.path)?.name
+      || attachments.find(item => item?.path)?.path?.split(/[\\/]/).pop()
+      || '').trim();
+  }
+  if (!title) {
+    const target = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : (_chatState.targetPath || '');
+    const leaf = String(target || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    title = leaf ? leaf + 'のチャット' : '新しいチャット';
+  }
+  return title.length > 48 ? title.slice(0, 47).trimEnd() + '…' : title;
+}
+
+function _chatEnsureAutomaticSessionTitle(text, attachments = []) {
+  if (String(_chatState.sessionTitle || '').trim()) return _chatState.sessionTitle;
+  const title = _chatAutomaticTitleFromText(text, attachments);
+  _setChatSessionTitle(title);
+  return title;
 }
 
 function _captureChatSessionTitleFromInput() {
@@ -219041,6 +219908,56 @@ async function chatSend(options = {}) {
     return;
   }
 
+  // Cloudの一括改名はAPIキーやローカルCLIへ依存しないnative toolとして先に処理する。
+  // 実行はdry-runダイアログの利用者確認後で、AIが単件renameを反復しない。
+  const cloudBatchUndoIntent = /(?:一括改名|一括変更).*(?:元に戻|取り消)/.test(text);
+  const cloudBatchRedoIntent = /(?:一括改名|一括変更).*(?:やり直|再実行)/.test(text);
+  const cloudBatchRenameIntent = !cloudBatchUndoIntent && !cloudBatchRedoIntent
+    && window.MeldexCloudBatchRename?.openDialog
+    && /(?:一括|すべて|全部|このフォルダ).*(?:ファイル名|名前).*(?:先頭|日時|日付).*(?:削除|除去|消して|変更)/.test(text);
+  if (!usingDeferredMessages && window.MeldexCloudBatchRename && (cloudBatchRenameIntent || cloudBatchUndoIntent || cloudBatchRedoIntent)) {
+    let targetFolder = String((typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : '') || (typeof _folderPath !== 'undefined' ? _folderPath : '') || requestSourceFolder || '');
+    const targetStat = await window.MeldexStorageAdapter?.getProvider?.()?.statPath?.(targetFolder).catch?.(() => null);
+    if (targetStat?.kind === 'file') targetFolder = targetFolder.replace(/\/[^/]+$/, '');
+    const userTimestamp = _chatLocalTimestamp();
+    const userMessage = { role: 'user', content: text, timestamp: userTimestamp };
+    _ensureChatMessageId(userMessage);
+    chatAddMessage('user', text, { messageIndex: targetMessages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
+    targetMessages.push(userMessage);
+    if (!detachedScope) _ensureSessionId();
+    try {
+      let answer = '';
+      let toolName = 'batch_rename';
+      let toolResult = { ok: true, dry_run: true };
+      if (cloudBatchRenameIntent) {
+        await window.MeldexCloudBatchRename.openDialog(targetFolder, { fromChat: true });
+        answer = 'Cloud一括改名のdry-runを開きました。変更前後と同名衝突を確認し、「実行」を選ぶと同じ操作IDで一括適用します。';
+      } else {
+        const explicitId = text.match(/\b[a-f0-9]{32}\b/i)?.[0] || '';
+        const recent = explicitId ? null : await window.MeldexCloudBatchRename.recentOperation(targetFolder).catch(() => null);
+        const operationId = explicitId || window.MeldexCloudBatchRename.latestOperationId || recent?.documentId || '';
+        if (!operationId) throw new Error('このフォルダの一括改名操作が見つかりません');
+        if (cloudBatchUndoIntent) {
+          toolName = 'batch_rename_undo'; toolResult = await window.MeldexCloudBatchRename.undo(operationId);
+          answer = `Cloud一括改名を元に戻しました（操作ID: ${operationId}）。`;
+        } else {
+          toolName = 'batch_rename_redo'; toolResult = await window.MeldexCloudBatchRename.redo(operationId);
+          answer = `Cloud一括改名をやり直しました（操作ID: ${operationId}）。`;
+        }
+        window.refreshOutliner?.();
+      }
+      const assistant = { role: 'assistant', content: answer, timestamp: _chatLocalTimestamp(), tool_events: [{ name: toolName, result: JSON.stringify(toolResult) }] };
+      _ensureChatMessageId(assistant); targetMessages.push(assistant);
+      chatAddMessage('assistant', answer, { messageIndex: targetMessages.length - 1, msg_id: assistant.msg_id, timestamp: assistant.timestamp });
+      if (!detachedScope) saveChatHistory();
+    } catch (error) {
+      const answer = `Cloud一括改名を処理できませんでした: ${error?.message || error}`;
+      const assistant = { role: 'assistant', content: answer, timestamp: _chatLocalTimestamp() };
+      _ensureChatMessageId(assistant); targetMessages.push(assistant); chatAddMessage('assistant', answer, { messageIndex: targetMessages.length - 1, msg_id: assistant.msg_id, timestamp: assistant.timestamp });
+    }
+    return true;
+  }
+
   const providerStatus = await _chatProviderReadyStatus(effectiveProvider);
   if (!providerStatus.configured) {
     if (!usingDeferredMessages) {
@@ -219062,6 +219979,9 @@ async function chatSend(options = {}) {
   }
 
   // ユーザーメッセージ表示・記録（画像添付があれば構造化コンテンツにする）
+  if (!detachedScope && typeof _chatEnsureAutomaticSessionTitle === 'function') {
+    _chatEnsureAutomaticSessionTitle(text, _pendingAtts);
+  }
   if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
   if (usingDeferredMessages) {
     deferredMessages.forEach(message => {
@@ -219874,6 +220794,7 @@ function _showChatTargetBadge(targetPath) {
   const label = badge.querySelector('#chat-current-target-path') || badge.querySelector('[data-chat-current-target-path]');
   const icon = badge.querySelector('[data-chat-current-target-icon]');
   const clearButton = badge.querySelector('[data-chat-target-clear]');
+  const currentButton = badge.querySelector('[data-chat-target-current]');
   const pickerButton = badge.querySelector('[data-chat-target-pick]');
   const targets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ targetPath: String(targetPath || '') }) : [];
   const pathText = targets.map(item => item.path).join('\n');
@@ -219908,6 +220829,10 @@ function _showChatTargetBadge(targetPath) {
   if (pickerButton) {
     pickerButton.disabled = !!_chatState.streaming;
     pickerButton.setAttribute('aria-disabled', pickerButton.disabled ? 'true' : 'false');
+  }
+  if (currentButton) {
+    currentButton.disabled = !!_chatState.streaming;
+    currentButton.setAttribute('aria-disabled', currentButton.disabled ? 'true' : 'false');
   }
 }
 
@@ -220192,7 +221117,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    await apiPost('/chat/save', _chatPostPayload({
+    const saved = await apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -220208,6 +221133,7 @@ async function chatAutoSave(options = {}) {
     }));
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
+      if (!_chatState.sessionTitle && saved?.title) _setChatSessionTitle(saved.title);
     }
     return true;
   } catch (e) {
@@ -221474,6 +222400,32 @@ function _chatCurrentOpenTarget() {
   return { path: '', kind: '', resolved: false };
 }
 
+function _chatCurrentVisiblePanelTarget() {
+  // Explicit action: prefer the most recently active content pane, including subpanels.
+  try {
+    if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentOpenTargetInfo === 'function') {
+      const info = GBPaneBridge.getCurrentOpenTargetInfo();
+      if (info?.activeTab) {
+        const target = _chatCurrentTargetFromTab(info.activeTab);
+        const path = _chatNormalizePath(target.path);
+        if (path && (target.kind === 'file' || target.kind === 'folder')) {
+          return { path, kind: target.kind, resolved: true };
+        }
+      }
+    }
+  } catch {}
+  try {
+    if (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function' && typeof GBLayout !== 'undefined') {
+      const target = _chatCurrentTargetFromTab(GBTabs.getActiveTab(GBLayout.activePane));
+      const path = _chatNormalizePath(target.path);
+      if (path && (target.kind === 'file' || target.kind === 'folder')) {
+        return { path, kind: target.kind, resolved: true };
+      }
+    }
+  } catch {}
+  return _chatCurrentOpenTarget();
+}
+
 function _chatTargetFromViewObject(view) {
   if (!view || typeof view !== 'object') return { path: '', kind: '' };
   const type = String(view.type || '');
@@ -221587,11 +222539,11 @@ function _chatTargetUpdateMode(options = {}) {
     return _chatTargetHasStarted() || reason === 'open-saved-chat' ? 'manual' : 'follow-main';
   }
   if (reason === 'tree-click' || reason === 'tree-select' || reason === 'tree-activate') {
-    if (_chatTargetHasStarted() && !options.force) return '';
+    if ((_chatTargetHasStarted() || currentMode === 'manual') && !options.force) return '';
     return 'follow-main';
   }
   if (reason === 'last-view') {
-    if ((_chatTargetHasStarted() || currentMode === 'detached') && !options.force) return '';
+    if ((_chatTargetHasStarted() || currentMode === 'manual' || currentMode === 'detached') && !options.force) return '';
     return 'follow-main';
   }
   return currentMode;
@@ -221712,7 +222664,9 @@ function _chatRenderTargetLabels(label, targets) {
 function _chatFollowCurrentOpenTarget(options = {}) {
   const chatState = _chatRuntimeState();
   if (!chatState) return _chatTargetSnapshot();
-  if (_chatTargetHasStarted() || _chatCurrentTargetMode() === 'detached') return _chatTargetSnapshot();
+  if (_chatTargetHasStarted() || _chatCurrentTargetMode() === 'manual' || _chatCurrentTargetMode() === 'detached') {
+    return _chatTargetSnapshot();
+  }
   _chatSetCurrentTargetMode('follow-main');
   const target = _chatCurrentOpenTarget();
   if (target.resolved) {
@@ -221810,6 +222764,34 @@ async function _chatPickCurrentTarget() {
   return selection;
 }
 
+function _chatUseCurrentOpenTarget() {
+  if (_chatState.streaming) {
+    if (typeof showStatus === 'function') showStatus('応答生成中は対象を変更できません', true);
+    return null;
+  }
+  const target = _chatCurrentVisiblePanelTarget();
+  if (!target.resolved || !target.path || !['file', 'folder'].includes(target.kind)) {
+    if (typeof showStatus === 'function') showStatus('メインパネルまたはサブパネルでファイルかフォルダを開いてください', true);
+    return null;
+  }
+  const started = _chatTargetHasStarted();
+  let status = '開いている項目をチャットの対象にしました';
+  if (!started) {
+    // An explicit click pins the visible item instead of leaving a follow-main
+    // target that could drift when the user changes panes before the first send.
+    _chatSetCurrentTargetPath(target.path, target.kind, { reason: 'chat-current-open-target', mode: 'manual' });
+  } else if (!_chatEffectiveTargets().some(item => _chatTargetKey(item.path) === _chatTargetKey(target.path))) {
+    _chatState.additionalTargets = [...(_chatState.additionalTargets || []), { path: target.path, kind: target.kind }];
+    status = '開いている項目をチャットの対象に追加しました';
+  } else {
+    status = '開いている項目はすでにチャットの対象です';
+  }
+  _chatRefreshCurrentTargetDisplay();
+  _chatPersistTargetSnapshot();
+  if (typeof showStatus === 'function') showStatus(status);
+  return target;
+}
+
 function _chatRestoreTargetSnapshot(snapshot) {
   const started = !!snapshot?.started || (_chatState.messages || []).some(message => message.role === 'user');
   let mode = _CHAT_TARGET_MODES.has(String(snapshot?.mode || '')) ? String(snapshot.mode) : 'follow-main';
@@ -221838,11 +222820,13 @@ function _chatRestoreTargetSnapshot(snapshot) {
 
 window.chatClearCurrentTarget = _chatClearCurrentTarget;
 window.chatPickCurrentTarget = _chatPickCurrentTarget;
+window.chatUseCurrentOpenTarget = _chatUseCurrentOpenTarget;
 window.MeldexChatCurrentTarget = {
   setPath: _chatSetCurrentTargetPath,
   setFromView: _chatSetCurrentTargetFromView,
   clear: _chatClearCurrentTarget,
   pick: _chatPickCurrentTarget,
+  useCurrent: _chatUseCurrentOpenTarget,
   followMain: _chatFollowCurrentOpenTarget,
   refresh: _chatRefreshCurrentTargetDisplay,
   snapshot: _chatTargetSnapshot,
@@ -226577,6 +227561,9 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const targetMessages = scopedMessages || _chatState.messages;
     const detachedScope = !!scopedMessages && scopedMessages !== _chatState.messages;
 
+    if (!detachedScope && typeof _chatEnsureAutomaticSessionTitle === 'function') {
+      _chatEnsureAutomaticSessionTitle(textValue, attachments);
+    }
     if (!detachedScope && typeof _chatFreezeCurrentTarget === 'function') _chatFreezeCurrentTarget();
 
     if (usingDeferredMessages) {
@@ -228764,8 +229751,14 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   async function refreshBoard(filePath, containerEl, options) {
     if (!containerEl || !filePath) return;
     if (!_isCommentLayerEnabled(options)) {
+      const previousLineIds = [...(_boardLineCountsByPath.get(filePath)?.keys() || [])];
       _boardLineCountsByPath.delete(filePath);
       _clearCommentLayer(containerEl);
+      try {
+        if (previousLineIds.length && typeof bd !== 'undefined' && bd?.path === filePath && typeof bdDrawConns === 'function') {
+          bdDrawConns({ connIds: previousLineIds, reason: 'comment-badges-disabled' });
+        }
+      } catch {}
       return;
     }
     const started = typeof bdPerfStart === 'function' ? bdPerfStart('CommentBadges.refreshBoard') : 0;
@@ -228776,6 +229769,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     }
     const maps = buildCountMap(items);
     const counts = maps.board_card;
+    const previousLineCounts = _boardLineCountsByPath.get(filePath) || new Map();
+    const changedLineIds = new Set([...previousLineCounts.keys(), ...maps.board_line.keys()]);
+    changedLineIds.forEach(lineId => {
+      if ((previousLineCounts.get(lineId) || 0) === (maps.board_line.get(lineId) || 0)) changedLineIds.delete(lineId);
+    });
     _boardLineCountsByPath.set(filePath, maps.board_line);
     const targetIds = options?.cardIds ? new Set(options.cardIds) : null;
     // ボードカード要素は id="bdn-<cardId>" の .bd-node（gb-canvas-engine.js 準拠）
@@ -228799,7 +229797,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     }
     try {
       if (typeof bd !== 'undefined' && bd?.path === filePath && typeof bdDrawConns === 'function') {
-        bdDrawConns({ reason: 'comment-badges' });
+        bdDrawConns({ connIds: [...changedLineIds], reason: 'comment-badges' });
       }
     } catch {}
   }
@@ -229779,10 +230777,6 @@ function _syncFolderPanelPathToOutliner(path, opts) {
   highlightOutlinerNode(path, opts || {});
 }
 
-function _syncFolderSelectionToOutliner(item) {
-  _syncFolderPanelPathToOutliner(item?.path || _folderPath || '');
-}
-
 function _folderMembershipKey(path) {
   return _normalizeFolderPathForCompare(path);
 }
@@ -230581,7 +231575,11 @@ async function _folderFetchBrowseItems(path, options = {}) {
   }
   // 明示的に再帰表示を有効にした時だけ、配下の主要アプリ文書が内包・参照する
   // 画像・動画等も仮想リンクとして加える。HTTPは一括し、通常表示の負荷は増やさない。
-  const containedTargets = result.filter(item => canShowContainedFiles(item) && item?.path);
+  // サブフォルダ内容表示は遅延ロードされる任意機能。機能チャンクがまだ
+  // 到着していなくても、通常のフォルダ一覧そのものは必ず表示する。
+  const containedTargets = typeof canShowContainedFiles === 'function'
+    ? result.filter(item => canShowContainedFiles(item) && item?.path)
+    : [];
   if (containedTargets.length) {
     try {
       const contained = await apiPost('/contained-files/batch', {
@@ -230737,7 +231735,9 @@ async function openFolder(label, path, opts) {
       const _navEntry = {type:'folder', label: displayLabel, path};
       navPush(_navEntry);
     }
-    if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
+    // フォルダパネルを開くだけではツリーの展開・全祖先探索を行わない。
+    // 明示的な「フォルダツリーで表示」は gb-current-reveal.js が担当する。
+    if (openOpts.revealInTree) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
     let fetchedItems = Array.isArray(openOpts.items)
       ? openOpts.items.slice()
@@ -231390,7 +232390,6 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = _folderSelectedItems.filter(i => i !== item);
       }
       _folderSelected = _folderSelectedItems.length > 0 ? _folderSelectedItems[_folderSelectedItems.length - 1] : null;
-      _syncFolderSelectionToOutliner(_folderSelected);
       _updateFolderBulkBar();
       if (_folderSelectedItems.length > 1) showStatus(_folderSelectedItems.length + ' 件選択中');
     });
@@ -231586,7 +232585,6 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = [item];
       }
       _folderSelected = item;
-      _syncFolderSelectionToOutliner(item);
       _syncFolderCheckboxes();
       _updateFolderBulkBar();
       { const _pc = _getFvPanelCfg(); if ((_pc.previewVisible ?? true) || (_pc.detailVisible ?? true)) showFolderPreview(item); }
@@ -232173,6 +233171,9 @@ function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
     const toolSub = addSub('ツール');
     if (item.type === 'folder') {
+      if (window.MeldexCloudBatchRename?.openDialog) {
+        toolSub.item('ファイル名を一括変更…', () => window.MeldexCloudBatchRename.openDialog(item.path), null, 'textCursorInput');
+      }
       toolSub.item('重複画像を検出', () => showDuplicateScanModal(item.path));
       toolSub.item('画像インデックスを作成', () => clipIndexFolder(item.path));
     }
@@ -235888,7 +236889,7 @@ function _installFolderBlankContextMenu(container) {
     const paths = [];
     document.querySelectorAll('#outliner-tree .tree-root-row').forEach(row => {
       const node = row.closest('.tree-node');
-      const path = node?._nodeData?._isRoot ? node._nodeData.path : '';
+      const path = node?._nodeData?._isRoot ? node._nodeData.path : (node?.dataset?.path || '');
       if (path) paths.push(path);
     });
     if (typeof _homeFolderPath === 'string' && _homeFolderPath) paths.push(_homeFolderPath);
@@ -235989,6 +236990,59 @@ function _installFolderBlankContextMenu(container) {
     _folderToolbarUpdateRaf = requestAnimationFrame(() => {
       _folderToolbarUpdateRaf = 0;
       updateFolderToolbarActions();
+    });
+  }
+
+  function _folderToolbarResolveRenamePath(path) {
+    const resolved = window.GBOutlinerVirtualRender?.resolveUniquePath?.(path);
+    if (resolved) return resolved;
+    const wanted = _folderToolbarNormalizePath(path).toLowerCase();
+    const matches = new Set();
+    document.querySelectorAll('#outliner-tree .tree-node[data-path]').forEach(node => {
+      const candidate = String(node.dataset.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const key = candidate.toLowerCase();
+      if (key === wanted || key.endsWith('/' + wanted)) matches.add(candidate);
+    });
+    return matches.size === 1 ? Array.from(matches)[0] : path;
+  }
+
+  function _folderToolbarStartTitleRename() {
+    const title = document.getElementById('folder-title');
+    const path = _folderToolbarCurrentPath();
+    if (!title || !path || title.querySelector('input') || typeof startTreeLabelEdit !== 'function') return false;
+    const renamePath = _folderToolbarResolveRenamePath(path);
+    if (_folderToolbarIsLockedPath(path) || _folderToolbarIsLockedPath(renamePath)) {
+      if (typeof showStatus === 'function') showStatus('編集ロック中のフォルダ名は変更できません', true);
+      return false;
+    }
+    const normalizedPaths = new Set([path, renamePath].map(candidate => _folderToolbarNormalizePath(candidate).toLowerCase()));
+    if (_folderToolbarTopFolderPaths().some(top => normalizedPaths.has(_folderToolbarNormalizePath(top).toLowerCase()))) return false;
+    startTreeLabelEdit(title, {
+      path: renamePath,
+      pathAliases: renamePath !== path ? [path] : [],
+      name: title.textContent || path.split(/[\\/]/).pop() || path,
+      type: 'folder',
+    }, _folderToolbarScheduleUpdate);
+    return true;
+  }
+
+  function _folderToolbarBindEditableTitle() {
+    const title = document.getElementById('folder-title');
+    if (!title || title.dataset.inlineRenameBound === '1') return;
+    title.dataset.inlineRenameBound = '1';
+    title.tabIndex = 0;
+    title.title = 'ダブルクリックまたはF2でフォルダ名を変更';
+    title.dataset.gbTooltip = title.title;
+    title.addEventListener('dblclick', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarStartTitleRename();
+    });
+    title.addEventListener('keydown', event => {
+      if (event.key !== 'F2' && event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarStartTitleRename();
     });
   }
 
@@ -236602,6 +237656,7 @@ function _installFolderBlankContextMenu(container) {
     _folderToolbarBindButton(buttons.undo, 'undo2', folderToolbarUndo);
     _folderToolbarBindButton(buttons.redo, 'redo2', folderToolbarRedo);
     _folderToolbarInstallExtraControls();
+    _folderToolbarBindEditableTitle();
     _folderToolbarWrapBulkBarUpdate();
     const grid = document.getElementById('folder-grid');
     if (grid && grid.dataset.folderToolbarSelectionBound !== '1') {
@@ -240593,19 +241648,6 @@ function createTreeNodeFromBrowse(item, rootPath) {
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
     icon.innerHTML = _outlinerIconMarkup(item, 18);
-    if (!itemLocked && window.MeldexFileIcons?.canEdit(item)) {
-      icon.setAttribute('role', 'button');
-      icon.tabIndex = 0;
-      icon.setAttribute('aria-label', 'アイコンを変更');
-      icon.setAttribute('aria-haspopup', 'dialog');
-      const chooseIcon = event => {
-        event.preventDefault(); event.stopPropagation();
-        window.MeldexFileIcons.openPicker(item, icon);
-      };
-      icon.addEventListener('click', chooseIcon);
-      icon.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); });
-      icon.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') chooseIcon(event); });
-    }
     // リンクファイルマーク
     if (item.linked) {
       icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
@@ -243534,24 +244576,50 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
+  const aliasPairs = (Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : [])
+    .filter(alias => alias && alias !== oldPath)
+    .map(alias => {
+      const normalized = String(alias).replace(/[\\/]+$/, '');
+      const cut = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + newName };
+    });
+  const applyPathReferences = (fromPath, toPath, label, response) => {
+    if (typeof renameAppPathReferences !== 'function') return;
+    renameAppPathReferences(fromPath, toPath, {
+      preserveMountedViews: true,
+      label,
+      fileId: response?.file_id,
+      etag: response?.etag,
+      titleOnly: response?.title_only,
+      type: nodeData.type || 'page',
+    });
+  };
   _renameTreeNode(oldPath, newPath, newName, fileId);
+  aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
   nodeData.path = newPath;
   nodeData.name = newName;
+  nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
       const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(newPath, oldPath, { preserveMountedViews: true, label: oldName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
+      aliasPairs.forEach(pair => _renameTreeNode(pair.newPath, pair.oldPath, oldName, r2?.file_id));
+      applyPathReferences(newPath, oldPath, oldName, r2);
+      aliasPairs.forEach(pair => applyPathReferences(pair.newPath, pair.oldPath, oldName, r2));
+      nodeData.pathAliases = aliasPairs.map(pair => pair.oldPath);
     },
     async () => {
       const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
       _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId: r2?.file_id, etag:r2?.etag, titleOnly:r2?.title_only, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
+      aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, r2?.file_id));
+      applyPathReferences(oldPath, newPath, newName, r2);
+      aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, r2));
+      nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
     }
   );
-  if (typeof renameAppPathReferences === 'function') {
-    renameAppPathReferences(oldPath, newPath, { preserveMountedViews: true, label: newName, fileId, type: nodeData.type || 'page', etag:options?.etag, titleOnly:options?.titleOnly });
-  }
+  const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
+  applyPathReferences(oldPath, newPath, newName, initialResponse);
+  aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
   if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
@@ -243613,6 +244681,16 @@ function backToPivot() {
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
+  const resolvedOldPath = window.GBOutlinerVirtualRender?.resolveUniquePath?.(oldPath) || '';
+  if (resolvedOldPath) {
+    const normalizedNewPath = String(newPath || '').replace(/\\/g, '/');
+    const isAbsoluteNewPath = /^(?:[a-z]:\/|\/)/i.test(normalizedNewPath);
+    const cut = Math.max(resolvedOldPath.lastIndexOf('/'), resolvedOldPath.lastIndexOf('\\'));
+    oldPath = resolvedOldPath;
+    newPath = isAbsoluteNewPath
+      ? normalizedNewPath
+      : (cut >= 0 ? resolvedOldPath.slice(0, cut + 1) : '') + (newName || normalizedNewPath);
+  }
   window.GBOutlinerVirtualRender?.renamePath?.(oldPath, newPath, newName, fileId);
   const nodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
   const oldPrefix = oldPath + '/';
@@ -248096,7 +249174,9 @@ async function doVaultReplace(all) {
     if (managesExpansion) delete item._gbVirtualExpansionManaged;
     rowEl.style.position = 'absolute';
     rowEl.style.top = state.offsets[index] + 'px';
-    rowEl.style.left = (entry.depth * 14) + 'px';
+    // 絶対配置行は .tree-children の padding-left:14px を通常フローの子のようには
+    // 受けないため、直下(depth=0)にも基準インデントを明示する。
+    rowEl.style.left = ((entry.depth + 1) * 14) + 'px';
     rowEl.style.right = '0';
     rowEl.dataset.gbVirtualIndex = String(index);
     _appendDepthLines(rowEl, entry.depth);
@@ -248401,6 +249481,26 @@ async function doVaultReplace(all) {
     if (!state) return undefined;
     var entry = state.flat.find(function (candidate) { return candidate.id === path; });
     return entry ? entry.parentId : undefined;
+  }
+
+  // フォルダパネルはソースルート相対、ツリーは絶対パスを保持する場合がある。
+  // 同名フォルダを誤って選ばないよう、全仮想モデルで一意に解決できる時だけ返す。
+  function resolveUniquePath(path) {
+    var wanted = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!wanted) return '';
+    var matches = new Set();
+    _activeContainers.forEach(function (container) {
+      var state = container && container._virtualState;
+      if (!state) return;
+      function collect(item) {
+        var candidate = String(item && item.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        var key = candidate.toLowerCase();
+        if (key === wanted || key.endsWith('/' + wanted)) matches.add(candidate);
+      }
+      state.allItems.forEach(collect);
+      state.childrenByParent.forEach(function (items) { items.forEach(collect); });
+    });
+    return matches.size === 1 ? Array.from(matches)[0] : '';
   }
 
   function renamePath(oldPath, newPath, newName, fileId) {
@@ -248758,6 +249858,7 @@ async function doVaultReplace(all) {
     collapseNested: collapseNested,
     isVirtualContainer: isVirtualContainer,
     parentPathForItem: parentPathForItem,
+    resolveUniquePath: resolveUniquePath,
     stateChildItemsFor: stateChildItemsFor,
     renamePath: renamePath,
     depthLineLocalOffsets: depthLineLocalOffsets,
@@ -259322,7 +260423,12 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
   if (typeof _folderPath !== 'undefined' && _folderPath) {
+    const previousFolderPath = _folderPath;
     _folderPath = _mapRenamedPath(_folderPath, oldPath, newPath);
+    if (_folderPath !== previousFolderPath && previousFolderPath === oldPath && exactLabel != null) {
+      const folderTitle = document.getElementById('folder-title');
+      if (folderTitle && !folderTitle.querySelector('input')) folderTitle.textContent = exactLabel;
+    }
   }
   if (typeof bd !== 'undefined' && bd) {
     if (bd.path) bd.path = _mapRenamedPath(bd.path, oldPath, newPath);
@@ -266741,6 +267847,11 @@ function buildToolMenuItems(toolType, component) {
         { label: '旧シナリオからインポート...', action: context => showScriptNoteImportModal({ trigger: context?.trigger }) },
       ],
       export: [
+        { label: '印刷...', action: () => {
+          const editor = formComponent?._editor;
+          if (editor?.doc && window.MeldexScriptNotePrint?.open) window.MeldexScriptNotePrint.open(editor);
+          else _showUnavailableToolMenuAction('シナリオ印刷');
+        }, disabled: !hasFile },
         { label: 'シナリオ形式として保存...', action: () => { if (typeof promptSaveCurrentScriptNoteAs === 'function') promptSaveCurrentScriptNoteAs(); }, disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('scriptnote'); }, disabled: !hasFile },
         { label: 'HTMLとして保存...', action: () => { if (typeof exportCurrentScriptNoteAsHtml === 'function') exportCurrentScriptNoteAsHtml(); }, disabled: !hasFile },

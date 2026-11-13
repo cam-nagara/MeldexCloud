@@ -1,3 +1,8 @@
+          _activeTabId = id;
+          renderTabs();
+        }
+      }
+    } finally {
       _addingTab = false;
     }
   }
@@ -893,8 +898,3 @@ async function apiPut(path, body, options = {}) {
   // snapshot rejects its own caller without poisoning subsequent saves.
   let result;
   if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {
-    const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
-    _gbAppUiConfigWriteTail = pending;
-    result = await pending;
-  } else result = await send();
-  _scheduleLinkDictionaryRefreshForMutation(path);

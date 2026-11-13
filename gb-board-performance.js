@@ -96,19 +96,58 @@ function bdAppendFastNode(node) {
   const ok = typeof bdReplaceNodeElement === 'function'
     ? bdReplaceNodeElement(node, { fastCardRender })
     : false;
-  if (ok && fastCardRender) bdMarkFastCardRenderUsed();
+  if (ok && fastCardRender) {
+    bdMarkFastCardRenderUsed();
+    // 軽量DOMは入力直後だけに限定し、呼び出し元が予約を忘れても次のflushで必ず
+    // 通常のbdRenderNodeへ置き換える。常設アンカーは復活させない。
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, 'fast-node-normalize');
+  }
   bdPerfEnd('bdAppendFastNode', started, fastCardRender ? 'fast-card-render=1' : '');
   return !!ok;
 }
 
+let _bdFastNodeIndex = null;
+let _bdFastChildrenIndex = null;
+let _bdFastIndexSource = null;
+let _bdFastIndexLength = -1;
+
+function bdInvalidateFastBoardIndexes() {
+  _bdFastNodeIndex = null;
+  _bdFastChildrenIndex = null;
+  _bdFastIndexSource = null;
+  _bdFastIndexLength = -1;
+}
+
+function bdEnsureFastBoardIndexes() {
+  const nodes = (typeof bd !== 'undefined' && Array.isArray(bd.nodes)) ? bd.nodes : [];
+  if (_bdFastNodeIndex && _bdFastIndexSource === nodes && _bdFastIndexLength === nodes.length) {
+    return { nodes: _bdFastNodeIndex, children: _bdFastChildrenIndex };
+  }
+  const nodeIndex = new Map();
+  const childIndex = new Map();
+  nodes.forEach(node => {
+    if (!node?.id) return;
+    nodeIndex.set(node.id, node);
+    if (!node.contained && node.parent) {
+      if (!childIndex.has(node.parent)) childIndex.set(node.parent, []);
+      childIndex.get(node.parent).push(node);
+    }
+  });
+  _bdFastNodeIndex = nodeIndex;
+  _bdFastChildrenIndex = childIndex;
+  _bdFastIndexSource = nodes;
+  _bdFastIndexLength = nodes.length;
+  return { nodes: nodeIndex, children: childIndex };
+}
+
 function bdFastNodeById(nodeId) {
   if (typeof bd === 'undefined' || !nodeId) return null;
-  return bd.nodes.find(node => node?.id === nodeId) || null;
+  return bdEnsureFastBoardIndexes().nodes.get(nodeId) || null;
 }
 
 function bdFastChildren(parentId) {
   if (typeof bd === 'undefined') return [];
-  return bd.nodes.filter(node => node?.parent === parentId && !node.contained);
+  return bdEnsureFastBoardIndexes().children.get(parentId) || [];
 }
 
 function bdFastSubtreeIds(rootId) {

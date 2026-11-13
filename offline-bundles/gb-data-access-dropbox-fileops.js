@@ -79,10 +79,12 @@
     _linkedItemsForFolder,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
+    _rewriteStoredPathsBatchForProvider,
     _removeStoredPathEntries,
     _removeStoredPathEntriesForProvider,
     _iterateWorkspaceFiles,
     _relocateReferences,
+    _relocateReferencesBatch,
     _queryBacklinks,
     _queryDeleteImpact,
     _fnvFileId,
@@ -4828,6 +4830,97 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         relocate,
         ..._resultWarnings(warnings),
       };
+    }
+
+    // 一括改名の物理移動はproviderがまとめて行い、副作用はこの同一操作IDの
+    // aftercareへ集約する。単件/outliner/moveをファイル数分呼ばない。
+    if (!window.MeldexCloudBatchRenameAftercare) {
+      window.MeldexCloudBatchRenameAftercare = {
+        async prepare({ provider, entries, direction }) {
+          const plans = new Map();
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+            });
+            plans.set(oldPath, annotationPlan);
+          }
+          return plans;
+        },
+        async apply({ provider, entries, operationId, direction, prepared }) {
+          const warnings = [];
+          const mappings = (entries || []).map(entry => ({
+            oldPath: direction === 'reverse' ? entry.destination : entry.source,
+            newPath: direction === 'reverse' ? entry.source : entry.destination,
+            isFolder: false,
+          }));
+          await _runPostMutationStep(warnings, 'version-history', async () => {
+            if (!mappings.length) return;
+            await _awaitPendingEditFinalizations();
+            const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+            const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);
+            const records = await adapter.listDocuments(kind);
+            for (const record of records) {
+              const current = _normalizeFolderPath(record?.payload?.original_relative_path || '');
+              const mapping = mappings.find(row => row.oldPath === current);
+              if (!mapping) continue;
+              await adapter.save(kind, record.documentId, { ...record.payload, original_relative_path: mapping.newPath }, { expectedRevision: record.revision });
+            }
+          });
+          await _runPostMutationStep(warnings, 'stored-paths', () => (
+            typeof _rewriteStoredPathsBatchForProvider === 'function'
+              ? _rewriteStoredPathsBatchForProvider(provider, mappings)
+              : Promise.all(mappings.map(row => _rewriteStoredPathsForProvider(provider, row.oldPath, row.newPath, false)))
+          ));
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            await _runPostMutationStep(warnings, 'csv-sidecars', () => _relocateCsvSidecars(provider, oldPath, newPath, false, false));
+            await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: false, operationId }, warnings);
+            await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+              annotationPlan: prepared?.get?.(oldPath),
+            }));
+          }
+          let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+          await _runPostMutationStep(warnings, 'references', async () => {
+            relocate = typeof _relocateReferencesBatch === 'function'
+              ? await _relocateReferencesBatch(provider, mappings)
+              : await _relocateReferences(provider, mappings[0]?.oldPath, mappings[0]?.newPath, false);
+          });
+          for (const mapping of mappings) {
+            window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(mapping.oldPath, mapping.newPath);
+          }
+          window.dispatchEvent(new CustomEvent('meldex:batch-paths-renamed', {
+            detail: { operationId, direction, entries: (entries || []).map(entry => ({ source: entry.source, destination: entry.destination })) },
+          }));
+          return { ok: warnings.length === 0, warnings, relocate };
+        },
+      };
+    }
+    if (pathname === '/outliner/batch-rename-aftercare' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const entries = Array.isArray(body?.entries) ? body.entries : [];
+      if (!entries.length || entries.length > 10000) throw new Error('一括変更mapが不正です');
+      const operationId = String(body?.operation_id || '');
+      if (!/^[a-f0-9]{32}$/.test(operationId)) throw new Error('一括変更の操作IDが不正です');
+      const direction = body?.direction === 'reverse' ? 'reverse' : 'forward';
+      if (body?.phase === 'prepare') {
+        const token = await window.MeldexCloudBatchRenameAftercare.prepare({ provider, entries, operationId, direction });
+        // 同一タブ内だけで物理移動直後まで保持する。永続化すべき計画・状態は
+        // typed journal側が正本で、アノテートのCAS読取結果は短命である。
+        window.__MeldexBatchRenameAftercareTokens ||= new Map();
+        window.__MeldexBatchRenameAftercareTokens.set(operationId + ':' + direction, token);
+        return { ok: true, token: operationId + ':' + direction };
+      }
+      if (body?.phase === 'apply') {
+        const key = operationId + ':' + direction;
+        const prepared = window.__MeldexBatchRenameAftercareTokens?.get?.(key) || null;
+        window.__MeldexBatchRenameAftercareTokens?.delete?.(key);
+        return window.MeldexCloudBatchRenameAftercare.apply({ provider, entries, operationId, direction, prepared });
+      }
+      throw new Error('一括変更aftercareの段階が不正です');
     }
 /* gb-data-access-dropbox-fileops identity claim continuation. */
     function _settingsEntryIdForClaim(text) {

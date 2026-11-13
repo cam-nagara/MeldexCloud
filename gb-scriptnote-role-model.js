@@ -13,6 +13,7 @@
   ]);
   const TEMPLATE_ROOT_FIELDS = [
     'layoutMode', 'rubyPresentation', 'viewMode', 'pageSettings',
+    'templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs',
   ];
 
   function plain(value) {

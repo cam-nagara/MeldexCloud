@@ -177,10 +177,6 @@ function _syncFolderPanelPathToOutliner(path, opts) {
   highlightOutlinerNode(path, opts || {});
 }
 
-function _syncFolderSelectionToOutliner(item) {
-  _syncFolderPanelPathToOutliner(item?.path || _folderPath || '');
-}
-
 function _folderMembershipKey(path) {
   return _normalizeFolderPathForCompare(path);
 }
@@ -979,7 +975,11 @@ async function _folderFetchBrowseItems(path, options = {}) {
   }
   // 明示的に再帰表示を有効にした時だけ、配下の主要アプリ文書が内包・参照する
   // 画像・動画等も仮想リンクとして加える。HTTPは一括し、通常表示の負荷は増やさない。
-  const containedTargets = result.filter(item => canShowContainedFiles(item) && item?.path);
+  // サブフォルダ内容表示は遅延ロードされる任意機能。機能チャンクがまだ
+  // 到着していなくても、通常のフォルダ一覧そのものは必ず表示する。
+  const containedTargets = typeof canShowContainedFiles === 'function'
+    ? result.filter(item => canShowContainedFiles(item) && item?.path)
+    : [];
   if (containedTargets.length) {
     try {
       const contained = await apiPost('/contained-files/batch', {

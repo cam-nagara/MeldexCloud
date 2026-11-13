@@ -126,7 +126,9 @@ async function openFolder(label, path, opts) {
       const _navEntry = {type:'folder', label: displayLabel, path};
       navPush(_navEntry);
     }
-    if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
+    // フォルダパネルを開くだけではツリーの展開・全祖先探索を行わない。
+    // 明示的な「フォルダツリーで表示」は gb-current-reveal.js が担当する。
+    if (openOpts.revealInTree) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
     let fetchedItems = Array.isArray(openOpts.items)
       ? openOpts.items.slice()
@@ -779,7 +781,6 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = _folderSelectedItems.filter(i => i !== item);
       }
       _folderSelected = _folderSelectedItems.length > 0 ? _folderSelectedItems[_folderSelectedItems.length - 1] : null;
-      _syncFolderSelectionToOutliner(_folderSelected);
       _updateFolderBulkBar();
       if (_folderSelectedItems.length > 1) showStatus(_folderSelectedItems.length + ' 件選択中');
     });
@@ -975,7 +976,6 @@ function renderFolderGrid(opts) {
         _folderSelectedItems = [item];
       }
       _folderSelected = item;
-      _syncFolderSelectionToOutliner(item);
       _syncFolderCheckboxes();
       _updateFolderBulkBar();
       { const _pc = _getFvPanelCfg(); if ((_pc.previewVisible ?? true) || (_pc.detailVisible ?? true)) showFolderPreview(item); }
@@ -1562,6 +1562,9 @@ function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
     const toolSub = addSub('ツール');
     if (item.type === 'folder') {
+      if (window.MeldexCloudBatchRename?.openDialog) {
+        toolSub.item('ファイル名を一括変更…', () => window.MeldexCloudBatchRename.openDialog(item.path), null, 'textCursorInput');
+      }
       toolSub.item('重複画像を検出', () => showDuplicateScanModal(item.path));
       toolSub.item('画像インデックスを作成', () => clipIndexFolder(item.path));
     }

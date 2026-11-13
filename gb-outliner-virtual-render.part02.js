@@ -113,6 +113,26 @@
     return entry ? entry.parentId : undefined;
   }
 
+  // フォルダパネルはソースルート相対、ツリーは絶対パスを保持する場合がある。
+  // 同名フォルダを誤って選ばないよう、全仮想モデルで一意に解決できる時だけ返す。
+  function resolveUniquePath(path) {
+    var wanted = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!wanted) return '';
+    var matches = new Set();
+    _activeContainers.forEach(function (container) {
+      var state = container && container._virtualState;
+      if (!state) return;
+      function collect(item) {
+        var candidate = String(item && item.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        var key = candidate.toLowerCase();
+        if (key === wanted || key.endsWith('/' + wanted)) matches.add(candidate);
+      }
+      state.allItems.forEach(collect);
+      state.childrenByParent.forEach(function (items) { items.forEach(collect); });
+    });
+    return matches.size === 1 ? Array.from(matches)[0] : '';
+  }
+
   function renamePath(oldPath, newPath, newName, fileId) {
     if (!oldPath || !newPath) return false;
     var containers = new Set(_activeContainers);
@@ -468,6 +488,7 @@
     collapseNested: collapseNested,
     isVirtualContainer: isVirtualContainer,
     parentPathForItem: parentPathForItem,
+    resolveUniquePath: resolveUniquePath,
     stateChildItemsFor: stateChildItemsFor,
     renamePath: renamePath,
     depthLineLocalOffsets: depthLineLocalOffsets,

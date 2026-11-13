@@ -41,7 +41,13 @@
     if (type === 'board') return _tabPath(tab, 'boardPath') || _statePath('currentBoardPath');
     if (type === 'scriptnote') return _tabPath(tab, 'scenarioPath', 'scriptnotePath');
     if (DB_VIEW_TYPES.has(type)) return _tabPath(tab, 'dbPath') || _statePath('currentDbPath');
-    if (type === 'folder') return _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
+    if (type === 'folder') {
+      // フォルダパネルで項目が選択されている時は、その項目（ファイルを含む）を
+      // 明示的な「フォルダツリーで表示」の対象にする。通常の選択だけではツリーを
+      // 展開せず、この操作を行った時だけ親を展開して対象位置へスクロールする。
+      const selectedPath = typeof _folderSelected !== 'undefined' ? _folderSelected?.path || '' : '';
+      return selectedPath || _tabPath(tab, 'folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '');
+    }
     if (type === 'csv') return _tabPath(tab, 'csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');
     if (type === 'media') return _tabPath(tab, 'mediaPath', 'pagePath') || _statePath('currentPagePath');
     if (type === 'calendar') return _tabPath(tab, 'calendarPath', 'dbPath')
@@ -350,7 +356,7 @@
     const row = node.querySelector('.tree-node-row');
     if (row) {
       row.classList.add('active');
-      row.scrollIntoView({ block: 'nearest' });
+      row.scrollIntoView({ block: 'center' });
       if (!options?.preserveFocus) row.focus?.({ preventScroll: true });
     }
     if (typeof treeSelection !== 'undefined' && treeSelection) {

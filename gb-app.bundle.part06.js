@@ -1,3 +1,8 @@
+  return !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a));
+}
+
+function _viewerFolderNavIsFolderNode(node) {
+  const data = node?._nodeData || {};
   if (!node || node.style?.display === 'none') return false;
   return data.type === 'folder' || data._isRoot === true;
 }
@@ -893,7 +898,3 @@ function renderEmptyState(container, icon, message, hint) {
   container.innerHTML = `
     <div class="gb-empty-state">
       <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide(icon, 48) : ''}</div>
-      <div class="gb-empty-message">${esc(message)}</div>
-      ${hint ? `<div class="gb-empty-hint">${esc(hint)}</div>` : ''}
-    </div>`;
-}

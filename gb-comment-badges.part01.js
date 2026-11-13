@@ -486,8 +486,14 @@
   async function refreshBoard(filePath, containerEl, options) {
     if (!containerEl || !filePath) return;
     if (!_isCommentLayerEnabled(options)) {
+      const previousLineIds = [...(_boardLineCountsByPath.get(filePath)?.keys() || [])];
       _boardLineCountsByPath.delete(filePath);
       _clearCommentLayer(containerEl);
+      try {
+        if (previousLineIds.length && typeof bd !== 'undefined' && bd?.path === filePath && typeof bdDrawConns === 'function') {
+          bdDrawConns({ connIds: previousLineIds, reason: 'comment-badges-disabled' });
+        }
+      } catch {}
       return;
     }
     const started = typeof bdPerfStart === 'function' ? bdPerfStart('CommentBadges.refreshBoard') : 0;
@@ -498,6 +504,11 @@
     }
     const maps = buildCountMap(items);
     const counts = maps.board_card;
+    const previousLineCounts = _boardLineCountsByPath.get(filePath) || new Map();
+    const changedLineIds = new Set([...previousLineCounts.keys(), ...maps.board_line.keys()]);
+    changedLineIds.forEach(lineId => {
+      if ((previousLineCounts.get(lineId) || 0) === (maps.board_line.get(lineId) || 0)) changedLineIds.delete(lineId);
+    });
     _boardLineCountsByPath.set(filePath, maps.board_line);
     const targetIds = options?.cardIds ? new Set(options.cardIds) : null;
     // ボードカード要素は id="bdn-<cardId>" の .bd-node（gb-canvas-engine.js 準拠）
@@ -521,7 +532,7 @@
     }
     try {
       if (typeof bd !== 'undefined' && bd?.path === filePath && typeof bdDrawConns === 'function') {
-        bdDrawConns({ reason: 'comment-badges' });
+        bdDrawConns({ connIds: [...changedLineIds], reason: 'comment-badges' });
       }
     } catch {}
   }

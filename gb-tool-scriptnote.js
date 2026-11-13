@@ -761,39 +761,18 @@ class ScriptNoteComponent extends ToolComponent {
     const noteLayoutSel = this.el.querySelector('#scenario-note-layout-select');
     if (noteLayoutSel) {
       this._refreshTemplateSelect();
-      noteLayoutSel.addEventListener('change', () => {
+      noteLayoutSel.addEventListener('change', async () => {
         const val = noteLayoutSel.value;
-        this.state.noteLayoutMode = val;
         if (!this._editor?.doc) return;
-        this._editor._pushUndo('レイアウト変更');
-        if (val.startsWith('custom:')) {
-          // カスタムテンプレート適用
-          try {
-            const templates = _snToolReadJsonObject(SN2_TEMPLATE_STORAGE_KEY);
-            const tpl = templates[val.slice(7)];
-            if (tpl) {
-              const result = globalThis.GBScriptNoteRoleModel?.applyTemplate
-                ? globalThis.GBScriptNoteRoleModel.applyTemplate(this._editor.doc, tpl)
-                : null;
-              if (!result) {
-                if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
-                if (tpl.editor) Object.assign(this._editor.doc.editor, JSON.parse(JSON.stringify(tpl.editor)));
-                if (tpl.rubyPresentation && typeof tpl.rubyPresentation === 'object') {
-                  this._editor.doc.rubyPresentation = JSON.parse(JSON.stringify(tpl.rubyPresentation));
-                }
-              }
-              if (typeof showStatus === 'function' && result?.message) showStatus(result.message);
-            }
-          } catch {}
-        } else {
-          this._editor.doc.layoutMode = val;
-          if (this._editor.doc.editor?.countConfig) delete this._editor.doc.editor.countConfig;
+        const previous = this._editor.doc.templateId || this._editor.doc.layoutMode || 'manga';
+        try {
+          if (typeof this._applyScriptNoteTemplate !== 'function') throw new Error('テンプレート適用処理を読み込めませんでした');
+          await this._applyScriptNoteTemplate(val);
+          if (typeof showStatus === 'function') showStatus('シナリオテンプレートを適用しました');
+        } catch (error) {
+          noteLayoutSel.value = previous;
+          if (typeof showStatus === 'function') showStatus('テンプレートを適用できませんでした: ' + (error?.message || error), true);
         }
-        this._editor._calcCache = null;
-        this._editor._render();
-        this._editor._markDirty();
-        this._syncDetailPanel();
-        this._syncTemplateButton?.();
       });
     }
     const titleInput = this.el.querySelector('#title-input');
@@ -1412,6 +1391,7 @@ class ScriptNoteComponent extends ToolComponent {
         this._editor = new ScriptNoteEditor(host);
       } else {
         this._editor.host = host;
+        host.__meldexScriptNoteEditor = this._editor;
       }
       const loaded = this._editor.loadDoc(parsed, nextPath, etag, conflictGeneration, identity);
       if (!loaded) {

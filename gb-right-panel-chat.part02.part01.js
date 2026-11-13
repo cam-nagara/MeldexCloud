@@ -606,6 +606,7 @@ function _showChatTargetBadge(targetPath) {
   const label = badge.querySelector('#chat-current-target-path') || badge.querySelector('[data-chat-current-target-path]');
   const icon = badge.querySelector('[data-chat-current-target-icon]');
   const clearButton = badge.querySelector('[data-chat-target-clear]');
+  const currentButton = badge.querySelector('[data-chat-target-current]');
   const pickerButton = badge.querySelector('[data-chat-target-pick]');
   const targets = typeof _chatEffectiveTargets === 'function' ? _chatEffectiveTargets({ targetPath: String(targetPath || '') }) : [];
   const pathText = targets.map(item => item.path).join('\n');
@@ -640,6 +641,10 @@ function _showChatTargetBadge(targetPath) {
   if (pickerButton) {
     pickerButton.disabled = !!_chatState.streaming;
     pickerButton.setAttribute('aria-disabled', pickerButton.disabled ? 'true' : 'false');
+  }
+  if (currentButton) {
+    currentButton.disabled = !!_chatState.streaming;
+    currentButton.setAttribute('aria-disabled', currentButton.disabled ? 'true' : 'false');
   }
 }
 
@@ -924,7 +929,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    await apiPost('/chat/save', _chatPostPayload({
+    const saved = await apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -940,6 +945,7 @@ async function chatAutoSave(options = {}) {
     }));
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
+      if (!_chatState.sessionTitle && saved?.title) _setChatSessionTitle(saved.title);
     }
     return true;
   } catch (e) {

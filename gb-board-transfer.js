@@ -587,7 +587,19 @@
       bdPaste();
       return { handled: true, ids: [...(bd.selected || [])], kind: 'board' };
     }
-    const meldexNodes = parseMeldexNodes(dataTransferText(transfer, NODE_MIME));
+    let meldexNodes = parseMeldexNodes(dataTransferText(transfer, NODE_MIME));
+    if (meldexNodes.length && global.MeldexDnD?.preserveMediaItem) {
+      meldexNodes = await Promise.all(meldexNodes.map(async spec => {
+        const type = spec.kind === 'image' ? 'image' : spec.linkType;
+        if (type !== 'image' && type !== 'video') return spec;
+        const preserved = await global.MeldexDnD.preserveMediaItem({
+          path: spec.path,
+          name: spec.label || filename(spec.path),
+          type,
+        });
+        return specFromMeldexItem(preserved);
+      }));
+    }
     if (meldexNodes.length) {
       return {
         handled: true,

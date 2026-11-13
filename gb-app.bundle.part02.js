@@ -1,3 +1,8 @@
+        if (Array.isArray(tab.navHistory)) {
+          tab.navHistory.forEach(entry => {
+            if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
+            if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
+          });
         }
       });
     });
@@ -893,8 +898,3 @@ navPush = function(entry, paneId) {
         } else {
           const id = 'tab-' + (++_tabIdCounter);
           _tabs.push({ id, label: label || '(無題)', type, path, icon: _tabIcon(type) });
-          _activeTabId = id;
-          renderTabs();
-        }
-      }
-    } finally {

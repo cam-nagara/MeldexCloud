@@ -6,11 +6,17 @@
         ch.contained = false;
         ch.x = pos.x;
         ch.y = pos.y;
+        affectedNodeIds.add(ch.id);
       }
     });
   }
   // 削除されるノードを親に持つ子のparent参照をクリア
-  bd.nodes.forEach(n => { if (n.parent && bd.selected.has(n.parent)) n.parent = ''; });
+  bd.nodes.forEach(n => {
+    if (n.parent && bd.selected.has(n.parent)) {
+      n.parent = '';
+      affectedNodeIds.add(n.id);
+    }
+  });
   // グループから削除ノードを除去
   if (bd.groups) bd.groups.forEach(g => { if (g.nodeIds) g.nodeIds = g.nodeIds.filter(id => !bd.selected.has(id)); });
   // ドリルダウン中のルートが削除対象なら解除（そのまま描画すると全カードが消える）
@@ -18,6 +24,7 @@
     _bdDrillRoot = null;
   }
   bd.nodes = bd.nodes.filter(n => !bd.selected.has(n.id));
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
   // 空になったグループを除去
   if (bd.groups) bd.groups = bd.groups.filter(g => g.nodeIds && g.nodeIds.length > 0);
   bd.selected.clear();
@@ -25,9 +32,31 @@
   bd._activeNode = nextSelectedId || null;
   if (nextSelectedId) bd.selected.add(nextSelectedId);
   bdClearConnectionSelection();
-  bdRender();
+  deletedIds.forEach(id => {
+    if (typeof bdRemoveNodeRender === 'function') bdRemoveNodeRender(id);
+    else document.getElementById('bdn-' + id)?.remove();
+  });
+  if (typeof bdDrawConns === 'function') {
+    bdDrawConns({ connIds: removedConnIds, previousEndpointPairs, reason: 'delete-nodes' });
+  }
+  affectedNodeIds.forEach(id => {
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'delete-parent');
+  });
+  if (typeof bdMarkSelectionDirty === 'function') {
+    bdMarkSelectionDirty(nextSelectedId ? [nextSelectedId] : [], 'delete-selection');
+  }
+  if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({
+      frameIds: affectedFrameIds,
+      minimap: true,
+      boardUi: true,
+      detailPanel: true,
+      comments: [...affectedNodeIds],
+    }, 'delete-nodes');
+  }
   bdDirty();
-  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+  if (typeof bdMarkExtrasDirty !== 'function' && typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
 }
 
 // --- ステータス定義 ---
@@ -759,3 +788,5 @@ function bdPaste() {
   const offset = 30;
   const { newNodes, idMap } = bdCloneNodesWithOffset(_bdClipboard, offset);
   bd.nodes.push(...newNodes);
+  if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+  const newConnectionIds = [];

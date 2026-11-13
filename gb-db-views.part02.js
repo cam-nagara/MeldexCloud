@@ -407,6 +407,8 @@ function _getGalleryConfig(dbPath, ctx) {
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   return {
     showEntryName: cfg.showEntryName !== false,
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
+    thumbnailSizePx: Number(cfg.thumbnailSizePx) || 0,
     cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
     ...displayCfg,
   };
@@ -616,6 +618,10 @@ function renderGallery(ctx) {
   const toolbar = _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx);
   const grid = document.createElement('div');
   grid.className = 'gallery-grid';
+  if (galleryCfg.thumbnailSizePx > 0) {
+    grid.classList.add('db-fixed-content-thumbnail-grid');
+    grid.style.setProperty('--db-content-thumbnail-size', galleryCfg.thumbnailSizePx + 'px');
+  }
 
   entityNames.forEach(entityName => {
     const entityData = entitiesMap[entityName];
@@ -654,6 +660,10 @@ function renderGallery(ctx) {
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, entityName); });
     card.style.position = 'relative';
     card.style.setProperty('--db-card-prop-lines', String(galleryCfg.cardPropLineCount));
+    if (galleryCfg.thumbnailSizePx > 0) {
+      card.classList.add('db-fixed-content-thumbnail');
+      card.style.setProperty('--db-content-thumbnail-size', galleryCfg.thumbnailSizePx + 'px');
+    }
     card.appendChild(moreBtn);
 
     let title = null;
@@ -665,7 +675,6 @@ function renderGallery(ctx) {
     }
 
     // プロパティ一覧（先頭4件）
-    if (galleryCfg.showBodyExcerpt === true) window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
@@ -724,10 +733,12 @@ function renderGallery(ctx) {
     }
     // 有効な画像型列が無ければ画像領域は表示しない。列の表示順（cardPropNames の順序）で、
     // 各列ごとに独立したサムネブロックを追加する（列ごとに cardImageThumbCount 枚まで）。
+    let hasContentImage = false;
     selectedImageCols.forEach(propName => {
       const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
       const imageItems = _dbCardImageItemsFromValues(vals);
       if (!imageItems.length) {
+        if (galleryCfg.showBodyExcerpt === true) return;
         const empty = document.createElement('span');
         empty.className = 'gallery-card-image-preview';
         empty.textContent = '画像を追加';
@@ -738,14 +749,17 @@ function renderGallery(ctx) {
         card.appendChild(empty);
         return;
       }
-      _appendDbCardImagePreview(card, imageItems, {
+      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
         className: 'gallery-card-image-preview',
         entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
         thumbCount: galleryCfg.cardImageThumbCount,
         columns: Math.min(2, galleryCfg.cardImageThumbCount),
         propName,
-      });
+      }) || hasContentImage;
     });
+    if (galleryCfg.showBodyExcerpt === true && !hasContentImage) {
+      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
+    }
     card.appendChild(propsDiv);
 
     // リレーション表示
@@ -805,6 +819,8 @@ function _getKanbanConfig(dbPath, ctx) {
   return {
     groupBy: cfg.groupBy || '_status',
     showEntryName: cfg.showEntryName !== false,
+    showBodyExcerpt: cfg.showBodyExcerpt === true,
+    thumbnailSizePx: Number(cfg.thumbnailSizePx) || 0,
     cardProps: Object.prototype.hasOwnProperty.call(cfg, 'cardProps') && Array.isArray(cfg.cardProps) ? cfg.cardProps : null,
     ...displayCfg,
   };
@@ -832,19 +848,21 @@ function _kanbanDefaultCardProps(visibleProps, groupByProp) {
 function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   const propTypes = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
+  let hasContentImage = false;
   propNames.forEach(propName => {
     const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
     const ptc = propTypes[propName] || {};
     if (ptc?.type === 'image') {
       const imageItems = _dbCardImageItemsFromValues(vals);
       if (imageItems.length) {
-        _appendDbCardImagePreview(root, imageItems, {
+        hasContentImage = _appendDbCardImagePreview(root, imageItems, {
           className: 'kanban-card-image-preview',
           entityPath: _entityPath(dbPath, card.name, ctx?.pivotData), ctx, ptc, viewType: 'kanban',
           propName,
           thumbCount: options.cardImageThumbCount,
-        });
+        }) || hasContentImage;
       } else {
+        if (options.contentFallback) return;
         const empty = document.createElement('span');
         empty.className = 'kanban-card-image-preview';
         empty.dataset.e2eId = ['kanban-card-property', dbPath, card.name, propName]
@@ -880,6 +898,7 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
     });
     root.appendChild(propRow);
   });
+  return hasContentImage;
 }
 
 function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
@@ -1069,6 +1088,10 @@ function renderKanban(ctx) {
   // ボード描画
   const board = document.createElement('div');
   board.className = 'kanban-board';
+  if (kanbanCfg.thumbnailSizePx > 0) {
+    board.classList.add('db-fixed-content-thumbnail-grid');
+    board.style.setProperty('--db-content-thumbnail-size', kanbanCfg.thumbnailSizePx + 'px');
+  }
 
   const statusColors = new Map(_kanbanStatusDefs(dbPath).map(st => [st.name, st.color]));
 
@@ -1275,6 +1298,10 @@ function renderKanban(ctx) {
       moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showDbCardContextMenu(e, dbPath, card.name); });
       cardEl.style.position = 'relative';
       cardEl.style.setProperty('--db-card-prop-lines', String(kanbanCfg.cardPropLineCount));
+      if (kanbanCfg.thumbnailSizePx > 0) {
+        cardEl.classList.add('db-fixed-content-thumbnail');
+        cardEl.style.setProperty('--db-content-thumbnail-size', kanbanCfg.thumbnailSizePx + 'px');
+      }
       cardEl.appendChild(moreBtn);
 
       if (kanbanCfg.showEntryName !== false) {
@@ -1284,17 +1311,18 @@ function renderKanban(ctx) {
         cardEl.appendChild(title);
       }
 
-      if (kanbanCfg.showBodyExcerpt === true) {
-        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
-      }
       const propsDiv = document.createElement('div');
       propsDiv.className = 'kanban-card-props';
       const cardPropNames = Array.isArray(kanbanCfg.cardProps)
         ? kanbanCfg.cardProps.filter(propName => visibleProps.includes(propName) && propName !== groupByProp)
         : _kanbanDefaultCardProps(visibleProps, groupByProp);
-      _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx, {
+      const hasContentImage = _renderKanbanCardProps(propsDiv, card, cardPropNames, ctx, {
         cardImageThumbCount: kanbanCfg.cardImageThumbCount,
+        contentFallback: kanbanCfg.showBodyExcerpt === true,
       });
+      if (kanbanCfg.showBodyExcerpt === true && !hasContentImage) {
+        window.MeldexDbBodyExcerpt?.append(cardEl, _entityPath(dbPath, card.name, ctx?.pivotData));
+      }
       cardEl.appendChild(propsDiv);
 
       colBody.appendChild(cardEl);

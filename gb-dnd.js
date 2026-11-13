@@ -606,6 +606,32 @@ const MeldexDnD = (() => {
     return null;
   }
 
+  async function preserveMediaItem(item) {
+    const path = String(item?.path || '').trim();
+    if (!path) return item;
+    const type = inferNodeType(path, item?.type);
+    if (type !== 'image' && type !== 'video') return item;
+    if (typeof apiPost !== 'function') {
+      throw new Error('貼り付けメディアの保存APIを利用できません');
+    }
+    const name = String(item?.name || item?.label || path.split(/[\\/]/).pop() || path);
+    const result = await apiPost('/media/preserve', {
+      source_path: path,
+      filename: name,
+    });
+    if (!result?.path || !['image', 'video'].includes(result.kind)) {
+      throw new Error('貼り付けメディアを保存できませんでした');
+    }
+    return {
+      ...item,
+      name,
+      path: result.path,
+      type: result.kind,
+      preservedMedia: true,
+      contentHash: result.content_hash || '',
+    };
+  }
+
   function resolveOpenType(type, ext) {
     const declared = String(type || '').trim().toLowerCase();
     const extension = String(ext || '').trim().toLowerCase().replace(/^\./, '');
@@ -805,6 +831,7 @@ const MeldexDnD = (() => {
     installSurfaceDragSource,
     installSurfaceDropTarget,
     getMediaType,
+    preserveMediaItem,
     resolveOpenType,
     normalizeOpenTarget,
     normalizeOpenTargetAsync,

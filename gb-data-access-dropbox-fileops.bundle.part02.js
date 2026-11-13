@@ -1,3 +1,5 @@
+      const index = operations.findIndex(row => row.operation_id === operationId);
+      const previous = index < 0 ? null : operations[index];
       _assertCloudCopyRecord(previous, operationId, operation, identity);
       if (!previous) throw new Error('prepared Cloudファイル操作履歴がありません');
       if (previous.state === 'completed') selected = previous.result;
@@ -896,5 +898,3 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
 async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
   // A normal first read can require several 50-record pages, followed by a
   // second pass after legacy migration changes the collection generation.
-  // Finish that work before reporting a startup failure. Bound the work and
-  // stop on stalled coverage; storage/CAS errors still propagate unchanged.

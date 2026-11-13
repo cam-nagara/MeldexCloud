@@ -1,3 +1,26 @@
+      } catch {}
+    }
+    box = document.createElement('div');
+    box.className = 'outliner-lasso-box';
+    _savedScrollerPosition = scroller.style.position;
+    scroller.style.position = 'relative';
+    scroller.appendChild(box);
+    if (selectionMode === 'replace') treeSelection.clear();
+    updateSelection(_outlinerLassoRectForEvent(event));
+  };
+
+  const endLasso = () => {
+    if (!tracking && !active) return;
+    const wasActive = active;
+    active = false;
+    tracking = false;
+    removeDocumentPointerEndHandlers();
+    box?.remove();
+    box = null;
+    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
+      try { scroller.releasePointerCapture(pointerId); } catch {}
+    }
+    pointerId = null;
     pointerCaptured = false;
     // pointerdown で設定した inline position を元に戻す
     if (_savedScrollerPosition !== null) {

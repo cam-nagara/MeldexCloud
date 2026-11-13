@@ -275,6 +275,11 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
     version: src.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(src.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(src.layoutMode),
+    ...(src.templateId ? { templateId: String(src.templateId) } : {}),
+    ...(Number.isInteger(Number(src.templateVersion)) ? { templateVersion: Number(src.templateVersion) } : {}),
+    ...(src.templatePurpose ? { templatePurpose: String(src.templatePurpose) } : {}),
+    ...(Array.isArray(src.templateSourceRefs) ? { templateSourceRefs: src.templateSourceRefs.map(String) } : {}),
+    ...(_scriptNotePlainObject(src.pageSettings).paper ? { pageSettings: JSON.parse(JSON.stringify(src.pageSettings)) } : {}),
     // wrapMode の既定値は true。ツールバー状態と保存形式を一致させる。
     editor,
     scenarioTypes: Array.isArray(src.scenarioTypes) ? src.scenarioTypes : [],
@@ -388,6 +393,11 @@ function serializeScriptNoteDoc(doc) {
     version: doc.version || (typeof SCRIPTNOTE_FILE_VERSION !== 'undefined' ? SCRIPTNOTE_FILE_VERSION : 1),
     title: String(doc.title || ''),
     layoutMode: _scriptNoteLayoutOrDefault(doc.layoutMode),
+    ...(doc.templateId ? { templateId: String(doc.templateId) } : {}),
+    ...(Number.isInteger(Number(doc.templateVersion)) ? { templateVersion: Number(doc.templateVersion) } : {}),
+    ...(doc.templatePurpose ? { templatePurpose: String(doc.templatePurpose) } : {}),
+    ...(Array.isArray(doc.templateSourceRefs) ? { templateSourceRefs: doc.templateSourceRefs.map(String) } : {}),
+    ...(_scriptNotePlainObject(doc.pageSettings).paper ? { pageSettings: JSON.parse(JSON.stringify(doc.pageSettings)) } : {}),
     editor: { ..._scriptNotePlainObject(doc.editor) },
     // 全体既定は editor.columnStyles、タイプ別上書きは各タイプのスタイルへ分離して保存する。
     scenarioTypes: _scriptNoteSerializedTypes(doc),

@@ -20,19 +20,6 @@
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
     icon.innerHTML = _outlinerIconMarkup(item, 18);
-    if (!itemLocked && window.MeldexFileIcons?.canEdit(item)) {
-      icon.setAttribute('role', 'button');
-      icon.tabIndex = 0;
-      icon.setAttribute('aria-label', 'アイコンを変更');
-      icon.setAttribute('aria-haspopup', 'dialog');
-      const chooseIcon = event => {
-        event.preventDefault(); event.stopPropagation();
-        window.MeldexFileIcons.openPicker(item, icon);
-      };
-      icon.addEventListener('click', chooseIcon);
-      icon.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); });
-      icon.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') chooseIcon(event); });
-    }
     // リンクファイルマーク
     if (item.linked) {
       icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';

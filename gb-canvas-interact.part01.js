@@ -939,18 +939,28 @@ function bdInitInteraction(root) {
     }
     if (drag && dragOffsets && !bd._dragExtracted) {
       if (!dragMoved) return;
-      let extractedAny = false;
+      const extractedIds = [];
       Object.keys(dragOffsets).forEach(id => {
         if (dragOffsets[id]?.followOnly) return;
         const n = bd.nodes.find(v => v.id === id);
         if (n && n.contained) {
           n.contained = false;
           n.parent = '';
-          extractedAny = true;
+          extractedIds.push(id);
         }
       });
       bd._dragExtracted = true;
-      if (extractedAny && typeof bdRender === 'function') bdRender();
+      if (extractedIds.length) {
+        if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+        extractedIds.forEach(id => {
+          if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(id);
+        });
+        if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(extractedIds, 'drag-extract-contained');
+        if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(extractedIds, 'drag-extract-contained');
+        if (typeof bdMarkExtrasDirty === 'function') {
+          bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'drag-extract-contained');
+        }
+      }
     }
     if (drag && dragOffsets) {
       if (!dragMoved) return;

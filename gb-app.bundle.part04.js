@@ -1,3 +1,8 @@
+    const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
+    _gbAppUiConfigWriteTail = pending;
+    result = await pending;
+  } else result = await send();
+  _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
 
@@ -893,8 +898,3 @@ function showScreenshotMenu(e) {
     if (closed) return;
     closed = true;
     if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
-    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
-    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
-    menu.remove();
-    if (restoreFocus) btn?.focus?.();
-  };
