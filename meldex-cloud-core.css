@@ -1041,7 +1041,7 @@ html[data-single-window="1"] #app-toolbar.visible {
   padding: var(--ui-space-2) var(--ui-space-4); background: var(--ui-toolbar-bg); border-bottom: var(--ui-border-width) solid var(--ui-border);
   flex-shrink: 0; flex-wrap: wrap; max-height: 25vh; overflow-y: auto;
   font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
-  min-height: calc(var(--ui-h-xs) + (2 * var(--ui-space-2)));
+  min-height: 39px;
   box-sizing: border-box;
 }
 .gb-toolbar { font-family: var(--ui-toolbar-font, var(--ui-font, inherit)); }
@@ -1049,7 +1049,31 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 #app-toolbar.visible { display: flex; }
 #app-toolbar :is(.tb-title, .tb-file-title, .tb-file-title > input),
 .gb-toolbar :is(.tb-title, .tb-file-title, .tb-file-title > input) {
-  font-size: var(--ui-font-12);
+  font-size: var(--ui-font-16);
+  line-height: 30px;
+  min-height: 30px;
+}
+/* シートボタン群の直下に見えていた線の発生源は #app-toolbar 自身の border-bottom。
+   シート表示時だけ外枠線を外し、ボタン・区切り線・セル罫線には触れない。 */
+#app-toolbar[data-active-toolbar="sheet"] {
+  padding: 0 !important;
+  gap: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+#app-toolbar[data-active-toolbar="sheet"] > #tb-db {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+#app-toolbar[data-active-toolbar="sheet"]::before,
+#app-toolbar[data-active-toolbar="sheet"]::after,
+#app-toolbar[data-active-toolbar="sheet"] > #tb-db::before,
+#app-toolbar[data-active-toolbar="sheet"] > #tb-db::after {
+  content: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 /* シートテーマの下線指定はセルだけに適用し、共通ツールバーへ持ち込まない。 */
 #app-toolbar #tb-db :is(button, .tb-title, .tb-file-title, label) {
@@ -6798,7 +6822,8 @@ button[data-search-tag-trigger][aria-pressed="true"] {
   color: inherit;
   cursor: pointer;
   border: 0;
-  padding: 0;
+  /* 右端のタブ操作ボタン(22px)と名前ボタンの中央クリック領域を重ねない。 */
+  padding: 0 24px 0 0;
   background: transparent;
   font: inherit;
   letter-spacing: inherit;
@@ -6918,7 +6943,7 @@ iframe.meldex-entity-linked-media {
 #tb-db #toolbar-category,
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] {
   display: inline-flex; align-items: center; min-height: 30px;
-  font-size: 16px; line-height: 30px; font-weight: 600;
+  font-size: var(--ui-font-16); line-height: 30px; font-weight: 600;
 }
 #tb-db #toolbar-category input,
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {
@@ -16375,8 +16400,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
    ベーススタイルは gb-ui.css .gb-toolbar + .gb-toolbar-board modifier で提供。
    以下はボード固有の追加ルールのみ。 */
 .gb-toolbar-board.bd-toolbar-bottom { border-top: 1px solid var(--ui-border); border-bottom: 0; justify-content: flex-start; }
-/* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準（12px / weight 600 / padding 0 6px / 枠なし）に統一 */
-.bd-toolbar-title { display: inline-flex; align-items: center; flex: 1 1 auto; min-width: 0; padding: 0 var(--ui-space-3); background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ファイル名はシートと同じ 16px / 30px。ツール固有CSSで共通 .tb-file-title を縮小しない。 */
+.bd-toolbar-title { display: inline-flex; align-items: center; flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 0 var(--ui-space-3); background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-16); line-height: 30px; font-weight: var(--ui-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bd-toolbar-group { display: flex; align-items: center; gap: 4px; min-height: 28px; }
 .bd-toolbar-group-meta { margin-left: auto; }
 .bd-toolbar-label { font-size: 11px; color: var(--fg2); white-space: nowrap; }
@@ -17680,7 +17705,7 @@ blockquote .quote-cite a {
   font-family: inherit;
   font-weight: inherit;
   font-style: normal;
-  font-size: var(--ui-font-12);
+  font-size: var(--ui-font-16);
   background: transparent;
   -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
   -webkit-text-stroke-width: 0;
@@ -17688,7 +17713,8 @@ blockquote .quote-cite a {
   box-shadow: none;
   border-bottom: 0;
   padding-left: var(--ui-space-3);
-  line-height: 1.2;
+  line-height: 30px;
+  min-height: 30px;
   display: flex;
   align-items: center;
   text-align: left;
@@ -22988,7 +23014,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   gap: var(--ui-space-3);
   /* height ではなく min-height にする。Phase 4 で descendant セレクタが消えるまで
      既存ツールバー内の button (~28px + padding) で 32px を超える可能性があるため */
-  min-height: var(--ui-h-md);
+  min-height: 39px;
   padding: var(--ui-space-2) var(--ui-space-4);
   background: var(--ui-toolbar-bg);
   border-bottom: 1px solid var(--ui-border);
@@ -23160,6 +23186,9 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   width: 240px;
   max-width: 240px;
   box-sizing: border-box;
+  min-height: 30px;
+  font-size: var(--ui-font-16);
+  line-height: 30px;
 }
 .tb-file-title > input,
 .tb-file-title.tb-file-title--input {
@@ -23171,7 +23200,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   color: inherit;
   font: inherit;
   padding: 0 var(--ui-space-3);
-  height: var(--ui-h-xs);
+  height: 30px;
   outline: none;
 }
 .tb-file-title > input:focus,
@@ -23272,8 +23301,11 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
 }
 .gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
   font-size: var(--ui-font-12);
-  padding: 3px var(--ui-space-4);
+  height: 30px;
+  min-height: 30px;
+  padding: 2px var(--ui-space-4);
   color: var(--ui-fg-muted);
+  box-sizing: border-box;
 }
 
 /* ============================================================

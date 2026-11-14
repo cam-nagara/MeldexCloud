@@ -7,8 +7,8 @@
    ベーススタイルは gb-ui.css .gb-toolbar + .gb-toolbar-board modifier で提供。
    以下はボード固有の追加ルールのみ。 */
 .gb-toolbar-board.bd-toolbar-bottom { border-top: 1px solid var(--ui-border); border-bottom: 0; justify-content: flex-start; }
-/* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準（12px / weight 600 / padding 0 6px / 枠なし）に統一 */
-.bd-toolbar-title { display: inline-flex; align-items: center; flex: 1 1 auto; min-width: 0; padding: 0 var(--ui-space-3); background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ファイル名はシートと同じ 16px / 30px。ツール固有CSSで共通 .tb-file-title を縮小しない。 */
+.bd-toolbar-title { display: inline-flex; align-items: center; flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 0 var(--ui-space-3); background: transparent; color: var(--ui-fg-default); font-size: var(--ui-font-16); line-height: 30px; font-weight: var(--ui-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bd-toolbar-group { display: flex; align-items: center; gap: 4px; min-height: 28px; }
 .bd-toolbar-group-meta { margin-left: auto; }
 .bd-toolbar-label { font-size: 11px; color: var(--fg2); white-space: nowrap; }

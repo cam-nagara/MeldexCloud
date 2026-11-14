@@ -1,3 +1,6 @@
+  container.innerHTML = `
+    <div class="gb-empty-state">
+      <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide(icon, 48) : ''}</div>
       <div class="gb-empty-message">${esc(message)}</div>
       ${hint ? `<div class="gb-empty-hint">${esc(hint)}</div>` : ''}
     </div>`;

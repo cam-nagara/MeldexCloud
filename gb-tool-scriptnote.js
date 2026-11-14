@@ -203,7 +203,6 @@ class ScriptNoteComponent extends ToolComponent {
     <option value="afureko">アフレコシナリオ</option>
     <option value="stage">舞台シナリオ</option>
   </select>
-  <button type="button" class="tb-icon-btn" data-sn-action="saveTemplate" title="現在の設定をテンプレートとして登録" aria-label="現在の設定をテンプレートとして登録"><span class="ico ico-save"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="manageTemplates" title="テンプレートを管理" aria-label="テンプレートを管理"><span class="ico ico-listChecks"></span></button>
   <div class="sep"></div>
   <button type="button" class="tb-icon-btn" data-sn-action="undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button><span class="ico ico-undo2"></span></button>
@@ -309,7 +308,7 @@ class ScriptNoteComponent extends ToolComponent {
     if (title) title.disabled = locked;
     if (layout) layout.disabled = locked;
     const mutationActions = new Set([
-      'saveTemplate', 'manageTemplates', 'undo', 'redo', 'horizontal', 'vertical',
+      'manageTemplates', 'undo', 'redo', 'horizontal', 'vertical',
       'wrap', 'mergeDisplay', 'addColumn', 'search',
     ]);
     const actionControls = this.el.querySelectorAll?.('[data-sn-action]') || [];
@@ -746,10 +745,6 @@ class ScriptNoteComponent extends ToolComponent {
       }
       if (action === 'manageFilters') {
         this._showPresetManager('filter');
-        return;
-      }
-      if (action === 'saveTemplate') {
-        this._addTemplatePreset({ allowOverwrite: true });
         return;
       }
       if (action === 'manageTemplates' || action === 'templatePicker') {

@@ -153,11 +153,6 @@
         return false;
       } });
     }
-    footerActions.push({ label: '新しいテンプレート', e2eId: 'note-templates-new', run: async ctx => {
-      const saved = await openEditor(library, { name: '', content: '' }, { title: '新しいテンプレート' });
-      if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
-      return false;
-    } });
     if (options.dbPath) {
       footerActions.push({ label: 'シートの設定を解除', e2eId: 'note-templates-clear-sheet', run: async () => {
         await saveSheetDefault(options.dbPath, null, metadata.schema_revision || 0);
@@ -169,7 +164,7 @@
       title: options.dbPath ? 'シートのノートテンプレート' : 'ノートテンプレート',
       items: items(),
       selectedId: options.dbPath ? metadata?.note_template?.id : undefined,
-      emptyText: '登録済みのテンプレートはありません。「新しいテンプレート」で作成できます。',
+      emptyText: '登録済みのテンプレートはありません。ハンバーガーメニューの「現在のノートからテンプレートを作成...」で作成できます。',
       primaryAction: { label: options.dbPath ? 'シートに設定' : 'ノートに適用', run: async item => {
         const current = library.templates.find(other => other.id === item.id);
         if (!current) throw new Error('保存済みのテンプレートを選択してください');
@@ -191,6 +186,24 @@
           const current = library.templates.find(other => other.id === item.id);
           const saved = await openEditor(library, current, { title: 'テンプレートの編集' });
           if (saved) { await ctx.refresh(items()); ctx.select(saved.id); ctx.setStatus('保存しました'); }
+          return false;
+        } },
+        { label: '前へ', e2eId: 'note-templates-up', run: async (item, ctx) => {
+          const index = library.templates.findIndex(other => other.id === item.id);
+          if (index <= 0) { ctx.setStatus('これ以上前へ移動できません'); return false; }
+          const next = library.templates.slice();
+          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+          await persist(library, next);
+          await ctx.refresh(items()); ctx.select(item.id); ctx.setStatus('並び順を変更しました');
+          return false;
+        } },
+        { label: '後へ', e2eId: 'note-templates-down', run: async (item, ctx) => {
+          const index = library.templates.findIndex(other => other.id === item.id);
+          if (index < 0 || index >= library.templates.length - 1) { ctx.setStatus('これ以上後へ移動できません'); return false; }
+          const next = library.templates.slice();
+          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+          await persist(library, next);
+          await ctx.refresh(items()); ctx.select(item.id); ctx.setStatus('並び順を変更しました');
           return false;
         } },
         { label: '削除', danger: true, e2eId: 'note-templates-delete', run: async (item, ctx) => {

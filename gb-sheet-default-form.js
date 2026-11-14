@@ -43,18 +43,24 @@
     let renderGeneration = 0;
     const render = async (refreshRecord = false) => {
       const generation = ++renderGeneration;
+      panel.dataset.formState = 'loading';
       panel.replaceChildren(document.createTextNode('フォームを読み込んでいます…'));
       try {
         const [loaded, record] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(metadata.default_form_path)),
           refreshRecord ? apiFetch('/entity?path=' + encodeURIComponent(path)) : null]);
-        if (!panel.isConnected || generation !== renderGeneration) return;
+        // パネルはタブ/ペイン再配置の途中で一瞬DOMから外れてから同じノードが
+        // 再接続される。isConnected で中断すると「読み込み中」のまま戻らないため、
+        // 世代が旧くなった場合だけ破棄する。
+        if (generation !== renderGeneration) return;
+        panel.dataset.formState = 'loaded';
         if (record) Object.assign(data, record);
         const doc = MeldexFormDocument.parse(loaded.content);
         if (normal(doc.sheet.path) !== normal(options.parentDb)) {
           const ids = await Promise.all([doc.sheet.path, options.parentDb].map(value => apiFetch('/file-id?path=' + encodeURIComponent(value))));
           if (!ids[0]?.file_id || ids[0].file_id !== ids[1]?.file_id) throw new Error('フォームの参照先シートが変更されています');
         }
-        if (!panel.isConnected || generation !== renderGeneration) return;
+        if (generation !== renderGeneration) return;
+        panel.dataset.formState = 'validated';
         const types = metadata.property_types || {};
         const config = normalizeDbFormConfig({ ...doc.formConfig, mode: 'entry' }, Object.keys(types), types);
         const layout = doc.layout ? _elNormalizeLayout(doc.layout) : _elNormalizeLayout({ name: doc.title,
@@ -63,6 +69,7 @@
         layout.formConfig = MeldexDbFormModel.forLayout(layout, doc.formConfig);
         panel.replaceChildren();
         _elRenderLayoutBody(panel, data, path, { ...options, formLayout: layout, propTypes: types }, options.parentDb, layout.id, render);
+        panel.dataset.formState = 'rendered';
         if (!doc.layout) {
           // The automatic layout has no authored coordinates to preserve.
           // Keep its inputs and save controls inside narrow topic panels.
@@ -74,7 +81,8 @@
           }
         }
       } catch (error) {
-        if (!panel.isConnected || generation !== renderGeneration) return;
+        if (generation !== renderGeneration) return;
+        panel.dataset.formState = 'error';
         panel.textContent = 'フォームを開けません: ' + (error.userMessage || error.message);
         const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '再試行';
         retry.addEventListener('click', () => render(true)); panel.appendChild(retry);

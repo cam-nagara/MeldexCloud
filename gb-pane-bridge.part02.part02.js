@@ -76,7 +76,10 @@
     const rtTb = appTb?.querySelector?.('#rt-toolbar') || document.getElementById('rt-toolbar');
     // page-view内に専用ツールバー(#page-rt-toolbar)があるので、app-toolbar内のrt-toolbarは常に非表示
     if (rtTb) rtTb.style.display = 'none';
-    if (appTb) appTb.classList.toggle('visible', effectiveIsDbView);
+    if (appTb) {
+      appTb.classList.toggle('visible', effectiveIsDbView);
+      appTb.dataset.activeToolbar = effectiveIsDbView ? 'sheet' : '';
+    }
 
     // ツールバーをアクティブペインのcontentElの先頭に移動
     if (appTb && effectiveShowToolbar) {

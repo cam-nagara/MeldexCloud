@@ -72,9 +72,9 @@
     },
     {
       test: info => /(?:ブラウザ版|クラウド版)では(?:まだ)?未対応の操作です/.test(info.raw),
-      title: 'クラウド版では未対応の操作です',
-      message: 'この操作は、現在のクラウド版では使えません。',
-      action: '必要な場合はデスクトップ版で実行するか、クラウド版で対応済みの操作に切り替えてください。',
+      title: 'この画面では操作を完了できません',
+      message: '現在の画面から直接実行できない操作です。入力内容はそのまま保持されています。',
+      action: info => info.nextAction || '対象ファイルをデスクトップ版で開き、同じメニューから操作を続けてください。',
     },
     {
       test: info => info.status === 501
@@ -116,9 +116,17 @@
     return String(error.meldexCode || error.code || error.payload?.code || error.payload?.detail?.code || error.detail?.code || '');
   }
 
+  function _nextAction(error, context) {
+    if (error == null || typeof error === 'string') return String(context?.nextAction || '');
+    return String(
+      error.nextAction || error.next_action || error.payload?.nextAction || error.payload?.next_action
+      || error.payload?.detail?.nextAction || error.payload?.detail?.next_action || context?.nextAction || ''
+    );
+  }
+
   function translate(error, context) {
     const raw = _rawMessage(error);
-    const info = { raw, status: _status(error), code: _code(error), context: context || {} };
+    const info = { raw, status: _status(error), code: _code(error), nextAction: _nextAction(error, context), context: context || {} };
     const rule = RULES.find(item => {
       try { return item.test(info); } catch (_) { return false; }
     });
@@ -131,7 +139,7 @@
     return {
       title: selected.title,
       message: selected.message,
-      action: selected.action,
+      action: typeof selected.action === 'function' ? selected.action(info) : selected.action,
       technical: raw,
       status: info.status,
       matched: !!rule,

@@ -1,3 +1,6 @@
+    if (closed) return;
+    closed = true;
+    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
     if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
     if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
     menu.remove();
@@ -895,6 +898,3 @@ function _viewerFolderNavNodePath(node) {
 }
 
 function _viewerFolderNavPathMatches(nodePath, targetPath) {
-  if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
-  const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
-  const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();

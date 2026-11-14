@@ -167,7 +167,8 @@
   color: inherit;
   cursor: pointer;
   border: 0;
-  padding: 0;
+  /* 右端のタブ操作ボタン(22px)と名前ボタンの中央クリック領域を重ねない。 */
+  padding: 0 24px 0 0;
   background: transparent;
   font: inherit;
   letter-spacing: inherit;
@@ -287,7 +288,7 @@ iframe.meldex-entity-linked-media {
 #tb-db #toolbar-category,
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] {
   display: inline-flex; align-items: center; min-height: 30px;
-  font-size: 16px; line-height: 30px; font-weight: 600;
+  font-size: var(--ui-font-16); line-height: 30px; font-weight: 600;
 }
 #tb-db #toolbar-category input,
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {

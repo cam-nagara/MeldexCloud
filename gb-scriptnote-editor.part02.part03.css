@@ -24,11 +24,12 @@
   max-width: 140px;
 }
 
-/* タイトル入力欄。2026-04-18: 他アプリのツールバーと同じ .tb-title 標準（12px / weight 600 / padding 0 6px）に統一
-   2026-04-24: .tb-file-title 固定幅 240px に統一（他アプリと揃える・入力開始時の幅変動を防ぐ）*/
+/* タイトル入力欄。ファイル名はシートと同じ 16px / 30px。
+   .tb-file-title 固定幅 240px は維持し、入力開始時の幅変動を防ぐ。 */
 #se-toolbar .title-input {
   background: transparent; border: 1px solid transparent; color: var(--ui-fg-default);
-  font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold);
+  box-sizing: border-box; height: 30px; min-height: 30px;
+  font-size: var(--ui-font-16); line-height: 30px; font-weight: var(--ui-weight-semibold);
 }
 #se-toolbar .title-input:focus { background: var(--ui-bg-app); border-color: var(--ui-accent); outline: none; border-radius: var(--ui-radius-xs); }
 

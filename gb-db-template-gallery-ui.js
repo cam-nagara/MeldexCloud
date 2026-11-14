@@ -412,7 +412,8 @@ function _dbTemplatePickerItems() {
 
 /**
  * シートテンプレートの選択画面を開く。ノート・シナリオ・ボードと同じ共通画面
- * （gb-template-picker.js）を使い、適用・編集・削除・現在のシートから作成を行う。
+ * （gb-template-picker.js）を使い、適用・編集・並べ替え・削除を行う。
+ * 現在のシートからの作成はハンバーガーメニューに限定する。
  */
 function showTemplateGalleryModal(dbPath, triggerEl = null) {
   const trigger = _dbTemplateTrigger(triggerEl);
@@ -428,7 +429,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     items: _dbTemplatePickerItems(),
     searchPlaceholder: 'テンプレートを検索（名前・説明・列名）',
     emptyText: 'テンプレートがありません',
-    cardClass: 'template-card',
     e2e: {
       dialog: 'db-template-gallery-dialog', grid: 'db-template-grid', preview: 'db-template-preview-pane',
       search: 'db-template-search-input', card: 'db-template-card', categoryPrefix: 'db-template-tier-',
@@ -451,6 +451,24 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
         showEditTemplateModal(tmpl, dbPath, trigger);
         return false;
       } },
+      { label: '前へ', e2eId: 'db-template-preview-pane-up', when: item => !item.builtin, run: async (item, ctx) => {
+        const templates = getCustomTemplates();
+        const index = templates.findIndex(other => other.id === item.id);
+        if (index <= 0) { ctx.setStatus('これ以上前へ移動できません'); return false; }
+        [templates[index - 1], templates[index]] = [templates[index], templates[index - 1]];
+        if (!saveCustomTemplates(templates, { label: 'シートテンプレート: 並べ替え', detail: item.name })) throw new Error('並び順を保存できませんでした');
+        await ctx.refresh(_dbTemplatePickerItems()); ctx.select(item.id); ctx.setStatus('並び順を変更しました');
+        return false;
+      } },
+      { label: '後へ', e2eId: 'db-template-preview-pane-down', when: item => !item.builtin, run: async (item, ctx) => {
+        const templates = getCustomTemplates();
+        const index = templates.findIndex(other => other.id === item.id);
+        if (index < 0 || index >= templates.length - 1) { ctx.setStatus('これ以上後へ移動できません'); return false; }
+        [templates[index], templates[index + 1]] = [templates[index + 1], templates[index]];
+        if (!saveCustomTemplates(templates, { label: 'シートテンプレート: 並べ替え', detail: item.name })) throw new Error('並び順を保存できませんでした');
+        await ctx.refresh(_dbTemplatePickerItems()); ctx.select(item.id); ctx.setStatus('並び順を変更しました');
+        return false;
+      } },
       { label: '削除', danger: true, e2eId: 'db-template-preview-pane-delete', when: item => !item.builtin, run: async (item, ctx) => {
         const tmpl = findTemplate(item.id);
         if (!tmpl) throw new Error('テンプレートが見つかりません');
@@ -465,7 +483,6 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     picker.overlay.dataset.dbTemplateModal = 'gallery';
     picker.overlay._dbTemplateTrigger = trigger;
     picker.overlay._dbTemplateClose = reason => picker.close(reason);
-    picker.modal?.classList.add('modal', 'db-template-modal');
   }
   return picker;
 }

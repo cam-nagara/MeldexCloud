@@ -141,7 +141,7 @@
         const shared = await loadSharedSettings();
         setText('x-bookmarks-connection', 'Cloud版: 共通設定を利用');
         setText('x-bookmarks-client-state', shared?.exists ? 'デスクトップ版と同期済み' : '共通設定は未保存');
-        setStatus('接続情報は共有されています。Xへの接続と取得は現在このブラウザーでは利用できません。', false);
+        setStatus('Cloudで接続設定を保存できます。Xの認証と取得は、下の引き継ぎ操作からデスクトップ版で続けてください。', false);
       } catch (err) {
         setStatus('共通設定を取得できませんでした: ' + (err.userMessage || err.message || err), true);
       }
@@ -232,12 +232,36 @@
       if (!isCloudSurface()) await apiPost('/x-bookmarks/config', body, { silentError: true });
       if (options?.showSuccess) {
         await loadStatus();
-        setStatus('X接続設定をデスクトップ版とクラウド版の共通設定へ保存しました。', false);
+        setStatus(isCloudSurface()
+          ? '共通設定へ保存しました。続いて「デスクトップ版へ引き継ぐ」を押してください。'
+          : 'X接続設定をデスクトップ版とクラウド版の共通設定へ保存しました。', false);
       }
       return true;
     } catch (err) {
       if (!silentError) setStatus('設定を保存できませんでした: ' + (err.userMessage || err.message || err), true);
       return false;
+    }
+  }
+
+  async function prepareDesktopHandoff() {
+    const button = document.getElementById('x-bookmarks-desktop-handoff');
+    if (button) button.disabled = true;
+    try {
+      const saved = await saveConfig({ silentError: false });
+      if (!saved) return;
+      const instructions = 'Meldexデスクトップ版を起動 → 設定 → 拡張機能 → Xブックマーク → 「Xに接続」 → Xの許可後に「差分を保存」';
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(instructions);
+          copied = true;
+        }
+      } catch (_) {}
+      const panel = document.getElementById('x-bookmarks-desktop-steps');
+      if (panel) panel.hidden = false;
+      setStatus(`共通設定を引き継ぎました。${copied ? '続きの手順をクリップボードにもコピーしました。' : '表示された手順をデスクトップ版で続けてください。'}`, false);
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -585,6 +609,7 @@
     const duplicatesButton = document.getElementById('x-bookmarks-duplicates');
     duplicatesButton?.addEventListener('click', () => showDuplicateRepair({ returnFocus: duplicatesButton }));
     document.getElementById('x-bookmarks-save-config')?.addEventListener('click', () => saveConfig({ showSuccess: true }));
+    document.getElementById('x-bookmarks-desktop-handoff')?.addEventListener('click', prepareDesktopHandoff);
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-scheduled-folders')?.addEventListener('change', saveConfig);
@@ -689,6 +714,15 @@
         <button type="button" id="x-bookmarks-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('unlink', 14)} 接続を解除</button>
       </div>
       <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
+      <div id="x-bookmarks-desktop-steps" class="gb-section gb-section--boxed" hidden style="margin-top:8px;padding:10px;">
+        <strong>デスクトップ版で続ける手順</strong>
+        <ol style="margin:6px 0 0 20px;padding:0;">
+          <li>Meldexデスクトップ版を同じアカウントで起動します。</li>
+          <li>設定 → 拡張機能 → Xブックマークを開きます。Cloudで保存したClient IDなどが自動で読み込まれます。</li>
+          <li>「Xに接続」で許可し、戻ったら「差分を保存」を押します。保存先シートはCloudから引き継がれます。</li>
+        </ol>
+      </div>
+      <button type="button" id="x-bookmarks-desktop-handoff" class="gb-btn gb-btn-sm gb-btn-primary" hidden>${icon('monitorUp', 14)} 設定を保存してデスクトップ版へ引き継ぐ</button>
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
     container.querySelectorAll('.gb-field-help').forEach(help => {
@@ -704,6 +738,10 @@
       if (schedule) schedule.hidden = true;
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');
       if (scheduledFolders) scheduledFolders.hidden = true;
+      const saveButton = document.getElementById('x-bookmarks-save-config');
+      if (saveButton) saveButton.textContent = 'Cloudで接続設定を保存';
+      const handoff = document.getElementById('x-bookmarks-desktop-handoff');
+      if (handoff) handoff.hidden = false;
     }
     setSyncBusy(syncInFlight);
     loadStatus();

@@ -1,3 +1,6 @@
+  if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
+  const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
+  const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();
   return !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a));
 }
 
@@ -895,6 +898,3 @@ document.addEventListener('keydown', (e) => {
 // 空状態表示
 // ============================================================
 function renderEmptyState(container, icon, message, hint) {
-  container.innerHTML = `
-    <div class="gb-empty-state">
-      <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide(icon, 48) : ''}</div>

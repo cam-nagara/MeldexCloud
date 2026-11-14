@@ -107,7 +107,7 @@
   font-family: inherit;
   font-weight: inherit;
   font-style: normal;
-  font-size: var(--ui-font-12);
+  font-size: var(--ui-font-16);
   background: transparent;
   -webkit-text-stroke-color: var(--page-title-stroke-color, transparent);
   -webkit-text-stroke-width: 0;
@@ -115,7 +115,8 @@
   box-shadow: none;
   border-bottom: 0;
   padding-left: var(--ui-space-3);
-  line-height: 1.2;
+  line-height: 30px;
+  min-height: 30px;
   display: flex;
   align-items: center;
   text-align: left;

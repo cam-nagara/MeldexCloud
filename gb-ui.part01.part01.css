@@ -494,7 +494,7 @@
   gap: var(--ui-space-3);
   /* height ではなく min-height にする。Phase 4 で descendant セレクタが消えるまで
      既存ツールバー内の button (~28px + padding) で 32px を超える可能性があるため */
-  min-height: var(--ui-h-md);
+  min-height: 39px;
   padding: var(--ui-space-2) var(--ui-space-4);
   background: var(--ui-toolbar-bg);
   border-bottom: 1px solid var(--ui-border);
@@ -666,6 +666,9 @@
   width: 240px;
   max-width: 240px;
   box-sizing: border-box;
+  min-height: 30px;
+  font-size: var(--ui-font-16);
+  line-height: 30px;
 }
 .tb-file-title > input,
 .tb-file-title.tb-file-title--input {
@@ -677,7 +680,7 @@
   color: inherit;
   font: inherit;
   padding: 0 var(--ui-space-3);
-  height: var(--ui-h-xs);
+  height: 30px;
   outline: none;
 }
 .tb-file-title > input:focus,
@@ -778,8 +781,11 @@
 }
 .gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
   font-size: var(--ui-font-12);
-  padding: 3px var(--ui-space-4);
+  height: 30px;
+  min-height: 30px;
+  padding: 2px var(--ui-space-4);
   color: var(--ui-fg-muted);
+  box-sizing: border-box;
 }
 
 /* ============================================================

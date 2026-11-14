@@ -3,7 +3,7 @@
   'use strict';
 
   const CLIENT_TOOL_NAMES = new Set([
-    'llm_list_ui_controls', 'llm_ui_action', 'configure_form_view', 'search_manual', 'read_manual',
+    'llm_list_ui_controls', 'llm_ui_action', 'configure_form_view', 'history_restore_confirm', 'search_manual', 'read_manual',
   ]);
   const CONTROL_SELECTOR = [
     '[data-action]',
@@ -765,6 +765,17 @@
       if (name === 'llm_list_ui_controls') return listControls(args);
       if (name === 'llm_ui_action') return await uiAction(args);
       if (name === 'configure_form_view') return await configureFormView(args);
+      if (name === 'history_restore_confirm') {
+        const path = String(args.path || '');
+        const version = String(args.version || '');
+        const revision = String(args.expected_revision || '');
+        if (!path || !version || !revision) return { ok: false, approved: false, error: '復元対象・版・現在revisionが不足しています' };
+        const message = `AIから履歴版を復元しますか？\n\n対象: ${path}\n保存版: ${version}\n\n現在の内容は復元前に自動保存されます。`;
+        const approved = typeof cfConfirm === 'function'
+          ? await cfConfirm(message, { danger: true, okLabel: 'この版へ復元' })
+          : false;
+        return { ok: !!approved, approved: !!approved };
+      }
     } catch (error) {
       return { ok: false, error: error?.message || String(error) };
     }

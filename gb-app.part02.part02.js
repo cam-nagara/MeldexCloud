@@ -543,7 +543,10 @@ function showView(viewName, ctx) {
   const showRtInAppbar = (resolvedViewName === 'page');
   _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
   const hasAppTb = isDbView || showRtInAppbar;
-  if (appTb) appTb.classList.toggle('visible', hasAppTb);
+  if (appTb) {
+    appTb.classList.toggle('visible', hasAppTb);
+    appTb.dataset.activeToolbar = isDbView ? 'sheet' : (showRtInAppbar ? 'rich-text' : '');
+  }
   // エントリビュー: エントリ内ツールバー
   const entityRt = document.getElementById('entity-rt-toolbar');
   if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';

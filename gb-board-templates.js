@@ -517,6 +517,28 @@
           ctx.setStatus('名前を変更しました');
           return false;
         } },
+        { label: '前へ', when: item => !item.builtin, e2eId: 'board-templates-up', run: async (item, ctx) => {
+          const index = library.templates.findIndex(other => other.id === item.id);
+          if (index <= 0) { ctx.setStatus('これ以上前へ移動できません'); return false; }
+          const next = library.templates.slice();
+          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+          await persistLibrary(library, next);
+          await ctx.refresh();
+          ctx.select(item.id);
+          ctx.setStatus('並び順を変更しました');
+          return false;
+        } },
+        { label: '後へ', when: item => !item.builtin, e2eId: 'board-templates-down', run: async (item, ctx) => {
+          const index = library.templates.findIndex(other => other.id === item.id);
+          if (index < 0 || index >= library.templates.length - 1) { ctx.setStatus('これ以上後へ移動できません'); return false; }
+          const next = library.templates.slice();
+          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+          await persistLibrary(library, next);
+          await ctx.refresh();
+          ctx.select(item.id);
+          ctx.setStatus('並び順を変更しました');
+          return false;
+        } },
         { label: '削除', danger: true, when: item => !item.builtin, e2eId: 'board-templates-delete', run: async (item, ctx) => {
           if (!await askConfirm(`テンプレート「${item.name}」を削除しますか？\nこのテンプレートから作ったボードは変わりません。`)) return false;
           await persistLibrary(library, library.templates.filter(other => other.id !== item.id));
