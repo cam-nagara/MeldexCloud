@@ -23,12 +23,14 @@
         button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; button.classList.toggle('active', selected);
       }
     };
-    columnsTab.addEventListener('click', async () => {
-      if (columnsTab.getAttribute('aria-selected') === 'true') return;
-      if (!await MeldexDbFormRuntime.confirmLeave(panel)) return;
+    const showColumns = async () => {
+      if (columnsTab.getAttribute('aria-selected') === 'true') return true;
+      if (!await MeldexDbFormRuntime.confirmLeave(panel)) return false;
       renderEntityPropsGridInto(grid, data, path, { ...options, propTypes: metadata.property_types });
       show(false);
-    });
+      return true;
+    };
+    columnsTab.addEventListener('click', showColumns);
     formTab.addEventListener('click', async () => {
       if (formTab.getAttribute('aria-selected') === 'true') return;
       if (options.beforeWrite && !await options.beforeWrite()) return;
@@ -89,7 +91,7 @@
       }
     };
     await render();
-    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel) };
+    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel), showColumns };
   }
   window.MeldexSheetDefaultForm = Object.freeze({ mount });
 })();

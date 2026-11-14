@@ -1,12 +1,15 @@
 /* Offline, bounded interchange. Parsing is pure; adoption is one document edit. */
 (function (root, factory) {
-  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
-  if (typeof module === 'object' && module.exports) module.exports = api;
+  const commonJS = typeof module === 'object' && module.exports;
+  if (commonJS && !root.MeldexEscape) require('./gb-escape.js');
+  const api = factory(commonJS ? require('./gb-map-document.js') : root.MeldexMapDocument, root.MeldexEscape);
+  if (commonJS) module.exports = api;
   else root.MeldexMapInterchange = api;
-})(globalThis, function (D) {
+})(globalThis, function (D, Escape) {
   'use strict';
   const MAX_TEXT = 8 * 1024 * 1024, MAX_POINTS = 100000;
   const fail = message => { throw new Error(message); };
+  if (!Escape || typeof Escape.xml !== 'function') fail('共有XMLエスケープ機能を読み込めません');
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const text = value => typeof value === 'string' ? value : '';
   const normalize = p => [((p[0] + 180) % 360 + 360) % 360 - 180, Math.max(-85.051129, Math.min(85.051129, p[1]))];
@@ -145,7 +148,7 @@
     if (format === 'gpx') return checked(readGPX(source));
     fail('CSV・GeoJSON・GPXを指定してください');
   }
-  const escapeXML = value => String(value).replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]);
+  const escapeXML = Escape.xml;
   function write(input, format) {
     const doc = D.parse(input), world = doc.coordinate_system === 'world';
     if (format !== 'csv' && !world) fail('GeoJSON・GPXは現実地図の座標だけを書き出せます');

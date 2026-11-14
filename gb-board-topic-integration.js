@@ -818,6 +818,7 @@
     fields.forEach(el => row.appendChild(el)); section.append(heading, row);
     const store = document.createElement('div'); store.hidden = true; store.appendChild(section);
     const open = document.createElement('button'); open.type = 'button'; open.className = 'bd-style-format-open';
+    open.dataset.e2eId = 'board-group-format-open';
     open.setAttribute('aria-haspopup','dialog'); open.setAttribute('aria-label','グループの書式設定');
     const preview = document.createElement('span'); preview.className = 'bd-style-format-preview'; preview.setAttribute('aria-hidden','true');
     preview.innerHTML = _bdCardStylePreviewHtml({ bgColor:visualStyle?.background, bgOpacity:visualStyle?.backgroundOpacity, borderColor:visualStyle?.borderColor, borderOpacity:visualStyle?.borderOpacity, borderWidth:visualStyle?.borderWidth, borderRadius:visualStyle?.borderRadius, textColor:visualStyle?.labelColor, fontBold:visualStyle?.labelBold, fontFamily:visualStyle?.labelFontFamily });
@@ -1045,14 +1046,19 @@
   }
 
   function switchMixedView(board, ref, options) {
-    if (!board?.topicViewDocument || !ref?.surface || !ref?.viewId) return false;
-    commitPendingEdits(board);
+    if (!board?.topicViewDocument || !['board', 'sheet'].includes(ref?.surface) || !ref?.viewId) return false;
     const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
     const documentValue = normalizeTopicDocument(board.topicViewDocument, board, board.path);
     const exists = ref.surface === 'board'
       ? documentValue.boardViews.some(view => view.boardViewId === ref.viewId)
       : documentValue.sheetViews.some(view => view.viewId === ref.viewId);
     if (!exists) return false;
+    const root = ref.surface === 'sheet' ? global._bdToolbarRoot?.() : null;
+    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
+    // A failed mount must not commit an editor, push undo, or leave the active
+    // view pointing at a sheet that was never rendered.
+    if (ref.surface === 'sheet' && (!root || !canvas)) return false;
+    commitPendingEdits(board);
     if (!readOnly && !options?.skipUndo) global.bdPushUndo?.('ビューを切り替え');
     if (ref.surface === 'board') {
       teardownMixedSheetView(board);
@@ -1065,9 +1071,6 @@
       && board.topicViewDocument.activeViewRef?.surface !== 'sheet') captureRuntime(board);
     board.topicViewDocument.activeViewRef = { surface: 'sheet', viewId: ref.viewId };
     board.topicViewDocument.activeSheetViewId = ref.viewId;
-    const root = global._bdToolbarRoot?.();
-    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
-    if (!root || !canvas) return false;
     teardownMixedSheetView(board);
     canvas.hidden = true;
     const hostElement = document.createElement('section');

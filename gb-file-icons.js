@@ -66,7 +66,7 @@
     if (layout?.getAllPanes) {
       for (const pane of layout.getAllPanes(layout.root)) {
         for (const tab of pane.tabs || []) {
-          const icon = document.querySelector('[data-tab-id="' + CSS.escape(tab.id) + '"] .gb-tab-icon');
+          const icon = document.querySelector('[data-tab-id="' + global.MeldexEscape.cssIdent(tab.id) + '"] .gb-tab-icon');
           if (icon) icon.innerHTML = render(tab, 14, typeof lucide === 'function' ? lucide(tab.icon || 'page', 14) : '');
         }
         layout.refreshPaneTabs?.(pane.id);

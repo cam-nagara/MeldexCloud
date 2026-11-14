@@ -33,8 +33,20 @@
   }
 
   function htmlSnapshotPath(data) {
-    const path = firstPropertyValue(data, 'HTML');
-    return /\.html?(?:$|[?#])/i.test(path) ? path.replace(/\\/g, '/') : '';
+    const direct = data?.html_snapshot ?? data?.htmlSnapshot;
+    const candidates = [
+      firstPropertyValue(data, 'HTML'),
+      typeof direct === 'string' ? direct : direct?.path || direct?.src || direct?.file,
+    ];
+    for (const item of Array.isArray(data?.entry_attachments) ? data.entry_attachments : []) {
+      const path = String(item?.path || item?.src || '');
+      if (String(item?.kind || '').toLowerCase() === 'html' || /\.html?(?:$|[?#])/i.test(path)) {
+        candidates.push(path);
+      }
+    }
+    const path = candidates.map(value => String(value || '').trim())
+      .find(value => /\.html?(?:$|[?#])/i.test(value));
+    return path ? path.replace(/\\/g, '/') : '';
   }
 
   function fileRawUrl(path) {
@@ -262,12 +274,15 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
+          parentDb: state.parentDb,
           columnsPanel: state.columnsPane,
           inlineNotePanel: state.inlineNotePanel,
           htmlPanel: state.htmlPanel,
+          htmlSnapshotPath: htmlSnapshotPath(nextSectionData),
           saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
+          selectTopicLayout: state.selectTopicLayout,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
         });
         if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
@@ -511,19 +526,30 @@
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
       columnsPane.appendChild(grid);
+      state.parentDb = parent;
+      const entityGridOptions = {
+        parentDb: parent,
+        propTypes: meta?.property_types || options.propTypes || undefined,
+        surface: state.surface,
+        topicTabs: true,
+        readOnly: access.readOnly,
+        ctx: options.ctx,
+      };
+      state.selectTopicLayout = async (layoutId) => {
+        if (await state.defaultForm?.showColumns?.() === false) return false;
+        if (typeof renderEntityPropsGridInto === 'function') {
+          renderEntityPropsGridInto(grid, data, state.path, { ...entityGridOptions, topicLayoutId: layoutId });
+        }
+        return true;
+      };
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
-          parentDb: parent,
-          propTypes: meta?.property_types || options.propTypes || undefined,
-          surface: state.surface,
-          topicTabs: true,
-          readOnly: access.readOnly,
-          ctx: options.ctx,
+          ...entityGridOptions, topicLayoutId: window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns',
         });
       }
 
       state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
-        parentDb: parent, readOnly: access.readOnly, ctx: options.ctx, beforeWrite: save, onRevision: revision => {
+        ...entityGridOptions, beforeWrite: save, onRevision: revision => {
           if (state.editor && !state.dirty && !state.saving
             && String(data.page_content || '') === (state.editor.dataset.lastSavedMd || '')) {
             state.editor.dataset.lastSavedRevision = String(revision);
@@ -582,12 +608,15 @@
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
+          parentDb: parent,
           columnsPanel: state.columnsPane,
           inlineNotePanel: state.inlineNotePanel,
           htmlPanel: state.htmlPanel,
+          htmlSnapshotPath: snapshotPath,
           saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
+          selectTopicLayout: state.selectTopicLayout,
         });
       }
 

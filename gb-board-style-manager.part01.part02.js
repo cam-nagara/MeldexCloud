@@ -252,6 +252,7 @@ function _bdCompactStyleFields(container, kind, style, options = {}) {
   open.type = 'button';
   open.className = 'bd-style-format-open';
   open.dataset.bdFormat = kind;
+  open.dataset.e2eId = `board-${kind}-format-open`;
   open.setAttribute('aria-haspopup','dialog');
   open.setAttribute('aria-expanded','false');
   const title = kind === 'card' ? 'トピックの書式設定' : 'ラインの書式設定';

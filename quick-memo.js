@@ -2759,7 +2759,7 @@
         const label = tree.contains(active) ? active.getAttribute('aria-label') : '';
         const scroll = tree.scrollTop;
         renderTree();
-        if (label) tree.querySelector('[aria-label="' + CSS.escape(label) + '"]')?.focus({ preventScroll: true });
+        if (label) tree.querySelector('[aria-label="' + MeldexEscape.cssIdent(label) + '"]')?.focus({ preventScroll: true });
         tree.scrollTop = scroll;
       };
       window.addEventListener('meldex:quick-memo-tags-loaded', refreshCatalog);

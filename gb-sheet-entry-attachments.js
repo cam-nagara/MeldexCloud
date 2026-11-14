@@ -313,9 +313,23 @@
     header.className = 'meldex-entity-attachments-header gb-pane-tabs';
     header.dataset.mobileTabContainer = '1';
 
-    const attachments = Array.isArray(data?.entry_attachments) ? data.entry_attachments : [];
+    const snapshotPath = String(options.htmlSnapshotPath || '').replace(/\\/g, '/');
+    const attachments = (Array.isArray(data?.entry_attachments) ? data.entry_attachments : []).filter(item => {
+      const itemPath = String(item?.path || item?.src || '').replace(/\\/g, '/');
+      // Old Web imports sometimes linked the same HTML file as a generic
+      // attachment.  The dedicated HTML panel is its single presentation.
+      return !snapshotPath || itemPath !== snapshotPath;
+    });
     const columns = options.columnsPanel;
     const columnsId = '__columns__';
+    const layoutIdPrefix = '__layout__:';
+    const layoutState = columns && typeof window.GBEntityLayout?.getState === 'function'
+      ? window.GBEntityLayout.getState(options.parentDb || _normalizePath(entryPath).replace(/\/[^/]*$/, ''))
+      : null;
+    const layoutsById = new Map((layoutState?.layouts || []).map(layout => [String(layout.id), layout]));
+    const topicLayouts = (layoutState?.tabOrder || [])
+      .filter(id => id !== window.GBEntityLayout?.COLUMNS_TAB_ID && layoutsById.has(String(id)))
+      .map(id => layoutsById.get(String(id)));
     const htmlPanel = options.htmlPanel;
     const htmlId = '__html__';
     const inlineNote = options.inlineNotePanel;
@@ -374,7 +388,8 @@
         tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
         if (selected) tab.closest('.gb-tab')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
       });
-      Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== selectedId; });
+      const paneId = selectedId.startsWith(layoutIdPrefix) ? columnsId : selectedId;
+      Array.from(content.children).forEach(pane => { pane.hidden = pane.dataset.attachmentId !== paneId; });
     }
     function selectAttachment(item, selectionOptions = {}) {
       switching = switching.catch(() => false).then(async () => {
@@ -385,8 +400,12 @@
         }
         if (!await flushEditors()) return false;
         if (disposed) return false;
-        if (item.id === columnsId || item.id === inlineNoteId || item.id === htmlId) {
+        if (item.id === columnsId || item.id === inlineNoteId || item.id === htmlId || item.topicLayoutId) {
           editors.get(selectedId)?.deactivate?.();
+          if ((item.id === columnsId || item.topicLayoutId)
+            && await options.selectTopicLayout?.(item.topicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID) === false) {
+            return false;
+          }
           selectedId = item.id; updateSelection();
           // A hidden linked editor must not remain the target of the inspector.
           if (selectionOptions.activate !== false) {
@@ -705,6 +724,13 @@
       id: columnsId, label: '列一覧', selectable: { id: columnsId }, iconSource: { kind: 'sheet', name: '' },
       e2eId: 'entity-topic-columns-tab', controls: columns.id,
     });
+    topicLayouts.forEach(layout => {
+      const id = layoutIdPrefix + layout.id;
+      appendTabRow({
+        id, label: layout.name || 'レイアウト', selectable: { id, topicLayoutId: layout.id },
+        iconSource: { kind: 'sheet', name: '' }, e2eId: 'entity-topic-layout-tab', controls: columns.id,
+      });
+    });
     if (htmlPanel) appendTabRow({
       id: htmlId, label: 'HTML', selectable: { id: htmlId }, iconSource: { kind: 'file', name: 'page.html' },
       e2eId: 'entity-topic-html-tab', controls: htmlPanel.id,
@@ -932,10 +958,7 @@
 
     if (attachments.length || columns || inlineNote) section.appendChild(content);
     container.appendChild(section);
-    const initial = (options.selectedId === columnsId && columns ? { id: columnsId } : null)
-      || (options.selectedId === htmlId && htmlPanel ? { id: htmlId } : null)
-      || (inlineNote && options.selectedId === inlineNoteId ? { id: inlineNoteId } : null)
-      || attachments.find(item => item.id === options.selectedId)
+    const initial = (typeof options.selectedId === 'string' ? tabItems.get(options.selectedId) : null)
       || (htmlPanel ? { id: htmlId } : columns ? { id: columnsId } : inlineNote ? { id: inlineNoteId } : attachments[0]);
     // 閉じた（非表示の）タブは、明示的に開く指定があった時だけ表示へ戻す。
     // 既定の選択先が閉じられていれば、表示中の先頭タブを選ぶ。

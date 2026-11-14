@@ -935,12 +935,18 @@
       const grid = document.createElement('div');
       grid.className = 'cloud-mobile-side-drawer-props-grid';
       props.appendChild(grid);
+      let selectedTopicLayoutId = typeof selectedId === 'string' && selectedId.startsWith('__layout__:')
+        ? selectedId.slice('__layout__:'.length)
+        : (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns');
+      let renderGridForAccess = () => false;
       if (typeof renderEntityPropsGridInto === 'function') {
-        const renderGridForAccess = (readOnly) => {
+        renderGridForAccess = (readOnly, layoutId = selectedTopicLayoutId) => {
+          selectedTopicLayoutId = layoutId;
           renderEntityPropsGridInto(grid, data, entityPath, {
             parentDb,
             surface: 'mobile-drawer',
             topicTabs: true,
+            topicLayoutId: selectedTopicLayoutId,
             readOnly: readOnly === true,
           });
           grid.__MeldexRenderedReadOnly = readOnly === true;
@@ -967,8 +973,13 @@
           window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
             readOnly,
             surface: 'mobile-drawer',
+            parentDb,
             selectedId,
             columnsPanel: columnsPane,
+            selectTopicLayout: layoutId => {
+              renderGridForAccess(readOnly, layoutId);
+              return true;
+            },
             beforeMutation: _flushActiveEditor,
             onReload: async (nextId) => {
               if (!await _flushActiveEditor()) return false;

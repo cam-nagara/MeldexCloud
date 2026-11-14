@@ -916,7 +916,10 @@ const GBPaneBridge = (() => {
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
     if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) {
-      scopedBridgeOpts.requestedViewMode = tab.state?.viewMode || viewName;
+      const requestedViewMode = tab.state?.viewMode || resolvedViewName || viewName;
+      scopedBridgeOpts.requestedViewMode = ['calendar', 'tasks', 'shifts'].includes(requestedViewMode)
+        ? 'timeline'
+        : requestedViewMode;
     }
     if (viewName === 'folder' && tab.state?.selectedPath) {
       scopedBridgeOpts.selectedPath = tab.state.selectedPath;

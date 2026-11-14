@@ -7,7 +7,9 @@ const GBLayout = (() => {
   const STORAGE_KEY = 'gb:layout';
   const ACTIVE_PANE_STORAGE_KEY = 'gb:layout:active-pane';
   const BACKUP_KEY = 'gb:layout:backup-pre-b';
-  const MAX_DEPTH = 4;
+  // 標準シェルだけで深度4を使うため、利用者がメインペインを1段は分割できる上限にする。
+  // 深度5のペインは再分割できず、無制限な入れ子は従来どおり防ぐ。
+  const MAX_DEPTH = 5;
   const MIN_PANE_SIZE = 32; // px（折り畳みボタン1つ分まで縮小可能）
   const FREE_LAYOUT_UI_ENABLED = false;
   const MAIN_TAB_REORDER_MIME = 'application/x-meldex-main-tab-reorder';

@@ -351,7 +351,17 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs === true && opts.topicLayoutId && typeof GBEntityLayout !== 'undefined') {
+    const state = GBEntityLayout.getState?.(parentDb);
+    const requested = String(opts.topicLayoutId);
+    const exists = requested === GBEntityLayout.COLUMNS_TAB_ID
+      || state?.layouts?.some(layout => layout.id === requested);
+    if (exists) {
+      activeEntityLayoutTab = requested;
+      entityLayoutRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
+      entityLayoutOptions = { ...effectiveOptions, parentDb, propTypes };
+    }
+  } else if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);

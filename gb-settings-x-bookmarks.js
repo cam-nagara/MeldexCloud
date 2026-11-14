@@ -682,11 +682,11 @@
         </label>
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
-      <div class="gb-section-desc">日本語以外のポストは設定済みCLIで翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60件まで）。CLI未設定・失敗時も原文は保存します。</div>
+      <div class="gb-section-desc">日本語以外のポストは設定済みCLIでまとめて翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60回まで）。CLI未設定・失敗時も原文は保存します。</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <button type="button" id="x-bookmarks-translations" class="gb-btn gb-btn-sm">保存済みポストの翻訳を続ける（X追加取得なし）</button>
       </div>
-      <div class="gb-section-desc">1時間60件の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。翻訳は1件あたり最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
+      <div class="gb-section-desc">1時間60回の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。複数ポストをまとめる1回ごとに最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <input id="x-bookmarks-include-replies" type="checkbox" checked>
         <span class="gb-label">手動保存時に返信を最大30件追加取得（追加料金あり・開始前に円の概算を確認）</span>

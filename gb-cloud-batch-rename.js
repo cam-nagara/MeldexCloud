@@ -496,7 +496,7 @@
     const setBusy = value => { busy = value; dialog.querySelectorAll('button,input,select').forEach(node => { if (node.dataset.action !== 'close') node.disabled = value; }); };
     const renderPlan = value => {
       role('summary').textContent = `${value.entries.length} 件を変更、${value.conflicts.length} 件の同名衝突、${value.skipped_unchanged_count} 件は変更不要`;
-      const rows = value.entries.slice(0, 200).map(entry => `<div style="padding:7px 9px;border-bottom:1px solid var(--border);font-size:12px;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px"><span style="overflow:hidden;text-overflow:ellipsis">${String(entry.source).replace(/[&<>]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]))}</span><span>→</span><span style="overflow:hidden;text-overflow:ellipsis">${String(entry.destination).replace(/[&<>]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]))}</span></div>`).join('');
+      const rows = value.entries.slice(0, 200).map(entry => `<div style="padding:7px 9px;border-bottom:1px solid var(--border);font-size:12px;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px"><span style="overflow:hidden;text-overflow:ellipsis">${window.MeldexEscape.html(entry.source)}</span><span>→</span><span style="overflow:hidden;text-overflow:ellipsis">${window.MeldexEscape.html(entry.destination)}</span></div>`).join('');
       role('list').innerHTML = rows + (value.entries.length > 200 ? `<div style="padding:8px">ほか ${value.entries.length - 200} 件（表示を省略）</div>` : '');
       action('apply').disabled = !value.entries.length || !!value.conflicts.length;
     };

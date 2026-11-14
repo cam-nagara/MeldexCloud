@@ -8468,6 +8468,7 @@
     fields.forEach(el => row.appendChild(el)); section.append(heading, row);
     const store = document.createElement('div'); store.hidden = true; store.appendChild(section);
     const open = document.createElement('button'); open.type = 'button'; open.className = 'bd-style-format-open';
+    open.dataset.e2eId = 'board-group-format-open';
     open.setAttribute('aria-haspopup','dialog'); open.setAttribute('aria-label','グループの書式設定');
     const preview = document.createElement('span'); preview.className = 'bd-style-format-preview'; preview.setAttribute('aria-hidden','true');
     preview.innerHTML = _bdCardStylePreviewHtml({ bgColor:visualStyle?.background, bgOpacity:visualStyle?.backgroundOpacity, borderColor:visualStyle?.borderColor, borderOpacity:visualStyle?.borderOpacity, borderWidth:visualStyle?.borderWidth, borderRadius:visualStyle?.borderRadius, textColor:visualStyle?.labelColor, fontBold:visualStyle?.labelBold, fontFamily:visualStyle?.labelFontFamily });
@@ -8695,14 +8696,19 @@
   }
 
   function switchMixedView(board, ref, options) {
-    if (!board?.topicViewDocument || !ref?.surface || !ref?.viewId) return false;
-    commitPendingEdits(board);
+    if (!board?.topicViewDocument || !['board', 'sheet'].includes(ref?.surface) || !ref?.viewId) return false;
     const readOnly = !!(board.readOnly || board.readonly || board.isReadOnly);
     const documentValue = normalizeTopicDocument(board.topicViewDocument, board, board.path);
     const exists = ref.surface === 'board'
       ? documentValue.boardViews.some(view => view.boardViewId === ref.viewId)
       : documentValue.sheetViews.some(view => view.viewId === ref.viewId);
     if (!exists) return false;
+    const root = ref.surface === 'sheet' ? global._bdToolbarRoot?.() : null;
+    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
+    // A failed mount must not commit an editor, push undo, or leave the active
+    // view pointing at a sheet that was never rendered.
+    if (ref.surface === 'sheet' && (!root || !canvas)) return false;
+    commitPendingEdits(board);
     if (!readOnly && !options?.skipUndo) global.bdPushUndo?.('ビューを切り替え');
     if (ref.surface === 'board') {
       teardownMixedSheetView(board);
@@ -8715,9 +8721,6 @@
       && board.topicViewDocument.activeViewRef?.surface !== 'sheet') captureRuntime(board);
     board.topicViewDocument.activeViewRef = { surface: 'sheet', viewId: ref.viewId };
     board.topicViewDocument.activeSheetViewId = ref.viewId;
-    const root = global._bdToolbarRoot?.();
-    const canvas = root?.querySelector?.('[data-bd-role="canvas"]');
-    if (!root || !canvas) return false;
     teardownMixedSheetView(board);
     canvas.hidden = true;
     const hostElement = document.createElement('section');
@@ -11102,12 +11105,14 @@
         button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; button.classList.toggle('active', selected);
       }
     };
-    columnsTab.addEventListener('click', async () => {
-      if (columnsTab.getAttribute('aria-selected') === 'true') return;
-      if (!await MeldexDbFormRuntime.confirmLeave(panel)) return;
+    const showColumns = async () => {
+      if (columnsTab.getAttribute('aria-selected') === 'true') return true;
+      if (!await MeldexDbFormRuntime.confirmLeave(panel)) return false;
       renderEntityPropsGridInto(grid, data, path, { ...options, propTypes: metadata.property_types });
       show(false);
-    });
+      return true;
+    };
+    columnsTab.addEventListener('click', showColumns);
     formTab.addEventListener('click', async () => {
       if (formTab.getAttribute('aria-selected') === 'true') return;
       if (options.beforeWrite && !await options.beforeWrite()) return;
@@ -11168,7 +11173,7 @@
       }
     };
     await render();
-    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel) };
+    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel), showColumns };
   }
   window.MeldexSheetDefaultForm = Object.freeze({ mount });
 })();
@@ -12515,7 +12520,9 @@ const GBLayout = (() => {
   const STORAGE_KEY = 'gb:layout';
   const ACTIVE_PANE_STORAGE_KEY = 'gb:layout:active-pane';
   const BACKUP_KEY = 'gb:layout:backup-pre-b';
-  const MAX_DEPTH = 4;
+  // 標準シェルだけで深度4を使うため、利用者がメインペインを1段は分割できる上限にする。
+  // 深度5のペインは再分割できず、無制限な入れ子は従来どおり防ぐ。
+  const MAX_DEPTH = 5;
   const MIN_PANE_SIZE = 32; // px（折り畳みボタン1つ分まで縮小可能）
   const FREE_LAYOUT_UI_ENABLED = false;
   const MAIN_TAB_REORDER_MIME = 'application/x-meldex-main-tab-reorder';
@@ -52906,6 +52913,7 @@ function _bdCompactStyleFields(container, kind, style, options = {}) {
   open.type = 'button';
   open.className = 'bd-style-format-open';
   open.dataset.bdFormat = kind;
+  open.dataset.e2eId = `board-${kind}-format-open`;
   open.setAttribute('aria-haspopup','dialog');
   open.setAttribute('aria-expanded','false');
   const title = kind === 'card' ? 'トピックの書式設定' : 'ラインの書式設定';
@@ -60497,8 +60505,20 @@ function _sn2StopSep() {
   }
 
   function htmlSnapshotPath(data) {
-    const path = firstPropertyValue(data, 'HTML');
-    return /\.html?(?:$|[?#])/i.test(path) ? path.replace(/\\/g, '/') : '';
+    const direct = data?.html_snapshot ?? data?.htmlSnapshot;
+    const candidates = [
+      firstPropertyValue(data, 'HTML'),
+      typeof direct === 'string' ? direct : direct?.path || direct?.src || direct?.file,
+    ];
+    for (const item of Array.isArray(data?.entry_attachments) ? data.entry_attachments : []) {
+      const path = String(item?.path || item?.src || '');
+      if (String(item?.kind || '').toLowerCase() === 'html' || /\.html?(?:$|[?#])/i.test(path)) {
+        candidates.push(path);
+      }
+    }
+    const path = candidates.map(value => String(value || '').trim())
+      .find(value => /\.html?(?:$|[?#])/i.test(value));
+    return path ? path.replace(/\\/g, '/') : '';
   }
 
   function fileRawUrl(path) {
@@ -60726,12 +60746,15 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(staging, nextSectionData, state.path, {
           readOnly: root.dataset.readOnly === '1',
           surface: state.surface,
+          parentDb: state.parentDb,
           columnsPanel: state.columnsPane,
           inlineNotePanel: state.inlineNotePanel,
           htmlPanel: state.htmlPanel,
+          htmlSnapshotPath: htmlSnapshotPath(nextSectionData),
           saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
+          selectTopicLayout: state.selectTopicLayout,
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
         });
         if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
@@ -60975,19 +60998,30 @@ function _sn2StopSep() {
       grid.className = 'meldex-entity-detail-props';
       if (state.surface === 'main') grid.id = 'entity-props-grid';
       columnsPane.appendChild(grid);
+      state.parentDb = parent;
+      const entityGridOptions = {
+        parentDb: parent,
+        propTypes: meta?.property_types || options.propTypes || undefined,
+        surface: state.surface,
+        topicTabs: true,
+        readOnly: access.readOnly,
+        ctx: options.ctx,
+      };
+      state.selectTopicLayout = async (layoutId) => {
+        if (await state.defaultForm?.showColumns?.() === false) return false;
+        if (typeof renderEntityPropsGridInto === 'function') {
+          renderEntityPropsGridInto(grid, data, state.path, { ...entityGridOptions, topicLayoutId: layoutId });
+        }
+        return true;
+      };
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
-          parentDb: parent,
-          propTypes: meta?.property_types || options.propTypes || undefined,
-          surface: state.surface,
-          topicTabs: true,
-          readOnly: access.readOnly,
-          ctx: options.ctx,
+          ...entityGridOptions, topicLayoutId: window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns',
         });
       }
 
       state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
-        parentDb: parent, readOnly: access.readOnly, ctx: options.ctx, beforeWrite: save, onRevision: revision => {
+        ...entityGridOptions, beforeWrite: save, onRevision: revision => {
           if (state.editor && !state.dirty && !state.saving
             && String(data.page_content || '') === (state.editor.dataset.lastSavedMd || '')) {
             state.editor.dataset.lastSavedRevision = String(revision);
@@ -61046,12 +61080,15 @@ function _sn2StopSep() {
         MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
           readOnly: access.readOnly,
           surface: state.surface,
+          parentDb: parent,
           columnsPanel: state.columnsPane,
           inlineNotePanel: state.inlineNotePanel,
           htmlPanel: state.htmlPanel,
+          htmlSnapshotPath: snapshotPath,
           saveInlineNote: save,
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
+          selectTopicLayout: state.selectTopicLayout,
         });
       }
 
@@ -99296,11 +99333,11 @@ async function resetLayoutToDefault() {
         </label>
       </details>
       <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
-      <div class="gb-section-desc">日本語以外のポストは設定済みCLIで翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60件まで）。CLI未設定・失敗時も原文は保存します。</div>
+      <div class="gb-section-desc">日本語以外のポストは設定済みCLIでまとめて翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60回まで）。CLI未設定・失敗時も原文は保存します。</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <button type="button" id="x-bookmarks-translations" class="gb-btn gb-btn-sm">保存済みポストの翻訳を続ける（X追加取得なし）</button>
       </div>
-      <div class="gb-section-desc">1時間60件の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。翻訳は1件あたり最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
+      <div class="gb-section-desc">1時間60回の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。複数ポストをまとめる1回ごとに最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <input id="x-bookmarks-include-replies" type="checkbox" checked>
         <span class="gb-label">手動保存時に返信を最大30件追加取得（追加料金あり・開始前に円の概算を確認）</span>
@@ -110114,7 +110151,17 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   let activeEntityLayoutTab = null;
   let entityLayoutRerender = null;
   let entityLayoutOptions = null;
-  if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+  if (opts.topicTabs === true && opts.topicLayoutId && typeof GBEntityLayout !== 'undefined') {
+    const state = GBEntityLayout.getState?.(parentDb);
+    const requested = String(opts.topicLayoutId);
+    const exists = requested === GBEntityLayout.COLUMNS_TAB_ID
+      || state?.layouts?.some(layout => layout.id === requested);
+    if (exists) {
+      activeEntityLayoutTab = requested;
+      entityLayoutRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
+      entityLayoutOptions = { ...effectiveOptions, parentDb, propTypes };
+    }
+  } else if (opts.topicTabs !== true && typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
     const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
     const elOpts = { ...effectiveOptions, parentDb, propTypes };
     const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
@@ -150495,12 +150542,18 @@ function hideBoardNoteTab() {
       const grid = document.createElement('div');
       grid.className = 'cloud-mobile-side-drawer-props-grid';
       props.appendChild(grid);
+      let selectedTopicLayoutId = typeof selectedId === 'string' && selectedId.startsWith('__layout__:')
+        ? selectedId.slice('__layout__:'.length)
+        : (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns');
+      let renderGridForAccess = () => false;
       if (typeof renderEntityPropsGridInto === 'function') {
-        const renderGridForAccess = (readOnly) => {
+        renderGridForAccess = (readOnly, layoutId = selectedTopicLayoutId) => {
+          selectedTopicLayoutId = layoutId;
           renderEntityPropsGridInto(grid, data, entityPath, {
             parentDb,
             surface: 'mobile-drawer',
             topicTabs: true,
+            topicLayoutId: selectedTopicLayoutId,
             readOnly: readOnly === true,
           });
           grid.__MeldexRenderedReadOnly = readOnly === true;
@@ -150527,8 +150580,13 @@ function hideBoardNoteTab() {
           window.MeldexSheetEntryAttachments.renderEntryAttachmentsSection(body, data, entityPath, {
             readOnly,
             surface: 'mobile-drawer',
+            parentDb,
             selectedId,
             columnsPanel: columnsPane,
+            selectTopicLayout: layoutId => {
+              renderGridForAccess(readOnly, layoutId);
+              return true;
+            },
             beforeMutation: _flushActiveEditor,
             onReload: async (nextId) => {
               if (!await _flushActiveEditor()) return false;
@@ -177652,13 +177710,16 @@ const MeldexMapRelations = (() => {
 ;
 /* Offline, bounded interchange. Parsing is pure; adoption is one document edit. */
 (function (root, factory) {
-  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-document.js') : root.MeldexMapDocument);
-  if (typeof module === 'object' && module.exports) module.exports = api;
+  const commonJS = typeof module === 'object' && module.exports;
+  if (commonJS && !root.MeldexEscape) require('./gb-escape.js');
+  const api = factory(commonJS ? require('./gb-map-document.js') : root.MeldexMapDocument, root.MeldexEscape);
+  if (commonJS) module.exports = api;
   else root.MeldexMapInterchange = api;
-})(globalThis, function (D) {
+})(globalThis, function (D, Escape) {
   'use strict';
   const MAX_TEXT = 8 * 1024 * 1024, MAX_POINTS = 100000;
   const fail = message => { throw new Error(message); };
+  if (!Escape || typeof Escape.xml !== 'function') fail('共有XMLエスケープ機能を読み込めません');
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const text = value => typeof value === 'string' ? value : '';
   const normalize = p => [((p[0] + 180) % 360 + 360) % 360 - 180, Math.max(-85.051129, Math.min(85.051129, p[1]))];
@@ -177797,7 +177858,7 @@ const MeldexMapRelations = (() => {
     if (format === 'gpx') return checked(readGPX(source));
     fail('CSV・GeoJSON・GPXを指定してください');
   }
-  const escapeXML = value => String(value).replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]);
+  const escapeXML = Escape.xml;
   function write(input, format) {
     const doc = D.parse(input), world = doc.coordinate_system === 'world';
     if (format !== 'csv' && !world) fail('GeoJSON・GPXは現実地図の座標だけを書き出せます');
@@ -254619,7 +254680,10 @@ const GBPaneBridge = (() => {
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
     if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) {
-      scopedBridgeOpts.requestedViewMode = tab.state?.viewMode || viewName;
+      const requestedViewMode = tab.state?.viewMode || resolvedViewName || viewName;
+      scopedBridgeOpts.requestedViewMode = ['calendar', 'tasks', 'shifts'].includes(requestedViewMode)
+        ? 'timeline'
+        : requestedViewMode;
     }
     if (viewName === 'folder' && tab.state?.selectedPath) {
       scopedBridgeOpts.selectedPath = tab.state.selectedPath;
@@ -259233,16 +259297,18 @@ const GBSubPanel = (() => {
     return root;
   }
 
-  async function _closeForMobileDrawer() {
+  async function _closeForMobileDrawer(options = {}) {
     if (!_current) {
       _showEmptyState();
       return true;
     }
-    try {
-      const flushResult = await _flushBeforeTransition(_current);
-      if (!flushResult?.ok) return false;
-    } catch {
-      return false;
+    if (!options.alreadyFlushed) {
+      try {
+        const flushResult = await _flushBeforeTransition(_current);
+        if (!flushResult?.ok) return false;
+      } catch {
+        return false;
+      }
     }
     if (await _retractCurrentContent({ remount: false }) === false) return false;
     _current = null;
@@ -259313,11 +259379,21 @@ const GBSubPanel = (() => {
     return mobile ? _openMobileDrawer(entry) : true;
   }
 
-  async function closeContent() {
+  async function closeContent(options = {}) {
     if (!_current) return true;
     const drawer = window.MeldexCloudMobileSideDrawer;
     if (_isMobileDrawerEnabled() && drawer?.isOpen?.() && typeof drawer.close === 'function') {
+      if (options.alreadyFlushed && await _closeForMobileDrawer({ alreadyFlushed: true }) === false) return false;
       return (await drawer.close()) !== false;
+    }
+    if (options.alreadyFlushed) {
+      if (await _retractCurrentContent({ remount: true }) === false) return false;
+      _current = null;
+      _navHistory = [];
+      _navIndex = -1;
+      _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
+      return true;
     }
     const seq = ++_opSeq;
     return _guardedTransition(seq, () => {
@@ -259399,7 +259475,7 @@ const GBSubPanel = (() => {
     if (typeof GBTabs.activateTab === 'function') GBTabs.activateTab(actualPaneId, tabId);
     if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(actualPaneId, { sync: true });
     if (seq !== _opSeq) return false;
-    if (await closeContent() === false) return false;
+    if (await closeContent({ alreadyFlushed: true }) === false) return false;
     if (window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
     return true;
   }

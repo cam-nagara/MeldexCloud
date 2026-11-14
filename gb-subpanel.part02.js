@@ -402,16 +402,18 @@
     return root;
   }
 
-  async function _closeForMobileDrawer() {
+  async function _closeForMobileDrawer(options = {}) {
     if (!_current) {
       _showEmptyState();
       return true;
     }
-    try {
-      const flushResult = await _flushBeforeTransition(_current);
-      if (!flushResult?.ok) return false;
-    } catch {
-      return false;
+    if (!options.alreadyFlushed) {
+      try {
+        const flushResult = await _flushBeforeTransition(_current);
+        if (!flushResult?.ok) return false;
+      } catch {
+        return false;
+      }
     }
     if (await _retractCurrentContent({ remount: false }) === false) return false;
     _current = null;
@@ -482,11 +484,21 @@
     return mobile ? _openMobileDrawer(entry) : true;
   }
 
-  async function closeContent() {
+  async function closeContent(options = {}) {
     if (!_current) return true;
     const drawer = window.MeldexCloudMobileSideDrawer;
     if (_isMobileDrawerEnabled() && drawer?.isOpen?.() && typeof drawer.close === 'function') {
+      if (options.alreadyFlushed && await _closeForMobileDrawer({ alreadyFlushed: true }) === false) return false;
       return (await drawer.close()) !== false;
+    }
+    if (options.alreadyFlushed) {
+      if (await _retractCurrentContent({ remount: true }) === false) return false;
+      _current = null;
+      _navHistory = [];
+      _navIndex = -1;
+      _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
+      return true;
     }
     const seq = ++_opSeq;
     return _guardedTransition(seq, () => {
@@ -568,7 +580,7 @@
     if (typeof GBTabs.activateTab === 'function') GBTabs.activateTab(actualPaneId, tabId);
     if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(actualPaneId, { sync: true });
     if (seq !== _opSeq) return false;
-    if (await closeContent() === false) return false;
+    if (await closeContent({ alreadyFlushed: true }) === false) return false;
     if (window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
     return true;
   }
