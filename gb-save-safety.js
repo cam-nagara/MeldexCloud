@@ -24,6 +24,7 @@
     '/production-management/entries',
     '/quick-memo',
     '/upload-file',
+    '/upload-files',
     '/upload-image',
     '/value',
   ];

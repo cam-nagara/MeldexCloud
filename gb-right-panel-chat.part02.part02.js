@@ -594,18 +594,9 @@ async function _chatMessageDropFile(file, mode, inputId) {
   }
   // 非画像: アップロードして入力欄に名前表示のリンクを挿入
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
     const uploadDir = _chatMessageDropUploadDir(mode);
-    const res = await apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: file.name }),
-    });
+    const [res] = await MeldexDnD.uploadFiles([file], uploadDir, { source: 'chat-drop' });
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || file.name;
     const markup = _chatMessageDropLinkMarkup(file.name, uploadedPath);
     _chatMessageDropInsertLink(inputId, markup);
@@ -849,6 +840,10 @@ function _chatCleanupUploadedPath(path) {
 function _chatCleanupUploadedAttachments(items) {
   (Array.isArray(items) ? items : [items]).forEach(item => {
     if (item && typeof item === 'object') item.canceled = true;
+    if (item?.previewUrl) {
+      URL.revokeObjectURL(item.previewUrl);
+      item.previewUrl = '';
+    }
     if (item?.uploaded && item.path) _chatCleanupUploadedPath(item.path);
   });
 }
@@ -976,17 +971,20 @@ function _chatAttachmentUploadDir() {
 
 function _chatStartAttachmentUpload(att, gen) {
   const uploadDir = _chatAttachmentUploadDir();
-  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
-  }).then(res => {
+  att.uploadPromise = MeldexDnD.uploadFiles([att.file], uploadDir, { source: 'chat-attachment' }).then(results => {
+    const res = results[0];
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || att.name;
     if (gen !== _chatSessionGen || att.canceled) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
       if (uploadedPath) _chatCleanupUploadedPath(uploadedPath);
       return false;
     }
     att.path = uploadedPath;
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    att.previewUrl = '';
+    att.dataUrl = (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(uploadedPath);
+    delete att.file;
     att.uploaded = true;
     att.uploading = false;
     att.uploadError = '';
@@ -1016,20 +1014,17 @@ async function _chatUploadAttachment(file) {
   const gen = _chatSessionGen;
   const fileName = _chatAttachmentFileName(file);
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
-    if (gen !== _chatSessionGen) return false;
+    const previewUrl = URL.createObjectURL(file);
+    if (gen !== _chatSessionGen) { URL.revokeObjectURL(previewUrl); return false; }
     _chatState.pendingAttachments = _chatState.pendingAttachments || [];
     const att = {
       id: 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       name: fileName,
       path: '',
       mime: isPdf ? 'application/pdf' : (file.type || 'image/png'),
-      dataUrl,
+      dataUrl: previewUrl,
+      previewUrl,
+      file,
       uploaded: false,
       uploading: true,
       uploadError: '',

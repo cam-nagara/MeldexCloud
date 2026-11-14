@@ -1,3 +1,6 @@
+
+function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
+  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
     child.entityData?._id || child.entityData?.topicRef || null]).sort((a, b) => a[0].localeCompare(b[0])));
   const initialSignature = signature(_outlinerSheetTreeItems(item, pivotData));
   // Navigation must paint before a migration reads/writes the entire Topic store.
@@ -895,6 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       const reason = result.failed?.[0]?.error;
       const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
       showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
-      loadOutliner();
-    } else if (result.succeeded.length) {
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);

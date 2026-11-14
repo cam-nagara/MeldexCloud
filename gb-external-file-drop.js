@@ -15,6 +15,9 @@
   // Chromium protects the original store as soon as the drop callback returns.
   // Acquire files, directory entries and strings before any receiver can await.
   function snapshot(transfer) {
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer) {
+      return MeldexDnD.snapshotDataTransfer(transfer);
+    }
     const types = Array.from(transfer?.types || []);
     const strings = Object.fromEntries(types.filter(type => type !== 'Files').map(type => [type.toLowerCase(), transfer.getData(type)]));
     const items = list(Array.from(transfer?.items || []).map(item => {
@@ -46,7 +49,8 @@
   }
   function routeFor(element) {
     if (!element?.closest) return null;
-    const fileInput = element.closest('input[type="file"]');
+    const fileInput = element.closest('input[type="file"]')
+      || element.closest('.gb-form-input-row')?.querySelector('input[type="file"]');
     if (fileInput) return {kind:'input', target:fileInput};
     if (element.closest('.modal-overlay,[role="dialog"][aria-modal="true"]')) return null;
     const {tab, component, pane, state:local} = componentFor(element);

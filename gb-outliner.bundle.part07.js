@@ -1,3 +1,6 @@
+      try {
+        scroller.setPointerCapture(pointerId);
+        pointerCaptured = true;
       } catch {}
     }
     box = document.createElement('div');
@@ -83,25 +86,14 @@
   scroller.addEventListener('pointercancel', endLasso);
 })();
 
-function _readOutlinerDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = ev => resolve(ev.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);
-  });
-}
-
 async function _uploadOutlinerDroppedFile(file, parentPath) {
   try {
-    const data = await _readOutlinerDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
+    const [result] = await MeldexDnD.uploadFiles([file], parentPath, { source: 'outliner-drop' });
+    return result?.ok ? result : {
+      ok: false,
+      name: file?.name || 'ファイル',
+      error: result?.error || '取り込みに失敗しました',
+    };
   } catch (error) {
     return {
       ok: false,
@@ -137,13 +129,10 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  let processed = 0;
-  const results = await Promise.all(files.map(async file => {
-    const result = await _uploadOutlinerDroppedFile(file, parentPath);
-    processed += 1;
-    progress?.update?.({ processed: processed, currentItem: file.name });
-    return result;
-  }));
+  const results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  results.forEach((result, index) => {
+    progress?.update?.({ processed: index + 1, currentItem: result.name || files[index]?.name || '' });
+  });
   try {
     progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();

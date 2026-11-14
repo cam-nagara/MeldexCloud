@@ -1607,19 +1607,7 @@ function _embeddedMediaHtmlForFile(fileName, linkUrl, kind) {
   return `<img src="${esc(linkUrl)}" alt="${esc(fileName)}">`;
 }
 
-async function _insertDroppedFileAtRange(el, range, file, dir) {
-  const path = el.dataset?.path || el.dataset?.entityPath;
-  const generation = el._openPageLoadSeq;
-  const isCurrent = () => (el.dataset?.path || el.dataset?.entityPath) === path
-    && el._openPageLoadSeq === generation && el.isContentEditable;
-  const dataUrl = await _readFileAsDataURL(file);
-  if (!isCurrent()) return range;
-  const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({data: dataUrl, filename: file.name}),
-  });
-  if (!res.ok || !isCurrent()) return range;
+function _insertUploadedFileAtRange(el, range, file, res) {
   const rawPath = res.path || file.name;
   const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(rawPath);
   const attrs = `data-path="${esc(rawPath)}" data-name="${esc(file.name)}"`;
@@ -1630,6 +1618,16 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
     return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'video'), `${attrs} data-type="video"`);
   }
   return _insertHtmlAtEditableRange(el, range, `<a href="${esc(linkUrl)}">${esc(file.name)}</a> `);
+}
+
+async function _insertDroppedFileAtRange(el, range, file, dir) {
+  const path = el.dataset?.path || el.dataset?.entityPath;
+  const generation = el._openPageLoadSeq;
+  const isCurrent = () => (el.dataset?.path || el.dataset?.entityPath) === path
+    && el._openPageLoadSeq === generation && el.isContentEditable;
+  const [res] = await MeldexDnD.uploadFiles([file], dir, { source: 'note-drop' });
+  if (!res?.ok) throw new Error(res?.error || 'ファイルを保存できませんでした');
+  return isCurrent() ? _insertUploadedFileAtRange(el, range, file, res) : range;
 }
 
 // クリップボード貼り付け: テキスト + 画像対応
@@ -1655,25 +1653,18 @@ function _wireNotePasteHandler(pc) {
       && editor._openPageLoadSeq === generation && editor.isContentEditable;
     if (!currentPath) return;
     const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        if (!isCurrent()) return;
-        const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
-        const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({data: ev.target.result, filename: fname}),
-        });
-        if (res.ok && res.path && isCurrent()) {
-          const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-          const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
-          _insertEmbeddedMediaHtml(editor, pasteRange,
-            _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
-        }
-      } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
-    };
-    reader.readAsDataURL(mediaFile);
+    try {
+      if (!isCurrent()) return;
+      const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
+      const uploadFile = mediaFile.name ? mediaFile : new File([mediaFile], fname, { type: mediaFile.type });
+      const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
+      if (res?.ok && res.path && isCurrent()) {
+        const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+        const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
+        _insertEmbeddedMediaHtml(editor, pasteRange,
+          _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
+      }
+    } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
     return;
   }
 

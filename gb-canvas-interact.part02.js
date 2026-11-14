@@ -394,21 +394,28 @@
     if (!bdEnsureInteractiveCanvas(canvas)) return;
     e.preventDefault(); e.stopPropagation();
     const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
+    // Explorer/browser の DataTransfer は最初の await 後には空になるため、
+    // drop の同期区間でファイル・URL・内部payloadをすべて退避する。
+    const nativeTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer
+      ? MeldexDnD.snapshotDataTransfer(e.dataTransfer)
+      : e.dataTransfer;
 
     // フォルダツリーからのドロップ
     const bridgeResolved = typeof MeldexDnD !== 'undefined'
-      ? (await MeldexDnD.resolveDropData(e, 'node')
-        || await MeldexDnD.resolveDropData(e, 'text')
-        || await MeldexDnD.resolveDropData(e, 'board-nodes'))
+      ? (await MeldexDnD.resolveDropData(nativeTransfer, 'node')
+        || await MeldexDnD.resolveDropData(nativeTransfer, 'text')
+        || await MeldexDnD.resolveDropData(nativeTransfer, 'board-nodes'))
       : null;
     const transfer = bridgeResolved && typeof MeldexDnD !== 'undefined'
-      ? MeldexDnD.dataTransferWithResolved(e.dataTransfer, bridgeResolved) : e.dataTransfer;
+      ? MeldexDnD.dataTransferWithResolved(nativeTransfer, bridgeResolved) : nativeTransfer;
     const cfData = transfer.getData('application/x-meldex-node');
     const meldexTextData = transfer.getData('application/x-meldex-text');
     const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
     const selectedPlainText = !transfer.files.length && transfer.getData('text/plain')
       && !droppedExternalImageUrl(transfer);
-    if ((cfData || meldexTextData || boardNodesData || selectedPlainText) && window.MeldexBoardTransfer?.processTransfer) {
+    const commonTransfer = cfData || meldexTextData || boardNodesData || selectedPlainText
+      || transfer.files.length || transfer.getData('text/html') || droppedExternalImageUrl(transfer);
+    if (commonTransfer && window.MeldexBoardTransfer?.processTransfer) {
       window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
         .then(result => {
           if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);
@@ -419,6 +426,13 @@
           console.error('[board] common transfer drop failed:', err);
           if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
         });
+      return;
+    }
+    // 共通transferが欠けた状態で旧実装へフォールバックすると、画像をBase64化して
+    // ボード本文へ埋め込む経路が復活する。読込不全時はデータを巨大化させず明示失敗する。
+    if (commonTransfer) {
+      if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
+      if (typeof showStatus === 'function') showStatus('共通ドロップ機能を読み込めませんでした。再読込してお試しください', true);
       return;
     }
     // 窓間payloadはsource側で一回だけclaim済み。共通transferが利用できない状態で
@@ -528,9 +542,9 @@
     }
 
     // ファイルドロップ
-    const files = e.dataTransfer.files;
+    const files = transfer.files;
     if (!files.length) {
-      const externalImageUrl = droppedExternalImageUrl(e.dataTransfer);
+      const externalImageUrl = droppedExternalImageUrl(transfer);
       if (externalImageUrl) addExternalImageDrop(externalImageUrl, wx, wy);
       return;
     }

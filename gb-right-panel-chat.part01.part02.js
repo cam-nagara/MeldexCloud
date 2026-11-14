@@ -810,18 +810,18 @@ async function _teamUploadAttachment(file) {
   const uploadDir = _teamChatUploadDir();
   const fileName = _teamAttachmentFileName(file);
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
-    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return false;
+    const previewUrl = URL.createObjectURL(file);
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) {
+      URL.revokeObjectURL(previewUrl);
+      return false;
+    }
     const att = {
       name: fileName,
       path: '',
       mime: file.type || 'image/png',
-      dataUrl,
+      dataUrl: previewUrl,
+      previewUrl,
+      file,
       uploaded: false,
       uploading: true,
       uploadError: '',
@@ -838,17 +838,20 @@ async function _teamUploadAttachment(file) {
 }
 
 function _teamStartAttachmentUpload(att, roomPath, uploadDir, gen) {
-  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
-  }).then(res => {
+  att.uploadPromise = MeldexDnD.uploadFiles([att.file], uploadDir, { source: 'team-chat-attachment' }).then(results => {
+    const res = results[0];
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || att.name;
     if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom || att.canceled) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
       if (uploadedPath && typeof _chatCleanupUploadedPath === 'function') _chatCleanupUploadedPath(uploadedPath);
       return false;
     }
     att.path = uploadedPath;
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    att.previewUrl = '';
+    att.dataUrl = (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(uploadedPath);
+    delete att.file;
     att.uploaded = true;
     att.uploading = false;
     att.uploadError = '';

@@ -529,6 +529,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
     input.addEventListener('change', validate); input.addEventListener('invalid', validate);
   }
   row.appendChild(input);
+  if (type === 'image' && typeof MeldexDnD !== 'undefined') MeldexDnD.installFileInputDropTarget?.(input);
   return row;
 }
 

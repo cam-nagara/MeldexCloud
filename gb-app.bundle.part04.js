@@ -57,6 +57,13 @@ let _authUser = null;
 function _apiLockJsonBody(opts) {
   const raw = opts?.body;
   if (!raw) return {};
+  if (raw instanceof FormData) {
+    const body = {};
+    for (const [key, value] of raw.entries()) {
+      if (typeof value === 'string' && body[key] === undefined) body[key] = value;
+    }
+    return body;
+  }
   if (typeof raw === 'string') {
     try { return JSON.parse(raw); } catch { return {}; }
   }
@@ -104,7 +111,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('folder_path');
   } else if (route === '/replace-batch') {
     (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/upload-file') {
+  } else if (route === '/upload-file' || route === '/upload-files') {
     addBoth('path');
     addBody('dir');
   } else if (route === '/outliner/add') {
@@ -182,7 +189,7 @@ function _apiUsesTransientActiveLock(path) {
   try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
   catch { return false; }
   return new Set([
-    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/upload-file', '/upload-files', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
     '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
   ]).has(route);
@@ -891,10 +898,3 @@ function showScreenshotMenu(e) {
   menu.setAttribute('aria-label', 'スクリーンショット');
   if (btn?.setAttribute) {
     btn.setAttribute('aria-haspopup', 'menu');
-    btn.setAttribute('aria-expanded', 'true');
-    btn.setAttribute('aria-controls', menu.id);
-  }
-  let closed = false;
-  let pointerCloser = null;
-  let keyCloser = null;
-  const closeMenu = (restoreFocus = false) => {

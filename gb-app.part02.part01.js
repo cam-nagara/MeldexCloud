@@ -554,7 +554,7 @@ function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
   if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
-  if (['/upload-file', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
+  if (['/upload-file', '/upload-files', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;
@@ -1048,6 +1048,13 @@ let _authUser = null;
 function _apiLockJsonBody(opts) {
   const raw = opts?.body;
   if (!raw) return {};
+  if (raw instanceof FormData) {
+    const body = {};
+    for (const [key, value] of raw.entries()) {
+      if (typeof value === 'string' && body[key] === undefined) body[key] = value;
+    }
+    return body;
+  }
   if (typeof raw === 'string') {
     try { return JSON.parse(raw); } catch { return {}; }
   }
@@ -1095,7 +1102,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('folder_path');
   } else if (route === '/replace-batch') {
     (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/upload-file') {
+  } else if (route === '/upload-file' || route === '/upload-files') {
     addBoth('path');
     addBody('dir');
   } else if (route === '/outliner/add') {
@@ -1173,7 +1180,7 @@ function _apiUsesTransientActiveLock(path) {
   try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
   catch { return false; }
   return new Set([
-    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/upload-file', '/upload-files', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
     '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
   ]).has(route);

@@ -28615,7 +28615,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
   'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails', 'topicRefs',
-  'topicViewDocument',
+  'topicViewDocument', 'nodes',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -28898,9 +28898,11 @@ function bdYamlListObjects(fm, key) {
 
 // 旧式ボード互換: フロントマター直下に `nodes:` をカード配列（各要素が
 // id/text/x/y/w/h/color 等をフラットに持つ、YAML block style のリスト）として
-// 直接持つスキーマの読み取り専用パーサ。現行の positions/sizes マップ方式や
-// 本文見出し方式とは別の並存フォーマット（例: 同梱サンプル
-// 「死霊探偵/キャラ相関図.board.md」）向け。
+// 直接持つスキーマの互換パーサ。現行の positions/sizes マップ方式や
+// 本文見出し方式とは別の旧フォーマット（例: 旧同梱サンプル）向け。
+// `nodes` は管理対象キーとして保存時に旧ブロックを残さず、読み込んだ全カードを
+// 現行形式へ正規化する。旧ブロックを残すと次回読込で現行本文より優先され、
+// 追加・編集したカードが消えたように見えるためである。
 //
 // bdYamlListObjects は各プロパティが1行で完結する前提（`from: n1, to: n2` 等の
 // フロー形式や単一行スカラー）のため、この関数はそれとは別に、複数行にまたがる
@@ -36056,6 +36058,7 @@ function _bdMinimapBounds() {
   const BOARD_MIME = 'application/x-meldex-board-nodes';
   const GRID_COLUMNS = 4;
   const MAX_ITEMS = 100;
+  const MAX_EMBEDDED_BOARD_BYTES = 20 * 1024 * 1024;
   const IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
   const VIDEO_EXT = /\.(?:mp4|m4v|mov|webm|ogv|avi|mkv|wmv|mpg|mpeg)$/i;
   const AUDIO_EXT = /\.(?:mp3|wav|ogg|m4a|flac|aac)$/i;
@@ -36484,38 +36487,18 @@ function _bdMinimapBounds() {
     return '';
   }
 
-  async function uploadClipboardFile(file, boardDir, snapshot, imageMode) {
-    const image = isImageFile(file);
-    const dataUrl = await readFileAsDataUrl(file);
-    if (!boardSnapshotIsCurrent(snapshot)) return null;
-    if (image && imageMode === 'embed') {
-      // 過大な画像はダイアログでユーザーに埋め込み/リンクを選ばせる（既定は埋め込み）
-      const choice = typeof global.bdResolveImageEmbedChoice === 'function'
-        ? await global.bdResolveImageEmbedChoice(file.size, file.name)
-        : 'embed';
-      if (!boardSnapshotIsCurrent(snapshot)) return null;
-      if (choice === 'embed') return imageSpec('', file.name || '貼り付けた画像', dataUrl);
-    }
-    try {
-      const response = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        silentError: image && !snapshot.path,
-        body: JSON.stringify({
-          data: dataUrl,
-          filename: file.name || (image ? 'clipboard-image.png' : 'clipboard-file'),
-        }),
-      });
-      if (response?.ok && response.path) {
-        const path = normalizePath(response.path);
-        return image
-          ? imageSpec(path, file.name || filename(path))
-          : linkSpec(path, file.name || filename(path), clipboardFileLinkType(file));
-      }
-    } catch (error) {
-      if (!image) throw error;
-    }
-    return image ? imageSpec('', file.name || '貼り付けた画像', dataUrl) : null;
+  function embeddedBoardBytes() {
+    if (typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return 0;
+    return bd.nodes.reduce((total, node) => {
+      const source = String(node?.img || '');
+      if (!/^data:/i.test(source)) return total;
+      const comma = source.indexOf(',');
+      if (comma < 0) return total;
+      const payload = source.slice(comma + 1);
+      return total + (/;base64,/i.test(source.slice(0, comma + 1))
+        ? Math.ceil(payload.length * 3 / 4)
+        : payload.length);
+    }, 0);
   }
 
   async function cleanupUploads(specs) {
@@ -36526,42 +36509,70 @@ function _bdMinimapBounds() {
     )));
   }
 
-  async function mapSettledLimited(items, worker, concurrency) {
-    const results = new Array(items.length);
-    let nextIndex = 0;
-    async function run() {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        try {
-          results[index] = { status: 'fulfilled', value: await worker(items[index], index) };
-        } catch (reason) {
-          results[index] = { status: 'rejected', reason };
-        }
-      }
-    }
-    const runnerCount = Math.min(items.length, Math.max(1, Number(concurrency) || 1));
-    await Promise.all(Array.from({ length: runnerCount }, run));
-    return results;
-  }
-
   async function addFiles(rawFiles, point, options) {
     const files = (Array.isArray(rawFiles) ? rawFiles : Array.from(rawFiles || [])).slice(0, MAX_ITEMS);
     if (!files.length || typeof bd === 'undefined') return [];
     const snapshot = { path: bd.path, openSeq: Number(bd._openSeq) || 0 };
     const boardDir = snapshot.path ? snapshot.path.substring(0, snapshot.path.lastIndexOf('/')) : '';
     const imageMode = typeof bdGetImageDropMode === 'function' ? bdGetImageDropMode() : 'link';
-    const settled = await mapSettledLimited(
-      files,
-      file => uploadClipboardFile(file, boardDir, snapshot, imageMode),
-      3,
-    );
-    const specs = [];
+    const specsByIndex = new Array(files.length);
+    const uploadQueue = [];
+    let embeddedBytes = embeddedBoardBytes();
     let failed = 0;
-    settled.forEach(result => {
-      if (result.status === 'fulfilled' && result.value) specs.push(result.value);
-      else failed += 1;
-    });
+    if (typeof showStatus === 'function') {
+      showStatus(files.length > 1 ? `${files.length}件のファイルを取り込み中…` : 'ファイルを取り込み中…');
+    }
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const image = isImageFile(file);
+      let embed = image && imageMode === 'embed'
+        && embeddedBytes + Math.max(0, Number(file.size) || 0) <= MAX_EMBEDDED_BOARD_BYTES;
+      if (embed && typeof global.bdResolveImageEmbedChoice === 'function') {
+        embed = await global.bdResolveImageEmbedChoice(file.size, file.name) === 'embed';
+      }
+      if (!boardSnapshotIsCurrent(snapshot)) return [];
+      if (embed) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!boardSnapshotIsCurrent(snapshot)) return [];
+          specsByIndex[index] = imageSpec('', file.name || '貼り付けた画像', dataUrl);
+          embeddedBytes += Math.max(0, Number(file.size) || 0);
+        } catch {
+          failed += 1;
+        }
+      } else {
+        uploadQueue.push({ file, index });
+      }
+    }
+    if (uploadQueue.length) {
+      const dnd = typeof MeldexDnD !== 'undefined' ? MeldexDnD : global.MeldexDnD;
+      if (typeof dnd?.uploadFiles !== 'function') {
+        failed += uploadQueue.length;
+      } else {
+        let uploaded = [];
+        try {
+          uploaded = await dnd.uploadFiles(
+            uploadQueue.map(item => item.file),
+            boardDir,
+            { source: 'board-drop', silentError: true },
+          );
+        } catch (error) {
+          console.error('[board-transfer] file upload failed:', error);
+        }
+        uploadQueue.forEach((item, resultIndex) => {
+          const response = uploaded[resultIndex];
+          if (!response?.ok || !response.path) {
+            failed += 1;
+            return;
+          }
+          const path = normalizePath(response.path);
+          specsByIndex[item.index] = isImageFile(item.file)
+            ? imageSpec(path, item.file.name || filename(path))
+            : linkSpec(path, item.file.name || filename(path), clipboardFileLinkType(item.file));
+        });
+      }
+    }
+    const specs = specsByIndex.filter(Boolean);
     if (!boardSnapshotIsCurrent(snapshot)) {
       await cleanupUploads(specs);
       if (typeof showStatus === 'function') {
@@ -43164,21 +43175,28 @@ function bdInitInteraction(root) {
     if (!bdEnsureInteractiveCanvas(canvas)) return;
     e.preventDefault(); e.stopPropagation();
     const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
+    // Explorer/browser の DataTransfer は最初の await 後には空になるため、
+    // drop の同期区間でファイル・URL・内部payloadをすべて退避する。
+    const nativeTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer
+      ? MeldexDnD.snapshotDataTransfer(e.dataTransfer)
+      : e.dataTransfer;
 
     // フォルダツリーからのドロップ
     const bridgeResolved = typeof MeldexDnD !== 'undefined'
-      ? (await MeldexDnD.resolveDropData(e, 'node')
-        || await MeldexDnD.resolveDropData(e, 'text')
-        || await MeldexDnD.resolveDropData(e, 'board-nodes'))
+      ? (await MeldexDnD.resolveDropData(nativeTransfer, 'node')
+        || await MeldexDnD.resolveDropData(nativeTransfer, 'text')
+        || await MeldexDnD.resolveDropData(nativeTransfer, 'board-nodes'))
       : null;
     const transfer = bridgeResolved && typeof MeldexDnD !== 'undefined'
-      ? MeldexDnD.dataTransferWithResolved(e.dataTransfer, bridgeResolved) : e.dataTransfer;
+      ? MeldexDnD.dataTransferWithResolved(nativeTransfer, bridgeResolved) : nativeTransfer;
     const cfData = transfer.getData('application/x-meldex-node');
     const meldexTextData = transfer.getData('application/x-meldex-text');
     const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
     const selectedPlainText = !transfer.files.length && transfer.getData('text/plain')
       && !droppedExternalImageUrl(transfer);
-    if ((cfData || meldexTextData || boardNodesData || selectedPlainText) && window.MeldexBoardTransfer?.processTransfer) {
+    const commonTransfer = cfData || meldexTextData || boardNodesData || selectedPlainText
+      || transfer.files.length || transfer.getData('text/html') || droppedExternalImageUrl(transfer);
+    if (commonTransfer && window.MeldexBoardTransfer?.processTransfer) {
       window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
         .then(result => {
           if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);
@@ -43189,6 +43207,13 @@ function bdInitInteraction(root) {
           console.error('[board] common transfer drop failed:', err);
           if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
         });
+      return;
+    }
+    // 共通transferが欠けた状態で旧実装へフォールバックすると、画像をBase64化して
+    // ボード本文へ埋め込む経路が復活する。読込不全時はデータを巨大化させず明示失敗する。
+    if (commonTransfer) {
+      if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
+      if (typeof showStatus === 'function') showStatus('共通ドロップ機能を読み込めませんでした。再読込してお試しください', true);
       return;
     }
     // 窓間payloadはsource側で一回だけclaim済み。共通transferが利用できない状態で
@@ -43298,9 +43323,9 @@ function bdInitInteraction(root) {
     }
 
     // ファイルドロップ
-    const files = e.dataTransfer.files;
+    const files = transfer.files;
     if (!files.length) {
-      const externalImageUrl = droppedExternalImageUrl(e.dataTransfer);
+      const externalImageUrl = droppedExternalImageUrl(transfer);
       if (externalImageUrl) addExternalImageDrop(externalImageUrl, wx, wy);
       return;
     }
@@ -109159,19 +109184,7 @@ function _embeddedMediaHtmlForFile(fileName, linkUrl, kind) {
   return `<img src="${esc(linkUrl)}" alt="${esc(fileName)}">`;
 }
 
-async function _insertDroppedFileAtRange(el, range, file, dir) {
-  const path = el.dataset?.path || el.dataset?.entityPath;
-  const generation = el._openPageLoadSeq;
-  const isCurrent = () => (el.dataset?.path || el.dataset?.entityPath) === path
-    && el._openPageLoadSeq === generation && el.isContentEditable;
-  const dataUrl = await _readFileAsDataURL(file);
-  if (!isCurrent()) return range;
-  const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({data: dataUrl, filename: file.name}),
-  });
-  if (!res.ok || !isCurrent()) return range;
+function _insertUploadedFileAtRange(el, range, file, res) {
   const rawPath = res.path || file.name;
   const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(rawPath);
   const attrs = `data-path="${esc(rawPath)}" data-name="${esc(file.name)}"`;
@@ -109182,6 +109195,16 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
     return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'video'), `${attrs} data-type="video"`);
   }
   return _insertHtmlAtEditableRange(el, range, `<a href="${esc(linkUrl)}">${esc(file.name)}</a> `);
+}
+
+async function _insertDroppedFileAtRange(el, range, file, dir) {
+  const path = el.dataset?.path || el.dataset?.entityPath;
+  const generation = el._openPageLoadSeq;
+  const isCurrent = () => (el.dataset?.path || el.dataset?.entityPath) === path
+    && el._openPageLoadSeq === generation && el.isContentEditable;
+  const [res] = await MeldexDnD.uploadFiles([file], dir, { source: 'note-drop' });
+  if (!res?.ok) throw new Error(res?.error || 'ファイルを保存できませんでした');
+  return isCurrent() ? _insertUploadedFileAtRange(el, range, file, res) : range;
 }
 
 // クリップボード貼り付け: テキスト + 画像対応
@@ -109207,25 +109230,18 @@ function _wireNotePasteHandler(pc) {
       && editor._openPageLoadSeq === generation && editor.isContentEditable;
     if (!currentPath) return;
     const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        if (!isCurrent()) return;
-        const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
-        const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({data: ev.target.result, filename: fname}),
-        });
-        if (res.ok && res.path && isCurrent()) {
-          const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-          const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
-          _insertEmbeddedMediaHtml(editor, pasteRange,
-            _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
-        }
-      } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
-    };
-    reader.readAsDataURL(mediaFile);
+    try {
+      if (!isCurrent()) return;
+      const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
+      const uploadFile = mediaFile.name ? mediaFile : new File([mediaFile], fname, { type: mediaFile.type });
+      const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
+      if (res?.ok && res.path && isCurrent()) {
+        const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+        const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
+        _insertEmbeddedMediaHtml(editor, pasteRange,
+          _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
+      }
+    } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
     return;
   }
 
@@ -109729,13 +109745,24 @@ function setupEditableDropHandler(el) {
       if (!currentPath) return;
       const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
       const generation = el._openPageLoadSeq;
-      for (const f of files) {
+      const dropFiles = Array.from(files);
+      showStatus(dropFiles.length > 1 ? `${dropFiles.length}件のファイルを取り込み中…` : 'ファイルを取り込み中…');
+      let uploaded = [];
+      try {
+        uploaded = await MeldexDnD.uploadFiles(dropFiles, dir, { source: 'note-drop', silentError: true });
+      } catch (err) {
+        showStatus('ファイル挿入に失敗: ' + err.message, true);
+        return;
+      }
+      let failed = 0;
+      for (let index = 0; index < dropFiles.length; index += 1) {
         if ((el.dataset.path || el.dataset.entityPath) !== currentPath
             || el._openPageLoadSeq !== generation || !el.isContentEditable) break;
-        try {
-          insertRange = await _insertDroppedFileAtRange(el, insertRange, f, dir);
-        } catch(err) { showStatus('ファイル挿入に失敗: ' + err.message, true); }
+        const result = uploaded[index];
+        if (!result?.ok) { failed += 1; continue; }
+        insertRange = _insertUploadedFileAtRange(el, insertRange, dropFiles[index], result);
       }
+      showStatus(failed ? `${dropFiles.length - failed}件を挿入し、${failed}件は失敗しました` : `${dropFiles.length}件のファイルを挿入しました`, failed === dropFiles.length);
       return;
     }
 
@@ -193717,6 +193744,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
     input.addEventListener('change', validate); input.addEventListener('invalid', validate);
   }
   row.appendChild(input);
+  if (type === 'image' && typeof MeldexDnD !== 'undefined') MeldexDnD.installFileInputDropTarget?.(input);
   return row;
 }
 
@@ -218038,18 +218066,18 @@ async function _teamUploadAttachment(file) {
   const uploadDir = _teamChatUploadDir();
   const fileName = _teamAttachmentFileName(file);
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
-    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) return false;
+    const previewUrl = URL.createObjectURL(file);
+    if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom) {
+      URL.revokeObjectURL(previewUrl);
+      return false;
+    }
     const att = {
       name: fileName,
       path: '',
       mime: file.type || 'image/png',
-      dataUrl,
+      dataUrl: previewUrl,
+      previewUrl,
+      file,
       uploaded: false,
       uploading: true,
       uploadError: '',
@@ -218066,17 +218094,20 @@ async function _teamUploadAttachment(file) {
 }
 
 function _teamStartAttachmentUpload(att, roomPath, uploadDir, gen) {
-  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
-  }).then(res => {
+  att.uploadPromise = MeldexDnD.uploadFiles([att.file], uploadDir, { source: 'team-chat-attachment' }).then(results => {
+    const res = results[0];
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || att.name;
     if (gen !== _teamSessionGen || roomPath !== _teamCurrentRoom || att.canceled) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
       if (uploadedPath && typeof _chatCleanupUploadedPath === 'function') _chatCleanupUploadedPath(uploadedPath);
       return false;
     }
     att.path = uploadedPath;
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    att.previewUrl = '';
+    att.dataUrl = (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(uploadedPath);
+    delete att.file;
     att.uploaded = true;
     att.uploading = false;
     att.uploadError = '';
@@ -222640,18 +222671,9 @@ async function _chatMessageDropFile(file, mode, inputId) {
   }
   // 非画像: アップロードして入力欄に名前表示のリンクを挿入
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
     const uploadDir = _chatMessageDropUploadDir(mode);
-    const res = await apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: file.name }),
-    });
+    const [res] = await MeldexDnD.uploadFiles([file], uploadDir, { source: 'chat-drop' });
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || file.name;
     const markup = _chatMessageDropLinkMarkup(file.name, uploadedPath);
     _chatMessageDropInsertLink(inputId, markup);
@@ -222895,6 +222917,10 @@ function _chatCleanupUploadedPath(path) {
 function _chatCleanupUploadedAttachments(items) {
   (Array.isArray(items) ? items : [items]).forEach(item => {
     if (item && typeof item === 'object') item.canceled = true;
+    if (item?.previewUrl) {
+      URL.revokeObjectURL(item.previewUrl);
+      item.previewUrl = '';
+    }
     if (item?.uploaded && item.path) _chatCleanupUploadedPath(item.path);
   });
 }
@@ -223022,17 +223048,20 @@ function _chatAttachmentUploadDir() {
 
 function _chatStartAttachmentUpload(att, gen) {
   const uploadDir = _chatAttachmentUploadDir();
-  att.uploadPromise = apiFetch('/upload-file?path=' + encodeURIComponent(uploadDir), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: att.dataUrl, filename: att.name }),
-  }).then(res => {
+  att.uploadPromise = MeldexDnD.uploadFiles([att.file], uploadDir, { source: 'chat-attachment' }).then(results => {
+    const res = results[0];
+    if (!res?.ok) throw new Error(res?.error || 'upload failed');
     const uploadedPath = res.path || att.name;
     if (gen !== _chatSessionGen || att.canceled) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
       if (uploadedPath) _chatCleanupUploadedPath(uploadedPath);
       return false;
     }
     att.path = uploadedPath;
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    att.previewUrl = '';
+    att.dataUrl = (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(uploadedPath);
+    delete att.file;
     att.uploaded = true;
     att.uploading = false;
     att.uploadError = '';
@@ -223062,20 +223091,17 @@ async function _chatUploadAttachment(file) {
   const gen = _chatSessionGen;
   const fileName = _chatAttachmentFileName(file);
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read error'));
-      r.readAsDataURL(file);
-    });
-    if (gen !== _chatSessionGen) return false;
+    const previewUrl = URL.createObjectURL(file);
+    if (gen !== _chatSessionGen) { URL.revokeObjectURL(previewUrl); return false; }
     _chatState.pendingAttachments = _chatState.pendingAttachments || [];
     const att = {
       id: 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
       name: fileName,
       path: '',
       mime: isPdf ? 'application/pdf' : (file.type || 'image/png'),
-      dataUrl,
+      dataUrl: previewUrl,
+      previewUrl,
+      file,
       uploaded: false,
       uploading: true,
       uploadError: '',
@@ -232173,26 +232199,15 @@ function _folderCanAcceptOsDrop(event, targetItem) {
   return types.includes('Files') && !types.includes('application/x-meldex-node');
 }
 
-function _folderReadDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = event => resolve(event.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);
-  });
-}
-
 async function _folderUploadDroppedFile(file, parentPath) {
   if (typeof _uploadOutlinerDroppedFile === 'function') return _uploadOutlinerDroppedFile(file, parentPath);
   try {
-    const data = await _folderReadDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
+    const [result] = await MeldexDnD.uploadFiles([file], parentPath, { source: 'folder-drop' });
+    return result?.ok ? result : {
+      ok: false,
+      name: file?.name || 'ファイル',
+      error: result?.error || '取り込みに失敗しました',
+    };
   } catch (error) {
     return { ok: false, name: file?.name || 'ファイル', error: error?.userMessage || error?.message || String(error) };
   }
@@ -232243,12 +232258,36 @@ function _folderCountOsDropFiles(nodes) {
   return nodes.reduce((count, node) => count + (node.kind === 'file' ? 1 : _folderCountOsDropFiles(node.children || [])), 0);
 }
 
+async function _folderImportOsFiles(nodes, parentPath, result, progress) {
+  if (!nodes.length) return;
+  let uploaded = [];
+  try {
+    uploaded = await MeldexDnD.uploadFiles(
+      nodes.map(node => node.file),
+      parentPath,
+      { source: 'folder-drop', silentError: true },
+    );
+  } catch (error) {
+    uploaded = nodes.map(node => ({ ok: false, name: node.name, error }));
+  }
+  nodes.forEach((node, index) => {
+    const item = uploaded[index] || { ok: false, name: node.name, error: '取り込み結果を確認できませんでした' };
+    if (item.ok) result.ok += 1;
+    else { result.failed += 1; result.failures.push(item); }
+    progress?.updateOperation?.(result.ok + result.failed);
+  });
+}
+
 async function _folderImportOsNode(node, parentPath, result, progress) {
   if (node.kind === 'folder') {
     try {
       const created = await apiPost('/outliner/add', { type: 'folder', label: node.name, parent: parentPath });
       const childParent = created?.node?.path || [parentPath, created?.node?.label || node.name].filter(Boolean).join('/');
-      for (const child of node.children || []) await _folderImportOsNode(child, childParent, result, progress);
+      const children = node.children || [];
+      await _folderImportOsFiles(children.filter(child => child.kind === 'file'), childParent, result, progress);
+      for (const child of children.filter(item => item.kind === 'folder')) {
+        await _folderImportOsNode(child, childParent, result, progress);
+      }
     } catch (error) {
       const skipped = _folderCountOsDropFiles(node.children || []);
       result.failed += Math.max(1, skipped);
@@ -232279,7 +232318,10 @@ async function _folderImportOsDrop(event, targetItem) {
   const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
   const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
-    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, boundProgress);
+    await _folderImportOsFiles(nodes.filter(node => node.kind === 'file'), targetItem.path, result, boundProgress);
+    for (const node of nodes.filter(item => item.kind === 'folder')) {
+      await _folderImportOsNode(node, targetItem.path, result, boundProgress);
+    }
   } finally {
     progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
@@ -243221,6 +243263,9 @@ function createTreeNodeFromBrowse(item, rootPath) {
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
+      const dropTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer
+        ? MeldexDnD.snapshotDataTransfer(e.dataTransfer)
+        : e.dataTransfer;
       // Capture the indicated position before asynchronous payload resolution or
       // dragend clears the marker. The same geometry drives dragover and drop.
       const position = _outlinerRowDropPosition(e, row, item);
@@ -243232,8 +243277,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
         const handled = await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
         if (handled > 0) return;
       }
-      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
-      const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(dropTransfer, 'node') : null;
+      const externalItems = _outlinerExternalDragItems({ dataTransfer: dropTransfer }, resolved?.payload).filter(source => {
         const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
         const targetPath = String(target.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
         return source.type !== 'entity' && !source.linked && sourcePath !== String(item.path || '').replace(/\\/g, '/').toLowerCase()
@@ -246378,25 +246423,14 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
   scroller.addEventListener('pointercancel', endLasso);
 })();
 
-function _readOutlinerDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = ev => resolve(ev.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);
-  });
-}
-
 async function _uploadOutlinerDroppedFile(file, parentPath) {
   try {
-    const data = await _readOutlinerDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
+    const [result] = await MeldexDnD.uploadFiles([file], parentPath, { source: 'outliner-drop' });
+    return result?.ok ? result : {
+      ok: false,
+      name: file?.name || 'ファイル',
+      error: result?.error || '取り込みに失敗しました',
+    };
   } catch (error) {
     return {
       ok: false,
@@ -246432,13 +246466,10 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  let processed = 0;
-  const results = await Promise.all(files.map(async file => {
-    const result = await _uploadOutlinerDroppedFile(file, parentPath);
-    processed += 1;
-    progress?.update?.({ processed: processed, currentItem: file.name });
-    return result;
-  }));
+  const results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  results.forEach((result, index) => {
+    progress?.update?.({ processed: index + 1, currentItem: result.name || files[index]?.name || '' });
+  });
   try {
     progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
@@ -263028,7 +263059,7 @@ function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
   if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
-  if (['/upload-file', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
+  if (['/upload-file', '/upload-files', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;
@@ -263522,6 +263553,13 @@ let _authUser = null;
 function _apiLockJsonBody(opts) {
   const raw = opts?.body;
   if (!raw) return {};
+  if (raw instanceof FormData) {
+    const body = {};
+    for (const [key, value] of raw.entries()) {
+      if (typeof value === 'string' && body[key] === undefined) body[key] = value;
+    }
+    return body;
+  }
   if (typeof raw === 'string') {
     try { return JSON.parse(raw); } catch { return {}; }
   }
@@ -263569,7 +263607,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBody('folder_path');
   } else if (route === '/replace-batch') {
     (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/upload-file') {
+  } else if (route === '/upload-file' || route === '/upload-files') {
     addBoth('path');
     addBody('dir');
   } else if (route === '/outliner/add') {
@@ -263647,7 +263685,7 @@ function _apiUsesTransientActiveLock(path) {
   try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
   catch { return false; }
   return new Set([
-    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/upload-file', '/upload-files', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
     '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
   ]).has(route);

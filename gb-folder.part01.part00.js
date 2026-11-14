@@ -597,26 +597,15 @@ function _folderCanAcceptOsDrop(event, targetItem) {
   return types.includes('Files') && !types.includes('application/x-meldex-node');
 }
 
-function _folderReadDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = event => resolve(event.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);
-  });
-}
-
 async function _folderUploadDroppedFile(file, parentPath) {
   if (typeof _uploadOutlinerDroppedFile === 'function') return _uploadOutlinerDroppedFile(file, parentPath);
   try {
-    const data = await _folderReadDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
+    const [result] = await MeldexDnD.uploadFiles([file], parentPath, { source: 'folder-drop' });
+    return result?.ok ? result : {
+      ok: false,
+      name: file?.name || 'ファイル',
+      error: result?.error || '取り込みに失敗しました',
+    };
   } catch (error) {
     return { ok: false, name: file?.name || 'ファイル', error: error?.userMessage || error?.message || String(error) };
   }
@@ -667,12 +656,36 @@ function _folderCountOsDropFiles(nodes) {
   return nodes.reduce((count, node) => count + (node.kind === 'file' ? 1 : _folderCountOsDropFiles(node.children || [])), 0);
 }
 
+async function _folderImportOsFiles(nodes, parentPath, result, progress) {
+  if (!nodes.length) return;
+  let uploaded = [];
+  try {
+    uploaded = await MeldexDnD.uploadFiles(
+      nodes.map(node => node.file),
+      parentPath,
+      { source: 'folder-drop', silentError: true },
+    );
+  } catch (error) {
+    uploaded = nodes.map(node => ({ ok: false, name: node.name, error }));
+  }
+  nodes.forEach((node, index) => {
+    const item = uploaded[index] || { ok: false, name: node.name, error: '取り込み結果を確認できませんでした' };
+    if (item.ok) result.ok += 1;
+    else { result.failed += 1; result.failures.push(item); }
+    progress?.updateOperation?.(result.ok + result.failed);
+  });
+}
+
 async function _folderImportOsNode(node, parentPath, result, progress) {
   if (node.kind === 'folder') {
     try {
       const created = await apiPost('/outliner/add', { type: 'folder', label: node.name, parent: parentPath });
       const childParent = created?.node?.path || [parentPath, created?.node?.label || node.name].filter(Boolean).join('/');
-      for (const child of node.children || []) await _folderImportOsNode(child, childParent, result, progress);
+      const children = node.children || [];
+      await _folderImportOsFiles(children.filter(child => child.kind === 'file'), childParent, result, progress);
+      for (const child of children.filter(item => item.kind === 'folder')) {
+        await _folderImportOsNode(child, childParent, result, progress);
+      }
     } catch (error) {
       const skipped = _folderCountOsDropFiles(node.children || []);
       result.failed += Math.max(1, skipped);
@@ -703,7 +716,10 @@ async function _folderImportOsDrop(event, targetItem) {
   const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
   const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
-    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, boundProgress);
+    await _folderImportOsFiles(nodes.filter(node => node.kind === 'file'), targetItem.path, result, boundProgress);
+    for (const node of nodes.filter(item => item.kind === 'folder')) {
+      await _folderImportOsNode(node, targetItem.path, result, boundProgress);
+    }
   } finally {
     progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }

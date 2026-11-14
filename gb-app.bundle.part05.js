@@ -1,3 +1,10 @@
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', menu.id);
+  }
+  let closed = false;
+  let pointerCloser = null;
+  let keyCloser = null;
+  const closeMenu = (restoreFocus = false) => {
     if (closed) return;
     closed = true;
     if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
@@ -891,10 +898,3 @@ function _viewerFolderNavCurrentFolderFromMessage(msg) {
   const folderPath = _viewerFolderNavCleanPath(msg?.folderPath || '');
   if (folderPath) return folderPath;
   return _viewerFolderNavParentPath(msg?.currentPath || msg?.path || state.currentPagePath || '');
-}
-
-function _viewerFolderNavNodePath(node) {
-  return _viewerFolderNavCleanPath(node?._nodeData?.path || node?.dataset?.path || '');
-}
-
-function _viewerFolderNavPathMatches(nodePath, targetPath) {

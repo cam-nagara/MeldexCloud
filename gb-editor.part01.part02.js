@@ -126,13 +126,24 @@
       if (!currentPath) return;
       const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
       const generation = el._openPageLoadSeq;
-      for (const f of files) {
+      const dropFiles = Array.from(files);
+      showStatus(dropFiles.length > 1 ? `${dropFiles.length}件のファイルを取り込み中…` : 'ファイルを取り込み中…');
+      let uploaded = [];
+      try {
+        uploaded = await MeldexDnD.uploadFiles(dropFiles, dir, { source: 'note-drop', silentError: true });
+      } catch (err) {
+        showStatus('ファイル挿入に失敗: ' + err.message, true);
+        return;
+      }
+      let failed = 0;
+      for (let index = 0; index < dropFiles.length; index += 1) {
         if ((el.dataset.path || el.dataset.entityPath) !== currentPath
             || el._openPageLoadSeq !== generation || !el.isContentEditable) break;
-        try {
-          insertRange = await _insertDroppedFileAtRange(el, insertRange, f, dir);
-        } catch(err) { showStatus('ファイル挿入に失敗: ' + err.message, true); }
+        const result = uploaded[index];
+        if (!result?.ok) { failed += 1; continue; }
+        insertRange = _insertUploadedFileAtRange(el, insertRange, dropFiles[index], result);
       }
+      showStatus(failed ? `${dropFiles.length - failed}件を挿入し、${failed}件は失敗しました` : `${dropFiles.length}件のファイルを挿入しました`, failed === dropFiles.length);
       return;
     }
 

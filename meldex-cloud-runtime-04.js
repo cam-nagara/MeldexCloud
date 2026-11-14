@@ -57980,6 +57980,64 @@ const MeldexDnD = (() => {
     return knownOffer ? !!_offerPayload(knownOffer, kind) : true;
   }
 
+  function _dataTransferList(values) {
+    return Object.assign(Array.from(values || []), {
+      item(index) { return this[index] || null; },
+    });
+  }
+
+  // Native DataTransfer stores are protected again as soon as the drop callback
+  // yields. Copy every value synchronously so async bridge claims and receivers do
+  // not make Explorer/browser drops intermittent.
+  function snapshotDataTransfer(eventOrTransfer) {
+    const transfer = eventOrTransfer?.dataTransfer || eventOrTransfer;
+    if (!transfer) return transfer;
+    const types = Array.from(transfer.types || []);
+    const stringTypes = new Set(types.filter(type => String(type).toLowerCase() !== 'files'));
+    Object.values(KIND_MIME).forEach(type => stringTypes.add(type));
+    ['text/plain', 'text/html', 'text/uri-list', 'text/x-moz-url', 'DownloadURL']
+      .forEach(type => stringTypes.add(type));
+    const strings = {};
+    stringTypes.forEach(type => {
+      try { strings[String(type).toLowerCase()] = transfer.getData(type) || ''; } catch {}
+    });
+    const files = _dataTransferList(transfer.files);
+    const items = _dataTransferList(Array.from(transfer.items || []).map(item => {
+      let file = null;
+      let entry = null;
+      try { if (item.kind === 'file') file = item.getAsFile?.() || null; } catch {}
+      try { if (item.kind === 'file') entry = item.webkitGetAsEntry?.() || null; } catch {}
+      return {
+        kind: item.kind,
+        type: item.type,
+        getAsFile: () => file,
+        webkitGetAsEntry: () => entry,
+        getAsString: callback => callback(strings[String(item.type || '').toLowerCase()] || ''),
+      };
+    }));
+    const snapshot = {
+      types,
+      files,
+      items,
+      effectAllowed: transfer.effectAllowed,
+      getData(type) { return strings[String(type || '').toLowerCase()] || ''; },
+      setData(type, value) {
+        const key = String(type || '').toLowerCase();
+        strings[key] = String(value ?? '');
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      clearData(type) {
+        if (type === undefined) Object.keys(strings).forEach(key => { strings[key] = ''; });
+        else strings[String(type || '').toLowerCase()] = '';
+      },
+    };
+    Object.defineProperty(snapshot, 'dropEffect', {
+      get: () => transfer.dropEffect,
+      set: value => { try { transfer.dropEffect = value; } catch {} },
+    });
+    return snapshot;
+  }
+
   function _parsePayload(raw, kind) {
     try {
       const payload = JSON.parse(raw);
@@ -58228,6 +58286,63 @@ const MeldexDnD = (() => {
     });
   }
 
+  async function _nodeImageFile(item) {
+    const path = String(item?.path || '').trim();
+    const type = inferNodeType(path, item?.type);
+    if (!path || type !== 'image') return null;
+    const base = typeof API_BASE === 'string' ? API_BASE : '';
+    const response = await fetch(base + '/file-raw?path=' + encodeURIComponent(path));
+    if (!response.ok) throw new Error(`画像を読み込めませんでした (${response.status})`);
+    const blob = await response.blob();
+    if (!String(blob.type || '').startsWith('image/') && getMediaType(path.split('.').pop()) !== 'image') {
+      throw new Error('画像以外のファイルは画像欄へ貼り付けられません');
+    }
+    const name = String(item?.name || item?.label || path.split(/[\\/]/).pop() || 'image').trim() || 'image';
+    return new File([blob], name, { type: blob.type || 'application/octet-stream' });
+  }
+
+  // Form image controls also accept Meldex node drags from the folder tree,
+  // folder panel, main panel and subpanel title handles.
+  function installFileInputDropTarget(input) {
+    if (!input || input.type !== 'file' || input.dataset.meldexNodeDropBound === '1') return;
+    input.dataset.meldexNodeDropBound = '1';
+    const host = input.closest('.gb-form-input-row') || input;
+    const setActive = active => host.toggleAttribute('data-meldex-node-drop-active', active);
+    host.addEventListener('dragover', event => {
+      if (!hasDropKind(event, 'node')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'copy';
+      setActive(true);
+    });
+    host.addEventListener('dragleave', event => {
+      if (!host.contains(event.relatedTarget)) setActive(false);
+    });
+    host.addEventListener('drop', async event => {
+      if (!hasDropKind(event, 'node')) return;
+      const transfer = snapshotDataTransfer(event.dataTransfer);
+      event.preventDefault();
+      event.stopPropagation();
+      setActive(false);
+      const resolved = await resolveDropData(transfer, 'node');
+      const payload = resolved?.payload;
+      const items = Array.isArray(payload?.items) && payload.items.length ? payload.items : (payload ? [payload] : []);
+      try {
+        const files = (await Promise.all(items.map(_nodeImageFile))).filter(Boolean);
+        if (!files.length) throw new Error('画像ファイルを画像欄へドロップしてください');
+        const assigned = new DataTransfer();
+        files.forEach(file => assigned.items.add(file));
+        input.files = assigned.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        completeDrop(resolved);
+      } catch (error) {
+        failDrop(resolved);
+        globalThis.showStatus?.(error?.message || '画像をフォームへ貼り付けられませんでした', true);
+      }
+    });
+  }
+
   // --- ファイル種別判定 ---
   const IMAGE_EXTS = ['png','jpg','jpeg','gif','bmp','webp','svg','ico','avif'];
   const VIDEO_EXTS = ['mp4','webm','ogv','mov','avi'];
@@ -58448,10 +58563,97 @@ const MeldexDnD = (() => {
     }
   }
 
+  function directFileUploadSupported() {
+    const cloudMode = String(document.body?.dataset?.cloudMode || '');
+    return !['dropbox', 'browser', 'server'].includes(cloudMode)
+      && !window.MeldexRuntimeAdapter?.isPwaMode?.();
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = event => resolve(String(event.target?.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
+      reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadFileLegacy(file, parentPath, options) {
+    const data = await readFileAsDataUrl(file);
+    const response = await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath || ''), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      silentError: options?.silentError === true,
+      timeoutMs: 300000,
+      body: JSON.stringify({
+        data,
+        filename: file.name || 'file',
+        source: options?.source || 'file-drop',
+        import_batch_id: options?.batchId || '',
+      }),
+    });
+    return response?.ok && response.path
+      ? { ...response, ok: true }
+      : { ok: false, name: file.name || 'file', error: 'ファイルを保存できませんでした' };
+  }
+
+  // Local desktop sends raw multipart bytes.  The legacy data-URL transport is
+  // retained only for Cloud/PWA adapters that do not expose the local endpoint.
+  async function uploadFiles(rawFiles, parentPath, options = {}) {
+    const files = Array.from(rawFiles || []).filter(Boolean);
+    if (!files.length) return [];
+    if (!directFileUploadSupported()) {
+      const results = [];
+      for (const file of files) {
+        try {
+          results.push(await uploadFileLegacy(file, parentPath, options));
+        } catch (error) {
+          results.push({
+            ok: false,
+            name: file.name || 'file',
+            error: error?.userMessage || error?.message || String(error),
+          });
+        }
+      }
+      return results;
+    }
+    const body = new FormData();
+    body.append('path', String(parentPath || ''));
+    body.append('source', String(options.source || 'file-drop'));
+    body.append('import_batch_id', String(options.batchId || ''));
+    files.forEach(file => body.append('files', file, file.name || 'file'));
+    let response;
+    try {
+      response = await apiFetch('/upload-files', {
+        method: 'POST',
+        body,
+        silentError: options.silentError === true,
+        timeoutMs: 300000,
+      });
+    } catch (error) {
+      const message = error?.userMessage || error?.message || String(error);
+      return files.map((file, index) => ({
+        ok: false,
+        index,
+        name: file.name || 'file',
+        error: message,
+      }));
+    }
+    const results = Array.isArray(response?.files) ? response.files : [];
+    return files.map((file, index) => results[index] || {
+      ok: false,
+      index,
+      name: file.name || 'file',
+      error: 'ファイル保存の応答を確認できませんでした',
+    });
+  }
+
   return {
     isPanelDnD,
     beginCrossWindowDrag,
     hasDropKind,
+    snapshotDataTransfer,
     resolveDropData,
     resolveTargetRoute,
     completeDrop,
@@ -58465,6 +58667,7 @@ const MeldexDnD = (() => {
     writeNodePayload,
     installSurfaceDragSource,
     installSurfaceDropTarget,
+    installFileInputDropTarget,
     getMediaType,
     preserveMediaItem,
     resolveOpenType,
@@ -58474,6 +58677,7 @@ const MeldexDnD = (() => {
     getIconForType,
     createAutoLinkHtml,
     insertNodeAtEditableRange,
+    uploadFiles,
     showDropCaret,
     hideDropCaret,
     setCaretFromPoint
@@ -58630,6 +58834,9 @@ const MeldexDnD = (() => {
   // Chromium protects the original store as soon as the drop callback returns.
   // Acquire files, directory entries and strings before any receiver can await.
   function snapshot(transfer) {
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer) {
+      return MeldexDnD.snapshotDataTransfer(transfer);
+    }
     const types = Array.from(transfer?.types || []);
     const strings = Object.fromEntries(types.filter(type => type !== 'Files').map(type => [type.toLowerCase(), transfer.getData(type)]));
     const items = list(Array.from(transfer?.items || []).map(item => {
@@ -58661,7 +58868,8 @@ const MeldexDnD = (() => {
   }
   function routeFor(element) {
     if (!element?.closest) return null;
-    const fileInput = element.closest('input[type="file"]');
+    const fileInput = element.closest('input[type="file"]')
+      || element.closest('.gb-form-input-row')?.querySelector('input[type="file"]');
     if (fileInput) return {kind:'input', target:fileInput};
     if (element.closest('.modal-overlay,[role="dialog"][aria-modal="true"]')) return null;
     const {tab, component, pane, state:local} = componentFor(element);
@@ -61108,6 +61316,7 @@ if (typeof window !== 'undefined') {
     '/production-management/entries',
     '/quick-memo',
     '/upload-file',
+    '/upload-files',
     '/upload-image',
     '/value',
   ];

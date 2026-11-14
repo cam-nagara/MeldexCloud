@@ -522,6 +522,9 @@
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
+      const dropTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer
+        ? MeldexDnD.snapshotDataTransfer(e.dataTransfer)
+        : e.dataTransfer;
       // Capture the indicated position before asynchronous payload resolution or
       // dragend clears the marker. The same geometry drives dragover and drop.
       const position = _outlinerRowDropPosition(e, row, item);
@@ -533,8 +536,8 @@
         const handled = await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
         if (handled > 0) return;
       }
-      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
-      const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(dropTransfer, 'node') : null;
+      const externalItems = _outlinerExternalDragItems({ dataTransfer: dropTransfer }, resolved?.payload).filter(source => {
         const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
         const targetPath = String(target.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
         return source.type !== 'entity' && !source.linked && sourcePath !== String(item.path || '').replace(/\\/g, '/').toLowerCase()
@@ -895,6 +898,3 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
     } finally { _outlinerWarmRunning = false; }
   }, 0);
 }
-
-function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
-  const signature = items => JSON.stringify(items.map(child => [child.path, child.type,

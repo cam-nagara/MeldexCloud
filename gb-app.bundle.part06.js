@@ -1,3 +1,10 @@
+}
+
+function _viewerFolderNavNodePath(node) {
+  return _viewerFolderNavCleanPath(node?._nodeData?.path || node?.dataset?.path || '');
+}
+
+function _viewerFolderNavPathMatches(nodePath, targetPath) {
   if (typeof _outlinerHighlightPathMatches === 'function') return _outlinerHighlightPathMatches(nodePath, targetPath);
   const a = _viewerFolderNavCleanPath(nodePath).toLowerCase();
   const b = _viewerFolderNavCleanPath(targetPath).toLowerCase();
@@ -891,10 +898,3 @@ document.addEventListener('keydown', (e) => {
       m.remove();
     }
   });
-  if (hasDialogMenu) e.stopImmediatePropagation();
-});
-
-// ============================================================
-// 空状態表示
-// ============================================================
-function renderEmptyState(container, icon, message, hint) {

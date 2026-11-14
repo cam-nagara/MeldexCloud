@@ -1,3 +1,6 @@
+// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
   _openOutlinerCreatedNode(nd, name);
 }
@@ -895,6 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     if (active) return;
     active = true;
     if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
-      try {
-        scroller.setPointerCapture(pointerId);
-        pointerCaptured = true;

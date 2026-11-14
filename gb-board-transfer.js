@@ -7,6 +7,7 @@
   const BOARD_MIME = 'application/x-meldex-board-nodes';
   const GRID_COLUMNS = 4;
   const MAX_ITEMS = 100;
+  const MAX_EMBEDDED_BOARD_BYTES = 20 * 1024 * 1024;
   const IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
   const VIDEO_EXT = /\.(?:mp4|m4v|mov|webm|ogv|avi|mkv|wmv|mpg|mpeg)$/i;
   const AUDIO_EXT = /\.(?:mp3|wav|ogg|m4a|flac|aac)$/i;
@@ -435,38 +436,18 @@
     return '';
   }
 
-  async function uploadClipboardFile(file, boardDir, snapshot, imageMode) {
-    const image = isImageFile(file);
-    const dataUrl = await readFileAsDataUrl(file);
-    if (!boardSnapshotIsCurrent(snapshot)) return null;
-    if (image && imageMode === 'embed') {
-      // 過大な画像はダイアログでユーザーに埋め込み/リンクを選ばせる（既定は埋め込み）
-      const choice = typeof global.bdResolveImageEmbedChoice === 'function'
-        ? await global.bdResolveImageEmbedChoice(file.size, file.name)
-        : 'embed';
-      if (!boardSnapshotIsCurrent(snapshot)) return null;
-      if (choice === 'embed') return imageSpec('', file.name || '貼り付けた画像', dataUrl);
-    }
-    try {
-      const response = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        silentError: image && !snapshot.path,
-        body: JSON.stringify({
-          data: dataUrl,
-          filename: file.name || (image ? 'clipboard-image.png' : 'clipboard-file'),
-        }),
-      });
-      if (response?.ok && response.path) {
-        const path = normalizePath(response.path);
-        return image
-          ? imageSpec(path, file.name || filename(path))
-          : linkSpec(path, file.name || filename(path), clipboardFileLinkType(file));
-      }
-    } catch (error) {
-      if (!image) throw error;
-    }
-    return image ? imageSpec('', file.name || '貼り付けた画像', dataUrl) : null;
+  function embeddedBoardBytes() {
+    if (typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return 0;
+    return bd.nodes.reduce((total, node) => {
+      const source = String(node?.img || '');
+      if (!/^data:/i.test(source)) return total;
+      const comma = source.indexOf(',');
+      if (comma < 0) return total;
+      const payload = source.slice(comma + 1);
+      return total + (/;base64,/i.test(source.slice(0, comma + 1))
+        ? Math.ceil(payload.length * 3 / 4)
+        : payload.length);
+    }, 0);
   }
 
   async function cleanupUploads(specs) {
@@ -477,42 +458,70 @@
     )));
   }
 
-  async function mapSettledLimited(items, worker, concurrency) {
-    const results = new Array(items.length);
-    let nextIndex = 0;
-    async function run() {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        try {
-          results[index] = { status: 'fulfilled', value: await worker(items[index], index) };
-        } catch (reason) {
-          results[index] = { status: 'rejected', reason };
-        }
-      }
-    }
-    const runnerCount = Math.min(items.length, Math.max(1, Number(concurrency) || 1));
-    await Promise.all(Array.from({ length: runnerCount }, run));
-    return results;
-  }
-
   async function addFiles(rawFiles, point, options) {
     const files = (Array.isArray(rawFiles) ? rawFiles : Array.from(rawFiles || [])).slice(0, MAX_ITEMS);
     if (!files.length || typeof bd === 'undefined') return [];
     const snapshot = { path: bd.path, openSeq: Number(bd._openSeq) || 0 };
     const boardDir = snapshot.path ? snapshot.path.substring(0, snapshot.path.lastIndexOf('/')) : '';
     const imageMode = typeof bdGetImageDropMode === 'function' ? bdGetImageDropMode() : 'link';
-    const settled = await mapSettledLimited(
-      files,
-      file => uploadClipboardFile(file, boardDir, snapshot, imageMode),
-      3,
-    );
-    const specs = [];
+    const specsByIndex = new Array(files.length);
+    const uploadQueue = [];
+    let embeddedBytes = embeddedBoardBytes();
     let failed = 0;
-    settled.forEach(result => {
-      if (result.status === 'fulfilled' && result.value) specs.push(result.value);
-      else failed += 1;
-    });
+    if (typeof showStatus === 'function') {
+      showStatus(files.length > 1 ? `${files.length}件のファイルを取り込み中…` : 'ファイルを取り込み中…');
+    }
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const image = isImageFile(file);
+      let embed = image && imageMode === 'embed'
+        && embeddedBytes + Math.max(0, Number(file.size) || 0) <= MAX_EMBEDDED_BOARD_BYTES;
+      if (embed && typeof global.bdResolveImageEmbedChoice === 'function') {
+        embed = await global.bdResolveImageEmbedChoice(file.size, file.name) === 'embed';
+      }
+      if (!boardSnapshotIsCurrent(snapshot)) return [];
+      if (embed) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!boardSnapshotIsCurrent(snapshot)) return [];
+          specsByIndex[index] = imageSpec('', file.name || '貼り付けた画像', dataUrl);
+          embeddedBytes += Math.max(0, Number(file.size) || 0);
+        } catch {
+          failed += 1;
+        }
+      } else {
+        uploadQueue.push({ file, index });
+      }
+    }
+    if (uploadQueue.length) {
+      const dnd = typeof MeldexDnD !== 'undefined' ? MeldexDnD : global.MeldexDnD;
+      if (typeof dnd?.uploadFiles !== 'function') {
+        failed += uploadQueue.length;
+      } else {
+        let uploaded = [];
+        try {
+          uploaded = await dnd.uploadFiles(
+            uploadQueue.map(item => item.file),
+            boardDir,
+            { source: 'board-drop', silentError: true },
+          );
+        } catch (error) {
+          console.error('[board-transfer] file upload failed:', error);
+        }
+        uploadQueue.forEach((item, resultIndex) => {
+          const response = uploaded[resultIndex];
+          if (!response?.ok || !response.path) {
+            failed += 1;
+            return;
+          }
+          const path = normalizePath(response.path);
+          specsByIndex[item.index] = isImageFile(item.file)
+            ? imageSpec(path, item.file.name || filename(path))
+            : linkSpec(path, item.file.name || filename(path), clipboardFileLinkType(item.file));
+        });
+      }
+    }
+    const specs = specsByIndex.filter(Boolean);
     if (!boardSnapshotIsCurrent(snapshot)) {
       await cleanupUploads(specs);
       if (typeof showStatus === 'function') {

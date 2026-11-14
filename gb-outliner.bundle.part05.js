@@ -1,3 +1,6 @@
+      loadOutliner();
+    } else if (result.succeeded.length) {
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
     } else if (result.skipped.length) {
       showStatus('削除対象が見つからなかったため、表示を更新しました', true);
       loadOutliner();
@@ -894,7 +897,3 @@ function _outlinerApplyCreateSuccess(pendingNode, found, options) {
   pendingNode.replaceWith(newNode);
   _selectOutlinerCreateNode(newNode);
 }
-
-// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
-  if (pendingNode && pendingNode.parentNode) pendingNode.remove();

@@ -25,7 +25,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
   'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails', 'topicRefs',
-  'topicViewDocument',
+  'topicViewDocument', 'nodes',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -308,9 +308,11 @@ function bdYamlListObjects(fm, key) {
 
 // 旧式ボード互換: フロントマター直下に `nodes:` をカード配列（各要素が
 // id/text/x/y/w/h/color 等をフラットに持つ、YAML block style のリスト）として
-// 直接持つスキーマの読み取り専用パーサ。現行の positions/sizes マップ方式や
-// 本文見出し方式とは別の並存フォーマット（例: 同梱サンプル
-// 「死霊探偵/キャラ相関図.board.md」）向け。
+// 直接持つスキーマの互換パーサ。現行の positions/sizes マップ方式や
+// 本文見出し方式とは別の旧フォーマット（例: 旧同梱サンプル）向け。
+// `nodes` は管理対象キーとして保存時に旧ブロックを残さず、読み込んだ全カードを
+// 現行形式へ正規化する。旧ブロックを残すと次回読込で現行本文より優先され、
+// 追加・編集したカードが消えたように見えるためである。
 //
 // bdYamlListObjects は各プロパティが1行で完結する前提（`from: n1, to: n2` 等の
 // フロー形式や単一行スカラー）のため、この関数はそれとは別に、複数行にまたがる
