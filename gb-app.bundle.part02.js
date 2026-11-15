@@ -1,3 +1,6 @@
+          }
+        }
+        // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 各タブの navHistory も追随させる
         if (Array.isArray(tab.navHistory)) {
           tab.navHistory.forEach(entry => {
             if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
@@ -105,6 +108,7 @@ function purgeAppPathReferences(paths) {
   let legacyTabsChanged = false;
   let clearedCurrentView = false;
   _cancelDeletedPathAutosaves(deletedPaths);
+  if (typeof stopAutoVersionsForPaths === 'function') stopAutoVersionsForPaths(deletedPaths);
   const activePathKey = {
     pivot: 'currentDbPath',
     gallery: 'currentDbPath',
@@ -894,7 +898,3 @@ navPush = function(entry, paneId) {
           activeTab.type = type;
           activeTab.path = path;
           activeTab.icon = _tabIcon(type);
-          renderTabs();
-        } else {
-          const id = 'tab-' + (++_tabIdCounter);
-          _tabs.push({ id, label: label || '(無題)', type, path, icon: _tabIcon(type) });

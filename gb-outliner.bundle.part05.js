@@ -1,3 +1,85 @@
+  const openSeq = ++_outlinerContextMenuOpenSeq;
+  const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
+
+  const selectedCount = treeSelection.items.size;
+  const isMulti = selectedCount > 1;
+  const isFolder = nodeData.type === 'folder';
+  const isDB = nodeData.type === 'database';
+  const isEntity = nodeData.type === 'entity';
+
+  function addMenuItem(text, onclick, cls, icon, targetMenu = menu) {
+    return _outlinerAppendMenuItem(targetMenu, {
+      label: text,
+      icon,
+      danger: cls === 'danger',
+      className: cls && cls !== 'danger' ? cls : '',
+      action: onclick,
+    });
+  }
+  function addSep() {
+    _outlinerAppendMenuSeparator(menu);
+  }
+
+  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
+  const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
+    .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
+  const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
+  const deleteContextItems = async () => {
+    closeTreeContextMenu();
+    const targets = treeSelection.getNodeData().filter(item => {
+      if (item.type === 'entity' || item._isRoot) return false;
+      return item.path && !isItemLocked(item.path);
+    });
+    if (!targets.length) {
+      showStatus('削除できる項目がありません', true);
+      return;
+    }
+    // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+    // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
+    // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
+    // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
+    const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+      ? await handleDisplayedFolderLinkDelete(targets, '', {
+        refresh: async () => {
+          if (typeof loadOutliner === 'function') await loadOutliner();
+          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+        },
+      })
+      : { handled: false, result: null };
+    if (linkedDelete.handled) {
+      if (linkedDelete.result) treeSelection.clear();
+      return;
+    }
+    const names = targets.map(item => item.name).join('、');
+    const impactTargets = targets.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
+    if (!confirmed) return;
+    treeSelection.clear();
+    const result = await deleteOutlinerItemsWithHistory(targets, {
+      confirmation: confirmed,
+      label: targets.length + ' 件を削除',
+      detail: names,
+      onItemDeleted: (item) => {
+        _removeOutlinerNodesForPaths([item.path]);
+      },
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    _removeOutlinerNodesForPaths(result.deletedPaths);
+    if (result.failedCount) {
+      const reason = result.failed?.[0]?.error;
+      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
       loadOutliner();
     } else if (result.succeeded.length) {
       showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
@@ -624,13 +706,6 @@
     addSep();
   }
 
-  // --- 削除（エントリ以外、ロック中は無効） ---
-  if (!isEntity && !_locked && !nodeData._isRoot) {
-    addSep();
-    const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
-    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
-  }
-
   // --- スプリットビュー ---
   if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
     addSep();
@@ -641,12 +716,13 @@
     }
   }
 
-  _outlinerPlaceContextMenu(menu);
-
-  // OSシェルメニュー項目を非同期追加
+  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
+  // 表示後に項目数やポップアップ座標を変えない。
   if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked });
+    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
   }
+  if (openSeq !== _outlinerContextMenuOpenSeq) return;
+  _outlinerPlaceContextMenu(menu);
 }
 
 // 追加先の親パスを決定
@@ -822,78 +898,3 @@ function _selectOutlinerCreateNode(newNode) {
 
 function _createOutlinerPendingCreateNode(type, label) {
   const item = {
-    name: label || '無題',
-    type,
-    path: '__meldex_pending_create_' + Date.now() + '_' + Math.random().toString(36).slice(2),
-    _pendingCreate: true,
-  };
-  const node = createTreeNodeFromBrowse(item);
-  node.classList.add('tree-node-pending-create');
-  const row = node.querySelector(':scope > .tree-node-row');
-  const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
-  if (row) {
-    row.draggable = false;
-    row.style.opacity = '0.62';
-    row.style.fontStyle = 'italic';
-  }
-  if (labelEl) labelEl.textContent = (label || '無題') + '（作成中）';
-  const block = (e) => { e.preventDefault(); e.stopPropagation(); };
-  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(eventName => {
-    node.addEventListener(eventName, block, true);
-  });
-  return node;
-}
-
-function _openOutlinerCreatedNode(nd, name) {
-  const _expOpts = { fromExplorer: true };
-  if (nd.type === 'page') openPage(name, nd.path, _expOpts);
-  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
-  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
-  else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
-  else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
-    if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
-  }
-  else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
-  else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
-  else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
-}
-
-function _outlinerCreateItemIdentity(type, name) {
-  const normalizedType = String(type || '').trim();
-  const normalizedName = String(name || '').trim();
-  return normalizedType && normalizedName ? `${normalizedType}\n${normalizedName}` : '';
-}
-
-// 追加API呼び出し前の既存子ノード識別子（事後確認での新規判定に使用）。
-// 「無題」のような同名項目は種類をまたいで共存できるため、名前だけでは比較しない。
-function _outlinerSnapshotChildNames(container) {
-  const names = new Set();
-  container.querySelectorAll(':scope > .tree-node').forEach(node => {
-    const d = node._nodeData;
-    const identity = d && !d._pendingCreate
-      ? _outlinerCreateItemIdentity(d.type, d.name)
-      : '';
-    if (identity) names.add(identity);
-  });
-  return names;
-}
-
-// 一覧からタイプが一致し事前集合に無い項目を探す（作成の事後確認用）。
-// 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
-function _outlinerFindNewItemInListing(items, type, existingNames) {
-  if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
-  return items.find(it => {
-    if (!it || it.type !== type || !it.name) return false;
-    const identity = _outlinerCreateItemIdentity(it.type, it.name);
-    return identity && !existingNames.has(identity);
-  }) || null;
-}
-
-// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found, options) {
-  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
-  if (!pendingNode || !pendingNode.parentNode) return;
-  const newNode = createTreeNodeFromBrowse(found);
-  pendingNode.replaceWith(newNode);
-  _selectOutlinerCreateNode(newNode);
-}

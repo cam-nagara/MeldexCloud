@@ -3,6 +3,36 @@
  * ページ/エントリ編集、リッチテキスト、マークダウン変換、自動リンク、検索
  */
 
+// Markdownの空本文も描画後は<div></div>等になるため、CSSの:emptyだけでは
+// 新規ノートを空と判定できない。メイン・サブパネル・単独版で同じ判定を共有する。
+function _noteEditorHasVisibleContent(root) {
+  if (!root) return false;
+  const doc = root.ownerDocument || document;
+  const showText = doc.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+  const walker = doc.createTreeWalker(root, showText);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = String(node.nodeValue || '')
+      .replace(/[\u00a0\u200b-\u200d\u2060\ufeff]/g, '')
+      .trim();
+    if (text) return true;
+  }
+  return !!root.querySelector?.([
+    'img', 'video', 'audio', 'iframe', 'object', 'canvas', 'svg',
+    'table', 'hr', 'input', 'textarea', 'select',
+    '.embed-media', '[data-note-embed]', '[data-meldex-embed]',
+  ].join(','));
+}
+
+function _syncNoteEmptyPrompt(root) {
+  if (!root) return false;
+  const isEmpty = !_noteEditorHasVisibleContent(root);
+  root.dataset.noteEmpty = isEmpty ? 'true' : 'false';
+  return isEmpty;
+}
+
+window.MeldexNoteEmptyPrompt = window.MeldexNoteEmptyPrompt || {};
+window.MeldexNoteEmptyPrompt.sync = _syncNoteEmptyPrompt;
+
 // ページタイトルのインライン編集
 // ページタイトル — contenteditableのblurでリネーム
 let _pageTitleOld = '';
@@ -553,6 +583,7 @@ function _restoreNoteReloadSnapshot(pc, path, snapshot) {
   if (!snapshot || !pc || pc.dataset.path !== path) return false;
   window.MeldexNoteEmbedBlock?.disposeWithin?.(pc);
   pc.innerHTML = mdToHtml(snapshot.bodyMarkdown, { basePath: path });
+  window.MeldexNoteEmptyPrompt?.sync?.(pc);
   window.MeldexNoteEmbedBlock?.hydrate?.(pc, snapshot.markdown);
   pc.dataset.frontmatter = snapshot.frontmatter;
   pc.dataset.lastSavedMd = snapshot.lastSavedMd;
@@ -909,6 +940,7 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
       } else {
         pc.innerHTML = applyAutoLinks(html, path, { force: true });
       }
+      window.MeldexNoteEmptyPrompt?.sync?.(pc);
       window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
     if (commentsEnabled && typeof CommentBadges !== 'undefined') {
@@ -1093,6 +1125,7 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexNoteEmptyPrompt?.sync?.(pc);
     window.MeldexNoteToolbarBlockSelect?.syncTriggerLabel?.();
     window.MeldexNoteEmbedBlock?.hydrate?.(pc, raw);
     window.MeldexImageLoading?.trackAll?.(pc);
@@ -1105,6 +1138,7 @@ async function openPage(label, path, opts) {
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
   } catch (e) {
     pc.innerHTML = '<span style="color:var(--fg2)">(ノートを読み込めませんでした)</span>';
+    window.MeldexNoteEmptyPrompt?.sync?.(pc);
     pc.dataset.frontmatter = '';
     pc.dataset.lastSavedMd = '';
     pc.dataset.loadFailed = '1';
@@ -1225,9 +1259,12 @@ async function openPage(label, path, opts) {
     const _toc = document.getElementById('note-toc');
     const _tocBtn = document.getElementById('btn-toc-toggle');
     const _fmToc = _getFrontmatterToc();
-    // ファイル指定 > グローバル設定
-    const _showToc = _fmToc !== undefined ? _fmToc
-                   : localStorage.getItem('note-toc-visible') === '1';
+    const _tocPreferences = _noteTocCurrentPreferences();
+    // 利用者がこのファイルで切り替えた状態 > frontmatter指定 > 既定非表示。
+    // 旧グローバル設定は移行時に最初の1ファイルへだけ取り込まれる。
+    const _showToc = typeof _tocPreferences.visible === 'boolean'
+      ? _tocPreferences.visible
+      : (_fmToc !== undefined ? _fmToc : false);
     if (_showToc) {
       if (_toc) _toc.style.display = '';
       if (_tocBtn) _tocBtn.classList.add('active');
@@ -1266,14 +1303,83 @@ function toggleNoteVertical() {
 }
 
 const NOTE_TOC_WIDTH_KEY = 'note-toc-width';
+const NOTE_TOC_FILE_STATE_KEY = 'meldex-note-toc-file-state-v1';
+const NOTE_TOC_FILE_STATE_LIMIT = 500;
 // 縦書きでは目次を本文の上に出すため、調整するのは幅ではなく高さになる。
 // 200px は幅として妥当でも高さとしては大きすぎるので、保存先を分けて
 // 組方向を切り替えるたびに片方が壊れないようにする（横書き側は既存のまま）。
 const NOTE_TOC_HEIGHT_KEY = 'note-toc-height';
 const NOTE_TOC_SIZE_LIMITS = {
-  horizontal: { key: NOTE_TOC_WIDTH_KEY, def: 200, min: 140, max: 420 },
-  vertical: { key: NOTE_TOC_HEIGHT_KEY, def: 160, min: 80, max: 360 },
+  horizontal: { key: NOTE_TOC_WIDTH_KEY, field: 'width', def: 200, min: 140, max: 420 },
+  vertical: { key: NOTE_TOC_HEIGHT_KEY, field: 'height', def: 160, min: 80, max: 360 },
 };
+
+function _noteTocFileIdentity() {
+  const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+  const identity = pc?.dataset?.documentKey || pc?.dataset?.assetId || pc?.dataset?.path
+    || (typeof state !== 'undefined' ? state.currentPagePath : '');
+  return String(identity || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function _readNoteTocFileState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTE_TOC_FILE_STATE_KEY) || 'null');
+    if (parsed && parsed.version === 1 && parsed.files && typeof parsed.files === 'object') return parsed;
+  } catch (_) {}
+  return { version: 1, legacyMigrated: false, files: {} };
+}
+
+function _writeNoteTocFileState(store) {
+  try { localStorage.setItem(NOTE_TOC_FILE_STATE_KEY, JSON.stringify(store)); } catch (_) {}
+}
+
+function _noteTocCurrentPreferences() {
+  const identity = _noteTocFileIdentity();
+  if (!identity) return {};
+  const store = _readNoteTocFileState();
+  let entry = store.files[identity];
+  if (!entry) {
+    entry = {};
+    // 旧版のアプリ全体設定は、アップグレード後に最初に開いた文書へだけ移す。
+    // 以後の新規文書へ同じ値を複製すると、再び実質的な全体設定になるため行わない。
+    if (!store.legacyMigrated) {
+      const legacyVisible = localStorage.getItem('note-toc-visible');
+      const legacyWidth = parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '', 10);
+      const legacyHeight = parseInt(localStorage.getItem(NOTE_TOC_HEIGHT_KEY) || '', 10);
+      if (legacyVisible !== null) entry.visible = legacyVisible === '1';
+      if (Number.isFinite(legacyWidth)) entry.width = legacyWidth;
+      if (Number.isFinite(legacyHeight)) entry.height = legacyHeight;
+      store.legacyMigrated = true;
+    }
+    store.files[identity] = entry;
+    _writeNoteTocFileState(store);
+  }
+  return { ...entry };
+}
+
+function _updateNoteTocCurrentPreferences(values) {
+  const identity = _noteTocFileIdentity();
+  if (!identity) return {};
+  const store = _readNoteTocFileState();
+  const entry = { ...(store.files[identity] || {}), ...(values || {}), updatedAt: Date.now() };
+  store.version = 1;
+  store.legacyMigrated = true;
+  store.files[identity] = entry;
+  const identities = Object.keys(store.files);
+  if (identities.length > NOTE_TOC_FILE_STATE_LIMIT) {
+    identities.sort((a, b) => Number(store.files[b]?.updatedAt || 0) - Number(store.files[a]?.updatedAt || 0));
+    identities.slice(NOTE_TOC_FILE_STATE_LIMIT).forEach(key => { delete store.files[key]; });
+  }
+  _writeNoteTocFileState(store);
+  return { ...entry };
+}
+
+window.MeldexNoteTocPreferences = Object.freeze({
+  storageKey: NOTE_TOC_FILE_STATE_KEY,
+  identity: _noteTocFileIdentity,
+  getCurrent: _noteTocCurrentPreferences,
+  updateCurrent: _updateNoteTocCurrentPreferences,
+});
 
 function _noteTocIsVertical() {
   return typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isActive();
@@ -1284,7 +1390,8 @@ function _noteTocSizeSpec() {
 }
 
 function _noteTocSavedSize(spec) {
-  return parseInt(localStorage.getItem(spec.key) || String(spec.def), 10) || spec.def;
+  const saved = Number(_noteTocCurrentPreferences()[spec.field]);
+  return Number.isFinite(saved) ? Math.max(spec.min, Math.min(spec.max, saved)) : spec.def;
 }
 
 function _applyNoteTocSize(toc, size, vertical) {
@@ -1327,7 +1434,7 @@ function initNoteTocResize(root = document) {
     const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
     const next = Math.max(spec.min, Math.min(spec.max, Math.round(size)));
     _applyNoteTocSize(toc, next, vertical);
-    localStorage.setItem(spec.key, String(next));
+    _updateNoteTocCurrentPreferences({ [spec.field]: next });
     return next;
   };
   const currentSize = () => {
@@ -1388,6 +1495,15 @@ function initNoteTocResize(root = document) {
 // （ボードのリンクカード計画 Phase B-2: サブパネル専用ノートDOMにも同じ配線を行う）。
 function _wireNoteEditableElement(pc) {
   if (!pc) return;
+  pc.addEventListener('input', function(event) {
+    const inputType = String(event.inputType || '');
+    // 通常の追加入力で非空状態が空へ戻ることはないため、大きいノートの全文走査を避ける。
+    if (this.dataset.noteEmpty !== 'false' || !inputType
+        || inputType.startsWith('delete') || inputType.startsWith('history')) {
+      _syncNoteEmptyPrompt(this);
+    }
+  });
+  _syncNoteEmptyPrompt(pc);
   // 縦書きモード: マウスホイールで横スクロール
   pc.addEventListener('wheel', function(e) {
     if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
@@ -1638,14 +1754,13 @@ function _wireNotePasteHandler(pc) {
   const cd = e.clipboardData;
   if (!cd) return;
 
-  // 画像・動画が含まれている場合 → アップロードして埋め込み
-  // （旧実装は画像だけを見ており、動画の貼り付けはドロップと挙動が食い違っていた）
-  const mediaFile = [...cd.files].find(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
-  if (mediaFile) {
+  // OS由来のファイルが含まれている場合は、形式を限定せず汎用保管庫へ保存して挿入する。
+  const pastedFile = [...cd.files][0];
+  if (pastedFile) {
     if (this.dataset.standaloneFileInput === '1') return;
     e.preventDefault();
     const editor = this;
-    const isVideo = mediaFile.type.startsWith('video/');
+    const isVideo = pastedFile.type.startsWith('video/');
     const pasteRange = _captureEditableSelection(editor);
     const currentPath = editor.dataset.path || state.currentPagePath;
     const generation = editor._openPageLoadSeq;
@@ -1655,16 +1770,14 @@ function _wireNotePasteHandler(pc) {
     const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
     try {
       if (!isCurrent()) return;
-      const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
-      const uploadFile = mediaFile.name ? mediaFile : new File([mediaFile], fname, { type: mediaFile.type });
+      const isImage = pastedFile.type.startsWith('image/');
+      const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
+      const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
       const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
       if (res?.ok && res.path && isCurrent()) {
-        const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-        const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
-        _insertEmbeddedMediaHtml(editor, pasteRange,
-          _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
+        _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
       }
-    } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
+    } catch (err) { showStatus('ファイルの貼り付けに失敗', true); }
     return;
   }
 
@@ -1710,6 +1823,9 @@ function _prepareEmbeddedMediaForControls(media) {
   if (!media) return;
   if (!media.hasAttribute('tabindex')) media.tabIndex = 0;
   if (!media.hasAttribute('role')) media.setAttribute('role', 'group');
+  // 子要素のネイティブ画像ドラッグではなく、保存情報を持つラッパーを移動する。
+  media.draggable = true;
+  media.querySelectorAll?.('img, video')?.forEach((item) => { item.draggable = false; });
   if (!media.hasAttribute('aria-label')) {
     media.setAttribute('aria-label', media.dataset.name ? `埋め込みメディア: ${media.dataset.name}` : '埋め込みメディア');
   }
@@ -1740,6 +1856,8 @@ function _prepareEmbeddedMediaControls(root) {
     document.body.appendChild(h);
     resizeHandles[corner] = h;
   }
+  // 旧位置計算が付けたpopup用クラスの幅制約を引き継がない。
+  Object.values(resizeHandles).forEach((h) => h.classList.remove('gb-popup-surface'));
   const eachResizeHandle = (fn) => MEDIA_RESIZE_CORNERS.forEach((c) => fn(resizeHandles[c], c));
 
   controls.setAttribute('aria-hidden', 'true');
@@ -1891,7 +2009,7 @@ function _prepareEmbeddedMediaControls(root) {
   });
 
   // 削除ボタン
-  controls.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+  controls.querySelector('[data-media-action="delete"]').addEventListener('click', async () => {
     const media = _activeMedia;
     if (!media) return;
     // remove()/_hideMediaControls() の前に持ち主を確定させる（後では_activeMediaが
@@ -1990,11 +2108,13 @@ function _positionMediaControls(media) {
       ? document.getElementById('media-resize-handle')
       : document.getElementById('media-resize-handle-' + corner);
     if (!h) return;
-    const half = (h.offsetWidth || 14) / 2;
+    // hidden中はoffsetWidth=0、visible後は実寸になるため、旧実装は再クリック時に
+    // 中心がずれていた。表示状態に依存しないCSS寸法で中心を固定する。
+    h.classList.remove('gb-popup-surface');
+    const half = (parseFloat(getComputedStyle(h).width) || 14) / 2;
     h.style.left = (x / z - half) + 'px';
     h.style.top = (y / z - half) + 'px';
     h.classList.add('visible');
-    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(h);
   });
   // 現在のアラインメントを反映（旧ノートの物理マージンも読めるようにする）
   const ms = media.style;
@@ -2005,6 +2125,53 @@ function _positionMediaControls(media) {
   if (isZero(start)) controls.querySelector('[data-align="left"]')?.classList.add('active');
   else if (isZero(end)) controls.querySelector('[data-align="right"]')?.classList.add('active');
   else controls.querySelector('[data-align="center"]')?.classList.add('active');
+}
+
+const NOTE_EMBEDDED_MEDIA_MIME = 'application/x-meldex-note-media';
+let _draggedEmbeddedMedia = null;
+
+function _topLevelEditableChild(editable, node) {
+  let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  while (current?.parentElement && current.parentElement !== editable) current = current.parentElement;
+  return current?.parentElement === editable ? current : null;
+}
+
+function _embeddedMediaDropBefore(editable, block, event) {
+  const rect = block?.getBoundingClientRect?.();
+  if (!rect) return true;
+  let writingMode = '';
+  try { writingMode = getComputedStyle(editable).writingMode || ''; } catch (_) { /* horizontal fallback */ }
+  if (writingMode.startsWith('vertical')) {
+    const midpoint = rect.left + rect.width / 2;
+    return writingMode === 'vertical-lr' ? event.clientX < midpoint : event.clientX > midpoint;
+  }
+  return event.clientY < rect.top + rect.height / 2;
+}
+
+function _moveEmbeddedMediaAtDrop(editable, media, event, range) {
+  if (!editable || !media?.isConnected || !editable.isContentEditable) return false;
+  const sourceEditor = media.closest?.('[contenteditable="true"]');
+  if (!sourceEditor) return false;
+  const sourceParent = media.parentElement;
+  const eventBlock = _topLevelEditableChild(editable, event.target);
+  const rangeNode = range?.startContainer || range?.commonAncestorContainer;
+  const block = eventBlock || _topLevelEditableChild(editable, rangeNode);
+  if (block) {
+    const sourceBlock = _topLevelEditableChild(sourceEditor, media);
+    if (block === media || block === sourceBlock) return false;
+    editable.insertBefore(media, _embeddedMediaDropBefore(editable, block, event) ? block : block.nextSibling);
+  } else {
+    editable.appendChild(media);
+  }
+  // 旧Markdown由来の空行ラッパーだけを掃除し、文字を持つ行は残す。
+  if (sourceParent && sourceParent !== sourceEditor && sourceParent.isConnected
+      && !sourceParent.textContent?.trim() && !sourceParent.querySelector('img,video,audio,.embed-media')) {
+    sourceParent.remove();
+  }
+  _prepareEmbeddedMediaForControls(media);
+  sourceEditor.dispatchEvent(new Event('input', { bubbles: true }));
+  if (editable !== sourceEditor) editable.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
 }
 
 // 埋め込みメディアのダブルクリックでビューワーを開く
@@ -2039,4 +2206,5 @@ function setupEditableDropHandler(el) {
 
     e.preventDefault();
     e.stopPropagation();
+    if (types.includes(NOTE_EMBEDDED_MEDIA_MIME)) e.dataTransfer.dropEffect = 'move';
     // キャレット位置にドロップラインを表示

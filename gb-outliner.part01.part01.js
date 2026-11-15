@@ -762,6 +762,31 @@ function _getVisibleTreeNodes(scopeSelector) {
 }
 
 // 複数選択管理
+// 「現在選択中」の色は、ツリー本体と最近使った項目／お気に入りを横断して一つだけにする。
+// data-active-workspace は接続先を表す別状態なので、ここでは変更しない。
+function clearSidebarShortcutSelection() {
+  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
+    .forEach(el => el.classList.remove('selected'));
+  window._meldexSidebarShortcutSelectionPath = '';
+}
+
+function clearTreeVisibleSelection() {
+  if (typeof treeSelection !== 'undefined') treeSelection.clear();
+  document.querySelectorAll('.tree-node-row.active').forEach(row => row.classList.remove('active'));
+}
+
+function beginTreeVisibleSelection(options) {
+  clearSidebarShortcutSelection();
+  // Ctrl/Meta/Shift はツリー内の複数選択を保つため、ツリー選択そのものは呼出元へ任せる。
+  if (!options?.preserveTreeSelection) clearTreeVisibleSelection();
+}
+
+window.MeldexVisibleSelection = Object.freeze({
+  clearShortcuts: clearSidebarShortcutSelection,
+  clearTree: clearTreeVisibleSelection,
+  beginTree: beginTreeVisibleSelection,
+});
+
 const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
   _lastClicked: null,
@@ -974,7 +999,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
     return 0;
   }
   const progress = window.MeldexImportProgress;
-  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
   let processed = 0;
   let succeeded = 0;
   const failures = [];
@@ -1045,6 +1070,21 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } else {
     showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
+  window.MeldexFileMoveHistory?.register?.(
+    movedItems.map(item => ({
+      oldPath: item.oldPath,
+      newPath: item.path,
+      currentPath: item.path,
+      name: item.name,
+      type: item.type,
+      fileId: item.file_id || item.fileId,
+    })),
+    {
+      label: `フォルダツリー: ${succeeded} 件を移動`,
+      detail: `→ ${targetPath}`,
+      refresh: () => refreshOutliner({ force: true, reason: 'outliner-move-history' }),
+    },
+  );
   return succeeded;
 }
 

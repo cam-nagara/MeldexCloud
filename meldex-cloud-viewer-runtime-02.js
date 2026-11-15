@@ -14410,7 +14410,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         throw new Error('Cloud画像identity aftercareが読み込まれていません');
       }
       const drainedIdentity = await imageAftercare.drainPrepared(provider);
-      const targetDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const embeddedSources = new Set([
+        'note-drop', 'note-paste', 'note-standalone-drop',
+        'board-drop', 'board-background', 'board-image-link', 'callout-icon',
+      ]);
+      const requestedDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const targetDir = embeddedSources.has(String(body?.source || '')) ? 'Meldexファイル' : requestedDir;
+      if (targetDir === 'Meldexファイル') await _directoryHandle(provider, targetDir, true);
       const rawName = String(body?.filename || body?.name || 'file').split(/[\\/]/).pop();
       const fileName = _validateItemName(rawName || 'file', 'filename');
       const split = _splitNameAndExt(fileName);
@@ -16309,6 +16315,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   const CLOUD_VIDEO_THUMBNAIL_EXTENSIONS = new Set([
     'mp4', 'm4v', 'mov', 'webm', 'ogv', 'avi', 'mkv', 'wmv', 'mpg', 'mpeg',
   ]);
+  const CLOUD_VIDEO_LOAD_TIMEOUT_MS = 60000;
+  const CLOUD_VIDEO_SEEK_TIMEOUT_MS = 30000;
   const cloudVideoThumbnailCache = new Map();
 
   function _isCloudVideoPath(path) {
@@ -16350,14 +16358,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     video.playsInline = true;
     video.preload = 'auto';
     try {
-      const loaded = _waitForVideoEvent(video, 'loadeddata', 15000);
+      const loaded = _waitForVideoEvent(video, 'loadeddata', CLOUD_VIDEO_LOAD_TIMEOUT_MS);
       video.src = objectUrl;
       video.load();
       await loaded;
 
       const duration = Number(video.duration);
       if (Number.isFinite(duration) && duration > 0.5) {
-        const seeked = _waitForVideoEvent(video, 'seeked', 8000);
+        const seeked = _waitForVideoEvent(video, 'seeked', CLOUD_VIDEO_SEEK_TIMEOUT_MS);
         video.currentTime = Math.min(1, duration * 0.1);
         await seeked;
       }
@@ -16418,13 +16426,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const clean = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     // Desktop Web Clipper also records its legacy _assets files relative to
     // the home folder, rather than the Dropbox source root.
-    if (!clean.startsWith('_media/') && !/(^|\/)_assets\//.test(clean)) return [clean];
+    const legacyAttachment = clean.startsWith('Meldex画像/');
+    const embeddedAttachment = clean.startsWith('Meldexファイル/');
+    if (!clean.startsWith('_media/') && !/(^|\/)_assets\//.test(clean)
+        && !legacyAttachment && !embeddedAttachment) return [clean];
     if (window.MeldexSourceFolderRegistry?.parseSourcePath?.(clean)) return [clean];
     const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!home) return [clean];
-    if (clean === home || clean.startsWith(home + '/')) return [clean];
-    const homeRelative = `${home}/${clean}`;
-    return homeRelative === clean ? [clean] : [homeRelative, clean];
+    const paths = [];
+    const add = path => { if (path && !paths.includes(path)) paths.push(path); };
+    if (!home || clean === home || clean.startsWith(home + '/')) add(clean);
+    else { add(`${home}/${clean}`); add(clean); }
+    // Desktopで旧保管庫が改名済みでも、保存済みの旧参照をCloudで読めるようにする。
+    if (legacyAttachment) {
+      const migrated = 'Meldexファイル/' + clean.slice('Meldex画像/'.length);
+      if (home) add(`${home}/${migrated}`);
+      add(migrated);
+    }
+    return paths;
   }
 
   async function _downloadMediaFile(provider, relativePath) {
@@ -17774,9 +17792,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 // ============================================================
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
-const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// Dropbox/NASを含む全画面で同じ通信契約を使う。通常読取・更新・長時間処理を
+// 分け、サーバー側で継続中の処理を15秒で失敗扱いにしない。
+const API_FETCH_TIMEOUT_MS = 60000;
+const API_FETCH_MUTATION_TIMEOUT_MS = 120000;
 const API_FETCH_MAX_TIMEOUT_MS = 330000;
-// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの15秒で中断すると、
+// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの読取上限で中断すると、
 // 選択済みのパスを受け取れず再入力を要求するため、サーバー待機上限より長く保つ。
 const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/pick-folder', 135000],
@@ -17802,15 +17823,46 @@ const API_FETCH_STORAGE_WRITES = [
   '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
   '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
 ];
+const API_FETCH_MAINTENANCE_TIMEOUT_MS = 300000;
+const API_FETCH_MAINTENANCE_SEGMENT_RE = /(?:^|[\/-])(?:rebuild|reindex|rescan|scan|repair|migrat(?:e|ion)|gc|import|export|backup|restore|archive|compress|extract|convert|generate|install|upgrade|recalculate|resolve|enrich|cleanup|purge|compact|batch|refresh|retry|apply|upload|download)(?:$|[\/-])/i;
+const API_FETCH_MUTATING_SYNC_SEGMENT_RE = /(?:^|[\/-])sync(?:$|[\/-])/i;
+function _apiFetchIsMaintenanceOperation(path, options = {}) {
+  const rawPath = String(path || '');
+  const pathname = rawPath.split('?')[0].replace(/^\/api(?=\/)/, '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (API_FETCH_MAINTENANCE_SEGMENT_RE.test(pathname)) return true;
+  if (method !== 'GET' && API_FETCH_MUTATING_SYNC_SEGMENT_RE.test(pathname)) return true;
+  try {
+    const params = new URL(rawPath, 'http://meldex.local').searchParams;
+    const enabled = key => ['1', 'true', 'yes'].includes(String(params.get(key) || '').toLowerCase());
+    return method === 'GET' && (
+      enabled('refresh') || enabled('full_scan') || enabled('rescan')
+      || enabled('rebuild') || enabled('reindex')
+    );
+  } catch {
+    return false;
+  }
+}
 function _apiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
   // 本体と同じく、フォルダ移動後のDB・参照・タグ更新を待つ。
   if (API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 保管庫全体の再構築・走査・修復・移行・同期は、通常APIの15秒で中断しない。
+  if (_apiFetchIsMaintenanceOperation(path, options)) return API_FETCH_MAINTENANCE_TIMEOUT_MS;
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
       && API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
-  return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
+  // 文書・シート内の参照一覧は、Dropbox/NAS上の多数ファイルを確認する読取なので、
+  // 通常読取ではなくフォルダ列挙と同じ上限で完了を待つ。
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)
+      || pathname.startsWith('/contained-files')) return 300000;
+  if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
+      && ['/pivot', '/db-metadata', '/value'].includes(pathname)) return 120000;
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    return API_FETCH_MUTATION_TIMEOUT_MS;
+  }
+  return API_FETCH_TIMEOUT_MS;
 }
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
@@ -21940,6 +21992,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
     if (toolbar.lastElementChild !== more) toolbar.appendChild(more);
+    const compactTitle = toolbar.matches('.gb-toolbar-main')
+      ? Array.from(toolbar.children).find(el => el.matches('.tb-file-title'))
+      : null;
+    compactTitle?.classList.remove('gb-tbo-title-compact');
     const before = entry.overflow;
     // 付いていないクラスの削除も変更通知になり、他の監視を起こすため、付いている時だけ外す。
     Array.from(toolbar.children).forEach(el => { if (el.classList.contains(hiddenClass)) el.classList.remove(hiddenClass); });
@@ -21972,6 +22028,9 @@ document.addEventListener('DOMContentLoaded', () => {
         el.classList.add(hiddenClass);
         removed.add(el);
       }
+      // Keep the 240px title contract until all movable operations have been
+      // retired. Only an extremely narrow host may compact the title itself.
+      if (!fits() && compactTitle) compactTitle.classList.add('gb-tbo-title-compact');
     }
     entry.overflow = items.filter(el => removed.has(el));
     if (more.hidden !== (entry.overflow.length === 0)) more.hidden = entry.overflow.length === 0;
@@ -22488,6 +22547,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let trayLayoutRoot = null;
   let trayLayoutObserver = null;
   let trayPositionFrame = 0;
+  const trayFrames = new WeakSet();
   const TRAY_MINIMIZED_KEY = 'meldex-operation-tray-minimized';
   let trayMinimized = (function () {
     try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
@@ -22582,6 +22642,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function _syncTrayHost(preferred) {
     if (!tray) return;
+    // 設定は通常のGBModalShellであり、トレイをダイアログ本体へ入れる必要はない。
+    // オーバーレイ直下の兄弟にすると、viewport右下の通常位置を保ったまま、
+    // 暗転より前・移動可能な設定ダイアログより後ろへ重ねられる。
+    const settingsHost = preferred?.isConnected
+      && preferred?.matches?.('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')
+      ? preferred
+      : Array.from(document.querySelectorAll('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')).at(-1) || null;
     // Native modal dialogs occupy the browser top layer, above every z-index.
     // Keep the same tray inside the active dialog so it remains visible and
     // interactive, then return it to body on close (even if the dialog is removed).
@@ -22589,8 +22656,84 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!modalHost?.matches('dialog:modal') || !modalHost.isConnected) {
       modalHost = Array.from(document.querySelectorAll('dialog:modal')).at(-1) || null;
     }
-    const host = modalHost || document.body;
+    const host = settingsHost || modalHost || document.body;
     if (tray.parentElement !== host) host.appendChild(tray);
+  }
+
+  function _wireTrayFrame(frame) {
+    if (!frame || trayFrames.has(frame)) return;
+    trayFrames.add(frame);
+    frame.addEventListener('load', _scheduleTrayPosition);
+  }
+
+  function _clipTrayRect(rect, clip) {
+    const clipped = {
+      left: Math.max(rect.left, clip.left),
+      top: Math.max(rect.top, clip.top),
+      right: Math.min(rect.right, clip.right),
+      bottom: Math.min(rect.bottom, clip.bottom),
+    };
+    clipped.width = Math.max(0, clipped.right - clipped.left);
+    clipped.height = Math.max(0, clipped.bottom - clipped.top);
+    return clipped;
+  }
+
+  function _collectTrayAvoidRects() {
+    const rects = [];
+    const visited = new Set();
+    const rootClip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+
+    function visit(doc, transform, clip) {
+      if (!doc || visited.has(doc)) return;
+      visited.add(doc);
+      for (const surface of doc.querySelectorAll(TRAY_AVOID_SELECTOR)) {
+        if (doc === document && (surface === tray || tray.contains(surface))) continue;
+        // 設定ダイアログはトレイより前面かつ移動可能。設定内のツールバーや
+        // フッターを避けてトレイ自体を動かすと「ダイアログ内に表示された」ように
+        // 見えるため、通常の右下位置を優先する。
+        if (doc === document && surface.closest('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')) continue;
+        const local = surface.getBoundingClientRect();
+        const mapped = _clipTrayRect({
+          left: transform.left + local.left * transform.scaleX,
+          top: transform.top + local.top * transform.scaleY,
+          right: transform.left + local.right * transform.scaleX,
+          bottom: transform.top + local.bottom * transform.scaleY,
+        }, clip);
+        if (mapped.width && mapped.height) rects.push(mapped);
+      }
+
+      for (const frame of doc.querySelectorAll('iframe')) {
+        _wireTrayFrame(frame);
+        const local = frame.getBoundingClientRect();
+        if (!local.width || !local.height) continue;
+        const mappedFrame = _clipTrayRect({
+          left: transform.left + local.left * transform.scaleX,
+          top: transform.top + local.top * transform.scaleY,
+          right: transform.left + local.right * transform.scaleX,
+          bottom: transform.top + local.bottom * transform.scaleY,
+        }, clip);
+        if (!mappedFrame.width || !mappedFrame.height) continue;
+        try {
+          const childDoc = frame.contentDocument;
+          const childWindow = frame.contentWindow;
+          if (!childDoc?.documentElement || !childWindow) continue;
+          const childWidth = childWindow.innerWidth || frame.clientWidth || local.width;
+          const childHeight = childWindow.innerHeight || frame.clientHeight || local.height;
+          if (!childWidth || !childHeight) continue;
+          visit(childDoc, {
+            left: transform.left + local.left * transform.scaleX,
+            top: transform.top + local.top * transform.scaleY,
+            scaleX: transform.scaleX * local.width / childWidth,
+            scaleY: transform.scaleY * local.height / childHeight,
+          }, mappedFrame);
+        } catch (_) {
+          // 外部サイト等のcross-origin iframeは内部を参照できないため安全に無視する。
+        }
+      }
+    }
+
+    visit(document, { left: 0, top: 0, scaleX: 1, scaleY: 1 }, rootClip);
+    return rects;
   }
 
   function _syncTrayPosition() {
@@ -22613,9 +22756,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let actionTop = window.innerHeight;
     // 個々のボタンではなく操作面全体を避ける。ビューワーの #controls のように
     // ボタン同士に隙間があるフッターでも、トレイが隙間へ重ならないようにする。
-    for (const surface of document.querySelectorAll(TRAY_AVOID_SELECTOR)) {
-      if (surface === tray || tray.contains(surface)) continue;
-      const action = surface.getBoundingClientRect();
+    for (const action of _collectTrayAvoidRects()) {
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
     }
@@ -22633,7 +22774,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const TRAY_POSITION_SELECTOR = '.gb-dock-fixed-right, .gb-dock-bar-right, ' + TRAY_AVOID_SELECTOR;
+  const TRAY_POSITION_SELECTOR = 'iframe, .gb-dock-fixed-right, .gb-dock-bar-right, ' + TRAY_AVOID_SELECTOR;
   function _nodeAffectsTrayPosition(node) {
     return node?.nodeType === 1 && (node.matches(TRAY_POSITION_SELECTOR) || !!node.querySelector(TRAY_POSITION_SELECTOR));
   }
@@ -22934,12 +23075,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function _init() {
     if (!window.MeldexOperationProgress || !document.body) return;
+    document.querySelectorAll('iframe').forEach(_wireTrayFrame);
     new MutationObserver(function (records) {
       for (const record of records) {
         if (record.target.tagName === 'DIALOG') _syncTrayHost(record.target);
       }
     }).observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
-    new MutationObserver(_scheduleTrayPosition).observe(document.body, { childList: true });
+    new MutationObserver(function () {
+      _syncTrayHost();
+      _scheduleTrayPosition();
+    }).observe(document.body, { childList: true });
     window.addEventListener('resize', _scheduleTrayPosition);
     window.addEventListener('gb:layout-viewport-resize', _scheduleTrayPosition);
     window.MeldexOperationProgress.subscribe(_render);

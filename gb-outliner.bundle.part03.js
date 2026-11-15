@@ -1,3 +1,43 @@
+    afterSnapshot,
+    detail || '',
+    refreshOutlinerSettingsAfterHistory
+  );
+}
+
+function applyNodeColor(row, color) {
+  const label = row.querySelector('.tree-label');
+  const icon = row.querySelector('.tree-icon');
+  if (color) {
+    if (label) label.style.color = color;
+    if (icon) icon.style.color = color;
+  } else {
+    if (label) label.style.color = '';
+    if (icon) icon.style.color = '';
+  }
+}
+
+function createTreeNodeFromBrowse(item, rootPath) {
+  // item: {name, type: "folder"|"database"|"page"|"scenario", path}
+  const div = document.createElement('div');
+  div.className = 'tree-node';
+  div._nodeData = item;
+  if (item.path) div.dataset.path = item.path;
+  if (item.sourceId) div.dataset.sourceId = item.sourceId;
+  if (item.rootKind) div.dataset.rootKind = item.rootKind;
+  if (item.workspaceId) div.dataset.workspaceId = item.workspaceId;
+  if (item.file_id) _registerFileId(item.path, item.file_id);
+
+  const row = document.createElement('div');
+  row.className = 'tree-node-row';
+  row.dataset.itemType = item.type || '';
+  if (item.sourceId) row.dataset.sourceId = item.sourceId;
+  if (item.rootKind) row.dataset.rootKind = item.rootKind;
+  if (item.workspaceId) row.dataset.workspaceId = item.workspaceId;
+  const itemLocked = item.path && isItemLocked(item.path);
+  row.draggable = !itemLocked && !item._isRoot;
+  row.tabIndex = -1;
+
+  const isFolder = item.type === 'folder';
   const isDB = item.type === 'database';
   const isUnavailableRoot = item.needsMapping === true;
   const isExpandable = !isUnavailableRoot && (isFolder || isDB || item.type === 'form-app');
@@ -312,6 +352,7 @@
   row.addEventListener('click', (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
     if (e.shiftKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Shift+クリック: 範囲選択（開かない）
       e.preventDefault();
       treeSelection.rangeTo(div);
@@ -319,6 +360,7 @@
       return;
     }
     if (e.ctrlKey || e.metaKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
@@ -332,6 +374,7 @@
     }
 
     // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
+    window.MeldexVisibleSelection?.beginTree?.();
     window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
 
     // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
@@ -667,7 +710,7 @@
       let movedAcrossFolders = false;
       let processed = 0;
       const failures = [];
-      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
+      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
@@ -738,6 +781,21 @@
         catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
         await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
+        window.MeldexFileMoveHistory?.register?.(
+          movedItems.map(movedItem => ({
+            oldPath: movedItem.oldPath,
+            newPath: movedItem.path,
+            currentPath: movedItem.path,
+            name: movedItem.name,
+            type: movedItem.type,
+            fileId: movedItem.file_id || movedItem.fileId,
+          })),
+          {
+            label: `フォルダツリー: ${movedItems.length} 件を移動`,
+            detail: `→ ${destFolder}`,
+            refresh: () => refreshOutliner({ force: true, reason: 'outliner-tree-move-history' }),
+          },
+        );
         return;
       }
       if (moved.length === 0) return;
@@ -840,61 +898,3 @@ function clearDragIndicators() {
 function _outlinerSheetTreeItems(item, pivotData) {
   const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
     name, type: 'entity',
-    display_icon: pivotData.entities[name]?._display_icon || '',
-    path: pivotData.entities[name]?._entry_path || (typeof _entityPath === 'function'
-      ? _entityPath(item.path, name, pivotData) : item.path + '/' + name + (pivotData.new_format ? '.md' : '')),
-    _dbPath: item.path,
-    entityData: pivotData.entities[name],
-  }));
-  const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
-  if (attachmentFolder) items.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
-  return items;
-}
-
-const _outlinerWarmQueue = [];
-const _outlinerWarmKeys = new Set();
-let _outlinerWarmRunning = false;
-
-function _scheduleOutlinerChildWarmup(container, items, rootPath) {
-  // Warm one level, at most four visible branches, one local read at a time.
-  // Never initiate Dropbox API downloads/migrations while merely listing rows.
-  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
-  const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
-  let added = 0;
-  for (const item of items) {
-    if (added >= 4 || _outlinerWarmQueue.length >= 12) break;
-    const node = nodes.get(item.path);
-    if (!node || node.style.display === 'none' || item.needsMapping === true || !['folder', 'database'].includes(item.type)) continue;
-    let path;
-    if (item.type === 'database') path = '/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true';
-    else {
-      const sortCfg = getSortForFolder(item.path);
-      const serverSorts = new Set(['name', 'modified', 'created']);
-      const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
-      const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
-      path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
-        + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
-        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true&form_hierarchy=true';
-    }
-    if (_outlinerWarmKeys.has(path)) continue;
-    _outlinerWarmKeys.add(path);
-    _outlinerWarmQueue.push({ path, node });
-    added++;
-  }
-  if (_outlinerWarmRunning) return;
-  _outlinerWarmRunning = true;
-  setTimeout(async () => {
-    try {
-      while (_outlinerWarmQueue.length) {
-        const next = _outlinerWarmQueue.shift();
-        try {
-          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
-            background: true, silentError: true,
-            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
-          });
-        } catch (_) { /* A foreground click retries through the normal error path. */ }
-        finally { _outlinerWarmKeys.delete(next.path); }
-      }
-    } finally { _outlinerWarmRunning = false; }
-  }, 0);
-}

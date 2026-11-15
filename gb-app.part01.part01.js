@@ -766,6 +766,9 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
 
 function renameAppPathReferences(oldPath, newPath, opts) {
   if (!oldPath || !newPath || (oldPath === newPath && !Object.prototype.hasOwnProperty.call(opts || {}, 'label'))) return;
+  if (oldPath !== newPath && typeof rebindAutoVersionPathPrefix === 'function') {
+    rebindAutoVersionPathPrefix(oldPath, newPath);
+  }
   // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
   // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
   window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
@@ -1001,6 +1004,7 @@ function purgeAppPathReferences(paths) {
   let legacyTabsChanged = false;
   let clearedCurrentView = false;
   _cancelDeletedPathAutosaves(deletedPaths);
+  if (typeof stopAutoVersionsForPaths === 'function') stopAutoVersionsForPaths(deletedPaths);
   const activePathKey = {
     pivot: 'currentDbPath',
     gallery: 'currentDbPath',

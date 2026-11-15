@@ -788,7 +788,9 @@
   async function request(path, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
     const body = options.body || {};
-    const timeoutMs = Number(options.timeoutMs || (method === 'GET' ? 0 : 60000));
+    // 通常の読取・更新は共通apiFetchの契約へ委ねる。ここで更新を60秒へ
+    // 短縮すると、共通層の120秒/長時間処理5分という分類を上書きしてしまう。
+    const timeoutMs = Number(options.timeoutMs || 0);
     if (method === 'GET') return apiFetch(path, timeoutMs ? { timeoutMs } : undefined);
     if (isWriteRequest(path, method) && window.MeldexProductionUiAvailability?.ensureWritable?.() === false) {
       const error = new Error('閲覧専用モードのため編集できません'); error.status = 403; throw error;
@@ -841,9 +843,9 @@
     patchEntry: (payload) => request('/production-management/entries', { method: 'PATCH', body: payload }),
     createEntry: (payload) => request('/production-management/entries', { method: 'POST', body: payload }),
     previewTasks: (payload) => request('/production-management/tasks/preview', { method: 'POST', body: payload }),
-    createTasks: (payload) => request('/production-management/tasks/create', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    createTasks: (payload) => request('/production-management/tasks/create', { method: 'POST', body: payload, timeoutMs: 300000 }),
     previewTaskStructure: (payload) => request('/production-management/tasks/structure/preview', { method: 'POST', body: payload }),
-    applyTaskStructure: (payload) => request('/production-management/tasks/structure/apply', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    applyTaskStructure: (payload) => request('/production-management/tasks/structure/apply', { method: 'POST', body: payload, timeoutMs: 300000 }),
     taskByEvent: (eventId) => request('/production-management/task-by-event' + encodeQuery({ event_id: eventId })),
     templates: (params = {}) => request('/production-management/lists' + encodeQuery({ sheet: 'タスクテンプレート', limit: 500, ...params })),
     createTemplate: (payload) => request('/production-management/entries', {
@@ -855,9 +857,9 @@
       body: { ...payload, sheet: 'タスクテンプレート' },
     }),
     fromTemplate: (payload) => request('/production-management/tasks/from-template', { method: 'POST', body: payload }),
-    // 一括作成の直後に続けて走らせるため、1000件規模でも既定60秒で切れないようにする。
-    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload, timeoutMs: 120000 }),
-    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    // 一括作成の直後に続けて走らせるため、1000件規模でも短い更新上限で切らない。
+    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload, timeoutMs: 300000 }),
+    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload, timeoutMs: 300000 }),
   };
 })();
 
@@ -9352,7 +9354,7 @@
 
   async function recalculate(id, overrides = {}) {
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/recalculate`, {
-      method: 'POST', body: { overrides }, timeoutMs: 120000,
+      method: 'POST', body: { overrides }, timeoutMs: 300000,
     });
     remember(result.proposal);
     await select(result.proposal.id);
@@ -9393,7 +9395,7 @@
 
   async function adopt(id) {
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/adoption/apply`, {
-      method: 'POST', timeoutMs: 120000,
+      method: 'POST', timeoutMs: 300000,
     });
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);

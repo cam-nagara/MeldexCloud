@@ -255,27 +255,29 @@ function _outlinerTrashRefsToNames(refs) {
   return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
 }
 
-async function _restoreOutlinerTrashRefs(refs) {
+async function _restoreOutlinerDeleteRecords(records) {
   const restored = [];
-  for (const ref of refs || []) {
-    if (!ref?.trash_name) continue;
+  const failures = [];
+  for (const record of records || []) {
+    if (!record?.deleted || !record.trashRef?.trash_name) continue;
     try {
       const result = await apiPost('/outliner/restore', {
-        trash_name: ref.trash_name,
-        ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+        trash_name: record.trashRef.trash_name,
+        ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
       });
+      record.currentPath = result?.restored_to || result?.restored_path || record.item.path;
+      record.deleted = false;
       restored.push(result);
     } catch (error) {
-      const message = error?.message ? String(error.message) : '復元に失敗しました';
-      throw new Error(ref.trash_name + ' の復元に失敗しました: ' + message);
+      failures.push({ record, error });
     }
   }
-  return restored;
+  return { restored, failures };
 }
 
-async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
+async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshSuccessfulRedo = false) {
   // Successful Redo already updated the tree model and DOM through pending deletion.
-  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount) return;
+  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount && !refreshSuccessfulRedo) return;
   if (typeof refresh === 'function') {
     await refresh(phase, result);
     return;
@@ -351,7 +353,13 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     });
   }
 
-  let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
+  const deleteRecords = succeeded.map(item => ({
+    item,
+    currentPath: item.path,
+    deleted: true,
+    trashRef: _outlinerTrashRefFromResponse(item),
+  }));
+  let trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
   let trashNames = _outlinerTrashRefsToNames(trashRefs);
   if (succeeded.length && typeof historyPush === 'function') {
     const label = options.label || (succeeded.length + ' 件を削除');
@@ -359,33 +367,43 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     historyPush(
       label,
       async () => {
-        const restored = await _restoreOutlinerTrashRefs(trashRefs);
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', { succeeded, deletedPaths, trashNames });
-        if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
+        const { restored, failures: restoreFailures } = await _restoreOutlinerDeleteRecords(deleteRecords);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
+        trashNames = _outlinerTrashRefsToNames(trashRefs);
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', {
+          succeeded,
+          deletedPaths: deleteRecords.filter(record => record.deleted).map(record => record.currentPath),
+          trashNames,
+          failedCount: restoreFailures.length,
+        });
+        if (restoreFailures.length) {
+          throw new Error(`${restoreFailures.length} 件を復元できませんでした。成功した項目は再試行しません`);
+        }
+        if (typeof showStatus === 'function') showStatus(restored.length + ' 件を復元しました');
       },
       async () => {
-        const redoTargets = succeeded.map(item => ({
-          path: item.path,
-          kind: item.type === 'folder' ? 'folder' : 'file',
-          ...(item.assetId ? { assetId: item.assetId } : {}),
+        const pendingRecords = deleteRecords.filter(record => !record.deleted);
+        if (!pendingRecords.length) return true;
+        const redoTargets = pendingRecords.map(record => ({
+          path: record.currentPath,
+          kind: record.item.type === 'folder' || record.item.kind === 'folder' ? 'folder' : 'file',
+          ...(record.item.assetId ? { assetId: record.item.assetId } : {}),
         }));
         const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-          ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-              redoTargets,
-              `${redoTargets.length} 件をもう一度削除しますか？`,
-            )
-          : await cfConfirm(`${redoTargets.length} 件をもう一度削除しますか？`);
-        if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+          ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(redoTargets)
+          : { confirmed: true, operation: 'trash' };
+        if (!confirmed) throw new Error('削除の参照確認に失敗しました');
         const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
           ? MeldexDeleteImpactWarning.confirmationPayload(confirmed)
           : {};
-        const nextTrashRefs = [];
         const redoFailures = [];
         let redoSkippedCount = 0;
-        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
-        for (const item of succeeded) {
+        const pendingPaths = pendingRecords.map(record => record.currentPath);
+        if (pendingPaths.length) _markOutlinerDeletePending(pendingPaths);
+        for (const record of pendingRecords) {
+          const item = record.item;
           const res = await apiPost('/outliner/delete', {
-            path: item.path,
+            path: record.currentPath,
             kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
             ...(item.assetId ? { assetId: item.assetId } : {}),
             ...confirmationPayload,
@@ -394,19 +412,22 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
             return null;
           });
           const ref = _outlinerTrashRefFromResponse(res);
-          if (ref) nextTrashRefs.push(ref);
-          else if (res && !res.ok) redoFailures.push({ item, error: new Error('削除応答が不正です') });
-          else if (res) redoSkippedCount++;
+          if (ref) {
+            record.trashRef = ref;
+            record.deleted = true;
+          }
+          else if (res) redoFailures.push({ item, error: new Error('取り消しに必要なゴミ箱情報がありません') });
         }
-        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
-        trashRefs = nextTrashRefs;
+        if (pendingPaths.length) _clearOutlinerDeletePending(pendingPaths);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
         trashNames = _outlinerTrashRefsToNames(trashRefs);
-        if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-          purgeAppPathReferences(deletedPaths);
+        const redonePaths = pendingRecords.filter(record => record.deleted).map(record => record.currentPath);
+        if (redonePaths.length && typeof purgeAppPathReferences === 'function') {
+          purgeAppPathReferences(redonePaths);
         }
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount });
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths: redonePaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount }, !!options.refreshSuccessfulRedo);
         if (redoFailures.length) {
-          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした`);
+          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした。成功した項目は再試行しません`);
         }
         if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
       },
@@ -477,6 +498,7 @@ function _showCloudPhase1BlockedCreate(type) {
 }
 
 const _outlinerContextMenuCleanups = new Set();
+let _outlinerContextMenuOpenSeq = 0;
 
 function _outlinerEscHtml(value) {
   return MeldexEscape.html(value);
@@ -680,6 +702,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
 
 // --- 右クリックメニュー ---
 function closeTreeContextMenu() {
+  _outlinerContextMenuOpenSeq += 1;
   _outlinerContextMenuCleanups.forEach(cleanup => {
     try { cleanup(); } catch {}
   });
@@ -725,8 +748,9 @@ function _outlinerLocalCopyPath(nodeEl, nodeData) {
   return _outlinerNativeClipboardPath(path);
 }
 
-function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
+async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   closeTreeContextMenu();
+  const openSeq = ++_outlinerContextMenuOpenSeq;
   const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
 
   const selectedCount = treeSelection.items.size;
@@ -786,8 +810,8 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, `「${names}」を削除しますか？`)
-      : await cfConfirm(`「${names}」を削除しますか？`);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {

@@ -105,6 +105,7 @@ async function _runPeriodicRestorePoints(nowValue) {
     if (!policy?.nextOccurrence) return;
     const now = nowValue instanceof Date ? nowValue : new Date(nowValue || Date.now());
     const state = _autoVersionScheduleState();
+    const touched = new Set();
     const scheduleId = policy.scheduleId(config);
     for (const [key, target] of _autoVersionTargets.entries()) {
       let saved = state[key] || {};
@@ -117,9 +118,12 @@ async function _runPeriodicRestorePoints(nowValue) {
             last_retention_checked_at: retention.ok ? now.toISOString() : saved.last_retention_checked_at,
             last_retention_error_at: retention.ok ? '' : now.toISOString(),
           };
+          touched.add(key);
           saved = state[key];
         }
       }
+      // 保持期間処理の待機中に削除・改名・移動された旧対象へ保存しない。
+      if (_autoVersionTargets.get(key) !== target) continue;
       if (!config.enabled) continue;
       const lastChecked = new Date(saved.last_checked_at || target.registeredAt || now.toISOString());
       const due = policy.nextOccurrence(config, lastChecked);
@@ -127,6 +131,7 @@ async function _runPeriodicRestorePoints(nowValue) {
       const bucketId = policy.bucketId(config, due);
       if (!target.dirty && !saved.changed_after_last_point) {
         state[key] = { ...saved, last_checked_at: now.toISOString(), last_bucket_id: bucketId };
+        touched.add(key);
         continue;
       }
       const endpoint = target.type === 'db' ? '/version/save-db' : '/version/save';
@@ -150,19 +155,114 @@ async function _runPeriodicRestorePoints(nowValue) {
           last_checked_at: now.toISOString(), last_bucket_id: bucketId,
           changed_after_last_point: false,
         };
+        touched.add(key);
       } catch (error) {
+        // API待機中に対象が削除・移動された場合は、旧パスの失敗状態を復活させない。
+        if (_autoVersionTargets.get(key) !== target) continue;
         target.dirty = true;
         state[key] = { ...saved, changed_after_last_point: true, last_error_at: now.toISOString() };
+        touched.add(key);
         if (target.path === _autoVersionPath && target.type === _autoVersionType) _autoVersionDirty = true;
       }
     }
-    _saveAutoVersionScheduleState(state);
+    // 実行中に start/mark/delete/rebind が保存した最新状態へ、今も有効な対象分だけを合流する。
+    // 古いスナップショットの一括保存で削除済み・旧パスを復活させない。
+    const latestState = _autoVersionScheduleState();
+    touched.forEach(key => {
+      if (_autoVersionTargets.has(key)) latestState[key] = state[key];
+      else delete latestState[key];
+    });
+    _saveAutoVersionScheduleState(latestState);
   })().finally(() => { _autoVersionRunPromise = null; });
   return _autoVersionRunPromise;
 }
 
 function _autoVersionTargetKey(path, type) {
   return `${type || 'file'}:${String(path || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+}
+
+function _normalizeAutoVersionPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function _autoVersionPathWithin(path, root) {
+  const normalizedPath = _normalizeAutoVersionPath(path);
+  const normalizedRoot = _normalizeAutoVersionPath(root);
+  return !!normalizedRoot && (normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + '/'));
+}
+
+function _syncCurrentAutoVersionTarget() {
+  const current = _autoVersionTargets.get(_autoVersionTargetKey(_autoVersionPath, _autoVersionType));
+  if (current) {
+    _autoVersionDirty = !!current.dirty;
+    return;
+  }
+  const fallback = Array.from(_autoVersionTargets.values()).pop() || null;
+  _autoVersionPath = fallback?.path || '';
+  _autoVersionType = fallback?.type || '';
+  _autoVersionDirty = !!fallback?.dirty;
+  if (_autoVersionTargets.size) return;
+  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
+  _autoVersionTimer = null;
+  _autoVersionTimerInterval = 0;
+}
+
+function stopAutoVersionsForPaths(paths) {
+  const roots = (Array.isArray(paths) ? paths : [paths]).map(_normalizeAutoVersionPath).filter(Boolean);
+  if (!roots.length) return 0;
+  const state = _autoVersionScheduleState();
+  let removed = 0;
+  for (const [key, target] of Array.from(_autoVersionTargets.entries())) {
+    if (!roots.some(root => _autoVersionPathWithin(target.path, root))) continue;
+    _autoVersionTargets.delete(key);
+    delete state[key];
+    removed += 1;
+  }
+  // 対象が現在未登録でも、以前の異常終了等で残った永続状態を削除する。
+  Object.keys(state).forEach(key => {
+    const separator = key.indexOf(':');
+    const storedPath = separator >= 0 ? key.slice(separator + 1) : '';
+    if (roots.some(root => _autoVersionPathWithin(storedPath, root))) delete state[key];
+  });
+  _saveAutoVersionScheduleState(state);
+  _syncCurrentAutoVersionTarget();
+  return removed;
+}
+
+function rebindAutoVersionPathPrefix(oldPath, newPath) {
+  const oldRoot = _normalizeAutoVersionPath(oldPath);
+  const newRoot = _normalizeAutoVersionPath(newPath);
+  if (!oldRoot || !newRoot || oldRoot === newRoot) return 0;
+  const state = _autoVersionScheduleState();
+  let rebound = 0;
+  for (const [oldKey, target] of Array.from(_autoVersionTargets.entries())) {
+    if (!_autoVersionPathWithin(target.path, oldRoot)) continue;
+    const mappedPath = newRoot + _normalizeAutoVersionPath(target.path).slice(oldRoot.length);
+    const newKey = _autoVersionTargetKey(mappedPath, target.type);
+    const existing = _autoVersionTargets.get(newKey);
+    _autoVersionTargets.delete(oldKey);
+    _autoVersionTargets.set(newKey, {
+      ...(existing || target),
+      path: mappedPath,
+      type: target.type,
+      dirty: !!(target.dirty || existing?.dirty),
+    });
+    if (Object.prototype.hasOwnProperty.call(state, oldKey) || Object.prototype.hasOwnProperty.call(state, newKey)) {
+      state[newKey] = {
+        ...(state[oldKey] || {}),
+        ...(state[newKey] || {}),
+        changed_after_last_point: !!(state[oldKey]?.changed_after_last_point || state[newKey]?.changed_after_last_point),
+      };
+      delete state[oldKey];
+    }
+    rebound += 1;
+  }
+  if (_autoVersionPath && _autoVersionPathWithin(_autoVersionPath, oldRoot)) {
+    _autoVersionPath = newRoot + _normalizeAutoVersionPath(_autoVersionPath).slice(oldRoot.length);
+  }
+  _saveAutoVersionScheduleState(state);
+  _syncCurrentAutoVersionTarget();
+  return rebound;
 }
 
 function _ensureAutoVersionTimer() {
@@ -238,7 +338,7 @@ async function _applyRestorePointRetentionToTarget(target, config, now = new Dat
 }
 
 function startAutoVersion(path, type) {
-  const normalizedPath = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedPath = _normalizeAutoVersionPath(path);
   if (!normalizedPath) return;
   const normalizedType = type === 'db' ? 'db' : 'file';
   const key = _autoVersionTargetKey(normalizedPath, normalizedType);
@@ -263,15 +363,11 @@ function stopAutoVersion(path, type) {
   } else {
     _autoVersionTargets.clear();
   }
-  if (_autoVersionTargets.size) return;
-  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
-  _autoVersionTimer = null;
-  _autoVersionTimerInterval = 0;
-  _autoVersionDirty = false;
+  _syncCurrentAutoVersionTarget();
 }
 
 function markAutoVersionDirty(path, type) {
-  const targetPath = String(path || _autoVersionPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const targetPath = _normalizeAutoVersionPath(path || _autoVersionPath || '');
   const targetType = type || _autoVersionType || 'file';
   if (!targetPath) return;
   const key = _autoVersionTargetKey(targetPath, targetType);

@@ -1278,13 +1278,16 @@ function _folderApplyRename(oldPath, newPath, newName, fileId) {
   });
 }
 
+let _folderContextMenuOpenSeq = 0;
+
 // フォルダアイテムの右クリックメニュー
-function showFolderItemContextMenu(e, item, options = {}) {
+async function showFolderItemContextMenu(e, item, options = {}) {
   if ((item?.archive_path || window._archiveBrowseContext) && typeof showArchiveItemContextMenu === 'function') {
     showArchiveItemContextMenu(e, item);
     return;
   }
   closeColHeaderMenu();
+  const openSeq = ++_folderContextMenuOpenSeq;
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
   // サブパネル内では、サブパネルで開く・バージョン管理等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
@@ -1309,7 +1312,10 @@ function showFolderItemContextMenu(e, item, options = {}) {
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
-  const closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  const closeMenu = () => {
+    _folderContextMenuOpenSeq += 1;
+    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  };
   function addItem(label, fn, cls, icon) {
     if (typeof _outlinerAppendMenuItem === 'function') {
       return _outlinerAppendMenuItem(menu, {

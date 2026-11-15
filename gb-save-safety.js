@@ -269,7 +269,7 @@
       kind: 'file-aftercare', label: '関連情報を更新中', persistentJobId: jobId, background: true,
     });
     // 開始APIを再送せず、返されたジョブの状態だけを既存ヘルパーで確認する。
-    window.runBackgroundJob('', null, { resumeJobId: jobId, operationProgress: false, maxPolls: 250 })
+    window.runBackgroundJob('', null, { resumeJobId: jobId, operationProgress: false })
       .then(result => {
         const relocate = result?.relocate || {};
         const details = ['backlink_error', 'cascade_error', 'sheet_attachment_error']

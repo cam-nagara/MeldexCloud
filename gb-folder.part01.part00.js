@@ -674,6 +674,13 @@ async function _folderImportOsFiles(nodes, parentPath, result, progress) {
     else { result.failed += 1; result.failures.push(item); }
     progress?.updateOperation?.(result.ok + result.failed);
   });
+  const successful = uploaded.map((item, index) => ({ item, file: nodes[index]?.file }))
+    .filter(row => row.item?.ok);
+  if (successful.length) result.savedGroups.push({
+    parentPath,
+    saved: successful.map(row => row.item),
+    files: successful.map(row => row.file),
+  });
 }
 
 async function _folderImportOsNode(node, parentPath, result, progress) {
@@ -681,6 +688,9 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
     try {
       const created = await apiPost('/outliner/add', { type: 'folder', label: node.name, parent: parentPath });
       const childParent = created?.node?.path || [parentPath, created?.node?.label || node.name].filter(Boolean).join('/');
+      if (created?.node?.path) {
+        result.savedGroups.push({ parentPath, saved: [{ item: created.node, path: created.node.path }], files: [] });
+      }
       const children = node.children || [];
       await _folderImportOsFiles(children.filter(child => child.kind === 'file'), childParent, result, progress);
       for (const child of children.filter(item => item.kind === 'folder')) {
@@ -695,9 +705,98 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
     return;
   }
   const uploaded = await _folderUploadDroppedFile(node.file, parentPath);
-  if (uploaded.ok) result.ok += 1;
+  if (uploaded.ok) {
+    result.ok += 1;
+    result.savedGroups.push({ parentPath, saved: [uploaded], files: [node.file] });
+  }
   else { result.failed += 1; result.failures.push(uploaded); }
   progress?.updateOperation?.(result.ok + result.failed);
+}
+
+function _folderDropPathsEqual(left, right) {
+  const normalize = value => {
+    const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+  };
+  return !!left && !!right && normalize(left) === normalize(right);
+}
+
+function _folderDroppedFileFallbackItem(saved, file) {
+  if (saved?.item?.path) {
+    return { ...saved.item, name: saved.item.name || saved.item.label || String(saved.item.path).split(/[/\\]/).pop() };
+  }
+  const path = String(saved?.path || '').replace(/\\/g, '/');
+  const filename = String(saved?.name || file?.name || path.split('/').pop() || 'ファイル');
+  const lower = filename.toLowerCase();
+  const suffix = (lower.match(/(\.[^.]+)$/) || [])[1] || '';
+  const imageExt = new Set(['.png','.apng','.jpg','.jpeg','.jpe','.jfif','.gif','.bmp','.webp','.svg','.ico','.avif','.tif','.tiff','.heic','.heif','.psd','.psb']);
+  const videoExt = new Set(['.mp4','.webm','.mov','.avi','.mkv']);
+  const audioExt = new Set(['.mp3','.wav','.ogg','.flac','.m4a','.aac']);
+  let type = 'unknown';
+  let name = filename;
+  if (imageExt.has(suffix) || String(file?.type || '').startsWith('image/')) type = 'image';
+  else if (videoExt.has(suffix) || String(file?.type || '').startsWith('video/')) type = 'video';
+  else if (audioExt.has(suffix) || String(file?.type || '').startsWith('audio/')) type = 'audio';
+  else if (suffix === '.csv') { type = 'csv'; name = filename.slice(0, -suffix.length); }
+  else if (suffix === '.md') { type = lower.endsWith('.board.md') ? 'board' : 'page'; name = filename.slice(0, -suffix.length); }
+  else if (['.html','.htm'].includes(suffix)) type = 'html';
+  else if (['.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.txt','.rtf'].includes(suffix)) type = 'document';
+  else if (['.zip','.rar','.7z','.tar','.gz'].includes(suffix)) type = 'archive';
+  return { name, type, path, ext: suffix, size: file?.size, modified: new Date().toISOString(), type_resolved: type !== 'unknown' };
+}
+
+function _folderVisibleOutlinerChildren(parentPath) {
+  if (typeof _findTreeNodeByPath !== 'function') return null;
+  const parentNode = _findTreeNodeByPath(parentPath);
+  if (!parentNode) {
+    return (typeof _homeFolderPath !== 'undefined' && _folderDropPathsEqual(parentPath, _homeFolderPath))
+      ? document.getElementById('body-home')
+      : null;
+  }
+  const children = parentNode.querySelector(':scope > .tree-children');
+  if (!children || children.dataset.loaded === 'false') return null;
+  const toggle = parentNode.querySelector(':scope > .tree-node-row > .tree-toggle');
+  if (children.classList.contains('collapsed') || (toggle && toggle.dataset.expanded !== 'true')) return null;
+  return children;
+}
+
+function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
+  const container = _folderVisibleOutlinerChildren(parentPath);
+  if (!container || !items.length || typeof createTreeNodeFromBrowse !== 'function') return;
+  const fresh = items.filter(item => typeof _findTreeNodeByPath !== 'function' || !_findTreeNodeByPath(item.path));
+  if (!fresh.length) return;
+  const virtual = window.GBOutlinerVirtualRender;
+  if (virtual?.isVirtualContainer?.(container)) {
+    virtual.dropInto(container, fresh);
+    return;
+  }
+  fresh.forEach(item => {
+    const node = createTreeNodeFromBrowse(item);
+    if (typeof _insertOutlinerCreateNode === 'function') _insertOutlinerCreateNode(container, node, null);
+    else container.appendChild(node);
+    if (typeof _registerTreeNode === 'function') _registerTreeNode(node);
+  });
+}
+
+function _folderApplySavedDropResults(parentPath, savedResults, files) {
+  const rows = (savedResults || []).map((saved, index) =>
+    _folderDroppedFileFallbackItem(saved, files?.[index])).filter(item => item.path);
+  if (!rows.length) return 0;
+  if (_folderDropPathsEqual(_folderPath, parentPath)) {
+    const pathKey = value => {
+      const normalized = String(value || '').replace(/\\/g, '/');
+      return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+    };
+    const byPath = new Map(_folderItems.map(item => [pathKey(item?.path), item]));
+    rows.forEach(item => byPath.set(pathKey(item.path), item));
+    _folderItems = [...byPath.values()];
+    if (typeof registerFileTypes === 'function') registerFileTypes(rows);
+    if (typeof renderFolderGrid === 'function') {
+      renderFolderGrid({ preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean) });
+    }
+  }
+  _folderInsertDroppedItemsIntoOutliner(parentPath, rows);
+  return rows.length;
 }
 
 async function _folderImportOsDrop(event, targetItem) {
@@ -712,8 +811,8 @@ async function _folderImportOsDrop(event, targetItem) {
     return 0;
   }
   const progress = window.MeldexImportProgress;
-  const result = { ok: 0, failed: 0, failures: [] };
-  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
+  const result = { ok: 0, failed: 0, failures: [], savedGroups: [] };
+  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null, { delayMs: 0, kind: 'external-file-intake' });
   const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
     await _folderImportOsFiles(nodes.filter(node => node.kind === 'file'), targetItem.path, result, boundProgress);
@@ -723,12 +822,7 @@ async function _folderImportOsDrop(event, targetItem) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
-  if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-panel-os-drop' });
-  if (_folderPath && typeof openFolder === 'function') {
-    await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
-      silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
-    });
-  }
+  result.savedGroups.forEach(group => _folderApplySavedDropResults(group.parentPath, group.saved, group.files));
   const first = result.failures[0];
   const reason = String(first?.error?.userMessage || first?.error?.message || first?.error || '');
   showStatus(result.failed
@@ -785,9 +879,10 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     }
   }
   const progress = window.MeldexImportProgress;
-  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
   let ok = 0;
   const failures = [];
+  const movedItems = [];
   try {
     for (const source of items) {
       try {
@@ -804,6 +899,14 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
         // The move is committed. A detached view cannot turn it into a failed
         // file operation or keep the other editors bound to the old path.
         ok += 1;
+        if (!copySource) movedItems.push({
+          oldPath,
+          newPath: res?.new_path || oldPath,
+          currentPath: res?.new_path || oldPath,
+          name: res?.new_name || source.name,
+          type: source.type,
+          fileId: res?.file_id || source.file_id,
+        });
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
           try { renameAppPathReferences(oldPath, res.new_path, {
             label: res.new_name || source.name,
@@ -846,6 +949,18 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } else {
     showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
+  window.MeldexFileMoveHistory?.register?.(movedItems, {
+    label: `フォルダパネル: ${movedItems.length} 件を移動`,
+    detail: `→ ${targetPath}`,
+    refresh: async () => {
+      if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-panel-move-history' });
+      if (_folderPath && typeof openFolder === 'function') {
+        await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
+          silent: true, skipNavPush: true, skipShowView: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
+        });
+      }
+    },
+  });
   return ok;
 }
 
@@ -940,7 +1055,7 @@ async function showContainedFiles(item) {
   try {
     const query = '/contained-files?path=' + encodeURIComponent(item.path)
       + '&type=' + encodeURIComponent(item.type || '');
-    const result = await apiFetch(query);
+    const result = await apiFetch(query, { foreground: true });
     const label = (item.name || String(item.path).split(/[\\/]/).pop() || 'ファイル') + ' 内のファイル';
     await openFolder(label, item.path, {
       items: Array.isArray(result?.items) ? result.items : [],
@@ -1000,7 +1115,7 @@ async function _folderFetchBrowseItems(path, options = {}) {
     try {
       const contained = await apiPost('/contained-files/batch', {
         targets: containedTargets.map(item => ({ path: item.path, type: item.type || '' })),
-      });
+      }, { foreground: true });
       if (options.isCurrent?.() === false) return [];
       (contained?.items || []).forEach(child => {
         if (!child?.path) return;

@@ -48,7 +48,12 @@
     if (!path || !isSupported()) return false;
     const data = snapshot || await apiPost('/os-clipboard/read', {}, { silentError: true });
     if (!data.items?.length) return false;
-    const result = await runBackgroundJob('/os-clipboard/import', { ticket: data.ticket, path });
+    const result = await runBackgroundJob('/os-clipboard/import', { ticket: data.ticket, path }, {
+      label: data.cut ? '外部ファイルを移動中' : '外部ファイルを貼り付け中',
+      operationKind: data.cut ? 'external-file-move' : 'external-file-paste',
+      operationDelayMs: 0,
+      showInTray: true,
+    });
     if (!result?.ok) throw new Error(result?.error || '貼り付け処理の完了を確認できませんでした');
     if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'os-clipboard' });
     if (typeof openFolder === 'function' && typeof _folderPath !== 'undefined' && _folderPath === path) {

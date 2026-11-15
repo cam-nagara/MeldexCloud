@@ -192,7 +192,7 @@ class ScriptNoteComponent extends ToolComponent {
 
   static _buildHTML() {
     return `
-<div id="se-toolbar" class="gb-toolbar">
+<div id="se-toolbar" class="gb-toolbar gb-toolbar-main">
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">

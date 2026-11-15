@@ -246,7 +246,9 @@ function bdIsCurrentBoardOpenRequest(path) {
   return !currentPath || !requestedPath || currentPath === requestedPath;
 }
 
-const BD_BOARD_OPEN_IO_TIMEOUT_MS = 30000;
+// ボード切替は保存・Dropbox/NAS読込・関連索引の確定を含む。共通HTTP層より
+// 先に30秒で失敗扱いにせず、長時間ファイル操作と同じ上限まで待つ。
+const BD_BOARD_OPEN_IO_TIMEOUT_MS = 300000;
 let _bdPendingOpenRollback = null;
 
 function _bdTimeoutError(label, timeoutMs) {

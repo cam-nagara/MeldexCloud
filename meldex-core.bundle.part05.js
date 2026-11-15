@@ -1,3 +1,37 @@
+    if (closePaletteTimer) clearTimeout(closePaletteTimer);
+    closePaletteTimer = null;
+    if (paletteOutsideHandler) document.removeEventListener('pointerdown', paletteOutsideHandler, true);
+    if (paletteKeyHandler) document.removeEventListener('keydown', paletteKeyHandler, true);
+    paletteOutsideHandler = null;
+    paletteKeyHandler = null;
+    palette?.remove();
+    palette = null;
+    colorBtn?.setAttribute?.('aria-expanded', 'false');
+  };
+  const updateToolButtons = (selectedBtn) => {
+    tb.querySelectorAll('.sa-tb-btn').forEach(b => {
+      const active = b === selectedBtn;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  };
+  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
+    btn.dataset.tool = t.name; btn.title = t.title; btn.setAttribute('aria-label', t.title); btn.setAttribute('aria-pressed', t.name === 'pen' ? 'true' : 'false'); btn.innerHTML = lucide(t.icon, 18);
+    btn.onclick = () => { markup.setTool(t.name); updateToolButtons(btn); };
+    tb.appendChild(btn);
+  });
+  const colorBtn = document.createElement('button');
+  colorBtn.type = 'button';
+  colorBtn.className = 'sa-markup-color-btn';
+  colorBtn.title = '色';
+  colorBtn.setAttribute('aria-label', 'アノテート色');
+  colorBtn.setAttribute('aria-haspopup', 'dialog');
+  colorBtn.setAttribute('aria-expanded', 'false');
+  const colorSwatch = document.createElement('span');
+  colorSwatch.className = 'sa-markup-color-swatch';
   colorSwatch.style.background = markup.ann.color || PALETTE_COLORS[0];
   colorBtn.appendChild(colorSwatch);
   colorBtn.onclick = () => {

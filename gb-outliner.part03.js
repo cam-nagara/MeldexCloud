@@ -279,6 +279,13 @@ function _outlinerHighlightNodeCandidates() {
 
 // フォルダツリーで対応ノードをハイライト（auto-link遷移・ページ復元等で使用）
 function highlightOutlinerNode(targetPath, opts) {
+  const selectedShortcut = document.querySelector('#body-recent .fav-item.selected, #body-favorites .fav-item.selected');
+  const shortcutPath = String(window._meldexSidebarShortcutSelectionPath || '').replace(/\\/g, '/');
+  if (selectedShortcut && shortcutPath && _outlinerHighlightPathMatches(shortcutPath, targetPath)) {
+    // ショートカットから開いた直後の後追い表示更新で、同じ実体のツリー行へ色を移さない。
+    document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+    return;
+  }
   document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
   if (!targetPath) return;
   const noScroll = opts && opts.noScroll;

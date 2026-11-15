@@ -114,7 +114,10 @@ function _chatPersistQueuedMessages() {
     });
     if (saved.length) localStorage.setItem(CHAT_QUEUE_STORAGE_KEY, JSON.stringify(saved));
     else localStorage.removeItem(CHAT_QUEUE_STORAGE_KEY);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function _chatRestoreQueuedMessages() {
@@ -368,16 +371,7 @@ function _chatDecorateHistoryList() {
   list.setAttribute('aria-label', 'AIチャット履歴');
   list.querySelectorAll('[data-chat-session-id]').forEach(row => {
     row.setAttribute('role', 'option');
-    const sessionId = String(row.dataset.chatSessionId || '');
-    const working = typeof _chatExecutionForSession === 'function' && !!_chatExecutionForSession(sessionId);
-    const unread = row.dataset.chatUnread === '1';
-    row.querySelector('.chat-list-state-icons')?.remove();
-    if (!working && !unread) return;
-    const icons = document.createElement('span');
-    icons.className = 'chat-list-state-icons';
-    icons.setAttribute('aria-label', [working ? 'AI作業中' : '', unread ? '未読' : ''].filter(Boolean).join('、'));
-    icons.textContent = (working ? '●' : '') + (unread ? ' •' : '');
-    row.firstElementChild?.appendChild(icons);
+    if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
   });
 }
 

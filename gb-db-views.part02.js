@@ -12,7 +12,6 @@
     { label: '右と入れ替え', disabled: idx >= viewsCount - 1, action: () => swapViews(idx, idx + 1) },
     { type: 'sep' },
     { label: '削除', action: async () => {
-      if (!await cfConfirm('このビューを削除しますか？')) return;
       const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
       const cfg = getDbViewConfig(dbPath);
       const curIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });

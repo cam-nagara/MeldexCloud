@@ -900,18 +900,17 @@
     const jobId = String(started?.job_id || '');
     if (!jobId) return started;
     const pollIntervalMs = 1000;
-    const maxPolls = 120; // 約2分
-    for (let i = 0; i < maxPolls; i += 1) {
+    // 経過時間ではなくジョブの完了状態を終了条件にする。長時間継続中のジョブを
+    // 失敗扱いにして重複起動を促さない。
+    for (let i = 0; ; i += 1) {
       const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
       if (onProgress) onProgress(job?.progress?.message || job?.progress?.phase || 'OSタグを照合しています...');
       if (job.status === 'done') return job.result || {};
       if (job.status === 'error') throw new Error(job.error || 'OSタグの再同期に失敗しました');
       if (job.status === 'cancelled' || job.status === 'canceled') throw new Error('OSタグの再同期を中止しました');
+      if (i === 119 && onProgress) onProgress('処理は継続中です。完了までこのまま待機します…');
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
-    const timeoutError = new Error('OSタグの再同期に時間がかかっています。しばらくしてから再度お試しください。');
-    timeoutError.name = 'LongRunningJobError';
-    throw timeoutError;
   }
 
   function bindTargetTagEditor(targetPath, ui, refresh) {

@@ -271,11 +271,16 @@ async function renderChatHistory() {
     items.forEach(item => {
       const div = document.createElement('div');
       const sessionId = String(item.name || '');
-      const modifiedMs = Date.parse(item.modified || '') || 0;
+      const replyVersion = String(item.assistantReplyVersion || '');
+      if (typeof _chatRememberReplyVersion === 'function') _chatRememberReplyVersion(sessionId, replyVersion);
+      const modifiedMs = typeof item.modified === 'number'
+        ? item.modified * 1000 : (Date.parse(item.modified || '') || 0);
       const readMs = Number(localStorage.getItem('meldex-chat-read:' + encodeURIComponent(sessionId)) || 0);
-      const isUnread = modifiedMs > readMs && sessionId !== String(_chatState.sessionId || '');
+      if (replyVersion && !localStorage.getItem(_chatReplySeenKey(sessionId)) && readMs >= modifiedMs) {
+        _chatMarkReplySeen(sessionId, replyVersion);
+      }
       div.dataset.chatSessionId = sessionId;
-      div.dataset.chatUnread = isUnread ? '1' : '0';
+      div.dataset.chatReplyVersion = replyVersion;
       div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
       div.onmouseover = () => div.style.background = 'var(--ui-hover-bg)';
@@ -292,10 +297,8 @@ async function renderChatHistory() {
         ? `<div data-chat-history-modified style="margin-top:3px;font-size:10px;color:var(--fg2);">最終更新 ${esc(modifiedLabel)}</div>`
         : '';
       const providerIcon = getProviderIconHtml(item.provider || 'gemini', 14);
-      div.innerHTML = `<div style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
+      div.innerHTML = `<div data-chat-state-host style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
       div.addEventListener('click', () => {
-        localStorage.setItem('meldex-chat-read:' + encodeURIComponent(sessionId), String(Date.now()));
-        div.dataset.chatUnread = '0';
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
       listEl.appendChild(div);
@@ -747,6 +750,8 @@ async function showChatHistoryDropdown(event) {
 
   const popup = document.createElement('div');
   popup.id = 'chat-title-dropdown';
+  popup.setAttribute('role', 'listbox');
+  popup.setAttribute('aria-label', 'チャットルームを選択');
   popup.style.cssText = 'position:fixed;z-index:10080;background:var(--ui-popup-bg, var(--bg));color:var(--fg);border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.25);min-width:240px;max-width:380px;max-height:320px;overflow-y:auto;font-size:12px;';
   const loading = document.createElement('div');
   loading.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
@@ -784,13 +789,25 @@ async function showChatHistoryDropdown(event) {
     }
     items.forEach(item => {
       const row = document.createElement('div');
+      row.dataset.chatSessionId = String(item.name || '');
+      row.dataset.chatReplyVersion = String(item.assistantReplyVersion || '');
+      if (typeof _chatRememberReplyVersion === 'function') {
+        _chatRememberReplyVersion(row.dataset.chatSessionId, row.dataset.chatReplyVersion);
+      }
       const isActive = _chatState.sessionId && item.name === _chatState.sessionId;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      row.tabIndex = 0;
       row.style.cssText = 'padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;' + (isActive ? 'background:var(--bg3);' : '');
       row.addEventListener('mouseover', () => row.style.background = isActive ? 'var(--bg3)' : 'rgba(255,255,255,0.05)');
       row.addEventListener('mouseout', () => row.style.background = isActive ? 'var(--bg3)' : '');
       const title = document.createElement('div');
-      title.style.cssText = 'color:' + (isActive ? 'var(--accent)' : 'var(--fg)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (isActive ? 'font-weight:bold;' : '');
-      title.textContent = _chatListTitle(item) || item.name;
+      title.dataset.chatStateHost = '1';
+      title.style.cssText = 'display:flex;align-items:center;gap:6px;color:' + (isActive ? 'var(--accent)' : 'var(--fg)') + ';white-space:nowrap;overflow:hidden;' + (isActive ? 'font-weight:bold;' : '');
+      const label = document.createElement('span');
+      label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      label.textContent = _chatListTitle(item) || item.name;
+      title.appendChild(label);
       row.appendChild(title);
       const targetName = item.targetPath ? item.targetPath.split('/').pop() : '';
       if (item.title && targetName && item.title !== targetName) {
@@ -799,12 +816,20 @@ async function showChatHistoryDropdown(event) {
         sub.textContent = targetName;
         row.appendChild(sub);
       }
-      row.addEventListener('click', () => {
+      const openRow = () => {
         _closeChatTitleDropdown();
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
+      };
+      row.addEventListener('click', openRow);
+      row.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openRow();
       });
       popup.appendChild(row);
+      if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
     });
+    popup.querySelector('[role="option"]')?.focus();
   } catch (e) {
     popup.innerHTML = '';
     const err = document.createElement('div');

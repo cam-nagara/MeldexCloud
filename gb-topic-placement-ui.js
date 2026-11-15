@@ -1322,7 +1322,8 @@
           target.position = global.bdClientToCanvasLocal(event.clientX, event.clientY, target._dropCanvas);
         }
         delete target._dropCanvas;
-        const operation = event.ctrlKey || event.metaKey ? 'link-duplicate' : 'move';
+        // Altを利用者向けの共通「リンク複製」修飾キーとする。Ctrl/Cmdは既存互換。
+        const operation = event.altKey || event.ctrlKey || event.metaKey ? 'link-duplicate' : 'move';
         const result = await execute(source, operation, target);
         if (!result?.ok) throw new Error(result?.message || '配置を保存できませんでした');
         global.MeldexDnD.completeDrop(resolved);

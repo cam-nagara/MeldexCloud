@@ -1364,15 +1364,22 @@ CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
 };
 
 CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
-  if (typeof cfConfirm === 'function' && !await cfConfirm('このイベントを削除しますか？')) return;
-  this._pushUndo('イベント削除');
   let calId = '';
+  let evRef = null;
   try {
-    const evRef = (this._events || []).find(x => x.id === id);
+    evRef = (this._events || []).find(x => x.id === id);
     calId = evRef?.calendar_id || '';
   } catch (_) {}
+  if (evRef && !evRef._recurrence_instance && !this._eventIsUndoable?.(evRef)) {
+    this._showStatus('自動生成された予定は元データから削除してください', true);
+    return;
+  }
+  if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
+    && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    // API成功後、再読込で削除前状態が失われる前に履歴へ積む。失敗した操作の偽履歴は残さない。
+    this._pushUndo('イベント削除');
     // Audit-P1 H-6: 紐付いたコメントを孤児化する（target_kind='calendar_event'）
     apiPost('/annotations/orphan-by-target', {
       target_kind: 'calendar_event',
@@ -1421,7 +1428,6 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     deleteButton.type = 'button'; deleteButton.className = 'tk-delete gb-btn gb-btn-sm gb-btn-danger danger'; deleteButton.textContent = '削除';
   }
   let busy = false;
-  let deleteConfirmPending = false;
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-todo',
     title: t ? 'ToDo編集' : '新規ToDo',
@@ -1434,7 +1440,7 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     closeLabel: 'ToDo編集を閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
-    onBeforeClose: () => !busy && !deleteConfirmPending,
+    onBeforeClose: () => !busy,
   });
   const o = modalApi.overlay;
   const panel = modalApi.modal;
@@ -1521,19 +1527,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     modalApi.close('saved');
   });
   deleteButton?.addEventListener('click', async () => {
-    if (busy || deleteConfirmPending) return;
-    deleteConfirmPending = true;
+    if (busy) return;
     setBusy(true);
-    if (status) status.textContent = '削除を確認中...';
-    let confirmed = false;
-    try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このToDoを削除しますか？'); }
-    catch {
-      if (status) status.textContent = '削除確認を表示できませんでした。もう一度お試しください。';
-    } finally {
-      deleteConfirmPending = false;
-      if (!confirmed && modalApi.isOpen()) setBusy(false);
-    }
-    if (!confirmed) return;
     if (status) status.textContent = '削除中...';
     try {
       await apiFetch('/cal/tasks/' + encodeURIComponent(t.id), { method: 'DELETE' });

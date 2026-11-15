@@ -563,7 +563,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         throw new Error('Cloud画像identity aftercareが読み込まれていません');
       }
       const drainedIdentity = await imageAftercare.drainPrepared(provider);
-      const targetDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const embeddedSources = new Set([
+        'note-drop', 'note-paste', 'note-standalone-drop',
+        'board-drop', 'board-background', 'board-image-link', 'callout-icon',
+      ]);
+      const requestedDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const targetDir = embeddedSources.has(String(body?.source || '')) ? 'Meldexファイル' : requestedDir;
+      if (targetDir === 'Meldexファイル') await _directoryHandle(provider, targetDir, true);
       const rawName = String(body?.filename || body?.name || 'file').split(/[\\/]/).pop();
       const fileName = _validateItemName(rawName || 'file', 'filename');
       const split = _splitNameAndExt(fileName);
@@ -892,9 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const provider = await _requirePwaProvider('read');
       return _listFolderVersions(provider, url.searchParams.get('path') || '');
     }
-    if (pathname === '/version/read-folder' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
-    }
-    if (pathname === '/version/read-folder-file' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');

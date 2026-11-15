@@ -135,6 +135,10 @@
     const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
     if (toolbar.lastElementChild !== more) toolbar.appendChild(more);
+    const compactTitle = toolbar.matches('.gb-toolbar-main')
+      ? Array.from(toolbar.children).find(el => el.matches('.tb-file-title'))
+      : null;
+    compactTitle?.classList.remove('gb-tbo-title-compact');
     const before = entry.overflow;
     // 付いていないクラスの削除も変更通知になり、他の監視を起こすため、付いている時だけ外す。
     Array.from(toolbar.children).forEach(el => { if (el.classList.contains(hiddenClass)) el.classList.remove(hiddenClass); });
@@ -167,6 +171,9 @@
         el.classList.add(hiddenClass);
         removed.add(el);
       }
+      // Keep the 240px title contract until all movable operations have been
+      // retired. Only an extremely narrow host may compact the title itself.
+      if (!fits() && compactTitle) compactTitle.classList.add('gb-tbo-title-compact');
     }
     entry.overflow = items.filter(el => removed.has(el));
     if (more.hidden !== (entry.overflow.length === 0)) more.hidden = entry.overflow.length === 0;

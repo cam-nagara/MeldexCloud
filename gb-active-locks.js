@@ -172,7 +172,10 @@
     headers.set(HEADER, token());
     const requestOptions = { ...(opts || {}), headers };
     // This request runs before apiFetch's mutation timeout. Bound both fetch
-    // and response-body reads, and fail closed before attempting a write.
+    // and response-body reads, and fail closed before attempting a write. The
+    // lock store may be on Dropbox/NAS, so use the normal read window rather
+    // than the old 15-second deadline.
+    const ACTIVE_LOCK_REQUEST_TIMEOUT_MS = 60000;
     const controller = new AbortController();
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -181,7 +184,7 @@
         const error = new Error('編集ロックの応答を確認できませんでした。接続を確認してください');
         error.code = 'active_lock_timeout';
         reject(error);
-      }, 15000);
+      }, ACTIVE_LOCK_REQUEST_TIMEOUT_MS);
     });
     try {
       const request = (async () => {

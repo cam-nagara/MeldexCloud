@@ -376,10 +376,9 @@ document.addEventListener('keydown', async (e) => {
       kind: item.type === 'folder' ? 'folder' : 'file',
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
-    const confirmMessage = items.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-      : await cfConfirm(confirmMessage);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     deleteOutlinerItemsWithHistory(items, {
       confirmation: confirmed,

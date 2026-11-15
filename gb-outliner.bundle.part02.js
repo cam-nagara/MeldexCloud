@@ -1,3 +1,28 @@
+  },
+  // 仮想化コンテナ内でのDOM当たり判定失敗時の範囲選択復元（rangeTo()専用の内部ヘルパー）。
+  // 起点(lastClicked)・終点(nodeEl)の両方が「同一の」仮想化コンテナに属する場合のみ対応し、
+  // それ以外（非仮想化フォルダ・別コンテナ間・所属不明）はfalseを返して既存の単一選択
+  // フォールバックに委ねる。範囲確定時、マウント済み行はtreeSelection経由（DOMクラスも
+  // 更新）、未マウント行は矩形選択(applyLassoSelection)と同じ流儀でstate.selectedIdsへ
+  // 直接安定IDを積む（再マウント時に自動復元される）。
+  _virtualRangeTo(nodeEl) {
+    const vr = window.GBOutlinerVirtualRender;
+    if (!vr || typeof vr.containerForPath !== 'function') return false;
+    const anchorPath = this._lastClickedPath;
+    const targetPath = nodeEl && nodeEl._nodeData && nodeEl._nodeData.path;
+    if (!anchorPath || !targetPath) return false;
+    const childrenDiv = vr.containerForPath(anchorPath);
+    if (!childrenDiv || childrenDiv !== vr.containerForPath(targetPath)) return false;
+    const state = childrenDiv._virtualState;
+    if (!state) return false;
+    const fromIdx = state.flat.findIndex(entry => entry.id === anchorPath);
+    const toIdx = state.flat.findIndex(entry => entry.id === targetPath);
+    if (fromIdx < 0 || toIdx < 0) return false;
+    this.clear();
+    const [start, end] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+    for (let i = start; i <= end; i++) {
+      const entry = state.flat[i];
+      const path = entry && entry.data && entry.data.path;
       if (!path) continue;
       const mountedEl = state.mountedById.get(path);
       if (mountedEl) this.add(mountedEl);
@@ -135,7 +160,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
     return 0;
   }
   const progress = window.MeldexImportProgress;
-  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
   let processed = 0;
   let succeeded = 0;
   const failures = [];
@@ -206,6 +231,21 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } else {
     showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
+  window.MeldexFileMoveHistory?.register?.(
+    movedItems.map(item => ({
+      oldPath: item.oldPath,
+      newPath: item.path,
+      currentPath: item.path,
+      name: item.name,
+      type: item.type,
+      fileId: item.file_id || item.fileId,
+    })),
+    {
+      label: `フォルダツリー: ${succeeded} 件を移動`,
+      detail: `→ ${targetPath}`,
+      refresh: () => refreshOutliner({ force: true, reason: 'outliner-move-history' }),
+    },
+  );
   return succeeded;
 }
 
@@ -858,43 +898,3 @@ function pushOutlinerSettingsHistory(label, beforeSnapshot, detail, keys) {
   return pushLocalStorageSettingsHistory(
     label || 'フォルダツリー: 設定変更',
     beforeSnapshot,
-    afterSnapshot,
-    detail || '',
-    refreshOutlinerSettingsAfterHistory
-  );
-}
-
-function applyNodeColor(row, color) {
-  const label = row.querySelector('.tree-label');
-  const icon = row.querySelector('.tree-icon');
-  if (color) {
-    if (label) label.style.color = color;
-    if (icon) icon.style.color = color;
-  } else {
-    if (label) label.style.color = '';
-    if (icon) icon.style.color = '';
-  }
-}
-
-function createTreeNodeFromBrowse(item, rootPath) {
-  // item: {name, type: "folder"|"database"|"page"|"scenario", path}
-  const div = document.createElement('div');
-  div.className = 'tree-node';
-  div._nodeData = item;
-  if (item.path) div.dataset.path = item.path;
-  if (item.sourceId) div.dataset.sourceId = item.sourceId;
-  if (item.rootKind) div.dataset.rootKind = item.rootKind;
-  if (item.workspaceId) div.dataset.workspaceId = item.workspaceId;
-  if (item.file_id) _registerFileId(item.path, item.file_id);
-
-  const row = document.createElement('div');
-  row.className = 'tree-node-row';
-  row.dataset.itemType = item.type || '';
-  if (item.sourceId) row.dataset.sourceId = item.sourceId;
-  if (item.rootKind) row.dataset.rootKind = item.rootKind;
-  if (item.workspaceId) row.dataset.workspaceId = item.workspaceId;
-  const itemLocked = item.path && isItemLocked(item.path);
-  row.draggable = !itemLocked && !item._isRoot;
-  row.tabIndex = -1;
-
-  const isFolder = item.type === 'folder';

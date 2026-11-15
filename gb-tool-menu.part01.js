@@ -969,15 +969,16 @@ async function _deleteCurrentFile(toolType) {
   if (!path) return;
   const assetId = getCurrentFileAssetId(path);
   const name = _toolMenuDisplayName(path, toolType, '');
-  const confirmMessage = `「${name || path}」を削除しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
         { path, kind: 'file', ...(assetId ? { assetId } : {}) },
-      ], confirmMessage)
-    : await cfConfirm(confirmMessage);
+      ])
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   try {
-    const result = await deleteOutlinerItemsWithHistory([{ path, name, type: toolType || 'page' }], {
+    const result = await deleteOutlinerItemsWithHistory([{
+      path, name, type: toolType || 'page', ...(assetId ? { assetId } : {}),
+    }], {
       confirmation: confirmed,
       label: 'ファイル削除',
       detail: path,

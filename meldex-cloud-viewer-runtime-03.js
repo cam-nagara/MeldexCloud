@@ -294,7 +294,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       const endpoint = parsed.path.startsWith('_media/') ? '/api/media/file' : '/api/file-raw';
       const context = endpoint === '/api/file-raw' && options.contextPath
         ? '&context_path=' + encodeURIComponent(options.contextPath) : '';
-      const assetScope = parsed.path.startsWith('Meldex画像/') ? '&asset_scope=home' : '';
+      const assetScope = /^(?:Meldex画像|Meldexファイル)\//.test(parsed.path) ? '&asset_scope=home' : '';
       const src = endpoint + '?path=' + encodeURIComponent(parsed.path) + context + assetScope;
       return `<img class="gb-icon-render gb-icon-image${_escAttr(className)}" src="${_escAttr(src)}" alt="" width="${px}" height="${px}" loading="lazy" decoding="async" style="object-fit:cover;border-radius:4px;">`;
     }
@@ -5405,7 +5405,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   // メタデータ取得完了（寸法確定）を待つ。showGroup()のレイヤー入替タイミング制御に使う。
   // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
-  function waitForVideoReady(video, timeoutMs = 3000) {
+  function waitForVideoReady(video, timeoutMs = 60000) {
     return new Promise(resolve => {
       if (!video) { resolve(false); return; }
       if (video.readyState >= 1) { resolve(true); return; } // HAVE_METADATA以上
@@ -5570,7 +5570,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   // メタデータ取得完了を待つ。showGroup()のレイヤー入替タイミング制御に使う（動画と同じ設計）。
   // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
-  function waitForAudioReady(audio, timeoutMs = 3000) {
+  function waitForAudioReady(audio, timeoutMs = 60000) {
     return new Promise(resolve => {
       if (!audio) { resolve(false); return; }
       if (audio.readyState >= 1) { resolve(true); return; } // HAVE_METADATA以上

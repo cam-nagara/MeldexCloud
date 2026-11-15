@@ -5,8 +5,8 @@
  * 計画書: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §2.2・§10.1
  * Phase0委任: app/docs/file-reference-integrity-phase0-2026-08-01/notes.md §4「4c」
  *
- * 既存の削除確認ダイアログ(cfConfirm、UI共通ルール「削除は必ず確認ダイアログ」で
- * 既に全削除操作に確認がある)へ、被参照件数の警告を追加するだけの薄いレイヤー。
+ * 完全削除など確認が必要な操作には被参照件数を表示し、ゴミ箱＋Undo/Redo＋共通履歴で
+ * 回復できる通常削除には、同じ整合性トークンだけを非表示で取得する薄いレイヤー。
  * サーバー側の判定・カウントは一切行わず、削除影響照会（POST /references/delete-impact。
  * apiPost が API ベース URL を前置するため、ここでは `/api` を自分で付けないこと —
  * 付けると `/api/api/...` になり常に失敗し、削除確認そのものが黙って中止されていた
@@ -129,7 +129,7 @@
       const note = document.createElement('div');
       note.className = 'gb-delete-impact-warning-incomplete';
       note.dataset.e2eId = 'delete-impact-warning-incomplete';
-      note.textContent = '参照の確認が不完全です';
+      note.textContent = '一部の参照先を確認できませんでした。ゴミ箱へ移動できますが、表示されていない参照が残る可能性があります。完全削除は安全のため実行できません。';
       box.appendChild(note);
     }
 
@@ -262,10 +262,31 @@
     };
   }
 
+  // ゴミ箱とUndo/Redoで回復できる操作向け。参照グラフの整合性トークンは従来どおり
+  // 取得するが、利用者を確認ダイアログで止めない。照会に失敗した場合は安全側で中止する。
+  async function authorizeReversibleDelete(targets, options) {
+    const items = _toDeleteImpactItems(targets);
+    const opts = Object.assign({}, options || {});
+    if (!items.length) return { confirmed: true, operation: 'trash' };
+    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
+    if (failed || !impact) {
+      if (typeof cfAlert === 'function') await cfAlert('参照の確認ができなかったため、削除を中止しました。');
+      return false;
+    }
+    return {
+      confirmed: true,
+      confirmationToken: impact.confirmationToken,
+      graphRevision: impact.graphRevision,
+      confirmations: impact.confirmations,
+      operation: 'trash',
+    };
+  }
+
   window.MeldexDeleteImpactWarning = {
     fetchDeleteImpact,
     buildWarningNode,
     confirmDeleteWithImpact,
+    authorizeReversibleDelete,
     confirmationPayload,
     targetFor,
   };

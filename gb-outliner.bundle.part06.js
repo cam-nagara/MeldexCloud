@@ -1,3 +1,79 @@
+    name: label || '無題',
+    type,
+    path: '__meldex_pending_create_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+    _pendingCreate: true,
+  };
+  const node = createTreeNodeFromBrowse(item);
+  node.classList.add('tree-node-pending-create');
+  const row = node.querySelector(':scope > .tree-node-row');
+  const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
+  if (row) {
+    row.draggable = false;
+    row.style.opacity = '0.62';
+    row.style.fontStyle = 'italic';
+  }
+  if (labelEl) labelEl.textContent = (label || '無題') + '（作成中）';
+  const block = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(eventName => {
+    node.addEventListener(eventName, block, true);
+  });
+  return node;
+}
+
+function _openOutlinerCreatedNode(nd, name) {
+  const _expOpts = { fromExplorer: true };
+  if (nd.type === 'page') openPage(name, nd.path, _expOpts);
+  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
+  else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
+  else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
+    if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
+  }
+  else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
+  else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
+  else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
+}
+
+function _outlinerCreateItemIdentity(type, name) {
+  const normalizedType = String(type || '').trim();
+  const normalizedName = String(name || '').trim();
+  return normalizedType && normalizedName ? `${normalizedType}\n${normalizedName}` : '';
+}
+
+// 追加API呼び出し前の既存子ノード識別子（事後確認での新規判定に使用）。
+// 「無題」のような同名項目は種類をまたいで共存できるため、名前だけでは比較しない。
+function _outlinerSnapshotChildNames(container) {
+  const names = new Set();
+  container.querySelectorAll(':scope > .tree-node').forEach(node => {
+    const d = node._nodeData;
+    const identity = d && !d._pendingCreate
+      ? _outlinerCreateItemIdentity(d.type, d.name)
+      : '';
+    if (identity) names.add(identity);
+  });
+  return names;
+}
+
+// 一覧からタイプが一致し事前集合に無い項目を探す（作成の事後確認用）。
+// 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
+function _outlinerFindNewItemInListing(items, type, existingNames) {
+  if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
+  return items.find(it => {
+    if (!it || it.type !== type || !it.name) return false;
+    const identity = _outlinerCreateItemIdentity(it.type, it.name);
+    return identity && !existingNames.has(identity);
+  }) || null;
+}
+
+// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
+function _outlinerApplyCreateSuccess(pendingNode, found, options) {
+  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
+  if (!pendingNode || !pendingNode.parentNode) return;
+  const newNode = createTreeNodeFromBrowse(found);
+  pendingNode.replaceWith(newNode);
+  _selectOutlinerCreateNode(newNode);
+}
+
 // 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
 async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
@@ -479,6 +555,13 @@ function _outlinerHighlightNodeCandidates() {
 
 // フォルダツリーで対応ノードをハイライト（auto-link遷移・ページ復元等で使用）
 function highlightOutlinerNode(targetPath, opts) {
+  const selectedShortcut = document.querySelector('#body-recent .fav-item.selected, #body-favorites .fav-item.selected');
+  const shortcutPath = String(window._meldexSidebarShortcutSelectionPath || '').replace(/\\/g, '/');
+  if (selectedShortcut && shortcutPath && _outlinerHighlightPathMatches(shortcutPath, targetPath)) {
+    // ショートカットから開いた直後の後追い表示更新で、同じ実体のツリー行へ色を移さない。
+    document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+    return;
+  }
   document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
   if (!targetPath) return;
   const noScroll = opts && opts.noScroll;
@@ -815,86 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     if (event.shiftKey) return 'add';
     return 'replace';
   }
-
-  function _outlinerLassoScopeFromTarget(target) {
-    if (target?.closest?.('#body-home')) return '#body-home';
-    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-home') return '#body-home';
-    if (section?.id === 'section-workspaces') return '#body-workspaces';
-    if (section?.id === 'section-roots') return '#outliner-tree';
-    return '#outliner-tree,#body-home';
-  }
-
-  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
-  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
-  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
-  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
-  function _outlinerLassoIsBlankTarget(target) {
-    if (window.GBOutlinerInput?.classifyPointerTarget) {
-      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
-    }
-    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
-    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
-    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-workspaces') return true;
-    return section?.id === 'section-roots' || section?.id === 'section-home';
-  }
-
-  function _outlinerLassoRectForEvent(event) {
-    const rect = scroller.getBoundingClientRect();
-    const currentX = event.clientX - rect.left + scroller.scrollLeft;
-    const currentY = event.clientY - rect.top + scroller.scrollTop;
-    const left = Math.min(startX, currentX);
-    const top = Math.min(startY, currentY);
-    const width = Math.abs(currentX - startX);
-    const height = Math.abs(currentY - startY);
-    return { left, top, right: left + width, bottom: top + height, width, height };
-  }
-
-  function _outlinerLassoRowRect(row) {
-    const rowRect = row.getBoundingClientRect();
-    const scrollerRect = scroller.getBoundingClientRect();
-    return {
-      left: rowRect.left - scrollerRect.left + scroller.scrollLeft,
-      top: rowRect.top - scrollerRect.top + scroller.scrollTop,
-      right: rowRect.left - scrollerRect.left + scroller.scrollLeft + rowRect.width,
-      bottom: rowRect.top - scrollerRect.top + scroller.scrollTop + rowRect.height,
-    };
-  }
-
-  function _outlinerRectsOverlap(a, b) {
-    return !(b.right < a.left || b.left > a.right || b.bottom < a.top || b.top > a.bottom);
-  }
-
-  const updateSelection = (lassoRect) => {
-    const base = new Set(baseSelection.filter(node => node?.isConnected));
-    const hitNodes = [];
-    treeSelection.clear();
-    base.forEach(node => treeSelection.add(node));
-    _getVisibleTreeNodes(selectionScope).forEach(nodeEl => {
-      const row = nodeEl.querySelector('.tree-node-row');
-      if (!row) return;
-      if (!_outlinerRectsOverlap(lassoRect, _outlinerLassoRowRect(row))) return;
-      hitNodes.push(nodeEl);
-      if (selectionMode === 'toggle' && base.has(nodeEl)) treeSelection.remove(nodeEl);
-      else treeSelection.add(nodeEl);
-    });
-    treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
-    if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
-    // 仮想化コンテナ（フォルダツリー改修Phase3）: 現在マウントされていない行も、
-    // 矩形の論理Y範囲から該当する表示モデルの行を求めて選択状態に反映する（§2.5）。
-    if (window.GBOutlinerVirtualRender?.applyLassoSelection) {
-      const basePaths = new Set([...base].map(node => node?._nodeData?.path).filter(Boolean));
-      window.GBOutlinerVirtualRender.applyLassoSelection({
-        lassoRect, scope: selectionScope, mode: selectionMode, basePaths,
-      });
-    }
-  };
-
-  const beginLasso = (event) => {
-    if (active) return;
-    active = true;
-    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {

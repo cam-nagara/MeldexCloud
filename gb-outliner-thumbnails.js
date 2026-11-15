@@ -535,6 +535,10 @@
       var img = document.createElement('img');
       img.className = 'tree-thumb-img';
       img.alt = '';
+      // The row owns Meldex D&D.  A natively draggable <img> starts with the
+      // thumbnail endpoint as Files/text/html/text/uri-list, so file-first drop
+      // receivers can mistake an internal move for an external thumbnail copy.
+      img.draggable = false;
       img.decoding = 'async';
       shell.appendChild(img);
       iconEl.insertAdjacentElement('afterend', shell);

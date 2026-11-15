@@ -247,7 +247,8 @@
    個別にクリップする。カード枠側でクリップすると、カードのしっぽ・カードメニューボタン・
    リンクを開くボタンがカード外に出た瞬間に切り落とされてしまうため。 */
 .bd-node { position: absolute; min-width: 40px; min-height: 28px; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); background: var(--bd-node-bg, var(--bg4)); border: 2px solid transparent; color: var(--fg); cursor: grab; user-select: none; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; overflow: visible; isolation: isolate; }
-.bd-node:has(.bd-img) { padding: 0; border-width: 0; }
+.bd-node:has(.bd-img),
+.bd-node.bd-video-node { padding: 0; border-width: 0; }
 /* hover 時のフィードバックは「カードメニューボタン」(.bd-card-menu-btn) の表示のみとし、
    カードを囲う矩形 (旧 box-shadow 1px outline) は出さない (v0.5.246)。z-index は前面化のため維持。 */
 .bd-node:hover { z-index: 5; }
@@ -401,6 +402,20 @@
 .bd-node.bd-selected .bd-text, .bd-node.bd-editing .bd-text { pointer-events: auto; }
 .bd-node .bd-img { position: relative; z-index: 1; width: 100%; height: auto; max-width: 100%; border-radius: 3px; display: block; pointer-events: none; }
 .bd-node:has(.bd-img) .bd-text { padding: 2px 6px 4px; }
+.bd-node .bd-card-video {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border-radius: inherit;
+  white-space: normal;
+  user-select: auto;
+  cursor: default;
+}
+.bd-node.bd-video-node > .bd-text { padding: 4px 38px 5px 7px; }
+.bd-node.bd-video-node .bd-link-open-btn { top: 4px; transform: none; }
+.bd-node.bd-video-node .gb-web-embed-video { min-height: 108px; }
 .bd-node.bd-image-missing { min-width: 180px; min-height: 108px; }
 .bd-node .bd-missing-image {
   position: relative;

@@ -342,6 +342,13 @@ historyRegisterSnapshotProvider('schedule:', {
   restore: (snap, scope) => (typeof _schedRestoreSnapshot === 'function' ? _schedRestoreSnapshot(snap, scope) : undefined),
 });
 
+// map: 大きいマップ文書のRedo状態は最初のUndo時に遅延取得する。通常編集のたびに
+// before/afterを二重保持せず、共通履歴の一方向エントリを安全に補完する。
+historyRegisterSnapshotProvider('map:', {
+  capture: (scope) => globalThis.MeldexMapHistorySnapshots?.capture?.(scope) ?? null,
+  restore: (snap, scope) => globalThis.MeldexMapHistorySnapshots?.restore?.(snap, scope) ?? false,
+});
+
 // アクションを記録（undoFnとredoFnはasync可、scopeはオプション）
 let _historyEntrySequence = 0;
 let _historyBusy = false;
@@ -352,7 +359,8 @@ function _historyIsBusy() {
 
 function historyPush(label, undoFn, redoFn, scope, detail) {
   const s = _getStack(scope);
-  s.undo.push({ id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' });
+  const entry = { id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' };
+  s.undo.push(entry);
   const max = getHistoryMax();
   while (s.undo.length > max) s.undo.shift();
   s.redo.length = 0;
@@ -362,6 +370,7 @@ function historyPush(label, undoFn, redoFn, scope, detail) {
   }
   renderHistoryList();
   renderHistoryPanel();
+  return entry;
 }
 
 async function historyUndo(scope) {
@@ -713,6 +722,10 @@ function _meldexPageTabHistoryScope(tab) {
   const path = String(tab?.path || tab?.state?.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
   return path ? `page:${path}` : '';
 }
+function _meldexMapTabHistoryScope(tab) {
+  const path = String(tab?.path || tab?.state?.mapPath || '').replace(/\\/g, '/');
+  return path ? `map:${path}` : '';
+}
 
 // 共通履歴（スコープなし）を使うタブ種別。
 function _meldexCommonHistoryTabScope() { return ''; }
@@ -734,6 +747,7 @@ const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
   scriptnote: _meldexScriptNoteTabHistoryScope,
   calendar: _meldexScheduleTabHistoryScope,
   page: _meldexPageTabHistoryScope,
+  map: _meldexMapTabHistoryScope,
   entity: _meldexCommonHistoryTabScope,
   media: _meldexCommonHistoryTabScope,
   html: _meldexCommonHistoryTabScope,
@@ -812,6 +826,12 @@ function _meldexHasPaneLayout() {
 const _MELDEX_LIVE_SCOPE_GETTERS = Object.freeze({
   'board:': () => (typeof bd !== 'undefined' && typeof _bdHistoryScope === 'function') ? _bdHistoryScope(bd.path) : null,
   'csv:': () => (typeof _csvHistoryScope === 'function') ? _csvHistoryScope() : null,
+  'map:': () => {
+    if (typeof getComponentInstance !== 'function') return null;
+    const tab = _meldexActiveTabForPane();
+    const component = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+    return component?.store && typeof component._historyScope === 'function' ? component._historyScope() : null;
+  },
 });
 
 function _meldexRiskyLiveScopePrefix(scope) {
@@ -850,7 +870,7 @@ async function _meldexWaitForLiveScopeSettle(scope, timeoutMs = 3000) {
 // （誤って正常な取り消しをブロックしない）。
 async function _meldexPrepareHistoryScopeTarget(scope) {
   if (!scope || !_meldexHasPaneLayout()) return { ok: true, switched: false };
-  if (!/^(db|board|csv|scriptnote|schedule|page):/.test(scope)) return { ok: true, switched: false };
+  if (!/^(db|board|csv|scriptnote|schedule|page|map):/.test(scope)) return { ok: true, switched: false };
   if (_meldexResolveActiveTabHistoryScope() === scope) return { ok: await _meldexWaitForLiveScopeSettle(scope), switched: false };
   const match = _meldexFindTabForHistoryScope(scope);
   if (!match) return { ok: false, switched: false };

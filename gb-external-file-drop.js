@@ -9,7 +9,22 @@
   const shown = element => element?.isConnected && element.getClientRects().length > 0;
   let highlighted = null;
   function clearHighlight() {
-    highlighted?.removeAttribute('data-meldex-external-drop-active'); highlighted = null;
+    highlighted?.removeAttribute('data-meldex-external-drop-active');
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.hideDropIndicator?.(highlighted);
+    highlighted = null;
+  }
+
+  function indicatorTarget(route, element) {
+    if (route?.target?.getBoundingClientRect) {
+      return route.target.closest?.('.gb-form-input-row,.gb-image-cell,[contenteditable="true"],textarea,input') || route.target;
+    }
+    return element?.closest?.([
+      '.tree-node-row', '.fv-item', '#folder-grid', '.gb-subpanel-folder-root', '.gb-folder-root',
+      '.gb-form-input-row', '.gb-image-cell', '#page-content', '#entity-freetext', '.gb-subpanel-note-content',
+      '#bd-canvas', '.gb-board-root', '#db-view-container', '.gb-database-root',
+      '#chat-messages', '#chat-rich-input', '#team-messages', '#team-input',
+      '.gb-subpanel-titlebar', '.gb-subpanel', '.gb-pane',
+    ].join(',')) || null;
   }
 
   // Chromium protects the original store as soon as the drop callback returns.
@@ -152,8 +167,15 @@
       label:url.hostname || 'リンク'};
   }
   async function webFiles(item) {
+    const progress = global.MeldexOperationProgress?.begin?.({
+      kind: 'external-file-download', label: '外部ファイルを取得中', mode: 'indeterminate',
+      showImmediately: true, showInTray: true, priority: 35,
+    });
+    try {
     if (!item.downloadable) {
-      return [new File(['[InternetShortcut]\r\nURL=' + item.url + '\r\n'], filename(item.label, 'リンク') + '.url', {type:'application/internet-shortcut'})];
+      const files = [new File(['[InternetShortcut]\r\nURL=' + item.url + '\r\n'], filename(item.label, 'リンク') + '.url', {type:'application/internet-shortcut'})];
+      progress?.succeed?.({ summary: 'リンクを取得しました' });
+      return files;
     }
     let blob, name = item.name;
     if (/^https?:/i.test(item.url)) {
@@ -170,7 +192,39 @@
     }
     if (blob.size > 25 * 1024 * 1024) throw new Error('ドロップしたファイルは25MB以下にしてください');
     if (!/\.[\w-]+$/.test(name) && blob.type.startsWith('image/')) name += '.' + ({'image/jpeg':'jpg','image/svg+xml':'svg'}[blob.type] || blob.type.split('/')[1] || 'png');
-    return [new File([blob], filename(name, 'download'), {type:blob.type})];
+    const files = [new File([blob], filename(name, 'download'), {type:blob.type})];
+    progress?.succeed?.({ summary: '外部ファイルを取得しました' });
+    return files;
+    } catch (error) {
+      progress?.fail?.({ error });
+      throw error;
+    }
+  }
+  async function importWebFolder(route, item) {
+    if (!route.path) throw new Error('先に保存先のフォルダを選択してください');
+    if (typeof isItemLocked === 'function' && isItemLocked(route.path)) throw new Error('編集ロック中の保存先へは取り込めません');
+    const progress = global.MeldexOperationProgress?.begin?.({
+      kind: 'external-file-import', label: '外部ファイルを取り込み中', mode: 'indeterminate',
+      showImmediately: true, showInTray: true, priority: 35,
+    });
+    let result;
+    try {
+      result = await apiPost('/external-drop/file', {
+        url:item.url, filename:item.name, image:item.image, path:route.path,
+      });
+    } catch (error) {
+      progress?.fail?.({ error });
+      throw new Error('ドロップしたファイルを保存できませんでした: ' + (error?.userMessage || error?.message || '通信エラー'));
+    }
+    if (!result?.ok || !result?.saved || !result?.path) {
+      const error = new Error('ドロップしたファイルを保存できませんでした');
+      progress?.fail?.({ error });
+      throw error;
+    }
+    if (typeof _folderApplySavedDropResults === 'function') _folderApplySavedDropResults(route.path, [result]);
+    progress?.succeed?.({ summary: '1件を取り込みました' });
+    global.showStatus?.('1件を取り込みました');
+    return result;
   }
   function fileTransfer(files) {
     const transfer = new DataTransfer();
@@ -218,8 +272,15 @@
     if (!route) return;
     event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
     if (route.kind !== 'native' && route.kind !== 'input') event.stopPropagation();
-    const target = event.target.closest('.tree-node-row,.fv-item,#folder-grid,#chat-messages,#chat-rich-input,#db-view-container');
-    if (highlighted !== target) { clearHighlight(); highlighted = target; highlighted?.setAttribute('data-meldex-external-drop-active', '1'); }
+    const target = indicatorTarget(route, event.target);
+    if (highlighted !== target) {
+      clearHighlight();
+      highlighted = target;
+      highlighted?.setAttribute('data-meldex-external-drop-active', '1');
+    }
+    if (typeof MeldexDnD !== 'undefined') {
+      MeldexDnD.showDropIndicator?.(target, { kind:'external', label:'ファイルをここにドロップ' });
+    }
   }, true);
   document.addEventListener('dragleave', event => { if (!highlighted?.contains(event.relatedTarget)) clearHighlight(); }, true);
   document.addEventListener('dragend', clearHighlight, true);
@@ -237,8 +298,11 @@
     if (!transfer.files.length && !transfer.items.some(entry => entry.kind === 'file') && !item) return;
     event.preventDefault(); event.stopImmediatePropagation();
     // Pin destination now: a later app/tab change cannot redirect the write.
-    global.MeldexExternalFileDrop.pending = Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer)
-      .then(data => receive(route, data, event)).catch(fail);
+    const directFolderImport = item?.downloadable && route.kind === 'folder' && route.type === 'folder';
+    global.MeldexExternalFileDrop.pending = (directFolderImport
+      ? importWebFolder(route, item)
+      : Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer).then(data => receive(route, data, event)))
+      .catch(fail);
   }, true);
   // Trusted Meldex viewers use a separate document, so their drops do not
   // bubble into the app. Import beside the viewer's current file in its parent.
@@ -263,8 +327,11 @@
       const item = transfer.files.length ? null : webItem(transfer);
       if (!transfer.files.length && !item) return;
       event.preventDefault(); event.stopImmediatePropagation();
-      global.MeldexExternalFileDrop.pending = Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer)
-        .then(data => receive(route, data, event)).catch(fail);
+      const directFolderImport = item?.downloadable && route.kind === 'folder' && route.type === 'folder';
+      global.MeldexExternalFileDrop.pending = (directFolderImport
+        ? importWebFolder(route, item)
+        : Promise.resolve(item ? webFiles(item).then(fileTransfer) : transfer).then(data => receive(route, data, event)))
+        .catch(fail);
     }, true);
   }
   document.addEventListener('load', event => bindViewer(event.target), true);

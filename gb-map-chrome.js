@@ -41,7 +41,7 @@
     app._mapCommands = commands;
     const parking = app._mapParking = document.createElement('div'); parking.hidden = true; app.el.appendChild(parking);
     parking.append(...toolbar.children);
-    toolbar.className = 'gb-toolbar gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
+    toolbar.className = 'gb-toolbar gb-toolbar-main gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
     const menu = iconButton(app, 'マップメニュー', 'menu', event => showToolMenu(event, 'map', app), 'menu'); menu.classList.add('tool-menu-btn');
     menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
     const reveal = iconButton(app, 'フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('map', event), 'reveal');

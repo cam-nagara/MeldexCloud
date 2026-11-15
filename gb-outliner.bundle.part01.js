@@ -823,6 +823,31 @@ function _getVisibleTreeNodes(scopeSelector) {
 }
 
 // 複数選択管理
+// 「現在選択中」の色は、ツリー本体と最近使った項目／お気に入りを横断して一つだけにする。
+// data-active-workspace は接続先を表す別状態なので、ここでは変更しない。
+function clearSidebarShortcutSelection() {
+  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
+    .forEach(el => el.classList.remove('selected'));
+  window._meldexSidebarShortcutSelectionPath = '';
+}
+
+function clearTreeVisibleSelection() {
+  if (typeof treeSelection !== 'undefined') treeSelection.clear();
+  document.querySelectorAll('.tree-node-row.active').forEach(row => row.classList.remove('active'));
+}
+
+function beginTreeVisibleSelection(options) {
+  clearSidebarShortcutSelection();
+  // Ctrl/Meta/Shift はツリー内の複数選択を保つため、ツリー選択そのものは呼出元へ任せる。
+  if (!options?.preserveTreeSelection) clearTreeVisibleSelection();
+}
+
+window.MeldexVisibleSelection = Object.freeze({
+  clearShortcuts: clearSidebarShortcutSelection,
+  clearTree: clearTreeVisibleSelection,
+  beginTree: beginTreeVisibleSelection,
+});
+
 const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
   _lastClicked: null,
@@ -873,28 +898,3 @@ const treeSelection = {
     this.clear();
     const [start, end] = from < to ? [from, to] : [to, from];
     for (let i = start; i <= end; i++) this.add(allRows[i]);
-  },
-  // 仮想化コンテナ内でのDOM当たり判定失敗時の範囲選択復元（rangeTo()専用の内部ヘルパー）。
-  // 起点(lastClicked)・終点(nodeEl)の両方が「同一の」仮想化コンテナに属する場合のみ対応し、
-  // それ以外（非仮想化フォルダ・別コンテナ間・所属不明）はfalseを返して既存の単一選択
-  // フォールバックに委ねる。範囲確定時、マウント済み行はtreeSelection経由（DOMクラスも
-  // 更新）、未マウント行は矩形選択(applyLassoSelection)と同じ流儀でstate.selectedIdsへ
-  // 直接安定IDを積む（再マウント時に自動復元される）。
-  _virtualRangeTo(nodeEl) {
-    const vr = window.GBOutlinerVirtualRender;
-    if (!vr || typeof vr.containerForPath !== 'function') return false;
-    const anchorPath = this._lastClickedPath;
-    const targetPath = nodeEl && nodeEl._nodeData && nodeEl._nodeData.path;
-    if (!anchorPath || !targetPath) return false;
-    const childrenDiv = vr.containerForPath(anchorPath);
-    if (!childrenDiv || childrenDiv !== vr.containerForPath(targetPath)) return false;
-    const state = childrenDiv._virtualState;
-    if (!state) return false;
-    const fromIdx = state.flat.findIndex(entry => entry.id === anchorPath);
-    const toIdx = state.flat.findIndex(entry => entry.id === targetPath);
-    if (fromIdx < 0 || toIdx < 0) return false;
-    this.clear();
-    const [start, end] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
-    for (let i = start; i <= end; i++) {
-      const entry = state.flat[i];
-      const path = entry && entry.data && entry.data.path;

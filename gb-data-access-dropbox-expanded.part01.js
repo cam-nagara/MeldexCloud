@@ -1344,6 +1344,28 @@
     }
   }
 
+  async function _preferredQuickMemoTarget(provider, roots) {
+    const found = [];
+    for (const root of roots) {
+      // 通常構成は登録ルート直下の「クイックメモ」。ここが正本なら、
+      // 大量の兄弟フォルダーを列挙せずに保存先を確定できる。
+      const child = await _validateQuickMemoTarget(provider, roots, {
+        quick_memo_folder: _joinPath(root.path, 'クイックメモ'),
+      });
+      if (child) {
+        found.push(child);
+        continue;
+      }
+      // クイックメモシート自体をDropboxフォルダーとして登録した構成も許可する。
+      const rootSheet = await _validateQuickMemoTarget(provider, roots, {
+        quick_memo_folder: root.path,
+      });
+      if (rootSheet) found.push(rootSheet);
+    }
+    if (found.length > 1) throw _error(409, 'クイックメモの保存先が複数見つかりました。Meldexファイルの登録を確認してください。');
+    return found[0] || null;
+  }
+
   async function _discoverQuickMemoTarget(provider, roots) {
     const marked = [], legacy = [], visited = new Set();
     const queue = roots.map(root => root.path);
@@ -1363,9 +1385,14 @@
         if (isSheet && fm.meldex_registry === 'quick-memo-v1') marked.push(folder);
         else if (isSheet && _quickMemoFolderName(folder, roots) === 'クイックメモ') legacy.push(folder);
       }
-      if (!isSheet) entries.forEach(entry => {
-        if (entry.kind === 'directory' && !/^[._]/.test(entry.name)) queue.push(_joinPath(folder, entry.name));
-      });
+      if (!isSheet) {
+        const directories = entries.filter(entry => entry.kind === 'directory' && !/^[._]/.test(entry.name));
+        const preferred = directories.filter(entry => entry.name === 'クイックメモ');
+        const remaining = directories.filter(entry => entry.name !== 'クイックメモ');
+        // 既定シートを先に確認し、巨大なDropbox配下の全走査でCloud版がタイムアウトするのを避ける。
+        queue.unshift(...preferred.map(entry => _joinPath(folder, entry.name)));
+        queue.push(...remaining.map(entry => _joinPath(folder, entry.name)));
+      }
     }
     const registry = window.MeldexSourceFolderRegistry, unique = new Map();
     for (const path of marked.length ? marked : legacy) {
@@ -1394,7 +1421,9 @@
       let cached = null;
       try { cached = JSON.parse(window.localStorage?.getItem(key) || 'null'); } catch {}
       const validated = await _validateQuickMemoTarget(provider, roots, cached);
-      const target = validated || await _discoverQuickMemoTarget(provider, roots);
+      const target = validated
+        || await _preferredQuickMemoTarget(provider, roots)
+        || await _discoverQuickMemoTarget(provider, roots);
       if (generation === _quickMemoTargetCacheGeneration) {
         _quickMemoTargetMemory.set(scope, target);
         try { window.localStorage?.setItem(key, JSON.stringify(target)); } catch {}

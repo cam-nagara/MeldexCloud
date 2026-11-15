@@ -65,7 +65,13 @@
       action: '不要なファイルを整理し、空き容量を確保してから保存してください。',
     },
     {
-      test: info => /network|failed to fetch|通信|オフライン|タイムアウト|timeout/i.test(info.raw),
+      test: info => /タイムアウト|timeout/i.test(info.raw),
+      title: '処理の完了を確認できません',
+      message: '待機時間を超えました。処理は裏側で続いている可能性があります。',
+      action: '同じ操作を繰り返さず、しばらく待って結果を確認してください。',
+    },
+    {
+      test: info => /network|failed to fetch|通信|オフライン/i.test(info.raw),
       title: '通信に失敗しました',
       message: 'Meldex サーバーまたはクラウド保存先との通信が切れました。',
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',

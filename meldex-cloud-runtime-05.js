@@ -6032,7 +6032,8 @@
           target.position = global.bdClientToCanvasLocal(event.clientX, event.clientY, target._dropCanvas);
         }
         delete target._dropCanvas;
-        const operation = event.ctrlKey || event.metaKey ? 'link-duplicate' : 'move';
+        // Altを利用者向けの共通「リンク複製」修飾キーとする。Ctrl/Cmdは既存互換。
+        const operation = event.altKey || event.ctrlKey || event.metaKey ? 'link-duplicate' : 'move';
         const result = await execute(source, operation, target);
         if (!result?.ok) throw new Error(result?.message || '配置を保存できませんでした');
         global.MeldexDnD.completeDrop(resolved);
@@ -6803,10 +6804,7 @@
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
         separator();
         action('削除', async () => {
-          const confirmed = typeof global.cfConfirm === 'function'
-            ? await global.cfConfirm(`「${entry.name}」を削除します。トピック本体は残り、このビュー固有の配置・ライン・グループ・表示設定だけが削除されます。`)
-            : false;
-          if (confirmed) controller.removeMixed(ref);
+          controller.removeMixed(ref);
         }, false, 'delete');
         let longPress = 0;
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
@@ -14039,7 +14037,7 @@ const GBLayout = (() => {
       subpanelButton.type = 'button';
       subpanelButton.className = 'gb-pane-btn gb-pane-subpanel-toggle' + (open ? ' is-active' : '');
       subpanelButton.dataset.e2eId = 'main-tab-subpanel-toggle';
-      subpanelButton.title = 'サブパネルを表示';
+      subpanelButton.title = open ? 'サブパネルを閉じる' : 'サブパネルを表示';
       subpanelButton.setAttribute('aria-label', subpanelButton.title);
       subpanelButton.setAttribute('aria-pressed', String(open));
       subpanelButton.setAttribute('aria-expanded', String(open));
@@ -14047,7 +14045,7 @@ const GBLayout = (() => {
       subpanelButton.innerHTML = lucide('panelRight', 16);
       subpanelButton.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await window.GBIndependentSubpanel.open();
+        await window.GBIndependentSubpanel.toggle();
       });
       ctrls.appendChild(subpanelButton);
     }
@@ -22657,7 +22655,7 @@ class CalendarComponent extends ToolComponent {
   static _buildHTML(startDay, multiDayCount) {
     void startDay;
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
-<div class="gb-toolbar gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
+<div class="gb-toolbar gb-toolbar-main gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
   <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
@@ -22974,7 +22972,7 @@ class CalendarComponent extends ToolComponent {
   }
 
   // === 公開API (postMessage置換) ===
-  pushUndo(label) { this._pushUndo(label); }
+  pushUndo(label, snapshot) { return this._pushUndo(label, snapshot); }
   async reload() {
     const requests = [this._loadTasks()];
     if (typeof this._refreshShiftStateAfterMutation === 'function') {
@@ -23236,16 +23234,23 @@ class CalendarComponent extends ToolComponent {
   // 操作履歴パネルの両方と連動する。共通履歴が無い環境（将来の単独起動・テストスタブ向けの保険。
   // 現状このコンポーネントを読み込む単独起動アプリは存在しない）は、従来どおり
   // this._undoStack/_redoStack の自己完結スタックへ自動フォールバックし挙動を変えない。
-  _pushUndo(label) {
+  _pushUndo(label, snapshot) {
+    const snap = snapshot || {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    };
+    let entry;
     if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
-      const snap = { events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() };
-      historyPush(label, () => this._restoreSnapshot(snap), null, _schedHistoryScope(this));
+      entry = historyPush(label, () => this._restoreSnapshot(snap), null, _schedHistoryScope(this));
     } else {
-      this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
+      entry = { label, events: snap.events, tasks: snap.tasks, eventWindow: snap.eventWindow };
+      this._undoStack.push(entry);
       if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
       this._redoStack.length = 0;
     }
     this._notifyParentHistory();
+    return entry;
   }
 
   async _undo() {
@@ -24924,15 +24929,22 @@ CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
 };
 
 CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
-  if (typeof cfConfirm === 'function' && !await cfConfirm('このイベントを削除しますか？')) return;
-  this._pushUndo('イベント削除');
   let calId = '';
+  let evRef = null;
   try {
-    const evRef = (this._events || []).find(x => x.id === id);
+    evRef = (this._events || []).find(x => x.id === id);
     calId = evRef?.calendar_id || '';
   } catch (_) {}
+  if (evRef && !evRef._recurrence_instance && !this._eventIsUndoable?.(evRef)) {
+    this._showStatus('自動生成された予定は元データから削除してください', true);
+    return;
+  }
+  if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
+    && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    // API成功後、再読込で削除前状態が失われる前に履歴へ積む。失敗した操作の偽履歴は残さない。
+    this._pushUndo('イベント削除');
     // Audit-P1 H-6: 紐付いたコメントを孤児化する（target_kind='calendar_event'）
     apiPost('/annotations/orphan-by-target', {
       target_kind: 'calendar_event',
@@ -24981,7 +24993,6 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     deleteButton.type = 'button'; deleteButton.className = 'tk-delete gb-btn gb-btn-sm gb-btn-danger danger'; deleteButton.textContent = '削除';
   }
   let busy = false;
-  let deleteConfirmPending = false;
   const modalApi = window.GBUI.createModal({
     id: 'calendar-tool-todo',
     title: t ? 'ToDo編集' : '新規ToDo',
@@ -24994,7 +25005,7 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     closeLabel: 'ToDo編集を閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
-    onBeforeClose: () => !busy && !deleteConfirmPending,
+    onBeforeClose: () => !busy,
   });
   const o = modalApi.overlay;
   const panel = modalApi.modal;
@@ -25081,19 +25092,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     modalApi.close('saved');
   });
   deleteButton?.addEventListener('click', async () => {
-    if (busy || deleteConfirmPending) return;
-    deleteConfirmPending = true;
+    if (busy) return;
     setBusy(true);
-    if (status) status.textContent = '削除を確認中...';
-    let confirmed = false;
-    try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このToDoを削除しますか？'); }
-    catch {
-      if (status) status.textContent = '削除確認を表示できませんでした。もう一度お試しください。';
-    } finally {
-      deleteConfirmPending = false;
-      if (!confirmed && modalApi.isOpen()) setBusy(false);
-    }
-    if (!confirmed) return;
     if (status) status.textContent = '削除中...';
     try {
       await apiFetch('/cal/tasks/' + encodeURIComponent(t.id), { method: 'DELETE' });
@@ -25142,10 +25142,10 @@ CalendarComponent.prototype._saveTask = async function(editId, overlay) {
 };
 
 CalendarComponent.prototype._deleteTask = async function(id) {
-  if (typeof cfConfirm === 'function' && !await cfConfirm('このToDoを削除しますか？')) return false;
-  this._pushUndo('ToDo削除');
   try {
     await apiFetch('/cal/tasks/' + id, { method: 'DELETE' });
+    // 削除成功後、再読込より前に削除前スナップショットを履歴化する。
+    this._pushUndo('ToDo削除');
     await this._loadTasks();
     this._render();
     this._renderTodayTasks();
@@ -33626,27 +33626,8 @@ function _bdSelectedConnectionIdsForDelete() {
   return typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
 }
 
-async function _bdConfirmDeleteSelection() {
-  const nodeCount = bd.selected?.size || 0;
-  const lineCount = _bdSelectedConnectionIdsForDelete().length;
-  let msg;
-  if (nodeCount && lineCount) msg = `${nodeCount}件のトピックと${lineCount}件のラインを削除しますか？`;
-  else if (nodeCount > 1) msg = `${nodeCount}件のトピックを削除しますか？`;
-  else if (nodeCount === 1) msg = 'このトピックを削除しますか？';
-  else if (lineCount > 1) msg = `${lineCount}件のラインを削除しますか？`;
-  else msg = 'このラインを削除しますか？';
-  try {
-    if (typeof cfConfirm === 'function') return !!(await cfConfirm(msg));
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') return !!window.confirm(msg);
-  } catch (_err) {
-    return false;
-  }
-  return true;
-}
-
 async function bdDeleteSelected(options = {}) {
   if (!_bdSelectedConnectionIdsForDelete().length && bd.selected.size===0) return;
-  if (options.confirm !== false && !(await _bdConfirmDeleteSelection())) return;
   const selectedConnIdsBeforeDelete = _bdSelectedConnectionIdsForDelete();
   if (!selectedConnIdsBeforeDelete.length && bd.selected.size===0) return;
   bdPushUndo();
@@ -34747,7 +34728,9 @@ function bdIsCurrentBoardOpenRequest(path) {
   return !currentPath || !requestedPath || currentPath === requestedPath;
 }
 
-const BD_BOARD_OPEN_IO_TIMEOUT_MS = 30000;
+// ボード切替は保存・Dropbox/NAS読込・関連索引の確定を含む。共通HTTP層より
+// 先に30秒で失敗扱いにせず、長時間ファイル操作と同じ上限まで待つ。
+const BD_BOARD_OPEN_IO_TIMEOUT_MS = 300000;
 let _bdPendingOpenRollback = null;
 
 function _bdTimeoutError(label, timeoutMs) {
@@ -35820,10 +35803,10 @@ function _bdMinimapBounds() {
 
   async function uploadImageDataUrl(node, index, dataUrl, filenameHint) {
     if (typeof global.apiFetch !== 'function') throw new Error('画像ファイルを保存できませんでした');
-    const result = await global.apiFetch('/upload-file?path=' + encodeURIComponent(boardUploadDir()), {
+    const result = await global.apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: filenameForNode(node, index, dataUrl, filenameHint) }),
+      body: JSON.stringify({ data: dataUrl, filename: filenameForNode(node, index, dataUrl, filenameHint), source: 'board-image-link' }),
     });
     if (!result?.ok || !result.path) throw new Error('画像ファイルを保存できませんでした');
     return String(result.path).replace(/\\/g, '/');
@@ -39088,7 +39071,7 @@ async function bdExportImage() {
       }),
       new Promise((_resolve, reject) => setTimeout(
         () => reject(new Error('画像生成がタイムアウトしました（内容が複雑すぎる可能性があります）')),
-        25000,
+        120000,
       )),
     ]);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -40038,7 +40021,6 @@ function bdConnContextMenu(e, conn) {
   }
   sep();
   dangerItem('削除', async () => {
-    if (!(await cfConfirm('このラインを削除しますか？'))) return;
     bdPushUndo();
     if (typeof bdRemoveConnection === 'function') bdRemoveConnection(conn);
     else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns({ connIds: [conn.id], reason: 'remove-connection-fallback' }); bdDirty(); }
@@ -40808,9 +40790,6 @@ function bdContextMenu(e, nodeId) {
     sep();
     dangerItem('削除 (Del)', async () => {
       if (!multi) bdSelect(nodeId);
-      const count = bd.selected.size;
-      const msg = count > 1 ? `${count}件のトピックを削除しますか？` : 'このトピックを削除しますか？';
-      if (!(await cfConfirm(msg))) return;
       await bdDeleteSelected({ confirm: false });
     });
 
@@ -43444,11 +43423,11 @@ function bdInitInteraction(root) {
             }
           }
           try {
-            const res = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
+            const res = await apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               silentError: isImage && !bd.path,
-              body: JSON.stringify({data, filename: f.name}),
+              body: JSON.stringify({data, filename: f.name, source: 'board-drop'}),
             });
             if (res?.ok) return { name: f.name, path: res.path || '', isImage, dataUrl: '', offset };
           } catch (uploadErr) {
@@ -44069,7 +44048,7 @@ function _bdIcon(name, size) {
 function bdBuildBoardShellMarkup(idSuffix = '') {
   const idFor = (base) => idSuffix ? `${base}-${idSuffix}` : base;
   return `
-    <div class="gb-toolbar gb-toolbar-board" data-bd-role="toolbar-top">
+    <div class="gb-toolbar gb-toolbar-main gb-toolbar-board" data-bd-role="toolbar-top">
       <button type="button" class="tb-icon-btn tool-menu-btn bd-toolbar-btn bd-toolbar-icon-btn" title="メニュー" aria-label="ボードメニュー" data-action="showToolMenu(event,'board')">${_bdIcon('menu', 16)}</button>
       <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>
@@ -49977,6 +49956,58 @@ function bdNodeA11yLabel(node) {
   return text ? `ボードトピック: ${text}` : 'ボードトピック';
 }
 
+const BD_DIRECT_VIDEO_EXT_RE = /\.(?:mp4|m4v|mov|webm|ogv)(?:[?#]|$)/i;
+
+function bdPlayableVideoInfo(node) {
+  const link = String(node?.link || '').trim();
+  if (!link) return null;
+  const parsed = globalThis.GBWebEmbeds?.parse?.(link);
+  if (parsed?.kind === 'video') return { kind: 'web', info: parsed };
+  const linkType = String(node?.linkType || '').toLowerCase();
+  if (linkType !== 'video' && !BD_DIRECT_VIDEO_EXT_RE.test(link)) return null;
+  const remote = /^(?:https?:|blob:|data:video\/)/i.test(link);
+  const base = typeof API_BASE === 'string' ? API_BASE : '/api';
+  return {
+    kind: 'direct',
+    src: remote ? link : `${base}/file-raw?path=${encodeURIComponent(link)}`,
+    label: String(node?.text || link.split(/[\\/]/).pop() || '動画'),
+    poster: String(node?.img || ''),
+  };
+}
+
+function bdAppendPlayableVideo(div, node, playable) {
+  let box = null;
+  if (playable.kind === 'web') box = globalThis.GBWebEmbeds?.buildElement?.(playable.info) || null;
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'gb-web-embed gb-web-embed--video gb-web-embed--localvideo';
+    box.contentEditable = 'false';
+    const video = document.createElement('video');
+    video.className = 'gb-web-embed-video';
+    video.src = playable.src;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.draggable = false;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('aria-label', `${playable.label}を再生`);
+    if (playable.poster) video.poster = playable.poster;
+    box.appendChild(video);
+  }
+  box.classList.add('bd-card-video');
+  box.draggable = false;
+  // 再生操作をカード移動・選択・ダブルクリックとして扱わない。
+  ['pointerdown', 'mousedown', 'click', 'dblclick'].forEach((type) => {
+    box.addEventListener(type, (event) => event.stopPropagation());
+  });
+  box.addEventListener('dragstart', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  div.appendChild(box);
+  return true;
+}
+
 function bdSelectNodeForKeyboard(nodeId) {
   if (!nodeId || typeof bd === 'undefined' || !(bd.selected instanceof Set)) return;
   const before = [...bd.selected, ...(bd.selectedConnIds instanceof Set ? bd.selectedConnIds : [])];
@@ -50045,7 +50076,9 @@ function bdRenderNode(node, options = {}) {
   div.dataset.styleId = node.cardStyle || bd.cardStyles?.[0]?.id || 'default';
   const depthStyleIndex = bdGetAutoDepthStyleIndexForNode(node, ctx.autoDepthStyleMap);
   if (depthStyleIndex) div.dataset.depthStyleIndex = depthStyleIndex;
-  if (node.img) div.classList.add('bd-image-node');
+  const playableVideo = bdPlayableVideoInfo(node);
+  if (playableVideo) div.classList.add('bd-video-node');
+  else if (node.img) div.classList.add('bd-image-node');
   div.dataset.shape = nodeStyle.shape || 'rect';
   div.oncontextmenu = (ev) => {
     ev.preventDefault();
@@ -50079,7 +50112,7 @@ function bdRenderNode(node, options = {}) {
 }
 
 function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
-  const isImageNode = !!node?.img;
+  const isImageNode = !!node?.img || !!bdPlayableVideoInfo(node);
   div.style.left = node.x + 'px';
   div.style.top = node.y + 'px';
   if (node.w) div.style.width = node.w + 'px';
@@ -50638,6 +50671,11 @@ function bdSyncNodeImageGeometryAfterLayout(div, node, reason) {
 }
 
 function bdAppendNodeImage(div, node) {
+  const playableVideo = bdPlayableVideoInfo(node);
+  if (playableVideo) {
+    bdAppendPlayableVideo(div, node, playableVideo);
+    return;
+  }
   if (!node.img) return;
   const img = document.createElement('img');
   img.className = 'bd-img';
@@ -50739,7 +50777,9 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   chDiv.setAttribute('aria-label', bdNodeA11yLabel(ch));
   const depthStyleIndex = bdGetAutoDepthStyleIndexForNode(ch, ctx.autoDepthStyleMap);
   if (depthStyleIndex) chDiv.dataset.depthStyleIndex = depthStyleIndex;
-  if (ch.img) chDiv.classList.add('bd-image-node');
+  const playableVideo = bdPlayableVideoInfo(ch);
+  if (playableVideo) chDiv.classList.add('bd-video-node');
+  else if (ch.img) chDiv.classList.add('bd-image-node');
   chDiv.oncontextmenu = ev => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -51669,10 +51709,10 @@ function _bdIsImageFile(file) {
 }
 
 async function _bdUploadBoardBackgroundImage(data, file) {
-  const res = await apiFetch('/upload-file?path=' + encodeURIComponent(_bdBoardUploadDir()), {
+  const res = await apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ data, filename: file.name || 'background.png' }),
+    body: JSON.stringify({ data, filename: file.name || 'background.png', source: 'board-background' }),
   });
   if (!res?.ok || !res.path) throw new Error('upload failed');
   return API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
@@ -61862,6 +61902,7 @@ function _sn2StopSep() {
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
+    const cancellationEnabled = opts.cancellable !== false;
     let cancelJobId = '';
     let operation = opts.operationProgress === false || !progressApi
       ? null
@@ -61877,6 +61918,7 @@ function _sn2StopSep() {
           cancellable: false,
           cancelCompletes: false,
           cancel: async () => {
+            if (!cancellationEnabled) return;
             if (cancelJobId) await apiPost('/jobs/' + encodeURIComponent(cancelJobId) + '/cancel', {}, { silentError: true });
           },
         });
@@ -61891,7 +61933,11 @@ function _sn2StopSep() {
           operation = existing;
         }
         operation?.setPersistentJobId(jobId);
-        operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中', cancellable: true });
+        operation?.update({
+          status: started?.status || 'running',
+          phase: started?.status === 'queued' ? '待機中' : '準備中',
+          cancellable: cancellationEnabled,
+        });
         if (userOnStarted) userOnStarted(jobId, started);
       },
       onProgress: function (progress, job) {
@@ -65752,7 +65798,9 @@ function _sn2StopSep() {
   }
 
   async function waitForJob(jobId, isCurrent) {
-    for (let attempt = 0; attempt < 240 && isCurrent(); attempt += 1) {
+    // 初回カタログ生成は対象件数に比例する。経過時間では打ち切らず、入力変更・
+    // ダイアログ終了によるisCurrent=falseか、ジョブの終端状態だけで終了する。
+    while (isCurrent()) {
       const job = await apiFetch(`/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
       if (job?.status === 'done') return job;
       if (['error', 'cancelled'].includes(job?.status)) {
@@ -65760,7 +65808,7 @@ function _sn2StopSep() {
       }
       await new Promise(resolve => window.setTimeout(resolve, JOB_POLL_MS));
     }
-    throw new Error('外部タグカタログの準備に時間がかかっています。入力し直すと再確認できます');
+    throw new DOMException('外部タグカタログの準備表示を中止しました', 'AbortError');
   }
 
   function open(options) {
@@ -70261,7 +70309,7 @@ class ScriptNoteComponent extends ToolComponent {
 
   static _buildHTML() {
     return `
-<div id="se-toolbar" class="gb-toolbar">
+<div id="se-toolbar" class="gb-toolbar gb-toolbar-main">
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
@@ -72872,6 +72920,7 @@ async function _runPeriodicRestorePoints(nowValue) {
     if (!policy?.nextOccurrence) return;
     const now = nowValue instanceof Date ? nowValue : new Date(nowValue || Date.now());
     const state = _autoVersionScheduleState();
+    const touched = new Set();
     const scheduleId = policy.scheduleId(config);
     for (const [key, target] of _autoVersionTargets.entries()) {
       let saved = state[key] || {};
@@ -72884,9 +72933,12 @@ async function _runPeriodicRestorePoints(nowValue) {
             last_retention_checked_at: retention.ok ? now.toISOString() : saved.last_retention_checked_at,
             last_retention_error_at: retention.ok ? '' : now.toISOString(),
           };
+          touched.add(key);
           saved = state[key];
         }
       }
+      // 保持期間処理の待機中に削除・改名・移動された旧対象へ保存しない。
+      if (_autoVersionTargets.get(key) !== target) continue;
       if (!config.enabled) continue;
       const lastChecked = new Date(saved.last_checked_at || target.registeredAt || now.toISOString());
       const due = policy.nextOccurrence(config, lastChecked);
@@ -72894,6 +72946,7 @@ async function _runPeriodicRestorePoints(nowValue) {
       const bucketId = policy.bucketId(config, due);
       if (!target.dirty && !saved.changed_after_last_point) {
         state[key] = { ...saved, last_checked_at: now.toISOString(), last_bucket_id: bucketId };
+        touched.add(key);
         continue;
       }
       const endpoint = target.type === 'db' ? '/version/save-db' : '/version/save';
@@ -72917,19 +72970,114 @@ async function _runPeriodicRestorePoints(nowValue) {
           last_checked_at: now.toISOString(), last_bucket_id: bucketId,
           changed_after_last_point: false,
         };
+        touched.add(key);
       } catch (error) {
+        // API待機中に対象が削除・移動された場合は、旧パスの失敗状態を復活させない。
+        if (_autoVersionTargets.get(key) !== target) continue;
         target.dirty = true;
         state[key] = { ...saved, changed_after_last_point: true, last_error_at: now.toISOString() };
+        touched.add(key);
         if (target.path === _autoVersionPath && target.type === _autoVersionType) _autoVersionDirty = true;
       }
     }
-    _saveAutoVersionScheduleState(state);
+    // 実行中に start/mark/delete/rebind が保存した最新状態へ、今も有効な対象分だけを合流する。
+    // 古いスナップショットの一括保存で削除済み・旧パスを復活させない。
+    const latestState = _autoVersionScheduleState();
+    touched.forEach(key => {
+      if (_autoVersionTargets.has(key)) latestState[key] = state[key];
+      else delete latestState[key];
+    });
+    _saveAutoVersionScheduleState(latestState);
   })().finally(() => { _autoVersionRunPromise = null; });
   return _autoVersionRunPromise;
 }
 
 function _autoVersionTargetKey(path, type) {
   return `${type || 'file'}:${String(path || '').replace(/\\/g, '/').replace(/^\/+/, '')}`;
+}
+
+function _normalizeAutoVersionPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function _autoVersionPathWithin(path, root) {
+  const normalizedPath = _normalizeAutoVersionPath(path);
+  const normalizedRoot = _normalizeAutoVersionPath(root);
+  return !!normalizedRoot && (normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + '/'));
+}
+
+function _syncCurrentAutoVersionTarget() {
+  const current = _autoVersionTargets.get(_autoVersionTargetKey(_autoVersionPath, _autoVersionType));
+  if (current) {
+    _autoVersionDirty = !!current.dirty;
+    return;
+  }
+  const fallback = Array.from(_autoVersionTargets.values()).pop() || null;
+  _autoVersionPath = fallback?.path || '';
+  _autoVersionType = fallback?.type || '';
+  _autoVersionDirty = !!fallback?.dirty;
+  if (_autoVersionTargets.size) return;
+  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
+  _autoVersionTimer = null;
+  _autoVersionTimerInterval = 0;
+}
+
+function stopAutoVersionsForPaths(paths) {
+  const roots = (Array.isArray(paths) ? paths : [paths]).map(_normalizeAutoVersionPath).filter(Boolean);
+  if (!roots.length) return 0;
+  const state = _autoVersionScheduleState();
+  let removed = 0;
+  for (const [key, target] of Array.from(_autoVersionTargets.entries())) {
+    if (!roots.some(root => _autoVersionPathWithin(target.path, root))) continue;
+    _autoVersionTargets.delete(key);
+    delete state[key];
+    removed += 1;
+  }
+  // 対象が現在未登録でも、以前の異常終了等で残った永続状態を削除する。
+  Object.keys(state).forEach(key => {
+    const separator = key.indexOf(':');
+    const storedPath = separator >= 0 ? key.slice(separator + 1) : '';
+    if (roots.some(root => _autoVersionPathWithin(storedPath, root))) delete state[key];
+  });
+  _saveAutoVersionScheduleState(state);
+  _syncCurrentAutoVersionTarget();
+  return removed;
+}
+
+function rebindAutoVersionPathPrefix(oldPath, newPath) {
+  const oldRoot = _normalizeAutoVersionPath(oldPath);
+  const newRoot = _normalizeAutoVersionPath(newPath);
+  if (!oldRoot || !newRoot || oldRoot === newRoot) return 0;
+  const state = _autoVersionScheduleState();
+  let rebound = 0;
+  for (const [oldKey, target] of Array.from(_autoVersionTargets.entries())) {
+    if (!_autoVersionPathWithin(target.path, oldRoot)) continue;
+    const mappedPath = newRoot + _normalizeAutoVersionPath(target.path).slice(oldRoot.length);
+    const newKey = _autoVersionTargetKey(mappedPath, target.type);
+    const existing = _autoVersionTargets.get(newKey);
+    _autoVersionTargets.delete(oldKey);
+    _autoVersionTargets.set(newKey, {
+      ...(existing || target),
+      path: mappedPath,
+      type: target.type,
+      dirty: !!(target.dirty || existing?.dirty),
+    });
+    if (Object.prototype.hasOwnProperty.call(state, oldKey) || Object.prototype.hasOwnProperty.call(state, newKey)) {
+      state[newKey] = {
+        ...(state[oldKey] || {}),
+        ...(state[newKey] || {}),
+        changed_after_last_point: !!(state[oldKey]?.changed_after_last_point || state[newKey]?.changed_after_last_point),
+      };
+      delete state[oldKey];
+    }
+    rebound += 1;
+  }
+  if (_autoVersionPath && _autoVersionPathWithin(_autoVersionPath, oldRoot)) {
+    _autoVersionPath = newRoot + _normalizeAutoVersionPath(_autoVersionPath).slice(oldRoot.length);
+  }
+  _saveAutoVersionScheduleState(state);
+  _syncCurrentAutoVersionTarget();
+  return rebound;
 }
 
 function _ensureAutoVersionTimer() {
@@ -73005,7 +73153,7 @@ async function _applyRestorePointRetentionToTarget(target, config, now = new Dat
 }
 
 function startAutoVersion(path, type) {
-  const normalizedPath = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedPath = _normalizeAutoVersionPath(path);
   if (!normalizedPath) return;
   const normalizedType = type === 'db' ? 'db' : 'file';
   const key = _autoVersionTargetKey(normalizedPath, normalizedType);
@@ -73030,15 +73178,11 @@ function stopAutoVersion(path, type) {
   } else {
     _autoVersionTargets.clear();
   }
-  if (_autoVersionTargets.size) return;
-  if (_autoVersionTimer) clearInterval(_autoVersionTimer);
-  _autoVersionTimer = null;
-  _autoVersionTimerInterval = 0;
-  _autoVersionDirty = false;
+  _syncCurrentAutoVersionTarget();
 }
 
 function markAutoVersionDirty(path, type) {
-  const targetPath = String(path || _autoVersionPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const targetPath = _normalizeAutoVersionPath(path || _autoVersionPath || '');
   const targetType = type || _autoVersionType || 'file';
   if (!targetPath) return;
   const key = _autoVersionTargetKey(targetPath, targetType);
@@ -74407,6 +74551,13 @@ historyRegisterSnapshotProvider('schedule:', {
   restore: (snap, scope) => (typeof _schedRestoreSnapshot === 'function' ? _schedRestoreSnapshot(snap, scope) : undefined),
 });
 
+// map: 大きいマップ文書のRedo状態は最初のUndo時に遅延取得する。通常編集のたびに
+// before/afterを二重保持せず、共通履歴の一方向エントリを安全に補完する。
+historyRegisterSnapshotProvider('map:', {
+  capture: (scope) => globalThis.MeldexMapHistorySnapshots?.capture?.(scope) ?? null,
+  restore: (snap, scope) => globalThis.MeldexMapHistorySnapshots?.restore?.(snap, scope) ?? false,
+});
+
 // アクションを記録（undoFnとredoFnはasync可、scopeはオプション）
 let _historyEntrySequence = 0;
 let _historyBusy = false;
@@ -74417,7 +74568,8 @@ function _historyIsBusy() {
 
 function historyPush(label, undoFn, redoFn, scope, detail) {
   const s = _getStack(scope);
-  s.undo.push({ id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' });
+  const entry = { id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' };
+  s.undo.push(entry);
   const max = getHistoryMax();
   while (s.undo.length > max) s.undo.shift();
   s.redo.length = 0;
@@ -74427,6 +74579,7 @@ function historyPush(label, undoFn, redoFn, scope, detail) {
   }
   renderHistoryList();
   renderHistoryPanel();
+  return entry;
 }
 
 async function historyUndo(scope) {
@@ -74778,6 +74931,10 @@ function _meldexPageTabHistoryScope(tab) {
   const path = String(tab?.path || tab?.state?.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
   return path ? `page:${path}` : '';
 }
+function _meldexMapTabHistoryScope(tab) {
+  const path = String(tab?.path || tab?.state?.mapPath || '').replace(/\\/g, '/');
+  return path ? `map:${path}` : '';
+}
 
 // 共通履歴（スコープなし）を使うタブ種別。
 function _meldexCommonHistoryTabScope() { return ''; }
@@ -74799,6 +74956,7 @@ const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
   scriptnote: _meldexScriptNoteTabHistoryScope,
   calendar: _meldexScheduleTabHistoryScope,
   page: _meldexPageTabHistoryScope,
+  map: _meldexMapTabHistoryScope,
   entity: _meldexCommonHistoryTabScope,
   media: _meldexCommonHistoryTabScope,
   html: _meldexCommonHistoryTabScope,
@@ -74877,6 +75035,12 @@ function _meldexHasPaneLayout() {
 const _MELDEX_LIVE_SCOPE_GETTERS = Object.freeze({
   'board:': () => (typeof bd !== 'undefined' && typeof _bdHistoryScope === 'function') ? _bdHistoryScope(bd.path) : null,
   'csv:': () => (typeof _csvHistoryScope === 'function') ? _csvHistoryScope() : null,
+  'map:': () => {
+    if (typeof getComponentInstance !== 'function') return null;
+    const tab = _meldexActiveTabForPane();
+    const component = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+    return component?.store && typeof component._historyScope === 'function' ? component._historyScope() : null;
+  },
 });
 
 function _meldexRiskyLiveScopePrefix(scope) {
@@ -74915,7 +75079,7 @@ async function _meldexWaitForLiveScopeSettle(scope, timeoutMs = 3000) {
 // （誤って正常な取り消しをブロックしない）。
 async function _meldexPrepareHistoryScopeTarget(scope) {
   if (!scope || !_meldexHasPaneLayout()) return { ok: true, switched: false };
-  if (!/^(db|board|csv|scriptnote|schedule|page):/.test(scope)) return { ok: true, switched: false };
+  if (!/^(db|board|csv|scriptnote|schedule|page|map):/.test(scope)) return { ok: true, switched: false };
   if (_meldexResolveActiveTabHistoryScope() === scope) return { ok: await _meldexWaitForLiveScopeSettle(scope), switched: false };
   const match = _meldexFindTabForHistoryScope(scope);
   if (!match) return { ok: false, switched: false };
@@ -103448,18 +103612,17 @@ async function resetLayoutToDefault() {
     const jobId = String(started?.job_id || '');
     if (!jobId) return started;
     const pollIntervalMs = 1000;
-    const maxPolls = 120; // 約2分
-    for (let i = 0; i < maxPolls; i += 1) {
+    // 経過時間ではなくジョブの完了状態を終了条件にする。長時間継続中のジョブを
+    // 失敗扱いにして重複起動を促さない。
+    for (let i = 0; ; i += 1) {
       const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
       if (onProgress) onProgress(job?.progress?.message || job?.progress?.phase || 'OSタグを照合しています...');
       if (job.status === 'done') return job.result || {};
       if (job.status === 'error') throw new Error(job.error || 'OSタグの再同期に失敗しました');
       if (job.status === 'cancelled' || job.status === 'canceled') throw new Error('OSタグの再同期を中止しました');
+      if (i === 119 && onProgress) onProgress('処理は継続中です。完了までこのまま待機します…');
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
-    const timeoutError = new Error('OSタグの再同期に時間がかかっています。しばらくしてから再度お試しください。');
-    timeoutError.name = 'LongRunningJobError';
-    throw timeoutError;
   }
 
   function bindTargetTagEditor(targetPath, ui, refresh) {
@@ -106939,6 +107102,7 @@ const MeldexAutoLink = (() => {
 
   const MAX_CHAT_EMBEDS = 3;
   const PROVIDER_LABELS = {
+    webvideo: 'Web動画',
     youtube: 'YouTube', niconico: 'ニコニコ動画', vimeo: 'Vimeo', dailymotion: 'Dailymotion',
     tiktok: 'TikTok', x: 'X', instagram: 'Instagram', bluesky: 'Bluesky', threads: 'Threads',
     spotify: 'Spotify', soundcloud: 'SoundCloud',
@@ -106979,6 +107143,13 @@ const MeldexAutoLink = (() => {
     const host = _host(url);
     const parts = url.pathname.split('/').filter(Boolean);
     const base = { url: url.href, provider: '', kind: '', title: '' };
+
+    // ブラウザが直接再生できる動画ファイル。クエリ付きURLでもpathnameだけで判定し、
+    // 保存されたURLをvideo要素以外へ渡さない。
+    if (/\.(?:mp4|m4v|mov|webm|ogv)$/i.test(url.pathname)) {
+      return { ...base, provider: 'webvideo', kind: 'video', aspect: 'wide',
+        directMedia: true, src: url.href };
+    }
 
     // YouTube
     if (host === 'youtube.com' || host === 'music.youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
@@ -107104,6 +107275,19 @@ const MeldexAutoLink = (() => {
     return frame;
   }
 
+  function _makeVideo(info) {
+    const video = global.document.createElement('video');
+    video.className = 'gb-web-embed-video';
+    video.src = info.src;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('controlslist', 'nodownload');
+    video.setAttribute('aria-label', `${_labelFor(info)}を再生`);
+    return video;
+  }
+
   // 埋め込み要素を作る。動画は再生ボタン付きのサムネイル/カード、ポスト・音声はiframe。
   function buildElement(info) {
     const doc = global.document;
@@ -107117,11 +107301,15 @@ const MeldexAutoLink = (() => {
     box.dataset.provider = info.provider;
     box.dataset.providerLabel = label;
     box.dataset.url = info.url;
-    if (info.kind === 'video' || info.needsResolve) {
+    if (info.kind === 'video' && info.directMedia) {
+      box.appendChild(_makeVideo(info));
+    } else if (info.kind === 'video' || info.needsResolve) {
       const poster = doc.createElement('button');
       poster.type = 'button';
       poster.className = 'gb-web-embed-poster';
       poster.dataset.gbWebEmbedAction = 'load';
+      poster.dataset.e2eId = ['web-embed-play', info.provider, info.id]
+        .filter(Boolean).join('-').replace(/[^A-Za-z0-9_-]/g, '-');
       poster.setAttribute('aria-label', info.kind === 'video' ? `${label}の動画を再生` : `${label}のポストを表示`);
       poster.title = info.url;
       if (info.thumbnail) {
@@ -107663,6 +107851,36 @@ const MeldexAutoLink = (() => {
  * Meldex Editor
  * ページ/エントリ編集、リッチテキスト、マークダウン変換、自動リンク、検索
  */
+
+// Markdownの空本文も描画後は<div></div>等になるため、CSSの:emptyだけでは
+// 新規ノートを空と判定できない。メイン・サブパネル・単独版で同じ判定を共有する。
+function _noteEditorHasVisibleContent(root) {
+  if (!root) return false;
+  const doc = root.ownerDocument || document;
+  const showText = doc.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+  const walker = doc.createTreeWalker(root, showText);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = String(node.nodeValue || '')
+      .replace(/[\u00a0\u200b-\u200d\u2060\ufeff]/g, '')
+      .trim();
+    if (text) return true;
+  }
+  return !!root.querySelector?.([
+    'img', 'video', 'audio', 'iframe', 'object', 'canvas', 'svg',
+    'table', 'hr', 'input', 'textarea', 'select',
+    '.embed-media', '[data-note-embed]', '[data-meldex-embed]',
+  ].join(','));
+}
+
+function _syncNoteEmptyPrompt(root) {
+  if (!root) return false;
+  const isEmpty = !_noteEditorHasVisibleContent(root);
+  root.dataset.noteEmpty = isEmpty ? 'true' : 'false';
+  return isEmpty;
+}
+
+window.MeldexNoteEmptyPrompt = window.MeldexNoteEmptyPrompt || {};
+window.MeldexNoteEmptyPrompt.sync = _syncNoteEmptyPrompt;
 
 // ページタイトルのインライン編集
 // ページタイトル — contenteditableのblurでリネーム
@@ -108214,6 +108432,7 @@ function _restoreNoteReloadSnapshot(pc, path, snapshot) {
   if (!snapshot || !pc || pc.dataset.path !== path) return false;
   window.MeldexNoteEmbedBlock?.disposeWithin?.(pc);
   pc.innerHTML = mdToHtml(snapshot.bodyMarkdown, { basePath: path });
+  window.MeldexNoteEmptyPrompt?.sync?.(pc);
   window.MeldexNoteEmbedBlock?.hydrate?.(pc, snapshot.markdown);
   pc.dataset.frontmatter = snapshot.frontmatter;
   pc.dataset.lastSavedMd = snapshot.lastSavedMd;
@@ -108570,6 +108789,7 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
       } else {
         pc.innerHTML = applyAutoLinks(html, path, { force: true });
       }
+      window.MeldexNoteEmptyPrompt?.sync?.(pc);
       window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
     if (commentsEnabled && typeof CommentBadges !== 'undefined') {
@@ -108754,6 +108974,7 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexNoteEmptyPrompt?.sync?.(pc);
     window.MeldexNoteToolbarBlockSelect?.syncTriggerLabel?.();
     window.MeldexNoteEmbedBlock?.hydrate?.(pc, raw);
     window.MeldexImageLoading?.trackAll?.(pc);
@@ -108766,6 +108987,7 @@ async function openPage(label, path, opts) {
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
   } catch (e) {
     pc.innerHTML = '<span style="color:var(--fg2)">(ノートを読み込めませんでした)</span>';
+    window.MeldexNoteEmptyPrompt?.sync?.(pc);
     pc.dataset.frontmatter = '';
     pc.dataset.lastSavedMd = '';
     pc.dataset.loadFailed = '1';
@@ -108886,9 +109108,12 @@ async function openPage(label, path, opts) {
     const _toc = document.getElementById('note-toc');
     const _tocBtn = document.getElementById('btn-toc-toggle');
     const _fmToc = _getFrontmatterToc();
-    // ファイル指定 > グローバル設定
-    const _showToc = _fmToc !== undefined ? _fmToc
-                   : localStorage.getItem('note-toc-visible') === '1';
+    const _tocPreferences = _noteTocCurrentPreferences();
+    // 利用者がこのファイルで切り替えた状態 > frontmatter指定 > 既定非表示。
+    // 旧グローバル設定は移行時に最初の1ファイルへだけ取り込まれる。
+    const _showToc = typeof _tocPreferences.visible === 'boolean'
+      ? _tocPreferences.visible
+      : (_fmToc !== undefined ? _fmToc : false);
     if (_showToc) {
       if (_toc) _toc.style.display = '';
       if (_tocBtn) _tocBtn.classList.add('active');
@@ -108927,14 +109152,83 @@ function toggleNoteVertical() {
 }
 
 const NOTE_TOC_WIDTH_KEY = 'note-toc-width';
+const NOTE_TOC_FILE_STATE_KEY = 'meldex-note-toc-file-state-v1';
+const NOTE_TOC_FILE_STATE_LIMIT = 500;
 // 縦書きでは目次を本文の上に出すため、調整するのは幅ではなく高さになる。
 // 200px は幅として妥当でも高さとしては大きすぎるので、保存先を分けて
 // 組方向を切り替えるたびに片方が壊れないようにする（横書き側は既存のまま）。
 const NOTE_TOC_HEIGHT_KEY = 'note-toc-height';
 const NOTE_TOC_SIZE_LIMITS = {
-  horizontal: { key: NOTE_TOC_WIDTH_KEY, def: 200, min: 140, max: 420 },
-  vertical: { key: NOTE_TOC_HEIGHT_KEY, def: 160, min: 80, max: 360 },
+  horizontal: { key: NOTE_TOC_WIDTH_KEY, field: 'width', def: 200, min: 140, max: 420 },
+  vertical: { key: NOTE_TOC_HEIGHT_KEY, field: 'height', def: 160, min: 80, max: 360 },
 };
+
+function _noteTocFileIdentity() {
+  const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+  const identity = pc?.dataset?.documentKey || pc?.dataset?.assetId || pc?.dataset?.path
+    || (typeof state !== 'undefined' ? state.currentPagePath : '');
+  return String(identity || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function _readNoteTocFileState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTE_TOC_FILE_STATE_KEY) || 'null');
+    if (parsed && parsed.version === 1 && parsed.files && typeof parsed.files === 'object') return parsed;
+  } catch (_) {}
+  return { version: 1, legacyMigrated: false, files: {} };
+}
+
+function _writeNoteTocFileState(store) {
+  try { localStorage.setItem(NOTE_TOC_FILE_STATE_KEY, JSON.stringify(store)); } catch (_) {}
+}
+
+function _noteTocCurrentPreferences() {
+  const identity = _noteTocFileIdentity();
+  if (!identity) return {};
+  const store = _readNoteTocFileState();
+  let entry = store.files[identity];
+  if (!entry) {
+    entry = {};
+    // 旧版のアプリ全体設定は、アップグレード後に最初に開いた文書へだけ移す。
+    // 以後の新規文書へ同じ値を複製すると、再び実質的な全体設定になるため行わない。
+    if (!store.legacyMigrated) {
+      const legacyVisible = localStorage.getItem('note-toc-visible');
+      const legacyWidth = parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '', 10);
+      const legacyHeight = parseInt(localStorage.getItem(NOTE_TOC_HEIGHT_KEY) || '', 10);
+      if (legacyVisible !== null) entry.visible = legacyVisible === '1';
+      if (Number.isFinite(legacyWidth)) entry.width = legacyWidth;
+      if (Number.isFinite(legacyHeight)) entry.height = legacyHeight;
+      store.legacyMigrated = true;
+    }
+    store.files[identity] = entry;
+    _writeNoteTocFileState(store);
+  }
+  return { ...entry };
+}
+
+function _updateNoteTocCurrentPreferences(values) {
+  const identity = _noteTocFileIdentity();
+  if (!identity) return {};
+  const store = _readNoteTocFileState();
+  const entry = { ...(store.files[identity] || {}), ...(values || {}), updatedAt: Date.now() };
+  store.version = 1;
+  store.legacyMigrated = true;
+  store.files[identity] = entry;
+  const identities = Object.keys(store.files);
+  if (identities.length > NOTE_TOC_FILE_STATE_LIMIT) {
+    identities.sort((a, b) => Number(store.files[b]?.updatedAt || 0) - Number(store.files[a]?.updatedAt || 0));
+    identities.slice(NOTE_TOC_FILE_STATE_LIMIT).forEach(key => { delete store.files[key]; });
+  }
+  _writeNoteTocFileState(store);
+  return { ...entry };
+}
+
+window.MeldexNoteTocPreferences = Object.freeze({
+  storageKey: NOTE_TOC_FILE_STATE_KEY,
+  identity: _noteTocFileIdentity,
+  getCurrent: _noteTocCurrentPreferences,
+  updateCurrent: _updateNoteTocCurrentPreferences,
+});
 
 function _noteTocIsVertical() {
   return typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isActive();
@@ -108945,7 +109239,8 @@ function _noteTocSizeSpec() {
 }
 
 function _noteTocSavedSize(spec) {
-  return parseInt(localStorage.getItem(spec.key) || String(spec.def), 10) || spec.def;
+  const saved = Number(_noteTocCurrentPreferences()[spec.field]);
+  return Number.isFinite(saved) ? Math.max(spec.min, Math.min(spec.max, saved)) : spec.def;
 }
 
 function _applyNoteTocSize(toc, size, vertical) {
@@ -108988,7 +109283,7 @@ function initNoteTocResize(root = document) {
     const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
     const next = Math.max(spec.min, Math.min(spec.max, Math.round(size)));
     _applyNoteTocSize(toc, next, vertical);
-    localStorage.setItem(spec.key, String(next));
+    _updateNoteTocCurrentPreferences({ [spec.field]: next });
     return next;
   };
   const currentSize = () => {
@@ -109049,6 +109344,15 @@ function initNoteTocResize(root = document) {
 // （ボードのリンクカード計画 Phase B-2: サブパネル専用ノートDOMにも同じ配線を行う）。
 function _wireNoteEditableElement(pc) {
   if (!pc) return;
+  pc.addEventListener('input', function(event) {
+    const inputType = String(event.inputType || '');
+    // 通常の追加入力で非空状態が空へ戻ることはないため、大きいノートの全文走査を避ける。
+    if (this.dataset.noteEmpty !== 'false' || !inputType
+        || inputType.startsWith('delete') || inputType.startsWith('history')) {
+      _syncNoteEmptyPrompt(this);
+    }
+  });
+  _syncNoteEmptyPrompt(pc);
   // 縦書きモード: マウスホイールで横スクロール
   pc.addEventListener('wheel', function(e) {
     if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
@@ -109299,14 +109603,13 @@ function _wireNotePasteHandler(pc) {
   const cd = e.clipboardData;
   if (!cd) return;
 
-  // 画像・動画が含まれている場合 → アップロードして埋め込み
-  // （旧実装は画像だけを見ており、動画の貼り付けはドロップと挙動が食い違っていた）
-  const mediaFile = [...cd.files].find(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
-  if (mediaFile) {
+  // OS由来のファイルが含まれている場合は、形式を限定せず汎用保管庫へ保存して挿入する。
+  const pastedFile = [...cd.files][0];
+  if (pastedFile) {
     if (this.dataset.standaloneFileInput === '1') return;
     e.preventDefault();
     const editor = this;
-    const isVideo = mediaFile.type.startsWith('video/');
+    const isVideo = pastedFile.type.startsWith('video/');
     const pasteRange = _captureEditableSelection(editor);
     const currentPath = editor.dataset.path || state.currentPagePath;
     const generation = editor._openPageLoadSeq;
@@ -109316,16 +109619,14 @@ function _wireNotePasteHandler(pc) {
     const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
     try {
       if (!isCurrent()) return;
-      const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
-      const uploadFile = mediaFile.name ? mediaFile : new File([mediaFile], fname, { type: mediaFile.type });
+      const isImage = pastedFile.type.startsWith('image/');
+      const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
+      const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
       const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
       if (res?.ok && res.path && isCurrent()) {
-        const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-        const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
-        _insertEmbeddedMediaHtml(editor, pasteRange,
-          _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
+        _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
       }
-    } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
+    } catch (err) { showStatus('ファイルの貼り付けに失敗', true); }
     return;
   }
 
@@ -109371,6 +109672,9 @@ function _prepareEmbeddedMediaForControls(media) {
   if (!media) return;
   if (!media.hasAttribute('tabindex')) media.tabIndex = 0;
   if (!media.hasAttribute('role')) media.setAttribute('role', 'group');
+  // 子要素のネイティブ画像ドラッグではなく、保存情報を持つラッパーを移動する。
+  media.draggable = true;
+  media.querySelectorAll?.('img, video')?.forEach((item) => { item.draggable = false; });
   if (!media.hasAttribute('aria-label')) {
     media.setAttribute('aria-label', media.dataset.name ? `埋め込みメディア: ${media.dataset.name}` : '埋め込みメディア');
   }
@@ -109401,6 +109705,8 @@ function _prepareEmbeddedMediaControls(root) {
     document.body.appendChild(h);
     resizeHandles[corner] = h;
   }
+  // 旧位置計算が付けたpopup用クラスの幅制約を引き継がない。
+  Object.values(resizeHandles).forEach((h) => h.classList.remove('gb-popup-surface'));
   const eachResizeHandle = (fn) => MEDIA_RESIZE_CORNERS.forEach((c) => fn(resizeHandles[c], c));
 
   controls.setAttribute('aria-hidden', 'true');
@@ -109552,7 +109858,7 @@ function _prepareEmbeddedMediaControls(root) {
   });
 
   // 削除ボタン
-  controls.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+  controls.querySelector('[data-media-action="delete"]').addEventListener('click', async () => {
     const media = _activeMedia;
     if (!media) return;
     // remove()/_hideMediaControls() の前に持ち主を確定させる（後では_activeMediaが
@@ -109651,11 +109957,13 @@ function _positionMediaControls(media) {
       ? document.getElementById('media-resize-handle')
       : document.getElementById('media-resize-handle-' + corner);
     if (!h) return;
-    const half = (h.offsetWidth || 14) / 2;
+    // hidden中はoffsetWidth=0、visible後は実寸になるため、旧実装は再クリック時に
+    // 中心がずれていた。表示状態に依存しないCSS寸法で中心を固定する。
+    h.classList.remove('gb-popup-surface');
+    const half = (parseFloat(getComputedStyle(h).width) || 14) / 2;
     h.style.left = (x / z - half) + 'px';
     h.style.top = (y / z - half) + 'px';
     h.classList.add('visible');
-    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(h);
   });
   // 現在のアラインメントを反映（旧ノートの物理マージンも読めるようにする）
   const ms = media.style;
@@ -109666,6 +109974,53 @@ function _positionMediaControls(media) {
   if (isZero(start)) controls.querySelector('[data-align="left"]')?.classList.add('active');
   else if (isZero(end)) controls.querySelector('[data-align="right"]')?.classList.add('active');
   else controls.querySelector('[data-align="center"]')?.classList.add('active');
+}
+
+const NOTE_EMBEDDED_MEDIA_MIME = 'application/x-meldex-note-media';
+let _draggedEmbeddedMedia = null;
+
+function _topLevelEditableChild(editable, node) {
+  let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  while (current?.parentElement && current.parentElement !== editable) current = current.parentElement;
+  return current?.parentElement === editable ? current : null;
+}
+
+function _embeddedMediaDropBefore(editable, block, event) {
+  const rect = block?.getBoundingClientRect?.();
+  if (!rect) return true;
+  let writingMode = '';
+  try { writingMode = getComputedStyle(editable).writingMode || ''; } catch (_) { /* horizontal fallback */ }
+  if (writingMode.startsWith('vertical')) {
+    const midpoint = rect.left + rect.width / 2;
+    return writingMode === 'vertical-lr' ? event.clientX < midpoint : event.clientX > midpoint;
+  }
+  return event.clientY < rect.top + rect.height / 2;
+}
+
+function _moveEmbeddedMediaAtDrop(editable, media, event, range) {
+  if (!editable || !media?.isConnected || !editable.isContentEditable) return false;
+  const sourceEditor = media.closest?.('[contenteditable="true"]');
+  if (!sourceEditor) return false;
+  const sourceParent = media.parentElement;
+  const eventBlock = _topLevelEditableChild(editable, event.target);
+  const rangeNode = range?.startContainer || range?.commonAncestorContainer;
+  const block = eventBlock || _topLevelEditableChild(editable, rangeNode);
+  if (block) {
+    const sourceBlock = _topLevelEditableChild(sourceEditor, media);
+    if (block === media || block === sourceBlock) return false;
+    editable.insertBefore(media, _embeddedMediaDropBefore(editable, block, event) ? block : block.nextSibling);
+  } else {
+    editable.appendChild(media);
+  }
+  // 旧Markdown由来の空行ラッパーだけを掃除し、文字を持つ行は残す。
+  if (sourceParent && sourceParent !== sourceEditor && sourceParent.isConnected
+      && !sourceParent.textContent?.trim() && !sourceParent.querySelector('img,video,audio,.embed-media')) {
+    sourceParent.remove();
+  }
+  _prepareEmbeddedMediaForControls(media);
+  sourceEditor.dispatchEvent(new Event('input', { bubbles: true }));
+  if (editable !== sourceEditor) editable.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
 }
 
 // 埋め込みメディアのダブルクリックでビューワーを開く
@@ -109700,6 +110055,7 @@ function setupEditableDropHandler(el) {
 
     e.preventDefault();
     e.stopPropagation();
+    if (types.includes(NOTE_EMBEDDED_MEDIA_MIME)) e.dataTransfer.dropEffect = 'move';
     // キャレット位置にドロップラインを表示
     // 挿入位置の線は共通実装（gb-dnd.js）へ委譲する。旧実装はここに同じ計算を
     // 複製しており、縦書き対応のような修正が片方だけに入る温床になっていた。
@@ -109737,6 +110093,12 @@ function setupEditableDropHandler(el) {
     const range = _editableRangeFromPoint(el, e.clientX, e.clientY);
     if (range) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); }
     let insertRange = range ? range.cloneRange() : _captureEditableSelection(el);
+
+    // 埋め込み画像・動画はURL文字列へ変換せず、サイズ・保存パスを保った実体を移動する。
+    if (types.includes(NOTE_EMBEDDED_MEDIA_MIME) && _draggedEmbeddedMedia) {
+      _moveEmbeddedMediaAtDrop(el, _draggedEmbeddedMedia, e, insertRange);
+      return;
+    }
 
     // メモ（アノテーション）のドロップ
     const annData = e.dataTransfer.getData('application/x-annotation');
@@ -109866,6 +110228,18 @@ setupEditableDropHandler(document.getElementById('entity-freetext'));
 function setupEditableDragSource(el) {
   if (!el) return;
   el.addEventListener('dragstart', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (media && el.contains(media) && e.dataTransfer) {
+      _prepareEmbeddedMediaForControls(media);
+      _draggedEmbeddedMedia = media;
+      media.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData(NOTE_EMBEDDED_MEDIA_MIME, media.dataset.path || media.dataset.name || 'media');
+      // 一部WebViewは独自MIMEだけのドラッグを開始しないため、安全な文字列も付ける。
+      e.dataTransfer.setData('text/plain', media.dataset.name || media.dataset.path || '埋め込みメディア');
+      if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, media, 0.72);
+      return;
+    }
     const sel = window.getSelection();
     const text = sel ? sel.toString() : '';
     if (!text) return;
@@ -109874,6 +110248,10 @@ function setupEditableDragSource(el) {
     e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
     if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
     e.dataTransfer.effectAllowed = 'copyMove';
+  });
+  el.addEventListener('dragend', () => {
+    _draggedEmbeddedMedia?.classList?.remove('is-dragging');
+    _draggedEmbeddedMedia = null;
   });
 }
 setupEditableDragSource((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
@@ -109887,12 +110265,12 @@ function toggleNoteToc() {
   if (toc.style.display === 'none') {
     toc.style.display = '';
     btn.classList.add('active');
-    localStorage.setItem('note-toc-visible', '1');
+    _updateNoteTocCurrentPreferences({ visible: true });
     updateNoteToc();
   } else {
     toc.style.display = 'none';
     btn.classList.remove('active');
-    localStorage.setItem('note-toc-visible', '');
+    _updateNoteTocCurrentPreferences({ visible: false });
   }
   syncNoteTocLayout();
 }
@@ -109915,9 +110293,16 @@ function updateNoteToc(editor) {
     : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
+  const mobileClose = '<button type="button" class="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
+  const bindMobileClose = () => {
+    toc.querySelector('.note-toc-mobile-close')?.addEventListener('click', () => {
+      if (typeof toggleNoteToc === 'function') toggleNoteToc();
+    });
+  };
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
   if (headings.length === 0) {
-    toc.innerHTML = '<div class="note-toc-empty">見出しがありません</div>';
+    toc.innerHTML = mobileClose + '<div class="note-toc-empty">見出しがありません</div>';
+    bindMobileClose();
     return;
   }
 
@@ -109931,7 +110316,8 @@ function updateNoteToc(editor) {
     html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}"`
       + ` data-e2e-id="note-toc-item-${i}" title="${esc(text)}">${esc(text)}</button>`;
   });
-  toc.innerHTML = html;
+  toc.innerHTML = mobileClose + html;
+  bindMobileClose();
   // 目次はDOMごと差し替わるため、テーマの適用対象マークを付け直す。
   // これを省くとテーマ側のホバー色だけが失効する。
   try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
@@ -111444,7 +111830,7 @@ function _calloutImageOptions(editable, isCurrent) {
       const path = editable.dataset.path || editable.dataset.entityPath || '';
       if (!path) throw new Error('先にノートを保存してください');
       const home = typeof _homeFolderPath !== 'undefined' ? String(_homeFolderPath || '').replace(/\\/g, '/').replace(/\/$/, '') : '';
-      const dir = (home ? home + '/' : '') + 'Meldex画像';
+      const dir = (home ? home + '/' : '') + 'Meldexファイル';
       const data = await _readFileAsDataURL(prepared);
       if (!current()) throw new Error('編集対象が変わりました');
       const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
@@ -114368,10 +114754,9 @@ document.addEventListener('keydown', async (e) => {
       kind: item.type === 'folder' ? 'folder' : 'file',
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
-    const confirmMessage = items.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-      : await cfConfirm(confirmMessage);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     deleteOutlinerItemsWithHistory(items, {
       confirmation: confirmed,
@@ -129845,21 +130230,28 @@ function _dpCalSave(editId) {
 }
 
 async function _dpCalDelete(id) {
-  if (!await cfConfirm('このイベントを削除しますか？')) return;
-  // Phase C: CalendarComponentに直接undo記録を依頼
   const formRoot = document.getElementById('dp-cal-title')?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
   const calComponent = formRoot?._calComponent || document.getElementById('rp-calendar')?._calComponent || null;
-  if (calComponent) calComponent.pushUndo('イベント削除');
   // 削除前に calendar_id を拾っておく（対象絞り込み用）
   let calId = '';
+  let evRef = null;
   try {
     if (calComponent?._events) {
-      const evRef = calComponent._events.find(x => x.id === id);
+      evRef = calComponent._events.find(x => x.id === id);
       calId = evRef?.calendar_id || '';
     }
   } catch (_) {}
+  if (evRef && !evRef._recurrence_instance && calComponent?._eventIsUndoable
+    && !calComponent._eventIsUndoable(evRef)) {
+    showStatus('自動生成された予定は元データから削除してください', true);
+    return;
+  }
+  if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
+    && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    // API成功後、再読込前の削除前状態を共通履歴へ記録する。
+    if (calComponent) calComponent.pushUndo('イベント削除');
     // Audit-P1 H-6: 削除成功後に紐付いたコメントを孤児化（target_kind='calendar_event'）
     apiPost('/annotations/orphan-by-target', {
       target_kind: 'calendar_event',
@@ -131530,15 +131922,21 @@ function hideBoardNoteTab() {
       this._showStatus('削除できるイベントがありません', true);
       return;
     }
-    const skippedText = plan.blocked ? `\n${plan.blocked}件は元データ管理または繰り返し予定のため削除しません。` : '';
-    if (typeof cfConfirm === 'function' && !await cfConfirm(`${targetCount} 件を削除しますか？${skippedText}`)) return;
+    // シフトは予定スナップショットのUndo対象外なので、シフトを含む時だけ確認を残す。
+    // 通常イベントだけの一括削除は確認なしで即時実行し、共通履歴から戻せる。
+    if (plan.shiftIds.length && typeof cfConfirm === 'function'
+      && !await cfConfirm(`${plan.shiftIds.length} 件のシフトを削除しますか？（シフトはUndo対象外です）`)) return;
     const beforeEvents = (this._events || []).map(event => ({ ...event }));
     const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
     const beforeSelected = [...this._eventSelection()];
     const beforeLast = this._lastSelectedEventId || '';
     const deletedEventMeta = new Map(plan.eventIds.map(id => [id, beforeEvents.find(event => event.id === id) || null]));
     const eventIdSet = new Set(plan.eventIds);
-    this._pushUndo('イベント一括削除');
+    const undoSnapshot = plan.eventIds.length ? {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    } : null;
     this._events = (this._events || []).filter(event => !eventIdSet.has(event.id));
     plan.shiftIds.forEach(shiftId => {
       if (typeof this._removeShiftOptimistic === 'function') this._removeShiftOptimistic(shiftId);
@@ -131550,39 +131948,49 @@ function hideBoardNoteTab() {
     this._clearEventSelection();
     this._renderCalendarList?.();
     this._render();
-    try {
-      await Promise.all([
-        ...plan.eventIds.map(id => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' })),
-        ...plan.shiftIds.map(shiftId => apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })),
-      ]);
-      plan.eventIds.forEach(id => {
+    const operations = [
+      ...plan.eventIds.map(id => ({ kind: 'event', id, run: () => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' }) })),
+      ...plan.shiftIds.map(id => ({ kind: 'shift', id, run: () => apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' }) })),
+    ];
+    const settled = await Promise.allSettled(operations.map(operation => operation.run()));
+    const succeeded = operations.filter((operation, index) => {
+      const result = settled[index];
+      return result.status === 'fulfilled' && result.value?.ok !== false;
+    });
+    const failed = operations.filter((operation, index) => !succeeded.includes(operation));
+    const succeededEventIds = succeeded.filter(operation => operation.kind === 'event').map(operation => operation.id);
+    if (succeededEventIds.length && undoSnapshot) this._pushUndo('イベント一括削除', undoSnapshot);
+    succeededEventIds.forEach(id => {
         apiPost('/annotations/orphan-by-target', {
           target_kind: 'calendar_event',
           target_file: deletedEventMeta.get(id)?.calendar_id || '_calendar',
           item_id: id,
           cascade_container: true,
         }).catch(() => {});
-      });
-      if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
-        this._refreshShiftStateAfterMutation();
-      } else {
-        this._loadEvents?.().then(() => this._render()).catch(() => {});
-      }
-      const suffix = plan.blocked ? `（${plan.blocked}件は対象外）` : '';
-      this._showStatus(`${targetCount} 件を削除しました${suffix}`);
-    } catch (error) {
+    });
+    if (!succeeded.length) {
       this._events = beforeEvents;
       this._shifts = beforeShifts;
       this._setSelectedEvents(beforeSelected, beforeLast);
       this._renderCalendarList?.();
       this._render();
-      this._showStatus(error?.message || '削除に失敗しました', true);
-      // 並列削除の部分成功でサーバーと表示が乖離しないよう再同期する
+    }
+    try {
       if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
-        this._refreshShiftStateAfterMutation();
+        await this._refreshShiftStateAfterMutation();
       } else {
-        this._loadEvents?.().then(() => this._render()).catch(() => {});
+        await this._loadEvents?.();
+        this._render();
       }
+    } catch (error) {
+      this._showStatus('削除結果の再読込に失敗しました。画面を再読み込みしてください', true);
+      return;
+    }
+    const suffix = plan.blocked ? `（${plan.blocked}件は対象外）` : '';
+    if (failed.length) {
+      this._showStatus(`${succeeded.length} 件を削除、${failed.length} 件は失敗しました${suffix}`, true);
+    } else {
+      this._showStatus(`${succeeded.length} 件を削除しました${suffix}`);
     }
   };
 
@@ -132235,12 +132643,15 @@ function hideBoardNoteTab() {
       this._showStatus('自動生成された予定は元データから削除してください', true);
       return;
     }
-    // 繰り返しの個別回はシリーズ全体と同じIDを持つため、削除の意味を明示して確認する
-    const confirmText = evRef?._recurrence_instance
-      ? 'これは繰り返しの予定です。繰り返しの予定全体を削除しますか？'
-      : 'このイベントを削除しますか？';
-    if (typeof cfConfirm === 'function' && !await cfConfirm(confirmText)) return;
     const isShift = source === 'shift' || source === 'shift-break' || String(id || '').startsWith('shift:');
+    // 通常イベントは即時削除＋Undoとする。Undo対象外のシフトと、1件の表示から
+    // シリーズ全体へ作用する繰り返し予定だけは、不可逆・広域操作として確認を残す。
+    if ((isShift || evRef?._recurrence_instance) && typeof cfConfirm === 'function') {
+      const confirmText = evRef?._recurrence_instance
+        ? 'これは繰り返しの予定です。繰り返しの予定全体を削除しますか？'
+        : 'このシフトを削除しますか？';
+      if (!await cfConfirm(confirmText)) return;
+    }
     if (isShift && this._shiftMutationStateUnknown) {
       this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
       return;
@@ -132253,7 +132664,12 @@ function hideBoardNoteTab() {
     const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
     const beforeSelected = this._eventSelection ? [...this._eventSelection()] : [];
     const beforeLast = this._lastSelectedEventId || '';
-    if (!isShift) this._pushUndo('イベント削除');
+    const undoable = !isShift && this._eventIsUndoable?.(evRef);
+    const undoSnapshot = undoable ? {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    } : null;
     if (isShift && shiftId && typeof this._removeShiftOptimistic === 'function') {
       this._removeShiftOptimistic(shiftId);
     } else {
@@ -132272,6 +132688,7 @@ function hideBoardNoteTab() {
         : await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
       if (result && result.ok === false) throw new Error(result.message || '削除に失敗');
       acknowledged = true;
+      if (undoSnapshot) this._pushUndo('イベント削除', undoSnapshot);
       apiPost('/annotations/orphan-by-target', {
         target_kind: 'calendar_event',
         target_file: evRef?.calendar_id || '_calendar',
@@ -154125,7 +154542,9 @@ function _dbNextLocalEntityName(dbPath, existingNames, baseName) {
   const used = new Set((existingNames || []).map(name => String(name || '')).filter(Boolean));
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
-    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
+    // 新形式では改名確定後の内部保存名を表示採番へ持ち越さない。一方、作成直後の
+    // 改名が通信中ならサーバー上では旧表示名がまだ占有中なので、完了までは予約する。
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true && !_value.renamePending) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
@@ -154145,7 +154564,10 @@ function _dbRegisterPendingEntityCreate(dbPath, entityName, createPromise) {
   const tracked = Promise.resolve(createPromise)
     .then(result => {
       const settled = Promise.resolve(result);
-      _dbPendingEntityCreates.set(key, { promise: settled, result, settled: true });
+      // 作成待ち中に改名が始まっていた場合、その予約状態を作成完了後の記録へ引き継ぐ。
+      // ここで落とすと、改名APIが未完了なのに旧表示名を次の作成が再利用してしまう。
+      const renamePending = _dbPendingEntityCreates.get(key)?.renamePending === true;
+      _dbPendingEntityCreates.set(key, { promise: settled, result, settled: true, renamePending });
       setTimeout(() => {
         const current = _dbPendingEntityCreates.get(key);
         if (current?.result === result) _dbPendingEntityCreates.delete(key);
@@ -154175,11 +154597,22 @@ function _dbMergePendingEntityCreates(dbPath, pivotData) {
   });
 }
 
-async function _dbResolveEntityPathForRename(dbPath, entityName) {
+function _dbHoldEntityCreateNameReservation(dbPath, entityName) {
   const pending = _dbPendingEntityCreates.get(_dbPendingEntityCreateKey(dbPath, entityName));
+  if (pending) pending.renamePending = true;
+  return pending || null;
+}
+
+async function _dbResolveEntityPathForRename(dbPath, entityName) {
+  const pending = _dbHoldEntityCreateNameReservation(dbPath, entityName);
   if (!pending) return _entityPath(dbPath, entityName);
   const created = await pending.promise;
   return created?.path || _entityPath(dbPath, created?.name || entityName);
+}
+
+function _dbReleaseEntityCreateNameReservation(dbPath, entityName) {
+  const pending = _dbPendingEntityCreates.get(_dbPendingEntityCreateKey(dbPath, entityName));
+  if (pending) pending.renamePending = false;
 }
 
 function _shouldRunFrontendAutoFillOnCreate(response) {
@@ -154193,7 +154626,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   // 同じ候補名へ収束し、409 が連鎖して「同名エントリが多数」に至るのを防ぐ。
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
-    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true && !_value.renamePending) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
@@ -154903,7 +155336,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
     try {
       const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
         silentError: true,
-        timeoutMs: 60000,
+        timeoutMs: 120000,
         skipBrowseCache: true,
         cache: 'reload',
       });
@@ -154935,13 +155368,13 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       let response;
       let firstError;
       try {
-        response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+        response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 300000 });
       } catch (error) {
         firstError = error;
         if (!isUnknownResultError(error)) throw error;
         showDeleteProgress(queue, true);
         try {
-          response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+          response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 300000 });
         } catch (retryError) {
           if (!isUnknownResultError(retryError)) throw retryError;
         }
@@ -154996,7 +155429,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
         try {
           const authoritative = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
             silentError: true,
-            timeoutMs: 60000,
+            timeoutMs: 120000,
             skipBrowseCache: true,
             cache: 'reload',
           });
@@ -157003,13 +157436,12 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     ] : []),
     { type: 'sep' },
     { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true, action: async () => {
-      const confirmMessage = entityName + ' を削除しますか？';
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
             { path: ep, kind: 'file', ...(assetId ? { assetId } : {}) },
-          ], confirmMessage)
-        : await cfConfirm(confirmMessage);
+          ])
+        : { confirmed: true, operation: 'trash' };
       if (!confirmed) return;
       const entryId = String(
         entityData?._id
@@ -157035,6 +157467,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
             true
           );
         } else {
+          if (typeof _dbUndoBulkDeleteEntities === 'function') {
+            _dbUndoBulkDeleteEntities(targetDbPath, result.trashRefs || [], ctx);
+          }
           showStatus(calendarWarning || '削除しました', !!calendarWarning);
         }
       } catch (error) {
@@ -165532,6 +165967,10 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
 
 function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
   // 作成待ちの間も改名全体を追跡し、再読込がその隙間へ入らないようにする。
+  // 作成応答が先に返って実パスが行へ入った分岐でも、旧表示名の予約は必要。
+  if (typeof _dbHoldEntityCreateNameReservation === 'function') {
+    _dbHoldEntityCreateNameReservation(dbPath, oldName);
+  }
   const saved = (async () => {
     if (entity?._topicCanonicalOnly && entity?.topicRef) {
       return window.MeldexTopicPlacementUI.renameProjectedTopic(entity, newName);
@@ -165546,6 +165985,11 @@ function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
     // 更新日時なども確定した1行の応答から反映する。
     if (result?.entity_data && typeof _dbApplyCreatedEntityData === 'function') {
       _dbApplyCreatedEntityData(dbPath, entity, result.entity_data);
+    }
+    // 作成直後の旧表示名は、改名がサーバーで確定するまで次の作成へ再利用しない。
+    // 成功後は新形式の保存名と表示名が独立しているため、通常の採番へ戻せる。
+    if (typeof _dbReleaseEntityCreateNameReservation === 'function') {
+      _dbReleaseEntityCreateNameReservation(dbPath, oldName);
     }
     return result;
   })();
@@ -174935,7 +175379,6 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
         await saveNextItems(nextItems);
       }));
       actions.appendChild(actionBtn('trash2', '削除', async () => {
-        if (typeof confirm === 'function' && !confirm('この画像を削除しますか？')) return;
         const nextItems = _imagePropCloneItems(items);
         nextItems.splice(idx, 1);
         await saveNextItems(nextItems);
@@ -180092,9 +180535,8 @@ const MeldexMapControls = (() => {
     }));
     root.appendChild(app._button('削除', async () => {
       const canEdit = app._editGuard(f.id);
-      if (!await cfConfirm('選択した地点・図形を削除しますか？（元に戻せます）')) return;
       if (!canEdit()) return;
-      app.update(doc => { doc.features = doc.features.filter(item => item.id !== f.id); }); app._selected = null; app._render();
+      app.update(doc => { doc.features = doc.features.filter(item => item.id !== f.id); }, true, 'マップの項目を削除'); app._selected = null; app._render();
     }, { disabled: locked }));
   }
   function generator(app) {
@@ -180415,7 +180857,7 @@ const MeldexMapControls = (() => {
     app._mapCommands = commands;
     const parking = app._mapParking = document.createElement('div'); parking.hidden = true; app.el.appendChild(parking);
     parking.append(...toolbar.children);
-    toolbar.className = 'gb-toolbar gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
+    toolbar.className = 'gb-toolbar gb-toolbar-main gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
     const menu = iconButton(app, 'マップメニュー', 'menu', event => showToolMenu(event, 'map', app), 'menu'); menu.classList.add('tool-menu-btn');
     menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
     const reveal = iconButton(app, 'フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('map', event), 'reveal');
@@ -180579,7 +181021,7 @@ class MapAppComponent extends ToolComponent {
     }
     this.view?.map?.invalidateSize({ pan: true, animate: false });
     this._syncDetailPanel();
-    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope(this._historyScope());
   }
   async load(path, options = {}) {
     if (!MeldexMapDocument.isAvailable()) { this.el.textContent = 'マップ初期版はデスクトップ版本体で開いてください。'; return false; }
@@ -180634,6 +181076,46 @@ class MapAppComponent extends ToolComponent {
     return button;
   }
   _message(text) { if (this.message) this.message.textContent = text; if (typeof showStatus === 'function') showStatus(text); }
+  _historyScope(path = this.path || this._tab()?.path || this.state.mapPath) {
+    return path ? 'map:' + String(path).replace(/\\/g, '/') : '';
+  }
+  _hasCommonHistory() {
+    return !!this._historyScope() && typeof historyPush === 'function'
+      && typeof historyUndo === 'function' && typeof historyRedo === 'function'
+      && typeof historyCanUndo === 'function' && typeof historyCanRedo === 'function';
+  }
+  _historyTarget(scope) {
+    if (typeof getComponentInstance === 'function' && typeof _meldexActiveTabForPane === 'function') {
+      const tab = _meldexActiveTabForPane();
+      const active = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+      if (active?.store && active._historyScope?.() === scope) return active;
+    }
+    if (this.el?.isConnected && this.store && this._historyScope() === scope) return this;
+    if (typeof getComponentInstance === 'function' && typeof _meldexFindTabForHistoryScope === 'function') {
+      const match = _meldexFindTabForHistoryScope(scope);
+      const target = match ? getComponentInstance(match.tabId) : null;
+      if (target?.store && target._historyScope?.() === scope) return target;
+    }
+    return null;
+  }
+  _restoreHistorySnapshot(snapshot, scope) {
+    const target = this._historyTarget(scope);
+    if (!target) return false;
+    if (target !== this) return target._restoreHistorySnapshot(snapshot, scope);
+    const next = MeldexMapDocument.parse(MeldexMapDocument.clone(snapshot));
+    for (const key of ['title', 'display_title', 'meldex']) {
+      if (this.store.doc[key] !== undefined) next[key] = MeldexMapDocument.clone(this.store.doc[key]);
+    }
+    this.store.doc = next;
+    this.store.revision++;
+    this.store.error = null;
+    this.store.changed(this.store);
+    this._inputDirty = false;
+    this.view?.cancel();
+    this._buildSettingsRefresh();
+    this._render();
+    return true;
+  }
   _draftPrefix() { return 'meldex-map-draft:' + this.path + ':'; }
   _draftKey() { return this._draftPrefix() + this._draftOwner; }
   _readDraft() {
@@ -180661,14 +181143,26 @@ class MapAppComponent extends ToolComponent {
       this.saveStatus.title = this.saveStatus.textContent;
       this.saveStatus.classList.toggle('error', !!store.error || !!this._draftFailed && store.dirty);
     }
-    if (this.undoButton) this.undoButton.disabled = this.editingDisabled || !store.undoStack.length;
-    if (this.redoButton) this.redoButton.disabled = this.editingDisabled || !store.redoStack.length;
+    const commonHistory = this._hasCommonHistory();
+    const scope = commonHistory ? this._historyScope() : '';
+    if (this.undoButton) this.undoButton.disabled = this.editingDisabled || !(commonHistory ? historyCanUndo(scope) : store.undoStack.length);
+    if (this.redoButton) this.redoButton.disabled = this.editingDisabled || !(commonHistory ? historyCanRedo(scope) : store.redoStack.length);
     clearTimeout(this._saveTimer);
     if (store.dirty && !store.pending && !store.error && !this.readOnly) this._saveTimer = setTimeout(() => { if (this.store === store) store.save(); }, 800);
   }
-  update(mutator, history = true) {
+  update(mutator, history = true, label = 'マップを編集') {
     if (this.editingDisabled || !this.store) return false;
-    try { return this.store.update(mutator, history); }
+    try {
+      if (!history || !this._hasCommonHistory()) return this.store.update(mutator, history);
+      const before = MeldexMapDocument.clone(this.store.doc);
+      if (!this.store.update(mutator, false)) return false;
+      const scope = this._historyScope();
+      historyPush(label,
+        () => this._restoreHistorySnapshot(before, scope),
+        undefined,
+        scope);
+      return true;
+    }
     catch (error) { this._message(error.message); return false; }
   }
   _editGuard(featureId = null) {
@@ -180728,9 +181222,9 @@ class MapAppComponent extends ToolComponent {
     if (this.editingDisabled) return;
     const source = this.store.doc, canEdit = this._editGuard();
     const allowed = new Set(source.features.filter(f => ids.includes(f.id) && !source.layers.find(l => l.id === f.layer_id)?.locked).map(f => f.id));
-    if (!allowed.size || !await cfConfirm(`${allowed.size}件の地点・図形を削除しますか？`)) return;
+    if (!allowed.size) return;
     if (!canEdit() || this.store.doc !== source) return;
-    if (this.update(doc => { doc.features = doc.features.filter(f => !allowed.has(f.id)); })) { this._selectMany([]); this._render(); }
+    if (this.update(doc => { doc.features = doc.features.filter(f => !allowed.has(f.id)); }, true, 'マップの項目を削除')) { this._selectMany([]); this._render(); }
   }
   _duplicateSelected() {
     if (this.editingDisabled) return;
@@ -180805,7 +181299,8 @@ class MapAppComponent extends ToolComponent {
     toolbar.append(this._button('新規', () => addPanelMenuTool('map', { paneId: this.paneId })), this._button('保存', () => this.flush(), { disabled: this.readOnly }),
       this._button('再読込', () => this.reload()), this._button('マップを書き出す', () => this.exportDocument()),
       this._button('データ入出力', () => MeldexMapControls.interchange(this)));
-    this.undoButton = this._button('元に戻す', () => this.restore('undo')); this.redoButton = this._button('やり直す', () => this.restore('redo'));
+    this.undoButton = this._button('元に戻す', () => this.restore('undo')); this.undoButton.setAttribute('data-undo-button', '');
+    this.redoButton = this._button('やり直す', () => this.restore('redo')); this.redoButton.setAttribute('data-redo-button', '');
     toolbar.append(this.undoButton, this.redoButton, this._button('全体表示', () => this.view.fit()));
     const exportPNG = this._button('PNG', async () => {
       const blob = await this.view.exportPNG(); if (!blob) throw new Error('画像を作成できませんでした');
@@ -180919,7 +181414,17 @@ class MapAppComponent extends ToolComponent {
     if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
     window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
   }
-  restore(direction) { this._commitInput(); if (!this.editingDisabled && this.store.restore(direction)) { this._inputDirty = false; this.view.cancel(); this._buildSettingsRefresh(); this._render(); } }
+  async restore(direction) {
+    this._commitInput();
+    if (this.editingDisabled || !this.store) return false;
+    if (this._hasCommonHistory()) {
+      const restored = await (direction === 'undo' ? historyUndo(this._historyScope()) : historyRedo(this._historyScope()));
+      return restored;
+    }
+    if (!this.store.restore(direction)) return false;
+    this._inputDirty = false; this.view.cancel(); this._buildSettingsRefresh(); this._render();
+    return true;
+  }
   _commitInput() { const input = document.activeElement; if ((this.el?.contains(input) || this.optionsRoot?.contains(input) || this.inspector?.contains(input)) && input.matches('input,textarea,select')) input.blur(); }
   async flush() {
     this._commitInput(); clearTimeout(this._saveTimer);
@@ -180999,6 +181504,32 @@ class MapAppComponent extends ToolComponent {
     window.removeEventListener('beforeunload', this._beforeUnload); super.destroy(); return true;
   }
 }
+
+function _meldexMapHistoryTarget(scope) {
+  if (typeof getComponentInstance === 'function' && typeof _meldexActiveTabForPane === 'function') {
+    const tab = _meldexActiveTabForPane();
+    const active = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+    if (active?.store && active._historyScope?.() === scope) return active;
+  }
+  if (typeof getComponentInstance === 'function' && typeof _meldexFindTabForHistoryScope === 'function') {
+    const match = _meldexFindTabForHistoryScope(scope);
+    const target = match ? getComponentInstance(match.tabId) : null;
+    if (target?.store && target._historyScope?.() === scope) return target;
+  }
+  return null;
+}
+
+window.MeldexMapHistorySnapshots = {
+  capture(scope) {
+    const target = _meldexMapHistoryTarget(scope);
+    return target?.store ? MeldexMapDocument.clone(target.store.doc) : null;
+  },
+  restore(snapshot, scope) {
+    const target = _meldexMapHistoryTarget(scope);
+    return target ? target._restoreHistorySnapshot(snapshot, scope) : false;
+  },
+};
+
 registerToolComponent('map', { cls: MapAppComponent, icon: 'map', label: 'マップ', multi: true, requiresViewLock: true });
 async function openMapApp(path, label, options = {}) {
   if (!MeldexMapDocument.isAvailable()) { showStatus('マップ初期版はデスクトップ版本体で開いてください。', true); return false; }
@@ -181237,6 +181768,10 @@ class FormAppComponent extends ToolComponent {
   }
   _changed() {
     if (!this.store) return;
+    if (this.titleElement) {
+      this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
+      this.titleElement.title = this.titleElement.textContent;
+    }
     try {
       if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
       else this._removeOwnDraft();
@@ -181583,11 +182118,35 @@ class FormAppComponent extends ToolComponent {
     if (this._designRender) _elCloseEditPopups();
     this._designRender = null;
     this.el.replaceChildren();
-    const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
-    const menu = this._button('メニュー', event => showToolMenu(event, 'form-app', this));
-    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-label', 'メニュー'); menu.setAttribute('aria-haspopup', 'menu'); menu.innerHTML = lucide('menu', 16); bar.appendChild(menu);
+    const bar = document.createElement('div');
+    bar.className = 'gb-form-app-toolbar gb-toolbar gb-toolbar-main';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'フォームの操作');
+    this.el.appendChild(bar);
+    const iconButton = (label, iconName, run) => {
+      const button = this._button(label, run);
+      button.className = 'tb-icon-btn';
+      button.innerHTML = lucide(iconName, 16);
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      return button;
+    };
+    const textButton = (label, run) => {
+      const button = this._button(label, run);
+      button.className = 'tb-text-btn';
+      return button;
+    };
+    const menu = iconButton('メニュー', 'menu', event => showToolMenu(event, 'form-app', this));
+    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-haspopup', 'menu'); bar.appendChild(menu);
+    bar.appendChild(iconButton('フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('form-app', event)));
+    this.titleElement = document.createElement('span');
+    this.titleElement.className = 'tb-title tb-file-title';
+    this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
+    this.titleElement.title = this.titleElement.textContent;
+    bar.appendChild(this.titleElement);
+    const separator = document.createElement('div'); separator.className = 'sep'; bar.appendChild(separator);
     const source = document.createElement('label'); source.className = 'gb-form-source-sheet'; source.textContent = '参照先シート';
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
+    const select = document.createElement('select'); select.className = 'gb-select tb-select'; select.setAttribute('aria-label', '参照先シート');
     select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
     if (this.ctx.dbPath) {
@@ -181598,24 +182157,20 @@ class FormAppComponent extends ToolComponent {
     select.disabled = this.definitionReadOnly; select.addEventListener('change', () => this._chooseSheet().catch(error => showStatus(error.message, true)));
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
-      bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const templateButton = this._button('テンプレート', event => this._openTemplatePicker(event.currentTarget));
-      templateButton.classList.add('tb-icon-btn');
-      templateButton.innerHTML = lucide('layoutTemplate', 16);
-      templateButton.title = 'テンプレート';
-      templateButton.setAttribute('aria-label', 'テンプレート');
+      bar.appendChild(textButton('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
+      const templateButton = iconButton('テンプレート', 'layoutTemplate', event => this._openTemplatePicker(event.currentTarget));
       templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
       templateButton.disabled = this.definitionReadOnly;
       bar.appendChild(templateButton);
-      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
+      const presets = document.createElement('select'); presets.className = 'gb-select tb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
       presets.hidden = true; presets.tabIndex = -1; presets.setAttribute('aria-hidden', 'true');
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
       presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
-      const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
-      const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
+      const automatic = textButton('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
+      const design = textButton('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }
-    bar.appendChild(this._button('再読込', async () => {
+    bar.appendChild(textButton('再読込', async () => {
       if (!await this._leave()) return;
       if (this.store.dirty && !await cfConfirm('未保存のフォーム定義を破棄して読み直しますか？')) return;
       await this.load(this.path, { discardDraft: true });
@@ -188822,16 +189377,15 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
         assetId: item.asset_id || item.assetId || '',
       }));
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(
             redoEntries.map(entry => ({
               path: entry.path,
               kind: 'file',
               ...(entry.assetId ? { assetId: entry.assetId } : {}),
             })),
-        `${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`,
           )
-        : await cfConfirm(`${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`);
-      if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+        : { confirmed: true, operation: 'trash' };
+      if (!confirmed) throw new Error('削除の参照確認に失敗しました');
       const result = await window.GbDbEntryIdentity.deleteEntries({
         dbPath,
         ctx,
@@ -189232,13 +189786,11 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     showStatus('選択した行の保存状態が変わったため削除を中止しました。行を選び直してください', true);
     return;
   }
-  const confirmMessage = `${names.length} 件のトピックをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(
         entries.map(entry => ({ path: entry.path, kind: 'file', ...(entry.assetId ? { assetId: entry.assetId } : {}) })),
-        confirmMessage,
       )
-    : await cfConfirm(confirmMessage);
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   const result = await window.GbDbEntryIdentity.deleteEntries({
     dbPath,
@@ -195361,7 +195913,6 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
     { label: '右と入れ替え', disabled: idx >= viewsCount - 1, action: () => swapViews(idx, idx + 1) },
     { type: 'sep' },
     { label: '削除', action: async () => {
-      if (!await cfConfirm('このビューを削除しますか？')) return;
       const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
       const cfg = getDbViewConfig(dbPath);
       const curIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
@@ -196864,48 +197415,40 @@ function renderKanban(ctx) {
     }
   }
 
-  async function _confirmDelete(message) {
-    if (typeof cfConfirm === 'function') {
-      return !!await cfConfirm(message, { danger: true, okLabel: 'ゴミ箱へ移動', cancelLabel: 'キャンセル' });
-    }
-    return confirm(message);
-  }
-
   async function _deleteSelected() {
     const current = cleanupState;
     if (!current || !current.selected.size || current.busyDepth) return;
     const targets = current.payload.items.filter(item => current.selected.has(item.path));
     const usedCount = targets.filter(item => item.used).length;
-    const lines = [`添付ファイル${targets.length}件をゴミ箱へ移動します。`];
-    if (usedCount) lines.push(`このうち${usedCount}件は現在シートで使われています。削除すると表示できなくなります。`);
-    let confirmation = null;
-    if (window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact) {
-      confirmation = await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        targets.map(item => ({ path: item.path, kind: 'file' })),
-        lines.join('\n'),
-        { danger: true, okLabel: 'ゴミ箱へ移動', cancelLabel: 'キャンセル', operation: 'trash' },
-      );
-    } else {
-      confirmation = await _confirmDelete(lines.join('\n'));
+    if (typeof deleteOutlinerItemsWithHistory !== 'function'
+        || typeof window.MeldexDeleteImpactWarning?.authorizeReversibleDelete !== 'function') {
+      _setStatus('Undo履歴を登録できないため削除できません', true);
+      return;
     }
+    const deleteTargets = targets.map(item => ({ path: item.path, name: item.name, type: 'file' }));
+    const confirmation = await window.MeldexDeleteImpactWarning.authorizeReversibleDelete(deleteTargets);
     if (!confirmation) {
-      _setStatus('削除を取り消しました');
+      _setStatus('削除の参照確認に失敗しました', true);
       return;
     }
 
     _setStatus('添付ファイルをゴミ箱へ移動しています...');
     _beginBusy();
     try {
-      const confirmationPayload = typeof window.MeldexDeleteImpactWarning?.confirmationPayload === 'function'
-        ? window.MeldexDeleteImpactWarning.confirmationPayload(confirmation)
-        : {};
-      const result = await apiPost('/outliner/delete-batch', {
-        items: targets.map(item => ({ path: item.path })),
-        ...confirmationPayload,
+      const result = await deleteOutlinerItemsWithHistory(deleteTargets, {
+        confirmation,
+        label: `添付ファイル${targets.length}件を削除`,
+        detail: usedCount ? `使用中 ${usedCount}件を含む` : targets.map(item => item.path).join(', '),
+        refreshSuccessfulRedo: true,
+        refresh: async phase => {
+          if ((phase === 'undo' || phase === 'redo') && cleanupState === current && current.modalApi?.isOpen?.()) {
+            await _reload({ keepStatus: true, preserveSelection: false });
+          }
+        },
       });
       const failed = Array.isArray(result?.failed) ? result.failed : [];
       if (failed.length) {
-        const detail = failed.map(item => item?.detail || item?.status || '').filter(Boolean).join(' / ');
+        const detail = failed.map(item => item?.error?.userMessage || item?.error?.message || item?.detail || item?.status || '').filter(Boolean).join(' / ');
         _setStatus(`${failed.length}件を削除できませんでした${detail ? `: ${detail}` : ''}`, true);
       } else {
         _setStatus(`添付ファイル${targets.length}件をゴミ箱へ移動しました`);
@@ -209502,12 +210045,21 @@ async function _applyCalendarSnapshot(dbPath, currentSnapshot, nextSnapshot) {
 }
 function _calPushUndo(label) {
   const { data, dbPath } = _currentCalendarSnapshotSource();
-  if (!dbPath) return;
-  _calUndoStack.push({ label, dbPath, snapshot: _cloneCalendarSnapshot(data) });
+  if (!dbPath) return null;
+  const entry = { label, dbPath, snapshot: _cloneCalendarSnapshot(data) };
+  _calUndoStack.push(entry);
   if (_calUndoStack.length > _CAL_UNDO_MAX) _calUndoStack.shift();
   _calRedoStack.length = 0;
   if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty(dbPath, 'db');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  return entry;
+}
+
+function _calDiscardFailedUndo(entry) {
+  const index = _calUndoStack.indexOf(entry);
+  if (index >= 0) _calUndoStack.splice(index, 1);
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
 }
 
 async function _calendarSnapshotForDb(targetDbPath, currentDbPath, currentData) {
@@ -210659,14 +211211,14 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
   });
   body.querySelector('#cal-detail-delete')?.addEventListener('click', async () => {
     const eventName = ev.name || ev.title || 'イベント';
-    if (!await cfConfirm(eventName + ' を削除しますか？')) return;
-    _calPushUndo('イベント削除');
+    const undoEntry = _calPushUndo('イベント削除');
     try {
       await apiDelete('/calendar-db/events/' + encodeURIComponent(eventName) + '?db_path=' + encodeURIComponent(dbPath));
       await _refreshCalendarDb(dbPath);
       if (typeof clearDetailPanel === 'function') await clearDetailPanel();
       showStatus('イベントを削除しました');
     } catch {
+      _calDiscardFailedUndo(undoEntry);
       showStatus('イベントの削除に失敗しました', true);
     }
   });
@@ -210741,7 +211293,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   saveButton.type='button';saveButton.id='ep-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='ep-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
-  let busy=false,deleteConfirmPending=false;
+  let busy=false;
   _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-event-edit',title:isNew?'新規イベント':'イベント編集',body:[...content.childNodes],
@@ -210797,14 +211349,10 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   });
   cancelButton.addEventListener('click', ()=>modalApi.close('cancel'));
   if(deleteButton)deleteButton.addEventListener('click',async()=>{
-    if(busy||deleteConfirmPending)return;
-    deleteConfirmPending=true;
-    let confirmed=false;
-    try{confirmed=await cfConfirm(ev.name+' を削除しますか？');}catch{}finally{deleteConfirmPending=false;}
-    if(!confirmed)return;
-    _calPushUndo('イベント削除');setBusy(true);
+    if(busy)return;
+    const undoEntry=_calPushUndo('イベント削除');setBusy(true);
     try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
-    catch{showStatus('削除に失敗',true);}
+    catch{_calDiscardFailedUndo(undoEntry);showStatus('削除に失敗',true);}
     finally{if(modalApi.isOpen())setBusy(false);}
   });
 }
@@ -210836,7 +211384,7 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tk-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='tk-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
-  let busy=false,deleteConfirmPending=false;
+  let busy=false;
   _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-todo',title:isNew?'新規ToDo':'ToDo編集',body:[...content.childNodes],
@@ -210875,14 +211423,10 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   });
   cancelButton.addEventListener('click',()=>modalApi.close('cancel'));
   if(deleteButton)deleteButton.addEventListener('click',async()=>{
-    if(busy||deleteConfirmPending)return;
-    deleteConfirmPending=true;
-    let confirmed=false;
-    try{confirmed=await cfConfirm('このToDoを削除しますか？');}catch{}finally{deleteConfirmPending=false;}
-    if(!confirmed)return;
-    _calPushUndo('ToDo削除');setBusy(true);
+    if(busy)return;
+    const undoEntry=_calPushUndo('ToDo削除');setBusy(true);
     try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
-    catch{showStatus('削除に失敗',true);}
+    catch{_calDiscardFailedUndo(undoEntry);showStatus('削除に失敗',true);}
     finally{if(modalApi.isOpen())setBusy(false);}
   });
 }
@@ -212288,7 +212832,21 @@ function _showSyncModal(dbPath) {
       rbBtn.disabled = true;
       rbBtn.textContent = '再構築中...';
       try {
-        const r = await apiPost('/backlinks/rebuild', {});
+        // 保管庫全体の走査を1本のHTTP応答で待つと、処理中でも通常APIの
+        // タイムアウトにより失敗扱いになる。ジョブIDを即時に受け取って進捗を
+        // ポーリングし、旧バックエンドでジョブ化されない場合だけ長時間待機する。
+        const r = typeof global.runBackgroundJob === 'function'
+          ? await global.runBackgroundJob('/backlinks/rebuild', { background: true }, {
+              operationKind: 'backlinks-rebuild',
+              operationLabel: 'バックリンク索引を再構築しています',
+              cancellable: false,
+              onProgress: progress => {
+                if (!rbBtn.isConnected) return;
+                const processed = Number(progress?.processed) || 0;
+                rbBtn.textContent = processed > 0 ? `再構築中... ${processed}件` : '再構築中...';
+              },
+            })
+          : await apiPost('/backlinks/rebuild', {}, { timeoutMs: 300000 });
         if (r && r.ok) {
           await onRebuilt();
         } else {
@@ -212453,8 +213011,8 @@ function _showSyncModal(dbPath) {
  * 計画書: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §2.2・§10.1
  * Phase0委任: app/docs/file-reference-integrity-phase0-2026-08-01/notes.md §4「4c」
  *
- * 既存の削除確認ダイアログ(cfConfirm、UI共通ルール「削除は必ず確認ダイアログ」で
- * 既に全削除操作に確認がある)へ、被参照件数の警告を追加するだけの薄いレイヤー。
+ * 完全削除など確認が必要な操作には被参照件数を表示し、ゴミ箱＋Undo/Redo＋共通履歴で
+ * 回復できる通常削除には、同じ整合性トークンだけを非表示で取得する薄いレイヤー。
  * サーバー側の判定・カウントは一切行わず、削除影響照会（POST /references/delete-impact。
  * apiPost が API ベース URL を前置するため、ここでは `/api` を自分で付けないこと —
  * 付けると `/api/api/...` になり常に失敗し、削除確認そのものが黙って中止されていた
@@ -212577,7 +213135,7 @@ function _showSyncModal(dbPath) {
       const note = document.createElement('div');
       note.className = 'gb-delete-impact-warning-incomplete';
       note.dataset.e2eId = 'delete-impact-warning-incomplete';
-      note.textContent = '参照の確認が不完全です';
+      note.textContent = '一部の参照先を確認できませんでした。ゴミ箱へ移動できますが、表示されていない参照が残る可能性があります。完全削除は安全のため実行できません。';
       box.appendChild(note);
     }
 
@@ -212710,10 +213268,31 @@ function _showSyncModal(dbPath) {
     };
   }
 
+  // ゴミ箱とUndo/Redoで回復できる操作向け。参照グラフの整合性トークンは従来どおり
+  // 取得するが、利用者を確認ダイアログで止めない。照会に失敗した場合は安全側で中止する。
+  async function authorizeReversibleDelete(targets, options) {
+    const items = _toDeleteImpactItems(targets);
+    const opts = Object.assign({}, options || {});
+    if (!items.length) return { confirmed: true, operation: 'trash' };
+    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
+    if (failed || !impact) {
+      if (typeof cfAlert === 'function') await cfAlert('参照の確認ができなかったため、削除を中止しました。');
+      return false;
+    }
+    return {
+      confirmed: true,
+      confirmationToken: impact.confirmationToken,
+      graphRevision: impact.graphRevision,
+      confirmations: impact.confirmations,
+      operation: 'trash',
+    };
+  }
+
   window.MeldexDeleteImpactWarning = {
     fetchDeleteImpact,
     buildWarningNode,
     confirmDeleteWithImpact,
+    authorizeReversibleDelete,
     confirmationPayload,
     targetFor,
   };
@@ -215977,6 +216556,87 @@ const _chatState = { messages: [], streaming: false, provider: 'gemini', model: 
 // _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
 const _chatExecutions = new Map();
 const _chatLegacyStreamState = { streaming: false, abortController: null, streamingProvider: '', streamingTargetPath: '', activeExecution: null };
+const _chatLatestReplyVersions = new Map();
+
+function _chatReplyVersionForMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = list.length - 1; index >= 0; index--) {
+    const message = list[index];
+    if (message?.role !== 'assistant') continue;
+    return String(message.msg_id || message.id || [index, message.timestamp || '', JSON.stringify(message.content || '')].join(':'));
+  }
+  return '';
+}
+
+function _chatReplySeenKey(sessionId) {
+  return 'meldex-chat-reply-seen:v1:' + encodeURIComponent(String(sessionId || ''));
+}
+
+function _chatRememberReplyVersion(sessionId, version) {
+  const id = String(sessionId || '');
+  const value = String(version || '');
+  if (id && value) _chatLatestReplyVersions.set(id, value);
+  return value;
+}
+
+function _chatMarkReplySeen(sessionId, version) {
+  const id = String(sessionId || '');
+  const value = String(version || _chatLatestReplyVersions.get(id) || '');
+  if (!id || !value) return false;
+  try { localStorage.setItem(_chatReplySeenKey(id), value); } catch {}
+  document.querySelectorAll('[data-chat-session-id]').forEach(row => {
+    if (String(row.dataset.chatSessionId || '') === id) row.dataset.chatUnread = '0';
+  });
+  return true;
+}
+
+function _chatSessionDisplayState(sessionId, suppliedVersion = '') {
+  const id = String(sessionId || '');
+  const execution = typeof _chatExecutionForSession === 'function' ? _chatExecutionForSession(id) : null;
+  const version = _chatRememberReplyVersion(
+    id,
+    _chatLatestReplyVersions.get(id)
+      || String(suppliedVersion || '')
+      || (id === String(_chatState.sessionId || '') ? _chatReplyVersionForMessages(_chatState.messages) : '')
+      || _chatReplyVersionForMessages(execution?.messages),
+  );
+  let seen = '';
+  try { seen = localStorage.getItem(_chatReplySeenKey(id)) || ''; } catch {}
+  return { working: !!execution, unread: !!version && seen !== version, version };
+}
+
+function _chatUpdateSessionStateRow(row) {
+  if (!row) return;
+  const sessionId = String(row.dataset.chatSessionId || '');
+  const state = _chatSessionDisplayState(sessionId, row.dataset.chatReplyVersion || '');
+  if (state.version) row.dataset.chatReplyVersion = state.version;
+  row.dataset.chatUnread = state.unread ? '1' : '0';
+  row.querySelector('.chat-session-state-indicator')?.remove();
+  if (!state.working && !state.unread) return;
+  const indicator = document.createElement('span');
+  indicator.className = 'chat-session-state-indicator';
+  indicator.dataset.chatState = state.working ? 'working' : 'unread';
+  indicator.setAttribute('role', 'img');
+  indicator.setAttribute('aria-label', state.working ? 'AI作業中' : '新着返信あり');
+  indicator.title = state.working ? 'AI作業中' : '新着返信あり';
+  indicator.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;margin-left:auto;flex:0 0 auto;';
+  if (state.working) {
+    const spinner = document.createElement('span');
+    spinner.className = 'chat-spinner';
+    spinner.style.cssText = 'width:11px;height:11px;border-width:1.5px;';
+    indicator.appendChild(spinner);
+  } else {
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent);';
+    indicator.appendChild(dot);
+  }
+  const host = row.querySelector('[data-chat-state-host]') || row.firstElementChild || row;
+  host.appendChild(indicator);
+}
+
+function _chatRefreshSessionStateUi() {
+  document.querySelectorAll('[data-chat-session-id]').forEach(_chatUpdateSessionStateRow);
+}
 
 function _chatExecutionList() {
   return Array.from(_chatExecutions.values());
@@ -216034,8 +216694,11 @@ function _chatPlaceLiveActivity(container, wrapper, assistantEl) {
   // 移動すると内側のスクロール位置が戻るため、記録欄の位置を保って付け替える。
   const scrollers = Array.from(wrapper.querySelectorAll('*')).filter(el => el.scrollTop > 0)
     .map(el => [el, el.scrollTop]);
+  const followSessionId = String(_chatState?.sessionId || '');
+  const anchor = _chatFollowCaptureAnchor(followSessionId, container);
   if (row) row.insertAdjacentElement('afterend', wrapper);
   else container.appendChild(wrapper);
+  _chatFollowRestoreAnchor(followSessionId, container, anchor);
   scrollers.forEach(([el, top]) => { el.scrollTop = top; });
 }
 
@@ -216145,7 +216808,7 @@ function _chatRegisterExecution(execution) {
       console.warn('AIチャットの進捗表示を開始できませんでした', error);
     }
   }
-  window.MeldexChatListbox?.decorateHistory?.();
+  _chatRefreshSessionStateUi();
   return execution;
 }
 
@@ -216160,15 +216823,22 @@ function _chatUpdateExecutionPhase(controller, phase) {
 function _chatUnregisterExecution(controller, outcome = {}) {
   const execution = _chatExecutions.get(controller);
   if (!execution) return false;
+  const status = String(outcome.status || 'succeeded');
+  if (status === 'succeeded') {
+    const replyVersion = _chatRememberReplyVersion(execution.sessionId, _chatReplyVersionForMessages(execution.messages));
+    if (String(execution.sessionId || '') === String(_chatState.sessionId || '')
+        && document.visibilityState !== 'hidden') {
+      _chatMarkReplySeen(execution.sessionId, replyVersion);
+    }
+  }
   _chatExecutions.delete(controller);
   const progress = execution.progress;
   if (progress) {
-    const status = String(outcome.status || 'succeeded');
     if (status === 'failed') progress.fail({ error: outcome.message || 'AIの応答を完了できませんでした' });
     else if (status === 'cancelled') progress.cancelled({ summary: outcome.message || '中止しました' });
     else progress.succeed({ summary: outcome.message || '応答が完了しました' });
   }
-  window.MeldexChatListbox?.decorateHistory?.();
+  _chatRefreshSessionStateUi();
   return true;
 }
 
@@ -216270,6 +216940,84 @@ function _chatIsScrolledNearBottom(container) {
 function _chatScrollToBottom(container) {
   if (!container) return;
   container.scrollTop = container.scrollHeight;
+}
+
+// 通常AI/CLIで共通の、セッション単位の会話追従状態。
+const _chatFollowStates = new Map();
+
+function _chatFollowState(sessionId) {
+  const key = String(sessionId || '__new__');
+  if (!_chatFollowStates.has(key)) {
+    _chatFollowStates.set(key, { key, mode: 'following', container: null, cleanup: null, userIntent: false, programmatic: false });
+  }
+  return _chatFollowStates.get(key);
+}
+
+function _chatBindFollowController(sessionId, container, options = {}) {
+  if (!container) return _chatFollowState(sessionId);
+  const state = _chatFollowState(sessionId);
+  if (state.container !== container) {
+    state.cleanup?.();
+    state.container = container;
+    const markIntent = () => { state.userIntent = true; };
+    const onKey = event => {
+      if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) markIntent();
+    };
+    const onScroll = () => {
+      if (state.programmatic) return;
+      if (state.userIntent) {
+        state.mode = _chatIsScrolledNearBottom(container) ? 'following' : 'paused-by-user';
+        state.userIntent = false;
+      }
+      // DOM追加・高さ変更だけではpausedを解除しない。following中は描画側が末尾へ戻す。
+    };
+    container.addEventListener('wheel', markIntent, { passive: true });
+    container.addEventListener('touchstart', markIntent, { passive: true });
+    container.addEventListener('pointerdown', markIntent, { passive: true });
+    container.addEventListener('keydown', onKey);
+    container.addEventListener('scroll', onScroll, { passive: true });
+    state.cleanup = () => {
+      container.removeEventListener('wheel', markIntent);
+      container.removeEventListener('touchstart', markIntent);
+      container.removeEventListener('pointerdown', markIntent);
+      container.removeEventListener('keydown', onKey);
+      container.removeEventListener('scroll', onScroll);
+    };
+  }
+  if (options.resume === true) state.mode = 'following';
+  return state;
+}
+
+function _chatFollowShouldScroll(sessionId, container) {
+  return _chatBindFollowController(sessionId, container).mode === 'following';
+}
+
+function _chatFollowScrollToBottom(sessionId, container) {
+  const state = _chatBindFollowController(sessionId, container);
+  if (state.mode !== 'following') return false;
+  state.programmatic = true;
+  _chatScrollToBottom(container);
+  requestAnimationFrame(() => { state.programmatic = false; });
+  return true;
+}
+
+function _chatFollowCaptureAnchor(sessionId, container) {
+  const state = _chatBindFollowController(sessionId, container);
+  if (state.mode !== 'paused-by-user') return null;
+  const top = container.getBoundingClientRect?.().top || 0;
+  const child = Array.from(container.children || []).find(el => (el.getBoundingClientRect?.().bottom || 0) > top);
+  return child ? { child, offset: (child.getBoundingClientRect?.().top || 0) - top, scrollTop: container.scrollTop } : { scrollTop: container.scrollTop };
+}
+
+function _chatFollowRestoreAnchor(sessionId, container, anchor) {
+  if (!anchor || _chatFollowState(sessionId).mode !== 'paused-by-user') return;
+  if (anchor.child?.isConnected) {
+    const top = container.getBoundingClientRect?.().top || 0;
+    const nextOffset = (anchor.child.getBoundingClientRect?.().top || 0) - top;
+    container.scrollTop += nextOffset - anchor.offset;
+  } else {
+    container.scrollTop = anchor.scrollTop;
+  }
 }
 
 function _chatShouldStickToBottom(container, force = false) {
@@ -218522,6 +219270,139 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
+// 未送信文は会話・保存ルートごとに退避する。入力中だけタイマーを持ち、
+// 1.2秒のデバウンスと5秒の上限で同期保存するため、アイドル時の負荷は発生しない。
+const _CHAT_DRAFT_STORAGE_PREFIX = 'meldex-chat-composer-draft:v1:';
+const _CHAT_DRAFT_DEBOUNCE_MS = 1200;
+const _CHAT_DRAFT_MAX_WAIT_MS = 5000;
+const _CHAT_DRAFT_MAX_CHARS = 512 * 1024;
+
+function _chatDraftScope() {
+  return {
+    user: typeof getUsername === 'function' ? String(getUsername() || '') : '',
+    workspaceId: typeof _chatWorkspaceIdValue === 'function'
+      ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
+    sourceFolder: typeof _chatSourceFolderValue === 'function'
+      ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
+    sessionId: String(_chatState.sessionId || 'new'),
+  };
+}
+
+function _chatDraftStorageKey(scope = _chatDraftScope()) {
+  return _CHAT_DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify(scope));
+}
+
+const _chatDraftManager = (() => {
+  let dirtyKey = '';
+  let debounceTimer = 0;
+  let maxTimer = 0;
+  let restoring = false;
+  let submissionKey = '';
+
+  const input = () => document.getElementById('chat-input');
+  const cancelTimers = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (maxTimer) clearTimeout(maxTimer);
+    debounceTimer = 0;
+    maxTimer = 0;
+  };
+  const persist = (key, value) => {
+    if (!key) return false;
+    try {
+      if (value) {
+        if (value.length > _CHAT_DRAFT_MAX_CHARS) {
+          console.warn('チャット下書きが保存上限を超えたため、先頭部分だけを保存します');
+          value = value.slice(0, _CHAT_DRAFT_MAX_CHARS);
+        }
+        localStorage.setItem(key, JSON.stringify({ value, savedAt: new Date().toISOString() }));
+      } else {
+        localStorage.removeItem(key);
+      }
+      return true;
+    } catch (error) {
+      console.warn('チャット下書きを保存できませんでした', error);
+      return false;
+    }
+  };
+  const flush = () => {
+    cancelTimers();
+    const field = input();
+    if (!field || !dirtyKey) return false;
+    // 送信処理が入力欄を空にしても、履歴保存または待機カード保存が成功するまでは
+    // 直前の下書きを消さない。
+    if (submissionKey === dirtyKey && !field.value) return true;
+    const saved = persist(dirtyKey, String(field.value || ''));
+    if (saved) dirtyKey = '';
+    return saved;
+  };
+  const schedule = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(flush, _CHAT_DRAFT_DEBOUNCE_MS);
+    if (!maxTimer) maxTimer = setTimeout(flush, _CHAT_DRAFT_MAX_WAIT_MS);
+  };
+  const onInput = () => {
+    if (restoring) return;
+    const field = input();
+    if (!field) return;
+    // 失敗後に本文が戻された場合は、その時点から通常の下書き保存へ戻る。
+    if (submissionKey && field.value) submissionKey = '';
+    if (submissionKey && !field.value) return;
+    dirtyKey = _chatDraftStorageKey();
+    schedule();
+  };
+  const beginSubmission = () => {
+    const field = input();
+    if (!field) return '';
+    dirtyKey = _chatDraftStorageKey();
+    flush();
+    submissionKey = dirtyKey || _chatDraftStorageKey();
+    return submissionKey;
+  };
+  const clearSubmitted = () => {
+    if (!submissionKey) return false;
+    const key = submissionKey;
+    submissionKey = '';
+    if (dirtyKey === key) dirtyKey = '';
+    cancelTimers();
+    return persist(key, '');
+  };
+  const restore = () => {
+    flush();
+    submissionKey = '';
+    dirtyKey = '';
+    cancelTimers();
+    const field = input();
+    if (!field) return false;
+    let value = '';
+    try {
+      const stored = JSON.parse(localStorage.getItem(_chatDraftStorageKey()) || 'null');
+      value = typeof stored?.value === 'string' ? stored.value : '';
+    } catch (error) {
+      console.warn('チャット下書きを復元できませんでした', error);
+    }
+    restoring = true;
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    restoring = false;
+    window.GBChatFormatting?.syncInput?.();
+    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(field, 2, 10);
+    return !!value;
+  };
+  input()?.addEventListener('input', onInput);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+  window.addEventListener('pagehide', flush);
+  return { flush, restore, beginSubmission, clearSubmitted, storageKey: _chatDraftStorageKey };
+})();
+
+window.GBChatDrafts = _chatDraftManager;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => _chatDraftManager.restore(), { once: true });
+} else {
+  setTimeout(() => _chatDraftManager.restore(), 0);
+}
+
 let _teamRoomCreationPending = false;
 
 async function showCreateRoomModal() {
@@ -220239,7 +221120,10 @@ function _chatPersistQueuedMessages() {
     });
     if (saved.length) localStorage.setItem(CHAT_QUEUE_STORAGE_KEY, JSON.stringify(saved));
     else localStorage.removeItem(CHAT_QUEUE_STORAGE_KEY);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function _chatRestoreQueuedMessages() {
@@ -220493,16 +221377,7 @@ function _chatDecorateHistoryList() {
   list.setAttribute('aria-label', 'AIチャット履歴');
   list.querySelectorAll('[data-chat-session-id]').forEach(row => {
     row.setAttribute('role', 'option');
-    const sessionId = String(row.dataset.chatSessionId || '');
-    const working = typeof _chatExecutionForSession === 'function' && !!_chatExecutionForSession(sessionId);
-    const unread = row.dataset.chatUnread === '1';
-    row.querySelector('.chat-list-state-icons')?.remove();
-    if (!working && !unread) return;
-    const icons = document.createElement('span');
-    icons.className = 'chat-list-state-icons';
-    icons.setAttribute('aria-label', [working ? 'AI作業中' : '', unread ? '未読' : ''].filter(Boolean).join('、'));
-    icons.textContent = (working ? '●' : '') + (unread ? ' •' : '');
-    row.firstElementChild?.appendChild(icons);
+    if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
   });
 }
 
@@ -220558,6 +221433,7 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const queue = _chatQueuedMessages();
 
   if (input) {
+    window.GBChatDrafts?.beginSubmission?.();
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
@@ -220573,7 +221449,8 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
   queue.push(message);
-  _chatPersistQueuedMessages();
+  const queueSaved = _chatPersistQueuedMessages();
+  if (queueSaved) window.GBChatDrafts?.clearSubmitted?.();
   chatAddMessage('user', message.content, {
     messageIndex: _chatState.messages.length + queue.length - 1,
     msg_id: message.msg_id,
@@ -220860,6 +221737,7 @@ async function chatSend(options = {}) {
     }
   }
   if (!usingDeferredMessages) {
+    window.GBChatDrafts?.beginSubmission?.();
     if (typeof _chatWithDraftUploadCleanupPaused === 'function') {
       _chatWithDraftUploadCleanupPaused(() => {
         input.value = '';
@@ -221077,7 +221955,7 @@ async function chatSend(options = {}) {
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
   const scrollStreamContainer = () => {
     const liveContainer = streamLiveContainer();
-    if (liveContainer && _autoScroll) _chatScrollToBottom(liveContainer);
+    if (liveContainer) _chatFollowScrollToBottom(streamSessionId, liveContainer);
   };
   const addAssistantToVisibleStream = (content, renderOptions) => (
     streamVisibleInCurrentChat() ? chatAddMessage('assistant', content, renderOptions) : null
@@ -221090,7 +221968,6 @@ async function chatSend(options = {}) {
   let responseToolEvents = [];
   let responseThinking = '';
   let liveThinkingTextEl = null;
-  let _autoScroll = true;
   let streamError = null;
   let streamCompleted = false;
   // 受信のたびに回答全文を描き直すと、長い回答ほど画面全体が重くなる。途中経過は
@@ -221116,10 +221993,8 @@ async function chatSend(options = {}) {
     if (streamPaintTimer) clearTimeout(streamPaintTimer);
     streamPaintTimer = 0;
   };
-  const _scrollHandler = () => {
-    _autoScroll = _chatIsScrolledNearBottom(msgContainer);
-  };
-  if (msgContainer && !detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
+  const _scrollHandler = () => {};
+  if (msgContainer && !detachedScope) _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
   const setLiveActivityStatus = (label) => {
     const st = spinnerWrapper.querySelector('#_chat-thinking-status');
     if (st) st.textContent = label || '考え中...';
@@ -221846,6 +222721,7 @@ function _chatScrollToMessage(msgId) {
 
 // 保存済みチャットを開いてリプレイ＋続行
 async function openSavedChat(path, anchor = '', sourceFolder) {
+  window.GBChatDrafts?.flush?.();
   const restoreGuard = typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreGuard === 'function'
     ? GBChatRestore.restoreGuard()
     : null;
@@ -222017,9 +222893,20 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     if (m.role === 'user') chatAddMessage('user', m.content, _chatMessageRenderOptions(m, index));
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
+  const openedReplyVersion = typeof _chatReplyVersionForMessages === 'function'
+    ? _chatReplyVersionForMessages(_chatState.messages) : '';
+  if (document.visibilityState !== 'hidden' && typeof _chatMarkReplySeen === 'function') {
+    _chatMarkReplySeen(_chatState.sessionId, openedReplyVersion);
+  }
+  if (typeof _chatRefreshSessionStateUi === 'function') _chatRefreshSessionStateUi();
   if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
+  window.GBChatDrafts?.restore?.();
   if (anchor) _chatScrollToMessage(anchor);
-  else _chatRevealLatest('llm');
+  else {
+    const follow = typeof _chatBindFollowController === 'function'
+      ? _chatBindFollowController(_chatState.sessionId, container) : null;
+    if (!follow || follow.mode !== 'paused-by-user') _chatRevealLatest('llm');
+  }
   return true;
   } finally {
     if (showOpenLoading) hideLoading(loading);
@@ -222027,6 +222914,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
 }
 
 function chatClear() {
+  window.GBChatDrafts?.flush?.();
   const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
   const previousWasStreaming = !!_chatState.streaming;
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
@@ -222054,6 +222942,7 @@ function chatClear() {
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '');
   chatAddSystem('新しいチャットを開始しました');
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  window.GBChatDrafts?.restore?.();
   renderChatHistory();
 }
 
@@ -222128,6 +223017,7 @@ async function chatAutoSave(options = {}) {
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
       if (!_chatState.sessionTitle && saved?.title) _setChatSessionTitle(saved.title);
+      window.GBChatDrafts?.clearSubmitted?.();
     }
     return true;
   } catch (e) {
@@ -222432,11 +223322,16 @@ async function renderChatHistory() {
     items.forEach(item => {
       const div = document.createElement('div');
       const sessionId = String(item.name || '');
-      const modifiedMs = Date.parse(item.modified || '') || 0;
+      const replyVersion = String(item.assistantReplyVersion || '');
+      if (typeof _chatRememberReplyVersion === 'function') _chatRememberReplyVersion(sessionId, replyVersion);
+      const modifiedMs = typeof item.modified === 'number'
+        ? item.modified * 1000 : (Date.parse(item.modified || '') || 0);
       const readMs = Number(localStorage.getItem('meldex-chat-read:' + encodeURIComponent(sessionId)) || 0);
-      const isUnread = modifiedMs > readMs && sessionId !== String(_chatState.sessionId || '');
+      if (replyVersion && !localStorage.getItem(_chatReplySeenKey(sessionId)) && readMs >= modifiedMs) {
+        _chatMarkReplySeen(sessionId, replyVersion);
+      }
       div.dataset.chatSessionId = sessionId;
-      div.dataset.chatUnread = isUnread ? '1' : '0';
+      div.dataset.chatReplyVersion = replyVersion;
       div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
       div.onmouseover = () => div.style.background = 'var(--ui-hover-bg)';
@@ -222453,10 +223348,8 @@ async function renderChatHistory() {
         ? `<div data-chat-history-modified style="margin-top:3px;font-size:10px;color:var(--fg2);">最終更新 ${esc(modifiedLabel)}</div>`
         : '';
       const providerIcon = getProviderIconHtml(item.provider || 'gemini', 14);
-      div.innerHTML = `<div style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
+      div.innerHTML = `<div data-chat-state-host style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
       div.addEventListener('click', () => {
-        localStorage.setItem('meldex-chat-read:' + encodeURIComponent(sessionId), String(Date.now()));
-        div.dataset.chatUnread = '0';
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
       listEl.appendChild(div);
@@ -222908,6 +223801,8 @@ async function showChatHistoryDropdown(event) {
 
   const popup = document.createElement('div');
   popup.id = 'chat-title-dropdown';
+  popup.setAttribute('role', 'listbox');
+  popup.setAttribute('aria-label', 'チャットルームを選択');
   popup.style.cssText = 'position:fixed;z-index:10080;background:var(--ui-popup-bg, var(--bg));color:var(--fg);border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.25);min-width:240px;max-width:380px;max-height:320px;overflow-y:auto;font-size:12px;';
   const loading = document.createElement('div');
   loading.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
@@ -222945,13 +223840,25 @@ async function showChatHistoryDropdown(event) {
     }
     items.forEach(item => {
       const row = document.createElement('div');
+      row.dataset.chatSessionId = String(item.name || '');
+      row.dataset.chatReplyVersion = String(item.assistantReplyVersion || '');
+      if (typeof _chatRememberReplyVersion === 'function') {
+        _chatRememberReplyVersion(row.dataset.chatSessionId, row.dataset.chatReplyVersion);
+      }
       const isActive = _chatState.sessionId && item.name === _chatState.sessionId;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      row.tabIndex = 0;
       row.style.cssText = 'padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;' + (isActive ? 'background:var(--bg3);' : '');
       row.addEventListener('mouseover', () => row.style.background = isActive ? 'var(--bg3)' : 'rgba(255,255,255,0.05)');
       row.addEventListener('mouseout', () => row.style.background = isActive ? 'var(--bg3)' : '');
       const title = document.createElement('div');
-      title.style.cssText = 'color:' + (isActive ? 'var(--accent)' : 'var(--fg)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (isActive ? 'font-weight:bold;' : '');
-      title.textContent = _chatListTitle(item) || item.name;
+      title.dataset.chatStateHost = '1';
+      title.style.cssText = 'display:flex;align-items:center;gap:6px;color:' + (isActive ? 'var(--accent)' : 'var(--fg)') + ';white-space:nowrap;overflow:hidden;' + (isActive ? 'font-weight:bold;' : '');
+      const label = document.createElement('span');
+      label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      label.textContent = _chatListTitle(item) || item.name;
+      title.appendChild(label);
       row.appendChild(title);
       const targetName = item.targetPath ? item.targetPath.split('/').pop() : '';
       if (item.title && targetName && item.title !== targetName) {
@@ -222960,12 +223867,20 @@ async function showChatHistoryDropdown(event) {
         sub.textContent = targetName;
         row.appendChild(sub);
       }
-      row.addEventListener('click', () => {
+      const openRow = () => {
         _closeChatTitleDropdown();
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
+      };
+      row.addEventListener('click', openRow);
+      row.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openRow();
       });
       popup.appendChild(row);
+      if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
     });
+    popup.querySelector('[role="option"]')?.focus();
   } catch (e) {
     popup.innerHTML = '';
     const err = document.createElement('div');
@@ -224575,6 +225490,9 @@ _chatInstallTabActivationHook();
   function _safeFontFamily(value) {
     const raw = String(value || '').trim().replace(/"/g, "'");
     if (!raw || raw.length > 160 || /url\s*\(|expression\s*\(|[<>[\]{};\\]/i.test(raw)) return '';
+    // contenteditableが継承値を明示styleへ展開することがある。CSS-wide keywordは
+    // 利用者が選んだフォントではないため、Markdownへ直列化しない。
+    if (/^(?:inherit|initial|unset|revert|revert-layer)$/i.test(raw)) return '';
     return raw;
   }
 
@@ -224768,7 +225686,12 @@ _chatInstallTabActivationHook();
     const lines = String(source || '').split('\n');
     const starts = _sourceLineStarts(source);
     if (container === editor) {
-      const childIndex = Math.max(0, Math.min(blocks.length, Number(offset) || 0));
+      // Chromiumは編集host直下へ一時的なtext/br nodeを作ることがある。DOM offsetを
+      // element blockのindexとして扱うと、現在行の一つ前/後へ改行が入るため、
+      // 実際に境界より前にあるblock数へ正規化する。
+      const direct = Array.from(editor.childNodes || []);
+      const domOffset = Math.max(0, Math.min(direct.length, Number(offset) || 0));
+      const childIndex = direct.slice(0, domOffset).filter(node => node.nodeType === Node.ELEMENT_NODE).length;
       if (childIndex >= blocks.length) {
         const lastLine = lines[blocks.length - 1] || '';
         return (starts[blocks.length - 1] || 0) + lastLine.length;
@@ -224862,7 +225785,10 @@ _chatInstallTabActivationHook();
 
   function _richInputToMarkdown(editor) {
     if (!editor) return '';
-    const blocks = Array.from(editor.childNodes);
+    const elementBlocks = _richInputBlocks(editor);
+    // Chromiumが編集host直下へ一時的に作る空text/br nodeは、行として保存しない。
+    // 行要素がまだ無い初期入力だけは、直下nodeをフォールバックとして扱う。
+    const blocks = elementBlocks.length ? elementBlocks : Array.from(editor.childNodes);
     if (!blocks.length) return '';
     return blocks.map(_serializeRichBlock).join('\n').replace(/\u00a0/g, ' ');
   }
@@ -228700,13 +229626,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const streamLiveContainer = () => streamVisibleInCurrentChat()
       ? (typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages'))
       : null;
-    let _autoScroll = true;
     const scrollStreamContainer = () => {
       const liveContainer = streamLiveContainer();
-      if (liveContainer && _autoScroll) {
-        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
-        else liveContainer.scrollTop = liveContainer.scrollHeight;
-      }
+      if (liveContainer && typeof _chatFollowScrollToBottom === 'function') _chatFollowScrollToBottom(streamSessionId, liveContainer);
+      else if (liveContainer) liveContainer.scrollTop = liveContainer.scrollHeight;
     };
     const addAssistantToVisibleStream = (content, renderOptions) => (
       streamVisibleInCurrentChat() && typeof chatAddMessage === 'function'
@@ -228731,16 +229654,13 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
-    const _scrollHandler = () => {
-      _autoScroll = typeof _chatIsScrolledNearBottom === 'function'
-        ? _chatIsScrolledNearBottom(msgContainer)
-        : (msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 48);
-    };
-    if (!detachedScope && msgContainer) msgContainer.addEventListener('scroll', _scrollHandler);
+    const _scrollHandler = () => {};
+    if (!detachedScope && msgContainer && typeof _chatBindFollowController === 'function') {
+      _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
+    }
     if (!detachedScope && msgContainer) {
       msgContainer.appendChild(activity.wrapper);
-      if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(msgContainer);
-      else msgContainer.scrollTop = msgContainer.scrollHeight;
+      scrollStreamContainer();
     }
 
     const assistantMessageId = typeof _newChatMessageId === 'function' ? _newChatMessageId() : 'msg_' + Math.random().toString(16).slice(2, 10);
@@ -228749,6 +229669,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     let fullText = '';
     let stderrText = '';
     let cliThinkingText = '';
+    let cliThinkingLogEl = null;
     let lastStatusText = 'CLIへ質問を送信中...';
     let lastCliOutputAt = 0;
     let lastCliTextAt = 0;
@@ -228757,6 +229678,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     let sawCliEvent = false;
     let cliCompleted = false;
     let clientIdleAbortMessage = '';
+    let cliStreamCorrelationId = '';
     let autoContinueRequest = null;
     const continuationCount = cliChatContinuationCount(options);
     const prepareAutoContinue = (reason) => {
@@ -228828,9 +229750,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       if (typeof _chatPlaceLiveActivity === 'function') _chatPlaceLiveActivity(liveContainer, activity.wrapper, assistantDiv);
       else if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
       refreshActivityStatus();
-      if (_autoScroll) {
-        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
-        else liveContainer.scrollTop = liveContainer.scrollHeight;
+      if (typeof _chatFollowScrollToBottom === 'function') {
+        _chatFollowScrollToBottom(streamSessionId, liveContainer);
+      } else {
+        liveContainer.scrollTop = liveContainer.scrollHeight;
       }
     };
     // 受信は1秒に何十回も届くため、描画は一定間隔にまとめる。完了・中断時の最終描画は
@@ -228864,13 +229787,21 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       if (isText) lastCliTextAt = lastCliOutputAt;
     };
     const appendCliThinking = (chunk, label = 'CLIの思考内容を受信中...') => {
-      const text = String(chunk || '').trimEnd();
-      if (!text.trim()) return;
-      cliThinkingText += (cliThinkingText && !cliThinkingText.endsWith('\n') ? '\n' : '') + text;
+      // SSEのdelta境界は文章境界ではない。CLIが送った文字だけを順番どおり連結する。
+      const text = chunk == null ? '' : String(chunk);
+      if (!text) return;
+      cliThinkingText += text;
       markCliOutput();
       refreshActivityStatus(label);
       if (streamVisibleInCurrentChat()) {
-        appendCliChatLog(activity.log, text);
+        activity.log.style.display = 'flex';
+        if (!cliThinkingLogEl || !cliThinkingLogEl.isConnected) {
+          cliThinkingLogEl = document.createElement('div');
+          cliThinkingLogEl.className = 'chat-cli-thinking-text';
+          activity.log.appendChild(cliThinkingLogEl);
+        }
+        cliThinkingLogEl.textContent = cliThinkingText;
+        activity.log.scrollTop = activity.log.scrollHeight;
         scheduleStreamPaint();
       }
     };
@@ -228879,7 +229810,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     const maybeAbortIdleCliStream = () => {
       if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
           && _chatExecutionIsActive(streamController)) {
-        clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
+        const correlation = cliStreamCorrelationId ? `（診断ID: ${cliStreamCorrelationId}）` : '';
+        clientIdleAbortMessage = `CLIとの通信が途切れました${correlation}。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。`;
         try { streamController.abort(); } catch {}
         return true;
       }
@@ -228984,7 +229916,13 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           const data = JSON.parse(line.substring(6));
           lastServerEventAt = Date.now();
           sawCliEvent = true;
-          if (data.type === 'cli_status') {
+          if (data.type === 'stream_start') {
+            cliStreamCorrelationId = String(data.stream_id || '');
+            refreshActivityStatus('CLIストリームへ接続しました...');
+          } else if (data.type === 'heartbeat') {
+            cliStreamCorrelationId = String(data.stream_id || cliStreamCorrelationId || '');
+            // heartbeatは通信生存確認であり、思考本文や進捗ログには混ぜない。
+          } else if (data.type === 'cli_status') {
             const nextStatus = data.message
               || (data.status === 'started' ? 'CLIを実行中...'
                 : data.status === 'waiting' ? 'CLIからの応答を待っています...'
@@ -232360,6 +233298,13 @@ async function _folderImportOsFiles(nodes, parentPath, result, progress) {
     else { result.failed += 1; result.failures.push(item); }
     progress?.updateOperation?.(result.ok + result.failed);
   });
+  const successful = uploaded.map((item, index) => ({ item, file: nodes[index]?.file }))
+    .filter(row => row.item?.ok);
+  if (successful.length) result.savedGroups.push({
+    parentPath,
+    saved: successful.map(row => row.item),
+    files: successful.map(row => row.file),
+  });
 }
 
 async function _folderImportOsNode(node, parentPath, result, progress) {
@@ -232367,6 +233312,9 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
     try {
       const created = await apiPost('/outliner/add', { type: 'folder', label: node.name, parent: parentPath });
       const childParent = created?.node?.path || [parentPath, created?.node?.label || node.name].filter(Boolean).join('/');
+      if (created?.node?.path) {
+        result.savedGroups.push({ parentPath, saved: [{ item: created.node, path: created.node.path }], files: [] });
+      }
       const children = node.children || [];
       await _folderImportOsFiles(children.filter(child => child.kind === 'file'), childParent, result, progress);
       for (const child of children.filter(item => item.kind === 'folder')) {
@@ -232381,9 +233329,98 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
     return;
   }
   const uploaded = await _folderUploadDroppedFile(node.file, parentPath);
-  if (uploaded.ok) result.ok += 1;
+  if (uploaded.ok) {
+    result.ok += 1;
+    result.savedGroups.push({ parentPath, saved: [uploaded], files: [node.file] });
+  }
   else { result.failed += 1; result.failures.push(uploaded); }
   progress?.updateOperation?.(result.ok + result.failed);
+}
+
+function _folderDropPathsEqual(left, right) {
+  const normalize = value => {
+    const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+  };
+  return !!left && !!right && normalize(left) === normalize(right);
+}
+
+function _folderDroppedFileFallbackItem(saved, file) {
+  if (saved?.item?.path) {
+    return { ...saved.item, name: saved.item.name || saved.item.label || String(saved.item.path).split(/[/\\]/).pop() };
+  }
+  const path = String(saved?.path || '').replace(/\\/g, '/');
+  const filename = String(saved?.name || file?.name || path.split('/').pop() || 'ファイル');
+  const lower = filename.toLowerCase();
+  const suffix = (lower.match(/(\.[^.]+)$/) || [])[1] || '';
+  const imageExt = new Set(['.png','.apng','.jpg','.jpeg','.jpe','.jfif','.gif','.bmp','.webp','.svg','.ico','.avif','.tif','.tiff','.heic','.heif','.psd','.psb']);
+  const videoExt = new Set(['.mp4','.webm','.mov','.avi','.mkv']);
+  const audioExt = new Set(['.mp3','.wav','.ogg','.flac','.m4a','.aac']);
+  let type = 'unknown';
+  let name = filename;
+  if (imageExt.has(suffix) || String(file?.type || '').startsWith('image/')) type = 'image';
+  else if (videoExt.has(suffix) || String(file?.type || '').startsWith('video/')) type = 'video';
+  else if (audioExt.has(suffix) || String(file?.type || '').startsWith('audio/')) type = 'audio';
+  else if (suffix === '.csv') { type = 'csv'; name = filename.slice(0, -suffix.length); }
+  else if (suffix === '.md') { type = lower.endsWith('.board.md') ? 'board' : 'page'; name = filename.slice(0, -suffix.length); }
+  else if (['.html','.htm'].includes(suffix)) type = 'html';
+  else if (['.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.txt','.rtf'].includes(suffix)) type = 'document';
+  else if (['.zip','.rar','.7z','.tar','.gz'].includes(suffix)) type = 'archive';
+  return { name, type, path, ext: suffix, size: file?.size, modified: new Date().toISOString(), type_resolved: type !== 'unknown' };
+}
+
+function _folderVisibleOutlinerChildren(parentPath) {
+  if (typeof _findTreeNodeByPath !== 'function') return null;
+  const parentNode = _findTreeNodeByPath(parentPath);
+  if (!parentNode) {
+    return (typeof _homeFolderPath !== 'undefined' && _folderDropPathsEqual(parentPath, _homeFolderPath))
+      ? document.getElementById('body-home')
+      : null;
+  }
+  const children = parentNode.querySelector(':scope > .tree-children');
+  if (!children || children.dataset.loaded === 'false') return null;
+  const toggle = parentNode.querySelector(':scope > .tree-node-row > .tree-toggle');
+  if (children.classList.contains('collapsed') || (toggle && toggle.dataset.expanded !== 'true')) return null;
+  return children;
+}
+
+function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
+  const container = _folderVisibleOutlinerChildren(parentPath);
+  if (!container || !items.length || typeof createTreeNodeFromBrowse !== 'function') return;
+  const fresh = items.filter(item => typeof _findTreeNodeByPath !== 'function' || !_findTreeNodeByPath(item.path));
+  if (!fresh.length) return;
+  const virtual = window.GBOutlinerVirtualRender;
+  if (virtual?.isVirtualContainer?.(container)) {
+    virtual.dropInto(container, fresh);
+    return;
+  }
+  fresh.forEach(item => {
+    const node = createTreeNodeFromBrowse(item);
+    if (typeof _insertOutlinerCreateNode === 'function') _insertOutlinerCreateNode(container, node, null);
+    else container.appendChild(node);
+    if (typeof _registerTreeNode === 'function') _registerTreeNode(node);
+  });
+}
+
+function _folderApplySavedDropResults(parentPath, savedResults, files) {
+  const rows = (savedResults || []).map((saved, index) =>
+    _folderDroppedFileFallbackItem(saved, files?.[index])).filter(item => item.path);
+  if (!rows.length) return 0;
+  if (_folderDropPathsEqual(_folderPath, parentPath)) {
+    const pathKey = value => {
+      const normalized = String(value || '').replace(/\\/g, '/');
+      return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+    };
+    const byPath = new Map(_folderItems.map(item => [pathKey(item?.path), item]));
+    rows.forEach(item => byPath.set(pathKey(item.path), item));
+    _folderItems = [...byPath.values()];
+    if (typeof registerFileTypes === 'function') registerFileTypes(rows);
+    if (typeof renderFolderGrid === 'function') {
+      renderFolderGrid({ preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean) });
+    }
+  }
+  _folderInsertDroppedItemsIntoOutliner(parentPath, rows);
+  return rows.length;
 }
 
 async function _folderImportOsDrop(event, targetItem) {
@@ -232398,8 +233435,8 @@ async function _folderImportOsDrop(event, targetItem) {
     return 0;
   }
   const progress = window.MeldexImportProgress;
-  const result = { ok: 0, failed: 0, failures: [] };
-  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null);
+  const result = { ok: 0, failed: 0, failures: [], savedGroups: [] };
+  const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null, { delayMs: 0, kind: 'external-file-intake' });
   const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
   try {
     await _folderImportOsFiles(nodes.filter(node => node.kind === 'file'), targetItem.path, result, boundProgress);
@@ -232409,12 +233446,7 @@ async function _folderImportOsDrop(event, targetItem) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
-  if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-panel-os-drop' });
-  if (_folderPath && typeof openFolder === 'function') {
-    await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
-      silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
-    });
-  }
+  result.savedGroups.forEach(group => _folderApplySavedDropResults(group.parentPath, group.saved, group.files));
   const first = result.failures[0];
   const reason = String(first?.error?.userMessage || first?.error?.message || first?.error || '');
   showStatus(result.failed
@@ -232471,9 +233503,10 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     }
   }
   const progress = window.MeldexImportProgress;
-  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
   let ok = 0;
   const failures = [];
+  const movedItems = [];
   try {
     for (const source of items) {
       try {
@@ -232490,6 +233523,14 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
         // The move is committed. A detached view cannot turn it into a failed
         // file operation or keep the other editors bound to the old path.
         ok += 1;
+        if (!copySource) movedItems.push({
+          oldPath,
+          newPath: res?.new_path || oldPath,
+          currentPath: res?.new_path || oldPath,
+          name: res?.new_name || source.name,
+          type: source.type,
+          fileId: res?.file_id || source.file_id,
+        });
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
           try { renameAppPathReferences(oldPath, res.new_path, {
             label: res.new_name || source.name,
@@ -232532,6 +233573,18 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } else {
     showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
+  window.MeldexFileMoveHistory?.register?.(movedItems, {
+    label: `フォルダパネル: ${movedItems.length} 件を移動`,
+    detail: `→ ${targetPath}`,
+    refresh: async () => {
+      if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-panel-move-history' });
+      if (_folderPath && typeof openFolder === 'function') {
+        await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
+          silent: true, skipNavPush: true, skipShowView: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
+        });
+      }
+    },
+  });
   return ok;
 }
 
@@ -232626,7 +233679,7 @@ async function showContainedFiles(item) {
   try {
     const query = '/contained-files?path=' + encodeURIComponent(item.path)
       + '&type=' + encodeURIComponent(item.type || '');
-    const result = await apiFetch(query);
+    const result = await apiFetch(query, { foreground: true });
     const label = (item.name || String(item.path).split(/[\\/]/).pop() || 'ファイル') + ' 内のファイル';
     await openFolder(label, item.path, {
       items: Array.isArray(result?.items) ? result.items : [],
@@ -232686,7 +233739,7 @@ async function _folderFetchBrowseItems(path, options = {}) {
     try {
       const contained = await apiPost('/contained-files/batch', {
         targets: containedTargets.map(item => ({ path: item.path, type: item.type || '' })),
-      });
+      }, { foreground: true });
       if (options.isCurrent?.() === false) return [];
       (contained?.items || []).forEach(child => {
         if (!child?.path) return;
@@ -233989,13 +235042,16 @@ function _folderApplyRename(oldPath, newPath, newName, fileId) {
   });
 }
 
+let _folderContextMenuOpenSeq = 0;
+
 // フォルダアイテムの右クリックメニュー
-function showFolderItemContextMenu(e, item, options = {}) {
+async function showFolderItemContextMenu(e, item, options = {}) {
   if ((item?.archive_path || window._archiveBrowseContext) && typeof showArchiveItemContextMenu === 'function') {
     showArchiveItemContextMenu(e, item);
     return;
   }
   closeColHeaderMenu();
+  const openSeq = ++_folderContextMenuOpenSeq;
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
   // サブパネル内では、サブパネルで開く・バージョン管理等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
@@ -234020,7 +235076,10 @@ function showFolderItemContextMenu(e, item, options = {}) {
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
-  const closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  const closeMenu = () => {
+    _folderContextMenuOpenSeq += 1;
+    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  };
   function addItem(label, fn, cls, icon) {
     if (typeof _outlinerAppendMenuItem === 'function') {
       return _outlinerAppendMenuItem(menu, {
@@ -234425,6 +235484,10 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+  if (item.path && typeof appendShellVerbsToMenu === 'function') {
+    await appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit, beforeDisplay: true });
+  }
+  if (openSeq !== _folderContextMenuOpenSeq) return;
   if (typeof positionPopup === 'function') {
     positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
   } else {
@@ -234433,11 +235496,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
     menu.style.top = (e.clientY / z) + 'px';
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  }
-  if (item.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit });
-    if (typeof positionPopup === 'function') positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
-    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   }
   setTimeout(() => {
     const closer = (ev) => {
@@ -235072,10 +236130,9 @@ async function fvBulkDelete() {
     kind: item.type === 'folder' ? 'folder' : 'file',
     ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
   }));
-  const confirmMessage = targets.length + ' 件を削除しますか？';
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-    : await cfConfirm(confirmMessage);
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
     confirmation: confirmed,
@@ -235581,6 +236638,83 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     return outcome;
   }
 
+  function _parentPath(path) {
+    const normalized = _normalizePath(path);
+    const slash = normalized.lastIndexOf('/');
+    return slash >= 0 ? normalized.slice(0, slash) : '';
+  }
+
+  function registerFileMoveHistory(records, options = {}) {
+    const moves = (records || []).filter(item => item?.oldPath && item?.newPath && item.oldPath !== item.newPath)
+      .map(item => ({
+        ...item,
+        oldParent: item.oldParent != null ? _normalizePath(item.oldParent) : _parentPath(item.oldPath),
+        newParent: item.newParent != null ? _normalizePath(item.newParent) : _parentPath(item.newPath),
+        currentPath: item.currentPath || item.newPath,
+        applied: item.applied !== false,
+      }));
+    if (!moves.length || typeof historyPush !== 'function') return false;
+    const replay = async undo => {
+      const ordered = undo ? [...moves].reverse() : moves;
+      const progress = global.MeldexImportProgress?.beginOperation?.(
+        undo ? 'ファイル移動を取り消しています' : 'ファイル移動をやり直しています',
+        ordered.length,
+        { delayMs: 0, kind: 'file-move-history' },
+      );
+      const failures = [];
+      let processed = 0;
+      for (const move of ordered) {
+        const expectedApplied = undo;
+        if (move.applied !== expectedApplied) {
+          processed += 1;
+          global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+          continue;
+        }
+        const from = move.currentPath;
+        try {
+          const destination = undo ? move.oldParent : move.newParent;
+          const response = await apiPost('/outliner/move', {
+            path: from,
+            dest_folder: destination,
+            conflict_policy: 'error',
+          });
+          move.currentPath = response?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
+          move.applied = !undo;
+          try {
+            if (typeof renameAppPathReferences === 'function') {
+              renameAppPathReferences(from, move.currentPath, {
+                label: response?.new_name || move.name || move.item?.name || '',
+                fileId: response?.file_id || move.fileId || move.item?.file_id,
+                type: move.type || move.item?.type || 'file',
+              });
+            }
+            if (typeof handleRelocateResponse === 'function') handleRelocateResponse(response);
+          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
+        } catch (error) {
+          failures.push({ path: from, error });
+        }
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+      }
+      const refreshOutcome = await refreshHistoryView(options);
+      global.MeldexImportProgress?.finishOperation?.(progress, {
+        failed: failures.length,
+        summary: `${processed - failures.length}件移動・${failures.length}件失敗`,
+        details: failures,
+      });
+      if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
+      if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
+    };
+    historyPush(
+      options.label || `ファイル移動: ${moves.length} 件`,
+      () => replay(true),
+      () => replay(false),
+      options.scope || '',
+      options.detail || `${moves.length} 件`,
+    );
+    return true;
+  }
+
   function isFolderPasteLinkChoiceSuppressed() {
     try {
       return localStorage.getItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE) === 'true';
@@ -235759,6 +236893,12 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     let skipped = 0;
     const executedMoves = [];
     const executedCopies = [];
+    const progress = global.MeldexImportProgress?.beginOperation?.(
+      mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
+      items.length,
+      { delayMs: 0, kind: mode === 'cut' ? 'file-move' : 'file-copy' },
+    );
+    let processed = 0;
 
     for (const item of items) {
       try {
@@ -235778,7 +236918,11 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
             continue;
           }
           const oldPath = item.path;
-          const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: item.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
@@ -235797,8 +236941,16 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
         }
       } catch (_) {
         failed.push(item);
+      } finally {
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
     }
+    global.MeldexImportProgress?.finishOperation?.(progress, {
+      failed: failed.length,
+      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
+      details: failed.map(item => ({ path: item.path || item.name || '', message: '処理できませんでした' })),
+    });
 
     if (mode === 'cut') {
       if (typeof options.onCutResult === 'function') {
@@ -235806,19 +236958,11 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
       } else if (typeof _folderToolbarClipboard !== 'undefined') {
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
-      if (executedMoves.length && typeof historyPush === 'function') {
-        const move = async (m, destination) => {
-          const from = m.currentPath;
-          const r = await apiPost('/outliner/move', { path: from, dest_folder: destination });
-          m.currentPath = r?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
-          try {
-            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
-        };
-        const moveUndo = () => replayHistoryItems(executedMoves, false, m => move(m, m.oldParent), options);
-        const moveRedo = () => replayHistoryItems(executedMoves, true, m => move(m, destFolder), options);
-        historyPush('フォルダ: 切り取り貼り付け', moveUndo, moveRedo, '', `${executedMoves.length} 件 → ${destFolder}`);
-      }
+      registerFileMoveHistory(executedMoves, {
+        ...options,
+        label: 'フォルダ: 切り取り貼り付け',
+        detail: `${executedMoves.length} 件 → ${destFolder}`,
+      });
     } else {
       if (executedCopies.length && typeof historyPush === 'function') {
         const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
@@ -235967,6 +237111,7 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     shouldPromptFolderPasteChoice,
     showFolderPasteChoiceModal,
     executeFolderPasteWithChoice,
+    registerFileMoveHistory,
     materializeFolderLinkWithHistory,
     promoteFolderLinkToSourceWithHistory,
     STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE,
@@ -235974,6 +237119,7 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
   global.showFolderPasteChoiceModal = showFolderPasteChoiceModal;
   global.shouldPromptFolderPasteChoice = shouldPromptFolderPasteChoice;
   global.executeFolderPasteWithChoice = executeFolderPasteWithChoice;
+  global.MeldexFileMoveHistory = Object.freeze({ register: registerFileMoveHistory });
   global.materializeFolderLinkWithHistory = materializeFolderLinkWithHistory;
   global.promoteFolderLinkToSourceWithHistory = promoteFolderLinkToSourceWithHistory;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -238487,6 +239633,13 @@ function _installFolderBlankContextMenu(container) {
     const pastedPaths = [];
     const failed = [];
     let skipped = 0;
+    let processed = 0;
+    const movedItems = [];
+    const progress = window.MeldexImportProgress?.beginOperation?.(
+      clip.mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
+      clip.items.length,
+      { delayMs: 0, kind: clip.mode === 'cut' ? 'file-move' : 'file-copy' },
+    );
     for (const item of clip.items) {
       try {
         if (item.type === 'folder' && _folderToolbarPathWithin(destFolder, item.path)) {
@@ -238503,26 +239656,46 @@ function _installFolderBlankContextMenu(container) {
             continue;
           }
           const oldPath = item.path;
-          const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: item.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
           try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
           catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
-          pastedPaths.push(res?.new_path || item.path);
+          const newPath = res?.new_path || item.path;
+          pastedPaths.push(newPath);
+          movedItems.push({ oldPath, newPath, currentPath: newPath, name: res?.new_name || item.name, type: item.type, fileId: res?.file_id || item.file_id });
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
           pastedPaths.push(res?.new_path || '');
         }
       } catch {
         failed.push(item);
+      } finally {
+        processed += 1;
+        window.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
     }
+    window.MeldexImportProgress?.finishOperation?.(progress, {
+      failed: failed.length,
+      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
+    });
     if (clip.mode === 'cut') {
       _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
     }
     const refresh = typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh;
     await refresh(pastedPaths.filter(Boolean));
+    if (clip.mode === 'cut') {
+      window.MeldexFileMoveHistory?.register?.(movedItems, {
+        label: 'フォルダ: 切り取り貼り付け',
+        detail: `${movedItems.length} 件 → ${destFolder}`,
+        refresh,
+      });
+    }
     if (failed.length) {
       showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
     } else if (pastedPaths.length) {
@@ -238595,10 +239768,9 @@ function _installFolderBlankContextMenu(container) {
       kind: item.type === 'folder' ? 'folder' : 'file',
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
-    const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-      : await cfConfirm(confirmMessage);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
       confirmation: confirmed,
@@ -240266,6 +241438,7 @@ function isPinnedShellVerb(verb) {
 async function appendShellVerbsToMenu(menu, path, options = {}) {
   if (!path) return;
   const editingLocked = !!options.editingLocked;
+  const beforeDisplay = options.beforeDisplay === true;
 
   function reclampMenu() {
     if (!document.body.contains(menu)) return;
@@ -240279,7 +241452,8 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
     if (rect.right > window.innerWidth) menu.style.left = Math.max(4, (window.innerWidth - rect.width - 4) / z) + 'px';
   }
 
-  // プレースホルダー表示
+  // 表示前に構築する呼び出し元では、このプレースホルダー自体も画面へ出ない。
+  // 取得完了後に一度だけポップアップを配置し、表示後の項目増加と座標ずれを防ぐ。
   const sep = _shellMenuAppendSeparator(menu);
   const placeholder = _shellMenuAppendItem(menu, 'OS メニュー 読み込み中...', null, {
     disabled: true,
@@ -240288,8 +241462,9 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   reclampMenu();
 
   const verbs = await fetchShellVerbs(path);
-  // メニューがまだDOMにあるか確認
-  if (!document.body.contains(menu)) return;
+  // 従来の表示済みメニュー追記経路では、閉じたメニューへ結果を戻さない。
+  // beforeDisplay経路は意図的に未接続DOM上で完成させる。
+  if (!beforeDisplay && !document.body.contains(menu)) return;
 
   placeholder.remove();
   if (verbs.length === 0) {
@@ -240826,6 +242001,7 @@ if (typeof window !== 'undefined') {
     if (opts.focus !== false) {
       try { row.focus({ preventScroll: true }); } catch {}
     }
+    window.MeldexVisibleSelection?.beginTree?.();
     if (typeof treeSelection !== 'undefined') {
       treeSelection.clear();
       treeSelection.add(nodeEl);
@@ -241848,6 +243024,31 @@ function _getVisibleTreeNodes(scopeSelector) {
 }
 
 // 複数選択管理
+// 「現在選択中」の色は、ツリー本体と最近使った項目／お気に入りを横断して一つだけにする。
+// data-active-workspace は接続先を表す別状態なので、ここでは変更しない。
+function clearSidebarShortcutSelection() {
+  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
+    .forEach(el => el.classList.remove('selected'));
+  window._meldexSidebarShortcutSelectionPath = '';
+}
+
+function clearTreeVisibleSelection() {
+  if (typeof treeSelection !== 'undefined') treeSelection.clear();
+  document.querySelectorAll('.tree-node-row.active').forEach(row => row.classList.remove('active'));
+}
+
+function beginTreeVisibleSelection(options) {
+  clearSidebarShortcutSelection();
+  // Ctrl/Meta/Shift はツリー内の複数選択を保つため、ツリー選択そのものは呼出元へ任せる。
+  if (!options?.preserveTreeSelection) clearTreeVisibleSelection();
+}
+
+window.MeldexVisibleSelection = Object.freeze({
+  clearShortcuts: clearSidebarShortcutSelection,
+  clearTree: clearTreeVisibleSelection,
+  beginTree: beginTreeVisibleSelection,
+});
+
 const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
   _lastClicked: null,
@@ -242060,7 +243261,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
     return 0;
   }
   const progress = window.MeldexImportProgress;
-  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length);
+  const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
   let processed = 0;
   let succeeded = 0;
   const failures = [];
@@ -242131,6 +243332,21 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } else {
     showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
+  window.MeldexFileMoveHistory?.register?.(
+    movedItems.map(item => ({
+      oldPath: item.oldPath,
+      newPath: item.path,
+      currentPath: item.path,
+      name: item.name,
+      type: item.type,
+      fileId: item.file_id || item.fileId,
+    })),
+    {
+      label: `フォルダツリー: ${succeeded} 件を移動`,
+      detail: `→ ${targetPath}`,
+      refresh: () => refreshOutliner({ force: true, reason: 'outliner-move-history' }),
+    },
+  );
   return succeeded;
 }
 
@@ -243137,6 +244353,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   row.addEventListener('click', (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
     if (e.shiftKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Shift+クリック: 範囲選択（開かない）
       e.preventDefault();
       treeSelection.rangeTo(div);
@@ -243144,6 +244361,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
       return;
     }
     if (e.ctrlKey || e.metaKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
@@ -243157,6 +244375,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
     }
 
     // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
+    window.MeldexVisibleSelection?.beginTree?.();
     window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
 
     // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
@@ -243492,7 +244711,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
       let movedAcrossFolders = false;
       let processed = 0;
       const failures = [];
-      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
+      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
@@ -243563,6 +244782,21 @@ function createTreeNodeFromBrowse(item, rootPath) {
         catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
         await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
+        window.MeldexFileMoveHistory?.register?.(
+          movedItems.map(movedItem => ({
+            oldPath: movedItem.oldPath,
+            newPath: movedItem.path,
+            currentPath: movedItem.path,
+            name: movedItem.name,
+            type: movedItem.type,
+            fileId: movedItem.file_id || movedItem.fileId,
+          })),
+          {
+            label: `フォルダツリー: ${movedItems.length} 件を移動`,
+            detail: `→ ${destFolder}`,
+            refresh: () => refreshOutliner({ force: true, reason: 'outliner-tree-move-history' }),
+          },
+        );
         return;
       }
       if (moved.length === 0) return;
@@ -244068,27 +245302,29 @@ function _outlinerTrashRefsToNames(refs) {
   return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
 }
 
-async function _restoreOutlinerTrashRefs(refs) {
+async function _restoreOutlinerDeleteRecords(records) {
   const restored = [];
-  for (const ref of refs || []) {
-    if (!ref?.trash_name) continue;
+  const failures = [];
+  for (const record of records || []) {
+    if (!record?.deleted || !record.trashRef?.trash_name) continue;
     try {
       const result = await apiPost('/outliner/restore', {
-        trash_name: ref.trash_name,
-        ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+        trash_name: record.trashRef.trash_name,
+        ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
       });
+      record.currentPath = result?.restored_to || result?.restored_path || record.item.path;
+      record.deleted = false;
       restored.push(result);
     } catch (error) {
-      const message = error?.message ? String(error.message) : '復元に失敗しました';
-      throw new Error(ref.trash_name + ' の復元に失敗しました: ' + message);
+      failures.push({ record, error });
     }
   }
-  return restored;
+  return { restored, failures };
 }
 
-async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
+async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshSuccessfulRedo = false) {
   // Successful Redo already updated the tree model and DOM through pending deletion.
-  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount) return;
+  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount && !refreshSuccessfulRedo) return;
   if (typeof refresh === 'function') {
     await refresh(phase, result);
     return;
@@ -244164,7 +245400,13 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     });
   }
 
-  let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
+  const deleteRecords = succeeded.map(item => ({
+    item,
+    currentPath: item.path,
+    deleted: true,
+    trashRef: _outlinerTrashRefFromResponse(item),
+  }));
+  let trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
   let trashNames = _outlinerTrashRefsToNames(trashRefs);
   if (succeeded.length && typeof historyPush === 'function') {
     const label = options.label || (succeeded.length + ' 件を削除');
@@ -244172,33 +245414,43 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     historyPush(
       label,
       async () => {
-        const restored = await _restoreOutlinerTrashRefs(trashRefs);
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', { succeeded, deletedPaths, trashNames });
-        if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
+        const { restored, failures: restoreFailures } = await _restoreOutlinerDeleteRecords(deleteRecords);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
+        trashNames = _outlinerTrashRefsToNames(trashRefs);
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', {
+          succeeded,
+          deletedPaths: deleteRecords.filter(record => record.deleted).map(record => record.currentPath),
+          trashNames,
+          failedCount: restoreFailures.length,
+        });
+        if (restoreFailures.length) {
+          throw new Error(`${restoreFailures.length} 件を復元できませんでした。成功した項目は再試行しません`);
+        }
+        if (typeof showStatus === 'function') showStatus(restored.length + ' 件を復元しました');
       },
       async () => {
-        const redoTargets = succeeded.map(item => ({
-          path: item.path,
-          kind: item.type === 'folder' ? 'folder' : 'file',
-          ...(item.assetId ? { assetId: item.assetId } : {}),
+        const pendingRecords = deleteRecords.filter(record => !record.deleted);
+        if (!pendingRecords.length) return true;
+        const redoTargets = pendingRecords.map(record => ({
+          path: record.currentPath,
+          kind: record.item.type === 'folder' || record.item.kind === 'folder' ? 'folder' : 'file',
+          ...(record.item.assetId ? { assetId: record.item.assetId } : {}),
         }));
         const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-          ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-              redoTargets,
-              `${redoTargets.length} 件をもう一度削除しますか？`,
-            )
-          : await cfConfirm(`${redoTargets.length} 件をもう一度削除しますか？`);
-        if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+          ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(redoTargets)
+          : { confirmed: true, operation: 'trash' };
+        if (!confirmed) throw new Error('削除の参照確認に失敗しました');
         const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
           ? MeldexDeleteImpactWarning.confirmationPayload(confirmed)
           : {};
-        const nextTrashRefs = [];
         const redoFailures = [];
         let redoSkippedCount = 0;
-        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
-        for (const item of succeeded) {
+        const pendingPaths = pendingRecords.map(record => record.currentPath);
+        if (pendingPaths.length) _markOutlinerDeletePending(pendingPaths);
+        for (const record of pendingRecords) {
+          const item = record.item;
           const res = await apiPost('/outliner/delete', {
-            path: item.path,
+            path: record.currentPath,
             kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
             ...(item.assetId ? { assetId: item.assetId } : {}),
             ...confirmationPayload,
@@ -244207,19 +245459,22 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
             return null;
           });
           const ref = _outlinerTrashRefFromResponse(res);
-          if (ref) nextTrashRefs.push(ref);
-          else if (res && !res.ok) redoFailures.push({ item, error: new Error('削除応答が不正です') });
-          else if (res) redoSkippedCount++;
+          if (ref) {
+            record.trashRef = ref;
+            record.deleted = true;
+          }
+          else if (res) redoFailures.push({ item, error: new Error('取り消しに必要なゴミ箱情報がありません') });
         }
-        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
-        trashRefs = nextTrashRefs;
+        if (pendingPaths.length) _clearOutlinerDeletePending(pendingPaths);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
         trashNames = _outlinerTrashRefsToNames(trashRefs);
-        if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-          purgeAppPathReferences(deletedPaths);
+        const redonePaths = pendingRecords.filter(record => record.deleted).map(record => record.currentPath);
+        if (redonePaths.length && typeof purgeAppPathReferences === 'function') {
+          purgeAppPathReferences(redonePaths);
         }
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount });
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths: redonePaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount }, !!options.refreshSuccessfulRedo);
         if (redoFailures.length) {
-          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした`);
+          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした。成功した項目は再試行しません`);
         }
         if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
       },
@@ -244290,6 +245545,7 @@ function _showCloudPhase1BlockedCreate(type) {
 }
 
 const _outlinerContextMenuCleanups = new Set();
+let _outlinerContextMenuOpenSeq = 0;
 
 function _outlinerEscHtml(value) {
   return MeldexEscape.html(value);
@@ -244493,6 +245749,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
 
 // --- 右クリックメニュー ---
 function closeTreeContextMenu() {
+  _outlinerContextMenuOpenSeq += 1;
   _outlinerContextMenuCleanups.forEach(cleanup => {
     try { cleanup(); } catch {}
   });
@@ -244538,8 +245795,9 @@ function _outlinerLocalCopyPath(nodeEl, nodeData) {
   return _outlinerNativeClipboardPath(path);
 }
 
-function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
+async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   closeTreeContextMenu();
+  const openSeq = ++_outlinerContextMenuOpenSeq;
   const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
 
   const selectedCount = treeSelection.items.size;
@@ -244599,8 +245857,8 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, `「${names}」を削除しますか？`)
-      : await cfConfirm(`「${names}」を削除しますか？`);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {
@@ -245247,13 +246505,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
   }
 
-  // --- 削除（エントリ以外、ロック中は無効） ---
-  if (!isEntity && !_locked && !nodeData._isRoot) {
-    addSep();
-    const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
-    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
-  }
-
   // --- スプリットビュー ---
   if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
     addSep();
@@ -245264,12 +246515,13 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  _outlinerPlaceContextMenu(menu);
-
-  // OSシェルメニュー項目を非同期追加
+  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
+  // 表示後に項目数やポップアップ座標を変えない。
   if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked });
+    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
   }
+  if (openSeq !== _outlinerContextMenuOpenSeq) return;
+  _outlinerPlaceContextMenu(menu);
 }
 
 // 追加先の親パスを決定
@@ -246000,6 +247252,13 @@ function _outlinerHighlightNodeCandidates() {
 
 // フォルダツリーで対応ノードをハイライト（auto-link遷移・ページ復元等で使用）
 function highlightOutlinerNode(targetPath, opts) {
+  const selectedShortcut = document.querySelector('#body-recent .fav-item.selected, #body-favorites .fav-item.selected');
+  const shortcutPath = String(window._meldexSidebarShortcutSelectionPath || '').replace(/\\/g, '/');
+  if (selectedShortcut && shortcutPath && _outlinerHighlightPathMatches(shortcutPath, targetPath)) {
+    // ショートカットから開いた直後の後追い表示更新で、同じ実体のツリー行へ色を移さない。
+    document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+    return;
+  }
   document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
   if (!targetPath) return;
   const noScroll = opts && opts.noScroll;
@@ -247685,9 +248944,13 @@ async function _openStoredOutlinerItem(item, opts) {
 // フォルダツリー本体の treeSelection とは別の軽量な選択状態として扱う（§2.4）。
 function _selectSidebarShortcutItem(item) {
   if (!item) return;
+  window.MeldexVisibleSelection?.clearTree?.();
   document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
     .forEach(el => { if (el !== item) el.classList.remove('selected'); });
   item.classList.add('selected');
+  window._meldexSidebarShortcutSelectionPath = String(
+    item._nodeData?.path || item.dataset?.path || item.dataset?.filePath || '',
+  ).replace(/\\/g, '/');
 }
 
 function updateRecentItems() {
@@ -248348,24 +249611,58 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
     const nodes = (draggedNodes || [draggedNode]).filter(Boolean);
     let movedCount = 0;
     let skippedCount = 0;
+    const movedItems = [];
+    const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
+    let processed = 0;
     for (const n of nodes) {
       const dragData = n._nodeData;
-      if (!dragData || !dragData.path) { skippedCount++; continue; }
-      if (typeof isItemLocked === 'function' && isItemLocked(dragData.path)) { skippedCount++; showStatus('編集ロック中の項目は移動できません', true); continue; }
-      if (dragData.linked) { skippedCount++; showStatus('リンクファイルは移動できません'); continue; }
+      if (!dragData || !dragData.path) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken); continue;
+      }
+      if (typeof isItemLocked === 'function' && isItemLocked(dragData.path)) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
+        showStatus('編集ロック中の項目は移動できません', true); continue;
+      }
+      if (dragData.linked) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
+        showStatus('リンクファイルは移動できません'); continue;
+      }
       try {
         const oldPath = dragData.path;
-        const _res = await apiPost('/outliner/move', { path: oldPath, dest_folder: _homeFolderPath });
+        const _res = await apiPost('/outliner/move', {
+          path: oldPath,
+          dest_folder: _homeFolderPath,
+          conflict_policy: 'error',
+        });
         movedCount++;
+        movedItems.push({
+          oldPath,
+          newPath: _res?.new_path || oldPath,
+          currentPath: _res?.new_path || oldPath,
+          name: _res?.new_name || dragData.name,
+          type: dragData.type,
+          fileId: _res?.file_id || dragData.file_id,
+        });
         try {
           if (_res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
         } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
         try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res); }
         catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
       } catch { skippedCount++; showStatus('移動に失敗', true); }
+      processed += 1;
+      window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
     }
+    window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: skippedCount, summary: `${movedCount}件移動・${skippedCount}件失敗` });
     await renderHomeFolderTree({ force: true, reason: 'home-drop' });
     await loadOutliner();
+    window.MeldexFileMoveHistory?.register?.(movedItems, {
+      label: `ホームフォルダへ ${movedItems.length} 件を移動`,
+      detail: `→ ${_homeFolderPath}`,
+      refresh: async () => {
+        await renderHomeFolderTree({ force: true, reason: 'home-drop-history' });
+        await loadOutliner();
+      },
+    });
     const statusText = skippedCount
       ? movedCount + ' 件をホームフォルダに移動しました。' + skippedCount + ' 件は移動できませんでした'
       : movedCount + ' 件をホームフォルダに移動しました';
@@ -251998,6 +253295,10 @@ async function doVaultReplace(all) {
       var img = document.createElement('img');
       img.className = 'tree-thumb-img';
       img.alt = '';
+      // The row owns Meldex D&D.  A natively draggable <img> starts with the
+      // thumbnail endpoint as Files/text/html/text/uri-list, so file-first drop
+      // receivers can mistake an internal move for an external thumbnail copy.
+      img.draggable = false;
       img.decoding = 'async';
       shell.appendChild(img);
       iconEl.insertAdjacentElement('afterend', shell);
@@ -261660,6 +262961,9 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
 
 function renameAppPathReferences(oldPath, newPath, opts) {
   if (!oldPath || !newPath || (oldPath === newPath && !Object.prototype.hasOwnProperty.call(opts || {}, 'label'))) return;
+  if (oldPath !== newPath && typeof rebindAutoVersionPathPrefix === 'function') {
+    rebindAutoVersionPathPrefix(oldPath, newPath);
+  }
   // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
   // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
   window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
@@ -261895,6 +263199,7 @@ function purgeAppPathReferences(paths) {
   let legacyTabsChanged = false;
   let clearedCurrentView = false;
   _cancelDeletedPathAutosaves(deletedPaths);
+  if (typeof stopAutoVersionsForPaths === 'function') stopAutoVersionsForPaths(deletedPaths);
   const activePathKey = {
     pivot: 'currentDbPath',
     gallery: 'currentDbPath',
@@ -263100,9 +264405,13 @@ function _apiFetchPerfInfo(path) {
 const _apiFetchInFlightGets = new Map();
 const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
-const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// 通常の読取でもDropbox/NASやウイルススキャンの待機で15秒を超えることがある。
+// 15秒を全APIへ一律適用すると、サーバー側では正常に継続している処理を失敗扱いに
+// してしまうため、読取・更新・長時間処理を共通ポリシーで分ける。
+const GB_APP_API_FETCH_TIMEOUT_MS = 60000;
+const GB_APP_API_FETCH_MUTATION_TIMEOUT_MS = 120000;
 const GB_APP_API_FETCH_MAX_TIMEOUT_MS = 330000;
-// OSのフォルダ／ファイル選択は利用者の操作を待つため、通常APIの15秒上限を使わない。
+// OSのフォルダ／ファイル選択は利用者の操作を待つため、通常APIの読取上限を使わない。
 // サーバー側の待機上限（フォルダ120秒、ファイル300秒）より少し長くして、正常な
 // 選択結果をフロント側が先に破棄しない。パスだけを入力する検証POSTも同じendpointを
 // 使うが、長い上限は実際の処理時間を延ばさず、応答が止まった場合だけ作用する。
@@ -263117,10 +264426,10 @@ const GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 // シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
-// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
-// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
-// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
-const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。
+// サーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーにならない
+// よう、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
+const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 60000;
 // 共有設定（プロフィール等）の読み書きも Dropbox 同期フォルダ上のファイルを触るため、
 // 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
@@ -263139,22 +264448,54 @@ const GB_APP_API_FETCH_STORAGE_WRITES = [
   '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
   '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
 ];
+const GB_APP_API_FETCH_MAINTENANCE_TIMEOUT_MS = 300000;
+const GB_APP_API_FETCH_MAINTENANCE_SEGMENT_RE = /(?:^|[\/-])(?:rebuild|reindex|rescan|scan|repair|migrat(?:e|ion)|gc|import|export|backup|restore|archive|compress|extract|convert|generate|install|upgrade|recalculate|resolve|enrich|cleanup|purge|compact|batch|refresh|retry|apply|upload|download)(?:$|[\/-])/i;
+const GB_APP_API_FETCH_MUTATING_SYNC_SEGMENT_RE = /(?:^|[\/-])sync(?:$|[\/-])/i;
+function _gbAppApiFetchIsMaintenanceOperation(path, options = {}) {
+  const rawPath = String(path || '');
+  const pathname = rawPath.split('?')[0].replace(/^\/api(?=\/)/, '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (GB_APP_API_FETCH_MAINTENANCE_SEGMENT_RE.test(pathname)) return true;
+  // GET /.../sync/status のような軽い状態確認は通常上限のままにし、
+  // 実際に同期を開始・変更する要求だけを長時間処理として扱う。
+  if (method !== 'GET' && GB_APP_API_FETCH_MUTATING_SYNC_SEGMENT_RE.test(pathname)) return true;
+  try {
+    const params = new URL(rawPath, 'http://meldex.local').searchParams;
+    const enabled = key => ['1', 'true', 'yes'].includes(String(params.get(key) || '').toLowerCase());
+    return method === 'GET' && (
+      enabled('refresh') || enabled('full_scan') || enabled('rescan')
+      || enabled('rebuild') || enabled('reindex')
+    );
+  } catch {
+    return false;
+  }
+}
 function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
   // ファイル操作は実体の変更後にもDB・参照・タグを更新する。通常の15秒で応答を捨てない。
   if (GB_APP_API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 全体再構築・再走査・修復・移行・同期は対象件数により15秒を超える。
+  // 各ボタンを個別リストへ追加し忘れないよう、操作の意味で共通分類する。
+  // ジョブ化済みのAPIは即時応答するため、この上限はハング時だけ作用する。
+  if (_gbAppApiFetchIsMaintenanceOperation(path, options)) return GB_APP_API_FETCH_MAINTENANCE_TIMEOUT_MS;
   // 監査したSQLite・共有設定の書込経路は、30秒のロック待ちと付随更新を待つ。
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
       && GB_APP_API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
-  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)
+      || pathname.startsWith('/contained-files')) return 300000;
   if (['/upload-file', '/upload-files', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;
+  // 未登録の更新APIも短い読取上限で打ち切らない。個別リストへの追加漏れが、
+  // 処理済みなのに失敗表示して再実行を誘う事故へ戻らないための共通の下限である。
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    return GB_APP_API_FETCH_MUTATION_TIMEOUT_MS;
+  }
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
     ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
     : GB_APP_API_FETCH_TIMEOUT_MS;
@@ -267688,7 +269029,7 @@ const MeldexExportImage = (() => {
     // 極端に時間がかかる、または返ってこないことがある。サーバー側レンダリングが
     // 使えない単独アプリではこのフォールバックが唯一の経路になるため、無期限に
     // 固まって見えないよう上限時間を設ける（タイムアウト後はエラー扱いにする）。
-    const timeoutMs = Number(options?.fallbackTimeoutMs) || 25000;
+    const timeoutMs = Number(options?.fallbackTimeoutMs) || 120000;
     const canvas = await Promise.race([
       h2c(contentEl, {
         scale,
@@ -268998,15 +270339,16 @@ async function _deleteCurrentFile(toolType) {
   if (!path) return;
   const assetId = getCurrentFileAssetId(path);
   const name = _toolMenuDisplayName(path, toolType, '');
-  const confirmMessage = `「${name || path}」を削除しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
         { path, kind: 'file', ...(assetId ? { assetId } : {}) },
-      ], confirmMessage)
-    : await cfConfirm(confirmMessage);
+      ])
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   try {
-    const result = await deleteOutlinerItemsWithHistory([{ path, name, type: toolType || 'page' }], {
+    const result = await deleteOutlinerItemsWithHistory([{
+      path, name, type: toolType || 'page', ...(assetId ? { assetId } : {}),
+    }], {
       confirmation: confirmed,
       label: 'ファイル削除',
       detail: path,
@@ -273401,10 +274743,9 @@ const _shortcutHandlers = {
       kind: item.type === 'folder' ? 'folder' : 'file',
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
-    const confirmMessage = _folderSelectedItems.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-      : await cfConfirm(confirmMessage);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     const deletedItems = [..._folderSelectedItems];
     const result = await deleteOutlinerItemsWithHistory(deletedItems, {

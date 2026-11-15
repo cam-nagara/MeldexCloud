@@ -102,7 +102,7 @@
 
   // メタデータ取得完了（寸法確定）を待つ。showGroup()のレイヤー入替タイミング制御に使う。
   // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
-  function waitForVideoReady(video, timeoutMs = 3000) {
+  function waitForVideoReady(video, timeoutMs = 60000) {
     return new Promise(resolve => {
       if (!video) { resolve(false); return; }
       if (video.readyState >= 1) { resolve(true); return; } // HAVE_METADATA以上

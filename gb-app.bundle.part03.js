@@ -1,3 +1,7 @@
+          renderTabs();
+        } else {
+          const id = 'tab-' + (++_tabIdCounter);
+          _tabs.push({ id, label: label || '(無題)', type, path, icon: _tabIcon(type) });
           _activeTabId = id;
           renderTabs();
         }
@@ -412,9 +416,13 @@ function _apiFetchPerfInfo(path) {
 const _apiFetchInFlightGets = new Map();
 const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
 const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
-const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// 通常の読取でもDropbox/NASやウイルススキャンの待機で15秒を超えることがある。
+// 15秒を全APIへ一律適用すると、サーバー側では正常に継続している処理を失敗扱いに
+// してしまうため、読取・更新・長時間処理を共通ポリシーで分ける。
+const GB_APP_API_FETCH_TIMEOUT_MS = 60000;
+const GB_APP_API_FETCH_MUTATION_TIMEOUT_MS = 120000;
 const GB_APP_API_FETCH_MAX_TIMEOUT_MS = 330000;
-// OSのフォルダ／ファイル選択は利用者の操作を待つため、通常APIの15秒上限を使わない。
+// OSのフォルダ／ファイル選択は利用者の操作を待つため、通常APIの読取上限を使わない。
 // サーバー側の待機上限（フォルダ120秒、ファイル300秒）より少し長くして、正常な
 // 選択結果をフロント側が先に破棄しない。パスだけを入力する検証POSTも同じendpointを
 // 使うが、長い上限は実際の処理時間を延ばさず、応答が止まった場合だけ作用する。
@@ -429,10 +437,10 @@ const GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 // シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
-// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
-// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
-// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
-const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。
+// サーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーにならない
+// よう、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
+const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 60000;
 // 共有設定（プロフィール等）の読み書きも Dropbox 同期フォルダ上のファイルを触るため、
 // 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
@@ -451,22 +459,54 @@ const GB_APP_API_FETCH_STORAGE_WRITES = [
   '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
   '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
 ];
+const GB_APP_API_FETCH_MAINTENANCE_TIMEOUT_MS = 300000;
+const GB_APP_API_FETCH_MAINTENANCE_SEGMENT_RE = /(?:^|[\/-])(?:rebuild|reindex|rescan|scan|repair|migrat(?:e|ion)|gc|import|export|backup|restore|archive|compress|extract|convert|generate|install|upgrade|recalculate|resolve|enrich|cleanup|purge|compact|batch|refresh|retry|apply|upload|download)(?:$|[\/-])/i;
+const GB_APP_API_FETCH_MUTATING_SYNC_SEGMENT_RE = /(?:^|[\/-])sync(?:$|[\/-])/i;
+function _gbAppApiFetchIsMaintenanceOperation(path, options = {}) {
+  const rawPath = String(path || '');
+  const pathname = rawPath.split('?')[0].replace(/^\/api(?=\/)/, '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (GB_APP_API_FETCH_MAINTENANCE_SEGMENT_RE.test(pathname)) return true;
+  // GET /.../sync/status のような軽い状態確認は通常上限のままにし、
+  // 実際に同期を開始・変更する要求だけを長時間処理として扱う。
+  if (method !== 'GET' && GB_APP_API_FETCH_MUTATING_SYNC_SEGMENT_RE.test(pathname)) return true;
+  try {
+    const params = new URL(rawPath, 'http://meldex.local').searchParams;
+    const enabled = key => ['1', 'true', 'yes'].includes(String(params.get(key) || '').toLowerCase());
+    return method === 'GET' && (
+      enabled('refresh') || enabled('full_scan') || enabled('rescan')
+      || enabled('rebuild') || enabled('reindex')
+    );
+  } catch {
+    return false;
+  }
+}
 function _gbAppApiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = GB_APP_API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
   // ファイル操作は実体の変更後にもDB・参照・タグを更新する。通常の15秒で応答を捨てない。
   if (GB_APP_API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 全体再構築・再走査・修復・移行・同期は対象件数により15秒を超える。
+  // 各ボタンを個別リストへ追加し忘れないよう、操作の意味で共通分類する。
+  // ジョブ化済みのAPIは即時応答するため、この上限はハング時だけ作用する。
+  if (_gbAppApiFetchIsMaintenanceOperation(path, options)) return GB_APP_API_FETCH_MAINTENANCE_TIMEOUT_MS;
   // 監査したSQLite・共有設定の書込経路は、30秒のロック待ちと付随更新を待つ。
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
       && GB_APP_API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
   // NASのSMB列挙・写真の詳細取得は15秒を超える。読み取りの完了を待ち、
   // 明示的な画面切替signalによる中断は引き続き尊重する。
-  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)) return 300000;
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)
+      || pathname.startsWith('/contained-files')) return 300000;
   if (['/upload-file', '/upload-files', '/upload-image', '/duplicate-resolve'].includes(pathname)) return 300000;
   // Cloud reads may include a large sheet and bounded Dropbox retry waits.
   if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
       && ['/pivot', '/db-metadata', '/value', '/browse', '/check-type'].includes(pathname)) return 120000;
+  // 未登録の更新APIも短い読取上限で打ち切らない。個別リストへの追加漏れが、
+  // 処理済みなのに失敗表示して再実行を誘う事故へ戻らないための共通の下限である。
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    return GB_APP_API_FETCH_MUTATION_TIMEOUT_MS;
+  }
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
     ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
     : GB_APP_API_FETCH_TIMEOUT_MS;
@@ -858,43 +898,3 @@ async function _gbAppPutValueConfirmed(path, body, options) {
       const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
       const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
       if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)
-          && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
-          && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
-        body = { ...body, [baseKey]: result.revision };
-      }
-    }
-    const payload = { ...body, operation_id: body.operation_id || crypto.randomUUID() };
-    try { return await send(payload); }
-    catch (error) {
-      const unknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
-        || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
-      if (!unknown) throw error;
-      _gbAppPendingValueWrites.set(key, payload);
-      const result = await send(payload);
-      _gbAppPendingValueWrites.delete(key);
-      return result;
-    }
-  });
-  _gbAppValueWriteTails.set(key, pending);
-  try { return await pending; }
-  finally { if (_gbAppValueWriteTails.get(key) === pending) _gbAppValueWriteTails.delete(key); }
-}
-
-async function apiPut(path, body, options = {}) {
-  const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
-  if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
-    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
-    _scheduleLinkDictionaryRefreshForMutation(path);
-    return result;
-  }
-  const requestOptions = {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(guardedBody),
-    ...(options || {}),
-  };
-  const send = () => apiFetch(path, requestOptions);
-  // Whole settings snapshots must commit in user request order. A failed
-  // snapshot rejects its own caller without poisoning subsequent saves.
-  let result;
-  if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {

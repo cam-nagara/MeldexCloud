@@ -225,15 +225,21 @@
       this._showStatus('削除できるイベントがありません', true);
       return;
     }
-    const skippedText = plan.blocked ? `\n${plan.blocked}件は元データ管理または繰り返し予定のため削除しません。` : '';
-    if (typeof cfConfirm === 'function' && !await cfConfirm(`${targetCount} 件を削除しますか？${skippedText}`)) return;
+    // シフトは予定スナップショットのUndo対象外なので、シフトを含む時だけ確認を残す。
+    // 通常イベントだけの一括削除は確認なしで即時実行し、共通履歴から戻せる。
+    if (plan.shiftIds.length && typeof cfConfirm === 'function'
+      && !await cfConfirm(`${plan.shiftIds.length} 件のシフトを削除しますか？（シフトはUndo対象外です）`)) return;
     const beforeEvents = (this._events || []).map(event => ({ ...event }));
     const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
     const beforeSelected = [...this._eventSelection()];
     const beforeLast = this._lastSelectedEventId || '';
     const deletedEventMeta = new Map(plan.eventIds.map(id => [id, beforeEvents.find(event => event.id === id) || null]));
     const eventIdSet = new Set(plan.eventIds);
-    this._pushUndo('イベント一括削除');
+    const undoSnapshot = plan.eventIds.length ? {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    } : null;
     this._events = (this._events || []).filter(event => !eventIdSet.has(event.id));
     plan.shiftIds.forEach(shiftId => {
       if (typeof this._removeShiftOptimistic === 'function') this._removeShiftOptimistic(shiftId);
@@ -245,39 +251,49 @@
     this._clearEventSelection();
     this._renderCalendarList?.();
     this._render();
-    try {
-      await Promise.all([
-        ...plan.eventIds.map(id => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' })),
-        ...plan.shiftIds.map(shiftId => apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })),
-      ]);
-      plan.eventIds.forEach(id => {
+    const operations = [
+      ...plan.eventIds.map(id => ({ kind: 'event', id, run: () => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' }) })),
+      ...plan.shiftIds.map(id => ({ kind: 'shift', id, run: () => apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' }) })),
+    ];
+    const settled = await Promise.allSettled(operations.map(operation => operation.run()));
+    const succeeded = operations.filter((operation, index) => {
+      const result = settled[index];
+      return result.status === 'fulfilled' && result.value?.ok !== false;
+    });
+    const failed = operations.filter((operation, index) => !succeeded.includes(operation));
+    const succeededEventIds = succeeded.filter(operation => operation.kind === 'event').map(operation => operation.id);
+    if (succeededEventIds.length && undoSnapshot) this._pushUndo('イベント一括削除', undoSnapshot);
+    succeededEventIds.forEach(id => {
         apiPost('/annotations/orphan-by-target', {
           target_kind: 'calendar_event',
           target_file: deletedEventMeta.get(id)?.calendar_id || '_calendar',
           item_id: id,
           cascade_container: true,
         }).catch(() => {});
-      });
-      if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
-        this._refreshShiftStateAfterMutation();
-      } else {
-        this._loadEvents?.().then(() => this._render()).catch(() => {});
-      }
-      const suffix = plan.blocked ? `（${plan.blocked}件は対象外）` : '';
-      this._showStatus(`${targetCount} 件を削除しました${suffix}`);
-    } catch (error) {
+    });
+    if (!succeeded.length) {
       this._events = beforeEvents;
       this._shifts = beforeShifts;
       this._setSelectedEvents(beforeSelected, beforeLast);
       this._renderCalendarList?.();
       this._render();
-      this._showStatus(error?.message || '削除に失敗しました', true);
-      // 並列削除の部分成功でサーバーと表示が乖離しないよう再同期する
+    }
+    try {
       if (plan.shiftIds.length && typeof this._refreshShiftStateAfterMutation === 'function') {
-        this._refreshShiftStateAfterMutation();
+        await this._refreshShiftStateAfterMutation();
       } else {
-        this._loadEvents?.().then(() => this._render()).catch(() => {});
+        await this._loadEvents?.();
+        this._render();
       }
+    } catch (error) {
+      this._showStatus('削除結果の再読込に失敗しました。画面を再読み込みしてください', true);
+      return;
+    }
+    const suffix = plan.blocked ? `（${plan.blocked}件は対象外）` : '';
+    if (failed.length) {
+      this._showStatus(`${succeeded.length} 件を削除、${failed.length} 件は失敗しました${suffix}`, true);
+    } else {
+      this._showStatus(`${succeeded.length} 件を削除しました${suffix}`);
     }
   };
 

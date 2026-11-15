@@ -462,6 +462,13 @@
     const pastedPaths = [];
     const failed = [];
     let skipped = 0;
+    let processed = 0;
+    const movedItems = [];
+    const progress = window.MeldexImportProgress?.beginOperation?.(
+      clip.mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
+      clip.items.length,
+      { delayMs: 0, kind: clip.mode === 'cut' ? 'file-move' : 'file-copy' },
+    );
     for (const item of clip.items) {
       try {
         if (item.type === 'folder' && _folderToolbarPathWithin(destFolder, item.path)) {
@@ -478,26 +485,46 @@
             continue;
           }
           const oldPath = item.path;
-          const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: item.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
           try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
           catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
-          pastedPaths.push(res?.new_path || item.path);
+          const newPath = res?.new_path || item.path;
+          pastedPaths.push(newPath);
+          movedItems.push({ oldPath, newPath, currentPath: newPath, name: res?.new_name || item.name, type: item.type, fileId: res?.file_id || item.file_id });
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
           pastedPaths.push(res?.new_path || '');
         }
       } catch {
         failed.push(item);
+      } finally {
+        processed += 1;
+        window.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
     }
+    window.MeldexImportProgress?.finishOperation?.(progress, {
+      failed: failed.length,
+      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
+    });
     if (clip.mode === 'cut') {
       _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
     }
     const refresh = typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh;
     await refresh(pastedPaths.filter(Boolean));
+    if (clip.mode === 'cut') {
+      window.MeldexFileMoveHistory?.register?.(movedItems, {
+        label: 'フォルダ: 切り取り貼り付け',
+        detail: `${movedItems.length} 件 → ${destFolder}`,
+        refresh,
+      });
+    }
     if (failed.length) {
       showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
     } else if (pastedPaths.length) {
@@ -570,10 +597,9 @@
       kind: item.type === 'folder' ? 'folder' : 'file',
       ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }));
-    const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-      : await cfConfirm(confirmMessage);
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
       confirmation: confirmed,

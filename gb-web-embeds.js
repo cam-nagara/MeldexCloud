@@ -13,6 +13,7 @@
 
   const MAX_CHAT_EMBEDS = 3;
   const PROVIDER_LABELS = {
+    webvideo: 'Web動画',
     youtube: 'YouTube', niconico: 'ニコニコ動画', vimeo: 'Vimeo', dailymotion: 'Dailymotion',
     tiktok: 'TikTok', x: 'X', instagram: 'Instagram', bluesky: 'Bluesky', threads: 'Threads',
     spotify: 'Spotify', soundcloud: 'SoundCloud',
@@ -53,6 +54,13 @@
     const host = _host(url);
     const parts = url.pathname.split('/').filter(Boolean);
     const base = { url: url.href, provider: '', kind: '', title: '' };
+
+    // ブラウザが直接再生できる動画ファイル。クエリ付きURLでもpathnameだけで判定し、
+    // 保存されたURLをvideo要素以外へ渡さない。
+    if (/\.(?:mp4|m4v|mov|webm|ogv)$/i.test(url.pathname)) {
+      return { ...base, provider: 'webvideo', kind: 'video', aspect: 'wide',
+        directMedia: true, src: url.href };
+    }
 
     // YouTube
     if (host === 'youtube.com' || host === 'music.youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
@@ -178,6 +186,19 @@
     return frame;
   }
 
+  function _makeVideo(info) {
+    const video = global.document.createElement('video');
+    video.className = 'gb-web-embed-video';
+    video.src = info.src;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('controlslist', 'nodownload');
+    video.setAttribute('aria-label', `${_labelFor(info)}を再生`);
+    return video;
+  }
+
   // 埋め込み要素を作る。動画は再生ボタン付きのサムネイル/カード、ポスト・音声はiframe。
   function buildElement(info) {
     const doc = global.document;
@@ -191,11 +212,15 @@
     box.dataset.provider = info.provider;
     box.dataset.providerLabel = label;
     box.dataset.url = info.url;
-    if (info.kind === 'video' || info.needsResolve) {
+    if (info.kind === 'video' && info.directMedia) {
+      box.appendChild(_makeVideo(info));
+    } else if (info.kind === 'video' || info.needsResolve) {
       const poster = doc.createElement('button');
       poster.type = 'button';
       poster.className = 'gb-web-embed-poster';
       poster.dataset.gbWebEmbedAction = 'load';
+      poster.dataset.e2eId = ['web-embed-play', info.provider, info.id]
+        .filter(Boolean).join('-').replace(/[^A-Za-z0-9_-]/g, '-');
       poster.setAttribute('aria-label', info.kind === 'video' ? `${label}の動画を再生` : `${label}のポストを表示`);
       poster.title = info.url;
       if (info.thumbnail) {

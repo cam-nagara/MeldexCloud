@@ -316,6 +316,7 @@
   row.addEventListener('click', (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
     if (e.shiftKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Shift+クリック: 範囲選択（開かない）
       e.preventDefault();
       treeSelection.rangeTo(div);
@@ -323,6 +324,7 @@
       return;
     }
     if (e.ctrlKey || e.metaKey) {
+      window.MeldexVisibleSelection?.beginTree?.({ preserveTreeSelection: true });
       // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
@@ -336,6 +338,7 @@
     }
 
     // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
+    window.MeldexVisibleSelection?.beginTree?.();
     window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
 
     // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
@@ -671,7 +674,7 @@
       let movedAcrossFolders = false;
       let processed = 0;
       const failures = [];
-      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
+      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
@@ -742,6 +745,21 @@
         catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
         await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
+        window.MeldexFileMoveHistory?.register?.(
+          movedItems.map(movedItem => ({
+            oldPath: movedItem.oldPath,
+            newPath: movedItem.path,
+            currentPath: movedItem.path,
+            name: movedItem.name,
+            type: movedItem.type,
+            fileId: movedItem.file_id || movedItem.fileId,
+          })),
+          {
+            label: `フォルダツリー: ${movedItems.length} 件を移動`,
+            detail: `→ ${destFolder}`,
+            refresh: () => refreshOutliner({ force: true, reason: 'outliner-tree-move-history' }),
+          },
+        );
         return;
       }
       if (moved.length === 0) return;

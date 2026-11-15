@@ -1,3 +1,61 @@
+    display_icon: pivotData.entities[name]?._display_icon || '',
+    path: pivotData.entities[name]?._entry_path || (typeof _entityPath === 'function'
+      ? _entityPath(item.path, name, pivotData) : item.path + '/' + name + (pivotData.new_format ? '.md' : '')),
+    _dbPath: item.path,
+    entityData: pivotData.entities[name],
+  }));
+  const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+  if (attachmentFolder) items.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+  return items;
+}
+
+const _outlinerWarmQueue = [];
+const _outlinerWarmKeys = new Set();
+let _outlinerWarmRunning = false;
+
+function _scheduleOutlinerChildWarmup(container, items, rootPath) {
+  // Warm one level, at most four visible branches, one local read at a time.
+  // Never initiate Dropbox API downloads/migrations while merely listing rows.
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+  const nodes = new Map(Array.from(container.querySelectorAll(':scope > .tree-node'), node => [node._nodeData?.path, node]));
+  let added = 0;
+  for (const item of items) {
+    if (added >= 4 || _outlinerWarmQueue.length >= 12) break;
+    const node = nodes.get(item.path);
+    if (!node || node.style.display === 'none' || item.needsMapping === true || !['folder', 'database'].includes(item.type)) continue;
+    let path;
+    if (item.type === 'database') path = '/pivot?path=' + encodeURIComponent(item.path) + '&tree_only=true';
+    else {
+      const sortCfg = getSortForFolder(item.path);
+      const serverSorts = new Set(['name', 'modified', 'created']);
+      const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+      const detail = !serverSorts.has(sortCfg.sort) && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+      path = '/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order
+        + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '')
+        + (item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '') + detail + '&all_files=true&form_hierarchy=true';
+    }
+    if (_outlinerWarmKeys.has(path)) continue;
+    _outlinerWarmKeys.add(path);
+    _outlinerWarmQueue.push({ path, node });
+    added++;
+  }
+  if (_outlinerWarmRunning) return;
+  _outlinerWarmRunning = true;
+  setTimeout(async () => {
+    try {
+      while (_outlinerWarmQueue.length) {
+        const next = _outlinerWarmQueue.shift();
+        try {
+          if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
+            background: true, silentError: true,
+            ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
+          });
+        } catch (_) { /* A foreground click retries through the normal error path. */ }
+        finally { _outlinerWarmKeys.delete(next.path); }
+      }
+    } finally { _outlinerWarmRunning = false; }
+  }, 0);
+}
 
 function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
   const signature = items => JSON.stringify(items.map(child => [child.path, child.type,
@@ -345,27 +403,29 @@ function _outlinerTrashRefsToNames(refs) {
   return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
 }
 
-async function _restoreOutlinerTrashRefs(refs) {
+async function _restoreOutlinerDeleteRecords(records) {
   const restored = [];
-  for (const ref of refs || []) {
-    if (!ref?.trash_name) continue;
+  const failures = [];
+  for (const record of records || []) {
+    if (!record?.deleted || !record.trashRef?.trash_name) continue;
     try {
       const result = await apiPost('/outliner/restore', {
-        trash_name: ref.trash_name,
-        ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+        trash_name: record.trashRef.trash_name,
+        ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
       });
+      record.currentPath = result?.restored_to || result?.restored_path || record.item.path;
+      record.deleted = false;
       restored.push(result);
     } catch (error) {
-      const message = error?.message ? String(error.message) : '復元に失敗しました';
-      throw new Error(ref.trash_name + ' の復元に失敗しました: ' + message);
+      failures.push({ record, error });
     }
   }
-  return restored;
+  return { restored, failures };
 }
 
-async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
+async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshSuccessfulRedo = false) {
   // Successful Redo already updated the tree model and DOM through pending deletion.
-  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount) return;
+  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount && !refreshSuccessfulRedo) return;
   if (typeof refresh === 'function') {
     await refresh(phase, result);
     return;
@@ -441,7 +501,13 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     });
   }
 
-  let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
+  const deleteRecords = succeeded.map(item => ({
+    item,
+    currentPath: item.path,
+    deleted: true,
+    trashRef: _outlinerTrashRefFromResponse(item),
+  }));
+  let trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
   let trashNames = _outlinerTrashRefsToNames(trashRefs);
   if (succeeded.length && typeof historyPush === 'function') {
     const label = options.label || (succeeded.length + ' 件を削除');
@@ -449,33 +515,43 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     historyPush(
       label,
       async () => {
-        const restored = await _restoreOutlinerTrashRefs(trashRefs);
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', { succeeded, deletedPaths, trashNames });
-        if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
+        const { restored, failures: restoreFailures } = await _restoreOutlinerDeleteRecords(deleteRecords);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
+        trashNames = _outlinerTrashRefsToNames(trashRefs);
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', {
+          succeeded,
+          deletedPaths: deleteRecords.filter(record => record.deleted).map(record => record.currentPath),
+          trashNames,
+          failedCount: restoreFailures.length,
+        });
+        if (restoreFailures.length) {
+          throw new Error(`${restoreFailures.length} 件を復元できませんでした。成功した項目は再試行しません`);
+        }
+        if (typeof showStatus === 'function') showStatus(restored.length + ' 件を復元しました');
       },
       async () => {
-        const redoTargets = succeeded.map(item => ({
-          path: item.path,
-          kind: item.type === 'folder' ? 'folder' : 'file',
-          ...(item.assetId ? { assetId: item.assetId } : {}),
+        const pendingRecords = deleteRecords.filter(record => !record.deleted);
+        if (!pendingRecords.length) return true;
+        const redoTargets = pendingRecords.map(record => ({
+          path: record.currentPath,
+          kind: record.item.type === 'folder' || record.item.kind === 'folder' ? 'folder' : 'file',
+          ...(record.item.assetId ? { assetId: record.item.assetId } : {}),
         }));
         const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-          ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-              redoTargets,
-              `${redoTargets.length} 件をもう一度削除しますか？`,
-            )
-          : await cfConfirm(`${redoTargets.length} 件をもう一度削除しますか？`);
-        if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+          ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(redoTargets)
+          : { confirmed: true, operation: 'trash' };
+        if (!confirmed) throw new Error('削除の参照確認に失敗しました');
         const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
           ? MeldexDeleteImpactWarning.confirmationPayload(confirmed)
           : {};
-        const nextTrashRefs = [];
         const redoFailures = [];
         let redoSkippedCount = 0;
-        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
-        for (const item of succeeded) {
+        const pendingPaths = pendingRecords.map(record => record.currentPath);
+        if (pendingPaths.length) _markOutlinerDeletePending(pendingPaths);
+        for (const record of pendingRecords) {
+          const item = record.item;
           const res = await apiPost('/outliner/delete', {
-            path: item.path,
+            path: record.currentPath,
             kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
             ...(item.assetId ? { assetId: item.assetId } : {}),
             ...confirmationPayload,
@@ -484,19 +560,22 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
             return null;
           });
           const ref = _outlinerTrashRefFromResponse(res);
-          if (ref) nextTrashRefs.push(ref);
-          else if (res && !res.ok) redoFailures.push({ item, error: new Error('削除応答が不正です') });
-          else if (res) redoSkippedCount++;
+          if (ref) {
+            record.trashRef = ref;
+            record.deleted = true;
+          }
+          else if (res) redoFailures.push({ item, error: new Error('取り消しに必要なゴミ箱情報がありません') });
         }
-        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
-        trashRefs = nextTrashRefs;
+        if (pendingPaths.length) _clearOutlinerDeletePending(pendingPaths);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
         trashNames = _outlinerTrashRefsToNames(trashRefs);
-        if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-          purgeAppPathReferences(deletedPaths);
+        const redonePaths = pendingRecords.filter(record => record.deleted).map(record => record.currentPath);
+        if (redonePaths.length && typeof purgeAppPathReferences === 'function') {
+          purgeAppPathReferences(redonePaths);
         }
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount });
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths: redonePaths, trashNames, failedCount: redoFailures.length, skippedCount: redoSkippedCount }, !!options.refreshSuccessfulRedo);
         if (redoFailures.length) {
-          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした`);
+          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした。成功した項目は再試行しません`);
         }
         if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
       },
@@ -567,6 +646,7 @@ function _showCloudPhase1BlockedCreate(type) {
 }
 
 const _outlinerContextMenuCleanups = new Set();
+let _outlinerContextMenuOpenSeq = 0;
 
 function _outlinerEscHtml(value) {
   return MeldexEscape.html(value);
@@ -770,6 +850,7 @@ function _showTreeAddMenu(x, y, nodeEl, nodeData) {
 
 // --- 右クリックメニュー ---
 function closeTreeContextMenu() {
+  _outlinerContextMenuOpenSeq += 1;
   _outlinerContextMenuCleanups.forEach(cleanup => {
     try { cleanup(); } catch {}
   });
@@ -815,86 +896,5 @@ function _outlinerLocalCopyPath(nodeEl, nodeData) {
   return _outlinerNativeClipboardPath(path);
 }
 
-function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
+async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   closeTreeContextMenu();
-  const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
-
-  const selectedCount = treeSelection.items.size;
-  const isMulti = selectedCount > 1;
-  const isFolder = nodeData.type === 'folder';
-  const isDB = nodeData.type === 'database';
-  const isEntity = nodeData.type === 'entity';
-
-  function addMenuItem(text, onclick, cls, icon, targetMenu = menu) {
-    return _outlinerAppendMenuItem(targetMenu, {
-      label: text,
-      icon,
-      danger: cls === 'danger',
-      className: cls && cls !== 'danger' ? cls : '',
-      action: onclick,
-    });
-  }
-  function addSep() {
-    _outlinerAppendMenuSeparator(menu);
-  }
-
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
-  const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
-    .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
-  const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
-  const deleteContextItems = async () => {
-    closeTreeContextMenu();
-    const targets = treeSelection.getNodeData().filter(item => {
-      if (item.type === 'entity' || item._isRoot) return false;
-      return item.path && !isItemLocked(item.path);
-    });
-    if (!targets.length) {
-      showStatus('削除できる項目がありません', true);
-      return;
-    }
-    // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
-    // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
-    // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
-    // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
-    const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
-      ? await handleDisplayedFolderLinkDelete(targets, '', {
-        refresh: async () => {
-          if (typeof loadOutliner === 'function') await loadOutliner();
-          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-        },
-      })
-      : { handled: false, result: null };
-    if (linkedDelete.handled) {
-      if (linkedDelete.result) treeSelection.clear();
-      return;
-    }
-    const names = targets.map(item => item.name).join('、');
-    const impactTargets = targets.map(item => ({
-      path: item.path,
-      kind: item.type === 'folder' ? 'folder' : 'file',
-      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-    }));
-    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, `「${names}」を削除しますか？`)
-      : await cfConfirm(`「${names}」を削除しますか？`);
-    if (!confirmed) return;
-    treeSelection.clear();
-    const result = await deleteOutlinerItemsWithHistory(targets, {
-      confirmation: confirmed,
-      label: targets.length + ' 件を削除',
-      detail: names,
-      onItemDeleted: (item) => {
-        _removeOutlinerNodesForPaths([item.path]);
-      },
-      refresh: async () => {
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-      },
-    });
-    _removeOutlinerNodesForPaths(result.deletedPaths);
-    if (result.failedCount) {
-      const reason = result.failed?.[0]?.error;
-      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);

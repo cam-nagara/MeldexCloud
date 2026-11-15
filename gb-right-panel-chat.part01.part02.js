@@ -1182,6 +1182,139 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 document.getElementById('chat-input')?.addEventListener('input', function() { _autoGrowTextarea(this, 2, 10); });
 // 送信後のリセットにも対応するため、teamSend/chatSend内で呼ぶよう修正
 
+// 未送信文は会話・保存ルートごとに退避する。入力中だけタイマーを持ち、
+// 1.2秒のデバウンスと5秒の上限で同期保存するため、アイドル時の負荷は発生しない。
+const _CHAT_DRAFT_STORAGE_PREFIX = 'meldex-chat-composer-draft:v1:';
+const _CHAT_DRAFT_DEBOUNCE_MS = 1200;
+const _CHAT_DRAFT_MAX_WAIT_MS = 5000;
+const _CHAT_DRAFT_MAX_CHARS = 512 * 1024;
+
+function _chatDraftScope() {
+  return {
+    user: typeof getUsername === 'function' ? String(getUsername() || '') : '',
+    workspaceId: typeof _chatWorkspaceIdValue === 'function'
+      ? String(_chatWorkspaceIdValue() || '') : String(_chatState.workspaceId || ''),
+    sourceFolder: typeof _chatSourceFolderValue === 'function'
+      ? String(_chatSourceFolderValue() || '') : String(_chatState.sourceFolder || ''),
+    sessionId: String(_chatState.sessionId || 'new'),
+  };
+}
+
+function _chatDraftStorageKey(scope = _chatDraftScope()) {
+  return _CHAT_DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify(scope));
+}
+
+const _chatDraftManager = (() => {
+  let dirtyKey = '';
+  let debounceTimer = 0;
+  let maxTimer = 0;
+  let restoring = false;
+  let submissionKey = '';
+
+  const input = () => document.getElementById('chat-input');
+  const cancelTimers = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (maxTimer) clearTimeout(maxTimer);
+    debounceTimer = 0;
+    maxTimer = 0;
+  };
+  const persist = (key, value) => {
+    if (!key) return false;
+    try {
+      if (value) {
+        if (value.length > _CHAT_DRAFT_MAX_CHARS) {
+          console.warn('チャット下書きが保存上限を超えたため、先頭部分だけを保存します');
+          value = value.slice(0, _CHAT_DRAFT_MAX_CHARS);
+        }
+        localStorage.setItem(key, JSON.stringify({ value, savedAt: new Date().toISOString() }));
+      } else {
+        localStorage.removeItem(key);
+      }
+      return true;
+    } catch (error) {
+      console.warn('チャット下書きを保存できませんでした', error);
+      return false;
+    }
+  };
+  const flush = () => {
+    cancelTimers();
+    const field = input();
+    if (!field || !dirtyKey) return false;
+    // 送信処理が入力欄を空にしても、履歴保存または待機カード保存が成功するまでは
+    // 直前の下書きを消さない。
+    if (submissionKey === dirtyKey && !field.value) return true;
+    const saved = persist(dirtyKey, String(field.value || ''));
+    if (saved) dirtyKey = '';
+    return saved;
+  };
+  const schedule = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(flush, _CHAT_DRAFT_DEBOUNCE_MS);
+    if (!maxTimer) maxTimer = setTimeout(flush, _CHAT_DRAFT_MAX_WAIT_MS);
+  };
+  const onInput = () => {
+    if (restoring) return;
+    const field = input();
+    if (!field) return;
+    // 失敗後に本文が戻された場合は、その時点から通常の下書き保存へ戻る。
+    if (submissionKey && field.value) submissionKey = '';
+    if (submissionKey && !field.value) return;
+    dirtyKey = _chatDraftStorageKey();
+    schedule();
+  };
+  const beginSubmission = () => {
+    const field = input();
+    if (!field) return '';
+    dirtyKey = _chatDraftStorageKey();
+    flush();
+    submissionKey = dirtyKey || _chatDraftStorageKey();
+    return submissionKey;
+  };
+  const clearSubmitted = () => {
+    if (!submissionKey) return false;
+    const key = submissionKey;
+    submissionKey = '';
+    if (dirtyKey === key) dirtyKey = '';
+    cancelTimers();
+    return persist(key, '');
+  };
+  const restore = () => {
+    flush();
+    submissionKey = '';
+    dirtyKey = '';
+    cancelTimers();
+    const field = input();
+    if (!field) return false;
+    let value = '';
+    try {
+      const stored = JSON.parse(localStorage.getItem(_chatDraftStorageKey()) || 'null');
+      value = typeof stored?.value === 'string' ? stored.value : '';
+    } catch (error) {
+      console.warn('チャット下書きを復元できませんでした', error);
+    }
+    restoring = true;
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    restoring = false;
+    window.GBChatFormatting?.syncInput?.();
+    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(field, 2, 10);
+    return !!value;
+  };
+  input()?.addEventListener('input', onInput);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+  window.addEventListener('pagehide', flush);
+  return { flush, restore, beginSubmission, clearSubmitted, storageKey: _chatDraftStorageKey };
+})();
+
+window.GBChatDrafts = _chatDraftManager;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => _chatDraftManager.restore(), { once: true });
+} else {
+  setTimeout(() => _chatDraftManager.restore(), 0);
+}
+
 let _teamRoomCreationPending = false;
 
 async function showCreateRoomModal() {

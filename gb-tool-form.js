@@ -135,6 +135,10 @@ class FormAppComponent extends ToolComponent {
   }
   _changed() {
     if (!this.store) return;
+    if (this.titleElement) {
+      this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
+      this.titleElement.title = this.titleElement.textContent;
+    }
     try {
       if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
       else this._removeOwnDraft();
@@ -481,11 +485,35 @@ class FormAppComponent extends ToolComponent {
     if (this._designRender) _elCloseEditPopups();
     this._designRender = null;
     this.el.replaceChildren();
-    const bar = document.createElement('div'); bar.className = 'gb-form-app-toolbar'; this.el.appendChild(bar);
-    const menu = this._button('メニュー', event => showToolMenu(event, 'form-app', this));
-    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-label', 'メニュー'); menu.setAttribute('aria-haspopup', 'menu'); menu.innerHTML = lucide('menu', 16); bar.appendChild(menu);
+    const bar = document.createElement('div');
+    bar.className = 'gb-form-app-toolbar gb-toolbar gb-toolbar-main';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'フォームの操作');
+    this.el.appendChild(bar);
+    const iconButton = (label, iconName, run) => {
+      const button = this._button(label, run);
+      button.className = 'tb-icon-btn';
+      button.innerHTML = lucide(iconName, 16);
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      return button;
+    };
+    const textButton = (label, run) => {
+      const button = this._button(label, run);
+      button.className = 'tb-text-btn';
+      return button;
+    };
+    const menu = iconButton('メニュー', 'menu', event => showToolMenu(event, 'form-app', this));
+    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-haspopup', 'menu'); bar.appendChild(menu);
+    bar.appendChild(iconButton('フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('form-app', event)));
+    this.titleElement = document.createElement('span');
+    this.titleElement.className = 'tb-title tb-file-title';
+    this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
+    this.titleElement.title = this.titleElement.textContent;
+    bar.appendChild(this.titleElement);
+    const separator = document.createElement('div'); separator.className = 'sep'; bar.appendChild(separator);
     const source = document.createElement('label'); source.className = 'gb-form-source-sheet'; source.textContent = '参照先シート';
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '参照先シート');
+    const select = document.createElement('select'); select.className = 'gb-select tb-select'; select.setAttribute('aria-label', '参照先シート');
     select.dataset.e2eId = `form-${this.tabId}-source-sheet`;
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'シートを選択'; select.appendChild(empty);
     if (this.ctx.dbPath) {
@@ -496,24 +524,20 @@ class FormAppComponent extends ToolComponent {
     select.disabled = this.definitionReadOnly; select.addEventListener('change', () => this._chooseSheet().catch(error => showStatus(error.message, true)));
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
-      bar.appendChild(this._button('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
-      const templateButton = this._button('テンプレート', event => this._openTemplatePicker(event.currentTarget));
-      templateButton.classList.add('tb-icon-btn');
-      templateButton.innerHTML = lucide('layoutTemplate', 16);
-      templateButton.title = 'テンプレート';
-      templateButton.setAttribute('aria-label', 'テンプレート');
+      bar.appendChild(textButton('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
+      const templateButton = iconButton('テンプレート', 'layoutTemplate', event => this._openTemplatePicker(event.currentTarget));
       templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
       templateButton.disabled = this.definitionReadOnly;
       bar.appendChild(templateButton);
-      const presets = document.createElement('select'); presets.className = 'gb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
+      const presets = document.createElement('select'); presets.className = 'gb-select tb-select'; presets.setAttribute('aria-label', 'テンプレートを適用'); presets.dataset.formTemplates = '1';
       presets.dataset.e2eId = `form-${this.tabId}-layout`;
       presets.hidden = true; presets.tabIndex = -1; presets.setAttribute('aria-hidden', 'true');
       const current = document.createElement('option'); current.value = ''; current.textContent = this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択'; presets.appendChild(current);
       presets.disabled = this.definitionReadOnly; presets.addEventListener('change', () => this._usePreset(presets).catch(error => showStatus(error.message, true))); bar.appendChild(presets); this._presetOptions(presets);
-      const automatic = this._button('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
-      const design = this._button('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
+      const automatic = textButton('現在の列から配置を作成', () => this._automaticLayout()); automatic.disabled = this.definitionReadOnly; bar.appendChild(automatic);
+      const design = textButton('配置を編集', () => this._design()); design.disabled = this.definitionReadOnly || !this.getLayout(); bar.appendChild(design);
     }
-    bar.appendChild(this._button('再読込', async () => {
+    bar.appendChild(textButton('再読込', async () => {
       if (!await this._leave()) return;
       if (this.store.dirty && !await cfConfirm('未保存のフォーム定義を破棄して読み直しますか？')) return;
       await this.load(this.path, { discardDraft: true });

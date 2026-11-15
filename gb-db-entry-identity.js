@@ -445,7 +445,7 @@
     try {
       const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
         silentError: true,
-        timeoutMs: 60000,
+        timeoutMs: 120000,
         skipBrowseCache: true,
         cache: 'reload',
       });
@@ -477,13 +477,13 @@
       let response;
       let firstError;
       try {
-        response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+        response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 300000 });
       } catch (error) {
         firstError = error;
         if (!isUnknownResultError(error)) throw error;
         showDeleteProgress(queue, true);
         try {
-          response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+          response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 300000 });
         } catch (retryError) {
           if (!isUnknownResultError(retryError)) throw retryError;
         }
@@ -538,7 +538,7 @@
         try {
           const authoritative = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
             silentError: true,
-            timeoutMs: 60000,
+            timeoutMs: 120000,
             skipBrowseCache: true,
             cache: 'reload',
           });

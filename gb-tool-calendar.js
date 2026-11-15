@@ -83,7 +83,7 @@ class CalendarComponent extends ToolComponent {
   static _buildHTML(startDay, multiDayCount) {
     void startDay;
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
-<div class="gb-toolbar gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
+<div class="gb-toolbar gb-toolbar-main gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
   <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
@@ -400,7 +400,7 @@ class CalendarComponent extends ToolComponent {
   }
 
   // === 公開API (postMessage置換) ===
-  pushUndo(label) { this._pushUndo(label); }
+  pushUndo(label, snapshot) { return this._pushUndo(label, snapshot); }
   async reload() {
     const requests = [this._loadTasks()];
     if (typeof this._refreshShiftStateAfterMutation === 'function') {
@@ -662,16 +662,23 @@ class CalendarComponent extends ToolComponent {
   // 操作履歴パネルの両方と連動する。共通履歴が無い環境（将来の単独起動・テストスタブ向けの保険。
   // 現状このコンポーネントを読み込む単独起動アプリは存在しない）は、従来どおり
   // this._undoStack/_redoStack の自己完結スタックへ自動フォールバックし挙動を変えない。
-  _pushUndo(label) {
+  _pushUndo(label, snapshot) {
+    const snap = snapshot || {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    };
+    let entry;
     if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
-      const snap = { events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() };
-      historyPush(label, () => this._restoreSnapshot(snap), null, _schedHistoryScope(this));
+      entry = historyPush(label, () => this._restoreSnapshot(snap), null, _schedHistoryScope(this));
     } else {
-      this._undoStack.push({ label, events: this._snapshotEventsForUndo(), tasks: this._snapshotTasksForUndo(), eventWindow: this._snapshotEventWindowForUndo() });
+      entry = { label, events: snap.events, tasks: snap.tasks, eventWindow: snap.eventWindow };
+      this._undoStack.push(entry);
       if (this._undoStack.length > this._UNDO_MAX) this._undoStack.shift();
       this._redoStack.length = 0;
     }
     this._notifyParentHistory();
+    return entry;
   }
 
   async _undo() {

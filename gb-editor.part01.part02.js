@@ -35,6 +35,12 @@
     if (range) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); }
     let insertRange = range ? range.cloneRange() : _captureEditableSelection(el);
 
+    // 埋め込み画像・動画はURL文字列へ変換せず、サイズ・保存パスを保った実体を移動する。
+    if (types.includes(NOTE_EMBEDDED_MEDIA_MIME) && _draggedEmbeddedMedia) {
+      _moveEmbeddedMediaAtDrop(el, _draggedEmbeddedMedia, e, insertRange);
+      return;
+    }
+
     // メモ（アノテーション）のドロップ
     const annData = e.dataTransfer.getData('application/x-annotation');
     if (annData) {
@@ -163,6 +169,18 @@ setupEditableDropHandler(document.getElementById('entity-freetext'));
 function setupEditableDragSource(el) {
   if (!el) return;
   el.addEventListener('dragstart', (e) => {
+    const media = e.target?.closest?.('.embed-media');
+    if (media && el.contains(media) && e.dataTransfer) {
+      _prepareEmbeddedMediaForControls(media);
+      _draggedEmbeddedMedia = media;
+      media.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData(NOTE_EMBEDDED_MEDIA_MIME, media.dataset.path || media.dataset.name || 'media');
+      // 一部WebViewは独自MIMEだけのドラッグを開始しないため、安全な文字列も付ける。
+      e.dataTransfer.setData('text/plain', media.dataset.name || media.dataset.path || '埋め込みメディア');
+      if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, media, 0.72);
+      return;
+    }
     const sel = window.getSelection();
     const text = sel ? sel.toString() : '';
     if (!text) return;
@@ -171,6 +189,10 @@ function setupEditableDragSource(el) {
     e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
     if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
     e.dataTransfer.effectAllowed = 'copyMove';
+  });
+  el.addEventListener('dragend', () => {
+    _draggedEmbeddedMedia?.classList?.remove('is-dragging');
+    _draggedEmbeddedMedia = null;
   });
 }
 setupEditableDragSource((window.GBEditorHost?.element('page-content') || document.getElementById('page-content')));
@@ -184,12 +206,12 @@ function toggleNoteToc() {
   if (toc.style.display === 'none') {
     toc.style.display = '';
     btn.classList.add('active');
-    localStorage.setItem('note-toc-visible', '1');
+    _updateNoteTocCurrentPreferences({ visible: true });
     updateNoteToc();
   } else {
     toc.style.display = 'none';
     btn.classList.remove('active');
-    localStorage.setItem('note-toc-visible', '');
+    _updateNoteTocCurrentPreferences({ visible: false });
   }
   syncNoteTocLayout();
 }

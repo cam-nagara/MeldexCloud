@@ -215,9 +215,8 @@ const MeldexMapControls = (() => {
     }));
     root.appendChild(app._button('削除', async () => {
       const canEdit = app._editGuard(f.id);
-      if (!await cfConfirm('選択した地点・図形を削除しますか？（元に戻せます）')) return;
       if (!canEdit()) return;
-      app.update(doc => { doc.features = doc.features.filter(item => item.id !== f.id); }); app._selected = null; app._render();
+      app.update(doc => { doc.features = doc.features.filter(item => item.id !== f.id); }, true, 'マップの項目を削除'); app._selected = null; app._render();
     }, { disabled: locked }));
   }
   function generator(app) {

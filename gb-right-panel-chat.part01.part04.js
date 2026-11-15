@@ -29,6 +29,7 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const queue = _chatQueuedMessages();
 
   if (input) {
+    window.GBChatDrafts?.beginSubmission?.();
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
@@ -44,7 +45,8 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
   queue.push(message);
-  _chatPersistQueuedMessages();
+  const queueSaved = _chatPersistQueuedMessages();
+  if (queueSaved) window.GBChatDrafts?.clearSubmitted?.();
   chatAddMessage('user', message.content, {
     messageIndex: _chatState.messages.length + queue.length - 1,
     msg_id: message.msg_id,
@@ -331,6 +333,7 @@ async function chatSend(options = {}) {
     }
   }
   if (!usingDeferredMessages) {
+    window.GBChatDrafts?.beginSubmission?.();
     if (typeof _chatWithDraftUploadCleanupPaused === 'function') {
       _chatWithDraftUploadCleanupPaused(() => {
         input.value = '';
@@ -548,7 +551,7 @@ async function chatSend(options = {}) {
   const streamLiveContainer = () => streamVisibleInCurrentChat() ? _chatLiveMessagesContainer() : null;
   const scrollStreamContainer = () => {
     const liveContainer = streamLiveContainer();
-    if (liveContainer && _autoScroll) _chatScrollToBottom(liveContainer);
+    if (liveContainer) _chatFollowScrollToBottom(streamSessionId, liveContainer);
   };
   const addAssistantToVisibleStream = (content, renderOptions) => (
     streamVisibleInCurrentChat() ? chatAddMessage('assistant', content, renderOptions) : null
@@ -561,7 +564,6 @@ async function chatSend(options = {}) {
   let responseToolEvents = [];
   let responseThinking = '';
   let liveThinkingTextEl = null;
-  let _autoScroll = true;
   let streamError = null;
   let streamCompleted = false;
   // 受信のたびに回答全文を描き直すと、長い回答ほど画面全体が重くなる。途中経過は
@@ -587,10 +589,8 @@ async function chatSend(options = {}) {
     if (streamPaintTimer) clearTimeout(streamPaintTimer);
     streamPaintTimer = 0;
   };
-  const _scrollHandler = () => {
-    _autoScroll = _chatIsScrolledNearBottom(msgContainer);
-  };
-  if (msgContainer && !detachedScope) msgContainer.addEventListener('scroll', _scrollHandler);
+  const _scrollHandler = () => {};
+  if (msgContainer && !detachedScope) _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
   const setLiveActivityStatus = (label) => {
     const st = spinnerWrapper.querySelector('#_chat-thinking-status');
     if (st) st.textContent = label || '考え中...';

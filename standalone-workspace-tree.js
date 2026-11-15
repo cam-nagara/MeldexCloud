@@ -617,26 +617,78 @@
     finally { _setBusy(false); }
   }
 
+  function _deleteTarget(item, path = item?.path) {
+    return {
+      path,
+      kind: item?.kind === 'directory' || item?.type === 'folder' ? 'folder' : 'file',
+      ...((item?.assetId || item?.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    };
+  }
+
+  async function _authorizeDelete(item, path = item?.path) {
+    return window.MeldexDeleteImpactWarning?.authorizeReversibleDelete
+      ? window.MeldexDeleteImpactWarning.authorizeReversibleDelete([_deleteTarget(item, path)])
+      : { confirmed: true, operation: 'trash' };
+  }
+
+  async function _refreshAfterHistory() {
+    if (!state.open) return;
+    try {
+      await _loadCurrent({ path: state.currentPath, clearSelection: true });
+    } catch (error) {
+      _setStatus(`操作は完了しましたが、表示を更新できませんでした: ${error?.message || String(error)}`, true);
+    }
+  }
+
   async function _remove() {
     const item = _selectedItem();
     if (!item) return;
-    const message = `${item.name || _runtime().basename(item.path)} をMeldexのゴミ箱へ移動します。`;
-    const confirmed = window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact
-      ? await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        [{
-          path: item.path,
-          kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file',
-          ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-        }],
-        message, { operation: 'trash' },
-      )
-      : false;
+    if (typeof window.historyPush !== 'function') {
+      _setStatus('Undo履歴を登録できないため削除できません。', true);
+      return;
+    }
+    const confirmed = await _authorizeDelete(item);
     if (!confirmed) return;
     _setBusy(true, 'ゴミ箱へ移動しています…');
     try {
-      await _runtime().deletePath(item.path,
+      const response = await _runtime().deletePath(item.path,
         { ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
           kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file' });
+      if (!response?.trash_name) throw new Error('取り消しに必要なゴミ箱情報を取得できませんでした');
+      const record = {
+        currentPath: item.path,
+        deleted: true,
+        trash_name: response.trash_name,
+        trash_root: response.trash_root || '',
+      };
+      const label = `削除: ${item.name || _runtime().basename(item.path)}`;
+      window.historyPush(label,
+          async () => {
+            if (!record.deleted) return true;
+            const restored = await _runtime().restorePath(record);
+            record.currentPath = restored?.restored_to || restored?.restored_path || item.path;
+            record.deleted = false;
+            await _refreshAfterHistory();
+            _setStatus('ゴミ箱から復元しました。', false);
+            return true;
+          },
+          async () => {
+            if (record.deleted) return true;
+            const redoConfirmation = await _authorizeDelete(item, record.currentPath);
+            if (!redoConfirmation) throw new Error('削除の参照確認に失敗しました');
+            const deleted = await _runtime().deletePath(record.currentPath, {
+              ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(redoConfirmation) || {}),
+              kind: _deleteTarget(item).kind,
+            });
+            if (!deleted?.trash_name) throw new Error('取り消しに必要なゴミ箱情報を取得できませんでした');
+            record.trash_name = deleted.trash_name;
+            record.trash_root = deleted.trash_root || '';
+            record.deleted = true;
+            await _refreshAfterHistory();
+            _setStatus('もう一度ゴミ箱へ移動しました。', false);
+            return true;
+          },
+          '', item.path);
       state.selectedPath = '';
       await _loadCurrent();
       _setStatus('ゴミ箱へ移動しました。', false);
@@ -647,16 +699,23 @@
   async function _move() {
     const item = _selectedItem();
     if (!item) return;
+    if (typeof window.historyPush !== 'function') {
+      _setStatus('Undo履歴を登録できないため移動できません。', true);
+      return;
+    }
     const sourceRootId = String(_runtime().getActiveRoot()?.id || '');
     const sourceFolder = state.currentPath;
     const picked = await pickFolder({ title: '移動先フォルダを選択', startPath: _runtime().getActiveRoot()?.path, keepOpen: true });
     if (!picked?.path) return;
     _setBusy(true, '移動しています…');
     let moved = false;
+    let movedPath = '';
     let operationError = null;
     let restoreError = null;
     try {
-      await _runtime().move(item.path, picked.path);
+      const result = await _runtime().move(item.path, picked.path);
+      movedPath = _runtime().normalizePath(result?.new_path || '');
+      if (!movedPath) throw new Error('移動先のパスを取得できませんでした');
       moved = true;
     } catch (error) {
       operationError = error;
@@ -678,6 +737,26 @@
       }
     } catch (error) {
       restoreError = error;
+    }
+    if (moved) {
+      const record = { currentPath: movedPath, applied: true };
+      const replayMove = async (toApplied) => {
+        if (record.applied === toApplied) return true;
+        const destination = toApplied ? picked.path : _runtime().dirname(item.path);
+        const expected = _runtime().normalizePath(toApplied ? movedPath : item.path);
+        const result = await _runtime().move(record.currentPath, destination, { conflictPolicy: 'error' });
+        const nextPath = _runtime().normalizePath(result?.new_path || '');
+        if (!nextPath || nextPath !== expected) {
+          throw new Error(`移動先が期待した場所と一致しません: ${nextPath || '不明'}`);
+        }
+        record.currentPath = nextPath;
+        record.applied = toApplied;
+        await _refreshAfterHistory();
+        _setStatus(toApplied ? '移動をやり直しました。' : '移動を取り消しました。', false);
+        return true;
+      };
+      window.historyPush(`移動: ${item.name || _runtime().basename(item.path)}`,
+        () => replayMove(false), () => replayMove(true), '', `${item.path} → ${movedPath}`);
     }
     if (moved && !restoreError) _setStatus('移動しました。', false);
     else if (moved) {

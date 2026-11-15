@@ -17,9 +17,12 @@
 // ============================================================
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
-const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// Dropbox/NASを含む全画面で同じ通信契約を使う。通常読取・更新・長時間処理を
+// 分け、サーバー側で継続中の処理を15秒で失敗扱いにしない。
+const API_FETCH_TIMEOUT_MS = 60000;
+const API_FETCH_MUTATION_TIMEOUT_MS = 120000;
 const API_FETCH_MAX_TIMEOUT_MS = 330000;
-// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの15秒で中断すると、
+// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの読取上限で中断すると、
 // 選択済みのパスを受け取れず再入力を要求するため、サーバー待機上限より長く保つ。
 const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/pick-folder', 135000],
@@ -45,15 +48,46 @@ const API_FETCH_STORAGE_WRITES = [
   '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
   '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
 ];
+const API_FETCH_MAINTENANCE_TIMEOUT_MS = 300000;
+const API_FETCH_MAINTENANCE_SEGMENT_RE = /(?:^|[\/-])(?:rebuild|reindex|rescan|scan|repair|migrat(?:e|ion)|gc|import|export|backup|restore|archive|compress|extract|convert|generate|install|upgrade|recalculate|resolve|enrich|cleanup|purge|compact|batch|refresh|retry|apply|upload|download)(?:$|[\/-])/i;
+const API_FETCH_MUTATING_SYNC_SEGMENT_RE = /(?:^|[\/-])sync(?:$|[\/-])/i;
+function _apiFetchIsMaintenanceOperation(path, options = {}) {
+  const rawPath = String(path || '');
+  const pathname = rawPath.split('?')[0].replace(/^\/api(?=\/)/, '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (API_FETCH_MAINTENANCE_SEGMENT_RE.test(pathname)) return true;
+  if (method !== 'GET' && API_FETCH_MUTATING_SYNC_SEGMENT_RE.test(pathname)) return true;
+  try {
+    const params = new URL(rawPath, 'http://meldex.local').searchParams;
+    const enabled = key => ['1', 'true', 'yes'].includes(String(params.get(key) || '').toLowerCase());
+    return method === 'GET' && (
+      enabled('refresh') || enabled('full_scan') || enabled('rescan')
+      || enabled('rebuild') || enabled('reindex')
+    );
+  } catch {
+    return false;
+  }
+}
 function _apiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
   // 本体と同じく、フォルダ移動後のDB・参照・タグ更新を待つ。
   if (API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 保管庫全体の再構築・走査・修復・移行・同期は、通常APIの15秒で中断しない。
+  if (_apiFetchIsMaintenanceOperation(path, options)) return API_FETCH_MAINTENANCE_TIMEOUT_MS;
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
       && API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
-  return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
+  // 文書・シート内の参照一覧は、Dropbox/NAS上の多数ファイルを確認する読取なので、
+  // 通常読取ではなくフォルダ列挙と同じ上限で完了を待つ。
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)
+      || pathname.startsWith('/contained-files')) return 300000;
+  if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
+      && ['/pivot', '/db-metadata', '/value'].includes(pathname)) return 120000;
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    return API_FETCH_MUTATION_TIMEOUT_MS;
+  }
+  return API_FETCH_TIMEOUT_MS;
 }
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();
@@ -864,37 +898,3 @@ const LUCIDE = {
   home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   page: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   db: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
-  scenario: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
-  sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-  calendarSync: '<path d="M11 10v4h4"/><path d="m11 14 1.535-1.605a5 5 0 0 1 8 1.5"/><path d="M16 2v4"/><path d="m21 18-1.535 1.605a5 5 0 0 1-8-1.5"/><path d="M21 22v-4h-4"/><path d="M21 8.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4.3"/><path d="M3 10h4"/><path d="M8 2v4"/>',
-  arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-  arrowRight: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
-  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
-  filePlus: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>',
-  menu: '<path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/>',
-  mousePointer: '<path d="M12.586 12.586 19 19"/><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/>',
-  creditCard: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
-  spline: '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
-  // アノテートフロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
-  // spline（曲線）から activity（角のはっきりした折れ線）へ差し替えるために追加。
-  // パス値は vendor/lucide-icons.js の LUCIDE_FULL['activity'] と同一。
-  activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
-  funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
-  panelLeft: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
-  panelRight: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
-  // ビューワー残課題修正計画 2026-08-04: 反転2種・回転を共通アイコン置換表へ登録
-  // （既存のビューワー固有直接描画回避を撤去するため。パス値はvendor/lucide-icons.jsの
-  // flipHorizontal2 / flipVertical2 / rotateCw と同一）。
-  flipHorizontal2: '<path d="m3 7 5 5-5 5V7"/><path d="m21 7-5 5 5 5V7"/><path d="M12 20v2"/><path d="M12 14v2"/><path d="M12 8v2"/><path d="M12 2v2"/>',
-  flipVertical2: '<path d="m17 3-5 5-5-5h10"/><path d="m17 21-5-5-5 5h10"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/>',
-  rotateCw: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
-  palette: '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
-  type: '<path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/>',
-  typeOutline: '<path d="M14 16.5a.5.5 0 0 0 .5.5h.5a2 2 0 0 1 0 4H9a2 2 0 0 1 0-4h.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5V8a2 2 0 0 1-4 0V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-4 0v-.5a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5Z"/>',
-  trash2: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
-  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
-  command: '<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0 0-6"/>',
-  chevronRight: '<path d="m9 18 6-6-6-6"/>',
-  entry: '<rect x="2" y="6" width="20" height="12" rx="2"/>',
-  image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
-  video: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',

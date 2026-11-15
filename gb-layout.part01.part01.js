@@ -1526,7 +1526,7 @@ const GBLayout = (() => {
       subpanelButton.type = 'button';
       subpanelButton.className = 'gb-pane-btn gb-pane-subpanel-toggle' + (open ? ' is-active' : '');
       subpanelButton.dataset.e2eId = 'main-tab-subpanel-toggle';
-      subpanelButton.title = 'サブパネルを表示';
+      subpanelButton.title = open ? 'サブパネルを閉じる' : 'サブパネルを表示';
       subpanelButton.setAttribute('aria-label', subpanelButton.title);
       subpanelButton.setAttribute('aria-pressed', String(open));
       subpanelButton.setAttribute('aria-expanded', String(open));
@@ -1534,7 +1534,7 @@ const GBLayout = (() => {
       subpanelButton.innerHTML = lucide('panelRight', 16);
       subpanelButton.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await window.GBIndependentSubpanel.open();
+        await window.GBIndependentSubpanel.toggle();
       });
       ctrls.appendChild(subpanelButton);
     }

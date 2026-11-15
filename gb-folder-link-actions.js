@@ -36,6 +36,83 @@
     return outcome;
   }
 
+  function _parentPath(path) {
+    const normalized = _normalizePath(path);
+    const slash = normalized.lastIndexOf('/');
+    return slash >= 0 ? normalized.slice(0, slash) : '';
+  }
+
+  function registerFileMoveHistory(records, options = {}) {
+    const moves = (records || []).filter(item => item?.oldPath && item?.newPath && item.oldPath !== item.newPath)
+      .map(item => ({
+        ...item,
+        oldParent: item.oldParent != null ? _normalizePath(item.oldParent) : _parentPath(item.oldPath),
+        newParent: item.newParent != null ? _normalizePath(item.newParent) : _parentPath(item.newPath),
+        currentPath: item.currentPath || item.newPath,
+        applied: item.applied !== false,
+      }));
+    if (!moves.length || typeof historyPush !== 'function') return false;
+    const replay = async undo => {
+      const ordered = undo ? [...moves].reverse() : moves;
+      const progress = global.MeldexImportProgress?.beginOperation?.(
+        undo ? 'ファイル移動を取り消しています' : 'ファイル移動をやり直しています',
+        ordered.length,
+        { delayMs: 0, kind: 'file-move-history' },
+      );
+      const failures = [];
+      let processed = 0;
+      for (const move of ordered) {
+        const expectedApplied = undo;
+        if (move.applied !== expectedApplied) {
+          processed += 1;
+          global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+          continue;
+        }
+        const from = move.currentPath;
+        try {
+          const destination = undo ? move.oldParent : move.newParent;
+          const response = await apiPost('/outliner/move', {
+            path: from,
+            dest_folder: destination,
+            conflict_policy: 'error',
+          });
+          move.currentPath = response?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
+          move.applied = !undo;
+          try {
+            if (typeof renameAppPathReferences === 'function') {
+              renameAppPathReferences(from, move.currentPath, {
+                label: response?.new_name || move.name || move.item?.name || '',
+                fileId: response?.file_id || move.fileId || move.item?.file_id,
+                type: move.type || move.item?.type || 'file',
+              });
+            }
+            if (typeof handleRelocateResponse === 'function') handleRelocateResponse(response);
+          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
+        } catch (error) {
+          failures.push({ path: from, error });
+        }
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+      }
+      const refreshOutcome = await refreshHistoryView(options);
+      global.MeldexImportProgress?.finishOperation?.(progress, {
+        failed: failures.length,
+        summary: `${processed - failures.length}件移動・${failures.length}件失敗`,
+        details: failures,
+      });
+      if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
+      if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
+    };
+    historyPush(
+      options.label || `ファイル移動: ${moves.length} 件`,
+      () => replay(true),
+      () => replay(false),
+      options.scope || '',
+      options.detail || `${moves.length} 件`,
+    );
+    return true;
+  }
+
   function isFolderPasteLinkChoiceSuppressed() {
     try {
       return localStorage.getItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE) === 'true';
@@ -214,6 +291,12 @@
     let skipped = 0;
     const executedMoves = [];
     const executedCopies = [];
+    const progress = global.MeldexImportProgress?.beginOperation?.(
+      mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
+      items.length,
+      { delayMs: 0, kind: mode === 'cut' ? 'file-move' : 'file-copy' },
+    );
+    let processed = 0;
 
     for (const item of items) {
       try {
@@ -233,7 +316,11 @@
             continue;
           }
           const oldPath = item.path;
-          const res = await apiPost('/outliner/move', { path: item.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: item.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
@@ -252,8 +339,16 @@
         }
       } catch (_) {
         failed.push(item);
+      } finally {
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
     }
+    global.MeldexImportProgress?.finishOperation?.(progress, {
+      failed: failed.length,
+      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
+      details: failed.map(item => ({ path: item.path || item.name || '', message: '処理できませんでした' })),
+    });
 
     if (mode === 'cut') {
       if (typeof options.onCutResult === 'function') {
@@ -261,19 +356,11 @@
       } else if (typeof _folderToolbarClipboard !== 'undefined') {
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
-      if (executedMoves.length && typeof historyPush === 'function') {
-        const move = async (m, destination) => {
-          const from = m.currentPath;
-          const r = await apiPost('/outliner/move', { path: from, dest_folder: destination });
-          m.currentPath = r?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
-          try {
-            if (typeof renameAppPathReferences === 'function') renameAppPathReferences(from, m.currentPath, { label: m.item.name, fileId: m.fileId, type: m.item.type });
-          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
-        };
-        const moveUndo = () => replayHistoryItems(executedMoves, false, m => move(m, m.oldParent), options);
-        const moveRedo = () => replayHistoryItems(executedMoves, true, m => move(m, destFolder), options);
-        historyPush('フォルダ: 切り取り貼り付け', moveUndo, moveRedo, '', `${executedMoves.length} 件 → ${destFolder}`);
-      }
+      registerFileMoveHistory(executedMoves, {
+        ...options,
+        label: 'フォルダ: 切り取り貼り付け',
+        detail: `${executedMoves.length} 件 → ${destFolder}`,
+      });
     } else {
       if (executedCopies.length && typeof historyPush === 'function') {
         const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
@@ -422,6 +509,7 @@
     shouldPromptFolderPasteChoice,
     showFolderPasteChoiceModal,
     executeFolderPasteWithChoice,
+    registerFileMoveHistory,
     materializeFolderLinkWithHistory,
     promoteFolderLinkToSourceWithHistory,
     STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE,
@@ -429,6 +517,7 @@
   global.showFolderPasteChoiceModal = showFolderPasteChoiceModal;
   global.shouldPromptFolderPasteChoice = shouldPromptFolderPasteChoice;
   global.executeFolderPasteWithChoice = executeFolderPasteWithChoice;
+  global.MeldexFileMoveHistory = Object.freeze({ register: registerFileMoveHistory });
   global.materializeFolderLinkWithHistory = materializeFolderLinkWithHistory;
   global.promoteFolderLinkToSourceWithHistory = promoteFolderLinkToSourceWithHistory;
 })(typeof window !== 'undefined' ? window : globalThis);

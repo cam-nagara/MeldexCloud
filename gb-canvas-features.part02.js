@@ -333,7 +333,7 @@ async function bdExportImage() {
       }),
       new Promise((_resolve, reject) => setTimeout(
         () => reject(new Error('画像生成がタイムアウトしました（内容が複雑すぎる可能性があります）')),
-        25000,
+        120000,
       )),
     ]);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -1283,7 +1283,6 @@ function bdConnContextMenu(e, conn) {
   }
   sep();
   dangerItem('削除', async () => {
-    if (!(await cfConfirm('このラインを削除しますか？'))) return;
     bdPushUndo();
     if (typeof bdRemoveConnection === 'function') bdRemoveConnection(conn);
     else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns({ connIds: [conn.id], reason: 'remove-connection-fallback' }); bdDirty(); }

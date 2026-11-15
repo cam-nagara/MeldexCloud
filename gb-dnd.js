@@ -22,6 +22,115 @@ const MeldexDnD = (() => {
   const claimResults = new Map();
   const offerExpiryTimers = new Map();
   let bridgeTransport = null;
+  let dropIndicator = null;
+  let dropIndicatorTarget = null;
+
+  function _ensureDropIndicator() {
+    if (dropIndicator?.isConnected) return dropIndicator;
+    const indicator = document.createElement('div');
+    indicator.id = 'meldex-drop-indicator';
+    indicator.className = 'meldex-drop-indicator';
+    indicator.hidden = true;
+    indicator.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'meldex-drop-indicator-label';
+    indicator.appendChild(label);
+    (document.body || document.documentElement).appendChild(indicator);
+    dropIndicator = indicator;
+    return indicator;
+  }
+
+  function _dropIndicatorSurface(element) {
+    if (!element?.closest) return null;
+    const specific = element.closest([
+      '[data-meldex-drop-indicator-target]',
+      '.tree-node-row', '.fv-item', '#folder-grid',
+      '.gb-form-input-row', '.gb-image-cell', '.gb-cell-dropzone', '.db-link-drop-target',
+      '#page-content', '#entity-freetext', '.gb-subpanel-note-content', '[data-editor-local-id="page-content"]',
+      '#bd-canvas', '.gb-board-root', '#db-view-container', '.gb-database-root',
+      '#chat-messages', '#chat-rich-input', '#team-messages', '#team-input',
+      '.gb-subpanel-titlebar', '.gb-tabbar', '.gb-pane-tabs', '.gb-subpanel', '.gb-pane',
+    ].join(','));
+    if (specific) return specific;
+    const route = resolveTargetRoute(element);
+    if (route.kind === 'node-link') {
+      return element.closest('[contenteditable="true"],textarea[data-meldex-editable],input[data-meldex-editable]');
+    }
+    if (route.kind === 'panel') return element.closest('.gb-tabbar,.gb-subpanel-titlebar,.gb-rail,.gb-dockbar');
+    if (route.kind === 'topic-placement') return element.closest('.tree-node,.gb-subpanel,.gb-pane');
+    return null;
+  }
+
+  function showDropIndicator(element, options = {}) {
+    const target = _dropIndicatorSurface(element) || element;
+    if (!target?.getBoundingClientRect || !target.isConnected) return false;
+    const rect = target.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(window.innerWidth, rect.right);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    if (right - left < 2 || bottom - top < 2) return false;
+    const indicator = _ensureDropIndicator();
+    const kind = options.kind === 'external' ? 'external' : 'internal';
+    indicator.dataset.kind = kind;
+    indicator.classList.toggle('is-compact', right - left < 180 || bottom - top < 48);
+    indicator.classList.toggle('is-label-hidden', right - left < 82 || bottom - top < 24);
+    indicator.querySelector('.meldex-drop-indicator-label').textContent = options.label
+      || (kind === 'external' ? 'ファイルをここにドロップ' : 'ここにドロップ');
+    Object.assign(indicator.style, {
+      left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px`,
+    });
+    indicator.hidden = false;
+    dropIndicatorTarget = target;
+    return true;
+  }
+
+  function hideDropIndicator(target) {
+    if (target && dropIndicatorTarget && target !== dropIndicatorTarget && !dropIndicatorTarget.contains(target)) return;
+    if (dropIndicator) dropIndicator.hidden = true;
+    dropIndicatorTarget = null;
+  }
+
+  function _internalDropKind(transfer) {
+    const types = Array.from(transfer?.types || []);
+    return Object.entries(KIND_MIME).find(([, type]) => types.includes(type))?.[0] || '';
+  }
+
+  function _internalDropSurface(element, kind) {
+    if (!element?.closest) return null;
+    if (kind === 'node') return _dropIndicatorSurface(element);
+    if (kind === 'text') {
+      return element.closest('[contenteditable="true"],textarea[data-meldex-editable],input[data-meldex-editable],#chat-rich-input,#team-input');
+    }
+    if (kind === 'board-nodes') return element.closest('#bd-canvas,.gb-board-root');
+    if (kind === 'topic') return element.closest('.tree-node-row,.gb-subpanel,.gb-pane');
+    return null;
+  }
+
+  function _installCommonDropIndicator() {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    document.addEventListener('dragover', event => {
+      const kind = _internalDropKind(event.dataTransfer);
+      if (!kind) return;
+      const target = _internalDropSurface(event.target, kind);
+      if (target) showDropIndicator(target, { kind: 'internal' });
+      else hideDropIndicator();
+    }, true);
+    document.addEventListener('dragleave', event => {
+      if (!dropIndicatorTarget) return;
+      if (event.relatedTarget && dropIndicatorTarget.contains(event.relatedTarget)) return;
+      if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0
+          || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) hideDropIndicator();
+    }, true);
+    document.addEventListener('drop', () => hideDropIndicator(), true);
+    document.addEventListener('dragend', () => hideDropIndicator(), true);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') hideDropIndicator(); }, true);
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('blur', () => hideDropIndicator());
+    }
+  }
+
+  _installCommonDropIndicator();
 
   function _transport() {
     const candidate = globalThis.MeldexBroadcast || globalThis.GBBroadcast;
@@ -627,6 +736,10 @@ const MeldexDnD = (() => {
       if (!hasDropKind(e, 'node')) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = e.altKey ? 'link' : 'copy';
+      showDropIndicator(root, { kind: 'internal' });
+    });
+    root.addEventListener('dragleave', e => {
+      if (!root.contains(e.relatedTarget)) hideDropIndicator(root);
     });
     root.addEventListener('drop', async e => {
       const resolved = await resolveDropData(e, 'node');
@@ -634,6 +747,7 @@ const MeldexDnD = (() => {
       if (!parsed) return;
       e.preventDefault();
       e.stopPropagation();
+      hideDropIndicator(root);
       const items = Array.isArray(parsed.items) && parsed.items.length ? parsed.items : [parsed];
       if (items.length !== 1 || !items[0]?.path) {
         failDrop(resolved);
@@ -672,7 +786,11 @@ const MeldexDnD = (() => {
     if (!input || input.type !== 'file' || input.dataset.meldexNodeDropBound === '1') return;
     input.dataset.meldexNodeDropBound = '1';
     const host = input.closest('.gb-form-input-row') || input;
-    const setActive = active => host.toggleAttribute('data-meldex-node-drop-active', active);
+    const setActive = active => {
+      host.toggleAttribute('data-meldex-node-drop-active', active);
+      if (active) showDropIndicator(host, { kind: 'internal' });
+      else hideDropIndicator(host);
+    };
     host.addEventListener('dragover', event => {
       if (!hasDropKind(event, 'node')) return;
       event.preventDefault();
@@ -968,11 +1086,17 @@ const MeldexDnD = (() => {
   async function uploadFiles(rawFiles, parentPath, options = {}) {
     const files = Array.from(rawFiles || []).filter(Boolean);
     if (!files.length) return [];
+    const embeddedSources = new Set([
+      'note-drop', 'note-paste', 'note-standalone-drop',
+      'board-drop', 'board-background', 'board-image-link', 'callout-icon',
+    ]);
+    const uploadParentPath = embeddedSources.has(String(options.source || ''))
+      ? 'Meldexファイル' : parentPath;
     if (!directFileUploadSupported()) {
       const results = [];
       for (const file of files) {
         try {
-          results.push(await uploadFileLegacy(file, parentPath, options));
+          results.push(await uploadFileLegacy(file, uploadParentPath, options));
         } catch (error) {
           results.push({
             ok: false,
@@ -984,7 +1108,7 @@ const MeldexDnD = (() => {
       return results;
     }
     const body = new FormData();
-    body.append('path', String(parentPath || ''));
+    body.append('path', String(uploadParentPath || ''));
     body.append('source', String(options.source || 'file-drop'));
     body.append('import_batch_id', String(options.batchId || ''));
     files.forEach(file => body.append('files', file, file.name || 'file'));
@@ -1033,6 +1157,8 @@ const MeldexDnD = (() => {
     installSurfaceDragSource,
     installSurfaceDropTarget,
     installFileInputDropTarget,
+    showDropIndicator,
+    hideDropIndicator,
     getMediaType,
     preserveMediaItem,
     resolveOpenType,

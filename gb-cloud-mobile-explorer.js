@@ -769,47 +769,35 @@
     const path = item?.path || '';
     if (!path) return;
     const name = item?.name || item?.label || path.split(/[\\/]/).pop() || 'この項目';
-    const confirmMessage = '「' + name + '」を削除しますか？';
     const impactTarget = [{
       path,
       kind: item?.type === 'folder' ? 'folder' : 'file',
       ...((item?.assetId || item?.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
     }];
-    let confirmed;
-    if (typeof MeldexDeleteImpactWarning !== 'undefined' && typeof cfConfirm === 'function') {
-      confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTarget, confirmMessage);
-    } else if (typeof cfConfirm === 'function') {
-      confirmed = await cfConfirm(confirmMessage);
-    } else {
-      confirmed = window.confirm(confirmMessage);
-    }
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTarget)
+      : { confirmed: true, operation: 'trash' };
     if (!confirmed) return;
     const currentKey = _normalizePath(_currentFolder?.path || '');
     const deleteKey = _normalizePath(path);
     if (currentKey && (currentKey === deleteKey || currentKey.startsWith(deleteKey + '/'))) {
       _currentFolder = _parentTargetForCurrent() || _currentFolder;
     }
-    if (typeof deleteOutlinerItemsWithHistory === 'function') {
-      const result = await deleteOutlinerItemsWithHistory([{
-        path,
-        name,
-        type: item?.type || 'page',
-      }], {
-        confirmation: confirmed,
-        label: '削除: ' + name,
-        refresh: _refreshAfterMutation,
-      });
-      await _refreshAfterMutation();
-      if (result?.failedCount > 0 && typeof showStatus === 'function') showStatus('削除に失敗しました', true);
-      return;
+    if (typeof deleteOutlinerItemsWithHistory !== 'function') {
+      throw new Error('Undo履歴を登録できないため削除できません');
     }
-    await apiPost('/outliner/delete', {
+    const result = await deleteOutlinerItemsWithHistory([{
       path,
-      kind: impactTarget[0].kind,
-      ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
+      name,
+      type: item?.type || 'page',
+      ...((item?.assetId || item?.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }], {
+      confirmation: confirmed,
+      label: '削除: ' + name,
+      refresh: _refreshAfterMutation,
     });
     await _refreshAfterMutation();
-    if (typeof showStatus === 'function') showStatus('削除しました: ' + name);
+    if (result?.failedCount > 0 && typeof showStatus === 'function') showStatus('削除に失敗しました', true);
   }
 
   function closeItemMenu() {

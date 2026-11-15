@@ -1,3 +1,37 @@
+    if (typeof getUsername === 'function') return getUsername();
+    try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; }
+    catch { return 'anonymous'; }
+  }
+
+  function _saveBoardAnnotation(payload, onSaved, onError) {
+    if (!boardMode || typeof apiPost !== 'function') return false;
+    apiPost('/annotations', payload).then((res) => {
+      if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
+        const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
+        _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
+      }
+      onSaved?.(res);
+    }).catch((error) => {
+      _reportMarkupSaveFailure(error);
+      onError?.(error);
+    });
+    return true;
+  }
+
+  function _updateBoardAnnotation(annId, payload, onSaved, onError) {
+    if (!boardMode || !annId || typeof apiPut !== 'function') return false;
+    const handleSaved = (res) => { onSaved?.(res); };
+    const handleError = (error) => {
+      _reportMarkupSaveFailure(error);
+      onError?.(error);
+    };
+    if (typeof _putAnnotationWithHistory === 'function') {
+      const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
+      Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
+    } else {
+      apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
+    }
+    return true;
   }
 
   function _deleteBoardAnnotation(annId, onDeleted, onError) {
@@ -864,37 +898,3 @@
 
   const _anchoredAnnotationEntries = new Set();
   let _anchoredRefreshHandle = 0;
-  const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
-  let _anchoredMutationObserver = null;
-
-  function _ensureAnchoredMutationObserver() {
-    if (_anchoredMutationObserver) return;
-    _anchoredMutationObserver = new MutationObserver(() => _scheduleAnchoredAnnotationRefresh());
-    _anchoredMutationObserver.observe(wrapper, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ['style', 'class'],
-    });
-  }
-
-  function _releaseAnchoredMutationObserverIfIdle() {
-    if (_anchoredAnnotationEntries.size || !_anchoredMutationObserver) return;
-    _anchoredMutationObserver.disconnect();
-    _anchoredMutationObserver = null;
-  }
-
-  function _trackAnchoredAnnotation(el, type, data, color, opacity) {
-    if (!data?.anchor) return;
-    const nodeEl = _boardAnnotationNode(data.anchor);
-    _anchoredAnnotationEntries.add({
-      el,
-      type,
-      data,
-      color,
-      opacity,
-      detaching: false,
-      lastWorldPoints: _anchoredWorldPoints(type, data),
-      lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
-      observedNode: nodeEl,
-    });

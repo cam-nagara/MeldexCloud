@@ -1,3 +1,9 @@
+      const rootsByPath = new Map(allowedRoots.map((root) => [root.path, root]));
+      const sourceRootsByPhysical = new Map(allowedRoots.filter((root) => (
+        window.MeldexSourceFolderRegistry?.parseSourcePath?.(root.path)
+      )).map((root) => [String(root.physicalPath || root.path).toLowerCase(), root]));
+      const listedPhysicalRoots = new Set();
+      for (const trashRoot of allowedRoots) {
         const physicalKey = String(trashRoot.physicalPath || trashRoot.path).toLowerCase();
         if (listedPhysicalRoots.has(physicalKey)) continue;
         try {

@@ -67,7 +67,9 @@
   }
 
   async function waitForJob(jobId, isCurrent) {
-    for (let attempt = 0; attempt < 240 && isCurrent(); attempt += 1) {
+    // 初回カタログ生成は対象件数に比例する。経過時間では打ち切らず、入力変更・
+    // ダイアログ終了によるisCurrent=falseか、ジョブの終端状態だけで終了する。
+    while (isCurrent()) {
       const job = await apiFetch(`/jobs/${encodeURIComponent(jobId)}`, { silentError: true });
       if (job?.status === 'done') return job;
       if (['error', 'cancelled'].includes(job?.status)) {
@@ -75,7 +77,7 @@
       }
       await new Promise(resolve => window.setTimeout(resolve, JOB_POLL_MS));
     }
-    throw new Error('外部タグカタログの準備に時間がかかっています。入力し直すと再確認できます');
+    throw new DOMException('外部タグカタログの準備表示を中止しました', 'AbortError');
   }
 
   function open(options) {

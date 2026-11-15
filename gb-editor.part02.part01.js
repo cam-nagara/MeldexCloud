@@ -4,9 +4,16 @@ function updateNoteToc(editor) {
     : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
+  const mobileClose = '<button type="button" class="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
+  const bindMobileClose = () => {
+    toc.querySelector('.note-toc-mobile-close')?.addEventListener('click', () => {
+      if (typeof toggleNoteToc === 'function') toggleNoteToc();
+    });
+  };
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
   if (headings.length === 0) {
-    toc.innerHTML = '<div class="note-toc-empty">見出しがありません</div>';
+    toc.innerHTML = mobileClose + '<div class="note-toc-empty">見出しがありません</div>';
+    bindMobileClose();
     return;
   }
 
@@ -20,7 +27,8 @@ function updateNoteToc(editor) {
     html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}"`
       + ` data-e2e-id="note-toc-item-${i}" title="${esc(text)}">${esc(text)}</button>`;
   });
-  toc.innerHTML = html;
+  toc.innerHTML = mobileClose + html;
+  bindMobileClose();
   // 目次はDOMごと差し替わるため、テーマの適用対象マークを付け直す。
   // これを省くとテーマ側のホバー色だけが失効する。
   try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
@@ -1533,7 +1541,7 @@ function _calloutImageOptions(editable, isCurrent) {
       const path = editable.dataset.path || editable.dataset.entityPath || '';
       if (!path) throw new Error('先にノートを保存してください');
       const home = typeof _homeFolderPath !== 'undefined' ? String(_homeFolderPath || '').replace(/\\/g, '/').replace(/\/$/, '') : '';
-      const dir = (home ? home + '/' : '') + 'Meldex画像';
+      const dir = (home ? home + '/' : '') + 'Meldexファイル';
       const data = await _readFileAsDataURL(prepared);
       if (!current()) throw new Error('編集対象が変わりました');
       const result = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {

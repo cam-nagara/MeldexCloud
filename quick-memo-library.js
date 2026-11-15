@@ -3,8 +3,10 @@
 
   const PAGE_SIZE = 50;
   const CLOUD_FOLDER = 'クイックメモ';
+  const LOCAL_READ_TIMEOUT_MS = 60000;
+  const CLOUD_READ_TIMEOUT_MS = 120000;
 
-  async function readWithTimeout(task, message, timeoutMs = 15000) {
+  async function readWithTimeout(task, message, timeoutMs = LOCAL_READ_TIMEOUT_MS) {
     let timer;
     try {
       return await Promise.race([task, new Promise((_, reject) => {
@@ -13,6 +15,12 @@
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  function readTimeoutFor(options) {
+    const requested = Number(options?.readTimeoutMs);
+    if (Number.isFinite(requested) && requested > 0) return requested;
+    return options?.isCloudMode?.() ? CLOUD_READ_TIMEOUT_MS : LOCAL_READ_TIMEOUT_MS;
   }
 
   function parseJsonValue(raw) {
@@ -320,7 +328,7 @@
       try {
         const read = state.connectionRequired ? Promise.resolve()
           : options.isCloudMode() ? cloudPage(reset, next, assertActive) : localPage(reset, next, assertActive);
-        await readWithTimeout(read, 'メモ一覧の読込に時間がかかっています。端末の入力は保持しています。接続と保存先を確認して再試行してください', options.readTimeoutMs);
+        await readWithTimeout(read, 'メモ一覧の読込に時間がかかっています。端末の入力は保持しています。接続と保存先を確認して再試行してください', readTimeoutFor(options));
         assertActive();
         Object.assign(state, { saved: next.saved, cloudFiles: next.cloudFiles,
           failedFiles: next.failedFiles, offset: next.offset, nextOffset: next.nextOffset });
@@ -347,7 +355,7 @@
         let memo = item;
         if (!item.pending && options.isCloudMode()) {
           const result = await readWithTimeout(window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(item.path)),
-            'メモを開くのに時間がかかっています。接続を確認してメモをもう一度選んでください', options.readTimeoutMs);
+            'メモを開くのに時間がかかっています。接続を確認してメモをもう一度選んでください', readTimeoutFor(options));
           memo = parseMemoText(result?.content ?? result, item.path, result?.etag);
         } else if (!item.pending) {
           const query = new URLSearchParams({ path: item.path || '', memo_id: item.memo_id || '' });
@@ -356,7 +364,7 @@
             const value = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(value.error || 'メモを開けませんでした');
             return value;
-          })(), 'メモを読み込めません。接続を確認してもう一度選んでください', options.readTimeoutMs);
+          })(), 'メモを読み込めません。接続を確認してもう一度選んでください', readTimeoutFor(options));
           memo = payload.memo || payload;
         }
         if (epoch !== state.openEpoch) return;

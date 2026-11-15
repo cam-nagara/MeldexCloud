@@ -1,3 +1,43 @@
+
+  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
+  if (typeof ann !== 'undefined') {
+    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
+    if (newTarget !== ann.targetPath) {
+      ann.targetPath = newTarget;
+      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
+      // スタンドアロン側の loadAnnotations を呼ぶと同じアノテートが二重に描画される
+      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
+        && _usesEmbeddedAnnotationSurface(viewName);
+      if (embedded) {
+        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
+        const layer = document.getElementById('ann-layer');
+        if (layer) layer.innerHTML = '';
+        if (typeof _forEachStandaloneAnnotationNote === 'function') {
+          _forEachStandaloneAnnotationNote(el => el.remove());
+        }
+      } else if (typeof loadAnnotations === 'function') {
+        loadAnnotations();
+      }
+    }
+    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
+  }
+}
+// スクリーンショットメニュー
+function showScreenshotMenu(e) {
+  const btn = e?.target?.closest?.('button') || e?.target;
+  const existing = document.querySelector('.ab-dropdown.ss-menu');
+  if (existing) {
+    existing.remove();
+    btn?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
+  const menu = document.createElement('div');
+  menu.className = 'ab-dropdown ss-menu';
+  menu.id = 'screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット');
+  if (btn?.setAttribute) {
+    btn.setAttribute('aria-haspopup', 'menu');
     btn.setAttribute('aria-expanded', 'true');
     btn.setAttribute('aria-controls', menu.id);
   }
@@ -858,43 +898,3 @@ function _isTrustedEmbeddedMessage(e) {
 
 function _syncViewerCurrentFileFromMessage(msg) {
   const path = typeof msg?.path === 'string' ? msg.path : '';
-  if (!path) return false;
-  state.currentPagePath = path;
-  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
-  if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  return true;
-}
-
-const _VIEWER_FOLDER_NAV_FILE_EXTS = new Set([
-  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
-  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
-  '.pdf',
-]);
-const _viewerFolderNavDisplayableCache = new Map();
-
-function _viewerFolderNavCleanPath(path) {
-  return String(path || '').replace(/\\/g, '/').split('#')[0].split('?')[0].replace(/\/+$/, '');
-}
-
-function _viewerFolderNavExt(path) {
-  const name = _viewerFolderNavCleanPath(path).split('/').pop() || '';
-  const index = name.lastIndexOf('.');
-  return index >= 0 ? name.slice(index).toLowerCase() : '';
-}
-
-function _viewerFolderNavIsDisplayableFile(path) {
-  return _VIEWER_FOLDER_NAV_FILE_EXTS.has(_viewerFolderNavExt(path));
-}
-
-function _viewerFolderNavParentPath(path) {
-  const clean = _viewerFolderNavCleanPath(path);
-  if (!clean) return '';
-  if (!_viewerFolderNavIsDisplayableFile(clean)) return clean;
-  const index = clean.lastIndexOf('/');
-  return index >= 0 ? clean.slice(0, index) : '';
-}
-
-function _viewerFolderNavCurrentFolderFromMessage(msg) {
-  const folderPath = _viewerFolderNavCleanPath(msg?.folderPath || '');
-  if (folderPath) return folderPath;
-  return _viewerFolderNavParentPath(msg?.currentPath || msg?.path || state.currentPagePath || '');

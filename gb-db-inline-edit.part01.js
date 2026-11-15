@@ -244,6 +244,10 @@ function _dbCommitEntityRenameLocalFirst(ctx, td, nameSpan, oldName, newName, db
 
 function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
   // 作成待ちの間も改名全体を追跡し、再読込がその隙間へ入らないようにする。
+  // 作成応答が先に返って実パスが行へ入った分岐でも、旧表示名の予約は必要。
+  if (typeof _dbHoldEntityCreateNameReservation === 'function') {
+    _dbHoldEntityCreateNameReservation(dbPath, oldName);
+  }
   const saved = (async () => {
     if (entity?._topicCanonicalOnly && entity?.topicRef) {
       return window.MeldexTopicPlacementUI.renameProjectedTopic(entity, newName);
@@ -258,6 +262,11 @@ function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
     // 更新日時なども確定した1行の応答から反映する。
     if (result?.entity_data && typeof _dbApplyCreatedEntityData === 'function') {
       _dbApplyCreatedEntityData(dbPath, entity, result.entity_data);
+    }
+    // 作成直後の旧表示名は、改名がサーバーで確定するまで次の作成へ再利用しない。
+    // 成功後は新形式の保存名と表示名が独立しているため、通常の採番へ戻せる。
+    if (typeof _dbReleaseEntityCreateNameReservation === 'function') {
+      _dbReleaseEntityCreateNameReservation(dbPath, oldName);
     }
     return result;
   })();

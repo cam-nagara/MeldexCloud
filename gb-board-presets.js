@@ -200,7 +200,7 @@ function _bdIcon(name, size) {
 function bdBuildBoardShellMarkup(idSuffix = '') {
   const idFor = (base) => idSuffix ? `${base}-${idSuffix}` : base;
   return `
-    <div class="gb-toolbar gb-toolbar-board" data-bd-role="toolbar-top">
+    <div class="gb-toolbar gb-toolbar-main gb-toolbar-board" data-bd-role="toolbar-top">
       <button type="button" class="tb-icon-btn tool-menu-btn bd-toolbar-btn bd-toolbar-icon-btn" title="メニュー" aria-label="ボードメニュー" data-action="showToolMenu(event,'board')">${_bdIcon('menu', 16)}</button>
       <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>

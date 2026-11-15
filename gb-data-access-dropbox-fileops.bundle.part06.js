@@ -1,3 +1,9 @@
+    if (pathname === '/version/read-folder' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
+    }
+    if (pathname === '/version/read-folder-file' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
       return _readFolderVersionFile(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', url.searchParams.get('file') || '');
     }
     if (pathname === '/version/save-folder' && method === 'POST') {
@@ -892,9 +898,3 @@
           message: error?.message || String(error), code: error?.code || '',
         });
       }
-      const rootsByPath = new Map(allowedRoots.map((root) => [root.path, root]));
-      const sourceRootsByPhysical = new Map(allowedRoots.filter((root) => (
-        window.MeldexSourceFolderRegistry?.parseSourcePath?.(root.path)
-      )).map((root) => [String(root.physicalPath || root.path).toLowerCase(), root]));
-      const listedPhysicalRoots = new Set();
-      for (const trashRoot of allowedRoots) {

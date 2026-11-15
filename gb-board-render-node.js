@@ -120,6 +120,58 @@ function bdNodeA11yLabel(node) {
   return text ? `ボードトピック: ${text}` : 'ボードトピック';
 }
 
+const BD_DIRECT_VIDEO_EXT_RE = /\.(?:mp4|m4v|mov|webm|ogv)(?:[?#]|$)/i;
+
+function bdPlayableVideoInfo(node) {
+  const link = String(node?.link || '').trim();
+  if (!link) return null;
+  const parsed = globalThis.GBWebEmbeds?.parse?.(link);
+  if (parsed?.kind === 'video') return { kind: 'web', info: parsed };
+  const linkType = String(node?.linkType || '').toLowerCase();
+  if (linkType !== 'video' && !BD_DIRECT_VIDEO_EXT_RE.test(link)) return null;
+  const remote = /^(?:https?:|blob:|data:video\/)/i.test(link);
+  const base = typeof API_BASE === 'string' ? API_BASE : '/api';
+  return {
+    kind: 'direct',
+    src: remote ? link : `${base}/file-raw?path=${encodeURIComponent(link)}`,
+    label: String(node?.text || link.split(/[\\/]/).pop() || '動画'),
+    poster: String(node?.img || ''),
+  };
+}
+
+function bdAppendPlayableVideo(div, node, playable) {
+  let box = null;
+  if (playable.kind === 'web') box = globalThis.GBWebEmbeds?.buildElement?.(playable.info) || null;
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'gb-web-embed gb-web-embed--video gb-web-embed--localvideo';
+    box.contentEditable = 'false';
+    const video = document.createElement('video');
+    video.className = 'gb-web-embed-video';
+    video.src = playable.src;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.draggable = false;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('aria-label', `${playable.label}を再生`);
+    if (playable.poster) video.poster = playable.poster;
+    box.appendChild(video);
+  }
+  box.classList.add('bd-card-video');
+  box.draggable = false;
+  // 再生操作をカード移動・選択・ダブルクリックとして扱わない。
+  ['pointerdown', 'mousedown', 'click', 'dblclick'].forEach((type) => {
+    box.addEventListener(type, (event) => event.stopPropagation());
+  });
+  box.addEventListener('dragstart', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  div.appendChild(box);
+  return true;
+}
+
 function bdSelectNodeForKeyboard(nodeId) {
   if (!nodeId || typeof bd === 'undefined' || !(bd.selected instanceof Set)) return;
   const before = [...bd.selected, ...(bd.selectedConnIds instanceof Set ? bd.selectedConnIds : [])];
@@ -188,7 +240,9 @@ function bdRenderNode(node, options = {}) {
   div.dataset.styleId = node.cardStyle || bd.cardStyles?.[0]?.id || 'default';
   const depthStyleIndex = bdGetAutoDepthStyleIndexForNode(node, ctx.autoDepthStyleMap);
   if (depthStyleIndex) div.dataset.depthStyleIndex = depthStyleIndex;
-  if (node.img) div.classList.add('bd-image-node');
+  const playableVideo = bdPlayableVideoInfo(node);
+  if (playableVideo) div.classList.add('bd-video-node');
+  else if (node.img) div.classList.add('bd-image-node');
   div.dataset.shape = nodeStyle.shape || 'rect';
   div.oncontextmenu = (ev) => {
     ev.preventDefault();
@@ -222,7 +276,7 @@ function bdRenderNode(node, options = {}) {
 }
 
 function bdApplyNodeBaseStyles(div, node, nodeStyle, showStatus) {
-  const isImageNode = !!node?.img;
+  const isImageNode = !!node?.img || !!bdPlayableVideoInfo(node);
   div.style.left = node.x + 'px';
   div.style.top = node.y + 'px';
   if (node.w) div.style.width = node.w + 'px';
@@ -781,6 +835,11 @@ function bdSyncNodeImageGeometryAfterLayout(div, node, reason) {
 }
 
 function bdAppendNodeImage(div, node) {
+  const playableVideo = bdPlayableVideoInfo(node);
+  if (playableVideo) {
+    bdAppendPlayableVideo(div, node, playableVideo);
+    return;
+  }
   if (!node.img) return;
   const img = document.createElement('img');
   img.className = 'bd-img';
@@ -882,7 +941,9 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   chDiv.setAttribute('aria-label', bdNodeA11yLabel(ch));
   const depthStyleIndex = bdGetAutoDepthStyleIndexForNode(ch, ctx.autoDepthStyleMap);
   if (depthStyleIndex) chDiv.dataset.depthStyleIndex = depthStyleIndex;
-  if (ch.img) chDiv.classList.add('bd-image-node');
+  const playableVideo = bdPlayableVideoInfo(ch);
+  if (playableVideo) chDiv.classList.add('bd-video-node');
+  else if (ch.img) chDiv.classList.add('bd-image-node');
   chDiv.oncontextmenu = ev => {
     ev.preventDefault();
     ev.stopPropagation();

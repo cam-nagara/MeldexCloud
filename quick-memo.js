@@ -1165,7 +1165,9 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {}),
-      ...(path === '/api/quick-memo' ? { signal: AbortSignal.timeout(20000) } : {}),
+      // 画像・音声を含む保存やDropbox同期を20秒で失敗扱いにしない。
+      // 下書きキューは維持しつつ、共通の更新API上限まで正常完了を待つ。
+      ...(path === '/api/quick-memo' ? { signal: AbortSignal.timeout(120000) } : {}),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || data.detail || res.statusText);

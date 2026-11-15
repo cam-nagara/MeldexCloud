@@ -168,7 +168,21 @@
       rbBtn.disabled = true;
       rbBtn.textContent = '再構築中...';
       try {
-        const r = await apiPost('/backlinks/rebuild', {});
+        // 保管庫全体の走査を1本のHTTP応答で待つと、処理中でも通常APIの
+        // タイムアウトにより失敗扱いになる。ジョブIDを即時に受け取って進捗を
+        // ポーリングし、旧バックエンドでジョブ化されない場合だけ長時間待機する。
+        const r = typeof global.runBackgroundJob === 'function'
+          ? await global.runBackgroundJob('/backlinks/rebuild', { background: true }, {
+              operationKind: 'backlinks-rebuild',
+              operationLabel: 'バックリンク索引を再構築しています',
+              cancellable: false,
+              onProgress: progress => {
+                if (!rbBtn.isConnected) return;
+                const processed = Number(progress?.processed) || 0;
+                rbBtn.textContent = processed > 0 ? `再構築中... ${processed}件` : '再構築中...';
+              },
+            })
+          : await apiPost('/backlinks/rebuild', {}, { timeoutMs: 300000 });
         if (r && r.ok) {
           await onRebuilt();
         } else {

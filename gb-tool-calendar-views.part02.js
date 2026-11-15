@@ -19,10 +19,10 @@ CalendarComponent.prototype._saveTask = async function(editId, overlay) {
 };
 
 CalendarComponent.prototype._deleteTask = async function(id) {
-  if (typeof cfConfirm === 'function' && !await cfConfirm('このToDoを削除しますか？')) return false;
-  this._pushUndo('ToDo削除');
   try {
     await apiFetch('/cal/tasks/' + id, { method: 'DELETE' });
+    // 削除成功後、再読込より前に削除前スナップショットを履歴化する。
+    this._pushUndo('ToDo削除');
     await this._loadTasks();
     this._render();
     this._renderTodayTasks();

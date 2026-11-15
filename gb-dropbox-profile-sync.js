@@ -653,7 +653,12 @@
     _startupProfileEpoch += 1;
   }
 
-  async function resolveStartupProfile() {
+  async function resolveStartupProfile(options) {
+    // 読取専用の単独画面は、過去にその画面から保存されたローカル値を
+    // 本体の共有プロフィールへ書き戻さず、Dropbox側の正本を直接反映する。
+    if (options?.preferShared === true) {
+      return _resolveStartupProfile(_startupProfileEpoch, { preferShared: true });
+    }
     if (_startupProfilePromise) return _startupProfilePromise;
     const pending = _resolveStartupProfile(_startupProfileEpoch).then((result) => {
       if (!result?.ok && _startupProfilePromise === pending) _startupProfilePromise = null;
@@ -666,7 +671,7 @@
     return pending;
   }
 
-  async function _resolveStartupProfile(epoch) {
+  async function _resolveStartupProfile(epoch, options = {}) {
     if (!await _shouldUseSharedProfile()) return { ok: false, reason: 'not-dropbox-workspace' };
     const account = await _getCurrentAccount(false);
     let accountId = _accountId(account);
@@ -714,7 +719,7 @@
       // OAuth未接続で自己同定ラダーが決めたキーはここで補わないと accountId が
       // 空のままになり、_applyProfileToLocal がローカル反映を行わずに抜けてしまう。
       const shared = _normalizeProfile(account, { ...sharedRaw, accountId: sharedRaw.accountId || accountId });
-      if (_isLocalProfileNewer(accountId, shared.updatedAt)) {
+      if (options.preferShared !== true && _isLocalProfileNewer(accountId, shared.updatedAt)) {
         const updatedAt = _readStorage(LOCAL_UPDATED_KEY, '') || _nowIso();
         const mergedLocal = _normalizeProfile(account, {
           ...shared,

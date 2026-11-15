@@ -10,6 +10,7 @@
   let trayLayoutRoot = null;
   let trayLayoutObserver = null;
   let trayPositionFrame = 0;
+  const trayFrames = new WeakSet();
   const TRAY_MINIMIZED_KEY = 'meldex-operation-tray-minimized';
   let trayMinimized = (function () {
     try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
@@ -104,6 +105,13 @@
 
   function _syncTrayHost(preferred) {
     if (!tray) return;
+    // 設定は通常のGBModalShellであり、トレイをダイアログ本体へ入れる必要はない。
+    // オーバーレイ直下の兄弟にすると、viewport右下の通常位置を保ったまま、
+    // 暗転より前・移動可能な設定ダイアログより後ろへ重ねられる。
+    const settingsHost = preferred?.isConnected
+      && preferred?.matches?.('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')
+      ? preferred
+      : Array.from(document.querySelectorAll('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')).at(-1) || null;
     // Native modal dialogs occupy the browser top layer, above every z-index.
     // Keep the same tray inside the active dialog so it remains visible and
     // interactive, then return it to body on close (even if the dialog is removed).
@@ -111,8 +119,84 @@
     if (!modalHost?.matches('dialog:modal') || !modalHost.isConnected) {
       modalHost = Array.from(document.querySelectorAll('dialog:modal')).at(-1) || null;
     }
-    const host = modalHost || document.body;
+    const host = settingsHost || modalHost || document.body;
     if (tray.parentElement !== host) host.appendChild(tray);
+  }
+
+  function _wireTrayFrame(frame) {
+    if (!frame || trayFrames.has(frame)) return;
+    trayFrames.add(frame);
+    frame.addEventListener('load', _scheduleTrayPosition);
+  }
+
+  function _clipTrayRect(rect, clip) {
+    const clipped = {
+      left: Math.max(rect.left, clip.left),
+      top: Math.max(rect.top, clip.top),
+      right: Math.min(rect.right, clip.right),
+      bottom: Math.min(rect.bottom, clip.bottom),
+    };
+    clipped.width = Math.max(0, clipped.right - clipped.left);
+    clipped.height = Math.max(0, clipped.bottom - clipped.top);
+    return clipped;
+  }
+
+  function _collectTrayAvoidRects() {
+    const rects = [];
+    const visited = new Set();
+    const rootClip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+
+    function visit(doc, transform, clip) {
+      if (!doc || visited.has(doc)) return;
+      visited.add(doc);
+      for (const surface of doc.querySelectorAll(TRAY_AVOID_SELECTOR)) {
+        if (doc === document && (surface === tray || tray.contains(surface))) continue;
+        // 設定ダイアログはトレイより前面かつ移動可能。設定内のツールバーや
+        // フッターを避けてトレイ自体を動かすと「ダイアログ内に表示された」ように
+        // 見えるため、通常の右下位置を優先する。
+        if (doc === document && surface.closest('.gb-modal-overlay[data-settings-modal="1"], .modal-overlay[data-settings-modal="1"]')) continue;
+        const local = surface.getBoundingClientRect();
+        const mapped = _clipTrayRect({
+          left: transform.left + local.left * transform.scaleX,
+          top: transform.top + local.top * transform.scaleY,
+          right: transform.left + local.right * transform.scaleX,
+          bottom: transform.top + local.bottom * transform.scaleY,
+        }, clip);
+        if (mapped.width && mapped.height) rects.push(mapped);
+      }
+
+      for (const frame of doc.querySelectorAll('iframe')) {
+        _wireTrayFrame(frame);
+        const local = frame.getBoundingClientRect();
+        if (!local.width || !local.height) continue;
+        const mappedFrame = _clipTrayRect({
+          left: transform.left + local.left * transform.scaleX,
+          top: transform.top + local.top * transform.scaleY,
+          right: transform.left + local.right * transform.scaleX,
+          bottom: transform.top + local.bottom * transform.scaleY,
+        }, clip);
+        if (!mappedFrame.width || !mappedFrame.height) continue;
+        try {
+          const childDoc = frame.contentDocument;
+          const childWindow = frame.contentWindow;
+          if (!childDoc?.documentElement || !childWindow) continue;
+          const childWidth = childWindow.innerWidth || frame.clientWidth || local.width;
+          const childHeight = childWindow.innerHeight || frame.clientHeight || local.height;
+          if (!childWidth || !childHeight) continue;
+          visit(childDoc, {
+            left: transform.left + local.left * transform.scaleX,
+            top: transform.top + local.top * transform.scaleY,
+            scaleX: transform.scaleX * local.width / childWidth,
+            scaleY: transform.scaleY * local.height / childHeight,
+          }, mappedFrame);
+        } catch (_) {
+          // 外部サイト等のcross-origin iframeは内部を参照できないため安全に無視する。
+        }
+      }
+    }
+
+    visit(document, { left: 0, top: 0, scaleX: 1, scaleY: 1 }, rootClip);
+    return rects;
   }
 
   function _syncTrayPosition() {
@@ -135,9 +219,7 @@
     let actionTop = window.innerHeight;
     // 個々のボタンではなく操作面全体を避ける。ビューワーの #controls のように
     // ボタン同士に隙間があるフッターでも、トレイが隙間へ重ならないようにする。
-    for (const surface of document.querySelectorAll(TRAY_AVOID_SELECTOR)) {
-      if (surface === tray || tray.contains(surface)) continue;
-      const action = surface.getBoundingClientRect();
+    for (const action of _collectTrayAvoidRects()) {
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
     }
@@ -155,7 +237,7 @@
     });
   }
 
-  const TRAY_POSITION_SELECTOR = '.gb-dock-fixed-right, .gb-dock-bar-right, ' + TRAY_AVOID_SELECTOR;
+  const TRAY_POSITION_SELECTOR = 'iframe, .gb-dock-fixed-right, .gb-dock-bar-right, ' + TRAY_AVOID_SELECTOR;
   function _nodeAffectsTrayPosition(node) {
     return node?.nodeType === 1 && (node.matches(TRAY_POSITION_SELECTOR) || !!node.querySelector(TRAY_POSITION_SELECTOR));
   }
@@ -456,12 +538,16 @@
 
   function _init() {
     if (!window.MeldexOperationProgress || !document.body) return;
+    document.querySelectorAll('iframe').forEach(_wireTrayFrame);
     new MutationObserver(function (records) {
       for (const record of records) {
         if (record.target.tagName === 'DIALOG') _syncTrayHost(record.target);
       }
     }).observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
-    new MutationObserver(_scheduleTrayPosition).observe(document.body, { childList: true });
+    new MutationObserver(function () {
+      _syncTrayHost();
+      _scheduleTrayPosition();
+    }).observe(document.body, { childList: true });
     window.addEventListener('resize', _scheduleTrayPosition);
     window.addEventListener('gb:layout-viewport-resize', _scheduleTrayPosition);
     window.MeldexOperationProgress.subscribe(_render);

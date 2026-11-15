@@ -155,24 +155,58 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
     const nodes = (draggedNodes || [draggedNode]).filter(Boolean);
     let movedCount = 0;
     let skippedCount = 0;
+    const movedItems = [];
+    const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
+    let processed = 0;
     for (const n of nodes) {
       const dragData = n._nodeData;
-      if (!dragData || !dragData.path) { skippedCount++; continue; }
-      if (typeof isItemLocked === 'function' && isItemLocked(dragData.path)) { skippedCount++; showStatus('編集ロック中の項目は移動できません', true); continue; }
-      if (dragData.linked) { skippedCount++; showStatus('リンクファイルは移動できません'); continue; }
+      if (!dragData || !dragData.path) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken); continue;
+      }
+      if (typeof isItemLocked === 'function' && isItemLocked(dragData.path)) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
+        showStatus('編集ロック中の項目は移動できません', true); continue;
+      }
+      if (dragData.linked) {
+        skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
+        showStatus('リンクファイルは移動できません'); continue;
+      }
       try {
         const oldPath = dragData.path;
-        const _res = await apiPost('/outliner/move', { path: oldPath, dest_folder: _homeFolderPath });
+        const _res = await apiPost('/outliner/move', {
+          path: oldPath,
+          dest_folder: _homeFolderPath,
+          conflict_policy: 'error',
+        });
         movedCount++;
+        movedItems.push({
+          oldPath,
+          newPath: _res?.new_path || oldPath,
+          currentPath: _res?.new_path || oldPath,
+          name: _res?.new_name || dragData.name,
+          type: dragData.type,
+          fileId: _res?.file_id || dragData.file_id,
+        });
         try {
           if (_res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, _res.new_path, { label: _res.new_name || dragData.name, fileId: _res.file_id, type: dragData.type || 'page' });
         } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
         try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res); }
         catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
       } catch { skippedCount++; showStatus('移動に失敗', true); }
+      processed += 1;
+      window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
     }
+    window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: skippedCount, summary: `${movedCount}件移動・${skippedCount}件失敗` });
     await renderHomeFolderTree({ force: true, reason: 'home-drop' });
     await loadOutliner();
+    window.MeldexFileMoveHistory?.register?.(movedItems, {
+      label: `ホームフォルダへ ${movedItems.length} 件を移動`,
+      detail: `→ ${_homeFolderPath}`,
+      refresh: async () => {
+        await renderHomeFolderTree({ force: true, reason: 'home-drop-history' });
+        await loadOutliner();
+      },
+    });
     const statusText = skippedCount
       ? movedCount + ' 件をホームフォルダに移動しました。' + skippedCount + ' 件は移動できませんでした'
       : movedCount + ' 件をホームフォルダに移動しました';

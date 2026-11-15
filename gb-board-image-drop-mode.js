@@ -273,10 +273,10 @@
 
   async function uploadImageDataUrl(node, index, dataUrl, filenameHint) {
     if (typeof global.apiFetch !== 'function') throw new Error('画像ファイルを保存できませんでした');
-    const result = await global.apiFetch('/upload-file?path=' + encodeURIComponent(boardUploadDir()), {
+    const result = await global.apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: dataUrl, filename: filenameForNode(node, index, dataUrl, filenameHint) }),
+      body: JSON.stringify({ data: dataUrl, filename: filenameForNode(node, index, dataUrl, filenameHint), source: 'board-image-link' }),
     });
     if (!result?.ok || !result.path) throw new Error('画像ファイルを保存できませんでした');
     return String(result.path).replace(/\\/g, '/');

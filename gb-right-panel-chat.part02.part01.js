@@ -664,6 +664,7 @@ function _chatScrollToMessage(msgId) {
 
 // 保存済みチャットを開いてリプレイ＋続行
 async function openSavedChat(path, anchor = '', sourceFolder) {
+  window.GBChatDrafts?.flush?.();
   const restoreGuard = typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreGuard === 'function'
     ? GBChatRestore.restoreGuard()
     : null;
@@ -835,9 +836,20 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     if (m.role === 'user') chatAddMessage('user', m.content, _chatMessageRenderOptions(m, index));
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
+  const openedReplyVersion = typeof _chatReplyVersionForMessages === 'function'
+    ? _chatReplyVersionForMessages(_chatState.messages) : '';
+  if (document.visibilityState !== 'hidden' && typeof _chatMarkReplySeen === 'function') {
+    _chatMarkReplySeen(_chatState.sessionId, openedReplyVersion);
+  }
+  if (typeof _chatRefreshSessionStateUi === 'function') _chatRefreshSessionStateUi();
   if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
+  window.GBChatDrafts?.restore?.();
   if (anchor) _chatScrollToMessage(anchor);
-  else _chatRevealLatest('llm');
+  else {
+    const follow = typeof _chatBindFollowController === 'function'
+      ? _chatBindFollowController(_chatState.sessionId, container) : null;
+    if (!follow || follow.mode !== 'paused-by-user') _chatRevealLatest('llm');
+  }
   return true;
   } finally {
     if (showOpenLoading) hideLoading(loading);
@@ -845,6 +857,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
 }
 
 function chatClear() {
+  window.GBChatDrafts?.flush?.();
   const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
   const previousWasStreaming = !!_chatState.streaming;
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
@@ -872,6 +885,7 @@ function chatClear() {
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '');
   chatAddSystem('新しいチャットを開始しました');
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  window.GBChatDrafts?.restore?.();
   renderChatHistory();
 }
 
@@ -946,6 +960,7 @@ async function chatAutoSave(options = {}) {
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
       if (!_chatState.sessionTitle && saved?.title) _setChatSessionTitle(saved.title);
+      window.GBChatDrafts?.clearSubmitted?.();
     }
     return true;
   } catch (e) {

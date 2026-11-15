@@ -306,14 +306,14 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
   });
   body.querySelector('#cal-detail-delete')?.addEventListener('click', async () => {
     const eventName = ev.name || ev.title || 'イベント';
-    if (!await cfConfirm(eventName + ' を削除しますか？')) return;
-    _calPushUndo('イベント削除');
+    const undoEntry = _calPushUndo('イベント削除');
     try {
       await apiDelete('/calendar-db/events/' + encodeURIComponent(eventName) + '?db_path=' + encodeURIComponent(dbPath));
       await _refreshCalendarDb(dbPath);
       if (typeof clearDetailPanel === 'function') await clearDetailPanel();
       showStatus('イベントを削除しました');
     } catch {
+      _calDiscardFailedUndo(undoEntry);
       showStatus('イベントの削除に失敗しました', true);
     }
   });
@@ -388,7 +388,7 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   saveButton.type='button';saveButton.id='ep-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='ep-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
-  let busy=false,deleteConfirmPending=false;
+  let busy=false;
   _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-event-edit',title:isNew?'新規イベント':'イベント編集',body:[...content.childNodes],
@@ -444,14 +444,10 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   });
   cancelButton.addEventListener('click', ()=>modalApi.close('cancel'));
   if(deleteButton)deleteButton.addEventListener('click',async()=>{
-    if(busy||deleteConfirmPending)return;
-    deleteConfirmPending=true;
-    let confirmed=false;
-    try{confirmed=await cfConfirm(ev.name+' を削除しますか？');}catch{}finally{deleteConfirmPending=false;}
-    if(!confirmed)return;
-    _calPushUndo('イベント削除');setBusy(true);
+    if(busy)return;
+    const undoEntry=_calPushUndo('イベント削除');setBusy(true);
     try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
-    catch{showStatus('削除に失敗',true);}
+    catch{_calDiscardFailedUndo(undoEntry);showStatus('削除に失敗',true);}
     finally{if(modalApi.isOpen())setBusy(false);}
   });
 }
@@ -483,7 +479,7 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tk-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
   const deleteButton=isNew?null:document.createElement('button');
   if(deleteButton){deleteButton.type='button';deleteButton.id='tk-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
-  let busy=false,deleteConfirmPending=false;
+  let busy=false;
   _styleCalendarDbDialogControls(content);
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-todo',title:isNew?'新規ToDo':'ToDo編集',body:[...content.childNodes],
@@ -522,14 +518,10 @@ function _openTaskModal(dbPath, task, defaultStatus) {
   });
   cancelButton.addEventListener('click',()=>modalApi.close('cancel'));
   if(deleteButton)deleteButton.addEventListener('click',async()=>{
-    if(busy||deleteConfirmPending)return;
-    deleteConfirmPending=true;
-    let confirmed=false;
-    try{confirmed=await cfConfirm('このToDoを削除しますか？');}catch{}finally{deleteConfirmPending=false;}
-    if(!confirmed)return;
-    _calPushUndo('ToDo削除');setBusy(true);
+    if(busy)return;
+    const undoEntry=_calPushUndo('ToDo削除');setBusy(true);
     try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
-    catch{showStatus('削除に失敗',true);}
+    catch{_calDiscardFailedUndo(undoEntry);showStatus('削除に失敗',true);}
     finally{if(modalApi.isOpen())setBusy(false);}
   });
 }

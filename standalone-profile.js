@@ -41,6 +41,10 @@
     return _isLocalProfile() && !_isStandaloneCloud();
   }
 
+  function _isProfileReadOnly() {
+    return _usesMainProfile() || document.body?.dataset?.standaloneProfileReadonly === 'true';
+  }
+
   function _embeddedMainStorage() {
     try {
       if (window.parent !== window && typeof window.parent?.getUsername === 'function') {
@@ -173,7 +177,7 @@
     const connected = _isConnected();
     const display = _displayName();
     badgeEl.classList.toggle('sa-profile-badge--guest', !connected);
-    badgeEl.title = _isLocalProfile() && !_isStandaloneCloud()
+    badgeEl.title = _isProfileReadOnly()
       ? (display || '本体のユーザー情報')
       : (connected ? (display || 'ユーザー設定') : 'ユーザー設定（Dropbox未接続）');
     badgeEl.setAttribute('aria-label', badgeEl.title);
@@ -286,7 +290,7 @@
   }
 
   async function _saveProfile(overrides) {
-    if (_usesMainProfile()) return false;
+    if (_isProfileReadOnly()) return false;
     const sync = window.MeldexDropboxProfileSync;
     const save = sync?.afterLocalProfileChanged || sync?.saveCurrentProfile;
     if (typeof save === 'function') {
@@ -330,6 +334,7 @@
   }
 
   async function _handleNameSave(input) {
+    if (_isProfileReadOnly()) return;
     const value = String(input?.value || '').trim();
     if (!value) {
       window.showStatus?.('ユーザー名を入力してください', true);
@@ -372,6 +377,7 @@
   }
 
   async function _handleAvatarUpload(input) {
+    if (_isProfileReadOnly()) return;
     const file = input?.files?.[0];
     if (!file) return;
     try {
@@ -389,6 +395,7 @@
   }
 
   async function _handleAvatarRemove() {
+    if (_isProfileReadOnly()) return;
     _safeSet(LOCAL_AVATAR_KEY, '');
     _safeSet(LOCAL_AVATAR_SPEC_KEY, '');
     _renderBadgeContent();
@@ -461,7 +468,7 @@
 
     const desc = _el('p', {
       className: 'sa-profile-popover-desc',
-      text: _isLocalProfile() && !_isStandaloneCloud()
+      text: _isProfileReadOnly()
         ? 'Meldex本体と同じ名前とアイコンを表示します。変更は本体の「設定 → ユーザー・共同作業」で行ってください。'
         : connected
         ? 'ここで設定した名前とアイコンは、同じDropboxにつないだ Meldex Cloud・他の端末・他の単独アプリでも使われます。'
@@ -504,7 +511,7 @@
     });
 
     popup.append(head, desc);
-    if (!_usesMainProfile()) popup.append(field, actions, fileInput);
+    if (!_isProfileReadOnly()) popup.append(field, actions, fileInput);
     popup._saProfileRefs = { preview, nameLabel, nameInput, currentName };
     document.body.appendChild(popup);
 
@@ -531,7 +538,7 @@
     document.addEventListener('pointerdown', outsidePointerHandler, true);
     document.addEventListener('keydown', popoverKeydownHandler, true);
     requestAnimationFrame(() => {
-      if (!_usesMainProfile()) {
+      if (!_isProfileReadOnly()) {
         try { nameInput?.focus({ preventScroll: true }); } catch { nameInput?.focus(); }
       }
     });
@@ -554,7 +561,9 @@
           mainProfile = result.profile;
         }
       } else if (_isConnected()) {
-        await window.MeldexDropboxProfileSync?.resolveStartupProfile?.();
+        await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(
+          _isProfileReadOnly() ? { preferShared: true } : undefined
+        );
       }
     } catch (error) {
       console.warn('[standalone-profile] resolveStartupProfile failed', error);

@@ -600,11 +600,11 @@
             }
           }
           try {
-            const res = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
+            const res = await apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               silentError: isImage && !bd.path,
-              body: JSON.stringify({data, filename: f.name}),
+              body: JSON.stringify({data, filename: f.name, source: 'board-drop'}),
             });
             if (res?.ok) return { name: f.name, path: res.path || '', isImage, dataUrl: '', offset };
           } catch (uploadErr) {

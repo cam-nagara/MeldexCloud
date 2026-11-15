@@ -78,7 +78,7 @@ const MeldexExportImage = (() => {
     // 極端に時間がかかる、または返ってこないことがある。サーバー側レンダリングが
     // 使えない単独アプリではこのフォールバックが唯一の経路になるため、無期限に
     // 固まって見えないよう上限時間を設ける（タイムアウト後はエラー扱いにする）。
-    const timeoutMs = Number(options?.fallbackTimeoutMs) || 25000;
+    const timeoutMs = Number(options?.fallbackTimeoutMs) || 120000;
     const canvas = await Promise.race([
       h2c(contentEl, {
         scale,

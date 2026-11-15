@@ -4155,7 +4155,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         throw new Error('Cloud画像identity aftercareが読み込まれていません');
       }
       const drainedIdentity = await imageAftercare.drainPrepared(provider);
-      const targetDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const embeddedSources = new Set([
+        'note-drop', 'note-paste', 'note-standalone-drop',
+        'board-drop', 'board-background', 'board-image-link', 'callout-icon',
+      ]);
+      const requestedDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
+      const targetDir = embeddedSources.has(String(body?.source || '')) ? 'Meldexファイル' : requestedDir;
+      if (targetDir === 'Meldexファイル') await _directoryHandle(provider, targetDir, true);
       const rawName = String(body?.filename || body?.name || 'file').split(/[\\/]/).pop();
       const fileName = _validateItemName(rawName || 'file', 'filename');
       const split = _splitNameAndExt(fileName);

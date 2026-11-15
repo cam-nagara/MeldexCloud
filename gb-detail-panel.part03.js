@@ -177,21 +177,28 @@ function _dpCalSave(editId) {
 }
 
 async function _dpCalDelete(id) {
-  if (!await cfConfirm('このイベントを削除しますか？')) return;
-  // Phase C: CalendarComponentに直接undo記録を依頼
   const formRoot = document.getElementById('dp-cal-title')?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
   const calComponent = formRoot?._calComponent || document.getElementById('rp-calendar')?._calComponent || null;
-  if (calComponent) calComponent.pushUndo('イベント削除');
   // 削除前に calendar_id を拾っておく（対象絞り込み用）
   let calId = '';
+  let evRef = null;
   try {
     if (calComponent?._events) {
-      const evRef = calComponent._events.find(x => x.id === id);
+      evRef = calComponent._events.find(x => x.id === id);
       calId = evRef?.calendar_id || '';
     }
   } catch (_) {}
+  if (evRef && !evRef._recurrence_instance && calComponent?._eventIsUndoable
+    && !calComponent._eventIsUndoable(evRef)) {
+    showStatus('自動生成された予定は元データから削除してください', true);
+    return;
+  }
+  if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
+    && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    // API成功後、再読込前の削除前状態を共通履歴へ記録する。
+    if (calComponent) calComponent.pushUndo('イベント削除');
     // Audit-P1 H-6: 削除成功後に紐付いたコメントを孤児化（target_kind='calendar_event'）
     apiPost('/annotations/orphan-by-target', {
       target_kind: 'calendar_event',

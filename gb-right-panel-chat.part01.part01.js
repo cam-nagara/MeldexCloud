@@ -17,6 +17,87 @@ const _chatState = { messages: [], streaming: false, provider: 'gemini', model: 
 // _chatState.streaming などは「表示中のチャットで応答中か」を表す読み取り口として残す。
 const _chatExecutions = new Map();
 const _chatLegacyStreamState = { streaming: false, abortController: null, streamingProvider: '', streamingTargetPath: '', activeExecution: null };
+const _chatLatestReplyVersions = new Map();
+
+function _chatReplyVersionForMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = list.length - 1; index >= 0; index--) {
+    const message = list[index];
+    if (message?.role !== 'assistant') continue;
+    return String(message.msg_id || message.id || [index, message.timestamp || '', JSON.stringify(message.content || '')].join(':'));
+  }
+  return '';
+}
+
+function _chatReplySeenKey(sessionId) {
+  return 'meldex-chat-reply-seen:v1:' + encodeURIComponent(String(sessionId || ''));
+}
+
+function _chatRememberReplyVersion(sessionId, version) {
+  const id = String(sessionId || '');
+  const value = String(version || '');
+  if (id && value) _chatLatestReplyVersions.set(id, value);
+  return value;
+}
+
+function _chatMarkReplySeen(sessionId, version) {
+  const id = String(sessionId || '');
+  const value = String(version || _chatLatestReplyVersions.get(id) || '');
+  if (!id || !value) return false;
+  try { localStorage.setItem(_chatReplySeenKey(id), value); } catch {}
+  document.querySelectorAll('[data-chat-session-id]').forEach(row => {
+    if (String(row.dataset.chatSessionId || '') === id) row.dataset.chatUnread = '0';
+  });
+  return true;
+}
+
+function _chatSessionDisplayState(sessionId, suppliedVersion = '') {
+  const id = String(sessionId || '');
+  const execution = typeof _chatExecutionForSession === 'function' ? _chatExecutionForSession(id) : null;
+  const version = _chatRememberReplyVersion(
+    id,
+    _chatLatestReplyVersions.get(id)
+      || String(suppliedVersion || '')
+      || (id === String(_chatState.sessionId || '') ? _chatReplyVersionForMessages(_chatState.messages) : '')
+      || _chatReplyVersionForMessages(execution?.messages),
+  );
+  let seen = '';
+  try { seen = localStorage.getItem(_chatReplySeenKey(id)) || ''; } catch {}
+  return { working: !!execution, unread: !!version && seen !== version, version };
+}
+
+function _chatUpdateSessionStateRow(row) {
+  if (!row) return;
+  const sessionId = String(row.dataset.chatSessionId || '');
+  const state = _chatSessionDisplayState(sessionId, row.dataset.chatReplyVersion || '');
+  if (state.version) row.dataset.chatReplyVersion = state.version;
+  row.dataset.chatUnread = state.unread ? '1' : '0';
+  row.querySelector('.chat-session-state-indicator')?.remove();
+  if (!state.working && !state.unread) return;
+  const indicator = document.createElement('span');
+  indicator.className = 'chat-session-state-indicator';
+  indicator.dataset.chatState = state.working ? 'working' : 'unread';
+  indicator.setAttribute('role', 'img');
+  indicator.setAttribute('aria-label', state.working ? 'AI作業中' : '新着返信あり');
+  indicator.title = state.working ? 'AI作業中' : '新着返信あり';
+  indicator.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;margin-left:auto;flex:0 0 auto;';
+  if (state.working) {
+    const spinner = document.createElement('span');
+    spinner.className = 'chat-spinner';
+    spinner.style.cssText = 'width:11px;height:11px;border-width:1.5px;';
+    indicator.appendChild(spinner);
+  } else {
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent);';
+    indicator.appendChild(dot);
+  }
+  const host = row.querySelector('[data-chat-state-host]') || row.firstElementChild || row;
+  host.appendChild(indicator);
+}
+
+function _chatRefreshSessionStateUi() {
+  document.querySelectorAll('[data-chat-session-id]').forEach(_chatUpdateSessionStateRow);
+}
 
 function _chatExecutionList() {
   return Array.from(_chatExecutions.values());
@@ -74,8 +155,11 @@ function _chatPlaceLiveActivity(container, wrapper, assistantEl) {
   // 移動すると内側のスクロール位置が戻るため、記録欄の位置を保って付け替える。
   const scrollers = Array.from(wrapper.querySelectorAll('*')).filter(el => el.scrollTop > 0)
     .map(el => [el, el.scrollTop]);
+  const followSessionId = String(_chatState?.sessionId || '');
+  const anchor = _chatFollowCaptureAnchor(followSessionId, container);
   if (row) row.insertAdjacentElement('afterend', wrapper);
   else container.appendChild(wrapper);
+  _chatFollowRestoreAnchor(followSessionId, container, anchor);
   scrollers.forEach(([el, top]) => { el.scrollTop = top; });
 }
 
@@ -185,7 +269,7 @@ function _chatRegisterExecution(execution) {
       console.warn('AIチャットの進捗表示を開始できませんでした', error);
     }
   }
-  window.MeldexChatListbox?.decorateHistory?.();
+  _chatRefreshSessionStateUi();
   return execution;
 }
 
@@ -200,15 +284,22 @@ function _chatUpdateExecutionPhase(controller, phase) {
 function _chatUnregisterExecution(controller, outcome = {}) {
   const execution = _chatExecutions.get(controller);
   if (!execution) return false;
+  const status = String(outcome.status || 'succeeded');
+  if (status === 'succeeded') {
+    const replyVersion = _chatRememberReplyVersion(execution.sessionId, _chatReplyVersionForMessages(execution.messages));
+    if (String(execution.sessionId || '') === String(_chatState.sessionId || '')
+        && document.visibilityState !== 'hidden') {
+      _chatMarkReplySeen(execution.sessionId, replyVersion);
+    }
+  }
   _chatExecutions.delete(controller);
   const progress = execution.progress;
   if (progress) {
-    const status = String(outcome.status || 'succeeded');
     if (status === 'failed') progress.fail({ error: outcome.message || 'AIの応答を完了できませんでした' });
     else if (status === 'cancelled') progress.cancelled({ summary: outcome.message || '中止しました' });
     else progress.succeed({ summary: outcome.message || '応答が完了しました' });
   }
-  window.MeldexChatListbox?.decorateHistory?.();
+  _chatRefreshSessionStateUi();
   return true;
 }
 
@@ -310,6 +401,84 @@ function _chatIsScrolledNearBottom(container) {
 function _chatScrollToBottom(container) {
   if (!container) return;
   container.scrollTop = container.scrollHeight;
+}
+
+// 通常AI/CLIで共通の、セッション単位の会話追従状態。
+const _chatFollowStates = new Map();
+
+function _chatFollowState(sessionId) {
+  const key = String(sessionId || '__new__');
+  if (!_chatFollowStates.has(key)) {
+    _chatFollowStates.set(key, { key, mode: 'following', container: null, cleanup: null, userIntent: false, programmatic: false });
+  }
+  return _chatFollowStates.get(key);
+}
+
+function _chatBindFollowController(sessionId, container, options = {}) {
+  if (!container) return _chatFollowState(sessionId);
+  const state = _chatFollowState(sessionId);
+  if (state.container !== container) {
+    state.cleanup?.();
+    state.container = container;
+    const markIntent = () => { state.userIntent = true; };
+    const onKey = event => {
+      if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) markIntent();
+    };
+    const onScroll = () => {
+      if (state.programmatic) return;
+      if (state.userIntent) {
+        state.mode = _chatIsScrolledNearBottom(container) ? 'following' : 'paused-by-user';
+        state.userIntent = false;
+      }
+      // DOM追加・高さ変更だけではpausedを解除しない。following中は描画側が末尾へ戻す。
+    };
+    container.addEventListener('wheel', markIntent, { passive: true });
+    container.addEventListener('touchstart', markIntent, { passive: true });
+    container.addEventListener('pointerdown', markIntent, { passive: true });
+    container.addEventListener('keydown', onKey);
+    container.addEventListener('scroll', onScroll, { passive: true });
+    state.cleanup = () => {
+      container.removeEventListener('wheel', markIntent);
+      container.removeEventListener('touchstart', markIntent);
+      container.removeEventListener('pointerdown', markIntent);
+      container.removeEventListener('keydown', onKey);
+      container.removeEventListener('scroll', onScroll);
+    };
+  }
+  if (options.resume === true) state.mode = 'following';
+  return state;
+}
+
+function _chatFollowShouldScroll(sessionId, container) {
+  return _chatBindFollowController(sessionId, container).mode === 'following';
+}
+
+function _chatFollowScrollToBottom(sessionId, container) {
+  const state = _chatBindFollowController(sessionId, container);
+  if (state.mode !== 'following') return false;
+  state.programmatic = true;
+  _chatScrollToBottom(container);
+  requestAnimationFrame(() => { state.programmatic = false; });
+  return true;
+}
+
+function _chatFollowCaptureAnchor(sessionId, container) {
+  const state = _chatBindFollowController(sessionId, container);
+  if (state.mode !== 'paused-by-user') return null;
+  const top = container.getBoundingClientRect?.().top || 0;
+  const child = Array.from(container.children || []).find(el => (el.getBoundingClientRect?.().bottom || 0) > top);
+  return child ? { child, offset: (child.getBoundingClientRect?.().top || 0) - top, scrollTop: container.scrollTop } : { scrollTop: container.scrollTop };
+}
+
+function _chatFollowRestoreAnchor(sessionId, container, anchor) {
+  if (!anchor || _chatFollowState(sessionId).mode !== 'paused-by-user') return;
+  if (anchor.child?.isConnected) {
+    const top = container.getBoundingClientRect?.().top || 0;
+    const nextOffset = (anchor.child.getBoundingClientRect?.().top || 0) - top;
+    container.scrollTop += nextOffset - anchor.offset;
+  } else {
+    container.scrollTop = anchor.scrollTop;
+  }
 }
 
 function _chatShouldStickToBottom(container, force = false) {

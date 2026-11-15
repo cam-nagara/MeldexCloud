@@ -442,12 +442,21 @@ async function _applyCalendarSnapshot(dbPath, currentSnapshot, nextSnapshot) {
 }
 function _calPushUndo(label) {
   const { data, dbPath } = _currentCalendarSnapshotSource();
-  if (!dbPath) return;
-  _calUndoStack.push({ label, dbPath, snapshot: _cloneCalendarSnapshot(data) });
+  if (!dbPath) return null;
+  const entry = { label, dbPath, snapshot: _cloneCalendarSnapshot(data) };
+  _calUndoStack.push(entry);
   if (_calUndoStack.length > _CAL_UNDO_MAX) _calUndoStack.shift();
   _calRedoStack.length = 0;
   if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty(dbPath, 'db');
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  return entry;
+}
+
+function _calDiscardFailedUndo(entry) {
+  const index = _calUndoStack.indexOf(entry);
+  if (index >= 0) _calUndoStack.splice(index, 1);
+  if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
 }
 
 async function _calendarSnapshotForDb(targetDbPath, currentDbPath, currentData) {

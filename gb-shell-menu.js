@@ -209,6 +209,7 @@ function isPinnedShellVerb(verb) {
 async function appendShellVerbsToMenu(menu, path, options = {}) {
   if (!path) return;
   const editingLocked = !!options.editingLocked;
+  const beforeDisplay = options.beforeDisplay === true;
 
   function reclampMenu() {
     if (!document.body.contains(menu)) return;
@@ -222,7 +223,8 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
     if (rect.right > window.innerWidth) menu.style.left = Math.max(4, (window.innerWidth - rect.width - 4) / z) + 'px';
   }
 
-  // プレースホルダー表示
+  // 表示前に構築する呼び出し元では、このプレースホルダー自体も画面へ出ない。
+  // 取得完了後に一度だけポップアップを配置し、表示後の項目増加と座標ずれを防ぐ。
   const sep = _shellMenuAppendSeparator(menu);
   const placeholder = _shellMenuAppendItem(menu, 'OS メニュー 読み込み中...', null, {
     disabled: true,
@@ -231,8 +233,9 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   reclampMenu();
 
   const verbs = await fetchShellVerbs(path);
-  // メニューがまだDOMにあるか確認
-  if (!document.body.contains(menu)) return;
+  // 従来の表示済みメニュー追記経路では、閉じたメニューへ結果を戻さない。
+  // beforeDisplay経路は意図的に未接続DOM上で完成させる。
+  if (!beforeDisplay && !document.body.contains(menu)) return;
 
   placeholder.remove();
   if (verbs.length === 0) {

@@ -743,9 +743,6 @@ function bdContextMenu(e, nodeId) {
     sep();
     dangerItem('削除 (Del)', async () => {
       if (!multi) bdSelect(nodeId);
-      const count = bd.selected.size;
-      const msg = count > 1 ? `${count}件のトピックを削除しますか？` : 'このトピックを削除しますか？';
-      if (!(await cfConfirm(msg))) return;
       await bdDeleteSelected({ confirm: false });
     });
 

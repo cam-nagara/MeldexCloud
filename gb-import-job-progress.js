@@ -181,6 +181,7 @@
   async function runBackgroundJob(startPath, body, options) {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
+    const cancellationEnabled = opts.cancellable !== false;
     let cancelJobId = '';
     let operation = opts.operationProgress === false || !progressApi
       ? null
@@ -196,6 +197,7 @@
           cancellable: false,
           cancelCompletes: false,
           cancel: async () => {
+            if (!cancellationEnabled) return;
             if (cancelJobId) await apiPost('/jobs/' + encodeURIComponent(cancelJobId) + '/cancel', {}, { silentError: true });
           },
         });
@@ -210,7 +212,11 @@
           operation = existing;
         }
         operation?.setPersistentJobId(jobId);
-        operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中', cancellable: true });
+        operation?.update({
+          status: started?.status || 'running',
+          phase: started?.status === 'queued' ? '待機中' : '準備中',
+          cancellable: cancellationEnabled,
+        });
         if (userOnStarted) userOnStarted(jobId, started);
       },
       onProgress: function (progress, job) {

@@ -1,3 +1,86 @@
+
+  function _outlinerLassoScopeFromTarget(target) {
+    if (target?.closest?.('#body-home')) return '#body-home';
+    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
+    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
+    const section = target?.closest?.('.sidebar-section');
+    if (section?.id === 'section-home') return '#body-home';
+    if (section?.id === 'section-workspaces') return '#body-workspaces';
+    if (section?.id === 'section-roots') return '#outliner-tree';
+    return '#outliner-tree,#body-home';
+  }
+
+  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
+  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
+  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
+  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
+  function _outlinerLassoIsBlankTarget(target) {
+    if (window.GBOutlinerInput?.classifyPointerTarget) {
+      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
+    }
+    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
+    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
+    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
+    const section = target?.closest?.('.sidebar-section');
+    if (section?.id === 'section-workspaces') return true;
+    return section?.id === 'section-roots' || section?.id === 'section-home';
+  }
+
+  function _outlinerLassoRectForEvent(event) {
+    const rect = scroller.getBoundingClientRect();
+    const currentX = event.clientX - rect.left + scroller.scrollLeft;
+    const currentY = event.clientY - rect.top + scroller.scrollTop;
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    return { left, top, right: left + width, bottom: top + height, width, height };
+  }
+
+  function _outlinerLassoRowRect(row) {
+    const rowRect = row.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    return {
+      left: rowRect.left - scrollerRect.left + scroller.scrollLeft,
+      top: rowRect.top - scrollerRect.top + scroller.scrollTop,
+      right: rowRect.left - scrollerRect.left + scroller.scrollLeft + rowRect.width,
+      bottom: rowRect.top - scrollerRect.top + scroller.scrollTop + rowRect.height,
+    };
+  }
+
+  function _outlinerRectsOverlap(a, b) {
+    return !(b.right < a.left || b.left > a.right || b.bottom < a.top || b.top > a.bottom);
+  }
+
+  const updateSelection = (lassoRect) => {
+    const base = new Set(baseSelection.filter(node => node?.isConnected));
+    const hitNodes = [];
+    treeSelection.clear();
+    base.forEach(node => treeSelection.add(node));
+    _getVisibleTreeNodes(selectionScope).forEach(nodeEl => {
+      const row = nodeEl.querySelector('.tree-node-row');
+      if (!row) return;
+      if (!_outlinerRectsOverlap(lassoRect, _outlinerLassoRowRect(row))) return;
+      hitNodes.push(nodeEl);
+      if (selectionMode === 'toggle' && base.has(nodeEl)) treeSelection.remove(nodeEl);
+      else treeSelection.add(nodeEl);
+    });
+    treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
+    if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
+    // 仮想化コンテナ（フォルダツリー改修Phase3）: 現在マウントされていない行も、
+    // 矩形の論理Y範囲から該当する表示モデルの行を求めて選択状態に反映する（§2.5）。
+    if (window.GBOutlinerVirtualRender?.applyLassoSelection) {
+      const basePaths = new Set([...base].map(node => node?._nodeData?.path).filter(Boolean));
+      window.GBOutlinerVirtualRender.applyLassoSelection({
+        lassoRect, scope: selectionScope, mode: selectionMode, basePaths,
+      });
+    }
+  };
+
+  const beginLasso = (event) => {
+    if (active) return;
+    active = true;
+    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
       try {
         scroller.setPointerCapture(pointerId);
         pointerCaptured = true;

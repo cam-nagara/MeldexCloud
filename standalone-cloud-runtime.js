@@ -817,10 +817,25 @@
     const target = _getEditSession().assertCanDelete(path);
     return requestJson('/outliner/delete', { method: 'POST', body: { path: target, ...(confirmation || {}) } });
   }
-  async function move(path, destinationFolder) {
+  async function restorePath(reference) {
+    const trashName = String(reference?.trash_name || '').trim();
+    if (!trashName) throw new Error('復元元のゴミ箱情報がありません');
+    return requestJson('/outliner/restore', {
+      method: 'POST',
+      body: {
+        trash_name: trashName,
+        ...(reference?.trash_root ? { trash_root: String(reference.trash_root) } : {}),
+      },
+    });
+  }
+  async function move(path, destinationFolder, options = {}) {
     const source = normalizePath(path);
     const result = await requestJson('/outliner/move', {
-      method: 'POST', body: { path: source, dest_folder: normalizePath(destinationFolder) },
+      method: 'POST', body: {
+        path: source,
+        dest_folder: normalizePath(destinationFolder),
+        ...(options.conflictPolicy ? { conflict_policy: String(options.conflictPolicy) } : {}),
+      },
     });
     if (result?.new_path) {
       const destination = normalizePath(result.new_path);
@@ -972,6 +987,7 @@
     createFile,
     duplicate,
     deletePath,
+    restorePath,
     move,
     listFiles,
     pickOpen,

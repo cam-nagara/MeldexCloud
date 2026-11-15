@@ -651,7 +651,9 @@
             }, group.location);
             let polls = 0;
             while (payload?.['.tag'] === 'async_job_id' || payload?.async_job_id) {
-              if (++polls > 120) throw new CloudBatchRenameError('Dropbox一括移動の完了確認がタイムアウトしました', 'dropbox_job_timeout');
+              // Dropboxの終端状態を終了条件にする。経過時間だけで失敗扱いにすると、
+              // 実際には完了した移動を再実行して競合するため固定上限を置かない。
+              polls += 1;
               await new Promise(resolve => setTimeout(resolve, Math.min(250 + polls * 50, 1500)));
               payload = await this._rpc('files/move_batch/check_v2', { async_job_id: payload.async_job_id }, group.location);
             }

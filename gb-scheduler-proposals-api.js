@@ -258,7 +258,7 @@
 
   async function recalculate(id, overrides = {}) {
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/recalculate`, {
-      method: 'POST', body: { overrides }, timeoutMs: 120000,
+      method: 'POST', body: { overrides }, timeoutMs: 300000,
     });
     remember(result.proposal);
     await select(result.proposal.id);
@@ -299,7 +299,7 @@
 
   async function adopt(id) {
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/adoption/apply`, {
-      method: 'POST', timeoutMs: 120000,
+      method: 'POST', timeoutMs: 300000,
     });
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);

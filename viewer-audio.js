@@ -98,7 +98,7 @@
 
   // メタデータ取得完了を待つ。showGroup()のレイヤー入替タイミング制御に使う（動画と同じ設計）。
   // タイムアウトは未完了として返し、呼び出し側で直前レイヤーを維持して再試行可能にする。
-  function waitForAudioReady(audio, timeoutMs = 3000) {
+  function waitForAudioReady(audio, timeoutMs = 60000) {
     return new Promise(resolve => {
       if (!audio) { resolve(false); return; }
       if (audio.readyState >= 1) { resolve(true); return; } // HAVE_METADATA以上

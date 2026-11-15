@@ -37,7 +37,7 @@ class MapAppComponent extends ToolComponent {
     }
     this.view?.map?.invalidateSize({ pan: true, animate: false });
     this._syncDetailPanel();
-    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope('');
+    if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope(this._historyScope());
   }
   async load(path, options = {}) {
     if (!MeldexMapDocument.isAvailable()) { this.el.textContent = 'マップ初期版はデスクトップ版本体で開いてください。'; return false; }
@@ -92,6 +92,46 @@ class MapAppComponent extends ToolComponent {
     return button;
   }
   _message(text) { if (this.message) this.message.textContent = text; if (typeof showStatus === 'function') showStatus(text); }
+  _historyScope(path = this.path || this._tab()?.path || this.state.mapPath) {
+    return path ? 'map:' + String(path).replace(/\\/g, '/') : '';
+  }
+  _hasCommonHistory() {
+    return !!this._historyScope() && typeof historyPush === 'function'
+      && typeof historyUndo === 'function' && typeof historyRedo === 'function'
+      && typeof historyCanUndo === 'function' && typeof historyCanRedo === 'function';
+  }
+  _historyTarget(scope) {
+    if (typeof getComponentInstance === 'function' && typeof _meldexActiveTabForPane === 'function') {
+      const tab = _meldexActiveTabForPane();
+      const active = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+      if (active?.store && active._historyScope?.() === scope) return active;
+    }
+    if (this.el?.isConnected && this.store && this._historyScope() === scope) return this;
+    if (typeof getComponentInstance === 'function' && typeof _meldexFindTabForHistoryScope === 'function') {
+      const match = _meldexFindTabForHistoryScope(scope);
+      const target = match ? getComponentInstance(match.tabId) : null;
+      if (target?.store && target._historyScope?.() === scope) return target;
+    }
+    return null;
+  }
+  _restoreHistorySnapshot(snapshot, scope) {
+    const target = this._historyTarget(scope);
+    if (!target) return false;
+    if (target !== this) return target._restoreHistorySnapshot(snapshot, scope);
+    const next = MeldexMapDocument.parse(MeldexMapDocument.clone(snapshot));
+    for (const key of ['title', 'display_title', 'meldex']) {
+      if (this.store.doc[key] !== undefined) next[key] = MeldexMapDocument.clone(this.store.doc[key]);
+    }
+    this.store.doc = next;
+    this.store.revision++;
+    this.store.error = null;
+    this.store.changed(this.store);
+    this._inputDirty = false;
+    this.view?.cancel();
+    this._buildSettingsRefresh();
+    this._render();
+    return true;
+  }
   _draftPrefix() { return 'meldex-map-draft:' + this.path + ':'; }
   _draftKey() { return this._draftPrefix() + this._draftOwner; }
   _readDraft() {
@@ -119,14 +159,26 @@ class MapAppComponent extends ToolComponent {
       this.saveStatus.title = this.saveStatus.textContent;
       this.saveStatus.classList.toggle('error', !!store.error || !!this._draftFailed && store.dirty);
     }
-    if (this.undoButton) this.undoButton.disabled = this.editingDisabled || !store.undoStack.length;
-    if (this.redoButton) this.redoButton.disabled = this.editingDisabled || !store.redoStack.length;
+    const commonHistory = this._hasCommonHistory();
+    const scope = commonHistory ? this._historyScope() : '';
+    if (this.undoButton) this.undoButton.disabled = this.editingDisabled || !(commonHistory ? historyCanUndo(scope) : store.undoStack.length);
+    if (this.redoButton) this.redoButton.disabled = this.editingDisabled || !(commonHistory ? historyCanRedo(scope) : store.redoStack.length);
     clearTimeout(this._saveTimer);
     if (store.dirty && !store.pending && !store.error && !this.readOnly) this._saveTimer = setTimeout(() => { if (this.store === store) store.save(); }, 800);
   }
-  update(mutator, history = true) {
+  update(mutator, history = true, label = 'マップを編集') {
     if (this.editingDisabled || !this.store) return false;
-    try { return this.store.update(mutator, history); }
+    try {
+      if (!history || !this._hasCommonHistory()) return this.store.update(mutator, history);
+      const before = MeldexMapDocument.clone(this.store.doc);
+      if (!this.store.update(mutator, false)) return false;
+      const scope = this._historyScope();
+      historyPush(label,
+        () => this._restoreHistorySnapshot(before, scope),
+        undefined,
+        scope);
+      return true;
+    }
     catch (error) { this._message(error.message); return false; }
   }
   _editGuard(featureId = null) {
@@ -186,9 +238,9 @@ class MapAppComponent extends ToolComponent {
     if (this.editingDisabled) return;
     const source = this.store.doc, canEdit = this._editGuard();
     const allowed = new Set(source.features.filter(f => ids.includes(f.id) && !source.layers.find(l => l.id === f.layer_id)?.locked).map(f => f.id));
-    if (!allowed.size || !await cfConfirm(`${allowed.size}件の地点・図形を削除しますか？`)) return;
+    if (!allowed.size) return;
     if (!canEdit() || this.store.doc !== source) return;
-    if (this.update(doc => { doc.features = doc.features.filter(f => !allowed.has(f.id)); })) { this._selectMany([]); this._render(); }
+    if (this.update(doc => { doc.features = doc.features.filter(f => !allowed.has(f.id)); }, true, 'マップの項目を削除')) { this._selectMany([]); this._render(); }
   }
   _duplicateSelected() {
     if (this.editingDisabled) return;
@@ -263,7 +315,8 @@ class MapAppComponent extends ToolComponent {
     toolbar.append(this._button('新規', () => addPanelMenuTool('map', { paneId: this.paneId })), this._button('保存', () => this.flush(), { disabled: this.readOnly }),
       this._button('再読込', () => this.reload()), this._button('マップを書き出す', () => this.exportDocument()),
       this._button('データ入出力', () => MeldexMapControls.interchange(this)));
-    this.undoButton = this._button('元に戻す', () => this.restore('undo')); this.redoButton = this._button('やり直す', () => this.restore('redo'));
+    this.undoButton = this._button('元に戻す', () => this.restore('undo')); this.undoButton.setAttribute('data-undo-button', '');
+    this.redoButton = this._button('やり直す', () => this.restore('redo')); this.redoButton.setAttribute('data-redo-button', '');
     toolbar.append(this.undoButton, this.redoButton, this._button('全体表示', () => this.view.fit()));
     const exportPNG = this._button('PNG', async () => {
       const blob = await this.view.exportPNG(); if (!blob) throw new Error('画像を作成できませんでした');
@@ -377,7 +430,17 @@ class MapAppComponent extends ToolComponent {
     if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
     window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
   }
-  restore(direction) { this._commitInput(); if (!this.editingDisabled && this.store.restore(direction)) { this._inputDirty = false; this.view.cancel(); this._buildSettingsRefresh(); this._render(); } }
+  async restore(direction) {
+    this._commitInput();
+    if (this.editingDisabled || !this.store) return false;
+    if (this._hasCommonHistory()) {
+      const restored = await (direction === 'undo' ? historyUndo(this._historyScope()) : historyRedo(this._historyScope()));
+      return restored;
+    }
+    if (!this.store.restore(direction)) return false;
+    this._inputDirty = false; this.view.cancel(); this._buildSettingsRefresh(); this._render();
+    return true;
+  }
   _commitInput() { const input = document.activeElement; if ((this.el?.contains(input) || this.optionsRoot?.contains(input) || this.inspector?.contains(input)) && input.matches('input,textarea,select')) input.blur(); }
   async flush() {
     this._commitInput(); clearTimeout(this._saveTimer);
@@ -457,6 +520,32 @@ class MapAppComponent extends ToolComponent {
     window.removeEventListener('beforeunload', this._beforeUnload); super.destroy(); return true;
   }
 }
+
+function _meldexMapHistoryTarget(scope) {
+  if (typeof getComponentInstance === 'function' && typeof _meldexActiveTabForPane === 'function') {
+    const tab = _meldexActiveTabForPane();
+    const active = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
+    if (active?.store && active._historyScope?.() === scope) return active;
+  }
+  if (typeof getComponentInstance === 'function' && typeof _meldexFindTabForHistoryScope === 'function') {
+    const match = _meldexFindTabForHistoryScope(scope);
+    const target = match ? getComponentInstance(match.tabId) : null;
+    if (target?.store && target._historyScope?.() === scope) return target;
+  }
+  return null;
+}
+
+window.MeldexMapHistorySnapshots = {
+  capture(scope) {
+    const target = _meldexMapHistoryTarget(scope);
+    return target?.store ? MeldexMapDocument.clone(target.store.doc) : null;
+  },
+  restore(snapshot, scope) {
+    const target = _meldexMapHistoryTarget(scope);
+    return target ? target._restoreHistorySnapshot(snapshot, scope) : false;
+  },
+};
+
 registerToolComponent('map', { cls: MapAppComponent, icon: 'map', label: 'マップ', multi: true, requiresViewLock: true });
 async function openMapApp(path, label, options = {}) {
   if (!MeldexMapDocument.isAvailable()) { showStatus('マップ初期版はデスクトップ版本体で開いてください。', true); return false; }

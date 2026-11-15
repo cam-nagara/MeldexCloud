@@ -1153,13 +1153,10 @@
     const streamLiveContainer = () => streamVisibleInCurrentChat()
       ? (typeof _chatLiveMessagesContainer === 'function' ? _chatLiveMessagesContainer() : document.getElementById('chat-messages'))
       : null;
-    let _autoScroll = true;
     const scrollStreamContainer = () => {
       const liveContainer = streamLiveContainer();
-      if (liveContainer && _autoScroll) {
-        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
-        else liveContainer.scrollTop = liveContainer.scrollHeight;
-      }
+      if (liveContainer && typeof _chatFollowScrollToBottom === 'function') _chatFollowScrollToBottom(streamSessionId, liveContainer);
+      else if (liveContainer) liveContainer.scrollTop = liveContainer.scrollHeight;
     };
     const addAssistantToVisibleStream = (content, renderOptions) => (
       streamVisibleInCurrentChat() && typeof chatAddMessage === 'function'
@@ -1184,16 +1181,13 @@
     if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
-    const _scrollHandler = () => {
-      _autoScroll = typeof _chatIsScrolledNearBottom === 'function'
-        ? _chatIsScrolledNearBottom(msgContainer)
-        : (msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 48);
-    };
-    if (!detachedScope && msgContainer) msgContainer.addEventListener('scroll', _scrollHandler);
+    const _scrollHandler = () => {};
+    if (!detachedScope && msgContainer && typeof _chatBindFollowController === 'function') {
+      _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
+    }
     if (!detachedScope && msgContainer) {
       msgContainer.appendChild(activity.wrapper);
-      if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(msgContainer);
-      else msgContainer.scrollTop = msgContainer.scrollHeight;
+      scrollStreamContainer();
     }
 
     const assistantMessageId = typeof _newChatMessageId === 'function' ? _newChatMessageId() : 'msg_' + Math.random().toString(16).slice(2, 10);
@@ -1202,6 +1196,7 @@
     let fullText = '';
     let stderrText = '';
     let cliThinkingText = '';
+    let cliThinkingLogEl = null;
     let lastStatusText = 'CLIへ質問を送信中...';
     let lastCliOutputAt = 0;
     let lastCliTextAt = 0;
@@ -1210,6 +1205,7 @@
     let sawCliEvent = false;
     let cliCompleted = false;
     let clientIdleAbortMessage = '';
+    let cliStreamCorrelationId = '';
     let autoContinueRequest = null;
     const continuationCount = cliChatContinuationCount(options);
     const prepareAutoContinue = (reason) => {
@@ -1281,9 +1277,10 @@
       if (typeof _chatPlaceLiveActivity === 'function') _chatPlaceLiveActivity(liveContainer, activity.wrapper, assistantDiv);
       else if (!liveContainer.contains(activity.wrapper)) liveContainer.appendChild(activity.wrapper);
       refreshActivityStatus();
-      if (_autoScroll) {
-        if (typeof _chatScrollToBottom === 'function') _chatScrollToBottom(liveContainer);
-        else liveContainer.scrollTop = liveContainer.scrollHeight;
+      if (typeof _chatFollowScrollToBottom === 'function') {
+        _chatFollowScrollToBottom(streamSessionId, liveContainer);
+      } else {
+        liveContainer.scrollTop = liveContainer.scrollHeight;
       }
     };
     // 受信は1秒に何十回も届くため、描画は一定間隔にまとめる。完了・中断時の最終描画は
@@ -1317,13 +1314,21 @@
       if (isText) lastCliTextAt = lastCliOutputAt;
     };
     const appendCliThinking = (chunk, label = 'CLIの思考内容を受信中...') => {
-      const text = String(chunk || '').trimEnd();
-      if (!text.trim()) return;
-      cliThinkingText += (cliThinkingText && !cliThinkingText.endsWith('\n') ? '\n' : '') + text;
+      // SSEのdelta境界は文章境界ではない。CLIが送った文字だけを順番どおり連結する。
+      const text = chunk == null ? '' : String(chunk);
+      if (!text) return;
+      cliThinkingText += text;
       markCliOutput();
       refreshActivityStatus(label);
       if (streamVisibleInCurrentChat()) {
-        appendCliChatLog(activity.log, text);
+        activity.log.style.display = 'flex';
+        if (!cliThinkingLogEl || !cliThinkingLogEl.isConnected) {
+          cliThinkingLogEl = document.createElement('div');
+          cliThinkingLogEl.className = 'chat-cli-thinking-text';
+          activity.log.appendChild(cliThinkingLogEl);
+        }
+        cliThinkingLogEl.textContent = cliThinkingText;
+        activity.log.scrollTop = activity.log.scrollHeight;
         scheduleStreamPaint();
       }
     };
@@ -1332,7 +1337,8 @@
     const maybeAbortIdleCliStream = () => {
       if (Date.now() - lastServerEventAt >= CLI_CHAT_TRANSPORT_TIMEOUT_MS
           && _chatExecutionIsActive(streamController)) {
-        clientIdleAbortMessage = 'CLIとの通信が途切れました。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。';
+        const correlation = cliStreamCorrelationId ? `（診断ID: ${cliStreamCorrelationId}）` : '';
+        clientIdleAbortMessage = `CLIとの通信が途切れました${correlation}。操作結果は未確認です。再送する前に対象とCLIの接続状態を確認してください。`;
         try { streamController.abort(); } catch {}
         return true;
       }
@@ -1437,7 +1443,13 @@
           const data = JSON.parse(line.substring(6));
           lastServerEventAt = Date.now();
           sawCliEvent = true;
-          if (data.type === 'cli_status') {
+          if (data.type === 'stream_start') {
+            cliStreamCorrelationId = String(data.stream_id || '');
+            refreshActivityStatus('CLIストリームへ接続しました...');
+          } else if (data.type === 'heartbeat') {
+            cliStreamCorrelationId = String(data.stream_id || cliStreamCorrelationId || '');
+            // heartbeatは通信生存確認であり、思考本文や進捗ログには混ぜない。
+          } else if (data.type === 'cli_status') {
             const nextStatus = data.message
               || (data.status === 'started' ? 'CLIを実行中...'
                 : data.status === 'waiting' ? 'CLIからの応答を待っています...'

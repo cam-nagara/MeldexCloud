@@ -105,13 +105,6 @@
     addSep();
   }
 
-  // --- 削除（エントリ以外、ロック中は無効） ---
-  if (!isEntity && !_locked && !nodeData._isRoot) {
-    addSep();
-    const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
-    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
-  }
-
   // --- スプリットビュー ---
   if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
     addSep();
@@ -122,12 +115,13 @@
     }
   }
 
-  _outlinerPlaceContextMenu(menu);
-
-  // OSシェルメニュー項目を非同期追加
+  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
+  // 表示後に項目数やポップアップ座標を変えない。
   if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked });
+    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
   }
+  if (openSeq !== _outlinerContextMenuOpenSeq) return;
+  _outlinerPlaceContextMenu(menu);
 }
 
 // 追加先の親パスを決定

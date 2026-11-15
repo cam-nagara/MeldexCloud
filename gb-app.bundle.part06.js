@@ -1,3 +1,43 @@
+  if (!path) return false;
+  state.currentPagePath = path;
+  if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
+  if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+  return true;
+}
+
+const _VIEWER_FOLDER_NAV_FILE_EXTS = new Set([
+  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
+  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
+  '.pdf',
+]);
+const _viewerFolderNavDisplayableCache = new Map();
+
+function _viewerFolderNavCleanPath(path) {
+  return String(path || '').replace(/\\/g, '/').split('#')[0].split('?')[0].replace(/\/+$/, '');
+}
+
+function _viewerFolderNavExt(path) {
+  const name = _viewerFolderNavCleanPath(path).split('/').pop() || '';
+  const index = name.lastIndexOf('.');
+  return index >= 0 ? name.slice(index).toLowerCase() : '';
+}
+
+function _viewerFolderNavIsDisplayableFile(path) {
+  return _VIEWER_FOLDER_NAV_FILE_EXTS.has(_viewerFolderNavExt(path));
+}
+
+function _viewerFolderNavParentPath(path) {
+  const clean = _viewerFolderNavCleanPath(path);
+  if (!clean) return '';
+  if (!_viewerFolderNavIsDisplayableFile(clean)) return clean;
+  const index = clean.lastIndexOf('/');
+  return index >= 0 ? clean.slice(0, index) : '';
+}
+
+function _viewerFolderNavCurrentFolderFromMessage(msg) {
+  const folderPath = _viewerFolderNavCleanPath(msg?.folderPath || '');
+  if (folderPath) return folderPath;
+  return _viewerFolderNavParentPath(msg?.currentPath || msg?.path || state.currentPagePath || '');
 }
 
 function _viewerFolderNavNodePath(node) {
@@ -858,43 +898,3 @@ document.addEventListener('pointerdown', (e) => {
   // （2026-08-13 バグ報告で確認）。
   if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
     document.querySelectorAll('.gb-context-menu').forEach(m => {
-      if (m._isPopupChildTarget?.(e.target)) return;
-      if (m._popupChildSelector && e.target?.closest?.(m._popupChildSelector)) return;
-      if (typeof m._requestClose === 'function') m._requestClose();
-      else m.remove();
-    });
-  }
-}, true);
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const menus = document.querySelectorAll('.gb-context-menu');
-  if (!menus.length) return;
-  // ダイアログとして振る舞う要素（アイコンピッカー等）はrole="dialog"/"alertdialog"を
-  // 持ち、自分自身のEscapeキー処理（document への capture 登録）で自分だけを閉じ、
-  // フォーカス復帰やリスナー解除も自前で行う契約を持つ。
-  //
-  // このリスナーはページ読み込み時に document のbubbleフェーズへ登録されるため、
-  // モーダルが開いた時に登録される最前面判定（gb-ui.js の onEscKey、
-  // GBDialogKeyboard.topmostDialog 等）より必ず先に発火する。ここで無条件に
-  // .gb-context-menu を全部 remove() してキー入力をそのまま素通しすると、背後の
-  // 親ダイアログが「ピッカーはもう無い」と誤認して一緒に閉じてしまう
-  // （アイコンピッカー Escape 早期消去バグ）。
-  //
-  // dialog ロールを持つメニューは、このキー入力をそのメニュー自身へ再ディスパッチ
-  // して専用のクローズ処理（フォーカス復帰・リスナー解除を含む）に任せ、元の
-  // キー入力はここで止めて後続の親ダイアログの Escape ハンドラへ渡さない。
-  // 通常のコンテキストメニュー（role=dialog を持たない）は従来どおりここで閉じる
-  // （main-menu 等の既存 Escape 挙動を変えない）。
-  let hasDialogMenu = false;
-  menus.forEach((m) => {
-    if (typeof m._requestClose === 'function') { hasDialogMenu = true; m._requestClose(); return; }
-    const role = m.getAttribute('role');
-    if (role === 'dialog' || role === 'alertdialog') {
-      hasDialogMenu = true;
-      m.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: false, cancelable: true }));
-      // 専用ハンドラが未登録などで閉じられなかった場合の保険（通常は到達しない）
-      if (m.isConnected) m.remove();
-    } else {
-      m.remove();
-    }
-  });

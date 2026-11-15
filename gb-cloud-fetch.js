@@ -66,6 +66,8 @@
   const CLOUD_VIDEO_THUMBNAIL_EXTENSIONS = new Set([
     'mp4', 'm4v', 'mov', 'webm', 'ogv', 'avi', 'mkv', 'wmv', 'mpg', 'mpeg',
   ]);
+  const CLOUD_VIDEO_LOAD_TIMEOUT_MS = 60000;
+  const CLOUD_VIDEO_SEEK_TIMEOUT_MS = 30000;
   const cloudVideoThumbnailCache = new Map();
 
   function _isCloudVideoPath(path) {
@@ -107,14 +109,14 @@
     video.playsInline = true;
     video.preload = 'auto';
     try {
-      const loaded = _waitForVideoEvent(video, 'loadeddata', 15000);
+      const loaded = _waitForVideoEvent(video, 'loadeddata', CLOUD_VIDEO_LOAD_TIMEOUT_MS);
       video.src = objectUrl;
       video.load();
       await loaded;
 
       const duration = Number(video.duration);
       if (Number.isFinite(duration) && duration > 0.5) {
-        const seeked = _waitForVideoEvent(video, 'seeked', 8000);
+        const seeked = _waitForVideoEvent(video, 'seeked', CLOUD_VIDEO_SEEK_TIMEOUT_MS);
         video.currentTime = Math.min(1, duration * 0.1);
         await seeked;
       }
@@ -175,13 +177,23 @@
     const clean = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     // Desktop Web Clipper also records its legacy _assets files relative to
     // the home folder, rather than the Dropbox source root.
-    if (!clean.startsWith('_media/') && !/(^|\/)_assets\//.test(clean)) return [clean];
+    const legacyAttachment = clean.startsWith('Meldex画像/');
+    const embeddedAttachment = clean.startsWith('Meldexファイル/');
+    if (!clean.startsWith('_media/') && !/(^|\/)_assets\//.test(clean)
+        && !legacyAttachment && !embeddedAttachment) return [clean];
     if (window.MeldexSourceFolderRegistry?.parseSourcePath?.(clean)) return [clean];
     const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!home) return [clean];
-    if (clean === home || clean.startsWith(home + '/')) return [clean];
-    const homeRelative = `${home}/${clean}`;
-    return homeRelative === clean ? [clean] : [homeRelative, clean];
+    const paths = [];
+    const add = path => { if (path && !paths.includes(path)) paths.push(path); };
+    if (!home || clean === home || clean.startsWith(home + '/')) add(clean);
+    else { add(`${home}/${clean}`); add(clean); }
+    // Desktopで旧保管庫が改名済みでも、保存済みの旧参照をCloudで読めるようにする。
+    if (legacyAttachment) {
+      const migrated = 'Meldexファイル/' + clean.slice('Meldex画像/'.length);
+      if (home) add(`${home}/${migrated}`);
+      add(migrated);
+    }
+    return paths;
   }
 
   async function _downloadMediaFile(provider, relativePath) {

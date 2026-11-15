@@ -115,6 +115,7 @@
     if (opts.focus !== false) {
       try { row.focus({ preventScroll: true }); } catch {}
     }
+    window.MeldexVisibleSelection?.beginTree?.();
     if (typeof treeSelection !== 'undefined') {
       treeSelection.clear();
       treeSelection.add(nodeEl);

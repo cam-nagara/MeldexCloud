@@ -232,6 +232,16 @@
   --ui-h-xl: 40px;
   --ui-h-touch: 44px;
 
+  /* 主要アプリツールバー（参照面: シート） */
+  --ui-toolbar-main-height: 39px;
+  --ui-toolbar-control-size: 22px;
+  --ui-toolbar-icon-size: var(--ui-icon-md);
+  --ui-toolbar-text-icon-size: var(--ui-icon-sm);
+  --ui-toolbar-title-width: 240px;
+  --ui-toolbar-title-height: 30px;
+  --ui-toolbar-title-font-size: var(--ui-font-16);
+  --ui-toolbar-separator-height: 18px;
+
   /* 角丸 */
   --ui-radius-xs: 3px;
   --ui-radius-sm: 4px;
@@ -492,9 +502,7 @@
   align-items: center;
   flex-wrap: wrap;  /* 旧 gb-layout.css で設定されていた折返しを継承。gb-ui.css が cascade 順で勝つため明示必須 */
   gap: var(--ui-space-3);
-  /* height ではなく min-height にする。Phase 4 で descendant セレクタが消えるまで
-     既存ツールバー内の button (~28px + padding) で 32px を超える可能性があるため */
-  min-height: 39px;
+  min-height: var(--ui-toolbar-main-height);
   padding: var(--ui-space-2) var(--ui-space-4);
   background: var(--ui-toolbar-bg);
   border-bottom: 1px solid var(--ui-border);
@@ -506,10 +514,25 @@
 }
 .gb-toolbar > .sep {
   width: 1px;
-  height: 18px;
+  height: var(--ui-toolbar-separator-height);
   background: var(--ui-border);
   margin: 0 var(--ui-space-1);
   flex-shrink: 0;
+}
+.gb-toolbar.gb-toolbar-main {
+  min-height: var(--ui-toolbar-main-height);
+  padding: 0;
+  gap: 0;
+  border-bottom: 0;
+  box-shadow: none;
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+.gb-toolbar.gb-toolbar-main::before,
+.gb-toolbar.gb-toolbar-main::after {
+  content: none;
+  border: 0;
+  box-shadow: none;
 }
 .gb-toolbar-title {
   display: inline-flex;
@@ -551,21 +574,18 @@
 }
 
 /* ============================================================
-   Phase 4 (2026-04-16): ツールバー統一クラス (.tb-*)
-   toolbar-unification-plan §2-2, §2-3 の仕様。
-   縦幅 32px (min-height)、フォント 12px、ボタン 24×24 を全ツールバー共通とする。
-   注: #tb-db は display:contents で #app-toolbar 直下に子を展開するため、
-   親要素への .gb-toolbar 依存は避け、単独セレクタで定義する。
+   ツールバー共通クラス (.tb-*)
+   現役仕様: meldex-ui-common-rules-2026-07-01.md
    ============================================================ */
 
-/* アイコン専用ボタン (24×24、SVG 16×16 中央配置) */
+/* アイコン専用ボタン (22×22、SVG 16×16 中央配置) */
 .tb-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--ui-h-xs);
-  height: var(--ui-h-xs);
-  min-width: var(--ui-h-xs);
+  width: var(--ui-toolbar-control-size);
+  height: var(--ui-toolbar-control-size);
+  min-width: var(--ui-toolbar-control-size);
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -588,18 +608,18 @@
 }
 .tb-icon-btn svg,
 .tb-icon-btn .ico {
-  width: 16px;
-  height: 16px;
+  width: var(--ui-toolbar-icon-size);
+  height: var(--ui-toolbar-icon-size);
   display: inline-block;
   vertical-align: middle;
 }
 
-/* アイコン+テキストボタン (高さ24, padding 0 6px) */
+/* アイコン+テキストボタン (高さ22, padding 0 6px) */
 .tb-text-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--ui-space-1);
-  height: var(--ui-h-xs);
+  height: var(--ui-toolbar-control-size);
   padding: 0 var(--ui-space-3);
   background: transparent;
   border: 1px solid transparent;
@@ -624,8 +644,8 @@
 }
 .tb-text-btn svg,
 .tb-text-btn .ico {
-  width: 14px;
-  height: 14px;
+  width: var(--ui-toolbar-text-icon-size);
+  height: var(--ui-toolbar-text-icon-size);
 }
 
 /* 色スウォッチ (22×22、書式ポップアップと同形) */
@@ -662,13 +682,13 @@
 /* ファイル名タイトル (固定幅 240px、表示/編集で幅が変動しないように統一)
    ボード・台本・ノート・CSV・DB 等のツールバー内ファイル名欄に適用。 */
 .tb-file-title {
-  flex: 0 0 240px;
-  width: 240px;
-  max-width: 240px;
+  flex: 0 0 var(--ui-toolbar-title-width);
+  width: var(--ui-toolbar-title-width);
+  max-width: var(--ui-toolbar-title-width);
   box-sizing: border-box;
-  min-height: 30px;
-  font-size: var(--ui-font-16);
-  line-height: 30px;
+  min-height: var(--ui-toolbar-title-height);
+  font-size: var(--ui-toolbar-title-font-size);
+  line-height: var(--ui-toolbar-title-height);
 }
 .tb-file-title > input,
 .tb-file-title.tb-file-title--input {
@@ -680,7 +700,7 @@
   color: inherit;
   font: inherit;
   padding: 0 var(--ui-space-3);
-  height: 30px;
+  height: var(--ui-toolbar-title-height);
   outline: none;
 }
 .tb-file-title > input:focus,

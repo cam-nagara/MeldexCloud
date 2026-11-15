@@ -983,7 +983,9 @@ function _dbNextLocalEntityName(dbPath, existingNames, baseName) {
   const used = new Set((existingNames || []).map(name => String(name || '')).filter(Boolean));
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
-    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
+    // 新形式では改名確定後の内部保存名を表示採番へ持ち越さない。一方、作成直後の
+    // 改名が通信中ならサーバー上では旧表示名がまだ占有中なので、完了までは予約する。
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true && !_value.renamePending) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);
@@ -1003,7 +1005,10 @@ function _dbRegisterPendingEntityCreate(dbPath, entityName, createPromise) {
   const tracked = Promise.resolve(createPromise)
     .then(result => {
       const settled = Promise.resolve(result);
-      _dbPendingEntityCreates.set(key, { promise: settled, result, settled: true });
+      // 作成待ち中に改名が始まっていた場合、その予約状態を作成完了後の記録へ引き継ぐ。
+      // ここで落とすと、改名APIが未完了なのに旧表示名を次の作成が再利用してしまう。
+      const renamePending = _dbPendingEntityCreates.get(key)?.renamePending === true;
+      _dbPendingEntityCreates.set(key, { promise: settled, result, settled: true, renamePending });
       setTimeout(() => {
         const current = _dbPendingEntityCreates.get(key);
         if (current?.result === result) _dbPendingEntityCreates.delete(key);
@@ -1033,11 +1038,22 @@ function _dbMergePendingEntityCreates(dbPath, pivotData) {
   });
 }
 
-async function _dbResolveEntityPathForRename(dbPath, entityName) {
+function _dbHoldEntityCreateNameReservation(dbPath, entityName) {
   const pending = _dbPendingEntityCreates.get(_dbPendingEntityCreateKey(dbPath, entityName));
+  if (pending) pending.renamePending = true;
+  return pending || null;
+}
+
+async function _dbResolveEntityPathForRename(dbPath, entityName) {
+  const pending = _dbHoldEntityCreateNameReservation(dbPath, entityName);
   if (!pending) return _entityPath(dbPath, entityName);
   const created = await pending.promise;
   return created?.path || _entityPath(dbPath, created?.name || entityName);
+}
+
+function _dbReleaseEntityCreateNameReservation(dbPath, entityName) {
+  const pending = _dbPendingEntityCreates.get(_dbPendingEntityCreateKey(dbPath, entityName));
+  if (pending) pending.renamePending = false;
 }
 
 function _shouldRunFrontendAutoFillOnCreate(response) {
@@ -1051,7 +1067,7 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
   // 同じ候補名へ収束し、409 が連鎖して「同名エントリが多数」に至るのを防ぐ。
   const dbKey = _dbNormalizePath(dbPath);
   _dbPendingEntityCreates.forEach((_value, key) => {
-    if (_value?.settled && _value.result?.response?.separate_storage_names === true) return;
+    if (_value?.settled && _value.result?.response?.separate_storage_names === true && !_value.renamePending) return;
     const splitAt = key.indexOf('\n');
     if (splitAt < 0 || key.slice(0, splitAt) !== dbKey) return;
     const name = key.slice(splitAt + 1);

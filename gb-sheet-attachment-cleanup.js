@@ -168,48 +168,40 @@
     }
   }
 
-  async function _confirmDelete(message) {
-    if (typeof cfConfirm === 'function') {
-      return !!await cfConfirm(message, { danger: true, okLabel: 'ゴミ箱へ移動', cancelLabel: 'キャンセル' });
-    }
-    return confirm(message);
-  }
-
   async function _deleteSelected() {
     const current = cleanupState;
     if (!current || !current.selected.size || current.busyDepth) return;
     const targets = current.payload.items.filter(item => current.selected.has(item.path));
     const usedCount = targets.filter(item => item.used).length;
-    const lines = [`添付ファイル${targets.length}件をゴミ箱へ移動します。`];
-    if (usedCount) lines.push(`このうち${usedCount}件は現在シートで使われています。削除すると表示できなくなります。`);
-    let confirmation = null;
-    if (window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact) {
-      confirmation = await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        targets.map(item => ({ path: item.path, kind: 'file' })),
-        lines.join('\n'),
-        { danger: true, okLabel: 'ゴミ箱へ移動', cancelLabel: 'キャンセル', operation: 'trash' },
-      );
-    } else {
-      confirmation = await _confirmDelete(lines.join('\n'));
+    if (typeof deleteOutlinerItemsWithHistory !== 'function'
+        || typeof window.MeldexDeleteImpactWarning?.authorizeReversibleDelete !== 'function') {
+      _setStatus('Undo履歴を登録できないため削除できません', true);
+      return;
     }
+    const deleteTargets = targets.map(item => ({ path: item.path, name: item.name, type: 'file' }));
+    const confirmation = await window.MeldexDeleteImpactWarning.authorizeReversibleDelete(deleteTargets);
     if (!confirmation) {
-      _setStatus('削除を取り消しました');
+      _setStatus('削除の参照確認に失敗しました', true);
       return;
     }
 
     _setStatus('添付ファイルをゴミ箱へ移動しています...');
     _beginBusy();
     try {
-      const confirmationPayload = typeof window.MeldexDeleteImpactWarning?.confirmationPayload === 'function'
-        ? window.MeldexDeleteImpactWarning.confirmationPayload(confirmation)
-        : {};
-      const result = await apiPost('/outliner/delete-batch', {
-        items: targets.map(item => ({ path: item.path })),
-        ...confirmationPayload,
+      const result = await deleteOutlinerItemsWithHistory(deleteTargets, {
+        confirmation,
+        label: `添付ファイル${targets.length}件を削除`,
+        detail: usedCount ? `使用中 ${usedCount}件を含む` : targets.map(item => item.path).join(', '),
+        refreshSuccessfulRedo: true,
+        refresh: async phase => {
+          if ((phase === 'undo' || phase === 'redo') && cleanupState === current && current.modalApi?.isOpen?.()) {
+            await _reload({ keepStatus: true, preserveSelection: false });
+          }
+        },
       });
       const failed = Array.isArray(result?.failed) ? result.failed : [];
       if (failed.length) {
-        const detail = failed.map(item => item?.detail || item?.status || '').filter(Boolean).join(' / ');
+        const detail = failed.map(item => item?.error?.userMessage || item?.error?.message || item?.detail || item?.status || '').filter(Boolean).join(' / ');
         _setStatus(`${failed.length}件を削除できませんでした${detail ? `: ${detail}` : ''}`, true);
       } else {
         _setStatus(`添付ファイル${targets.length}件をゴミ箱へ移動しました`);

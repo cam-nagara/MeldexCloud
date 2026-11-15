@@ -386,16 +386,15 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
         assetId: item.asset_id || item.assetId || '',
       }));
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(
             redoEntries.map(entry => ({
               path: entry.path,
               kind: 'file',
               ...(entry.assetId ? { assetId: entry.assetId } : {}),
             })),
-        `${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`,
           )
-        : await cfConfirm(`${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`);
-      if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+        : { confirmed: true, operation: 'trash' };
+      if (!confirmed) throw new Error('削除の参照確認に失敗しました');
       const result = await window.GbDbEntryIdentity.deleteEntries({
         dbPath,
         ctx,
@@ -796,13 +795,11 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     showStatus('選択した行の保存状態が変わったため削除を中止しました。行を選び直してください', true);
     return;
   }
-  const confirmMessage = `${names.length} 件のトピックをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(
         entries.map(entry => ({ path: entry.path, kind: 'file', ...(entry.assetId ? { assetId: entry.assetId } : {}) })),
-        confirmMessage,
       )
-    : await cfConfirm(confirmMessage);
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   const result = await window.GbDbEntryIdentity.deleteEntries({
     dbPath,

@@ -330,10 +330,10 @@ function _bdIsImageFile(file) {
 }
 
 async function _bdUploadBoardBackgroundImage(data, file) {
-  const res = await apiFetch('/upload-file?path=' + encodeURIComponent(_bdBoardUploadDir()), {
+  const res = await apiFetch('/upload-file?path=' + encodeURIComponent('Meldexファイル'), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ data, filename: file.name || 'background.png' }),
+    body: JSON.stringify({ data, filename: file.name || 'background.png', source: 'board-background' }),
   });
   if (!res?.ok || !res.path) throw new Error('upload failed');
   return API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);

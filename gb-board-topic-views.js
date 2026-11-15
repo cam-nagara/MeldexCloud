@@ -513,10 +513,7 @@
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
         separator();
         action('削除', async () => {
-          const confirmed = typeof global.cfConfirm === 'function'
-            ? await global.cfConfirm(`「${entry.name}」を削除します。トピック本体は残り、このビュー固有の配置・ライン・グループ・表示設定だけが削除されます。`)
-            : false;
-          if (confirmed) controller.removeMixed(ref);
+          controller.removeMixed(ref);
         }, false, 'delete');
         let longPress = 0;
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });

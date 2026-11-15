@@ -42,7 +42,7 @@ html[data-single-window="1"] .gb-split-handle {
 html[data-single-window="1"] #app-toolbar.visible {
   display: none !important;
 }
-.tb-sep { width: var(--ui-border-width); height: var(--ui-h-xs); background: var(--ui-border); margin: 0 var(--ui-space-1); flex-shrink: 0; }
+.tb-sep { width: var(--ui-border-width); height: var(--ui-toolbar-separator-height); background: var(--ui-border); margin: 0 var(--ui-space-1); flex-shrink: 0; }
 /* 旧ツールボタン（互換用に残す） */
 .tb-new-inline { display: contents; }
 .tb-new-dropdown { display: none; }
@@ -178,24 +178,24 @@ html[data-single-window="1"] #app-toolbar.visible {
 }
 
 #app-toolbar {
-  display: none; align-items: center; gap: var(--ui-space-3);
-  padding: var(--ui-space-2) var(--ui-space-4); background: var(--ui-toolbar-bg); border-bottom: var(--ui-border-width) solid var(--ui-border);
-  flex-shrink: 0; flex-wrap: wrap; max-height: 25vh; overflow-y: auto;
+  display: none; align-items: center; gap: 0;
+  padding: 0; background: var(--ui-toolbar-bg); border-bottom: 0;
+  flex-shrink: 0; flex-wrap: nowrap; max-height: 25vh; overflow: visible;
   font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
-  min-height: 39px;
+  min-height: var(--ui-toolbar-main-height);
   box-sizing: border-box;
+  box-shadow: none;
 }
 .gb-toolbar { font-family: var(--ui-toolbar-font, var(--ui-font, inherit)); }
 html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none !important; }
 #app-toolbar.visible { display: flex; }
 #app-toolbar :is(.tb-title, .tb-file-title, .tb-file-title > input),
 .gb-toolbar :is(.tb-title, .tb-file-title, .tb-file-title > input) {
-  font-size: var(--ui-font-16);
-  line-height: 30px;
-  min-height: 30px;
+  font-size: var(--ui-toolbar-title-font-size);
+  line-height: var(--ui-toolbar-title-height);
+  min-height: var(--ui-toolbar-title-height);
 }
-/* シートボタン群の直下に見えていた線の発生源は #app-toolbar 自身の border-bottom。
-   シート表示時だけ外枠線を外し、ボタン・区切り線・セル罫線には触れない。 */
+/* active状態でも主要ツールバー共通契約を維持し、テーマ由来の線を持ち込まない。 */
 #app-toolbar[data-active-toolbar="sheet"] {
   padding: 0 !important;
   gap: 0 !important;
@@ -231,7 +231,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 }
 #app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 #app-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
-#app-toolbar .sep { width: var(--ui-border-width); height: 20px; background: var(--ui-border); margin: 0 var(--ui-space-2); }
+#app-toolbar .sep { width: var(--ui-border-width); height: var(--ui-toolbar-separator-height); background: var(--ui-border); margin: 0 var(--ui-space-1); }
 .toolbar-group { display: flex; align-items: center; gap: var(--ui-space-2); }
 
 /* 旧互換 */
@@ -1759,7 +1759,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   min-height: 200px;
 }
 
-:is(#page-content,[data-editor-local-id="page-content"])[contenteditable="true"]:empty::before {
+:is(#page-content,[data-editor-local-id="page-content"])[contenteditable="true"][data-note-empty="true"]::before {
   content: attr(data-placeholder);
   color: var(--ui-fg-muted, var(--fg2));
   pointer-events: none;

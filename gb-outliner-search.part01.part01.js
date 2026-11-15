@@ -1099,9 +1099,13 @@ async function _openStoredOutlinerItem(item, opts) {
 // フォルダツリー本体の treeSelection とは別の軽量な選択状態として扱う（§2.4）。
 function _selectSidebarShortcutItem(item) {
   if (!item) return;
+  window.MeldexVisibleSelection?.clearTree?.();
   document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
     .forEach(el => { if (el !== item) el.classList.remove('selected'); });
   item.classList.add('selected');
+  window._meldexSidebarShortcutSelectionPath = String(
+    item._nodeData?.path || item.dataset?.path || item.dataset?.filePath || '',
+  ).replace(/\\/g, '/');
 }
 
 function updateRecentItems() {

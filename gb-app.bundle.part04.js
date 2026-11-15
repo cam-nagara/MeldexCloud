@@ -1,3 +1,43 @@
+          && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
+          && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
+        body = { ...body, [baseKey]: result.revision };
+      }
+    }
+    const payload = { ...body, operation_id: body.operation_id || crypto.randomUUID() };
+    try { return await send(payload); }
+    catch (error) {
+      const unknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+        || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+      if (!unknown) throw error;
+      _gbAppPendingValueWrites.set(key, payload);
+      const result = await send(payload);
+      _gbAppPendingValueWrites.delete(key);
+      return result;
+    }
+  });
+  _gbAppValueWriteTails.set(key, pending);
+  try { return await pending; }
+  finally { if (_gbAppValueWriteTails.get(key) === pending) _gbAppValueWriteTails.delete(key); }
+}
+
+async function apiPut(path, body, options = {}) {
+  const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
+    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    _scheduleLinkDictionaryRefreshForMutation(path);
+    return result;
+  }
+  const requestOptions = {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(guardedBody),
+    ...(options || {}),
+  };
+  const send = () => apiFetch(path, requestOptions);
+  // Whole settings snapshots must commit in user request order. A failed
+  // snapshot rejects its own caller without poisoning subsequent saves.
+  let result;
+  if (String(path).split('?')[0].replace(/^\/api/, '') === '/ui-config') {
     const pending = _gbAppUiConfigWriteTail.catch(() => {}).then(send);
     _gbAppUiConfigWriteTail = pending;
     result = await pending;
@@ -858,43 +898,3 @@ function showView(viewName, ctx) {
   }
 
   state.view = viewName;
-
-  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
-  if (typeof ann !== 'undefined') {
-    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
-    if (newTarget !== ann.targetPath) {
-      ann.targetPath = newTarget;
-      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
-      // スタンドアロン側の loadAnnotations を呼ぶと同じアノテートが二重に描画される
-      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
-        && _usesEmbeddedAnnotationSurface(viewName);
-      if (embedded) {
-        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
-        const layer = document.getElementById('ann-layer');
-        if (layer) layer.innerHTML = '';
-        if (typeof _forEachStandaloneAnnotationNote === 'function') {
-          _forEachStandaloneAnnotationNote(el => el.remove());
-        }
-      } else if (typeof loadAnnotations === 'function') {
-        loadAnnotations();
-      }
-    }
-    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
-  }
-}
-// スクリーンショットメニュー
-function showScreenshotMenu(e) {
-  const btn = e?.target?.closest?.('button') || e?.target;
-  const existing = document.querySelector('.ab-dropdown.ss-menu');
-  if (existing) {
-    existing.remove();
-    btn?.setAttribute?.('aria-expanded', 'false');
-    return;
-  }
-  const menu = document.createElement('div');
-  menu.className = 'ab-dropdown ss-menu';
-  menu.id = 'screenshot-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'スクリーンショット');
-  if (btn?.setAttribute) {
-    btn.setAttribute('aria-haspopup', 'menu');

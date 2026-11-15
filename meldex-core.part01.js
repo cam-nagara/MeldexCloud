@@ -13,9 +13,12 @@
 // ============================================================
 const API_BASE = window.MeldexRuntimeAdapter?.getApiBaseUrl?.() || '/api';
 const API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
-const API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// Dropbox/NASを含む全画面で同じ通信契約を使う。通常読取・更新・長時間処理を
+// 分け、サーバー側で継続中の処理を15秒で失敗扱いにしない。
+const API_FETCH_TIMEOUT_MS = 60000;
+const API_FETCH_MUTATION_TIMEOUT_MS = 120000;
 const API_FETCH_MAX_TIMEOUT_MS = 330000;
-// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの15秒で中断すると、
+// OSネイティブの選択ダイアログは利用者の操作を待つ。通常APIの読取上限で中断すると、
 // 選択済みのパスを受け取れず再入力を要求するため、サーバー待機上限より長く保つ。
 const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/pick-folder', 135000],
@@ -41,15 +44,46 @@ const API_FETCH_STORAGE_WRITES = [
   '/chat/save', '/quick-memo', '/global-tags', '/global-tag-groups', '/folder-links',
   '/personal-preferences', '/workspace-preferences', '/dropbox-link/settings-file',
 ];
+const API_FETCH_MAINTENANCE_TIMEOUT_MS = 300000;
+const API_FETCH_MAINTENANCE_SEGMENT_RE = /(?:^|[\/-])(?:rebuild|reindex|rescan|scan|repair|migrat(?:e|ion)|gc|import|export|backup|restore|archive|compress|extract|convert|generate|install|upgrade|recalculate|resolve|enrich|cleanup|purge|compact|batch|refresh|retry|apply|upload|download)(?:$|[\/-])/i;
+const API_FETCH_MUTATING_SYNC_SEGMENT_RE = /(?:^|[\/-])sync(?:$|[\/-])/i;
+function _apiFetchIsMaintenanceOperation(path, options = {}) {
+  const rawPath = String(path || '');
+  const pathname = rawPath.split('?')[0].replace(/^\/api(?=\/)/, '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (API_FETCH_MAINTENANCE_SEGMENT_RE.test(pathname)) return true;
+  if (method !== 'GET' && API_FETCH_MUTATING_SYNC_SEGMENT_RE.test(pathname)) return true;
+  try {
+    const params = new URL(rawPath, 'http://meldex.local').searchParams;
+    const enabled = key => ['1', 'true', 'yes'].includes(String(params.get(key) || '').toLowerCase());
+    return method === 'GET' && (
+      enabled('refresh') || enabled('full_scan') || enabled('rescan')
+      || enabled('rebuild') || enabled('reindex')
+    );
+  } catch {
+    return false;
+  }
+}
 function _apiFetchDefaultTimeout(path, options = {}) {
   const pathname = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
   const nativeDialogTimeout = API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname);
   if (nativeDialogTimeout) return nativeDialogTimeout;
   // 本体と同じく、フォルダ移動後のDB・参照・タグ更新を待つ。
   if (API_FETCH_FILE_OPERATIONS.has(pathname)) return 300000;
+  // 保管庫全体の再構築・走査・修復・移行・同期は、通常APIの15秒で中断しない。
+  if (_apiFetchIsMaintenanceOperation(path, options)) return API_FETCH_MAINTENANCE_TIMEOUT_MS;
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
       && API_FETCH_STORAGE_WRITES.some(prefix => pathname === prefix || pathname.startsWith(prefix + '/'))) return 120000;
-  return API_FETCH_NATIVE_DIALOG_TIMEOUTS.get(pathname) || API_FETCH_TIMEOUT_MS;
+  // 文書・シート内の参照一覧は、Dropbox/NAS上の多数ファイルを確認する読取なので、
+  // 通常読取ではなくフォルダ列挙と同じ上限で完了を待つ。
+  if (['/browse', '/images-in-folder', '/check-type', '/outliner-roots', '/file'].includes(pathname)
+      || pathname.startsWith('/contained-files')) return 300000;
+  if (window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox'
+      && ['/pivot', '/db-metadata', '/value'].includes(pathname)) return 120000;
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    return API_FETCH_MUTATION_TIMEOUT_MS;
+  }
+  return API_FETCH_TIMEOUT_MS;
 }
 const _apiFetchBrowseCache = new Map();
 const _apiFetchBrowseInFlight = new Map();

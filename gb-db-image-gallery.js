@@ -766,7 +766,6 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
         await saveNextItems(nextItems);
       }));
       actions.appendChild(actionBtn('trash2', '削除', async () => {
-        if (typeof confirm === 'function' && !confirm('この画像を削除しますか？')) return;
         const nextItems = _imagePropCloneItems(items);
         nextItems.splice(idx, 1);
         await saveNextItems(nextItems);

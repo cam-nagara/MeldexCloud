@@ -58,6 +58,24 @@
   margin-left: auto;
   font-size: 11px;
 }
+.gb-toolbar-main.gb-toolbar-overflow-host > .tb-file-title {
+  flex: 0 0 var(--ui-toolbar-title-width) !important;
+  width: var(--ui-toolbar-title-width) !important;
+  min-width: var(--ui-toolbar-title-width) !important;
+  max-width: var(--ui-toolbar-title-width) !important;
+}
+.gb-toolbar-main.gb-toolbar-overflow-host > .tb-file-title.gb-tbo-title-compact {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 48px !important;
+}
+.gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button {
+  flex-basis: var(--ui-toolbar-control-size) !important;
+  width: var(--ui-toolbar-control-size) !important;
+  min-width: var(--ui-toolbar-control-size) !important;
+  height: var(--ui-toolbar-control-size);
+  min-height: var(--ui-toolbar-control-size);
+}
 .gb-toolbar-overflow-button > .gb-toolbar-overflow-symbol {
   display:inline-block;
   flex:0 0 auto;

@@ -67,7 +67,9 @@ img.meldex-image-is-loading {
   color: transparent;
 }
 
-.meldex-image-load-host {
+/* Keep this fallback low-specificity so positioned component hosts (for
+   example, absolute board nodes) retain their own layout contract. */
+:where(.meldex-image-load-host) {
   position: relative;
 }
 
@@ -148,6 +150,15 @@ img.meldex-image-load-error {
   border-radius: 10px;
   box-shadow: var(--meldex-progress-shadow);
   backdrop-filter: blur(12px);
+}
+
+/* 設定を開いている間だけ、暗転 < 進捗 < 設定ダイアログの順にする。
+   トレイはオーバーレイ直下の兄弟なので暗転色の影響を受けず、fixedの通常位置も保つ。 */
+:is(.gb-modal-overlay, .modal-overlay)[data-settings-modal="1"] > .meldex-operation-tray {
+  z-index: 1;
+}
+:is(.gb-modal-overlay, .modal-overlay)[data-settings-modal="1"] > .settings-modal {
+  z-index: 2;
 }
 
 .meldex-operation-tray[hidden] { display: none; }

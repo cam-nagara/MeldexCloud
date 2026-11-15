@@ -129,27 +129,8 @@ function _bdSelectedConnectionIdsForDelete() {
   return typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
 }
 
-async function _bdConfirmDeleteSelection() {
-  const nodeCount = bd.selected?.size || 0;
-  const lineCount = _bdSelectedConnectionIdsForDelete().length;
-  let msg;
-  if (nodeCount && lineCount) msg = `${nodeCount}件のトピックと${lineCount}件のラインを削除しますか？`;
-  else if (nodeCount > 1) msg = `${nodeCount}件のトピックを削除しますか？`;
-  else if (nodeCount === 1) msg = 'このトピックを削除しますか？';
-  else if (lineCount > 1) msg = `${lineCount}件のラインを削除しますか？`;
-  else msg = 'このラインを削除しますか？';
-  try {
-    if (typeof cfConfirm === 'function') return !!(await cfConfirm(msg));
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') return !!window.confirm(msg);
-  } catch (_err) {
-    return false;
-  }
-  return true;
-}
-
 async function bdDeleteSelected(options = {}) {
   if (!_bdSelectedConnectionIdsForDelete().length && bd.selected.size===0) return;
-  if (options.confirm !== false && !(await _bdConfirmDeleteSelection())) return;
   const selectedConnIdsBeforeDelete = _bdSelectedConnectionIdsForDelete();
   if (!selectedConnIdsBeforeDelete.length && bd.selected.size===0) return;
   bdPushUndo();

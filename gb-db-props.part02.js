@@ -259,13 +259,12 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     ] : []),
     { type: 'sep' },
     { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true, action: async () => {
-      const confirmMessage = entityName + ' を削除しますか？';
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
             { path: ep, kind: 'file', ...(assetId ? { assetId } : {}) },
-          ], confirmMessage)
-        : await cfConfirm(confirmMessage);
+          ])
+        : { confirmed: true, operation: 'trash' };
       if (!confirmed) return;
       const entryId = String(
         entityData?._id
@@ -291,6 +290,9 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
             true
           );
         } else {
+          if (typeof _dbUndoBulkDeleteEntities === 'function') {
+            _dbUndoBulkDeleteEntities(targetDbPath, result.trashRefs || [], ctx);
+          }
           showStatus(calendarWarning || '削除しました', !!calendarWarning);
         }
       } catch (error) {

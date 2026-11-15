@@ -318,12 +318,15 @@
       this._showStatus('自動生成された予定は元データから削除してください', true);
       return;
     }
-    // 繰り返しの個別回はシリーズ全体と同じIDを持つため、削除の意味を明示して確認する
-    const confirmText = evRef?._recurrence_instance
-      ? 'これは繰り返しの予定です。繰り返しの予定全体を削除しますか？'
-      : 'このイベントを削除しますか？';
-    if (typeof cfConfirm === 'function' && !await cfConfirm(confirmText)) return;
     const isShift = source === 'shift' || source === 'shift-break' || String(id || '').startsWith('shift:');
+    // 通常イベントは即時削除＋Undoとする。Undo対象外のシフトと、1件の表示から
+    // シリーズ全体へ作用する繰り返し予定だけは、不可逆・広域操作として確認を残す。
+    if ((isShift || evRef?._recurrence_instance) && typeof cfConfirm === 'function') {
+      const confirmText = evRef?._recurrence_instance
+        ? 'これは繰り返しの予定です。繰り返しの予定全体を削除しますか？'
+        : 'このシフトを削除しますか？';
+      if (!await cfConfirm(confirmText)) return;
+    }
     if (isShift && this._shiftMutationStateUnknown) {
       this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
       return;
@@ -336,7 +339,12 @@
     const beforeShifts = (this._shifts || []).map(shift => ({ ...shift }));
     const beforeSelected = this._eventSelection ? [...this._eventSelection()] : [];
     const beforeLast = this._lastSelectedEventId || '';
-    if (!isShift) this._pushUndo('イベント削除');
+    const undoable = !isShift && this._eventIsUndoable?.(evRef);
+    const undoSnapshot = undoable ? {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    } : null;
     if (isShift && shiftId && typeof this._removeShiftOptimistic === 'function') {
       this._removeShiftOptimistic(shiftId);
     } else {
@@ -355,6 +363,7 @@
         : await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
       if (result && result.ok === false) throw new Error(result.message || '削除に失敗');
       acknowledged = true;
+      if (undoSnapshot) this._pushUndo('イベント削除', undoSnapshot);
       apiPost('/annotations/orphan-by-target', {
         target_kind: 'calendar_event',
         target_file: evRef?.calendar_id || '_calendar',

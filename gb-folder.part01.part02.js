@@ -124,6 +124,10 @@
     }
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+  if (item.path && typeof appendShellVerbsToMenu === 'function') {
+    await appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit, beforeDisplay: true });
+  }
+  if (openSeq !== _folderContextMenuOpenSeq) return;
   if (typeof positionPopup === 'function') {
     positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
   } else {
@@ -132,11 +136,6 @@
     menu.style.top = (e.clientY / z) + 'px';
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  }
-  if (item.path && typeof appendShellVerbsToMenu === 'function') {
-    appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit });
-    if (typeof positionPopup === 'function') positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
-    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   }
   setTimeout(() => {
     const closer = (ev) => {
@@ -771,10 +770,9 @@ async function fvBulkDelete() {
     kind: item.type === 'folder' ? 'folder' : 'file',
     ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
   }));
-  const confirmMessage = targets.length + ' 件を削除しますか？';
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-    : await cfConfirm(confirmMessage);
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+    : { confirmed: true, operation: 'trash' };
   if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
     confirmation: confirmed,

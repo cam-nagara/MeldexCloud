@@ -172,6 +172,9 @@
   function _safeFontFamily(value) {
     const raw = String(value || '').trim().replace(/"/g, "'");
     if (!raw || raw.length > 160 || /url\s*\(|expression\s*\(|[<>[\]{};\\]/i.test(raw)) return '';
+    // contenteditableが継承値を明示styleへ展開することがある。CSS-wide keywordは
+    // 利用者が選んだフォントではないため、Markdownへ直列化しない。
+    if (/^(?:inherit|initial|unset|revert|revert-layer)$/i.test(raw)) return '';
     return raw;
   }
 
@@ -365,7 +368,12 @@
     const lines = String(source || '').split('\n');
     const starts = _sourceLineStarts(source);
     if (container === editor) {
-      const childIndex = Math.max(0, Math.min(blocks.length, Number(offset) || 0));
+      // Chromiumは編集host直下へ一時的なtext/br nodeを作ることがある。DOM offsetを
+      // element blockのindexとして扱うと、現在行の一つ前/後へ改行が入るため、
+      // 実際に境界より前にあるblock数へ正規化する。
+      const direct = Array.from(editor.childNodes || []);
+      const domOffset = Math.max(0, Math.min(direct.length, Number(offset) || 0));
+      const childIndex = direct.slice(0, domOffset).filter(node => node.nodeType === Node.ELEMENT_NODE).length;
       if (childIndex >= blocks.length) {
         const lastLine = lines[blocks.length - 1] || '';
         return (starts[blocks.length - 1] || 0) + lastLine.length;
@@ -459,7 +467,10 @@
 
   function _richInputToMarkdown(editor) {
     if (!editor) return '';
-    const blocks = Array.from(editor.childNodes);
+    const elementBlocks = _richInputBlocks(editor);
+    // Chromiumが編集host直下へ一時的に作る空text/br nodeは、行として保存しない。
+    // 行要素がまだ無い初期入力だけは、直下nodeをフォールバックとして扱う。
+    const blocks = elementBlocks.length ? elementBlocks : Array.from(editor.childNodes);
     if (!blocks.length) return '';
     return blocks.map(_serializeRichBlock).join('\n').replace(/\u00a0/g, ' ');
   }
