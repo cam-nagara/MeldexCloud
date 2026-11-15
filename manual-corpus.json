@@ -1,9 +1,9 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.481",
+  "manual_version": "0.7.482",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "20cc388ab450747676c218429aed06a74269c5edefac70318e98a1ef5d0bc589",
+  "source_digest": "4d73105f2e9a97d24a506eb6e4456ea7d651ad1770e352b6c807bdda3e6aaacb",
   "document_count": 204,
   "chunk_count": 1962,
   "documents": [
@@ -333,7 +333,7 @@
       "path": "03_設定と連携/システムトレイ常駐.md",
       "title": "システムトレイ常駐",
       "category": "設定・外部連携",
-      "source_sha256": "acf4bc29973a202a231b7551d6d17abc6ec77aec75aa111c4d749adadd03e817",
+      "source_sha256": "6f0f4886e7aafba00a5609cc407ba7b7c5a387b74ed15207fb0f1172d0e7d114",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E3%83%88%E3%83%AC%E3%82%A4%E5%B8%B8%E9%A7%90.md"
     },
     {
@@ -1362,7 +1362,7 @@
       "path": "04_サポート/トラブルシューティング集.md",
       "title": "トラブルシューティング集",
       "category": "サポート",
-      "source_sha256": "ef4805f2f4cd9c7f309bebaf7dda889771615ed393310fb5bb9996afcd7393b2",
+      "source_sha256": "2492d65b1d5fe926800b5e26d18c151909c1b826250796da5df1fe9bd5003ea3",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%83%88%E3%83%A9%E3%83%96%E3%83%AB%E3%82%B7%E3%83%A5%E3%83%BC%E3%83%86%E3%82%A3%E3%83%B3%E3%82%B0%E9%9B%86.md"
     },
     {
@@ -12004,7 +12004,7 @@
       "category": "設定・外部連携",
       "heading": "提供する機能",
       "anchor": "_5",
-      "text": "機能\n内容\nMeldexを開く\nMeldex のメイン画面を開く\nMeldexで続ける\nチャット、検索、ファイル情報など目的の場所を直接開く\nクイックメモ\nMeldex 本体を開かずにメモを入力・保存\n新規付箋\nカーソル位置の近くにアノテートの付箋を作成\n閉じた付箋を再表示\nこのパソコンで閉じた付箋ウィンドウをまとめて再表示\nスクリーンショット\n全画面・範囲・ウィンドウを撮影し、撮影画像専用のアノテートツールを開く\nバグ報告\n操作手順と症状を入力し、スクリーンショットや動作ログを添えて報告\nOS起動時に常駐アプリを開始\nサインイン時の自動起動を切り替える\n設定を開く\nMeldex の設定画面を直接開く\n終了\n常駐アプリと、その常駐アプリが起動したバックグラウンド処理を終了",
+      "text": "機能\n内容\nMeldexを開く\nMeldex のメイン画面を開く\nMeldexで続ける\nチャット、検索、ファイル情報など目的の場所を直接開く\nクイックメモ\nMeldex 本体を開かずにメモを入力・保存\n新規付箋\nカーソル位置の近くにアノテートの付箋を作成\n閉じた付箋を再表示\nこのパソコンで閉じた付箋ウィンドウをまとめて再表示\nスクリーンショット\n全画面・範囲・ウィンドウを撮影し、撮影画像専用のアノテートツールを開く\nバグ報告\n操作手順と症状を入力し、スクリーンショットや動作ログを添えて報告\nOS起動時に常駐アプリを開始\nサインイン時の自動起動を切り替える\n設定を開く\nMeldex の設定画面を直接開く\n終了\nMeldex本体、常駐アプリ、常駐アプリが起動した管理対象のバックグラウンド処理を終了",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E3%83%88%E3%83%AC%E3%82%A4%E5%B8%B8%E9%A7%90.md&section=_5"
     },
     {
@@ -12064,7 +12064,7 @@
       "category": "設定・外部連携",
       "heading": "通常終了",
       "anchor": "_11",
-      "text": "タスクトレイアイコンを右クリック → 終了",
+      "text": "タスクトレイアイコンを右クリック → 終了\nこの操作はMeldex全体の明示終了です。Meldexの画面、通常ブラウザ、内部ブラウザが\nローカルサーバーへ接続したままでも、それらの接続を待たずに本体と常駐を終了します。",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=03_%E8%A8%AD%E5%AE%9A%E3%81%A8%E9%80%A3%E6%90%BA/%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E3%83%88%E3%83%AC%E3%82%A4%E5%B8%B8%E9%A7%90.md&section=_11"
     },
     {
@@ -18764,7 +18764,7 @@
       "category": "サポート",
       "heading": "終了できない",
       "anchor": "_4",
-      "text": "タスクトレイのアイコンを右クリック →「終了」\nそれでも残る場合はタスクマネージャーから python.exe を終了",
+      "text": "タスクトレイのアイコンを右クリック →「終了」\nそれでも残る場合はタスクマネージャーで、実行ファイルの場所がMeldexのインストール先であることを確認してから「Meldex」を終了",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=04_%E3%82%B5%E3%83%9D%E3%83%BC%E3%83%88/%E3%83%88%E3%83%A9%E3%83%96%E3%83%AB%E3%82%B7%E3%83%A5%E3%83%BC%E3%83%86%E3%82%A3%E3%83%B3%E3%82%B0%E9%9B%86.md&section=_4"
     },
     {
