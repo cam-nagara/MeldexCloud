@@ -370,13 +370,28 @@ function bdRemoveConnectionRender(svg, defs, connId) {
   }
 }
 
-function bdSyncSelectionRectForNode(nodeOrId) {
+function bdResolveSelectionUiContext(nodeId, preferredNodeEl) {
+  if (!nodeId || typeof document === 'undefined') return { root: null, layer: null, nodeEl: null };
+  const suppliedNode = preferredNodeEl?.isConnected ? preferredNodeEl : null;
+  const suppliedRoot = suppliedNode?.closest?.('.gb-canvas-root') || null;
+  const root = suppliedRoot
+    || (typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document);
+  const safeId = MeldexEscape.cssIdent(nodeId);
+  // 同じボードルートからカードとリサイズレイヤーを取得する。文書全体の重複IDを
+  // 個別に検索すると、サブパネル等に別ボードDOMがある場合に別々の面を組み合わせてしまう。
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
+  const nodeEl = suppliedNode || root?.querySelector?.(`#bdn-${safeId}`)
+    || (root === document ? document.getElementById?.('bdn-' + nodeId) : null);
+  return { root, layer, nodeEl };
+}
+
+function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
   if (!node || !node.id || node.contained || typeof document === 'undefined') return false;
-  const layer = document.getElementById('bd-resize-layer');
-  const el = document.getElementById('bdn-' + node.id);
+  const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
   const safeId = MeldexEscape.cssIdent(node.id);
@@ -402,16 +417,15 @@ function bdSyncSelectionRectForNode(nodeOrId) {
   return true;
 }
 
-function bdSyncResizeHandleForNode(nodeOrId) {
+function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
   if (!node || !node.id || node.contained || typeof document === 'undefined') return false;
-  const layer = document.getElementById('bd-resize-layer');
-  const el = document.getElementById('bdn-' + node.id);
+  const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
-  bdSyncSelectionRectForNode(node);
+  bdSyncSelectionRectForNode(node, el);
   const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
@@ -434,11 +448,16 @@ function bdSyncResizeHandleForNode(nodeOrId) {
 }
 
 function bdRemoveSelectionUiForMissingNodes() {
-  const layer = document.getElementById('bd-resize-layer');
+  const root = typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document;
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
   if (!layer || typeof bd === 'undefined') return;
   const liveIds = new Set((bd.nodes || []).filter(node => node && !node.contained).map(node => node.id));
   layer.querySelectorAll('.bd-resize[data-node-id], .bd-selection-rect[data-node-id]').forEach(el => {
-    if (!liveIds.has(el.dataset.nodeId) || !document.getElementById('bdn-' + el.dataset.nodeId)) el.remove();
+    const safeId = MeldexEscape.cssIdent(el.dataset.nodeId);
+    const nodeEl = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + el.dataset.nodeId) : null);
+    if (!liveIds.has(el.dataset.nodeId) || !nodeEl) el.remove();
   });
 }
 

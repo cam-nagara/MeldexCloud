@@ -873,8 +873,9 @@
     }, true);
     document.addEventListener('copy', handleCopyEvent, true);
     document.addEventListener('pointerdown', event => {
-      if (!event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]')) return;
-      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
+      const canvas = event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]');
+      if (!canvas) return;
+      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY, canvas);
     }, { passive: true });
   }
 

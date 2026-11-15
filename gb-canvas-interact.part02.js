@@ -393,7 +393,9 @@
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
     if (!bdEnsureInteractiveCanvas(canvas)) return;
     e.preventDefault(); e.stopPropagation();
-    const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
+    // このdropを受け取ったキャンバス自身で座標変換する。サブパネル等に別の
+    // ボードDOMがあっても、文書全体の「現在のキャンバス」に取り違えない。
+    const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY, canvas);
     // Explorer/browser の DataTransfer は最初の await 後には空になるため、
     // drop の同期区間でファイル・URL・内部payloadをすべて退避する。
     const nativeTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer

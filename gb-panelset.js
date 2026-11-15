@@ -1336,8 +1336,12 @@
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'gb-dock-icon';
-          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && (fixedSide || !panelsetNode.collapsed);
+          // 右サイドバーを閉じている間は、保存している「次に開くタブ」と
+          // 現在画面に開いているタブを区別する。折りたたみ中に active を残すと、
+          // 何も表示していないのにオプション等がオンに見えてしまう。
+          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && !panelsetNode.collapsed;
           if (isActiveTab) btn.classList.add('active');
+          btn.setAttribute('aria-pressed', isActiveTab ? 'true' : 'false');
           btn.dataset.paneId = pane.id;
           btn.dataset.tabId = tab.id || '';
           btn.dataset.groupId = g.id;
@@ -1351,14 +1355,6 @@
           // 展開中の固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
           // DOM・選択・スクロールを保持したまま、右サイドバー本体だけ差し替える。
           const switchFixedRightRailContent = () => {
-            if (panelsetNode.collapsed) {
-              panelsetNode.activeGroupId = g.id;
-              pane.activeTabIndex = tabIdx;
-              // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
-              // collapsedだけを書き換えると本体がレール幅のままになる。
-              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
-              return;
-            }
             const previousGroup = groups.find(item => item?.id === panelsetNode.activeGroupId);
             // 同じアイコンの再選択でも本体DOMを作り直すため、現在の
             // ライブコンテナを先に退避する。省略すると設定欄自体が消失する。
@@ -1372,10 +1368,16 @@
             }
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
-            panelsetNode.collapsed = false;
-            delete panelsetNode._userCollapsed;
-            col.classList.remove('gb-dock-collapsed');
-            body.style.display = 'flex';
+            if (panelsetNode.collapsed) {
+              // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
+              // collapsedだけを書き換えると本体がレール幅のままになる。
+              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
+            } else {
+              panelsetNode.collapsed = false;
+              delete panelsetNode._userCollapsed;
+              col.classList.remove('gb-dock-collapsed');
+              body.style.display = 'flex';
+            }
             body.replaceChildren();
             if (g.root && typeof GBLayout?.renderNode === 'function') {
               body.appendChild(GBLayout.renderNode(g.root, depth));
@@ -1544,6 +1546,38 @@
     toggle.title = title;
     toggle.setAttribute('aria-label', title);
     toggle.innerHTML = _railIcon(_toggleRailIcon(side, collapsed), 20);
+    if (side === 'right') {
+      const activeGroup = (panelsetNode.groups || []).find(group => group?.id === panelsetNode.activeGroupId);
+      const activePaneTabs = new Map();
+      if (activeGroup?.root) {
+        _collectPanesInGroup(activeGroup.root).forEach(pane => {
+          const tab = (pane.tabs || [])[pane.activeTabIndex];
+          if (tab) activePaneTabs.set(pane.id, tab.id || '');
+        });
+      }
+      col.querySelectorAll(':scope > .gb-dock-bar .gb-dock-icon[data-tab-id]').forEach(icon => {
+        const active = !collapsed
+          && icon.dataset.groupId === activeGroup?.id
+          && activePaneTabs.get(icon.dataset.paneId) === icon.dataset.tabId;
+        icon.classList.toggle('active', active);
+        icon.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+    return true;
+  }
+
+  // ボード等から右サイドバーの特定ツールを開く場合も、ユーザーがレールアイコンを
+  // 押した時と同じ局所切替を通す。GBLayout.render() でメインペインまで作り直すと、
+  // D&D直後でまだ保存待ちのボード内容を失うため、描画済みレールがある時は全体再描画しない。
+  function activateFixedRightRailTab(panelsetNode, groupId, paneId, tabId) {
+    if (_fixedDockSide(panelsetNode) !== 'right' || typeof document === 'undefined') return false;
+    const col = document.querySelector(`.gb-dock-fixed-right[data-panelset-id="${panelsetNode.id}"]`);
+    const icon = [...(col?.querySelectorAll(':scope > .gb-dock-bar .gb-dock-icon[data-tab-id]') || [])]
+      .find(item => item.dataset.groupId === groupId
+        && item.dataset.paneId === paneId
+        && item.dataset.tabId === (tabId || ''));
+    if (!icon) return false;
+    icon.click();
     return true;
   }
 
@@ -1564,6 +1598,7 @@
     renderGroupIconButton,
     renderDock,
     syncFixedDockCollapsed,
+    activateFixedRightRailTab,
     syncRightRailChatButton,
     syncLeftRailActiveApp,
     collectGroupTabTypes,

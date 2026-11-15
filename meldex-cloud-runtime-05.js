@@ -18507,8 +18507,12 @@ const GBLayout = (() => {
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'gb-dock-icon';
-          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && (fixedSide || !panelsetNode.collapsed);
+          // 右サイドバーを閉じている間は、保存している「次に開くタブ」と
+          // 現在画面に開いているタブを区別する。折りたたみ中に active を残すと、
+          // 何も表示していないのにオプション等がオンに見えてしまう。
+          const isActiveTab = (pane.activeTabIndex === tabIdx) && isActiveGroup && !panelsetNode.collapsed;
           if (isActiveTab) btn.classList.add('active');
+          btn.setAttribute('aria-pressed', isActiveTab ? 'true' : 'false');
           btn.dataset.paneId = pane.id;
           btn.dataset.tabId = tab.id || '';
           btn.dataset.groupId = g.id;
@@ -18522,14 +18526,6 @@ const GBLayout = (() => {
           // 展開中の固定右レールの切替ではルートレイアウトを再描画しない。メインパネルの
           // DOM・選択・スクロールを保持したまま、右サイドバー本体だけ差し替える。
           const switchFixedRightRailContent = () => {
-            if (panelsetNode.collapsed) {
-              panelsetNode.activeGroupId = g.id;
-              pane.activeTabIndex = tabIdx;
-              // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
-              // collapsedだけを書き換えると本体がレール幅のままになる。
-              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
-              return;
-            }
             const previousGroup = groups.find(item => item?.id === panelsetNode.activeGroupId);
             // 同じアイコンの再選択でも本体DOMを作り直すため、現在の
             // ライブコンテナを先に退避する。省略すると設定欄自体が消失する。
@@ -18543,10 +18539,16 @@ const GBLayout = (() => {
             }
             panelsetNode.activeGroupId = g.id;
             pane.activeTabIndex = tabIdx;
-            panelsetNode.collapsed = false;
-            delete panelsetNode._userCollapsed;
-            col.classList.remove('gb-dock-collapsed');
-            body.style.display = 'flex';
+            if (panelsetNode.collapsed) {
+              // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
+              // collapsedだけを書き換えると本体がレール幅のままになる。
+              _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
+            } else {
+              panelsetNode.collapsed = false;
+              delete panelsetNode._userCollapsed;
+              col.classList.remove('gb-dock-collapsed');
+              body.style.display = 'flex';
+            }
             body.replaceChildren();
             if (g.root && typeof GBLayout?.renderNode === 'function') {
               body.appendChild(GBLayout.renderNode(g.root, depth));
@@ -18715,6 +18717,38 @@ const GBLayout = (() => {
     toggle.title = title;
     toggle.setAttribute('aria-label', title);
     toggle.innerHTML = _railIcon(_toggleRailIcon(side, collapsed), 20);
+    if (side === 'right') {
+      const activeGroup = (panelsetNode.groups || []).find(group => group?.id === panelsetNode.activeGroupId);
+      const activePaneTabs = new Map();
+      if (activeGroup?.root) {
+        _collectPanesInGroup(activeGroup.root).forEach(pane => {
+          const tab = (pane.tabs || [])[pane.activeTabIndex];
+          if (tab) activePaneTabs.set(pane.id, tab.id || '');
+        });
+      }
+      col.querySelectorAll(':scope > .gb-dock-bar .gb-dock-icon[data-tab-id]').forEach(icon => {
+        const active = !collapsed
+          && icon.dataset.groupId === activeGroup?.id
+          && activePaneTabs.get(icon.dataset.paneId) === icon.dataset.tabId;
+        icon.classList.toggle('active', active);
+        icon.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+    return true;
+  }
+
+  // ボード等から右サイドバーの特定ツールを開く場合も、ユーザーがレールアイコンを
+  // 押した時と同じ局所切替を通す。GBLayout.render() でメインペインまで作り直すと、
+  // D&D直後でまだ保存待ちのボード内容を失うため、描画済みレールがある時は全体再描画しない。
+  function activateFixedRightRailTab(panelsetNode, groupId, paneId, tabId) {
+    if (_fixedDockSide(panelsetNode) !== 'right' || typeof document === 'undefined') return false;
+    const col = document.querySelector(`.gb-dock-fixed-right[data-panelset-id="${panelsetNode.id}"]`);
+    const icon = [...(col?.querySelectorAll(':scope > .gb-dock-bar .gb-dock-icon[data-tab-id]') || [])]
+      .find(item => item.dataset.groupId === groupId
+        && item.dataset.paneId === paneId
+        && item.dataset.tabId === (tabId || ''));
+    if (!icon) return false;
+    icon.click();
     return true;
   }
 
@@ -18735,6 +18769,7 @@ const GBLayout = (() => {
     renderGroupIconButton,
     renderDock,
     syncFixedDockCollapsed,
+    activateFixedRightRailTab,
     syncRightRailChatButton,
     syncLeftRailActiveApp,
     collectGroupTabTypes,
@@ -27940,13 +27975,28 @@ function bdRemoveConnectionRender(svg, defs, connId) {
   }
 }
 
-function bdSyncSelectionRectForNode(nodeOrId) {
+function bdResolveSelectionUiContext(nodeId, preferredNodeEl) {
+  if (!nodeId || typeof document === 'undefined') return { root: null, layer: null, nodeEl: null };
+  const suppliedNode = preferredNodeEl?.isConnected ? preferredNodeEl : null;
+  const suppliedRoot = suppliedNode?.closest?.('.gb-canvas-root') || null;
+  const root = suppliedRoot
+    || (typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document);
+  const safeId = MeldexEscape.cssIdent(nodeId);
+  // 同じボードルートからカードとリサイズレイヤーを取得する。文書全体の重複IDを
+  // 個別に検索すると、サブパネル等に別ボードDOMがある場合に別々の面を組み合わせてしまう。
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
+  const nodeEl = suppliedNode || root?.querySelector?.(`#bdn-${safeId}`)
+    || (root === document ? document.getElementById?.('bdn-' + nodeId) : null);
+  return { root, layer, nodeEl };
+}
+
+function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
   if (!node || !node.id || node.contained || typeof document === 'undefined') return false;
-  const layer = document.getElementById('bd-resize-layer');
-  const el = document.getElementById('bdn-' + node.id);
+  const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
   const safeId = MeldexEscape.cssIdent(node.id);
@@ -27972,16 +28022,15 @@ function bdSyncSelectionRectForNode(nodeOrId) {
   return true;
 }
 
-function bdSyncResizeHandleForNode(nodeOrId) {
+function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
   if (!node || !node.id || node.contained || typeof document === 'undefined') return false;
-  const layer = document.getElementById('bd-resize-layer');
-  const el = document.getElementById('bdn-' + node.id);
+  const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
-  bdSyncSelectionRectForNode(node);
+  bdSyncSelectionRectForNode(node, el);
   const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
@@ -28004,11 +28053,16 @@ function bdSyncResizeHandleForNode(nodeOrId) {
 }
 
 function bdRemoveSelectionUiForMissingNodes() {
-  const layer = document.getElementById('bd-resize-layer');
+  const root = typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document;
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
   if (!layer || typeof bd === 'undefined') return;
   const liveIds = new Set((bd.nodes || []).filter(node => node && !node.contained).map(node => node.id));
   layer.querySelectorAll('.bd-resize[data-node-id], .bd-selection-rect[data-node-id]').forEach(el => {
-    if (!liveIds.has(el.dataset.nodeId) || !document.getElementById('bdn-' + el.dataset.nodeId)) el.remove();
+    const safeId = MeldexEscape.cssIdent(el.dataset.nodeId);
+    const nodeEl = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + el.dataset.nodeId) : null);
+    if (!liveIds.has(el.dataset.nodeId) || !nodeEl) el.remove();
   });
 }
 
@@ -29261,7 +29315,9 @@ function bdNearestNodeFromPoint(x, y, excludeIds) {
 
 function bdSyncResizeHandles() {
   const _bdResizePerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncResizeHandles') : 0;
-  const layer = document.getElementById('bd-resize-layer');
+  const root = typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document;
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
   if (!layer) return;
   const existingHandles = new Map();
   const existingRects = new Map();
@@ -29273,7 +29329,9 @@ function bdSyncResizeHandles() {
   // `node.contained` (コンテナ内ノード) はワールド座標と関係しない相対位置のためスキップ。
   bd.nodes.forEach(node => {
     if (!node || node.contained) return;
-    const el = document.getElementById('bdn-' + node.id);
+    const safeId = MeldexEscape.cssIdent(node.id);
+    const el = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + node.id) : null);
     if (!el || !el.isConnected) return;
     const isSelected = bd.selected.has(node.id);
     const isEditing = el.classList.contains('bd-editing');
@@ -29316,7 +29374,7 @@ function bdSyncResizeHandles() {
   existingRects.forEach(rect => rect.remove());
 
   // Gap-1 §9.6: マルチ選択時の統合グループアンカー（bbox の 4 辺中央 + 四隅）
-  _bdSyncGroupAnchors(layer);
+  _bdSyncGroupAnchors(layer, root);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdSyncResizeHandles', _bdResizePerf);
 }
 
@@ -29324,8 +29382,10 @@ function bdSyncResizeHandles() {
 //   - 選択 1 件以下: グループアンカー削除 + .bd-has-multi-selection クラス解除
 //   - ロック混在: グループアンカー削除（意図しない接続を避けるため。本監査 §5 仕様4 で確定）
 //   - 複数選択: bbox を計算してアンカー 8 点を配置
-function _bdSyncGroupAnchors(layer) {
-  const canvas = document.getElementById('bd-canvas');
+function _bdSyncGroupAnchors(layer, boardRoot) {
+  const root = boardRoot || (typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document);
+  const canvas = root?.querySelector?.('[data-bd-role="canvas"], #bd-canvas')
+    || (root === document ? document.getElementById?.('bd-canvas') : null);
   const selIds = [...(bd.selected || [])];
   const existingGroup = layer.querySelector(':scope > .bd-selection-group-anchors');
   if (selIds.length <= 1) {
@@ -29344,7 +29404,9 @@ function _bdSyncGroupAnchors(layer) {
   selIds.forEach(id => {
     const n = bd.nodes.find(v => v.id === id);
     if (!n || n.contained) return;
-    const el = document.getElementById('bdn-' + id);
+    const safeId = MeldexEscape.cssIdent(id);
+    const el = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + id) : null);
     if (!el) return;
     x0 = Math.min(x0, n.x);
     y0 = Math.min(y0, n.y);
@@ -34088,10 +34150,10 @@ function bdTransform() {
   if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
 }
 // スクリーン座標→ワールド座標変換（回転対応）
-function bdScreenToWorld(sx, sy) {
-  const canvas = typeof bdGetBoardElement === 'function'
+function bdScreenToWorld(sx, sy, canvasOverride) {
+  const canvas = canvasOverride || (typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : document.getElementById('bd-canvas');
+    : document.getElementById('bd-canvas'));
   if (!canvas) return { x: sx, y: sy };
   const cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
   // スクリーン→キャンバスローカル座標
@@ -36924,8 +36986,9 @@ function _bdMinimapBounds() {
     }, true);
     document.addEventListener('copy', handleCopyEvent, true);
     document.addEventListener('pointerdown', event => {
-      if (!event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]')) return;
-      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
+      const canvas = event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]');
+      if (!canvas) return;
+      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY, canvas);
     }, { passive: true });
   }
 
@@ -43174,7 +43237,9 @@ function bdInitInteraction(root) {
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
     if (!bdEnsureInteractiveCanvas(canvas)) return;
     e.preventDefault(); e.stopPropagation();
-    const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
+    // このdropを受け取ったキャンバス自身で座標変換する。サブパネル等に別の
+    // ボードDOMがあっても、文書全体の「現在のキャンバス」に取り違えない。
+    const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY, canvas);
     // Explorer/browser の DataTransfer は最初の await 後には空になるため、
     // drop の同期区間でファイル・URL・内部payloadをすべて退避する。
     const nativeTransfer = typeof MeldexDnD !== 'undefined' && MeldexDnD.snapshotDataTransfer
@@ -45351,6 +45416,12 @@ function _bdRevealRightSidebarTool(tabType) {
       return _bdFindRightSidebarPaneByTabType(tabType)?.pane?.id || '';
     }
     return '';
+  }
+  if (typeof GBPanelSet?.activateFixedRightRailTab === 'function'
+      && GBPanelSet.activateFixedRightRailTab(
+        match.panelset, match.group.id, match.pane.id, match.tab.id || '',
+      )) {
+    return match.pane.id || '';
   }
   match.panelset.activeGroupId = match.group.id;
   match.pane.activeTabIndex = match.tabIdx;
@@ -50549,6 +50620,23 @@ function bdAppendMissingImagePlaceholder(div, node) {
   div.appendChild(box);
 }
 
+function bdSyncNodeImageGeometryAfterLayout(div, node, reason) {
+  const sync = () => {
+    if (!div?.isConnected) return;
+    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id, div);
+    else if (typeof bdSyncSelectionRectForNode === 'function') bdSyncSelectionRectForNode(node.id, div);
+    if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [node.id], reason });
+  };
+  // data URL やキャッシュ済み画像は load 発火時点ではカードの高さがまだ旧値のことがある。
+  // レイアウト確定後に測り直し、カードと同じボードルートの選択UIへ反映する。
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(sync));
+  } else {
+    sync();
+  }
+}
+
 function bdAppendNodeImage(div, node) {
   if (!node.img) return;
   const img = document.createElement('img');
@@ -50561,10 +50649,7 @@ function bdAppendNodeImage(div, node) {
     delete node._imageLoadErrorAt;
     node._imgNaturalW = img.naturalWidth || 0;
     node._imgNaturalH = img.naturalHeight || 0;
-    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
-    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
-    else if (typeof bdSyncSelectionRectForNode === 'function') bdSyncSelectionRectForNode(node.id);
-    if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [node.id], reason: 'image-load' });
+    bdSyncNodeImageGeometryAfterLayout(div, node, 'image-load');
   };
   img.onerror = () => {
     img.style.display = 'none';
@@ -50572,8 +50657,7 @@ function bdAppendNodeImage(div, node) {
     node._imageLoadError = true;
     node._imageLoadErrorAt = Date.now();
     bdAppendMissingImagePlaceholder(div, node);
-    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
-    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
+    bdSyncNodeImageGeometryAfterLayout(div, node, 'image-error');
   };
   div.appendChild(img);
   img.src = node.img;
@@ -258523,6 +258607,10 @@ const GBSubPanel = (() => {
     const opts = options || {};
     if (!_contentEl) return Promise.resolve(true);
     const content = _contentEl;
+    // 仮想ペインだけがメイン側の共有表示面を借りる。空状態や隔離iframeを
+    // 閉じるだけで全ペインを再マウントすると、D&D直後で未保存のボードまで
+    // 保存済み状態から作り直され、追加した画像が消える。
+    const hadVirtualPane = !!_pane;
     const disposals = [...content.querySelectorAll('[data-meldex-entity-detail]')]
       .map(root => Promise.resolve(root._meldexEntityDetailController?.dispose?.()).catch(() => false));
     return Promise.all(disposals).then(results => {
@@ -258536,7 +258624,7 @@ const GBSubPanel = (() => {
       _stopSheetTheftObserver();
       _teardownVirtualPane();
       content.replaceChildren();
-      if (opts.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
+      if (opts.remount && hadVirtualPane && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
         GBPaneBridge.mountAllPanes();
       }
       return true;
@@ -258732,6 +258820,10 @@ const GBSubPanel = (() => {
     root.classList.add('meldex-entity-detail-editor');
     root.dataset.editorLocalId = 'page-content';
     root.dataset.testid = 'gb-subpanel-note-content';
+    root.dataset.placeholder = 'ここにテキストを入力';
+    root.setAttribute('role', 'textbox');
+    root.setAttribute('aria-label', 'ノート本文');
+    root.setAttribute('aria-multiline', 'true');
     root.contentEditable = 'false';
     root.style.cssText = 'flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:16px;line-height:1.7;outline:none;';
     _contentEl.appendChild(root);

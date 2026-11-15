@@ -315,6 +315,10 @@ const GBSubPanel = (() => {
     const opts = options || {};
     if (!_contentEl) return Promise.resolve(true);
     const content = _contentEl;
+    // 仮想ペインだけがメイン側の共有表示面を借りる。空状態や隔離iframeを
+    // 閉じるだけで全ペインを再マウントすると、D&D直後で未保存のボードまで
+    // 保存済み状態から作り直され、追加した画像が消える。
+    const hadVirtualPane = !!_pane;
     const disposals = [...content.querySelectorAll('[data-meldex-entity-detail]')]
       .map(root => Promise.resolve(root._meldexEntityDetailController?.dispose?.()).catch(() => false));
     return Promise.all(disposals).then(results => {
@@ -328,7 +332,7 @@ const GBSubPanel = (() => {
       _stopSheetTheftObserver();
       _teardownVirtualPane();
       content.replaceChildren();
-      if (opts.remount && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
+      if (opts.remount && hadVirtualPane && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
         GBPaneBridge.mountAllPanes();
       }
       return true;
@@ -524,6 +528,10 @@ const GBSubPanel = (() => {
     root.classList.add('meldex-entity-detail-editor');
     root.dataset.editorLocalId = 'page-content';
     root.dataset.testid = 'gb-subpanel-note-content';
+    root.dataset.placeholder = 'ここにテキストを入力';
+    root.setAttribute('role', 'textbox');
+    root.setAttribute('aria-label', 'ノート本文');
+    root.setAttribute('aria-multiline', 'true');
     root.contentEditable = 'false';
     root.style.cssText = 'flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:16px;line-height:1.7;outline:none;';
     _contentEl.appendChild(root);

@@ -2618,6 +2618,12 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   min-height: 200px;
 }
 
+:is(#page-content,[data-editor-local-id="page-content"])[contenteditable="true"]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ui-fg-muted, var(--fg2));
+  pointer-events: none;
+}
+
 
 @media (max-width: 480px) {
   /* 超小画面: さらにコンパクト */

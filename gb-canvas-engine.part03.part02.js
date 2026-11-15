@@ -441,10 +441,10 @@ function bdTransform() {
   if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
 }
 // スクリーン座標→ワールド座標変換（回転対応）
-function bdScreenToWorld(sx, sy) {
-  const canvas = typeof bdGetBoardElement === 'function'
+function bdScreenToWorld(sx, sy, canvasOverride) {
+  const canvas = canvasOverride || (typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
-    : document.getElementById('bd-canvas');
+    : document.getElementById('bd-canvas'));
   if (!canvas) return { x: sx, y: sy };
   const cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
   // スクリーン→キャンバスローカル座標

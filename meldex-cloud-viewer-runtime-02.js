@@ -22493,6 +22493,17 @@ document.addEventListener('DOMContentLoaded', () => {
     try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
   })();
   let lastOperations = [];
+  const TRAY_AVOID_SELECTOR = [
+    '[data-meldex-operation-avoid]',
+    '#controls.gb-toolbar-viewer',
+    '.gb-toolbar',
+    '[role="toolbar"]',
+    '.gb-modal-footer',
+    '.gb-modal-shell-footer',
+    '[data-modal-footer]',
+    '.gb-confirm-actions',
+    '.annotation-fab',
+  ].join(', ');
 
   function _text(value) { return String(value == null ? '' : value); }
 
@@ -22597,12 +22608,14 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       tray.style.removeProperty('--meldex-operation-right-inset');
     }
-    // 前面表示を維持したまま、設定の「閉じる」等の操作を覆わない。
+    // 前面表示を維持したまま、主要アプリの下部ツールバーや設定の操作領域を覆わない。
     const box = tray.getBoundingClientRect();
     let actionTop = window.innerHeight;
-    // 画面右下に浮かぶ操作ボタン（アノテートツール等）も覆わず、その上へ逃がす。
-    for (const button of document.querySelectorAll('.gb-modal-footer button, .gb-modal-shell-footer button, [data-modal-footer] button, .gb-confirm-actions button, .annotation-fab')) {
-      const action = button.getBoundingClientRect();
+    // 個々のボタンではなく操作面全体を避ける。ビューワーの #controls のように
+    // ボタン同士に隙間があるフッターでも、トレイが隙間へ重ならないようにする。
+    for (const surface of document.querySelectorAll(TRAY_AVOID_SELECTOR)) {
+      if (surface === tray || tray.contains(surface)) continue;
+      const action = surface.getBoundingClientRect();
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
     }
@@ -22620,7 +22633,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const TRAY_POSITION_SELECTOR = '.gb-dock-fixed-right, .gb-dock-bar-right, .annotation-fab, .gb-modal-footer, .gb-modal-shell-footer, [data-modal-footer], .gb-confirm-actions';
+  const TRAY_POSITION_SELECTOR = '.gb-dock-fixed-right, .gb-dock-bar-right, ' + TRAY_AVOID_SELECTOR;
   function _nodeAffectsTrayPosition(node) {
     return node?.nodeType === 1 && (node.matches(TRAY_POSITION_SELECTOR) || !!node.querySelector(TRAY_POSITION_SELECTOR));
   }

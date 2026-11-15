@@ -727,6 +727,12 @@ function _bdRevealRightSidebarTool(tabType) {
     }
     return '';
   }
+  if (typeof GBPanelSet?.activateFixedRightRailTab === 'function'
+      && GBPanelSet.activateFixedRightRailTab(
+        match.panelset, match.group.id, match.pane.id, match.tab.id || '',
+      )) {
+    return match.pane.id || '';
+  }
   match.panelset.activeGroupId = match.group.id;
   match.pane.activeTabIndex = match.tabIdx;
   if (match.panelset.collapsed && typeof GBLayout?.setNodeCollapsed === 'function') {

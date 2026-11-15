@@ -289,7 +289,9 @@ function bdNearestNodeFromPoint(x, y, excludeIds) {
 
 function bdSyncResizeHandles() {
   const _bdResizePerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncResizeHandles') : 0;
-  const layer = document.getElementById('bd-resize-layer');
+  const root = typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document;
+  const layer = root?.querySelector?.('[data-bd-role="resize-layer"], #bd-resize-layer')
+    || (root === document ? document.getElementById?.('bd-resize-layer') : null);
   if (!layer) return;
   const existingHandles = new Map();
   const existingRects = new Map();
@@ -301,7 +303,9 @@ function bdSyncResizeHandles() {
   // `node.contained` (コンテナ内ノード) はワールド座標と関係しない相対位置のためスキップ。
   bd.nodes.forEach(node => {
     if (!node || node.contained) return;
-    const el = document.getElementById('bdn-' + node.id);
+    const safeId = MeldexEscape.cssIdent(node.id);
+    const el = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + node.id) : null);
     if (!el || !el.isConnected) return;
     const isSelected = bd.selected.has(node.id);
     const isEditing = el.classList.contains('bd-editing');
@@ -344,7 +348,7 @@ function bdSyncResizeHandles() {
   existingRects.forEach(rect => rect.remove());
 
   // Gap-1 §9.6: マルチ選択時の統合グループアンカー（bbox の 4 辺中央 + 四隅）
-  _bdSyncGroupAnchors(layer);
+  _bdSyncGroupAnchors(layer, root);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdSyncResizeHandles', _bdResizePerf);
 }
 
@@ -352,8 +356,10 @@ function bdSyncResizeHandles() {
 //   - 選択 1 件以下: グループアンカー削除 + .bd-has-multi-selection クラス解除
 //   - ロック混在: グループアンカー削除（意図しない接続を避けるため。本監査 §5 仕様4 で確定）
 //   - 複数選択: bbox を計算してアンカー 8 点を配置
-function _bdSyncGroupAnchors(layer) {
-  const canvas = document.getElementById('bd-canvas');
+function _bdSyncGroupAnchors(layer, boardRoot) {
+  const root = boardRoot || (typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document);
+  const canvas = root?.querySelector?.('[data-bd-role="canvas"], #bd-canvas')
+    || (root === document ? document.getElementById?.('bd-canvas') : null);
   const selIds = [...(bd.selected || [])];
   const existingGroup = layer.querySelector(':scope > .bd-selection-group-anchors');
   if (selIds.length <= 1) {
@@ -372,7 +378,9 @@ function _bdSyncGroupAnchors(layer) {
   selIds.forEach(id => {
     const n = bd.nodes.find(v => v.id === id);
     if (!n || n.contained) return;
-    const el = document.getElementById('bdn-' + id);
+    const safeId = MeldexEscape.cssIdent(id);
+    const el = root?.querySelector?.(`#bdn-${safeId}`)
+      || (root === document ? document.getElementById?.('bdn-' + id) : null);
     if (!el) return;
     x0 = Math.min(x0, n.x);
     y0 = Math.min(y0, n.y);

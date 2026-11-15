@@ -1758,3 +1758,9 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   outline: none;
   min-height: 200px;
 }
+
+:is(#page-content,[data-editor-local-id="page-content"])[contenteditable="true"]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ui-fg-muted, var(--fg2));
+  pointer-events: none;
+}

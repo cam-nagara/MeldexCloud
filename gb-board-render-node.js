@@ -763,6 +763,23 @@ function bdAppendMissingImagePlaceholder(div, node) {
   div.appendChild(box);
 }
 
+function bdSyncNodeImageGeometryAfterLayout(div, node, reason) {
+  const sync = () => {
+    if (!div?.isConnected) return;
+    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id, div);
+    else if (typeof bdSyncSelectionRectForNode === 'function') bdSyncSelectionRectForNode(node.id, div);
+    if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [node.id], reason });
+  };
+  // data URL やキャッシュ済み画像は load 発火時点ではカードの高さがまだ旧値のことがある。
+  // レイアウト確定後に測り直し、カードと同じボードルートの選択UIへ反映する。
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(sync));
+  } else {
+    sync();
+  }
+}
+
 function bdAppendNodeImage(div, node) {
   if (!node.img) return;
   const img = document.createElement('img');
@@ -775,10 +792,7 @@ function bdAppendNodeImage(div, node) {
     delete node._imageLoadErrorAt;
     node._imgNaturalW = img.naturalWidth || 0;
     node._imgNaturalH = img.naturalHeight || 0;
-    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
-    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
-    else if (typeof bdSyncSelectionRectForNode === 'function') bdSyncSelectionRectForNode(node.id);
-    if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [node.id], reason: 'image-load' });
+    bdSyncNodeImageGeometryAfterLayout(div, node, 'image-load');
   };
   img.onerror = () => {
     img.style.display = 'none';
@@ -786,8 +800,7 @@ function bdAppendNodeImage(div, node) {
     node._imageLoadError = true;
     node._imageLoadErrorAt = Date.now();
     bdAppendMissingImagePlaceholder(div, node);
-    if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(node, div);
-    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
+    bdSyncNodeImageGeometryAfterLayout(div, node, 'image-error');
   };
   div.appendChild(img);
   img.src = node.img;
