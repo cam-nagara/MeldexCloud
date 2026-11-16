@@ -295,6 +295,14 @@
             }
             await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
           }
+          const templateTarget = String(result.target_sheet || item.target_sheet || '').trim()
+            || String(result.path || item.server_path || '').replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+          try {
+            await window.MeldexImportSheetTemplates?.apply?.('quick-memo', templateTarget);
+          } catch (templateError) {
+            // メモ本体は保存済みなのでキューへ戻さず、テンプレートだけ設定画面から再試行可能にする。
+            console.warn('クイックメモ保存先へのテンプレート適用に失敗しました', templateError);
+          }
           sent.set(item.memo_id, { signature: signature(raw), result });
         } catch {}
       }

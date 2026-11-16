@@ -589,6 +589,17 @@ async function selectDatabase(dbPath, ctx, opts) {
     console.warn('[Meldex] シート表示設定の適用に失敗しました', error);
   }
 
+  // Web Clipper / Xアカウントの保存先には、利用者が指定したテンプレートを
+  // 初回だけ加算適用する。失敗しても既存シートの表示は妨げない。
+  if (ctx.dbMetadata && window.MeldexImportSheetTemplates?.ensureForOpenedSheet) {
+    try {
+      await window.MeldexImportSheetTemplates.ensureForOpenedSheet(dbPath, ctx.dbMetadata);
+      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+    } catch (error) {
+      console.warn('[Meldex] インポート先テンプレートの適用に失敗しました', error);
+    }
+  }
+
   // localStorage → バックエンドへの自動マイグレーション（property_types）
   // バックエンドの property_types が未設定（undefined/null）かつ localStorage に設定がある場合のみ
   if (ctx.dbMetadata && ctx.dbMetadata.property_types != null && Object.keys(ctx.dbMetadata.property_types).length === 0) {

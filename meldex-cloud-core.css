@@ -3771,6 +3771,25 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
 
 .gb-rail-shell-bottom:empty { display: none; }
 
+/* 上端・中央・下端へ振り分けられた後も、固定レールの全ボタンを同寸に保つ。
+   下端アクションだけ親レイアウトの縮小を受けて小さく見える回帰を防ぐ。 */
+.gb-dock-bar-fixed .gb-rail-shell-top > .gb-dock-icon,
+.gb-dock-bar-fixed .gb-rail-shell-scroll > .gb-dock-icon,
+.gb-dock-bar-fixed .gb-rail-shell-bottom > .gb-dock-icon {
+  width: var(--gb-rail-button-size, 34px);
+  height: var(--gb-rail-button-size, 34px);
+  min-width: var(--gb-rail-button-size, 34px);
+  min-height: var(--gb-rail-button-size, 34px);
+  flex: 0 0 var(--gb-rail-button-size, 34px);
+}
+
+.gb-dock-bar-fixed .gb-rail-shell-top > .gb-dock-icon svg,
+.gb-dock-bar-fixed .gb-rail-shell-scroll > .gb-dock-icon svg,
+.gb-dock-bar-fixed .gb-rail-shell-bottom > .gb-dock-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
 @media (pointer: coarse) {
   .gb-dock-bar-fixed .gb-dock-icon {
     min-width: 44px;

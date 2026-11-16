@@ -18608,6 +18608,12 @@ const GBLayout = (() => {
       e.stopPropagation();
       const { pane, tab, tabIdx, g, activateFixedTab } = ctx;
       if (fixedSide) {
+        // 右レールは同じ選択中アイコンをもう一度押した時に、
+        // 中身だけを切り替え直さず右サイドバー全体を閉じる。
+        if (fixedSide === 'right' && !panelsetNode.collapsed && btn.classList.contains('active')) {
+          _setPanelsetCollapsed(panelsetNode, true, { skipActivePaneCallback: true });
+          return;
+        }
         activateFixedTab();
         return;
       }
@@ -62238,7 +62244,17 @@ function _sn2StopSep() {
       const successMessage = enrichmentOnly
         ? `@${username} の後処理を実行しました。完了${data.enriched || 0}件・後処理待ち${data.enrichment_pending || 0}件・翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`
         : resultSummary(data);
-      setStatus(successMessage, false);
+      let templateWarning = '';
+      try {
+        await window.MeldexImportSheetTemplates?.apply?.(
+          'x-account-posts',
+          data.save_dir || `Xアカウント/@${username}`
+        );
+      } catch (templateError) {
+        console.warn('Xアカウント保存先へのテンプレート適用に失敗しました', templateError);
+        templateWarning = ' シートテンプレートを適用できませんでした。設定から再試行してください。';
+      }
+      setStatus(successMessage + templateWarning, !!templateWarning);
       await refreshAccounts();
       if (typeof loadOutliner === 'function') {
         try {
@@ -62545,6 +62561,7 @@ function _sn2StopSep() {
         <input id="x-account-posts-username" class="gb-input" type="text" autocomplete="off" placeholder="例: XDevelopers または https://x.com/XDevelopers" data-e2e-id="x-account-posts-username">
       </label>
       <div id="x-account-posts-save-preview" class="gb-section-desc">保存先: ユーザー名を入力すると表示されます</div>
+      <div class="gb-section gb-section--boxed" style="margin-top:8px;" data-import-sheet-template="x-account-posts"></div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
         <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
@@ -83105,6 +83122,7 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <div id="settings-quick-memo-install-container" class="settings-section-wide" data-settings-view="quick-memo-setup"></div>
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="quick-memo-setup" data-import-sheet-template="quick-memo"></section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません', { e2eId: 'settings-transfer-help' })}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
@@ -83499,6 +83517,7 @@ async function showSettingsModal(opts) {
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
         <div id="webclip-inbox-schedule-container"></div>
+        <div class="gb-section gb-section--boxed" style="margin-top:8px;" data-import-sheet-template="web-clipper"></div>
         <label class="gb-field" style="margin-top:8px;">
           <span class="gb-label">ブラウザに読み込むフォルダ</span>
           <input id="settings-webclip-install-path" class="gb-input" type="text" data-gb-path-input readonly value="" placeholder="Web Clipperを準備すると表示されます">
@@ -99349,7 +99368,15 @@ async function resetLayoutToDefault() {
         }
       );
       await loadStatus({ preserveStatus: true });
-      setStatus(syncSummary(data, '保存しました。'), false);
+      let templateWarning = '';
+      try {
+        const saveDir = data?.save_dir || getInputValue('x-bookmarks-save-dir', 'Xブックマーク');
+        await window.MeldexImportSheetTemplates?.apply?.('x-bookmarks', saveDir);
+      } catch (templateError) {
+        console.warn('Xブックマーク保存先へのテンプレート適用に失敗しました', templateError);
+        templateWarning = ' シートテンプレートを適用できませんでした。設定から再試行してください。';
+      }
+      setStatus(syncSummary(data, '保存しました。') + templateWarning, !!templateWarning);
     } catch (err) {
       const payload = err.errorDetail || err.payload?.detail;
       if (payload?.reason_code === 'x_api_credits_depleted') {
@@ -99648,6 +99675,7 @@ async function resetLayoutToDefault() {
         <span class="gb-label">保存先シート</span>
         <input id="x-bookmarks-save-dir" class="gb-input" type="text" value="Xブックマーク">
       </label>
+      <div class="gb-section gb-section--boxed" data-import-sheet-template="x-bookmarks"></div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <span class="gb-label">取得件数 ${fieldHelp('手動保存は最大5,000件まで選べます。大量取得は有料です。開始前に費用目安を確認します。定期実行は意図しない課金を避けるため最新100件だけを確認し、フォルダ全体は読み直しません。')}</span>
         <select id="x-bookmarks-max-results" class="gb-select">
@@ -188291,6 +188319,17 @@ async function selectDatabase(dbPath, ctx, opts) {
     console.warn('[Meldex] シート表示設定の適用に失敗しました', error);
   }
 
+  // Web Clipper / Xアカウントの保存先には、利用者が指定したテンプレートを
+  // 初回だけ加算適用する。失敗しても既存シートの表示は妨げない。
+  if (ctx.dbMetadata && window.MeldexImportSheetTemplates?.ensureForOpenedSheet) {
+    try {
+      await window.MeldexImportSheetTemplates.ensureForOpenedSheet(dbPath, ctx.dbMetadata);
+      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+    } catch (error) {
+      console.warn('[Meldex] インポート先テンプレートの適用に失敗しました', error);
+    }
+  }
+
   // localStorage → バックエンドへの自動マイグレーション（property_types）
   // バックエンドの property_types が未設定（undefined/null）かつ localStorage に設定がある場合のみ
   if (ctx.dbMetadata && ctx.dbMetadata.property_types != null && Object.keys(ctx.dbMetadata.property_types).length === 0) {
@@ -215157,11 +215196,17 @@ function openCalendar() {
         if (endpoint) {
           state = await apiPost(endpoint, { ...payload, voter, choice: index });
         } else {
-          const input = document.getElementById('chat-input');
-          if (!input || input.value.trim() || (typeof _chatState !== 'undefined' && _chatState.streaming)) throw new Error('入力中のメッセージを送信してから回答してください');
-          input.value = `「${poll.question}」への回答: ${poll.options[index]}`;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          if (await chatSend({ fromButton: true }) === false) throw new Error('回答を送信できませんでした。入力欄から再送信してください');
+          const answerText = `「${poll.question}」への回答: ${poll.options[index]}`;
+          const waitingDrafts = window.MeldexChatWaitingDrafts;
+          if (waitingDrafts?.enqueue) {
+            if (!waitingDrafts.enqueue(answerText, { sendWhenIdle: true })) throw new Error('回答を待機キューへ追加できませんでした');
+          } else {
+            const input = document.getElementById('chat-input');
+            if (!input || input.value.trim() || (typeof _chatState !== 'undefined' && _chatState.streaming)) throw new Error('入力中のメッセージを送信してから回答してください');
+            input.value = answerText;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            if (await chatSend({ fromButton: true }) === false) throw new Error('回答を送信できませんでした。入力欄から再送信してください');
+          }
           aiChoice = index;
         }
       } catch (error) { failure = '回答できません: ' + (error?.message || error); }
@@ -220442,6 +220487,41 @@ function _chatRenderQueuedMessageBubbles() {
   });
 }
 
+function _chatRenderQueuedAttachments(wrapper, message) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (!wrapper || !attachments.length) return;
+  const strip = document.createElement('div');
+  strip.className = 'chat-queued-attachments';
+  strip.setAttribute('aria-label', '待機中の添付ファイル');
+  strip.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:100%;margin:2px 0 3px;';
+  attachments.forEach(att => {
+    const isPdf = String(att?.mime || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(att?.name || att?.path || '');
+    const card = document.createElement('div');
+    card.className = 'chat-queued-attachment';
+    card.title = String(att?.name || att?.path || '添付ファイル');
+    card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:3px;width:70px;min-width:0;padding:4px;border:1px solid var(--border);border-radius:7px;background:var(--bg2);';
+    if (isPdf) {
+      const icon = document.createElement('span');
+      icon.style.cssText = 'display:flex;align-items:center;justify-content:center;width:54px;height:42px;color:var(--fg2);';
+      icon.innerHTML = typeof lucide === 'function' ? lucide('fileText', 24) : 'PDF';
+      card.appendChild(icon);
+    } else {
+      const image = document.createElement('img');
+      const storedPath = String(att?.path || '');
+      image.src = String(att?.dataUrl || '') || (storedPath ? ((typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(storedPath)) : '');
+      image.alt = String(att?.name || storedPath || '添付画像');
+      image.style.cssText = 'display:block;width:54px;height:42px;object-fit:cover;border-radius:4px;background:var(--bg3);';
+      card.appendChild(image);
+    }
+    const label = document.createElement('span');
+    label.textContent = String(att?.name || att?.path || '添付');
+    label.style.cssText = 'display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--fg2);';
+    card.appendChild(label);
+    strip.appendChild(card);
+  });
+  wrapper.appendChild(strip);
+}
+
 function _chatRenderStoredMessages() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
@@ -220881,6 +220961,7 @@ function chatAddMessage(role, content, options = {}) {
     header.appendChild(editBtn);
   }
   wrapper.appendChild(header);
+  if (isQueued && isUser) _chatRenderQueuedAttachments(wrapper, options?.waitingDraft);
 
   // バブル
   const div = document.createElement('div');
@@ -220891,10 +220972,13 @@ function chatAddMessage(role, content, options = {}) {
       ? 'background:var(--bg2);color:var(--fg2);padding:8px 12px;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;'
       : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
   // スタンプのみメッセージの判定
-  const _isStructured = Array.isArray(content);
+  const renderContent = isQueued && Array.isArray(content)
+    ? content.filter(part => part?.type === 'text')
+    : content;
+  const _isStructured = Array.isArray(renderContent);
   const _stampOnly = !_isStructured && typeof isStampOnly === 'function' && isStampOnly(plainContent);
   if (_isStructured) {
-    _chatRenderStructuredMessage(div, content, isUser);
+    _chatRenderStructuredMessage(div, renderContent, isUser);
   } else if (_stampOnly) {
     div.style.background = 'transparent';
     div.style.padding = '4px';
@@ -221167,6 +221251,7 @@ const CHAT_QUEUE_STORAGE_KEY = 'meldex-chat-waiting-drafts:v1';
 const CHAT_QUEUE_MODE_KEY = 'chat-waiting-send-mode';
 const CHAT_QUEUE_MODES = new Set(['one-by-one', 'combined', 'consecutive']);
 let _chatDeletedDraftUndo = null;
+let _chatEditingQueuedDraft = null;
 
 function _chatQueueSendMode() {
   const value = String(localStorage.getItem(CHAT_QUEUE_MODE_KEY) || 'one-by-one');
@@ -221203,7 +221288,22 @@ function _chatDraftScope(message) {
 function _chatPersistQueuedMessages() {
   try {
     const saved = _chatQueuedMessages().map(message => {
-      const copy = { ...message, draftScope: _chatSerializableQueueScope(_chatDraftScope(message)) };
+      const copy = {
+        ...message,
+        draftScope: _chatSerializableQueueScope(_chatDraftScope(message)),
+        // File / Promise / blob URL は再起動後に復元できず、巨大な data URL は
+        // localStorage の上限を超えて待機キュー全体の保存を失敗させる。
+        // 送信に必要なアップロード済みパスと表示情報だけを永続化する。
+        attachments: (message.attachments || []).map(item => ({
+          id: String(item?.id || ''),
+          name: String(item?.name || ''),
+          path: String(item?.path || ''),
+          mime: String(item?.mime || item?.mimeType || ''),
+          uploaded: item?.uploaded !== false,
+          uploading: false,
+          uploadError: '',
+        })),
+      };
       delete copy._messages;
       return copy;
     });
@@ -221274,6 +221374,7 @@ function _chatQueuedMessagesForScope(scope) {
 function _chatClearQueuedMessages() {
   const queue = _chatQueuedMessages();
   queue.splice(0, queue.length);
+  _chatEditingQueuedDraft = null;
   _chatState.queuedScope = null;
   _chatPersistQueuedMessages();
 }
@@ -221296,18 +221397,79 @@ function _chatCreateWaitingDraft(text, attachments, scope) {
   return message;
 }
 
+function _chatInsertWaitingDraft(message, index) {
+  if (!message) return false;
+  const queue = _chatQueuedMessages();
+  const insertion = Number.isInteger(index) ? Math.max(0, Math.min(index, queue.length)) : queue.length;
+  queue.splice(insertion, 0, message);
+  _chatState.queuedScope = message.draftScope || _chatState.queuedScope || _chatCurrentQueueScope();
+  const saved = _chatPersistQueuedMessages();
+  if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+  return saved;
+}
+
+function _chatEditedDraftInsertion(scope) {
+  const edit = _chatEditingQueuedDraft;
+  if (!edit) return null;
+  if (!_chatQueueScopesMatch(_chatDraftScope(edit.message), scope)) return null;
+  _chatEditingQueuedDraft = null;
+  return edit;
+}
+
+function _chatHasEditedQueuedDraft() {
+  return !!_chatEditingQueuedDraft;
+}
+
+function _chatBuildQueuedDraft(text, attachments, scope) {
+  const edit = _chatEditedDraftInsertion(scope);
+  const message = _chatCreateWaitingDraft(text, attachments, scope);
+  if (edit?.message) {
+    message.msg_id = edit.message.msg_id || message.msg_id;
+    message.timestamp = edit.message.timestamp || message.timestamp;
+    message.provider = edit.message.provider || message.provider;
+    message.model = edit.message.model || message.model;
+    message.generation = { ...(edit.message.generation || message.generation || {}) };
+    message.draftScope = _chatSerializableQueueScope(_chatDraftScope(edit.message) || scope);
+  }
+  return { message, index: edit?.index };
+}
+
+function _chatEnqueueText(text, options = {}) {
+  const value = String(text || '').trim();
+  const attachments = Array.isArray(options.attachments) ? options.attachments.map(item => ({ ...item })) : [];
+  if (!value && !attachments.length) return false;
+  if (attachments.some(item => item?.uploading || item?.uploadError || !String(item?.path || '').trim())) return false;
+  const scope = options.scope || _chatCurrentQueueScope();
+  const message = _chatCreateWaitingDraft(value, attachments, scope);
+  _chatInsertWaitingDraft(message, Number.isInteger(options.index) ? options.index : undefined);
+  if (typeof showStatus === 'function') showStatus('待機カードへ追加しました');
+  if (options.sendWhenIdle !== false && !_chatScopeIsStreaming(scope.messages)) {
+    setTimeout(() => {
+      if (typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        _chatSendQueuedMessagesAfterStream().catch(() => {});
+      }
+    }, 0);
+  }
+  return message;
+}
+
 function _chatRestoreWaitingDraftToComposer(message) {
   if (!message) return false;
   const input = document.getElementById('chat-input');
   if (!input) return false;
   const existingText = String(input.value || '').trim();
   const existingAttachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
+  if (existingAttachments.some(item => item?.uploading || item?.uploadError || !String(item?.path || '').trim())) {
+    if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に待機カードを編集してください', true);
+    return false;
+  }
   if (existingText || existingAttachments.length) {
     _chatQueuedMessages().push(_chatCreateWaitingDraft(existingText, existingAttachments, _chatCurrentQueueScope()));
   }
   input.value = typeof _chatContentToText === 'function' ? _chatContentToText(message.content) : String(message.content || '');
   input.dispatchEvent(new Event('input', { bubbles: true }));
   _chatState.pendingAttachments = (message.attachments || []).map(item => ({ ...item }));
+  if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   if (message.provider) {
     _chatState.provider = message.provider;
     const providerSelect = document.getElementById('chat-provider');
@@ -221368,14 +221530,27 @@ function _chatEditQueuedMessage(msgId) {
   const index = queue.findIndex(item => String(item?.msg_id || '') === String(msgId || ''));
   if (index < 0) return false;
   const [message] = queue.splice(index, 1);
-  return _chatRestoreWaitingDraftToComposer(message);
+  if (!_chatRestoreWaitingDraftToComposer(message)) {
+    queue.splice(index, 0, message);
+    _chatPersistQueuedMessages();
+    if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+    return false;
+  }
+  _chatEditingQueuedDraft = { message, index };
+  return true;
 }
 
 function _chatInterruptWithQueuedMessage(msgId) {
   const message = _chatQueuedMessages().find(item => String(item?.msg_id || '') === String(msgId || ''));
   const execution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
   const controller = execution?.controller || _chatState.abortController;
-  if (!message || !controller) return false;
+  if (!message) return false;
+  if (!controller) {
+    if (typeof _chatSendQueuedMessagesAfterStream !== 'function') return false;
+    _chatSendQueuedMessagesAfterStream({ queuedMessageId: String(message.msg_id || '') }).catch(() => {});
+    if (typeof showStatus === 'function') showStatus('待機カードを送信します');
+    return true;
+  }
   _chatState.interruptDraftId = String(message.msg_id || '');
   if (execution) {
     execution.interruptRequested = true;
@@ -221393,6 +221568,7 @@ window.MeldexChatWaitingDrafts = {
   setMode: _chatSetQueueSendMode,
   scopeKey: _chatQueueScopeKey,
   persist: _chatPersistQueuedMessages,
+  enqueue: _chatEnqueueText,
   edit: _chatEditQueuedMessage,
   interrupt: _chatInterruptWithQueuedMessage,
 };
@@ -221534,19 +221710,17 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   }
 
   const scope = _chatCurrentQueueScope();
-  const message = _chatCreateWaitingDraft(text, attachments, scope);
+  const queuedDraft = _chatBuildQueuedDraft(text, attachments, scope);
+  const message = queuedDraft.message;
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
-  queue.push(message);
+  const insertion = Number.isInteger(queuedDraft.index)
+    ? Math.max(0, Math.min(queuedDraft.index, queue.length))
+    : queue.length;
+  queue.splice(insertion, 0, message);
   const queueSaved = _chatPersistQueuedMessages();
   if (queueSaved) window.GBChatDrafts?.clearSubmitted?.();
-  chatAddMessage('user', message.content, {
-    messageIndex: _chatState.messages.length + queue.length - 1,
-    msg_id: message.msg_id,
-    queuedMessageId: message.msg_id,
-    timestamp,
-    queued_for_next_response: true,
-  });
+  if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
   if (typeof showStatus === 'function') showStatus('待機カードへ追加しました');
   return true;
 }
@@ -221608,17 +221782,18 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
   if (!queued.length) return false;
   // 割り込み対象は、割り込みを受けた実行から渡されたものだけを使う（別チャットへ混入させない）。
   const interruptId = String(options.interruptDraftId || '');
-  if (interruptId) {
-    const chosen = queued.find(item => String(item?.msg_id || '') === interruptId);
+  const requestedId = String(options.queuedMessageId || interruptId || '');
+  if (requestedId) {
+    const chosen = queued.find(item => String(item?.msg_id || '') === requestedId);
     const rest = queued.filter(item => item !== chosen);
     if (rest.length) {
       _chatState.queuedMessages = rest.concat(_chatQueuedMessages());
       _chatPersistQueuedMessages();
     }
     queued = chosen ? [chosen] : queued.slice(0, 1);
-    if (String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
+    if (interruptId && String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
   }
-  const sendMode = interruptId ? 'one-by-one' : _chatQueueSendMode();
+  const sendMode = requestedId ? 'one-by-one' : _chatQueueSendMode();
   if (sendMode === 'one-by-one' && queued.length > 1) {
     _chatState.queuedMessages = queued.slice(1).concat(_chatQueuedMessages());
     queued = queued.slice(0, 1);
@@ -221759,6 +221934,11 @@ async function chatSend(options = {}) {
     if (_chatExecutionForMessages(requestedStreamMessages)) return false;
   } else if (_chatState.streaming) {
     return _chatQueueUserInputForNextTurn(options);
+  }
+  if (!requestedStreamMessages && typeof _chatHasEditedQueuedDraft === 'function' && _chatHasEditedQueuedDraft()) {
+    const queued = _chatQueueUserInputForNextTurn({ ...options, fromButton: false, stopRequested: false });
+    if (!queued) return false;
+    return _chatSendQueuedMessagesAfterStream();
   }
   const effectiveProvider = _chatProviderKey(options.provider || _chatState.provider);
   if (_chatIsCliProvider(effectiveProvider)) {
@@ -224242,7 +224422,8 @@ function _renderChatAttachments() {
       thumb.innerHTML = typeof lucide === 'function' ? lucide('fileText', 18) : 'PDF';
       thumb.style.cssText = 'width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg2);flex-shrink:0;';
     } else {
-      thumb.src = att.dataUrl;
+      const storedPath = String(att.path || '');
+      thumb.src = String(att.dataUrl || '') || (storedPath ? ((typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(storedPath)) : '');
       thumb.alt = att.name;
       thumb.style.cssText = 'width:24px;height:24px;object-fit:cover;border-radius:2px;flex-shrink:0;';
     }
@@ -233913,6 +234094,14 @@ function _folderIsIndependentSurface() {
   return !!_folderResolveRenderOverride();
 }
 
+function _folderUpdateStatusCounts(items) {
+  const list = Array.isArray(items) ? items : [];
+  const folderCount = list.reduce((count, item) => count + (item?.type === 'folder' ? 1 : 0), 0);
+  const fileCount = list.length - folderCount;
+  const countEl = document.getElementById('sb-count');
+  if (countEl) countEl.textContent = `フォルダ ${folderCount} / ファイル ${fileCount}`;
+}
+
 // CSVの_csvShowTakeoverNotice()と同じ流儀・同じ見え方（メッセージ文言・空状態と
 // 同じクラス）で、直前の描画先（切り替わる側）へ通知を出す。override切り替え前に
 // 呼ぶことで、直前の描画先がメイン/サブパネルのどちらでも正しく届く。
@@ -233995,6 +234184,7 @@ async function openFolder(label, path, opts) {
     if (isStaleFolderLoad()) return;
     _folderItems = fetchedItems;
     _folderBrowseIncomplete = browseIncomplete;
+    _folderUpdateStatusCounts(_folderItems);
     if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80, loading });
@@ -234016,6 +234206,7 @@ async function openFolder(label, path, opts) {
     if (isStaleFolderLoad()) return;
     hadError = true;
     _folderItems = [];
+    _folderUpdateStatusCounts(_folderItems);
     _folderSelected = null;
     _folderSelectedItems = [];
     const folderGridEl = _folderGridEl();
@@ -234047,6 +234238,7 @@ function renderFolderInitialPrompt() {
   _folderVisibleItems = [];
   _folderSelected = null;
   _folderSelectedItems = [];
+  _folderUpdateStatusCounts(_folderItems);
   const titleEl = document.getElementById('folder-title');
   if (titleEl) titleEl.textContent = 'フォルダ';
   window.MeldexFileLockBadge?.apply?.(titleEl, '');
@@ -234439,6 +234631,7 @@ function renderFolderGrid(opts) {
   const resetScrollTop = !!renderOpts.resetScrollTop;
   const container = _folderGridEl();
   if (!container) return;
+  _folderUpdateStatusCounts(_folderItems);
   const renderSeq = ++_folderRenderSeq;
   container.innerHTML = '';
   if (resetScrollTop) container.scrollTop = 0;
@@ -267958,7 +268151,20 @@ function _sendHeartbeat() {
     .then(async data => {
       const revision = data?.webclip_directory_revision;
       if (typeof revision !== 'string') return;
-      if (_webclipDirectoryRevision === null) { _webclipDirectoryRevision = revision; return; }
+      const changedSheetPaths = Array.isArray(data?.webclip_changed_sheet_paths)
+        ? data.webclip_changed_sheet_paths : [];
+      const applyChangedSheetTemplates = async () => {
+        if (!changedSheetPaths.length) return true;
+        const applyMany = window.MeldexImportSheetTemplates?.applyMany;
+        if (typeof applyMany !== 'function') return false;
+        await applyMany('web-clipper', changedSheetPaths);
+        return true;
+      };
+      if (_webclipDirectoryRevision === null) {
+        if (!(await applyChangedSheetTemplates())) return;
+        _webclipDirectoryRevision = revision;
+        return;
+      }
       if (_webclipDirectoryRevision === revision) return;
       const isCurrent = () => {
         const active = typeof document === 'undefined' ? null : document.activeElement;
@@ -267975,6 +268181,7 @@ function _sendHeartbeat() {
         result = await refreshOutliner({ force: true, coalesce: true, reason: 'webclip-directory-change' });
       } else return;
       if (result === false || Array.isArray(result) && result.some(row => row?.status === 'rejected')) return;
+      if (!(await applyChangedSheetTemplates())) return;
       _webclipDirectoryRevision = revision;
     })
     .catch(() => {})
@@ -275017,6 +275224,399 @@ function _checkKeyConflict(selfId, newKey) {
 // === 初期化 ===
 
 document.addEventListener('DOMContentLoaded', _updateAllTooltips);
+
+;
+
+/* === gb-import-sheet-templates.js === */
+;
+(function (global) {
+  'use strict';
+
+  const STORAGE_KEY = 'meldex.import-sheet-templates.v1';
+  const APPLIED_KEY = 'meldex.import-sheet-templates.applied.v1';
+  const PREFERENCE_DOCUMENT = 'import-sheet-templates';
+  const DEFINITIONS = Object.freeze({
+    'quick-memo': {
+      label: 'クイックメモ',
+      description: 'クイックメモの保存先シートへ、選択したシートテンプレートを追加適用します。',
+    },
+    'web-clipper': {
+      label: 'Web Clipper',
+      description: 'Web Clipperの保存先シートへ、保存通知を受けた時に選択したシートテンプレートを追加適用します。',
+    },
+    'x-bookmarks': {
+      label: 'Xブックマーク',
+      description: 'Xブックマークの保存先シートへ、保存完了時に選択したシートテンプレートを追加適用します。',
+    },
+    'x-account-posts': {
+      label: 'Xアカウント',
+      description: '各Xアカウントの保存先シートへ、保存完了時に選択したシートテンプレートを追加適用します。',
+    },
+  });
+  let sharedLoadPromise = null;
+
+  function readJson(key, fallback) {
+    try {
+      const parsed = JSON.parse(global.localStorage?.getItem(key) || 'null');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function selections() {
+    return readJson(STORAGE_KEY, {});
+  }
+
+  function writeSelections(value) {
+    global.localStorage?.setItem(STORAGE_KEY, JSON.stringify(value || {}));
+  }
+
+  function appliedRecords() {
+    return readJson(APPLIED_KEY, {});
+  }
+
+  function writeAppliedRecords(value) {
+    global.localStorage?.setItem(APPLIED_KEY, JSON.stringify(value || {}));
+  }
+
+  function normalizeImporter(importer) {
+    const key = String(importer || '').trim();
+    return Object.prototype.hasOwnProperty.call(DEFINITIONS, key) ? key : '';
+  }
+
+  function getSelection(importer) {
+    const key = normalizeImporter(importer);
+    return key ? String(selections()[key] || '') : '';
+  }
+
+  function templates() {
+    if (typeof global.getAllTemplates !== 'function') return [];
+    try {
+      return global.getAllTemplates().filter(item => item && item.id && item.name);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function hashTemplate(template) {
+    const text = JSON.stringify({
+      id: template?.id || '',
+      name: template?.name || '',
+      properties: template?.properties || [],
+      colOrder: template?.colOrder || [],
+      colWidths: template?.colWidths || {},
+      enabledModes: template?.enabledModes || [],
+      savedViews: template?.savedViews || [],
+      entityTemplates: template?.entityTemplates || [],
+    });
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${template?.id || ''}:${(hash >>> 0).toString(36)}`;
+  }
+
+  function clearAppliedFor(importer) {
+    const key = normalizeImporter(importer);
+    if (!key) return;
+    const records = appliedRecords();
+    if (records[key]) {
+      delete records[key];
+      writeAppliedRecords(records);
+    }
+  }
+
+  function renderAll() {
+    global.document?.querySelectorAll?.('[data-import-sheet-template]')?.forEach(mount);
+  }
+
+  function syncMountedSelections() {
+    global.document?.querySelectorAll?.('[data-import-sheet-template]')?.forEach(host => {
+      const key = normalizeImporter(host.dataset.importSheetTemplate);
+      const select = host.querySelector?.('[data-import-sheet-template-select]');
+      if (!key || !select) return;
+      const selectedId = getSelection(key);
+      if (selectedId && ![...select.options].some(option => option.value === selectedId)) {
+        const selectedTemplate = templates().find(template => String(template.id) === selectedId);
+        const option = global.document.createElement('option');
+        option.value = selectedId;
+        option.textContent = selectedTemplate
+          ? `${selectedTemplate.name}${selectedTemplate.builtin === false ? '（カスタム）' : ''}`
+          : '利用できないテンプレート';
+        select.appendChild(option);
+        if (!selectedTemplate) {
+          statusFor(host, '共有設定のテンプレートがこの端末にありません。別のテンプレートを選択してください。', true);
+        }
+      }
+      select.value = selectedId;
+    });
+  }
+
+  async function saveSharedSelections(changedImporter) {
+    if (typeof global.apiFetch !== 'function') return { shared: false };
+    const changedKey = normalizeImporter(changedImporter);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const current = await global.apiFetch(`/personal-preferences/${PREFERENCE_DOCUMENT}`, { silentError: true });
+        const remoteSelections = current?.payload?.selections;
+        const localSelections = selections();
+        const mergedSelections = remoteSelections && typeof remoteSelections === 'object' && !Array.isArray(remoteSelections)
+          ? { ...remoteSelections }
+          : {};
+        if (changedKey) mergedSelections[changedKey] = String(localSelections[changedKey] || '');
+        else Object.assign(mergedSelections, localSelections);
+        const payload = { schemaVersion: 1, selections: mergedSelections };
+        const body = { payload };
+        if (current?.available !== false) body.expectedRevision = current?.revision || null;
+        const result = await global.apiFetch(`/personal-preferences/${PREFERENCE_DOCUMENT}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          silentError: true,
+        });
+        if (result?.ok !== false) return { shared: true, revision: result?.revision || null };
+      } catch (error) {
+        if (attempt > 0) return { shared: false, error };
+      }
+    }
+    return { shared: false };
+  }
+
+  async function loadSharedSelections() {
+    if (sharedLoadPromise) return sharedLoadPromise;
+    sharedLoadPromise = (async () => {
+      if (typeof global.apiFetch !== 'function') return { shared: false };
+      try {
+        const result = await global.apiFetch(`/personal-preferences/${PREFERENCE_DOCUMENT}`, { silentError: true });
+        const remote = result?.payload?.selections;
+        if (remote && typeof remote === 'object' && !Array.isArray(remote)) {
+          const next = { ...selections() };
+          Object.keys(DEFINITIONS).forEach(key => {
+            if (Object.prototype.hasOwnProperty.call(remote, key)) next[key] = String(remote[key] || '');
+          });
+          writeSelections(next);
+          syncMountedSelections();
+        }
+        return { shared: result?.available !== false, revision: result?.revision || null };
+      } catch (error) {
+        return { shared: false, error };
+      }
+    })();
+    return sharedLoadPromise;
+  }
+
+  async function save(importer, templateId, options = {}) {
+    const key = normalizeImporter(importer);
+    if (!key) throw new Error('インポート種別が不正です');
+    const id = String(templateId || '');
+    if (id && !templates().some(template => String(template.id) === id)) {
+      throw new Error('選択したシートテンプレートが見つかりません');
+    }
+    const before = typeof global.captureLocalStorageSettings === 'function'
+      ? global.captureLocalStorageSettings([STORAGE_KEY, APPLIED_KEY])
+      : null;
+    const next = { ...selections(), [key]: id };
+    writeSelections(next);
+    clearAppliedFor(key);
+    if (before && options.skipHistory !== true && typeof global.pushLocalStorageSettingsHistory === 'function') {
+      global.pushLocalStorageSettingsHistory(
+        `${DEFINITIONS[key].label}: インポート先テンプレート`,
+        before,
+        global.captureLocalStorageSettings([STORAGE_KEY, APPLIED_KEY]),
+        id || 'テンプレートなし',
+        () => {
+          syncMountedSelections();
+          void saveSharedSelections(key);
+        }
+      );
+    }
+    syncMountedSelections();
+    return saveSharedSelections(key);
+  }
+
+  async function apply(importer, path, options = {}) {
+    const key = normalizeImporter(importer);
+    const dbPath = String(path || '').trim();
+    if (!key || !dbPath) return { applied: false, reason: 'target-missing' };
+    await loadSharedSelections();
+    const templateId = getSelection(key);
+    if (!templateId) return { applied: false, reason: 'not-configured' };
+    const template = templates().find(item => String(item.id) === templateId);
+    if (!template) return { applied: false, reason: 'template-missing', templateId };
+    const fingerprint = hashTemplate(template);
+    const records = appliedRecords();
+    const perImporter = records[key] && typeof records[key] === 'object' ? records[key] : {};
+    if (!options.force && perImporter[dbPath] === fingerprint) {
+      return { applied: false, reason: 'already-applied', templateId, path: dbPath };
+    }
+    if (typeof global.applyDbTemplate !== 'function') throw new Error('シートテンプレート機能を利用できません');
+    const result = global.applyDbTemplate(dbPath, template, { overwrite: false });
+    if (result?.backendSavePromise) await result.backendSavePromise;
+    records[key] = { ...perImporter, [dbPath]: fingerprint };
+    writeAppliedRecords(records);
+    return {
+      applied: true,
+      templateId,
+      templateName: template.name,
+      path: dbPath,
+      added: Array.isArray(result?.applied) ? result.applied.length : 0,
+      skipped: Array.isArray(result?.skipped) ? result.skipped.length : 0,
+    };
+  }
+
+  async function resolveCurrentTargets(importer) {
+    const key = normalizeImporter(importer);
+    if (key === 'quick-memo' && typeof global.apiFetch === 'function') {
+      const config = await global.apiFetch('/quick-memo/config', { silentError: true });
+      return [config?.quick_memo_folder].filter(Boolean);
+    }
+    if (key === 'x-bookmarks') {
+      return [global.document?.getElementById?.('x-bookmarks-save-dir')?.value || 'Xブックマーク'];
+    }
+    if (key === 'x-account-posts') {
+      const usernames = [...(global.document?.querySelectorAll?.('[data-action="sync"][data-username]') || [])]
+        .map(button => String(button.dataset.username || '').trim()).filter(Boolean);
+      return [...new Set(usernames.map(username => `Xアカウント/@${username}`))];
+    }
+    if (key === 'web-clipper') {
+      const metadata = global.state?.dbMetadata;
+      return metadata?.webclip_sheet === true && global.state?.currentDbPath ? [global.state.currentDbPath] : [];
+    }
+    return [];
+  }
+
+  async function applyCurrent(importer) {
+    const targets = await resolveCurrentTargets(importer);
+    if (!targets.length) return { applied: 0, targets: 0 };
+    const results = [];
+    for (const path of targets.slice(0, 16)) results.push(await apply(importer, path, { force: true }));
+    return { applied: results.filter(result => result.applied).length, targets: targets.length, results };
+  }
+
+  async function applyMany(importer, paths) {
+    const targets = [...new Set((Array.isArray(paths) ? paths : [])
+      .map(path => String(path || '').trim()).filter(Boolean))].slice(0, 32);
+    const results = [];
+    for (const path of targets) {
+      try {
+        results.push(await apply(importer, path));
+      } catch (error) {
+        results.push({ applied: false, reason: 'apply-failed', path, error });
+      }
+    }
+    return {
+      applied: results.filter(result => result.applied).length,
+      failed: results.filter(result => result.reason === 'apply-failed').length,
+      targets: targets.length,
+      results,
+    };
+  }
+
+  function statusFor(host, message, isError) {
+    const status = host.querySelector('[data-import-sheet-template-status]');
+    if (!status) return;
+    status.textContent = String(message || '');
+    status.style.color = isError ? 'var(--danger, var(--red))' : 'var(--fg2)';
+  }
+
+  function mount(host) {
+    if (!host || host.dataset.importSheetTemplateMounted === '1') return;
+    const key = normalizeImporter(host.dataset.importSheetTemplate);
+    if (!key) return;
+    host.dataset.importSheetTemplateMounted = '1';
+    host.innerHTML = `
+      <div class="gb-section-title">インポート先のシートテンプレート</div>
+      <div class="gb-section-desc">${DEFINITIONS[key].description} 既存の列や値は上書きしません。</div>
+      <div class="gb-field-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap;margin-top:8px;">
+        <select class="gb-select" data-import-sheet-template-select aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
+        <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply>現在の保存先にも適用</button>
+      </div>
+      <div class="gb-section-desc" data-import-sheet-template-status role="status" aria-live="polite"></div>
+    `;
+    const select = host.querySelector('[data-import-sheet-template-select]');
+    const current = getSelection(key);
+    const options = ['<option value="">テンプレートを追加適用しない</option>'];
+    templates().forEach(template => {
+      const option = global.document.createElement('option');
+      option.value = String(template.id);
+      option.textContent = `${template.name}${template.builtin === false ? '（カスタム）' : ''}`;
+      options.push(option.outerHTML);
+    });
+    if (current && !templates().some(template => String(template.id) === current)) {
+      const missing = global.document.createElement('option');
+      missing.value = current;
+      missing.textContent = '利用できないテンプレート';
+      options.push(missing.outerHTML);
+      statusFor(host, '選択済みのテンプレートがこの端末にありません。別のテンプレートを選択してください。', true);
+    }
+    select.innerHTML = options.join('');
+    select.value = current;
+    select.addEventListener('change', async () => {
+      select.disabled = true;
+      try {
+        const saved = await save(key, select.value);
+        statusFor(host, saved.shared ? '設定を保存し、端末間で共有しました。' : '設定をこの端末に保存しました。', false);
+      } catch (error) {
+        statusFor(host, `設定を保存できませんでした: ${error?.message || error}`, true);
+      } finally {
+        select.disabled = false;
+      }
+    });
+    host.querySelector('[data-import-sheet-template-apply]')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await applyCurrent(key);
+        statusFor(host, result.targets
+          ? `${result.targets}個の保存先にテンプレートを適用しました。`
+          : '現在の保存先シートがまだありません。次のインポート時に自動適用します。', false);
+      } catch (error) {
+        statusFor(host, `テンプレートを適用できませんでした: ${error?.message || error}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    void loadSharedSelections();
+  }
+
+  async function ensureForOpenedSheet(dbPath, metadata) {
+    let importer = '';
+    if (metadata?.webclip_sheet === true) importer = 'web-clipper';
+    else if (metadata?.x_account_username) importer = 'x-account-posts';
+    if (!importer) return { applied: false, reason: 'not-import-sheet' };
+    return apply(importer, dbPath);
+  }
+
+  function start() {
+    renderAll();
+    void loadSharedSelections();
+    if (typeof global.MutationObserver === 'function' && global.document?.body) {
+      new global.MutationObserver(records => {
+        records.forEach(record => record.addedNodes.forEach(node => {
+          if (node?.matches?.('[data-import-sheet-template]')) mount(node);
+          node?.querySelectorAll?.('[data-import-sheet-template]').forEach(mount);
+        }));
+      }).observe(global.document.body, { childList: true, subtree: true });
+    }
+  }
+
+  global.MeldexImportSheetTemplates = Object.freeze({
+    apply,
+    applyMany,
+    applyCurrent,
+    definitions: () => ({ ...DEFINITIONS }),
+    ensureForOpenedSheet,
+    getSelection,
+    loadSharedSelections,
+    mount,
+    save,
+  });
+
+  if (global.document?.readyState === 'loading') global.document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})(window);
 
 ;
 

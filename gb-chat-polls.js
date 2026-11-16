@@ -110,11 +110,17 @@
         if (endpoint) {
           state = await apiPost(endpoint, { ...payload, voter, choice: index });
         } else {
-          const input = document.getElementById('chat-input');
-          if (!input || input.value.trim() || (typeof _chatState !== 'undefined' && _chatState.streaming)) throw new Error('入力中のメッセージを送信してから回答してください');
-          input.value = `「${poll.question}」への回答: ${poll.options[index]}`;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          if (await chatSend({ fromButton: true }) === false) throw new Error('回答を送信できませんでした。入力欄から再送信してください');
+          const answerText = `「${poll.question}」への回答: ${poll.options[index]}`;
+          const waitingDrafts = window.MeldexChatWaitingDrafts;
+          if (waitingDrafts?.enqueue) {
+            if (!waitingDrafts.enqueue(answerText, { sendWhenIdle: true })) throw new Error('回答を待機キューへ追加できませんでした');
+          } else {
+            const input = document.getElementById('chat-input');
+            if (!input || input.value.trim() || (typeof _chatState !== 'undefined' && _chatState.streaming)) throw new Error('入力中のメッセージを送信してから回答してください');
+            input.value = answerText;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            if (await chatSend({ fromButton: true }) === false) throw new Error('回答を送信できませんでした。入力欄から再送信してください');
+          }
           aiChoice = index;
         }
       } catch (error) { failure = '回答できません: ' + (error?.message || error); }

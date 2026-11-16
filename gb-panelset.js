@@ -1439,6 +1439,12 @@
       e.stopPropagation();
       const { pane, tab, tabIdx, g, activateFixedTab } = ctx;
       if (fixedSide) {
+        // 右レールは同じ選択中アイコンをもう一度押した時に、
+        // 中身だけを切り替え直さず右サイドバー全体を閉じる。
+        if (fixedSide === 'right' && !panelsetNode.collapsed && btn.classList.contains('active')) {
+          _setPanelsetCollapsed(panelsetNode, true, { skipActivePaneCallback: true });
+          return;
+        }
         activateFixedTab();
         return;
       }

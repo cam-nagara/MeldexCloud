@@ -72,6 +72,7 @@ const CHAT_QUEUE_STORAGE_KEY = 'meldex-chat-waiting-drafts:v1';
 const CHAT_QUEUE_MODE_KEY = 'chat-waiting-send-mode';
 const CHAT_QUEUE_MODES = new Set(['one-by-one', 'combined', 'consecutive']);
 let _chatDeletedDraftUndo = null;
+let _chatEditingQueuedDraft = null;
 
 function _chatQueueSendMode() {
   const value = String(localStorage.getItem(CHAT_QUEUE_MODE_KEY) || 'one-by-one');
@@ -108,7 +109,22 @@ function _chatDraftScope(message) {
 function _chatPersistQueuedMessages() {
   try {
     const saved = _chatQueuedMessages().map(message => {
-      const copy = { ...message, draftScope: _chatSerializableQueueScope(_chatDraftScope(message)) };
+      const copy = {
+        ...message,
+        draftScope: _chatSerializableQueueScope(_chatDraftScope(message)),
+        // File / Promise / blob URL は再起動後に復元できず、巨大な data URL は
+        // localStorage の上限を超えて待機キュー全体の保存を失敗させる。
+        // 送信に必要なアップロード済みパスと表示情報だけを永続化する。
+        attachments: (message.attachments || []).map(item => ({
+          id: String(item?.id || ''),
+          name: String(item?.name || ''),
+          path: String(item?.path || ''),
+          mime: String(item?.mime || item?.mimeType || ''),
+          uploaded: item?.uploaded !== false,
+          uploading: false,
+          uploadError: '',
+        })),
+      };
       delete copy._messages;
       return copy;
     });
@@ -179,6 +195,7 @@ function _chatQueuedMessagesForScope(scope) {
 function _chatClearQueuedMessages() {
   const queue = _chatQueuedMessages();
   queue.splice(0, queue.length);
+  _chatEditingQueuedDraft = null;
   _chatState.queuedScope = null;
   _chatPersistQueuedMessages();
 }
@@ -201,18 +218,79 @@ function _chatCreateWaitingDraft(text, attachments, scope) {
   return message;
 }
 
+function _chatInsertWaitingDraft(message, index) {
+  if (!message) return false;
+  const queue = _chatQueuedMessages();
+  const insertion = Number.isInteger(index) ? Math.max(0, Math.min(index, queue.length)) : queue.length;
+  queue.splice(insertion, 0, message);
+  _chatState.queuedScope = message.draftScope || _chatState.queuedScope || _chatCurrentQueueScope();
+  const saved = _chatPersistQueuedMessages();
+  if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+  return saved;
+}
+
+function _chatEditedDraftInsertion(scope) {
+  const edit = _chatEditingQueuedDraft;
+  if (!edit) return null;
+  if (!_chatQueueScopesMatch(_chatDraftScope(edit.message), scope)) return null;
+  _chatEditingQueuedDraft = null;
+  return edit;
+}
+
+function _chatHasEditedQueuedDraft() {
+  return !!_chatEditingQueuedDraft;
+}
+
+function _chatBuildQueuedDraft(text, attachments, scope) {
+  const edit = _chatEditedDraftInsertion(scope);
+  const message = _chatCreateWaitingDraft(text, attachments, scope);
+  if (edit?.message) {
+    message.msg_id = edit.message.msg_id || message.msg_id;
+    message.timestamp = edit.message.timestamp || message.timestamp;
+    message.provider = edit.message.provider || message.provider;
+    message.model = edit.message.model || message.model;
+    message.generation = { ...(edit.message.generation || message.generation || {}) };
+    message.draftScope = _chatSerializableQueueScope(_chatDraftScope(edit.message) || scope);
+  }
+  return { message, index: edit?.index };
+}
+
+function _chatEnqueueText(text, options = {}) {
+  const value = String(text || '').trim();
+  const attachments = Array.isArray(options.attachments) ? options.attachments.map(item => ({ ...item })) : [];
+  if (!value && !attachments.length) return false;
+  if (attachments.some(item => item?.uploading || item?.uploadError || !String(item?.path || '').trim())) return false;
+  const scope = options.scope || _chatCurrentQueueScope();
+  const message = _chatCreateWaitingDraft(value, attachments, scope);
+  _chatInsertWaitingDraft(message, Number.isInteger(options.index) ? options.index : undefined);
+  if (typeof showStatus === 'function') showStatus('待機カードへ追加しました');
+  if (options.sendWhenIdle !== false && !_chatScopeIsStreaming(scope.messages)) {
+    setTimeout(() => {
+      if (typeof _chatSendQueuedMessagesAfterStream === 'function') {
+        _chatSendQueuedMessagesAfterStream().catch(() => {});
+      }
+    }, 0);
+  }
+  return message;
+}
+
 function _chatRestoreWaitingDraftToComposer(message) {
   if (!message) return false;
   const input = document.getElementById('chat-input');
   if (!input) return false;
   const existingText = String(input.value || '').trim();
   const existingAttachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
+  if (existingAttachments.some(item => item?.uploading || item?.uploadError || !String(item?.path || '').trim())) {
+    if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に待機カードを編集してください', true);
+    return false;
+  }
   if (existingText || existingAttachments.length) {
     _chatQueuedMessages().push(_chatCreateWaitingDraft(existingText, existingAttachments, _chatCurrentQueueScope()));
   }
   input.value = typeof _chatContentToText === 'function' ? _chatContentToText(message.content) : String(message.content || '');
   input.dispatchEvent(new Event('input', { bubbles: true }));
   _chatState.pendingAttachments = (message.attachments || []).map(item => ({ ...item }));
+  if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   if (message.provider) {
     _chatState.provider = message.provider;
     const providerSelect = document.getElementById('chat-provider');
@@ -273,14 +351,27 @@ function _chatEditQueuedMessage(msgId) {
   const index = queue.findIndex(item => String(item?.msg_id || '') === String(msgId || ''));
   if (index < 0) return false;
   const [message] = queue.splice(index, 1);
-  return _chatRestoreWaitingDraftToComposer(message);
+  if (!_chatRestoreWaitingDraftToComposer(message)) {
+    queue.splice(index, 0, message);
+    _chatPersistQueuedMessages();
+    if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
+    return false;
+  }
+  _chatEditingQueuedDraft = { message, index };
+  return true;
 }
 
 function _chatInterruptWithQueuedMessage(msgId) {
   const message = _chatQueuedMessages().find(item => String(item?.msg_id || '') === String(msgId || ''));
   const execution = typeof _chatVisibleExecution === 'function' ? _chatVisibleExecution() : null;
   const controller = execution?.controller || _chatState.abortController;
-  if (!message || !controller) return false;
+  if (!message) return false;
+  if (!controller) {
+    if (typeof _chatSendQueuedMessagesAfterStream !== 'function') return false;
+    _chatSendQueuedMessagesAfterStream({ queuedMessageId: String(message.msg_id || '') }).catch(() => {});
+    if (typeof showStatus === 'function') showStatus('待機カードを送信します');
+    return true;
+  }
   _chatState.interruptDraftId = String(message.msg_id || '');
   if (execution) {
     execution.interruptRequested = true;
@@ -298,6 +389,7 @@ window.MeldexChatWaitingDrafts = {
   setMode: _chatSetQueueSendMode,
   scopeKey: _chatQueueScopeKey,
   persist: _chatPersistQueuedMessages,
+  enqueue: _chatEnqueueText,
   edit: _chatEditQueuedMessage,
   interrupt: _chatInterruptWithQueuedMessage,
 };

@@ -350,7 +350,15 @@
         }
       );
       await loadStatus({ preserveStatus: true });
-      setStatus(syncSummary(data, '保存しました。'), false);
+      let templateWarning = '';
+      try {
+        const saveDir = data?.save_dir || getInputValue('x-bookmarks-save-dir', 'Xブックマーク');
+        await window.MeldexImportSheetTemplates?.apply?.('x-bookmarks', saveDir);
+      } catch (templateError) {
+        console.warn('Xブックマーク保存先へのテンプレート適用に失敗しました', templateError);
+        templateWarning = ' シートテンプレートを適用できませんでした。設定から再試行してください。';
+      }
+      setStatus(syncSummary(data, '保存しました。') + templateWarning, !!templateWarning);
     } catch (err) {
       const payload = err.errorDetail || err.payload?.detail;
       if (payload?.reason_code === 'x_api_credits_depleted') {
@@ -649,6 +657,7 @@
         <span class="gb-label">保存先シート</span>
         <input id="x-bookmarks-save-dir" class="gb-input" type="text" value="Xブックマーク">
       </label>
+      <div class="gb-section gb-section--boxed" data-import-sheet-template="x-bookmarks"></div>
       <label class="gb-field-row" style="justify-content:flex-start;">
         <span class="gb-label">取得件数 ${fieldHelp('手動保存は最大5,000件まで選べます。大量取得は有料です。開始前に費用目安を確認します。定期実行は意図しない課金を避けるため最新100件だけを確認し、フォルダ全体は読み直しません。')}</span>
         <select id="x-bookmarks-max-results" class="gb-select">

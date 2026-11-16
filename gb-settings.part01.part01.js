@@ -430,6 +430,7 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <div id="settings-quick-memo-install-container" class="settings-section-wide" data-settings-view="quick-memo-setup"></div>
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="quick-memo-setup" data-import-sheet-template="quick-memo"></section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません', { e2eId: 'settings-transfer-help' })}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
@@ -824,6 +825,7 @@ async function showSettingsModal(opts) {
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
         <div id="webclip-inbox-schedule-container"></div>
+        <div class="gb-section gb-section--boxed" style="margin-top:8px;" data-import-sheet-template="web-clipper"></div>
         <label class="gb-field" style="margin-top:8px;">
           <span class="gb-label">ブラウザに読み込むフォルダ</span>
           <input id="settings-webclip-install-path" class="gb-input" type="text" data-gb-path-input readonly value="" placeholder="Web Clipperを準備すると表示されます">

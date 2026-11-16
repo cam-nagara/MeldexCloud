@@ -1102,7 +1102,8 @@ function _renderChatAttachments() {
       thumb.innerHTML = typeof lucide === 'function' ? lucide('fileText', 18) : 'PDF';
       thumb.style.cssText = 'width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg2);flex-shrink:0;';
     } else {
-      thumb.src = att.dataUrl;
+      const storedPath = String(att.path || '');
+      thumb.src = String(att.dataUrl || '') || (storedPath ? ((typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(storedPath)) : '');
       thumb.alt = att.name;
       thumb.style.cssText = 'width:24px;height:24px;object-fit:cover;border-radius:2px;flex-shrink:0;';
     }

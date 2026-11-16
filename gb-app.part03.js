@@ -1285,7 +1285,20 @@ function _sendHeartbeat() {
     .then(async data => {
       const revision = data?.webclip_directory_revision;
       if (typeof revision !== 'string') return;
-      if (_webclipDirectoryRevision === null) { _webclipDirectoryRevision = revision; return; }
+      const changedSheetPaths = Array.isArray(data?.webclip_changed_sheet_paths)
+        ? data.webclip_changed_sheet_paths : [];
+      const applyChangedSheetTemplates = async () => {
+        if (!changedSheetPaths.length) return true;
+        const applyMany = window.MeldexImportSheetTemplates?.applyMany;
+        if (typeof applyMany !== 'function') return false;
+        await applyMany('web-clipper', changedSheetPaths);
+        return true;
+      };
+      if (_webclipDirectoryRevision === null) {
+        if (!(await applyChangedSheetTemplates())) return;
+        _webclipDirectoryRevision = revision;
+        return;
+      }
       if (_webclipDirectoryRevision === revision) return;
       const isCurrent = () => {
         const active = typeof document === 'undefined' ? null : document.activeElement;
@@ -1302,6 +1315,7 @@ function _sendHeartbeat() {
         result = await refreshOutliner({ force: true, coalesce: true, reason: 'webclip-directory-change' });
       } else return;
       if (result === false || Array.isArray(result) && result.some(row => row?.status === 'rejected')) return;
+      if (!(await applyChangedSheetTemplates())) return;
       _webclipDirectoryRevision = revision;
     })
     .catch(() => {})

@@ -215,7 +215,17 @@
       const successMessage = enrichmentOnly
         ? `@${username} の後処理を実行しました。完了${data.enriched || 0}件・後処理待ち${data.enrichment_pending || 0}件・翻訳待ち${Number(data.translation_pending_existing || 0) + Number(data.translation_pending_replies || 0)}件。`
         : resultSummary(data);
-      setStatus(successMessage, false);
+      let templateWarning = '';
+      try {
+        await window.MeldexImportSheetTemplates?.apply?.(
+          'x-account-posts',
+          data.save_dir || `Xアカウント/@${username}`
+        );
+      } catch (templateError) {
+        console.warn('Xアカウント保存先へのテンプレート適用に失敗しました', templateError);
+        templateWarning = ' シートテンプレートを適用できませんでした。設定から再試行してください。';
+      }
+      setStatus(successMessage + templateWarning, !!templateWarning);
       await refreshAccounts();
       if (typeof loadOutliner === 'function') {
         try {
@@ -522,6 +532,7 @@
         <input id="x-account-posts-username" class="gb-input" type="text" autocomplete="off" placeholder="例: XDevelopers または https://x.com/XDevelopers" data-e2e-id="x-account-posts-username">
       </label>
       <div id="x-account-posts-save-preview" class="gb-section-desc">保存先: ユーザー名を入力すると表示されます</div>
+      <div class="gb-section gb-section--boxed" style="margin-top:8px;" data-import-sheet-template="x-account-posts"></div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
         <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>

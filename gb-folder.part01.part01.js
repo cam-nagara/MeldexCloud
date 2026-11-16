@@ -60,6 +60,14 @@ function _folderIsIndependentSurface() {
   return !!_folderResolveRenderOverride();
 }
 
+function _folderUpdateStatusCounts(items) {
+  const list = Array.isArray(items) ? items : [];
+  const folderCount = list.reduce((count, item) => count + (item?.type === 'folder' ? 1 : 0), 0);
+  const fileCount = list.length - folderCount;
+  const countEl = document.getElementById('sb-count');
+  if (countEl) countEl.textContent = `フォルダ ${folderCount} / ファイル ${fileCount}`;
+}
+
 // CSVの_csvShowTakeoverNotice()と同じ流儀・同じ見え方（メッセージ文言・空状態と
 // 同じクラス）で、直前の描画先（切り替わる側）へ通知を出す。override切り替え前に
 // 呼ぶことで、直前の描画先がメイン/サブパネルのどちらでも正しく届く。
@@ -142,6 +150,7 @@ async function openFolder(label, path, opts) {
     if (isStaleFolderLoad()) return;
     _folderItems = fetchedItems;
     _folderBrowseIncomplete = browseIncomplete;
+    _folderUpdateStatusCounts(_folderItems);
     if (typeof _registerFileIds === 'function') _registerFileIds(_folderItems);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(_folderItems.length, '大きいフォルダを描画中...', { threshold: 80, loading });
@@ -163,6 +172,7 @@ async function openFolder(label, path, opts) {
     if (isStaleFolderLoad()) return;
     hadError = true;
     _folderItems = [];
+    _folderUpdateStatusCounts(_folderItems);
     _folderSelected = null;
     _folderSelectedItems = [];
     const folderGridEl = _folderGridEl();
@@ -194,6 +204,7 @@ function renderFolderInitialPrompt() {
   _folderVisibleItems = [];
   _folderSelected = null;
   _folderSelectedItems = [];
+  _folderUpdateStatusCounts(_folderItems);
   const titleEl = document.getElementById('folder-title');
   if (titleEl) titleEl.textContent = 'フォルダ';
   window.MeldexFileLockBadge?.apply?.(titleEl, '');
@@ -586,6 +597,7 @@ function renderFolderGrid(opts) {
   const resetScrollTop = !!renderOpts.resetScrollTop;
   const container = _folderGridEl();
   if (!container) return;
+  _folderUpdateStatusCounts(_folderItems);
   const renderSeq = ++_folderRenderSeq;
   container.innerHTML = '';
   if (resetScrollTop) container.scrollTop = 0;

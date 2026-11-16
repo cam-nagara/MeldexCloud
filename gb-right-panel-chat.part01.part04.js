@@ -41,19 +41,17 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   }
 
   const scope = _chatCurrentQueueScope();
-  const message = _chatCreateWaitingDraft(text, attachments, scope);
+  const queuedDraft = _chatBuildQueuedDraft(text, attachments, scope);
+  const message = queuedDraft.message;
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
-  queue.push(message);
+  const insertion = Number.isInteger(queuedDraft.index)
+    ? Math.max(0, Math.min(queuedDraft.index, queue.length))
+    : queue.length;
+  queue.splice(insertion, 0, message);
   const queueSaved = _chatPersistQueuedMessages();
   if (queueSaved) window.GBChatDrafts?.clearSubmitted?.();
-  chatAddMessage('user', message.content, {
-    messageIndex: _chatState.messages.length + queue.length - 1,
-    msg_id: message.msg_id,
-    queuedMessageId: message.msg_id,
-    timestamp,
-    queued_for_next_response: true,
-  });
+  if (typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
   if (typeof showStatus === 'function') showStatus('待機カードへ追加しました');
   return true;
 }
@@ -115,17 +113,18 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
   if (!queued.length) return false;
   // 割り込み対象は、割り込みを受けた実行から渡されたものだけを使う（別チャットへ混入させない）。
   const interruptId = String(options.interruptDraftId || '');
-  if (interruptId) {
-    const chosen = queued.find(item => String(item?.msg_id || '') === interruptId);
+  const requestedId = String(options.queuedMessageId || interruptId || '');
+  if (requestedId) {
+    const chosen = queued.find(item => String(item?.msg_id || '') === requestedId);
     const rest = queued.filter(item => item !== chosen);
     if (rest.length) {
       _chatState.queuedMessages = rest.concat(_chatQueuedMessages());
       _chatPersistQueuedMessages();
     }
     queued = chosen ? [chosen] : queued.slice(0, 1);
-    if (String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
+    if (interruptId && String(_chatState.interruptDraftId || '') === interruptId) _chatState.interruptDraftId = '';
   }
-  const sendMode = interruptId ? 'one-by-one' : _chatQueueSendMode();
+  const sendMode = requestedId ? 'one-by-one' : _chatQueueSendMode();
   if (sendMode === 'one-by-one' && queued.length > 1) {
     _chatState.queuedMessages = queued.slice(1).concat(_chatQueuedMessages());
     queued = queued.slice(0, 1);
@@ -266,6 +265,11 @@ async function chatSend(options = {}) {
     if (_chatExecutionForMessages(requestedStreamMessages)) return false;
   } else if (_chatState.streaming) {
     return _chatQueueUserInputForNextTurn(options);
+  }
+  if (!requestedStreamMessages && typeof _chatHasEditedQueuedDraft === 'function' && _chatHasEditedQueuedDraft()) {
+    const queued = _chatQueueUserInputForNextTurn({ ...options, fromButton: false, stopRequested: false });
+    if (!queued) return false;
+    return _chatSendQueuedMessagesAfterStream();
   }
   const effectiveProvider = _chatProviderKey(options.provider || _chatState.provider);
   if (_chatIsCliProvider(effectiveProvider)) {

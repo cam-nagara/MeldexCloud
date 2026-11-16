@@ -469,6 +469,41 @@ function _chatRenderQueuedMessageBubbles() {
   });
 }
 
+function _chatRenderQueuedAttachments(wrapper, message) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (!wrapper || !attachments.length) return;
+  const strip = document.createElement('div');
+  strip.className = 'chat-queued-attachments';
+  strip.setAttribute('aria-label', '待機中の添付ファイル');
+  strip.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:100%;margin:2px 0 3px;';
+  attachments.forEach(att => {
+    const isPdf = String(att?.mime || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(att?.name || att?.path || '');
+    const card = document.createElement('div');
+    card.className = 'chat-queued-attachment';
+    card.title = String(att?.name || att?.path || '添付ファイル');
+    card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:3px;width:70px;min-width:0;padding:4px;border:1px solid var(--border);border-radius:7px;background:var(--bg2);';
+    if (isPdf) {
+      const icon = document.createElement('span');
+      icon.style.cssText = 'display:flex;align-items:center;justify-content:center;width:54px;height:42px;color:var(--fg2);';
+      icon.innerHTML = typeof lucide === 'function' ? lucide('fileText', 24) : 'PDF';
+      card.appendChild(icon);
+    } else {
+      const image = document.createElement('img');
+      const storedPath = String(att?.path || '');
+      image.src = String(att?.dataUrl || '') || (storedPath ? ((typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(storedPath)) : '');
+      image.alt = String(att?.name || storedPath || '添付画像');
+      image.style.cssText = 'display:block;width:54px;height:42px;object-fit:cover;border-radius:4px;background:var(--bg3);';
+      card.appendChild(image);
+    }
+    const label = document.createElement('span');
+    label.textContent = String(att?.name || att?.path || '添付');
+    label.style.cssText = 'display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--fg2);';
+    card.appendChild(label);
+    strip.appendChild(card);
+  });
+  wrapper.appendChild(strip);
+}
+
 function _chatRenderStoredMessages() {
   const container = _chatLiveMessagesContainer();
   if (!container) return;
@@ -908,6 +943,7 @@ function chatAddMessage(role, content, options = {}) {
     header.appendChild(editBtn);
   }
   wrapper.appendChild(header);
+  if (isQueued && isUser) _chatRenderQueuedAttachments(wrapper, options?.waitingDraft);
 
   // バブル
   const div = document.createElement('div');
@@ -918,10 +954,13 @@ function chatAddMessage(role, content, options = {}) {
       ? 'background:var(--bg2);color:var(--fg2);padding:8px 12px;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;'
       : 'background:var(--bg3);color:var(--chat-message-fg, var(--fg));padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
   // スタンプのみメッセージの判定
-  const _isStructured = Array.isArray(content);
+  const renderContent = isQueued && Array.isArray(content)
+    ? content.filter(part => part?.type === 'text')
+    : content;
+  const _isStructured = Array.isArray(renderContent);
   const _stampOnly = !_isStructured && typeof isStampOnly === 'function' && isStampOnly(plainContent);
   if (_isStructured) {
-    _chatRenderStructuredMessage(div, content, isUser);
+    _chatRenderStructuredMessage(div, renderContent, isUser);
   } else if (_stampOnly) {
     div.style.background = 'transparent';
     div.style.padding = '4px';
