@@ -19,6 +19,7 @@
 
   const JOINED_WORKSPACES_KEY = 'meldex-joined-workspaces-v1';
   const WORKSPACE_LEDGER_DOCUMENT_ID = 'workspace-source-folders';
+  const WORKSPACE_METADATA_DOCUMENT_ID = 'workspace';
 
   function _auth() {
     return window.MeldexDropboxAuth;
@@ -208,6 +209,67 @@
     return serialized;
   }
 
+  async function _managementWorkspaceMetadataRecord(workspaceDropboxPath, namespaceKind, options) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+    if (!provider || !resolver?.resolveSharedWorkspaceTypedAdapter || !kind) {
+      throw new Error('共有ワークスペース情報の管理領域を安全に判定できません');
+    }
+    const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(provider, kind, {
+      workspaceDropboxPath,
+      namespaceKind,
+      workspaceId: options?.workspaceId || '',
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const record = await adapter.load(kind, WORKSPACE_METADATA_DOCUMENT_ID);
+    return { adapter, kind, record };
+  }
+
+  async function readWorkspaceMetadata(workspaceDropboxPath, namespaceKind) {
+    const path = normalizeDropboxPath(workspaceDropboxPath);
+    if (!path || path === '/') throw new Error('共有ワークスペースフォルダを選択してください');
+    const managed = await _managementWorkspaceMetadataRecord(path, namespaceKind, { allowUnjoined: true });
+    if (managed.record?.payload) {
+      return { payload: managed.record.payload, revision: managed.record.revision || '', source: 'managed' };
+    }
+    try {
+      const response = await _content('files/download', {
+        path: joinDropboxPath(path, '_Meldex_workspace.json'),
+      }, undefined, namespaceKind);
+      const payload = JSON.parse(await response.text());
+      return payload && typeof payload === 'object'
+        ? { payload, revision: '', source: 'legacy' }
+        : null;
+    } catch (err) {
+      if (_isWorkspaceLedgerNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+
+  async function writeWorkspaceMetadata(workspaceDropboxPath, payload, namespaceKind, options) {
+    const path = normalizeDropboxPath(workspaceDropboxPath);
+    if (!path || path === '/') throw new Error('共有ワークスペースフォルダを選択してください');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('共有ワークスペース情報が不正です');
+    }
+    const managed = await _managementWorkspaceMetadataRecord(path, namespaceKind, {
+      workspaceId: payload.workspaceId || payload.id || options?.workspaceId || '',
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const hasExpected = Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision');
+    const expectedRevision = hasExpected
+      ? options.expectedRevision
+      : (managed.record?.revision ?? null);
+    const record = await managed.adapter.save(
+      managed.kind,
+      WORKSPACE_METADATA_DOCUMENT_ID,
+      payload,
+      { expectedRevision },
+    );
+    return { payload: record?.payload || payload, revision: record?.revision || '' };
+  }
+
   // ------------------------------------------------------------------
   // B. 参加中ワークスペースの記録（この端末ローカル、localStorage）
   //
@@ -305,6 +367,8 @@
     readWorkspaceLedger,
     readWorkspaceLedgerStatus,
     writeWorkspaceLedger,
+    readWorkspaceMetadata,
+    writeWorkspaceMetadata,
     listJoinedWorkspaces,
     addJoinedWorkspace,
     removeJoinedWorkspace,

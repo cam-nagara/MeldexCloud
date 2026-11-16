@@ -826,7 +826,7 @@ async function showSettingsModal(opts) {
         <div id="webclip-inbox-schedule-container"></div>
         <label class="gb-field" style="margin-top:8px;">
           <span class="gb-label">ブラウザに読み込むフォルダ</span>
-          <input id="settings-webclip-install-path" class="gb-input" type="text" readonly value="" placeholder="Web Clipperを準備すると表示されます">
+          <input id="settings-webclip-install-path" class="gb-input" type="text" data-gb-path-input readonly value="" placeholder="Web Clipperを準備すると表示されます">
         </label>
         <ol class="gb-section-desc" style="margin:8px 0 0 20px;padding:0;line-height:1.6;">
           <li><strong>Web Clipperを準備</strong>を押します。</li>

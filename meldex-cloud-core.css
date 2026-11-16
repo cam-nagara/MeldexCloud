@@ -17771,7 +17771,7 @@ blockquote .quote-cite a {
 :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) {
   color: var(--ui-toolbar-fg, var(--fg));
   font-family: inherit;
-  font-weight: inherit;
+  font-weight: var(--ui-weight-semibold);
   font-style: normal;
   font-size: var(--ui-font-16);
   background: transparent;
@@ -23285,6 +23285,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   box-sizing: border-box;
   min-height: var(--ui-toolbar-title-height);
   font-size: var(--ui-toolbar-title-font-size);
+  font-weight: var(--ui-weight-semibold);
   line-height: var(--ui-toolbar-title-height);
 }
 .tb-file-title > input,
@@ -28669,6 +28670,28 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   min-width: 0 !important;
   box-sizing: border-box;
 }
+
+/* フォルダや保存先は通常の設定値より長いため、320pxの標準幅に制限しない。
+   gb-path-utils が入力を中略表示用のラッパーへ移した後も、同じ横幅を保つ。 */
+.settings-modal :is(.gb-field-row, .gb-field):has(input[data-gb-path-input])
+> :is(input[data-gb-path-input], .gb-middle-ellipsis-input-wrap) {
+  flex: 1 1 640px !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+}
+.settings-modal .gb-field-row:has(input[data-gb-path-input]) > :is(button, .gb-btn) {
+  flex: 0 0 auto;
+}
+:is(.settings-folder-path-modal, .settings-source-folder-path-modal)
+:is(input[data-gb-path-input], .gb-middle-ellipsis-input-wrap) {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+}
+
 :is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
   .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
   .bd-group-manager-field, .bd-group-options > label, .bd-group-style-fields > label,

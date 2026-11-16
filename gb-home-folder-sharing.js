@@ -57,9 +57,15 @@
     }
     if (status.homeShared) {
       el.hidden = false;
-      el.style.color = 'var(--danger)';
+      el.style.color = 'var(--orange)';
       const label = SHARED_REASON_LABEL[status.homeSharedReason] || '共有フォルダ';
-      el.textContent = `ホームフォルダが${label}の中にあります。他の人から見える可能性があります。`;
+      el.textContent = `注意: ホームフォルダが${label}の中にあります。他の人から見える可能性があります。接続エラーではありません。`;
+      return;
+    }
+    if (status.homeSharedUnknownReason) {
+      el.hidden = false;
+      el.style.color = 'var(--fg2)';
+      el.textContent = 'ホームフォルダの共有範囲を確認できません。Dropboxの同期完了後にもう一度確認してください。接続エラーではありません。';
       return;
     }
     el.hidden = true;
@@ -71,7 +77,7 @@
     if (status?.homeShared && !_startupWarningShown) {
       _startupWarningShown = true;
       if (typeof showStatus === 'function') {
-        showStatus('ホームフォルダが共有フォルダの中にあります。他の人から内容が見える可能性があります。', true);
+        showStatus('注意: ホームフォルダが共有フォルダの中にあります。他の人から内容が見える可能性があります。');
       }
     }
     _maybeShowInheritOrMigrationPrompt();
@@ -243,7 +249,7 @@
         _startupWarningShown = true;
         const reason = isTeamRoot ? 'チームスペース' : '共有ワークスペース';
         if (typeof showStatus === 'function') {
-          showStatus(`ホームフォルダが${reason}の中にあります。他の人から内容が見える可能性があります。`, true);
+          showStatus(`注意: ホームフォルダが${reason}の中にあります。他の人から内容が見える可能性があります。`);
         }
       }
       return { shared: isShared, reason: isTeamRoot ? 'team_root' : (isWorkspace ? 'workspace' : '') };

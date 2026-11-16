@@ -3319,6 +3319,7 @@
 
   const JOINED_WORKSPACES_KEY = 'meldex-joined-workspaces-v1';
   const WORKSPACE_LEDGER_DOCUMENT_ID = 'workspace-source-folders';
+  const WORKSPACE_METADATA_DOCUMENT_ID = 'workspace';
 
   function _auth() {
     return window.MeldexDropboxAuth;
@@ -3508,6 +3509,67 @@
     return serialized;
   }
 
+  async function _managementWorkspaceMetadataRecord(workspaceDropboxPath, namespaceKind, options) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+    if (!provider || !resolver?.resolveSharedWorkspaceTypedAdapter || !kind) {
+      throw new Error('共有ワークスペース情報の管理領域を安全に判定できません');
+    }
+    const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(provider, kind, {
+      workspaceDropboxPath,
+      namespaceKind,
+      workspaceId: options?.workspaceId || '',
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const record = await adapter.load(kind, WORKSPACE_METADATA_DOCUMENT_ID);
+    return { adapter, kind, record };
+  }
+
+  async function readWorkspaceMetadata(workspaceDropboxPath, namespaceKind) {
+    const path = normalizeDropboxPath(workspaceDropboxPath);
+    if (!path || path === '/') throw new Error('共有ワークスペースフォルダを選択してください');
+    const managed = await _managementWorkspaceMetadataRecord(path, namespaceKind, { allowUnjoined: true });
+    if (managed.record?.payload) {
+      return { payload: managed.record.payload, revision: managed.record.revision || '', source: 'managed' };
+    }
+    try {
+      const response = await _content('files/download', {
+        path: joinDropboxPath(path, '_Meldex_workspace.json'),
+      }, undefined, namespaceKind);
+      const payload = JSON.parse(await response.text());
+      return payload && typeof payload === 'object'
+        ? { payload, revision: '', source: 'legacy' }
+        : null;
+    } catch (err) {
+      if (_isWorkspaceLedgerNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+
+  async function writeWorkspaceMetadata(workspaceDropboxPath, payload, namespaceKind, options) {
+    const path = normalizeDropboxPath(workspaceDropboxPath);
+    if (!path || path === '/') throw new Error('共有ワークスペースフォルダを選択してください');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('共有ワークスペース情報が不正です');
+    }
+    const managed = await _managementWorkspaceMetadataRecord(path, namespaceKind, {
+      workspaceId: payload.workspaceId || payload.id || options?.workspaceId || '',
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const hasExpected = Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision');
+    const expectedRevision = hasExpected
+      ? options.expectedRevision
+      : (managed.record?.revision ?? null);
+    const record = await managed.adapter.save(
+      managed.kind,
+      WORKSPACE_METADATA_DOCUMENT_ID,
+      payload,
+      { expectedRevision },
+    );
+    return { payload: record?.payload || payload, revision: record?.revision || '' };
+  }
+
   // ------------------------------------------------------------------
   // B. 参加中ワークスペースの記録（この端末ローカル、localStorage）
   //
@@ -3605,6 +3667,8 @@
     readWorkspaceLedger,
     readWorkspaceLedgerStatus,
     writeWorkspaceLedger,
+    readWorkspaceMetadata,
+    writeWorkspaceMetadata,
     listJoinedWorkspaces,
     addJoinedWorkspace,
     removeJoinedWorkspace,
@@ -10391,16 +10455,28 @@
   }
 
   function _normalizeCloudWorkspace(raw) {
-    const folder = _workspaceFolderPath(raw?.folder || raw?.path || '');
-    const id = String(raw?.id || '').trim() || (folder ? _fnvFileId(folder).slice(0, 18) : '');
+    const dropboxPath = String(raw?.dropboxPath || raw?.dropbox_path || '').trim();
+    const registry = window.MeldexSourceFolderRegistry;
+    let folder = _workspaceFolderPath(raw?.folder || raw?.path || '');
+    if (!folder && dropboxPath && registry?.virtualPathFromDropboxPath) {
+      folder = _workspaceFolderPath(registry.virtualPathFromDropboxPath(dropboxPath));
+    }
+    const id = String(raw?.workspaceId || raw?.workspace_id || raw?.id || '').trim()
+      || (dropboxPath ? _fnvFileId(dropboxPath).slice(0, 18) : (folder ? _fnvFileId(folder).slice(0, 18) : ''));
     if (!id) return null;
+    if (dropboxPath && registry?.sourcePath) {
+      folder = registry.sourcePath(`ws:${id}:wsrc:root`, '');
+    }
     const members = (Array.isArray(raw?.members) ? raw.members : [])
       .map(member => _workspaceMember(member))
       .filter(Boolean);
     return {
       id,
+      workspaceId: id,
       name: String(raw?.name || _basename(folder) || 'ワークスペース'),
       folder,
+      dropboxPath,
+      namespaceKind: raw?.namespaceKind === 'team_root' || raw?.namespace_kind === 'team_root' ? 'team_root' : 'home',
       visible: raw?.visible !== false,
       deleted: raw?.deleted === true,
       createdAt: String(raw?.createdAt || raw?.created_at || _nowIso()),
@@ -10408,6 +10484,7 @@
       deletedAt: raw?.deletedAt || raw?.deleted_at || '',
       sourceFolderIds: Array.isArray(raw?.sourceFolderIds) ? raw.sourceFolderIds.map(String) : [],
       members,
+      _sharedRevision: String(raw?._sharedRevision || raw?.revision || ''),
     };
   }
 
@@ -10428,7 +10505,190 @@
     const managed = await _readManagementPayload(provider, kind, PWA_WORKSPACES_DOCUMENT_ID);
     const data = managed.payload
       || await _readJsonSafe(provider, PWA_WORKSPACES_FILE, { workspaces: [] });
-    return _normalizeWorkspaceStore(data);
+    const base = _normalizeWorkspaceStore(data);
+    const joined = window.MeldexWorkspaceLedgerIO?.listJoinedWorkspaces?.() || [];
+    const candidates = base.workspaces.slice();
+    joined.forEach(entry => {
+      const path = String(entry?.dropboxPath || '').trim().toLowerCase();
+      const namespaceKind = entry?.namespaceKind === 'team_root' ? 'team_root' : 'home';
+      if (!path) return;
+      const exists = candidates.some(item => (
+        item.namespaceKind === namespaceKind
+        && String(item.dropboxPath || '').trim().toLowerCase() === path
+      ));
+      if (!exists) candidates.push(_normalizeCloudWorkspace(entry));
+    });
+
+    const resolved = await Promise.all(candidates.map(async cached => {
+      const location = _cloudWorkspaceDropboxLocation(cached);
+      if (!location.dropboxPath || !window.MeldexWorkspaceLedgerIO?.readWorkspaceMetadata) return cached;
+      try {
+        const shared = await window.MeldexWorkspaceLedgerIO.readWorkspaceMetadata(
+          location.dropboxPath,
+          location.namespaceKind,
+        );
+        if (!shared?.payload) return cached;
+        window.MeldexWorkspaceLedgerIO?.addJoinedWorkspace?.({
+          id: shared.payload.workspaceId || shared.payload.id || cached.id,
+          name: shared.payload.name || cached.name,
+          dropboxPath: location.dropboxPath,
+          namespaceKind: location.namespaceKind,
+        });
+        return _normalizeCloudWorkspace({
+          ...cached,
+          ...shared.payload,
+          id: shared.payload.workspaceId || shared.payload.id || cached.id,
+          folder: location.folder || cached.folder,
+          dropboxPath: location.dropboxPath,
+          namespaceKind: location.namespaceKind,
+          _sharedRevision: shared.revision || '',
+        });
+      } catch (error) {
+        console.warn('[MeldexWorkspaces] 共有ワークスペース情報を読み取れませんでした', error);
+        return cached;
+      }
+    }));
+    const unique = [];
+    const seen = new Set();
+    resolved.forEach(item => {
+      if (!item) return;
+      const key = item.dropboxPath
+        ? `${item.namespaceKind}:${String(item.dropboxPath).toLowerCase()}`
+        : `id:${item.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      unique.push(item);
+    });
+    const personalIndexKeys = base.workspaces.map(item => item.dropboxPath
+      ? `${item.namespaceKind}:${String(item.dropboxPath).toLowerCase()}`
+      : `id:${item.id}`);
+    return { ...base, workspaces: unique, personalIndexKeys };
+  }
+
+  function _cloudWorkspaceDropboxLocation(workspace) {
+    const registry = window.MeldexSourceFolderRegistry;
+    let dropboxPath = String(workspace?.dropboxPath || workspace?.dropbox_path || '').trim();
+    if (!dropboxPath && registry?.resolveDropboxPath) {
+      try { dropboxPath = String(registry.resolveDropboxPath(workspace?.folder || '') || '').trim(); } catch {}
+    }
+    let folder = _workspaceFolderPath(workspace?.folder || '');
+    if (!folder && dropboxPath && registry?.virtualPathFromDropboxPath) {
+      try { folder = _workspaceFolderPath(registry.virtualPathFromDropboxPath(dropboxPath)); } catch {}
+    }
+    return {
+      dropboxPath,
+      folder,
+      namespaceKind: workspace?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+    };
+  }
+
+  function _sharedWorkspacePayload(workspace) {
+    const normalized = _normalizeCloudWorkspace(workspace);
+    const location = _cloudWorkspaceDropboxLocation(normalized);
+    return {
+      kind: 'meldex-shared-workspace',
+      schemaVersion: 1,
+      workspaceId: normalized.id,
+      name: normalized.name,
+      namespaceKind: location.namespaceKind,
+      dropboxPath: location.dropboxPath,
+      visible: normalized.visible !== false,
+      deleted: normalized.deleted === true,
+      createdAt: normalized.createdAt,
+      updatedAt: normalized.updatedAt,
+      deletedAt: normalized.deletedAt || '',
+      sourceFolderIds: normalized.sourceFolderIds || [],
+      members: normalized.members || [],
+    };
+  }
+
+  async function _saveSharedCloudWorkspace(workspace, options) {
+    const location = _cloudWorkspaceDropboxLocation(workspace);
+    if (!location.dropboxPath || location.dropboxPath === '/') {
+      throw _httpError(409, 'ワークスペースのDropboxフォルダを確認できません');
+    }
+    const payload = _sharedWorkspacePayload({ ...workspace, ...location });
+    const saved = await window.MeldexWorkspaceLedgerIO?.writeWorkspaceMetadata?.(
+      location.dropboxPath,
+      payload,
+      location.namespaceKind,
+      {
+        workspaceId: payload.workspaceId,
+        allowUnjoined: options?.allowUnjoined === true,
+        expectedRevision: Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')
+          ? options.expectedRevision
+          : null,
+      },
+    );
+    if (!saved) throw _httpError(503, '共有ワークスペース情報を保存できません');
+    return _normalizeCloudWorkspace({
+      ...workspace,
+      ...payload,
+      id: payload.workspaceId,
+      folder: location.folder || workspace.folder,
+      _sharedRevision: saved.revision || '',
+    });
+  }
+
+  async function _cacheCloudWorkspace(workspace) {
+    await _updateCloudWorkspaceStore(store => {
+      const pathKey = `${workspace.namespaceKind}:${String(workspace.dropboxPath || '').toLowerCase()}`;
+      const index = store.workspaces.findIndex(item => (
+        item.id === workspace.id
+        || `${item.namespaceKind}:${String(item.dropboxPath || '').toLowerCase()}` === pathKey
+      ));
+      if (index >= 0) store.workspaces[index] = workspace;
+      else store.workspaces.push(workspace);
+      return store;
+    });
+  }
+
+  async function _currentCloudWorkspaceIdentity() {
+    let accountId = '';
+    try {
+      const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+      accountId = String(account?.account_id || account?.accountId || '').trim();
+    } catch {}
+    const username = String(typeof getUsername === 'function' ? getUsername() : '').trim().toLowerCase();
+    return { accountId, username };
+  }
+
+  async function _currentCloudWorkspaceAccess(workspace, identity) {
+    const current = identity || await _currentCloudWorkspaceIdentity();
+    const { accountId, username } = current;
+    const members = Array.isArray(workspace?.members) ? workspace.members : [];
+    const member = (accountId && members.find(row => String(row?.accountId || '').trim() === accountId))
+      || members.find(row => (
+        username
+        && !String(row?.accountId || '').trim()
+        && String(row?.name || '').trim().toLowerCase() === username
+      ))
+      || null;
+    return { accountId, username, member, role: member ? _workspaceRole(member.role, 'member') : '' };
+  }
+
+  async function _mutateSharedCloudWorkspace(id, mutate, options) {
+    const store = await _readCloudWorkspaceStore();
+    const current = store.workspaces.find(item => item.id === id && item.deleted !== true);
+    if (!current) throw _httpError(404, 'ワークスペースが見つかりません');
+    const access = await _currentCloudWorkspaceAccess(current);
+    const required = options?.requiredRole || 'admin';
+    if (required === 'admin' && !['owner', 'admin'].includes(access.role)) {
+      throw _httpError(403, 'この操作を行えるのはワークスペースの所有者または管理者だけです');
+    }
+    if (required === 'member' && !access.member) {
+      throw _httpError(403, 'このワークスペースのメンバーではありません');
+    }
+    const next = _normalizeCloudWorkspace({ ...current, members: (current.members || []).map(item => ({ ...item })) });
+    mutate(next, access);
+    // mutate 実装が日時更新を忘れても、共有CASの更新は必ず新しい版になる。
+    next.updatedAt = _nowIso();
+    const saved = await _saveSharedCloudWorkspace(next, {
+      expectedRevision: current._sharedRevision || null,
+      allowUnjoined: false,
+    });
+    await _cacheCloudWorkspace(saved);
+    return saved;
   }
 
   async function _resolveCloudWorkspaceFolder(workspaceId) {
@@ -10437,8 +10697,19 @@
     const store = await _readCloudWorkspaceStore();
     const workspace = store.workspaces.find(item => item?.id === id && item.deleted !== true);
     if (!workspace) throw _httpError(404, 'ワークスペースが見つかりません');
+    if ((workspace.members || []).length && !(await _currentCloudWorkspaceAccess(workspace)).member) {
+      throw _httpError(403, 'このワークスペースへアクセスする権限がありません');
+    }
     const folder = _workspaceFolderPath(workspace.folder || '');
     if (!folder) throw _httpError(409, 'ワークスペースのDropboxフォルダが設定されていません');
+    const registry = window.MeldexSourceFolderRegistry;
+    if (registry?.resolveDropboxPath && registry?.loadOutlinerRoots) {
+      try {
+        registry.resolveDropboxPath(folder);
+      } catch {
+        await registry.loadOutlinerRoots();
+      }
+    }
     return folder;
   }
 
@@ -10470,7 +10741,11 @@
   }
 
   function _currentWorkspaceMember(body, role) {
-    const name = String(body?.user || body?.name || (typeof getUsername === 'function' ? getUsername() : '') || 'anonymous').trim() || 'anonymous';
+    // body.name はワークスペースの表示名なので、作成者の名前として使わない。
+    const name = String(
+      body?.user || body?.memberName || body?.member_name
+      || (typeof getUsername === 'function' ? getUsername() : '') || 'anonymous'
+    ).trim() || 'anonymous';
     return _workspaceMember({
       name,
       role: role || 'owner',
@@ -10482,56 +10757,115 @@
 
   async function _cloudWorkspaceList() {
     const store = await _readCloudWorkspaceStore();
-    return { workspaces: store.workspaces.filter(item => item && item.deleted !== true) };
+    const workspaces = [];
+    let identity = null;
+    for (const item of store.workspaces) {
+      if (!item || item.deleted === true) continue;
+      // メンバー情報のない旧レコードは移行のため表示する。共有正本にメンバーが
+      // ある新形式は、現在のDropboxアカウント／旧形式のユーザー名で参加を確認する。
+      if ((item.members || []).length) {
+        // Dropboxの現在アカウント確認はネットワーク境界になり得る。必要な時だけ、
+        // 一覧1回につき1回取得して全ワークスペースで再利用する。
+        identity ||= await _currentCloudWorkspaceIdentity();
+        if (!(await _currentCloudWorkspaceAccess(item, identity)).member) continue;
+      }
+      workspaces.push(item);
+    }
+    return { workspaces };
   }
 
   async function _cloudCreateWorkspace(body) {
     const folder = _workspaceFolderPath(body?.folder || body?.path || '');
     if (!folder) throw _httpError(400, 'ワークスペースにするフォルダを指定してください');
-    let created = null;
-    await _updateCloudWorkspaceStore(store => {
-      if (store.workspaces.some(item => item.deleted !== true && _normalizeFolderPath(item.folder) === folder)) {
-        throw _httpError(409, 'このフォルダは既にワークスペースに登録されています');
+    const store = await _readCloudWorkspaceStore();
+    const location = _cloudWorkspaceDropboxLocation({ folder, namespaceKind: body?.namespaceKind });
+    if (!location.dropboxPath) throw _httpError(409, '選択したフォルダのDropbox上の場所を確認できません');
+    const existingWorkspace = store.workspaces.find(item => item.deleted !== true && (
+      _normalizeFolderPath(item.folder) === folder
+      || (item.namespaceKind === location.namespaceKind
+        && String(item.dropboxPath || '').toLowerCase() === location.dropboxPath.toLowerCase())
+    ));
+    if (existingWorkspace) {
+      // 共有正本の作成後に個人発見インデックスだけが失敗した場合、同じ操作の再試行を
+      // 「重複」として永久に拒否しない。現在のDropboxアカウントが既存メンバーなら、
+      // 正本を書き直さず派生インデックスと参加記録だけを修復する。
+      const existingKey = existingWorkspace.dropboxPath
+        ? `${existingWorkspace.namespaceKind}:${String(existingWorkspace.dropboxPath).toLowerCase()}`
+        : `id:${existingWorkspace.id}`;
+      const missingFromPersonalIndex = !store.personalIndexKeys?.includes(existingKey);
+      const access = await _currentCloudWorkspaceAccess(existingWorkspace);
+      if (missingFromPersonalIndex && access.member) {
+        window.MeldexWorkspaceLedgerIO?.addJoinedWorkspace?.({
+          id: existingWorkspace.id,
+          name: existingWorkspace.name,
+          dropboxPath: existingWorkspace.dropboxPath,
+          namespaceKind: existingWorkspace.namespaceKind,
+        });
+        await _cacheCloudWorkspace(existingWorkspace);
+        return { ok: true, workspace: existingWorkspace, repaired: true };
       }
-      const now = _nowIso();
-      created = _normalizeCloudWorkspace({
-        id: _workspaceId(),
-        name: String(body?.name || _basename(folder) || 'ワークスペース').trim(),
-        folder,
-        visible: true,
-        createdAt: now,
-        updatedAt: now,
-        members: [_currentWorkspaceMember(body, 'owner')].filter(Boolean),
-      });
-      store.workspaces.push(created);
-      return store;
+      throw _httpError(409, 'このフォルダは既にワークスペースに登録されています');
+    }
+    const now = _nowIso();
+    let currentAccountId = String(body?.accountId || body?.account_id || '').trim();
+    if (!currentAccountId) {
+      try {
+        const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+        currentAccountId = String(account?.account_id || account?.accountId || '').trim();
+      } catch {}
+    }
+    let created = _normalizeCloudWorkspace({
+      id: _workspaceId(),
+      name: String(body?.name || _basename(folder) || 'ワークスペース').trim(),
+      folder,
+      ...location,
+      visible: true,
+      createdAt: now,
+      updatedAt: now,
+      members: [_currentWorkspaceMember({ ...body, accountId: currentAccountId }, 'owner')].filter(Boolean),
     });
+    const ledgerStatus = await window.MeldexWorkspaceLedgerIO?.readWorkspaceLedgerStatus?.(
+      location.dropboxPath,
+      location.namespaceKind,
+    );
+    if (ledgerStatus && !ledgerStatus.exists) {
+      await window.MeldexWorkspaceLedgerIO.writeWorkspaceLedger(
+        location.dropboxPath,
+        [{ provider: 'dropbox', relPath: '', name: created.name }],
+        location.namespaceKind,
+        { allowUnjoined: true },
+      );
+    }
+    created = await _saveSharedCloudWorkspace(created, { allowUnjoined: true, expectedRevision: null });
+    window.MeldexWorkspaceLedgerIO?.addJoinedWorkspace?.({
+      id: created.id,
+      name: created.name,
+      dropboxPath: created.dropboxPath,
+      namespaceKind: created.namespaceKind,
+    });
+    await _cacheCloudWorkspace(created);
     return { ok: true, workspace: created };
   }
 
   async function _cloudUpdateWorkspace(id, body) {
-    let updated = null;
-    await _updateCloudWorkspaceStore(store => {
-      const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
-      if (!target) throw _httpError(404, 'ワークスペースが見つかりません');
+    const updated = await _mutateSharedCloudWorkspace(id, target => {
       if (Object.prototype.hasOwnProperty.call(body || {}, 'name')) target.name = String(body.name || target.name || 'ワークスペース').trim();
-      if (Object.prototype.hasOwnProperty.call(body || {}, 'folder')) target.folder = _workspaceFolderPath(body.folder || target.folder || '');
+      // 共有境界そのものの移動は、別フォルダへのコピー／移行を伴うためここでは
+      // 名前変更と同じ更新として扱わない。
+      if (Object.prototype.hasOwnProperty.call(body || {}, 'folder')
+          && _workspaceFolderPath(body.folder || '') !== _workspaceFolderPath(target.folder || '')) {
+        throw _httpError(409, '共有ワークスペースのフォルダ変更は、離脱後に新しいフォルダへ参加してください');
+      }
       target.updatedAt = _nowIso();
-      updated = _normalizeCloudWorkspace(target);
-      Object.assign(target, updated);
-      return store;
     });
     return { ok: true, workspace: updated };
   }
 
   async function _cloudDeleteWorkspace(id) {
-    await _updateCloudWorkspaceStore(store => {
-      const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
-      if (!target) throw _httpError(404, 'ワークスペースが見つかりません');
+    await _mutateSharedCloudWorkspace(id, target => {
       target.deleted = true;
       target.deletedAt = _nowIso();
       target.updatedAt = target.deletedAt;
-      return store;
     });
     return { ok: true };
   }
@@ -10560,10 +10894,7 @@
         throw _httpError(400, '仮ユーザーはログイン権限を持たないため、ワークスペースのアクセスユーザーには追加できません');
       }
     }
-    let workspace = null;
-    await _updateCloudWorkspaceStore(store => {
-      const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
-      if (!target) throw _httpError(404, 'ワークスペースが見つかりません');
+    const workspace = await _mutateSharedCloudWorkspace(id, target => {
       const targetName = String(name || '').trim();
       const existingIndex = target.members.findIndex(item => item.name === targetName);
       const existing = existingIndex >= 0 ? target.members[existingIndex] : {};
@@ -10578,6 +10909,10 @@
         updatedAt: _nowIso(),
       }, targetName);
       if (!member) throw _httpError(400, 'メンバー名を指定してください');
+      if (existing?.role === 'owner' && member.role !== 'owner'
+          && target.members.filter(item => item?.role === 'owner').length <= 1) {
+        throw _httpError(409, '最後の所有者を別の役割へ変更できません');
+      }
       if (accountId) {
         target.members = target.members.filter((item, index) => index === existingIndex || item?.accountId !== accountId);
       }
@@ -10585,30 +10920,46 @@
       if (index >= 0) target.members[index] = { ...target.members[index], ...member };
       else target.members.push(member);
       target.updatedAt = _nowIso();
-      workspace = _normalizeCloudWorkspace(target);
-      Object.assign(target, workspace);
-      return store;
     });
     return { ok: true, workspace };
   }
 
   async function _cloudRemoveWorkspaceMember(id, name) {
-    await _updateCloudWorkspaceStore(store => {
-      const target = store.workspaces.find(item => item.id === id && item.deleted !== true);
-      if (!target) throw _httpError(404, 'ワークスペースが見つかりません');
+    await _mutateSharedCloudWorkspace(id, target => {
+      const removing = target.members.find(member => member.name === name);
+      if (removing?.role === 'owner'
+          && target.members.filter(member => member?.role === 'owner').length <= 1) {
+        throw _httpError(409, '最後の所有者をワークスペースから削除できません');
+      }
       target.members = target.members.filter(member => member.name !== name);
       target.updatedAt = _nowIso();
-      return store;
     });
     return { ok: true };
   }
 
   async function _cloudSyncWorkspaceProfile(id, body) {
-    return _cloudUpsertWorkspaceMember(id, String(body?.name || body?.user || (typeof getUsername === 'function' ? getUsername() : 'anonymous')), {
-      role: body?.role || 'member',
-      avatar: body?.avatar || _localAvatar(),
-      accountId: body?.accountId || body?.account_id || '',
-    });
+    const requestedName = String(body?.name || body?.user || (typeof getUsername === 'function' ? getUsername() : '')).trim();
+    if (!requestedName) throw _httpError(400, 'ユーザー名は必須です');
+    const workspace = await _mutateSharedCloudWorkspace(id, (target, access) => {
+      const existing = access.member;
+      const member = _workspaceMember({
+        ...existing,
+        name: requestedName,
+        role: existing.role,
+        avatar: Object.prototype.hasOwnProperty.call(body || {}, 'avatar') ? body.avatar : (existing.avatar || _localAvatar()),
+        accountId: access.accountId || existing.accountId || '',
+        userId: existing.userId || '',
+        updatedAt: _nowIso(),
+      }, requestedName);
+      const previousName = String(existing.name || '').trim().toLowerCase();
+      target.members = target.members.filter(row => {
+        if (member.accountId && String(row?.accountId || '').trim() === member.accountId) return false;
+        return !previousName || String(row?.name || '').trim().toLowerCase() !== previousName;
+      });
+      target.members.push(member);
+      target.updatedAt = _nowIso();
+    }, { requiredRole: 'member' });
+    return { ok: true, workspace };
   }
 
   async function _cloudPickWorkspaceFolder() {
@@ -27965,12 +28316,40 @@
     return result;
   }
 
-  // Desktop と同じ登録マーカーを使う。選択中のroot直下へ別シートを作らない。
-  async function _quickMemoRoots() {
+  // Desktop と同じくホームフォルダを最優先にし、その後で登録済みソースフォルダを探す。
+  // Dropbox provider の相対パス "" は Cloud のホームフォルダ（vault root）を表す。
+  async function _quickMemoRoots(provider) {
     const registry = window.MeldexSourceFolderRegistry;
     const roots = typeof registry.loadOutlinerRoots === 'function' ? await registry.loadOutlinerRoots()
       : (await registry.loadRegistry({ writeIfMissing: false })).roots.map(root => registry.toOutlinerRoot(root));
-    return roots.filter(root => root && root.visible !== false && /^__dropbox_root__\/[^/]+$/.test(root.path));
+    const sources = roots.filter(root => root && root.visible !== false && /^__dropbox_root__\/[^/]+$/.test(root.path));
+    return [{
+      id: '__meldex_home__', path: '', name: 'ホームフォルダ',
+      dropboxPath: provider?.getVaultPath?.() || window.MeldexDropboxAuth?.getVaultPath?.() || '',
+      home: true,
+    }, ...sources];
+  }
+
+  function _quickMemoPathInsideRoot(path, root, allowRoot = true) {
+    const target = String(path || ''), base = String(root?.path || '');
+    if (!base) {
+      // 仮想ソースパスは登録済みsource rootとの一致が必要。空rootで全Dropboxへ
+      // 書ける扱いにせず、ホームの標準クイックメモ配下だけを許可する。ホーム外へ
+      // 移動した保存先は、従来どおり登録済みsource rootとの一致を必須にする。
+      const homeMemo = 'クイックメモ';
+      return target === homeMemo || target.startsWith(homeMemo + '/');
+    }
+    return (allowRoot && target === base) || target.startsWith(base + '/');
+  }
+
+  function _quickMemoRootForPath(path, roots, allowRoot = true) {
+    return roots.find(root => root?.path && _quickMemoPathInsideRoot(path, root, allowRoot))
+      || roots.find(root => !root?.path && _quickMemoPathInsideRoot(path, root, allowRoot));
+  }
+
+  function _quickMemoDisplayPath(path, root) {
+    const suffix = String(path || '').slice(String(root?.path || '').length).replace(/^\/+/, '');
+    return (root?.name || 'Dropbox') + (suffix ? '/' + suffix : '');
   }
 
   function _quickMemoFolderName(folder, roots) {
@@ -27983,7 +28362,7 @@
     return JSON.stringify([account?.account_id || '', provider.getVaultPath?.() || '']);
   }
 
-  const _QUICK_MEMO_TARGET_CACHE_PREFIX = 'meldex-quick-memo-target:v2:';
+  const _QUICK_MEMO_TARGET_CACHE_PREFIX = 'meldex-quick-memo-target:v3:';
   const _quickMemoTargetMemory = new Map();
   const _quickMemoTargetInflight = new Map();
   let _quickMemoTargetCacheGeneration = 0;
@@ -27996,7 +28375,7 @@
 
   async function _validateQuickMemoTarget(provider, roots, cached) {
     const path = String(cached?.quick_memo_folder || '');
-    const root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
+    const root = _quickMemoRootForPath(path, roots);
     if (!path || !root) return null;
     try {
       const noteName = _quickMemoFolderName(path, roots) + '.md';
@@ -28004,7 +28383,7 @@
       if (!entries.some(entry => entry.kind === 'file' && entry.name === noteName)) return null;
       const fm = _parseFrontmatter(await provider.readText(_joinPath(path, noteName))).frontmatter;
       if (fm.type !== 'settings-db' || fm.meldex_registry !== 'quick-memo-v1') return null;
-      return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+      return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
     } catch {
       return null;
     }
@@ -28019,6 +28398,9 @@
         quick_memo_folder: _joinPath(root.path, 'クイックメモ'),
       });
       if (child) {
+        // デスクトップ版と同じ契約: 既定のホーム/クイックメモが存在する場合は
+        // ソースフォルダを全走査せず、必ず本体の保存先として採用する。
+        if (root.home) return child;
         found.push(child);
         continue;
       }
@@ -28071,8 +28453,8 @@
         ? 'クイックメモのシートが複数あります。Meldexファイルで本体の保存先フォルダだけを表示して再試行してください'
         : 'Meldex本体のクイックメモシートが見つかりません。Meldexファイルで本体と同じDropboxフォルダを登録してください。メモは送信待ちに保持します');
     }
-    const path = candidates[0], root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
-    return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+    const path = candidates[0], root = _quickMemoRootForPath(path, roots);
+    return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
   }
 
   async function _quickMemoTarget(provider) {
@@ -28082,7 +28464,7 @@
     if (_quickMemoTargetInflight.has(scope)) return _quickMemoTargetInflight.get(scope);
     const generation = _quickMemoTargetCacheGeneration;
     const task = (async () => {
-      const roots = await _quickMemoRoots();
+      const roots = await _quickMemoRoots(provider);
       const key = _quickMemoTargetCacheKey(scope);
       let cached = null;
       try { cached = JSON.parse(window.localStorage?.getItem(key) || 'null'); } catch {}
@@ -28112,9 +28494,9 @@
 
   async function _quickMemoFolder(provider, rawPath, file) {
     const path = _normalizeFolderPath(rawPath);
-    const roots = await _quickMemoRoots();
+    const roots = await _quickMemoRoots(provider);
     if (String(rawPath).replace(/\\/g, '/').split('/').some(part => part === '..' || part === '.')
-      || !roots.some(root => path.startsWith(root.path + '/') || (!file && path === root.path))) {
+      || !roots.some(root => _quickMemoPathInsideRoot(path, root, !file))) {
       throw Object.assign(new Error('登録済みDropboxフォルダ内の保存先を指定してください'), { status: 403 });
     }
     const folder = file ? _dirname(path) : path;
@@ -56337,7 +56719,21 @@ document.addEventListener('DOMContentLoaded', () => {
       _hideInputOverlay(binding);
       return;
     }
-    const style = global.getComputedStyle?.(input);
+    // 中略表示中の input は文字を透明にして overlay だけを見せる。ResizeObserver から
+    // 再計算された時にその透明色を overlay へコピーすると、狭い画面でパス表示が消える。
+    // class を同期的に一時解除して元のテーマ色を採取し、描画前に戻す。
+    const wasActive = input.classList.contains('gb-middle-ellipsis-input-active');
+    if (wasActive) input.classList.remove('gb-middle-ellipsis-input-active');
+    const computed = global.getComputedStyle?.(input);
+    const style = computed ? {
+      paddingLeft: computed.paddingLeft,
+      paddingRight: computed.paddingRight,
+      color: computed.color,
+      fontSize: computed.fontSize,
+      fontFamily: computed.fontFamily,
+      fontWeight: computed.fontWeight,
+    } : null;
+    if (wasActive) input.classList.add('gb-middle-ellipsis-input-active');
     if (style) {
       binding.wrapper.style.setProperty('--gb-middle-input-padding-left', style.paddingLeft || '0px');
       binding.wrapper.style.setProperty('--gb-middle-input-padding-right', style.paddingRight || '0px');

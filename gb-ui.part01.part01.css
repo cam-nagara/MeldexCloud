@@ -688,6 +688,7 @@
   box-sizing: border-box;
   min-height: var(--ui-toolbar-title-height);
   font-size: var(--ui-toolbar-title-font-size);
+  font-weight: var(--ui-weight-semibold);
   line-height: var(--ui-toolbar-title-height);
 }
 .tb-file-title > input,

@@ -105,7 +105,7 @@
 :is(#page-rt-toolbar,[data-editor-local-id="page-rt-toolbar"]) :is(#page-title,[data-editor-local-id="page-title"]) {
   color: var(--ui-toolbar-fg, var(--fg));
   font-family: inherit;
-  font-weight: inherit;
+  font-weight: var(--ui-weight-semibold);
   font-style: normal;
   font-size: var(--ui-font-16);
   background: transparent;

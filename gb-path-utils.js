@@ -335,7 +335,21 @@
       _hideInputOverlay(binding);
       return;
     }
-    const style = global.getComputedStyle?.(input);
+    // 中略表示中の input は文字を透明にして overlay だけを見せる。ResizeObserver から
+    // 再計算された時にその透明色を overlay へコピーすると、狭い画面でパス表示が消える。
+    // class を同期的に一時解除して元のテーマ色を採取し、描画前に戻す。
+    const wasActive = input.classList.contains('gb-middle-ellipsis-input-active');
+    if (wasActive) input.classList.remove('gb-middle-ellipsis-input-active');
+    const computed = global.getComputedStyle?.(input);
+    const style = computed ? {
+      paddingLeft: computed.paddingLeft,
+      paddingRight: computed.paddingRight,
+      color: computed.color,
+      fontSize: computed.fontSize,
+      fontFamily: computed.fontFamily,
+      fontWeight: computed.fontWeight,
+    } : null;
+    if (wasActive) input.classList.add('gb-middle-ellipsis-input-active');
     if (style) {
       binding.wrapper.style.setProperty('--gb-middle-input-padding-left', style.paddingLeft || '0px');
       binding.wrapper.style.setProperty('--gb-middle-input-padding-right', style.paddingRight || '0px');

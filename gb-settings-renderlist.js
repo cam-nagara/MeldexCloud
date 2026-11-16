@@ -34,9 +34,9 @@
       <div class="gb-section-title">RenderList連携</div>
       <div class="gb-section-desc">RenderListが表示したpairing secretを一度だけ登録します。連携は選択したSMB/NASフォルダだけを使い、LAN待受ポートは開きません。</div>
       <div class="gb-section-desc" data-renderlist-status>接続状態を確認中...</div>
-      <label class="gb-field"><span class="gb-label">Bridge root</span><input class="gb-input" data-renderlist-bridge-root placeholder="\\\\NAS\\RenderList\\bridge"></label>
-      <label class="gb-field"><span class="gb-label">Analytics Library root</span><input class="gb-input" data-renderlist-analytics-root placeholder="\\\\NAS\\RenderList\\analytics-library"></label>
-      <label class="gb-field"><span class="gb-label">分析シート保存先（任意）</span><input class="gb-input" data-renderlist-sheet-root placeholder="未指定時はホームフォルダ/RenderList分析"></label>
+      <label class="gb-field"><span class="gb-label">Bridge root</span><input class="gb-input" data-gb-path-input data-renderlist-bridge-root placeholder="\\\\NAS\\RenderList\\bridge"></label>
+      <label class="gb-field"><span class="gb-label">Analytics Library root</span><input class="gb-input" data-gb-path-input data-renderlist-analytics-root placeholder="\\\\NAS\\RenderList\\analytics-library"></label>
+      <label class="gb-field"><span class="gb-label">分析シート保存先（任意）</span><input class="gb-input" data-gb-path-input data-renderlist-sheet-root placeholder="未指定時はホームフォルダ/RenderList分析"></label>
       <label class="gb-field"><span class="gb-label">Workspace ID（確認用）</span><input class="gb-input" data-renderlist-workspace-id></label>
       <label class="gb-field"><span class="gb-label">Pairing secret</span><input class="gb-input" type="password" autocomplete="new-password" data-renderlist-secret></label>
       <div class="gb-field-row">

@@ -78,6 +78,7 @@
   function _renderRows(container, rows, users) {
     const activeId = window.MeldexWorkspaces?.getActiveId?.() || '';
     const workspaceHtml = rows.map(workspace => {
+      const sharedFolder = !!String(workspace?.dropboxPath || '').trim();
       const listId = `workspace-user-options-${String(workspace.id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
       const options = (Array.isArray(users) ? users : []).map(user => `<option value="${_escape(user.display || user.user || '')}">${_escape(user.user_type === 'virtual' ? '仮ユーザー' : 'アカウント')}</option>`).join('');
       return `<section class="gb-section gb-section--boxed settings-workspace-card" data-settings-view="workspace" data-workspace-id="${_escape(workspace.id)}">
@@ -93,10 +94,11 @@
       </div>
       <div class="gb-field-row">
         <input class="gb-input" data-workspace-name data-e2e-id="settings-workspace-name-${_escape(workspace.id)}" value="${_escape(workspace.name || '')}" aria-label="ワークスペース名">
-        <input class="gb-input" data-workspace-folder data-e2e-id="settings-workspace-folder-${_escape(workspace.id)}" value="${_escape(workspace.folder || '')}" aria-label="ワークスペースのフォルダ">
+        <input class="gb-input" data-gb-path-input data-workspace-folder data-e2e-id="settings-workspace-folder-${_escape(workspace.id)}" value="${_escape(workspace.folder || '')}" aria-label="ワークスペースのフォルダ"${sharedFolder ? ' readonly aria-readonly="true" title="共有ワークスペースのフォルダは端末ごとに変更できません"' : ''}>
         <button type="button" class="gb-btn gb-btn-sm" data-workspace-save data-e2e-id="settings-workspace-save-${_escape(workspace.id)}">${_icon('save', 14)} 保存</button>
         <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-workspace-delete data-e2e-id="settings-workspace-delete-${_escape(workspace.id)}">${_icon('trash2', 14)} 削除</button>
       </div>
+      ${sharedFolder ? '<div class="gb-section-desc">共有フォルダの場所は全端末共通です。変更する場合は離脱後に別のフォルダへ参加してください。</div>' : ''}
       <div class="gb-section-title" style="margin-top:12px;">${_icon('usersRound', 14)} ユーザーとアクセス権限</div>
       <div class="gb-section-desc">アカウントユーザーには共有アクセス権限を、仮ユーザーには制作管理上の所属だけを設定します。</div>
       <div class="gb-section-desc" style="color:var(--red, #e53935);">注意：信頼できるユーザーだけに管理者PCのCLI返答を許可してください。 ${fieldHelp('完全な安全は保証できません。信頼できるユーザーだけ許可してください。', { e2eId: `workspace-cli-user-permission-help-${String(workspace.id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}` })}</div>

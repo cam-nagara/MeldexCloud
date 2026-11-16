@@ -1299,12 +1299,40 @@
     return result;
   }
 
-  // Desktop と同じ登録マーカーを使う。選択中のroot直下へ別シートを作らない。
-  async function _quickMemoRoots() {
+  // Desktop と同じくホームフォルダを最優先にし、その後で登録済みソースフォルダを探す。
+  // Dropbox provider の相対パス "" は Cloud のホームフォルダ（vault root）を表す。
+  async function _quickMemoRoots(provider) {
     const registry = window.MeldexSourceFolderRegistry;
     const roots = typeof registry.loadOutlinerRoots === 'function' ? await registry.loadOutlinerRoots()
       : (await registry.loadRegistry({ writeIfMissing: false })).roots.map(root => registry.toOutlinerRoot(root));
-    return roots.filter(root => root && root.visible !== false && /^__dropbox_root__\/[^/]+$/.test(root.path));
+    const sources = roots.filter(root => root && root.visible !== false && /^__dropbox_root__\/[^/]+$/.test(root.path));
+    return [{
+      id: '__meldex_home__', path: '', name: 'ホームフォルダ',
+      dropboxPath: provider?.getVaultPath?.() || window.MeldexDropboxAuth?.getVaultPath?.() || '',
+      home: true,
+    }, ...sources];
+  }
+
+  function _quickMemoPathInsideRoot(path, root, allowRoot = true) {
+    const target = String(path || ''), base = String(root?.path || '');
+    if (!base) {
+      // 仮想ソースパスは登録済みsource rootとの一致が必要。空rootで全Dropboxへ
+      // 書ける扱いにせず、ホームの標準クイックメモ配下だけを許可する。ホーム外へ
+      // 移動した保存先は、従来どおり登録済みsource rootとの一致を必須にする。
+      const homeMemo = 'クイックメモ';
+      return target === homeMemo || target.startsWith(homeMemo + '/');
+    }
+    return (allowRoot && target === base) || target.startsWith(base + '/');
+  }
+
+  function _quickMemoRootForPath(path, roots, allowRoot = true) {
+    return roots.find(root => root?.path && _quickMemoPathInsideRoot(path, root, allowRoot))
+      || roots.find(root => !root?.path && _quickMemoPathInsideRoot(path, root, allowRoot));
+  }
+
+  function _quickMemoDisplayPath(path, root) {
+    const suffix = String(path || '').slice(String(root?.path || '').length).replace(/^\/+/, '');
+    return (root?.name || 'Dropbox') + (suffix ? '/' + suffix : '');
   }
 
   function _quickMemoFolderName(folder, roots) {
@@ -1317,7 +1345,7 @@
     return JSON.stringify([account?.account_id || '', provider.getVaultPath?.() || '']);
   }
 
-  const _QUICK_MEMO_TARGET_CACHE_PREFIX = 'meldex-quick-memo-target:v2:';
+  const _QUICK_MEMO_TARGET_CACHE_PREFIX = 'meldex-quick-memo-target:v3:';
   const _quickMemoTargetMemory = new Map();
   const _quickMemoTargetInflight = new Map();
   let _quickMemoTargetCacheGeneration = 0;
@@ -1330,7 +1358,7 @@
 
   async function _validateQuickMemoTarget(provider, roots, cached) {
     const path = String(cached?.quick_memo_folder || '');
-    const root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
+    const root = _quickMemoRootForPath(path, roots);
     if (!path || !root) return null;
     try {
       const noteName = _quickMemoFolderName(path, roots) + '.md';
@@ -1338,7 +1366,7 @@
       if (!entries.some(entry => entry.kind === 'file' && entry.name === noteName)) return null;
       const fm = _parseFrontmatter(await provider.readText(_joinPath(path, noteName))).frontmatter;
       if (fm.type !== 'settings-db' || fm.meldex_registry !== 'quick-memo-v1') return null;
-      return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+      return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
     } catch {
       return null;
     }
@@ -1353,6 +1381,9 @@
         quick_memo_folder: _joinPath(root.path, 'クイックメモ'),
       });
       if (child) {
+        // デスクトップ版と同じ契約: 既定のホーム/クイックメモが存在する場合は
+        // ソースフォルダを全走査せず、必ず本体の保存先として採用する。
+        if (root.home) return child;
         found.push(child);
         continue;
       }
@@ -1405,8 +1436,8 @@
         ? 'クイックメモのシートが複数あります。Meldexファイルで本体の保存先フォルダだけを表示して再試行してください'
         : 'Meldex本体のクイックメモシートが見つかりません。Meldexファイルで本体と同じDropboxフォルダを登録してください。メモは送信待ちに保持します');
     }
-    const path = candidates[0], root = roots.find(item => path === item.path || path.startsWith(item.path + '/'));
-    return { quick_memo_folder: path, display_path: (root.name || 'Dropbox') + path.slice(root.path.length) };
+    const path = candidates[0], root = _quickMemoRootForPath(path, roots);
+    return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
   }
 
   async function _quickMemoTarget(provider) {
@@ -1416,7 +1447,7 @@
     if (_quickMemoTargetInflight.has(scope)) return _quickMemoTargetInflight.get(scope);
     const generation = _quickMemoTargetCacheGeneration;
     const task = (async () => {
-      const roots = await _quickMemoRoots();
+      const roots = await _quickMemoRoots(provider);
       const key = _quickMemoTargetCacheKey(scope);
       let cached = null;
       try { cached = JSON.parse(window.localStorage?.getItem(key) || 'null'); } catch {}
@@ -1446,9 +1477,9 @@
 
   async function _quickMemoFolder(provider, rawPath, file) {
     const path = _normalizeFolderPath(rawPath);
-    const roots = await _quickMemoRoots();
+    const roots = await _quickMemoRoots(provider);
     if (String(rawPath).replace(/\\/g, '/').split('/').some(part => part === '..' || part === '.')
-      || !roots.some(root => path.startsWith(root.path + '/') || (!file && path === root.path))) {
+      || !roots.some(root => _quickMemoPathInsideRoot(path, root, !file))) {
       throw Object.assign(new Error('登録済みDropboxフォルダ内の保存先を指定してください'), { status: 403 });
     }
     const folder = file ? _dirname(path) : path;

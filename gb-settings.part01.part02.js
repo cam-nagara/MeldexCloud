@@ -297,6 +297,7 @@ async function _promptFolderPath() {
     const input = document.createElement('input');
     input.id = 'prompt-folder-path';
     input.className = 'gb-input';
+    input.dataset.gbPathInput = '';
     input.dataset.e2eId = 'settings-home-folder-path-input';
     input.type = 'text';
     input.placeholder = 'D:\\...';
@@ -331,7 +332,7 @@ async function _promptFolderPath() {
     dialog.overlay.dataset.settingsFolderPathPrompt = '1';
     dialog.overlay.dataset.e2eId = 'settings-home-folder-path-overlay';
     dialog.modal.dataset.e2eId = 'settings-home-folder-path-dialog';
-    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    dialog.modal.style.width = 'min(720px, calc(100vw - 24px))';
     dialog.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'settings-home-folder-path-close');
     const submit = () => {
       result = input.value.trim() || null;
@@ -384,6 +385,7 @@ async function _addOutlinerRootManual() {
     const input = document.createElement('input');
     input.id = 'manual-root-path';
     input.className = 'gb-input';
+    input.dataset.gbPathInput = '';
     input.dataset.e2eId = 'settings-source-folder-path-input';
     input.type = 'text';
     input.placeholder = 'D:\\...';
@@ -426,7 +428,7 @@ async function _addOutlinerRootManual() {
     dialog.overlay.dataset.settingsSourceFolderPathPrompt = '1';
     dialog.overlay.dataset.e2eId = 'settings-source-folder-path-overlay';
     dialog.modal.dataset.e2eId = 'settings-source-folder-path-dialog';
-    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    dialog.modal.style.width = 'min(720px, calc(100vw - 24px))';
     const closeButton = dialog.header.querySelector('.gb-modal-close');
     if (closeButton) closeButton.dataset.e2eId = 'settings-source-folder-path-close';
     const showMessage = (message, error = false) => {

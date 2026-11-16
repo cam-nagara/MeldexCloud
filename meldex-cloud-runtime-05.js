@@ -78873,6 +78873,7 @@ ${spEsc(actionText)}</pre>
       .mscl-root-badge--local-only[role="button"]{cursor:pointer;}
       .mscl-root-badge--local-only[role="button"]:hover{background:var(--bg4);}
       .mscl-status-card .mscl-candidate-row,.mscl-status-card .mscl-vault-optin{margin-top:8px;align-items:center;flex-wrap:wrap;}
+      .mscl-connection-actions{justify-content:flex-start;flex-wrap:wrap;gap:8px;margin-top:8px;}
     `;
     document.head.appendChild(style);
   }
@@ -78944,13 +78945,43 @@ ${spEsc(actionText)}</pre>
     line2.className = 'gb-section-desc';
     line2.innerHTML = `ソースフォルダはこのDropboxにつないだすべての端末で共通です。 ${_cloudLinkHelp('デスクトップ版MeldexはDropboxアプリ経由で同じフォルダを開けます。')}`;
     _identifyCloudLinkHelp(line2, 'settings-cloud-source-sharing-help');
-    card.append(title, line1, line2);
+    const connectionRow = document.createElement('div');
+    connectionRow.className = 'gb-field-row mscl-connection-actions';
+    const disconnect = document.createElement('button');
+    disconnect.type = 'button';
+    disconnect.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+    disconnect.textContent = 'Dropbox接続を解除';
+    disconnect.dataset.e2eId = 'settings-dropbox-disconnect';
+    disconnect.addEventListener('click', () => _disconnectDropbox(disconnect));
+    connectionRow.appendChild(disconnect);
+    card.append(title, line1, line2, connectionRow);
 
     _appendWorkspaceJoinSection(card, container);
     window.MeldexOfflineShell?.renderSettings?.(card);
 
     container.innerHTML = '';
     container.appendChild(card);
+  }
+
+  async function _disconnectDropbox(btn) {
+    const proceed = await _confirmYesNo(
+      'このブラウザのDropbox接続を解除しますか？ Dropbox上のファイル、ソースフォルダ、共有ワークスペースは削除されません。再接続すれば同じ内容を利用できます。'
+    );
+    if (!proceed) return;
+    if (btn) btn.disabled = true;
+    try {
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      if (provider?.clearWorkspace) await provider.clearWorkspace();
+      await window.MeldexDropboxAuth?.clearSession?.();
+      window.MeldexRuntimeAdapter?.clearWorkspaceState?.();
+      if (typeof showStatus === 'function') showStatus('Dropbox接続を解除しました');
+      // Dropboxモードのまま古いproviderを使い続けないよう、認証セッションと
+      // ワークスペース状態を破棄した後に起動判定からやり直す。
+      window.location.reload();
+    } catch (e) {
+      if (btn) btn.disabled = false;
+      if (typeof showStatus === 'function') showStatus('Dropbox接続を解除できませんでした: ' + _errorText(e), true);
+    }
   }
 
   function _renderBrowserStatusCard(container) {
@@ -79072,7 +79103,8 @@ ${spEsc(actionText)}</pre>
   async function _joinSharedWorkspace(container, btn) {
     const picker = _folderPicker();
     const ledgerIO = _workspaceLedgerIO();
-    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace || !ledgerIO?.readWorkspaceLedgerStatus) {
+    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace || !ledgerIO?.readWorkspaceLedgerStatus
+        || !ledgerIO?.readWorkspaceMetadata || !window.MeldexWorkspaces?.create) {
       if (typeof showStatus === 'function') showStatus('参加できませんでした: この端末では利用できません', true);
       return;
     }
@@ -79102,6 +79134,28 @@ ${spEsc(actionText)}</pre>
         return;
       }
 
+      // 旧版はソース台帳だけを作り、共同作業ワークスペースの正本を作らない経路が
+      // あった。参加時に共有メタデータが無ければ正式な作成APIで一度だけ移行する。
+      let workspaceMetadata = null;
+      try {
+        workspaceMetadata = await ledgerIO.readWorkspaceMetadata(picked.path, picked.namespaceKind);
+      } catch (e) {
+        if (typeof showStatus === 'function') showStatus('ワークスペース情報を確認できませんでした: ' + _errorText(e), true);
+        return;
+      }
+      if (!workspaceMetadata?.payload) {
+        try {
+          await window.MeldexWorkspaces.create({
+            name: picked.name,
+            folder: picked.path,
+            namespaceKind: picked.namespaceKind,
+          });
+        } catch (e) {
+          if (typeof showStatus === 'function') showStatus('旧形式の共有ワークスペースを移行できませんでした: ' + _errorText(e), true);
+          return;
+        }
+      }
+
       try {
         ledgerIO.addJoinedWorkspace({
           dropboxPath: picked.path,
@@ -79128,7 +79182,8 @@ ${spEsc(actionText)}</pre>
   async function _makeOrJoinSharedWorkspace(container, btn) {
     const picker = _folderPicker();
     const ledgerIO = _workspaceLedgerIO();
-    if (!picker?.pickFolder || !ledgerIO?.readWorkspaceLedgerStatus || !ledgerIO?.writeWorkspaceLedger || !ledgerIO?.addJoinedWorkspace) {
+    if (!picker?.pickFolder || !ledgerIO?.readWorkspaceLedgerStatus || !ledgerIO?.readWorkspaceMetadata
+        || !ledgerIO?.addJoinedWorkspace || !window.MeldexWorkspaces?.create) {
       if (typeof showStatus === 'function') showStatus('共有ワークスペースにできませんでした: この端末では利用できません', true);
       return;
     }
@@ -79172,15 +79227,13 @@ ${spEsc(actionText)}</pre>
         if (!proceed) return;
 
         try {
-          // 全ソースが削除済み（削除の記録だけが残っている）場合は、フォルダ自身の
-          // 削除記録を取り除いてから登録し直す（削除記録を残したまま追加だけ
-          // スキップすると、「共有ワークスペースにしました」と表示されるのに
-          // フォルダツリーへ何も出ない空振りになる）。
-          const nextRoots = existingRoots.filter((r) => String(r?.relPath || '') !== '');
-          nextRoots.push({ provider: 'dropbox', relPath: '', name: picked.name });
-          // まだ参加（joined）していないフォルダへの初回書き込みは、直前の確認
-          // ダイアログでユーザーが明示同意したこの1回だけ allowUnjoined で許可する
-          await ledgerIO.writeWorkspaceLedger(picked.path, nextRoots, picked.namespaceKind, { allowUnjoined: true });
+          // 正式な作成APIがソース台帳・共有メタデータ・個人発見インデックス・
+          // 参加記録をまとめて作る。ここで台帳だけを直接作る旧経路へ戻さない。
+          await window.MeldexWorkspaces.create({
+            name: picked.name,
+            folder: picked.path,
+            namespaceKind: picked.namespaceKind,
+          });
         } catch (e) {
           if (typeof showStatus === 'function') showStatus('共有ワークスペースにできませんでした: ' + _errorText(e), true);
           return;
@@ -79198,6 +79251,20 @@ ${spEsc(actionText)}</pre>
         }
         if (typeof showStatus === 'function') showStatus(`「${picked.name}」を共有ワークスペースにしました`);
       } else {
+        let workspaceMetadata = null;
+        try {
+          workspaceMetadata = await ledgerIO.readWorkspaceMetadata(picked.path, picked.namespaceKind);
+          if (!workspaceMetadata?.payload) {
+            await window.MeldexWorkspaces.create({
+              name: picked.name,
+              folder: picked.path,
+              namespaceKind: picked.namespaceKind,
+            });
+          }
+        } catch (e) {
+          if (typeof showStatus === 'function') showStatus('ワークスペース情報を準備できませんでした: ' + _errorText(e), true);
+          return;
+        }
         try {
           ledgerIO.addJoinedWorkspace({
             dropboxPath: picked.path,
@@ -83434,7 +83501,7 @@ async function showSettingsModal(opts) {
         <div id="webclip-inbox-schedule-container"></div>
         <label class="gb-field" style="margin-top:8px;">
           <span class="gb-label">ブラウザに読み込むフォルダ</span>
-          <input id="settings-webclip-install-path" class="gb-input" type="text" readonly value="" placeholder="Web Clipperを準備すると表示されます">
+          <input id="settings-webclip-install-path" class="gb-input" type="text" data-gb-path-input readonly value="" placeholder="Web Clipperを準備すると表示されます">
         </label>
         <ol class="gb-section-desc" style="margin:8px 0 0 20px;padding:0;line-height:1.6;">
           <li><strong>Web Clipperを準備</strong>を押します。</li>
@@ -84818,6 +84885,7 @@ async function _promptFolderPath() {
     const input = document.createElement('input');
     input.id = 'prompt-folder-path';
     input.className = 'gb-input';
+    input.dataset.gbPathInput = '';
     input.dataset.e2eId = 'settings-home-folder-path-input';
     input.type = 'text';
     input.placeholder = 'D:\\...';
@@ -84852,7 +84920,7 @@ async function _promptFolderPath() {
     dialog.overlay.dataset.settingsFolderPathPrompt = '1';
     dialog.overlay.dataset.e2eId = 'settings-home-folder-path-overlay';
     dialog.modal.dataset.e2eId = 'settings-home-folder-path-dialog';
-    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    dialog.modal.style.width = 'min(720px, calc(100vw - 24px))';
     dialog.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'settings-home-folder-path-close');
     const submit = () => {
       result = input.value.trim() || null;
@@ -84905,6 +84973,7 @@ async function _addOutlinerRootManual() {
     const input = document.createElement('input');
     input.id = 'manual-root-path';
     input.className = 'gb-input';
+    input.dataset.gbPathInput = '';
     input.dataset.e2eId = 'settings-source-folder-path-input';
     input.type = 'text';
     input.placeholder = 'D:\\...';
@@ -84947,7 +85016,7 @@ async function _addOutlinerRootManual() {
     dialog.overlay.dataset.settingsSourceFolderPathPrompt = '1';
     dialog.overlay.dataset.e2eId = 'settings-source-folder-path-overlay';
     dialog.modal.dataset.e2eId = 'settings-source-folder-path-dialog';
-    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    dialog.modal.style.width = 'min(720px, calc(100vw - 24px))';
     const closeButton = dialog.header.querySelector('.gb-modal-close');
     if (closeButton) closeButton.dataset.e2eId = 'settings-source-folder-path-close';
     const showMessage = (message, error = false) => {
@@ -94613,9 +94682,15 @@ async function showMeldexChangelogDialog(returnFocus) {
     }
     if (status.homeShared) {
       el.hidden = false;
-      el.style.color = 'var(--danger)';
+      el.style.color = 'var(--orange)';
       const label = SHARED_REASON_LABEL[status.homeSharedReason] || '共有フォルダ';
-      el.textContent = `ホームフォルダが${label}の中にあります。他の人から見える可能性があります。`;
+      el.textContent = `注意: ホームフォルダが${label}の中にあります。他の人から見える可能性があります。接続エラーではありません。`;
+      return;
+    }
+    if (status.homeSharedUnknownReason) {
+      el.hidden = false;
+      el.style.color = 'var(--fg2)';
+      el.textContent = 'ホームフォルダの共有範囲を確認できません。Dropboxの同期完了後にもう一度確認してください。接続エラーではありません。';
       return;
     }
     el.hidden = true;
@@ -94627,7 +94702,7 @@ async function showMeldexChangelogDialog(returnFocus) {
     if (status?.homeShared && !_startupWarningShown) {
       _startupWarningShown = true;
       if (typeof showStatus === 'function') {
-        showStatus('ホームフォルダが共有フォルダの中にあります。他の人から内容が見える可能性があります。', true);
+        showStatus('注意: ホームフォルダが共有フォルダの中にあります。他の人から内容が見える可能性があります。');
       }
     }
     _maybeShowInheritOrMigrationPrompt();
@@ -94799,7 +94874,7 @@ async function showMeldexChangelogDialog(returnFocus) {
         _startupWarningShown = true;
         const reason = isTeamRoot ? 'チームスペース' : '共有ワークスペース';
         if (typeof showStatus === 'function') {
-          showStatus(`ホームフォルダが${reason}の中にあります。他の人から内容が見える可能性があります。`, true);
+          showStatus(`注意: ホームフォルダが${reason}の中にあります。他の人から内容が見える可能性があります。`);
         }
       }
       return { shared: isShared, reason: isTeamRoot ? 'team_root' : (isWorkspace ? 'workspace' : '') };
