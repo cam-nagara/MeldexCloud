@@ -153730,8 +153730,15 @@ async function _dbOpenConfiguredTarget(path, label, options = {}) {
   }
 }
 
-function _dbOpenConfiguredEntity(path, label, ctx, sourceEl) {
-  return _dbOpenConfiguredTarget(path, label, { ctx, sourceEl, linkType: 'entity' });
+async function _dbOpenConfiguredEntity(path, label, ctx, sourceEl) {
+  try {
+    const dbPath = ctx?.dbPath || _dbPathFromEntityPath(path);
+    const resolvedPath = await _dbResolveEntityPathForOpen(dbPath, label, path);
+    return await _dbOpenConfiguredTarget(resolvedPath, label, { ctx, sourceEl, linkType: 'entity' });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus(error?.message || 'トピックの作成完了を確認できませんでした', true);
+    return false;
+  }
 }
 
 // property_types.source は、作成日時などのエントリメタデータ参照と、
@@ -154522,6 +154529,13 @@ function _entityNextDefaultIndex(existingNames, baseName) {
 }
 
 const _dbPendingEntityCreates = new Map();
+
+async function _dbResolveEntityPathForOpen(dbPath, entityName, fallbackPath) {
+  const pending = _dbPendingEntityCreates.get(_dbPendingEntityCreateKey(dbPath, entityName));
+  if (!pending) return fallbackPath;
+  const created = await pending.promise;
+  return created?.path || created?.response?.path || created?.response?.entry_path || fallbackPath;
+}
 
 async function waitForPendingDbEntityCreates(dbPath) {
   const target = _dbNormalizePath(dbPath || '');
