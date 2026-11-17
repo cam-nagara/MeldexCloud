@@ -49,11 +49,38 @@ window.addEventListener('error', (e) => {
   });
 });
 
+// 利用者の操作の直後に起きた未処理の失敗は、ログ送信だけでなく画面にも出す。以前はログ送信
+// だけで、メニューからの列名変更などが失敗しても画面に何も出なかった。背景処理の失敗で
+// 通知が乱発しないよう、直前（5秒以内）に操作があった時だけ、同じ内容は10秒に1回に絞る。
+let _lastUserGestureAt = 0;
+const _recentUnhandledNotices = new Map();
+['pointerdown', 'keydown'].forEach((type) => {
+  window.addEventListener(type, () => { _lastUserGestureAt = Date.now(); }, true);
+});
+
+function _shouldNotifyUnhandledRejection(reason) {
+  const name = String(reason?.name || '');
+  if (name === 'AbortError' || reason?.cancelled === true || reason?.silent === true) return false;
+  if (Date.now() - _lastUserGestureAt > 5000) return false;
+  const key = String(reason?.message || reason || '');
+  const last = _recentUnhandledNotices.get(key) || 0;
+  if (Date.now() - last < 10000) return false;
+  _recentUnhandledNotices.set(key, Date.now());
+  if (_recentUnhandledNotices.size > 50) _recentUnhandledNotices.clear();
+  return true;
+}
+
 window.addEventListener('unhandledrejection', (e) => {
   _sendLog('error', {
     message: e.reason?.message || String(e.reason),
     stack: e.reason?.stack || ''
   });
+  try {
+    if (typeof showStatus === 'function' && _shouldNotifyUnhandledRejection(e.reason)) {
+      const message = String(e.reason?.message || e.reason || '').trim();
+      showStatus('操作を完了できませんでした' + (message ? ': ' + message : ''), true);
+    }
+  } catch {}
 });
 
 /* ==============================
@@ -950,6 +977,43 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
     }
   });
+  // サブパネル・独立した表示面（openPage の containerEl）で開いたノートは #page-content では
+  // ないため、以前は保存先が旧パスのまま残り、改名後の保存が旧パスへ新しいファイルを作って
+  // いた（2回改名した後の保存で発覚）。保存の調整役に登録された編集面と、配線済みの
+  // ノート編集面すべての保存先を追従させる。
+  const renamedHosts = new Set();
+  try {
+    const saveCoordinator = window.MeldexDocumentSaveCoordinator;
+    if (saveCoordinator?.documentKeyForPath && saveCoordinator.getParticipants) {
+      [newPath, oldPath].forEach(path => {
+        (saveCoordinator.getParticipants(saveCoordinator.documentKeyForPath(path)) || []).forEach(host => renamedHosts.add(host));
+      });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 改名後の保存先の追従に失敗しました', error);
+  }
+  document.querySelectorAll('[data-path]').forEach(el => { if (el._noteEditableWired) renamedHosts.add(el); });
+  renamedHosts.forEach(host => {
+    if (host?.dataset?.path) host.dataset.path = _mapRenamedPath(host.dataset.path, oldPath, newPath);
+  });
+  // ファイル名を変える改名では、サーバーが表示タイトルや先頭の見出しを書き換えることがあり、
+  // 開いているノートの「最後に保存した内容」が古くなる。そのまま保存すると競合（409）になる
+  // ため、改名後の内容を読み直して基準を合わせる（編集中の本文はそのまま残す）。
+  if (!options.titleOnly && options.etag && oldPath !== newPath) {
+    const resyncHosts = new Set([document.getElementById('page-content'), ...renamedHosts]);
+    resyncHosts.forEach(host => {
+      if (host?.dataset?.path !== newPath || host.dataset.lastSavedMd == null) return;
+      if (typeof apiFetch !== 'function' || !window.MeldexNoteSaveAdapter?.syncResolvedBaseline) return;
+      apiFetch('/file?path=' + encodeURIComponent(newPath), { silentError: true })
+        .then(loaded => {
+          if (host.dataset.path !== newPath || typeof loaded?.content !== 'string') return;
+          const fm = loaded.content.match(/^(---\n[\s\S]*?\n---\n?)/);
+          if (fm) host.dataset.frontmatter = fm[1];
+          window.MeldexNoteSaveAdapter.syncResolvedBaseline(newPath, host, loaded.content, loaded.etag || options.etag);
+        })
+        .catch(error => console.warn('[Meldex] 改名後のノートの保存基準を更新できませんでした', error));
+    });
+  }
 
   if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
     Object.keys(_sn2Editors).forEach(path => {

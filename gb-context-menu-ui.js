@@ -50,8 +50,10 @@
     document.removeEventListener('pointerdown', active.outside, true);
     document.removeEventListener('keydown', active.keydown, true);
     const restore = active.restoreFocus;
+    const onClose = active.onClose;
     active = null;
     restore?.focus?.({ preventScroll: true });
+    try { onClose?.(); } catch (error) { console.warn('[MeldexContextMenuUI] onClose failed', error); }
   }
 
   function _appendSeparator(menu) {
@@ -105,6 +107,14 @@
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
     button.setAttribute('role', 'menuitem');
     button.disabled = item.disabled === true;
+    if (item.e2eId) button.dataset.e2eId = String(item.e2eId);
+    if (item.icon && typeof global.lucide === 'function') {
+      const icon = document.createElement('span');
+      icon.className = 'menu-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = global.lucide(String(item.icon), 16);
+      button.appendChild(icon);
+    }
     const label = document.createElement('span');
     label.className = 'gb-context-menu-item-label';
     label.textContent = String(item.label || '');
@@ -152,10 +162,17 @@
   function openAt(options) {
     close();
     const menu = _buildMenu(options?.items || [], options?.ariaLabel);
+    if (options?.e2eId) menu.dataset.e2eId = String(options.e2eId);
     document.body.appendChild(menu);
-    const x = Number(options?.x || 0);
-    const y = Number(options?.y || 0);
-    _position(menu, { left: x, right: x, top: y, bottom: y }, 'below');
+    // anchorRect を渡すと、点ではなく矩形（行など）を基準に配置する。
+    const anchor = options?.anchorRect;
+    if (anchor && Number.isFinite(Number(anchor.left)) && Number.isFinite(Number(anchor.bottom))) {
+      _position(menu, anchor, options?.prefer || 'below');
+    } else {
+      const x = Number(options?.x || 0);
+      const y = Number(options?.y || 0);
+      _position(menu, { left: x, right: x, top: y, bottom: y }, 'below');
+    }
     const outside = event => {
       if (active?.menu.contains(event.target) || active?.submenu?.contains(event.target)) return;
       close();
@@ -175,7 +192,11 @@
         trigger.setAttribute('aria-expanded', 'false'); trigger.focus({ preventScroll: true });
       }
     };
-    active = { menu, submenu: null, submenuTrigger: null, outside, keydown, restoreFocus: options?.restoreFocus || null };
+    active = {
+      menu, submenu: null, submenuTrigger: null, outside, keydown,
+      restoreFocus: options?.restoreFocus || null,
+      onClose: typeof options?.onClose === 'function' ? options.onClose : null,
+    };
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keydown, true);
     menu.focus({ preventScroll: true });

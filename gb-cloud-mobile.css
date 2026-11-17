@@ -57,8 +57,8 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tb-icon-btn,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-btn,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-nav-btn {
-    min-width: 44px !important;
-    min-height: 44px !important;
+    min-width: var(--ui-h-touch, 44px) !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #app-toolbar {
@@ -293,8 +293,8 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tree-node-row .tree-hover-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     touch-action: manipulation;
   }
 
@@ -317,8 +317,8 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .fav-more-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     opacity: 1;
     touch-action: manipulation;
   }
@@ -547,12 +547,12 @@
     grid-row: 3;
     min-width: 0;
     width: 100% !important;
-    height: 44px;
-    min-height: 44px;
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     box-sizing: border-box;
-    padding: 0 36px 0 12px !important;
+    padding: 0 36px 0 var(--ui-space-5, 12px) !important;
     border: 1px solid var(--border, #333) !important;
-    border-radius: 8px !important;
+    border-radius: var(--ui-radius-lg, 8px) !important;
     background: var(--bg3, #2d2d2d) !important;
     color: var(--fg, #d4d4d4) !important;
     font-size: var(--cloud-mobile-ui-meta-font-size, 14px) !important;
@@ -566,10 +566,10 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-display-btn,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-filter-btn {
     grid-row: 3;
-    width: 44px !important;
-    min-width: 44px !important;
-    height: 44px !important;
-    min-height: 44px !important;
+    width: var(--ui-h-touch, 44px) !important;
+    min-width: var(--ui-h-touch, 44px) !important;
+    height: var(--ui-h-touch, 44px) !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     padding: 0 !important;
     overflow: hidden;
     white-space: nowrap;
@@ -591,13 +591,13 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tb-icon-btn,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar button {
-    width: 44px !important;
-    height: 44px !important;
-    min-width: 44px !important;
-    min-height: 44px !important;
+    width: var(--ui-h-touch, 44px) !important;
+    height: var(--ui-h-touch, 44px) !important;
+    min-width: var(--ui-h-touch, 44px) !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     padding: 0 !important;
     border: 1px solid transparent !important;
-    border-radius: 8px !important;
+    border-radius: var(--ui-radius-lg, 8px) !important;
     background: transparent !important;
     color: var(--fg, #d4d4d4) !important;
     display: inline-flex;
@@ -751,8 +751,8 @@
     grid-column: 4;
     grid-row: 1 / 3;
     position: static !important;
-    width: 44px !important;
-    height: 44px !important;
+    width: var(--ui-h-touch, 44px) !important;
+    height: var(--ui-h-touch, 44px) !important;
     padding: 0 !important;
     opacity: 1 !important;
     justify-self: end;
@@ -1065,8 +1065,8 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer .entry-prop-card .cell-add-btn {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-side-drawer-editable {
@@ -1124,13 +1124,13 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings select,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings .gb-input,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-settings .gb-select {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     font-size: var(--cloud-mobile-ui-font-size) !important;
     line-height: 1.2 !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .tl-nav-btn {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     font-size: var(--cloud-mobile-ui-meta-font-size) !important;
     line-height: 1.2 !important;
   }
@@ -1352,7 +1352,7 @@
   }
 
   body .settings-modal > .gb-modal-shell-footer button {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
 
   /* マップ済み予定パネルのスマホ用フッター（グリッド・全幅ボタン）は、Cloud/
@@ -1480,7 +1480,7 @@
     width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.trash-dialog-modal > .gb-modal-footer {
@@ -1493,7 +1493,7 @@
     box-sizing: border-box !important;
     width: 100% !important;
     min-width: 0 !important;
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
 
   body .gb-mobile-dialog-sheet .mapped-calendar-event-footer #mapped-cal-save {
@@ -1522,7 +1522,7 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet button {
     max-width: 100%;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -1530,10 +1530,10 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .gb-modal-close,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet button[aria-label="閉じる"] {
-    width: 44px !important;
-    min-width: 44px !important;
-    height: 44px !important;
-    min-height: 44px !important;
+    width: var(--ui-h-touch, 44px) !important;
+    min-width: var(--ui-h-touch, 44px) !important;
+    height: var(--ui-h-touch, 44px) !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -1701,7 +1701,7 @@ body[data-mobile-ui-local="1"] .gb-global-tags-target-editor .gb-input,
 body[data-cloud-mobile="1"] .gb-global-tags-target-editor [data-global-tags-role="target-add"],
 body[data-mobile-ui="1"] .gb-global-tags-target-editor [data-global-tags-role="target-add"],
 body[data-mobile-ui-local="1"] .gb-global-tags-target-editor [data-global-tags-role="target-add"] {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 
 body[data-cloud-mobile="1"] .gb-global-tags-target-editor .gb-tag-chip,
@@ -1756,8 +1756,8 @@ body[data-mobile-ui-local="1"] .gb-knowledge-integrity-target-header .gb-btn,
 body[data-cloud-mobile="1"] .gb-knowledge-integrity-version-row .gb-btn,
 body[data-mobile-ui="1"] .gb-knowledge-integrity-version-row .gb-btn,
 body[data-mobile-ui-local="1"] .gb-knowledge-integrity-version-row .gb-btn {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--ui-h-touch, 44px);
+  min-height: var(--ui-h-touch, 44px);
 }
 
 body[data-cloud-mobile="1"] .gb-knowledge-integrity-target-header,

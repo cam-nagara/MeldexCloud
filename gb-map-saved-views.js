@@ -11,7 +11,7 @@
     const view = { id: D.id(), name: name.trim(), center: D.clone(viewport.center), zoom: viewport.zoom, rotation: rotation(state.mapRotation),
       layer_ids: doc.layers.filter(l => state.mapLayerVisibility?.[l.id] ?? l.visible).map(l => l.id),
       filter: typeof state.mapSearch === 'string' ? state.mapSearch.slice(0, 1000) : '',
-      feature_kind: kinds.includes(state.mapFeatureKind) ? state.mapFeatureKind : '', period_id: state.mapPeriodId || '' };
+      feature_kind: kinds.includes(state.mapFeatureKind) ? state.mapFeatureKind : '', display:(typeof module==='object'&&module.exports?require('./gb-map-display.js'):globalThis.MeldexMapDisplay).effective({...doc.display,...state.mapElementVisibility}),period_id: state.mapPeriodId || '' };
     D.parse({ ...doc, saved_views: [view] }); return view;
   }
   function apply(app, view) {
@@ -19,12 +19,13 @@
     if (app._inputDirty) { app._message('入力内容を確認してから表示を切り替えてください'); return false; }
     const doc = app.store.doc;
     app.state.mapLayerVisibility = Object.fromEntries(doc.layers.map(l => [l.id, view.layer_ids.includes(l.id)]));
+    app.state.mapElementVisibility=view.display||{};
     app.state.mapSearch = view.filter; app.state.mapFeatureKind = view.feature_kind; app.state.mapRotation = rotation(view.rotation);
     app.state.mapPeriodId = (doc.periods || []).some(p => p.id === view.period_id) ? view.period_id : '';
     app.state.mapViewport = { center: D.clone(view.center), zoom: view.zoom };
     app.state.mapViewSystem = doc.coordinate_system; app.state.mapSavedViewId = view.id;
     app.search.value = view.filter; app.kindFilter.value = view.feature_kind;
-    app._saveViewState(); app._render(); app.view.map.setView(app.view.latlng(view.center), view.zoom);
+    app._saveViewState(); app._buildSettingsRefresh(); app._render(); app.view.map.setView(app.view.latlng(view.center), view.zoom);
     return true;
   }
   function render(app) {

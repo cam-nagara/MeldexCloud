@@ -6,9 +6,10 @@
   gap: 2px;
   min-width: 0;
   flex: 0 0 auto;
-  padding: 2px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: var(--ui-view-tab-row-padding);
+  border-bottom: var(--ui-view-tab-row-border);
   background: var(--bg2);
+  box-sizing: border-box;
 }
 
 .db-view-switcher .db-view-tabs {
@@ -50,8 +51,9 @@
   display: inline-flex;
   align-items: center;
   position: relative;
-  height: var(--ui-h-xs);
-  padding: 0 8px;
+  height: var(--ui-view-tab-height);
+  padding: 0 var(--ui-view-tab-padding-x);
+  font-size: var(--ui-view-tab-font-size);
   border-radius: var(--ui-radius-xs);
   border-bottom: 2px solid transparent;
   box-sizing: border-box;
@@ -134,7 +136,7 @@
   .db-view-switcher .db-view-select {
     display: inline-block;
     flex: 1 1 auto;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .db-view-switcher .view-tab {

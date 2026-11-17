@@ -449,14 +449,17 @@ async function selectDatabase(dbPath, ctx, opts) {
           const newName = input.value.trim() || curName;
           toolbarCategoryEl.textContent = newName;
           if (newName !== curName && state.currentDbPath) {
+            const oldPath = state.currentDbPath;
+            // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+            if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(oldPath, newName, 'database');
             try {
-              const oldPath = state.currentDbPath;
-              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database', title_only: true });
+              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database' });
               const newPath = res?.new_path || oldPath.replace(/[^/]+$/, newName);
+              // ツリー全体を読み直さず、該当する行のパスと名前だけを書き換える
+              if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, newName, res?.file_id);
               if (typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
+                renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database', skipDbReload: true });
               }
-              if (typeof refreshOutliner === 'function') refreshOutliner();
               await selectDatabase(newPath, ctx, {
                 silent: true,
                 skipRecent: true,
@@ -464,11 +467,20 @@ async function selectDatabase(dbPath, ctx, opts) {
                 skipSaveLastView: false,
               });
               showStatus('シート名を変更しました');
-            } catch (err) { toolbarCategoryEl.textContent = curName; showStatus('名前変更失敗: ' + err.message, true); }
+            } catch (err) {
+              if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(oldPath, curName, 'database');
+              toolbarCategoryEl.textContent = curName;
+              showStatus('名前変更失敗: ' + err.message, true);
+            }
           }
         };
         input.addEventListener('blur', commit);
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); if (e.key === 'Escape') { input.value = curName; input.blur(); } });
+        input.addEventListener('keydown', (e) => {
+          // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+          if (e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+          if (e.key === 'Escape') { input.value = curName; input.blur(); }
+        });
       };
       toolbarCategoryEl._dbRenameHandler = renameHandler;
       toolbarCategoryEl.addEventListener('dblclick', renameHandler);

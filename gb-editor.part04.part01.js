@@ -439,6 +439,37 @@ function moveBlock(direction) {
 // 通常は文字選択で出る書式設定ポップアップへ統合され、そこが使えない環境
 // （クラウドのスマホ編集UI等）だけ MeldexNoteRuby.showLegacyPopup が使われる。
 
+// 右クリックメニュー等の項目を実行し、完了まで待つ。非同期の失敗も含め、
+// 失敗時は項目名と理由を表示する（旧実装は完了を待たず、失敗が無言で消えていた）。
+async function _runNoteContextMenuAction(item) {
+  try {
+    return await item.action();
+  } catch (error) {
+    console.warn('[note] メニュー項目の実行に失敗しました', item?.label, error);
+    const reason = typeof _noteUserFacingReason === 'function'
+      ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+    if (typeof showStatus === 'function') showStatus(`「${item?.label || '操作'}」を実行できませんでした: ${reason}`, true);
+    return false;
+  }
+}
+
+// 右クリック「貼り付け」。クリップボードの読み取りが拒否・失敗した場合は理由を表示する。
+async function _noteContextPasteFromClipboard() {
+  let text;
+  try {
+    if (!navigator.clipboard?.readText) throw new Error('unsupported');
+    text = await navigator.clipboard.readText();
+  } catch (error) {
+    console.warn('[note] クリップボードを読み取れませんでした', error);
+    if (typeof showStatus === 'function') {
+      showStatus('クリップボードを読み取れませんでした。読み取りの許可を確認するか、Ctrl+V で貼り付けてください', true);
+    }
+    return false;
+  }
+  document.execCommand('insertText', false, text);
+  return true;
+}
+
 async function confirmNoteTableDelete(message) {
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
   if (typeof confirm === 'function') return !!confirm(message);
@@ -477,7 +508,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
       s.removeAllRanges();
       s.addRange(savedRange.cloneRange());
     }
-    action();
+    return action();
   };
 
   const menu = document.createElement('div');
@@ -526,7 +557,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { type: 'sep' },
     { label: '切り取り', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('cut')) },
     { label: 'コピー', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('copy')) },
-    { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => navigator.clipboard.readText().then(t => document.execCommand('insertText', false, t)).catch(() => {})) },
+    { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => _noteContextPasteFromClipboard()) },
     { type: 'sep' },
     { label: '元に戻す', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, false)) document.execCommand('undo'); } },
     { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
@@ -704,7 +735,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
       menu.appendChild(el);
       return;
     }
-    const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); item.action(); });
+    const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); _runNoteContextMenuAction(item); });
     menu.appendChild(el);
   });
 

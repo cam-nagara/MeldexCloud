@@ -68,7 +68,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _gridVisibleRowIds() {
     return (this.doc?.rows || [])
-      .filter(row => this._isRoleVisible(row.role || '', row.status || ''))
+      .filter(row => this._isRoleVisible(row))
       .map(row => row.id);
   },
 
@@ -89,7 +89,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       ...(this.doc?.editor?.visibleStandardColumns || {}),
     };
     if (!statusEnabled) visible._status = false;
-    const ids = ['_gutter', '_gutter2', '_role', '_status', '_text']
+    const ids = ['_gutter', '_gutter2', '_character', '_role', '_status', '_text']
       .filter(colId => visible[colId] !== false)
       .concat((this.doc?.editor?.customColumns || []).filter(col => col?.id && col.visible !== false).map(col => col.id));
     const order = Array.isArray(this.doc?.editor?.columnOrder) ? this.doc.editor.columnOrder : [];
@@ -125,6 +125,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _clearGridCellSelection() {
     if (this._gridCellSelection) this._gridCellSelection.clear();
     this._gridCellAnchor = null;
+    this._gridKeyboardFocus = null;
     this._updateGridCellSelectionUI();
   },
 
@@ -187,6 +188,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _gridCellValue(rowId, colId) {
     const row = this.doc?.rows?.find(item => item.id === rowId);
     if (!row) return '';
+    if (colId === '_character') return row.character || '';
     if (colId === '_role') return row.role || '';
     if (colId === '_status') return row.status || '';
     if (colId === '_text') return typeof _sn2StripRubyToPlain === 'function' ? _sn2StripRubyToPlain(row.text || '') : (row.text || '');
@@ -197,35 +199,95 @@ Object.assign(ScriptNoteEditor.prototype, {
     return row.columns?.[colId] ?? '';
   },
 
-  _gridSelectionMatrix() {
+  // 選択中のセルを含む行・列（表示順）。Ctrl+クリックで飛び飛びに選んだ時は、
+  // 選択のない行・列を詰めた表として扱う（四角形の範囲ならそのまま）。
+  _gridSelectionAxes() {
     const bounds = this._gridCellSelectionBounds();
     if (!bounds) return null;
-    const matrix = [];
-    for (let rowIndex = bounds.firstRow; rowIndex <= bounds.lastRow; rowIndex++) {
-      const values = [];
-      for (let colIndex = bounds.firstCol; colIndex <= bounds.lastCol; colIndex++) {
-        const rowId = bounds.rowIds[rowIndex];
-        const colId = bounds.colIds[colIndex];
-        values.push(this._gridCellSelection.has(_sn2GridCellKey(rowId, colId)) ? this._gridCellValue(rowId, colId) : '');
-      }
-      matrix.push(values);
-    }
+    const rowSet = new Set();
+    const colSet = new Set();
+    this._gridCellSelection.forEach(key => {
+      const [rowId, colId] = _sn2GridCellParts(key);
+      const rowIndex = bounds.rowIds.indexOf(rowId);
+      const colIndex = bounds.colIds.indexOf(colId);
+      if (rowIndex < 0 || colIndex < 0) return;
+      rowSet.add(rowIndex);
+      colSet.add(colIndex);
+    });
+    const rows = [...rowSet].sort((a, b) => a - b);
+    const cols = [...colSet].sort((a, b) => a - b);
+    return { bounds, rows, cols };
+  },
+
+  _gridSelectionMatrix() {
+    const axes = this._gridSelectionAxes();
+    if (!axes) return null;
+    const { bounds } = axes;
+    const matrix = axes.rows.map(rowIndex => axes.cols.map(colIndex => {
+      const rowId = bounds.rowIds[rowIndex];
+      const colId = bounds.colIds[colIndex];
+      return this._gridCellSelection.has(_sn2GridCellKey(rowId, colId)) ? this._gridCellValue(rowId, colId) : '';
+    }));
     return { bounds, matrix };
   },
 
+  // Ctrl+クリック: セルを選択へ追加／選択から外す。最初の1回は、それまでのアクティブセルも選択に含める。
+  _toggleGridCellInSelection(rowId, colId) {
+    if (!rowId || !colId || colId === '_handle') return false;
+    if (this._cellEditMode) this._exitEditMode?.();
+    if (this._rowSelection?.size) this._clearRowSelection?.();
+    if (this._textCellSelection?.size) this._clearTextCellSelection?.();
+    if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
+    if (!(this._gridCellSelection instanceof Set)) this._gridCellSelection = new Set();
+    if (!this._gridCellSelection.size && this._activeCellRowId && this._activeCellColId
+        && this._activeCellColId !== '_handle') {
+      this._gridCellSelection.add(_sn2GridCellKey(this._activeCellRowId, this._activeCellColId));
+    }
+    const key = _sn2GridCellKey(rowId, colId);
+    if (this._gridCellSelection.has(key) && this._gridCellSelection.size > 1) this._gridCellSelection.delete(key);
+    else this._gridCellSelection.add(key);
+    this._gridCellAnchor = { rowId, colId };
+    this._gridKeyboardFocus = { rowId, colId };
+    this._updateGridCellSelectionUI();
+    this._activeCellRowId = rowId;
+    this._activeCellColId = colId;
+    this.host?.querySelectorAll('.sn2-cell-active').forEach(el => el.classList.remove('sn2-cell-active'));
+    try { window.getSelection()?.removeAllRanges(); } catch {}
+    this._restoreActiveCellHighlight?.();
+    return true;
+  },
+
   _handleGridCellSelectionCopy(e) {
-    if (!this._gridCellSelection?.size || !this.host?.isConnected) return false;
+    if (!this.host?.isConnected) return false;
+    if (!this._gridCellSelection?.size) {
+      // 矩形範囲がなくても、このシナリオ内でアクティブ（非編集）セルにフォーカスがあればその値をコピーする
+      const activeEl = document.activeElement;
+      if (!this._activeCellRowId || this._cellEditMode || !activeEl || !this.host.contains(activeEl)) return false;
+    }
     if (typeof this._isRowSelectionOwnerActive === 'function' && !this._isRowSelectionOwnerActive()) return false;
     const nativeSelection = window.getSelection();
     if (nativeSelection?.rangeCount && !nativeSelection.isCollapsed) return false;
-    const table = this._gridSelectionMatrix();
-    if (!table?.matrix?.length) return false;
-    const tsv = table.matrix.map(row => row.map(_sn2QuoteTsvCell).join('\t')).join('\n');
-    const html = '<table><tbody>' + table.matrix.map(row => '<tr>' + row.map(value => `<td>${_sn2EscapeClipboardHtml(value)}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
-    e.clipboardData?.setData('text/plain', tsv);
-    e.clipboardData?.setData('text/html', html);
+    const payload = this._cellClipboardPayload();
+    if (!payload) return false;
+    e.clipboardData?.setData('text/plain', payload.tsv);
+    e.clipboardData?.setData('text/html', payload.html);
     e.preventDefault();
     return true;
+  },
+
+  // 矩形セル範囲（なければアクティブ（非編集）セル1つ）を TSV / HTML table にする。
+  _cellClipboardPayload() {
+    let matrix = null;
+    if (this._gridCellSelection?.size) {
+      matrix = this._gridSelectionMatrix()?.matrix || null;
+    } else if (this._activeCellRowId && this._activeCellColId && !this._cellEditMode
+      && this._activeCellColId !== '_handle') {
+      matrix = [[this._gridCellValue(this._activeCellRowId, this._activeCellColId)]];
+    }
+    if (!matrix?.length) return null;
+    const tsv = matrix.map(row => row.map(_sn2QuoteTsvCell).join('\t')).join('\n');
+    const html = '<table><tbody>' + matrix.map(row => '<tr>' + row.map(value => `<td>${_sn2EscapeClipboardHtml(value)}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+    return { tsv, html };
   },
 
   _gridPasteStart(target) {
@@ -240,8 +302,18 @@ Object.assign(ScriptNoteEditor.prototype, {
   _setGridPastedValue(row, colId, value) {
     const text = String(value == null ? '' : value);
     if (colId === '_gutter' || colId === '_gutter2') return false;
+    if (colId === '_character') {
+      if (globalThis.GBScriptNoteRoleModel?.assignRowCharacter) {
+        globalThis.GBScriptNoteRoleModel.assignRowCharacter(this.doc, row, text.trim());
+      } else {
+        row.character = text.trim();
+      }
+      return true;
+    }
     if (colId === '_role') {
-      if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+        globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, text.trim());
+      } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
         globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, text.trim());
       } else {
         row.role = text.trim();
@@ -270,13 +342,20 @@ Object.assign(ScriptNoteEditor.prototype, {
   _createGridPasteRow(templateRow = null) {
     const row = {
       id: globalThis.crypto?.randomUUID?.() || `sn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      character: templateRow?.character || '',
+      ...(templateRow?.characterRef ? { characterRef: { ...templateRow.characterRef } } : {}),
+      type: templateRow?.type || templateRow?.role || '',
+      ...(templateRow?.typeRef ? { typeRef: { ...templateRow.typeRef } } : {}),
       role: templateRow?.role || '',
       ...(templateRow?.roleRef ? { roleRef: { ...templateRow.roleRef } } : {}),
       status: templateRow?.status || '',
       text: '',
       columns: {},
     };
-    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, row.typeRef || row.roleRef || row.type || row.role);
+      globalThis.GBScriptNoteRoleModel.assignRowCharacter?.(this.doc, row, row.characterRef || row.character);
+    } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
       globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, row.roleRef || row.role);
     }
     return row;
@@ -287,11 +366,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     const hasGridSelection = !!this._gridCellSelection?.size;
     const targetCell = e.target?.closest?.('[data-col-id]');
     const hasTableShape = String(plainText || '').includes('\t');
-    if (!hasGridSelection && !hasTableShape && !targetCell?.classList?.contains('sn2-custom-cell')) return false;
+    // アクティブ（非編集）セルへの貼り付けは、1値ならそのセルへ、複数行・表形式なら起点として貼り付ける
+    const fromActiveCell = !hasGridSelection && typeof this._isActiveNonEditingTarget === 'function'
+      && this._isActiveNonEditingTarget(e.target);
+    if (!hasGridSelection && !hasTableShape && !fromActiveCell && !targetCell?.classList?.contains('sn2-custom-cell')) return false;
     const start = this._gridPasteStart(e.target);
     if (!start) return false;
     const matrix = _sn2ParseClipboardTable(plainText);
     if (!matrix.length || !matrix.some(row => row.length)) return false;
+    if (hasGridSelection && this._pasteIntoSelectedGridCells(e, matrix)) return true;
     const colIds = this._gridSelectableColumnIds();
     const startColIndex = colIds.indexOf(start.colId);
     const visibleRowIds = this._gridVisibleRowIds();
@@ -334,8 +417,54 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._markDirty({ skipUndo: true });
       this._updateGridCellSelectionUI();
       this._focusGridCellSelectionHost();
-      if (typeof showStatus === 'function') showStatus(`表を貼り付けました: ${matrix.length}行 × ${mappedColumns}列`);
+      // 貼り付け後は起点のセルをアクティブにして、続けてキーボードで操作できるようにする
+      // （1セルなら範囲表示も残さない。複数セルなら貼り付けた範囲の選択表示を保つ）。
+      if (selectedKeys.size <= 1) {
+        this._setActiveCell?.(start.rowId, start.colId, false);
+      } else {
+        if (this._cellEditMode) this._cellEditMode = false;
+        this._activeCellRowId = start.rowId;
+        this._activeCellColId = start.colId;
+        this._restoreActiveCellHighlight?.();
+      }
+      if (typeof showStatus === 'function' && !(fromActiveCell && selectedKeys.size <= 1)) showStatus(`表を貼り付けました: ${matrix.length}行 × ${mappedColumns}列`);
     }
+    return true;
+  },
+
+  // 複数セルを選んでいる時の貼り付け。1つの値はすべての選択セルへ入れ、
+  // 選択と同じ形（選択のある行数×列数）の表は、選択したセルの位置へ順に入れる。
+  // どちらでもなければ false（従来どおり先頭セルから表を貼り付ける）。
+  _pasteIntoSelectedGridCells(e, matrix) {
+    if (this._readOnly || !(this._gridCellSelection?.size > 1)) return false;
+    const axes = this._gridSelectionAxes();
+    if (!axes) return false;
+    const single = matrix.length === 1 && matrix[0].length === 1;
+    const sameShape = matrix.length === axes.rows.length && matrix.every(row => row.length === axes.cols.length);
+    if (!single && !sameShape) return false;
+    const targets = [];
+    axes.rows.forEach((rowIndex, r) => axes.cols.forEach((colIndex, c) => {
+      const rowId = axes.bounds.rowIds[rowIndex];
+      const colId = axes.bounds.colIds[colIndex];
+      if (colId === '_gutter' || colId === '_gutter2') return;
+      if (!this._gridCellSelection.has(_sn2GridCellKey(rowId, colId))) return;
+      const row = this.doc.rows.find(item => item.id === rowId);
+      if (row) targets.push([row, colId, single ? matrix[0][0] : matrix[r][c]]);
+    }));
+    if (!targets.length) return false;
+    e.preventDefault();
+    this._pushUndo('選択したセルへ貼り付け');
+    let changed = false;
+    targets.forEach(([row, colId, value]) => { if (this._setGridPastedValue(row, colId, value)) changed = true; });
+    if (!changed) return true;
+    this._syncCharactersFromRows?.();
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    this._updateGridCellSelectionUI();
+    this._focusGridCellSelectionHost();
+    if (!this._cellEditMode && this._activeCellRowId) this._restoreActiveCellHighlight?.();
+    if (typeof showStatus === 'function') showStatus(String(targets.length) + 'セルに貼り付けました');
     return true;
   },
 
@@ -356,6 +485,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._markDirty({ skipUndo: true });
     this._updateGridCellSelectionUI();
     this._focusGridCellSelectionHost();
+    // 描き直しで消えたアクティブセルを戻す（範囲の選択表示は保つ）
+    if (!this._cellEditMode && this._activeCellRowId) this._restoreActiveCellHighlight?.();
     return true;
   },
 
@@ -368,7 +499,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _sanitizeTextCellSelection() {
     if (!this._textCellSelection || !this.doc?.rows) return;
-    const visible = new Set(this.doc.rows.filter(row => this._isRoleVisible(row.role || '', row.status || '')).map(row => row.id));
+    const visible = new Set(this.doc.rows.filter(row => this._isRoleVisible(row)).map(row => row.id));
     for (const rowId of [...this._textCellSelection]) {
       if (!visible.has(rowId)) this._textCellSelection.delete(rowId);
     }
@@ -409,7 +540,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const to = Math.min(this.doc.rows.length - 1, Math.max(fromIdx, toIdx));
     for (let i = from; i <= to; i++) {
       const row = this.doc.rows[i];
-      if (row && this._isRoleVisible(row.role || '', row.status || '')) next.add(row.id);
+      if (row && this._isRoleVisible(row)) next.add(row.id);
     }
     this._textCellSelection = next;
     this._updateTextCellSelectionUI();

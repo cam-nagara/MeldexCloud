@@ -560,10 +560,148 @@ function _outlinerAppendMenuItem(menu, options) {
     event.preventDefault();
     event.stopPropagation();
     if (item.disabled) return;
-    if (typeof options?.action === 'function') options.action(event);
+    if (typeof options?.action === 'function') {
+      void _outlinerRunMenuAction(options.action, event, options?.label || options?.title || '');
+    }
   });
   menu.appendChild(item);
   return item;
+}
+
+// 失敗の理由を、利用者向けの短い文に整える（通信の状態コードや内部の例外名は出さない）。
+function _outlinerFailureReason(error) {
+  if (!error) return '';
+  if (error.name === 'AbortError') return '中断されました';
+  const raw = String(error?.userMessage || error?.message || (typeof error === 'string' ? error : '') || '').trim();
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) return 'サーバーに接続できませんでした';
+  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError || error instanceof RangeError) {
+    return '予期しないエラーが発生しました';
+  }
+  let text = raw
+    .replace(/^HTTP\s*\d+\s*:\s*/i, '')
+    .replace(/\(\d+秒\)\s*:\s*\S+$/, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim();
+  if (text.length > 120) text = text.slice(0, 120) + '…';
+  return text;
+}
+
+function _outlinerReportFailure(message, error) {
+  const reason = _outlinerFailureReason(error);
+  if (typeof showStatus === 'function') showStatus(reason ? `${message}：${reason}` : message, true);
+}
+
+// 右クリックメニューの実行。非同期の処理も待ち、失敗を握り潰さずに原因つきで表示する。
+async function _outlinerRunMenuAction(action, event, label) {
+  try {
+    return await action(event);
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner menu] 実行に失敗', error);
+    _outlinerReportFailure(label ? `「${label}」を実行できませんでした` : '操作を実行できませんでした', error);
+    return undefined;
+  }
+}
+
+// 複数項目の複製。部分失敗も件数と最初の原因を返し、表示で握り潰さない。
+async function _outlinerDuplicateItems(items) {
+  const result = { ok: 0, failed: 0, error: null };
+  for (const target of items || []) {
+    try {
+      await apiPost('/outliner/duplicate', { path: target.path });
+      result.ok += 1;
+    } catch (error) {
+      result.failed += 1;
+      if (!result.error) result.error = error;
+    }
+  }
+  return result;
+}
+
+function _outlinerReportBatchResult(result, verbDone, failMessage) {
+  const reason = result.failed ? _outlinerFailureReason(result.error) : '';
+  const suffix = reason ? `：${reason}` : '';
+  if (!result.failed) {
+    showStatus(`${result.ok}件を${verbDone}`);
+  } else if (!result.ok) {
+    showStatus(`${failMessage}${suffix}`, true);
+  } else {
+    showStatus(`${result.ok}件を${verbDone}。${result.failed}件は失敗しました${suffix}`, true);
+  }
+}
+
+async function _outlinerRunDuplicate(items) {
+  const result = await _outlinerDuplicateItems(items);
+  if (result.ok > 0 && typeof loadOutliner === 'function') {
+    try { await loadOutliner(); } catch (error) { console.error('[outliner duplicate] 表示の更新に失敗', error); }
+  }
+  _outlinerReportBatchResult(result, '複製しました', '複製に失敗しました');
+  return result;
+}
+
+// ソースフォルダの表示名変更。失敗は原因つきで表示し、成功表示は保存と再読込の後だけ。
+async function _outlinerRenameSourceFolder(nodeData) {
+  try {
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const root = roots.find(r => r.path === nodeData.path);
+    if (!root) {
+      showStatus('名前を変更できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    const newName = await cfPrompt('表示名を入力:', root.name);
+    if (!newName) return false;
+    root.name = newName;
+    await _putOutlinerRootsWithBase(roots, baseRoots);
+    await loadOutliner();
+    showStatus('名前を変更しました');
+    return true;
+  } catch (error) {
+    console.error('[outliner source folder] 名前の変更に失敗', error);
+    _outlinerReportFailure('名前を変更できませんでした', error);
+    return false;
+  }
+}
+
+async function _outlinerUnregisterSourceFolder(nodeData) {
+  try {
+    // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+    // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+    if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return false;
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const newRoots = roots.filter(r => r.path !== nodeData.path);
+    if (newRoots.length === roots.length) {
+      showStatus('登録を解除できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    await _putOutlinerRootsWithBase(newRoots, baseRoots);
+    await loadOutliner();
+    showStatus('ソースフォルダの登録を解除しました');
+    return true;
+  } catch (error) {
+    console.error('[outliner source folder] 登録解除に失敗', error);
+    _outlinerReportFailure('ソースフォルダの登録を解除できませんでした', error);
+    return false;
+  }
+}
+
+async function _outlinerCopyLink(nodeData) {
+  const linkPath = nodeData?.path;
+  if (!linkPath) return false;
+  const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
+  if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {
+    showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
+    return false;
+  }
+  try {
+    const ok = await MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type);
+    if (ok) showStatus('リンクをコピーしました');
+    else showStatus('リンクをコピーできませんでした：クリップボードに書き込めませんでした', true);
+    return !!ok;
+  } catch (error) {
+    _outlinerReportFailure('リンクをコピーできませんでした', error);
+    return false;
+  }
 }
 
 function _outlinerAppendMenuSeparator(menu) {
@@ -848,14 +986,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       onCopy: () => folderToolbarCopyItems(contextOperationItems),
       onCut: () => folderToolbarCutItems(contextOperationItems),
       onPaste: () => folderToolbarPasteToFolder(addParent),
-      onDuplicate: async () => {
-        let count = 0;
-        for (const target of editableContextItems) {
-          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
-        }
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
-      },
+      onDuplicate: () => _outlinerRunDuplicate(editableContextItems),
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
       cutDisabled: editableContextItems.length === 0,
@@ -1074,9 +1205,13 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   // --- バージョン管理（フォルダのみ） ---
   if (!isMulti && (isFolder || isDB) && nodeData.path) {
     addSep();
-    addMenuItem('バージョンを保存', () => {
+    addMenuItem('バージョンを保存', async () => {
       closeTreeContextMenu();
-      if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
+      if (typeof saveFolderVersion !== 'function') {
+        showStatus('バージョンを保存できませんでした：この画面ではバージョン管理を使えません', true);
+        return;
+      }
+      await saveFolderVersion(nodeData.path);
     }, null, 'save');
     addMenuItem('バージョン管理', () => {
       closeTreeContextMenu();
@@ -1152,13 +1287,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!isMulti && nodeData.path) {
     addMenuItem('リンクをコピー', () => {
       closeTreeContextMenu();
-      const linkPath = nodeData.path;
-      const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
-      if (typeof MeldexBroadcast !== 'undefined') {
-        MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type).then(ok => {
-          if (ok) showStatus('リンクをコピーしました');
-        });
-      }
+      return _outlinerCopyLink(nodeData);
     }, null, 'link');
   }
 

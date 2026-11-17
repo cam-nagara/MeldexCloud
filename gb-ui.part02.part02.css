@@ -144,7 +144,7 @@
     gap: var(--ui-space-3);
   }
   .dup-group-header .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .dup-item {
     width: min(170px, 100%);
@@ -335,14 +335,16 @@
   margin-bottom: 12px;
 }
 .gb-version-section-header {
-  font-size: var(--ui-font-13);
-  font-weight: bold;
-  padding: 6px 0;
+  font-size: var(--ui-panel-subheader-font-size);
+  font-weight: var(--ui-weight-semibold);
+  padding: 0;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--gb-history-fg, var(--ui-fg-default));
+  min-height: var(--ui-panel-subheader-height);
+  box-sizing: border-box;
 }
 .gb-version-section-body {
   padding-left: 4px;
@@ -711,6 +713,6 @@ input[type=checkbox].gb-checkbox:focus-visible {
   }
   .meldex-dropbox-folder-picker-row,
   .meldex-dropbox-folder-picker-modal .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

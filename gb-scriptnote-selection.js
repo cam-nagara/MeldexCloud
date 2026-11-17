@@ -3,7 +3,7 @@
 Object.assign(ScriptNoteEditor.prototype, {
 
   _isRowSelectionTarget(row) {
-    return !!(row && this._isRoleVisible(row.role || '', row.status || ''));
+    return !!(row && this._isRoleVisible(row));
   },
 
   _sanitizeRowSelection() {
@@ -104,7 +104,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       for (let i = from; i <= to; i++) {
         const row = this.doc.rows[i];
         if (!row) continue;
-        if (!this._isRoleVisible(row.role || '', row.status || '')) continue;
+        if (!this._isRoleVisible(row)) continue;
         this._rowSelection.add(row.id);
       }
     } else if (ctrlKey) {
@@ -294,7 +294,9 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._pushUndo('一括タイプ変更');
         this.doc.rows.forEach((row) => {
           if (!selectedIds.has(row.id)) return;
-          if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+          if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+            globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
+          } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
             globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
           } else {
             row.role = name;
@@ -321,6 +323,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
+    if (this._scenarioViewEditUnit?.() === 'page') {
+      this._deleteScenarioPagesForRows([...selectedIds], '_text');
+      this._clearRowSelection();
+      return;
+    }
     if ((this.doc?.rows?.length || 0) - selectedIds.size < 1) {
       const keepRow = this.doc.rows.find((row) => selectedIds.has(row.id));
       if (keepRow) selectedIds.delete(keepRow.id);
@@ -338,10 +345,13 @@ Object.assign(ScriptNoteEditor.prototype, {
           return;
         }
         this._pushUndo('一括行削除');
+        const removeIndex = this.doc.rows.findIndex(row => selectedIds.has(row.id));
         this.doc.rows = this.doc.rows.filter((row) => !selectedIds.has(row.id));
         this._clearRowSelection();
         this._render();
         this._markDirty();
+        // 削除した位置の次の行をアクティブにし、キーボード操作を続けられるようにする。
+        if (removeIndex >= 0) this._activateCellNearAfterClose?.(removeIndex, '_text');
       });
     }
   },
@@ -376,6 +386,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     host.addEventListener('pointerdown', (e) => {
       const cb = e.target.closest?.('.sn2-row-check');
       if (!cb || e.button !== 0) return;
+      // Shift+クリックはclick側の範囲選択へ渡す。ここでドラッグ選択を開始すると
+      // clickを抑止してしまい、折り返し段や縦書きでも複数選択できなくなる。
+      if (e.shiftKey) return;
       const rowId = cb.closest?.('.sn2-row')?.dataset.rowId || '';
       if (!rowId) return;
       e.preventDefault();
@@ -437,7 +450,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _sanitizeRoleCellSelection() {
     if (!this._roleCellSelection || !this.doc?.rows) return;
-    const visible = new Set(this.doc.rows.filter(row => this._isRoleVisible(row.role || '', row.status || '')).map(row => row.id));
+    const visible = new Set(this.doc.rows.filter(row => this._isRoleVisible(row)).map(row => row.id));
     for (const rowId of [...this._roleCellSelection]) {
       if (!visible.has(rowId)) this._roleCellSelection.delete(rowId);
     }
@@ -479,7 +492,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const to = Math.min(this.doc.rows.length - 1, Math.max(fromIdx, toIdx));
     for (let i = from; i <= to; i++) {
       const row = this.doc.rows[i];
-      if (row && this._isRoleVisible(row.role || '', row.status || '')) next.add(row.id);
+      if (row && this._isRoleVisible(row)) next.add(row.id);
     }
     this._roleCellSelection = next;
     this._updateRoleCellSelectionUI();
@@ -527,7 +540,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     let next = idx + dir;
     while (next >= 0 && next < this.doc.rows.length) {
       const row = this.doc.rows[next];
-      if (this._isRoleVisible(row.role || '', row.status || '')) return next;
+      if (this._isRoleVisible(row)) return next;
       next += dir;
     }
     return -1;
@@ -535,13 +548,20 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _writeRoleClipboard(text) {
     const value = String(text || '');
+    const fallback = () => {
+      if (this._writeRoleClipboardFallback(value)) return;
+      if (typeof showStatus === 'function') showStatus('タイプをコピーできませんでした。クリップボードへの書き込みが許可されていません', true);
+    };
     if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(value).catch(() => this._writeRoleClipboardFallback(value));
+      Promise.resolve()
+        .then(() => navigator.clipboard.writeText(value))
+        .catch(fallback);
       return;
     }
-    this._writeRoleClipboardFallback(value);
+    fallback();
   },
 
+  // 成功したら true。ブラウザがコピーを拒否・失敗した時は false を返す。
   _writeRoleClipboardFallback(text) {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -549,10 +569,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     ta.tabIndex = -1;
     ta.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
     document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    try { document.execCommand('copy'); } catch {}
-    ta.remove();
+    let copied = false;
+    try {
+      ta.focus();
+      ta.select();
+      copied = document.execCommand('copy') !== false;
+    } catch {
+      copied = false;
+    } finally {
+      ta.remove();
+    }
+    return copied;
   },
 
   _copyRoleCellSelection(fallbackRowId = '') {
@@ -574,7 +601,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       const rowEl = this._roleButtonByRowId(row.id)?.closest?.('.sn2-row') || null;
       if (rowEl && typeof this._setRowRole === 'function') this._setRowRole(idx, rowEl, value);
       else {
-        if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+        if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+          globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, value);
+        } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
           globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, value);
         } else {
           row.role = value;
@@ -650,20 +679,21 @@ Object.assign(ScriptNoteEditor.prototype, {
     const crossCol = isVertical
       ? (key === 'ArrowUp' ? 'prev-col' : key === 'ArrowDown' ? 'next-col' : null)
       : (key === 'ArrowLeft' ? 'prev-col' : key === 'ArrowRight' ? 'next-col' : null);
-    // Tab はその行のタイプ選択メニューを開く（Shift+Tab は従来どおり前のセルへ移動）
-    if (key === 'Tab' && !e.shiftKey) {
+    // Tabでキャラ、Shift+Tabでタイプの選択メニューを開く。
+    if (key === 'Tab') {
       e.preventDefault(); e.stopPropagation();
       this._selectRoleCell(rowId, idx);
-      this._showRoleMenu(roleBtn);
+      const target = roleBtn.closest('.sn2-row')?.querySelector(e.shiftKey ? '.sn2-role-btn' : '.sn2-character-btn');
+      if (target) this._showRoleMenu(target, { kind: e.shiftKey ? 'type' : 'character' });
       return true;
     }
-    if (crossCol || key === 'Tab') {
+    if (crossCol) {
       e.preventDefault(); e.stopPropagation();
       this._activeCellRowId = rowId;
       this._activeCellColId = '_role';
       this._cellEditMode = false;
       if (this._roleCellSelection?.size) this._clearRoleCellSelection?.();
-      this._navigateCell(key === 'Tab' ? (e.shiftKey ? 'prev-col' : 'next-col') : crossCol);
+      this._navigateCell(crossCol);
       return true;
     }
     if (key === 'Escape') {
@@ -772,6 +802,161 @@ Object.assign(ScriptNoteEditor.prototype, {
       document.addEventListener('pointerdown', onPointerDown, true);
       document.addEventListener('keydown', onKeydown, true);
     }, 0);
+    return true;
+  },
+
+  // ハンドルクリックの行メニュー（MeldexRowHandleMenu）の項目。
+  // 操作はすべて既存の行操作と同じ取り消し履歴に積む。
+  _rowHandleMenuItems(rowId) {
+    const idx = this.doc?.rows?.findIndex(row => row.id === rowId) ?? -1;
+    if (idx < 0) return [];
+    const readOnly = !!this._readOnly;
+    const selected = !!this._rowSelection?.has(rowId);
+    const neighbor = dir => this._rowHandleNeighborIndex(idx, dir) >= 0;
+    const row = this.doc.rows[idx];
+    const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
+      .filter(choice => choice && choice.kind !== 'none')
+      .map(choice => String(choice.name || choice.label || ''))
+      .filter(Boolean);
+    // ビューの「追加・削除はページ単位」の時は、行の追加・削除がページ単位になる。
+    const pageUnit = this._scenarioViewEditUnit?.() === 'page';
+    const items = [
+      { icon: 'arrowUp', label: pageUnit ? '上にページを追加' : '上に行を追加', e2eId: 'sn-row-menu-add-above', disabled: readOnly,
+        action: () => this._insertEmptyRowRelative(rowId, 'above', '_text') },
+      { icon: 'arrowDown', label: pageUnit ? '下にページを追加' : '下に行を追加', e2eId: 'sn-row-menu-add-below', disabled: readOnly,
+        action: () => this._insertEmptyRowRelative(rowId, 'below', '_text') },
+      { icon: 'copy', label: '複製', e2eId: 'sn-row-menu-duplicate', disabled: readOnly,
+        action: () => this._duplicateRowById(rowId) },
+      { type: 'separator' },
+      { icon: 'chevronUp', label: '上へ移動', e2eId: 'sn-row-menu-move-up', disabled: readOnly || !neighbor(-1),
+        action: () => this._moveRowById(rowId, -1) },
+      { icon: 'chevronDown', label: '下へ移動', e2eId: 'sn-row-menu-move-down', disabled: readOnly || !neighbor(1),
+        action: () => this._moveRowById(rowId, 1) },
+    ];
+    if (roles.length && !readOnly) {
+      items.push({
+        icon: 'tag', label: 'タイプ変更', e2eId: 'sn-row-menu-role',
+        items: roles.map((name, index) => ({
+          label: name,
+          e2eId: `sn-row-menu-role-${index + 1}`,
+          disabled: String(row.role || '') === name,
+          action: () => this._setRowRoleById(rowId, name),
+        })),
+      });
+    }
+    if (typeof this._scenarioPageHasBreaks === 'function' && this._scenarioPageHasBreaks()) {
+      items.push({
+        icon: 'bookOpen', label: 'ページ', e2eId: 'sn-row-menu-page',
+        items: [
+          { label: '上にページを追加', e2eId: 'sn-row-menu-page-add-above', disabled: readOnly,
+            action: () => this._insertScenarioPageRelative(rowId, 'above', '_text') },
+          { label: '下にページを追加', e2eId: 'sn-row-menu-page-add-below', disabled: readOnly,
+            action: () => this._insertScenarioPageRelative(rowId, 'below', '_text') },
+          { label: 'ページを複製', e2eId: 'sn-row-menu-page-duplicate', disabled: readOnly,
+            action: () => this._duplicateScenarioPage(rowId) },
+          { label: 'ページを上へ移動', e2eId: 'sn-row-menu-page-move-up', disabled: readOnly,
+            action: () => this._moveScenarioPage(rowId, -1) },
+          { label: 'ページを下へ移動', e2eId: 'sn-row-menu-page-move-down', disabled: readOnly,
+            action: () => this._moveScenarioPage(rowId, 1) },
+          { label: 'ページを削除', e2eId: 'sn-row-menu-page-delete', danger: true, disabled: readOnly,
+            action: () => this._deleteScenarioPagesForRows([rowId], this._activeCellColId || '_text') },
+        ],
+      });
+    }
+    items.push(
+      { type: 'separator' },
+      { icon: selected ? 'squareMinus' : 'squareCheck', label: selected ? '選択解除' : '選択', e2eId: 'sn-row-menu-select',
+        action: () => {
+          const currentIdx = this.doc.rows.findIndex(item => item.id === rowId);
+          if (currentIdx >= 0) this._toggleRowSelection(rowId, currentIdx, false, true);
+        } },
+      { type: 'separator' },
+      { icon: 'trash2', label: pageUnit ? 'ページを削除' : '削除', danger: true, e2eId: 'sn-row-menu-delete',
+        disabled: readOnly || this.doc.rows.length <= 1,
+        action: () => this._deleteRowById(rowId) },
+    );
+    return items;
+  },
+
+  _rowHandleNeighborIndex(idx, dir) {
+    let target = idx + dir;
+    while (target >= 0 && target < this.doc.rows.length) {
+      if (this._isRoleVisible(this.doc.rows[target])) return target;
+      target += dir;
+    }
+    return -1;
+  },
+
+  _duplicateRowById(rowId) {
+    if (this._readOnly) return null;
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    if (idx < 0) return null;
+    this._pushUndo('行複製');
+    const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
+    const copy = { ...JSON.parse(JSON.stringify(this.doc.rows[idx])), id: nextId };
+    this.doc.rows.splice(idx + 1, 0, copy);
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    return copy;
+  },
+
+  _moveRowById(rowId, dir) {
+    if (this._readOnly) return false;
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    if (idx < 0) return false;
+    const targetIdx = this._rowHandleNeighborIndex(idx, dir);
+    if (targetIdx < 0) return false;
+    this._pushUndo('行入れ替え');
+    const tmp = this.doc.rows[idx];
+    this.doc.rows[idx] = this.doc.rows[targetIdx];
+    this.doc.rows[targetIdx] = tmp;
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    return true;
+  },
+
+  _setRowRoleById(rowId, name) {
+    if (this._readOnly) return false;
+    const row = this.doc.rows.find(item => item.id === rowId);
+    if (!row) return false;
+    this._pushUndo('タイプ変更');
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
+    } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
+    } else {
+      row.role = name;
+    }
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    return true;
+  },
+
+  _deleteRowById(rowId) {
+    if (this._readOnly) return false;
+    if (this._scenarioViewEditUnit?.() === 'page') {
+      return this._deleteScenarioPagesForRows([rowId], this._activeCellColId || '_text');
+    }
+    const idx = this.doc.rows.findIndex(row => row.id === rowId);
+    if (idx < 0) return false;
+    if (this.doc.rows.length <= 1) {
+      if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
+      return false;
+    }
+    const focusColId = this._activeCellColId || '_text';
+    this._pushUndo('行削除');
+    this.doc.rows.splice(idx, 1);
+    this._rowSelection?.delete?.(rowId);
+    if (this._activeCellRowId === rowId) { this._activeCellRowId = null; this._cellEditMode = false; }
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    this._updateRowSelectionUI?.();
+    // 削除した位置の次の行をアクティブにし、キーボード操作を続けられるようにする。
+    this._activateCellNearAfterClose?.(idx, focusColId);
     return true;
   },
 

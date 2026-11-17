@@ -521,15 +521,6 @@ function _restoreToolMenuModalFocus(trigger) {
   try { trigger.focus({ preventScroll: true }); } catch { try { trigger.focus(); } catch {} }
 }
 
-function _setScriptNoteOpenMessage(host, text, depth = 0, isError = false) {
-  if (!host) return;
-  const message = document.createElement('div');
-  message.className = 'scriptnote-open-message' + (isError ? ' is-error' : '');
-  message.style.setProperty('--scriptnote-open-indent', (depth * 16 + 8) + 'px');
-  message.textContent = text;
-  host.replaceChildren(message);
-}
-
 function showScriptNoteOpenModal(mode = 'open', options = {}) {
   const isImport = mode === 'import';
   const existing = document.querySelector(`.gb-scriptnote-open-overlay[data-scriptnote-open-mode="${isImport ? 'import' : 'open'}"]`);
@@ -559,7 +550,7 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
   content.innerHTML = `
       <div class="field gb-scriptnote-open-field">
         <label id="scriptnote-open-tree-label" class="gb-scriptnote-open-label">フォルダツリーから${isImport ? '旧シナリオ' : 'シナリオ'}を選択</label>
-        <div id="scriptnote-open-tree" class="gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
+        <div id="scriptnote-open-tree" class="gb-folder-picker-embed gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
       </div>
       <div id="scriptnote-open-selection" class="gb-scriptnote-open-selection" aria-live="polite"></div>
       <div class="gb-scriptnote-open-hint">
@@ -586,7 +577,7 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
     extraClass: 'gb-scriptnote-open-modal',
     geometryKey: isImport ? 'scriptnote-import-dialog' : 'scriptnote-open-dialog',
     minWidth: '0',
-    initialFocus: '#scriptnote-open-tree',
+    initialFocus: '#scriptnote-open-tree .gb-folder-picker-search',
     returnFocus: () => trigger,
     closeLabel: isImport ? '旧シナリオからインポートを閉じる' : 'シナリオを開くを閉じる',
     closeOnEsc: true,
@@ -636,153 +627,51 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
     if (openScenarioInScriptNote(selectedPath, label)) return;
     showStatus('シナリオを開けませんでした', true);
   };
-  const updateSelection = (path, label, rowEl) => {
+  const updateSelection = (path, label) => {
     selectedPath = path || '';
     selectedLabel = label || '';
-    treeHost.querySelectorAll('.scriptnote-open-row.is-selected').forEach(el => {
-      el.classList.remove('is-selected');
-      el.setAttribute('aria-selected', 'false');
-    });
-    if (rowEl) {
-      rowEl.classList.add('is-selected');
-      rowEl.setAttribute('aria-selected', 'true');
-    }
     selectionEl.textContent = selectedPath
       ? `選択中: ${selectedLabel || selectedPath.split('/').pop().replace(/\.\w+$/, '')}`
       : '選択中: なし';
     openBtn.disabled = !selectedPath;
   };
-  const buildBrowseUrl = (path, rootPath) => {
-    let url = '/browse?path=' + encodeURIComponent(path) + '&all_files=true';
-    if (rootPath) url += '&root=' + encodeURIComponent(rootPath);
-    return url;
-  };
-  const createNodeRow = (item, depth, rootPath) => {
-    const wrapper = document.createElement('div');
-    const row = document.createElement('div');
-    row.className = 'scriptnote-open-row';
-    const itemLabel = item.name || item.label || item.path?.split('/').pop() || '';
-    const rowKey = String(item.path || itemLabel || 'item').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'item';
-    row.dataset.e2eId = 'scriptnote-open-row-' + rowKey;
-    row.dataset.scriptnoteOpenPath = item.path || '';
-    row.style.setProperty('--scriptnote-open-indent', (depth * 16 + 4) + 'px');
-    const isFolder = item.type === 'folder' || item._isRoot;
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'scriptnote-open-toggle';
-    toggle.dataset.e2eId = 'scriptnote-open-toggle-' + rowKey;
-    toggle.dataset.scriptnoteOpenPath = item.path || '';
-    if (isFolder) toggle.innerHTML = lucide('chevronRight', 10); else toggle.textContent = '';
-    toggle.setAttribute('aria-label', isFolder ? 'フォルダを展開: ' + itemLabel : 'フォルダではありません');
-    if (!isFolder) {
-      toggle.disabled = true;
-      toggle.tabIndex = -1;
-      toggle.setAttribute('aria-hidden', 'true');
-    }
-    const label = document.createElement('div');
-    label.className = 'scriptnote-open-row-label';
-    label.textContent = itemLabel;
-    const isSelectableItem = isImport ? isScenarioBrowseItem(item) : isScriptNoteBrowseItem(item);
-    row.classList.toggle('is-selectable', isSelectableItem);
-    row.classList.toggle('is-muted', !isFolder && !isSelectableItem);
-    row.appendChild(toggle);
-    row.appendChild(label);
-    wrapper.appendChild(row);
-    const children = document.createElement('div');
-    children.className = 'scriptnote-open-children';
-    children.hidden = true;
-    wrapper.appendChild(children);
-
-    if (isFolder) {
-      row.setAttribute('role', 'button');
-      row.tabIndex = 0;
-      row.setAttribute('aria-expanded', 'false');
-      row.setAttribute('aria-label', 'フォルダを展開: ' + itemLabel);
-      const toggleFolder = async () => {
-        const willOpen = children.hidden;
-        row.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-        if (!willOpen) {
-          children.hidden = true;
-          toggle.innerHTML = lucide('chevronRight', 10);
-          return;
-        }
-        toggle.innerHTML = lucide('chevronDown', 10);
-        children.hidden = false;
-        if (children.dataset.loaded === 'true') return;
-        _setScriptNoteOpenMessage(children, '読み込み中...', depth + 1);
-        try {
-          const items = await apiFetch(buildBrowseUrl(item.path, rootPath));
-          const visibleItems = (items || [])
-            .filter(child => child && (child.type === 'folder' || (isImport ? isScenarioBrowseItem(child) : isScriptNoteBrowseItem(child))))
-            .sort((a, b) => {
-              const af = a.type === 'folder' ? 0 : 1;
-              const bf = b.type === 'folder' ? 0 : 1;
-              if (af !== bf) return af - bf;
-              return String(a.name || '').localeCompare(String(b.name || ''), 'ja');
-            });
-          children.innerHTML = '';
-          if (!visibleItems.length) {
-            _setScriptNoteOpenMessage(children, isImport ? '旧シナリオなし' : 'シナリオなし', depth + 1);
-          } else {
-            visibleItems.forEach(child => children.appendChild(createNodeRow(child, depth + 1, rootPath)));
-          }
-          children.dataset.loaded = 'true';
-        } catch {
-          _setScriptNoteOpenMessage(children, '読み込み失敗', depth + 1, true);
-        }
-      };
-      toggle.addEventListener('click', (e) => { e.stopPropagation(); toggleFolder(); });
-      row.addEventListener('click', toggleFolder);
-      row.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        toggleFolder();
-      });
-    } else {
-      row.setAttribute('role', 'button');
-      row.tabIndex = isSelectableItem ? 0 : -1;
-      row.setAttribute('aria-selected', selectedPath && item.path === selectedPath ? 'true' : 'false');
-      row.setAttribute('aria-label', itemLabel);
-      row.addEventListener('click', () => updateSelection(item.path, item.name || '', row));
-      row.addEventListener('dblclick', () => {
-        updateSelection(item.path, item.name || '', row);
+  // フォルダツリーは共通のフォルダ選択部品を埋め込む（UI共通ルール 4.1）
+  const isSelectableItem = item => (isImport ? isScenarioBrowseItem(item) : isScriptNoteBrowseItem(item));
+  const browser = typeof window.GBFolderPicker?.createBrowser === 'function'
+    ? window.GBFolderPicker.createBrowser({
+      selectFiles: true,
+      selectFolders: false,
+      fileFilter: isSelectableItem,
+      initialPath: selectedPath,
+      revealPath: selectedPath,
+      currentLabel: isImport ? '選択中の旧シナリオ:' : '選択中のシナリオ:',
+      emptyText: isImport ? 'この階層にフォルダまたは旧シナリオはありません。' : 'この階層にフォルダまたはシナリオはありません。',
+      onSelect: selection => {
+        if (selection?.kind === 'file') updateSelection(selection.path, selection.name || '');
+      },
+      onActivate: selection => {
+        if (selection?.kind !== 'file') return;
+        updateSelection(selection.path, selection.name || '');
         submit();
-      });
-      row.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        updateSelection(item.path, item.name || '', row);
-        if (e.key === 'Enter') submit();
-      });
-      if (selectedPath && item.path === selectedPath) updateSelection(item.path, item.name || '', row);
-    }
-    return wrapper;
-  };
-  const renderTree = async () => {
-    _setScriptNoteOpenMessage(treeHost, '読み込み中...');
-    try {
-      const roots = await apiFetch('/outliner-roots');
-      treeHost.innerHTML = '';
-      if (!Array.isArray(roots) || !roots.length) {
-        _setScriptNoteOpenMessage(treeHost, 'フォルダツリーがありません');
-        return;
-      }
-      roots.forEach(root => {
-        const rootNode = { ...root, type: 'folder', _isRoot: true };
-        treeHost.appendChild(createNodeRow(rootNode, 0, root.path));
-      });
-      if (!selectedPath) updateSelection('', '', null);
-    } catch {
-      _setScriptNoteOpenMessage(treeHost, 'フォルダツリーの読み込みに失敗しました', 0, true);
-    }
-  };
+      },
+    })
+    : null;
+  if (browser) {
+    browser.tree.setAttribute('aria-labelledby', 'scriptnote-open-tree-label');
+    treeHost.replaceChildren(browser.element);
+  } else {
+    treeHost.textContent = 'フォルダツリーを表示できませんでした';
+  }
+  updateSelection(selectedPath, selectedLabel);
   cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
   openBtn.addEventListener('click', submit);
   modalApi.modal.addEventListener('keydown', (e) => {
+    // ツリー行のEnterは共通部品側で選択と確定を行う
+    if (e.target.closest('.gb-folder-picker-tree, .gb-folder-picker-search-results')) return;
     if (e.key === 'Enter' && !openBtn.disabled && !e.target.closest('button')) submit();
   });
-  renderTree();
   modalApi.open();
+  browser?.start();
   return modalApi;
 }
 

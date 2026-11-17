@@ -36,6 +36,211 @@ const MeldexExportImage = (() => {
   }
 
   // ================================================================
+  // ブラウザ自身のレイアウトエンジンによる画像化（SVG foreignObject）
+  // ================================================================
+  // html2canvas は writing-mode（縦書き）・ルビ・縦中横・text-orientation を解釈できず、
+  // 縦書きのシナリオやノートを画像化すると文字が横倒し・重なりで崩れる。配布版には
+  // サーバー側の画像化エンジンも同梱されないため、自己完結HTMLを画面外の iframe で
+  // レイアウトし、その結果を SVG foreignObject 経由でキャンバスへ描く。描画は画面と
+  // 同じエンジンが行うので、縦書き・ルビ・装飾がエディタ表示と一致する。
+  // 外部リソースは読めない（SVG画像の制約）ため、フォント・画像は data URI 埋め込み済みの
+  // HTML を渡すこと。data URI の SVG は Chromium でキャンバスを汚染しない。
+  const NATIVE_MAX_CANVAS_EDGE = 32000;
+  const NATIVE_MAX_CANVAS_AREA = 120 * 1000 * 1000;
+
+  function _escapeStyleForXhtml(cssText) {
+    // XHTML の <style> 本文では & と < をエスケープする（CDATA を使わず確実に通す）。
+    return String(cssText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  }
+
+  // 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず
+  // 出力が永久に止まるため、各フレームを最大 80ms でタイマーへ切り替える。
+  function _nextFrames(count) {
+    const one = () => new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      try { requestAnimationFrame(finish); } catch {}
+      setTimeout(finish, 80);
+    });
+    let chain = Promise.resolve();
+    for (let i = 0; i < (count || 1); i++) chain = chain.then(one);
+    return chain;
+  }
+
+  async function _waitForFrameAssets(doc) {
+    try { if (doc.fonts?.ready) await doc.fonts.ready; } catch {}
+    const images = Array.from(doc.images || []);
+    await Promise.all(images.map(img => (img.complete ? null : new Promise(resolve => {
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', resolve, { once: true });
+    }))));
+    await _nextFrames(2);
+  }
+
+  /**
+   * 自己完結HTMLをブラウザのレイアウトエンジンでPNG化する。
+   * @param {string} html - 完全なHTML文書（外部参照なし）
+   * @param {Object} options - { viewportWidth, viewportHeight, dpr, captureSelector, padding, background }
+   * @returns {Promise<Blob>}
+   */
+  async function renderHtmlToPngNative(html, options) {
+    const opts = options || {};
+    const viewportWidth = Math.max(320, Math.round(Number(opts.viewportWidth) || 1200));
+    const viewportHeight = Math.max(200, Math.round(Number(opts.viewportHeight) || 800));
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.tabIndex = -1;
+    iframe.style.cssText = `position:fixed;left:-100000px;top:0;width:${viewportWidth}px;height:${viewportHeight}px;border:0;visibility:hidden;pointer-events:none;`;
+    document.body.appendChild(iframe);
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('画像化用の描画がタイムアウトしました')), 60000);
+        iframe.onload = () => { clearTimeout(timer); resolve(); };
+        iframe.srcdoc = html;
+      });
+      const doc = iframe.contentDocument;
+      if (!doc?.body) throw new Error('画像化用の文書を構築できませんでした');
+      await _waitForFrameAssets(doc);
+      const target = (opts.captureSelector && doc.querySelector(opts.captureSelector)) || doc.body;
+      const padding = Math.max(0, Number(opts.padding) || 0);
+      // 縦書きの本文は左（負の座標）方向へはみ出す。foreignObject は文書の原点より左上を
+      // 描けないため、はみ出し分だけ本文を右下へずらし、文書幅も同じだけ広げてから測る
+      // （本文の折り返し幅は変えない）。
+      const measureMin = () => {
+        let mx = Infinity; let my = Infinity;
+        const nodes = opts.boundsSelector ? target.querySelectorAll(opts.boundsSelector) : [target, ...target.querySelectorAll('*')];
+        nodes.forEach(node => {
+          const r = node.getBoundingClientRect();
+          if (!r.width && !r.height) return;
+          mx = Math.min(mx, r.left + (iframe.contentWindow.scrollX || 0));
+          my = Math.min(my, r.top + (iframe.contentWindow.scrollY || 0));
+        });
+        return { mx: Number.isFinite(mx) ? mx : 0, my: Number.isFinite(my) ? my : 0 };
+      };
+      const firstMin = measureMin();
+      const shiftX = firstMin.mx < padding ? Math.ceil(padding - firstMin.mx) : 0;
+      const shiftY = firstMin.my < padding ? Math.ceil(padding - firstMin.my) : 0;
+      if (shiftX || shiftY) {
+        const bodyStyle = iframe.contentWindow.getComputedStyle(doc.body);
+        doc.body.style.paddingLeft = (parseFloat(bodyStyle.paddingLeft) || 0) + shiftX + 'px';
+        doc.body.style.paddingTop = (parseFloat(bodyStyle.paddingTop) || 0) + shiftY + 'px';
+        iframe.style.width = (viewportWidth + shiftX) + 'px';
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      // 撮影範囲 = 対象要素の外接矩形（はみ出した子孫を含む）。縦書きの右起点レイアウトでも
+      // 左右にはみ出た部分を取りこぼさないよう、子孫の矩形も合わせて測る。
+      const rootRect = target.getBoundingClientRect();
+      let minX = rootRect.left; let minY = rootRect.top; let maxX = rootRect.right; let maxY = rootRect.bottom;
+      if (target !== doc.body) {
+        // boundsSelector があれば内容を持つ要素だけで外接矩形を測る（min-height:100% 等の
+        // 入れ物が作る余白を画像へ含めない）
+        const boundNodes = opts.boundsSelector ? target.querySelectorAll(opts.boundsSelector) : target.querySelectorAll('*');
+        if (opts.boundsSelector && boundNodes.length) {
+          minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+        }
+        boundNodes.forEach(node => {
+          const r = node.getBoundingClientRect();
+          if (!r.width && !r.height) return;
+          minX = Math.min(minX, r.left); minY = Math.min(minY, r.top);
+          maxX = Math.max(maxX, r.right); maxY = Math.max(maxY, r.bottom);
+        });
+      } else {
+        maxX = Math.max(maxX, doc.documentElement.scrollWidth);
+        maxY = Math.max(maxY, doc.documentElement.scrollHeight);
+        minX = Math.min(minX, 0); minY = Math.min(minY, 0);
+      }
+      const scrollX = iframe.contentWindow.scrollX || 0;
+      const scrollY = iframe.contentWindow.scrollY || 0;
+      const x0 = Math.floor(minX + scrollX - padding);
+      const y0 = Math.floor(minY + scrollY - padding);
+      const width = Math.max(1, Math.ceil(maxX - minX + padding * 2));
+      const height = Math.max(1, Math.ceil(maxY - minY + padding * 2));
+      // foreignObject の大きさが描画時の表示領域になる。縦書きは1行の長さを表示領域の高さから
+      // 決めるため、測定した iframe の表示領域より小さくしない（小さいと行の長さが変わる）。
+      const docWidth = Math.max(width + Math.max(0, x0), doc.documentElement.scrollWidth, doc.documentElement.clientWidth);
+      const docHeight = Math.max(height + Math.max(0, y0), doc.documentElement.scrollHeight, doc.documentElement.clientHeight);
+
+      let background = opts.background || '';
+      if (!background) {
+        const bodyBg = iframe.contentWindow.getComputedStyle(doc.body).backgroundColor;
+        const htmlBg = iframe.contentWindow.getComputedStyle(doc.documentElement).backgroundColor;
+        background = [bodyBg, htmlBg].find(c => c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') || '';
+      }
+
+      // 組方向が親と異なる要素（横書きの中の縦書き本文など）は、行の長さの基準が
+      // foreignObject 内では通常表示と変わり、極端に短い行で組まれる。測定した行方向の
+      // 長さ（縦書きは高さ、横書きは幅）を明示して、同じ位置で改行させる。
+      const frameWin = iframe.contentWindow;
+      [doc.body, ...doc.body.querySelectorAll('*')].forEach(node => {
+        const parent = node.parentElement;
+        if (!parent) return;
+        const mode = frameWin.getComputedStyle(node).writingMode;
+        if (mode === frameWin.getComputedStyle(parent).writingMode) return;
+        const vertical = /^vertical|^sideways/.test(mode);
+        if (vertical && !node.style.height) node.style.height = node.getBoundingClientRect().height + 'px';
+        if (!vertical && !node.style.width) node.style.width = node.getBoundingClientRect().width + 'px';
+      });
+
+      const serializer = new XMLSerializer();
+      const styles = Array.from(doc.querySelectorAll('style')).map(node => node.textContent || '').join('\n');
+      const htmlAttrs = Array.from(doc.documentElement.attributes)
+        .filter(attr => attr.name !== 'xmlns' && attr.name !== 'style')
+        .map(attr => ` ${attr.name}="${MeldexEscape.html(attr.value)}"`).join('');
+      // foreignObject 内では文書幅が foreignObject の幅になる。測定した iframe と同じ文書幅に
+      // 固定し、中央寄せ・右寄せ（縦書き）の配置が画像化時にずれないようにする。
+      const layoutWidth = doc.documentElement.clientWidth || (viewportWidth + shiftX);
+      const layoutHeight = doc.documentElement.clientHeight || viewportHeight;
+      const htmlStyle = ` style="width:${layoutWidth}px;min-width:${layoutWidth}px;max-width:${layoutWidth}px;min-height:${layoutHeight}px;${MeldexEscape.html(doc.documentElement.getAttribute('style') || '')}"`;
+      // body を XHTML として直列化（<style>/<script> は除外済みの複製を使う）
+      const bodyClone = doc.body.cloneNode(true);
+      bodyClone.querySelectorAll('script, style, link').forEach(node => node.remove());
+      const bodyXml = serializer.serializeToString(bodyClone);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${x0} ${y0} ${width} ${height}">`
+        + `<foreignObject x="0" y="0" width="${docWidth}" height="${docHeight}">`
+        + `<html xmlns="http://www.w3.org/1999/xhtml"${htmlAttrs}${htmlStyle}><head><style>${_escapeStyleForXhtml(styles)}</style></head>${bodyXml}</html>`
+        + '</foreignObject></svg>';
+
+      const image = new Image();
+      image.decoding = 'sync';
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error('画像化用のSVGを読み込めませんでした'));
+        image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      });
+      // 非表示ウィンドウでは decode() が保留されることがあるため上限時間を設ける（読込自体は onload で完了済み）
+      try { await Promise.race([image.decode?.(), new Promise(resolve => setTimeout(resolve, 2000))]); } catch {}
+
+      // キャンバス上限を超える場合は解像度を下げる（長大なシナリオでも失敗させない）
+      const desiredScale = Math.max(1, Number(opts.dpr) || Math.round(window.devicePixelRatio || 1) || 1);
+      const scale = Math.min(
+        desiredScale,
+        NATIVE_MAX_CANVAS_EDGE / width,
+        NATIVE_MAX_CANVAS_EDGE / height,
+        Math.sqrt(NATIVE_MAX_CANVAS_AREA / (width * height)),
+      );
+      // これ以上縮めると文字が判読できない。崩れた画像を作らず、代わりの手段を案内する。
+      if (!(scale >= 0.2)) {
+        throw new Error('内容が大きすぎるため画像にできません。折り返し表示にするか、HTMLとして保存してください');
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const g = canvas.getContext('2d');
+      if (background) {
+        g.fillStyle = background;
+        g.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      g.scale(scale, scale);
+      g.drawImage(image, 0, 0, width, height);
+      return await new Promise((resolve, reject) => {
+        canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error('Canvas→Blob変換に失敗'))), 'image/png');
+      });
+    } finally {
+      iframe.remove();
+    }
+  }
+
+  // ================================================================
   // html2canvas フォールバック
   // ================================================================
 
@@ -144,10 +349,36 @@ const MeldexExportImage = (() => {
     try {
       let blob = null;
 
-      if (!opts.useFallbackOnly && typeof MeldexExportHtml !== 'undefined') {
+      // 縦書き・ルビを含み得るビューは、まずブラウザ自身のレイアウトで画像化する。
+      let nativeHtml = '';
+      let nativeError = null;
+      if (opts.native && !opts.useFallbackOnly) {
         try {
-          // 方式C: HTML生成 → サーバーサイドレンダリング
-          const html = await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {});
+          const html = typeof opts.buildHtml === 'function'
+            ? await opts.buildHtml()
+            : (typeof MeldexExportHtml !== 'undefined' ? await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {}) : '');
+          nativeHtml = html || '';
+          if (html) {
+            blob = await renderHtmlToPngNative(html, {
+              viewportWidth: opts.nativeViewportWidth || contentEl?.scrollWidth || 1200,
+              viewportHeight: opts.nativeViewportHeight || 800,
+              dpr: opts.dpr,
+              captureSelector: opts.captureSelector,
+              boundsSelector: opts.boundsSelector,
+              padding: opts.capturePadding,
+            });
+          }
+        } catch (nativeErr) {
+          console.warn('[export-image] native render failed, falling back:', nativeErr);
+          nativeError = nativeErr;
+          blob = null;
+        }
+      }
+
+      if (!blob && !opts.useFallbackOnly && typeof MeldexExportHtml !== 'undefined') {
+        try {
+          // 方式C: HTML生成 → サーバーサイドレンダリング（専用スナップショットがあればそれを使う）
+          const html = nativeHtml || await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {});
           blob = await _exportViaServer(html, {
             dpr: opts.dpr,
             width: opts.width,
@@ -158,6 +389,15 @@ const MeldexExportImage = (() => {
         }
       }
 
+      // html2canvas は縦書き・ルビを描けない。縦書きを含み得るビューでは崩れた画像を
+      // 黙って保存せず、失敗として知らせる（旧経路へ戻らない）。
+      const legacyFallbackForbidden = typeof opts.forbidLegacyFallback === 'function'
+        ? !!opts.forbidLegacyFallback()
+        : !!opts.forbidLegacyFallback;
+      if (!blob && legacyFallbackForbidden) {
+        showStatus('PNG の生成に失敗しました' + (nativeError?.message ? ': ' + nativeError.message : ''), true);
+        return;
+      }
       if (!blob) {
         // フォールバック: html2canvas
         blob = await _fallbackHtml2Canvas(contentEl, opts);
@@ -225,18 +465,11 @@ const MeldexExportImage = (() => {
         : 'エントリレイアウト',
     };
 
-    // シナリオは特別処理: rAF×2 で縦書きレンダリング完了を待つ
-    if (viewType === 'scriptnote') {
-      const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
-      if (editor) {
-        try { editor._syncAllFromDom?.(); } catch {}
-        try { editor._render(); } catch {}
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }
-    }
+    // シナリオの描画の確定（入力中セルの再描画・縦書き寸法の待機）は
+    // buildScriptNoteExportDocument が行う。ここで全体を描き直すと行選択が失われる。
     // ノートの縦書きも組み直しに時間がかかるため、同じく描画完了を待ってから撮影する
     if (viewType === 'page' && window.MeldexNoteWritingMode?.isActive?.()) {
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await _nextFrames(2);
     }
 
     const el = getEl();
@@ -255,7 +488,38 @@ const MeldexExportImage = (() => {
     }
 
     const htmlOptions = _getHtmlOptionsForView(viewType);
+    // シナリオは本文・タイプ書式・縦書き・ルビをエディタと同じに再現する専用スナップショットを使う
+    if (viewType === 'scriptnote' && typeof buildScriptNoteExportDocument === 'function') {
+      const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+      let snapshot = null;
+      await exportToPng(el, {
+        title,
+        native: true,
+        buildHtml: async () => {
+          snapshot = await buildScriptNoteExportDocument(editor, { purpose: 'image' });
+          return snapshot?.html || '';
+        },
+        get nativeViewportWidth() { return snapshot?.viewportWidth || 1200; },
+        get nativeViewportHeight() { return snapshot?.viewportHeight || 800; },
+        captureSelector: '.sn2-scroll',
+        boundsSelector: '.sn2-header, .sn2-row, .sn2-page-break, .sn2-spread-border',
+        capturePadding: 16,
+        forbidLegacyFallback: true,
+        htmlOptions,
+        ignoreElements: _ignoreElementsForView(viewType),
+      });
+      return;
+    }
+    // ノートの縦書きは1行の長さが本文領域の高さで決まる。画像も画面と同じ高さで組む。
+    if (viewType === 'page') {
+      const pane = el.closest?.('.page-scroll, .editor-scroll, .pane-content') || el.parentElement || el;
+      extraOptions.nativeViewportWidth = Math.max(320, Math.round(pane.clientWidth || el.clientWidth || 1200));
+      extraOptions.nativeViewportHeight = Math.max(320, Math.round(pane.clientHeight || el.clientHeight || window.innerHeight || 800));
+    }
     await exportToPng(el, {
+      native: viewType === 'page',
+      captureSelector: viewType === 'page' ? '#page-content' : undefined,
+      forbidLegacyFallback: viewType === 'page' && !!window.MeldexNoteWritingMode?.isActive?.(),
       title,
       htmlOptions,
       layoutViewport: viewType === 'database' ? { width: window.innerWidth, height: window.innerHeight } : undefined,
@@ -338,6 +602,10 @@ const MeldexExportImage = (() => {
   function _getHtmlOptionsForView(viewType) {
     switch (viewType) {
       case 'page':
+        if (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportOptions) {
+          const pc = document.getElementById('page-content');
+          return MeldexExportHtml.noteExportOptions(pc, !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isActive()), '');
+        }
         return {
           cssFiles: ['gb-tools.css', 'gb-ui.css'],
           // 組方向を画像にも反映する。スタイルの本体は gb-export-html.js の
@@ -409,6 +677,7 @@ const MeldexExportImage = (() => {
   return {
     exportToPng,
     exportCurrentView,
+    renderHtmlToPngNative,
   };
 
 })();

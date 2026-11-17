@@ -1,3 +1,4 @@
+      } else {
         canvas.style.background = board?._bgColor || bg;
       }
       canvas.style.setProperty('--bd-theme-line-color', themeDef?.board?.lineColor || '');

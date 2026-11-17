@@ -744,7 +744,9 @@
       let target = opts.returnFocus;
       if (typeof target === 'function') target = target();
       if (!target?.focus) target = opener;
-      return target;
+      // 狭い画面でツールバーのあふれメニューへ退避した開き元は非表示なので、
+      // 見えているあふれメニューのボタンへ戻す。
+      return window.MeldexToolbarOverflow?.focusTarget?.(target) || target;
     }
 
     function _restoreOpenerFocus() {

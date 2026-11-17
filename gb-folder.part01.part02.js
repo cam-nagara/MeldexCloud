@@ -124,10 +124,16 @@
     }
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
-  if (item.path && typeof appendShellVerbsToMenu === 'function') {
-    await appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit, beforeDisplay: true });
+  // OS項目は取得済みの時だけ表示前に組み込み、未取得なら表示後に下端へ追記する。
+  const shellPath = item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit, beforeDisplay: true });
   }
   if (openSeq !== _folderContextMenuOpenSeq) return;
+  const appendShellAfterDisplay = () => {
+    if (shellPath && !shellReady) appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit }).catch(() => {});
+  };
   if (typeof positionPopup === 'function') {
     positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
   } else {
@@ -137,6 +143,7 @@
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   }
+  appendShellAfterDisplay();
   setTimeout(() => {
     const closer = (ev) => {
       const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
@@ -644,7 +651,7 @@ function _ensureFolderBulkBarChrome(bar) {
     }
     window.GBSelectionFloatMenu.bindDrag(bar, { host });
     bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
-      if (button.dataset.selectionFloatActionBound === '1') return;
+      if (button.dataset.selectionFloatActionBound === '1' || button.closest('[data-ui-component]')) return;
       button.dataset.selectionFloatActionBound = '1';
       button.classList.add('gb-selection-float-button');
       // bindDrag() が click をバブル段階で stopPropagation するため、data-action の

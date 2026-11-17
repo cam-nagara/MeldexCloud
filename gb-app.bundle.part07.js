@@ -1,3 +1,115 @@
+  let closeOnPointer = null;
+  let closeOnKey = null;
+  function closeMenu(restoreFocus = false) {
+    if (menuClosed) return;
+    menuClosed = true;
+    document.removeEventListener('pointerdown', closeOnPointer, true);
+    document.removeEventListener('keydown', closeOnKey, true);
+    menu.remove();
+    if (restoreFocus && typeof btn.focus === 'function') {
+      try { btn.focus({ preventScroll: true }); } catch { btn.focus(); }
+    }
+  }
+  function focusableItems() {
+    return [...menu.querySelectorAll('.gb-context-menu-item')];
+  }
+  items.forEach(it => {
+    if (!it) { const sep = document.createElement('div'); sep.className = 'gb-context-menu-sep'; sep.setAttribute('role', 'separator'); menu.appendChild(sep); return; }
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'gb-context-menu-item';
+    row.setAttribute('role', 'menuitem');
+    row.textContent = it.label;
+    row.addEventListener('click', () => { closeMenu(false); try { it.action(); } catch {} });
+    menu.appendChild(row);
+  });
+  document.body.appendChild(menu);
+  const br = btn.getBoundingClientRect();
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, br, { prefer: 'bottom', gap: 2 });
+  } else {
+    { const z = _getZoom(); menu.style.left = Math.max(4, Math.min(br.left / z, window.innerWidth / z - menu.offsetWidth - 4)) + 'px'; menu.style.top = (br.bottom / z + 2) + 'px'; }
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  }
+  closeOnPointer = function closeMobileToolMenuOnPointer(ev) {
+    if (!menu.contains(ev.target)) closeMenu(false);
+  };
+  closeOnKey = function closeMobileToolMenuOnKey(ev) {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    const rows = focusableItems();
+    if (!rows.length) return;
+    const currentIndex = Math.max(0, rows.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % rows.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + rows.length) % rows.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = rows.length - 1;
+    else return;
+    ev.preventDefault();
+    rows[nextIndex]?.focus();
+  };
+  setTimeout(() => {
+    if (menuClosed || !menu.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
+  }, 0);
+  menu.querySelector('.gb-context-menu-item')?.focus();
+}
+
+// OS テーマ変更を監視
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (detectCurrentTheme() === 'OSに合わせる' || localStorage.getItem('editor-theme-name') === 'OSに合わせる') {
+    applyThemePreset('OSに合わせる');
+    saveColorSettings();
+  }
+});
+
+// HTML ビューワーのナビゲーション。外部URLのiframe履歴は同一オリジン制約で
+// 状態を安全に読めないため、Meldexから明示的に開いたURLだけを管理する。
+function _gbMoveHtmlViewerHistory(delta) {
+  const nextIndex = _gbHtmlViewerHistory.index + delta;
+  if (nextIndex < 0 || nextIndex >= _gbHtmlViewerHistory.entries.length) {
+    _gbUpdateHtmlViewerNavButtons();
+    return false;
+  }
+  const nextUrl = _gbHtmlViewerHistory.entries[nextIndex];
+  if (!_gbSetHtmlViewerSrc(nextUrl, null, { skipHistory: true })) return false;
+  _gbHtmlViewerHistory.index = nextIndex;
+  _gbUpdateHtmlViewerNavButtons();
+  return true;
+}
+function htmlNavBack() { return _gbMoveHtmlViewerHistory(-1); }
+function htmlNavForward() { return _gbMoveHtmlViewerHistory(1); }
+function htmlNavigate(url) { if (!url) return; _gbSetHtmlViewerSrc(url); }
+function htmlRefresh() { const f = _gbPrepareUntrustedIframe(document.getElementById('html-iframe')); if (f) try { f.contentWindow.location.reload(); } catch { f.src = f.src; } }
+_gbUpdateHtmlViewerNavButtons();
+
+// ============================================================
+// 最後のポインタ操作がフォルダツリー内かどうかを追跡
+// gb-editor.js の Delete ハンドラが誤削除防止に使う
+// ============================================================
+document.addEventListener('pointerdown', (e) => {
+  try {
+    window._lastPointerInTree = !!(e.target && e.target.closest && e.target.closest('#outliner-tree'));
+  } catch {}
+}, true);
+
+// ============================================================
+// 共通コンテキストメニューの閉じる処理
+// ============================================================
+document.addEventListener('pointerdown', (e) => {
+  // gb-mobile-tab-gesture-router.js のスマホ用タブ切替メニュー(.gb-mobile-tab-menu)は
+  // 位置制御の都合で document.body 直下に付き、.gb-context-menu の子ではない。
+  // ここで除外しないと、.gb-context-menu を内側に持つポップアップ（アイコン
+  // ピッカー等）でタブ切替メニューの項目をタップするたびに「外側クリック」と
+  // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
+  // （2026-08-13 バグ報告で確認）。
+  if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
+    document.querySelectorAll('.gb-context-menu').forEach(m => {
       if (m._isPopupChildTarget?.(e.target)) return;
       if (m._popupChildSelector && e.target?.closest?.(m._popupChildSelector)) return;
       if (typeof m._requestClose === 'function') m._requestClose();

@@ -191,6 +191,6 @@
   }
 
   .at-job-actions .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

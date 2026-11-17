@@ -134,19 +134,19 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-layout-button {
     min-width: 0;
-    min-height: 44px;
-    padding: 5px 3px;
+    min-height: var(--ui-h-touch, 44px);
+    padding: var(--ui-space-2, 4px) var(--ui-space-1, 2px);
     display: inline-flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 2px;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--ui-radius-lg, 8px);
     background: transparent;
     color: var(--fg2, #969696);
     font: inherit;
-    font-size: 11px;
+    font-size: var(--ui-font-11, 11px);
     line-height: 1.12;
     text-align: center;
     touch-action: manipulation;
@@ -499,11 +499,11 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-create-header button {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     padding: 0;
     border: 1px solid var(--border, #333);
-    border-radius: 8px;
+    border-radius: var(--ui-radius-lg, 8px);
     background: var(--bg3, #2d2d2d);
     color: var(--fg, #d4d4d4);
   }
@@ -618,11 +618,11 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-rename-input {
     width: 100%;
-    min-height: 46px;
+    min-height: var(--ui-h-touch, 44px);
     box-sizing: border-box;
-    padding: 10px 12px;
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
     border: 1px solid var(--accent, #4a90d9);
-    border-radius: 8px;
+    border-radius: var(--ui-radius-lg, 8px);
     background: var(--bg, #1f1f1f);
     color: var(--fg, #d4d4d4);
     font: inherit;
@@ -636,9 +636,9 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .cloud-mobile-explorer-rename-actions button {
-    min-height: 46px;
+    min-height: var(--ui-h-touch, 44px);
     border: 1px solid var(--border, #333);
-    border-radius: 8px;
+    border-radius: var(--ui-radius-lg, 8px);
     background: var(--bg, #1f1f1f);
     color: var(--fg, #d4d4d4);
     font: inherit;

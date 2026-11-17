@@ -146,7 +146,8 @@ img.meldex-image-load-error {
   overflow: hidden;
   color: var(--fg, #e7e9ec);
   background: var(--meldex-progress-surface);
-  border: 1px solid var(--border, #59606b);
+  /* ポップアップと同じくアクセントカラーで縁取る。 */
+  border: 1px solid var(--ui-popup-border, var(--accent, #59606b));
   border-radius: 10px;
   box-shadow: var(--meldex-progress-shadow);
   backdrop-filter: blur(12px);
@@ -175,7 +176,8 @@ img.meldex-image-load-error {
   font-weight: 600;
 }
 
-.meldex-operation-tray-header { gap: 7px; }
+.meldex-operation-tray-header { gap: 7px; cursor: move; user-select: none; touch-action: none; }
+.meldex-operation-tray.is-dragging { user-select: none; }
 .meldex-operation-tray-title {
   flex: 0 1 auto;
   min-width: 0;
@@ -214,11 +216,16 @@ img.meldex-image-load-error {
 .meldex-operation-tray-toggle:hover,
 .meldex-operation-tray-toggle:focus-visible { color: var(--fg, #e7e9ec); background: var(--bg3, #303641); }
 
-/* 最小化: 件数と状態だけの小さな帯にする。 */
+/* 最小化: 件数と状態だけの小さな帯にする。件数まで省略せずに読める幅を確保する。 */
 .meldex-operation-tray.is-minimized {
-  width: auto;
-  max-width: min(260px, calc(100vw - 28px - var(--meldex-operation-right-inset)));
+  width: max-content;
+  max-width: calc(100vw - 16px);
   border-radius: 999px;
+}
+
+.meldex-operation-tray.is-minimized .meldex-operation-tray-title {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .meldex-operation-tray.is-minimized .meldex-operation-tray-header {
@@ -349,12 +356,12 @@ img.meldex-image-load-error {
 }
 
 .meldex-operation-actions button {
-  min-height: 28px;
-  padding: 3px 9px;
+  min-height: var(--ui-h-sm, 28px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px);
   color: var(--fg, #e7e9ec);
   background: var(--bg3, #303641);
   border: 1px solid var(--border, #59606b);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   font: inherit;
   cursor: pointer;
 }
@@ -390,8 +397,8 @@ img.meldex-image-load-error {
   }
 
   .meldex-operation-actions button {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .meldex-operation-tray.is-minimized { left: auto; }

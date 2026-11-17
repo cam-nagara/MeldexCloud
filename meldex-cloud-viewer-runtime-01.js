@@ -25,11 +25,11 @@
   });
   const PREBUILT_SPLIT_BUNDLES = {
     'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '0c4bcb64a9c5', parts: { 'meldex-core.bundle.part01.js': '6821061bd632', 'meldex-core.bundle.part02.js': '986b9df11a89', 'meldex-core.bundle.part03.js': '2e939005778e', 'meldex-core.bundle.part04.js': '2da59a517e75', 'meldex-core.bundle.part05.js': 'd093e107d753' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '05983e63651b', parts: { 'gb-app.bundle.part01.js': '3a9241bb4b60', 'gb-app.bundle.part02.js': 'd679c59dbbee', 'gb-app.bundle.part03.js': '8f104941f3da', 'gb-app.bundle.part04.js': '0f3555cf0975', 'gb-app.bundle.part05.js': '54414f5ee9c3', 'gb-app.bundle.part06.js': '88bdec83114f', 'gb-app.bundle.part07.js': '8352c3c6c7bf' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '47197f4d01b4', parts: { 'gb-theme-manager.bundle.part01.js': '29d330501f88', 'gb-theme-manager.bundle.part02.js': '9bc030516ac9', 'gb-theme-manager.bundle.part03.js': '1cb58589e2b6', 'gb-theme-manager.bundle.part04.js': '08a7a2f05f3f' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '74c2801dec9e', parts: { 'gb-outliner.bundle.part01.js': '7110a3e220e0', 'gb-outliner.bundle.part02.js': '62af4537368a', 'gb-outliner.bundle.part03.js': 'c6cc0320888e', 'gb-outliner.bundle.part04.js': '1e3036d83fe7', 'gb-outliner.bundle.part05.js': 'a23d9e5f04b5', 'gb-outliner.bundle.part06.js': 'a62f196ad9c6', 'gb-outliner.bundle.part07.js': '19a6ca0cae0b' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'ddcffa632e3c', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '22d3b2347d99', 'gb-data-access-dropbox-fileops.bundle.part02.js': '1b9a372c58d1', 'gb-data-access-dropbox-fileops.bundle.part03.js': '8f401580ae12', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'b7d8debd6a84', 'gb-data-access-dropbox-fileops.bundle.part05.js': '5cba967412db', 'gb-data-access-dropbox-fileops.bundle.part06.js': 'a23f43a5f4bf', 'gb-data-access-dropbox-fileops.bundle.part07.js': '86e13774d8e6' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '0e64b1e45f57', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '9edf34ed3c11', 'gb-cloud-mobile-editbar.bundle.part02.js': '962cc03502e9' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'd0adb1869f81', parts: { 'gb-app.bundle.part01.js': 'eff796b060e9', 'gb-app.bundle.part02.js': 'edc0cbf15fd8', 'gb-app.bundle.part03.js': '94bfedfb658e', 'gb-app.bundle.part04.js': '83b30db611a1', 'gb-app.bundle.part05.js': 'c5c432e10c1c', 'gb-app.bundle.part06.js': '5c8b3c72f93c', 'gb-app.bundle.part07.js': '11677b2c2f6e' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '801b680c041e', parts: { 'gb-theme-manager.bundle.part01.js': '3fa736f4a2e4', 'gb-theme-manager.bundle.part02.js': 'cdaecba11e60', 'gb-theme-manager.bundle.part03.js': 'b7a2aac62dc6', 'gb-theme-manager.bundle.part04.js': '1ebdd509a16b' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '32b28986b86d', parts: { 'gb-outliner.bundle.part01.js': '7110a3e220e0', 'gb-outliner.bundle.part02.js': 'c63a39e5774c', 'gb-outliner.bundle.part03.js': 'c56f4d74056c', 'gb-outliner.bundle.part04.js': 'c4e3aeadd90a', 'gb-outliner.bundle.part05.js': '85eb84fa4e7f', 'gb-outliner.bundle.part06.js': 'ad15f2428dcd', 'gb-outliner.bundle.part07.js': '90a3b68c0fa2' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '4474037858d6', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '22d3b2347d99', 'gb-data-access-dropbox-fileops.bundle.part02.js': '1b9a372c58d1', 'gb-data-access-dropbox-fileops.bundle.part03.js': '8f401580ae12', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'b7d8debd6a84', 'gb-data-access-dropbox-fileops.bundle.part05.js': '5cba967412db', 'gb-data-access-dropbox-fileops.bundle.part06.js': 'b20d3d22e9c0', 'gb-data-access-dropbox-fileops.bundle.part07.js': '78c3adb6177b' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '67ff6a2221fc', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '6b518945011a', 'gb-cloud-mobile-editbar.bundle.part02.js': 'ec47e6f9c87b' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -717,9 +717,10 @@
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
     ['.gb-panelset-tabbar > button, .gb-panelset-tabbar > .gb-panel-tab', 'panelset-tab'],
     ['.gb-split-collapsed-icon, .gb-split-expand-btn, .gb-dock-icon, .gb-pane-collapsed > .gb-pane-tabs .gb-tab, .gb-pane-collapse', 'collapse-button'],
-    ['.sidebar-section-header, .sidebar-header', 'folder-section'],
-    ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item', 'folder'],
-    ['.tree-node-row[data-item-type="folder"]', 'folder-tree-folder'],
+    ['.sidebar-section-header, .sidebar-header, .gb-folder-picker-section', 'folder-section'],
+    // フォルダ選択・タグ管理・単独アプリの一覧も、左のフォルダツリーと同じ行の色分けに従う（UI共通ルール 19）
+    ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item, .gb-folder-picker-row[data-gb-picker-kind="file"], .gb-tag-tree-row', 'folder'],
+    ['.tree-node-row[data-item-type="folder"], .gb-folder-picker-row[data-gb-picker-kind="folder"]', 'folder-tree-folder'],
     ['#folder-grid .fv-item[data-item-type="folder"], .gb-subpanel-folder-root .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
     ['#page-content h1, #page-content h2, #page-content h3, #page-content h4, #page-content h5, #page-content h6, #entity-freetext h1, #entity-freetext h2, #entity-freetext h3, #entity-freetext h4, #entity-freetext h5, #entity-freetext h6, #dp-editable h1, #dp-editable h2, #dp-editable h3, #dp-editable h4, #dp-editable h5, #dp-editable h6', 'note-heading'],
     ['#note-toc .note-toc-item', 'note-toc-item'],

@@ -2,8 +2,8 @@
 @media (max-width: 480px) {
   /* 超小画面: さらにコンパクト */
   #toolbar { font-size: 10px; }
-  .toolbar-group button { font-size: 10px; padding: 1px 4px; }
-  #cal-toolbar button { font-size: 10px; padding: 2px 4px; }
+  .toolbar-group button { font-size: var(--ui-font-10, 10px); padding: 1px var(--ui-space-2, 4px); }
+  #cal-toolbar button { font-size: var(--ui-font-10, 10px); padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px); }
   .cal-day { min-height: 50px; }
   .cal-day-num { font-size: 10px; }
   .task-column { min-width: 180px; width: 180px; }
@@ -30,7 +30,7 @@
 .gb-pane-tabs {
   display: flex; align-items: center; gap: 0;
   background: var(--ui-pane-tabbar-bg, var(--bg2)); border-bottom: 1px solid var(--border);
-  flex-shrink: 0; min-height: 30px;
+  flex-shrink: 0; min-height: var(--ui-pane-tab-height);
   flex-wrap: nowrap; overflow: hidden;
 }
 /* タブ群のスクロールコンテナ: タブが多すぎても右端の ctrls/nav-ctrls が
@@ -55,7 +55,7 @@
   line-height: var(--ui-pane-tab-line-height, 100%);
   font-weight: var(--ui-pane-tab-font-weight, normal);
   font-style: var(--ui-pane-tab-font-style, normal);
-  flex-shrink: 0; height: 30px;
+  flex-shrink: 0; height: var(--ui-pane-tab-height);
   max-width: 160px; min-width: 0; user-select: none; position: relative;
   -webkit-touch-callout: none;
 }
@@ -151,8 +151,8 @@
 }
 .gb-pane-mobile-main-tab-ctrls { display: none; }
 .gb-pane-btn {
-  width: 22px; height: 22px; color: var(--fg2); cursor: pointer;
-  opacity: 0.7; flex-shrink: 0; user-select: none; border-radius: 3px;
+  width: var(--ui-h-xs, 22px); height: var(--ui-h-xs, 22px); color: var(--fg2); cursor: pointer;
+  opacity: 0.7; flex-shrink: 0; user-select: none; border-radius: var(--ui-radius-xs, 3px);
   padding: 0; border: 1px solid transparent; background: transparent;
   display: flex; align-items: center; justify-content: center;
 }
@@ -189,11 +189,11 @@
   flex-shrink: 0;
 }
 .gb-pane-nav-btn {
-  width: 24px;
-  height: 24px;
+  width: var(--ui-h-xs, 22px);
+  height: var(--ui-h-xs, 22px);
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   background: transparent;
   color: var(--fg2);
   cursor: pointer;
@@ -302,9 +302,9 @@
   width: 100%; overflow-x: auto; overflow-y: hidden;
 }
 .gb-split-expand-btn {
-  cursor: pointer; font-size: 16px; color: var(--fg2);
-  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
-  border-radius: 3px; flex-shrink: 0;
+  cursor: pointer; font-size: var(--ui-font-16, 16px); color: var(--fg2);
+  width: var(--ui-h-xs, 22px); height: var(--ui-h-xs, 22px); display: flex; align-items: center; justify-content: center;
+  border-radius: var(--ui-radius-xs, 3px); flex-shrink: 0;
 }
 .gb-split-expand-btn:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 .gb-split-collapsed-icon {
@@ -378,8 +378,12 @@
   align-items: center;
   flex-shrink: 0;
   gap: var(--ui-space-2);
-  padding: var(--ui-space-2) var(--ui-space-3);
+  padding: 0 var(--ui-space-4);
   border-bottom: 1px solid var(--ui-border);
+  min-height: var(--ui-panel-header-height);
+  font-size: var(--ui-panel-header-font-size);
+  background: var(--ui-header-bg);
+  box-sizing: border-box;
 }
 .dp-detail-title {
   flex: 1 1 auto;
@@ -445,7 +449,7 @@ body[data-mobile-ui-local="1"] .dp-event-form .gb-input,
 body[data-mobile-ui-local="1"] .dp-event-form .gb-select,
 body[data-mobile-ui-local="1"] .dp-event-form .gb-btn,
 body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 body[data-cloud-mobile="1"] .dp-event-form .gb-textarea,
 body[data-mobile-ui="1"] .dp-event-form .gb-textarea,
@@ -473,7 +477,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   .dp-event-form .gb-select,
   .dp-event-form .gb-btn,
   .dp-detail-header .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .dp-event-form .gb-textarea {
     min-height: 96px;
@@ -597,8 +601,8 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 /* Part 2-3: 分割ハンドル折りたたみボタン (border 上の hover ボタン、双方向 2 個) */
 .split-collapse-btn {
   position: absolute;
-  width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
-  font-size: 9px; color: var(--fg); background: var(--bg3); border: 1px solid var(--border); border-radius: 50%;
+  width: var(--ui-h-2xs, 18px); height: var(--ui-h-2xs, 18px); display: flex; align-items: center; justify-content: center;
+  font-size: var(--ui-font-10, 10px); color: var(--fg); background: var(--bg3); border: 1px solid var(--border); border-radius: 50%;
   cursor: pointer; opacity: 0; transition: opacity 0.15s; z-index: 5;
   user-select: none; pointer-events: auto;
 }
@@ -980,9 +984,10 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
 .gb-dock-popup {
   position: fixed;
   z-index: 10050;
-  background: var(--bg);
+  background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, rgba(128,128,128,0.3))));
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
   display: flex;
   flex-direction: column;
   min-width: 200px;

@@ -34,14 +34,14 @@
 
 .tl-header-more-btn {
   flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
+  width: var(--ui-h-2xs, 18px);
+  height: var(--ui-h-2xs, 18px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -545,8 +545,8 @@ input.tl-number-input:focus::-webkit-inner-spin-button {
 
   .tl-header-more-btn {
     flex-basis: 44px;
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 
   .tl-color-modal {

@@ -129,7 +129,8 @@
   text-orientation: upright !important;
   font-feature-settings: "vert" 1, "vpal" 1;
 }
-/* タイプ列: mixed（半角スペースの幅を正常に保つ） */
+/* キャラ／タイプ列: mixed（半角スペースの幅を正常に保つ） */
+.sn2-scroll.sn2-vertical .sn2-character-btn,
 .sn2-scroll.sn2-vertical .sn2-role-btn {
   writing-mode: vertical-rl !important;
   text-orientation: mixed !important;
@@ -157,6 +158,7 @@
   writing-mode: horizontal-tb;
   text-orientation: mixed;
   text-align: center;
+  white-space: nowrap;
 }
 
 /* 縦書き: 各セルの高さをCSS変数で制御 */
@@ -173,9 +175,19 @@
      行の各セル位置がズレて見える */
   padding: 6px 4px;
   border-right: none;
+  /* ページ／コマの自動生成ラベルは接頭辞と番号を別の縦列へ分断しない。 */
+  white-space: nowrap !important;
+  word-break: normal !important;
+  overflow: visible;
 }
 .sn2-scroll.sn2-vertical .sn2-gutter2 {
   height: var(--sn2-vcol-_gutter2, auto);
+}
+.sn2-scroll.sn2-vertical .sn2-character-btn {
+  width: auto;
+  height: var(--sn2-vcol-_character, auto);
+  border-left: none;
+  border-right: none;
 }
 .sn2-scroll.sn2-vertical .sn2-role-btn {
   width: auto;
@@ -192,15 +204,15 @@
 }
 .sn2-scroll.sn2-vertical .sn2-handle {
   width: auto;
-  height: var(--sn2-vcol-_handle, 36px);
+  height: var(--sn2-vcol-_handle, 54px);
   padding: 2px 4px 0;
   box-sizing: border-box;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0;
+  gap: 2px;
 }
-.sn2-scroll.sn2-vertical .sn2-handle > span {
+.sn2-scroll.sn2-vertical .sn2-row-grip {
   transform: rotate(90deg);
 }
 
@@ -299,9 +311,10 @@
   border-bottom: var(--sn2-border-width, 1px) solid var(--fg2, #888);
 }
 /* 各セルの高さをCSS変数で対応 */
-.sn2-header-vertical .sn2-header-cell[data-col-id="_handle"] { height: var(--sn2-vcol-_handle, 36px); padding: 2px 4px 0; box-sizing: border-box; }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_handle"] { height: var(--sn2-vcol-_handle, 54px); padding: 2px 4px 0; box-sizing: border-box; }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_gutter"] { height: var(--sn2-vcol-_gutter, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_gutter2"] { height: var(--sn2-vcol-_gutter2, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_character"] { height: var(--sn2-vcol-_character, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_role"] { height: var(--sn2-vcol-_role, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_status"] { height: var(--sn2-vcol-_status, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_text"] { flex: 0 0 auto !important; height: var(--sn2-vcol-_text, var(--sn2-col-_text, 300px)) !important; }
@@ -343,8 +356,8 @@
 .sn2-header-popup {
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
   min-width: 160px;
   padding: 4px;
   z-index: 10000;
@@ -370,8 +383,8 @@
 .sn2-ruby-popup-input {
   flex: 0 1 140px;
   min-width: 60px;
-  height: 24px;
-  font-size: 13px;
+  height: var(--ui-h-xs, 22px);
+  font-size: var(--ui-font-13, 13px);
 }
 .sn2-ruby-popup-options {
   display: flex;
@@ -477,18 +490,29 @@
 .sn2-text[data-align="center"] { text-align: center; }
 .sn2-text[data-align="right"] { text-align: right; }
 /* 垂直配置: セルの高さは維持（stretch）、内容の位置をflex配置で制御 */
+/* 区切り列・追加列の値は、縦中横などの部分要素を含んでも1つの文の流れとして配置する。
+   flex-column にすると「コマ」と番号のような文字列と部分要素が別のflex itemになり、
+   縦書きでは別の行へ改行されてしまう。.sn2-text と同じ align-content 方式で配置する。 */
+.sn2-gutter[data-valign],
+.sn2-gutter2[data-valign],
+.sn2-custom-text[data-valign] { display: block; }
 .sn2-gutter[data-valign="top"],
 .sn2-gutter2[data-valign="top"],
-.sn2-role-btn[data-valign="top"],
-.sn2-custom-text[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-custom-text[data-valign="top"] { align-content: start; }
 .sn2-gutter[data-valign="middle"],
 .sn2-gutter2[data-valign="middle"],
-.sn2-role-btn[data-valign="middle"],
-.sn2-custom-text[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-custom-text[data-valign="middle"] { align-content: center; }
 .sn2-gutter[data-valign="bottom"],
 .sn2-gutter2[data-valign="bottom"],
-.sn2-role-btn[data-valign="bottom"],
-.sn2-custom-text[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
+.sn2-custom-text[data-valign="bottom"] { align-content: end; }
+/* ボタンは align-content を受けないため flex を使う。中身は _wrapTcy が1つの
+   .sn2-cell-flow へまとめ、部分要素が別の行へ分かれないようにする。 */
+.sn2-character-btn[data-valign="top"],
+.sn2-role-btn[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-character-btn[data-valign="middle"],
+.sn2-role-btn[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-character-btn[data-valign="bottom"],
+.sn2-role-btn[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
 .sn2-status-btn[data-valign],
 .sn2-custom-cell[data-valign] { flex-direction: row; }
 .sn2-status-btn[data-valign="top"],
@@ -514,21 +538,27 @@
 .sn2-custom-cell[data-align="center"] { justify-content: center; }
 .sn2-custom-cell[data-align="right"] { justify-content: flex-end; }
 /* 折返設定: タイプ列・ガター列・カスタム列テキスト（.sn2-text と同じ3モード） */
+.sn2-character-btn[data-overflow="wrap"],
 .sn2-role-btn[data-overflow="wrap"],
 .sn2-gutter[data-overflow="wrap"],
 .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; text-overflow: clip; }
+.sn2-character-btn[data-overflow="overflow"],
 .sn2-role-btn[data-overflow="overflow"],
 .sn2-gutter[data-overflow="overflow"],
 .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; text-overflow: clip; }
+.sn2-character-btn[data-overflow="clip"],
 .sn2-role-btn[data-overflow="clip"],
 .sn2-gutter[data-overflow="clip"],
 .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }

@@ -1579,10 +1579,14 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     if (items.length === 0 && e.key !== 'Escape') return;
     if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
       const addIdx = e.key === 'ArrowDown' ? findAddItemIndex(items, activeInputText(e.target)) : -1;
-      activeIdx = addIdx >= 0 ? addIdx : Math.min(activeIdx + 1, items.length - 1);
+      // 末尾から先頭へ循環する（追加候補へのジャンプは、まだそこに居ない時だけ）
+      activeIdx = (addIdx >= 0 && addIdx !== activeIdx)
+        ? addIdx
+        : (activeIdx >= items.length - 1 ? 0 : activeIdx + 1);
       highlight(items, activeIdx);
     } else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
-      activeIdx = Math.max(activeIdx - 1, 0);
+      // 先頭から末尾へ循環する
+      activeIdx = activeIdx <= 0 ? items.length - 1 : activeIdx - 1;
       highlight(items, activeIdx);
     } else if (e.key === 'ArrowLeft') {
       activeIdx = 0;

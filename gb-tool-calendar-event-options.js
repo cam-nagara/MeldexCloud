@@ -239,7 +239,8 @@
       this._showStatus('保存中です。少し待ってからもう一度お試しください');
       return;
     }
-    this._pushUndo('イベント編集');
+    // 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     const creator = body.querySelector('[data-cal-event-creator]')?.value || this._getUser();
     const allDay = body.querySelector('[data-cal-event-allday]')?.checked;
     const startInput = body.querySelector('[data-cal-event-start]');
@@ -286,6 +287,7 @@
     }
     try {
       await apiPut('/cal/events/' + editId, data);
+      this._pushUndo('イベント編集', undoSnapshot);
       if (this.el) this.el.dataset.eventSaveState = 'saved';
       this._showStatus('イベントを保存しました');
       this._loadEvents?.().then(() => this._render()).catch(() => {});

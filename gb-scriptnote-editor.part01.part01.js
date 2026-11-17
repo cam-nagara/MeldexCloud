@@ -254,6 +254,11 @@ class ScriptNoteEditor {
       this._sn2RegisteredPath = this._path || '';
       this._sn2RegisteredScopeId = this._historyScopeId || '';
     }
+    // ビュー（ファイル内に保存）を確定し、表示中のビューの絞り込みで初回描画する。
+    if (typeof this._ensureScenarioViews === 'function') {
+      this._ensureScenarioViews();
+      this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
+    }
     this._render();
     this._pushUndo('初期状態');
     if (coordinator && path && conflictGeneration != null) {
@@ -600,14 +605,23 @@ class ScriptNoteEditor {
       const removed = [...prevIds].filter(id => !currIds.has(id));
       if (removed.length > 0) {
         const path = savePath;
-        Promise.all(removed.map(id =>
+        // 保存自体は完了しているので待たないが、失敗は黙って捨てずに件数と理由を知らせる。
+        Promise.allSettled(removed.map(id =>
           apiPost('/annotations/orphan-by-target', {
             target_kind: 'scriptnote_line',
             target_file: path,
             item_id: id,
             cascade_container: true,
-          }).catch(() => {})
-        ));
+          }, { silentError: true })
+        )).then(results => {
+          const failed = results.filter(result => result.status === 'rejected');
+          if (!failed.length) return;
+          console.warn('削除した行のコメントを整理できませんでした:', failed.map(result => result.reason));
+          const reason = failed[0]?.reason?.message || failed[0]?.reason || '';
+          if (typeof showStatus === 'function') {
+            showStatus(`シナリオは保存しましたが、削除した行のコメント${failed.length}件を整理できませんでした${reason ? `（${reason}）` : ''}`, true);
+          }
+        });
       }
       // Audit-P1 H-3: 保存完了後にコメントバッジキャッシュを無効化し、
       // 行並び替え・行挿入・行削除の結果を即座に反映する（3 秒 TTL キャッシュで
@@ -823,16 +837,22 @@ class ScriptNoteEditor {
     return { bgColor: chara.bgColor || '', textColor: chara.textColor || '' };
   }
 
-  _getCharaStyle(role) {
+  _getCharaStyle(role, kind = 'type') {
     if (!role) return null;
-    const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(this.doc, role)
+    const character = kind === 'character'
+      ? (globalThis.GBScriptNoteRoleModel?.findCharacterByName?.(this.doc, role)
+        || this.doc.characters.find(c => !c.isDefault && c.name === role))
+      : null;
+    const chara = character
+      || globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(this.doc, role)
+      || this.doc.scenarioTypes?.find?.(item => item.name === role)
       || this.doc.characters.find(c => !c.isDefault && c.name === role);
     if (!chara) return null;
     const { bgColor, textColor } = this._resolveCharaColors(chara, '_role');
     const rs = chara.roleStyle || {};
     const parts = [];
     if (rs.bgColor || bgColor) parts.push(`background:${rs.bgColor || bgColor}`);
-    if (rs.textColor || textColor) parts.push(`color:${rs.textColor || textColor}`);
+    if (rs.textColor || chara.nameColor || textColor) parts.push(`color:${rs.textColor || chara.nameColor || textColor}`);
     if (rs.fontWeight === 'bold') parts.push('font-weight:bold');
     if (rs.fontStyle === 'italic') parts.push('font-style:italic');
     if (rs.fontSize) parts.push(`font-size:${rs.fontSize}px`);
@@ -846,12 +866,14 @@ class ScriptNoteEditor {
 
   _applyRowStyle(rowEl, role) {
     const textEl = rowEl.querySelector('.sn2-text');
+    const characterBtn = rowEl.querySelector('.sn2-character-btn');
     const roleBtn = rowEl.querySelector('.sn2-role-btn');
     const statusBtn = rowEl.querySelector('.sn2-status-btn');
     const gutterEl = rowEl.querySelector('.sn2-gutter:not(.sn2-gutter2)');
     const gutter2El = rowEl.querySelector('.sn2-gutter2');
     const rowId = rowEl.dataset.rowId;
     const rowData = this.doc?.rows?.find((item) => item.id === rowId) || null;
+    const character = globalThis.GBScriptNoteRoleModel?.resolveRowCharacter?.(this.doc, rowData || role)?.character || null;
     const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(this.doc, rowData || role)
       || (role
         ? this.doc.characters.find(c => !c.isDefault && c.name === role)
@@ -946,19 +968,20 @@ class ScriptNoteEditor {
       el.style.textDecorationColor = r.underline ? accentColor : '';
       if (align) el.style.textAlign = align;
     };
-    // 配置・折返の適用: タイプ管理の列別スタイル（textAlign/textValign/textOverflow）を優先し、
-    // 未設定（自動）なら列ヘッダーメニューの列設定（align/valign/overflow）へフォールバックする
+    // 配置・折返しは列設定だけを正本とする。タイプや追加方法にかかわらず同じ列は同じ配置になる。
     const stdColSettings = this.doc.editor?.standardColumnSettings || {};
     const customColDefs = this.doc.editor?.customColumns || [];
-    const alignmentColSettings = (colId) => (
-      colId.startsWith('_') ? (stdColSettings[colId] || {}) : (customColDefs.find(c => c.id === colId) || {})
-    );
-    const applyCellAlignment = (el, roleStyle, colId, opts = {}) => {
+    const alignmentColSettings = (colId) => {
+      if (typeof _scriptNoteColumnLayoutSettings === 'function') return _scriptNoteColumnLayoutSettings(this.doc, colId);
+      const raw = colId.startsWith('_') ? (stdColSettings[colId] || {}) : (customColDefs.find(c => c.id === colId) || {});
+      return { align: raw.align || 'left', valign: raw.valign || 'top', overflow: raw.overflow || 'wrap' };
+    };
+    const applyCellAlignment = (el, colId, opts = {}) => {
       if (!el) return;
       const colSet = alignmentColSettings(colId);
-      const align = roleStyle?.textAlign || colSet.align || '';
-      const valign = roleStyle?.textValign || colSet.valign || '';
-      const overflow = roleStyle?.textOverflow || colSet.overflow || '';
+      const align = colSet.align || 'left';
+      const valign = colSet.valign || 'top';
+      const overflow = colSet.overflow || 'wrap';
       el.style.textAlign = align;
       if (opts.alignDataset) {
         if (align) el.dataset.align = align; else delete el.dataset.align;
@@ -973,17 +996,38 @@ class ScriptNoteEditor {
     rowEl.style.background = '';
     // ガター列（大区切り）
     applyGutterStyle(gutterEl, '_gutter');
-    applyCellAlignment(gutterEl, chara?.gutterStyle, '_gutter');
+    applyCellAlignment(gutterEl, '_gutter');
     // ガター2列（小区切り）
     applyGutterStyle(gutter2El, '_gutter2');
-    applyCellAlignment(gutter2El, chara?.gutter2Style, '_gutter2');
+    applyCellAlignment(gutter2El, '_gutter2');
+    // キャラ列。キャラ固有の名前書式だけを適用し、本文書式とは分離する。
+    if (characterBtn) {
+      // キャラ空欄の行は、キャラ表「（なし）」行の名前書式を使う。
+      const styleOwner = character || this.doc?.editor?.noneCharacter || null;
+      const nameStyle = styleOwner?.roleStyle || {};
+      const characterStyle = {
+        bgColor: nameStyle.bgColor || character?.bgColor,
+        textColor: nameStyle.textColor || styleOwner?.nameColor || character?.textColor,
+        fontWeight: nameStyle.fontWeight,
+        fontStyle: nameStyle.fontStyle,
+        fontSize: nameStyle.fontSize,
+        fontFamily: nameStyle.fontFamily,
+        textStrokeColor: nameStyle.textStrokeColor,
+        textStrokeWidth: nameStyle.textStrokeWidth,
+        leftAccent: nameStyle.leftAccent,
+        underline: nameStyle.underline,
+        accentColor: nameStyle.accentColor || character?.accentColor,
+      };
+      setStyle(characterBtn, resolve(colStyles._character, characterStyle), true);
+      applyCellAlignment(characterBtn, '_character');
+    }
     // タイプ列
     if (roleBtn) {
       const ecRole = this._resolveCharaColors(chara, '_role');
       const rs = chara?.roleStyle || {};
       const roleRole = { bgColor: rs.bgColor || ecRole.bgColor, textColor: rs.textColor || ecRole.textColor, fontWeight: rs.fontWeight, fontStyle: rs.fontStyle, fontSize: rs.fontSize, fontFamily: rs.fontFamily, textStrokeColor: rs.textStrokeColor, textStrokeWidth: rs.textStrokeWidth, leftAccent: rs.leftAccent, underline: rs.underline, accentColor: rs.accentColor || chara?.accentColor };
       setStyle(roleBtn, resolve(colStyles._role, roleRole), true);
-      applyCellAlignment(roleBtn, rs, '_role');
+      applyCellAlignment(roleBtn, '_role');
     }
     // テキスト列
     if (textEl) {
@@ -1003,56 +1047,102 @@ class ScriptNoteEditor {
       // textStyle を優先、chara レベルにフォールバック（?? で空文字は有効値として扱う）
       const effBefore = ts.textBefore ?? chara?.textBefore;
       if (effBefore) textEl.dataset.before = effBefore; else delete textEl.dataset.before;
+      // 前の文字列はセルの余白へぶら下げる。○など約物以外の全角記号は余白より大きく、
+      // セルの外へはみ出していたため、記号の幅ぶんだけ行頭側の余白を広げる。
+      // 横書きで半角幅に詰める約物（「（等）は従来どおり8pxの余白に収まる。
+      if (effBefore) {
+        const vertical = this.doc.editor?.viewMode === 'vertical';
+        const halved = /[「『（〔［｛〈《【〘〖“‘、。，．・：；]/u;
+        let em = 0;
+        for (const ch of String(effBefore)) {
+          const cp = ch.codePointAt(0);
+          const wide = cp >= 0x1100 && !(cp >= 0xff61 && cp <= 0xffdc);
+          em += !wide ? 0.6 : (!vertical && halved.test(ch) ? 0.5 : 1);
+        }
+        textEl.style.setProperty('--sn2-before-reserve', em.toFixed(2) + 'em');
+      } else {
+        textEl.style.removeProperty('--sn2-before-reserve');
+      }
       const effAfter = ts.textAfter ?? chara?.textAfter;
       if (effAfter) textEl.dataset.after = effAfter; else delete textEl.dataset.after;
-      // タイプ固有の配置・折り返し（textStyle優先、なければcharaレベル。?? で空文字=明示リセットを尊重）
-      // タイプ側が未設定（自動）の場合は列ヘッダーメニューの列設定を消さずにフォールバックする
       const textColSet = alignmentColSettings('_text');
-      const effAlign = (ts.textAlign ?? chara?.textAlign) || textColSet.align;
+      const effAlign = textColSet.align;
       if (effAlign) textEl.dataset.align = effAlign; else delete textEl.dataset.align;
-      const effValign = (ts.textValign ?? chara?.textValign) || textColSet.valign;
+      const effValign = textColSet.valign;
       if (effValign) textEl.dataset.valign = effValign; else delete textEl.dataset.valign;
-      const effOverflow = (ts.textOverflow ?? chara?.textOverflow) || textColSet.overflow;
+      const effOverflow = textColSet.overflow;
       if (effOverflow) textEl.dataset.overflow = effOverflow; else delete textEl.dataset.overflow;
       // テキスト位置オフセット（1列 = 隣接セルの設定幅）
       // 横書き: translateX、縦書き: translateY で描画位置だけをずらす（レイアウト・枠線位置は固定）
+      // 前回ずらしで隠したセルを先に戻す（列数を減らした時に、再描画なしでも隠れたままにならないように）
+      rowEl.querySelectorAll('[data-sn2-shift-hidden]').forEach(cell => {
+        cell.style.visibility = '';
+        cell.style.borderColor = '';
+        delete cell.dataset.sn2ShiftHidden;
+      });
       if (chara?.textShiftDir && chara?.textShiftCols) {
         const isVert = this.doc.editor?.viewMode === 'vertical';
         const cols = Number(chara.textShiftCols) || 1;
-        const hideCell = (el) => { el.style.visibility = 'hidden'; el.style.background = pageBg; el.style.borderColor = 'transparent'; };
-        const cw = this.doc.editor?.columnWidths || {};
-        const defaultWidths = { _gutter: 40, _gutter2: 48, _role: 88, _status: 92 };
-        const getColW = (colId) => cw[colId] || defaultWidths[colId] || 80;
-        let totalPx = 0;
-        if (chara.textShiftDir === 'after') {
-          const customCells = [...rowEl.querySelectorAll('.sn2-custom-cell')];
-          for (let j = 0; j < cols && j < customCells.length; j++) {
-            totalPx += getColW(customCells[j].dataset.colId);
-            hideCell(customCells[j]);
-          }
-          // 後にずらす: 横書き=右、縦書き=下
-          textEl.style.transform = isVert ? `translateY(${totalPx}px)` : `translateX(${totalPx}px)`;
+        const hideCell = (el) => {
+          el.dataset.sn2ShiftHidden = '1';
+          el.style.visibility = 'hidden'; el.style.background = pageBg; el.style.borderColor = 'transparent';
+        };
+        const defaultWidths = { _gutter: 40, _gutter2: 48, _character: 88, _role: 88, _status: 92, _text: 300 };
+        const widthFallback = (colId) => defaultWidths[colId]
+          || Number(customColDefs.find(column => column.id === colId)?.width)
+          || 80;
+        // 列幅の数値を描画時に焼き込まず、リサイズ処理が更新するCSS変数を参照する。
+        // これにより、本文を前後へずらした行の幅・移動量・見出し枠線もドラッグ中に追従する。
+        const widthTerm = (colId) => {
+          const horizontal = `var(--sn2-col-${colId}, ${widthFallback(colId)}px)`;
+          return isVert ? `var(--sn2-vcol-${colId}, ${horizontal})` : horizontal;
+        };
+        const positiveOffset = terms => terms.length === 1 ? terms[0] : `calc(${terms.join(' + ')})`;
+        const negativeOffset = terms => `calc(0px - ${terms.join(' - ')})`;
+        const shiftedWidth = (base, terms) => terms.length ? `calc(${base} + ${terms.join(' + ')})` : base;
+        // ずらし先は「実際の表示順でテキスト列の隣にある列」から数える。
+        // 以前は キャラ/タイプ の固定順を使っていたため、列順を変えると
+        // テキストが重なる列と隠れる列が食い違い、キャラ列までずれて見えていた。
+        const standardCells = { _status: statusBtn, _role: roleBtn, _character: characterBtn, _gutter2: gutter2El, _gutter: gutterEl };
+        const cellFor = id => standardCells[id] !== undefined
+          ? standardCells[id]
+          : [...rowEl.querySelectorAll('.sn2-custom-cell')].find(cell => cell.dataset.colId === id) || null;
+        const order = (typeof this._getVisibleColumnIds === 'function' ? this._getVisibleColumnIds() : [])
+          .filter(id => id !== '_handle');
+        const textIndex = order.indexOf('_text');
+        let neighbourIds;
+        if (textIndex >= 0) {
+          neighbourIds = chara.textShiftDir === 'after' ? order.slice(textIndex + 1) : order.slice(0, textIndex).reverse();
+        } else if (chara.textShiftDir === 'after') {
+          // 表示順を取れない時（部分的な描画）は従来の並び（テキストの後ろ=カスタム列）
+          neighbourIds = [...rowEl.querySelectorAll('.sn2-custom-cell')].map(cell => cell.dataset.colId);
         } else {
-          const leftCells = [
-            { el: statusBtn, id: '_status' },
-            { el: roleBtn, id: '_role' },
-            { el: gutter2El, id: '_gutter2' },
-            { el: gutterEl, id: '_gutter' },
-          ].filter(c => c.el);
-          for (let j = 0; j < cols && j < leftCells.length; j++) {
-            totalPx += getColW(leftCells[j].id);
-            hideCell(leftCells[j].el);
-          }
+          neighbourIds = ['_status', '_role', '_character', '_gutter2', '_gutter'];
+        }
+        const neighbours = neighbourIds
+          .map(id => ({ id, el: cellFor(id) }))
+          .filter(c => c.el);
+        const offsetTerms = [];
+        for (let j = 0; j < cols && j < neighbours.length; j++) {
+          offsetTerms.push(widthTerm(neighbours[j].id));
+          hideCell(neighbours[j].el);
+        }
+        if (chara.textShiftDir === 'after') {
+          // 後にずらす: 横書き=右、縦書き=下
+          const offset = offsetTerms.length ? positiveOffset(offsetTerms) : '0px';
+          textEl.style.transform = isVert ? `translateY(${offset})` : `translateX(${offset})`;
+        } else {
+          const negative = offsetTerms.length ? negativeOffset(offsetTerms) : '0px';
           if (isVert) {
             // 縦書き: 高さ拡張+translateY+負マージンで下端レイアウトを維持
-            textEl.style.setProperty('height', `calc(100% + ${totalPx}px)`, 'important');
-            textEl.style.marginBottom = -totalPx + 'px';
-            textEl.style.transform = `translateY(-${totalPx}px)`;
+            textEl.style.setProperty('height', shiftedWidth('100%', offsetTerms), 'important');
+            textEl.style.marginBottom = negative;
+            textEl.style.transform = `translateY(${negative})`;
           } else {
             // 横書き: 幅拡張+translateX+負マージンで右端レイアウトを維持
-            textEl.style.width = `calc(var(--sn2-col-_text, 300px) + ${totalPx}px)`;
-            textEl.style.marginRight = -totalPx + 'px';
-            textEl.style.transform = `translateX(-${totalPx}px)`;
+            textEl.style.width = shiftedWidth(widthTerm('_text'), offsetTerms);
+            textEl.style.marginRight = negative;
+            textEl.style.transform = `translateX(${negative})`;
           }
         }
         textEl.style.marginLeft = '';
@@ -1063,11 +1153,6 @@ class ScriptNoteEditor {
         textEl.style.marginLeft = '';
         textEl.style.marginRight = '';
         textEl.style.marginBottom = '';
-        // シフト解除時に復元
-        [...rowEl.querySelectorAll('.sn2-custom-cell')].forEach(cell => { cell.style.visibility = ''; cell.style.borderColor = ''; });
-        if (roleBtn) { roleBtn.style.visibility = ''; roleBtn.style.borderColor = ''; }
-        if (gutter2El) { gutter2El.style.visibility = ''; gutter2El.style.borderColor = ''; }
-        if (gutterEl) { gutterEl.style.visibility = ''; gutterEl.style.borderColor = ''; }
       }
     }
     if (statusBtn && rowData && typeof this._renderRowStatusButton === 'function') {
@@ -1107,7 +1192,7 @@ class ScriptNoteEditor {
       cell.style.boxShadow = r.leftAccent ? `inset 3px 0 0 ${accentColor}` : '';
       cell.style.textDecorationLine = r.underline ? 'underline' : '';
       cell.style.textDecorationColor = r.underline ? accentColor : '';
-      applyCellAlignment(cell, rs, colId, { alignDataset: true, overflowEl: cell.querySelector('.sn2-custom-text') });
+      applyCellAlignment(cell, colId, { alignDataset: true, overflowEl: cell.querySelector('.sn2-custom-text') });
     });
   }
 
@@ -1119,9 +1204,9 @@ class ScriptNoteEditor {
     if (Array.isArray(cb)) return new Set(cb);
     // 旧形式: 文字列を変換
     if (cb === 'gutter-role') return new Set(['_gutter']);
-    if (cb === 'role-text') return new Set(['_role']);
+    if (cb === 'role-text') return new Set(['_character', '_role']);
     if (cb === 'all-cols') {
-      const s = new Set(['_gutter', '_gutter2', '_role', '_text']);
+      const s = new Set(['_gutter', '_gutter2', '_character', '_role', '_text']);
       if (this.doc.editor?.statusEnabled) s.add('_status');
       (this.doc.editor?.customColumns || []).forEach(c => s.add(c.id));
       return s;
@@ -1207,13 +1292,13 @@ class ScriptNoteEditor {
     const includeHandle = options.includeHandle !== false;
     const statusEnabled = !!this.doc.editor?.statusEnabled;
     const visible = {
-      _handle: true, _gutter: true, _gutter2: true, _role: true,
+      _handle: true, _gutter: true, _gutter2: true, _character: true, _role: true,
       _status: statusEnabled, _text: true,
       ...(this.doc.editor?.visibleStandardColumns || {}),
     };
     visible._handle = true;
     if (!statusEnabled) visible._status = false;
-    const standard = ['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+    const standard = ['_handle', '_gutter', '_gutter2', '_character', '_role', '_status', '_text']
       .filter(id => (includeHandle || id !== '_handle') && visible[id] !== false);
     const custom = this._getCustomColumns().filter(column => column?.id && column.visible !== false).map(column => column.id);
     const ids = [...standard, ...custom];
@@ -1252,6 +1337,10 @@ class ScriptNoteEditor {
     const scroll = document.createElement('div');
     scroll.className = 'sn2-scroll' + (viewMode === 'vertical' ? ' sn2-vertical' : '') + (wrapMode ? ' sn2-wrap' : '');
     if (this.doc.editor?.pageBreakSpacing === false) scroll.classList.add('sn2-no-page-break-spacing');
+    const pageBreakGap = Number(this.doc.editor?.pageBreakGap);
+    scroll.style.setProperty('--sn2-page-break-gap', `${Number.isFinite(pageBreakGap) ? Math.max(0, Math.min(200, pageBreakGap)) : 24}px`);
+    const spreadBorderGap = Number(this.doc.editor?.spreadBorder?.gap);
+    scroll.style.setProperty('--sn2-spread-border-gap', `${Number.isFinite(spreadBorderGap) ? Math.max(0, Math.min(200, spreadBorderGap)) : 0}px`);
     // 余白
     const marginRaw = this.doc.editor?.margin || '';
     const marginVal = marginRaw ? (/^\d+$/.test(marginRaw) ? marginRaw + 'px' : marginRaw) : '';
@@ -1271,7 +1360,7 @@ class ScriptNoteEditor {
     if (wrapMode && viewMode !== 'vertical') {
       // 一旦仮の値で設定、レンダリング後にヘッダーの実幅で更新
       const estWidth = (colWidths._handle || 20) + (colWidths._gutter || 40) + (colWidths._gutter2 || 48)
-        + (colWidths._role || 88) + (statusEnabled ? (colWidths._status || 92) : 0)
+        + (colWidths._character || 88) + (colWidths._role || 88) + (statusEnabled ? (colWidths._status || 92) : 0)
         + (colWidths._text || 300) + customCols.reduce((s, c) => s + (colWidths[c.id] || c.width || 80), 0);
       editor.style.setProperty('--sn2-column-width', estWidth + 'px');
     }
@@ -1342,11 +1431,12 @@ class ScriptNoteEditor {
     const textWidth = colWidths._text || 0;
     const colLabels = this.doc.editor?.columnLabels || {};
     const countDef = this._getCountDef();
-    const defaultLabels = { _gutter: countDef.primaryLabel, _gutter2: countDef.secondaryLabel, _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
+    const defaultLabels = { _gutter: countDef.primaryLabel, _gutter2: countDef.secondaryLabel, _character: 'キャラ', _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
     const allStdCols = [
-      { id: '_handle', label: '', width: colWidths._handle || 36 },
+      { id: '_handle', label: '', width: colWidths._handle || 54 },
       { id: '_gutter', label: colLabels._gutter || defaultLabels._gutter, width: colWidths._gutter || 40 },
       { id: '_gutter2', label: colLabels._gutter2 || defaultLabels._gutter2, width: colWidths._gutter2 || 48 },
+      { id: '_character', label: colLabels._character || defaultLabels._character, width: colWidths._character || 88 },
       { id: '_role', label: colLabels._role || defaultLabels._role, width: colWidths._role || 88 },
       { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
       { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
@@ -1566,5 +1656,5 @@ class ScriptNoteEditor {
     let prevVisibleCalc = null;
     for (let i = 0; i < this.doc.rows.length; i++) {
       // フィルタで非表示
-      if (!this._isRoleVisible(this.doc.rows[i].role, this.doc.rows[i].status || '')) continue;
+      if (!this._isRoleVisible(this.doc.rows[i])) continue;
       const prevRow = prevVisibleRow;

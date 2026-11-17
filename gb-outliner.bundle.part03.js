@@ -1,3 +1,8 @@
+  if (typeof pushLocalStorageSettingsHistory !== 'function') return false;
+  const afterSnapshot = captureOutlinerSettingsHistory(keys);
+  return pushLocalStorageSettingsHistory(
+    label || 'フォルダツリー: 設定変更',
+    beforeSnapshot,
     afterSnapshot,
     detail || '',
     refreshOutlinerSettingsAfterHistory
@@ -120,6 +125,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
     menuBtn.innerHTML = lucide('ellipsis', 14);
     menuBtn.title = 'メニュー';
     menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
+    // クリック前のホバー中にOS項目を先読みし、開いた時点で揃っている状態にする。
+    menuBtn.addEventListener('pointerenter', () => {
+      if (item.path && typeof prefetchShellVerbs === 'function') prefetchShellVerbs(item.path);
+    });
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
@@ -552,7 +561,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   row.addEventListener('drop', async (e) => {
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
-      await _folderImportOsDrop(e, item);
+      await _outlinerImportOsDropSafely(e, item);
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
@@ -889,12 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
 function clearDragIndicators() {
   const home = document.getElementById('body-home');
-  if (home) home.style.outline = '';
-  document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
-    el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
-  });
-}
-
-function _outlinerSheetTreeItems(item, pivotData) {
-  const items = Object.keys(pivotData?.entities || {}).sort().map(name => ({
-    name, type: 'entity',

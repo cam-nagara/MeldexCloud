@@ -26,7 +26,10 @@
   }
 
   function checkpointId(value) {
-    return String(value?.checkpointId || value?.revision || value || '');
+    // 空の checkpoint（読取専用の移行結果では {} になる）を "[object Object]" という
+    // 偽の識別子にしない。以前はこれで列名変更の事前確認を素通りしていた。
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+    return String(value?.checkpointId || value?.revision || '');
   }
 
   function rememberView(detail, options = {}) {
@@ -155,10 +158,19 @@
     Object.keys(pivotData.entities).forEach((name) => {
       if (pivotData.entities[name]?._topicCanonicalOnly === true) delete pivotData.entities[name];
     });
-    const requestedViewId = String(preferredViewId || view.document?.activeSheetViewId
-      || view.document?.activeView || '');
-    const placements = (view.document?.placements || []).filter(item => item?.surface === 'sheet'
-      && (!requestedViewId || String(item.viewId || '') === requestedViewId));
+    // 画面のビューID（旧シートの保存ビュー view_… 等）が共通保管庫の文書に無いことがある。
+    // 以前はその場合に配置が0件になり、旧シートの行をすべて表示から外していた（移行できる
+    // シートが増えて発覚）。文書に無いビューIDは使わず、文書の表示中ビュー、それも無ければ
+    // シートの全配置を使う。
+    const sheetPlacements = (view.document?.placements || []).filter(item => item?.surface === 'sheet');
+    const placementViewIds = new Set(sheetPlacements.map(item => String(item.viewId || '')));
+    let requestedViewId = String(preferredViewId || '');
+    if (!placementViewIds.has(requestedViewId)) {
+      requestedViewId = String(view.document?.activeSheetViewId || view.document?.activeView || '');
+    }
+    if (!placementViewIds.has(requestedViewId)) requestedViewId = '';
+    const placements = sheetPlacements.filter(item => !requestedViewId
+      || String(item.viewId || '') === requestedViewId);
     const records = new Map((view.records || []).map(record => [recordKey(record, view.sourceId), record]));
     // 保存名と表示名は異なる。移行キャッシュの旧名で行を作らず、現在の保存先へ結び付ける。
     const legacyNames = new Map();
@@ -262,6 +274,15 @@
   global.addEventListener?.('meldex:topic-records-updated', (event) => {
     rememberView(event.detail);
     rerenderProjectedSheets(event.detail?.dbPath || event.detail?.legacyPath);
+  });
+
+  // 移行に失敗したシートの古い表示定義を使い続けない（削除・改名済みの列が古い値つきで
+  // 再表示されるのを防ぐ）。旧シートの表示に戻る。
+  global.addEventListener?.('meldex:topic-migration-failed', (event) => {
+    const path = normalizePath(event.detail?.dbPath);
+    if (!path || !viewsByPath.has(path)) return;
+    viewsByPath.delete(path);
+    rerenderProjectedSheets(event.detail?.dbPath);
   });
 
   function recordRef(view, entityName, entityData) {
@@ -477,12 +498,25 @@
     });
   }
 
-  async function ensureView(dbPath) {
+  // 列名変更の前に、このシートの共通保管庫の表示定義を最新化する。戻り値:
+  //   { view }                      … 書き込み可能な最新の表示定義
+  //   { readOnly: true, message }   … 閲覧専用・競合中（旧シートも変更しない）
+  //   { unavailable: true, message }… 移行できない（共通化の確認は省略して旧シートだけ改名）
+  async function refreshViewForColumnChange(dbPath) {
     const path = normalizePath(dbPath);
-    if (viewsByPath.has(path)) return viewsByPath.get(path);
-    const result = await global.GbTopicLiveBridge?.migrateOpenedSheet?.(dbPath, { reason: 'column-confirm' });
+    const bridge = global.GbTopicLiveBridge;
+    if (!bridge?.migrateOpenedSheet) return { unavailable: true, message: '共通保管庫に接続していません' };
+    const result = await bridge.migrateOpenedSheet(dbPath, { reason: 'column-confirm' });
     if (result?.detail) rememberView(result.detail);
-    return viewsByPath.get(path) || null;
+    const view = viewsByPath.get(path) || null;
+    if (result?.ok && view && !view.readOnly && checkpointId(view.checkpoint)) return { view };
+    if (result?.ok && (result.mode === 'preview' || view?.readOnly)) {
+      return { readOnly: true, message: 'このシートは閲覧専用または他の操作と競合しているため、列名を変更しませんでした' };
+    }
+    // 失敗した移行の古い表示定義を使い回さない。
+    viewsByPath.delete(path);
+    const reason = result?.error?.message || result?.error?.payload?.detail || result?.status || '';
+    return { unavailable: true, message: reason ? String(reason) : '共通保管庫へ移行できませんでした' };
   }
 
   function renamedSheetViews(document, oldName, newName, familyId, currentColumn) {
@@ -510,7 +544,19 @@
   }
 
   async function renameColumn(options) {
-    const view = await ensureView(options.dbPath);
+    const refreshed = await refreshViewForColumnChange(options.dbPath);
+    if (refreshed.readOnly) throw new Error(refreshed.message);
+    if (refreshed.unavailable) {
+      // 共通保管庫へ移行できないシートでは、共通化の対象（他の場所の同じ列）が存在しない。
+      // 以前はここで列名変更そのものを拒否していたため、移行できないシートでは列名を一切
+      // 変えられなかった。旧シート（正本）の列名だけを変更し、理由を通知する。
+      await options.rename();
+      if (typeof global.showStatus === 'function') {
+        global.showStatus(`列名を変更しました（共通化の確認は省略: ${refreshed.message}）`);
+      }
+      return true;
+    }
+    const view = refreshed.view;
     const baseCheckpointId = checkpointId(view?.checkpoint);
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');

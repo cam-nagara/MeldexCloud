@@ -966,8 +966,16 @@ CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
   const mStart = `${y}-${String(m+1).padStart(2,'0')}-01`;
   const mEnd = `${y}-${String(m+1).padStart(2,'0')}-${String(dim).padStart(2,'0')}T23:59:59`;
   let timeEntries = [];
-  try { timeEntries = await apiFetch('/cal/time?date_from=' + mStart + '&date_to=' + mEnd); } catch {}
+  let timeEntriesFailed = false;
+  try {
+    timeEntries = await apiFetch('/cal/time?date_from=' + mStart + '&date_to=' + mEnd);
+  } catch (error) {
+    timeEntriesFailed = true;
+    console.warn('[calendar] shift table time entries load failed:', error);
+  }
   if (this._view !== 'shifts' || activeSeq !== this._renderSeq) return;
+  if (timeEntriesFailed) this._showStatus?.('シフト表の勤怠記録を読み込めませんでした。実績は表示されません', true);
+  if (!Array.isArray(timeEntries)) timeEntries = [];
   let html = '<div style="overflow-x:auto;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
   html += `<span style="font-weight:bold;">${y}年${m+1}月 シフト表</span><button class="gb-cal-shift-add" style="font-size:12px;padding:3px 10px;">+ シフト追加</button></div>`;
   html += '<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr><th style="padding:4px 8px;border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-header-bg, var(--bg3));color:var(--cal-header-fg, var(--fg2));min-width:80px;">ユーザー</th>';
@@ -1273,7 +1281,9 @@ CalendarComponent.prototype._bindSidebarResize = function() {
 };
 
 // === アラーム ===
-CalendarComponent.prototype._checkAlarms = async function() {
+// 定期確認（1分ごと）の失敗は連続して通知せず、記録に1回だけ残す。
+// 利用者が「通知を確認」した時（throwOnError）は失敗を呼び出し元へ返して表示させる。
+CalendarComponent.prototype._checkAlarms = async function(options = {}) {
   try {
     const alerts = await apiFetch('/cal/alerts?minutes_ahead=2&lookback_minutes=1440&user=' + encodeURIComponent(this._getUser()));
     alerts.forEach(ev => {
@@ -1283,7 +1293,12 @@ CalendarComponent.prototype._checkAlarms = async function() {
       if ('Notification' in window && Notification.permission === 'granted') new Notification('Meldex カレンダー', { body: ev.title + '\n' + (ev.start||'').substring(11,16), icon: '/Meldex_icon.png' });
       this._showStatus('🔔 ' + ev.title);
     });
-  } catch {}
+    this._alarmCheckFailing = false;
+  } catch (error) {
+    if (options.throwOnError) throw error;
+    if (!this._alarmCheckFailing) console.warn('[calendar] alarm check failed:', error);
+    this._alarmCheckFailing = true;
+  }
 };
 
 // === 右パネル（イベント編集フォーム） ===
@@ -1340,7 +1355,8 @@ CalendarComponent.prototype._openEventInPanel = function(editId, defaultStart, d
 
 CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
   const p = this._rightPanelEl;
-  this._pushUndo(editId ? 'イベント編集' : 'イベント作成');
+  // 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）
+  const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
   const data = {
     title: p.querySelector('.rp-ev-title').value,
     start: p.querySelector('.rp-ev-start').value,
@@ -1357,6 +1373,7 @@ CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
   try {
     if (editId) await apiPut('/cal/events/' + editId, data);
     else await apiPost('/cal/events', data);
+    this._pushUndo(editId ? 'イベント編集' : 'イベント作成', undoSnapshot);
     await this._loadEvents(); this._render();
     this._closeRightPanel();
     this._showStatus('イベントを保存しました');
@@ -1376,8 +1393,10 @@ CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
   }
   if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
     && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
+  let deleted = false;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    deleted = true;
     // API成功後、再読込で削除前状態が失われる前に履歴へ積む。失敗した操作の偽履歴は残さない。
     this._pushUndo('イベント削除');
     // Audit-P1 H-6: 紐付いたコメントを孤児化する（target_kind='calendar_event'）
@@ -1391,7 +1410,11 @@ CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
     this._render();
     this._closeRightPanel();
     this._showStatus('削除しました');
-  } catch {}
+  } catch (error) {
+    const detail = String(error?.userMessage || error?.message || '').trim();
+    const base = deleted ? '削除しましたが、表示を更新できませんでした。再読み込みしてください' : '削除に失敗しました';
+    this._showStatus(detail && !deleted ? base + ': ' + detail : base, true);
+  }
 };
 
 CalendarComponent.prototype._closeRightPanel = function() {
@@ -1417,8 +1440,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
 <div class="field"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
 <div class="field gb-cal-task-form-wide"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
 </div>`;
-  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
-  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
+  content.querySelectorAll('input, textarea').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+  content.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select', 'gb-select-medium'); });
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'tk-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');

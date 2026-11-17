@@ -60,7 +60,9 @@ function _fileStyleYamlScalar(raw) {
   return value;
 }
 function _fileStyleBlockRegex() {
-  return /style:\s*\n(?:\s+(?:--[\w-]+|__[A-Za-z0-9_-]+):[^\n]*\n?)*/m;
+  // 行頭（最上位キー）の style: だけを対象にする。行頭固定が無いと、入れ子の style: や
+  // linestyle: 等の別キーを書き換え、字下げの崩れたYAMLを作っていた（読込側と同じ条件）。
+  return /^style:[ \t]*\n(?:[ \t]+(?:--[\w-]+|__[A-Za-z0-9_-]+):[^\n]*\n?)*/m;
 }
 function _fileStyleToYaml(style) {
   if (!style || typeof style !== 'object' || Array.isArray(style) || Object.keys(style).length === 0) return '';

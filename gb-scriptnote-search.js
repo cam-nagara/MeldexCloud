@@ -21,7 +21,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!needle) return [];
     const matches = [];
     (Array.isArray(this.doc?.rows) ? this.doc.rows : []).forEach((row, rowIndex) => {
-      if (!this._isRoleVisible(row.role || '', row.status || '')) return;
+      if (!this._isRoleVisible(row)) return;
       const plain = _sn2StripRubyToPlain(row.text || '');
       let start = 0;
       while (start <= plain.length) {
@@ -151,7 +151,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._pushUndo('検索一括置換');
     let replaced = 0;
     (Array.isArray(this.doc?.rows) ? this.doc.rows : []).forEach((row) => {
-      if (!this._isRoleVisible(row.role || '', row.status || '')) return;
+      if (!this._isRoleVisible(row)) return;
       let plain = _sn2StripRubyToPlain(row.text || '');
       let pos = plain.indexOf(state.query);
       let seekFrom = 0;

@@ -1,15 +1,6 @@
     addMenuItem('名前を変更...', async () => {
       closeTreeContextMenu();
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const root = roots.find(r => r.path === nodeData.path);
-      if (!root) return;
-      const newName = await cfPrompt('表示名を入力:', root.name);
-      if (!newName) return;
-      root.name = newName;
-      await _putOutlinerRootsWithBase(roots, baseRoots);
-      await loadOutliner();
-      showStatus('名前を変更しました');
+      await _outlinerRenameSourceFolder(nodeData);
     }, null, 'pencil');
     addMenuItem('チーム管理...', async () => {
       closeTreeContextMenu();
@@ -18,15 +9,7 @@
     addSep();
     addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
-      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const newRoots = roots.filter(r => r.path !== nodeData.path);
-      await _putOutlinerRootsWithBase(newRoots, baseRoots);
-      await loadOutliner();
-      showStatus('ソースフォルダの登録を解除しました');
+      await _outlinerUnregisterSourceFolder(nodeData);
     }, null, 'folder-minus');
   }
 
@@ -115,13 +98,18 @@
     }
   }
 
-  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
-  // 表示後に項目数やポップアップ座標を変えない。
-  if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
+  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
+  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
+  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
   }
   if (openSeq !== _outlinerContextMenuOpenSeq) return;
   _outlinerPlaceContextMenu(menu);
+  if (shellPath && !shellReady) {
+    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
+  }
 }
 
 // 追加先の親パスを決定

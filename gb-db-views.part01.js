@@ -457,7 +457,15 @@ async function _showDbConfigModal(dbPath, ctx) {
   let pivotData = localCtx?.dbPath === dbPath ? localCtx.pivotData : null;
   if (!pivotData && state.currentDbPath === dbPath) pivotData = state.pivotData;
   if (!pivotData) {
-    try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch { pivotData = null; }
+    try {
+      pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+    } catch (error) {
+      pivotData = null;
+      console.warn('[Meldex] シート設定の列一覧を読み込めませんでした', error);
+      if (typeof showStatus === 'function') {
+        showStatus('シートの列一覧を読み込めませんでした。設定画面の列の選択肢が空になります: ' + (error?.message || error), true);
+      }
+    }
   }
   let dbMetadata = localCtx?.dbPath === dbPath ? localCtx.dbMetadata : null;
   if (!dbMetadata && state.currentDbPath === dbPath) dbMetadata = state.dbMetadata;
@@ -1117,6 +1125,31 @@ function _makeDuplicateSavedViewName(sourceName, views) {
   return candidate;
 }
 
+// ビュー複製の保存。表示設定はバックエンドへ非同期に送られるため、保存の確定を待ち、
+// 失敗したら理由を表示して false を返す（表示切替・履歴・完了通知は呼び出し側が成功後に行う）。
+async function _saveDuplicatedDbViews(dbPath, views, ctx) {
+  let saved = false;
+  let saveError = null;
+  try {
+    if (typeof saveDbViewConfigImmediate === 'function') {
+      const cfg = getDbViewConfig(dbPath);
+      cfg.savedViews = views;
+      saved = await saveDbViewConfigImmediate(dbPath, cfg, { skipHistory: true, ctx });
+    } else {
+      setSavedViews(dbPath, views, { skipHistory: true });
+      saved = true;
+    }
+  } catch (error) {
+    saveError = error;
+    saved = false;
+  }
+  if (saved) return true;
+  console.warn('[Meldex] ビューの複製を保存できませんでした', saveError);
+  const reason = saveError ? ': ' + (saveError?.message || saveError) : '。保存先の空き容量や権限を確認してください';
+  showStatus('ビューを複製できませんでした' + reason, true);
+  return false;
+}
+
 async function duplicateSavedView(idx, ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -1140,13 +1173,14 @@ async function duplicateSavedView(idx, ctx) {
   duplicate.name = name;
   const insertIdx = idx + 1;
   views.splice(insertIdx, 0, duplicate);
-  setSavedViews(dbPath, views, { skipHistory: true });
+  if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
   loadSavedView(insertIdx, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     const detail = (source.name || 'ビュー') + ' → ' + name;
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), detail);
   }
   showStatus('ビューを複製しました: ' + name);
+  return true;
 }
 
 async function duplicateCurrentDbView(viewMode, label, ctx) {
@@ -1169,12 +1203,13 @@ async function duplicateCurrentDbView(viewMode, label, ctx) {
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const duplicate = _makeDbViewStateFromCurrent(dbPath, mode, name, ctx);
   views.push(duplicate);
-  setSavedViews(dbPath, views, { skipHistory: true });
+  if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
   loadSavedView(views.length - 1, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), sourceLabel + ' → ' + name);
   }
   showStatus('ビューを複製しました: ' + name);
+  return true;
 }
 
 function loadSavedView(idx, ctx, options = {}) {

@@ -30,11 +30,14 @@
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  padding: 4px 4px 4px 8px;
-  background: var(--ui-pane-tabbar-bg, var(--bg3, var(--bg2)));
-  border-bottom: 1px solid var(--ui-border, var(--border));
+  padding: 0 var(--ui-space-2) 0 var(--ui-space-4);
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
   cursor: move;
   user-select: none;
+  min-height: var(--ui-panel-header-height);
+  font-size: var(--ui-panel-header-font-size);
+  box-sizing: border-box;
 }
 .gb-tag-picker-panel-icon {
   display: inline-flex;
@@ -60,8 +63,8 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: var(--ui-h-xs, 22px);
+  height: var(--ui-h-xs, 22px);
   padding: 0;
   background: transparent;
   border: none;
@@ -102,12 +105,12 @@
   flex: 0 0 auto;
 }
 .gb-tag-picker-mode-btn {
-  padding: 4px 8px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   background: transparent;
   border: none;
   border-right: 1px solid var(--ui-border, var(--border));
   color: var(--ui-fg-muted, var(--fg2));
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
   line-height: 1.4;
   cursor: pointer;
   white-space: nowrap;
@@ -133,7 +136,7 @@
 }
 .gb-tag-picker-clear-btn {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
 }
 
 .gb-tag-picker-panel-list {
@@ -231,6 +234,6 @@ button[data-search-tag-trigger][aria-pressed="true"] {
   .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-float-panel-header,
   .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-tag-picker-mode-btn,
   .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-tag-picker-panel-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

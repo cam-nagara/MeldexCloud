@@ -88,17 +88,35 @@
   // 両方カバーされる。単独版など、どちらも存在しない環境では 'input' の
   // dispatchのみで、その環境固有の自動保存に委ねる（保存系レーンの管轄に
   // 立ち入らない）。
+  // 保存は非同期なので、完了を待って失敗を拾う（旧実装は try 内で待たずに呼び、
+  // 非同期の失敗が catch に届かず無言で消えていた）。保存処理側が理由を表示済みの
+  // 失敗（false / 失敗結果）は記録だけ残し、想定外の例外は理由を表示する。
   function _flushExistingSaveReservation(editable) {
-    if (!editable) return;
+    if (!editable) return Promise.resolve(false);
+    let pending;
     try {
       if (editable.id === 'dp-editable' && typeof global._dpSave === 'function') {
-        global._dpSave(editable);
-        return;
+        pending = global._dpSave(editable);
+      } else if (typeof global.flushPendingEditorAutosave === 'function') {
+        pending = global.flushPendingEditorAutosave();
+      } else {
+        return Promise.resolve(false);
       }
-      if (typeof global.flushPendingEditorAutosave === 'function') global.flushPendingEditorAutosave();
     } catch (err) {
-      console.warn('MeldexNoteBlockReorder: save reservation flush failed', err);
+      pending = Promise.reject(err);
     }
+    return Promise.resolve(pending).then(result => {
+      const failed = result === false || (Array.isArray(result) && result.some(r =>
+        r?.status === 'rejected' || ['failed', 'conflict', 'missing'].includes(r?.value?.outcome)));
+      if (failed) console.warn('MeldexNoteBlockReorder: save after move did not complete', result);
+      return !failed;
+    }, err => {
+      console.warn('MeldexNoteBlockReorder: save reservation flush failed', err);
+      if (typeof global.showStatus === 'function') {
+        global.showStatus('行の移動後の保存に失敗しました。内容は画面に残っています', true);
+      }
+      return false;
+    });
   }
 
   function _refreshTocIfNeeded() {
@@ -597,7 +615,9 @@
     const range = _rangeAtStartOf(blockEl);
     const info = nbt.resolveCurrentBlock(editable, range) || { kind: 'body', block: blockEl };
     const currentTypeId = nbt.getBlockTypeId(info);
-    const rect = blockEl.getBoundingClientRect();
+    // 階層の親（子リストを持つ項目）は要素全体の矩形が子孫まで含むため、
+    // ハンドル位置と同じく項目自身の矩形を基準にする。
+    const rect = (lr && lr.rowOwnRect(blockEl, editable)) || blockEl.getBoundingClientRect();
     // 工程7-3: 「対象行の下へ」開く
     const anchorRect = { top: rect.bottom, bottom: rect.bottom, left: rect.left, right: rect.right };
     // 計画書§2.3: メニュー表示中も対象行のハイライトを途切れさせない。

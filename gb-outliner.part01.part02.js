@@ -84,6 +84,10 @@
     menuBtn.innerHTML = lucide('ellipsis', 14);
     menuBtn.title = 'メニュー';
     menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
+    // クリック前のホバー中にOS項目を先読みし、開いた時点で揃っている状態にする。
+    menuBtn.addEventListener('pointerenter', () => {
+      if (item.path && typeof prefetchShellVerbs === 'function') prefetchShellVerbs(item.path);
+    });
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
@@ -516,7 +520,7 @@
   row.addEventListener('drop', async (e) => {
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
-      await _folderImportOsDrop(e, item);
+      await _outlinerImportOsDropSafely(e, item);
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;

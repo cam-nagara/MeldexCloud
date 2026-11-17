@@ -253,9 +253,9 @@
 }
 
 .meldex-install-card--modal .meldex-install-button {
-  padding: 6px 10px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: color-mix(in srgb, var(--accent) 18%, var(--bg3));
   color: var(--fg);
   cursor: pointer;
@@ -269,9 +269,9 @@
 }
 
 .meldex-install-card--modal .meldex-install-quick-button {
-  padding: 6px 10px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--bg3);
   color: var(--fg);
   cursor: pointer;
@@ -545,7 +545,7 @@
 }
 
 .meldex-cloud-home-only-actions button {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 
 .meldex-install-prompt-modal,
@@ -865,7 +865,7 @@
   .meldex-install-help-modal > .btn-row button {
     width: 100% !important;
     min-width: 0 !important;
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     justify-content: center !important;
     white-space: normal !important;
   }
@@ -918,7 +918,7 @@
 
   body[data-cloud-mobile="1"] .meldex-cloud-mode-modal button,
   body[data-cloud-mobile="1"] .meldex-cloud-setup-modal button {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
     font-size: 15px !important;
     line-height: 1.28 !important;
   }
@@ -981,6 +981,6 @@
   }
 
   .meldex-install-actions button {
-    min-height: 38px;
+    min-height: var(--ui-h-xl, 40px);
   }
 }

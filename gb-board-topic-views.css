@@ -9,11 +9,13 @@
 .bd-view-tabs-row {
   flex: 0 0 auto;
   min-width: 0;
-  border-bottom: 1px solid var(--ui-border, var(--border));
+  padding: var(--ui-view-tab-row-padding);
+  border-bottom: var(--ui-view-tab-row-border);
   background: var(--bg2);
+  box-sizing: border-box;
 }
 /* 行の下線と背景は外側の .bd-view-tabs-row が持つ。内側にも下線があると二重になりシートより1px高くなる。 */
-.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; border-bottom: 0; }
+.bd-view-tabs-row > .bd-topic-view-controls { width: 100%; border-bottom: 0; padding: 0; }
 .bd-view-tabs-row .bd-common-view-tabs { flex: 1 1 auto; border-bottom: 0; }
 .bd-view-tabs-row .bd-topic-view-controls > select { display: none; }
 @media (max-width: 768px) {
@@ -130,7 +132,7 @@
 
   .bd-topic-view-overflow-menu button,
   .bd-group-options input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
 }
@@ -147,13 +149,13 @@
 #cloud-mobile-boardbar > .bd-topic-view-controls > select {
   flex: 1 1 auto;
   max-width: min(62vw, 260px);
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 
 #cloud-mobile-boardbar > .bd-topic-view-controls > button,
 #cloud-mobile-boardbar > .bd-topic-view-controls > .bd-topic-view-overflow > summary {
-  min-height: 44px;
-  min-width: 44px;
+  min-height: var(--ui-h-touch, 44px);
+  min-width: var(--ui-h-touch, 44px);
 }
 
 #cloud-mobile-boardbar > .bd-topic-view-controls > .bd-topic-view-wide-action {
@@ -190,7 +192,7 @@
 }
 .bd-mixed-view-empty-host strong { color: var(--ui-fg-default, var(--fg)); font-size: 15px; }
 .bd-common-view-tabs { min-width: 0; max-width: 100%; overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; scrollbar-width: thin; }
-.bd-common-view-tab { display: inline-flex; align-items: center; flex: 0 0 auto; height: var(--ui-h-xs); padding: 0 8px; border-radius: var(--ui-radius-xs); box-sizing: border-box; }
+.bd-common-view-tab { display: inline-flex; align-items: center; flex: 0 0 auto; height: var(--ui-view-tab-height); padding: 0 var(--ui-view-tab-padding-x); font-size: var(--ui-view-tab-font-size); border-radius: var(--ui-radius-xs); border-bottom: 2px solid transparent; box-sizing: border-box; }
 .bd-common-view-tab > .view-tab-label { display: inline-flex; align-items: center; gap: 4px; min-height: var(--ui-h-xs); padding: 0; color: inherit; background: transparent; border: 0; }
 .bd-common-view-tab > .view-tab-label svg { width: 14px; height: 14px; }
 .bd-common-view-menu { display: block; position: relative; }
@@ -198,7 +200,13 @@
 .bd-common-view-tab:hover .bd-common-view-menu > .view-tab-more,
 .bd-common-view-tab:focus-within .bd-common-view-menu > .view-tab-more,
 .bd-common-view-menu[open] > .view-tab-more { opacity: 1; }
-.bd-common-view-tab.active { background: var(--ui-bg-control-active); color: var(--ui-fg-strong); }
+/* 選択中の表示はシートのビュータブと同じ（下線＋薄いアクセント背景） */
+.bd-common-view-tab.active {
+  background: var(--ui-inner-tab-active-bg);
+  color: var(--ui-inner-tab-active-fg);
+  border-color: var(--ui-inner-tab-active-border);
+  box-shadow: inset var(--ui-inner-tab-active-left-accent) 0 0 var(--ui-inner-tab-active-underline), inset 0 calc(-1 * var(--ui-inner-tab-active-underline-width)) 0 var(--ui-inner-tab-active-underline);
+}
 .bd-common-view-add { display: flex; align-items: center; flex: 0 0 auto; }
 /* min-height は .bd-topic-view-overflow > summary の32pxを打ち消す（残すと行がシートより高くなる）。 */
 .bd-common-view-add > .view-tab-add { display: inline-flex; align-items: center; justify-content: center; width: var(--ui-h-xs); height: var(--ui-h-xs); min-width: var(--ui-h-xs); min-height: var(--ui-h-xs); padding: 0; border-radius: var(--ui-radius-xs); box-sizing: border-box; }

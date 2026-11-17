@@ -1,3 +1,30 @@
+      tab.label = exactLabel;
+      legacyTabsChanged = true;
+    }
+  });
+
+  _legacyNavHistory.forEach(entry => {
+    if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
+    if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
+  });
+
+  if (typeof GBLayout !== 'undefined' && typeof GBLayout.getAllPanes === 'function' && GBLayout.root) {
+    GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
+      (pane.tabs || []).forEach(tab => {
+        const wasExact = tab.path === oldPath;
+        const mapped = _mapRenamedPath(tab.path, oldPath, newPath);
+        if (mapped !== tab.path) {
+          tab.path = mapped;
+          layoutChanged = true;
+        }
+        if (wasExact && exactLabel != null && tab.label !== exactLabel) {
+          tab.label = exactLabel;
+          layoutChanged = true;
+        }
+        if (tab.state && typeof tab.state === 'object') {
+          if (wasExact && exactLabel != null) tab.state.label = exactLabel;
+          if (_updatePathRefs(tab.state, APP_PATH_REF_KEYS, oldPath, newPath)) {
+            layoutChanged = true;
           }
         }
         // タブ単位の戻る/進む履歴（②タブ別ナビ履歴、2026-07-21）: 各タブの navHistory も追随させる
@@ -54,6 +81,43 @@
       pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
     }
   });
+  // サブパネル・独立した表示面（openPage の containerEl）で開いたノートは #page-content では
+  // ないため、以前は保存先が旧パスのまま残り、改名後の保存が旧パスへ新しいファイルを作って
+  // いた（2回改名した後の保存で発覚）。保存の調整役に登録された編集面と、配線済みの
+  // ノート編集面すべての保存先を追従させる。
+  const renamedHosts = new Set();
+  try {
+    const saveCoordinator = window.MeldexDocumentSaveCoordinator;
+    if (saveCoordinator?.documentKeyForPath && saveCoordinator.getParticipants) {
+      [newPath, oldPath].forEach(path => {
+        (saveCoordinator.getParticipants(saveCoordinator.documentKeyForPath(path)) || []).forEach(host => renamedHosts.add(host));
+      });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 改名後の保存先の追従に失敗しました', error);
+  }
+  document.querySelectorAll('[data-path]').forEach(el => { if (el._noteEditableWired) renamedHosts.add(el); });
+  renamedHosts.forEach(host => {
+    if (host?.dataset?.path) host.dataset.path = _mapRenamedPath(host.dataset.path, oldPath, newPath);
+  });
+  // ファイル名を変える改名では、サーバーが表示タイトルや先頭の見出しを書き換えることがあり、
+  // 開いているノートの「最後に保存した内容」が古くなる。そのまま保存すると競合（409）になる
+  // ため、改名後の内容を読み直して基準を合わせる（編集中の本文はそのまま残す）。
+  if (!options.titleOnly && options.etag && oldPath !== newPath) {
+    const resyncHosts = new Set([document.getElementById('page-content'), ...renamedHosts]);
+    resyncHosts.forEach(host => {
+      if (host?.dataset?.path !== newPath || host.dataset.lastSavedMd == null) return;
+      if (typeof apiFetch !== 'function' || !window.MeldexNoteSaveAdapter?.syncResolvedBaseline) return;
+      apiFetch('/file?path=' + encodeURIComponent(newPath), { silentError: true })
+        .then(loaded => {
+          if (host.dataset.path !== newPath || typeof loaded?.content !== 'string') return;
+          const fm = loaded.content.match(/^(---\n[\s\S]*?\n---\n?)/);
+          if (fm) host.dataset.frontmatter = fm[1];
+          window.MeldexNoteSaveAdapter.syncResolvedBaseline(newPath, host, loaded.content, loaded.etag || options.etag);
+        })
+        .catch(error => console.warn('[Meldex] 改名後のノートの保存基準を更新できませんでした', error));
+    });
+  }
 
   if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
     Object.keys(_sn2Editors).forEach(path => {
@@ -834,67 +898,3 @@ function _handleTabBarContextmenu(e) {
     if (!items.length) return;
     const currentIndex = Math.max(0, items.indexOf(document.activeElement));
     let nextIndex = currentIndex;
-    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
-    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
-    else if (ev.key === 'Home') nextIndex = 0;
-    else if (ev.key === 'End') nextIndex = items.length - 1;
-    else return;
-    ev.preventDefault();
-    items[nextIndex]?.focus();
-  };
-  setTimeout(() => {
-    if (menuClosed || !menu.isConnected) return;
-    document.addEventListener('pointerdown', closeOnPointer, true);
-    document.addEventListener('keydown', closeOnKey, true);
-  }, 0);
-  menu.querySelector('.gb-context-menu-item')?.focus();
-}
-{
-  const _tabBar = document.getElementById('tab-bar');
-  _tabBar?.addEventListener('contextmenu', _handleTabBarContextmenu);
-  if (_tabBar && typeof addLongPressHandler === 'function') {
-    addLongPressHandler(_tabBar, _handleTabBarContextmenu);
-  }
-}
-
-// Chrome --appモードで新しいウィンドウを開く（JS版）
-async function _open_app_window_js(url) {
-  const resolvedUrl = new URL(url, location.origin).toString();
-  try {
-    const res = await fetch(API_BASE + '/open-app-window', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: resolvedUrl }),
-    });
-    if (res.ok) return true;
-  } catch {}
-  const opened = window.open(resolvedUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
-  return !!opened;
-}
-
-// 既存のopen関数をフックしてタブを追加（再帰防止付き）
-let _addingTab = false;
-const _origNavPush = navPush;
-navPush = function(entry, paneId) {
-  _origNavPush(entry, paneId);
-  if (_addingTab || navNavigating) return; // activateTab→navOpen→openX→navPush の再帰を防止
-  if (entry && entry.type) {
-    const label = entry.label || entry.path?.split('/').pop() || '(無題)';
-    if (entry.type === 'welcome') return;
-    _addingTab = true;
-    try {
-      // タブを追加（既存ならアクティブ化のみ、navOpenは呼ばない）
-      const path = entry.path || entry.dbPath || '';
-      const type = typeof _normalizeOpenTypeForNav === 'function' ? _normalizeOpenTypeForNav(entry.type) : entry.type;
-      const existing = _tabs.find(t => t.path === path && t.type === type);
-      if (existing) {
-        _activeTabId = existing.id;
-        renderTabs();
-      } else {
-        // 現在のアクティブタブを上書き（新しいタブを追加しない）
-        const activeTab = _tabs.find(t => t.id === _activeTabId);
-        if (activeTab) {
-          activeTab.label = label || '(無題)';
-          activeTab.type = type;
-          activeTab.path = path;
-          activeTab.icon = _tabIcon(type);

@@ -1,3 +1,67 @@
+    clearBoardDetailTabs();
+  }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);
+  const _setDisplay = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = value;
+  };
+  _setDisplay('login-view', 'none');
+  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
+  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
+  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+  _setDisplay('tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
+  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
+  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
+  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
+  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
+  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
+  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
+  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
+  if (typeof _dbTreeSetOptionTabVisible === 'function') {
+    _dbTreeSetOptionTabVisible(resolvedViewName === 'tree');
+  }
+  // app-toolbarの表示切替
+  const appTb = document.getElementById('app-toolbar');
+  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // ページビュー: app-toolbarにリッチテキストツールバー表示
+  const showRtInAppbar = (resolvedViewName === 'page');
+  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
+  const hasAppTb = isDbView || showRtInAppbar;
+  if (appTb) {
+    appTb.classList.toggle('visible', hasAppTb);
+    appTb.dataset.activeToolbar = isDbView ? 'sheet' : (showRtInAppbar ? 'rich-text' : '');
+  }
+  // エントリビュー: エントリ内ツールバー
+  const entityRt = document.getElementById('entity-rt-toolbar');
+  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
+  // ステータスバーのショートカットヘルプ
+  const sc = document.getElementById('sb-shortcuts');
+  if (isDbView) {
+    const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
+    if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
+    else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
+    else sc.textContent = '';
+  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
+    if (typeof updateNoteShortcutStatusbar === 'function') updateNoteShortcutStatusbar(sc);
+    else sc.textContent = 'Ctrl+Alt+1〜3 見出し | Ctrl+Shift+N 本文 | Alt+Shift+←→ 段落レベル';
+  } else if (resolvedViewName === 'scriptnote') {
+    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+  } else if (resolvedViewName === 'media') {
+    if (typeof updateMediaViewerShortcutStatusbar === 'function') updateMediaViewerShortcutStatusbar(sc);
+    else sc.textContent = '';
+  } else {
+    sc.textContent = '';
+  }
+
+  state.view = viewName;
 
   // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
   if (typeof ann !== 'undefined') {
@@ -834,67 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
       }
     } catch {}
   });
-}
-
-// main-viewsへのD&Dドロップ
-// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）
-// Ctrl+ドロップ: ファイルをそのパネルで開く
-{
-  const mv = document.getElementById('main-views');
-  // 注意: #sidebar は GBLayout のドッキング対象として #gb-layout-root（#main-views の
-  // 子孫）へ組み込まれるため、フォルダツリー（お気に入り・最近使った項目・ワークスペースを
-  // 含む #sidebar 全体）は実行時には #main-views の子孫になる。Ctrl+ドロップでパネルに
-  // 開くこの機能は「ドロップ先がツリー以外のパネル領域」の場合だけに限定し、ツリー内へ
-  // Ctrl+ドロップしても項目が開かないようにする（フォルダツリー改修 Phase 2 §2.5・§9）。
-  const _isMainViewsSidebarDrop = (e) => !!e.target?.closest?.('#sidebar');
-  if (mv) mv.addEventListener('dragover', (e) => {
-    if (e.dataTransfer.types.includes('application/x-meldex-node')) {
-      // Ctrl+ドラッグ時のみmain-viewsレベルで受け付け（ファイルを開く）
-      // 通常時は各ビュー固有のdragoverに委ねる
-      if (e.ctrlKey && state.view !== 'board' && !_isMainViewsSidebarDrop(e)) e.preventDefault();
-    }
-  });
-  if (mv) mv.addEventListener('drop', (e) => {
-    // Ctrl+ドロップ: ファイルをパネルで開く
-    if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
-    if (state.view === 'board') return;
-    if (_isMainViewsSidebarDrop(e)) return; // フォルダツリー（サイドバー）内へのCtrl+ドロップでは開かない
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    if (!cfData) return;
-    e.preventDefault();
-    try {
-      const { name, path, type } = JSON.parse(cfData);
-      const navType = typeof _normalizeOpenTypeForNav === 'function'
-        ? _normalizeOpenTypeForNav(type)
-        : (type === 'database' ? 'pivot' : type === 'board' ? 'board' : (type || 'page'));
-      navOpen({ type: navType, label: name, path });
-    } catch {}
-  });
-}
-
-// Phase D: HTMLビューワー(viewer.html)のiframe通信のみ残存
-// canvas/calendarのpostMessageはPhase Cで直接関数呼び出しに変換済み
-function _getTrustedEmbeddedMessageIframe(e) {
-  if (!e) return null;
-  const candidates = [];
-  const addCandidate = iframe => {
-    if (iframe && !candidates.includes(iframe)) candidates.push(iframe);
-  };
-  addCandidate((typeof _getActiveIframe === 'function') ? _getActiveIframe() : null);
-  addCandidate(document.getElementById('html-iframe'));
-  document.querySelectorAll('iframe').forEach(addCandidate);
-  for (const iframe of candidates) {
-    if (!iframe?.contentWindow || e.source !== iframe.contentWindow) continue;
-    const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
-    if (!_gbIsTrustedInternalViewerUrl(iframeSrc)) continue;
-    if (e.origin === window.location.origin || e.origin === 'null') return iframe;
-  }
-  return null;
-}
-
-function _isTrustedEmbeddedMessage(e) {
-  return !!_getTrustedEmbeddedMessageIframe(e);
-}
-
-function _syncViewerCurrentFileFromMessage(msg) {
-  const path = typeof msg?.path === 'string' ? msg.path : '';

@@ -424,25 +424,61 @@ async function loadFileFolderTags(filePath, container) {
         const removeBtn = document.createElement('span');
         removeBtn.textContent = '\u00d7';
         removeBtn.style.cssText = 'cursor:pointer;color:var(--fg2);margin-left:2px;';
-        removeBtn.addEventListener('click', async (e) => {
+        removeBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          await removeFolderLinkWithHistory(filePath, f.file_id, f.folder, { tagsContainer: container });
-          showStatus('リンク解除しました');
+          return _folderRemoveLinkFromTag(filePath, f, container);
         });
         tag.appendChild(removeBtn);
       }
       container.appendChild(tag);
     });
 
-    // +ボタン
-    const addBtn = document.createElement('span');
-    addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:var(--ui-bg-control,var(--bg3));color:var(--fg2);cursor:pointer;';
-    addBtn.textContent = '+';
-    addBtn.title = 'フォルダにリンク登録';
-    addBtn.dataset.gbTooltip = 'このファイルを別フォルダにもリンク登録します';
-    addBtn.addEventListener('click', () => showAddFolderLinkModal(filePath, container));
-    container.appendChild(addBtn);
-  } catch (e) {}
+    container.appendChild(_folderLinkAddButton(filePath, container));
+  } catch (error) {
+    // 読込失敗で＋ボタンごと消さない。原因を表示し、再試行と追加の操作を残す。
+    console.error('[folder links] 所属フォルダを読み込めませんでした', error);
+    container.innerHTML = '';
+    const retry = document.createElement('span');
+    retry.className = 'folder-link-load-failed';
+    retry.style.cssText = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:11px;background:var(--ui-bg-control,var(--bg3));color:var(--red,var(--fg2));cursor:pointer;';
+    retry.textContent = '読み込めませんでした（再試行）';
+    retry.title = '所属フォルダをもう一度読み込みます';
+    retry.dataset.gbTooltip = '所属フォルダをもう一度読み込みます';
+    retry.addEventListener('click', (e) => {
+      e.stopPropagation();
+      return loadFileFolderTags(filePath, container);
+    });
+    container.appendChild(retry);
+    container.appendChild(_folderLinkAddButton(filePath, container));
+    _folderReportFailure('所属フォルダを読み込めませんでした', error);
+  }
+}
+
+function _folderLinkAddButton(filePath, container) {
+  const addBtn = document.createElement('span');
+  addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:var(--ui-bg-control,var(--bg3));color:var(--fg2);cursor:pointer;';
+  addBtn.textContent = '+';
+  addBtn.title = 'フォルダにリンク登録';
+  addBtn.dataset.gbTooltip = 'このファイルを別フォルダにもリンク登録します';
+  addBtn.addEventListener('click', () => showAddFolderLinkModal(filePath, container));
+  return addBtn;
+}
+
+// 所属フォルダの解除。失敗を原因つきで表示し、成功表示は解除の完了後だけ。
+async function _folderRemoveLinkFromTag(filePath, link, container) {
+  try {
+    const res = await removeFolderLinkWithHistory(filePath, link.file_id, link.folder, { tagsContainer: container });
+    if (res?.removed === false) {
+      showStatus('リンクを解除できませんでした：既に解除されているか、見つかりません', true);
+      return false;
+    }
+    showStatus('リンク解除しました');
+    return true;
+  } catch (error) {
+    console.error('[folder links] リンクを解除できませんでした', error);
+    _folderReportFailure('リンクを解除できませんでした', error);
+    return false;
+  }
 }
 
 function showAddFolderLinkModal(filePath, tagsContainer) {
@@ -458,9 +494,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   content.innerHTML = `
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
     <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『サンプル作品』/第1話登場"></div>
-    <div id="modal-link-tree" style="max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;margin-bottom:8px;background:var(--bg);font-size:12px;">
-      <div style="color:var(--fg2);padding:4px;">読み込み中...</div>
-    </div>
+    <div id="modal-link-tree" class="gb-folder-picker-embed folder-link-register-tree"></div>
     <div class="gb-dialog-inline-status" data-folder-link-status role="status" aria-live="polite" hidden></div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
@@ -507,128 +541,34 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
   submitButton.addEventListener('click', () => submitAddFolderLink(filePath, o));
   modalApi.open();
-  // フォルダツリーを読み込み
-  _loadFolderLinkTree(modalApi.body.querySelector('#modal-link-tree'));
+  // フォルダツリーは共通のフォルダ選択部品を埋め込む（UI共通ルール 4.1）
+  _mountFolderLinkTree(modalApi.body.querySelector('#modal-link-tree'), o, filePath);
   return modalApi;
 }
 
-async function _loadFolderLinkTree(container) {
-  try {
-    const roots = window.GBFolderPicker?.loadRoots
-      ? await window.GBFolderPicker.loadRoots()
-      : await apiFetch('/outliner-roots');
-    container.innerHTML = '';
-    if (window.GBFolderPicker?.loadRoots) {
-      roots.forEach(root => {
-        const rootEl = _createLinkTreeNode(root.name, root.path, root.rootPath || root.path, true, {
-          sourceId: root.sourceId || '',
-          rootKind: root.kind || root.rootKind || '',
-          workspaceId: root.workspaceId || '',
-        });
-        container.appendChild(rootEl);
-      });
-      return;
-    }
-    // ホームフォルダを先頭に追加（ルートに含まれていない場合）
-    if (_homeFolderPath) {
-      const rootPaths = roots.filter(r => r.visible).map(r => r.path);
-      if (!rootPaths.includes(_homeFolderPath)) {
-        const homeLabel = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
-        const homeEl = _createLinkTreeNode(homeLabel, _homeFolderPath, _homeFolderPath, true);
-        container.appendChild(homeEl);
-      }
-    }
-    for (const root of roots.filter(r => r.visible)) {
-      const rootEl = _createLinkTreeNode(root.name, root.path, root.path, true);
-      container.appendChild(rootEl);
-    }
-  } catch(e) {
-    container.innerHTML = '<div style="color:var(--fg2);padding:4px;">ツリーの読み込みに失敗</div>';
+function _mountFolderLinkTree(container, overlay, filePath) {
+  if (!container) return null;
+  if (typeof window.GBFolderPicker?.createBrowser !== 'function') {
+    container.textContent = 'フォルダツリーを表示できませんでした。パスを直接入力してください。';
+    return null;
   }
-}
-
-function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
-  const div = document.createElement('div');
-  div.style.marginLeft = isRoot ? '0' : '16px';
-
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:3px;';
-  row.onmouseenter = () => { row.style.background = 'var(--bg3)'; };
-  row.onmouseleave = () => { row.style.background = ''; };
-
-  const toggle = document.createElement('span');
-  toggle.textContent = '\u25B6';
-  toggle.style.cssText = 'font-size:9px;width:12px;text-align:center;flex-shrink:0;color:var(--fg2);cursor:pointer;';
-  toggle.dataset.expanded = 'false';
-  row.appendChild(toggle);
-
-  const icon = document.createElement('span');
-  icon.innerHTML = lucide('folder', 14);
-  icon.style.cssText = 'flex-shrink:0;color:var(--fg2);';
-  row.appendChild(icon);
-
-  const label = document.createElement('span');
-  label.textContent = name;
-  label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  row.appendChild(label);
-
-  div.appendChild(row);
-
-  const childrenDiv = document.createElement('div');
-  childrenDiv.style.display = 'none';
-  childrenDiv.dataset.loaded = 'false';
-  div.appendChild(childrenDiv);
-
-  // 展開/折りたたみ処理
-  async function _toggleExpand() {
-    const expanded = toggle.dataset.expanded === 'true';
-    if (expanded) {
-      childrenDiv.style.display = 'none';
-      toggle.textContent = '\u25B6';
-      toggle.dataset.expanded = 'false';
-    } else {
-      childrenDiv.style.display = '';
-      toggle.textContent = '\u25BC';
-      toggle.dataset.expanded = 'true';
-      if (childrenDiv.dataset.loaded === 'false') {
-        childrenDiv.dataset.loaded = 'true';
-        childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">...</div>';
-        try {
-          const sourceParam = options.sourceId ? '&sourceId=' + encodeURIComponent(options.sourceId) : '';
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(rootPath) + '&folders_only=1&sort=name&order=asc' + sourceParam);
-          childrenDiv.innerHTML = '';
-          const folders = items.filter(it => it.type === 'folder');
-          if (folders.length === 0) {
-            childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">（フォルダなし）</div>';
-          } else {
-            folders.forEach(f => {
-              childrenDiv.appendChild(_createLinkTreeNode(f.name, f.path, rootPath, false, options));
-            });
-          }
-        } catch(err) {
-          childrenDiv.innerHTML = '<div style="color:var(--red);padding:2px 16px;font-size:11px;">エラー</div>';
-        }
-      }
-    }
-  }
-
-  // 行クリック → パスをセット + 展開/折りたたみ
-  row.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const input = document.getElementById('modal-link-folder');
-    if (input) input.value = path;
-    // 選択ハイライト
-    document.querySelectorAll('#modal-link-tree .link-tree-selected').forEach(el => {
-      el.classList.remove('link-tree-selected');
-      el.style.background = '';
-    });
-    row.classList.add('link-tree-selected');
-    row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)';
-    // 展開/折りたたみもトリガー
-    await _toggleExpand();
+  const browser = window.GBFolderPicker.createBrowser({
+    currentLabel: '選択中:',
+    onSelect: selection => {
+      const input = overlay.querySelector('#modal-link-folder');
+      if (input && selection?.path) input.value = selection.path;
+    },
+    onActivate: selection => {
+      if (!selection?.path) return;
+      const input = overlay.querySelector('#modal-link-folder');
+      if (input) input.value = selection.path;
+      submitAddFolderLink(filePath, overlay);
+    },
   });
-
-  return div;
+  browser.tree.setAttribute('aria-label', 'リンク先のフォルダツリー');
+  container.replaceChildren(browser.element);
+  browser.start();
+  return browser;
 }
 
 async function submitAddFolderLink(filePath, overlay) {

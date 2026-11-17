@@ -142,7 +142,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
         await _saveMappedCalendarDates(dbPath, ev, newStart, newEnd, { preserveMissingEndIfZeroDuration: true });
         showStatus('日時を更新しました');
       } catch (err) {
-        showStatus('リサイズに失敗', true);
+        showStatus(err?.message ? 'リサイズに失敗: ' + err.message : 'リサイズに失敗', true);
       }
       return;
     }

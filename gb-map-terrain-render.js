@@ -38,19 +38,50 @@
     return {width,height,data};
   }
   function canvas(terrain){const p=pixels(terrain),c=document.createElement('canvas');c.width=p.width;c.height=p.height;const context=c.getContext('2d'),image=context.createImageData(p.width,p.height);image.data.set(p.data);context.putImageData(image,0,0);return c;}
-  function style(f){const role=f.cartography?.role;
+  function baseStyle(f){const role=f.cartography?.role;
     const base={role:typeof role==='string'?role:'',weight:3,fillOpacity:.22,fontSize:16,label:true,symbolSize:20};
     if(role==='river'){const flow=Number.isFinite(f.cartography.flow)?T.clamp(f.cartography.flow,0,1e9):1;return {...base,weight:T.clamp(.5+Math.log1p(flow)*.22,.65,2.6),label:false};}
-    if(role==='road')return {...base,weight:1.05,label:false};
+    if(role==='road')return {...base,weight:f.cartography.rank==='minor'?.65:1.05,dash:f.cartography.rank==='minor'?'2 3':null,label:false};
+    if(role==='railway')return {...base,weight:1.8,dash:'2 4',label:false};
     if(role==='shipping')return {...base,weight:.85,dash:'5 5',label:false};
-    if(role==='border')return {...base,weight:1.15,dash:'4 2',label:false};
+    if(role==='border')return {...base,weight:f.cartography.area?0:1.0,fillOpacity:0,dash:f.cartography.area?null:'3 2',label:false};
     if(role==='lake')return {...base,weight:.3,fillOpacity:.95,label:false};
-    if(role==='city')return {...base,fontSize:f.cartography.capital?12:11,symbolSize:f.icon==='port'?13:f.cartography.capital?10:6};
-    if(role==='country-label')return {...base,fontSize:17};
+    if(role==='city')return {...base,fontSize:f.cartography.capital?12:11,fontWeight:f.cartography.capital?600:400,symbolSize:f.cartography.capital?10:f.icon==='port'?7:5};
+    if(role==='country-label')return {...base,fontSize:14,fontWeight:500};
     if(role==='mountain-label')return {...base,fontSize:12};
     if(role==='river-label')return {...base,fontSize:11};
     return base;
   }
-  function symbol(f,fallback){return f.cartography?.role==='city'?(f.icon==='port'?'⚓':f.cartography.capital?'◉':'●'):fallback;}
-  return Object.freeze({pixels,canvas,style,symbol});
+  function style(f,scale=1){const s=baseStyle(f);return scale===1?s:{...s,fontSize:s.fontSize*scale,symbolSize:s.symbolSize*scale,weight:s.weight*scale,...(s.dash?{dash:s.dash.split(' ').map(n=>Number(n)*scale).join(' ')}:{})};}
+  function symbol(f,fallback){return f.cartography?.role==='city'?(f.cartography.capital?'◉':f.icon==='port'?'○':'●'):fallback;}
+  const DROP=Object.freeze({width:28,height:40,anchorX:14,anchorY:38,centerX:14,centerY:14,radius:6.5,path:'M14 38C11 32 2 23 2 14A12 12 0 0 1 26 14C26 23 17 32 14 38Z'});
+  function marker(f){return f.kind==='pin'&&f.marker_style==='drop'?DROP:null;}
+  function drawMarker(c,f,point,scale=1,glyph=''){
+    const m=marker(f);if(!m)return false;
+    c.save();c.translate(point[0],point[1]);c.scale(scale,scale);c.translate(-m.anchorX,-m.anchorY);c.setLineDash([]);
+    c.fillStyle=f.color;c.strokeStyle='white';c.lineWidth=1.5;const path=new Path2D(m.path);c.fill(path);c.stroke(path);
+    c.fillStyle='white';c.beginPath();c.arc(m.centerX,m.centerY,m.radius,0,Math.PI*2);c.fill();
+    if(['city','castle','mountain','forest','port'].includes(f.icon)&&glyph){c.fillStyle=f.color;c.font='bold 12px sans-serif';c.textAlign='center';c.textBaseline='middle';c.fillText(glyph,m.centerX,m.centerY);}
+    c.restore();return true;
+  }
+  function labelLayout(features,project,measure,options={}){
+    const selected=options.selected||new Set(),occupied=[],result=new Map(),bounds=options.bounds;
+    const entries=features.filter(f=>['pin','label'].includes(f.kind)&&f.label).map((f,index)=>{
+      const cart=style(f,options.scale||1),manual=!cart.role,score=selected.has(f.id)?20000:manual?10000:cart.role==='country-label'?90:f.cartography?.capital?100:f.icon==='port'?40:20;
+      return {f,index,cart,manual,score};
+    }).sort((a,b)=>b.score-a.score||a.index-b.index);
+    for(const {f,cart,manual} of entries){
+      const p=project(f.points[0]),w=Math.min(300,measure(f.label,cart)),h=cart.fontSize+3;
+      const m=marker(f),scale=options.scale||1,r=m?(m.width/2+6)*scale:cart.symbolSize/2+4,y=m?(m.centerY-m.anchorY)*scale:0;
+      const candidates=manual?[m?[r,y]:options.forExport?[f.kind==='pin'?18*scale:0,-cart.fontSize*.35]:[f.kind==='pin'?12:-12,0]]:f.kind==='pin'?[[r,y],[-r-w,y],[-w/2,y-h/2-r],[-w/2,m?h/2+4*scale:h/2+r]]:[[-w/2,0],[-w/2,-h],[-w/2,h]];
+      let chosen=null;
+      for(const [dx,dy] of candidates){const rect=[p[0]+dx-3,p[1]+dy-h/2-2,p[0]+dx+w+3,p[1]+dy+h/2+2];
+        if(!manual&&!selected.has(f.id)&&(bounds&&(rect[0]<bounds[0]||rect[1]<bounds[1]||rect[2]>bounds[2]||rect[3]>bounds[3])||occupied.some(b=>rect[0]<b[2]&&rect[2]>b[0]&&rect[1]<b[3]&&rect[3]>b[1])))continue;
+        chosen={visible:true,dx,dy,rect};occupied.push(rect);break;
+      }
+      result.set(f.id,chosen||{visible:false});
+    }
+    return result;
+  }
+  return Object.freeze({pixels,canvas,style,symbol,labelLayout,marker,drawMarker});
 });

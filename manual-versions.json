@@ -1,13 +1,85 @@
 {
   "type": "meldex-public-manual-versions",
   "schema_version": 1,
-  "latest": "0.7.485",
+  "latest": "0.7.499",
   "versions": [
     {
-      "version": "0.7.485",
-      "label": "v0.7.485（最新版）",
+      "version": "0.7.499",
+      "label": "v0.7.499（最新版）",
       "url": "manual.html",
       "latest": true
+    },
+    {
+      "version": "0.7.498",
+      "label": "v0.7.498",
+      "url": "manual-versions/v0.7.498/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.497",
+      "label": "v0.7.497",
+      "url": "manual-versions/v0.7.497/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.496",
+      "label": "v0.7.496",
+      "url": "manual-versions/v0.7.496/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.495",
+      "label": "v0.7.495",
+      "url": "manual-versions/v0.7.495/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.494",
+      "label": "v0.7.494",
+      "url": "manual-versions/v0.7.494/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.493",
+      "label": "v0.7.493",
+      "url": "manual-versions/v0.7.493/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.492",
+      "label": "v0.7.492",
+      "url": "manual-versions/v0.7.492/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.491",
+      "label": "v0.7.491",
+      "url": "manual-versions/v0.7.491/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.490",
+      "label": "v0.7.490",
+      "url": "manual-versions/v0.7.490/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.489",
+      "label": "v0.7.489",
+      "url": "manual-versions/v0.7.489/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.488",
+      "label": "v0.7.488",
+      "url": "manual-versions/v0.7.488/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.487",
+      "label": "v0.7.487",
+      "url": "manual-versions/v0.7.487/manual.html",
+      "latest": false
     },
     {
       "version": "0.7.484",

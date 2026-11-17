@@ -72,14 +72,14 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  min-height: 36px;
-  padding: 7px 10px;
+  min-height: var(--ui-h-lg, 36px);
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   border: 1px solid var(--line, #404040);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--bg2, #262626);
   color: var(--fg, #e7e7e7);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--ui-font-13, 13px);
 }
 
 .gb-production-bulk-field input:focus-visible,
@@ -177,12 +177,12 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-pro
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field input,
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field select,
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-check {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field input,
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog .gb-production-bulk-field select {
-  font-size: 16px;
+  font-size: var(--ui-font-16, 16px);
 }
 
 body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
@@ -225,12 +225,12 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   .gb-production-bulk-field select,
   .gb-production-bulk-check,
   .gb-production-task-create-dialog .gb-production-task-button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .gb-production-bulk-field input,
   .gb-production-bulk-field select {
-    font-size: 16px;
+    font-size: var(--ui-font-16, 16px);
   }
 
   .gb-production-bulk-description,

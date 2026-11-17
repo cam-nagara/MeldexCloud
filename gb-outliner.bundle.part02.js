@@ -296,13 +296,18 @@ function getManualOrder(folderPath) {
     return (fid && all[fid]) || all[folderPath] || [];
   } catch { return []; }
 }
+// 保存できたら true、保存領域に書き込めなかったら false を返す（呼び出し側で失敗を表示する）。
 function setManualOrder(folderPath, names) {
   try {
     const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
     const key = _pathToFileId(folderPath) || folderPath;
     all[key] = names;
     localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
-  } catch {}
+    return true;
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner] 手動並び順を保存できませんでした', error);
+    return false;
+  }
 }
 // 保存済みの手動並び順を破棄する。ルート直下（folderPath='_root'）はマニュアル順が
 // 設定側（ソースフォルダの並べ替え）より優先されるため、設定側で並べ替えを保存した際に
@@ -893,8 +898,3 @@ function captureOutlinerSettingsHistory(keys) {
 }
 
 function pushOutlinerSettingsHistory(label, beforeSnapshot, detail, keys) {
-  if (typeof pushLocalStorageSettingsHistory !== 'function') return false;
-  const afterSnapshot = captureOutlinerSettingsHistory(keys);
-  return pushLocalStorageSettingsHistory(
-    label || 'フォルダツリー: 設定変更',
-    beforeSnapshot,

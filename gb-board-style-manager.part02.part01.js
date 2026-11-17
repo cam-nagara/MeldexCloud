@@ -404,7 +404,10 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
     });
 
     popup.querySelector('[data-bd-popup-delete]')?.addEventListener('click', async () => {
-      if (liveArr().length <= 1) return;
+      if (liveArr().length <= 1) {
+        showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイルは最低1件必要なため、最後の1件は削除できません`, true);
+        return;
+      }
       const live = currentLive(); if (!live) return;
       const activeRefKey = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
       const unitLabel = kind === 'card' ? 'トピック' : 'ライン';

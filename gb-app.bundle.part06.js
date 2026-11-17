@@ -1,3 +1,67 @@
+}
+
+// main-viewsへのD&Dドロップ
+// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）
+// Ctrl+ドロップ: ファイルをそのパネルで開く
+{
+  const mv = document.getElementById('main-views');
+  // 注意: #sidebar は GBLayout のドッキング対象として #gb-layout-root（#main-views の
+  // 子孫）へ組み込まれるため、フォルダツリー（お気に入り・最近使った項目・ワークスペースを
+  // 含む #sidebar 全体）は実行時には #main-views の子孫になる。Ctrl+ドロップでパネルに
+  // 開くこの機能は「ドロップ先がツリー以外のパネル領域」の場合だけに限定し、ツリー内へ
+  // Ctrl+ドロップしても項目が開かないようにする（フォルダツリー改修 Phase 2 §2.5・§9）。
+  const _isMainViewsSidebarDrop = (e) => !!e.target?.closest?.('#sidebar');
+  if (mv) mv.addEventListener('dragover', (e) => {
+    if (e.dataTransfer.types.includes('application/x-meldex-node')) {
+      // Ctrl+ドラッグ時のみmain-viewsレベルで受け付け（ファイルを開く）
+      // 通常時は各ビュー固有のdragoverに委ねる
+      if (e.ctrlKey && state.view !== 'board' && !_isMainViewsSidebarDrop(e)) e.preventDefault();
+    }
+  });
+  if (mv) mv.addEventListener('drop', (e) => {
+    // Ctrl+ドロップ: ファイルをパネルで開く
+    if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
+    if (state.view === 'board') return;
+    if (_isMainViewsSidebarDrop(e)) return; // フォルダツリー（サイドバー）内へのCtrl+ドロップでは開かない
+    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    if (!cfData) return;
+    e.preventDefault();
+    try {
+      const { name, path, type } = JSON.parse(cfData);
+      const navType = typeof _normalizeOpenTypeForNav === 'function'
+        ? _normalizeOpenTypeForNav(type)
+        : (type === 'database' ? 'pivot' : type === 'board' ? 'board' : (type || 'page'));
+      navOpen({ type: navType, label: name, path });
+    } catch {}
+  });
+}
+
+// Phase D: HTMLビューワー(viewer.html)のiframe通信のみ残存
+// canvas/calendarのpostMessageはPhase Cで直接関数呼び出しに変換済み
+function _getTrustedEmbeddedMessageIframe(e) {
+  if (!e) return null;
+  const candidates = [];
+  const addCandidate = iframe => {
+    if (iframe && !candidates.includes(iframe)) candidates.push(iframe);
+  };
+  addCandidate((typeof _getActiveIframe === 'function') ? _getActiveIframe() : null);
+  addCandidate(document.getElementById('html-iframe'));
+  document.querySelectorAll('iframe').forEach(addCandidate);
+  for (const iframe of candidates) {
+    if (!iframe?.contentWindow || e.source !== iframe.contentWindow) continue;
+    const iframeSrc = iframe.getAttribute('src') || iframe.src || '';
+    if (!_gbIsTrustedInternalViewerUrl(iframeSrc)) continue;
+    if (e.origin === window.location.origin || e.origin === 'null') return iframe;
+  }
+  return null;
+}
+
+function _isTrustedEmbeddedMessage(e) {
+  return !!_getTrustedEmbeddedMessageIframe(e);
+}
+
+function _syncViewerCurrentFileFromMessage(msg) {
+  const path = typeof msg?.path === 'string' ? msg.path : '';
   if (!path) return false;
   state.currentPagePath = path;
   if (typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
@@ -583,6 +647,36 @@ function _gbNormalizeHtmlViewerUrl(rawUrl) {
   }
 }
 
+const _gbHtmlViewerHistory = { entries: [], index: -1 };
+
+function _gbUpdateHtmlViewerNavButtons() {
+  const canBack = _gbHtmlViewerHistory.index > 0;
+  const canForward = _gbHtmlViewerHistory.index >= 0
+    && _gbHtmlViewerHistory.index < _gbHtmlViewerHistory.entries.length - 1;
+  const back = document.getElementById('html-nav-back');
+  const forward = document.getElementById('html-nav-forward');
+  if (back) {
+    back.disabled = !canBack;
+    back.setAttribute('aria-disabled', canBack ? 'false' : 'true');
+  }
+  if (forward) {
+    forward.disabled = !canForward;
+    forward.setAttribute('aria-disabled', canForward ? 'false' : 'true');
+  }
+}
+
+function _gbRecordHtmlViewerHistory(url) {
+  const current = _gbHtmlViewerHistory.entries[_gbHtmlViewerHistory.index];
+  if (current === url) {
+    _gbUpdateHtmlViewerNavButtons();
+    return;
+  }
+  _gbHtmlViewerHistory.entries.splice(_gbHtmlViewerHistory.index + 1);
+  _gbHtmlViewerHistory.entries.push(url);
+  _gbHtmlViewerHistory.index = _gbHtmlViewerHistory.entries.length - 1;
+  _gbUpdateHtmlViewerNavButtons();
+}
+
 function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   const url = _gbNormalizeHtmlViewerUrl(rawUrl);
   if (!url) {
@@ -593,6 +687,10 @@ function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   if (iframe) iframe.src = url;
   const urlBar = options?.skipUrlBar ? null : document.getElementById('html-url-bar');
   if (urlBar) urlBar.value = url;
+  const mainIframe = document.getElementById('html-iframe');
+  if (iframe && iframe === mainIframe && options?.skipHistory !== true) {
+    _gbRecordHtmlViewerHistory(url);
+  }
   return true;
 }
 
@@ -800,101 +898,3 @@ function showMobileToolMenu(e) {
   menu.setAttribute('aria-label', 'ツールメニュー');
   menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
   let menuClosed = false;
-  let closeOnPointer = null;
-  let closeOnKey = null;
-  function closeMenu(restoreFocus = false) {
-    if (menuClosed) return;
-    menuClosed = true;
-    document.removeEventListener('pointerdown', closeOnPointer, true);
-    document.removeEventListener('keydown', closeOnKey, true);
-    menu.remove();
-    if (restoreFocus && typeof btn.focus === 'function') {
-      try { btn.focus({ preventScroll: true }); } catch { btn.focus(); }
-    }
-  }
-  function focusableItems() {
-    return [...menu.querySelectorAll('.gb-context-menu-item')];
-  }
-  items.forEach(it => {
-    if (!it) { const sep = document.createElement('div'); sep.className = 'gb-context-menu-sep'; sep.setAttribute('role', 'separator'); menu.appendChild(sep); return; }
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'gb-context-menu-item';
-    row.setAttribute('role', 'menuitem');
-    row.textContent = it.label;
-    row.addEventListener('click', () => { closeMenu(false); try { it.action(); } catch {} });
-    menu.appendChild(row);
-  });
-  document.body.appendChild(menu);
-  const br = btn.getBoundingClientRect();
-  if (typeof positionPopup === 'function') {
-    positionPopup(menu, br, { prefer: 'bottom', gap: 2 });
-  } else {
-    { const z = _getZoom(); menu.style.left = Math.max(4, Math.min(br.left / z, window.innerWidth / z - menu.offsetWidth - 4)) + 'px'; menu.style.top = (br.bottom / z + 2) + 'px'; }
-    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  }
-  closeOnPointer = function closeMobileToolMenuOnPointer(ev) {
-    if (!menu.contains(ev.target)) closeMenu(false);
-  };
-  closeOnKey = function closeMobileToolMenuOnKey(ev) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeMenu(true);
-      return;
-    }
-    const rows = focusableItems();
-    if (!rows.length) return;
-    const currentIndex = Math.max(0, rows.indexOf(document.activeElement));
-    let nextIndex = currentIndex;
-    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % rows.length;
-    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + rows.length) % rows.length;
-    else if (ev.key === 'Home') nextIndex = 0;
-    else if (ev.key === 'End') nextIndex = rows.length - 1;
-    else return;
-    ev.preventDefault();
-    rows[nextIndex]?.focus();
-  };
-  setTimeout(() => {
-    if (menuClosed || !menu.isConnected) return;
-    document.addEventListener('pointerdown', closeOnPointer, true);
-    document.addEventListener('keydown', closeOnKey, true);
-  }, 0);
-  menu.querySelector('.gb-context-menu-item')?.focus();
-}
-
-// OS テーマ変更を監視
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  if (detectCurrentTheme() === 'OSに合わせる' || localStorage.getItem('editor-theme-name') === 'OSに合わせる') {
-    applyThemePreset('OSに合わせる');
-    saveColorSettings();
-  }
-});
-
-// HTML ビューワーのナビゲーション
-function htmlNavBack() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.back(); } catch {} }
-function htmlNavForward() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.forward(); } catch {} }
-function htmlNavigate(url) { if (!url) return; _gbSetHtmlViewerSrc(url); }
-function htmlRefresh() { const f = _gbPrepareUntrustedIframe(document.getElementById('html-iframe')); if (f) try { f.contentWindow.location.reload(); } catch { f.src = f.src; } }
-
-// ============================================================
-// 最後のポインタ操作がフォルダツリー内かどうかを追跡
-// gb-editor.js の Delete ハンドラが誤削除防止に使う
-// ============================================================
-document.addEventListener('pointerdown', (e) => {
-  try {
-    window._lastPointerInTree = !!(e.target && e.target.closest && e.target.closest('#outliner-tree'));
-  } catch {}
-}, true);
-
-// ============================================================
-// 共通コンテキストメニューの閉じる処理
-// ============================================================
-document.addEventListener('pointerdown', (e) => {
-  // gb-mobile-tab-gesture-router.js のスマホ用タブ切替メニュー(.gb-mobile-tab-menu)は
-  // 位置制御の都合で document.body 直下に付き、.gb-context-menu の子ではない。
-  // ここで除外しないと、.gb-context-menu を内側に持つポップアップ（アイコン
-  // ピッカー等）でタブ切替メニューの項目をタップするたびに「外側クリック」と
-  // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
-  // （2026-08-13 バグ報告で確認）。
-  if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
-    document.querySelectorAll('.gb-context-menu').forEach(m => {

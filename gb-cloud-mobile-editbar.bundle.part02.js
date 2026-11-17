@@ -1,6 +1,3 @@
-    });
-    _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
-      const group = button.dataset.annMobileGroup;
       const groupMembers = _annMobileGroupMembers(group);
       const isActive = groupMembers.some(member => member.tool === tool);
       button.classList.toggle('active', isActive);

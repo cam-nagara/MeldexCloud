@@ -322,9 +322,10 @@
     ['#detail-tab-bar .gb-inner-tab, #detail-tab-bar .detail-tab, .gb-tabbar .gb-inner-tab, .gb-tabbar .detail-tab, .cs-tab', 'detail-tab'],
     ['.gb-panelset-tabbar > button, .gb-panelset-tabbar > .gb-panel-tab', 'panelset-tab'],
     ['.gb-split-collapsed-icon, .gb-split-expand-btn, .gb-dock-icon, .gb-pane-collapsed > .gb-pane-tabs .gb-tab, .gb-pane-collapse', 'collapse-button'],
-    ['.sidebar-section-header, .sidebar-header', 'folder-section'],
-    ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item', 'folder'],
-    ['.tree-node-row[data-item-type="folder"]', 'folder-tree-folder'],
+    ['.sidebar-section-header, .sidebar-header, .gb-folder-picker-section', 'folder-section'],
+    // フォルダ選択・タグ管理・単独アプリの一覧も、左のフォルダツリーと同じ行の色分けに従う（UI共通ルール 19）
+    ['.tree-node-row:not([data-item-type="folder"]), .sidebar-section-body .fav-item, .sidebar-item, .gb-folder-picker-row[data-gb-picker-kind="file"], .gb-tag-tree-row', 'folder'],
+    ['.tree-node-row[data-item-type="folder"], .gb-folder-picker-row[data-gb-picker-kind="folder"]', 'folder-tree-folder'],
     ['#folder-grid .fv-item[data-item-type="folder"], .gb-subpanel-folder-root .fv-item[data-item-type="folder"]', 'folder-panel-folder'],
     ['#page-content h1, #page-content h2, #page-content h3, #page-content h4, #page-content h5, #page-content h6, #entity-freetext h1, #entity-freetext h2, #entity-freetext h3, #entity-freetext h4, #entity-freetext h5, #entity-freetext h6, #dp-editable h1, #dp-editable h2, #dp-editable h3, #dp-editable h4, #dp-editable h5, #dp-editable h6', 'note-heading'],
     ['#note-toc .note-toc-item', 'note-toc-item'],
@@ -897,4 +898,3 @@
     }
     if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
       applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
-      const apps = getThemeUiApplications();

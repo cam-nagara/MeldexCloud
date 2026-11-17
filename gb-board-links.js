@@ -1320,7 +1320,12 @@ function bdActivatePreviewPane(options = {}) {
     }
     if (preserveActivePane) return false;
     if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('preview');
-  } catch {}
+  } catch (error) {
+    // 失敗を成功として返さない。原因を記録し、利用者へ知らせる。
+    try { console.warn('[board] ビューワーを開けませんでした:', error); } catch (_) {}
+    if (typeof showStatus === 'function') showStatus('ビューワーを開けませんでした。パネルレイアウトを確認してから、もう一度お試しください', true);
+    return false;
+  }
   return true;
 }
 

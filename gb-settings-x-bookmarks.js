@@ -209,12 +209,25 @@
   function _formatScheduleState(state) {
     if (!state) return '';
     const parts = [];
-    if (state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
+    const dispatch = state.last_dispatch || {};
+    const progress = Number(dispatch.processed) || 0;
+    const total = Number(dispatch.total) || 0;
+    const progressText = total > 0 ? `${progress}/${total}件` : (progress > 0 ? `${progress}件` : '開始前');
+    if (state.auto_retry_blocked) {
+      parts.push('同じ工程で3回進まなかったため自動再開を停止中');
+      parts.push(`停止工程: ${dispatch.stage || '不明'} ${progressText}`);
+      parts.push('「差分を保存」で手動再開できます');
+    } else if (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatch.status)) {
+      parts.push(`実行中: ${dispatch.stage || '準備中'} ${progressText}`);
+    } else if (dispatch.status === 'interrupted') {
+      parts.push(`再開待ち: ${dispatch.stage || '準備中'} ${progressText}`);
+    }
+    if (!state.auto_retry_blocked && state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
     if (state.last_run) {
       const label = state.last_run.status === 'done' ? '成功' : (state.last_run.status === 'error' ? '失敗' : state.last_run.status);
       parts.push(`前回自動実行: ${label}`);
     }
-    if (state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
+    if (!state.auto_retry_blocked && state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
     return parts.join(' / ');
   }
 

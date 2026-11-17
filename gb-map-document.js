@@ -1,9 +1,9 @@
 /* Map documents own geometry; linked Meldex topics keep their own content. */
 (function (root, factory) {
-  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain);
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain, typeof module === 'object' && module.exports ? require('./gb-map-azgaar.js') : root.MeldexMapAzgaar, typeof module === 'object' && module.exports ? require('./gb-map-display.js') : root.MeldexMapDisplay);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.MeldexMapDocument = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (T) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (T, A, Display) {
   'use strict';
   // Immutable image strings are shared by history snapshots instead of copying
   // multi-megabyte base64 payloads for every small geometry edit.
@@ -27,7 +27,7 @@
     const doc = typeof text === 'string' ? JSON.parse(text.replace(/^\uFEFF/, '')) : clone(text);
     const fail = message => { throw new Error(message || 'マップの定義が不正です'); };
     if (!object(doc) || doc.fileType !== 'meldex-map') fail('マップファイルではありません');
-    if (doc.schema_version !== 1) fail('未対応のマップ形式です。対応するMeldexで開いてください');
+    if (![1,2].includes(doc.schema_version)) fail('未対応のマップ形式です。対応するMeldexで開いてください');
     if (!['world', 'local'].includes(doc.coordinate_system) || typeof doc.title !== 'string') fail();
     if (!object(doc.canvas) || !['width', 'height'].every(key => finite(doc.canvas[key]) && doc.canvas[key] >= 128 && doc.canvas[key] <= 16384)) fail();
     if (!['osm', 'gsi', 'blank'].includes(doc.basemap) || doc.coordinate_system === 'local' && doc.basemap !== 'blank') fail();
@@ -65,6 +65,7 @@
         || !Array.isArray(feature.tags) || !feature.tags.every(tag => typeof tag === 'string')
         || !Array.isArray(feature.links) || !feature.links.every(link => object(link) && typeof link.path === 'string'
           && (!/^[a-z][a-z\d+.-]*:/i.test(link.path) || /^[a-z]:[\\/]/i.test(link.path)) && !link.path.includes('\0'))) fail();
+      if (feature.marker_style !== undefined && (feature.kind !== 'pin' || !['symbol','drop'].includes(feature.marker_style))) fail('マーカーのデザインが不正です');
       if (feature.period_ids !== undefined && (!Array.isArray(feature.period_ids) || feature.period_ids.length > 100
         || new Set(feature.period_ids).size !== feature.period_ids.length || !feature.period_ids.every(key => typeof key === 'string' && periodIds.has(key)))) fail('図形の章・時代の参照が不正です');
       if (feature.travel_plan !== undefined) {
@@ -91,7 +92,7 @@
           || !pointOK(v.center) || !finite(v.zoom) || v.zoom < -10 || v.zoom > 22 || !Array.isArray(v.layer_ids) || v.layer_ids.length > 100
           || v.layer_ids.some(id => typeof id !== 'string' || !id) || new Set(v.layer_ids).size !== v.layer_ids.length
           || typeof v.filter !== 'string' || v.filter.length > 1000 || !['', 'pin', 'route', 'region', 'label'].includes(v.feature_kind)
-          || typeof v.period_id !== 'string' || v.period_id.length > 128) fail('保存した表示が不正です');
+          || typeof v.period_id !== 'string' || v.period_id.length > 128 || v.display !== undefined && !Display.valid(v.display)) fail('保存した表示が不正です');
         views.add(v.id);
       }
     }
@@ -103,6 +104,10 @@
     }
     if (doc.background !== null && (doc.coordinate_system !== 'local' || !object(doc.background)
       || typeof doc.background.data_url !== 'string' || doc.background.data_url.length > 20 * 1024 * 1024 || !IMAGE.test(doc.background.data_url))) fail();
+    if (doc.atlas != null && (doc.coordinate_system !== 'local' || !A?.valid(doc.atlas))) fail('Azgaar地図の描画データが不正です');
+    if(doc.display!==undefined&&!Display.valid(doc.display))fail('表示する要素の設定が不正です');
+    if(doc.schema_version===2&&(!doc.atlas?.surface||!doc.atlas.editor?.edits?.length))fail('地形編集の定義が不正です');
+    if(doc.schema_version===1&&doc.atlas?.editor?.edits?.length)fail('地形編集には新しいマップ形式が必要です');
     return doc;
   }
   function visibleInPeriod(feature, periodId) { return !periodId || !feature.period_ids?.length || feature.period_ids.includes(periodId); }

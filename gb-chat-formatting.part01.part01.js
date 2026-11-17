@@ -18,6 +18,8 @@
   let _updatingFromPlain = false;
   let _lastInputSelection = null;
   let _richVerticalColumn = null;
+  let _richInputComposing = false;
+  const _composerFallbackHistory = { undo: [], redo: [] };
   const INPUT_NAVIGATION_KEYS = new Set(['Home', 'End', 'PageUp', 'PageDown']);
 
   function _chatInput() {
@@ -487,6 +489,95 @@
     _updatingFromRich = false;
   }
 
+  function _richInputHtml(source) {
+    const host = document.createElement('div');
+    String(source || '').replace(/\r\n?/g, '\n').split('\n').forEach(line => {
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      const block = document.createElement(heading ? 'h' + heading[1].length : 'div');
+      block.className = 'chat-rich-input-line';
+      _appendRichInline(block, heading ? heading[2] : line);
+      if (!block.childNodes.length) block.appendChild(document.createElement('br'));
+      host.appendChild(block);
+    });
+    return host.innerHTML;
+  }
+
+  function _restoreComposerSnapshot(snapshot) {
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    if (!input || !snapshot) return false;
+    input.value = snapshot.text;
+    if (editor) _renderRichInputFromSource(snapshot.start, snapshot.end);
+    else {
+      input.focus();
+      input.setSelectionRange?.(snapshot.start, snapshot.end);
+    }
+    _updatingFromPlain = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    _updatingFromPlain = false;
+    return true;
+  }
+
+  function _handleComposerFallbackUndo(event) {
+    if (_richInputComposing || event?.isComposing || event?.keyCode === 229) return false;
+    const modifier = !!(event?.ctrlKey || event?.metaKey);
+    const key = String(event?.key || '').toLowerCase();
+    const redo = modifier && (key === 'y' || (key === 'z' && event.shiftKey));
+    const undo = modifier && key === 'z' && !event.shiftKey;
+    if (!undo && !redo) return false;
+    const from = redo ? _composerFallbackHistory.redo : _composerFallbackHistory.undo;
+    const to = redo ? _composerFallbackHistory.undo : _composerFallbackHistory.redo;
+    const snapshot = from.pop();
+    if (!snapshot) return false;
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    const source = String(input?.value || '').replace(/\r\n?/g, '\n');
+    const range = editor ? _richSelectionSourceRange(editor, true, source) : null;
+    to.push({ text: source, start: range?.start ?? source.length, end: range?.end ?? source.length });
+    event.preventDefault();
+    event.stopPropagation();
+    _restoreComposerSnapshot(snapshot);
+    return true;
+  }
+
+  function _applyRichInputSourceEdit(source, nextSource, beforeStart, beforeEnd, nextStart, nextEnd) {
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    if (!input) return false;
+    const before = String(source || '').replace(/\r\n?/g, '\n');
+    const next = String(nextSource || '').replace(/\r\n?/g, '\n');
+    const oldRange = _clampRange(before, beforeStart, beforeEnd);
+    const newRange = _clampRange(next, nextStart, nextEnd);
+
+    // Replace the visible editor as one browser edit. This keeps paste, D&D,
+    // context-menu edits, and rendered markdown formatting in the same native
+    // undo transaction while the hidden textarea remains only a mirror.
+    if (editor && typeof document.execCommand === 'function' && !_richInputComposing) {
+      editor.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      let edited = false;
+      try { edited = document.execCommand('insertHTML', false, _richInputHtml(next)); } catch (_) {}
+      if (edited) {
+        _syncPlainFromRich();
+        if (String(input.value || '').replace(/\r\n?/g, '\n') === next) {
+          _setRichSelectionFromSourceRange(editor, next, newRange.start, newRange.end);
+          _composerFallbackHistory.undo.length = 0;
+          _composerFallbackHistory.redo.length = 0;
+          return true;
+        }
+      }
+    }
+
+    _composerFallbackHistory.undo.push({ text: before, start: oldRange.start, end: oldRange.end });
+    if (_composerFallbackHistory.undo.length > 100) _composerFallbackHistory.undo.shift();
+    _composerFallbackHistory.redo.length = 0;
+    return _restoreComposerSnapshot({ text: next, start: newRange.start, end: newRange.end });
+  }
+
   function _insertPlainTextIntoRich(text) {
     const selection = window.getSelection();
     if (!selection || !selection.rangeCount) return false;
@@ -704,16 +795,7 @@
       ? _applyHeading(source, range.start, range.end, value)
       : _applyInlineFormatToRange(source, range.start, range.end, prop, value);
     if (!result) return;
-    input.value = result.text;
-    const editor = _chatRichInput();
-    if (editor) _renderRichInputFromSource(result.start, result.end);
-    else {
-      input.focus();
-      input.setSelectionRange(result.start, result.end);
-    }
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
+    if (!_applyRichInputSourceEdit(source, result.text, range.start, range.end, result.start, result.end)) return;
     _activeTarget = { kind: 'input', start: result.start, end: result.end };
   }
 
@@ -796,39 +878,11 @@
     const source = String(input.value || '').replace(/\r\n?/g, '\n');
     const range = _clampRange(source, target.start, target.end);
     const insert = String(replacement || '').replace(/\r\n?/g, '\n');
-    const editor = _chatRichInput();
-
-    // The visible composer is contenteditable. Apply the edit there first so
-    // Chromium/Electron records cut, paste, and delete in its native undo
-    // transaction. Directly replacing the hidden textarea value works visually
-    // but makes Ctrl+Z unable to restore a context-menu edit.
-    if (editor && typeof document.execCommand === 'function') {
-      _setRichSelectionFromSourceRange(editor, source, range.start, range.end);
-      let edited = false;
-      try { edited = document.execCommand('insertText', false, insert); } catch (_) {}
-      if (edited) {
-        _syncPlainFromRich();
-        const nextSource = String(input.value || '').replace(/\r\n?/g, '\n');
-        const caret = Math.min(nextSource.length, range.start + insert.length);
-        target.start = caret;
-        target.end = caret;
-        return true;
-      }
-    }
-
-    // Fallback for the plain textarea or engines without insertText support.
-    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const nextSource = source.slice(0, range.start) + insert + source.slice(range.end);
     const caret = range.start + insert.length;
+    if (!_applyRichInputSourceEdit(source, nextSource, range.start, range.end, caret, caret)) return false;
     target.start = caret;
     target.end = caret;
-    if (editor) _renderRichInputFromSource(caret, caret);
-    else {
-      input.focus();
-      input.setSelectionRange?.(caret, caret);
-    }
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
     return true;
   }
 

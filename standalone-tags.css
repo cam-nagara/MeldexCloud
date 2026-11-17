@@ -4,11 +4,11 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: var(--ui-h-lg, 36px);
+  height: var(--ui-h-lg, 36px);
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -97,8 +97,8 @@
 
 @media (pointer: coarse), (max-width: 560px) {
   .sa-tags-button {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -137,8 +137,8 @@
   color: var(--fg);
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+  border-radius: var(--ui-dialog-radius, 6px);
+  box-shadow: var(--ui-dialog-shadow, 0 8px 24px rgba(0,0,0,0.45));
   font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -201,9 +201,9 @@
 .sa-tags-dialog select,
 .sa-tags-dialog textarea {
   box-sizing: border-box;
-  min-height: 30px;
+  min-height: var(--ui-h-md, 32px);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   color: var(--fg);
   background: var(--bg3);
   font: inherit;
@@ -214,7 +214,7 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   cursor: pointer;
 }
 
@@ -227,12 +227,12 @@
 .sa-tags-dialog input,
 .sa-tags-dialog select,
 .sa-tags-dialog textarea {
-  padding: 5px 7px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
 }
 
 .sa-tags-dialog .gb-tag-tree-row {
-  min-height: 34px;
-  border-radius: 5px;
+  min-height: var(--ui-row-height, 22px);
+  border-radius: var(--ui-row-radius, 3px);
 }
 
 .sa-tags-dialog .gb-tag-tree-row:hover {
@@ -254,8 +254,8 @@
 
 @media (max-width: 900px), (pointer: coarse) {
   .sa-tags-button {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 
   .sa-tags-overlay {
@@ -279,10 +279,10 @@
   .sa-tags-dialog .gb-tag-tree-row,
   .sa-tags-dialog .gb-tag-text-btn,
   .sa-tags-dialog .gb-tag-icon-btn {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
 
   .sa-tags-dialog .gb-tag-icon-btn {
-    min-width: 44px !important;
+    min-width: var(--ui-h-touch, 44px) !important;
   }
 }

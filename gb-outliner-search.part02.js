@@ -863,34 +863,64 @@ function _visibleFolderSearchToolbar() {
   }) || document.getElementById('folder-toolbar');
 }
 
+// 検索・置換を持たない画面から呼ばれた時の表示。ノートの検索欄へ黙って流さない。
+function _toolbarSearchUnavailable(reason) {
+  if (typeof showStatus === 'function') showStatus(reason || 'この画面では検索・置換を使えません', true);
+  return false;
+}
+
+// 戻り値: false=開けなかった（理由は表示済み）、true=検索・置換を開いた。
 function openCurrentToolbarSearchReplace(tool, options = {}) {
-  const normalized = String(tool || '').toLowerCase();
-  if (normalized === 'page' || normalized === 'note') {
-    if (typeof openFileSearch === 'function') openFileSearch('replace');
-    return;
+  const aliases = {
+    note: 'page', entity: 'page',
+    db: 'database', sheet: 'database', pivot: 'database', tree: 'database', gallery: 'database',
+    kanban: 'database', timeline: 'database', gantt: 'database', chart: 'database', graph: 'database',
+  };
+  const raw = String(tool || '').toLowerCase();
+  const normalized = aliases[raw] || raw;
+  if (normalized === 'page') {
+    if (typeof openFileSearch !== 'function' || !document.getElementById('file-search-bar')) {
+      return _toolbarSearchUnavailable('この画面ではノートの検索・置換を使えません');
+    }
+    openFileSearch('replace');
+    return true;
   }
   if (normalized === 'board') {
-    if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
-    return;
+    if (typeof bdOpenFindBar !== 'function') return _toolbarSearchUnavailable('この画面ではボードの検索・置換を使えません');
+    bdOpenFindBar('replace');
+    return true;
   }
-  if (normalized === 'database' || normalized === 'db' || normalized === 'sheet') {
-    if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
-    return;
+  if (normalized === 'database') {
+    if (typeof openDbFindReplace !== 'function') return _toolbarSearchUnavailable('この画面ではシートの検索・置換を使えません');
+    openDbFindReplace('replace');
+    return true;
+  }
+  const unsupportedLabels = {
+    calendar: 'カレンダー', media: 'メディア', image: 'メディア', video: 'メディア', audio: 'メディア', pdf: 'メディア',
+    html: 'HTML', csv: 'CSV', 'form-app': 'フォーム', form: 'フォーム', map: 'マップ',
+  };
+  if (unsupportedLabels[normalized]) {
+    return _toolbarSearchUnavailable(`${unsupportedLabels[normalized]}では検索・置換を使えません`);
   }
   if (normalized === 'scriptnote' || normalized === 'scenario') {
     const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
     const searchButton = editor?.host?.closest?.('.gb-se-root')?.querySelector?.('[data-sn-action="search"]') || null;
-    if (typeof editor?._showSearchReplacePopup === 'function') editor._showSearchReplacePopup(searchButton);
-    return;
+    if (typeof editor?._showSearchReplacePopup !== 'function') return _toolbarSearchUnavailable('この画面ではシナリオの検索・置換を使えません');
+    editor._showSearchReplacePopup(searchButton);
+    return true;
   }
   if (normalized === 'folder') {
     const folderPath = (typeof _folderPath !== 'undefined' && _folderPath) ? _folderPath : '';
     const toolbar = _visibleFolderSearchToolbar();
     const trigger = options.trigger || toolbar?.querySelector('button[aria-label="検索と置換"]') || null;
     openVaultSearchReplacePanel(folderPath, { surface: 'main', anchor: toolbar, trigger });
-    return;
+    return true;
   }
+  // 種類の分からない画面はノートの検索欄へ流さない。種類の指定が無い時だけ従来どおりノート扱い。
+  if (normalized) return _toolbarSearchUnavailable();
+  if (!document.getElementById('file-search-bar')) return _toolbarSearchUnavailable();
   if (typeof openFileSearch === 'function') openFileSearch('replace');
+  return true;
 }
 
 function _selectedSearchFolderPath() {

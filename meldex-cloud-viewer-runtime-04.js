@@ -368,9 +368,9 @@
   style.textContent = `
 .gb-palette {
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
-  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 6px;
+  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: var(--ui-popup-radius, 6px);
   width: calc(24px * 8 + 3px * 7 + 16px);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 .gb-palette-popup { position: fixed; z-index: 10100; }
 .gb-palette-grid {
@@ -4384,36 +4384,36 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function items() {
     const scene = Scene();
     return [
-      { label: '前へ', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
-      { label: '次へ', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
-      { label: '1枚戻る', shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
-      { label: '1枚進む', shortcutId: 'viewer.shiftForward', action: () => { scene.pause(); scene.shiftForward(); } },
+      { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
+      { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
+      { label: '1枚戻る', icon: 'arrowLeft', shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
+      { label: '1枚進む', icon: 'arrowRight', shortcutId: 'viewer.shiftForward', action: () => { scene.pause(); scene.shiftForward(); } },
       sep(),
-      { label: scene.isSheetContext() ? '前の画像行' : '前のフォルダ', shortcutId: 'viewer.prevFolder', action: () => scene.prevFolder() },
-      { label: scene.isSheetContext() ? '次の画像行' : '次のフォルダ', shortcutId: 'viewer.nextFolder', action: () => scene.nextFolder() },
+      { label: scene.isSheetContext() ? '前の画像行' : '前のフォルダ', icon: 'folderInput', shortcutId: 'viewer.prevFolder', action: () => scene.prevFolder() },
+      { label: scene.isSheetContext() ? '次の画像行' : '次のフォルダ', icon: 'folderOutput', shortcutId: 'viewer.nextFolder', action: () => scene.nextFolder() },
       sep(),
-      { label: scene.isPlaying() ? '一時停止' : '再生', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
+      { label: scene.isPlaying() ? '一時停止' : '再生', icon: scene.isPlaying() ? 'pause' : 'play', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
       sep(),
-      { label: 'ズームイン', shortcutId: 'viewer.zoomIn', action: () => scene.zoomIn() },
-      { label: 'ズームアウト', shortcutId: 'viewer.zoomOut', action: () => scene.zoomOut() },
-      { label: 'フィット', items: [
-        { label: '原寸（収める）', shortcutId: 'viewer.fitOriginalContain', action: () => scene.setFitMode('original_contain') },
-        { label: '全体フィット', shortcutId: 'viewer.fitContain', action: () => scene.setFitMode('contain') },
-        { label: '高さフィット', shortcutId: 'viewer.fitHeight', action: () => scene.setFitMode('height') },
-        { label: '幅フィット', shortcutId: 'viewer.fitWidth', action: () => scene.setFitMode('width') },
-        { label: '原寸', shortcutId: 'viewer.fitNone', action: () => scene.setFitMode('none') },
+      { label: 'ズームイン', icon: 'zoomIn', shortcutId: 'viewer.zoomIn', action: () => scene.zoomIn() },
+      { label: 'ズームアウト', icon: 'zoomOut', shortcutId: 'viewer.zoomOut', action: () => scene.zoomOut() },
+      { label: 'フィット', icon: 'scan', items: [
+        { label: '原寸（収める）', icon: 'scan', shortcutId: 'viewer.fitOriginalContain', action: () => scene.setFitMode('original_contain') },
+        { label: '全体フィット', icon: 'maximize2', shortcutId: 'viewer.fitContain', action: () => scene.setFitMode('contain') },
+        { label: '高さフィット', icon: 'moveVertical', shortcutId: 'viewer.fitHeight', action: () => scene.setFitMode('height') },
+        { label: '幅フィット', icon: 'moveHorizontal', shortcutId: 'viewer.fitWidth', action: () => scene.setFitMode('width') },
+        { label: '原寸', icon: 'image', shortcutId: 'viewer.fitNone', action: () => scene.setFitMode('none') },
       ] },
-      { label: '全画面', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
+      { label: '全画面', icon: 'maximize', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       sep(),
-      { label: '表示モード', items: [
-        { label: `${scene.getMode() === 'single' ? '● ' : ''}単体`, action: () => scene.setMode('single') },
-        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き`, action: () => scene.setMode('spread') },
-        { label: `${scene.getMode() === 'manga' ? '● ' : ''}マンガ（右→左）`, action: () => scene.setMode('manga') },
+      { label: '表示モード', icon: 'layout', items: [
+        { label: `${scene.getMode() === 'single' ? '● ' : ''}単体`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
+        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き`, icon: 'bookOpen', action: () => scene.setMode('spread') },
+        { label: `${scene.getMode() === 'manga' ? '● ' : ''}マンガ（右→左）`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
       ] },
-      { label: '回転・反転', items: [
-        { label: '左右反転', shortcutId: 'viewer.flipH', action: () => scene.toggleFlipH() },
-        { label: '上下反転', action: () => scene.toggleFlipV() },
-        { label: '回転', shortcutId: 'viewer.rotate', action: () => scene.rotate() },
+      { label: '回転・反転', icon: 'rotateCw', items: [
+        { label: '左右反転', icon: 'flipHorizontal', shortcutId: 'viewer.flipH', action: () => scene.toggleFlipH() },
+        { label: '上下反転', icon: 'flipVertical', action: () => scene.toggleFlipV() },
+        { label: '回転', icon: 'rotateCw', shortcutId: 'viewer.rotate', action: () => scene.rotate() },
       ] },
       sep(),
       { type: 'slider', label: '再生速度', min: 0.5, max: 15, step: 0.5, value: scene.getSpeed(),
@@ -4421,20 +4421,20 @@ async function _applyImportedCustomColors(rawColors, mode) {
       { type: 'slider', label: 'フェード', min: 0, max: 2000, step: 100, value: scene.getFadeMs(),
         format: value => `${(parseFloat(value) / 1000).toFixed(1)}s`, onChange: value => scene.setFadeMs(value) },
       sep(),
-      { label: 'エフェクト', items: [
-        { label: `背景ブラー ${scene.isBgBlur() ? 'ON' : 'OFF'}`, action: () => scene.toggleBg() },
-        { label: `HUD ${scene.isHudVisible() ? 'ON' : 'OFF'}`, shortcutId: 'viewer.toggleHud', action: () => scene.toggleHud() },
+      { label: 'エフェクト', icon: 'sparkles', items: [
+        { label: `背景ブラー ${scene.isBgBlur() ? 'ON' : 'OFF'}`, icon: 'blend', action: () => scene.toggleBg() },
+        { label: `HUD ${scene.isHudVisible() ? 'ON' : 'OFF'}`, icon: 'panelTop', shortcutId: 'viewer.toggleHud', action: () => scene.toggleHud() },
       ] },
       ...(annotationsAvailable() ? [
         sep(),
-        { label: 'アノテート', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
         ...(annotationVersionsAvailable() ? [
-          { label: 'アノテートのバージョン管理...', action: openAnnotationVersions },
+          { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
         ] : []),
       ] : []),
       ...(window.MeldexStandaloneDefaultApps?.isAvailable?.() ? [
         sep(),
-        { label: '既定アプリに設定...', action: () => window.MeldexStandaloneDefaultApps.openDialog({ source: 'menu' }) },
+        { label: '既定アプリに設定...', icon: 'settings', action: () => window.MeldexStandaloneDefaultApps.openDialog({ source: 'menu' }) },
       ] : []),
     ];
   }

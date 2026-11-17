@@ -13,7 +13,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const editor = this.host?.querySelector('.sn2-editor');
     if (!editor) return;
     if (!this.doc.editor.columnWidths) this.doc.editor.columnWidths = {};
-    const headerCell = this.host?.querySelector(`.sn2-header-cell[data-col-id="${colId}"]`);
+    // 折り返し時は段ごとに見出しがあるため、つかんだ段の見出しを基準にし、全段の見出しへ反映する。
+    const cellSelector = `.sn2-header-cell[data-col-id="${colId}"]`;
+    const headerCell = resizerEl?.closest?.('.sn2-header')?.querySelector(cellSelector)
+      || this.host?.querySelector(cellSelector);
+    const headerCells = [...(this.host?.querySelectorAll(cellSelector) || [])];
+    const wrapMode = !!this.doc.editor?.wrapMode;
+    let resized = false;
     let currentSize = this.doc.editor.columnWidths[colId];
     if (!currentSize) {
       currentSize = headerCell
@@ -28,11 +34,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (this.doc !== ownerDocument || this._readOnly) { onUp(); return; }
       const delta = (isVertical ? ev.clientY : ev.clientX) - startPos;
       const newSize = Math.max(30, currentSize + delta);
+      if (newSize !== currentSize) resized = true;
       this.doc.editor.columnWidths[colId] = newSize;
       if (isVertical) {
         editor.style.setProperty(vcolVar, newSize + 'px');
         if (scrollEl) scrollEl.style.setProperty(vcolVar, newSize + 'px');
-        if (headerCell) headerCell.style.height = newSize + 'px';
+        headerCells.forEach(cell => { cell.style.height = newSize + 'px'; });
       } else {
         editor.style.setProperty(colVar, newSize + 'px');
         if (scrollEl) scrollEl.style.setProperty(colVar, newSize + 'px');
@@ -40,13 +47,19 @@ Object.assign(ScriptNoteEditor.prototype, {
           editor.style.setProperty('--sn2-text-flex', '0 0 auto');
           if (scrollEl) scrollEl.style.setProperty('--sn2-text-flex', '0 0 auto');
         }
-        if (headerCell) { headerCell.style.width = newSize + 'px'; headerCell.classList.remove('sn2-header-flex'); }
+        headerCells.forEach(cell => { cell.style.width = newSize + 'px'; cell.classList.remove('sn2-header-flex'); });
       }
     };
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       if (this.doc !== ownerDocument || this._readOnly) return;
+      // 折り返し時は列幅で各行の大きさが変わるため、段の割り付けをやり直す。
+      if (wrapMode && resized) {
+        this._render();
+        this._markDirty();
+        return;
+      }
       // 縦書き: ヘッダーの高さ変更に合わせて全行の高さを再同期
       if (isVertical) {
         const header = scrollEl?.querySelector('.sn2-header');
@@ -79,13 +92,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const isVertical = this.doc.editor?.viewMode === 'vertical';
     const editor = this.host?.querySelector('.sn2-editor');
     const scrollEl = this.host?.querySelector('.sn2-scroll');
-    const headerCell = this.host?.querySelector(`.sn2-header-cell[data-col-id="${colId}"]`);
+    const headerCells = [...(this.host?.querySelectorAll(`.sn2-header-cell[data-col-id="${colId}"]`) || [])];
     this.doc.editor.columnWidths[colId] = newSize;
     if (isVertical) {
       const vcolVar = `--sn2-vcol-${colId}`;
       editor?.style.setProperty(vcolVar, newSize + 'px');
       scrollEl?.style.setProperty(vcolVar, newSize + 'px');
-      if (headerCell) headerCell.style.height = newSize + 'px';
+      headerCells.forEach(cell => { cell.style.height = newSize + 'px'; });
       const header = scrollEl?.querySelector('.sn2-header');
       if (header) {
         const headerHeight = header.offsetHeight;
@@ -100,10 +113,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       editor?.style.setProperty('--sn2-text-flex', '0 0 auto');
       scrollEl?.style.setProperty('--sn2-text-flex', '0 0 auto');
     }
-    if (headerCell) {
-      headerCell.style.width = newSize + 'px';
-      headerCell.classList.remove('sn2-header-flex');
-    }
+    headerCells.forEach(cell => {
+      cell.style.width = newSize + 'px';
+      cell.classList.remove('sn2-header-flex');
+    });
   },
 
   _handleColResizerKeydown(e, colId) {
@@ -117,6 +130,12 @@ Object.assign(ScriptNoteEditor.prototype, {
     const delta = e.key === positiveKey ? step : -step;
     this._pushUndo('列幅変更');
     this._applyColSize(colId, this._currentColSize(colId) + delta);
+    if (this.doc.editor?.wrapMode) {
+      // 折り返し時は段を割り付け直し、同じ境界へフォーカスを戻して続けて調整できるようにする。
+      const resizerId = e.currentTarget?.dataset?.e2eId || '';
+      this._render();
+      if (resizerId) this.host?.querySelector(`[data-e2e-id="${resizerId}"]`)?.focus();
+    }
     this._markDirty();
   },
 
@@ -230,6 +249,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       return colDef || {};
     };
     const settings = getSettings();
+    const effectiveSettings = typeof _scriptNoteColumnLayoutSettings === 'function'
+      ? _scriptNoteColumnLayoutSettings(this.doc, colId)
+      : { align: settings.align || 'left', valign: settings.valign || 'top', overflow: settings.overflow || 'wrap' };
 
     const popup = document.createElement('div');
     popup.className = 'sn2-header-popup';
@@ -293,9 +315,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const alignLabels = isVerticalWriting
       ? { left: '上寄せ', center: '中央', right: '下寄せ' }
       : { left: '左寄せ', center: '中央', right: '右寄せ' };
-    popup.appendChild(mkSubItem(isVerticalWriting ? '垂直' : '水平', alignLabels[settings.align] || alignLabels.left, (sub) => {
+    popup.appendChild(mkSubItem(isVerticalWriting ? '垂直' : '水平', alignLabels[effectiveSettings.align], (sub) => {
       ['left', 'center', 'right'].forEach((val) => {
-        sub.appendChild(mkItem(alignLabels[val], settings.align === val, () => {
+        sub.appendChild(mkItem(alignLabels[val], effectiveSettings.align === val, () => {
           this._pushUndo('列配置変更'); settings.align = val; this._markDirty(); this._render(); closePopup();
         }));
       });
@@ -304,9 +326,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const valignLabels = isVerticalWriting
       ? { top: '右寄せ', middle: '中央', bottom: '左寄せ' }
       : { top: '上寄せ', middle: '中央', bottom: '下寄せ' };
-    popup.appendChild(mkSubItem(isVerticalWriting ? '水平' : '垂直', valignLabels[settings.valign] || valignLabels.top, (sub) => {
+    popup.appendChild(mkSubItem(isVerticalWriting ? '水平' : '垂直', valignLabels[effectiveSettings.valign], (sub) => {
       ['top', 'middle', 'bottom'].forEach((val) => {
-        sub.appendChild(mkItem(valignLabels[val], settings.valign === val, () => {
+        sub.appendChild(mkItem(valignLabels[val], effectiveSettings.valign === val, () => {
           this._pushUndo('列配置変更'); settings.valign = val; this._markDirty(); this._render(); closePopup();
         }));
       });
@@ -314,18 +336,21 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     // テキスト折り返し（現在値+サブメニュー）
     const overflowLabels = { wrap: '折り返し', overflow: 'はみ出し', clip: '切り詰め' };
-    popup.appendChild(mkSubItem('テキスト', overflowLabels[settings.overflow] || '折り返し', (sub) => {
-      [['折り返し', 'wrap'], ['はみ出し', 'overflow'], ['切り詰め', 'clip']].forEach(([label, val]) => {
-        sub.appendChild(mkItem(label, settings.overflow === val, () => {
-          this._pushUndo('列配置変更'); settings.overflow = val; this._markDirty(); this._render(); closePopup();
-        }));
-      });
-    }));
+    if (colId !== '_gutter' && colId !== '_gutter2') {
+      popup.appendChild(mkSubItem('テキスト', overflowLabels[effectiveSettings.overflow], (sub) => {
+        [['折り返し', 'wrap'], ['はみ出し', 'overflow'], ['切り詰め', 'clip']].forEach(([label, val]) => {
+          sub.appendChild(mkItem(label, effectiveSettings.overflow === val, () => {
+            this._pushUndo('列配置変更'); settings.overflow = val; this._markDirty(); this._render(); closePopup();
+          }));
+        });
+      }));
+    }
 
     popup.appendChild(mkSep());
 
+    const countDef = this._getCountDef?.() || { primaryLabel: 'ページ', secondaryLabel: 'コマ' };
     const standardLabels = {
-      _gutter: '大区切り', _gutter2: '小区切り', _role: 'タイプ', _text: 'テキスト',
+      _gutter: countDef.primaryLabel || 'ページ', _gutter2: countDef.secondaryLabel || 'コマ', _character: 'キャラ', _role: 'タイプ', _text: 'テキスト',
     };
     const visibilityItems = [
       ...Object.entries(standardLabels).map(([id, label]) => ({ id, label })),
@@ -667,7 +692,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     const ownerColumn = this._getCustomColumns().find(column => column.id === colId);
     if (!ownerColumn) return;
-    const colLabel = colId === '_gutter' ? '大区切り' : colId === '_gutter2' ? '小区切り' : colId === '_role' ? 'タイプ' : colId === '_status' ? '採用状況' : colId === '_text' ? 'テキスト'
+    const colLabel = colId === '_gutter' ? '大区切り' : colId === '_gutter2' ? '小区切り' : colId === '_character' ? 'キャラ' : colId === '_role' ? 'タイプ' : colId === '_status' ? '採用状況' : colId === '_text' ? 'テキスト'
       : (this._getCustomColumns().find(c => c.id === colId)?.label || colId);
     showConfirmDialog(`「${colLabel}」列を削除しますか？`, () => {
     if (this._readOnly || this.doc !== ownerDocument || this._getCustomColumns().find(column => column.id === colId) !== ownerColumn) return;

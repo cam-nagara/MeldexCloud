@@ -6,4 +6,4 @@
 .meldex-note-embed[data-board-interaction-active="true"] .meldex-note-embed-body { touch-action:pan-x pan-y; }
 .meldex-note-embed:not([data-board-interaction-active="true"]) .meldex-note-embed-body { touch-action:pan-y; }
 .meldex-note-embed-status:not(:empty) { padding:12px; color:var(--fg-muted, var(--fg)); }
-@media (max-width:600px) { .meldex-note-embed { inline-size:100%; max-inline-size:100%; } .meldex-note-embed-header button { min-height:36px; } }
+@media (max-width:600px) { .meldex-note-embed { inline-size:100%; max-inline-size:100%; } .meldex-note-embed-header button { min-height:var(--ui-h-lg, 36px); } }

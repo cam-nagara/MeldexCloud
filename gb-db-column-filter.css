@@ -8,10 +8,10 @@
   padding: 10px;
   box-sizing: border-box;
   color: var(--fg);
-  background: var(--bg2);
+  background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 8px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.42);
+  border-radius: var(--ui-menu-radius, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .db-column-filter-header,
@@ -30,12 +30,12 @@
 }
 
 .db-column-filter-popover button {
-  min-height: 30px;
-  padding: 4px 9px;
+  min-height: var(--ui-h-md, 32px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   color: var(--fg);
   background: var(--bg3);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
 }
 
@@ -94,9 +94,9 @@
 }
 
 .db-column-filter-select-actions button {
-  min-height: 26px;
-  padding: 2px 7px;
-  font-size: 11px;
+  min-height: var(--ui-h-sm, 28px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-11, 11px);
 }
 
 .db-column-filter-value-list {
@@ -191,6 +191,6 @@ mark.db-find-current-text {
   .db-column-filter-popover button,
   .db-column-filter-search,
   .db-column-filter-value {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

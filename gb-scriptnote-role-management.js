@@ -4,7 +4,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   _roleManagementAdapter() {
     const doc = this.doc;
     const model = globalThis.GBScriptNoteRoleModel || null;
-    const needsNormalization = Number(doc?.schema_version) < 3
+    const needsNormalization = Number(doc?.schema_version) < 4
       || !Array.isArray(doc?.scenarioTypes)
       || !Array.isArray(doc?.characters);
     if (needsNormalization && model?.ensureDocument) model.ensureDocument(doc);
@@ -56,9 +56,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       if (kind === 'type') {
         return doc.characters.filter(character => character?.typeId === id).length
-          + (doc.rows || []).filter(row => row?.roleRef?.kind === 'type' && row.roleRef.id === id).length;
+          + (doc.rows || []).filter(row => row?.typeRef?.kind === 'type' && row.typeRef.id === id).length;
       }
-      return (doc.rows || []).filter(row => row?.roleRef?.kind === 'character' && row.roleRef.id === id).length;
+      return (doc.rows || []).filter(row => row?.characterRef?.kind === 'character' && row.characterRef.id === id).length;
     };
     const canDelete = (kind, id, replacement = null) => {
       const value = invoke('canDeleteRole', [doc, { kind, id }, replacement], () => null);
@@ -197,6 +197,19 @@ Object.assign(ScriptNoteEditor.prototype, {
     const characterSection = this._buildRoleManagementSection('character', adapter, container);
     const separator = this._buildRoleManagementSeparator(typeSection, characterSection);
     root.append(typeSection, separator, characterSection);
+    root.addEventListener('click', event => {
+      const target = event.target;
+      const blankSurface = target === root
+        || target?.classList?.contains('sn2-role-manage-section')
+        || target?.classList?.contains('sn2-role-manage-scroll');
+      if (!blankSurface) return;
+      this._detailTypeSelection.clear();
+      this._detailCharacterSelection.clear();
+      this._detailTypeSelectionAnchor = null;
+      this._detailCharacterSelectionAnchor = null;
+      root.querySelectorAll('.sn2-role-manage-row.selected').forEach(row => row.classList.remove('selected'));
+      root.querySelectorAll('.sn2-role-manage-check:not(:disabled)').forEach(checkbox => { checkbox.checked = false; });
+    });
     container.appendChild(root);
   },
 
@@ -213,7 +226,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     separator.setAttribute('aria-valuemax', '80');
     const storedValue = localStorage.getItem(storageKey);
     const stored = storedValue == null ? Number.NaN : Number(storedValue);
-    let percent = Number.isFinite(stored) ? Math.max(20, Math.min(80, stored)) : 50;
+    let percent = Number.isFinite(stored) ? Math.max(20, Math.min(80, stored)) : 40;
     const apply = (next, persist = true) => {
       percent = Math.max(20, Math.min(80, Math.round(next)));
       typeSection.style.flex = `0 1 ${percent}%`;
@@ -267,6 +280,371 @@ Object.assign(ScriptNoteEditor.prototype, {
     return button;
   },
 
+  _roleManagementPreviewColumns() {
+    const standard = [
+      { id: '_gutter', label: '大区切り' },
+      { id: '_gutter2', label: '小区切り' },
+      { id: '_character', label: 'キャラ' },
+      { id: '_role', label: 'タイプ' },
+      { id: '_text', label: '本文' },
+    ];
+    const custom = (this.doc.editor?.customColumns || []).map(column => ({
+      id: column.id,
+      label: column.label || column.id || '追加列',
+    }));
+    return [...standard, ...custom];
+  },
+
+  _roleManagementTableColumns() {
+    // 「大区切り／小区切り／タイプ／テキスト／追加列」を表示する（キャラ列はキャラ表で扱う）。
+    // パネル幅に収まらない分は横スクロールし、列幅は見出しの境界線ドラッグで調整する。
+    return this._roleManagementPreviewColumns().filter(column => column.id !== '_character');
+  },
+
+  _roleManagementEffectiveAppearance(kind, item, adapter = null) {
+    if (kind === 'type') return item;
+    return {
+      ...(item || {}),
+      roleStyle: {
+        ...(item?.roleStyle || {}),
+        ...(item?.nameColor ? { textColor: item.nameColor } : {}),
+      },
+    };
+  },
+
+  _roleManagementStyleTarget(kind, item, adapter) {
+    if (kind === 'type') return item;
+    if (!item?.typeId) return null;
+    return adapter.types.find(type => type?.id === item.typeId) || null;
+  },
+
+  _resolveRoleManagementPreviewStyle(appearance, colId) {
+    const colStyle = this.doc.editor?.columnStyles?.[colId] || {};
+    const roleStyle = (colId === '_character' || colId === '_role') ? (appearance?.roleStyle || {})
+      : colId === '_text' ? (appearance?.textStyle || {})
+        : colId === '_gutter' ? (appearance?.gutterStyle || {})
+          : colId === '_gutter2' ? (appearance?.gutter2Style || {})
+            : (appearance?.customStyles?.[colId] || {});
+    const isGutter = colId === '_gutter' || colId === '_gutter2';
+    const read = (key, fallback = '') => {
+      if (isGutter) {
+        return Object.prototype.hasOwnProperty.call(roleStyle, key)
+          ? roleStyle[key]
+          : (colStyle[key] ?? fallback);
+      }
+      let roleValue = roleStyle[key];
+      if ((key === 'bgColor' || key === 'textColor') && !roleValue) roleValue = appearance?.[key];
+      if (colId === '_text' && !roleValue && [
+        'fontWeight', 'fontStyle', 'fontSize', 'fontFamily',
+        'textStrokeColor', 'textStrokeWidth',
+      ].includes(key)) roleValue = appearance?.[key];
+      return roleValue || colStyle[key] || fallback;
+    };
+    const columnSettings = typeof _scriptNoteColumnLayoutSettings === 'function'
+      ? _scriptNoteColumnLayoutSettings(this.doc, colId)
+      : (colId.startsWith('_')
+        ? (this.doc.editor?.standardColumnSettings?.[colId] || {})
+        : ((this.doc.editor?.customColumns || []).find(column => column.id === colId) || {}));
+    const countStyle = colId === '_gutter' ? (this.doc.editor?.countConfig?.primaryStyle || {})
+      : colId === '_gutter2' ? (this.doc.editor?.countConfig?.secondaryStyle || {})
+        : {};
+    return {
+      bgColor: countStyle.bgColor || read('bgColor'),
+      textColor: countStyle.textColor || read('textColor'),
+      fontWeight: countStyle.fontWeight || read('fontWeight'),
+      fontStyle: read('fontStyle'),
+      fontSize: countStyle.fontSize || read('fontSize'),
+      fontFamily: read('fontFamily'),
+      textStrokeColor: read('textStrokeColor'),
+      textStrokeWidth: read('textStrokeWidth'),
+      leftAccent: !!read('leftAccent', false),
+      underline: !!read('underline', false),
+      accentColor: read('accentColor'),
+      textBefore: colId === '_text' ? (roleStyle.textBefore ?? appearance?.textBefore ?? '') : (roleStyle.textBefore ?? ''),
+      textAfter: colId === '_text' ? (roleStyle.textAfter ?? appearance?.textAfter ?? '') : (roleStyle.textAfter ?? ''),
+      textAlign: columnSettings.align || 'left',
+      textValign: columnSettings.valign || 'top',
+      textOverflow: columnSettings.overflow || 'wrap',
+    };
+  },
+
+  _roleManagementPreviewText(item, appearance, column) {
+    if (column.id === '_gutter' || column.id === '_gutter2') {
+      return this._detailCellPreviewLabel?.(column.id) || (column.id === '_gutter' ? 'p01' : 'コマ01');
+    }
+    if (column.id === '_character' || column.id === '_role') return item?.name || '（なし）';
+    const style = this._resolveRoleManagementPreviewStyle(appearance, column.id);
+    const base = column.id === '_text' ? '本文' : (column.label || '見本');
+    return `${style.textBefore || ''}${base}${style.textAfter || ''}`;
+  },
+
+  _applyRoleManagementPreview(preview, item, appearance, column) {
+    if (!preview || !appearance) return;
+    const style = this._resolveRoleManagementPreviewStyle(appearance, column.id);
+    const isGutter = column.id === '_gutter' || column.id === '_gutter2';
+    const isCustom = !column.id.startsWith('_');
+    const pageBg = 'var(--sn2-page-bg, var(--content-bg, var(--bg)))';
+    const baseText = 'var(--sn2-base-text-color, var(--fg))';
+    const accent = style.accentColor || style.textColor || 'var(--accent)';
+    const backgroundText = isGutter && /^#[0-9a-f]{6}$/i.test(style.bgColor || '')
+      ? globalThis.MeldexThemeManager?.getAccentTextColor?.(style.bgColor) : '';
+    preview.textContent = this._roleManagementPreviewText(item, appearance, column);
+    Object.assign(preview.style, {
+      background: style.bgColor || (isCustom ? 'transparent' : pageBg),
+      color: style.textColor || backgroundText || (isCustom ? 'inherit' : baseText),
+      fontWeight: style.fontWeight === 'bold' || style.bold ? 'bold' : '',
+      fontStyle: style.fontStyle === 'italic' || style.italic ? 'italic' : '',
+      fontSize: style.fontSize ? `${style.fontSize}px` : '',
+      fontFamily: style.fontFamily || '',
+      webkitTextStrokeColor: style.textStrokeColor || '',
+      webkitTextStrokeWidth: style.textStrokeWidth ? `${style.textStrokeWidth}px` : '',
+      paintOrder: (style.textStrokeColor || style.textStrokeWidth) ? 'stroke fill' : '',
+      boxShadow: style.leftAccent ? `inset 3px 0 0 ${accent}` : '',
+      textDecorationLine: style.underline ? 'underline' : '',
+      textDecorationColor: style.underline ? accent : '',
+      textAlign: style.textAlign || 'center',
+      whiteSpace: style.textOverflow === 'wrap' ? 'normal' : 'nowrap',
+      display: style.textValign ? 'flex' : '',
+      alignItems: style.textValign === 'top' ? 'flex-start' : style.textValign === 'bottom' ? 'flex-end' : (style.textValign ? 'center' : ''),
+      justifyContent: style.textAlign === 'left' ? 'flex-start' : style.textAlign === 'right' ? 'flex-end' : (style.textValign ? 'center' : ''),
+    });
+    preview.dataset.valign = style.textValign || '';
+    preview.dataset.overflow = style.textOverflow || '';
+  },
+
+  _applyRoleManagementNamePreview(control, item, appearance) {
+    const isCharacter = this.doc?.characters?.includes?.(item) || control?.dataset?.rolePreviewKind === 'character';
+    const column = { id: isCharacter ? '_character' : '_role', label: isCharacter ? 'キャラ' : 'タイプ' };
+    this._applyRoleManagementPreview(control, item, appearance, column);
+    // input は置換要素なので、縦位置用の flex 指定を外して通常の編集欄として保つ。
+    control.style.display = '';
+    control.style.alignItems = '';
+    control.style.justifyContent = '';
+    control.value = item?.name || '';
+  },
+
+  _applyRoleManagementRowDecoration(row, appearance) {
+    row.classList.toggle('sn2-role-manage-row--outlined', !!appearance?.outline);
+    if (appearance?.outlineColor) row.style.setProperty('--sn2-role-outline-color', appearance.outlineColor);
+    else row.style.removeProperty('--sn2-role-outline-color');
+    if (appearance?.outlineWidth) row.style.setProperty('--sn2-role-outline-width', `${appearance.outlineWidth}px`);
+    else row.style.removeProperty('--sn2-role-outline-width');
+  },
+
+  _buildRoleManagementStyleCell(kind, item, itemIndex, column, adapter, panelContainer) {
+    const appearance = this._roleManagementEffectiveAppearance(kind, item, adapter);
+    const cell = document.createElement('td');
+    cell.className = 'sn2-role-preview-cell';
+    cell.dataset.columnId = column.id;
+    if (this._getColumnBorderSet?.().has(column.id)) cell.classList.add('sn2-role-preview-cell--bordered');
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'sn2-role-style-preview';
+    preview.dataset.rolePreviewKind = kind;
+    preview.dataset.rolePreviewId = item?.id || 'none';
+    preview.dataset.rolePreviewColumn = column.id;
+    const suffix = column.id.replace(/^_/, '') || 'column';
+    preview.dataset.e2eId = column.id === '_role'
+      ? `scriptnote-${kind}-style-preview-${itemIndex}`
+      : `scriptnote-${kind}-style-preview-${itemIndex}-${suffix}`;
+    const ownerName = item?.name || '（なし）';
+    const target = this._roleManagementStyleTarget(kind, item, adapter);
+    preview.title = target
+      ? `${ownerName}の${column.label}書式を設定`
+      : `${ownerName}へ初期タイプを設定すると${column.label}書式を編集できます`;
+    preview.setAttribute('aria-label', preview.title);
+    preview.addEventListener('click', () => {
+      const styleTarget = this._roleManagementStyleTarget(kind, item, adapter);
+      if (!styleTarget) {
+        if (typeof showStatus === 'function') showStatus('先にキャラの初期タイプを設定してください', true);
+        this._showCharacterManagementSettingsPopup(preview, item, adapter, panelContainer);
+        return;
+      }
+      const isGutter = column.id === '_gutter' || column.id === '_gutter2';
+      const inheritedStyle = isGutter ? (this.doc.editor?.columnStyles?.[column.id] || {}) : {};
+      this._showCellStylePopup(preview, styleTarget, column.id, panelContainer, isGutter ? {
+        includeCountConfig: false,
+        inheritedStyle,
+        typeOverride: true,
+      } : {});
+    });
+    this._applyRoleManagementPreview(preview, item, appearance, column);
+    cell.appendChild(preview);
+    return cell;
+  },
+
+  _refreshRoleManagementPreviews(panelContainer) {
+    const root = panelContainer || document;
+    const adapter = this._roleManagementAdapter();
+    const columns = new Map(this._roleManagementPreviewColumns().map(column => [column.id, column]));
+    root.querySelectorAll?.('[data-role-preview-kind][data-role-preview-column]').forEach(preview => {
+      const kind = preview.dataset.rolePreviewKind;
+      const id = preview.dataset.rolePreviewId;
+      const item = kind === 'type'
+        ? (id === 'none' ? this.doc.editor?.noneType : adapter.types.find(candidate => candidate.id === id))
+        : (id === 'none' ? this._scenarioNoneCharacter(false) : adapter.characters.find(candidate => candidate.id === id));
+      const column = columns.get(preview.dataset.rolePreviewColumn);
+      if (!item || !column) return;
+      const appearance = this._roleManagementEffectiveAppearance(kind, item, adapter);
+      if ((column.id === '_character' || column.id === '_role') && preview.matches('input')) {
+        this._applyRoleManagementNamePreview(preview, item, appearance);
+      } else {
+        this._applyRoleManagementPreview(preview, item, appearance, column);
+      }
+      preview.closest('.sn2-role-preview-cell')?.classList.toggle(
+        'sn2-role-preview-cell--bordered',
+        this._getColumnBorderSet?.().has(column.id),
+      );
+      const row = preview.closest('.sn2-role-manage-row');
+      if (row) this._applyRoleManagementRowDecoration(row, appearance);
+    });
+  },
+
+  _markRoleManagementGridControls(row, rowIndex) {
+    const controls = [...row.children].map(cell => {
+      if (!cell?.matches?.('td')) return null;
+      return cell.querySelector(
+        'input:not(:disabled):not(.sn2-role-manage-grip), select:not(:disabled), button:not(:disabled):not(.sn2-role-style-trigger)',
+      );
+    }).filter(Boolean);
+    controls.forEach((control, columnIndex) => {
+      control.dataset.roleGridControl = 'true';
+      control.dataset.roleGridRow = String(rowIndex);
+      control.dataset.roleGridColumn = String(columnIndex);
+      if (control.matches('select')) {
+        control.setAttribute('aria-keyshortcuts', 'Enter Space F2 ArrowUp ArrowDown Escape');
+        control.title = '上下矢印: 行移動／Enter・Space・F2: 選択肢を編集／Escape: 編集終了';
+      }
+    });
+  },
+
+  _bindRoleManagementGridNavigation(table) {
+    const tableKind = table.dataset.roleManagementKind;
+    const setSelectEditMode = (select, enabled) => {
+      if (!select?.matches?.('select')) return;
+      if (enabled) select.dataset.roleSelectEditing = 'true';
+      else delete select.dataset.roleSelectEditing;
+      select.classList.toggle('is-keyboard-editing', !!enabled);
+    };
+    table.addEventListener('focusout', event => setSelectEditMode(event.target, false));
+    table.addEventListener('keydown', event => {
+      const panelHost = table.closest('.sn2-role-management')?.parentElement;
+      const current = event.target.closest?.('[data-role-grid-control="true"]');
+      if (!current || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+      const isText = current.matches('input[type="text"], input:not([type])');
+      const setTextEditMode = (input, enabled) => {
+        if (!input?.matches?.('input[type="text"], input:not([type])')) return;
+        input.readOnly = !enabled;
+        input.classList.toggle('is-keyboard-editing', !!enabled);
+        if (enabled) requestAnimationFrame(() => input.select());
+      };
+      const restoreGridFocus = control => {
+        const row = Number(control.dataset.roleGridRow);
+        const col = Number(control.dataset.roleGridColumn);
+        requestAnimationFrame(() => {
+          const liveTable = panelHost?.querySelector?.(`[data-role-management-kind="${tableKind}"]`);
+          const liveControl = liveTable?.querySelector?.(`[data-role-grid-row="${row}"][data-role-grid-column="${col}"]`);
+          liveControl?.focus?.({ preventScroll: true });
+        });
+      };
+      if (isText) {
+        if (event.key === 'Enter' || event.key === 'F2') {
+          event.preventDefault();
+          if (current.readOnly) setTextEditMode(current, true);
+          else {
+            setTextEditMode(current, false);
+            current.blur();
+            restoreGridFocus(current);
+          }
+          return;
+        }
+        if (event.key === 'Escape' && !current.readOnly) {
+          event.preventDefault();
+          setTextEditMode(current, false);
+          current.blur();
+          restoreGridFocus(current);
+          return;
+        }
+      }
+      if (current.matches('select')) {
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') {
+          setSelectEditMode(current, current.dataset.roleSelectEditing !== 'true');
+          if (event.key === 'F2') event.preventDefault();
+          return;
+        }
+        if (event.key === 'Escape' && current.dataset.roleSelectEditing === 'true') {
+          setSelectEditMode(current, false);
+          return;
+        }
+      }
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      if (isText && !current.readOnly && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        const start = current.selectionStart ?? 0;
+        const end = current.selectionEnd ?? start;
+        if (start !== end) return;
+        if (event.key === 'ArrowLeft' && start > 0) return;
+        if (event.key === 'ArrowRight' && end < current.value.length) return;
+      }
+      if (current.matches('select') && current.dataset.roleSelectEditing === 'true'
+        && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) return;
+      const rowIndex = Number(current.dataset.roleGridRow);
+      const columnIndex = Number(current.dataset.roleGridColumn);
+      const rowDelta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+      const columnDelta = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+      const targetRow = rowIndex + rowDelta;
+      const targetColumn = columnIndex + columnDelta;
+      let next = table.querySelector(`[data-role-grid-row="${targetRow}"][data-role-grid-column="${targetColumn}"]`);
+      if (!next && rowDelta) {
+        const rowControls = [...table.querySelectorAll(`[data-role-grid-row="${targetRow}"]`)];
+        next = rowControls.sort((a, b) => Math.abs(Number(a.dataset.roleGridColumn) - columnIndex)
+          - Math.abs(Number(b.dataset.roleGridColumn) - columnIndex))[0];
+      }
+      if (!next) return;
+      event.preventDefault();
+      next.focus({ preventScroll: true });
+      next.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      requestAnimationFrame(() => {
+        const liveTable = panelHost?.querySelector(`[data-role-management-kind="${tableKind}"]`);
+        const live = liveTable?.querySelector(`[data-role-grid-row="${targetRow}"][data-role-grid-column="${targetColumn}"]`)
+          || (rowDelta ? [...(liveTable?.querySelectorAll(`[data-role-grid-row="${targetRow}"]`) || [])]
+            .sort((a, b) => Math.abs(Number(a.dataset.roleGridColumn) - columnIndex)
+              - Math.abs(Number(b.dataset.roleGridColumn) - columnIndex))[0] : null);
+        if (!live || live === document.activeElement) return;
+        live.focus({ preventScroll: true });
+        live.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      });
+    });
+  },
+
+  _toggleRoleManagementSelection(kind, item, checked, shiftKey, adapter, section) {
+    const selection = kind === 'type' ? this._detailTypeSelection : this._detailCharacterSelection;
+    const items = kind === 'type' ? adapter.types : adapter.characters;
+    const anchorKey = kind === 'type' ? '_detailTypeSelectionAnchor' : '_detailCharacterSelectionAnchor';
+    const anchorId = this[anchorKey];
+    if (shiftKey && anchorId) {
+      const from = items.findIndex(candidate => candidate.id === anchorId);
+      const to = items.findIndex(candidate => candidate.id === item.id);
+      if (from >= 0 && to >= 0) {
+        const start = Math.min(from, to);
+        const end = Math.max(from, to);
+        for (let index = start; index <= end; index += 1) {
+          if (checked) selection.add(items[index].id);
+          else selection.delete(items[index].id);
+        }
+      }
+    } else {
+      if (checked) selection.add(item.id);
+      else selection.delete(item.id);
+      this[anchorKey] = item.id;
+    }
+    section?.querySelectorAll('.sn2-role-manage-row[data-role-id]').forEach(row => {
+      const selected = selection.has(row.dataset.roleId);
+      row.classList.toggle('selected', selected);
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (checkbox && !checkbox.disabled) checkbox.checked = selected;
+    });
+  },
+
   _buildRoleManagementSection(kind, adapter, panelContainer) {
     const isType = kind === 'type';
     const items = isType ? adapter.types : adapter.characters;
@@ -277,8 +655,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     const header = document.createElement('header');
     header.className = 'sn2-role-manage-header';
     header.title = isType
-      ? 'キャラと紐づいたタイプは、シナリオのタイプ列候補から自動的に外れます'
-      : 'キャラは名前色と対応タイプを持ち、本文などの書式は対応タイプから取得します';
+      ? 'シナリオのタイプ列から選択するタイプと、その書式を管理します'
+      : 'キャラ名の背景色・文字色と、キャラ選択時に補われる初期タイプを設定します';
     const title = document.createElement('h2');
     title.className = 'sn2-role-manage-title';
     title.textContent = isType ? 'タイプ' : 'キャラ';
@@ -297,34 +675,91 @@ Object.assign(ScriptNoteEditor.prototype, {
     scroll.setAttribute('aria-label', `${isType ? 'タイプ' : 'キャラ'}一覧`);
     const table = document.createElement('table');
     table.className = `sn2-role-manage-table sn2-role-manage-table--${isType ? 'types' : 'characters'}`;
+    table.dataset.roleManagementKind = kind;
+    const tableColumns = isType ? this._roleManagementTableColumns() : [];
+    const customColumnCount = tableColumns.filter(column => !column.id.startsWith('_')).length;
+    table.style.setProperty('--sn2-role-custom-cols', String(customColumnCount));
+    table.setAttribute('aria-label', `${isType ? 'タイプ' : 'キャラ'}の設定表`);
+    const colgroup = document.createElement('colgroup');
+    // 列幅の既定値。空文字は「残り幅を受け持つ列」（タイプ表はテキスト、キャラ表はキャラ名）。
+    // 左端の選択・並べ替え列はキャラ表と同じ36pxに保つ。全列を固定幅にすると
+    // 余った幅が左端列にも配分されるため、可変列を1つだけ残す。
+    const addColumn = (key, width) => {
+      const column = document.createElement('col');
+      column.dataset.roleColKey = key;
+      column.dataset.roleColDefault = width ? String(width) : '';
+      colgroup.appendChild(column);
+    };
+    if (isType) {
+      addColumn('control', 36);
+      tableColumns.forEach(column => {
+        const key = `preview-${column.id}`;
+        if (column.id === '_role') addColumn(key, 86);
+        else if (column.id === '_text') addColumn(key, 0);
+        else addColumn(key, 50);
+      });
+      addColumn('settings', 60);
+    } else {
+      addColumn('control', 36);
+      addColumn('name', 0);
+      addColumn('linked-type', 88);
+      addColumn('sheet-link', 56);
+    }
+    table.appendChild(colgroup);
+    this._applyRoleManagementColumnWidths(table, kind);
     const thead = document.createElement('thead');
     const headings = isType
-      ? [['', '並べ替え'], ['', '選択'], ['タイプ名', 'シナリオ上の機能と完全な書式を所有する名前'], ['書式', '書式プレビュー。クリックすると既存の完全な書式設定を開きます'], ['設定', 'タイプの機能・ガター・詳細設定']]
-      : [['', '並べ替え'], ['', '選択'], ['色', 'タイプ列に表示するキャラ名だけへ適用する名前色'], ['キャラ名', 'シナリオに表示するキャラ名'], ['対応タイプ', '選択したタイプの完全な書式を使用します'], ['設定', 'キャラ行の編集']];
+      ? [
+        { label: '', tooltip: '選択と並べ替え', key: 'control' },
+        ...tableColumns.map(column => ({
+          label: column.id === '_role' ? 'タイプ' : column.id === '_text' ? 'テキスト' : column.label,
+          tooltip: `${column.label}の書式。見出しで選択中タイプを一括設定、各セルで個別設定します`,
+          key: `preview-${column.id}`,
+          column,
+        })),
+        { label: '設定', tooltip: 'タイプの機能と詳細設定', key: 'settings' },
+      ]
+      : [
+        { label: '', tooltip: '選択と並べ替え', key: 'control' },
+        {
+          label: 'キャラ名',
+          tooltip: 'キャラ名の書式。見出しで選択中キャラ（未選択なら全キャラ）を一括設定、セルの「…」で個別設定します',
+          key: 'name',
+          column: { id: '_character', label: 'キャラ名' },
+        },
+        { label: '初期タイプ', tooltip: 'タイプ未設定行で、このキャラを選んだ時に補うタイプです', key: 'linked-type' },
+        { label: 'シート', tooltip: '「シート読込」で追加したキャラの元トピック。クリックでサブパネルに表示します', key: 'sheet-link' },
+      ];
     const headingRow = document.createElement('tr');
-    headings.forEach(([label, tooltip], columnIndex) => {
+    headings.forEach((heading, columnIndex) => {
       const th = document.createElement('th');
-      th.textContent = label;
-      th.title = tooltip;
-      const resizable = isType ? [2, 3].includes(columnIndex) : [3, 4].includes(columnIndex);
-      if (resizable) this._bindRoleManagementColumnResize(th, kind, columnIndex);
-      if (isType && label === '書式') {
+      th.textContent = heading.label;
+      th.title = heading.tooltip;
+      th.className = `sn2-role-manage-col sn2-role-manage-col--${heading.key.replace(/[^a-z0-9_-]/gi, '-')}`;
+      if (heading.column) {
+        th.dataset.columnId = heading.column.id;
         th.classList.add('sn2-role-manage-format-header');
-        th.dataset.e2eId = 'scriptnote-type-format-header';
         th.tabIndex = 0;
         th.setAttribute('role', 'button');
-        th.setAttribute('aria-label', '選択中のタイプの書式を設定');
-        const open = event => {
-          if (event.target.closest?.('.sn2-role-column-resizer')) return;
-          this._showColBulkPopup(th, '_role', panelContainer);
-        };
-        th.addEventListener('click', open);
+        th.setAttribute('aria-label', `${heading.column.label}列の書式を一括設定`);
+        const openBulkFormat = isType
+          ? () => this._showColBulkPopup(th, heading.column.id, panelContainer)
+          : () => this._showCharacterColumnBulkPopup(th, panelContainer);
+        th.addEventListener('click', openBulkFormat);
         th.addEventListener('keydown', event => {
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault();
-          open(event);
+          openBulkFormat();
         });
       }
+      if (isType && heading.column?.id === '_role') th.dataset.e2eId = 'scriptnote-type-format-header';
+      else if (!isType && heading.column?.id === '_character') th.dataset.e2eId = 'scriptnote-character-format-header';
+      else if (heading.column) {
+        // 本文・区切り・追加列の見出しも操作できる部品なので、列IDで安定した識別子を付ける。
+        th.dataset.e2eId = `scriptnote-${kind}-format-header-${String(heading.column.id).replace(/^_/, '').replace(/[^a-z0-9_-]/gi, '-')}`;
+      }
+      // 右端の境界線をドラッグして列幅を変える（最終列は表の右端なので付けない）。
+      if (columnIndex < headings.length - 1) this._bindRoleManagementColumnResize(th, table, kind, heading.key, heading.label);
       headingRow.appendChild(th);
     });
     thead.appendChild(headingRow);
@@ -347,112 +782,237 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (isType) {
       tbody.appendChild(this._buildScenarioNoneTypeManagementRow(adapter, panelContainer));
+    } else {
+      tbody.appendChild(this._buildScenarioNoneCharacterManagementRow(adapter, panelContainer));
     }
     table.appendChild(tbody);
+    this._bindRoleManagementGridNavigation(table);
     scroll.appendChild(table);
     section.appendChild(scroll);
     section.appendChild(this._buildRoleManagementToolbar(kind, adapter, panelContainer));
     return section;
   },
 
-  _bindRoleManagementColumnResize(header, kind, columnIndex) {
-    const storageKey = 'meldex.scriptnote.roleManagement.columnWidths.v1';
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
-    const key = `${kind}:${columnIndex}`;
-    const stored = Number(saved[key]);
-    if (Number.isFinite(stored) && stored >= 80) header.style.width = `${stored}px`;
+  _roleManagementColumnWidthStore() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('meldex.scriptnote.roleManagement.columnWidths.v2') || '{}');
+      return saved && typeof saved === 'object' ? saved : {};
+    } catch { return {}; }
+  },
+
+  _saveRoleManagementColumnWidth(kind, key, width) {
+    const saved = this._roleManagementColumnWidthStore();
+    const storeKey = `${kind}:${key}`;
+    if (width == null) delete saved[storeKey];
+    else saved[storeKey] = width;
+    try { localStorage.setItem('meldex.scriptnote.roleManagement.columnWidths.v2', JSON.stringify(saved)); } catch {}
+  },
+
+  // 列幅（既定値＋利用者がドラッグで変えた値）を colgroup と表の幅へ反映する。
+  // 可変列（既定値なし）が残っている間は表を100%幅にして残りをその列へ渡し、
+  // 可変列まで幅を指定した時は各列の合計幅で表を描く（はみ出す分は横スクロール）。
+  _applyRoleManagementColumnWidths(table, kind, overrides = null) {
+    const saved = this._roleManagementColumnWidthStore();
+    const cols = [...table.querySelectorAll(':scope > colgroup > col[data-role-col-key]')];
+    let fixedSum = 0;
+    let hasFlexible = false;
+    cols.forEach(col => {
+      const key = col.dataset.roleColKey;
+      const override = overrides && Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : undefined;
+      const stored = Number(override !== undefined ? override : saved[`${kind}:${key}`]);
+      const fallback = Number(col.dataset.roleColDefault) || 0;
+      const width = Number.isFinite(stored) && stored > 0 ? stored : fallback;
+      if (width > 0) {
+        col.style.width = `${width}px`;
+        fixedSum += width;
+      } else {
+        col.style.width = '';
+        hasFlexible = true;
+      }
+    });
+    if (hasFlexible) {
+      table.style.width = '100%';
+      table.style.minWidth = `${fixedSum + 80}px`;
+    } else {
+      table.style.width = `${fixedSum}px`;
+      table.style.minWidth = `${fixedSum}px`;
+    }
+  },
+
+  _bindRoleManagementColumnResize(header, table, kind, key, label = '') {
+    const MIN_WIDTH = 28;
+    const MAX_WIDTH = 640;
     const resizer = document.createElement('span');
     resizer.className = 'sn2-role-column-resizer';
-    resizer.dataset.e2eId = `scriptnote-${kind}-column-resizer-${columnIndex}`;
-    resizer.tabIndex = 0;
+    resizer.dataset.e2eId = `scriptnote-${kind}-column-resizer-${String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-')}`;
+    resizer.tabIndex = -1;
     resizer.setAttribute('role', 'separator');
     resizer.setAttribute('aria-orientation', 'vertical');
-    resizer.setAttribute('aria-label', `${header.textContent || '列'}の幅を調整`);
-    const setWidth = width => {
-      const next = Math.max(80, Math.min(480, Math.round(width)));
-      header.style.width = `${next}px`;
-      resizer.setAttribute('aria-valuenow', String(next));
-      return next;
-    };
-    resizer.addEventListener('keydown', event => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-      event.preventDefault();
-      const next = setWidth(header.getBoundingClientRect().width + (event.key === 'ArrowRight' ? 10 : -10));
-      saved[key] = next;
-      localStorage.setItem(storageKey, JSON.stringify(saved));
-    });
-    resizer.addEventListener('pointerdown', event => {
+    resizer.setAttribute('aria-label', `${label || '列'}の幅を調整`);
+    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す';
+    const colFor = () => table.querySelector(`:scope > colgroup > col[data-role-col-key="${MeldexEscape.cssIdent(key)}"]`);
+    const clamp = width => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(width)));
+    // 見出しのクリック（書式の一括設定）へ伝わらないようにする。
+    resizer.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
+    resizer.addEventListener('dblclick', event => {
       event.preventDefault();
       event.stopPropagation();
-      resizer.setPointerCapture?.(event.pointerId);
+      this._saveRoleManagementColumnWidth(kind, key, null);
+      this._applyRoleManagementColumnWidths(table, kind);
+    });
+    resizer.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try { resizer.setPointerCapture?.(event.pointerId); } catch (_) { /* 合成イベントでは捕捉できない */ }
       const startX = event.clientX;
-      const startWidth = header.getBoundingClientRect().width;
+      const startWidth = Math.round(header.getBoundingClientRect().width);
       let width = startWidth;
-      const move = pointerEvent => { width = setWidth(startWidth + pointerEvent.clientX - startX); };
-      const end = () => {
-        saved[key] = width;
-        localStorage.setItem(storageKey, JSON.stringify(saved));
+      resizer.classList.add('is-resizing');
+      const move = pointerEvent => {
+        width = clamp(startWidth + pointerEvent.clientX - startX);
+        this._applyRoleManagementColumnWidths(table, kind, { [key]: width });
+      };
+      const finish = commit => {
+        resizer.classList.remove('is-resizing');
         resizer.removeEventListener('pointermove', move);
         resizer.removeEventListener('pointerup', end);
         resizer.removeEventListener('pointercancel', cancel);
+        if (commit && width !== startWidth) this._saveRoleManagementColumnWidth(kind, key, width);
+        this._applyRoleManagementColumnWidths(table, kind);
       };
-      const cancel = () => {
-        resizer.removeEventListener('pointermove', move);
-        resizer.removeEventListener('pointerup', end);
-        resizer.removeEventListener('pointercancel', cancel);
-      };
+      const end = () => finish(true);
+      const cancel = () => finish(false);
       resizer.addEventListener('pointermove', move);
       resizer.addEventListener('pointerup', end);
       resizer.addEventListener('pointercancel', cancel);
     });
+    if (!colFor()) return;
     header.appendChild(resizer);
   },
 
   _showTypeManagementSettingsMenu(anchor, type, panelContainer) {
-    document.querySelectorAll('.sn2-type-settings-menu').forEach(element => element.remove());
-    const menu = document.createElement('div');
-    menu.className = 'gb-fmt-popup sn2-type-settings-menu';
-    menu.setAttribute('role', 'menu');
-    const styleTargets = [
-      ['_role', 'タイプ列の書式', 'タイプ列に表示する名前の完全な書式を設定'],
-      ['_text', '本文の書式', '本文列の完全な書式を設定'],
-      ['_gutter', '大区切りの書式', '大区切り列の完全な書式を設定'],
-      ['_gutter2', '小区切りの書式', '小区切り列の完全な書式を設定'],
-    ];
-    (this.doc.editor?.customColumns || []).forEach(column => {
-      styleTargets.push([column.id, `${column.label || column.id}の書式`, 'カスタム列の完全な書式を設定']);
+    this._showRoleOptionsPopup(anchor, type, panelContainer);
+  },
+
+  _buildRoleManagementControlCell(kind, row, item, adapter, panelContainer, itemIndex, disabled = false) {
+    const cell = document.createElement('td');
+    cell.className = 'sn2-role-manage-cell--control';
+    const controls = document.createElement('span');
+    controls.className = 'sn2-role-manage-control';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'sn2-role-manage-check';
+    check.dataset.e2eId = `scriptnote-${kind}-select-${itemIndex}`;
+    const label = item?.name || (kind === 'type' ? 'タイプ' : 'キャラ');
+    if (disabled) {
+      check.disabled = true;
+      check.title = '「（なし）」行は削除・複製できません';
+      check.setAttribute('aria-label', '（なし）行は選択対象外');
+    } else {
+      const selection = kind === 'type' ? this._detailTypeSelection : this._detailCharacterSelection;
+      check.checked = selection.has(item.id);
+      check.title = `${label}を選択`;
+      check.setAttribute('aria-label', check.title);
+      const applySelection = shiftKey => {
+        this._toggleRoleManagementSelection(kind, item, check.checked, shiftKey, adapter, row.closest('section'));
+      };
+      check.addEventListener('click', event => {
+        event.stopPropagation();
+        applySelection(event.shiftKey);
+      });
+      check.addEventListener('keydown', event => {
+        if (event.key !== ' ' || !event.shiftKey) return;
+        event.preventDefault();
+        check.checked = !check.checked;
+        applySelection(true);
+      });
+    }
+    controls.appendChild(check);
+
+    if (disabled) {
+      const grip = document.createElement('button');
+      grip.type = 'button';
+      grip.className = 'sn2-role-manage-grip sn2-role-manage-grip--disabled';
+      grip.disabled = true;
+      grip.dataset.e2eId = `scriptnote-${kind}-drag-${itemIndex}`;
+      grip.title = '「（なし）」行は固定表示のため並べ替えできません';
+      grip.setAttribute('aria-label', '（なし）行は並べ替え不可');
+      grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
+      controls.appendChild(grip);
+    } else {
+      controls.appendChild(this._buildRoleManagementGrip(
+        row, kind, item, adapter, panelContainer, Number(itemIndex),
+      ));
+    }
+    cell.appendChild(controls);
+    return cell;
+  },
+
+  _buildRoleManagementTypeNameCell(type, itemIndex, adapter, panelContainer, editable = true) {
+    const column = { id: '_role', label: 'タイプ' };
+    const cell = document.createElement('td');
+    cell.className = 'sn2-role-preview-cell sn2-role-manage-cell--type-name';
+    cell.dataset.columnId = column.id;
+    if (this._getColumnBorderSet?.().has(column.id)) cell.classList.add('sn2-role-preview-cell--bordered');
+    const editor = document.createElement('div');
+    editor.className = 'sn2-role-name-editor';
+    const preview = document.createElement(editable ? 'input' : 'span');
+    preview.className = editable
+      ? 'sn2-role-manage-name sn2-role-name-preview'
+      : 'sn2-role-manage-name--static sn2-role-name-preview';
+    if (editable) preview.type = 'text';
+    if (editable) preview.readOnly = true;
+    preview.dataset.rolePreviewKind = 'type';
+    preview.dataset.rolePreviewId = type?.id || 'none';
+    preview.dataset.rolePreviewColumn = '_role';
+    preview.dataset.e2eId = `scriptnote-type-name-${itemIndex}`;
+    preview.setAttribute('aria-label', editable ? 'タイプ名' : 'タイプ名: （なし）');
+    if (editable) {
+      preview.title = 'タイプ名。キャラ名を含む他の役割名と重複できません';
+      preview.addEventListener('dblclick', () => {
+        preview.readOnly = false;
+        preview.classList.add('is-keyboard-editing');
+        preview.select();
+      });
+      preview.addEventListener('blur', () => {
+        preview.readOnly = true;
+        preview.classList.remove('is-keyboard-editing');
+      });
+      preview.addEventListener('change', () => {
+        const previous = type.name;
+        try {
+          this._pushUndo('タイプ名変更');
+          adapter.renameType(type, preview.value);
+        } catch (error) {
+          preview.value = previous || '';
+          if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
+          return;
+        }
+        preview.value = type.name || previous;
+        adapter.touch();
+        this.renderDetailPanel(panelContainer);
+      });
+    } else {
+      preview.title = 'タイプが未設定の行に適用される共通の書式です';
+    }
+    this._applyRoleManagementNamePreview(preview, type, type);
+    if (!editable) preview.textContent = '（なし）';
+
+    const format = document.createElement('button');
+    format.type = 'button';
+    format.className = 'sn2-role-style-trigger';
+    format.textContent = '…';
+    format.title = `${editable ? type.name || 'タイプ' : '（なし）'}のタイプ列書式を設定`;
+    format.setAttribute('aria-label', format.title);
+    format.dataset.e2eId = `scriptnote-type-style-preview-${itemIndex}`;
+    format.addEventListener('click', event => {
+      event.stopPropagation();
+      this._showCellStylePopup(format, type, '_role', panelContainer);
     });
-    styleTargets.forEach(([columnId, label, title]) => {
-      menu.appendChild(this._roleManagementButton(label, title, () => {
-        menu.remove();
-        const isGutter = columnId === '_gutter' || columnId === '_gutter2';
-        const inheritedStyle = isGutter ? (this.doc.editor?.columnStyles?.[columnId] || {}) : {};
-        this._showCellStylePopup(anchor, type, columnId, panelContainer, isGutter ? {
-          includeCountConfig: false,
-          inheritedStyle,
-          typeOverride: true,
-        } : {});
-      }, `scriptnote-type-style-${columnId.replace(/^_/, '')}`));
-    });
-    menu.appendChild(this._roleManagementButton('機能・詳細設定', 'タイプの機能、区切り、その他の詳細設定を開く', () => {
-      menu.remove();
-      this._showRoleOptionsPopup(anchor, type, panelContainer);
-    }, 'scriptnote-type-function-settings'));
-    document.body.appendChild(menu);
-    if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-    const close = (event) => {
-      if (event.key === 'Escape' || (!menu.contains(event.target) && event.target !== anchor)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', close, true);
-        document.removeEventListener('keydown', close, true);
-      }
-    };
-    setTimeout(() => {
-      document.addEventListener('pointerdown', close, true);
-      document.addEventListener('keydown', close, true);
-    }, 0);
+    editor.append(preview, format);
+    cell.appendChild(editor);
+    return cell;
   },
 
   _buildScenarioNoneTypeManagementRow(adapter, panelContainer) {
@@ -466,65 +1026,26 @@ Object.assign(ScriptNoteEditor.prototype, {
     const row = document.createElement('tr');
     row.className = 'sn2-role-manage-row sn2-role-manage-row--none';
     row.dataset.roleId = 'none';
+    row.dataset.roleKind = 'type';
     row.dataset.e2eId = 'scriptnote-type-row-none';
-
-    const handleCell = document.createElement('td');
-    const grip = document.createElement('button');
-    grip.type = 'button';
-    grip.className = 'sn2-role-manage-grip sn2-role-manage-grip--disabled';
-    grip.disabled = true;
-    grip.dataset.e2eId = 'scriptnote-type-drag-none';
-    grip.title = '「（なし）」行は固定表示のため並べ替えできません';
-    grip.setAttribute('aria-label', '（なし）行は並べ替え不可');
-    grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
-    handleCell.appendChild(grip);
-
-    const selectCell = document.createElement('td');
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.disabled = true;
-    check.dataset.e2eId = 'scriptnote-type-select-none';
-    check.title = '「（なし）」行は削除・複製できません';
-    check.setAttribute('aria-label', '（なし）行は選択対象外');
-    selectCell.appendChild(check);
-
-    const nameCell = document.createElement('td');
-    const name = document.createElement('span');
-    name.className = 'sn2-role-manage-name sn2-role-manage-name--static';
-    name.textContent = '（なし）';
-    name.title = 'タイプが未設定の行に適用される共通の書式・オプションです';
-    name.dataset.e2eId = 'scriptnote-type-name-none';
-    name.setAttribute('aria-label', 'タイプ名: （なし）');
-    nameCell.appendChild(name);
-
-    const previewCell = document.createElement('td');
-    const preview = document.createElement('button');
-    preview.type = 'button';
-    preview.className = 'sn2-role-style-preview';
-    preview.title = '「（なし）」行のタイプ列の書式を設定';
-    preview.dataset.e2eId = 'scriptnote-type-style-preview-none';
-    preview.setAttribute('aria-label', '（なし）行の書式を設定');
-    const roleStyle = noneType.roleStyle || {};
-    preview.textContent = `${roleStyle.textBefore || ''}（なし）${roleStyle.textAfter || ''}`;
-    Object.assign(preview.style, {
-      color: roleStyle.textColor || '',
-      background: roleStyle.bgColor || '',
-      fontWeight: roleStyle.fontWeight === 'bold' || roleStyle.bold ? 'bold' : '',
-      fontStyle: roleStyle.fontStyle === 'italic' || roleStyle.italic ? 'italic' : '',
-      fontFamily: roleStyle.fontFamily || '',
-      fontSize: roleStyle.fontSize ? `${roleStyle.fontSize}px` : '',
-    });
-    preview.addEventListener('click', () => this._showCellStylePopup(preview, noneType, '_role', panelContainer));
-    previewCell.appendChild(preview);
-
     const settingsCell = document.createElement('td');
     settingsCell.className = 'sn2-role-manage-actions';
-    const options = this._roleManagementButton('設定', '「（なし）」行の機能、ガター、本文書式を設定', () => {
-      this._showTypeManagementSettingsMenu(options, noneType, panelContainer);
+    const options = this._roleManagementButton('設定', '「（なし）」行の機能と詳細設定', () => {
+      this._showRoleOptionsPopup(options, noneType, panelContainer);
     }, 'scriptnote-type-settings-none');
     settingsCell.append(options);
 
-    row.append(handleCell, selectCell, nameCell, previewCell, settingsCell);
+    row.appendChild(this._buildRoleManagementControlCell(
+      'type', row, noneType, adapter, panelContainer, 'none', true,
+    ));
+    this._roleManagementTableColumns().forEach(column => {
+      row.appendChild(column.id === '_role'
+        ? this._buildRoleManagementTypeNameCell(noneType, 'none', adapter, panelContainer, false)
+        : this._buildRoleManagementStyleCell('type', noneType, 'none', column, adapter, panelContainer));
+    });
+    row.appendChild(settingsCell);
+    this._applyRoleManagementRowDecoration(row, noneType);
+    this._markRoleManagementGridControls(row, adapter.types.length);
     return row;
   },
 
@@ -532,110 +1053,127 @@ Object.assign(ScriptNoteEditor.prototype, {
     const row = document.createElement('tr');
     row.className = 'sn2-role-manage-row';
     row.dataset.roleId = type.id;
+    row.dataset.roleKind = 'type';
     row.dataset.e2eId = `scriptnote-type-row-${index}`;
     const selected = this._detailTypeSelection.has(type.id);
     row.classList.toggle('selected', selected);
-    const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer, index));
-    const selectCell = document.createElement('td');
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = selected;
-    check.title = `${type.name || 'タイプ'}を選択`;
-    check.dataset.e2eId = `scriptnote-type-select-${index}`;
-    check.setAttribute('aria-label', check.title);
-    check.addEventListener('change', () => {
-      if (check.checked) this._detailTypeSelection.add(type.id);
-      else this._detailTypeSelection.delete(type.id);
-      row.classList.toggle('selected', check.checked);
-    });
-    selectCell.appendChild(check);
-    const nameCell = document.createElement('td');
-    const name = document.createElement('input');
-    name.type = 'text';
-    name.className = 'sn2-role-manage-name';
-    name.value = type.name || '';
-    name.title = 'タイプ名。キャラ名を含む他の役割名と重複できません';
-    name.dataset.e2eId = `scriptnote-type-name-${index}`;
-    name.setAttribute('aria-label', 'タイプ名');
-    name.addEventListener('change', () => {
-      const previous = type.name;
-      try {
-        this._pushUndo('タイプ名変更');
-        adapter.renameType(type, name.value);
-      } catch (error) {
-        name.value = previous || '';
-        if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
-        return;
-      }
-      name.value = type.name || previous;
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    });
-    nameCell.appendChild(name);
-    const previewCell = document.createElement('td');
-    const preview = document.createElement('button');
-    preview.type = 'button';
-    preview.className = 'sn2-role-style-preview';
-    preview.title = 'タイプ列の書式を設定';
-    preview.dataset.e2eId = `scriptnote-type-style-preview-${index}`;
-    preview.setAttribute('aria-label', `${type.name || 'タイプ'}の書式を設定`);
-    const roleStyle = type.roleStyle || {};
-    preview.textContent = `${roleStyle.textBefore || ''}${type.name || 'Aa'}${roleStyle.textAfter || ''}`;
-    Object.assign(preview.style, {
-      color: roleStyle.textColor || '',
-      background: roleStyle.bgColor || '',
-      fontWeight: roleStyle.fontWeight === 'bold' || roleStyle.bold ? 'bold' : '',
-      fontStyle: roleStyle.fontStyle === 'italic' || roleStyle.italic ? 'italic' : '',
-      fontFamily: roleStyle.fontFamily || '',
-      fontSize: roleStyle.fontSize ? `${roleStyle.fontSize}px` : '',
-    });
-    preview.addEventListener('click', () => this._showCellStylePopup(preview, type, '_role', panelContainer));
-    previewCell.appendChild(preview);
     const settingsCell = document.createElement('td');
     settingsCell.className = 'sn2-role-manage-actions';
-    const options = this._roleManagementButton('設定', 'タイプの機能、ガター、カスタム列を設定', () => {
-      this._showTypeManagementSettingsMenu(options, type, panelContainer);
+    const options = this._roleManagementButton('設定', 'タイプの機能と詳細設定', () => {
+      this._showRoleOptionsPopup(options, type, panelContainer);
     }, `scriptnote-type-settings-${index}`);
     settingsCell.append(options);
-    row.append(handleCell, selectCell, nameCell, previewCell, settingsCell);
+
+    row.appendChild(this._buildRoleManagementControlCell(
+      'type', row, type, adapter, panelContainer, index,
+    ));
+    this._roleManagementTableColumns().forEach(column => {
+      row.appendChild(column.id === '_role'
+        ? this._buildRoleManagementTypeNameCell(type, index, adapter, panelContainer)
+        : this._buildRoleManagementStyleCell('type', type, index, column, adapter, panelContainer));
+    });
+    row.appendChild(settingsCell);
+    this._applyRoleManagementRowDecoration(row, type);
+    this._markRoleManagementGridControls(row, index);
     return row;
   },
 
-  _buildScenarioCharacterManagementRow(character, index, adapter, panelContainer) {
-    const row = document.createElement('tr');
-    row.className = 'sn2-role-manage-row';
-    row.dataset.roleId = character.id;
-    row.dataset.e2eId = `scriptnote-character-row-${index}`;
-    const selected = this._detailCharacterSelection.has(character.id);
-    row.classList.toggle('selected', selected);
-    const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer, index));
-    const selectCell = document.createElement('td');
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = selected;
-    check.title = `${character.name || 'キャラ'}を選択`;
-    check.dataset.e2eId = `scriptnote-character-select-${index}`;
-    check.setAttribute('aria-label', check.title);
-    check.addEventListener('change', () => {
-      if (check.checked) this._detailCharacterSelection.add(character.id);
-      else this._detailCharacterSelection.delete(character.id);
-      row.classList.toggle('selected', check.checked);
+  _showCharacterManagementSettingsPopup(anchor, character, adapter, panelContainer) {
+    document.querySelectorAll('.sn2-character-settings-popup').forEach(element => element.remove());
+    if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
+    const popup = document.createElement('div');
+    popup.className = 'gb-fmt-popup sn2-character-settings-popup';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-label', `${character.name || 'キャラ'}の設定`);
+    popup.dataset.e2eId = 'scriptnote-character-settings-popup';
+
+    const header = document.createElement('div');
+    header.className = 'sn2-character-settings-header';
+    const title = document.createElement('strong');
+    title.textContent = 'キャラ設定';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'gb-btn-icon';
+    closeButton.setAttribute('aria-label', 'キャラ設定を閉じる');
+    closeButton.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
+    header.append(title, closeButton);
+
+    const body = document.createElement('div');
+    body.className = 'sn2-character-settings-body';
+    const makeField = (labelText, control) => {
+      const label = document.createElement('label');
+      label.className = 'sn2-character-settings-field';
+      const caption = document.createElement('span');
+      caption.textContent = labelText;
+      label.append(caption, control);
+      return label;
+    };
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'gb-input';
+    nameInput.value = character.name || '';
+    nameInput.dataset.e2eId = 'scriptnote-character-settings-name';
+    nameInput.setAttribute('aria-label', 'キャラ名');
+
+    const colorButton = document.createElement('button');
+    colorButton.type = 'button';
+    colorButton.className = 'sn2-role-name-color gb-color-swatch gb-color-swatch--field';
+    colorButton.style.background = character.nameColor || 'transparent';
+    colorButton.dataset.color = character.nameColor || 'transparent';
+    colorButton.dataset.e2eId = 'scriptnote-character-settings-color';
+    colorButton.setAttribute('aria-label', 'キャラ名の色');
+
+    const typeSelect = document.createElement('select');
+    typeSelect.className = 'gb-select';
+    typeSelect.dataset.e2eId = 'scriptnote-character-settings-type';
+    typeSelect.setAttribute('aria-label', '初期タイプ');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '（未設定）';
+    typeSelect.appendChild(none);
+    adapter.types.forEach(type => {
+      const option = document.createElement('option');
+      option.value = type.id;
+      option.textContent = type.name || '名称未設定';
+      option.selected = type.id === character.typeId;
+      typeSelect.appendChild(option);
     });
-    selectCell.appendChild(check);
-    const colorCell = document.createElement('td');
-    const color = document.createElement('button');
-    color.type = 'button';
-    color.className = 'sn2-role-name-color gb-color-swatch gb-color-swatch--field';
-    color.dataset.color = character.nameColor || 'transparent';
-    color.style.background = character.nameColor || 'transparent';
-    color.title = 'タイプ列に表示するキャラ名の色';
-    color.dataset.e2eId = `scriptnote-character-name-color-${index}`;
-    color.setAttribute('aria-label', `${character.name || 'キャラ'}の名前色`);
-    color.addEventListener('click', () => {
+    body.append(makeField('キャラ名', nameInput), makeField('名前色', colorButton), makeField('初期タイプ', typeSelect));
+    const note = document.createElement('p');
+    note.className = 'sn2-character-settings-note';
+    note.textContent = '初期タイプは、タイプ未設定の行でこのキャラを選んだ時だけ補われます。行で明示したタイプは上書きしません。';
+    body.appendChild(note);
+    popup.append(header, body);
+
+    let pointerHandler = null;
+    let keyHandler = null;
+    const close = (restoreFocus = true) => {
+      popup.remove();
+      if (pointerHandler) document.removeEventListener('pointerdown', pointerHandler, true);
+      if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
+      if (restoreFocus) requestAnimationFrame(() => anchor?.isConnected && anchor.focus());
+    };
+    closeButton.addEventListener('click', () => close());
+    nameInput.addEventListener('change', () => {
+      const previous = character.name || '';
+      if (nameInput.value.trim() === previous) return;
+      try {
+        this._pushUndo('キャラ名変更');
+        adapter.renameCharacter(character, nameInput.value);
+      } catch (error) {
+        nameInput.value = previous;
+        if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
+        return;
+      }
+      nameInput.value = character.name || previous;
+      const rowInput = panelContainer?.querySelector(`[data-role-id="${MeldexEscape.cssIdent(character.id)}"] [data-e2e-id^="scriptnote-character-name-"]`);
+      if (rowInput) rowInput.value = character.name;
+      adapter.touch();
+      this._refreshRoleManagementPreviews(panelContainer);
+    });
+    colorButton.addEventListener('click', () => {
       if (typeof openColorPalette !== 'function') return;
-      openColorPalette(color, character.nameColor || 'transparent', nextColor => {
+      openColorPalette(colorButton, character.nameColor || 'transparent', nextColor => {
         this._pushUndo('キャラ名前色変更');
         character.nameColor = nextColor || 'transparent';
         if (!character.typeId && character.legacyAppearance) {
@@ -643,14 +1181,199 @@ Object.assign(ScriptNoteEditor.prototype, {
             ...(character.legacyAppearance.roleStyle || {}), textColor: character.nameColor,
           };
         }
-        color.dataset.color = character.nameColor;
-        color.style.background = character.nameColor;
+        colorButton.dataset.color = character.nameColor;
+        colorButton.style.background = character.nameColor;
+        const rowColor = panelContainer?.querySelector(`[data-role-id="${MeldexEscape.cssIdent(character.id)}"] [data-e2e-id^="scriptnote-character-name-color-"]`);
+        if (rowColor) {
+          rowColor.dataset.color = character.nameColor;
+          rowColor.style.background = character.nameColor;
+        }
         adapter.touch();
-        requestAnimationFrame(() => color.isConnected && color.focus());
+        this._refreshRoleManagementPreviews(panelContainer);
       });
     });
-    colorCell.appendChild(color);
+    typeSelect.addEventListener('change', () => {
+      this._pushUndo('キャラ初期タイプ変更');
+      adapter.setCharacterType(character, typeSelect.value || null);
+      const rowSelect = panelContainer?.querySelector(`[data-role-id="${MeldexEscape.cssIdent(character.id)}"] [data-e2e-id^="scriptnote-character-type-"]`);
+      if (rowSelect) rowSelect.value = character.typeId || '';
+      adapter.touch();
+      this._refreshRoleManagementPreviews(panelContainer);
+    });
+
+    document.body.appendChild(popup);
+    if (typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+    pointerHandler = event => {
+      if (!popup.contains(event.target) && event.target !== anchor) close();
+    };
+    keyHandler = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    };
+    document.addEventListener('keydown', keyHandler, true);
+    setTimeout(() => document.addEventListener('pointerdown', pointerHandler, true), 0);
+    requestAnimationFrame(() => {
+      nameInput.focus();
+      nameInput.select();
+    });
+  },
+
+  // キャラ表の「（なし）」行。キャラ欄が空欄の行に使う名前書式を持つ。
+  // 未設定のうちは文書へ書き込まず、書式を変えた時だけ editor.noneCharacter として保存する。
+  _scenarioNoneCharacter(create = false) {
+    const editor = this.doc?.editor;
+    const stored = editor?.noneCharacter && typeof editor.noneCharacter === 'object' ? editor.noneCharacter : null;
+    if (stored) {
+      stored.id = 'none';
+      stored.name = '';
+      return stored;
+    }
+    const transient = this._transientNoneCharacter ||= { id: 'none', name: '', roleStyle: {} };
+    if (create && editor) {
+      editor.noneCharacter = transient;
+      this._transientNoneCharacter = null;
+    }
+    return transient;
+  },
+
+  _buildScenarioNoneCharacterManagementRow(adapter, panelContainer) {
+    const noneCharacter = this._scenarioNoneCharacter(false);
+    const row = document.createElement('tr');
+    row.className = 'sn2-role-manage-row sn2-role-manage-row--none';
+    row.dataset.roleId = 'none';
+    row.dataset.roleKind = 'character';
+    row.dataset.e2eId = 'scriptnote-character-row-none';
     const nameCell = document.createElement('td');
+    nameCell.className = 'sn2-role-manage-cell--name sn2-role-preview-cell';
+    nameCell.dataset.columnId = '_character';
+    if (this._getColumnBorderSet?.().has('_character')) nameCell.classList.add('sn2-role-preview-cell--bordered');
+    const nameEditor = document.createElement('div');
+    nameEditor.className = 'sn2-role-name-editor';
+    const preview = document.createElement('span');
+    preview.className = 'sn2-role-manage-name--static sn2-role-name-preview';
+    preview.dataset.rolePreviewKind = 'character';
+    preview.dataset.rolePreviewId = 'none';
+    preview.dataset.rolePreviewColumn = '_character';
+    preview.dataset.e2eId = 'scriptnote-character-name-none';
+    preview.title = 'キャラが空欄の行に適用される共通の書式です';
+    preview.setAttribute('aria-label', 'キャラ名: （なし）');
+    this._applyRoleManagementPreview(
+      preview, noneCharacter,
+      this._roleManagementEffectiveAppearance('character', noneCharacter, adapter),
+      { id: '_character', label: 'キャラ' },
+    );
+    const format = document.createElement('button');
+    format.type = 'button';
+    format.className = 'sn2-role-style-trigger';
+    format.textContent = '…';
+    format.title = '（なし）の背景色と文字色を設定';
+    format.setAttribute('aria-label', format.title);
+    format.dataset.e2eId = 'scriptnote-character-style-preview-none';
+    format.addEventListener('click', event => {
+      event.stopPropagation();
+      this._showCharacterNameStylePopup(format, this._scenarioNoneCharacter(true), adapter, panelContainer);
+    });
+    nameEditor.append(preview, format);
+    nameCell.appendChild(nameEditor);
+    const typeCell = document.createElement('td');
+    typeCell.className = 'sn2-role-manage-cell--linked-type sn2-role-manage-cell--muted';
+    typeCell.textContent = '—';
+    typeCell.title = '（なし）行には初期タイプを設定できません';
+    const sheetCell = document.createElement('td');
+    sheetCell.className = 'sn2-role-manage-cell--sheet-link';
+    row.append(
+      this._buildRoleManagementControlCell('character', row, noneCharacter, adapter, panelContainer, 'none', true),
+      nameCell,
+      typeCell,
+      sheetCell,
+    );
+    this._markRoleManagementGridControls(row, adapter.characters.length);
+    return row;
+  },
+
+  // キャラ表「シート」列: 元トピックへのリンク（クリックでサブパネルに表示）と、
+  // 連携先トピックの選択（空欄・変更ボタン → シートからトピックを1件選ぶダイアログ）。
+  _buildCharacterSheetLinkCell(character, index, panelContainer = null) {
+    const cell = document.createElement('td');
+    cell.className = 'sn2-role-manage-cell--sheet-link';
+    const link = character?.sheetLink && typeof character.sheetLink === 'object' ? character.sheetLink : null;
+    const path = String(link?.path || '').trim();
+    const canPick = !!panelContainer && !this._readOnly && !!character?.id;
+    const openPicker = () => {
+      if (!canPick) return;
+      this._showDbImportModal(panelContainer, { linkCharacterId: character.id });
+    };
+    if (canPick) {
+      cell.classList.add('sn2-role-manage-cell--sheet-link-pickable');
+      // ボタン以外の余白クリックでも連携先を選べる。
+      cell.addEventListener('click', event => {
+        if (event.target.closest?.('button')) return;
+        event.stopPropagation();
+        openPicker();
+      });
+    }
+    const buildPickButton = linked => {
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = `sn2-role-sheet-link-pick${linked ? ' sn2-role-sheet-link-pick--change' : ''}`;
+      pick.dataset.e2eId = `scriptnote-character-sheet-pick-${index}`;
+      pick.title = linked ? '連携するシートのトピックを選び直す' : 'シートのトピックと連携';
+      pick.setAttribute('aria-label', `${character?.name || 'キャラ'}: ${pick.title}`);
+      pick.innerHTML = typeof lucide === 'function' ? lucide(linked ? 'pencil' : 'link2', 12) : '…';
+      pick.addEventListener('click', event => {
+        event.stopPropagation();
+        openPicker();
+      });
+      return pick;
+    };
+    if (!path) {
+      if (canPick) cell.appendChild(buildPickButton(false));
+      return cell;
+    }
+    const name = String(link.name || '').trim() || path.split('/').pop().replace(/\.md$/i, '');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sn2-role-sheet-link';
+    button.dataset.e2eId = `scriptnote-character-sheet-link-${index}`;
+    button.textContent = name;
+    button.title = `${name}をサブパネルで開く`;
+    button.setAttribute('aria-label', button.title);
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      if (typeof openEntityInSplit !== 'function') {
+        if (typeof showStatus === 'function') showStatus('この画面ではトピックを開けません', true);
+        return;
+      }
+      try {
+        const opened = await openEntityInSplit(path, name);
+        if (opened === false && typeof showStatus === 'function') showStatus('トピックを開けませんでした', true);
+      } catch (error) {
+        console.error('キャラの元トピックを開けませんでした', error);
+        if (typeof showStatus === 'function') showStatus('トピックを開けませんでした', true);
+      }
+    });
+    const wrap = document.createElement('span');
+    wrap.className = 'sn2-role-sheet-link-wrap';
+    wrap.appendChild(button);
+    if (canPick) wrap.appendChild(buildPickButton(true));
+    cell.appendChild(wrap);
+    return cell;
+  },
+
+  _buildScenarioCharacterManagementRow(character, index, adapter, panelContainer) {
+    const row = document.createElement('tr');
+    row.className = 'sn2-role-manage-row';
+    row.dataset.roleId = character.id;
+    row.dataset.roleKind = 'character';
+    row.dataset.e2eId = `scriptnote-character-row-${index}`;
+    const selected = this._detailCharacterSelection.has(character.id);
+    row.classList.toggle('selected', selected);
+    const nameCell = document.createElement('td');
+    nameCell.className = 'sn2-role-manage-cell--name';
+    const nameEditor = document.createElement('div');
+    nameEditor.className = 'sn2-role-name-editor';
     const name = document.createElement('input');
     name.type = 'text';
     name.className = 'sn2-role-manage-name';
@@ -658,6 +1381,20 @@ Object.assign(ScriptNoteEditor.prototype, {
     name.title = 'キャラ名。タイプ名を含む他の役割名と重複できません';
     name.dataset.e2eId = `scriptnote-character-name-${index}`;
     name.setAttribute('aria-label', 'キャラ名');
+    name.readOnly = true;
+    name.dataset.rolePreviewKind = 'character';
+    name.dataset.rolePreviewId = character.id;
+    name.dataset.rolePreviewColumn = '_character';
+    name.classList.add('sn2-role-name-preview');
+    name.addEventListener('dblclick', () => {
+      name.readOnly = false;
+      name.classList.add('is-keyboard-editing');
+      name.select();
+    });
+    name.addEventListener('blur', () => {
+      name.readOnly = true;
+      name.classList.remove('is-keyboard-editing');
+    });
     name.addEventListener('change', () => {
       const previous = character.name;
       try {
@@ -672,13 +1409,34 @@ Object.assign(ScriptNoteEditor.prototype, {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
     });
-    nameCell.appendChild(name);
+    this._applyRoleManagementNamePreview(
+      name,
+      character,
+      this._roleManagementEffectiveAppearance('character', character, adapter),
+    );
+    const format = document.createElement('button');
+    format.type = 'button';
+    format.className = 'sn2-role-style-trigger';
+    format.textContent = '…';
+    format.title = `${character.name || 'キャラ'}の背景色と文字色を設定`;
+    format.setAttribute('aria-label', format.title);
+    format.dataset.e2eId = `scriptnote-character-style-preview-${index}`;
+    format.addEventListener('click', event => {
+      event.stopPropagation();
+      this._showCharacterNameStylePopup(format, character, adapter, panelContainer);
+    });
+    nameEditor.append(name, format);
+    nameCell.appendChild(nameEditor);
+    nameCell.classList.add('sn2-role-preview-cell');
+    nameCell.dataset.columnId = '_character';
+    if (this._getColumnBorderSet?.().has('_character')) nameCell.classList.add('sn2-role-preview-cell--bordered');
     const typeCell = document.createElement('td');
+    typeCell.className = 'sn2-role-manage-cell--linked-type';
     const typeSelect = document.createElement('select');
     typeSelect.className = 'sn2-role-type-select';
-    typeSelect.title = '対応タイプの見た目と機能を使用します。未設定では既定または旧表示を維持します';
+    typeSelect.title = 'タイプ未設定の行で、このキャラを選んだ時に補う初期タイプです';
     typeSelect.dataset.e2eId = `scriptnote-character-type-${index}`;
-    typeSelect.setAttribute('aria-label', `${character.name || 'キャラ'}の対応タイプ`);
+    typeSelect.setAttribute('aria-label', `${character.name || 'キャラ'}の初期タイプ`);
     const none = document.createElement('option');
     none.value = '';
     none.textContent = '（未設定）';
@@ -691,22 +1449,129 @@ Object.assign(ScriptNoteEditor.prototype, {
       typeSelect.appendChild(option);
     });
     typeSelect.addEventListener('change', () => {
-      this._pushUndo('キャラ対応タイプ変更');
+      this._pushUndo('キャラ初期タイプ変更');
       adapter.setCharacterType(character, typeSelect.value || null);
       adapter.touch();
-      this.renderDetailPanel(panelContainer);
+      this._refreshRoleManagementPreviews(panelContainer);
     });
     typeCell.appendChild(typeSelect);
-    const settingsCell = document.createElement('td');
-    settingsCell.className = 'sn2-role-manage-actions';
-    const edit = this._roleManagementButton('設定', 'この行で名前色、キャラ名、対応タイプを設定', () => {
-      row.classList.add('is-editing');
-      name.focus();
-      name.select();
-    }, `scriptnote-character-settings-${index}`);
-    settingsCell.append(edit);
-    row.append(handleCell, selectCell, colorCell, nameCell, typeCell, settingsCell);
+    row.append(
+      this._buildRoleManagementControlCell('character', row, character, adapter, panelContainer, index),
+      nameCell,
+      typeCell,
+      this._buildCharacterSheetLinkCell(character, index, panelContainer),
+    );
+    this._applyRoleManagementRowDecoration(row, this._roleManagementEffectiveAppearance('character', character, adapter));
+    this._markRoleManagementGridControls(row, index);
     return row;
+  },
+
+  _showCharacterNameStylePopup(anchor, character, adapter, panelContainer) {
+    if (typeof openFormatPopup !== 'function') return;
+    character.roleStyle = character.roleStyle && typeof character.roleStyle === 'object'
+      ? character.roleStyle : {};
+    const style = character.roleStyle;
+    openFormatPopup(anchor, {
+      values: {
+        bgColor: style.bgColor || '',
+        textColor: style.textColor || character.nameColor || '',
+      },
+      fields: ['bgColor', 'textColor'],
+      className: 'gb-fmt-popup--character-name-style',
+      onChange: (prop, value) => {
+        this._pushUndo('キャラ名書式変更');
+        if (value === '' || value == null) delete style[prop];
+        else style[prop] = value;
+        if (prop === 'textColor') character.nameColor = value || '';
+        adapter.touch();
+        this._refreshRowStyles();
+        this._markDirty();
+        this._refreshRoleManagementPreviews(panelContainer);
+      },
+      onReset: () => {
+        this._pushUndo('キャラ名書式リセット');
+        delete style.bgColor;
+        delete style.textColor;
+        character.nameColor = '';
+        adapter.touch();
+        this._refreshRowStyles();
+        this._markDirty();
+        this._refreshRoleManagementPreviews(panelContainer);
+      },
+    });
+  },
+
+  // キャラ表「キャラ名」見出し: タイプ表の列見出しと同じく、列全体の書式をまとめて設定する。
+  // 対象は選択中のキャラ、未選択なら全キャラ。保存先は各キャラの名前書式（キャラ列に表示）。
+  _showCharacterColumnBulkPopup(anchorEl, panelContainer) {
+    if (typeof openFormatPopup !== 'function') return;
+    const adapter = this._roleManagementAdapter();
+    const flagProps = new Set(['leftAccent', 'underline']);
+    const styleProps = [
+      'bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'fontFamily',
+      'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'accentColor',
+    ];
+    const getTargets = () => {
+      const selectedIds = this._detailCharacterSelection || new Set();
+      const selected = adapter.characters.filter(character => selectedIds.has(character.id));
+      return selected.length ? selected : adapter.characters;
+    };
+    const styleOf = character => {
+      if (!character.roleStyle || typeof character.roleStyle !== 'object') character.roleStyle = {};
+      return character.roleStyle;
+    };
+    const valueOf = (character, prop) => {
+      if (prop === 'textColor') return character.roleStyle?.textColor || character.nameColor || '';
+      if (flagProps.has(prop)) return !!character.roleStyle?.[prop];
+      return character.roleStyle?.[prop] ?? '';
+    };
+    // 対象キャラで値が揃っている書式だけを初期表示する（揃っていなければ未設定表示）。
+    const initialTargets = getTargets();
+    const values = {};
+    styleProps.forEach(prop => {
+      const candidates = initialTargets.map(character => valueOf(character, prop));
+      const shared = candidates.length && candidates.every(value => value === candidates[0]);
+      values[prop] = shared ? candidates[0] : (flagProps.has(prop) ? false : '');
+    });
+    const refresh = () => {
+      adapter.touch();
+      this._refreshRowStyles();
+      this._markDirty();
+      this._refreshRoleManagementPreviews(panelContainer);
+    };
+    openFormatPopup(anchorEl, {
+      values,
+      fields: [
+        'textColor', 'fontSize', 'fontFamily', 'bold', 'italic',
+        'textStrokeColor', 'textStrokeWidth', 'bgColor', 'leftAccent', 'underline', 'accentColor',
+      ],
+      verticalWriting: this.doc.editor?.viewMode === 'vertical',
+      className: 'gb-fmt-popup--colbulk',
+      positionAnchor: this._detailMultiSelectionPositionAnchor?.(anchorEl, panelContainer),
+      onChange: (prop, value) => {
+        const targets = getTargets();
+        if (!targets.length) return;
+        this._pushUndo('キャラ名書式一括変更');
+        targets.forEach(character => {
+          const style = styleOf(character);
+          if (value === '' || value === null || value === undefined || value === false) delete style[prop];
+          else style[prop] = value;
+          if (prop === 'textColor') character.nameColor = value || '';
+        });
+        refresh();
+      },
+      onReset: () => {
+        const targets = getTargets();
+        if (!targets.length) return;
+        this._pushUndo('キャラ名書式一括リセット');
+        targets.forEach(character => {
+          const style = styleOf(character);
+          styleProps.forEach(prop => delete style[prop]);
+          character.nameColor = '';
+        });
+        refresh();
+      },
+    });
   },
 
   _buildRoleManagementGrip(row, kind, item, adapter, panelContainer, rowIndex) {
@@ -720,7 +1585,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const stableSuffix = item?.id || `idx-${rowIndex}`;
     grip.dataset.e2eId = `scriptnote-${kind}-drag-${stableSuffix}`;
     grip.setAttribute('aria-label', `${item.name || (kind === 'type' ? 'タイプ' : 'キャラ')}を並べ替え`);
-    grip.title = 'ドラッグで並べ替え。Alt+上下キーでも移動できます';
+    grip.title = 'クリックでメニュー／ドラッグで並べ替え。Alt+上下キーでも移動できます';
     grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
     const finishMove = () => {
       adapter.touch();
@@ -742,12 +1607,21 @@ Object.assign(ScriptNoteEditor.prototype, {
     grip.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
       event.preventDefault();
-      grip.setPointerCapture?.(event.pointerId);
-      row.classList.add('sn2-dragging');
+      try { grip.setPointerCapture?.(event.pointerId); } catch (_) { /* 合成イベント等で捕捉できない時は grip 上の移動だけで続ける */ }
       let destination = null;
+      let dragging = false;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const threshold = globalThis.MeldexRowHandleMenu?.DRAG_THRESHOLD || 4;
       const autoScroll = globalThis.MeldexDragAutoScroll;
-      autoScroll?.beginPointerSession?.(event.clientX, event.clientY);
       const move = pointerEvent => {
+        // 閾値未満の移動はクリック（行メニュー）として扱い、並べ替えを始めない。
+        if (!dragging) {
+          if (Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY) < threshold) return;
+          dragging = true;
+          row.classList.add('sn2-dragging');
+          autoScroll?.beginPointerSession?.(startX, startY);
+        }
         autoScroll?.updatePointer?.(pointerEvent.clientX, pointerEvent.clientY);
         const targetRow = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest?.('.sn2-role-manage-row');
         if (!targetRow || targetRow.closest('section') !== row.closest('section')) return;
@@ -761,7 +1635,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         destination = dropAfter ? { afterId: targetId } : { beforeId: targetId };
       };
       const cleanup = () => {
-        autoScroll?.endPointerSession?.();
+        if (dragging) autoScroll?.endPointerSession?.();
         row.classList.remove('sn2-dragging');
         row.closest('tbody')?.querySelectorAll('.sn2-drop-above, .sn2-drop-below').forEach(candidate => {
           candidate.classList.remove('sn2-drop-above', 'sn2-drop-below');
@@ -782,7 +1656,97 @@ Object.assign(ScriptNoteEditor.prototype, {
       grip.addEventListener('pointerup', end);
       grip.addEventListener('pointercancel', cancel);
     });
+    globalThis.MeldexRowHandleMenu?.bind?.(grip, {
+      getRow: () => grip.closest('.sn2-role-manage-row') || row,
+      ariaLabel: `${kind === 'type' ? 'タイプ' : 'キャラ'}のメニュー`,
+      e2eId: `scriptnote-${kind}-row-menu`,
+      getItems: () => this._roleManagementRowMenuItems(kind, item, adapter, panelContainer, stableSuffix),
+    });
     return grip;
+  },
+
+  // タイプ表／キャラ表のハンドルクリックで開く行メニュー。
+  _roleManagementRowMenuItems(kind, item, adapter, panelContainer, stableSuffix) {
+    const isType = kind === 'type';
+    const list = isType ? adapter.types : adapter.characters;
+    const index = list.findIndex(candidate => candidate.id === item.id);
+    if (index < 0) return [];
+    const readOnly = !!this._readOnly;
+    const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
+    const selected = !!selection?.has(item.id);
+    const label = isType ? 'タイプ' : 'キャラ';
+    const rerender = () => {
+      adapter.touch();
+      this.renderDetailPanel(panelContainer);
+    };
+    const move = delta => {
+      this._pushUndo(isType ? 'タイプ並び替え' : 'キャラ並び替え');
+      if (adapter.move(kind, item.id, delta)) {
+        rerender();
+        requestAnimationFrame(() => {
+          panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${MeldexEscape.cssIdent(stableSuffix)}"]`)?.focus();
+        });
+      }
+    };
+    const items = [
+      { icon: 'chevronUp', label: '上へ移動', e2eId: `scriptnote-${kind}-row-menu-move-up`,
+        disabled: readOnly || index === 0, action: () => move(-1) },
+      { icon: 'chevronDown', label: '下へ移動', e2eId: `scriptnote-${kind}-row-menu-move-down`,
+        disabled: readOnly || index >= list.length - 1, action: () => move(1) },
+      { icon: 'copy', label: '複製', e2eId: `scriptnote-${kind}-row-menu-duplicate`, disabled: readOnly,
+        action: () => {
+          this._pushUndo(isType ? 'タイプ複製' : 'キャラ複製');
+          const created = adapter.clone(kind, item);
+          selection?.clear?.();
+          if (created?.id) selection?.add?.(created.id);
+          rerender();
+        } },
+    ];
+    if (!isType) {
+      const linked = !!String(item?.sheetLink?.path || '').trim();
+      items.push(
+        { type: 'separator' },
+        { icon: 'link2', label: linked ? 'シートのトピックを選び直す...' : 'シートのトピックと連携...',
+          e2eId: 'scriptnote-character-row-menu-sheet-link', disabled: readOnly,
+          action: () => this._showDbImportModal(panelContainer, { linkCharacterId: item.id }) },
+        ...(linked ? [{ icon: 'unlink', label: 'シートとの連携を解除', e2eId: 'scriptnote-character-row-menu-sheet-unlink',
+          disabled: readOnly, action: () => this._setCharacterSheetLink(item.id, null, panelContainer) }] : []),
+      );
+    }
+    items.push(
+      { type: 'separator' },
+      { icon: selected ? 'squareMinus' : 'squareCheck', label: selected ? '選択解除' : '選択',
+        e2eId: `scriptnote-${kind}-row-menu-select`,
+        action: () => {
+          if (selected) selection?.delete?.(item.id);
+          else selection?.add?.(item.id);
+          this.renderDetailPanel(panelContainer);
+        } },
+      { type: 'separator' },
+      { icon: 'trash2', label: '削除', danger: true, e2eId: `scriptnote-${kind}-row-menu-delete`, disabled: readOnly,
+        action: () => this._deleteManagedRoles(kind, [item], adapter, panelContainer) },
+    );
+    return items;
+  },
+
+  // キャラの「シート」列の連携先を設定・解除する（取り消し履歴つき）。
+  _setCharacterSheetLink(characterId, link, panelContainer) {
+    if (this._readOnly) return false;
+    const adapter = this._roleManagementAdapter();
+    const character = adapter.characters.find(candidate => candidate.id === characterId);
+    if (!character) return false;
+    const nextPath = String(link?.path || '').trim();
+    const currentPath = String(character.sheetLink?.path || '').trim();
+    if (nextPath === currentPath && (!nextPath || String(link?.name || '') === String(character.sheetLink?.name || ''))) return false;
+    this._pushUndo(nextPath ? 'キャラのシート連携' : 'キャラのシート連携解除');
+    if (nextPath) {
+      character.sheetLink = { path: nextPath, name: String(link.name || ''), sheet: String(link.sheet || '') };
+    } else {
+      delete character.sheetLink;
+    }
+    adapter.touch();
+    if (panelContainer) this.renderDetailPanel(panelContainer);
+    return true;
   },
 
   _deleteManagedRoles(kind, selected, adapter, panelContainer, onDeleted = null) {
@@ -968,23 +1932,23 @@ Object.assign(ScriptNoteEditor.prototype, {
       const bulk = document.createElement('select');
       bulk.className = 'sn2-role-bulk-type';
       bulk.dataset.e2eId = 'scriptnote-character-bulk-type-select';
-      bulk.title = '選択したキャラへ一括設定する対応タイプ';
-      bulk.setAttribute('aria-label', '一括設定する対応タイプ');
+      bulk.title = '選択したキャラへ一括設定する初期タイプ';
+      bulk.setAttribute('aria-label', '一括設定する初期タイプ');
       const none = document.createElement('option');
       none.value = '';
-      none.textContent = '対応タイプ: 未設定';
+      none.textContent = '初期タイプ: 未設定';
       bulk.appendChild(none);
       adapter.types.forEach(type => {
         const option = document.createElement('option');
         option.value = type.id;
-        option.textContent = `対応タイプ: ${type.name}`;
+        option.textContent = `初期タイプ: ${type.name}`;
         bulk.appendChild(option);
       });
       toolbar.appendChild(bulk);
-      toolbar.appendChild(this._roleManagementButton('一括設定', '選択したキャラの対応タイプをまとめて変更', () => {
+      toolbar.appendChild(this._roleManagementButton('一括設定', '選択したキャラの初期タイプをまとめて変更', () => {
         const selected = adapter.characters.filter(character => selection.has(character.id));
         if (!selected.length) return;
-        this._pushUndo('キャラ対応タイプ一括変更');
+        this._pushUndo('キャラ初期タイプ一括変更');
         selected.forEach(character => adapter.setCharacterType(character, bulk.value || null));
         rerender();
       }, 'scriptnote-character-bulk-type'));

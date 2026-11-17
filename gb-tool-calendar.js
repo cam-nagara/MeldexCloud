@@ -500,10 +500,23 @@ class CalendarComponent extends ToolComponent {
     const cal = this._selectedCalendar() || this._firstCalendar();
     if (cal && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
+      this._persistCalendarVisibleOn(cal);
       this._renderCalendarList?.();
     }
     return cal?.id || '';
+  }
+
+  // 予定の追加先や選択で非表示のカレンダーを表示に戻した時の保存。画面上は表示のまま
+  // 続行し、保存できなかったことだけを原因つきで知らせる（再読み込みで非表示へ戻るため）。
+  _persistCalendarVisibleOn(cal) {
+    return apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 })
+      .then(() => true)
+      .catch(error => {
+        const detail = String(error?.userMessage || error?.message || '').trim();
+        const base = 'カレンダー「' + (cal.name || '無題') + '」の表示設定を保存できませんでした';
+        this._showStatus?.(detail ? base + ': ' + detail : base, true);
+        return false;
+      });
   }
 
   _ensureSelectedCalendar() {
@@ -521,7 +534,7 @@ class CalendarComponent extends ToolComponent {
     localStorage.setItem('gb:cal-selected-id', cal.id);
     if (options.ensureVisible !== false && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
+      this._persistCalendarVisibleOn(cal);
     }
     if (options.render !== false) {
       this._renderCalendarList();
@@ -662,6 +675,16 @@ class CalendarComponent extends ToolComponent {
   // 操作履歴パネルの両方と連動する。共通履歴が無い環境（将来の単独起動・テストスタブ向けの保険。
   // 現状このコンポーネントを読み込む単独起動アプリは存在しない）は、従来どおり
   // this._undoStack/_redoStack の自己完結スタックへ自動フォールバックし挙動を変えない。
+  // 保存の前に取っておき、保存が成功した後で _pushUndo(label, snapshot) へ渡す。
+  // 失敗した操作の偽履歴を残さないため。
+  _captureUndoSnapshot() {
+    return {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    };
+  }
+
   _pushUndo(label, snapshot) {
     const snap = snapshot || {
       events: this._snapshotEventsForUndo(),

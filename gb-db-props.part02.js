@@ -155,7 +155,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
 
 // エントリ列の右クリックメニュー
 // ギャラリー/カンバンカード右クリックメニュー
-function showDbCardContextMenu(e, dbPath, entityName, propName) {
+function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}) {
   closeColHeaderMenu();
   const tableCtx = e?.target?.closest?.('tbody')?._meldexCtx;
   const ctx = tableCtx && !tableCtx.destroyed ? tableCtx : typeof _dbPaneContextFromEvent === 'function'
@@ -251,7 +251,10 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     { icon: 'link2', label: 'パスをコピー', action: () => {
       const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
       const copyPath = window.GBPathUtils?.resolveForClipboard?.(ep, base) ?? ep;
-      navigator.clipboard.writeText(copyPath).then(() => showStatus('パスをコピーしました'));
+      return navigator.clipboard.writeText(copyPath).then(
+        () => showStatus('パスをコピーしました'),
+        () => showStatus('パスをコピーできませんでした', true),
+      );
     }},
     ...(topicPlacementSource ? [
       { type: 'sep' },
@@ -311,14 +314,21 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       el.textContent = item.label;
     }
     if (item.danger) el.classList.add('danger');
-    el.addEventListener('click', () => { closeColHeaderMenu(); item.action(); });
+    el.addEventListener('click', () => { closeColHeaderMenu(); return _dbRunMenuItemAction(item.action); });
     menu.appendChild(el);
   });
   // positionPopup() でマウス位置基準の配置 + ビューポートクランプを一括処理
   // (既知バグ #3「手動 zoom 計算残存」の修正)
   document.body.appendChild(menu);
-  positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  // 行ハンドルのクリック（MeldexRowHandleMenu）は対象行の直下へ開く。
+  const anchorRect = menuOptions?.anchorRect || { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+  if (menuOptions?.anchorRect) menu.dataset.e2eId = 'db-row-handle-menu';
+  positionPopup(menu, anchorRect, { prefer: 'below' });
   _installColHeaderMenuDismissHandlers();
+  if (menuOptions?.focusFirst) {
+    const first = menu.querySelector('.gb-context-menu-item');
+    if (first) { first.tabIndex = -1; first.focus({ preventScroll: true }); }
+  }
 }
 
 function _hasDependencyPairProps(pts) {
@@ -841,7 +851,7 @@ function _addColumnDisplayOrderItem(root, propName, checked, afterItem) {
   actions.className = 'col-vis-actions';
   if (!root?._productionWriteBlocked) {
     const copyBtn = _dbColumnActionButton('copy', '列を複製: ' + propName, '', '複製');
-    copyBtn.addEventListener('click', () => _duplicateColumnFromDisplayOrderModal(root, propName, item));
+    copyBtn.addEventListener('click', () => _dbRunMenuItemAction(_duplicateColumnFromDisplayOrderModal, root, propName, item));
     actions.appendChild(copyBtn);
   }
   if (!root?._productionWriteBlocked
@@ -944,8 +954,20 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   const { dbPath, ctx, pivotData } = _dbColumnModalContext(root);
   if (!dbPath || !propName) return;
   const newName = _dbUniqueColumnName(propName + ' コピー', _dbColumnModalNames(root, dbPath, ctx));
-  const pt = JSON.parse(JSON.stringify((getPropertyTypes(dbPath) || {})[propName] || { type: 'text' }));
-  await Promise.resolve(setPropertyType(dbPath, newName, pt));
+  const pt = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || { type: 'text' }));
+  let saved;
+  try {
+    saved = await Promise.resolve(setPropertyType(dbPath, newName, pt, ctx));
+  } catch (error) {
+    console.warn('[Meldex] 列の複製に失敗しました', error);
+    if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした: ${error?.message || error}`, true);
+    return false;
+  }
+  if (saved === false) {
+    // 保護された列などで保存できなかった。値のコピーや表示順の更新へ進まない。
+    if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした。列の保護設定や編集権限を確認してください`, true);
+    return false;
+  }
   _copyColumnViewConfig(dbPath, propName, newName);
   _addColumnDisplayOrderItem(root, newName, true, item);
   _saveColumnDisplayOrderState(root);
@@ -954,6 +976,7 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   else if (typeof renderPivot === 'function') renderPivot(ctx);
   const suffix = result.failed ? `（${result.failed}件失敗）` : '';
   if (typeof showStatus === 'function') showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件${suffix}`, !!result.failed);
+  return true;
 }
 
 async function _deleteColumnFromDisplayOrderModal(root, propName, item) {

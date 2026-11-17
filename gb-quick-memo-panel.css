@@ -24,11 +24,14 @@
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  padding: 4px 4px 4px 8px;
-  background: var(--ui-pane-tabbar-bg, var(--bg3, var(--bg2)));
-  border-bottom: 1px solid var(--ui-border, var(--border));
+  padding: 0 var(--ui-space-2) 0 var(--ui-space-4);
+  background: var(--ui-header-bg);
+  border-bottom: 1px solid var(--ui-border);
   cursor: move;
   user-select: none;
+  min-height: var(--ui-panel-header-height);
+  font-size: var(--ui-panel-header-font-size);
+  box-sizing: border-box;
 }
 
 .gb-quick-memo-panel-icon {
@@ -57,8 +60,8 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: var(--ui-h-xs, 22px);
+  height: var(--ui-h-xs, 22px);
   padding: 0;
   background: transparent;
   border: none;
@@ -133,8 +136,8 @@
   }
 
   .gb-quick-memo-panel[data-mobile-sheet-eligible="1"] .gb-quick-memo-panel-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 }
 

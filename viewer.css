@@ -105,7 +105,7 @@ body[data-viewer-file-drop="ready"]::after {
 .viewer-ann-note { position: relative; width: 100%; height: 100%; box-sizing: border-box; color: #333; padding: 8px;
   border-radius: 4px; font-size: 12px; border: 1px solid rgba(0,0,0,0.15); overflow: hidden; }
 .viewer-ann-note-textarea { width: 100%; height: 100%; background: transparent; border: none;
-  color: #333; font-size: 12px; resize: both; outline: none; font-family: inherit; }
+  color: #333; font-size: var(--ui-font-12, 12px); resize: both; outline: none; font-family: inherit; }
 
 /* アノテートのフロートパネル（viewer-annotation-toolbar.js）。本体の #ann-toolbar と同じ
    共通クラス（.floating-toolbar / .ann-tool / .ann-width-control / .gb-color-swatch）を使い、

@@ -514,7 +514,13 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath) {
       if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleIdle === 'function') {
         MeldexAutoLink.scheduleIdle();
       }
-    } catch {}
+    } catch (error) {
+      // 追加・同期した行を表示し直す読込が失敗すると、画面が古いまま残る。黙らせない。
+      console.warn('[Meldex] シートの最新の内容を読み込めませんでした', error);
+      if (isCurrent() && typeof showStatus === 'function') {
+        showStatus('シートの最新の内容を読み込めませんでした。表示が古い可能性があります: ' + (error?.message || error), true);
+      }
+    }
   };
   renderCtx._dbEntityReloadTimer = setTimeout(refresh, 0);
   return renderCtx;
@@ -532,10 +538,23 @@ function _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx) {
     for (const item of items) {
       if (typeof _shouldRunFrontendAutoFillOnCreate === 'function' && !_shouldRunFrontendAutoFillOnCreate(item.response)) continue;
       if (typeof _autoFillOnCreate === 'function') {
-        try { await _autoFillOnCreate(dbPath, item.path, {}); } catch {}
+        try {
+          await _autoFillOnCreate(dbPath, item.path, {});
+        } catch (error) {
+          // 行の追加自体は保存済み。自動入力だけが失敗したことを伝える。
+          console.warn('[Meldex] 追加した行の自動入力に失敗しました', error);
+          if (typeof showStatus === 'function') {
+            showStatus(`追加した行「${item.name}」の自動入力ができませんでした: ${error?.message || error}`, true);
+          }
+        }
       }
     }
-  }).then(() => _dbReloadAfterEntityCreate(renderCtx, dbPath, items.map(item => item.name))).catch(() => {});
+  }).then(() => _dbReloadAfterEntityCreate(renderCtx, dbPath, items.map(item => item.name))).catch((error) => {
+    console.warn('[Meldex] 追加した行を表示し直せませんでした', error);
+    if (typeof showStatus === 'function') {
+      showStatus('追加した行を表示し直せませんでした: ' + (error?.message || error), true);
+    }
+  });
 }
 
 
@@ -672,7 +691,7 @@ function _handleRelationLinkClick(link, ctx) {
     const mi = document.createElement('div');
     mi.className = 'gb-context-menu-item';
     mi.innerHTML = lucide(it.icon, 14) + ' ' + it.label;
-    mi.addEventListener('click', () => { menu.remove(); it.action(); });
+    mi.addEventListener('click', () => { menu.remove(); return _dbRunMenuItemAction(it.action); });
     menu.appendChild(mi);
   });
   const rect = link.getBoundingClientRect();

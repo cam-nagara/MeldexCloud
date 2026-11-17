@@ -749,13 +749,13 @@
     if (!collapsed) {
       if (!tags.length) {
         const emptyWrap = document.createElement('div');
-        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.style.marginLeft = 'var(--ui-row-indent)';
         emptyWrap.appendChild(emptyRow('タグなし'));
         wrap.appendChild(emptyWrap);
       } else {
         const tagsGrid = document.createElement('div');
         tagsGrid.className = 'gb-tag-tree-grid';
-        tagsGrid.style.marginLeft = '18px';
+        tagsGrid.style.marginLeft = 'var(--ui-row-indent)';
         tags.forEach(tag => {
           if (!window.MeldexTagTreeRuntime?.takeTag
             || window.MeldexTagTreeRuntime.takeTag(budget)) {
@@ -771,7 +771,6 @@
   function renderGroupNode(group, groupsById, depth, budget) {
     const adminGroup = group?._dictionary_scope === 'admin';
     const wrap = document.createElement('div');
-    wrap.style.marginLeft = (depth * 12) + 'px';
     const key = rowKey('group', group.id);
     const head = treeRowBase('group', key, depth);
     head.appendChild(iconButton(group.collapsed ? 'chevron-right' : 'chevron-down', group.collapsed ? '展開' : '折りたたみ', () => toggleGroupCollapsed(group), '', 'tag-management-group-toggle-' + safeKeyPart(group.id)));
@@ -826,7 +825,7 @@
       if (group.tags.length) {
         const tagsGrid = document.createElement('div');
         tagsGrid.className = 'gb-tag-tree-grid';
-        tagsGrid.style.marginLeft = '18px';
+        tagsGrid.style.marginLeft = 'var(--ui-row-indent)';
         group.tags.forEach(tag => {
           if (!window.MeldexTagTreeRuntime?.takeTag
             || window.MeldexTagTreeRuntime.takeTag(budget)) {
@@ -837,7 +836,7 @@
       }
       if (group.children.length) {
         const childrenBox = document.createElement('div');
-        childrenBox.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
+        childrenBox.style.cssText = 'margin-left:var(--ui-row-indent);display:flex;flex-direction:column;gap:2px;';
         group.children.forEach(child => childrenBox.appendChild(
           renderGroupNode(child, groupsById, depth + 1, budget),
         ));
@@ -845,7 +844,7 @@
       }
       if (!group.tags.length && !group.children.length) {
         const emptyWrap = document.createElement('div');
-        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.style.marginLeft = 'var(--ui-row-indent)';
         emptyWrap.appendChild(emptyRow('空のグループ'));
         wrap.appendChild(emptyWrap);
       }
@@ -902,13 +901,7 @@
     row.setAttribute('role', 'treeitem');
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
-    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
-    if (isSelected(key)) {
-      row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 22%, transparent)';
-      row.style.outline = '1px solid color-mix(in srgb, var(--ui-selection-bg) 55%, transparent)';
-    }
-    row.addEventListener('mouseenter', () => { if (!isSelected(key)) row.style.background = 'var(--bg3)'; });
-    row.addEventListener('mouseleave', () => { if (!isSelected(key)) row.style.background = ''; });
+    // 行の寸法・選択表示は共通トークン（--ui-row-*）を使う CSS 側で決める（aria-selected で切替）
     return row;
   }
 

@@ -190,7 +190,10 @@ async function _orphanRemovedNoteLines(prevMd, currMd, filePath) {
           target_file: filePath,
           item_id: id,
           cascade_container: true,
-        }).catch(() => {})
+        }).catch(error => {
+          // 行の削除自体は保存済み。コメントの切り離しだけ失敗した記録を残す。
+          console.warn('[note] 削除した行のコメントを切り離せませんでした', filePath, id, error);
+        })
       ));
     }
     // Audit-P1 H-1: 保存完了後にコメントバッジキャッシュを無効化し、
@@ -203,9 +206,13 @@ async function _orphanRemovedNoteLines(prevMd, currMd, filePath) {
         if (pc && pc.dataset.path === filePath) {
           CommentBadges.refreshNote(filePath, pc);
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('[note] コメント表示を更新できませんでした', filePath, error);
+      }
     }
-  } catch (_) {}
+  } catch (error) {
+    console.warn('[note] 削除した行のコメント整理に失敗しました', filePath, error);
+  }
 }
 
 // ブロック要素から line-id を取得。未設定なら新規採番して挿入する（Y案: 遅延付与）。
@@ -935,10 +942,21 @@ async function _openLinkInCurrentTab(filePath, name) {
     // DB内エントリかどうか判定
     const parent = filePath.replace(/[/\\][^/\\]+$/, '');
     let isDbEntry = false;
-    try {
-      const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent));
-      if (meta && meta.property_types && Object.keys(meta.property_types).length > 0) isDbEntry = true;
-    } catch {}
+    // 保存先の直下（区切りなし）のノートはシートの中ではないため確認しない。
+    if (parent !== filePath) {
+      try {
+        const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent), { silentError: true });
+        if (meta && meta.property_types && Object.keys(meta.property_types).length > 0) isDbEntry = true;
+      } catch (error) {
+        // 判定できないままノートとして開くと、シートのトピックを通常ノートの
+        // 画面で開いて誤編集し得る。安全側に倒して開かずに理由を表示する。
+        console.warn('[note] リンク先の種類を確認できませんでした', filePath, error);
+        const reason = typeof _noteUserFacingReason === 'function'
+          ? _noteUserFacingReason(error, '通信状態を確認してください') : '通信状態を確認してください';
+        showStatus(`「${name || filePath}」を開けませんでした: シートのトピックかどうかを確認できませんでした（${reason}）`, true);
+        return false;
+      }
+    }
     if (isDbEntry && typeof selectDatabase === 'function' && typeof selectEntity === 'function') {
       await selectDatabase(parent);
       await selectEntity(filePath);
@@ -984,10 +1002,10 @@ function onAutoLinkClick(el, e) {
     }
   }
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLinkInRightSidebar(filePath, name, {
+  return _runNoteLinkOpen(name, () => openLinkInRightSidebar(filePath, name, {
     linkType: el.dataset.linkType || el.dataset.type || '',
     sourcePaneId: el.closest('.gb-pane')?.dataset?.paneId || '',
-  });
+  }));
 }
 
 // ダブルクリックは現在のパネルでリンク先を開く
@@ -995,7 +1013,7 @@ function onAutoLinkDblClick(el) {
   const filePath = _resolveAutoLinkPath(el.dataset.path);
   if (!filePath) return;
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLink(filePath, name);
+  return _runNoteLinkOpen(name, () => openLink(filePath, name));
 }
 
 function _contextLinkLabel(el, fallbackPath) {
@@ -1040,8 +1058,8 @@ function _resolveContextLinkTarget(rawTarget) {
       sourcePaneId,
       element: chatLink,
       openAction: () => {
-        if (typeof openChatMarkdownTarget === 'function') openChatMarkdownTarget(path);
-        else openLink(path, _contextLinkLabel(chatLink, path));
+        if (typeof openChatMarkdownTarget === 'function') return openChatMarkdownTarget(path);
+        else return openLink(path, _contextLinkLabel(chatLink, path));
       },
     };
   }
@@ -1057,8 +1075,8 @@ function _resolveContextLinkTarget(rawTarget) {
       sourcePaneId,
       element: chatPropLink,
       openAction: () => {
-        if (typeof _openEntityChat === 'function') _openEntityChat(path);
-        else openLink(path, _contextLinkLabel(chatPropLink, path));
+        if (typeof _openEntityChat === 'function') return _openEntityChat(path);
+        else return openLink(path, _contextLinkLabel(chatPropLink, path));
       },
     };
   }
@@ -1185,10 +1203,7 @@ function _showLinkContextMenu(e, linkTarget) {
     });
     menu.appendChild(item);
   };
-  addItem('externalLink', 'リンク先を開く', () => {
-    if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
-    else openLink(linkTarget.path, linkTarget.label);
-  });
+  addItem('externalLink', 'リンク先を開く', () => _openContextLinkCurrent(linkTarget));
   addItem('copy', 'パスをコピー', () => _copyLinkContextPath(linkTarget));
   const browserUrl = String(linkTarget.path || '').trim();
   const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
@@ -1341,25 +1356,41 @@ document.addEventListener('contextmenu', (e) => {
 let _linkActivationTimer = null;
 let _linkActivationToken = 0;
 
+// リンクを開く処理を完了まで待ち、失敗（例外・拒否）を理由つきで表示する。
+// 旧実装は完了を待たずに呼んでおり、失敗が無言で消えていた。
+function _runNoteLinkOpen(label, open) {
+  let pending;
+  try {
+    pending = Promise.resolve(open());
+  } catch (error) {
+    pending = Promise.reject(error);
+  }
+  return pending.catch(error => {
+    console.warn('[note] リンク先を開けませんでした', label, error);
+    const reason = typeof _noteUserFacingReason === 'function'
+      ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+    if (typeof showStatus === 'function') showStatus(`「${label || 'リンク先'}」を開けませんでした: ${reason}`, true);
+    return false;
+  });
+}
+
 function _openContextLinkCurrent(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
-    linkTarget.openAction();
-    return;
+    return _runNoteLinkOpen(linkTarget.label, () => linkTarget.openAction());
   }
-  openLink(linkTarget.path, linkTarget.label);
+  return _runNoteLinkOpen(linkTarget.label, () => openLink(linkTarget.path, linkTarget.label));
 }
 
 function _openContextLinkRightSidebar(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
-    linkTarget.openAction();
-    return;
+    return _runNoteLinkOpen(linkTarget.label, () => linkTarget.openAction());
   }
-  openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
+  return _runNoteLinkOpen(linkTarget.label, () => openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
-  });
+  }));
 }
 
 function _consumeUnifiedLinkEvent(e, linkTarget) {

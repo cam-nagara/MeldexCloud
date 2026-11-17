@@ -114,14 +114,51 @@ function _isEditMutationShellVerb(verb) {
 
 // --- データ取得 ---
 
+const _shellVerbInflight = new Map(); // path key -> Promise
+// OS項目が無い環境（クラウド版など）や項目0件の場所は、空の結果を短時間だけ記憶する。
+// 毎回「読み込み中...」行が出て消えるちらつきを防ぎ、一時的な失敗は1分後に取り直す。
+const _shellVerbEmptyAt = new Map(); // path key -> 取得時刻
+const _SHELL_VERB_EMPTY_TTL_MS = 60 * 1000;
+
+function _shellVerbEmptyFresh(cacheKey) {
+  const at = _shellVerbEmptyAt.get(cacheKey);
+  if (at == null) return false;
+  if (Date.now() - at < _SHELL_VERB_EMPTY_TTL_MS) return true;
+  _shellVerbEmptyAt.delete(cacheKey);
+  return false;
+}
+
 async function fetchShellVerbs(path) {
   const cacheKey = _shellVerbCacheKey(path);
   if (_shellVerbCache[cacheKey]) return _shellVerbCache[cacheKey];
-  try {
-    const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
-    if (verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
-    return verbs;
-  } catch { return []; }
+  if (_shellVerbEmptyFresh(cacheKey)) return [];
+  // 「…」へのホバーで先読みした取得と、メニュー表示時の取得を1回にまとめる。
+  if (_shellVerbInflight.has(cacheKey)) return _shellVerbInflight.get(cacheKey);
+  const request = (async () => {
+    try {
+      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
+      if (Array.isArray(verbs) && verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
+      else if (Array.isArray(verbs)) _shellVerbEmptyAt.set(cacheKey, Date.now());
+      return Array.isArray(verbs) ? verbs : [];
+    } catch {
+      _shellVerbEmptyAt.set(cacheKey, Date.now());
+      return [];
+    } finally { _shellVerbInflight.delete(cacheKey); }
+  })();
+  _shellVerbInflight.set(cacheKey, request);
+  return request;
+}
+
+// OS項目の取得はPowerShell起動を伴い1秒前後かかる。メニュー本体は待たせず即表示し、
+// 取得済みの時だけ表示前に組み込む（未取得なら表示後にメニュー下端へ追記する）。
+function hasCachedShellVerbs(path) {
+  const cacheKey = _shellVerbCacheKey(path);
+  return !!_shellVerbCache[cacheKey] || _shellVerbEmptyFresh(cacheKey);
+}
+
+function prefetchShellVerbs(path) {
+  if (!path || hasCachedShellVerbs(path)) return;
+  fetchShellVerbs(path).catch(() => {});
 }
 
 async function executeShellVerb(path, verbRaw) {

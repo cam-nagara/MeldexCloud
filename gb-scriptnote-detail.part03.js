@@ -125,12 +125,13 @@
       const borderSet = this._getColumnBorderSet();
       const colLabels = this.doc.editor?.columnLabels || {};
       const countDef2 = this._getCountDef();
-      const defaultLabels = { _gutter: countDef2.primaryLabel, _gutter2: countDef2.secondaryLabel, _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
-      const visCols2 = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
+      const defaultLabels = { _gutter: countDef2.primaryLabel, _gutter2: countDef2.secondaryLabel, _character: 'キャラ', _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
+      const visCols2 = { _handle: true, _gutter: true, _gutter2: true, _character: true, _role: true, _status: statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
       if (!statusEnabled) visCols2._status = false;
       const allCols = [];
       if (visCols2._gutter !== false) allCols.push({ id: '_gutter', label: colLabels._gutter || defaultLabels._gutter });
       if (visCols2._gutter2 !== false) allCols.push({ id: '_gutter2', label: colLabels._gutter2 || defaultLabels._gutter2 });
+      if (visCols2._character !== false) allCols.push({ id: '_character', label: colLabels._character || defaultLabels._character });
       if (visCols2._role !== false) allCols.push({ id: '_role', label: colLabels._role || defaultLabels._role });
       if (visCols2._status !== false) allCols.push({ id: '_status', label: colLabels._status || defaultLabels._status });
       if (visCols2._text !== false) allCols.push({ id: '_text', label: colLabels._text || defaultLabels._text });

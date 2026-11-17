@@ -67,12 +67,15 @@ body {
 }
 
 .sa-secondary-panel-header {
-  min-height: 44px;
+  min-height: var(--ui-panel-header-height);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px 6px 12px;
-  border-bottom: 1px solid var(--border, #2b323b);
+  padding: 0 var(--ui-space-4);
+  border-bottom: 1px solid var(--ui-border, var(--border, #2b323b));
+  font-size: var(--ui-panel-header-font-size);
+  background: var(--ui-header-bg, transparent);
+  box-sizing: border-box;
 }
 
 .sa-secondary-panel-header strong {
@@ -88,7 +91,7 @@ body {
 .sa-secondary-panel button:not(.gb-inner-tab),
 .sa-secondary-panel select,
 .sa-secondary-panel input {
-  min-height: 32px;
+  min-height: var(--ui-h-md, 32px);
 }
 
 .sa-secondary-panel button:not(.gb-inner-tab),

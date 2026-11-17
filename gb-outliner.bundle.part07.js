@@ -1,3 +1,191 @@
+function _outlinerKeyboardIsExpanded(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded === 'true';
+}
+
+// 標準Tree View操作（§2.4）: 閉じている子項目なら親へ選択を移す
+function _outlinerKeyboardParentNode(nodeEl) {
+  const container = nodeEl?.parentElement || null;
+  return container?.closest?.('.tree-node') || null;
+}
+
+// 標準Tree View操作（§2.4）: 展開済みの親なら最初の子へ選択を移す
+function _outlinerKeyboardFirstChildNode(nodeEl) {
+  const childrenDiv = nodeEl?.querySelector?.(':scope > .tree-children') || null;
+  return childrenDiv?.querySelector?.(':scope > .tree-node') || null;
+}
+
+function _handleOutlinerTreeKeydown(event) {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
+  const target = event.target;
+  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
+  if (!scopeSelector) return;
+  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
+  event.preventDefault();
+  event.stopPropagation();
+  _outlinerKeyboardMarkActive();
+  if (event.key === 'ArrowLeft') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current) && _outlinerKeyboardIsExpanded(current)) {
+      _outlinerKeyboardToggle(current, false);
+      return;
+    }
+    // 展開中でない（閉じた子項目・葉）場合は親へ選択を移す
+    const parent = _outlinerKeyboardParentNode(current);
+    if (parent) _outlinerKeyboardSelectNode(parent);
+    return;
+  }
+  if (event.key === 'ArrowRight') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current)) {
+      if (!_outlinerKeyboardIsExpanded(current)) {
+        _outlinerKeyboardToggle(current, true);
+        return;
+      }
+      // 展開済みなら最初の子へ選択を移す
+      const firstChild = _outlinerKeyboardFirstChildNode(current);
+      if (firstChild) {
+        _outlinerKeyboardSelectNode(firstChild);
+      } else {
+        // 展開直後（子の読み込み中）に2打目のArrowRightが押された場合、
+        // まだ子ノードがDOMに存在せずno-opになってしまう。読み込み完了後に
+        // 最初の子へフォーカス移動するデフォルト動作を予約しておく
+        // （gb-outliner.part01.part02.js の読み込み完了処理が消化する）。
+        const childrenDiv = current.querySelector?.(':scope > .tree-children') || null;
+        if (childrenDiv && childrenDiv.dataset.loading === 'true') {
+          childrenDiv._outlinerPendingArrowRightFocusNode = current;
+        }
+      }
+    }
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (current) _outlinerKeyboardActivateNode(current);
+    return;
+  }
+  if (event.key === 'F2') {
+    if (current) _outlinerKeyboardStartRename(current);
+    return;
+  }
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
+  }
+  const nodes = _getVisibleTreeNodes(scopeSelector);
+  if (!nodes.length) return;
+  const rawIndex = nodes.indexOf(current);
+  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
+  const nextIndex = event.key === 'ArrowUp'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(nodes.length - 1, currentIndex + 1);
+  _outlinerKeyboardSelectNode(nodes[nextIndex]);
+}
+
+// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
+// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
+// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
+// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
+// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
+// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
+// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
+// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
+// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
+// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
+// （非仮想化フォルダの既存挙動は変更しない）。
+function _outlinerKeyboardVirtualContainerFor(nodeEl) {
+  const childrenDiv = nodeEl && nodeEl.parentElement;
+  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
+}
+
+function _outlinerKeyboardTryVirtualStep(current, key) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
+
+  let childrenDiv = null;
+  let path = null;
+  let recoveringUnmounted = false;
+  if (current) {
+    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
+    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
+    path = current._nodeData && current._nodeData.path;
+  } else {
+    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
+    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
+    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
+    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
+    childrenDiv = vr.containerForPath(lastPath);
+    if (!childrenDiv) return false;
+    path = lastPath;
+    recoveringUnmounted = true;
+  }
+
+  const state = childrenDiv._virtualState;
+  if (!state || !path) return false;
+  const currentIndex = state.flat.findIndex(entry => entry.id === path);
+  if (currentIndex < 0) return false;
+
+  const delta = key === 'ArrowUp' ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
+  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
+  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
+  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
+
+  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
+  if (!target) return false;
+  _outlinerKeyboardSelectNode(target);
+  return true;
+}
+
+(function initOutlinerTreeKeyboardNavigation() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
+  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
+})();
+
+// ドラッグ中のホイールスクロール対応
+(function() {
+  let _isDragging = false;
+  document.addEventListener('dragstart', () => { _isDragging = true; });
+  document.addEventListener('dragend', () => { _isDragging = false; });
+  document.addEventListener('drop', () => { _isDragging = false; });
+  // ドラッグ中にホイールでスクロール可能にする
+  const scrollTargets = ['tree-scroll-container'];
+  scrollTargets.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('wheel', (e) => {
+      if (!_isDragging) return;
+      e.preventDefault();
+      el.scrollTop += e.deltaY;
+    }, { passive: false });
+  });
+})();
+
+(function initOutlinerLassoSelection() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  const LASSO_DRAG_THRESHOLD = 4;
+  let active = false;
+  let tracking = false;
+  let box = null;
+  let startX = 0;
+  let startY = 0;
+  let startClientX = 0;
+  let startClientY = 0;
+  let selectionMode = 'replace';
+  let selectionScope = '#outliner-tree,#body-home';
+  let baseSelection = [];
+  let pointerId = null;
+  let pointerCaptured = false;
+  let _savedScrollerPosition = null;
+
+  function _outlinerLassoMode(event) {
+    if (event.ctrlKey || event.metaKey) return 'toggle';
+    if (event.shiftKey) return 'add';
+    return 'replace';
+  }
 
   function _outlinerLassoScopeFromTarget(target) {
     if (target?.closest?.('#body-home')) return '#body-home';
@@ -186,7 +374,19 @@ async function _uploadOutlinerDroppedFile(file, parentPath) {
   }
 }
 
-document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
+// 行・ツリーへのOSドロップ取込。読み取りや取り込みの途中で失敗しても、原因つきで表示する。
+async function _outlinerImportOsDropSafely(event, targetItem) {
+  try {
+    return await _folderImportOsDrop(event, targetItem);
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    if (typeof _outlinerReportFailure === 'function') _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    else showStatus('ファイルを取り込めませんでした', true);
+    return 0;
+  }
+}
+
+async function _outlinerHandleTreeOsDrop(e) {
   e.preventDefault();
   const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
   let parentPath = '';
@@ -198,7 +398,7 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
   if (typeof _folderImportOsDrop === 'function') {
-    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
+    await _outlinerImportOsDropSafely(e, { type: 'folder', path: parentPath || state.vaultPath });
     return;
   }
   const progress = window.MeldexOperationProgress?.begin?.({
@@ -212,7 +412,15 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  let results;
+  try {
+    results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    progress?.fail?.({ error: error });
+    _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    return;
+  }
   results.forEach((result, index) => {
     progress?.update?.({ processed: index + 1, currentItem: result.name || files[index]?.name || '' });
   });
@@ -220,8 +428,11 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
   } catch (error) {
+    // 取り込み自体は済んでいる。表示の更新失敗を取り込み失敗と混同させない。
+    console.error('[outliner drop] 表示の更新に失敗', error);
     progress?.fail?.({ error: error });
-    throw error;
+    _outlinerReportFailure('ファイルは取り込みましたが、ツリーの表示を更新できませんでした', error);
+    return;
   }
   const succeeded = results.filter(result => result.ok);
   const failed = results.filter(result => !result.ok);
@@ -240,4 +451,6 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
     else showStatus(files.length + '個のファイルをインポートしました');
   }
-});
+}
+
+document.getElementById('outliner-tree')?.addEventListener('drop', e => _outlinerHandleTreeOsDrop(e));

@@ -183,6 +183,7 @@ function showChatExportMenu(event) {
       ariaLabel: 'チャットのエクスポート形式',
       restoreFocus,
       items: items.map(item => ({
+        icon: item.icon,
         label: item.label,
         action: () => chatExport(item.format),
       })),

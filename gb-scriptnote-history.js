@@ -74,7 +74,10 @@ function _sn2RecordHistoryTransition(editor, label) {
 Object.assign(ScriptNoteEditor.prototype, {
 
   _takeSnapshot() {
-    return JSON.stringify(serializeScriptNoteDoc(this.doc));
+    const data = serializeScriptNoteDoc(this.doc);
+    // 表示中のビューは表示の切替なので履歴の比較・復元に含めない。
+    if (data && typeof data === 'object') delete data.activeViewId;
+    return JSON.stringify(data);
   },
 
   _historyScope() {
@@ -153,6 +156,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.doc.rubyPresentation = data.rubyPresentation;
       this.doc.rows = data.rows;
       this.doc.source = data.source;
+      // ビュー一覧は本文と同じ履歴単位で戻す。表示中のビューは戻さない（表示の切替は履歴に入れない）。
+      if (Array.isArray(data.views)) this.doc.views = data.views;
+      else delete this.doc.views;
+      if (typeof this._ensureScenarioViews === 'function') {
+        this._ensureScenarioViews();
+        this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
+        this._refreshScenarioViewTabs?.();
+      }
       this._ensureDefaultChara();
       this._calcCache = null;
       this._render();

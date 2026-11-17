@@ -536,6 +536,26 @@
     return section;
   }
 
+  // 関連リソースのリンク解除。失敗したら原因つきで知らせ、一覧はそのまま残す。
+  async function detachTopicResource(topicPath, topic, resources, index) {
+    const next = (resources || []).filter((_value, resourceIndex) => resourceIndex !== index);
+    try {
+      const result = await apiFetch(topicPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true, body: JSON.stringify({
+        mutationId: 'production-resource-detach-' + Date.now() + '-' + index,
+        baseRevision: topic?.revision,
+        changes: { resources: next },
+      }) });
+      if (result && result.ok === false) throw new Error(result.message || result.error || '');
+      return true;
+    } catch (error) {
+      const detail = String(error?.userMessage || error?.message || '').trim();
+      if (typeof showStatus === 'function') {
+        showStatus(detail ? 'リンクを解除できませんでした: ' + detail : 'リンクを解除できませんでした', true);
+      }
+      return false;
+    }
+  }
+
   function taskTopicResources(row) {
     const host = document.createElement('section');
     host.className = 'gb-production-task-topic-resources';
@@ -601,13 +621,10 @@
           detach.dataset.e2eId = 'gb-production-topic-resource-detach';
           detach.dataset.resourcePath = href;
           detach.addEventListener('click', async () => {
-            const next = resources.filter((_value, resourceIndex) => resourceIndex !== index);
-            await apiFetch(topicPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true, body: JSON.stringify({
-              mutationId: 'production-resource-detach-' + Date.now() + '-' + index,
-              baseRevision: topic.revision,
-              changes: { resources: next },
-            }) });
-            render();
+            detach.disabled = true;
+            const detached = await detachTopicResource(topicPath, topic, resources, index);
+            if (detached) render();
+            else if (detach.isConnected) detach.disabled = !!availability.blocked;
           });
           item.append(link, detach); list.appendChild(item);
         });
@@ -824,7 +841,7 @@
     const notifications = button('通知', 'bell', () => runCollaboration(notifications, '通知を確認できません', async () => {
       const calendar = componentFor(options);
       if (typeof calendar?._checkAlarms !== 'function') throw new Error('通知を確認できません');
-      await calendar._checkAlarms();
+      await calendar._checkAlarms({ throwOnError: true });
       status('現在の通知を確認しました');
     }));
     notifications.dataset.e2eId = 'gb-production-task-collaboration-notifications';

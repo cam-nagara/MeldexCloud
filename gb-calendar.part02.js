@@ -1,7 +1,7 @@
     try {
       await _saveMappedCalendarDates(dbPath, { _mapped: true, entityName: data.entityName, entityPath: data.entityPath, name: data.name }, newStart, newEnd, { preserveMissingEndIfZeroDuration: true });
       showStatus('日時を更新しました');
-    } catch(err){ showStatus('移動に失敗',true); }
+    } catch(err){ showStatus(err?.message ? '移動に失敗: ' + err.message : '移動に失敗', true); }
     return;
   }
   await _awaitCalendarSnapshotReady(dbPath);
@@ -25,9 +25,12 @@
 // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
 // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、§5.8-2）。
 function _styleCalendarDbDialogControls(root) {
-  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => el.classList.add('gb-input'));
-  root.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
+  // 埋め込んだ共通部品（[data-ui-component]）の中は部品側の見た目に任せる
+  const own = el => !el.closest('[data-ui-component]');
+  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => { if (own(el)) el.classList.add('gb-input'); });
+  root.querySelectorAll('button').forEach(el => { if (own(el)) el.classList.add('gb-btn', 'gb-btn-sm'); });
   root.querySelectorAll('select').forEach(el => {
+    if (!own(el)) return;
     el.classList.add('gb-select');
     if (el.classList.contains('gb-select-sm')) return;
     const short = el.options.length && Array.from(el.options).every(option => Array.from(option.textContent).length <= 8)

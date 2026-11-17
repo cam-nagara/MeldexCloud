@@ -146,13 +146,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-list-switch-btn {
   flex: 0 0 auto;
-  min-height: 28px;
-  padding: 4px 10px;
+  min-height: var(--ui-h-sm, 28px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   border: 1px solid var(--cal-control-border, var(--border));
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill, 999px);
   background: var(--cal-control-bg, var(--bg));
   color: var(--cal-muted-fg, var(--fg2));
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -176,8 +176,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 
 .gb-production-list-switch-add-btn {
-  min-width: 28px;
-  padding: 4px 8px;
+  min-width: var(--ui-h-sm, 28px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -190,15 +190,15 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 
 .gb-production-list-switch-add-form input {
-  height: 28px;
+  height: var(--ui-h-sm, 28px);
   min-width: 160px;
-  padding: 3px 8px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px);
   border: 1px solid var(--cal-accent, var(--accent));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--cal-control-bg, var(--bg));
   color: var(--cal-control-fg, var(--fg));
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
 }
 
 .gb-production-list-switch-add-confirm,
@@ -266,11 +266,11 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-template-placement select,
 .gb-production-quick-plan input,
 .gb-production-quick-plan select {
-  height: 30px;
+  height: var(--ui-h-md, 32px);
   min-width: 0;
-  padding: 4px 7px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   border: 1px solid var(--cal-control-border, var(--border));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--cal-control-bg, var(--bg));
   color: var(--cal-control-fg, var(--fg));
   font: inherit;
@@ -294,17 +294,17 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-sidebar-button,
 .gb-production-template-button,
 .gb-production-dialog-actions button {
-  min-height: 30px;
-  padding: 4px 9px;
+  min-height: var(--ui-h-md, 32px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   border: 1px solid var(--cal-control-border, var(--border));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--cal-control-bg, var(--bg3));
   color: var(--cal-control-fg, var(--fg));
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -510,7 +510,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
    行の高さ・余白はシートのビュータブ行（.db-view-switcher: 上下2px＋タブ高 --ui-h-xs）に揃える。
    タッチ環境の44pxは下の @media 側（!important）が優先する。 */
 .gb-production-list-switch.db-view-tabs {
-  padding: 2px 6px;
+  padding: var(--ui-view-tab-row-padding);
   gap: 2px;
 }
 
@@ -518,9 +518,10 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  min-height: var(--ui-h-xs);
-  height: var(--ui-h-xs);
-  padding: 0 8px;
+  min-height: var(--ui-view-tab-height);
+  height: var(--ui-view-tab-height);
+  padding: 0 var(--ui-view-tab-padding-x);
+  font-size: var(--ui-view-tab-font-size);
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: var(--ui-radius-xs);
@@ -542,10 +543,12 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   }
 }
 
+/* 選択中の表示はシートのビュータブと同じ（下線＋薄いアクセント背景） */
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn.is-active {
-  border-bottom-color: var(--cal-accent, var(--accent));
-  background: color-mix(in srgb, var(--cal-accent, var(--accent)) 10%, transparent);
-  color: var(--cal-fg, var(--fg));
+  border-bottom-color: transparent;
+  background: var(--ui-inner-tab-active-bg);
+  color: var(--ui-inner-tab-active-fg);
+  box-shadow: inset var(--ui-inner-tab-active-left-accent) 0 0 var(--ui-inner-tab-active-underline), inset 0 calc(-1 * var(--ui-inner-tab-active-underline-width)) 0 var(--ui-inner-tab-active-underline);
 }
 
 .gb-production-sidebar-entrances {
@@ -952,8 +955,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 
 .gb-production-checklist-item button {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--ui-h-touch, 44px);
+  min-height: var(--ui-h-touch, 44px);
 }
 
 .gb-production-sidebar-date-range,
@@ -1036,7 +1039,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   box-sizing: border-box;
   padding: 14px;
   border: 1px solid var(--cal-control-border, var(--border));
-  border-radius: 8px;
+  border-radius: var(--ui-dialog-radius, 6px);
   background: var(--cal-panel-bg, var(--bg2));
   color: var(--cal-fg, var(--fg));
 }
@@ -1044,7 +1047,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-work-dialog::backdrop { background: rgb(0 0 0 / 45%); }
 .gb-production-work-dialog p { color: var(--cal-muted-fg, var(--fg2)); font-size: 10px; }
 .gb-production-work-dialog input,
-.gb-production-work-dialog select { width: 100%; height: 32px; }
+.gb-production-work-dialog select { width: 100%; height: var(--ui-h-md, 32px); }
 .gb-production-dialog-actions { justify-content: flex-end; margin-top: 10px; }
 
 body[data-cloud-mobile-editing-ui="1"] :is(
@@ -1107,8 +1110,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-work-dialog input,
   .gb-production-work-dialog select
 ) {
-  min-height: 44px;
-  font-size: 16px;
+  min-height: var(--ui-h-touch, 44px);
+  font-size: var(--ui-font-16, 16px);
 }
 
 body[data-cloud-mobile-editing-ui="1"] :is(
@@ -1123,7 +1126,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-sidebar-tab,
   .gb-production-quick-advanced summary
 ) {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 
 body[data-cloud-mobile-editing-ui="1"] :is(
@@ -1132,7 +1135,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-list-switch-add-confirm,
   .gb-production-list-switch-add-cancel
 ) {
-  min-width: 44px;
+  min-width: var(--ui-h-touch, 44px);
 }
 
 @media (pointer: coarse), (max-width: 720px) {
@@ -1144,8 +1147,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-task-button,
   .gb-production-sidebar-button,
   .gb-production-template-button {
-    min-width: 44px;
-    min-height: 44px !important;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px) !important;
   }
   .gb-production-list-switch-add-form input,
   .gb-production-sidebar-field input,
@@ -1158,7 +1161,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-quick-plan select,
   .gb-production-work-dialog input,
   .gb-production-work-dialog select {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .gb-production-quick-advanced summary { min-height: 44px; }
   .gb-production-sidebar-tab { min-height: 44px; }
@@ -1239,8 +1242,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-work-dialog input,
   .gb-production-work-dialog select {
     height: auto;
-    min-height: 44px;
-    font-size: 16px;
+    min-height: var(--ui-h-touch, 44px);
+    font-size: var(--ui-font-16, 16px);
   }
 
   .gb-production-sidebar-tab,
@@ -1250,13 +1253,13 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 
   .gb-production-collaboration-actions .gb-production-sidebar-button {
     flex: 1 1 calc(50% - 6px);
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
 @media (max-width: 480px) {
   .gb-production-list-switch { padding: 5px 6px; gap: 3px; }
-  .gb-production-list-switch-btn { padding: 4px 8px; }
+  .gb-production-list-switch-btn { padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); }
   .gb-production-quick-plan-form { grid-template-columns: 1fr; }
   .gb-production-quick-plan-form > button { grid-column: auto; width: 100%; }
   .gb-production-quick-solutions { align-items: stretch; }
@@ -1277,7 +1280,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .gb-production-checklist-item {
     grid-template-columns: 44px minmax(0, 1fr);
@@ -1307,7 +1310,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   top: 2px;
   bottom: 2px;
   width: 2px;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill, 999px);
   background: var(--cal-accent, var(--accent));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
   pointer-events: none;
@@ -1568,7 +1571,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 

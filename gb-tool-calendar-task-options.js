@@ -12,7 +12,8 @@
 
   CalendarComponent.prototype._createTaskQuick = async function(options) {
     const opts = options || {};
-    this._pushUndo('ToDo作成');
+    // 取り消し履歴は作成成功後にだけ積む（失敗した操作の偽履歴は残さない）
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     try {
       const res = await apiPost('/cal/tasks', {
         title: '無題',
@@ -21,6 +22,7 @@
         due_date: opts.due_date || '',
         user: this._getUser(),
       });
+      this._pushUndo('ToDo作成', undoSnapshot);
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
@@ -108,7 +110,7 @@
       this._showStatus('保存中です。少し待ってからもう一度お試しください');
       return false;
     }
-    this._pushUndo('ToDo編集');
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     const data = {
       title: body.querySelector('[data-cal-task-title]')?.value || '無題',
       status: body.querySelector('[data-cal-task-status]')?.value || 'todo',
@@ -125,6 +127,7 @@
     try {
       await apiPut('/cal/tasks/' + editId, data);
       saved = true;
+      this._pushUndo('ToDo編集', undoSnapshot);
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();

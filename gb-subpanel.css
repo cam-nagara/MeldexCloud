@@ -56,18 +56,18 @@
 }
 
 .gb-subpanel-button {
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
   min-width: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 0 4px;
+  padding: 0 var(--ui-space-2, 4px);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: transparent;
   color: var(--fg2);
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
   cursor: pointer;
 }
 
@@ -84,8 +84,8 @@
 }
 
 .gb-subpanel-nav-btn {
-  width: 22px;
-  height: 22px;
+  width: var(--ui-h-xs, 22px);
+  height: var(--ui-h-xs, 22px);
   padding: 0;
 }
 
@@ -190,11 +190,11 @@
 .gb-subpanel-entity-parent { min-height: 24px; margin-bottom: 10px; }
 .gb-subpanel-link-button {
   border: 0;
-  padding: 2px 0;
+  padding: var(--ui-space-1, 2px) 0;
   background: transparent;
   color: var(--fg2);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   cursor: pointer;
 }
 .gb-subpanel-link-button:hover,
@@ -282,14 +282,14 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
     .cloud-mobile-side-drawer[data-drawer-kind="panel"] .gb-subpanel-button {
     box-sizing: border-box;
-    min-width: 44px;
-    height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
     .cloud-mobile-side-drawer[data-drawer-kind="panel"] .gb-subpanel-nav-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]

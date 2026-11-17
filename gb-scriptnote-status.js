@@ -131,13 +131,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     const applyStatus = (statusValue) => {
       const prevStatus = String(row.status || '');
-      const wasVisible = this._isRoleVisible(row.role || '', prevStatus);
+      const wasVisible = this._isRoleVisible({ ...row, status: prevStatus });
       const nextStatus = String(statusValue || '').trim();
       if (prevStatus === nextStatus) return;
       this._pushUndo('採用状況変更');
       if (nextStatus) row.status = nextStatus;
       else delete row.status;
-      const isVisible = this._isRoleVisible(row.role || '', row.status || '');
+      const isVisible = this._isRoleVisible(row);
       if (!rowEl || wasVisible !== isVisible) this._render();
       else this._renderRowStatusButton(anchorBtn, row);
       this._markDirty({ skipUndo: true });

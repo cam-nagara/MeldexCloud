@@ -501,9 +501,64 @@ function _bdRawLooksLikeBoardFile(raw) {
 }
 
 function _bdCanSaveCurrentBoardPath(path) {
+  // 読込時に壊れていた部分がある間は上書きしない（保存すると壊れた部分が消えるため）。
+  if (Array.isArray(bd._loadDamage) && bd._loadDamage.length) return false;
   const savePath = _bdNormalizePathForGuard(path);
   const loadedPath = _bdNormalizePathForGuard(bd._loadedBoardPath || '');
   return !!savePath && _bdIsBoardWritablePath(savePath) && !!loadedPath && savePath === loadedPath;
+}
+
+// --- 読込時に壊れていた部分の扱い ---
+// スタイル・マーカー・表示フィルタの値が JSON としても YAML の簡易形式としても読めない場合、
+// 以前は黙って捨てていたため、次の保存（自動保存・終了時保存を含む）でファイルから消えていた。
+// 方針: 「壊れた生テキストを保持して書き戻す」ではなく「読込時に警告し、上書き保存を止める」を採る。
+// 理由:
+//  - スタイル一覧は寛容な読み取り（bdYamlListObjects）が壊れた行を中身の欠けたスタイルへ変換して
+//    一覧へ混ぜるため、生テキストも書き戻すと同じ行が二重化したり、欠けた側が正として残る。
+//  - マーカーはトピックごとの xmind 行の中に埋め込まれており、壊れた生テキストを書き戻すと
+//    同じ行の他の値（メモ・形・文字色など）まで次回読込で読めなくなる恐れがある。
+//  - 上書き保存の経路（通常保存・自動保存・終了時保存）はすべて _bdCanSaveCurrentBoardPath を通るため、
+//    ここで止めれば元ファイルは確実に無変更で残る。利用者は警告に従いファイルを直して開き直せる。
+const BD_LOAD_DAMAGE_LABELS = {
+  cardStyles: 'トピックスタイル',
+  lineStyles: 'ラインスタイル',
+  depthStyles: '階層別スタイル',
+  markers: 'マーカー',
+  displayFilters: '表示フィルタ',
+};
+
+function _bdParseJsonOrFlowObject(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  } catch (_) {}
+  if (typeof bdYamlScalar === 'function' && raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const value = bdYamlScalar(raw);
+      if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) return value;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// 一覧（cardStyles 等）の各行のうち、`- {` で始まるのにどちらの形式でも読めない行を返す。
+function _bdDamagedFlowListItems(fm, key) {
+  const lines = typeof bdYamlTopLevelBlock === 'function' ? bdYamlTopLevelBlock(fm, key) : [];
+  const damaged = [];
+  lines.forEach(line => {
+    const item = String(line || '').match(/^\s*-\s*(\{.*)$/);
+    if (item && !_bdParseJsonOrFlowObject(item[1])) damaged.push(item[1].trim());
+  });
+  return damaged;
+}
+
+function _bdLoadDamageMessage(damage) {
+  const labels = [...new Set((damage || []).map(item => BD_LOAD_DAMAGE_LABELS[item.section] || item.section))];
+  if (!labels.length) return '';
+  return `ボードの一部（${labels.join('、')}）が壊れていて読み込めませんでした。`
+    + '内容を失わないよう、このボードの保存を止めています。ファイルの該当箇所を直してから開き直してください';
 }
 
 // --- Markdown解析 ---
@@ -512,6 +567,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '', topicRuntime = null;
+  const loadDamage = [];
   let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
@@ -607,13 +663,18 @@ function bdParseMd(raw) {
     if (/numbering:\s*true/.test(fm)) bd._numbering = true;
     // Xmindメタ
     const xmBlock = fm.match(/xmind:\n((?:\s+\w+:.*\n?)*)/);
+    const legacyBrokenMarkers = {};
     if (xmBlock) xmBlock[1].replace(/(\w+):\s*\{([^}]+)\}/g, (_, id, props) => {
       const t = {};
       const nm = props.match(/note:\s*'((?:[^'\\]|\\.)*)'/); if (nm) t.note = nm[1].replace(/\\n/g, '\n').replace(/\\'/g, "'");
       if (/checked:\s*true/.test(props)) t.checked = true;
       else if (/checked:\s*false/.test(props)) t.checked = false;
       const pm = props.match(/progress:\s*(\d+)/); if (pm) t.progress = +pm[1];
-      const mm = props.match(/markers:\s*(\{[^}]+\})/); if (mm) { try { t.markers = JSON.parse(mm[1]); } catch {} }
+      const mm = props.match(/markers:\s*(\{[^}]+\})/);
+      if (mm) {
+        // 入れ子の値は下の bdYamlNestedMap で読めることがあるため、ここでは候補として記録だけする。
+        try { t.markers = JSON.parse(mm[1]); } catch { legacyBrokenMarkers[id] = mm[1]; }
+      }
       const sm = props.match(/shape:\s*(\w+)/); if (sm) t.shape = sm[1];
       const fsm = props.match(/fontSize:\s*(\d+)/); if (fsm) t.fontSize = +fsm[1];
       if (/fontBold:\s*true/.test(props)) t.fontBold = true;
@@ -683,6 +744,24 @@ function bdParseMd(raw) {
         Object.assign(transforms[id], t);
       });
     }
+    // マーカーが最終的に読めなかったトピックを記録する（読めない値はトピックに付けない）。
+    Object.keys(transforms).forEach(id => {
+      const t = transforms[id];
+      if (!t || !Object.prototype.hasOwnProperty.call(t, 'markers')) return;
+      const value = t.markers;
+      if (value && typeof value === 'object' && !Array.isArray(value)) return;
+      if (value === '' || value == null) { delete t.markers; return; }
+      const recovered = typeof value === 'string' ? _bdParseJsonOrFlowObject(value) : null;
+      if (recovered) { t.markers = recovered; return; }
+      loadDamage.push({ section: 'markers', id, raw: typeof value === 'string' ? value : JSON.stringify(value) });
+      delete t.markers;
+    });
+    Object.keys(legacyBrokenMarkers).forEach(id => {
+      const value = transforms[id]?.markers;
+      if (value && typeof value === 'object' && !Array.isArray(value)) return;
+      if (loadDamage.some(item => item.section === 'markers' && item.id === id)) return;
+      loadDamage.push({ section: 'markers', id, raw: legacyBrokenMarkers[id] });
+    });
     // ステータス定義
     const sdBlock = fm.match(/statusDefs:\n((?:\s+-.*\n?)*)/);
     if (sdBlock) {
@@ -759,6 +838,9 @@ function bdParseMd(raw) {
         depthStyles = parsedDepthStyles;
       }
     }
+    ['cardStyles', 'lineStyles', 'depthStyles'].forEach(section => {
+      _bdDamagedFlowListItems(fm, section).forEach(rawItem => loadDamage.push({ section, raw: rawItem }));
+    });
     const boardUiBlock = fm.match(/boardUi:\n((?:\s+\w+:.*\n?)*)/);
     if (boardUiBlock) {
       const acm = boardUiBlock[1].match(/activeCardStyle:\s*([^\n]+)/);
@@ -768,7 +850,8 @@ function bdParseMd(raw) {
       const thm = boardUiBlock[1].match(/themeId:\s*([^\n]+)/);
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
-      const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
+      // 閉じ括弧が欠けた値も「壊れている」と検知できるよう、行の残り全体を取る。
+      const dfm = boardUiBlock[1].match(/displayFilters:[ \t]*([^\n]*)/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (dpm) boardUi.activeDepthStylePreset = String(bdYamlScalar(dpm[1]));
@@ -776,13 +859,10 @@ function bdParseMd(raw) {
       if (thm) boardUi.themeId = thm[1].trim();
       if (ssm) boardUi.showShadow = ssm[1] === 'true';
       if (trm) boardUi.textRotateOnLine = trm[1] === 'true';
-      if (dfm) {
-        try {
-          const parsedFilters = JSON.parse(dfm[1]);
-          if (parsedFilters && typeof parsedFilters === 'object' && !Array.isArray(parsedFilters)) {
-            boardUi.displayFilters = parsedFilters;
-          }
-        } catch {}
+      if (dfm && dfm[1].trim()) {
+        const parsedFilters = _bdParseJsonOrFlowObject(dfm[1]);
+        if (parsedFilters) boardUi.displayFilters = parsedFilters;
+        else loadDamage.push({ section: 'displayFilters', raw: dfm[1] });
       }
     }
     const connBlock = fm.match(/connections:\n((?:\s+-.*\n?)*)/);
@@ -920,7 +1000,7 @@ function bdParseMd(raw) {
           connections: legacyConnections,
           groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
           llmSemantics: legacyLlmSemantics,
-          preservedFrontmatter, topicRuntime,
+          preservedFrontmatter, topicRuntime, loadDamage,
         };
       }
     }
@@ -1015,7 +1095,7 @@ function bdParseMd(raw) {
         depthStyles,
         boardUi,
         llmSemantics: parsedLlmSemantics,
-        preservedFrontmatter: archivedFrontmatter, topicRuntime,
+        preservedFrontmatter: archivedFrontmatter, topicRuntime, loadDamage,
       };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
@@ -1072,7 +1152,7 @@ function bdParseMd(raw) {
     ? bdNormalizeLoadedLlmSemantics(llmSemantics, idMap)
     : llmSemantics;
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(mappedConnections, null, parsedLlmSemantics);
-  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime };
+  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime, loadDamage };
 }
 
 // --- Markdown書き出し ---
@@ -1110,7 +1190,9 @@ function bdToMd(boardState = bd) {
   const hasBgColors = bd.nodes.some(n => n.bgColor);
   if (hasBgColors) {
     fm += 'bgcolors:\n';
-    bd.nodes.forEach((n,i) => { if (n.bgColor) fm += `  n${i}: ${n.bgColor}\n`; });
+    // 色は "#77d7d0" のように引用符で囲む。引用符なしの `#…` はYAMLではコメント扱いになり、
+    // デスクトップ版のAIボード編集など標準YAMLで読む経路で背景色が消えていた。
+    bd.nodes.forEach((n,i) => { if (n.bgColor) fm += `  n${i}: ${JSON.stringify(String(n.bgColor))}\n`; });
   }
   const hasContainers = bd.nodes.some(n => n.container || n.contained);
   if (hasContainers) {

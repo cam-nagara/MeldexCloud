@@ -47,7 +47,7 @@
   background: transparent;
   color: var(--fg3);
   cursor: pointer;
-  font-size: 19px;
+  font-size: var(--ui-font-18, 18px);
   line-height: 1;
   padding: 1px;
 }
@@ -63,7 +63,7 @@
 }
 
 .file-rating button:focus-visible {
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -76,7 +76,7 @@
 
 .file-rating--compact button {
   color: var(--fg3);
-  font-size: 13px;
+  font-size: var(--ui-font-13, 13px);
   text-shadow: none;
 }
 
@@ -103,10 +103,10 @@
   width: 100%;
   resize: vertical;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg);
   color: var(--fg);
-  padding: 7px 8px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   font: inherit;
   line-height: 1.45;
 }

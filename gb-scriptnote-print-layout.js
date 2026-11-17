@@ -9,16 +9,71 @@
   function settingsFor(doc) {
     const own = doc?.pageSettings;
     if (own?.paper && own?.grid) return clone(own);
-    return global.MeldexScriptNoteTemplateDefinitions?.get?.(doc?.layoutMode || 'manga')
+    const template = global.MeldexScriptNoteTemplateDefinitions?.get?.(doc?.layoutMode || 'manga')
       || global.MeldexScriptNoteTemplateDefinitions?.get?.('manga');
+    if (!template) return template;
+    // 紙面設定を保存していないシナリオは、エディタで選んでいる組方向（縦書き/横書き）で組む。
+    // 用紙テンプレートの既定組方向で組むと、縦書きのシナリオが横書きで印刷される。
+    const viewMode = doc?.rubyPresentation?.writingMode || doc?.editor?.viewMode;
+    if (viewMode === 'vertical' || viewMode === 'horizontal') {
+      const next = clone(template);
+      next.writingMode = viewMode === 'vertical' ? 'vertical-rl' : 'horizontal-tb';
+      return next;
+    }
+    return template;
   }
 
   function rowText(row) {
     return String(row?.text ?? row?.body ?? row?.content ?? row?.value ?? '');
   }
 
+  // 本文記法（ルビ {親|るび}・手動リンク [表示](ml:…)・エスケープ）を表示用の断片へ分解する
+  function rowSegments(raw) {
+    if (typeof global._sn2CollectVisibleSegments !== 'function') return null;
+    try { return global._sn2CollectVisibleSegments(String(raw || '')); } catch { return null; }
+  }
+
+  function unescapePlain(value) {
+    if (typeof global._sn2UnescapeScriptNotePlainText === 'function') return global._sn2UnescapeScriptNotePlainText(value);
+    return String(value || '').replace(/\\([\\{|}[\]])/g, '$1');
+  }
+
+  function hasRichMarkup(raw) {
+    const segments = rowSegments(raw);
+    return !!segments && segments.some(segment => segment.type === 'ruby' || segment.type === 'manual-link');
+  }
+
+  function appendRichText(target, raw) {
+    const segments = rowSegments(raw);
+    if (!segments) {
+      target.textContent = visibleRowText({ text: raw });
+      return;
+    }
+    segments.forEach(segment => {
+      if (segment.type === 'ruby') {
+        const ruby = document.createElement('ruby');
+        ruby.appendChild(document.createTextNode(segment.plain));
+        const rt = document.createElement('rt');
+        rt.textContent = segment.ruby;
+        ruby.appendChild(rt);
+        target.appendChild(ruby);
+      } else if (segment.type === 'manual-link') {
+        const link = document.createElement('span');
+        link.className = 'sn-print-link';
+        link.textContent = segment.plain;
+        target.appendChild(link);
+      } else {
+        target.appendChild(document.createTextNode(unescapePlain(segment.raw)));
+      }
+    });
+  }
+
   function visibleRowText(row) {
     const raw = rowText(row);
+    const segments = rowSegments(raw);
+    if (segments) {
+      return segments.map(segment => (segment.type === 'plain' ? unescapePlain(segment.raw) : segment.plain)).join('');
+    }
     const withoutRuby = raw.replace(/\{((?:\\.|[^{}|])*)\|(?:\\.|[^{}])*\}/g, '$1');
     if (typeof global._sn2UnescapeScriptNotePlainText === 'function') {
       return global._sn2UnescapeScriptNotePlainText(withoutRuby);
@@ -34,7 +89,24 @@
     return normalized.replace(/([\\{|}])/g, '\\$1');
   }
 
-  function rowKind(row) {
+  // 行のタイプ定義（タイプ設定の「区切り」「プロット」「種類」）を引く
+  function rowTypeDef(doc, row) {
+    const types = Array.isArray(doc?.scenarioTypes) ? doc.scenarioTypes : [];
+    const ref = row?.typeRef;
+    if (ref?.kind === 'none') return null;
+    if (ref?.id) {
+      const byId = types.find(type => type && String(type.id || '') === String(ref.id));
+      if (byId) return byId;
+    }
+    const name = String(row?.type || row?.role || '');
+    return name ? (types.find(type => type && String(type.name || '') === name) || null) : null;
+  }
+
+  function rowKind(row, doc) {
+    const typeDef = doc ? rowTypeDef(doc, row) : null;
+    if (typeDef?.isBreak) return 'pageBreak';
+    if (typeDef?.isSummary) return 'heading';
+    if (typeDef?.kind === 'heading' || typeDef?.kind === 'action') return typeDef.kind;
     const raw = String(row?.kind || row?.type || row?.role || '').toLowerCase();
     if (row?.isBreak || /pagebreak|改ページ|めくり|白紙/.test(raw)) return 'pageBreak';
     if (/heading|pillar|scene|幕|場|柱/.test(raw)) return 'heading';
@@ -54,9 +126,10 @@
       page = [];
     };
     (Array.isArray(doc?.rows) ? doc.rows : []).forEach((row, rowIndex) => {
-      const kind = rowKind(row);
+      const kind = rowKind(row, doc);
       if (kind === 'pageBreak') {
-        flush();
+        // 先頭の区切り（「1ページ」など）で白紙の1ページ目を作らない
+        if (page.length) flush();
         return;
       }
       if (kind === 'heading' && page.length === capacity - 1) flush();
@@ -124,8 +197,17 @@
       row.className = `sn-print-row sn-print-row--${entry.kind}`;
       row.dataset.sourceRow = String(entry.rowIndex);
       row.dataset.sourceRowId = String(entry.row?.id || '');
-      row.textContent = entry.text || '\u3000';
-      if (options.editable) {
+      const raw = rowText(entry.row);
+      const rich = hasRichMarkup(raw);
+      if (rich) appendRichText(row, raw);
+      else row.textContent = entry.text || '\u3000';
+      // ルビ・リンクを含む行は紙面上の直接編集を無効にする（プレーンテキスト編集では
+      // 記法が失われるため）。本文はシナリオ本体で編集する。
+      if (options.editable && rich) {
+        row.dataset.richReadonly = '1';
+        row.title = 'ルビやリンクを含む行は、シナリオ本体で編集してください';
+      }
+      if (options.editable && !rich) {
         row.contentEditable = 'plaintext-only';
         row.setAttribute('role', 'textbox');
         row.setAttribute('aria-label', `${entry.rowIndex + 1}行目を紙面上で編集`);
@@ -177,6 +259,7 @@
 .sn-print-page:nth-child(even){padding-left:var(--sn-margin-inner);padding-right:var(--sn-margin-outer)}
 .sn-print-page-content{block-size:100%;inline-size:100%;overflow:hidden}
 .sn-print-row{break-inside:avoid;white-space:pre-wrap}.sn-print-row--heading{font-weight:700;font-family:sans-serif}.sn-print-row--action{font-weight:400}.sn-print-row--cue{font-weight:600}.sn-print-row--dialogue{font-weight:400}
+.sn-print-row ruby{ruby-position:over}.sn-print-row rt{font-size:.5em;line-height:1}.sn-print-link{text-decoration:underline;text-underline-offset:.15em}.sn-print-row[data-rich-readonly]{cursor:default}
 .sn-print-row[contenteditable]{border-radius:2px;outline:none;cursor:text}.sn-print-row[contenteditable]:hover{background:#1677ff0d}.sn-print-row[contenteditable]:focus{background:#1677ff14;box-shadow:0 0 0 1px #1677ff88 inset}
 .sn-print-band-head{position:absolute;inset-block-start:4mm;inset-inline:8mm;display:flex;writing-mode:horizontal-tb;border-block-end:.4pt solid #777;font:8pt sans-serif}.sn-print-band-head span{text-align:center;border-inline-end:.4pt solid #777}
 .sn-print-page-number{position:absolute;inset-block-end:5mm;inset-inline-end:50%;writing-mode:horizontal-tb;font:8pt sans-serif}

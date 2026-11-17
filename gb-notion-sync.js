@@ -346,12 +346,15 @@
   async function _pickFolderFromTree(card) {
     try {
       const input = card.querySelector('.notion-folder-path');
-      const selected = window.GBFolderPicker?.pickFolder
-        ? await window.GBFolderPicker.pickFolder({
-            title: 'Notion同期するフォルダを選択',
-            initialPath: input?.value || '',
-          })
-        : await _showNotionFolderTreePicker(input?.value || '');
+      // フォルダの選択は共通のフォルダ選択部品だけを使う（UI共通ルール 4.1）
+      if (typeof window.GBFolderPicker?.pickFolder !== 'function') {
+        showStatus('フォルダ選択を表示できませんでした。パスを直接入力してください', true);
+        return;
+      }
+      const selected = await window.GBFolderPicker.pickFolder({
+        title: 'Notion同期するフォルダを選択',
+        initialPath: input?.value || '',
+      });
       if (selected?.path !== undefined && input) {
         input.value = selected.path;
         const saved = await _saveFolderConfig(card, {});
@@ -360,200 +363,6 @@
     } catch (e) {
       showStatus('フォルダ選択に失敗しました', true);
     }
-  }
-
-  function _notionCssEscape(value) {
-    return MeldexEscape.cssIdent(value);
-  }
-
-  function _notionFolderLabel(path) {
-    const text = String(path || '').trim();
-    if (!text) return 'ルート';
-    return text.split(/[/\\]/).filter(Boolean).pop() || text;
-  }
-
-  function _showNotionFolderTreePicker(initialPath = '') {
-    return new Promise(resolve => {
-      const pickerDescId = `notion-folder-picker-current-${++_notionModalSeq}`;
-      const body = document.createElement('div');
-      body.className = 'notion-folder-picker-body';
-      body.innerHTML = `
-        <div class="notion-folder-picker-current-row">
-          <span class="notion-sync-label">選択中:</span>
-          <code id="${pickerDescId}" class="notion-folder-picker-current">${esc(initialPath || 'ルート')}</code>
-        </div>
-        <div id="notion-folder-picker-tree" class="notion-folder-picker-tree"></div>
-        <div id="notion-folder-picker-status" class="notion-sync-status-line"></div>`;
-      const cancelButton = document.createElement('button');
-      cancelButton.id = 'notion-folder-picker-cancel';
-      cancelButton.type = 'button';
-      cancelButton.className = 'gb-btn gb-btn-sm notion-sync-action';
-      cancelButton.dataset.e2eId = 'notion-folder-picker-cancel';
-      cancelButton.textContent = 'キャンセル';
-      const okButton = document.createElement('button');
-      okButton.id = 'notion-folder-picker-ok';
-      okButton.type = 'button';
-      okButton.className = 'gb-btn gb-btn-sm gb-btn-primary notion-sync-action';
-      okButton.dataset.e2eId = 'notion-folder-picker-ok';
-      okButton.textContent = '選択';
-      let closed = false;
-      const modalApi = window.GBUI.createModal({
-        id: `notion-folder-picker-${_notionModalSeq}`,
-        title: 'フォルダを選択',
-        body,
-        footer: [cancelButton, okButton],
-        variant: 'mobile-sheet',
-        extraClass: 'notion-folder-picker-modal',
-        initialFocus: '[data-notion-folder-path]',
-        closeLabel: 'フォルダ選択を閉じる',
-        closeOnEsc: true,
-        closeOnOverlay: true,
-        onClose: () => {
-          document.removeEventListener('keydown', onKeyDown, true);
-          if (!closed) {
-            closed = true;
-            resolve(null);
-          }
-        },
-      });
-      const overlay = modalApi.overlay;
-      overlay.classList.add('modal-overlay');
-      overlay.dataset.notionFolderPicker = '1';
-      modalApi.modal.dataset.e2eId = 'notion-folder-picker-dialog';
-      modalApi.modal.setAttribute('aria-describedby', pickerDescId);
-      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'notion-folder-picker-header-close');
-      modalApi.footer.classList.add('btn-row', 'notion-folder-picker-actions');
-      modalApi.open();
-      replaceIcons(overlay);
-
-      const tree = body.querySelector('#notion-folder-picker-tree');
-      const currentEl = body.querySelector(`#${pickerDescId}`);
-      const statusEl = body.querySelector('#notion-folder-picker-status');
-      let selectedPath = String(initialPath || '');
-
-      const close = value => {
-        if (closed) return;
-        closed = true;
-        document.removeEventListener('keydown', onKeyDown, true);
-        modalApi.close(value ? 'select' : 'cancel');
-        resolve(value);
-      };
-      const setStatus = (message, error = false) => {
-        if (!statusEl) return;
-        statusEl.textContent = message || '';
-        statusEl.style.color = error ? 'var(--red)' : 'var(--fg2)';
-      };
-      const markSelected = row => {
-        tree.querySelectorAll('[data-notion-folder-path]').forEach(el => {
-          delete el.dataset.selected;
-          el.style.background = '';
-          el.style.color = '';
-        });
-        row.dataset.selected = '1';
-        row.style.background = 'var(--accent)';
-        row.style.color = 'var(--ui-fg-strong)';
-        selectedPath = row.dataset.notionFolderPath || '';
-        currentEl.textContent = selectedPath || 'ルート';
-      };
-      const createRow = (name, path, depth, icon = 'folder') => {
-        const row = document.createElement('div');
-        row.className = 'notion-folder-picker-row';
-        row.setAttribute('role', 'button');
-        row.setAttribute('aria-label', `${name || _notionFolderLabel(path)}を選択`);
-        row.tabIndex = 0;
-        row.dataset.notionFolderPath = path || '';
-        row.dataset.depth = String(depth);
-        row.style.paddingLeft = `${8 + depth * 16}px`;
-        const iconWrap = document.createElement('span');
-        iconWrap.className = 'notion-folder-picker-icon';
-        iconWrap.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
-        row.appendChild(iconWrap);
-        const label = document.createElement('span');
-        label.textContent = name || _notionFolderLabel(path);
-        label.className = 'notion-folder-picker-label';
-        row.appendChild(label);
-        row.title = path || 'ルート';
-        row.addEventListener('click', () => markSelected(row));
-        row.addEventListener('dblclick', () => close({ path: row.dataset.notionFolderPath || '' }));
-        row.addEventListener('keydown', event => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            close({ path: row.dataset.notionFolderPath || '' });
-          } else if (event.key === ' ') {
-            event.preventDefault();
-            markSelected(row);
-          }
-        });
-        row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.classList.add('hover'); });
-        row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.classList.remove('hover'); });
-        return row;
-      };
-      const expandFolder = async (parentPath, depth, parentRow) => {
-        let insertAfter = parentRow || null;
-        setStatus('読み込み中...');
-        try {
-          const data = await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + '&folders_only=1&sort=name&order=asc');
-          const folders = (Array.isArray(data) ? data : (data.items || [])).filter(item => item.type === 'folder');
-          for (const folder of folders) {
-            const path = folder.path || '';
-            if (tree.querySelector(`[data-notion-folder-path="${_notionCssEscape(path)}"]`)) continue;
-            const row = createRow(folder.name, path, depth + 1, 'folder');
-            const toggle = document.createElement('button');
-            toggle.type = 'button';
-            toggle.className = 'notion-folder-picker-toggle';
-            toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
-            toggle.setAttribute('aria-expanded', 'false');
-            toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-            toggle.addEventListener('click', async event => {
-              event.stopPropagation();
-              const expanded = toggle.dataset.expanded === '1';
-              if (expanded) {
-                const rowDepth = Number(row.dataset.depth || 0);
-                let next = row.nextElementSibling;
-                while (next && Number(next.dataset.depth || 0) > rowDepth) {
-                  const remove = next;
-                  next = next.nextElementSibling;
-                  remove.remove();
-                }
-                toggle.dataset.expanded = '0';
-                toggle.setAttribute('aria-expanded', 'false');
-                toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
-                toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-                replaceIcons(toggle);
-                return;
-              }
-              await expandFolder(path, depth + 1, row);
-              toggle.dataset.expanded = '1';
-              toggle.setAttribute('aria-expanded', 'true');
-              toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を折りたたむ`);
-              toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronDown', 10) : 'v';
-              replaceIcons(toggle);
-            });
-            row.prepend(toggle);
-            if (insertAfter?.nextSibling) tree.insertBefore(row, insertAfter.nextSibling);
-            else tree.appendChild(row);
-            if (path === selectedPath) markSelected(row);
-            insertAfter = row;
-          }
-          replaceIcons(tree);
-          setStatus(folders.length ? '' : 'この階層にフォルダはありません。');
-        } catch (error) {
-          setStatus('フォルダ一覧の取得に失敗しました: ' + (error?.message || error), true);
-        }
-      };
-      const onKeyDown = event => {
-        if (event.key === 'Enter') close({ path: selectedPath });
-      };
-
-      tree.innerHTML = '';
-      const rootRow = createRow('ルート', '', 0, 'home');
-      tree.appendChild(rootRow);
-      if (!selectedPath) markSelected(rootRow);
-      expandFolder('', 0, rootRow);
-      okButton.addEventListener('click', () => close({ path: selectedPath }));
-      cancelButton.addEventListener('click', () => close(null));
-      document.addEventListener('keydown', onKeyDown, true);
-    });
   }
 
   // === NotionページURL解決 ===

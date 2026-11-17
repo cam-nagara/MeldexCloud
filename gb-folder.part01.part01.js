@@ -1335,7 +1335,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         icon,
         danger: cls === 'red',
         className: 'tree-ctx-item',
-        action: () => { closeMenu(); fn(); },
+        action: () => { closeMenu(); return _folderRunMenuAction(fn, label); },
       });
     }
     const d = document.createElement('div');
@@ -1346,7 +1346,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       d.textContent = label;
     }
     if (cls) d.style.color = 'var(--' + cls + ')';
-    d.addEventListener('click', () => { closeMenu(); fn(); });
+    d.addEventListener('click', () => { closeMenu(); return _folderRunMenuAction(fn, label); });
     menu.appendChild(d);
   }
   function addSep() {
@@ -1365,7 +1365,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
             icon: itemIcon,
             danger: cls === 'red',
             className: 'tree-ctx-item',
-            action: () => { closeMenu(); fn(); },
+            action: () => { closeMenu(); return _folderRunMenuAction(fn, l); },
           });
         },
       };
@@ -1385,7 +1385,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         if (itemIcon && typeof lucide === 'function') d.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(itemIcon, 14) + '</span>' + esc(l);
         else d.textContent = l;
         if(cls) d.style.color='var(--'+cls+')';
-        d.addEventListener('click', () => { closeMenu(); fn(); });
+        d.addEventListener('click', () => { closeMenu(); return _folderRunMenuAction(fn, l); });
         panel.appendChild(d);
       }
     };
@@ -1404,17 +1404,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       onCopy: () => folderToolbarCopyItems(operationItems),
       onCut: () => folderToolbarCutItems(operationItems),
       onPaste: () => folderToolbarPasteToFolder(pasteTarget),
-      onDuplicate: async () => {
-        let count = 0;
-        for (const target of editableItems) {
-          try {
-            await apiPost('/outliner/duplicate', { path: target.path });
-            count += 1;
-          } catch {}
-        }
-        if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-        showStatus(count > 0 ? `${count} 件を複製しました` : '複製に失敗しました', count === 0);
-      },
+      onDuplicate: () => _folderDuplicateItems(editableItems, () => (
+        _folderPath ? openFolder(_folderPath.split('/').pop(), _folderPath) : null
+      )),
       onDelete: () => folderToolbarDeleteSelection(),
       copyDisabled: operationItems.length === 0,
       cutDisabled: editableItems.length === 0,

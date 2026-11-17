@@ -125,7 +125,7 @@
         const targetPath = _joinPath(parent, labelName + '.mel-scenario');
         await createText(targetPath, JSON.stringify({
           fileType: 'meldex-scriptnote',
-          schema_version: 3,
+          schema_version: 4,
           version: 1,
           title: shown(labelName),
           ...(title !== null && title !== label ? {display_title:title} : {}),
@@ -193,15 +193,30 @@
         throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
-      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
-        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
-        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
-          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+      // タイトル＝ファイル名（デスクトップ版の /api/outliner/rename と同じ規則）。
+      // 使えない文字は置き換えたファイル名にし、元の表記は表示タイトルに残す。
+      let titleOnly = false;
+      let newName = '';
+      let displayName = '';
+      let keepDisplayTitle = false;
+      if (titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
+        displayName = titleHelper.validate(body?.new_name);
+        const currentStem = source.kind === 'directory' ? _basename(oldPath) : _splitNameAndExt(_basename(oldPath)).stem;
+        const fileName = titleHelper.storageName(displayName);
+        titleOnly = body?.title_only === true || fileName === currentStem;
+        newName = titleOnly ? displayName : fileName;
+        if (!titleOnly) {
+          const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+          let hadDisplayTitle = false;
+          if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+            hadDisplayTitle = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+          }
+          keepDisplayTitle = hadDisplayTitle || displayName !== fileName;
         }
+      } else {
+        newName = _validateItemName(body?.new_name || '', 'new_name');
       }
       if (titleOnly) {
         const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
@@ -236,6 +251,9 @@
             await _moveEntry(provider, oldNotePath, newNotePath);
             await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
           }
+          if (keepDisplayTitle && await _pathExists(provider, newNotePath)) {
+            await provider.writeText(newNotePath, titleHelper.write(await provider.readText(newNotePath), displayName, newNotePath, body?.type));
+          }
         });
         await _runPostMutationStep(warnings, 'stored-paths', () => (
           typeof _rewriteStoredPathsForProvider === 'function'
@@ -261,7 +279,15 @@
         }) : [];
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
-        await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
+        const heading = displayName || newName;
+        // デスクトップ版（meldex_api_outliner の re.sub(r"^# .+", count=1)）と同じく、
+        // ファイル先頭が見出しの時だけ書き換える。以前は m フラグで本文中の最初の
+        // 「# 見出し」を探していたため、frontmatter付きノートの本文見出しを名前で
+        // 上書きしていた（実データ388件が該当）。
+        await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
+      }
+      if (keepDisplayTitle) {
+        await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
       if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
@@ -872,29 +898,3 @@
           await _directoryHandle(provider, _dirname(sidecarPath), true);
           await _moveEntry(provider, sidecarTrashPath, sidecarPath);
           await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
-        });
-      }
-      await _runPathMutationHooksSafe({
-        action: 'restore', oldPath: trashPath, newPath: originalPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
-        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
-      });
-      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/trash' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const items = [];
-      const warnings = [];
-      let allowedRoots;
-      try {
-        allowedRoots = await _allowedTrashRoots();
-      } catch (error) {
-        allowedRoots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex', physicalPath: '' }];
-        warnings.push({
-          trash_root: '', trash_root_name: '', stage: 'trash-roots',
-          message: error?.message || String(error), code: error?.code || '',
-        });
-      }

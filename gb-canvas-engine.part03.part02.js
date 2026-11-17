@@ -602,6 +602,12 @@ async function bdSave() {
   const savePath = bd.path;
   let reservedDraftAtRequest = bd._draftReservationPath === savePath ? bd._draftReservationContent : undefined;
   if (!savePath) return true;
+  if (Array.isArray(bd._loadDamage) && bd._loadDamage.length) {
+    showStatus(typeof _bdLoadDamageMessage === 'function'
+      ? _bdLoadDamageMessage(bd._loadDamage)
+      : 'ボードの一部が壊れているため、保存を止めています', true);
+    return false;
+  }
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
     showStatus('ボード保存を中止しました: ボードとして開いたMarkdownファイルではありません', true);
     return false;

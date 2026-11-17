@@ -71,7 +71,7 @@ function _showTableToolbar(tableEl, editable) {
     btn.type = 'button';
     btn.className = 'table-mini-toolbar-btn';
     btn.textContent = label;
-    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); action(); });
+    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _runNoteContextMenuAction({ label, action }); });
     toolbar.appendChild(btn);
   });
   document.body.appendChild(toolbar);

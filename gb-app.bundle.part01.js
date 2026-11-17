@@ -53,11 +53,38 @@ window.addEventListener('error', (e) => {
   });
 });
 
+// 利用者の操作の直後に起きた未処理の失敗は、ログ送信だけでなく画面にも出す。以前はログ送信
+// だけで、メニューからの列名変更などが失敗しても画面に何も出なかった。背景処理の失敗で
+// 通知が乱発しないよう、直前（5秒以内）に操作があった時だけ、同じ内容は10秒に1回に絞る。
+let _lastUserGestureAt = 0;
+const _recentUnhandledNotices = new Map();
+['pointerdown', 'keydown'].forEach((type) => {
+  window.addEventListener(type, () => { _lastUserGestureAt = Date.now(); }, true);
+});
+
+function _shouldNotifyUnhandledRejection(reason) {
+  const name = String(reason?.name || '');
+  if (name === 'AbortError' || reason?.cancelled === true || reason?.silent === true) return false;
+  if (Date.now() - _lastUserGestureAt > 5000) return false;
+  const key = String(reason?.message || reason || '');
+  const last = _recentUnhandledNotices.get(key) || 0;
+  if (Date.now() - last < 10000) return false;
+  _recentUnhandledNotices.set(key, Date.now());
+  if (_recentUnhandledNotices.size > 50) _recentUnhandledNotices.clear();
+  return true;
+}
+
 window.addEventListener('unhandledrejection', (e) => {
   _sendLog('error', {
     message: e.reason?.message || String(e.reason),
     stack: e.reason?.stack || ''
   });
+  try {
+    if (typeof showStatus === 'function' && _shouldNotifyUnhandledRejection(e.reason)) {
+      const message = String(e.reason?.message || e.reason || '').trim();
+      showStatus('操作を完了できませんでした' + (message ? ': ' + message : ''), true);
+    }
+  } catch {}
 });
 
 /* ==============================
@@ -871,30 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       legacyTabsChanged = true;
     }
     if (wasExact && exactLabel != null && tab.label !== exactLabel) {
-      tab.label = exactLabel;
-      legacyTabsChanged = true;
-    }
-  });
-
-  _legacyNavHistory.forEach(entry => {
-    if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) layoutChanged = true;
-    if (entry.path === newPath && exactLabel != null) entry.label = exactLabel;
-  });
-
-  if (typeof GBLayout !== 'undefined' && typeof GBLayout.getAllPanes === 'function' && GBLayout.root) {
-    GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
-      (pane.tabs || []).forEach(tab => {
-        const wasExact = tab.path === oldPath;
-        const mapped = _mapRenamedPath(tab.path, oldPath, newPath);
-        if (mapped !== tab.path) {
-          tab.path = mapped;
-          layoutChanged = true;
-        }
-        if (wasExact && exactLabel != null && tab.label !== exactLabel) {
-          tab.label = exactLabel;
-          layoutChanged = true;
-        }
-        if (tab.state && typeof tab.state === 'object') {
-          if (wasExact && exactLabel != null) tab.state.label = exactLabel;
-          if (_updatePathRefs(tab.state, APP_PATH_REF_KEYS, oldPath, newPath)) {
-            layoutChanged = true;

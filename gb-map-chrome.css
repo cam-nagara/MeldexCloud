@@ -6,7 +6,7 @@
 .gb-map-app .gb-toolbar .tb-range{padding:0;background:transparent;border:0;width:110px}
 .gb-map-app .gb-toolbar output{font-size:11px;min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
 .gb-map-app .gb-map-contextbar{gap:8px;min-height:28px;padding:2px 8px}
-.gb-map-app .gb-map-contextbar .gb-select{max-width:160px;height:22px;font-size:12px}
+.gb-map-app .gb-map-contextbar .gb-select{max-width:160px;height:var(--ui-h-xs, 22px);font-size:var(--ui-font-12, 12px)}
 .gb-map-brush{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .gb-map-color-button{color:var(--map-color)!important}
 .gb-map-app .gb-map-sidebar{position:absolute;inset:8px auto 8px 8px;width:260px;max-width:calc(100% - 16px);z-index:801;padding:0;border:1px solid var(--ui-border-strong);border-radius:var(--ui-radius-md,4px);background:var(--ui-popup-bg,var(--bg));box-shadow:var(--ui-shadow-lg);display:flex;flex-direction:column;overflow:hidden}
@@ -15,7 +15,7 @@
 .gb-map-options{color:var(--ui-fg,var(--fg));font-size:13px;padding:12px;box-sizing:border-box;min-width:0}
 .gb-map-options [hidden]{display:none!important}.gb-map-options h3{font-size:13px;margin:0 0 12px}.gb-map-options h4{font-size:12px;margin:16px 0 8px}
 .gb-map-options .gb-map-field{margin:0 0 12px;gap:6px}.gb-map-options .gb-map-field>span{color:var(--ui-fg-muted,var(--fg2));font-size:12px}
-.gb-map-options .gb-map-field>input,.gb-map-options .gb-map-field>select,.gb-map-options .gb-map-field>textarea{width:100%;box-sizing:border-box;font-size:13px;min-height:28px}
+.gb-map-options .gb-map-field>input,.gb-map-options .gb-map-field>select,.gb-map-options .gb-map-field>textarea{width:100%;box-sizing:border-box;font-size:var(--ui-font-13, 13px);min-height:var(--ui-h-sm, 28px)}
 .gb-map-options .gb-color-swatch{width:32px;height:22px;min-height:22px;padding:0}.gb-map-tag-chips{display:flex;flex-wrap:wrap;gap:4px}
 .gb-map-options .gb-btn{margin:0 4px 6px 0;max-width:100%;white-space:normal}
 .gb-map-options .gb-map-section{border-top:1px solid var(--ui-border);padding:12px 0 0;margin-top:12px}.gb-map-section>summary{font-size:12px;font-weight:600;cursor:pointer;padding:0 0 8px;outline-offset:2px}

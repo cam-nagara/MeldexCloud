@@ -370,17 +370,24 @@ function _bdStartInlineBoardTitleEdit(titleEl) {
       showStatus('ボード名が空です', true);
       return;
     }
+    // 通信を待たずに新しい名前を表示し、フォルダツリーとタブも先に変える（失敗したら戻す）
+    const boardPath = bd.path || (typeof state !== 'undefined' ? state.currentBoardPath : '') || '';
+    titleEl.textContent = draft;
+    if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, draft, 'board');
     try {
       await _bdRenameBoardFile(draft);
       titleEl.textContent = draft;
       showStatus('ボード名を変更しました');
     } catch (e) {
+      if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, currentText, 'board');
       titleEl.textContent = currentText;
       showStatus('ボード名の変更に失敗: ' + (e?.message || ''), true);
     }
   };
   input.addEventListener('keydown', event => {
     event.stopPropagation();
+    // 日本語変換中の Enter は変換の確定なので、名前の確定にしない
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       finish(true);

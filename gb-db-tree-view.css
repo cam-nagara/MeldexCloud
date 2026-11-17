@@ -24,12 +24,12 @@
   flex: 1 1 240px;
   min-width: 120px;
   max-width: 420px;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: var(--ui-h-md, 32px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
 }
 
 .db-tree-toolbar select {
@@ -44,12 +44,12 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 30px;
-  padding: 4px 9px;
+  min-height: var(--ui-h-md, 32px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   color: var(--fg);
   background: var(--bg3);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
@@ -337,7 +337,7 @@
   align-items: center;
   justify-content: center;
   width: 24px;
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
   margin: 0;
   padding: 0;
   opacity: 1;
@@ -423,12 +423,12 @@
   align-items: center;
   justify-content: center;
   width: 24px;
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
   padding: 0;
   color: var(--fg2);
   background: transparent;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -600,11 +600,11 @@
 
 .db-tree-option-section select {
   min-width: 0;
-  min-height: 30px;
+  min-height: var(--ui-h-md, 32px);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
 }
 
 .db-tree-settings-actions {
@@ -637,7 +637,7 @@
   }
 
   .db-tree-toolbar button {
-    min-height: 40px;
+    min-height: var(--ui-h-xl, 40px);
   }
 
   .db-tree-content {
@@ -676,8 +676,8 @@
 
 @media (pointer: coarse) {
   .db-tree-name-actions > button {
-    width: 40px;
-    height: 40px;
+    width: var(--ui-h-xl, 40px);
+    height: var(--ui-h-xl, 40px);
   }
 
   .db-tree-name-cell .row-select-cb,

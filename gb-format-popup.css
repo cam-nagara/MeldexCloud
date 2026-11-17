@@ -16,8 +16,8 @@
   padding: var(--ui-space-3) var(--ui-popup-padding-inline, 12px);
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: var(--ui-radius-sm);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
   font-size: var(--ui-font-12);
   color: var(--fg);
   width: max-content;
@@ -72,7 +72,8 @@
 .gb-fmt-popup--role-opts {
   z-index: 10000;
   /* 共通書式ポップアップと同じ内容幅。用途ラベルを含めて収める。 */
-  min-width: 0;
+  width: min(420px, calc(100vw - 24px));
+  min-width: min(360px, calc(100vw - 24px));
   max-width: min(420px, calc(100vw - 24px));
   max-height: 80vh;
   overflow-y: auto;
@@ -212,8 +213,8 @@
 
 /* 書式トグルボタン（B/I/U/S） */
 .gb-fmt-btn {
-  height: 22px;
-  min-width: 22px;
+  height: var(--ui-h-xs, 22px);
+  min-width: var(--ui-h-xs, 22px);
   padding: 0 var(--ui-space-2);
   box-sizing: border-box;
   line-height: 1;
@@ -248,7 +249,7 @@
 
 /* 数値入力（フォントサイズ等） */
 input.gb-fmt-num {
-  height: 22px;
+  height: var(--ui-h-xs, 22px);
   width: 70px;
   padding: 0 var(--ui-space-2);
   box-sizing: border-box;
@@ -452,9 +453,9 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   .gb-fmt-popup-group > .gb-btn-sm,
   .gb-fmt-popup .meldex-dropdown-close-btn,
   .gb-fmt-popup [data-meldex-dropdown-close] {
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     padding: 0 var(--ui-space-4);
     font-size: var(--ui-font-14);
   }
@@ -469,8 +470,8 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
   .gb-fmt-text.gb-fmt-text--w36,
   .gb-fmt-text.gb-fmt-text--w54,
   .gb-fmt-sel {
-    height: 44px;
-    min-height: 44px;
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     font-size: var(--ui-font-14);
   }
 

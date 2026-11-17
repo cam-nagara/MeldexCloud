@@ -52,7 +52,7 @@
 
 @media (pointer: coarse) {
   .note-heading-toolbar-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 

@@ -27,6 +27,7 @@
     globalIndexPromise: null,
     globalIndexFiles: null,
     globalIndexLoadedAt: 0,
+    globalIndexError: '',
     floatingChrome: null,
     leftChromeSyncRaf: 0,
     leftChromePollTimer: 0,
@@ -96,7 +97,15 @@
     html: 'html',
     entity: 'entity',
     folder: 'folder',
+    scenario: 'scriptnote',
   };
+
+  // navOpen（gb-app.part01.part03.js）が開ける種類。ここに無い種類は理由を表示する。
+  const NAV_OPENABLE_TYPES = new Set([
+    'page', 'csv', 'form-app', 'map', 'board', 'entity', 'pivot', 'database',
+    'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
+    'scriptnote', 'media', 'image', 'video', 'audio', 'html', 'folder', 'archive', 'calendar',
+  ]);
 
   const GLOBAL_INDEX_PAGE_CATEGORIES = new Set(['text', 'data', 'chat', 'archive', 'calendar', 'other']);
 
@@ -135,6 +144,28 @@
 
   function _notifyActionUnavailable(label) {
     if (typeof showStatus === 'function') showStatus(`${label}を開けませんでした`, true);
+  }
+
+  // 呼び出し先の機能がこの画面に読み込まれていない時の表示。黙って終わらせない。
+  function _notifyUnavailableHere(label) {
+    if (typeof showStatus === 'function') showStatus(`「${label}」はこの画面では使えません`, true);
+    return false;
+  }
+
+  // 例外の文言は内部向けのことが多い。日本語の説明を含む時だけ利用者へ見せる。
+  function _userFacingReason(error) {
+    const own = typeof error?.userMessage === 'string' ? error.userMessage.trim() : '';
+    if (own) return own;
+    const message = String(error?.message || (typeof error === 'string' ? error : '') || '').trim();
+    if (message && /[぀-ヿ㐀-鿿]/.test(message) && !/\b(?:is not|undefined|null|TypeError|ReferenceError|SyntaxError)\b/.test(message)) {
+      return message.length > 120 ? `${message.slice(0, 120)}…` : message;
+    }
+    return '予期しない問題が起きました';
+  }
+
+  function _notifyActionFailed(label, error) {
+    console.error('[command-palette] action failed', error);
+    if (typeof showStatus === 'function') showStatus(`「${label}」を実行できませんでした（${_userFacingReason(error)}）`, true);
   }
 
   function _openSettings(panel) {
@@ -190,15 +221,10 @@
   }
 
   function _openPanel(type, item) {
-    if (item?.open && typeof item.open === 'function') {
-      item.open();
-      return;
-    }
-    if (typeof _openPanelMenuItem === 'function') {
-      _openPanelMenuItem(type);
-      return;
-    }
-    if (typeof addPanelMenuTool === 'function') addPanelMenuTool(type);
+    if (item?.open && typeof item.open === 'function') return item.open();
+    if (typeof _openPanelMenuItem === 'function') return _openPanelMenuItem(type);
+    if (typeof addPanelMenuTool === 'function') return addPanelMenuTool(type);
+    return _notifyUnavailableHere(`${item?.label || type}パネルを開く`);
   }
 
   function _entryOpenPath(entry) {
@@ -253,29 +279,45 @@
     state.globalIndexFiles = null;
     state.globalIndexLoadedAt = 0;
     state.globalIndexPromise = null;
+    state.globalIndexError = '';
   }
 
+  function _isNavOpenable(entry, type) {
+    if (type === 'archive') return !!entry?.archivePath;
+    return NAV_OPENABLE_TYPES.has(type);
+  }
+
+  // 戻り値: false=開けなかった（理由は表示済み）、それ以外=開く処理の結果（Promiseのこともある）。
   function _openFile(entry) {
     const openPath = _entryOpenPath(entry);
-    if (!openPath) return;
+    const label = entry?.label || entry?.name || openPath;
+    if (!openPath) {
+      if (typeof showStatus === 'function') showStatus(`「${label || '項目'}」の場所が分からないため開けません`, true);
+      return false;
+    }
     const type = entry.type || _navTypeForEntry(entry);
-    const label = entry.label || entry.name || openPath;
     const mediaType = _mediaTypeForEntry(entry, type);
+    if (!_isNavOpenable(entry, type)) {
+      if (typeof showStatus === 'function') showStatus(`「${label}」は、ここから開けない種類のファイルです`, true);
+      return false;
+    }
     if (typeof navOpen === 'function') {
-      navOpen({
+      return navOpen({
         ...entry,
         type,
         label,
         path: openPath,
         mediaType,
       });
-      return;
     }
-    if (type === 'page' && typeof openPage === 'function') openPage(label, openPath);
+    if (type === 'page' && typeof openPage === 'function') return openPage(label, openPath);
+    return _notifyUnavailableHere(`${label}を開く`);
   }
 
-  function _openUnifiedSearchResult(entry) {
-    _openFile(entry);
+  async function _openUnifiedSearchResult(entry) {
+    const opened = _openFile(entry);
+    if (opened === false) return false;
+    await opened;
     const firstMatch = Array.isArray(entry?.matches) ? entry.matches[0] : null;
     const detail = {
       path: _entryOpenPath(entry),
@@ -289,6 +331,7 @@
     [0, 180, 600].forEach(delay => setTimeout(() => {
       window.dispatchEvent(new CustomEvent('meldex:search-result-open', { detail }));
     }, delay));
+    return true;
   }
 
   function _readRecentItems() {
@@ -300,12 +343,27 @@
     }
   }
 
+  function _isAbsolutePathText(path) {
+    return /^[a-z]:\//i.test(path) || path.startsWith('//');
+  }
+
+  // 照合キー。索引の項目は root_type と相対パス・絶対パスを持つ。最近使った項目
+  // （addRecent の保存形式）は root_type を持たず、パスは保存先からの相対パスか
+  // 保存先外の絶対パスなので、root_type の無い相対パスは保存先（vault）からの
+  // 相対パスとして照合し、絶対パスは索引の abs_path と照合する。
   function _entryLocationKeys(entry) {
     const keys = [];
     const root = _normalize(_entryRootKey(entry));
-    const path = _normalize(String(entry?.path || '').replace(/\\/g, '/').replace(/^\/+/, ''));
+    const rawPath = String(entry?.path || '').replace(/\\/g, '/');
+    const path = _normalize(rawPath.replace(/^\/+/, ''));
     const absolute = _normalize(String(entry?.abs_path || entry?.absPath || '').replace(/\\/g, '/'));
-    if (path) keys.push(`${root}\n${path}`);
+    if (path && _isAbsolutePathText(rawPath)) {
+      keys.push(`absolute\n${_normalize(rawPath)}`);
+    } else if (path) {
+      keys.push(`${root || 'vault'}\n${path}`);
+      // macOS 等の絶対パス（/Users/...）も取りこぼさない。
+      if (rawPath.startsWith('/')) keys.push(`absolute\n${_normalize(rawPath)}`);
+    }
     if (absolute) keys.push(`absolute\n${absolute}`);
     return keys;
   }
@@ -313,13 +371,29 @@
   function _recentCommands() {
     const indexedKeys = new Set((state.globalIndexFiles || []).flatMap(_entryLocationKeys));
     if (!indexedKeys.size) return [];
+    const indexedByKey = new Map();
+    (state.globalIndexFiles || []).forEach((file) => {
+      _entryLocationKeys(file).forEach((key) => { if (!indexedByKey.has(key)) indexedByKey.set(key, file); });
+    });
     const seen = new Set();
     return _readRecentItems()
       .filter(entry => entry && entry.path)
       .filter(entry => {
-        const match = _entryLocationKeys(entry).find(key => indexedKeys.has(key));
-        if (!match || seen.has(match)) return false;
-        seen.add(match);
+        // シート・カレンダーはフォルダなので索引に本体が無く、フォルダノート（名前/名前.md）だけが
+        // 載る。以前は最近使ったシートが一覧に出なかった。フォルダノートでも照合する。
+        const folderNote = (value) => {
+          const text = String(value || '').replace(/[\\/]+$/, '');
+          const name = text.split(/[\\/]/).pop();
+          return text && name ? `${text}/${name}.md` : '';
+        };
+        const isFolderDocument = ['pivot', 'database', 'calendar', 'db'].includes(String(entry.type || ''));
+        const candidates = isFolderDocument
+          ? [entry, { ...entry, path: folderNote(entry.path), abs_path: entry.abs_path ? folderNote(entry.abs_path) : entry.abs_path }]
+          : [entry];
+        const match = candidates.flatMap(_entryLocationKeys).find(key => indexedKeys.has(key));
+        const file = match ? indexedByKey.get(match) : null;
+        if (!file || seen.has(file)) return false;
+        seen.add(file);
         return true;
       })
       .slice(0, MAX_RECENT_ITEMS)
@@ -383,9 +457,11 @@
         const files = Array.isArray(data?.files) ? data.files : [];
         state.globalIndexFiles = files;
         state.globalIndexLoadedAt = Date.now();
+        state.globalIndexError = '';
         return files;
       })().catch((error) => {
         console.warn('[command-palette] global index load failed', error);
+        state.globalIndexError = `ファイル一覧を読み込めませんでした（${_userFacingReason(error)}）。ファイル名の候補と最近使った項目を表示できません`;
         return state.globalIndexFiles || [];
       }).finally(() => {
         state.globalIndexPromise = null;
@@ -440,10 +516,6 @@
     }));
   }
 
-  function _layoutSubcommands(layout) {
-    return [];
-  }
-
   function _layoutCommands() {
     return _layoutEntries().map((layout) => {
       const active = document.body?.dataset?.appLayoutActive === layout.id;
@@ -458,7 +530,6 @@
           keywords: ['app layout', 'アプリレイアウト', layout.id, layout.toolType || ''],
           meta: active ? '選択中' : '切替',
           priority: active ? 85 : 70,
-          subcommands: () => _layoutSubcommands(layout),
         },
       );
     });
@@ -473,7 +544,9 @@
         `${entry.label}を新規作成`,
         'フォルダツリーの選択位置に追加',
         entry.icon,
-        () => { if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(entry.type); },
+        () => (typeof showAddOutlinerItem === 'function'
+          ? showAddOutlinerItem(entry.type)
+          : _notifyUnavailableHere(`${entry.label}を新規作成`)),
         { keywords: ['new', 'create', '追加', entry.type], priority: 65 },
       ));
     });
@@ -482,25 +555,31 @@
         const activePane = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
         const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(activePane) : null;
         const type = tab?.type === 'pivot' ? 'database' : (tab?.type || 'page');
-        if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace(type);
+        if (typeof openCurrentToolbarSearchReplace !== 'function') return _notifyUnavailableHere('現在のパネルを検索・置換');
+        return openCurrentToolbarSearchReplace(type);
       }, { keywords: ['find', 'replace', '検索', '置換', '現在'], priority: 66 }),
       _command('search:source-folders', 'コマンド', 'ソースフォルダ全体を検索・置換', '表示した対象だけを一括処理', 'folderSearch', () => {
-        if (typeof openVaultSearchReplacePanel === 'function') openVaultSearchReplacePanel('');
+        if (typeof openVaultSearchReplacePanel !== 'function') return _notifyUnavailableHere('ソースフォルダ全体を検索・置換');
+        return openVaultSearchReplacePanel('');
       }, { keywords: ['vault', 'source folder', '全文検索', '一括置換'], priority: 65 }),
       _command('system-sheet:all-files', 'コマンド', '全ファイルをシートで表示', 'すべてのソースフォルダを横断', 'tableProperties', () => {
-        if (typeof openAllFilesSheet === 'function') openAllFilesSheet();
+        if (typeof openAllFilesSheet !== 'function') return _notifyUnavailableHere('全ファイルをシートで表示');
+        return openAllFilesSheet();
       }, { keywords: ['files', 'ファイル', '横断', 'シート'], priority: 61 }),
       _command('trash:open', 'コマンド', '削除済みファイルを開く', 'ゴミ箱', 'trash2', () => _openTrash(), { keywords: ['trash', 'ゴミ箱', '削除'], priority: 60 }),
       _command('settings:open', 'コマンド', '設定を開く', '', 'settings', () => _openSettings(), { keywords: ['preferences', 'config'], priority: 62 }),
       _command('user:settings', 'コマンド', 'ユーザー設定を開く', '', 'userRound', () => _openSettings('ユーザー'), { keywords: ['user', 'profile', 'アカウント'], priority: 58 }),
       _command('knowledge:settings', 'コマンド', 'LLMの記憶継承を開く', '', 'brain', () => {
-        if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('items');
+        if (typeof openKnowledgeHomeView !== 'function') return _notifyUnavailableHere('LLMの記憶継承を開く');
+        return openKnowledgeHomeView('items');
       }, { keywords: ['knowledge', '記憶', 'LLM'], priority: 57 }),
       _command('ideas:open', 'コマンド', 'アイディアインボックスを開く', '', 'lightbulb', () => {
-        if (typeof openIdeaInboxView === 'function') openIdeaInboxView();
+        if (typeof openIdeaInboxView !== 'function') return _notifyUnavailableHere('アイディアインボックスを開く');
+        return openIdeaInboxView();
       }, { keywords: ['idea', 'アイディア'], priority: 56 }),
       _command('taste:open', 'コマンド', '感性原則を開く', '', 'sparkles', () => {
-        if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('taste');
+        if (typeof openKnowledgeHomeView !== 'function') return _notifyUnavailableHere('感性原則を開く');
+        return openKnowledgeHomeView('taste');
       }, { keywords: ['taste', '感性', '個人化'], priority: 56 }),
     );
     return items;
@@ -508,7 +587,9 @@
 
   function _applyAppLayout(appId) {
     if (typeof window.applyAppLayout === 'function') return window.applyAppLayout(appId);
-    return GBAppLayouts?.applyAppLayout?.(appId);
+    const layouts = typeof GBAppLayouts !== 'undefined' ? GBAppLayouts : null;
+    if (typeof layouts?.applyAppLayout === 'function') return layouts.applyAppLayout(appId);
+    return _notifyUnavailableHere('アプリレイアウトの切り替え');
   }
 
   function _settingsCommands() {
@@ -735,7 +816,8 @@
     // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
     // 検索結果が返ってから追加で反映する。
     _updateSearchHint(null);
-    if (!hasQueryTokens && !hasTagCondition) { _setPaletteStatus(''); return; }
+    const indexError = state.globalIndexError || '';
+    if (!hasQueryTokens && !hasTagCondition) { _setPaletteStatus(indexError, !!indexError); return; }
 
     _setPaletteStatus('検索中…');
 
@@ -758,7 +840,10 @@
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
-    if (state.status?.dataset.error !== '1') _setPaletteStatus(`${items.length}件の候補`);
+    if (state.status?.dataset.error !== '1') {
+      if (indexError) _setPaletteStatus(`${items.length}件の候補。${indexError}`, true);
+      else _setPaletteStatus(`${items.length}件の候補`);
+    }
   }
 
   function _moveActive(delta) {
@@ -793,27 +878,25 @@
   }
 
   function _executeItem(item) {
-    if (!item) return;
+    if (!item) return Promise.resolve(false);
     if (item.id === 'sub:back') {
       _leaveSubcommands();
-      return;
+      return Promise.resolve(true);
     }
     if (item.subcommands) {
       _enterSubcommands(item);
-      return;
+      return Promise.resolve(true);
     }
     const action = item.action;
     closeCommandPalette();
-    if (typeof action === 'function') {
-      setTimeout(() => {
-        try {
-          const result = action();
-          if (result && typeof result.catch === 'function') result.catch(error => console.error('[command-palette] action failed', error));
-        } catch (error) {
-          console.error('[command-palette] action failed', error);
-        }
-      }, 0);
-    }
+    if (typeof action !== 'function') return Promise.resolve(false);
+    // パレットが閉じてフォーカスが戻ってから実行する。失敗は握りつぶさず表示する。
+    return new Promise(resolve => setTimeout(resolve, 0))
+      .then(() => action())
+      .catch((error) => {
+        _notifyActionFailed(item.label, error);
+        return false;
+      });
   }
 
   function _onInputKeydown(event) {

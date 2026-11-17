@@ -98,18 +98,37 @@ function _snToolPushStorageHistory(label, beforeSnapshot, keys, detail) {
   return true;
 }
 
-function _snToolReadJsonObject(key) {
+// 端末に保存した設定（テンプレート・フィルタ・行セット等）が読めない時、空として扱うと
+// 次の保存で元の内容が上書きされて消える。上書きの前に一度だけ別キーへ退避する。
+function _snPreserveUnreadableStorage(key, raw) {
+  if (raw == null || raw === '') return;
   try {
-    const value = JSON.parse(localStorage.getItem(key) || '{}');
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  } catch { return {}; }
+    const backupKey = key + '.unreadable-backup';
+    if (localStorage.getItem(backupKey) == null) localStorage.setItem(backupKey, String(raw));
+    console.warn('[scriptnote] 端末の保存設定を読めないため、元の内容を ' + backupKey + ' へ退避しました');
+  } catch {}
+}
+
+function _snToolReadJsonObject(key) {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(key);
+    const value = JSON.parse(raw || '{}');
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  } catch {}
+  _snPreserveUnreadableStorage(key, raw);
+  return {};
 }
 
 function _snToolReadJsonArray(key) {
+  let raw = null;
   try {
-    const value = JSON.parse(localStorage.getItem(key) || '[]');
-    return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item) : [];
-  } catch { return []; }
+    raw = localStorage.getItem(key);
+    const value = JSON.parse(raw || '[]');
+    if (Array.isArray(value)) return value.filter(item => typeof item === 'string' && item);
+  } catch {}
+  _snPreserveUnreadableStorage(key, raw);
+  return [];
 }
 
 function _snToolPresetNames(storageKey, orderKey) {
@@ -216,10 +235,7 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
   <div class="tb-spacer"></div>
   <button type="button" class="tb-icon-btn" data-sn-action="filter" id="btn-filter" title="タイプ/採用状況でフィルタ" aria-label="タイプ/採用状況でフィルタ"><span class="ico ico-funnel"></span></button>
-  <select id="sn-filter-preset" class="tb-select sn2-toolbar-filter-preset" title="フィルタプリセット" aria-label="フィルタプリセット"><option value="__all__">すべて表示</option></select>
   <div class="sep"></div>
-  <button type="button" class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録" aria-label="現在のフィルタを登録"><span class="ico ico-save"></span></button>
-  <button type="button" class="tb-icon-btn" data-sn-action="manageFilters" title="フィルタプリセットを管理" aria-label="フィルタプリセットを管理"><span class="ico ico-listChecks"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み" aria-label="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換" aria-label="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
   <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
@@ -258,7 +274,25 @@ class ScriptNoteComponent extends ToolComponent {
           silent: true,
           skipStatus: true,
         };
-        this._loadScenario(this.state.scenarioPath, isPaneActive ? {} : passiveLoadOpts);
+        const loadPath = this.state.scenarioPath;
+        this._lastLoadError = null;
+        const loading = this._loadScenario(loadPath, isPaneActive ? {} : passiveLoadOpts);
+        if (!isPaneActive) {
+          // 非アクティブなパネルの読込は表示を出さない設定で行うが、失敗まで黙ると
+          // 空のパネルだけが残るため、どのシナリオが読めなかったかを知らせる。
+          Promise.resolve(loading).then(loaded => loaded, error => {
+            this._lastLoadError = error;
+            return false;
+          }).then(loaded => {
+            // 新しい読込に追い越された場合（エラーなしの false）は失敗ではない。
+            if (loaded !== false || !this._lastLoadError) return;
+            const name = String(loadPath).split(/[\\/]/).pop() || loadPath;
+            const reason = this._lastLoadError?.message || this._lastLoadError || '';
+            if (typeof showStatus === 'function') {
+              showStatus(`別のパネルのシナリオ「${name}」を読み込めませんでした${reason ? `: ${reason}` : ''}`, true);
+            }
+          });
+        }
         return;
       }
     } else if (!this._editor?.doc) {
@@ -771,9 +805,18 @@ class ScriptNoteComponent extends ToolComponent {
       });
     }
     const titleInput = this.el.querySelector('#title-input');
+    // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+    if (titleInput) titleInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        titleInput.blur();
+      }
+    });
     if (titleInput) titleInput.addEventListener('change', async () => {
       const editor = this._editor;
       if (editor?.doc) {
+        const previousTitle = editor.doc.title || '';
         editor._pushUndo('タイトル変更');
         editor.doc.title = titleInput.value;
         editor._markDirty();
@@ -781,9 +824,45 @@ class ScriptNoteComponent extends ToolComponent {
         const newTitle = titleInput.value.trim();
         const oldPath = editor._path;
         if (newTitle && oldPath) {
+          // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+          if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
+            applyOptimisticRenameLabel(oldPath, newTitle, 'scriptnote');
+          }
           try {
-            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
-            if (this._editor !== editor || editor._path !== oldPath || editor.doc?.title !== newTitle) return;
+            // 1) 表示中の文書は自動保存と同じ列でタイトルを確定する（並走すると409になる）。
+            let res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
+            const storageName = window.GBPathUtils?.displayTitle?.storageName;
+            const currentStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+            const needsFileRename = res?.new_path === oldPath && typeof storageName === 'function' && storageName(newTitle) !== currentStem;
+            // タイトルを続けて変えた場合は、後続の change が改名を引き継ぐ。
+            if (editor.doc?.title !== newTitle) return;
+            if (this._editor !== editor || editor._path !== oldPath) {
+              // 1段目（タイトル保存）の後で表示中のシナリオが切り替わった。別の保存と競合し得るため
+              // ファイル名は変えず、先に変えたツリー・タブの名前を実際のファイル名へ戻して知らせる。
+              if (needsFileRename) {
+                if (editor._path === oldPath && newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
+                  applyOptimisticRenameLabel(oldPath, currentStem, 'scriptnote');
+                }
+                if (typeof showStatus === 'function') {
+                  showStatus('タイトルは保存しましたが、表示中のシナリオが切り替わったためファイル名は変更していません。もう一度タイトルを確定すると変更できます', true);
+                }
+              }
+              return;
+            }
+            // 2) タイトル＝ファイル名。保存済みの状態でファイル名を新しいタイトルへ変える。
+            let switchedAfterFileRename = false;
+            if (needsFileRename) {
+              res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote' });
+              if (editor._path !== oldPath) {
+                if (typeof showStatus === 'function') {
+                  showStatus('ファイル名は変更しましたが、同時に別の変更があったため画面へ反映できませんでした。フォルダツリーから開き直してください', true);
+                }
+                return;
+              }
+              // ファイルは既に新しい名前へ移っている。表示が切り替わっていても、このエディタの保存先と
+              // ツリーは新しい名前へ合わせる（旧名へ保存して別ファイルを作らないため）。
+              switchedAfterFileRename = this._editor !== editor;
+            }
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
               if (typeof _sn2Editors !== 'undefined') {
@@ -792,21 +871,27 @@ class ScriptNoteComponent extends ToolComponent {
                 if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
               }
               editor._path = res.new_path;
-              this.state.scenarioPath = res.new_path;
+              if (!switchedAfterFileRename) this.state.scenarioPath = res.new_path;
               window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
                 detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
               }));
-              window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
+              if (!switchedAfterFileRename) window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
               if (typeof renameAppPathReferences === 'function') {
                 renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, etag:res.etag, titleOnly:res.title_only, type: 'scriptnote' });
               }
               // タブ名を更新
-              if (typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);
+              if (!switchedAfterFileRename && typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);
               // フォルダツリーのノード名を更新
               if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
             }
           } catch (e) {
-            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）
+            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）。
+            // 先に変えたツリーとタブの名前は、変わらなかったファイル名に合わせて戻す。
+            if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function' && editor._path === oldPath) {
+              const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+              applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
+              titleInput.value = editor.doc.title || '';
+            }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
           }
         }
@@ -1404,6 +1489,8 @@ class ScriptNoteComponent extends ToolComponent {
         throw new Error('競合状態が更新されたため、再読込を中止しました');
       }
       if (restoredDraft) this._editor._dirty = true;
+      // ツールバー直下のビュータブ（絞り込みと操作単位をファイル内のビューとして切り替える）
+      this._editor._mountScenarioViewTabs?.(this.el?.querySelector?.('#se-toolbar'));
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
       this._syncReadOnlyFromFileLock();
@@ -1442,6 +1529,7 @@ class ScriptNoteComponent extends ToolComponent {
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオを読み込みました');
       return true;
     } catch (err) {
+      this._lastLoadError = err;
       if (this.el) this.el.dataset.loadFailed = '1';
       if (!this._editor?.doc) {
         this.state.scenarioPath = '';

@@ -16,12 +16,14 @@
     // ファイル/フォルダの実体をリネーム
     if (nodeData.path && nv !== old) {
       const oldPath = nodeData.path;
+      // 通信を待たずに、開いているタブやツールバーの名前も先に変える
+      applyOptimisticRenameLabel(oldPath, nv, nodeData.type || 'page');
       try {
         const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page',
-          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
+          title_only: false
         });
         if (!res || !res.new_path) throw new Error('rename failed');
         _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
@@ -31,6 +33,7 @@
           await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
         } else {
           // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+          applyOptimisticRenameLabel(oldPath, old, nodeData.type || 'page');
           labelEl.textContent = old;
           const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
           showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
@@ -74,22 +77,59 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+  // 取り消し・やり直し: 以前は表示名（oldName）をそのまま新しいファイル名として送り、
+  // 戻った先を oldPath と決め打ちしていた。「タイトル＝ファイル名」では、表示タイトルと
+  // ファイル名が違う項目（無題/ を「キャラ」と表示する等）が キャラ/ へ改名される一方、
+  // ツリーと参照は存在しない 無題/ を指してしまう。元のファイル名へ戻してから表示タイトルを
+  // 戻し、ツリーと参照はサーバーが実際に返したパスへ合わせる。
+  const titleOnlyRename = options?.titleOnly === true || oldPath === newPath;
+  const itemType = nodeData.type || 'page';
+  const baseNameOf = (path) => String(path || '').replace(/[\/]+$/, '').split(/[\/]/).pop() || '';
+  const storedStemOf = (fromPath, toPath) => {
+    const fromBase = baseNameOf(fromPath);
+    const toBase = baseNameOf(toPath);
+    for (let index = fromBase.indexOf('.'); index > 0; index = fromBase.indexOf('.', index + 1)) {
+      const ext = fromBase.slice(index);
+      if (toBase.toLowerCase().endsWith(ext.toLowerCase())) return fromBase.slice(0, index);
+    }
+    return fromBase;
+  };
+  const originalStem = storedStemOf(oldPath, newPath);
+  let currentPath = newPath;
+  const renameTo = async (fromPath, fileStem, displayTitle) => {
+    if (titleOnlyRename) {
+      const res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: displayTitle, type: itemType, title_only: true });
+      return { response: res, path: res?.new_path || fromPath };
+    }
+    let res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: fileStem, type: itemType, title_only: false });
+    let path = res?.new_path || fromPath;
+    if (displayTitle && displayTitle !== fileStem) {
+      const titled = await apiPost('/outliner/rename', { old_path: path, new_name: displayTitle, type: itemType, title_only: true });
+      res = { ...res, ...titled, new_path: path, file_id: titled?.file_id || res?.file_id };
+    }
+    return { response: res, path };
+  };
+  const moveTreeTo = (fromPath, toPath, label, response, aliasFrom, aliasTo) => {
+    _renameTreeNode(fromPath, toPath, label, response?.file_id);
+    aliasPairs.forEach(pair => _renameTreeNode(pair[aliasFrom], pair[aliasTo], label, response?.file_id));
+    applyPathReferences(fromPath, toPath, label, response);
+    aliasPairs.forEach(pair => applyPathReferences(pair[aliasFrom], pair[aliasTo], label, response));
+    nodeData.path = toPath;
+    nodeData.pathAliases = aliasPairs.map(pair => pair[aliasTo]);
+  };
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.newPath, pair.oldPath, oldName, r2?.file_id));
-      applyPathReferences(newPath, oldPath, oldName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.newPath, pair.oldPath, oldName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.oldPath);
+      const { response, path } = await renameTo(currentPath, originalStem, oldName);
+      moveTreeTo(currentPath, path, oldName, response, 'newPath', 'oldPath');
+      nodeData.name = oldName;
+      currentPath = path;
+      if (path !== oldPath) showStatus(`元のファイル名に戻せなかったため「${baseNameOf(path)}」になりました`, true);
     },
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, r2?.file_id));
-      applyPathReferences(oldPath, newPath, newName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+      const { response, path } = await renameTo(currentPath, storedStemOf(newPath, oldPath), newName);
+      moveTreeTo(currentPath, path, newName, response, 'oldPath', 'newPath');
+      nodeData.name = newName;
+      currentPath = path;
     }
   );
   const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
@@ -153,6 +193,28 @@ function backToPivot() {
   }
   document.querySelectorAll('.tree-node-row.active').forEach(el => el.classList.remove('active'));
 }
+
+// 名前の変更を確定した瞬間に、ツリー・タブ・ツールバーの表示名だけを先に変える。
+// 保存先（パス）の差し替えはサーバーの応答後に renameAppPathReferences が行う。
+// 改名の通信は環境によって数秒かかるため、待たずに名前が変わったことを見せる。
+// 失敗時は同じ関数を元の名前で呼び直して戻す。
+function applyOptimisticRenameLabel(path, label, type) {
+  if (!path || label == null || label === '') return;
+  const text = String(label);
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
+    if (node._nodeData?.path !== path) return;
+    const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
+    if (labelEl && !labelEl.querySelector('input')) labelEl.textContent = text;
+  });
+  try {
+    if (typeof renameAppPathReferences === 'function') {
+      renameAppPathReferences(path, path, { label: text, type: type || 'page', preserveMountedViews: true, skipDbReload: true });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 名前の先行表示に失敗しました', error);
+  }
+}
+if (typeof window !== 'undefined') window.applyOptimisticRenameLabel = applyOptimisticRenameLabel;
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
@@ -810,7 +872,19 @@ async function _uploadOutlinerDroppedFile(file, parentPath) {
   }
 }
 
-document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
+// 行・ツリーへのOSドロップ取込。読み取りや取り込みの途中で失敗しても、原因つきで表示する。
+async function _outlinerImportOsDropSafely(event, targetItem) {
+  try {
+    return await _folderImportOsDrop(event, targetItem);
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    if (typeof _outlinerReportFailure === 'function') _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    else showStatus('ファイルを取り込めませんでした', true);
+    return 0;
+  }
+}
+
+async function _outlinerHandleTreeOsDrop(e) {
   e.preventDefault();
   const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
   let parentPath = '';
@@ -822,7 +896,7 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
   if (typeof _folderImportOsDrop === 'function') {
-    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
+    await _outlinerImportOsDropSafely(e, { type: 'folder', path: parentPath || state.vaultPath });
     return;
   }
   const progress = window.MeldexOperationProgress?.begin?.({
@@ -836,7 +910,15 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  let results;
+  try {
+    results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    progress?.fail?.({ error: error });
+    _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    return;
+  }
   results.forEach((result, index) => {
     progress?.update?.({ processed: index + 1, currentItem: result.name || files[index]?.name || '' });
   });
@@ -844,8 +926,11 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
   } catch (error) {
+    // 取り込み自体は済んでいる。表示の更新失敗を取り込み失敗と混同させない。
+    console.error('[outliner drop] 表示の更新に失敗', error);
     progress?.fail?.({ error: error });
-    throw error;
+    _outlinerReportFailure('ファイルは取り込みましたが、ツリーの表示を更新できませんでした', error);
+    return;
   }
   const succeeded = results.filter(result => result.ok);
   const failed = results.filter(result => !result.ok);
@@ -864,4 +949,6 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
     else showStatus(files.length + '個のファイルをインポートしました');
   }
-});
+}
+
+document.getElementById('outliner-tree')?.addEventListener('drop', e => _outlinerHandleTreeOsDrop(e));

@@ -306,6 +306,7 @@ async function bdOpenBoard(label, path, opts) {
     title: prevTitle,
     path: bd.path || '',
     loadedBoardPath: bd._loadedBoardPath || '',
+    loadDamage: Array.isArray(bd._loadDamage) ? bd._loadDamage : [],
     dump: typeof bdDumpState === 'function' ? bdDumpState() : null,
   };
   _bdPendingOpenRollback = rollback;
@@ -401,6 +402,8 @@ async function bdOpenBoard(label, path, opts) {
       historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(nextPath) : ('board:' + String(nextPath || '').replace(/\\/g, '/')));
     }
     bd._preservedFrontmatter = parsed.preservedFrontmatter || '';
+    // 読込時に壊れていた部分。残っている間は上書き保存を止める（_bdCanSaveCurrentBoardPath）。
+    bd._loadDamage = Array.isArray(parsed.loadDamage) ? parsed.loadDamage : [];
     window.MeldexFileLockBadge?.apply?.(titleEl, nextPath);
     bd.nodes = parsed.nodes || [];
     if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes);
@@ -528,11 +531,16 @@ async function bdOpenBoard(label, path, opts) {
       _bdShowConflictPending(documentKeyAtOpen, nextPath);
     }
     _bdPendingOpenRollback = null;
+    if (bd._loadDamage.length && typeof _bdLoadDamageMessage === 'function') {
+      try { console.warn('[board] 読込時に壊れていた部分:', nextPath, bd._loadDamage); } catch (_) {}
+      showStatus(_bdLoadDamageMessage(bd._loadDamage), true);
+    }
     return true;
   } catch (err) {
     if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     bd.path = prevPath;
     bd._loadedBoardPath = prevLoadedBoardPath;
+    bd._loadDamage = rollback.loadDamage || [];
     if (titleEl) titleEl.textContent = rollback.title || '';
     window.MeldexFileLockBadge?.apply?.(titleEl, prevPath);
     if (prevDump && typeof bdLoadState === 'function') {

@@ -1,3 +1,29 @@
+        });
+      }
+      await _runPathMutationHooksSafe({
+        action: 'restore', oldPath: trashPath, newPath: originalPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      await _runPostMutationStep(warnings, 'trash-metadata', async () => {
+        if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
+      });
+      return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+    }
+
+    if (pathname === '/trash' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const items = [];
+      const warnings = [];
+      let allowedRoots;
+      try {
+        allowedRoots = await _allowedTrashRoots();
+      } catch (error) {
+        allowedRoots = [{ path: _normalizeFolderPath(PWA_TRASH_DIR), name: 'Meldex', physicalPath: '' }];
+        warnings.push({
+          trash_root: '', trash_root_name: '', stage: 'trash-roots',
+          message: error?.message || String(error), code: error?.code || '',
+        });
+      }
       const rootsByPath = new Map(allowedRoots.map((root) => [root.path, root]));
       const sourceRootsByPhysical = new Map(allowedRoots.filter((root) => (
         window.MeldexSourceFolderRegistry?.parseSourcePath?.(root.path)

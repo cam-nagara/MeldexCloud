@@ -167,14 +167,10 @@
     const range = editor ? _richSelectionSourceRange(editor, true, source) : null;
     if (!input || !editor || !range) return false;
     const insert = String(text || '').replace(/\r\n?/g, '\n');
-    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const nextSource = source.slice(0, range.start) + insert + source.slice(range.end);
     const caret = range.start + insert.length;
     _richVerticalColumn = null;
-    _renderRichInputFromSource(caret, caret);
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
-    return true;
+    return _applyRichInputSourceEdit(source, nextSource, range.start, range.end, caret, caret);
   }
 
   function _ensureRichInput() {
@@ -247,6 +243,7 @@
       _syncPlainFromRich();
     });
     editor.addEventListener('keydown', (event) => {
+      if (_handleComposerFallbackUndo(event)) return;
       if (_handleRichInputVerticalNavigation(event, editor)) return;
       if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) {
         event.stopPropagation();
@@ -269,6 +266,8 @@
         _richVerticalColumn = null;
       }
     });
+    editor.addEventListener('compositionstart', () => { _richInputComposing = true; });
+    editor.addEventListener('compositionend', () => { _richInputComposing = false; });
     editor.addEventListener('pointerdown', (event) => {
       if (_focusEmptyRichInputAtStart(event, editor)) return;
       _richVerticalColumn = null;

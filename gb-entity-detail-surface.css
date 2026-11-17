@@ -78,8 +78,8 @@
 @media (pointer: coarse) {
   .meldex-entity-detail-actions button,
   .meldex-entity-detail-toolbar button {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -115,8 +115,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
-  font-size: 12px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px);
+  font-size: var(--ui-font-12, 12px);
   border: 1px solid var(--border);
   border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg);
@@ -127,7 +127,7 @@
 @media (pointer: coarse), (max-width: 640px) {
   .meldex-entity-attachment-add-btn,
   .meldex-entity-attachment-menu .ab-dropdown-item {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     box-sizing: border-box;
   }
 }
@@ -234,7 +234,7 @@ iframe.meldex-entity-linked-media {
   min-height: 80px;
   box-sizing: border-box;
   resize: vertical;
-  padding: 8px;
+  padding: var(--ui-space-4, 8px);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -250,12 +250,12 @@ iframe.meldex-entity-linked-media {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   border: none;
   background: transparent;
   color: var(--fg2, #888);
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
 }
 
 .meldex-entity-attachment-del-btn:hover {
@@ -292,7 +292,7 @@ iframe.meldex-entity-linked-media {
 }
 #tb-db #toolbar-category input,
 .gb-editor-host-toolbar [data-editor-local-id="toolbar-category"] input {
-  height: 30px; box-sizing: border-box; line-height: normal;
+  height: var(--ui-h-md, 32px); box-sizing: border-box; line-height: normal;
 }
 
 /* Saved HTML owns the topic content area independently of its columns. */

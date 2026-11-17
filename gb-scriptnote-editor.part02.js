@@ -109,7 +109,7 @@
         : this.doc.characters.find(c => c.isDefault));
     // dataset.kind: 'blank' (空ロール), 'break' (区切り), 'summary' (プロット), 'action', 'heading', 'dialogue'
     let kind = 'dialogue';
-    if (!row.role) kind = 'blank';
+    if (!row.role && !row.character) kind = 'blank';
     else if (effectiveRole?.type?.isSummary || chara?.isSummary) kind = 'summary';
     else if (effectiveRole?.type?.isBreak || chara?.isBreak) kind = 'break';
     else {
@@ -126,11 +126,12 @@
     }
     // まとめ表示: 前行と同じガター値やタイプ値なら非表示フラグ
     const mergeGutter = mergeDisplay && prevRow && calc && idx > 0;
+    const mergeCharacter = mergeDisplay && prevRow && prevRow.character === row.character && row.character;
     const mergeRole = mergeDisplay && prevRow && prevRow.role === row.role && row.role;
     const visibleIds = new Set(typeof this._getVisibleColumnIds === 'function'
       ? this._getVisibleColumnIds()
       : (visibleCols || []).map(column => column.id));
-    const visCols = Object.fromEntries(['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+    const visCols = Object.fromEntries(['_handle', '_gutter', '_gutter2', '_character', '_role', '_status', '_text']
       .map(id => [id, visibleIds.has(id)]));
 
     // 列間枠線: どの列の右側に枠線を表示するかを判定
@@ -143,7 +144,7 @@
       el.appendChild(cell);
     };
 
-    // チェックボックス + ドラッグハンドル（ハンドルdiv内にチェックボックスを配置）
+    // シートと同じ順序の行コントロール（＋、ドラッグハンドル、チェックボックス）
     if (visCols._handle !== false) {
       const rowId = row.id;
       const handle = document.createElement('div');
@@ -151,15 +152,63 @@
       // 注意: HTML5 draggable は使わない (ドラッグ中 wheel がブロックされるため)。
       // pointer events ベースの自前ドラッグ (_bind 内) で移動を実装する。
       // シナリオ上ではツールチップを出さない（title属性は付けない）
-      handle.addEventListener('click', (ev) => {
-        if (this._suppressRowCheckClick) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          return;
-        }
+      // クリック（ドラッグなし）で行メニュー。Shift/Ctrl+クリックは従来どおり行選択。
+      handle.dataset.e2eId = `sn-row-${rowId}-handle`;
+      handle.setAttribute('aria-label', `${idx + 1}行目のメニュー`);
+      const toggleSelectionFromHandle = (ev) => {
         ev.stopPropagation();
-        this._toggleRowSelection(rowId, idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
+        const currentIdx = this.doc.rows.findIndex(item => item.id === rowId);
+        this._toggleRowSelection(rowId, currentIdx >= 0 ? currentIdx : idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
+      };
+      if (globalThis.MeldexRowHandleMenu?.bind) {
+        globalThis.MeldexRowHandleMenu.bind(handle, {
+          ignoreSelector: '.sn2-row-add-btn, .sn2-row-check',
+          getRow: () => handle.closest('.sn2-row'),
+          getPrefer: () => (this.doc.editor?.viewMode === 'vertical' ? 'left' : 'below'),
+          isEnabled: () => !this._suppressRowCheckClick,
+          onModifiedClick: toggleSelectionFromHandle,
+          ariaLabel: '行メニュー',
+          e2eId: 'sn-row-handle-menu',
+          getItems: () => (typeof this._rowHandleMenuItems === 'function' ? this._rowHandleMenuItems(rowId) : []),
+        });
+      } else {
+        handle.addEventListener('click', (ev) => {
+          if (ev.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
+          if (this._suppressRowCheckClick) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+          }
+          toggleSelectionFromHandle(ev);
+        });
+      }
+      const addRowBtn = document.createElement('span');
+      addRowBtn.className = 'sn2-row-add-btn';
+      addRowBtn.title = 'クリックで下に行を追加 / Alt+クリックで上に追加';
+      addRowBtn.tabIndex = 0;
+      addRowBtn.setAttribute('role', 'button');
+      addRowBtn.setAttribute('aria-label', `${idx + 1}行目の前後に行を追加`);
+      addRowBtn.dataset.e2eId = `sn-row-${rowId}-add`;
+      addRowBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 12) : '+';
+      const triggerAddRow = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._insertEmptyRowRelative(rowId, ev.altKey ? 'above' : 'below', '_text');
+      };
+      addRowBtn.addEventListener('click', triggerAddRow);
+      addRowBtn.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') triggerAddRow(ev);
       });
+      addRowBtn.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      handle.appendChild(addRowBtn);
+      const gripText = document.createElement('span');
+      gripText.className = 'sn2-row-grip';
+      gripText.textContent = '⠿';
+      gripText.style.cssText = 'pointer-events:none;';
+      handle.appendChild(gripText);
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.className = 'sn2-row-check';
@@ -173,13 +222,10 @@
           return;
         }
         ev.stopPropagation();
-        this._toggleRowSelection(rowId, idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
+        const currentIdx = this.doc.rows.findIndex(item => item.id === rowId);
+        this._toggleRowSelection(rowId, currentIdx >= 0 ? currentIdx : idx, ev.shiftKey, ev.ctrlKey || ev.metaKey);
       });
       handle.appendChild(cb);
-      const gripText = document.createElement('span');
-      gripText.textContent = '⠿';
-      gripText.style.cssText = 'pointer-events:none;';
-      handle.appendChild(gripText);
       appendCell('_handle', handle);
     }
 
@@ -239,6 +285,24 @@
       appendCell('_gutter2', gutter2);
     }
 
+    // キャラボタン
+    let characterBtn = null;
+    if (visCols._character !== false) {
+      characterBtn = document.createElement('button');
+      characterBtn.className = 'sn2-character-btn';
+      characterBtn.type = 'button';
+      characterBtn.textContent = mergeCharacter ? '' : (row.character || '');
+      characterBtn.setAttribute('aria-label', `キャラ: ${row.character || '未設定'}`);
+      characterBtn.tabIndex = 0;
+      characterBtn.dataset.rowId = row.id;
+      characterBtn.dataset.e2eId = `sn-row-${row.id}-character`;
+      const characterSt = getColSettings('_character');
+      if (characterSt.align) characterBtn.style.textAlign = characterSt.align;
+      if (characterSt.valign) characterBtn.dataset.valign = characterSt.valign;
+      if (colBorderSet.has('_character')) characterBtn.dataset.colBorderRight = '';
+      appendCell('_character', characterBtn);
+    }
+
     // タイプボタン
     let roleBtn = null;
     if (visCols._role !== false) {
@@ -284,7 +348,7 @@
       textDiv.contentEditable = this._readOnly ? 'false' : 'true';
       textDiv.setAttribute('role', 'textbox');
       textDiv.setAttribute('aria-multiline', 'true');
-      textDiv.setAttribute('aria-label', `本文、${idx + 1}行、タイプ${row.role || '未設定'}`);
+      textDiv.setAttribute('aria-label', `本文、${idx + 1}行、キャラ${row.character || '未設定'}、タイプ${row.role || '未設定'}`);
       textDiv.setAttribute('aria-readonly', this._readOnly ? 'true' : 'false');
       textDiv.dataset.rowId = row.id;
       textDiv.dataset.e2eId = `sn-row-${row.id}-text`;
@@ -394,7 +458,15 @@
         inp.addEventListener('input', () => {
           if (typeof this._scheduleAutoDecorate === 'function') this._scheduleAutoDecorate(inp);
         });
-        inp.addEventListener('focusout', () => { this._pushUndo('列値変更'); row.columns[col.id] = inp.textContent || ''; this._markDirty({ skipUndo: true }); });
+        // 画面上の文字が変わった時だけ書き戻す。アクティブセルの消去・貼り付けで再描画される際、
+        // 取り外される旧セルの focusout が古い文字で新しい値を上書きしないようにする。
+        let lastSyncedText = String(val);
+        inp.addEventListener('focusout', () => {
+          const nextText = inp.textContent || '';
+          if (nextText === lastSyncedText) return;
+          lastSyncedText = nextText;
+          this._pushUndo('列値変更'); row.columns[col.id] = nextText; this._markDirty({ skipUndo: true });
+        });
         cell.appendChild(inp);
       }
       if (colBorderSet.has(col.id)) cell.dataset.colBorderRight = '';
@@ -419,7 +491,7 @@
     // 縦書き: 連続半角英数字を縦中横(tcy)で横組みブロック化
     if (this.doc.editor?.viewMode === 'vertical') {
       el.querySelectorAll('.sn2-gutter').forEach(c => this._wrapTcy(c, 'sn2-tcy-wide'));
-      el.querySelectorAll('.sn2-role-btn, .sn2-custom-text').forEach(c => this._wrapTcy(c));
+      el.querySelectorAll('.sn2-character-btn, .sn2-role-btn, .sn2-custom-text').forEach(c => this._wrapTcy(c));
       if (textDiv) this._wrapTcy(textDiv);
     }
 
@@ -624,24 +696,38 @@
     };
     // 要素は保持したまま、その中のテキストノードを処理する。
     [...el.childNodes].forEach(walk);
+    // キャラ／タイプのボタンは縦位置合わせに flex を使うため、文字列と縦中横が
+    // 別のflex itemになり改行される。1つの流れへまとめて同じ行に並べる。
+    if (el.tagName === 'BUTTON' && el.childNodes.length > 1) {
+      const flow = document.createElement('span');
+      flow.className = 'sn2-cell-flow';
+      flow.append(...el.childNodes);
+      el.appendChild(flow);
+    }
     if (el.isConnected) this._adjustTcyAlignment(el);
   }
 
   _adjustTcyAlignment(root = this.host) {
     if (!root?.isConnected || this.doc?.editor?.viewMode !== 'vertical') return;
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-    root.querySelectorAll('.sn2-tcy > .sn2-tcy-glyph').forEach(glyph => {
-      // Chromiumの縦中横は、圧縮する文字列によって字形の中心が枠から
-      // ずれる。文字・フォントごとの固定値ではなく、実際の描画位置を測る。
-      // inline要素の矩形は子の相対位置を含むことがある。補正前の枠を
-      // 基準に測り直し、再描画やフォント変更で補正が累積しないようにする。
-      glyph.style.removeProperty('--sn2-tcy-center-shift');
+    // Chromiumの縦中横は、圧縮する文字列によって字形の中心が枠から
+    // ずれる。文字・フォントごとの固定値ではなく、実際の描画位置を測る。
+    // inline要素の矩形は子の相対位置を含むことがある。補正前の枠を
+    // 基準に測り直し、再描画やフォント変更で補正が累積しないようにする。
+    // 補正の解除→全字形の測定→補正の書き込みを分けてまとめる（字形ごとに
+    // 書いて測ると、字形の数だけ画面全体の再レイアウトが走る）。
+    const glyphs = [...root.querySelectorAll('.sn2-tcy > .sn2-tcy-glyph')];
+    glyphs.forEach(glyph => glyph.style.removeProperty('--sn2-tcy-center-shift'));
+    const range = document.createRange();
+    const shifts = glyphs.map(glyph => {
       const box = glyph.parentElement.getBoundingClientRect();
-      const range = document.createRange();
       range.selectNodeContents(glyph);
       const text = range.getBoundingClientRect();
-      if (!(box.width > 0) || !(text.width > 0)) return;
-      const delta = ((text.left + text.right) - (box.left + box.right)) / (2 * z);
+      if (!(box.width > 0) || !(text.width > 0)) return 0;
+      return ((text.left + text.right) - (box.left + box.right)) / (2 * z);
+    });
+    glyphs.forEach((glyph, index) => {
+      const delta = shifts[index];
       if (Math.abs(delta) > 0.01) glyph.style.setProperty('--sn2-tcy-center-shift', -delta + 'px');
     });
   }
@@ -704,6 +790,18 @@
     // contentEditableへキャレットを置くが、この click ハンドラで contentEditable を
     // false に戻すため、同一フレーム内で「編集開始」の見た目には遷移しない。
     host.addEventListener('click', (e) => {
+      // Ctrl（Macは⌘）+クリック: セルを複数選択へ追加／選択から外す（どの列のセルでも）
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const cellEl = e.target.closest?.('.sn2-row [data-col-id]');
+        const rowEl = cellEl?.closest('.sn2-row');
+        if (cellEl && rowEl && host.contains(cellEl) && cellEl.dataset.colId !== '_handle'
+            && typeof this._toggleGridCellInSelection === 'function') {
+          e.preventDefault();
+          e.stopPropagation();
+          this._toggleGridCellInSelection(rowEl.dataset.rowId, cellEl.dataset.colId);
+          return;
+        }
+      }
       const textEl = e.target.closest?.('.sn2-text, .sn2-custom-text');
       if (textEl && host.contains(textEl)) {
         const rowEl = textEl.closest('.sn2-row');
@@ -1021,12 +1119,8 @@
             e.preventDefault(); e.stopPropagation();
             nativeCtrl.blur();
             this._cellEditMode = false;
-            // Tab はその行のタイプ選択メニューを開く（Shift+Tab は従来どおり前のセルへ移動）
-            if (!e.shiftKey) {
-              const roleBtn = nativeCtrl.closest('.sn2-row')?.querySelector('.sn2-role-btn');
-              if (roleBtn) { this._showRoleMenu(roleBtn); return; }
-            }
-            this._navigateCell(e.shiftKey ? 'prev-col' : 'next-col');
+            const target = this._roleMenuAnchor(nativeCtrl.closest('.sn2-row'), e.shiftKey ? 'type' : 'character');
+            if (target) this._showRoleMenu(target, { kind: e.shiftKey ? 'type' : 'character' });
             return;
           }
         }
@@ -1039,8 +1133,13 @@
       // （メインテキストセルの Tab は part03 のテキストセル keydown で処理される）
       if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         const customText = e.target.closest?.('.sn2-custom-text');
-        const roleBtn = customText?.closest('.sn2-row')?.querySelector('.sn2-role-btn');
-        if (roleBtn) { e.preventDefault(); this._showRoleMenu(roleBtn); return; }
+        const characterBtn = customText ? this._roleMenuAnchor(customText.closest('.sn2-row'), 'character') : null;
+        if (characterBtn) { e.preventDefault(); this._showRoleMenu(characterBtn, { kind: 'character' }); return; }
+      }
+      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey) {
+        const customText = e.target.closest?.('.sn2-custom-text');
+        const roleBtn = customText ? this._roleMenuAnchor(customText.closest('.sn2-row'), 'type') : null;
+        if (roleBtn) { e.preventDefault(); this._showRoleMenu(roleBtn, { kind: 'type' }); return; }
       }
 
       // Ctrl+Z / Ctrl+Y (undo/redo) — テキスト内外どちらでも動作
@@ -1145,4 +1244,4 @@
         let targetIdx = idx + dir;
         while (targetIdx >= 0 && targetIdx < this.doc.rows.length) {
           const targetRow = this.doc.rows[targetIdx];
-          if (this._isRoleVisible(targetRow.role, targetRow.status || '')) break;
+          if (this._isRoleVisible(targetRow)) break;

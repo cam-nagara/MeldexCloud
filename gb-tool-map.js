@@ -20,7 +20,7 @@ class MapAppComponent extends ToolComponent {
     this._commitInput(); if (this._inputDirty) { this._message('入力内容を確認してください'); return; }
     this.state.mapBrowseMode = !this.state.mapBrowseMode;
     this.state.mapViewport = { center: this.view.xy(this.view.map.getCenter()), zoom: this.view.map.getZoom() };
-    this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy();
+    this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy();
     this.view.destroy(); this._build(); this._render(); this._saveViewState();
     this._message(this.readOnly ? 'このマップは読み取り専用です。地点や図形は編集できません。'
       : this.state.mapBrowseMode ? '閲覧モードです。地点の移動・作図・編集を停止しています。' : '作図モードです。地点や図形を編集できます。');
@@ -44,7 +44,7 @@ class MapAppComponent extends ToolComponent {
     if (this.store && !options.ignoreDraft && !await this.flush()) return false;
     const generation = ++this._generation;
     this._sheetSignature = null; this._sheetCache = new Map(); this._directParents = [];
-    clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
+    clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
     this.el.textContent = 'マップを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false)]);
@@ -194,13 +194,14 @@ class MapAppComponent extends ToolComponent {
     const doc = this.store.doc, layer = doc.layers.find(l => l.id === this._activeLayer);
     if (this.editingDisabled) return;
     if (action.source && action.source !== doc.features) { this.view._features(); this._message('地図が変更されたため操作を取り消しました'); return; }
+    if(action.type==='atlas-stroke'){MeldexMapTerrainControls.paint(this,action).catch(e=>this._message(e.message));return;}
     if (action.type === 'transform') {
       const editable = action.changes.filter(change => doc.features.some(f => f.id === change.id && !doc.layers.find(l => l.id === f.layer_id)?.locked));
       this.update(next => { for (const change of editable) next.features.find(f => f.id === change.id).points = MeldexMapDocument.clone(change.points); });
     } else if (action.type === 'erase') {
       this._deleteSelected(action.ids); return;
     } else if (action.type === 'terrain') {
-      this.update(next => { next.terrain = action.terrain; delete next.terrain.environment; delete next.terrain.presentation; });
+      this.update(next => { next.terrain = action.terrain; delete next.atlas; next.schema_version=1; delete next.terrain.environment; delete next.terrain.presentation; });
       this._buildSettingsRefresh();
     }
     else if (action.type === 'add') {
@@ -208,6 +209,7 @@ class MapAppComponent extends ToolComponent {
       const feature = MeldexMapDocument.feature(action.kind, action.points, layer.id,
         ({ pin: '地点', route: '経路', region: '領域', label: '地名' })[action.kind]);
       feature.icon = action.icon || 'pin'; feature.color = this.colorInput.value;
+      if(action.kind==='route'){const kind=action.role||this.view.routeKind||'major';feature.cartography={role:kind==='major'?'road':kind==='other'?'':kind,rank:kind==='major'?'major':'minor'};feature.line_style='curve';if(kind==='river')feature.color='#427f9f';if(kind==='railway')feature.color='#555b60';if(kind==='shipping')feature.color='#628798';}
       if (this.update(next => next.features.push(feature))) { this._selected = feature.id; this._selection = new Set([feature.id]); this._inspectorShown = true; }
     } else if (['move', 'vertex'].includes(action.type)) {
       const feature = doc.features.find(f => f.id === action.id);
@@ -273,6 +275,7 @@ class MapAppComponent extends ToolComponent {
     this._inputDirty = false; this._render();
   }
   _setTool(tool) {
+    if(this.store.doc.atlas&&(!this.store.doc.atlas.surface||this.store.doc.atlas.locked)&&['land','sea'].includes(tool)){this._message('Azgaarの地形は「世界地図を生成」で更新してください。地点・図形は通常どおり編集できます。');return;}
     if (this.editingDisabled && !['select', 'measure'].includes(tool)) return;
     this.view.setTool(tool, this.symbolInput.value);
     if (tool !== 'select') { this._inspectorShown = false; this._renderInspector(); this.sidebar.hidden = true; this.sidebarToggle?.setAttribute('aria-pressed', 'false'); }
@@ -280,13 +283,16 @@ class MapAppComponent extends ToolComponent {
     this._message(({ select: this.editingDisabled ? '地点や図形を選択します。閲覧中は移動しません。' : '地点や図形を選択します。地点はドラッグで移動できます。', pin: '地図をクリックして地点を置きます。',
       label: '地図をクリックして地名を置きます。', symbol: '地図をクリックして記号を置きます。',
       route: '経路の各点をクリックし、「確定」で完了します。', region: '領域の頂点をクリックし、「確定」で閉じます。',
-      measure: '計測する各点をクリックしてください。', land: 'ドラッグして陸地を描きます。', sea: 'ドラッグして海を描きます。', erase: '消す図形をなぞります。元に戻すで復旧できます。' })[tool]);
+      river:'ドラッグして川をベクターで描きます。描いた後に「周囲の地形を合わせる」で谷を作れます。', measure: '計測する各点をクリックしてください。', land: this.store.doc.atlas?'ドラッグして選択中の地形を描きます。':'ドラッグして陸地を描きます。', sea: 'ドラッグして海を描きます。', erase: '消す図形をなぞります。元に戻すで復旧できます。' })[tool]);
     this.view._features();
     MeldexMapChrome.refresh(this);
   }
   _render() {
     if (!this.store || !this.view) return;
+    // Adoption / Redo can replace a legacy terrain while its brush is active.
+    if(this.store.doc.atlas&&(!this.store.doc.atlas.surface||this.store.doc.atlas.locked)&&['land','sea'].includes(this.view.tool))this._setTool('select');
     if (!this.store.doc.layers.some(layer => layer.id === this._activeLayer)) this._activeLayer = this.store.doc.layers[0].id;
+    this.view.elementVisibility=this.state.mapElementVisibility||null;
     this.view.periodId = MeldexMapPeriods.selected(this);
     this.view.setRotation(this.state.mapRotation || 0, false);
     this.view.filter = typeof this.state.mapSearch === 'string' ? this.state.mapSearch.trim().toLocaleLowerCase() : '';
@@ -302,6 +308,7 @@ class MapAppComponent extends ToolComponent {
     this.breadcrumbs.replaceChildren(); MeldexMapRelations.breadcrumbs(this, this.breadcrumbs);
     this.sheetSources.replaceChildren(); MeldexMapRelations.sources(this, this.sheetSources);
     MeldexMapRelations.refresh(this).catch(error => { this.sheetStatus.textContent = error.message; });
+    for(const key of ['land','sea']){const b=this.toolButtons.get(key);if(b){b.disabled=this.editingDisabled||!!this.store.doc.atlas&&(!this.store.doc.atlas.surface||!!this.store.doc.atlas.locked);if(this.store.doc.atlas)b.title=this.store.doc.atlas.locked?'地形をロックしています':'ドラッグして地形を描きます';else b.title=b.getAttribute('aria-label')||key;}}
     this.localControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'local'; });
     this.worldControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'world'; });
     MeldexMapChrome.refresh(this);
@@ -330,7 +337,7 @@ class MapAppComponent extends ToolComponent {
     this.inspectorToggle = this._button('選択項目', () => { this._inspectorShown = !this._inspectorShown; this._renderInspector(); }); toolbar.appendChild(this.inspectorToggle);
     this.saveStatus = document.createElement('span'); this.saveStatus.className = 'gb-map-save-status'; this.saveStatus.setAttribute('role', 'status'); toolbar.appendChild(this.saveStatus);
     const tools = document.createElement('div'); tools.className = 'gb-map-tools'; tools.setAttribute('aria-label', '地図の編集ツール'); this.el.appendChild(tools);
-    for (const [tool, label] of [['select', '選択'], ['pin', '地点'], ['route', '経路'], ['region', '領域'], ['label', '文字'], ['symbol', '記号'], ['land', '陸地'], ['sea', '海'], ['erase', '消しゴム'], ['measure', '計測']]) {
+    for (const [tool, label] of [['select', '選択'], ['pin', '地点'], ['route', '経路'], ['river','川（フリーハンド）'], ['region', '領域'], ['label', '文字'], ['symbol', '記号'], ['land', '陸地'], ['sea', '海'], ['erase', '消しゴム'], ['measure', '計測']]) {
       const button = this._button(label, () => this._setTool(tool), { id: tool, disabled: this.editingDisabled && !['select', 'measure'].includes(tool) });
       button.setAttribute('aria-pressed', String(tool === 'select')); this.toolButtons.set(tool, button); tools.appendChild(button);
       if (['land', 'sea'].includes(tool)) this.localControls.push(button);
@@ -381,6 +388,7 @@ class MapAppComponent extends ToolComponent {
       this._button('100%', () => this.view.zoom100()), this._button('全体', () => this.view.fit()), this.rotationSlider, this.rotationLabel, this._button('回転リセット', () => this.view.setRotation(0)));
     this.message = document.createElement('span'); this.message.setAttribute('role', 'status');
     this.position = document.createElement('span'); status.append(this.message, this.position);
+    const previousView=this.view;
     this.view = new MeldexMapView(surface, {
       action: action => this._action(action), select: id => this._select(id), message: text => this._message(text),
       selection: (ids, active) => this._selectMany(ids, active), edit: id => this._editName(id), command: name => this._command(name),
@@ -406,6 +414,7 @@ class MapAppComponent extends ToolComponent {
         } catch (error) { this._message(error.userMessage || error.message); }
       },
     });
+    if(previousView)for(const key of ['routeKind','terrainKind','terrainStrength','brushSize'])if(previousView[key]!==undefined)this.view[key]=previousView[key];
     MeldexMapChrome.decorate(this);
     this._message('地図の種類を選び、地点や地形を追加してください。');
   }
@@ -516,7 +525,7 @@ class MapAppComponent extends ToolComponent {
   getDetailContent() { return this.path ? { type: 'map', path: this.path } : null; }
   destroy(options = {}) {
     if (!options.skipFlush && (this.store?.dirty || this.store?.pending || this._inputDirty)) return false;
-    ++this._generation; clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this);
+    ++this._generation; clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this);
     window.removeEventListener('beforeunload', this._beforeUnload); super.destroy(); return true;
   }
 }

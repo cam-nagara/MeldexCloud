@@ -66,9 +66,9 @@
 }
 /* Tierチップ: .gb-btn/.gb-btn-sm を基底とし、pill形状とフィルタ選択状態だけを上書きする */
 .template-tier-btn {
-  min-height: 30px;
-  padding: 5px 12px;
-  border-radius: 999px;
+  min-height: var(--ui-h-md, 32px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-5, 12px);
+  border-radius: var(--ui-radius-pill, 999px);
   color: var(--fg2);
 }
 .template-tier-btn.active,
@@ -405,5 +405,5 @@ body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .template-card,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .db-template-footer .gb-btn,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .db-template-icon-button,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .gb-input {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }

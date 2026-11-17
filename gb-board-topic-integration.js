@@ -599,7 +599,20 @@
         if (!result?.ok || board._topicBridgeDestroyed || board.path !== expectedPath) return result;
         canonicalizeBoard(board, result.detail || {});
         return result;
-      }).catch(() => ({ ok: false, status: 'fallback' }));
+      }).catch((error) => {
+        // 旧ボードが正本なので操作は続けるが、配置など移行が必要な操作で原因を追えるよう、
+        // 記録を残して共通の失敗イベント（gb-topic-live-bridge と同じ形）を出す。
+        const message = String(error?.message || error || '');
+        try { console.warn('[board] 共通トピックへの移行に失敗しました:', expectedPath, error); } catch (_) {}
+        if (typeof global.dispatchEvent === 'function' && typeof global.CustomEvent === 'function') {
+          try {
+            global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
+              detail: { dbPath: expectedPath, status: 'fallback', message },
+            }));
+          } catch (_) {}
+        }
+        return { ok: false, status: 'fallback', error };
+      });
     } else {
       board._topicMigrationPromise = Promise.resolve({ ok: false, status: 'offline' });
     }
@@ -993,7 +1006,25 @@
     const styleButton = (text, e2eId, action) => {
       const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
       element.dataset.e2eId = e2eId;
-      element.addEventListener('click', async () => { await action(); refreshAll(); });
+      element.addEventListener('click', async () => {
+        // 非同期の確認や更新の失敗も受け取り、原因つきで表示する。
+        // 操作側で例外を表示済み（error あり）の結果は二重に表示しない。
+        try {
+          const result = await action();
+          if (result && result.ok === false && !result.error && !result.confirmationRequired) {
+            showGroupMessage(result.reason === 'read-only'
+              ? `「${text}」を実行できませんでした: 読み取り専用のため変更できません`
+              : `「${text}」を実行できませんでした: 対象のグループまたはスタイルが見つかりません`, true);
+          }
+        } catch (error) {
+          try { console.warn('[board] グループスタイル操作に失敗しました:', text, error); } catch (_) {}
+          const reason = String(error?.message || '').trim();
+          showGroupMessage(/[ぁ-んァ-ヶ一-龠]/.test(reason)
+            ? `「${text}」を実行できませんでした: ${reason}`
+            : `「${text}」を実行できませんでした（予期しない問題が発生しました。もう一度お試しください）`, true);
+        }
+        refreshAll();
+      });
       styleActions.appendChild(element);
     };
     styleButton('作成', 'board-group-style-create', () => controller.createGroupStyle(styleName.value || 'グループスタイル', groupSelect.value));
@@ -1011,8 +1042,10 @@
         const confirmed = typeof global.cfConfirm === 'function'
           ? await global.cfConfirm(`グループスタイル「${style.name}」を削除します。使用中の${affected.affectedGroupCount}件は現在の見た目を個別値として保持しますか？`)
           : false;
-        if (confirmed) controller.removeGroupStyle(style.groupStyleId, 'preserve');
+        if (confirmed) return controller.removeGroupStyle(style.groupStyleId, 'preserve');
+        return { ok: true, cancelled: true };
       }
+      return affected;
     });
     root.appendChild(details);
     refreshAll();

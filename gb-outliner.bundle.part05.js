@@ -1,3 +1,150 @@
+function _outlinerBindContextMenuClose(menu) {
+  let removed = false;
+  let pointerArmed = false;
+  const cleanup = () => {
+    if (removed) return;
+    removed = true;
+    document.removeEventListener('keydown', keyHandler, true);
+    if (pointerArmed) document.removeEventListener('pointerdown', pointerHandler, true);
+    _outlinerContextMenuCleanups.delete(cleanup);
+  };
+  const keyHandler = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTreeContextMenu();
+  };
+  const pointerHandler = (event) => {
+    const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(event.target));
+    if (!inAnyMenu) closeTreeContextMenu();
+  };
+  _outlinerContextMenuCleanups.add(cleanup);
+  document.addEventListener('keydown', keyHandler, true);
+  pointerArmed = true;
+  document.addEventListener('pointerdown', pointerHandler, true);
+}
+
+async function _refreshOutlinerSort() {
+  const results = await refreshOutliner({ force: true, reason: 'outliner-sort' });
+  if (results?.some(result => result.status === 'rejected')) showStatus('並び順を保存しましたが、ツリーの一部を更新できませんでした', true);
+  if (typeof renderFolderGrid === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
+    await renderFolderGrid({ preserveSelectedPaths: _folderSelectedItems.map(item => item?.path).filter(Boolean) });
+  }
+}
+
+function showOutlinerSortMenu(event) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  closeTreeContextMenu();
+  const trigger = document.getElementById('btn-tree-sort');
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+  const menu = _outlinerCreateContextMenu('フォルダツリーの並べ替え', rect.left / zoom, rect.bottom / zoom);
+  menu.dataset.e2eId = 'outliner-sort-menu';
+  const current = getSortSettings()._tree || { sort: 'manual', order: 'asc' };
+  getFolderSortOptions().forEach(option => {
+    const active = current.sort === option.sort && current.order === option.order;
+    const button = _outlinerAppendMenuItem(menu, {
+      label: option.label, checked: active, role: 'menuitemradio',
+      action: async () => {
+        closeTreeContextMenu();
+        const keys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(keys);
+        const settings = getSortSettings();
+        Object.keys(settings).forEach(key => { settings[key] = { sort: option.sort, order: option.order }; });
+        settings._tree = { sort: option.sort, order: option.order };
+        localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(settings));
+        if (typeof pushLocalStorageSettingsHistory === 'function') {
+          pushLocalStorageSettingsHistory('フォルダツリー: 並べ替え設定', before,
+            captureOutlinerSettingsHistory(keys), option.label, _refreshOutlinerSort);
+        }
+        await _refreshOutlinerSort();
+      },
+    });
+    button.dataset.sort = option.sort;
+    button.dataset.order = option.order;
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  _outlinerPlaceContextMenu(menu);
+}
+
+function _showTreeAddMenu(x, y, nodeEl, nodeData) {
+  closeTreeContextMenu();
+  const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
+  // シートを選んでいるときは、シートの中に作れる「エントリ」を先頭に出す。
+  // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
+  if (nodeData?.type === 'database' && nodeData.path) {
+    _outlinerAppendMenuItem(menu, {
+      label: 'トピック',
+      icon: 'plus',
+      action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
+    });
+    _outlinerAppendMenuSeparator(menu);
+  }
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
+    _outlinerAppendMenuItem(menu, {
+      label,
+      icon,
+      action: async () => {
+        closeTreeContextMenu();
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type, { anchorNode: nodeEl });
+      },
+    });
+  });
+  _outlinerPlaceContextMenu(menu);
+}
+
+// --- 右クリックメニュー ---
+function closeTreeContextMenu() {
+  _outlinerContextMenuOpenSeq += 1;
+  _outlinerContextMenuCleanups.forEach(cleanup => {
+    try { cleanup(); } catch {}
+  });
+  _outlinerContextMenuCleanups.clear();
+  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+}
+
+// gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
+function _outlinerPathIsAbsolute(path) {
+  if (window.GBPathUtils?.isAbsolute) return window.GBPathUtils.isAbsolute(path);
+  const value = String(path || '');
+  return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
+}
+
+function _outlinerJoinPath(base, rel) {
+  if (window.GBPathUtils?.join) return window.GBPathUtils.join(base, rel);
+  const left = String(base || '').replace(/[\\/]+$/, '');
+  const right = String(rel || '').replace(/^[\\/]+/, '');
+  if (!left) return right;
+  if (!right) return left;
+  return left + '/' + right;
+}
+
+function _outlinerNativeClipboardPath(path) {
+  if (window.GBPathUtils?.toNativeClipboard) return window.GBPathUtils.toNativeClipboard(path);
+  const value = String(path || '');
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return value.replace(/\//g, '\\');
+  if (/^[/\\]{2}/.test(value)) return '\\\\' + value.replace(/^[/\\]+/, '').replace(/\//g, '\\');
+  return value;
+}
+
+function _outlinerLocalCopyPath(nodeEl, nodeData) {
+  let path = String(nodeData?.path || '');
+  if (!path) return '';
+  if (!_outlinerPathIsAbsolute(path)) {
+    const rootNode = nodeEl?.closest?.('#outliner-tree > .tree-node');
+    const rootPath = rootNode?._nodeData?.path || '';
+    const base = nodeEl?.closest?.('#body-home') && _homeFolderPath
+      ? _homeFolderPath
+      : (rootPath || (typeof state !== 'undefined' ? state.vaultPath : ''));
+    if (base && _outlinerPathIsAbsolute(base)) path = _outlinerJoinPath(base, path);
+  }
+  return _outlinerNativeClipboardPath(path);
+}
+
+async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
+  closeTreeContextMenu();
   const openSeq = ++_outlinerContextMenuOpenSeq;
   const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
 
@@ -96,14 +243,7 @@
       onCopy: () => folderToolbarCopyItems(contextOperationItems),
       onCut: () => folderToolbarCutItems(contextOperationItems),
       onPaste: () => folderToolbarPasteToFolder(addParent),
-      onDuplicate: async () => {
-        let count = 0;
-        for (const target of editableContextItems) {
-          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
-        }
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
-      },
+      onDuplicate: () => _outlinerRunDuplicate(editableContextItems),
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
       cutDisabled: editableContextItems.length === 0,
@@ -322,9 +462,13 @@
   // --- バージョン管理（フォルダのみ） ---
   if (!isMulti && (isFolder || isDB) && nodeData.path) {
     addSep();
-    addMenuItem('バージョンを保存', () => {
+    addMenuItem('バージョンを保存', async () => {
       closeTreeContextMenu();
-      if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
+      if (typeof saveFolderVersion !== 'function') {
+        showStatus('バージョンを保存できませんでした：この画面ではバージョン管理を使えません', true);
+        return;
+      }
+      await saveFolderVersion(nodeData.path);
     }, null, 'save');
     addMenuItem('バージョン管理', () => {
       closeTreeContextMenu();
@@ -400,13 +544,7 @@
   if (!isMulti && nodeData.path) {
     addMenuItem('リンクをコピー', () => {
       closeTreeContextMenu();
-      const linkPath = nodeData.path;
-      const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
-      if (typeof MeldexBroadcast !== 'undefined') {
-        MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type).then(ok => {
-          if (ok) showStatus('リンクをコピーしました');
-        });
-      }
+      return _outlinerCopyLink(nodeData);
     }, null, 'link');
   }
 
@@ -601,16 +739,7 @@
     }, null, 'folderPen');
     addMenuItem('名前を変更...', async () => {
       closeTreeContextMenu();
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const root = roots.find(r => r.path === nodeData.path);
-      if (!root) return;
-      const newName = await cfPrompt('表示名を入力:', root.name);
-      if (!newName) return;
-      root.name = newName;
-      await _putOutlinerRootsWithBase(roots, baseRoots);
-      await loadOutliner();
-      showStatus('名前を変更しました');
+      await _outlinerRenameSourceFolder(nodeData);
     }, null, 'pencil');
     addMenuItem('チーム管理...', async () => {
       closeTreeContextMenu();
@@ -619,15 +748,7 @@
     addSep();
     addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
-      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const newRoots = roots.filter(r => r.path !== nodeData.path);
-      await _putOutlinerRootsWithBase(newRoots, baseRoots);
-      await loadOutliner();
-      showStatus('ソースフォルダの登録を解除しました');
+      await _outlinerUnregisterSourceFolder(nodeData);
     }, null, 'folder-minus');
   }
 
@@ -716,13 +837,18 @@
     }
   }
 
-  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
-  // 表示後に項目数やポップアップ座標を変えない。
-  if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
+  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
+  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
+  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
   }
   if (openSeq !== _outlinerContextMenuOpenSeq) return;
   _outlinerPlaceContextMenu(menu);
+  if (shellPath && !shellReady) {
+    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
+  }
 }
 
 // 追加先の親パスを決定
@@ -772,129 +898,3 @@ function applyColorToSelection(color) {
     .filter(Boolean)
     .join(', ');
   treeSelection.items.forEach(nodeEl => {
-    const data = nodeEl._nodeData;
-    if (!data) return;
-    const row = nodeEl.querySelector('.tree-node-row');
-    if (row) applyNodeColor(row, color);
-    if (data.path) setNodeColor(data.path, color);
-  });
-  pushOutlinerSettingsHistory(
-    color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
-    before,
-    detail,
-    [NODE_COLORS_KEY]
-  );
-  showStatus(color ? '色を設定しました' : '色をリセットしました');
-}
-
-/* ==============================
-   タイムアウト事後確認（作成・リネーム共通）
-   ============================== */
-// APIタイムアウト時のポーリング間隔。合計30秒で打ち切る
-const OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS = [2000, 4000, 8000, 16000];
-// 同一キーの事後確認ポーリングが二重に走らないようにする
-const _outlinerPostTimeoutConfirmInFlight = new Set();
-
-// E2Eから待機時間を短縮できるようにする（通常はundefinedで既定値）
-function _outlinerPostTimeoutConfirmDelays() {
-  const o = window.__outlinerPostTimeoutConfirmDelaysForE2E;
-  return (Array.isArray(o) && o.length) ? o : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
-}
-
-// 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
-async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, options = {}) {
-  const sourceId = contextNodeEl?._nodeData?.sourceId || '';
-  let rootPath = '';
-  let cur = contextNodeEl || null;
-  while (cur) {
-    if (cur._nodeData?._isRoot) { rootPath = cur._nodeData.path; break; }
-    cur = cur.parentElement ? cur.parentElement.closest('.tree-node') : null;
-  }
-  const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
-  const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
-  const controller = new AbortController();
-  let timer;
-  const timeout = new Promise(resolve => {
-    timer = setTimeout(() => { controller.abort(); resolve(null); }, options.timeoutMs || 5000);
-  });
-  try {
-    return await Promise.race([apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
-      { skipBrowseCache: true, cache: 'reload', timeoutMs: options.timeoutMs || 5000, signal: controller.signal }), timeout]);
-  } catch {
-    return null;
-  } finally { clearTimeout(timer); }
-}
-
-// 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
-// oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
-function _outlinerFindRenamedItem(items, oldDisplayName, newName, originalPath) {
-  if (!Array.isArray(items)) return null;
-  // Title-only edits keep their path; another item may have the same display name.
-  if (originalPath) {
-    const original = items.find(it => it && it.path === originalPath);
-    if (original) return original.name === newName ? original : null;
-  }
-  if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
-  return items.find(it => it && it.name === newName) || null;
-}
-
-function _resolveOutlinerCreateInsertTarget(parentPath, options) {
-  const expandUnloaded = options?.expandUnloaded !== false;
-  let container;
-  let deferTreeInsert = false;
-  if (parentPath) {
-    const parentNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(parentPath) : null;
-    if (parentNode) {
-      const childrenDiv = parentNode.querySelector(':scope > .tree-children');
-      if (childrenDiv) {
-        const toggle = parentNode.querySelector('.tree-toggle');
-        if (childrenDiv.dataset.loaded === 'false') {
-          deferTreeInsert = true;
-          if (expandUnloaded && toggle && toggle.dataset.expanded !== 'true') toggle.click();
-        } else {
-          childrenDiv.classList.remove('collapsed');
-          if (toggle) { toggle.classList.add('expanded'); toggle.dataset.expanded = 'true'; }
-          container = childrenDiv;
-        }
-      }
-    }
-    if (!container && _homeFolderPath && parentPath === _homeFolderPath) {
-      container = document.getElementById('body-home');
-    }
-    // 親ノードがDOM上に見つからず、ホームフォルダにも該当しない場合はルートへ誤挿入せず
-    // 「挿入先不明」を返す。呼び出し元は誤挿入せず全体再読込に委ねる
-    if (!container && !deferTreeInsert) return { container: null, deferTreeInsert: false };
-  }
-  if (!container && !deferTreeInsert) container = document.getElementById('outliner-tree');
-  return { container, deferTreeInsert };
-}
-
-function _insertOutlinerCreateNode(container, newNode, anchorNode) {
-  if (!container || !newNode) return;
-  if (anchorNode && (container.parentElement === anchorNode
-      || anchorNode._nodeData?.path === container.closest('.tree-node')?._nodeData?.path)) {
-    container.insertBefore(newNode, container.firstChild);
-    return;
-  }
-  const sel = anchorNode || treeSelection.lastClicked;
-  if (sel && sel._nodeData && sel.parentElement === container) {
-    const selType = sel._nodeData.type;
-    if (anchorNode || (selType !== 'folder' && selType !== 'database')) {
-      container.insertBefore(newNode, sel.nextSibling);
-      return;
-    }
-  }
-  container.appendChild(newNode);
-}
-
-function _selectOutlinerCreateNode(newNode) {
-  if (!newNode) return;
-  treeSelection.clear();
-  treeSelection.add(newNode);
-  treeSelection.lastClicked = newNode;
-  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
-  newNode.querySelector('.tree-node-row')?.classList.add('active');
-}
-
-function _createOutlinerPendingCreateNode(type, label) {
-  const item = {

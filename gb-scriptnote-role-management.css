@@ -5,8 +5,9 @@
   box-sizing: border-box;
   min-height: 0;
   overflow: hidden;
-  gap: 10px;
-  padding: 10px;
+  gap: 0;
+  padding: 0;
+  background: var(--ui-bg-panel);
 }
 .sn2-role-manage-section {
   display: flex;
@@ -15,8 +16,9 @@
   min-height: 150px;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-sm);
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
   background: var(--ui-bg-panel);
 }
 .sn2-role-manage-separator {
@@ -29,8 +31,8 @@
 .sn2-role-manage-separator::before {
   content: '';
   position: absolute;
-  inset: 4px 0;
-  border-top: 2px solid var(--ui-border);
+  inset: 5px 0 auto;
+  border-top: 1px solid var(--ui-border);
 }
 .sn2-role-manage-separator:hover::before,
 .sn2-role-manage-separator:focus-visible::before { border-color: var(--ui-accent); }
@@ -39,7 +41,7 @@
   flex: 0 0 auto;
   align-items: center;
   min-height: 32px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
 }
@@ -66,58 +68,109 @@
 }
 .sn2-role-manage-table {
   width: 100%;
-  min-width: 560px;
+  min-width: 0;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: var(--ui-font-11);
+  font-size: var(--ui-font-12);
 }
-.sn2-role-manage-table--characters { min-width: 560px; }
 .sn2-role-manage-table th {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 5px 6px;
+  height: 30px;
+  padding: 4px 2px;
+  overflow: hidden;
+  border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
   color: var(--ui-fg-muted);
-  text-align: left;
+  font-size: var(--ui-font-10);
+  text-align: center;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sn2-role-manage-table th { box-sizing: border-box; }
 .sn2-role-manage-format-header { cursor: pointer; }
+.sn2-role-manage-format-header:hover,
+.sn2-role-manage-format-header:focus-visible {
+  color: var(--ui-hover-fg);
+  background: var(--ui-hover-bg);
+  outline: none;
+  box-shadow: inset 0 -2px 0 var(--ui-accent);
+}
+.sn2-role-manage-table select.is-keyboard-editing {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+.sn2-role-manage-table input.is-keyboard-editing {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+/* 見出しの右境界線。ドラッグで列幅を変える（th は overflow:hidden なので内側に置く）。 */
 .sn2-role-column-resizer {
   position: absolute;
   top: 0;
-  right: -4px;
+  right: 0;
   bottom: 0;
   z-index: 3;
-  width: 8px;
+  width: 6px;
   cursor: col-resize;
   touch-action: none;
 }
 .sn2-role-column-resizer:hover,
-.sn2-role-column-resizer:focus-visible { background: color-mix(in srgb, var(--ui-accent) 35%, transparent); }
+.sn2-role-column-resizer.is-resizing { background: color-mix(in srgb, var(--sn2-active-cell-color) 45%, transparent); }
 .sn2-role-manage-table td {
-  height: 32px;
-  padding: 3px 5px;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 2px;
+  overflow: hidden;
+  border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   vertical-align: middle;
 }
-.sn2-role-manage-table th:first-child,
-.sn2-role-manage-table td:first-child { width: 32px; padding-inline: 2px; text-align: center; }
-.sn2-role-manage-table th:nth-child(2),
-.sn2-role-manage-table td:nth-child(2) { width: 32px; text-align: center; }
-.sn2-role-manage-table--types th:nth-child(3) { width: 34%; }
-.sn2-role-manage-table--types th:nth-child(4) { width: 36%; }
-.sn2-role-manage-table--types th:last-child { width: 72px; }
-.sn2-role-manage-table--characters th:nth-child(3) { width: 42px; }
-.sn2-role-manage-table--characters th:nth-child(4) { width: 27%; }
-.sn2-role-manage-table--characters th:nth-child(5) { width: 30%; }
-.sn2-role-manage-table--characters th:last-child { width: 72px; }
+.sn2-role-manage-table th:last-child,
+.sn2-role-manage-table td:last-child { border-right: 0; }
+/* アクティブなセル: 操作部品にフォーカスがあるセルを、シナリオ本体のアクティブセルと
+   同じ内側2pxの枠・同じ色（アプリのアクセントカラー）で示す。オプションパネル内では
+   --accent / --ui-accent がパネル用アクセントへ差し替わるため、ルートで解決した値を使う。
+   部品自身の枠線や背景色の書式見本に埋もれないよう、セル側に描く。 */
+:root { --sn2-active-cell-color: var(--accent, #4a90d9); }
+.sn2-role-manage-table tbody td:focus-within {
+  box-shadow: inset 0 0 0 2px var(--sn2-active-cell-color);
+}
+.sn2-role-manage-col--control,
+.sn2-role-manage-cell--control,
+.sn2-role-manage-col--color,
+.sn2-role-manage-cell--color,
+.sn2-role-manage-col--settings,
+.sn2-role-manage-actions { text-align: center; }
+.sn2-role-manage-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+.sn2-role-manage-check {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.sn2-role-manage-row:hover .sn2-role-manage-check,
+.sn2-role-manage-row.selected .sn2-role-manage-check,
+.sn2-role-manage-check:focus-visible,
+.sn2-role-manage-check:disabled { opacity: 1; }
 .sn2-role-manage-grip {
   display: inline-grid;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 26px;
   padding: 0;
   place-items: center;
   border: 0;
@@ -141,7 +194,8 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
+  padding: 0 var(--ui-space-2, 4px);
   border: 1px solid transparent;
   border-radius: var(--ui-radius-xs);
   background: transparent;
@@ -156,6 +210,7 @@
   background: var(--ui-bg-app);
   outline: none;
 }
+.sn2-role-manage-name[readonly] { cursor: default; caret-color: transparent; }
 .sn2-role-manage-name--static {
   display: flex;
   align-items: center;
@@ -168,6 +223,39 @@
   font: inherit;
   user-select: none;
 }
+.sn2-role-name-editor {
+  position: relative;
+  min-width: 0;
+}
+.sn2-role-name-editor .sn2-role-name-preview { padding-right: 18px; }
+.sn2-role-name-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-role-style-trigger {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  z-index: 2;
+  display: none;
+  width: 17px;
+  height: 20px;
+  padding: 0 2px;
+  transform: translateY(-50%);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-control-hover);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  line-height: 1;
+  cursor: pointer;
+}
+.sn2-role-manage-cell--type-name:hover .sn2-role-style-trigger,
+.sn2-role-manage-cell--type-name:focus-within .sn2-role-style-trigger,
+.sn2-role-manage-cell--name:hover .sn2-role-style-trigger,
+.sn2-role-manage-cell--name:focus-within .sn2-role-style-trigger,
+.sn2-role-style-trigger:focus-visible { display: block; }
 .sn2-role-manage-grip--disabled {
   opacity: 0.35;
   cursor: default;
@@ -176,9 +264,59 @@
 .sn2-role-manage-row--none {
   background: color-mix(in srgb, var(--ui-bg-surface) 40%, transparent);
 }
+.sn2-role-manage-cell--muted {
+  color: var(--ui-fg-muted);
+  text-align: center;
+}
+/* キャラ表「シート」列: 元トピックへのリンク。 */
+.sn2-role-manage-cell--sheet-link { min-width: 0; }
+.sn2-role-sheet-link {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sn2-role-sheet-link:hover,
+.sn2-role-sheet-link:focus-visible { background: var(--ui-bg-control-hover); outline: none; }
+/* 連携先の選択: 空欄と余白クリックで選べる。変更ボタンは行にポインタがある時だけ目立たせる。 */
+.sn2-role-manage-cell--sheet-link-pickable { cursor: pointer; }
+.sn2-role-sheet-link-wrap { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.sn2-role-sheet-link-wrap .sn2-role-sheet-link { flex: 1 1 auto; width: auto; }
+.sn2-role-sheet-link-pick {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-fg-muted);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.sn2-role-manage-row:hover .sn2-role-sheet-link-pick,
+.sn2-role-sheet-link-pick:hover,
+.sn2-role-sheet-link-pick:focus-visible { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); opacity: 1; outline: none; }
+.sn2-db-import-sheet tr.sn2-db-import-link-picked > td { background: var(--ui-bg-selected); box-shadow: inset 0 1px 0 var(--ui-accent), inset 0 -1px 0 var(--ui-accent); }
 .sn2-role-name-color {
   width: 28px;
-  height: 24px;
+  height: 26px;
   padding: 1px;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
@@ -188,7 +326,7 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 26px;
+  height: 30px;
   overflow: hidden;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
@@ -197,13 +335,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sn2-role-style-preview[data-valign="top"] { align-items: flex-start; }
+.sn2-role-style-preview[data-valign="center"] { align-items: center; }
+.sn2-role-style-preview[data-valign="bottom"] { align-items: flex-end; }
+.sn2-role-style-preview[data-valign]:not([data-valign=""]) { display: flex; justify-content: center; }
+.sn2-role-style-preview[data-overflow="wrap"] { height: auto; min-height: 26px; overflow-wrap: anywhere; }
+.sn2-role-preview-cell--bordered { border-right: 2px solid var(--sn2-border-color, var(--ui-border-strong, var(--ui-border))); }
+.sn2-role-manage-row--outlined .sn2-role-style-preview,
+.sn2-role-manage-row--outlined .sn2-role-name-preview {
+  outline: var(--sn2-role-outline-width, 1px) solid var(--sn2-role-outline-color, var(--ui-border-strong, var(--ui-border)));
+  outline-offset: -1px;
+}
+.sn2-role-style-preview:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
 .sn2-role-manage-actions {
-  display: flex;
-  align-items: center;
-  gap: 3px;
   white-space: nowrap;
 }
-.sn2-role-manage-actions .sn2-detail-add-btn { min-width: 28px; padding-inline: 6px; }
+.sn2-role-manage-actions .sn2-detail-add-btn {
+  min-width: 52px;
+  max-width: 100%;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
+  font-size: var(--ui-font-10);
+}
 .sn2-role-unset-badge {
   display: inline-block;
   margin-top: 2px;
@@ -220,11 +375,14 @@
 }
 .sn2-role-manage-toolbar {
   flex: 0 0 auto;
+  padding: 6px 8px;
   border-top: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
 }
+.sn2-role-manage-toolbar .sn2-detail-toolbar-spacer { display: none; }
 .sn2-role-bulk-type {
-  min-width: 132px;
+  flex: 1 1 132px;
+  min-width: 0;
   max-width: 220px;
 }
 .sn2-role-delete-modal {
@@ -264,15 +422,54 @@
 }
 .sn2-role-delete-field select {
   width: 100%;
+  min-height: var(--ui-h-lg, 36px);
+}
+
+.sn2-character-settings-popup {
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  min-width: min(280px, calc(100vw - 24px));
+  padding: 0;
+}
+.sn2-character-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+.sn2-character-settings-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+.sn2-character-settings-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.sn2-character-settings-field > :last-child {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+}
+.sn2-character-settings-note {
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  line-height: 1.5;
 }
 
 
 @media (max-width: 640px), (pointer: coarse) {
   .sn2-role-management {
-    gap: 10px;
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    gap: 0;
+    padding: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .sn2-role-manage-section {
     min-height: 150px;
@@ -310,22 +507,23 @@
   .sn2-role-name-color {
     width: 44px;
   }
-  .sn2-role-manage-grip { width: 44px; height: 44px; }
-  .sn2-role-manage-actions {
-    gap: 4px;
-  }
+  .sn2-role-manage-grip { flex-basis: 22px; width: 22px; height: 44px; }
+  .sn2-role-sheet-link-pick { width: 44px; height: 44px; }
+  .sn2-role-column-resizer { width: 12px; }
+  .sn2-role-style-trigger { display: block; width: 24px; height: 32px; }
+  .sn2-role-name-editor .sn2-role-name-preview { padding-right: 26px; }
   .sn2-role-manage-actions .sn2-detail-add-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
     padding-inline: 8px;
   }
   .sn2-role-manage-toolbar {
     width: auto;
     max-width: none;
-    overflow-x: auto;
-    flex-wrap: nowrap;
+    overflow-x: hidden;
+    flex-wrap: wrap;
   }
   .sn2-role-bulk-type {
-    flex: 0 0 170px;
+    flex: 1 1 170px;
     min-height: 44px;
     font-size: 15px;
   }
@@ -333,7 +531,7 @@
     width: 100%;
   }
   .sn2-role-delete-field select {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
 }

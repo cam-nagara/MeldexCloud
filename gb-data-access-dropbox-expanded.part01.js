@@ -147,6 +147,8 @@
   }
 
   function _frontmatterText(frontmatter, body) {
+    // 正確に読めなかった設定欄（読込時に印が付く）を書き戻して値を消さない。
+    window.MeldexCloudFrontmatterLite?.assertWritable?.(frontmatter);
     const lines = ['---'];
     Object.entries(frontmatter || {}).forEach(([key, value]) => {
       if (!key || key.startsWith('_')) return;

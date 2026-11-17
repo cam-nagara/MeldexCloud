@@ -1,0 +1,177 @@
+/* gb-view-tabs.css: ツールバー下のビュータブ（共通部品 MeldexViewTabs）
+   寸法・選択表示はシート・ボードのビュータブと同じ共通トークンを使う。 */
+
+.gb-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: var(--ui-view-tab-row-padding);
+  border-bottom: var(--ui-view-tab-row-border);
+  background: var(--bg2);
+  box-sizing: border-box;
+}
+
+.gb-view-tabs-list {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.gb-view-tab {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  flex: 0 0 auto;
+  height: var(--ui-view-tab-height);
+  padding: 0 var(--ui-view-tab-padding-x);
+  font-size: var(--ui-view-tab-font-size);
+  color: var(--ui-fg-muted, var(--fg2));
+  border-radius: var(--ui-radius-xs);
+  border-bottom: 2px solid transparent;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.gb-view-tab:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
+
+/* 選択中の表示はシートのビュータブと同じ（下線＋薄いアクセント背景） */
+.gb-view-tab.active {
+  background: var(--ui-inner-tab-active-bg);
+  color: var(--ui-inner-tab-active-fg);
+  border-color: var(--ui-inner-tab-active-border);
+  box-shadow: inset var(--ui-inner-tab-active-left-accent) 0 0 var(--ui-inner-tab-active-underline), inset 0 calc(-1 * var(--ui-inner-tab-active-underline-width)) 0 var(--ui-inner-tab-active-underline);
+}
+
+.gb-view-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--ui-h-xs);
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gb-view-tab-label svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+.gb-view-tab-rename {
+  width: 9em;
+  height: calc(var(--ui-view-tab-height) - 4px);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.gb-view-tab-menu { display: block; position: relative; }
+
+.gb-view-tab-menu > summary { list-style: none; }
+.gb-view-tab-menu > summary::-webkit-details-marker { display: none; }
+
+.gb-view-tab-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  min-height: var(--ui-h-xs);
+  margin-left: 4px;
+  padding: 0 2px;
+  border-radius: 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.gb-view-tab:hover .gb-view-tab-more,
+.gb-view-tab:focus-within .gb-view-tab-more,
+.gb-view-tab-menu[open] > .gb-view-tab-more { opacity: 1; }
+
+.gb-view-tabs-add { flex: 0 0 auto; }
+
+.gb-view-tabs-add-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-h-xs);
+  height: var(--ui-h-xs);
+  min-width: var(--ui-h-xs);
+  padding: 0;
+  color: var(--ui-fg-muted, var(--fg2));
+  border-radius: var(--ui-radius-xs);
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.gb-view-tabs-add-trigger:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
+.gb-view-tabs-add-trigger svg { width: 16px; height: 16px; }
+
+/* メニュー: 共通メニュー（ボードのビュータブのメニュー）と同じ見た目。
+   popover の既定スタイル（中央寄せ・枠）は打ち消す。 */
+.gb-view-tab-menu-panel {
+  display: grid;
+  gap: 0;
+  min-width: 160px;
+  padding: var(--ui-space-2) 0;
+  color: var(--ui-fg-default);
+  font-size: var(--ui-font-13);
+  font-weight: normal;
+  background: var(--ui-popup-bg, var(--ui-bg-control));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
+  border-radius: var(--ui-radius-md);
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  box-sizing: border-box;
+}
+
+.gb-view-tab-menu-panel[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+}
+
+.gb-view-tab-menu-panel[popover]:not(:popover-open),
+.gb-view-tab-menu:not([open]) > .gb-view-tab-menu-panel:not([popover]) { display: none; }
+
+.gb-view-tab-menu-panel:not([popover]) {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+}
+
+.gb-view-tab-menu-panel > .gb-context-menu-item:disabled {
+  opacity: 0.55;
+  color: var(--ui-fg-muted);
+  cursor: default;
+  background: transparent;
+}
+
+.gb-view-tab-menu-panel .gb-context-menu-item { display: flex; align-items: center; gap: 4px; width: 100%; }
+.gb-view-tab-check { display: inline-flex; width: 14px; height: 14px; flex: 0 0 14px; }
+
+.gb-view-tabs-select { display: none; min-width: 128px; max-width: 100%; }
+
+@media (pointer: coarse), (max-width: 640px) {
+  .gb-view-tab-label,
+  .gb-view-tab-more,
+  .gb-view-tabs-add-trigger { min-height: 44px; min-width: 44px; }
+}
+
+/* 狭い画面では、シートと同じくタブ列をドロップダウンへ切り替える */
+@media (max-width: 768px) {
+  .gb-view-tabs-select { display: inline-block; flex: 1 1 auto; min-height: var(--ui-h-touch, 44px); }
+  .gb-view-tab:not(.active) { display: none; }
+  .gb-view-tab.active > .gb-view-tab-label { display: none; }
+  .gb-view-tab.active .gb-view-tab-more { opacity: 1; margin-left: 0; }
+  .gb-view-tabs-list { flex: 0 0 auto; overflow: visible; }
+}

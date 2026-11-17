@@ -449,8 +449,14 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   try {
     targetMetadata = typeof _getDbMetadataCached === 'function'
       ? await _getDbMetadataCached(_relDb, true) : null;
-  } catch (_) {
-    if (seq === scope._rollupRelationLoadSeq) sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+  } catch (error) {
+    console.warn('[Meldex] 集計の参照先シートの列設定を読み込めませんでした', error);
+    if (seq === scope._rollupRelationLoadSeq) {
+      sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+      if (typeof showStatus === 'function') {
+        showStatus('参照先シートの列を読み込めませんでした: ' + (error?.message || error), true);
+      }
+    }
     return;
   }
   if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;

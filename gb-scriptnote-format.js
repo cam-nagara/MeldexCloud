@@ -250,11 +250,17 @@ async function _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targ
     return { doc: legacyDoc, text: JSON.stringify(legacyDoc, null, 2), documentId: '', independentCopy: true };
   }
   let documentId = '';
-  if (targetExists && typeof apiFetch === 'function') {
+  if (targetExists) {
+    // 上書き先の文書IDを読めないまま新しいIDを振ると、同じファイルが別文書として扱われ、
+    // 版履歴・リンク・競合判定が黙って切り離される。読めない時は保存を止めて理由を返す。
+    let current = null;
     try {
-      const current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
-      documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
-    } catch {}
+      if (typeof apiFetch !== 'function') throw new Error('ファイルを読み込めません');
+      current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
+    } catch (error) {
+      throw new Error(`上書き先のシナリオを確認できなかったため保存を中止しました（${error?.message || error}）`);
+    }
+    documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
   }
   if (!documentId) {
     documentId = identity?.newDocumentId?.() || '';
@@ -687,9 +693,385 @@ async function promptSaveCurrentScriptNoteAs() {
   });
 }
 
-// シナリオエディタの現在ビュー（フィルタ・テーマ・縦/横/折返し設定すべて反映済み）を
-// 操作不可の静的 HTML として保存する。embed-font: Regular の woff2 を data URI で
-// 埋め込んで自己完結させる。
+// ==========================================================
+// シナリオの静的スナップショット（HTML保存・PNG・公開で共通）
+// ==========================================================
+// エディタの現在ビュー（フィルタ・テーマ・タイプ書式・縦/横/折返し・ルビ設定）を
+// 操作不可の自己完結HTMLにする。HTML保存・画像（PNG）・公開はすべてこの1つの
+// 生成結果を使い、出力形式ごとに見た目がずれないようにする。
+//
+// 再現の要点:
+// - 描画は .sn2-scroll の複製。祖先（エディタホストや :root）から継承している
+//   CSS変数・文字設定は複製側へ計算済みの値で書き写す（祖先は出力に含まれないため）。
+// - 行選択の列（_handle）は見出しセルと行の両方から外す（片方だけ外すと縦書きで
+//   見出しと行が列幅ぶんずれる）。
+// - ルビはエディタと同じ表現（data-ruby と疑似要素）のまま出力し、ルビ設定
+//   （大きさ・位置・揃え・字間・書体）をそのまま効かせる。
+// - 折り返し表示は段の割り付けがエディタの表示寸法で決まるため、その寸法を固定する。
+const SN2_EXPORT_REMOVE_SELECTOR = [
+  '.sn2-row-bulk-bar', '.sn2-handle-zone', '.sn2-handle', '.sn2-add-row', '.sn2-add-col-btn',
+  '.sn2-resizer', '.sn2-col-resizer', '.sn2-row-resizer', '.sn2-row-check',
+  '[data-col-id="_handle"]', '.sn2-drop-indicator',
+  // 縦書きでスクロール端まで寄せるための編集用余白（画面幅比率の空白）。出力には不要で、
+  // 画像化時に幅の基準が変わると内容がずれる原因になる。
+  '.sn2-pan-spacer-inline', '.sn2-pan-spacer',
+  // 入力中の独自カーソル、コメントの件数バッジ（内部のやり取りを公開しない）
+  '.sn2-custom-caret', '.cmt-badge', '[data-export-remove]',
+  // 文書として出力してはならない要素
+  'script', 'iframe', 'object', 'embed', 'base', 'meta', 'link', 'portal',
+].join(', ');
+const SN2_EXPORT_TRANSIENT_CLASSES = [
+  'sn2-dragging', 'sn2-cell-active', 'sn2-drop-below', 'sn2-drop-above', 'sn2-swap-highlight',
+  'sn2-text-cell-selected', 'sn2-row-selected', 'sn2-role-cell-selected', 'sn2-grid-cell-selected',
+  'sn2-panning', 'cmt-line-highlight',
+];
+// 出力に残す data 属性（表示のCSSが参照するもの）。それ以外（リンク先の内部パス
+// data-path など）は出力・公開に載せない。
+const SN2_EXPORT_DATA_ATTR_RE = /^data-(after|before|align|border|col-border-right|col-id|row-id|kind|outline|overflow|ruby(-[a-z-]+)?|spread-border|valign|status)$/;
+
+function _sn2ExportSafeLink(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('#')) return raw;
+  try {
+    const url = new URL(raw, document.baseURI);
+    return ['https:', 'http:', 'mailto:', 'tel:'].includes(url.protocol) ? url.toString() : '';
+  } catch { return ''; }
+}
+
+// 出力・公開用の属性の清掃（イベント属性・内部パス・危険なリンクを除去）
+function _sn2ExportSanitizeAttributes(clone) {
+  [clone, ...clone.querySelectorAll('*')].forEach(node => {
+    Array.from(node.attributes || []).forEach(attr => {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'srcset' || name === 'title') {
+        node.removeAttribute(attr.name);
+      } else if (name.startsWith('data-') && !SN2_EXPORT_DATA_ATTR_RE.test(name)) {
+        node.removeAttribute(attr.name);
+      } else if (name === 'href' || name === 'xlink:href') {
+        const safe = _sn2ExportSafeLink(attr.value);
+        if (safe && !/^data:/i.test(attr.value)) node.setAttribute(attr.name, safe);
+        else if (!/^data:/i.test(attr.value)) node.removeAttribute(attr.name);
+      }
+    });
+  });
+}
+// 祖先から継承され、エクスポート先では失われる文字・色の計算値
+const SN2_EXPORT_INHERITED_PROPS = [
+  'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
+  'font-feature-settings', 'font-kerning', 'text-rendering', '-webkit-font-smoothing',
+];
+
+function _sn2ExportComputedCustomProperties(el) {
+  const out = [];
+  if (!el) return out;
+  const cs = getComputedStyle(el);
+  for (let i = 0; i < cs.length; i++) {
+    const name = cs[i];
+    if (!name || !name.startsWith('--')) continue;
+    const value = cs.getPropertyValue(name).trim();
+    if (value) out.push([name, value]);
+  }
+  return out;
+}
+
+// 元要素の計算済みスタイルを複製へ固定する（レイアウト依存の寸法・既定書体を出力先でも再現する）
+const SN2_EXPORT_CONTROL_PROPS = [
+  'display', 'box-sizing', 'width', 'height', 'min-width', 'min-height', 'flex-grow', 'flex-shrink', 'flex-basis',
+  'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+  'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+  'border-radius', 'background-color', 'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+  'line-height', 'letter-spacing', 'text-align', 'vertical-align', 'align-items', 'justify-content',
+  'writing-mode', 'text-orientation', 'white-space', 'overflow-x', 'overflow-y', 'text-overflow',
+];
+
+function _sn2ExportFreezeLayout(original, clone) {
+  const vertical = original.classList.contains('sn2-vertical');
+  const freezeMainAxis = (src, dst) => {
+    const cs = getComputedStyle(src);
+    if (cs.display === 'none') return;
+    dst.style.setProperty('box-sizing', 'border-box', 'important');
+    if (vertical) dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
+    else dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
+    dst.style.setProperty('flex', '0 0 auto', 'important');
+  };
+  // 見出しセルはエディタで表示領域に合わせて縮められ、行はその寸法に揃えてある。
+  // 出力先では縮まないため、見出しセルの実寸を固定して行とずれないようにする。
+  const pairs = (selector, fn) => {
+    const a = original.querySelectorAll(selector);
+    const b = clone.querySelectorAll(selector);
+    if (a.length !== b.length) return;
+    a.forEach((el, i) => fn(el, b[i]));
+  };
+  pairs('.sn2-header-cell', freezeMainAxis);
+  // 見出し列そのものの太さ（縦書きは幅、横書きは高さ）もエディタでは縮められている
+  pairs('.sn2-header', (src, dst) => {
+    if (getComputedStyle(src).display === 'none') return;
+    dst.style.setProperty('box-sizing', 'border-box', 'important');
+    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
+    else dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
+    dst.style.setProperty('flex-shrink', '0', 'important');
+  });
+  // 行内のセルも同様（行の寸法はエディタが見出しに合わせて固定済み。セル側は縮み方が
+  // 出力先で変わると本文の折り返し位置まで変わる）
+  // 行の太さ（縦書きは幅、横書きは高さ）もエディタの実寸に揃える
+  pairs('.sn2-row', (src, dst) => {
+    if (getComputedStyle(src).display === 'none') return;
+    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px');
+    else dst.style.setProperty('height', src.offsetHeight + 'px');
+  });
+  pairs('.sn2-row > *', (src, dst) => {
+    if (src.matches('.sn2-row-spacer, .sn2-handle-zone, .sn2-handle')) return;
+    freezeMainAxis(src, dst);
+  });
+  // ボタン・入力欄は既定書体（ブラウザ既定）と既定の枠を持つ。span 化しても同じ見た目に
+  // なるよう計算済みスタイルを書き写しておく。
+  pairs('button, input, select, textarea', (src, dst) => {
+    const cs = getComputedStyle(src);
+    // 値はプロパティで設定されるため複製に残らない。表示中の文字列を元要素から控える。
+    if (src.tagName === 'SELECT') dst.setAttribute('data-export-text', src.selectedIndex >= 0 ? (src.options[src.selectedIndex]?.textContent || '') : '');
+    else if (src.tagName === 'INPUT' && (src.type === 'checkbox' || src.type === 'radio')) dst.setAttribute('data-export-text', src.checked ? '☑' : '☐');
+    else if (src.tagName === 'INPUT' || src.tagName === 'TEXTAREA') dst.setAttribute('data-export-text', src.value || '');
+    SN2_EXPORT_CONTROL_PROPS.forEach(name => {
+      const value = cs.getPropertyValue(name);
+      if (value) dst.style.setProperty(name, value);
+    });
+    if (cs.display === 'inline-block' || cs.display === 'inline') dst.style.setProperty('display', 'inline-block');
+  });
+}
+
+function _sn2ExportStripInteractive(clone) {
+  clone.querySelectorAll(SN2_EXPORT_REMOVE_SELECTOR).forEach(el => el.remove());
+  SN2_EXPORT_TRANSIENT_CLASSES.forEach(cls => {
+    clone.querySelectorAll('.' + cls).forEach(el => el.classList.remove(cls));
+  });
+  clone.querySelectorAll('[contenteditable]').forEach(el => {
+    el.removeAttribute('contenteditable');
+    el.setAttribute('data-readonly', '1');
+    // 編集可能領域にはブラウザ既定で「空白の後で折り返す」改行規則が付く。属性を外しても
+    // エディタと同じ位置で改行されるよう、同じ規則を明示しておく。
+    el.style.setProperty('-webkit-line-break', 'after-white-space');
+  });
+  clone.querySelectorAll('[data-action], [data-sn-action]').forEach(el => {
+    el.removeAttribute('data-action');
+    el.removeAttribute('data-sn-action');
+  });
+  // ボタン（キャラ・タイプ表示）は見た目を保つため span へ置き換える。disabled の
+  // ままだと閲覧ブラウザの既定スタイル（灰色化）が混ざる。
+  clone.querySelectorAll('button').forEach(btn => {
+    const span = document.createElement('span');
+    Array.from(btn.attributes).forEach(attr => {
+      if (/^(type|disabled|aria-haspopup|aria-expanded|tabindex|onclick)$/i.test(attr.name)) return;
+      span.setAttribute(attr.name, attr.value);
+    });
+    span.style.removeProperty('pointer-events');
+    while (btn.firstChild) span.appendChild(btn.firstChild);
+    btn.replaceWith(span);
+  });
+  clone.querySelectorAll('input, textarea, select').forEach(el => {
+    const span = document.createElement('span');
+    span.className = el.className;
+    const frozen = el.getAttribute('style');
+    if (frozen) span.setAttribute('style', frozen);
+    const exportText = el.getAttribute('data-export-text');
+    if (el.dataset) Object.entries(el.dataset).forEach(([key, value]) => { if (key !== 'exportText') span.dataset[key] = value; });
+    if (exportText !== null) span.textContent = exportText;
+    else if (el.type === 'checkbox' || el.type === 'radio') span.textContent = el.checked ? '☑' : '☐';
+    else if (el.tagName === 'SELECT') span.textContent = el.selectedOptions?.[0]?.textContent || el.value || '';
+    else span.textContent = el.value || el.textContent || '';
+    el.replaceWith(span);
+  });
+  clone.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
+  clone.querySelectorAll('[draggable]').forEach(el => el.removeAttribute('draggable'));
+  clone.querySelectorAll('[role="button"], [role="textbox"], [role="separator"]').forEach(el => {
+    el.removeAttribute('role');
+    el.removeAttribute('aria-readonly');
+    el.removeAttribute('aria-multiline');
+  });
+  clone.querySelectorAll('[data-e2e-id]').forEach(el => el.removeAttribute('data-e2e-id'));
+  clone.querySelectorAll('[style*="cursor"]').forEach(el => el.style.removeProperty('cursor'));
+  _sn2ExportSanitizeAttributes(clone);
+}
+
+// 表示中に使われている文字の太さだけを埋め込む（太字の行を合成太字にしない）
+function _sn2ExportUsedFontWeights(scroll) {
+  const used = new Set(['regular']);
+  if (!scroll) return Array.from(used);
+  const nodes = [scroll, ...scroll.querySelectorAll('*')];
+  for (const node of nodes) {
+    const weight = Number.parseInt(getComputedStyle(node).fontWeight, 10) || 400;
+    if (weight >= 600) used.add('bold');
+    else if (weight >= 500) used.add('medium');
+    if (used.size === 3) break;
+  }
+  return ['regular', 'medium', 'bold'].filter(key => used.has(key));
+}
+
+async function _sn2ExportEmbedFontCss(enabled, weights) {
+  if (enabled === false) return '';
+  if (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.embedFont === 'function') {
+    try {
+      const css = await MeldexExportHtml.embedFont(weights && weights.length ? weights : ['regular']);
+      if (css) return css;
+    } catch {}
+  }
+  try {
+    const r = await fetch('fonts/NotoSansJP-Regular.woff2');
+    if (!r.ok) return '';
+    const bin = new Uint8Array(await r.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < bin.length; i += 0x8000) s += String.fromCharCode.apply(null, bin.subarray(i, i + 0x8000));
+    return `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${btoa(s)}') format('woff2'); }`;
+  } catch {
+    return '';
+  }
+}
+
+// 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず
+// 出力が永久に止まるため、各フレームを最大 80ms でタイマーへ切り替える。
+function _sn2ExportNextFrames(count = 2) {
+  const one = () => new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    try { requestAnimationFrame(finish); } catch {}
+    setTimeout(finish, 80);
+  });
+  let chain = Promise.resolve();
+  for (let i = 0; i < count; i++) chain = chain.then(one);
+  return chain;
+}
+
+async function _sn2ExportEditorCss() {
+  let css = '';
+  try { css = await _sn2FetchCssWithImports('gb-scriptnote-editor.css'); } catch {}
+  // CSS内の相対 url()（画像・フォント）は自己完結のため data URI 化する
+  if (css && typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.inlineCssAssets === 'function') {
+    try { css = await MeldexExportHtml.inlineCssAssets(css, document.baseURI); } catch {}
+  }
+  return css;
+}
+
+/**
+ * シナリオの静的スナップショットを作る。
+ * @param {object} editor - アクティブなシナリオエディタ
+ * @param {{purpose?: 'html'|'image'|'publish', embedFont?: boolean}} options
+ */
+async function buildScriptNoteExportDocument(editor, options = {}) {
+  if (!editor?.doc) return null;
+  try { editor._syncAllFromDom?.(); } catch {}
+  // 表示中の DOM がそのまま出力の正本。全体を描き直すと行選択やスクロール位置が失われるため、
+  // 入力中のセル（記法がまだ描画に反映されていない可能性がある）がある時だけ描き直す。
+  const active = document.activeElement;
+  const editingCell = !!(active && editor.host?.contains?.(active) && active.isContentEditable);
+  if (editingCell) {
+    try { editor._render(); } catch {}
+  }
+  // 縦書きの行寸法は描画後のフレームで確定する。2フレーム待ってから複製する。
+  await _sn2ExportNextFrames(2);
+  try { if (document.fonts?.ready) await document.fonts.ready; } catch {}
+  const scroll = editor.host?.querySelector('.sn2-scroll');
+  if (!scroll) return null;
+
+  const vertical = scroll.classList.contains('sn2-vertical');
+  const wrap = scroll.classList.contains('sn2-wrap');
+  const viewWidth = Math.max(320, Math.round(scroll.clientWidth || 1200));
+  const viewHeight = Math.max(200, Math.round(scroll.clientHeight || 800));
+
+  const clone = scroll.cloneNode(true);
+  _sn2ExportFreezeLayout(scroll, clone);
+  _sn2ExportStripInteractive(clone);
+
+  // 祖先由来の CSS 変数（テーマ・ファイルテーマ・UI設定）を計算値で固定する
+  _sn2ExportComputedCustomProperties(scroll).forEach(([name, value]) => {
+    if (!clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+  });
+  const scrollStyle = getComputedStyle(scroll);
+  SN2_EXPORT_INHERITED_PROPS.forEach(name => {
+    const value = scrollStyle.getPropertyValue(name);
+    if (value && !clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+  });
+  const bg = scrollStyle.backgroundColor;
+  // 折り返し表示は段の割り付けを決めた寸法を固定する（縦書きは幅、横書きは高さ）
+  if (wrap && vertical) clone.style.setProperty('width', viewWidth + 'px', 'important');
+  if (wrap && !vertical) clone.style.setProperty('height', viewHeight + 'px', 'important');
+
+  if (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.embedImages === 'function') {
+    try { await MeldexExportHtml.embedImages(clone); } catch {}
+  }
+
+  const [editorCss, fontCss] = await Promise.all([
+    _sn2ExportEditorCss(),
+    _sn2ExportEmbedFontCss(options.embedFont, _sn2ExportUsedFontWeights(scroll)),
+  ]);
+  const rootVars = _sn2ExportComputedCustomProperties(document.documentElement)
+    .map(([name, value]) => `${name}: ${value};`).join(' ');
+
+  const fileStem = String(editor._path || '').split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+  const title = String(editor.doc.title || fileStem || 'シナリオ');
+  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
+  const escHtml = MeldexEscape.html;
+  const pageBg = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'
+    ? bg
+    : 'var(--sn2-page-bg, var(--content-bg, var(--bg, #1e1e1e)))';
+  const csp = options.purpose === 'publish'
+    ? '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; media-src data:; form-action \'none\'">\n<meta name="referrer" content="no-referrer">\n'
+    : '';
+
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${csp}<meta name="color-scheme" content="dark light">
+<title>${escHtml(title)}</title>
+<style>
+${fontCss}
+/* アプリ本体と同じ基本リセット（gb-theme.css）。無いとセル内余白の寸法計算がずれる */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { ${rootVars} }
+html, body {
+  margin: 0; padding: 0;
+  background: ${pageBg};
+  color: var(--fg, #d4d4d4);
+  font-family: var(--ui-font, 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif);
+  font-size: var(--ui-font-size, 15px);
+}
+${editorCss}
+/* 静的エクスポート用の上書き: 操作 UI を隠し、内容の寸法で配置する */
+body { padding: 16px; box-sizing: border-box; }
+body > .sn2-scroll {
+  flex: none !important;
+  overflow: visible !important;
+  max-height: none !important;
+  max-width: none !important;
+  position: relative !important;
+}
+body > .sn2-scroll:not(.sn2-wrap) { height: auto !important; width: max-content !important; }
+body > .sn2-scroll.sn2-vertical:not(.sn2-wrap) { margin-left: auto; }
+body > .sn2-scroll.sn2-wrap.sn2-vertical { height: auto !important; }
+body > .sn2-scroll.sn2-wrap:not(.sn2-vertical) { width: max-content !important; }
+.sn2-header, .sn2-scroll.sn2-wrap .sn2-header,
+.sn2-scroll.sn2-vertical:not(.sn2-wrap) > .sn2-header { position: relative !important; top: auto !important; left: auto !important; right: auto !important; }
+.sn2-row-bulk-bar, .sn2-handle, .sn2-handle-zone, .sn2-add-row, .sn2-add-col-btn,
+.sn2-resizer, .sn2-col-resizer, .sn2-row-resizer, .sn2-row-check { display: none !important; }
+.sn2-row, .sn2-header-cell { cursor: default !important; }
+*, *::before, *::after { user-select: text !important; -webkit-user-select: text !important; caret-color: transparent; }
+.sn2-text:focus, .sn2-custom-text:focus { outline: none !important; }
+@media print {
+  body { padding: 0; }
+  .sn2-row { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>`;
+  return { html, title, safeTitle, viewportWidth: viewWidth + 32, viewportHeight: viewHeight + 32, vertical };
+}
+
+// シナリオエディタの現在ビューを操作不可の静的 HTML として保存する。
 async function exportCurrentScriptNoteAsHtml() {
   if (typeof _sn2GetActiveEditor !== 'function') {
     if (typeof showStatus === 'function') showStatus('シナリオエディタが利用できません', true);
@@ -700,195 +1082,21 @@ async function exportCurrentScriptNoteAsHtml() {
     if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
     return;
   }
-  // 最新状態でレンダリング
-  try { editor._syncAllFromDom?.(); } catch {}
-  try { editor._render(); } catch {}
-  // _render() は縦書きモードで requestAnimationFrame 内で行の style.height と
-  // style.minWidth を設定する。クローン前に rAF を 2 回待ってこれらの JS 同期
-  // 処理が完了してから DOM スナップショットを取る (これを待たないと行高さが
-  // 未設定のままクローンされ、エクスポート HTML でテキストが潰れる)。
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const scroll = editor.host?.querySelector('.sn2-scroll');
-  if (!scroll) {
+  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
+  let snapshot = null;
+  try {
+    snapshot = await buildScriptNoteExportDocument(editor, { purpose: 'html' });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('HTML の生成に失敗しました: ' + (error?.message || error), true);
+    return;
+  }
+  if (!snapshot) {
     if (typeof showStatus === 'function') showStatus('レンダリング結果が見つかりません', true);
     return;
   }
-
-  // ステータス表示
-  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
-
-  // クローンしてインタラクティブな属性を除去
-  const clone = scroll.cloneNode(true);
-  // フローティング UI / ドラッグハンドル系を除去
-  clone.querySelectorAll('.sn2-row-bulk-bar, .sn2-handle-zone, .sn2-handle, .sn2-add-row, .sn2-add-col-btn').forEach(el => el.remove());
-  // contenteditable / inputs / data-action を完全除去
-  clone.querySelectorAll('[contenteditable]').forEach(el => {
-    el.removeAttribute('contenteditable');
-    el.setAttribute('data-readonly', '1');
-  });
-  clone.querySelectorAll('[data-action], [data-sn-action]').forEach(el => {
-    el.removeAttribute('data-action');
-    el.removeAttribute('data-sn-action');
-  });
-  clone.querySelectorAll('input, textarea, select, button').forEach(el => {
-    if (el.tagName === 'BUTTON') {
-      // タイプボタンは見た目だけ残してクリック不可に
-      el.setAttribute('disabled', 'disabled');
-      el.style.pointerEvents = 'none';
-    } else {
-      const span = document.createElement('span');
-      span.className = el.className;
-      span.textContent = el.value || el.textContent || '';
-      el.replaceWith(span);
-    }
-  });
-  clone.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
-  clone.querySelectorAll('[draggable]').forEach(el => el.removeAttribute('draggable'));
-
-  // span[data-ruby] / .auto-link[data-ruby] を HTML 標準の <ruby><rt> に置換する。
-  // 元の実装は ::after 擬似要素で描画していたが、iOS Safari や Gmail/Dropbox の
-  // 内蔵ブラウザでは ::after ルビの位置計算が壊れて二重描画になるケースがあった。
-  // ネイティブ ruby は全ブラウザで安定して縦書きルビが描画される。
-  clone.querySelectorAll('[data-ruby]').forEach(el => {
-    const rubyText = el.getAttribute('data-ruby');
-    if (!rubyText) return;
-    const baseText = el.textContent || '';
-    const ruby = document.createElement('ruby');
-    ruby.appendChild(document.createTextNode(baseText));
-    const rt = document.createElement('rt');
-    rt.textContent = rubyText;
-    ruby.appendChild(rt);
-    // auto-link も含め、クラス名は保持しない (ネイティブ ruby に任せる)
-    el.replaceWith(ruby);
-  });
-
-  // CSS を取得（gb-fonts.css は woff2 埋め込みに置き換えるので除外）
-  // cache-buster + no-store でブラウザ・中間キャッシュを完全回避する
-  let editorCss = '';
-  try {
-    editorCss = await _sn2FetchCssWithImports('gb-scriptnote-editor.css');
-  } catch {}
-
-  // CSS 変数を :root から収集
-  const rootStyle = getComputedStyle(document.documentElement);
-  const varNames = [
-    '--bg', '--bg2', '--bg3', '--bg4',
-    '--fg', '--fg2', '--accent', '--accent2',
-    '--border', '--selection',
-    '--ui-header-fg', '--ui-header-bg',
-    '--ui-header-font',
-    '--ui-toolbar-fg', '--ui-toolbar-bg',
-    '--ui-toolbar-font', '--ui-muted-font',
-    '--ui-hover-fg', '--ui-hover-bg',
-    '--ui-fg-strong',
-    '--ui-selection-fg', '--ui-selection-bg',
-    '--ui-range-fill-bg', '--ui-range-track-bg',
-    '--ui-scrollbar-track-bg', '--ui-scrollbar-thumb-bg', '--ui-scrollbar-thumb-hover-bg',
-    '--ui-font', '--ui-font-size',
-  ];
-  const varDecls = varNames
-    .map(v => {
-      const val = rootStyle.getPropertyValue(v).trim();
-      return val ? `${v}: ${val};` : '';
-    })
-    .filter(Boolean)
-    .join(' ');
-
-  // Noto Sans JP Regular を data URI で埋め込み（自己完結 HTML 化）
-  let fontFaceCss = '';
-  try {
-    const r = await fetch('fonts/NotoSansJP-Regular.woff2');
-    if (r.ok) {
-      const buf = await r.arrayBuffer();
-      const bin = new Uint8Array(buf);
-      let s = '';
-      for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
-      const b64 = btoa(s);
-      fontFaceCss = `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`;
-    }
-  } catch {}
-
-  const title = (editor.doc.title || 'シナリオ').toString();
-  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
-  const escHtml = MeldexEscape.html;
-
-  const html = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="color-scheme" content="dark light">
-<title>${escHtml(title)}</title>
-<style>
-${fontFaceCss}
-:root { ${varDecls} }
-html, body {
-  margin: 0; padding: 0;
-  background: var(--bg, #1e1e1e);
-  color: var(--fg, #d4d4d4);
-  font-family: var(--ui-font, 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif);
-  font-size: var(--ui-font-size, 15px);
-}
-${editorCss}
-/* 静的エクスポート用の上書き: 操作 UI を完全に隠す */
-/* .sn2-scroll は通常 flex:1 で親に張り付くが、エクスポートではコンテンツに
-   ぴったり合わせて body 直下に並べる。縦書き row-reverse でもはみ出さない
-   よう幅を fit-content にしてブラウザのスクロールに任せる */
-.sn2-scroll {
-  flex: none !important;
-  overflow: visible !important;
-  height: auto !important;
-  max-height: none !important;
-  width: fit-content !important;
-  max-width: none !important;
-}
-.sn2-row-bulk-bar, .sn2-handle, .sn2-handle-zone, .sn2-add-row, .sn2-add-col-btn,
-.sn2-resizer, .sn2-col-resizer, .sn2-row-resizer { display: none !important; }
-.sn2-row { cursor: default !important; }
-*, *::before, *::after { user-select: text !important; -webkit-user-select: text !important; }
-[disabled] { cursor: default !important; opacity: 1 !important; }
-
-/* iOS Safari / Gmail/Dropbox 内蔵ブラウザ向けの互換 CSS */
-/* ネイティブ ruby を iOS でも正しく縦書きにレンダリングさせる */
-ruby {
-  ruby-position: over;
-}
-.sn2-scroll.sn2-vertical ruby {
-  ruby-position: inter-character;
-}
-rt {
-  font-size: 0.55em;
-  line-height: 1;
-  color: inherit;
-  opacity: 0.75;
-}
-/* iOS で縦書きのグリフが一部横になる対策。writing-mode を -webkit- プレフィックス
-   でも指定し、text-combine-upright で数字・記号を縦中横にする */
-.sn2-scroll.sn2-vertical .sn2-text,
-.sn2-scroll.sn2-vertical .sn2-gutter,
-.sn2-scroll.sn2-vertical .sn2-custom-text {
-  -webkit-writing-mode: vertical-rl;
-  -webkit-text-orientation: upright;
-}
-.sn2-scroll.sn2-vertical .sn2-role-btn {
-  -webkit-writing-mode: vertical-rl;
-  -webkit-text-orientation: mixed;
-}
-.sn2-tcy,
-.sn2-tcy-wide {
-  -webkit-text-combine: horizontal;
-}
-</style>
-</head>
-<body>
-${clone.outerHTML}
-</body>
-</html>`;
-
-  // OS ネイティブの「名前を付けて保存」ダイアログをサーバー側 (Meldex.py)
-  // で開き、選択されたパスに直接書き込む。
   if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
-    await MeldexExportSave.saveText(html, {
-      title: safeTitle,
+    await MeldexExportSave.saveText(snapshot.html, {
+      title: snapshot.safeTitle,
       extension: '.html',
       dialogTitle: 'HTMLとして保存',
       filetypes: [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
@@ -897,6 +1105,9 @@ ${clone.outerHTML}
       errorMessage: 'HTML の保存に失敗しました',
     });
   }
+}
+if (typeof window !== 'undefined') {
+  window.buildScriptNoteExportDocument = buildScriptNoteExportDocument;
 }
 
 // 行本文 (row.text) を Markdown 出力用のプレーンテキストへ変換する。
@@ -910,7 +1121,12 @@ function _sn2ScriptNoteRowTextForMarkdown(rawText) {
     return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(raw) : raw;
   }
   return _sn2CollectVisibleSegments(raw).map(segment => {
-    if (segment.type === 'ruby') return `{${segment.plain}|${segment.ruby}}`;
+    // ルビ記法の区切り文字（\ { | }）が親文字・ルビに含まれる場合はエスケープし、
+    // 記法として一意に読めるようにする（例: 親文字 "A|B" → {A\|B|ルビ}）。
+    if (segment.type === 'ruby') {
+      const escRuby = value => String(value || '').replace(/[\\{}|]/g, ch => '\\' + ch);
+      return `{${escRuby(segment.plain)}|${escRuby(segment.ruby)}}`;
+    }
     if (segment.type === 'manual-link') return segment.plain;
     return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(segment.raw) : segment.raw;
   }).join('');
@@ -943,6 +1159,7 @@ async function exportCurrentScriptNoteAsMarkdown() {
 
   rows.forEach((row, idx) => {
     const role = String(row?.role || '').trim();
+    const displayRole = String(row?.character || role).trim();
     const rawBody = _sn2ScriptNoteRowTextForMarkdown(row?.text || '');
     if (role && breakNames.has(role)) {
       // 区切り（ページ送り）行はセクション区切りの水平線に変換する
@@ -952,7 +1169,7 @@ async function exportCurrentScriptNoteAsMarkdown() {
       return;
     }
     const lines = rawBody.split('\n');
-    if (role) lines[0] = lines[0] ? `**[${role}]** ${lines[0]}` : `**[${role}]**`;
+    if (displayRole) lines[0] = lines[0] ? `**[${displayRole}]** ${lines[0]}` : `**[${displayRole}]**`;
     blocks.push(lines.join('  \n'));
   });
 
@@ -986,6 +1203,8 @@ globalThis.GBScriptNoteDialogUI = globalThis.GBScriptNoteDialogUI || {
     body?.style.setProperty('overflow-x', 'hidden', 'important');
     if (compact) body?.style.setProperty('width', '100%');
     root.querySelectorAll('button, input, select, textarea, [role="button"], [role="option"]').forEach(control => {
+      // 埋め込んだ共通部品（フォルダツリー等）は部品側の寸法に任せる。ここで拡大すると共通の見た目が崩れる
+      if (control.closest('[data-ui-component]')) return;
       if (control.type === 'checkbox' || control.type === 'radio') {
         const label = control.closest('label');
         if (label) {

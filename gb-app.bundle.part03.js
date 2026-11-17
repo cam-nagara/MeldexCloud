@@ -1,3 +1,67 @@
+    if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (ev.key === 'Home') nextIndex = 0;
+    else if (ev.key === 'End') nextIndex = items.length - 1;
+    else return;
+    ev.preventDefault();
+    items[nextIndex]?.focus();
+  };
+  setTimeout(() => {
+    if (menuClosed || !menu.isConnected) return;
+    document.addEventListener('pointerdown', closeOnPointer, true);
+    document.addEventListener('keydown', closeOnKey, true);
+  }, 0);
+  menu.querySelector('.gb-context-menu-item')?.focus();
+}
+{
+  const _tabBar = document.getElementById('tab-bar');
+  _tabBar?.addEventListener('contextmenu', _handleTabBarContextmenu);
+  if (_tabBar && typeof addLongPressHandler === 'function') {
+    addLongPressHandler(_tabBar, _handleTabBarContextmenu);
+  }
+}
+
+// Chrome --appモードで新しいウィンドウを開く（JS版）
+async function _open_app_window_js(url) {
+  const resolvedUrl = new URL(url, location.origin).toString();
+  try {
+    const res = await fetch(API_BASE + '/open-app-window', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: resolvedUrl }),
+    });
+    if (res.ok) return true;
+  } catch {}
+  const opened = window.open(resolvedUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+  return !!opened;
+}
+
+// 既存のopen関数をフックしてタブを追加（再帰防止付き）
+let _addingTab = false;
+const _origNavPush = navPush;
+navPush = function(entry, paneId) {
+  _origNavPush(entry, paneId);
+  if (_addingTab || navNavigating) return; // activateTab→navOpen→openX→navPush の再帰を防止
+  if (entry && entry.type) {
+    const label = entry.label || entry.path?.split('/').pop() || '(無題)';
+    if (entry.type === 'welcome') return;
+    _addingTab = true;
+    try {
+      // タブを追加（既存ならアクティブ化のみ、navOpenは呼ばない）
+      const path = entry.path || entry.dbPath || '';
+      const type = typeof _normalizeOpenTypeForNav === 'function' ? _normalizeOpenTypeForNav(entry.type) : entry.type;
+      const existing = _tabs.find(t => t.path === path && t.type === type);
+      if (existing) {
+        _activeTabId = existing.id;
+        renderTabs();
+      } else {
+        // 現在のアクティブタブを上書き（新しいタブを追加しない）
+        const activeTab = _tabs.find(t => t.id === _activeTabId);
+        if (activeTab) {
+          activeTab.label = label || '(無題)';
+          activeTab.type = type;
+          activeTab.path = path;
+          activeTab.icon = _tabIcon(type);
           renderTabs();
         } else {
           const id = 'tab-' + (++_tabIdCounter);
@@ -834,67 +898,3 @@ async function _gbAppPrepareFullFileWrite(path, body) {
   if (revision && coordinator?.revisionTokenForWrite) {
     payload.if_match_etag = coordinator.revisionTokenForWrite(revision);
     return payload;
-  }
-  if (revision || force || createOnly) return payload;
-
-  // revision無しの旧呼び出し元を、保存直前に取得した「最新revision」で
-  // 延命してはいけない。古い本文へ最新revisionを付け直すと、読込後に別端末で
-  // 更新された内容をCASに成功させて上書きしてしまう。ここで許可する自動補完は、
-  // 保存先が存在しないことを確認できた時の create_only だけとする。
-  try {
-    const separator = String(path).includes('?') ? '&' : '?';
-    const current = await apiFetch(`${path}${separator}metadata_only=1`, { silentError: true });
-    coordinator?.bindDocumentIdentity?.(
-      new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
-      current,
-    );
-    const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
-    error.status = 428;
-    error.meldexCode = 'precondition_required';
-    error.meldexDetail = {
-      code: 'precondition_required',
-      path: new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
-      current_etag: current?.etag || '',
-      current_transport_revision: current?.transport_revision || null,
-    };
-    throw error;
-  } catch (error) {
-    if (error?.status === 404 && !(payload.skip_if_missing || payload.skipIfMissing)) {
-      payload.create_only = true;
-      return payload;
-    }
-    if (error?.status === 404 && (payload.skip_if_missing || payload.skipIfMissing)) return payload;
-    throw error;
-  }
-}
-
-let _gbAppUiConfigWriteTail = Promise.resolve();
-const _gbAppPendingValueWrites = new Map();
-const _gbAppValueWriteTails = new Map();
-let _gbAppValueAccount = window.MeldexDropboxAuth?.getSession?.()?.accountId || '';
-window.addEventListener?.('meldex:dropbox-auth-session-changed', event => {
-  const account = String(event.detail?.accountId || '');
-  if (account !== _gbAppValueAccount) _gbAppPendingValueWrites.clear();
-  _gbAppValueAccount = account;
-});
-window.addEventListener?.('meldex:mode-changed', () => _gbAppPendingValueWrites.clear());
-
-async function _gbAppPutValueConfirmed(path, body, options) {
-  const key = String(path);
-  const previous = _gbAppValueWriteTails.get(key);
-  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
-    const send = payload => apiFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      ...(options || {}), body: JSON.stringify(payload), silentError: true });
-    const uncertain = _gbAppPendingValueWrites.get(key);
-    if (uncertain) {
-      const result = await send(uncertain);
-      _gbAppPendingValueWrites.delete(key);
-      const canonical = value => Array.isArray(value) ? value.map(canonical)
-        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
-      const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
-      if (withoutId(body) === withoutId(uncertain)) return result;
-      // Only an ordinary candidate patch may follow its own confirmed patch.
-      // Whole-body edits and structural changes retain their original baseline.
-      const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
-      const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
-      if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)

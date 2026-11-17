@@ -35,11 +35,11 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 80px;
-  padding: 2px 5px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   color: var(--fg);
   background: var(--bg2);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   font: inherit;
 }
 

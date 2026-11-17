@@ -225,6 +225,7 @@
   --ui-space-8: 24px;
 
   /* 高さ */
+  --ui-h-2xs: 18px; /* 行内の小型操作（ツリー行のホバー操作など） */
   --ui-h-xs: 22px;
   --ui-h-sm: 28px;
   --ui-h-md: 32px;
@@ -241,6 +242,55 @@
   --ui-toolbar-title-height: 30px;
   --ui-toolbar-title-font-size: var(--ui-font-16);
   --ui-toolbar-separator-height: 18px;
+
+  /* 部品の共通寸法（UI共通ルール 4.0／19。全画面がこの値を参照し、比較テストで固定する） */
+  /* ダイアログ */
+  --ui-dialog-header-height: 48px;
+  --ui-dialog-footer-min-height: 52px;
+  --ui-dialog-body-padding: var(--ui-space-6);
+  --ui-dialog-close-size: var(--ui-h-md);
+  --ui-dialog-radius: var(--ui-radius-md);
+  --ui-dialog-shadow: var(--ui-shadow-lg);
+  /* メニュー・ドロップダウン */
+  --ui-menu-padding-y: var(--ui-space-2);
+  --ui-menu-item-padding-y: 5px;
+  --ui-menu-item-padding-x: 14px;
+  --ui-menu-item-font-size: var(--ui-font-13);
+  --ui-menu-min-width: 160px;
+  --ui-menu-radius: var(--ui-radius-md);
+  /* 浮かぶパネル（ポップアップ・ポップオーバー・パレット）の枠。背景と枠線は --ui-popup-bg / --ui-popup-border */
+  --ui-popup-radius: var(--ui-menu-radius);
+  --ui-popup-shadow: var(--ui-shadow-lg);
+  /* ツールバー下のビュータブと、その段 */
+  --ui-view-tab-height: var(--ui-h-xs);
+  --ui-view-tab-padding-x: var(--ui-space-4);
+  --ui-view-tab-font-size: var(--ui-font-12);
+  --ui-view-tab-row-padding: var(--ui-space-1) var(--ui-space-3);
+  --ui-view-tab-row-border: var(--ui-border-width) solid var(--ui-border);
+  /* ペイン上部のファイルタブ */
+  --ui-pane-tab-height: 30px;
+  /* パネル見出し（見出し・小見出しの2種類） */
+  --ui-panel-header-height: var(--ui-h-md);
+  --ui-panel-header-font-size: var(--ui-font-12);
+  --ui-panel-subheader-height: var(--ui-h-sm);
+  --ui-panel-subheader-font-size: var(--ui-font-11);
+  /* ツリー・一覧の行（参照面: 左のフォルダツリー。全面で同じ高さ・字下げ・選択表示） */
+  --ui-row-height: var(--ui-h-xs);
+  --ui-row-padding-y: 3px;
+  --ui-row-padding-x: var(--ui-space-2);
+  --ui-row-gap: var(--ui-space-2);
+  --ui-row-indent: 14px;
+  --ui-row-font-size: var(--ui-font-14);
+  --ui-row-radius: var(--ui-radius-xs);
+  --ui-row-icon-size: var(--ui-icon-sm);
+  --ui-row-hover-bg: var(--outliner-item-hover-bg, var(--ui-hover-bg));
+  --ui-row-hover-fg: var(--outliner-item-hover-fg, var(--ui-hover-fg));
+  --ui-row-selected-bg: var(--outliner-item-selected-bg, var(--ui-selection-bg));
+  --ui-row-selected-fg: var(--outliner-item-selected-fg, var(--ui-fg-strong));
+  /* 空状態 */
+  --ui-empty-padding: 48px var(--ui-space-8);
+  --ui-empty-gap: var(--ui-space-5);
+  --ui-empty-font-size: var(--ui-font-12);
 
   /* 角丸 */
   --ui-radius-xs: 3px;
@@ -802,8 +852,8 @@
 }
 .gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
   font-size: var(--ui-font-12);
-  height: 30px;
-  min-height: 30px;
+  height: var(--ui-h-md, 32px);
+  min-height: var(--ui-h-md, 32px);
   padding: 2px var(--ui-space-4);
   color: var(--ui-fg-muted);
   box-sizing: border-box;
@@ -815,7 +865,7 @@
 .gb-panel-header {
   display: flex;
   align-items: center;
-  height: var(--ui-h-md);
+  height: var(--ui-panel-header-height);
   padding: 0 var(--ui-space-4);
   background: var(--ui-header-bg);
   border-bottom: 1px solid var(--ui-border);
@@ -824,6 +874,7 @@
   position: sticky;
   top: 0;
   z-index: var(--ui-z-toolbar);
+  font-size: var(--ui-panel-header-font-size);
 }
 .gb-panel-title {
   font-size: var(--ui-font-14);
@@ -1014,12 +1065,13 @@
   display: flex;
   align-items: center;
   gap: var(--ui-space-2);
-  min-height: var(--ui-h-sm);
+  min-height: var(--ui-panel-subheader-height);
   padding: var(--ui-space-1) var(--ui-space-4);
   background: var(--ui-header-bg);
   border-bottom: 1px solid var(--ui-border);
   flex-shrink: 0;
   box-sizing: border-box;
+  font-size: var(--ui-panel-subheader-font-size);
 }
 .gb-panel-subheader > .sep {
   width: 1px;
@@ -1052,9 +1104,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--ui-space-2);
-  height: 30px;
+  height: var(--ui-pane-tab-height);
   padding: 0 var(--ui-space-4);
-  font-size: var(--ui-font-11);
+  font-size: var(--ui-pane-tab-font-size);
   font-weight: var(--ui-weight-medium);
   color: var(--ui-fg-muted);
   background: transparent;

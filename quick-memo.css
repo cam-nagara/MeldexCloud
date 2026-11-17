@@ -41,10 +41,10 @@ body {
   left: 0;
   width: min(292px, calc(100vw - 16px));
   padding: 5px;
-  border: 1px solid var(--qm-border);
-  border-radius: 8px;
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
+  border-radius: var(--ui-menu-radius, 6px);
   background: var(--qm-panel);
-  box-shadow: 0 12px 36px rgb(0 0 0 / 52%);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
   max-height: calc(100dvh - 72px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -59,7 +59,7 @@ body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 38px;
+  min-height: var(--ui-h-xl, 40px);
   border-color: transparent;
   background: transparent;
   text-align: left;
@@ -83,8 +83,8 @@ body {
 .qm-create-button {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: var(--ui-h-touch, 44px);
+  height: var(--ui-h-touch, 44px);
   padding: 0;
   border-radius: 50%;
   border-color: var(--qm-accent);
@@ -101,18 +101,18 @@ body {
   width: min(220px, calc(100vw - 24px));
   max-height: calc(100dvh - 96px);
 }
-.qm-create-menu > button { min-height: 44px; }
+.qm-create-menu > button { min-height: var(--ui-h-touch, 44px); }
 .qm-create-menu > button[hidden] { display: none; }
 .qm-create-menu > button:focus-visible { outline: 2px solid var(--qm-accent); outline-offset: -2px; }
 .qm-create-button:focus-visible { outline: 2px solid var(--qm-accent); outline-offset: 2px; }
 button, input, select { font: inherit; }
 button {
-  min-height: 36px;
+  min-height: var(--ui-h-lg, 36px);
   border: 1px solid var(--qm-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--qm-panel-2);
   color: var(--qm-fg);
-  padding: 6px 10px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   cursor: pointer;
 }
 button:hover:not(:disabled) { border-color: var(--qm-muted); }
@@ -162,13 +162,13 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-title-input {
   width: 100%;
   min-width: 0;
-  height: 28px;
-  padding: 1px 5px;
+  height: var(--ui-h-sm, 28px);
+  padding: 1px var(--ui-space-2, 4px);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: transparent;
   color: var(--qm-strong);
-  font-size: 14px;
+  font-size: var(--ui-font-14, 14px);
   font-weight: 650;
   text-overflow: ellipsis;
 }
@@ -225,7 +225,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   color: var(--qm-muted);
   font-size: 12px;
 }
-.qm-link-button { min-height: 24px; padding: 1px 6px; border: 0; background: transparent; color: var(--qm-blue); font-size: 12px; }
+.qm-link-button { min-height: var(--ui-h-xs, 22px); padding: 1px var(--ui-space-3, 6px); border: 0; background: transparent; color: var(--qm-blue); font-size: var(--ui-font-12, 12px); }
 
 .qm-cloud-connect { flex: 0 0 auto; flex-direction: column; gap: 6px; padding: 5px; }
 .qm-cloud-connect p { margin: 0; font-size: 13px; color: var(--qm-muted); }
@@ -233,12 +233,12 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-cloud-connect-code input {
   flex: 1 1 200px;
   min-width: 0;
-  min-height: 36px;
+  min-height: var(--ui-h-lg, 36px);
   border: 1px solid var(--qm-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--qm-bg);
   color: var(--qm-fg);
-  padding: 6px 9px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
 }
 .qm-storage-location {
   max-width: 320px;
@@ -254,12 +254,12 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-meta { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; padding: 8px; }
 .qm-meta input {
   width: 100%;
-  min-height: 38px;
+  min-height: var(--ui-h-xl, 40px);
   border: 1px solid var(--qm-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--qm-bg);
   color: var(--qm-fg);
-  padding: 7px 9px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
 }
 /* 候補帯: 旧設計(折り返し可・縦スクロール)と新設計(1行・横スクロール)の指定が
    二重に残り、後勝ちのCSSカスケードで中身のチップ列だけ折り返しが生き残って
@@ -371,9 +371,9 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
   width: min(280px, calc(100vw - 24px));
   padding: 12px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
-  border-radius: 8px;
-  background: var(--qm-panel-2);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+  border-radius: var(--ui-menu-radius, 6px);
+  background: var(--ui-popup-bg, var(--qm-panel-2));
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
 }
 .qm-color-popover[hidden] { display: none; }
 .qm-color-popover label { display: grid; gap: 7px; color: var(--qm-muted); font-size: 12px; }
@@ -441,10 +441,10 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 body[data-memo-mode="pen"] .qm-editor,
 body[data-memo-mode="voice"] .qm-editor { flex: 0 1 30%; min-height: 60px; }
 .qm-save-wrap { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 10010; }
-.qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: 48px; min-width: 80px; padding: 0 16px; border-radius: 24px; background: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
-.qm-save-dialog { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; min-width: 200px; max-width: calc(100vw - 32px); border: 1px solid var(--qm-border); border-radius: 10px; padding: 20px; background: var(--qm-panel); color: var(--qm-fg); text-align: center; }
+.qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: var(--ui-h-touch, 44px); min-width: 80px; padding: 0 var(--ui-space-6, 16px); border-radius: 24px; background: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
+.qm-save-dialog { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; min-width: 200px; max-width: calc(100vw - 32px); border: 1px solid var(--qm-border); border-radius: var(--ui-dialog-radius, 6px); padding: 20px; background: var(--qm-panel); color: var(--qm-fg); text-align: center; }
 .qm-save-dialog::backdrop { background: rgb(0 0 0 / 55%); }
-.qm-save-dialog button { min-width: 80px; min-height: 44px; }
+.qm-save-dialog button { min-width: 80px; min-height: var(--ui-h-touch, 44px); }
 #standalone-toast { bottom: calc(72px + var(--qm-safe-bottom)); }
 body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 
@@ -455,18 +455,18 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
   gap: 4px;
   padding: 5px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
-  border-radius: 8px;
-  background: var(--qm-panel-2);
-  box-shadow: 0 10px 26px rgba(0,0,0,.42);
+  border-radius: var(--ui-popup-radius, 6px);
+  background: var(--ui-popup-bg, var(--qm-panel-2));
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 .qm-format-popup[hidden] { display: none; }
-.qm-format-popup button { min-width: 34px; min-height: 34px; padding: 4px 7px; }
+.qm-format-popup button { min-width: 34px; min-height: var(--ui-h-lg, 36px); padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); }
 
 .qm-voice { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 0; padding: 32px 16px; }
 .qm-voice-status { font-size: 14px; color: var(--qm-muted); }
 .qm-voice-timer { font-size: 48px; font-weight: 300; color: var(--qm-strong); font-variant-numeric: tabular-nums; }
 .qm-voice-controls { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
-.qm-voice-btn { min-width: 100px; min-height: 44px; border-radius: 22px; font-size: 15px; }
+.qm-voice-btn { min-width: 100px; min-height: var(--ui-h-touch, 44px); border-radius: 22px; font-size: 15px; }
 .qm-voice-record { background: var(--qm-danger); border-color: var(--qm-danger); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-voice-stop { background: var(--qm-panel-2); border-color: var(--qm-muted); }
 .qm-voice-transcript {
@@ -488,12 +488,12 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-list-filter input, .qm-list-filter select {
   flex: 1;
   min-width: 0;
-  min-height: 38px;
+  min-height: var(--ui-h-xl, 40px);
   border: 1px solid var(--qm-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--qm-bg);
   color: var(--qm-fg);
-  padding: 7px 9px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
 }
 .qm-list-content { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 8px; padding-bottom: calc(8px + var(--qm-create-clearance)); scroll-padding-bottom: var(--qm-create-clearance); display: flex; flex-direction: column; gap: 6px; }
 .qm-list-item { width: 100%; min-height: 0; padding: 10px 12px; text-align: left; background: var(--qm-panel); border: 1px solid var(--qm-border); border-radius: 8px; }
@@ -521,10 +521,10 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-tag-picker {
   width: min(420px, 100%);
   padding: 14px;
-  border: 1px solid var(--qm-border);
-  border-radius: 10px;
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--qm-border)));
+  border-radius: var(--ui-popup-radius, 6px);
   background: var(--qm-panel);
-  box-shadow: 0 20px 60px rgb(0 0 0 / 52%);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .qm-tag-picker h2 {
@@ -536,20 +536,20 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-tag-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .qm-tag-picker-count { color: var(--qm-muted); font-size: 11px; white-space: nowrap; }
 .qm-tag-picker-sources { display: flex; flex-wrap: wrap; gap: 6px; }
-.qm-tag-picker-sources button { min-height: 32px; padding: 4px 10px; }
+.qm-tag-picker-sources button { min-height: var(--ui-h-md, 32px); padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); }
 .qm-tag-picker-sources button[aria-pressed="true"] { border-color: var(--qm-accent); color: var(--qm-strong); background: var(--qm-panel-2); }
 .qm-tag-picker-hint { margin: 8px 0; color: var(--qm-muted); font-size: 12px; line-height: 1.5; }
 .qm-tag-picker-error { margin: 8px 0; color: var(--qm-danger, #f48771); font-size: 12px; }
 .qm-tag-sync-status { display: flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--qm-muted); font-size: 11px; overflow-wrap: anywhere; }
 .qm-tag-sync-status > span { flex: 1; min-width: 0; }
-.qm-tag-sync-status > button { flex: 0 0 auto; padding: 3px 6px; font-size: 11px; }
+.qm-tag-sync-status > button { flex: 0 0 auto; padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px); font-size: var(--ui-font-11, 11px); }
 
 .qm-tag-picker input {
   width: 100%;
-  min-height: 42px;
-  padding: 7px 9px;
+  min-height: var(--ui-h-touch, 44px);
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   border: 1px solid var(--qm-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--qm-bg);
   color: var(--qm-fg);
 }
@@ -606,14 +606,14 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 
 @media (max-width: 900px) and (pointer: coarse) {
   .qm-menu-wrap > .qm-icon, .qm-menu > button, .qm-header-actions button, .qm-header-primary-controls button, .qm-profile-slot, .qm-profile-slot button, .qm-mode-controls button, .qm-toolbar button {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .qm-menu-wrap > .qm-icon, .qm-header-actions .qm-icon, .qm-header-primary-controls .qm-icon, .qm-mode-controls .qm-icon { width: 44px; }
   .qm-meta input, .qm-list-filter input, .qm-list-filter select {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
-  .qm-title-input { min-height: 44px; }
+  .qm-title-input { min-height: var(--ui-h-touch, 44px); }
   .qm-profile-slot .sa-profile-badge { width: 44px; height: 44px; }
   .qm-tag-selector { height: 44px; max-height: 44px; }
   .qm-tag-add { min-width: 44px; min-height: 44px; }

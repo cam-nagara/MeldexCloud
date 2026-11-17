@@ -68,11 +68,20 @@ function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
 
 async function _saveFileThemeToNoteFrontmatter(theme) {
   const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
-  if (!pc || pc.contentEditable === 'false' || !pc.dataset.path) return false;
+  if (!pc || !pc.dataset.path) return false;
+  const statusFn = (msg) => { if (typeof showStatus === 'function') showStatus(msg, true); };
+  if (pc.dataset.loadFailed === '1') {
+    statusFn('ノートを読み込めていないため、書式を保存できません');
+    return false;
+  }
+  if (pc.contentEditable === 'false') {
+    statusFn('ロック中または読み取り専用のため、書式を変更できません');
+    return false;
+  }
   const path = pc.dataset.path;
   let fmStr = pc.dataset.frontmatter || '';
   // 書込時は必ず style: に統一し、旧 theme: ブロックは除去する（同ファイル内の重複防止）
-  fmStr = fmStr.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
+  fmStr = fmStr.replace(/^theme:[ \t]*\n(?:[ \t]+--[^\n]+\n?)*/m, '');
   const styleYaml = _fileStyleToYaml(theme);
   if (styleYaml) {
     if (_fileStyleBlockRegex().test(fmStr)) {
@@ -532,6 +541,17 @@ function _noteTableInsertColumnNear(cell, where, editable = _noteTableEditable(c
   return selected;
 }
 
+// 確認ダイアログの間に編集ロック・読み取り専用化や再描画が起きた場合は、
+// 削除を中止して理由を表示する（確認前の判定だけを信じて消さない）。
+function _noteTableStillEditableAfterConfirm(table, editable) {
+  if (!_noteTableCanEdit(editable)) return false;
+  if (!table?.isConnected || (editable && !editable.contains(table))) {
+    if (typeof showStatus === 'function') showStatus('表が表示されなくなったため、削除を中止しました', true);
+    return false;
+  }
+  return true;
+}
+
 async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.closest?.('table'))) {
   const table = cell?.closest?.('table');
   const row = cell?.parentElement;
@@ -540,6 +560,7 @@ async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.clo
   const removesTable = table.querySelectorAll('tr').length <= 1;
   const ok = await _noteTableConfirm(removesTable ? '最後の行です。表全体を削除しますか？' : 'この行を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
   const beforeHtml = editable ? editable.innerHTML : '';
   _noteTablePushCustomUndo(editable);
@@ -567,6 +588,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
   const colCount = Math.max(...rows.map(tr => tr.cells.length));
   const ok = await _noteTableConfirm(colCount <= 1 ? '最後の列です。表全体を削除しますか？' : 'この列を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
   const nextCell = row.cells[colIdx + 1] || row.cells[colIdx - 1] || null;
   _noteTablePushCustomUndo(editable);
@@ -590,6 +612,7 @@ async function _noteTableDeleteTable(table, editable = _noteTableEditable(table)
   if (!_noteTableCanEdit(editable)) return false;
   const ok = await _noteTableConfirm('表を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
   _noteTablePushCustomUndo(editable);
   table.remove();
@@ -769,7 +792,16 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
       ev.preventDefault();
       ev.stopPropagation();
       menu.remove();
-      const result = await handler();
+      let result;
+      try {
+        result = await handler();
+      } catch (error) {
+        console.warn('[note] 表の操作に失敗しました', label, error);
+        const reason = typeof _noteUserFacingReason === 'function'
+          ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+        if (typeof showStatus === 'function') showStatus(`「${label}」を実行できませんでした: ${reason}`, true);
+        return;
+      }
       if (result?.isConnected) _showNoteTableCellControls(result);
       else if (cell?.isConnected) _positionNoteTableCellControls(cell);
     });
@@ -914,78 +946,3 @@ bindTableCellContextMenu(document.getElementById('entity-freetext'));
 // MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
 // レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
 // div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。
-
-// 行頭からキャレットまでのテキスト（改行区切りの現在行部分）を取得する。
-function _noteLineTextBeforeCaret(block, range) {
-  const before = range.cloneRange();
-  before.setStart(block, 0);
-  const text = before.toString().replace(/\u00a0/g, ' ');
-  return text.slice(text.lastIndexOf('\n') + 1);
-}
-
-// 行頭記法トリガーの判定。一致しなければ null。
-// - 「・」→ 箇条書き
-// - 数値（1桁以上）→ 番号付きリスト（入力した数値をstartとして保持）
-// - h1〜h6（大小文字問わず）→ 見出し1〜6
-// - 既存の #〜###### → 見出し1〜6（維持）
-function _noteLineStartTrigger(lineText) {
-  const headingHash = lineText.match(/^(#{1,6})$/);
-  if (headingHash) return { typeId: 'h' + headingHash[1].length };
-  const headingLetter = lineText.match(/^[hH]([1-6])$/);
-  if (headingLetter) return { typeId: 'h' + headingLetter[1] };
-  if (lineText === '・') return { typeId: 'ul' }; // 「・」
-  const ordered = lineText.match(/^(\d+)$/);
-  if (ordered) return { typeId: 'ol', orderedStart: parseInt(ordered[1], 10) };
-  return null;
-}
-
-function _handleNoteMarkdownShortcutKeydown(e) {
-  if (e.defaultPrevented || e.isComposing) return; // IME変換中は誤発火させない（工程6必須要件）
-  if (e.key !== ' ' && e.key !== 'Spacebar') return;
-  if (typeof MeldexNoteBlockTypes === 'undefined') return;
-  const editable = e.target?.closest?.(MeldexNoteBlockTypes.EDITABLE_SELECTOR);
-  if (!editable || editable.contentEditable !== 'true') return;
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
-  const range = sel.getRangeAt(0);
-  if (!editable.contains(range.startContainer)) return;
-  const info = MeldexNoteBlockTypes.resolveCurrentBlock(editable, range);
-  if (!info) return;
-  // コード・表・コールアウト内では行頭記法を認識しない（誤変換防止。従来挙動を維持）
-  if (info.kind === 'code' || info.kind === 'table' || info.kind === 'callout') return;
-  const lineText = _noteLineTextBeforeCaret(info.block, range);
-  const trigger = _noteLineStartTrigger(lineText);
-  if (!trigger) return;
-
-  e.preventDefault();
-  const originalRange = range.cloneRange();
-  MeldexNoteBlockTypes.convertCurrentLineTo(trigger.typeId, {
-    editable,
-    range: originalRange,
-    orderedStart: trigger.orderedStart,
-    // トリガー文字（"###" 等）の削除は、共通変換の undo push 直後・DOM変換の
-    // 直前で実行し、「削除＋行種変換」を1回のUndoにまとめる（§5工程4-4）。
-    beforeConvert(convInfo, convRange) {
-      const deleteRange = convRange.cloneRange();
-      deleteRange.setStart(convInfo.block, 0);
-      const lineIdSpan = convInfo.block.firstElementChild?.classList?.contains('_nl-id') ? convInfo.block.firstElementChild : null;
-      if (lineIdSpan) deleteRange.setStartAfter(lineIdSpan);
-      deleteRange.deleteContents();
-    },
-  });
-}
-
-function bindNoteMarkdownShortcuts() {
-  if (document._noteMarkdownShortcutAttached) return;
-  document._noteMarkdownShortcutAttached = true;
-  // captureフェーズの単一リスナーへ集約する（#page-content 限定だった旧実装から
-  // #entity-freetext・#dp-editable へも一般化。動的生成される編集ホストにも
-  // 個別バインド不要で追従する）。
-  document.addEventListener('keydown', _handleNoteMarkdownShortcutKeydown, true);
-}
-
-bindNoteMarkdownShortcuts();
-
-// スラッシュコマンドのイベントリスナー登録（キー操作は gb-note-block-menu.js が
-// document capture フェーズで処理する。ここでは / の検出のみ）
-document.addEventListener('input', _onSlashInput);

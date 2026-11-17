@@ -781,7 +781,7 @@
     const safeTitle = String(title || '');
     if (id === 'note') return '';
     if (id === 'scenario') return JSON.stringify({
-      fileType: 'meldex-scriptnote', schema_version: 3, version: 1,
+      fileType: 'meldex-scriptnote', schema_version: 4, version: 1,
       title: safeTitle === '無題' ? '' : safeTitle, layoutMode: 'manga',
       editor: { wrapMode: true, statusEnabled: false, viewMode: 'horizontal' },
       scenarioTypes: [], characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},

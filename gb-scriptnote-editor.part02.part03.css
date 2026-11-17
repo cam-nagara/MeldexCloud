@@ -28,7 +28,7 @@
    .tb-file-title 固定幅 240px は維持し、入力開始時の幅変動を防ぐ。 */
 #se-toolbar .title-input {
   background: transparent; border: 1px solid transparent; color: var(--ui-fg-default);
-  box-sizing: border-box; height: 30px; min-height: 30px;
+  box-sizing: border-box; height: var(--ui-toolbar-title-height, 30px); min-height: var(--ui-toolbar-title-height, 30px);
   font-size: var(--ui-font-16); line-height: 30px; font-weight: var(--ui-weight-semibold);
 }
 #se-toolbar .title-input:focus { background: var(--ui-bg-app); border-color: var(--ui-accent); outline: none; border-radius: var(--ui-radius-xs); }
@@ -505,15 +505,15 @@
   #se-toolbar .tb-text-btn,
   #se-toolbar .tb-select,
   #se-toolbar .title-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   #se-toolbar .tb-icon-btn {
     width: 44px;
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   #se-toolbar .tb-text-btn {
-    padding: 0 12px;
+    padding: 0 var(--ui-space-5, 12px);
   }
   #se-toolbar .title-input {
     min-width: 180px;
@@ -529,7 +529,7 @@
   .sn2-preset-modal-actions .gb-btn,
   .sn2-preset-manager-add,
   .sn2-preset-manager-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-preset-manager-row {
@@ -541,7 +541,7 @@
     flex-wrap: wrap;
   }
   .sn2-preset-manager-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-sep-modal {
     min-width: 0;
@@ -615,11 +615,11 @@
   }
   .sn2-ruby-popup-input {
     flex: 1 1 auto; /* タッチ環境は操作面を優先して幅いっぱいに戻す */
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-ruby-popup .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-ruby-popup-check {
     min-height: 44px;
@@ -696,7 +696,7 @@
     font-size: 15px;
   }
   .sn2-header-popup .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-header-sub-popup {
     max-width: calc(100vw - 16px);
@@ -712,18 +712,18 @@
   .sn2-role-menu .sn2-role-input,
   .sn2-role-menu .sn2-role-link,
   .sn2-role-menu .meldex-dropdown-close-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-role-menu .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-search-popup {
     box-sizing: border-box;
     min-width: min(320px, calc(100vw - 16px)) !important;
   }
   .sn2-search-popup .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .gb-fmt-popup--col-style {
     box-sizing: border-box;
@@ -771,7 +771,7 @@
   .gb-fmt-popup--role-opts .sn2-role-opts-input-num,
   .gb-fmt-popup--role-opts .sn2-role-opts-sel,
   .gb-fmt-popup--role-opts .sn2-detail-add-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-detail-settings {
@@ -840,9 +840,9 @@
     display: none;
   }
   .sn2-detail-add-btn {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 8px 12px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
     font-size: 15px;
     line-height: 1.2;
   }
@@ -868,7 +868,7 @@
   .sn2-ruby-number-input,
   .sn2-ruby-presentation-control,
   .sn2-ruby-rule-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-ruby-number-input {
@@ -912,10 +912,10 @@
     min-height: 44px;
   }
   .sn2-ruby-panel .sn2-ruby-delete-rule.gb-btn.gb-btn-icon.gb-btn-xs {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-ruby-btn-icon svg,
   .sn2-ruby-delete-rule svg {
@@ -935,7 +935,7 @@
   .sn2-rowset-panel .sn2-rowset-role-select,
   .sn2-rowset-panel .sn2-rowset-repeat-input,
   .sn2-rowset-save-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-rowset-list-label {
@@ -958,10 +958,10 @@
     min-height: 44px;
   }
   .sn2-rowset-panel .sn2-rowset-delete-row.gb-btn.gb-btn-icon.gb-btn-xs {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-rowset-add-row {
     margin: 8px 12px;
@@ -988,7 +988,7 @@
     padding-right: 16px;
   }
   .sn2-rowset-save-actions .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-save-as-modal {
@@ -1008,7 +1008,7 @@
   .sn2-save-folder-display,
   .sn2-save-folder-select,
   .sn2-save-folder-toggle {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-save-as-modal .gb-modal-close,
@@ -1044,8 +1044,8 @@
     padding: 6px 4px;
   }
   .sn2-detail-cell-input {
-    min-height: 44px;
-    height: 44px;
+    min-height: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     line-height: 1.25;
     font-size: 15px;
   }
@@ -1053,8 +1053,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     right: 2px;
     font-size: 15px;
   }
@@ -1076,13 +1076,12 @@
     gap: 4px;
     font-size: 15px;
   }
-  .sn2-db-import-picker select {
-    width: 100%;
-    min-width: 0;
-    min-height: 44px;
+  .sn2-db-import-browser {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(120px, 0.7fr) minmax(220px, 1.3fr);
   }
   .sn2-db-import-modal .btn-row button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     min-width: 88px;
     font-size: 15px;
   }

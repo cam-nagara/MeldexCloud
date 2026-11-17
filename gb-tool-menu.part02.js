@@ -146,6 +146,8 @@ function buildToolMenuItems(toolType, component) {
       { label: 'テンプレート...', action: () => { const comp = formComponent; if (comp && typeof comp._showTemplatePicker === 'function') comp._showTemplatePicker(); else showStatus('シナリオを開いてから選んでください', true); }, disabled: !hasFile },
       { label: '現在のシナリオからテンプレートを作成...', action: () => { const comp = formComponent; if (comp && typeof comp._addTemplatePreset === 'function') comp._addTemplatePreset({ allowOverwrite: false, okText: '登録' }); else showStatus('シナリオを開いてから作成してください', true); }, disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
+      { label: '公開を更新', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('scriptnote'); }, disabled: !hasFile },
     ],
     database: [
       { label: 'シートテンプレート...', action: context => { if (typeof showTemplateGalleryModal === 'function') showTemplateGalleryModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },

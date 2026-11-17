@@ -62,7 +62,7 @@
   }
 
   .gb-sheet-archive-body .gb-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     max-width: 100%;
     box-sizing: border-box;
   }
@@ -70,7 +70,7 @@
   .gb-sheet-archive-body .gb-btn,
   .gb-sheet-archive-modal .gb-modal-close,
   .gb-sheet-archive-modal .gb-modal-footer .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .gb-sheet-archive-footer {

@@ -515,9 +515,13 @@
 
   function _clampModal(modal, header, footer) {
     const viewport = _layoutViewport(modal);
-    const { minWidth, minHeight } = _modalSize(modal, header, footer);
-    let width = _numericStyle(modal.style.width, minWidth);
-    let height = _numericStyle(modal.style.height, minHeight);
+    const measured = _modalSize(modal, header, footer);
+    const { minWidth, minHeight } = measured;
+    // 寸法をまだ確定していない（初回の実寸測定より先に画面の寸法変化やドラッグが来た）時は、
+    // 最小値ではなく中身の実寸を使う。最小値を使うと、裏に回ったウィンドウ等で描画フレームが
+    // 遅れた時にダイアログが最小寸法へ固定される。
+    let width = _numericStyle(modal.style.width, Math.max(measured.width, minWidth));
+    let height = _numericStyle(modal.style.height, Math.max(measured.height, minHeight));
     const maxWidth = Math.max(240, viewport.width - VIEWPORT_PADDING * 2);
     const maxHeight = Math.max(180, viewport.height - VIEWPORT_PADDING * 2);
     width = Math.min(Math.max(width, Math.min(minWidth, maxWidth)), maxWidth);
@@ -543,8 +547,16 @@
     // 開いた直後に既定サイズが見え続けたり、復元完了を待つ処理がタイムアウトする。
     // viewportへの収め直しだけは、実寸が確定する下の描画後処理で行う。
     _restoreGeometry(modal);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    // 描画フレームが進まない（非表示・裏に回った）ウィンドウでも寸法を確定できるよう、
+    // 各フレーム待ちは一定時間でタイマーへ切り替える。
+    const nextFrame = (callback) => {
+      let done = false;
+      const run = () => { if (!done) { done = true; callback(); } };
+      requestAnimationFrame(run);
+      setTimeout(run, 120);
+    };
+    nextFrame(() => {
+      nextFrame(() => {
         if (!modal.isConnected) return;
         const viewport = _layoutViewport(modal);
         const { width, height, minWidth, minHeight } = _modalSize(modal, header, footer);

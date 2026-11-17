@@ -23,14 +23,8 @@
 
   function _rootSectionLabel(kind) {
     if (kind === 'home') return 'ホームフォルダ';
-    if (kind === 'workspace') return 'ワークスペースフォルダ';
+    if (kind === 'workspace') return 'ワークスペース';
     return 'ソースフォルダ';
-  }
-
-  function _rootIcon(kind) {
-    if (kind === 'home') return 'home';
-    if (kind === 'workspace') return 'usersRound';
-    return 'folderTree';
   }
 
   function _rootKey(root) {
@@ -131,8 +125,9 @@
       } catch (_) {}
     }
 
-    const order = { home: 0, source: 1, workspace: 2 };
-    roots.sort((a, b) => (order[_rootKind(a)] - order[_rootKind(b)]) || String(a.name).localeCompare(String(b.name), 'ja'));
+    // 左のフォルダツリーパネルと同じ区分順・登録順（名前順に並べ替えない）
+    const order = { workspace: 0, source: 1, home: 2 };
+    roots.sort((a, b) => order[_rootKind(a)] - order[_rootKind(b)]);
     return roots;
   }
 
@@ -167,8 +162,7 @@
   function _clearSelection(tree) {
     tree.querySelectorAll('[data-gb-folder-picker-selected="1"]').forEach(row => {
       delete row.dataset.gbFolderPickerSelected;
-      row.style.background = '';
-      row.style.color = '';
+      if (row.getAttribute('role') === 'treeitem') row.setAttribute('aria-selected', 'false');
     });
   }
 
@@ -176,8 +170,7 @@
     _clearSelection(state.tree);
     if (state.searchResultsEl) _clearSelection(state.searchResultsEl);
     row.dataset.gbFolderPickerSelected = '1';
-    row.style.background = 'var(--accent)';
-    row.style.color = 'var(--ui-fg-strong)';
+    if (row.getAttribute('role') === 'treeitem') row.setAttribute('aria-selected', 'true');
   }
 
   function _icon(name, size) {
@@ -218,31 +211,41 @@
     node.className = 'gb-folder-picker-node';
 
     const row = document.createElement('div');
-    row.className = 'gb-folder-picker-row';
+    // 見た目は左のフォルダツリーパネルと同じ（UI共通ルール 4.1）。ルート行はアイコンなし・太字・区分背景
+    row.className = depth === 0 ? 'gb-folder-picker-row is-root' : 'gb-folder-picker-row';
     row.dataset.gbPickerKind = isFile ? 'file' : 'folder';
     row.dataset.gbPickerName = String(name || '').toLocaleLowerCase('ja');
     row.dataset.gbPickerPath = String(path || '').toLocaleLowerCase('ja');
-    row.style.cssText = `display:flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px 4px ${8 + depth * 16}px;border-radius:4px;cursor:pointer;font-size:12px;`;
+    row.dataset.path = path;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', String(depth + 1));
+    row.setAttribute('aria-selected', 'false');
+    if (!isFile) row.setAttribute('aria-expanded', 'false');
+    row.tabIndex = 0;
+    // 行の寸法・字下げ・選択表示は共通トークン（--ui-row-*）を使う CSS 側で決める
+    row.style.setProperty('--gb-picker-depth', String(depth));
 
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'gb-folder-picker-toggle';
+    toggle.tabIndex = -1;
     toggle.title = '展開';
     toggle.setAttribute('aria-label', `${name}を展開`);
     toggle.setAttribute('aria-expanded', 'false');
-    toggle.style.cssText = 'width:18px;height:22px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;flex-shrink:0;';
-    toggle.innerHTML = _icon('chevronRight', 12);
+    toggle.innerHTML = _icon('chevronRight', 16);
     if (isFile) toggle.style.visibility = 'hidden';
     row.appendChild(toggle);
 
-    const icon = document.createElement('span');
-    icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
-    icon.innerHTML = _icon(depth === 0 ? _rootIcon(_rootKind(root)) : (isFile ? _fileIconForType(folder.type) : 'folder'), 14);
-    row.appendChild(icon);
+    if (depth > 0) {
+      const icon = document.createElement('span');
+      icon.className = 'gb-folder-picker-icon';
+      icon.innerHTML = _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
+      row.appendChild(icon);
+    }
 
     const label = document.createElement('span');
+    label.className = 'gb-folder-picker-label';
     label.textContent = name;
-    label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     row.appendChild(label);
     row.title = path;
 
@@ -258,16 +261,21 @@
       );
       _markSelectedAcross(state, row);
       _setCurrentPathText(state.current, _rowLabelText(state.selected));
-      state.ok.disabled = false;
+      state.onSelect?.(state.selected, { automatic });
     };
+    const activate = () => { state.onActivate?.(state.selected); };
 
     if (state.nodeByPath) state.nodeByPath.set(path, { row, selectRow, isFile, expand: null });
 
     if (isFile) {
       row.addEventListener('click', () => selectRow());
-      row.addEventListener('dblclick', () => { selectRow(); state.close(state.selected); });
-      row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-      row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
+      row.addEventListener('dblclick', () => { selectRow(); activate(); });
+      row.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        selectRow();
+        if (event.key === 'Enter') activate();
+      });
       node.appendChild(row);
       if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
       return node;
@@ -277,29 +285,34 @@
       const expanded = children.style.display !== 'none';
       if (expanded) {
         children.style.display = 'none';
+        row.setAttribute('aria-expanded', 'false');
         toggle.title = '展開';
         toggle.setAttribute('aria-label', `${name}を展開`);
         toggle.setAttribute('aria-expanded', 'false');
-        toggle.innerHTML = _icon('chevronRight', 12);
+        toggle.innerHTML = _icon('chevronRight', 16);
         if (typeof replaceIcons === 'function') replaceIcons(toggle);
         return;
       }
       children.style.display = '';
+      row.setAttribute('aria-expanded', 'true');
       toggle.title = '折りたたむ';
       toggle.setAttribute('aria-label', `${name}を折りたたむ`);
       toggle.setAttribute('aria-expanded', 'true');
-      toggle.innerHTML = _icon('chevronDown', 12);
+      toggle.innerHTML = _icon('chevronDown', 16);
       if (typeof replaceIcons === 'function') replaceIcons(toggle);
       if (children.dataset.loaded === '1') return;
       children.dataset.loaded = '1';
       const loading = document.createElement('div');
       loading.textContent = '読み込み中...';
-      loading.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
+      loading.className = 'gb-folder-picker-message';
+      loading.style.setProperty('--gb-picker-depth', String(depth + 1));
       children.appendChild(loading);
       try {
         const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }), { skipBrowseCache: true });
         const rows = (Array.isArray(payload) ? payload : (payload.items || []))
-          .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles && (!state.fileTypes || state.fileTypes.includes(item.type)))));
+          .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles
+            && (!state.fileTypes || state.fileTypes.includes(item.type))
+            && (typeof state.fileFilter !== 'function' || state.fileFilter(item)))));
         rows.sort((a, b) => {
           const aFolder = a.type === 'folder' ? 0 : 1;
           const bFolder = b.type === 'folder' ? 0 : 1;
@@ -311,7 +324,8 @@
         if (!rows.length) {
           const empty = document.createElement('div');
           empty.textContent = state.emptyText || (state.selectFiles ? 'この階層にファイル・フォルダはありません。' : 'この階層にフォルダはありません。');
-          empty.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
+          empty.className = 'gb-folder-picker-message';
+        empty.style.setProperty('--gb-picker-depth', String(depth + 1));
           children.appendChild(empty);
           toggle.style.visibility = 'hidden';
           return;
@@ -322,7 +336,8 @@
         children.innerHTML = '';
         const failed = document.createElement('div');
         failed.textContent = 'フォルダ一覧を読み込めませんでした。';
-        failed.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--red);`;
+        failed.className = 'gb-folder-picker-message is-error';
+        failed.style.setProperty('--gb-picker-depth', String(depth + 1));
         children.appendChild(failed);
       }
     };
@@ -331,16 +346,33 @@
       if (entry) entry.expand = expand;
     }
 
+    const foldersSelectable = state.selectFolders !== false;
     row.addEventListener('click', (event) => {
       if (event.target === toggle || toggle.contains(event.target)) return;
-      selectRow();
+      if (foldersSelectable) selectRow();
+      else expand();
     });
-    row.addEventListener('dblclick', () => {
-      selectRow();
-      state.close(state.selected);
+    if (foldersSelectable) {
+      row.addEventListener('dblclick', () => {
+        selectRow();
+        activate();
+      });
+    }
+    row.addEventListener('keydown', (event) => {
+      const expanded = children.style.display !== 'none';
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        if (!expanded) expand();
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        if (expanded) expand();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (!foldersSelectable) { expand(); return; }
+        selectRow();
+        if (event.key === 'Enter') activate();
+      }
     });
-    row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-    row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
     toggle.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -384,74 +416,299 @@
     }
   }
 
+  // フォルダツリーからフォルダ/ファイルを選ぶ共通ブラウザ。ダイアログ本文へ埋め込める。
+  // pickFolder() はこれを共通ダイアログに載せたもの。独自のツリーをダイアログ内に作らず、これを使う。
+  function createBrowser(options = {}) {
+    const body = document.createElement('div');
+    body.className = 'gb-folder-picker-body';
+    // 共通部品の目印。ダイアログ側の一括装飾（タッチ用拡大など）はこの中の部品に触れない（UI共通ルール 4.0）
+    body.dataset.uiComponent = 'folder-picker';
+
+    const currentRow = document.createElement('div');
+    currentRow.className = 'gb-folder-picker-current-row';
+    currentRow.dataset.e2eId = 'gb-folder-picker-current-row';
+    currentRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:8px;';
+    const currentLabel = document.createElement('span');
+    currentLabel.textContent = options.currentLabel || '選択中:';
+    currentLabel.style.whiteSpace = 'nowrap';
+    const current = document.createElement('code');
+    current.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--fg);';
+    current.textContent = options.initialPath || '未選択';
+    currentRow.appendChild(currentLabel);
+    currentRow.appendChild(current);
+    body.appendChild(currentRow);
+
+    const tools = document.createElement('div');
+    tools.className = 'gb-folder-picker-tools';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'gb-input gb-folder-picker-search';
+    searchInput.dataset.e2eId = 'gb-folder-picker-search';
+    searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
+    searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
+    const sortSelect = document.createElement('select');
+    sortSelect.className = 'gb-input gb-folder-picker-sort';
+    sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
+    sortSelect.setAttribute('aria-label', '並び順');
+    sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
+    const filterSelect = document.createElement('select');
+    filterSelect.className = 'gb-input gb-folder-picker-filter';
+    filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
+    filterSelect.setAttribute('aria-label', '表示する種類');
+    filterSelect.innerHTML = options.selectFiles
+      ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
+      : '<option value="folder">フォルダ</option>';
+    [searchInput, sortSelect, filterSelect].forEach(control => {
+      tools.appendChild(control);
+    });
+    body.appendChild(tools);
+
+    const tree = document.createElement('div');
+    tree.className = 'gb-folder-picker-tree';
+    tree.dataset.e2eId = 'gb-folder-picker-tree';
+    tree.setAttribute('role', 'tree');
+    tree.style.cssText = 'flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;';
+    body.appendChild(tree);
+
+    let searchResults = null;
+    if (typeof options.searchProvider === 'function') {
+      searchResults = document.createElement('div');
+      searchResults.className = 'gb-folder-picker-search-results';
+      searchResults.style.cssText = tree.style.cssText;
+      searchResults.style.display = 'none';
+      body.appendChild(searchResults);
+    }
+
+    const status = document.createElement('div');
+    status.className = 'gb-folder-picker-status';
+    status.dataset.e2eId = 'gb-folder-picker-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'min-height:18px;font-size:12px;color:var(--fg2);margin-top:6px;';
+    body.appendChild(status);
+
+    const state = {
+      tree,
+      current,
+      selected: null,
+      initialPath: options.initialPath || '',
+      selectFiles: !!options.selectFiles,
+      fileTypes: Array.isArray(options.fileTypes) && options.fileTypes.length ? options.fileTypes.slice() : null,
+      emptyText: options.emptyText || '',
+      nodeByPath: new Map(),
+      searchResultsEl: searchResults,
+      sortDirection: 'asc',
+      filterKind: options.selectFiles ? 'all' : 'folder',
+      roots: null,
+      selectFolders: options.selectFolders !== false,
+      fileFilter: typeof options.fileFilter === 'function' ? options.fileFilter : null,
+      onSelect: typeof options.onSelect === 'function' ? options.onSelect : null,
+      onActivate: typeof options.onActivate === 'function' ? options.onActivate : null,
+    };
+
+    let searchItemsCache = null;
+    async function _ensureSearchItems() {
+      if (searchItemsCache) return searchItemsCache;
+      try {
+        const list = await options.searchProvider();
+        searchItemsCache = Array.isArray(list) ? list : [];
+      } catch (_) {
+        searchItemsCache = [];
+      }
+      return searchItemsCache;
+    }
+
+    function _renderSearchResults(items, query) {
+      searchResults.innerHTML = '';
+      const q = String(query || '').toLowerCase().trim();
+      const filtered = items.filter(d => !q || String(d.name || '').toLowerCase().includes(q) || String(d.path || '').toLowerCase().includes(q));
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.textContent = '該当なし';
+        empty.style.cssText = 'padding:8px;font-size:12px;color:var(--fg2);';
+        searchResults.appendChild(empty);
+        return;
+      }
+      filtered.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+      filtered.forEach(d => {
+        const row = document.createElement('div');
+        row.className = 'gb-folder-picker-row';
+        row.style.setProperty('--gb-picker-depth', '0');
+        const icon = document.createElement('span');
+        icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
+        icon.innerHTML = _icon('database', 14);
+        row.appendChild(icon);
+        const label = document.createElement('span');
+        label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+        label.textContent = d.name || _leafName(d.path);
+        row.appendChild(label);
+        if (d.rootName || d.relPath) {
+          const sub = document.createElement('span');
+          sub.style.cssText = 'font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%;';
+          sub.textContent = d.rootName ? (d.rootName + (d.relPath ? ' / ' + d.relPath : '')) : (d.relPath || '');
+          row.appendChild(sub);
+        }
+        row.title = d.path || '';
+        const selectThis = () => {
+          const matchedRoot = Array.isArray(state.roots) ? state.roots.find(r => {
+            const rp = _normalizePath(r.rootPath || r.path);
+            return rp && (_normalizePath(d.path) === rp || _normalizePath(d.path).startsWith(rp + '/'));
+          }) : null;
+          state.selected = matchedRoot
+            ? _selectionFor(matchedRoot, d.path, d.name, 'file', d.type)
+            : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file', type: d.type || '' };
+          _markSelectedAcross(state, row);
+          _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
+          state.onSelect?.(state.selected, { automatic: false });
+        };
+        row.addEventListener('click', selectThis);
+        row.addEventListener('dblclick', () => { selectThis(); state.onActivate?.(state.selected); });
+        searchResults.appendChild(row);
+      });
+    }
+
+    function _applyLocalTreeView() {
+      if (typeof options.searchProvider === 'function') return;
+      const query = searchInput.value.toLocaleLowerCase('ja').trim();
+      const visit = node => {
+        const row = node.querySelector(':scope > .gb-folder-picker-row');
+        const children = node.querySelector(':scope > .gb-folder-picker-children');
+        const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
+        // some() は最初の一致で止まり後続の兄弟が判定されないため、全件を判定してから集計する
+        const descendantVisible = childNodes.map(visit).some(Boolean);
+        const kind = row?.dataset.gbPickerKind || 'folder';
+        const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
+        const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
+        const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
+        node.hidden = !visible;
+        return visible;
+      };
+      tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
+    }
+    state.applyTreeView = _applyLocalTreeView;
+
+    searchInput.addEventListener('input', async () => {
+      if (typeof options.searchProvider !== 'function') {
+        _applyLocalTreeView();
+        return;
+      }
+        const query = searchInput.value;
+        if (!query.trim()) {
+          searchResults.style.display = 'none';
+          tree.style.display = '';
+          return;
+        }
+        tree.style.display = 'none';
+        searchResults.style.display = '';
+        searchResults.textContent = '読み込み中...';
+        const items = await _ensureSearchItems();
+        if (searchInput.value !== query) return;
+        _renderSearchResults(items, query);
+    });
+    filterSelect.addEventListener('change', () => {
+      state.filterKind = filterSelect.value;
+      if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
+        _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
+      } else _applyLocalTreeView();
+    });
+    sortSelect.addEventListener('change', () => {
+      state.sortDirection = sortSelect.value;
+      state.nodeByPath.clear();
+      searchItemsCache = null;
+      searchInput.value = '';
+      searchResults && (searchResults.style.display = 'none');
+      tree.style.display = '';
+      renderRoots();
+    });
+
+    let loadedRoots = null;
+    async function renderRoots() {
+      tree.textContent = 'フォルダを読み込み中...';
+      status.textContent = '';
+      status.style.color = '';
+      try {
+      const roots = loadedRoots || await loadRoots(options);
+      loadedRoots = roots;
+      state.roots = roots;
+      tree.innerHTML = '';
+      if (!roots.length) {
+        status.textContent = '選択できるフォルダがありません。';
+        return;
+      }
+      // ルートはパネルと同じ区分順・登録順で出す（区分見出しが重複しない）。並び順の指定は各フォルダの中身に効く。
+      // パネルと同じく、ルートが無い区分も見出しだけは出す（表示対象から外した区分は出さない）
+      const sectionKinds = [];
+      if (options.includeWorkspaces !== false) sectionKinds.push('workspace');
+      if (options.includeSources !== false) sectionKinds.push('source');
+      if (options.includeHome !== false) sectionKinds.push('home');
+      const entries = [];
+      sectionKinds.forEach(kind => {
+        const inKind = roots.filter(root => _rootKind(root) === kind);
+        if (!inKind.length) entries.push({ kind, root: null });
+        inKind.forEach(root => entries.push({ kind, root }));
+      });
+      let lastSection = '';
+      entries.forEach(({ kind, root }) => {
+        const section = _rootSectionLabel(kind);
+        if (section !== lastSection) {
+          // パネルの区分見出しと同じ形（開閉の三角＋区分名）。押すとその区分のルートを畳む
+          const heading = document.createElement('button');
+          heading.type = 'button';
+          heading.className = 'gb-folder-picker-section';
+          heading.setAttribute('aria-expanded', 'true');
+          const chevron = document.createElement('span');
+          chevron.className = 'sidebar-section-toggle expanded';
+          chevron.innerHTML = _icon('chevronRight', 10);
+          const text = document.createElement('span');
+          text.textContent = section;
+          heading.append(chevron, text);
+          heading.addEventListener('click', () => {
+            const open = heading.getAttribute('aria-expanded') !== 'true';
+            heading.setAttribute('aria-expanded', open ? 'true' : 'false');
+            chevron.classList.toggle('expanded', open);
+            let next = heading.nextElementSibling;
+            while (next && !next.classList.contains('gb-folder-picker-section')) {
+              next.classList.toggle('is-section-collapsed', !open);
+              next = next.nextElementSibling;
+            }
+          });
+          tree.appendChild(heading);
+          lastSection = section;
+        }
+        if (root) tree.appendChild(_createFolderNode(root, { name: root.name, path: root.path }, 0, state));
+      });
+      if (typeof replaceIcons === 'function') replaceIcons(tree);
+      if (options.revealPath) {
+        try { await _revealPath(state, options.revealPath); } catch (_) {}
+      }
+    } catch (error) {
+      tree.textContent = '';
+      status.textContent = 'フォルダ一覧を読み込めませんでした。';
+      status.style.color = 'var(--red)';
+    }
+    }
+    return {
+      element: body,
+      tree,
+      searchInput,
+      status,
+      state,
+      // DOM接続後に呼ぶ。中略表示は実効幅が必要なため接続前には行わない
+      start() {
+        _setCurrentPathText(current, options.initialPath || '未選択');
+        return renderRoots().then(() => state.roots || []);
+      },
+      reload() {
+        loadedRoots = null;
+        state.nodeByPath.clear();
+        return renderRoots().then(() => state.roots || []);
+      },
+      getSelection: () => state.selected,
+    };
+  }
+
   function pickFolder(options = {}) {
     return new Promise(async resolve => {
-      const body = document.createElement('div');
-      body.className = 'gb-folder-picker-body';
-
-      const currentRow = document.createElement('div');
-      currentRow.className = 'gb-folder-picker-current-row';
-      currentRow.dataset.e2eId = 'gb-folder-picker-current-row';
-      currentRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:8px;';
-      const currentLabel = document.createElement('span');
-      currentLabel.textContent = options.currentLabel || '選択中:';
-      currentLabel.style.whiteSpace = 'nowrap';
-      const current = document.createElement('code');
-      current.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--fg);';
-      current.textContent = options.initialPath || '未選択';
-      currentRow.appendChild(currentLabel);
-      currentRow.appendChild(current);
-      body.appendChild(currentRow);
-
-      const tools = document.createElement('div');
-      tools.className = 'gb-folder-picker-tools';
-      const searchInput = document.createElement('input');
-      searchInput.type = 'search';
-      searchInput.className = 'gb-input gb-folder-picker-search';
-      searchInput.dataset.e2eId = 'gb-folder-picker-search';
-      searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
-      searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
-      const sortSelect = document.createElement('select');
-      sortSelect.className = 'gb-input gb-folder-picker-sort';
-      sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
-      sortSelect.setAttribute('aria-label', '並び順');
-      sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
-      const filterSelect = document.createElement('select');
-      filterSelect.className = 'gb-input gb-folder-picker-filter';
-      filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
-      filterSelect.setAttribute('aria-label', '表示する種類');
-      filterSelect.innerHTML = options.selectFiles
-        ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
-        : '<option value="folder">フォルダ</option>';
-      [searchInput, sortSelect, filterSelect].forEach(control => {
-        tools.appendChild(control);
-      });
-      body.appendChild(tools);
-
-      const tree = document.createElement('div');
-      tree.className = 'gb-folder-picker-tree';
-      tree.dataset.e2eId = 'gb-folder-picker-tree';
-      tree.setAttribute('role', 'tree');
-      tree.style.cssText = 'flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;';
-      body.appendChild(tree);
-
-      let searchResults = null;
-      if (typeof options.searchProvider === 'function') {
-        searchResults = document.createElement('div');
-        searchResults.className = 'gb-folder-picker-search-results';
-        searchResults.style.cssText = tree.style.cssText;
-        searchResults.style.display = 'none';
-        body.appendChild(searchResults);
-      }
-
-      const status = document.createElement('div');
-      status.className = 'gb-folder-picker-status';
-      status.dataset.e2eId = 'gb-folder-picker-status';
-      status.setAttribute('role', 'status');
-      status.setAttribute('aria-live', 'polite');
-      status.style.cssText = 'min-height:18px;font-size:12px;color:var(--fg2);margin-top:6px;';
-      body.appendChild(status);
-
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'gb-btn gb-btn-sm gb-btn-quiet';
@@ -464,7 +721,15 @@
       ok.textContent = '選択';
       ok.disabled = true;
       let closed = false;
-      let state = null;
+      const browser = createBrowser({
+        ...options,
+        onSelect: () => { ok.disabled = false; },
+        onActivate: selection => close(selection),
+      });
+      const body = browser.element;
+      const searchInput = browser.searchInput;
+      const tree = browser.tree;
+      const state = browser.state;
       let modalApi = null;
       const close = value => {
         if (closed) return;
@@ -474,6 +739,8 @@
         resolve(value || null);
       };
       const onKeyDown = event => {
+        // ツリー行のEnterは行側で選択してから確定するため、ここでは古い選択で閉じない
+        if (event.target?.closest?.('.gb-folder-picker-tree, .gb-folder-picker-search-results')) return;
         if (event.key === 'Enter' && state?.selected) close(state.selected);
       };
       modalApi = window.GBUI.createModal({
@@ -502,190 +769,18 @@
       modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'gb-folder-picker-header-close');
       modalApi.footer.classList.add('gb-folder-picker-actions');
       modalApi.open();
-      // DOM接続前は実効幅が取れないため、中略表示の適用はここ（appendChild後）で行う
-      _setCurrentPathText(current, options.initialPath || '未選択');
       if (typeof replaceIcons === 'function') replaceIcons(overlay);
 
-      state = {
-        tree,
-        current,
-        ok,
-        selected: null,
-        initialPath: options.initialPath || '',
-        selectFiles: !!options.selectFiles,
-        fileTypes: Array.isArray(options.fileTypes) && options.fileTypes.length ? options.fileTypes.slice() : null,
-        emptyText: options.emptyText || '',
-        nodeByPath: new Map(),
-        searchResultsEl: searchResults,
-        sortDirection: 'asc',
-        filterKind: options.selectFiles ? 'all' : 'folder',
-        roots: null,
-        close: value => close(value),
-      };
       document.addEventListener('keydown', onKeyDown, true);
       cancel.addEventListener('click', () => close(null));
       ok.addEventListener('click', () => close(state.selected));
-
-      let searchItemsCache = null;
-      async function _ensureSearchItems() {
-        if (searchItemsCache) return searchItemsCache;
-        try {
-          const list = await options.searchProvider();
-          searchItemsCache = Array.isArray(list) ? list : [];
-        } catch (_) {
-          searchItemsCache = [];
-        }
-        return searchItemsCache;
-      }
-
-      function _renderSearchResults(items, query) {
-        searchResults.innerHTML = '';
-        const q = String(query || '').toLowerCase().trim();
-        const filtered = items.filter(d => !q || String(d.name || '').toLowerCase().includes(q) || String(d.path || '').toLowerCase().includes(q));
-        if (!filtered.length) {
-          const empty = document.createElement('div');
-          empty.textContent = '該当なし';
-          empty.style.cssText = 'padding:8px;font-size:12px;color:var(--fg2);';
-          searchResults.appendChild(empty);
-          return;
-        }
-        filtered.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
-        filtered.forEach(d => {
-          const row = document.createElement('div');
-          row.className = 'gb-folder-picker-row';
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;min-height:28px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;';
-          const icon = document.createElement('span');
-          icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
-          icon.innerHTML = _icon('database', 14);
-          row.appendChild(icon);
-          const label = document.createElement('span');
-          label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
-          label.textContent = d.name || _leafName(d.path);
-          row.appendChild(label);
-          if (d.rootName || d.relPath) {
-            const sub = document.createElement('span');
-            sub.style.cssText = 'font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%;';
-            sub.textContent = d.rootName ? (d.rootName + (d.relPath ? ' / ' + d.relPath : '')) : (d.relPath || '');
-            row.appendChild(sub);
-          }
-          row.title = d.path || '';
-          const selectThis = () => {
-            const matchedRoot = Array.isArray(state.roots) ? state.roots.find(r => {
-              const rp = _normalizePath(r.rootPath || r.path);
-              return rp && (_normalizePath(d.path) === rp || _normalizePath(d.path).startsWith(rp + '/'));
-            }) : null;
-            state.selected = matchedRoot
-              ? _selectionFor(matchedRoot, d.path, d.name, 'file', d.type)
-              : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file', type: d.type || '' };
-            _markSelectedAcross(state, row);
-            _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
-            state.ok.disabled = false;
-          };
-          row.addEventListener('click', selectThis);
-          row.addEventListener('dblclick', () => { selectThis(); state.close(state.selected); });
-          row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-          row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
-          searchResults.appendChild(row);
-        });
-      }
-
-      function _applyLocalTreeView() {
-        if (typeof options.searchProvider === 'function') return;
-        const query = searchInput.value.toLocaleLowerCase('ja').trim();
-        const visit = node => {
-          const row = node.querySelector(':scope > .gb-folder-picker-row');
-          const children = node.querySelector(':scope > .gb-folder-picker-children');
-          const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
-          const descendantVisible = childNodes.some(visit);
-          const kind = row?.dataset.gbPickerKind || 'folder';
-          const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
-          const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
-          const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
-          node.hidden = !visible;
-          return visible;
-        };
-        tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
-      }
-      state.applyTreeView = _applyLocalTreeView;
-
-      searchInput.addEventListener('input', async () => {
-        if (typeof options.searchProvider !== 'function') {
-          _applyLocalTreeView();
-          return;
-        }
-          const query = searchInput.value;
-          if (!query.trim()) {
-            searchResults.style.display = 'none';
-            tree.style.display = '';
-            return;
-          }
-          tree.style.display = 'none';
-          searchResults.style.display = '';
-          searchResults.textContent = '読み込み中...';
-          const items = await _ensureSearchItems();
-          if (searchInput.value !== query) return;
-          _renderSearchResults(items, query);
-      });
-      filterSelect.addEventListener('change', () => {
-        state.filterKind = filterSelect.value;
-        if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
-          _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
-        } else _applyLocalTreeView();
-      });
-      sortSelect.addEventListener('change', () => {
-        state.sortDirection = sortSelect.value;
-        state.nodeByPath.clear();
-        searchItemsCache = null;
-        searchInput.value = '';
-        searchResults && (searchResults.style.display = 'none');
-        tree.style.display = '';
-        renderRoots();
-      });
-
-      let loadedRoots = null;
-      async function renderRoots() {
-        tree.textContent = 'フォルダを読み込み中...';
-        try {
-        const roots = loadedRoots || await loadRoots(options);
-        loadedRoots = roots;
-        state.roots = roots;
-        tree.innerHTML = '';
-        if (!roots.length) {
-          status.textContent = '選択できるフォルダがありません。';
-          return;
-        }
-        let lastSection = '';
-        const orderedRoots = roots.slice().sort((a, b) => {
-          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
-          return state.sortDirection === 'desc' ? -order : order;
-        });
-        orderedRoots.forEach(root => {
-          const section = _rootSectionLabel(_rootKind(root));
-          if (section !== lastSection) {
-            const heading = document.createElement('div');
-            heading.textContent = section;
-            heading.style.cssText = 'padding:8px 6px 4px;font-size:11px;color:var(--fg2);font-weight:bold;';
-            tree.appendChild(heading);
-            lastSection = section;
-          }
-          tree.appendChild(_createFolderNode(root, { name: root.name, path: root.path }, 0, state));
-        });
-        if (typeof replaceIcons === 'function') replaceIcons(tree);
-        if (options.revealPath) {
-          try { await _revealPath(state, options.revealPath); } catch (_) {}
-        }
-      } catch (error) {
-        tree.textContent = '';
-        status.textContent = 'フォルダ一覧を読み込めませんでした。';
-        status.style.color = 'var(--red)';
-      }
-      }
-      await renderRoots();
+      await browser.start();
     });
   }
 
   window.GBFolderPicker = {
     loadRoots,
+    createBrowser,
     pickFolder,
     toSourceRelativePath,
   };

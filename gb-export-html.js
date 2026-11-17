@@ -100,6 +100,45 @@ const MeldexExportHtml = (() => {
    *   true の場合、input/textarea/select/button を span/disabled 化せずそのまま残す。
    *   公開フォームのようにユーザー入力を受け付ける必要がある HTML に使う。
    */
+  // 元要素が祖先（パネル・ファイルテーマ）から受け継いでいる CSS 変数と文字設定、および
+  // 本文の余白・行間を計算済みの値で複製へ固定する。出力には祖先が含まれないため。
+  const CONTEXT_TEXT_PROPS = [
+    'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
+    'font-feature-settings', 'text-rendering', 'word-break', 'overflow-wrap', 'line-break',
+  ];
+  const CONTEXT_BOX_PROPS = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
+  function applyComputedContext(originalEl, clone) {
+    if (!originalEl || !clone?.style) return;
+    const cs = getComputedStyle(originalEl);
+    for (let i = 0; i < cs.length; i++) {
+      const name = cs[i];
+      if (!name || !name.startsWith('--')) continue;
+      const value = cs.getPropertyValue(name).trim();
+      if (value && !clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+    }
+    [...CONTEXT_TEXT_PROPS, ...CONTEXT_BOX_PROPS].forEach(name => {
+      const value = cs.getPropertyValue(name);
+      if (value) clone.style.setProperty(name, value);
+    });
+    // 行間は、画面側の指定のされ方（倍率か px か）が組方向や要素で異なり、出力用CSSの
+    // 上書きと組み合わさると子要素（コード・表・見出し等）でずれる。本文内の各要素の行間を
+    // 画面の実測値で固定する（複製と元の要素数が一致する時だけ）。
+    const sourceNodes = originalEl.querySelectorAll('*');
+    const cloneNodes = clone.querySelectorAll('*');
+    if (sourceNodes.length === cloneNodes.length) {
+      sourceNodes.forEach((node, index) => {
+        const value = getComputedStyle(node).lineHeight;
+        if (value && value !== 'normal') cloneNodes[index].style.setProperty('line-height', value);
+      });
+    }
+    const maxWidth = cs.getPropertyValue('max-width');
+    if (maxWidth && maxWidth !== 'none') clone.style.setProperty('max-width', maxWidth);
+  }
+
+  // アプリ本体と同じ基本リセット（gb-theme.css）。無いと引用・段落・見出し等にブラウザ既定の
+  // 余白が付き、画面と配置が変わる。
+  const APP_RESET_CSS = '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }';
+
   function cloneAndClean(el, opts) {
     const options = opts || {};
     const clone = el.cloneNode(true);
@@ -165,6 +204,14 @@ const MeldexExportHtml = (() => {
   }
 
   const PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST = new Set(['data-publish-form', 'data-form-type']);
+  // 表示用CSSの目印で、内部情報（パス・ID・トークン等）を含まない data 属性。すべての data 属性を
+  // 消すと、完了タスクの装飾・シートのセル折り返し・ボードの図形書式・状態色などが出力で効かなくなる。
+  // ルビの読みは本文の一部。値に内部パスやIDを持つ属性（data-path, data-entity-id 等）は含めない。
+  const PUBLISHED_DISPLAY_DATA_ATTRIBUTES = new Set([
+    'data-ruby', 'data-checked', 'data-cell-overflow', 'data-bd-role', 'data-status', 'data-status-kind',
+    'data-note-status', 'data-chip-border', 'data-chip-bg', 'data-bd-group-color', 'data-shape', 'data-dir',
+    'data-item-type', 'data-today', 'data-small-list', 'data-stage', 'data-cal-dow', 'data-editor-local-id',
+  ]);
   const PUBLISHED_FORBIDDEN_ELEMENTS = 'script,iframe,object,embed,base,meta,link,portal';
 
   function _safePublishedLink(value) {
@@ -192,7 +239,8 @@ const MeldexExportHtml = (() => {
           node.removeAttribute(attr.name);
           return;
         }
-        if (name.startsWith('data-') && !(opts.preserveFormControls && PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST.has(name))) {
+        if (name.startsWith('data-') && !PUBLISHED_DISPLAY_DATA_ATTRIBUTES.has(name)
+          && !(opts.preserveFormControls && PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST.has(name))) {
           node.removeAttribute(attr.name);
           return;
         }
@@ -247,6 +295,16 @@ const MeldexExportHtml = (() => {
   /** :root の CSS 変数を実値に解決して返す */
   function collectCssVars() {
     const rootStyle = getComputedStyle(document.documentElement);
+    // 決め打ちの一覧だけでは、ノートの見出し色・太さ（--page-*）やファイルテーマ等の変数が
+    // 出力から欠ける。計算済みのカスタムプロパティをすべて書き出す（一覧は互換のため残す）。
+    const allDecls = [];
+    for (let i = 0; i < rootStyle.length; i++) {
+      const name = rootStyle[i];
+      if (!name || !name.startsWith('--')) continue;
+      const value = rootStyle.getPropertyValue(name).trim();
+      if (value) allDecls.push(`${name}: ${value};`);
+    }
+    if (allDecls.length) return allDecls.join(' ');
     const varNames = [
       '--bg', '--bg2', '--bg3', '--bg4',
       '--fg', '--fg2', '--accent', '--accent2',
@@ -318,7 +376,7 @@ const MeldexExportHtml = (() => {
 [contenteditable] { -webkit-user-modify: read-only; caret-color: transparent; }
 input, textarea, select { display: none !important; }
 button[disabled] { cursor: default !important; opacity: 1 !important; pointer-events: none; }
-a { pointer-events: none; color: inherit; text-decoration: inherit; }
+a { pointer-events: none; }
 /* 印刷時の背景色保持 */
 * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 `;
@@ -538,9 +596,10 @@ ${bodyHtml}
   async function exportToHtml(contentEl, options) {
     const opts = options || {};
     const clone = cloneAndClean(contentEl);
+    if (opts.inheritComputedContext) applyComputedContext(contentEl, clone);
 
-    // ルビ変換
-    convertDataRuby(clone);
+    // ルビ変換（画面と同じ組み方を保つビューは data-ruby の表示をそのまま使う）
+    if (!opts.keepDataRuby) convertDataRuby(clone);
 
     // エディタ固有の前処理コールバック
     if (typeof opts.preTransform === 'function') {
@@ -555,7 +614,7 @@ ${bodyHtml}
 
     // CSS
     const varDecls = collectCssVars();
-    let cssText = `:root { ${varDecls} }\n`;
+    let cssText = (opts.appReset ? APP_RESET_CSS + '\n' : '') + `:root { ${varDecls} }\n`;
     cssText += `html, body {
   margin: 0; padding: 0;
   background: var(--bg, #1e1e1e);
@@ -621,7 +680,7 @@ ${bodyHtml}
       if (!publishCtx) return false;
     }
     const kind = viewType || publishCtx.kind;
-    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board'];
+    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote'];
     if (!supportedKinds.includes(kind) || kind !== publishCtx.kind) {
       showStatus('このビューは公開HTMLに未対応です', true);
       return false;
@@ -648,9 +707,17 @@ ${bodyHtml}
       db_path: kind === 'board' ? '' : (publishCtx.path || cfg.db_path || ''),
       board_snapshot: publishCtx.board || null,
     };
-    const publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
-      ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
-      : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
+    let publicationPackage = null;
+    if (kind === 'scriptnote') {
+      // シナリオは HTML保存・画像と同じ静的スナップショットを公開する（設定の反映を一致させる）
+      publicationPackage = await _buildScriptNotePublicationPackage(publishCtx, cfg);
+      if (!publicationPackage) return false;
+      mergedCfg.title = publicationPackage.title || mergedCfg.title;
+    } else {
+      publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
+        ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
+        : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
+    }
     const html = publicationPackage?.html;
     if (!html) return false;
     if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
@@ -688,8 +755,42 @@ ${bodyHtml}
     return !!result;
   }
 
+  function _activeScriptNoteEditorForPath(path) {
+    const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+    if (!editor?.doc) return null;
+    const norm = value => String(value || '').replace(/\\/g, '/');
+    if (path && norm(editor._path) !== norm(path)) return null;
+    return editor;
+  }
+
+  async function _buildScriptNotePublicationPackage(publishCtx, cfg) {
+    if (typeof buildScriptNoteExportDocument !== 'function') {
+      showStatus('シナリオの公開HTMLを生成できませんでした', true);
+      return null;
+    }
+    const editor = _activeScriptNoteEditorForPath(publishCtx?.path);
+    if (!editor) {
+      showStatus('公開対象のシナリオが表示されていないため公開を停止しました', true);
+      return null;
+    }
+    const snapshot = await buildScriptNoteExportDocument(editor, {
+      purpose: 'publish',
+      embedFont: cfg?.embed_font !== false,
+    });
+    if (!snapshot?.html) {
+      showStatus('公開できるシナリオ内容がありません', true);
+      return null;
+    }
+    return { html: snapshot.html, assets: [], title: snapshot.title };
+  }
+
   function _getViewTitle(viewType) {
     switch (viewType) {
+      case 'scriptnote': {
+        const editor = _activeScriptNoteEditorForPath('');
+        const stem = String(editor?._path || '').split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+        return String(editor?.doc?.title || stem || 'シナリオ');
+      }
       case 'page': {
         const pc = document.getElementById('page-content');
         const h1 = pc?.querySelector('h1, h2, h3');
@@ -837,15 +938,23 @@ ${bodyHtml}
       `;
   }
 
+  // ノートの HTML 保存・画像・公開で共通の出力設定（画面と同じ見た目にする）
+  function noteExportOptions(pc, vertical, title) {
+    return {
+      title,
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
+      extraCss: noteExportCss(vertical),
+      inheritComputedContext: true,
+      keepDataRuby: true,
+      appReset: true,
+    };
+  }
+
   async function _exportNotePage() {
     const pc = document.getElementById('page-content');
     if (!pc) { showStatus('ノートが開かれていません', true); return null; }
     const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(pc));
-    return exportToHtml(pc, {
-      title: _getViewTitle('page'),
-      cssFiles: ['gb-tools.css', 'gb-ui.css'],
-      extraCss: noteExportCss(vertical),
-    });
+    return exportToHtml(pc, noteExportOptions(pc, vertical, _getViewTitle('page')));
   }
 
   // --- データベース ---
@@ -1002,6 +1111,9 @@ ${bodyHtml}
     sanitizePublishedClone,
     convertDataRuby,
     noteExportCss,
+    noteExportOptions,
+    applyComputedContext,
+    APP_RESET_CSS,
     collectCssVars,
     createAssetCollector,
     ASSET_BASE_TOKEN,

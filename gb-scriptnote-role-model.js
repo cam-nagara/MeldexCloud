@@ -2,7 +2,7 @@
 (function (global) {
   'use strict';
 
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
   const NONE_REF = Object.freeze({ kind: 'none', id: 'none' });
   const NONE_LABEL = '（なし）';
   const FUNCTION_NAMES = new Set([
@@ -10,6 +10,8 @@
     '右ページ', '左ページ', 'めくり', '改ページ', '見開き', '白紙', 'トビラ絵', '大ゴマ', '未完', '柱',
     'シーン見出し', '場面転換', 'Aパート', 'Bパート', 'Cパート',
     '第一幕', '第二幕', '第三幕', '場',
+    // 旧エディタの種類推定（_legacyDetectKindByName）で区切り・ト書き扱いだった名前。
+    '巻頭カラー', '巻頭見開き', '暗転', '幕間', '動作', '説明', 'ナレ', 'SE', 'BGM', 'テロップ', '地の文', '独白', '傍白',
   ]);
   const TEMPLATE_ROOT_FIELDS = [
     'layoutMode', 'rubyPresentation', 'viewMode', 'pageSettings',
@@ -178,15 +180,26 @@
     return null;
   }
 
-  function migrateRows(doc, rows, used) {
+  function migrateRows(doc, rows, used, options = {}) {
     return (Array.isArray(rows) ? rows : []).map((row, index) => {
       const item = clone(plain(row));
       item.role = String(item.role || '');
       let ref = roleRefForName(doc, item.role);
       if (!ref && item.role) {
-        const character = migrateLegacyItem({ name: item.role }, 'character', used);
-        doc.characters.push(character);
-        ref = { kind: 'character', id: character.id };
+        // 旧形式（schema_version なし／v1・v2）は、キャラ一覧に宣言していない役割名を行で
+        // 使うことがある。以前は一律にキャラとして作ったため、改ページ・めくり・ト書き等の
+        // 機能タイプがキャラになり、ページ区切りやタイプ設定が効かないまま v4 で保存されていた
+        // （実データ2ファイル・1,603行）。機能名ならタイプとして作り、区切り等の旧既定は
+        // applyLegacyScriptNoteDocMigrations がタイプ側へ付ける。
+        if (isFunctionalLegacy({ name: item.role }, options)) {
+          const type = migrateLegacyItem({ name: item.role }, 'type', used);
+          doc.scenarioTypes.push(type);
+          ref = { kind: 'type', id: type.id };
+        } else {
+          const character = migrateLegacyItem({ name: item.role }, 'character', used);
+          doc.characters.push(character);
+          ref = { kind: 'character', id: character.id };
+        }
       }
       item.roleRef = ref || { ...NONE_REF };
       if (!item.id) item.id = `sn-role-${index}-${hash(item.role + index)}`;
@@ -206,7 +219,8 @@
       const kind = isFunctionalLegacy(item, options) ? 'type' : 'character';
       (kind === 'type' ? types : characters).push(migrateLegacyItem(item, kind, used));
     }
-    source.schema_version = SCHEMA_VERSION;
+    // まず従来の共通role形式へ移行し、normalizeV3Documentで分離形式へ上げる。
+    source.schema_version = 3;
     source.editor = clone(plain(source.editor));
     if (legacyNone && !source.editor.noneType) {
       source.editor.noneType = { ...clone(plain(legacyNone)), isRoleNone: true, name: '' };
@@ -214,8 +228,8 @@
     }
     source.scenarioTypes = types;
     source.characters = characters;
-    source.rows = migrateRows(source, source.rows, used);
-    return source;
+    source.rows = migrateRows(source, source.rows, used, options);
+    return normalizeV3Document(source);
   }
 
   function normalizeV3Document(input) {
@@ -232,9 +246,32 @@
     source.rows = (Array.isArray(source.rows) ? source.rows : []).map(row => {
       const item = clone(plain(row));
       item.role = String(item.role || '');
-      const ref = normalizeRef(item.roleRef);
-      const resolved = ref ? resolveRole(source, ref) : null;
-      item.roleRef = resolved ? ref : (roleRefForName(source, item.role) || item.roleRef || null);
+      const legacyRef = normalizeRef(item.roleRef) || roleRefForName(source, item.role) || { ...NONE_REF };
+      const legacyResolved = resolveRole(source, legacyRef);
+      const explicitCharacterRef = normalizeRef(item.characterRef);
+      const explicitTypeRef = normalizeRef(item.typeRef);
+      const hasCharacterRef = Object.prototype.hasOwnProperty.call(item, 'characterRef');
+      const hasTypeRef = Object.prototype.hasOwnProperty.call(item, 'typeRef');
+      const character = explicitCharacterRef?.kind === 'character'
+        ? findCharacterById(source, explicitCharacterRef.id)
+        : (!hasCharacterRef
+          ? findCharacterByName(source, item.character)
+            || (legacyResolved?.kind === 'character' ? legacyResolved.character : null)
+          : null);
+      const type = explicitTypeRef?.kind === 'type'
+        ? findTypeById(source, explicitTypeRef.id)
+        : (!hasTypeRef
+          ? findTypeByName(source, item.type)
+            || (legacyResolved?.kind === 'type' ? legacyResolved.type : null)
+            || (character?.typeId ? findTypeById(source, character.typeId) : null)
+          : null);
+      item.characterRef = character ? { kind: 'character', id: character.id } : { ...NONE_REF };
+      item.character = character?.name || '';
+      item.typeRef = type ? { kind: 'type', id: type.id } : { ...NONE_REF };
+      item.type = type?.name || '';
+      // v3以前の読取側へ渡してもタイプとして解決できる互換ミラー。
+      item.roleRef = { ...item.typeRef };
+      item.role = item.type;
       return item;
     });
     source.schema_version = Math.max(SCHEMA_VERSION, Number(source.schema_version) || SCHEMA_VERSION);
@@ -243,9 +280,7 @@
 
   function normalizeDocument(input, options = {}) {
     const version = Number(plain(input).schema_version) || 1;
-    return version < SCHEMA_VERSION
-      ? migrateV2Document(input, options)
-      : normalizeV3Document(input);
+    return normalizeV3Document(version < 3 ? migrateV2Document(input, options) : input);
   }
 
   function ensureDocument(doc, options = {}) {
@@ -258,7 +293,7 @@
 
   function resolveRole(doc, value) {
     const row = plain(value);
-    const explicitRef = normalizeRef(row.roleRef || value);
+    const explicitRef = normalizeRef(row.typeRef || row.roleRef || value);
     if (explicitRef?.kind === 'none') {
       return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
     }
@@ -283,37 +318,61 @@
     return clone(plain(plain(doc?.editor).defaultType));
   }
 
+  function resolveRowCharacter(doc, value) {
+    const row = plain(value);
+    const ref = normalizeRef(row.characterRef);
+    if (ref?.kind === 'character') {
+      const character = findCharacterById(doc, ref.id);
+      if (character) return { kind: 'character', id: character.id, name: character.name, character, ref };
+    }
+    if (ref?.kind === 'none') return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+    const legacy = normalizeRef(row.roleRef || value);
+    if (legacy?.kind === 'character') {
+      const character = findCharacterById(doc, legacy.id);
+      if (character) return { kind: 'character', id: character.id, name: character.name, character, ref: legacy };
+    }
+    const character = findCharacterByName(doc, row.character || (typeof value === 'string' ? value : ''));
+    return character
+      ? { kind: 'character', id: character.id, name: character.name, character, ref: { kind: 'character', id: character.id } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
+  function resolveRowType(doc, value) {
+    const row = plain(value);
+    const ref = normalizeRef(row.typeRef || row.roleRef || value);
+    if (ref?.kind === 'type') {
+      const type = findTypeById(doc, ref.id);
+      if (type) return { kind: 'type', id: type.id, name: type.name, type, ref };
+    }
+    if (ref?.kind === 'none' && row.typeRef) return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+    const namedType = findTypeByName(doc, row.type || row.role || (typeof value === 'string' ? value : ''));
+    if (namedType) return { kind: 'type', id: namedType.id, name: namedType.name, type: namedType, ref: { kind: 'type', id: namedType.id } };
+    const character = resolveRowCharacter(doc, value)?.character;
+    const initialType = character?.typeId ? findTypeById(doc, character.typeId) : null;
+    if (initialType) return { kind: 'type', id: initialType.id, name: initialType.name, type: initialType, ref: { kind: 'type', id: initialType.id } };
+    const unresolvedName = text(row.type || row.role || (typeof value === 'string' ? value : ''));
+    return unresolvedName
+      ? { kind: 'unresolved', id: '', name: unresolvedName, ref: null }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
   function getEffectiveStyle(doc, value) {
-    const resolved = resolveRole(doc, value);
+    const resolved = resolveRowType(doc, value);
     if (!resolved) return defaultAppearance(doc);
     if (resolved.kind === 'none') {
+      const legacyAppearance = resolveRowCharacter(doc, value)?.character?.legacyAppearance;
+      if (legacyAppearance && Object.keys(plain(legacyAppearance)).length) return clone(legacyAppearance);
       return clone(Object.keys(plain(plain(doc?.editor).noneType)).length
         ? plain(doc.editor).noneType
         : defaultAppearance(doc));
     }
-    if (resolved.kind === 'type') return clone(resolved.type);
-    const character = resolved.character;
-    if (!character.typeId) {
-      if (character.legacyAppearance) return clone(character.legacyAppearance);
-      const appearance = { ...defaultAppearance(doc), ...clone(character) };
-      appearance.roleStyle = { ...plain(appearance.roleStyle) };
-      if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
-      return appearance;
-    }
-    const type = findTypeById(doc, character.typeId);
-    const appearance = type ? clone(type) : defaultAppearance(doc);
-    appearance.roleStyle = { ...plain(appearance.roleStyle) };
-    if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
-    return appearance;
+    return resolved.kind === 'type' ? clone(resolved.type) : defaultAppearance(doc);
   }
 
   function getEffectiveRole(doc, value) {
-    const resolved = resolveRole(doc, value);
-    if (!resolved) return null;
-    const type = resolved.kind === 'character'
-      ? findTypeById(doc, resolved.character.typeId)
-      : resolved.type || null;
-    return { ...resolved, type, style: getEffectiveStyle(doc, value) };
+    const resolved = resolveRowType(doc, value);
+    const character = resolveRowCharacter(doc, value)?.character || null;
+    return { ...resolved, character, type: resolved.type || null, style: getEffectiveStyle(doc, value) };
   }
 
   function countTypeLinks(doc) {
@@ -325,20 +384,31 @@
   }
 
   function buildRoleChoices(doc) {
-    const counts = countTypeLinks(doc);
     const characters = (doc.characters || []).map(item => ({
       kind: 'character', id: item.id, name: item.name, label: item.name,
       ref: { kind: 'character', id: item.id },
     }));
-    const types = (doc.scenarioTypes || [])
-      .filter(item => !counts[item.id])
-      .map(item => ({
+    const types = (doc.scenarioTypes || []).map(item => ({
         kind: 'type', id: item.id, name: item.name, label: item.name,
         ref: { kind: 'type', id: item.id },
       }));
     return [...characters, ...types, {
       kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF },
     }];
+  }
+
+  function buildCharacterChoices(doc) {
+    return [...(doc.characters || []).map(item => ({
+      kind: 'character', id: item.id, name: item.name, label: item.name,
+      ref: { kind: 'character', id: item.id },
+    })), { kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF } }];
+  }
+
+  function buildTypeChoices(doc) {
+    return [...(doc.scenarioTypes || []).map(item => ({
+      kind: 'type', id: item.id, name: item.name, label: item.name,
+      ref: { kind: 'type', id: item.id },
+    })), { kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF } }];
   }
 
   function assertAvailableName(doc, name, except) {
@@ -382,8 +452,51 @@
       }
     }
     if (!resolved) throw new Error('指定された役割を確認できません');
-    row.roleRef = { ...resolved.ref };
-    row.role = resolved.kind === 'none' ? '' : resolved.name;
+    if (resolved.kind === 'character') return assignRowCharacter(doc, row, resolved.ref, options);
+    return assignRowType(doc, row, resolved.ref);
+  }
+
+  function assignRowCharacter(doc, row, target, options = {}) {
+    if (!row || typeof row !== 'object') throw new Error('対象行が不正です');
+    // キャラを書き換える前の行タイプを確認する。書き換え後に解決すると、
+    // 新キャラの初期タイプ自体が「既存タイプ」に見えて補完できなくなる。
+    const currentType = resolveRowType(doc, row);
+    const targetsNone = target == null
+      || (typeof target === 'string' && isNoneName(target))
+      || (typeof target === 'object' && target?.kind === 'none');
+    let character = null;
+    if (!targetsNone) {
+      const resolved = resolveRowCharacter(doc, target);
+      character = resolved?.character || (typeof target === 'string' ? ensureCharacterForName(doc, target, options) : null);
+      if (!character) throw new Error('指定されたキャラを確認できません');
+    }
+    row.characterRef = character ? { kind: 'character', id: character.id } : { ...NONE_REF };
+    row.character = character?.name || '';
+    if (character?.typeId && currentType.kind === 'none') assignRowType(doc, row, { kind: 'type', id: character.typeId });
+    return character
+      ? { kind: 'character', id: character.id, name: character.name, character, ref: { ...row.characterRef } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
+  function assignRowType(doc, row, target) {
+    if (!row || typeof row !== 'object') throw new Error('対象行が不正です');
+    const targetsNone = target == null
+      || (typeof target === 'string' && isNoneName(target))
+      || (typeof target === 'object' && target?.kind === 'none');
+    let type = null;
+    if (!targetsNone) {
+      const ref = normalizeRef(target);
+      type = ref?.kind === 'type' ? findTypeById(doc, ref.id)
+        : (typeof target === 'string' ? findTypeById(doc, target) || findTypeByName(doc, target) : null);
+      if (!type) throw new Error('指定されたタイプを確認できません');
+    }
+    row.typeRef = type ? { kind: 'type', id: type.id } : { ...NONE_REF };
+    row.type = type?.name || '';
+    row.roleRef = { ...row.typeRef };
+    row.role = row.type;
+    const resolved = type
+      ? { kind: 'type', id: type.id, name: type.name, type, ref: { ...row.typeRef } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
     return resolved;
   }
 
@@ -397,7 +510,7 @@
       : (typeof typeValue === 'string'
         ? findTypeById(doc, typeValue) || findTypeByName(doc, typeValue)
         : typeValue);
-    if (typeValue != null && typeValue !== '' && !type) throw new Error('対応タイプを確認できません');
+    if (typeValue != null && typeValue !== '' && !type) throw new Error('初期タイプを確認できません');
     character.typeId = type?.id || null;
     if (type) delete character.legacyAppearance;
     return character;
@@ -407,17 +520,18 @@
     let updated = 0;
     const unresolved = [];
     for (const row of doc.rows || []) {
-      const resolved = resolveRole(doc, row);
-      if (!resolved) {
-        unresolved.push(row.id || '');
-        continue;
-      }
-      const name = resolved.kind === 'none' ? '' : resolved.name;
-      if (row.role !== name) {
-        row.role = name;
-        updated += 1;
-      }
-      row.roleRef = { ...resolved.ref };
+      const character = resolveRowCharacter(doc, row);
+      const type = resolveRowType(doc, row);
+      if (!character || !type) unresolved.push(row.id || '');
+      const characterName = character?.kind === 'character' ? character.name : '';
+      const typeName = type?.kind === 'type' ? type.name : '';
+      if (row.character !== characterName || row.type !== typeName || row.role !== typeName) updated += 1;
+      row.character = characterName;
+      row.characterRef = character?.kind === 'character' ? { ...character.ref } : { ...NONE_REF };
+      row.type = typeName;
+      row.typeRef = type?.kind === 'type' ? { ...type.ref } : { ...NONE_REF };
+      row.role = typeName;
+      row.roleRef = { ...row.typeRef };
     }
     return { updated, unresolved };
   }
@@ -463,7 +577,7 @@
     const resolved = resolveRole(doc, value);
     if (!resolved) return { rows: 0, characters: 0, total: 0 };
     const rows = (doc.rows || []).filter(row => {
-      const current = resolveRole(doc, row);
+      const current = resolved.kind === 'character' ? resolveRowCharacter(doc, row) : resolveRowType(doc, row);
       return current?.kind === resolved.kind && current?.id === resolved.id;
     }).length;
     const characters = resolved.kind === 'type'
@@ -497,9 +611,10 @@
       throw new Error('タイプの置換先には別のタイプを指定してください');
     }
     for (const row of doc.rows || []) {
-      const current = resolveRole(doc, row);
+      const current = resolved.kind === 'character' ? resolveRowCharacter(doc, row) : resolveRowType(doc, row);
       if (current?.kind === resolved.kind && current?.id === resolved.id) {
-        assignRowRole(doc, row, replacementRole?.ref || NONE_REF);
+        if (resolved.kind === 'character') assignRowCharacter(doc, row, replacementRole?.ref || NONE_REF);
+        else assignRowType(doc, row, replacementRole?.ref || NONE_REF);
       }
     }
     if (resolved.kind === 'type') {
@@ -600,15 +715,15 @@
     }
     for (const character of doc.characters || []) {
       if (character.typeId && !findTypeById(doc, character.typeId)) {
-        errors.push(`キャラ「${character.name}」の対応タイプが見つかりません`);
+        errors.push(`キャラ「${character.name}」の初期タイプが見つかりません`);
       }
     }
     for (const row of doc.rows || []) {
-      const resolved = resolveRole(doc, row);
-      if (!resolved) warnings.push(`行「${row.id || '?'}」の役割を解決できません: ${row.role || ''}`);
-      else if (row.role !== (resolved.kind === 'none' ? '' : resolved.name)) {
-        warnings.push(`行「${row.id || '?'}」の表示名が参照先と一致しません`);
-      }
+      const character = resolveRowCharacter(doc, row);
+      const type = resolveRowType(doc, row);
+      if (!character || !type) warnings.push(`行「${row.id || '?'}」のキャラまたはタイプを解決できません`);
+      if (row.character !== (character?.kind === 'character' ? character.name : '')) warnings.push(`行「${row.id || '?'}」のキャラ表示名が参照先と一致しません`);
+      if (row.type !== (type?.kind === 'type' ? type.name : '')) warnings.push(`行「${row.id || '?'}」のタイプ表示名が参照先と一致しません`);
     }
     return { valid: errors.length === 0, errors, warnings };
   }
@@ -633,12 +748,18 @@
     findCharacterById,
     findCharacterByName,
     resolveRole,
+    resolveRowCharacter,
+    resolveRowType,
     roleKind,
     getEffectiveRole,
     getEffectiveStyle,
     countTypeLinks,
     buildRoleChoices,
+    buildCharacterChoices,
+    buildTypeChoices,
     assignRowRole,
+    assignRowCharacter,
+    assignRowType,
     ensureCharacterForName,
     setCharacterType,
     renameCharacter,

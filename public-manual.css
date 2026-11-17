@@ -170,13 +170,13 @@ select {
 .manual-version-wrap select,
 .manual-search-wrap input {
   width: 100%;
-  min-height: 42px;
+  min-height: var(--ui-h-touch, 44px);
   border: 1px solid var(--manual-border);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg, 8px);
   outline: none;
   background: var(--manual-surface);
   color: var(--manual-text);
-  padding: 8px 11px;
+  padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
 }
 
 .manual-version-wrap select {

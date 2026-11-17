@@ -104,8 +104,8 @@
 @media (pointer: coarse), (max-width: 640px) {
   .entity-props-toggle,
   .entity-props-col-width-btn {
-    min-height: 44px !important;
-    min-width: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
+    min-width: var(--ui-h-touch, 44px) !important;
   }
 }
 /* プロパティ本体 (並び替えツールバー + グループ見出し + カード)。display:contents で
@@ -124,11 +124,11 @@
 .entity-props-col-width-popup-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--fg); }
 .entity-props-col-width-popup-row input[type="number"] {
   width: 72px;
-  padding: 3px 6px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
 }
 /* 列一覧の文字選択コピー ポップアップ（gb-entity-props-selection.js）。
    .gb-context-menu 共通クラスへ相乗りしつつ、複合セレクタで確実に上書きする。 */
@@ -138,12 +138,12 @@
 }
 .entity-props-selection-copy-btn {
   display: flex; align-items: center; gap: 4px;
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: var(--ui-font-12, 12px);
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   background: var(--bg3);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   cursor: pointer;
 }
 .entity-props-selection-copy-btn:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
@@ -206,9 +206,9 @@
 /* 列タイプ選択のカスタムドロップダウン（アイコン付き） */
 .pt-type-select-btn {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  padding: 5px 8px; background: var(--bg); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
-  font-size: 13px; text-align: left; box-sizing: border-box;
+  padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px); cursor: pointer;
+  font-size: var(--ui-font-13, 13px); text-align: left; box-sizing: border-box;
 }
 .pt-type-select-btn:hover { border-color: var(--accent); }
 .pt-type-select-icon, .pt-type-select-caret { display: inline-flex; align-items: center; color: var(--fg2); flex: 0 0 auto; }
@@ -235,9 +235,9 @@
   flex-wrap: wrap;
 }
 #entity-create-note-btn button {
-  padding: 6px 12px; font-size: 12px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-5, 12px); font-size: var(--ui-font-12, 12px);
   background: var(--bg3); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px;
+  border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
 }
 #entity-create-note-btn button:hover { background: var(--bg4); border-color: var(--accent); }
@@ -250,7 +250,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: var(--ui-h-md, 32px);
   white-space: nowrap;
   line-height: 1.2;
 }
@@ -262,8 +262,8 @@
 }
 @media (max-width: 430px) {
   .entity-create-action-btn {
-    min-height: 44px;
-    padding: 10px 12px;
+    min-height: var(--ui-h-touch, 44px);
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
   }
 }
 
@@ -290,7 +290,7 @@
   border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; flex-wrap: wrap;
 }
 .db-card-view-toolbar-btn {
-  min-height: 24px; padding: 2px 8px; font-size: 12px;
+  min-height: var(--ui-h-xs, 22px); padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); font-size: var(--ui-font-12, 12px);
 }
 .db-card-props-settings {
   border-top: 1px solid var(--border);
@@ -319,9 +319,9 @@
 .db-card-props-number-input {
   width: 64px;
   min-width: 64px;
-  height: 24px;
-  padding: 2px 6px;
-  font-size: 12px;
+  height: var(--ui-h-xs, 22px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-12, 12px);
   box-sizing: border-box;
 }
 .gallery-grid {
@@ -544,10 +544,10 @@
     z-index: var(--ui-z-toast, 400);
   }
   #media-float-controls button {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   #media-float-controls svg,
   #media-float-controls .ico {

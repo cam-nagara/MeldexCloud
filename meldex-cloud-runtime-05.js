@@ -467,6 +467,12 @@
       return { ok: false, status: 'superseded', target };
     }
     if (result.ok) result.detail = publish(result, options?.reason);
+    else if (result.status === 'fallback' && typeof global.dispatchEvent === 'function'
+      && typeof global.CustomEvent === 'function') {
+      global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
+        detail: { dbPath: target.dbPath, status: result.status, message: String(result.error?.message || '') },
+      }));
+    }
     return result;
   }
 
@@ -4736,7 +4742,10 @@
   }
 
   function checkpointId(value) {
-    return String(value?.checkpointId || value?.revision || value || '');
+    // 空の checkpoint（読取専用の移行結果では {} になる）を "[object Object]" という
+    // 偽の識別子にしない。以前はこれで列名変更の事前確認を素通りしていた。
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+    return String(value?.checkpointId || value?.revision || '');
   }
 
   function rememberView(detail, options = {}) {
@@ -4865,10 +4874,19 @@
     Object.keys(pivotData.entities).forEach((name) => {
       if (pivotData.entities[name]?._topicCanonicalOnly === true) delete pivotData.entities[name];
     });
-    const requestedViewId = String(preferredViewId || view.document?.activeSheetViewId
-      || view.document?.activeView || '');
-    const placements = (view.document?.placements || []).filter(item => item?.surface === 'sheet'
-      && (!requestedViewId || String(item.viewId || '') === requestedViewId));
+    // 画面のビューID（旧シートの保存ビュー view_… 等）が共通保管庫の文書に無いことがある。
+    // 以前はその場合に配置が0件になり、旧シートの行をすべて表示から外していた（移行できる
+    // シートが増えて発覚）。文書に無いビューIDは使わず、文書の表示中ビュー、それも無ければ
+    // シートの全配置を使う。
+    const sheetPlacements = (view.document?.placements || []).filter(item => item?.surface === 'sheet');
+    const placementViewIds = new Set(sheetPlacements.map(item => String(item.viewId || '')));
+    let requestedViewId = String(preferredViewId || '');
+    if (!placementViewIds.has(requestedViewId)) {
+      requestedViewId = String(view.document?.activeSheetViewId || view.document?.activeView || '');
+    }
+    if (!placementViewIds.has(requestedViewId)) requestedViewId = '';
+    const placements = sheetPlacements.filter(item => !requestedViewId
+      || String(item.viewId || '') === requestedViewId);
     const records = new Map((view.records || []).map(record => [recordKey(record, view.sourceId), record]));
     // 保存名と表示名は異なる。移行キャッシュの旧名で行を作らず、現在の保存先へ結び付ける。
     const legacyNames = new Map();
@@ -4972,6 +4990,15 @@
   global.addEventListener?.('meldex:topic-records-updated', (event) => {
     rememberView(event.detail);
     rerenderProjectedSheets(event.detail?.dbPath || event.detail?.legacyPath);
+  });
+
+  // 移行に失敗したシートの古い表示定義を使い続けない（削除・改名済みの列が古い値つきで
+  // 再表示されるのを防ぐ）。旧シートの表示に戻る。
+  global.addEventListener?.('meldex:topic-migration-failed', (event) => {
+    const path = normalizePath(event.detail?.dbPath);
+    if (!path || !viewsByPath.has(path)) return;
+    viewsByPath.delete(path);
+    rerenderProjectedSheets(event.detail?.dbPath);
   });
 
   function recordRef(view, entityName, entityData) {
@@ -5187,12 +5214,25 @@
     });
   }
 
-  async function ensureView(dbPath) {
+  // 列名変更の前に、このシートの共通保管庫の表示定義を最新化する。戻り値:
+  //   { view }                      … 書き込み可能な最新の表示定義
+  //   { readOnly: true, message }   … 閲覧専用・競合中（旧シートも変更しない）
+  //   { unavailable: true, message }… 移行できない（共通化の確認は省略して旧シートだけ改名）
+  async function refreshViewForColumnChange(dbPath) {
     const path = normalizePath(dbPath);
-    if (viewsByPath.has(path)) return viewsByPath.get(path);
-    const result = await global.GbTopicLiveBridge?.migrateOpenedSheet?.(dbPath, { reason: 'column-confirm' });
+    const bridge = global.GbTopicLiveBridge;
+    if (!bridge?.migrateOpenedSheet) return { unavailable: true, message: '共通保管庫に接続していません' };
+    const result = await bridge.migrateOpenedSheet(dbPath, { reason: 'column-confirm' });
     if (result?.detail) rememberView(result.detail);
-    return viewsByPath.get(path) || null;
+    const view = viewsByPath.get(path) || null;
+    if (result?.ok && view && !view.readOnly && checkpointId(view.checkpoint)) return { view };
+    if (result?.ok && (result.mode === 'preview' || view?.readOnly)) {
+      return { readOnly: true, message: 'このシートは閲覧専用または他の操作と競合しているため、列名を変更しませんでした' };
+    }
+    // 失敗した移行の古い表示定義を使い回さない。
+    viewsByPath.delete(path);
+    const reason = result?.error?.message || result?.error?.payload?.detail || result?.status || '';
+    return { unavailable: true, message: reason ? String(reason) : '共通保管庫へ移行できませんでした' };
   }
 
   function renamedSheetViews(document, oldName, newName, familyId, currentColumn) {
@@ -5220,7 +5260,19 @@
   }
 
   async function renameColumn(options) {
-    const view = await ensureView(options.dbPath);
+    const refreshed = await refreshViewForColumnChange(options.dbPath);
+    if (refreshed.readOnly) throw new Error(refreshed.message);
+    if (refreshed.unavailable) {
+      // 共通保管庫へ移行できないシートでは、共通化の対象（他の場所の同じ列）が存在しない。
+      // 以前はここで列名変更そのものを拒否していたため、移行できないシートでは列名を一切
+      // 変えられなかった。旧シート（正本）の列名だけを変更し、理由を通知する。
+      await options.rename();
+      if (typeof global.showStatus === 'function') {
+        global.showStatus(`列名を変更しました（共通化の確認は省略: ${refreshed.message}）`);
+      }
+      return true;
+    }
+    const view = refreshed.view;
     const baseCheckpointId = checkpointId(view?.checkpoint);
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
@@ -6660,6 +6712,34 @@
     return result;
   }
 
+  // ビュー操作が失敗した理由を利用者向けの文言にする（内部の英語メッセージは出さない）。
+  function viewActionFailureText(text, error, result) {
+    const head = `「${String(text || 'ビュー操作')}」を実行できませんでした`;
+    if (result?.reason === 'read-only') return `${head}: 読み取り専用のため変更できません`;
+    const message = String(error?.message || '').trim();
+    if (message === 'View was not found' || message === 'BoardView was not found') return `${head}: ビューが見つかりません`;
+    if (/index is invalid/.test(message)) return `${head}: 移動先が範囲外です`;
+    if (message && /[ぁ-んァ-ヶ一-龠]/.test(message)) return `${head}: ${message}`;
+    return `${head}（予期しない問題が発生しました。もう一度お試しください）`;
+  }
+
+  function reportViewActionFailure(text, error, result) {
+    if (error) { try { console.warn('[board] ビュー操作に失敗しました:', text, error); } catch (_) {} }
+    global.showStatus?.(viewActionFailureText(text, error, result), true);
+  }
+
+  // 同期・非同期どちらの操作も待ち、失敗（例外・拒否・{ok:false}）を通知する。成功なら true。
+  async function runViewAction(text, run) {
+    try {
+      const result = await run();
+      if (result && result.ok === false) { reportViewActionFailure(text, null, result); return false; }
+      return true;
+    } catch (error) {
+      reportViewActionFailure(text, error);
+      return false;
+    }
+  }
+
   function attachToolbar(container, controller, options) {
     if (!container?.appendChild || !controller) return null;
     const settings = options || {};
@@ -6793,7 +6873,9 @@
           button.dataset.e2eId = `board-common-view-${actionId}-${refToken}`;
           button.disabled = settings.readOnly === true || !!disabled;
           button.addEventListener('click', async () => {
-            await run(); menu.open = false;
+            // 失敗してもメニューを閉じ、原因を表示する（開いたまま無表示にしない）。
+            try { await runViewAction(text, run); }
+            finally { menu.open = false; }
             if (refreshAfter) refresh();
           }); panel.appendChild(button);
         };
@@ -6803,9 +6885,7 @@
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
         separator();
-        action('削除', async () => {
-          controller.removeMixed(ref);
-        }, false, 'delete');
+        action('削除', () => controller.removeMixed(ref), false, 'delete');
         let longPress = 0;
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
@@ -6813,9 +6893,14 @@
         tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-ref', JSON.stringify(ref)));
         tab.addEventListener('dragover', event => { if (!settings.readOnly) event.preventDefault(); });
         tab.addEventListener('drop', event => {
-          if (settings.readOnly) return; event.preventDefault();
-          try { controller.reorderMixed(JSON.parse(event.dataTransfer?.getData('text/meldex-view-ref') || '{}'), index); }
-          catch {} refresh();
+          if (settings.readOnly) return;
+          const payload = event.dataTransfer?.getData('text/meldex-view-ref') || '';
+          if (!payload) return; // ビュー以外のドロップは対象外
+          event.preventDefault();
+          let dropped = null;
+          try { dropped = JSON.parse(payload); }
+          catch (error) { reportViewActionFailure('ビューの並べ替え', error); refresh(); return; }
+          runViewAction('ビューの並べ替え', () => controller.reorderMixed(dropped, index)).then(() => refresh());
         });
         tab.appendChild(label); tab.appendChild(menu); tabs.appendChild(tab);
       });
@@ -6835,7 +6920,11 @@
         button.dataset.bdTopicViewMutation = `add-${kind}`;
         button.dataset.e2eId = `board-common-view-add-${kind}`;
         button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
-        button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
+        button.addEventListener('click', async () => {
+          try { await runViewAction(`${text}ビューを追加`, run); }
+          finally { add.open = false; }
+          refresh();
+        }); addMenu.appendChild(button);
       });
       // 再描画でも「＋」はタブ列の直後に戻す（末尾へ足すと後付けのシャッフル等と順序が入れ替わる）。
       root.insertBefore(add, select.nextSibling);
@@ -8247,7 +8336,20 @@
         if (!result?.ok || board._topicBridgeDestroyed || board.path !== expectedPath) return result;
         canonicalizeBoard(board, result.detail || {});
         return result;
-      }).catch(() => ({ ok: false, status: 'fallback' }));
+      }).catch((error) => {
+        // 旧ボードが正本なので操作は続けるが、配置など移行が必要な操作で原因を追えるよう、
+        // 記録を残して共通の失敗イベント（gb-topic-live-bridge と同じ形）を出す。
+        const message = String(error?.message || error || '');
+        try { console.warn('[board] 共通トピックへの移行に失敗しました:', expectedPath, error); } catch (_) {}
+        if (typeof global.dispatchEvent === 'function' && typeof global.CustomEvent === 'function') {
+          try {
+            global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
+              detail: { dbPath: expectedPath, status: 'fallback', message },
+            }));
+          } catch (_) {}
+        }
+        return { ok: false, status: 'fallback', error };
+      });
     } else {
       board._topicMigrationPromise = Promise.resolve({ ok: false, status: 'offline' });
     }
@@ -8641,7 +8743,25 @@
     const styleButton = (text, e2eId, action) => {
       const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
       element.dataset.e2eId = e2eId;
-      element.addEventListener('click', async () => { await action(); refreshAll(); });
+      element.addEventListener('click', async () => {
+        // 非同期の確認や更新の失敗も受け取り、原因つきで表示する。
+        // 操作側で例外を表示済み（error あり）の結果は二重に表示しない。
+        try {
+          const result = await action();
+          if (result && result.ok === false && !result.error && !result.confirmationRequired) {
+            showGroupMessage(result.reason === 'read-only'
+              ? `「${text}」を実行できませんでした: 読み取り専用のため変更できません`
+              : `「${text}」を実行できませんでした: 対象のグループまたはスタイルが見つかりません`, true);
+          }
+        } catch (error) {
+          try { console.warn('[board] グループスタイル操作に失敗しました:', text, error); } catch (_) {}
+          const reason = String(error?.message || '').trim();
+          showGroupMessage(/[ぁ-んァ-ヶ一-龠]/.test(reason)
+            ? `「${text}」を実行できませんでした: ${reason}`
+            : `「${text}」を実行できませんでした（予期しない問題が発生しました。もう一度お試しください）`, true);
+        }
+        refreshAll();
+      });
       styleActions.appendChild(element);
     };
     styleButton('作成', 'board-group-style-create', () => controller.createGroupStyle(styleName.value || 'グループスタイル', groupSelect.value));
@@ -8659,8 +8779,10 @@
         const confirmed = typeof global.cfConfirm === 'function'
           ? await global.cfConfirm(`グループスタイル「${style.name}」を削除します。使用中の${affected.affectedGroupCount}件は現在の見た目を個別値として保持しますか？`)
           : false;
-        if (confirmed) controller.removeGroupStyle(style.groupStyleId, 'preserve');
+        if (confirmed) return controller.removeGroupStyle(style.groupStyleId, 'preserve');
+        return { ok: true, cancelled: true };
       }
+      return affected;
     });
     root.appendChild(details);
     refreshAll();
@@ -11184,7 +11306,7 @@
 (function (global) {
   'use strict';
 
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
   const NONE_REF = Object.freeze({ kind: 'none', id: 'none' });
   const NONE_LABEL = '（なし）';
   const FUNCTION_NAMES = new Set([
@@ -11192,6 +11314,8 @@
     '右ページ', '左ページ', 'めくり', '改ページ', '見開き', '白紙', 'トビラ絵', '大ゴマ', '未完', '柱',
     'シーン見出し', '場面転換', 'Aパート', 'Bパート', 'Cパート',
     '第一幕', '第二幕', '第三幕', '場',
+    // 旧エディタの種類推定（_legacyDetectKindByName）で区切り・ト書き扱いだった名前。
+    '巻頭カラー', '巻頭見開き', '暗転', '幕間', '動作', '説明', 'ナレ', 'SE', 'BGM', 'テロップ', '地の文', '独白', '傍白',
   ]);
   const TEMPLATE_ROOT_FIELDS = [
     'layoutMode', 'rubyPresentation', 'viewMode', 'pageSettings',
@@ -11360,15 +11484,26 @@
     return null;
   }
 
-  function migrateRows(doc, rows, used) {
+  function migrateRows(doc, rows, used, options = {}) {
     return (Array.isArray(rows) ? rows : []).map((row, index) => {
       const item = clone(plain(row));
       item.role = String(item.role || '');
       let ref = roleRefForName(doc, item.role);
       if (!ref && item.role) {
-        const character = migrateLegacyItem({ name: item.role }, 'character', used);
-        doc.characters.push(character);
-        ref = { kind: 'character', id: character.id };
+        // 旧形式（schema_version なし／v1・v2）は、キャラ一覧に宣言していない役割名を行で
+        // 使うことがある。以前は一律にキャラとして作ったため、改ページ・めくり・ト書き等の
+        // 機能タイプがキャラになり、ページ区切りやタイプ設定が効かないまま v4 で保存されていた
+        // （実データ2ファイル・1,603行）。機能名ならタイプとして作り、区切り等の旧既定は
+        // applyLegacyScriptNoteDocMigrations がタイプ側へ付ける。
+        if (isFunctionalLegacy({ name: item.role }, options)) {
+          const type = migrateLegacyItem({ name: item.role }, 'type', used);
+          doc.scenarioTypes.push(type);
+          ref = { kind: 'type', id: type.id };
+        } else {
+          const character = migrateLegacyItem({ name: item.role }, 'character', used);
+          doc.characters.push(character);
+          ref = { kind: 'character', id: character.id };
+        }
       }
       item.roleRef = ref || { ...NONE_REF };
       if (!item.id) item.id = `sn-role-${index}-${hash(item.role + index)}`;
@@ -11388,7 +11523,8 @@
       const kind = isFunctionalLegacy(item, options) ? 'type' : 'character';
       (kind === 'type' ? types : characters).push(migrateLegacyItem(item, kind, used));
     }
-    source.schema_version = SCHEMA_VERSION;
+    // まず従来の共通role形式へ移行し、normalizeV3Documentで分離形式へ上げる。
+    source.schema_version = 3;
     source.editor = clone(plain(source.editor));
     if (legacyNone && !source.editor.noneType) {
       source.editor.noneType = { ...clone(plain(legacyNone)), isRoleNone: true, name: '' };
@@ -11396,8 +11532,8 @@
     }
     source.scenarioTypes = types;
     source.characters = characters;
-    source.rows = migrateRows(source, source.rows, used);
-    return source;
+    source.rows = migrateRows(source, source.rows, used, options);
+    return normalizeV3Document(source);
   }
 
   function normalizeV3Document(input) {
@@ -11414,9 +11550,32 @@
     source.rows = (Array.isArray(source.rows) ? source.rows : []).map(row => {
       const item = clone(plain(row));
       item.role = String(item.role || '');
-      const ref = normalizeRef(item.roleRef);
-      const resolved = ref ? resolveRole(source, ref) : null;
-      item.roleRef = resolved ? ref : (roleRefForName(source, item.role) || item.roleRef || null);
+      const legacyRef = normalizeRef(item.roleRef) || roleRefForName(source, item.role) || { ...NONE_REF };
+      const legacyResolved = resolveRole(source, legacyRef);
+      const explicitCharacterRef = normalizeRef(item.characterRef);
+      const explicitTypeRef = normalizeRef(item.typeRef);
+      const hasCharacterRef = Object.prototype.hasOwnProperty.call(item, 'characterRef');
+      const hasTypeRef = Object.prototype.hasOwnProperty.call(item, 'typeRef');
+      const character = explicitCharacterRef?.kind === 'character'
+        ? findCharacterById(source, explicitCharacterRef.id)
+        : (!hasCharacterRef
+          ? findCharacterByName(source, item.character)
+            || (legacyResolved?.kind === 'character' ? legacyResolved.character : null)
+          : null);
+      const type = explicitTypeRef?.kind === 'type'
+        ? findTypeById(source, explicitTypeRef.id)
+        : (!hasTypeRef
+          ? findTypeByName(source, item.type)
+            || (legacyResolved?.kind === 'type' ? legacyResolved.type : null)
+            || (character?.typeId ? findTypeById(source, character.typeId) : null)
+          : null);
+      item.characterRef = character ? { kind: 'character', id: character.id } : { ...NONE_REF };
+      item.character = character?.name || '';
+      item.typeRef = type ? { kind: 'type', id: type.id } : { ...NONE_REF };
+      item.type = type?.name || '';
+      // v3以前の読取側へ渡してもタイプとして解決できる互換ミラー。
+      item.roleRef = { ...item.typeRef };
+      item.role = item.type;
       return item;
     });
     source.schema_version = Math.max(SCHEMA_VERSION, Number(source.schema_version) || SCHEMA_VERSION);
@@ -11425,9 +11584,7 @@
 
   function normalizeDocument(input, options = {}) {
     const version = Number(plain(input).schema_version) || 1;
-    return version < SCHEMA_VERSION
-      ? migrateV2Document(input, options)
-      : normalizeV3Document(input);
+    return normalizeV3Document(version < 3 ? migrateV2Document(input, options) : input);
   }
 
   function ensureDocument(doc, options = {}) {
@@ -11440,7 +11597,7 @@
 
   function resolveRole(doc, value) {
     const row = plain(value);
-    const explicitRef = normalizeRef(row.roleRef || value);
+    const explicitRef = normalizeRef(row.typeRef || row.roleRef || value);
     if (explicitRef?.kind === 'none') {
       return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
     }
@@ -11465,37 +11622,61 @@
     return clone(plain(plain(doc?.editor).defaultType));
   }
 
+  function resolveRowCharacter(doc, value) {
+    const row = plain(value);
+    const ref = normalizeRef(row.characterRef);
+    if (ref?.kind === 'character') {
+      const character = findCharacterById(doc, ref.id);
+      if (character) return { kind: 'character', id: character.id, name: character.name, character, ref };
+    }
+    if (ref?.kind === 'none') return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+    const legacy = normalizeRef(row.roleRef || value);
+    if (legacy?.kind === 'character') {
+      const character = findCharacterById(doc, legacy.id);
+      if (character) return { kind: 'character', id: character.id, name: character.name, character, ref: legacy };
+    }
+    const character = findCharacterByName(doc, row.character || (typeof value === 'string' ? value : ''));
+    return character
+      ? { kind: 'character', id: character.id, name: character.name, character, ref: { kind: 'character', id: character.id } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
+  function resolveRowType(doc, value) {
+    const row = plain(value);
+    const ref = normalizeRef(row.typeRef || row.roleRef || value);
+    if (ref?.kind === 'type') {
+      const type = findTypeById(doc, ref.id);
+      if (type) return { kind: 'type', id: type.id, name: type.name, type, ref };
+    }
+    if (ref?.kind === 'none' && row.typeRef) return { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+    const namedType = findTypeByName(doc, row.type || row.role || (typeof value === 'string' ? value : ''));
+    if (namedType) return { kind: 'type', id: namedType.id, name: namedType.name, type: namedType, ref: { kind: 'type', id: namedType.id } };
+    const character = resolveRowCharacter(doc, value)?.character;
+    const initialType = character?.typeId ? findTypeById(doc, character.typeId) : null;
+    if (initialType) return { kind: 'type', id: initialType.id, name: initialType.name, type: initialType, ref: { kind: 'type', id: initialType.id } };
+    const unresolvedName = text(row.type || row.role || (typeof value === 'string' ? value : ''));
+    return unresolvedName
+      ? { kind: 'unresolved', id: '', name: unresolvedName, ref: null }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
   function getEffectiveStyle(doc, value) {
-    const resolved = resolveRole(doc, value);
+    const resolved = resolveRowType(doc, value);
     if (!resolved) return defaultAppearance(doc);
     if (resolved.kind === 'none') {
+      const legacyAppearance = resolveRowCharacter(doc, value)?.character?.legacyAppearance;
+      if (legacyAppearance && Object.keys(plain(legacyAppearance)).length) return clone(legacyAppearance);
       return clone(Object.keys(plain(plain(doc?.editor).noneType)).length
         ? plain(doc.editor).noneType
         : defaultAppearance(doc));
     }
-    if (resolved.kind === 'type') return clone(resolved.type);
-    const character = resolved.character;
-    if (!character.typeId) {
-      if (character.legacyAppearance) return clone(character.legacyAppearance);
-      const appearance = { ...defaultAppearance(doc), ...clone(character) };
-      appearance.roleStyle = { ...plain(appearance.roleStyle) };
-      if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
-      return appearance;
-    }
-    const type = findTypeById(doc, character.typeId);
-    const appearance = type ? clone(type) : defaultAppearance(doc);
-    appearance.roleStyle = { ...plain(appearance.roleStyle) };
-    if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
-    return appearance;
+    return resolved.kind === 'type' ? clone(resolved.type) : defaultAppearance(doc);
   }
 
   function getEffectiveRole(doc, value) {
-    const resolved = resolveRole(doc, value);
-    if (!resolved) return null;
-    const type = resolved.kind === 'character'
-      ? findTypeById(doc, resolved.character.typeId)
-      : resolved.type || null;
-    return { ...resolved, type, style: getEffectiveStyle(doc, value) };
+    const resolved = resolveRowType(doc, value);
+    const character = resolveRowCharacter(doc, value)?.character || null;
+    return { ...resolved, character, type: resolved.type || null, style: getEffectiveStyle(doc, value) };
   }
 
   function countTypeLinks(doc) {
@@ -11507,20 +11688,31 @@
   }
 
   function buildRoleChoices(doc) {
-    const counts = countTypeLinks(doc);
     const characters = (doc.characters || []).map(item => ({
       kind: 'character', id: item.id, name: item.name, label: item.name,
       ref: { kind: 'character', id: item.id },
     }));
-    const types = (doc.scenarioTypes || [])
-      .filter(item => !counts[item.id])
-      .map(item => ({
+    const types = (doc.scenarioTypes || []).map(item => ({
         kind: 'type', id: item.id, name: item.name, label: item.name,
         ref: { kind: 'type', id: item.id },
       }));
     return [...characters, ...types, {
       kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF },
     }];
+  }
+
+  function buildCharacterChoices(doc) {
+    return [...(doc.characters || []).map(item => ({
+      kind: 'character', id: item.id, name: item.name, label: item.name,
+      ref: { kind: 'character', id: item.id },
+    })), { kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF } }];
+  }
+
+  function buildTypeChoices(doc) {
+    return [...(doc.scenarioTypes || []).map(item => ({
+      kind: 'type', id: item.id, name: item.name, label: item.name,
+      ref: { kind: 'type', id: item.id },
+    })), { kind: 'none', id: NONE_REF.id, name: '', label: NONE_LABEL, ref: { ...NONE_REF } }];
   }
 
   function assertAvailableName(doc, name, except) {
@@ -11564,8 +11756,51 @@
       }
     }
     if (!resolved) throw new Error('指定された役割を確認できません');
-    row.roleRef = { ...resolved.ref };
-    row.role = resolved.kind === 'none' ? '' : resolved.name;
+    if (resolved.kind === 'character') return assignRowCharacter(doc, row, resolved.ref, options);
+    return assignRowType(doc, row, resolved.ref);
+  }
+
+  function assignRowCharacter(doc, row, target, options = {}) {
+    if (!row || typeof row !== 'object') throw new Error('対象行が不正です');
+    // キャラを書き換える前の行タイプを確認する。書き換え後に解決すると、
+    // 新キャラの初期タイプ自体が「既存タイプ」に見えて補完できなくなる。
+    const currentType = resolveRowType(doc, row);
+    const targetsNone = target == null
+      || (typeof target === 'string' && isNoneName(target))
+      || (typeof target === 'object' && target?.kind === 'none');
+    let character = null;
+    if (!targetsNone) {
+      const resolved = resolveRowCharacter(doc, target);
+      character = resolved?.character || (typeof target === 'string' ? ensureCharacterForName(doc, target, options) : null);
+      if (!character) throw new Error('指定されたキャラを確認できません');
+    }
+    row.characterRef = character ? { kind: 'character', id: character.id } : { ...NONE_REF };
+    row.character = character?.name || '';
+    if (character?.typeId && currentType.kind === 'none') assignRowType(doc, row, { kind: 'type', id: character.typeId });
+    return character
+      ? { kind: 'character', id: character.id, name: character.name, character, ref: { ...row.characterRef } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
+  }
+
+  function assignRowType(doc, row, target) {
+    if (!row || typeof row !== 'object') throw new Error('対象行が不正です');
+    const targetsNone = target == null
+      || (typeof target === 'string' && isNoneName(target))
+      || (typeof target === 'object' && target?.kind === 'none');
+    let type = null;
+    if (!targetsNone) {
+      const ref = normalizeRef(target);
+      type = ref?.kind === 'type' ? findTypeById(doc, ref.id)
+        : (typeof target === 'string' ? findTypeById(doc, target) || findTypeByName(doc, target) : null);
+      if (!type) throw new Error('指定されたタイプを確認できません');
+    }
+    row.typeRef = type ? { kind: 'type', id: type.id } : { ...NONE_REF };
+    row.type = type?.name || '';
+    row.roleRef = { ...row.typeRef };
+    row.role = row.type;
+    const resolved = type
+      ? { kind: 'type', id: type.id, name: type.name, type, ref: { ...row.typeRef } }
+      : { kind: 'none', id: NONE_REF.id, name: '', ref: { ...NONE_REF } };
     return resolved;
   }
 
@@ -11579,7 +11814,7 @@
       : (typeof typeValue === 'string'
         ? findTypeById(doc, typeValue) || findTypeByName(doc, typeValue)
         : typeValue);
-    if (typeValue != null && typeValue !== '' && !type) throw new Error('対応タイプを確認できません');
+    if (typeValue != null && typeValue !== '' && !type) throw new Error('初期タイプを確認できません');
     character.typeId = type?.id || null;
     if (type) delete character.legacyAppearance;
     return character;
@@ -11589,17 +11824,18 @@
     let updated = 0;
     const unresolved = [];
     for (const row of doc.rows || []) {
-      const resolved = resolveRole(doc, row);
-      if (!resolved) {
-        unresolved.push(row.id || '');
-        continue;
-      }
-      const name = resolved.kind === 'none' ? '' : resolved.name;
-      if (row.role !== name) {
-        row.role = name;
-        updated += 1;
-      }
-      row.roleRef = { ...resolved.ref };
+      const character = resolveRowCharacter(doc, row);
+      const type = resolveRowType(doc, row);
+      if (!character || !type) unresolved.push(row.id || '');
+      const characterName = character?.kind === 'character' ? character.name : '';
+      const typeName = type?.kind === 'type' ? type.name : '';
+      if (row.character !== characterName || row.type !== typeName || row.role !== typeName) updated += 1;
+      row.character = characterName;
+      row.characterRef = character?.kind === 'character' ? { ...character.ref } : { ...NONE_REF };
+      row.type = typeName;
+      row.typeRef = type?.kind === 'type' ? { ...type.ref } : { ...NONE_REF };
+      row.role = typeName;
+      row.roleRef = { ...row.typeRef };
     }
     return { updated, unresolved };
   }
@@ -11645,7 +11881,7 @@
     const resolved = resolveRole(doc, value);
     if (!resolved) return { rows: 0, characters: 0, total: 0 };
     const rows = (doc.rows || []).filter(row => {
-      const current = resolveRole(doc, row);
+      const current = resolved.kind === 'character' ? resolveRowCharacter(doc, row) : resolveRowType(doc, row);
       return current?.kind === resolved.kind && current?.id === resolved.id;
     }).length;
     const characters = resolved.kind === 'type'
@@ -11679,9 +11915,10 @@
       throw new Error('タイプの置換先には別のタイプを指定してください');
     }
     for (const row of doc.rows || []) {
-      const current = resolveRole(doc, row);
+      const current = resolved.kind === 'character' ? resolveRowCharacter(doc, row) : resolveRowType(doc, row);
       if (current?.kind === resolved.kind && current?.id === resolved.id) {
-        assignRowRole(doc, row, replacementRole?.ref || NONE_REF);
+        if (resolved.kind === 'character') assignRowCharacter(doc, row, replacementRole?.ref || NONE_REF);
+        else assignRowType(doc, row, replacementRole?.ref || NONE_REF);
       }
     }
     if (resolved.kind === 'type') {
@@ -11782,15 +12019,15 @@
     }
     for (const character of doc.characters || []) {
       if (character.typeId && !findTypeById(doc, character.typeId)) {
-        errors.push(`キャラ「${character.name}」の対応タイプが見つかりません`);
+        errors.push(`キャラ「${character.name}」の初期タイプが見つかりません`);
       }
     }
     for (const row of doc.rows || []) {
-      const resolved = resolveRole(doc, row);
-      if (!resolved) warnings.push(`行「${row.id || '?'}」の役割を解決できません: ${row.role || ''}`);
-      else if (row.role !== (resolved.kind === 'none' ? '' : resolved.name)) {
-        warnings.push(`行「${row.id || '?'}」の表示名が参照先と一致しません`);
-      }
+      const character = resolveRowCharacter(doc, row);
+      const type = resolveRowType(doc, row);
+      if (!character || !type) warnings.push(`行「${row.id || '?'}」のキャラまたはタイプを解決できません`);
+      if (row.character !== (character?.kind === 'character' ? character.name : '')) warnings.push(`行「${row.id || '?'}」のキャラ表示名が参照先と一致しません`);
+      if (row.type !== (type?.kind === 'type' ? type.name : '')) warnings.push(`行「${row.id || '?'}」のタイプ表示名が参照先と一致しません`);
     }
     return { valid: errors.length === 0, errors, warnings };
   }
@@ -11815,12 +12052,18 @@
     findCharacterById,
     findCharacterByName,
     resolveRole,
+    resolveRowCharacter,
+    resolveRowType,
     roleKind,
     getEffectiveRole,
     getEffectiveStyle,
     countTypeLinks,
     buildRoleChoices,
+    buildCharacterChoices,
+    buildTypeChoices,
     assignRowRole,
+    assignRowCharacter,
+    assignRowType,
     ensureCharacterForName,
     setCharacterType,
     renameCharacter,
@@ -23078,10 +23321,23 @@ class CalendarComponent extends ToolComponent {
     const cal = this._selectedCalendar() || this._firstCalendar();
     if (cal && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
+      this._persistCalendarVisibleOn(cal);
       this._renderCalendarList?.();
     }
     return cal?.id || '';
+  }
+
+  // 予定の追加先や選択で非表示のカレンダーを表示に戻した時の保存。画面上は表示のまま
+  // 続行し、保存できなかったことだけを原因つきで知らせる（再読み込みで非表示へ戻るため）。
+  _persistCalendarVisibleOn(cal) {
+    return apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 })
+      .then(() => true)
+      .catch(error => {
+        const detail = String(error?.userMessage || error?.message || '').trim();
+        const base = 'カレンダー「' + (cal.name || '無題') + '」の表示設定を保存できませんでした';
+        this._showStatus?.(detail ? base + ': ' + detail : base, true);
+        return false;
+      });
   }
 
   _ensureSelectedCalendar() {
@@ -23099,7 +23355,7 @@ class CalendarComponent extends ToolComponent {
     localStorage.setItem('gb:cal-selected-id', cal.id);
     if (options.ensureVisible !== false && !this._visibleCalIds.has(cal.id)) {
       this._visibleCalIds.add(cal.id);
-      apiPut('/cal/calendars/' + cal.id + '?_user=' + encodeURIComponent(this._getUser()), { visible: 1 }).catch(() => {});
+      this._persistCalendarVisibleOn(cal);
     }
     if (options.render !== false) {
       this._renderCalendarList();
@@ -23240,6 +23496,16 @@ class CalendarComponent extends ToolComponent {
   // 操作履歴パネルの両方と連動する。共通履歴が無い環境（将来の単独起動・テストスタブ向けの保険。
   // 現状このコンポーネントを読み込む単独起動アプリは存在しない）は、従来どおり
   // this._undoStack/_redoStack の自己完結スタックへ自動フォールバックし挙動を変えない。
+  // 保存の前に取っておき、保存が成功した後で _pushUndo(label, snapshot) へ渡す。
+  // 失敗した操作の偽履歴を残さないため。
+  _captureUndoSnapshot() {
+    return {
+      events: this._snapshotEventsForUndo(),
+      tasks: this._snapshotTasksForUndo(),
+      eventWindow: this._snapshotEventWindowForUndo(),
+    };
+  }
+
   _pushUndo(label, snapshot) {
     const snap = snapshot || {
       events: this._snapshotEventsForUndo(),
@@ -24537,8 +24803,16 @@ CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
   const mStart = `${y}-${String(m+1).padStart(2,'0')}-01`;
   const mEnd = `${y}-${String(m+1).padStart(2,'0')}-${String(dim).padStart(2,'0')}T23:59:59`;
   let timeEntries = [];
-  try { timeEntries = await apiFetch('/cal/time?date_from=' + mStart + '&date_to=' + mEnd); } catch {}
+  let timeEntriesFailed = false;
+  try {
+    timeEntries = await apiFetch('/cal/time?date_from=' + mStart + '&date_to=' + mEnd);
+  } catch (error) {
+    timeEntriesFailed = true;
+    console.warn('[calendar] shift table time entries load failed:', error);
+  }
   if (this._view !== 'shifts' || activeSeq !== this._renderSeq) return;
+  if (timeEntriesFailed) this._showStatus?.('シフト表の勤怠記録を読み込めませんでした。実績は表示されません', true);
+  if (!Array.isArray(timeEntries)) timeEntries = [];
   let html = '<div style="overflow-x:auto;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
   html += `<span style="font-weight:bold;">${y}年${m+1}月 シフト表</span><button class="gb-cal-shift-add" style="font-size:12px;padding:3px 10px;">+ シフト追加</button></div>`;
   html += '<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr><th style="padding:4px 8px;border:1px solid var(--cal-grid-line, var(--border));background:var(--cal-header-bg, var(--bg3));color:var(--cal-header-fg, var(--fg2));min-width:80px;">ユーザー</th>';
@@ -24844,7 +25118,9 @@ CalendarComponent.prototype._bindSidebarResize = function() {
 };
 
 // === アラーム ===
-CalendarComponent.prototype._checkAlarms = async function() {
+// 定期確認（1分ごと）の失敗は連続して通知せず、記録に1回だけ残す。
+// 利用者が「通知を確認」した時（throwOnError）は失敗を呼び出し元へ返して表示させる。
+CalendarComponent.prototype._checkAlarms = async function(options = {}) {
   try {
     const alerts = await apiFetch('/cal/alerts?minutes_ahead=2&lookback_minutes=1440&user=' + encodeURIComponent(this._getUser()));
     alerts.forEach(ev => {
@@ -24854,7 +25130,12 @@ CalendarComponent.prototype._checkAlarms = async function() {
       if ('Notification' in window && Notification.permission === 'granted') new Notification('Meldex カレンダー', { body: ev.title + '\n' + (ev.start||'').substring(11,16), icon: '/Meldex_icon.png' });
       this._showStatus('🔔 ' + ev.title);
     });
-  } catch {}
+    this._alarmCheckFailing = false;
+  } catch (error) {
+    if (options.throwOnError) throw error;
+    if (!this._alarmCheckFailing) console.warn('[calendar] alarm check failed:', error);
+    this._alarmCheckFailing = true;
+  }
 };
 
 // === 右パネル（イベント編集フォーム） ===
@@ -24911,7 +25192,8 @@ CalendarComponent.prototype._openEventInPanel = function(editId, defaultStart, d
 
 CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
   const p = this._rightPanelEl;
-  this._pushUndo(editId ? 'イベント編集' : 'イベント作成');
+  // 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）
+  const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
   const data = {
     title: p.querySelector('.rp-ev-title').value,
     start: p.querySelector('.rp-ev-start').value,
@@ -24928,6 +25210,7 @@ CalendarComponent.prototype._saveEventFromPanel = async function(editId) {
   try {
     if (editId) await apiPut('/cal/events/' + editId, data);
     else await apiPost('/cal/events', data);
+    this._pushUndo(editId ? 'イベント編集' : 'イベント作成', undoSnapshot);
     await this._loadEvents(); this._render();
     this._closeRightPanel();
     this._showStatus('イベントを保存しました');
@@ -24947,8 +25230,10 @@ CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
   }
   if (evRef?._recurrence_instance && typeof cfConfirm === 'function'
     && !await cfConfirm('これは繰り返しの予定です。繰り返しの予定全体を削除しますか？')) return;
+  let deleted = false;
   try {
     await apiFetch('/cal/events/' + id, { method: 'DELETE' });
+    deleted = true;
     // API成功後、再読込で削除前状態が失われる前に履歴へ積む。失敗した操作の偽履歴は残さない。
     this._pushUndo('イベント削除');
     // Audit-P1 H-6: 紐付いたコメントを孤児化する（target_kind='calendar_event'）
@@ -24962,7 +25247,11 @@ CalendarComponent.prototype._deleteEventFromPanel = async function(id) {
     this._render();
     this._closeRightPanel();
     this._showStatus('削除しました');
-  } catch {}
+  } catch (error) {
+    const detail = String(error?.userMessage || error?.message || '').trim();
+    const base = deleted ? '削除しましたが、表示を更新できませんでした。再読み込みしてください' : '削除に失敗しました';
+    this._showStatus(detail && !deleted ? base + ': ' + detail : base, true);
+  }
 };
 
 CalendarComponent.prototype._closeRightPanel = function() {
@@ -24988,8 +25277,8 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
 <div class="field"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
 <div class="field gb-cal-task-form-wide"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
 </div>`;
-  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
-  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
+  content.querySelectorAll('input, textarea').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+  content.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select', 'gb-select-medium'); });
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'tk-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -25189,6 +25478,27 @@ CalendarComponent.prototype._ganttDateValue = function(date, original, isEnd) {
   return this._localDateTimeStr(value);
 };
 
+// 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）。
+CalendarComponent.prototype._commitGanttEventPatch = async function(ev, patch, label) {
+  const undoSnapshot = this._eventIsUndoable(ev) && typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : null;
+  try {
+    await _calApplyEventTimePatch(this, ev, patch);
+  } catch (error) {
+    this._showStatus?.('ガントの更新に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    try { await this._loadEvents(); } catch (reloadError) { console.warn('[calendar] gantt reload failed:', reloadError); }
+    this._render();
+    return false;
+  }
+  if (undoSnapshot) this._pushUndo(label, undoSnapshot);
+  try {
+    await this._loadEvents();
+  } catch (reloadError) {
+    console.warn('[calendar] gantt reload failed:', reloadError);
+  }
+  this._render();
+  return true;
+};
+
 CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range, win) {
   const reason = this._ganttEventEditReason(ev);
   if (reason) {
@@ -25239,16 +25549,7 @@ CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range
         start: this._ganttDateValue(nextStart, ev.start, false),
         end: this._ganttDateValue(nextEnd, ev.end || ev.start, true),
       };
-      if (this._eventIsUndoable(ev)) this._pushUndo(mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
-      try {
-        await _calApplyEventTimePatch(this, ev, patch);
-        await this._loadEvents();
-        this._render();
-      } catch (error) {
-        this._showStatus?.('ガントの更新に失敗しました: ' + (error?.message || error), true);
-        await this._loadEvents();
-        this._render();
-      }
+      await this._commitGanttEventPatch(ev, patch, mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
@@ -25391,8 +25692,8 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${esc(endValue)}"></div></div>
 <div class="field"><label>種別</label><select id="sh-type" class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
 <div class="field"><label>メモ</label><textarea id="sh-note" class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>`;
-  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
-  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
+  content.querySelectorAll('input, textarea').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+  content.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select', 'gb-select-medium'); });
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.id = 'sh-cancel'; cancelButton.className = 'sh-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -25481,8 +25782,16 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     if (busy || deleteConfirmPending) return;
     deleteConfirmPending = true;
     let confirmed = false;
+    let confirmFailed = false;
     try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このシフトを削除しますか？'); }
-    catch {} finally { deleteConfirmPending = false; }
+    catch (error) {
+      confirmFailed = true;
+      console.warn('[calendar] shift delete confirmation failed:', error);
+    } finally { deleteConfirmPending = false; }
+    if (confirmFailed) {
+      status.textContent = '削除の確認を表示できませんでした。もう一度お試しください。';
+      return;
+    }
     if (!confirmed) return;
     setBusy(true); status.textContent = '削除中...';
     const deleted = await this._deleteShift(existing.id, { skipConfirm: true });
@@ -27514,8 +27823,9 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
     input.addEventListener('change', async () => {
       const file = input.files[0];
       if (!file) return;
-      const text = await file.text();
       try {
+        // ファイルの読み取り失敗（読めない・消えた等）も取り込み失敗として知らせる
+        const text = await file.text();
         const res = await apiPost('/cal/sync/ical/import', { ics: text, user: this._getUser() });
         this._showStatus(`iCalインポート完了: ${res.imported}件`);
         await this._loadEvents();
@@ -29533,9 +29843,64 @@ function _bdRawLooksLikeBoardFile(raw) {
 }
 
 function _bdCanSaveCurrentBoardPath(path) {
+  // 読込時に壊れていた部分がある間は上書きしない（保存すると壊れた部分が消えるため）。
+  if (Array.isArray(bd._loadDamage) && bd._loadDamage.length) return false;
   const savePath = _bdNormalizePathForGuard(path);
   const loadedPath = _bdNormalizePathForGuard(bd._loadedBoardPath || '');
   return !!savePath && _bdIsBoardWritablePath(savePath) && !!loadedPath && savePath === loadedPath;
+}
+
+// --- 読込時に壊れていた部分の扱い ---
+// スタイル・マーカー・表示フィルタの値が JSON としても YAML の簡易形式としても読めない場合、
+// 以前は黙って捨てていたため、次の保存（自動保存・終了時保存を含む）でファイルから消えていた。
+// 方針: 「壊れた生テキストを保持して書き戻す」ではなく「読込時に警告し、上書き保存を止める」を採る。
+// 理由:
+//  - スタイル一覧は寛容な読み取り（bdYamlListObjects）が壊れた行を中身の欠けたスタイルへ変換して
+//    一覧へ混ぜるため、生テキストも書き戻すと同じ行が二重化したり、欠けた側が正として残る。
+//  - マーカーはトピックごとの xmind 行の中に埋め込まれており、壊れた生テキストを書き戻すと
+//    同じ行の他の値（メモ・形・文字色など）まで次回読込で読めなくなる恐れがある。
+//  - 上書き保存の経路（通常保存・自動保存・終了時保存）はすべて _bdCanSaveCurrentBoardPath を通るため、
+//    ここで止めれば元ファイルは確実に無変更で残る。利用者は警告に従いファイルを直して開き直せる。
+const BD_LOAD_DAMAGE_LABELS = {
+  cardStyles: 'トピックスタイル',
+  lineStyles: 'ラインスタイル',
+  depthStyles: '階層別スタイル',
+  markers: 'マーカー',
+  displayFilters: '表示フィルタ',
+};
+
+function _bdParseJsonOrFlowObject(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  } catch (_) {}
+  if (typeof bdYamlScalar === 'function' && raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const value = bdYamlScalar(raw);
+      if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) return value;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// 一覧（cardStyles 等）の各行のうち、`- {` で始まるのにどちらの形式でも読めない行を返す。
+function _bdDamagedFlowListItems(fm, key) {
+  const lines = typeof bdYamlTopLevelBlock === 'function' ? bdYamlTopLevelBlock(fm, key) : [];
+  const damaged = [];
+  lines.forEach(line => {
+    const item = String(line || '').match(/^\s*-\s*(\{.*)$/);
+    if (item && !_bdParseJsonOrFlowObject(item[1])) damaged.push(item[1].trim());
+  });
+  return damaged;
+}
+
+function _bdLoadDamageMessage(damage) {
+  const labels = [...new Set((damage || []).map(item => BD_LOAD_DAMAGE_LABELS[item.section] || item.section))];
+  if (!labels.length) return '';
+  return `ボードの一部（${labels.join('、')}）が壊れていて読み込めませんでした。`
+    + '内容を失わないよう、このボードの保存を止めています。ファイルの該当箇所を直してから開き直してください';
 }
 
 // --- Markdown解析 ---
@@ -29544,6 +29909,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '', topicRuntime = null;
+  const loadDamage = [];
   let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
@@ -29639,13 +30005,18 @@ function bdParseMd(raw) {
     if (/numbering:\s*true/.test(fm)) bd._numbering = true;
     // Xmindメタ
     const xmBlock = fm.match(/xmind:\n((?:\s+\w+:.*\n?)*)/);
+    const legacyBrokenMarkers = {};
     if (xmBlock) xmBlock[1].replace(/(\w+):\s*\{([^}]+)\}/g, (_, id, props) => {
       const t = {};
       const nm = props.match(/note:\s*'((?:[^'\\]|\\.)*)'/); if (nm) t.note = nm[1].replace(/\\n/g, '\n').replace(/\\'/g, "'");
       if (/checked:\s*true/.test(props)) t.checked = true;
       else if (/checked:\s*false/.test(props)) t.checked = false;
       const pm = props.match(/progress:\s*(\d+)/); if (pm) t.progress = +pm[1];
-      const mm = props.match(/markers:\s*(\{[^}]+\})/); if (mm) { try { t.markers = JSON.parse(mm[1]); } catch {} }
+      const mm = props.match(/markers:\s*(\{[^}]+\})/);
+      if (mm) {
+        // 入れ子の値は下の bdYamlNestedMap で読めることがあるため、ここでは候補として記録だけする。
+        try { t.markers = JSON.parse(mm[1]); } catch { legacyBrokenMarkers[id] = mm[1]; }
+      }
       const sm = props.match(/shape:\s*(\w+)/); if (sm) t.shape = sm[1];
       const fsm = props.match(/fontSize:\s*(\d+)/); if (fsm) t.fontSize = +fsm[1];
       if (/fontBold:\s*true/.test(props)) t.fontBold = true;
@@ -29715,6 +30086,24 @@ function bdParseMd(raw) {
         Object.assign(transforms[id], t);
       });
     }
+    // マーカーが最終的に読めなかったトピックを記録する（読めない値はトピックに付けない）。
+    Object.keys(transforms).forEach(id => {
+      const t = transforms[id];
+      if (!t || !Object.prototype.hasOwnProperty.call(t, 'markers')) return;
+      const value = t.markers;
+      if (value && typeof value === 'object' && !Array.isArray(value)) return;
+      if (value === '' || value == null) { delete t.markers; return; }
+      const recovered = typeof value === 'string' ? _bdParseJsonOrFlowObject(value) : null;
+      if (recovered) { t.markers = recovered; return; }
+      loadDamage.push({ section: 'markers', id, raw: typeof value === 'string' ? value : JSON.stringify(value) });
+      delete t.markers;
+    });
+    Object.keys(legacyBrokenMarkers).forEach(id => {
+      const value = transforms[id]?.markers;
+      if (value && typeof value === 'object' && !Array.isArray(value)) return;
+      if (loadDamage.some(item => item.section === 'markers' && item.id === id)) return;
+      loadDamage.push({ section: 'markers', id, raw: legacyBrokenMarkers[id] });
+    });
     // ステータス定義
     const sdBlock = fm.match(/statusDefs:\n((?:\s+-.*\n?)*)/);
     if (sdBlock) {
@@ -29791,6 +30180,9 @@ function bdParseMd(raw) {
         depthStyles = parsedDepthStyles;
       }
     }
+    ['cardStyles', 'lineStyles', 'depthStyles'].forEach(section => {
+      _bdDamagedFlowListItems(fm, section).forEach(rawItem => loadDamage.push({ section, raw: rawItem }));
+    });
     const boardUiBlock = fm.match(/boardUi:\n((?:\s+\w+:.*\n?)*)/);
     if (boardUiBlock) {
       const acm = boardUiBlock[1].match(/activeCardStyle:\s*([^\n]+)/);
@@ -29800,7 +30192,8 @@ function bdParseMd(raw) {
       const thm = boardUiBlock[1].match(/themeId:\s*([^\n]+)/);
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
-      const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
+      // 閉じ括弧が欠けた値も「壊れている」と検知できるよう、行の残り全体を取る。
+      const dfm = boardUiBlock[1].match(/displayFilters:[ \t]*([^\n]*)/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (dpm) boardUi.activeDepthStylePreset = String(bdYamlScalar(dpm[1]));
@@ -29808,13 +30201,10 @@ function bdParseMd(raw) {
       if (thm) boardUi.themeId = thm[1].trim();
       if (ssm) boardUi.showShadow = ssm[1] === 'true';
       if (trm) boardUi.textRotateOnLine = trm[1] === 'true';
-      if (dfm) {
-        try {
-          const parsedFilters = JSON.parse(dfm[1]);
-          if (parsedFilters && typeof parsedFilters === 'object' && !Array.isArray(parsedFilters)) {
-            boardUi.displayFilters = parsedFilters;
-          }
-        } catch {}
+      if (dfm && dfm[1].trim()) {
+        const parsedFilters = _bdParseJsonOrFlowObject(dfm[1]);
+        if (parsedFilters) boardUi.displayFilters = parsedFilters;
+        else loadDamage.push({ section: 'displayFilters', raw: dfm[1] });
       }
     }
     const connBlock = fm.match(/connections:\n((?:\s+-.*\n?)*)/);
@@ -29952,7 +30342,7 @@ function bdParseMd(raw) {
           connections: legacyConnections,
           groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
           llmSemantics: legacyLlmSemantics,
-          preservedFrontmatter, topicRuntime,
+          preservedFrontmatter, topicRuntime, loadDamage,
         };
       }
     }
@@ -30047,7 +30437,7 @@ function bdParseMd(raw) {
         depthStyles,
         boardUi,
         llmSemantics: parsedLlmSemantics,
-        preservedFrontmatter: archivedFrontmatter, topicRuntime,
+        preservedFrontmatter: archivedFrontmatter, topicRuntime, loadDamage,
       };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
@@ -30104,7 +30494,7 @@ function bdParseMd(raw) {
     ? bdNormalizeLoadedLlmSemantics(llmSemantics, idMap)
     : llmSemantics;
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(mappedConnections, null, parsedLlmSemantics);
-  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime };
+  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime, loadDamage };
 }
 
 // --- Markdown書き出し ---
@@ -30142,7 +30532,9 @@ function bdToMd(boardState = bd) {
   const hasBgColors = bd.nodes.some(n => n.bgColor);
   if (hasBgColors) {
     fm += 'bgcolors:\n';
-    bd.nodes.forEach((n,i) => { if (n.bgColor) fm += `  n${i}: ${n.bgColor}\n`; });
+    // 色は "#77d7d0" のように引用符で囲む。引用符なしの `#…` はYAMLではコメント扱いになり、
+    // デスクトップ版のAIボード編集など標準YAMLで読む経路で背景色が消えていた。
+    bd.nodes.forEach((n,i) => { if (n.bgColor) fm += `  n${i}: ${JSON.stringify(String(n.bgColor))}\n`; });
   }
   const hasContainers = bd.nodes.some(n => n.container || n.contained);
   if (hasContainers) {
@@ -34298,6 +34690,12 @@ async function bdSave() {
   const savePath = bd.path;
   let reservedDraftAtRequest = bd._draftReservationPath === savePath ? bd._draftReservationContent : undefined;
   if (!savePath) return true;
+  if (Array.isArray(bd._loadDamage) && bd._loadDamage.length) {
+    showStatus(typeof _bdLoadDamageMessage === 'function'
+      ? _bdLoadDamageMessage(bd._loadDamage)
+      : 'ボードの一部が壊れているため、保存を止めています', true);
+    return false;
+  }
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
     showStatus('ボード保存を中止しました: ボードとして開いたMarkdownファイルではありません', true);
     return false;
@@ -34794,6 +35192,7 @@ async function bdOpenBoard(label, path, opts) {
     title: prevTitle,
     path: bd.path || '',
     loadedBoardPath: bd._loadedBoardPath || '',
+    loadDamage: Array.isArray(bd._loadDamage) ? bd._loadDamage : [],
     dump: typeof bdDumpState === 'function' ? bdDumpState() : null,
   };
   _bdPendingOpenRollback = rollback;
@@ -34889,6 +35288,8 @@ async function bdOpenBoard(label, path, opts) {
       historySetScope(typeof _bdHistoryScope === 'function' ? _bdHistoryScope(nextPath) : ('board:' + String(nextPath || '').replace(/\\/g, '/')));
     }
     bd._preservedFrontmatter = parsed.preservedFrontmatter || '';
+    // 読込時に壊れていた部分。残っている間は上書き保存を止める（_bdCanSaveCurrentBoardPath）。
+    bd._loadDamage = Array.isArray(parsed.loadDamage) ? parsed.loadDamage : [];
     window.MeldexFileLockBadge?.apply?.(titleEl, nextPath);
     bd.nodes = parsed.nodes || [];
     if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(bd.nodes);
@@ -35016,11 +35417,16 @@ async function bdOpenBoard(label, path, opts) {
       _bdShowConflictPending(documentKeyAtOpen, nextPath);
     }
     _bdPendingOpenRollback = null;
+    if (bd._loadDamage.length && typeof _bdLoadDamageMessage === 'function') {
+      try { console.warn('[board] 読込時に壊れていた部分:', nextPath, bd._loadDamage); } catch (_) {}
+      showStatus(_bdLoadDamageMessage(bd._loadDamage), true);
+    }
     return true;
   } catch (err) {
     if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
     bd.path = prevPath;
     bd._loadedBoardPath = prevLoadedBoardPath;
+    bd._loadDamage = rollback.loadDamage || [];
     if (titleEl) titleEl.textContent = rollback.title || '';
     window.MeldexFileLockBadge?.apply?.(titleEl, prevPath);
     if (prevDump && typeof bdLoadState === 'function') {
@@ -39451,6 +39857,28 @@ function _bdCreateHudMenu(rect, options) {
   });
   return menu;
 }
+// メニュー項目の処理が失敗した時に、黙って終わらせず原因つきで表示する。
+// 非同期の処理は完了まで待ち、途中の失敗も受け取る。戻り値は成功なら true。
+function _bdMenuActionFailureMessage(label, error) {
+  const name = String(label || '').replace(/\s+/g, ' ').trim();
+  const head = name ? `「${name}」を実行できませんでした` : '操作を実行できませんでした';
+  const reason = String(error?.message || '').trim();
+  // 日本語の理由だけを利用者へ見せる（内部の英語メッセージは開発者向けの記録に残す）。
+  if (reason && /[\u3040-\u30ff\u3400-\u9fff]/.test(reason)) return `${head}: ${reason}`;
+  return `${head}（予期しない問題が発生しました。もう一度お試しください）`;
+}
+function _bdRunMenuAction(fn, label) {
+  const fail = (error) => {
+    try { console.warn('[board] メニュー項目の実行に失敗しました:', label, error); } catch (_) {}
+    if (typeof showStatus === 'function') showStatus(_bdMenuActionFailureMessage(label, error), true);
+    return false;
+  };
+  let result;
+  try { result = typeof fn === 'function' ? fn() : undefined; }
+  catch (error) { return Promise.resolve(fail(error)); }
+  if (result && typeof result.then === 'function') return Promise.resolve(result).then(() => true, fail);
+  return Promise.resolve(true);
+}
 function _bdHudMenuItem(htmlLabel, onClick, opts) {
   const d = document.createElement('div');
   d.className = 'gb-context-menu-item';
@@ -39461,8 +39889,9 @@ function _bdHudMenuItem(htmlLabel, onClick, opts) {
   if (opts?.danger) d.classList.add('danger');
   d.addEventListener('click', (ev) => {
     ev.preventDefault(); ev.stopPropagation();
+    const labelText = d.textContent || '';
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-    try { onClick?.(); } catch {}
+    return _bdRunMenuAction(onClick, labelText);
   });
   d.addEventListener('keydown', ev => {
     if (ev.key === 'Enter' || ev.key === ' ') {
@@ -39737,9 +40166,10 @@ function _bdContextMenuItem(parent, label, fn, opts) {
   const activate = ev => {
     ev?.preventDefault?.();
     ev?.stopPropagation?.();
-    if (options.disabled) return;
+    if (options.disabled) return Promise.resolve(false);
+    const labelText = item.textContent || '';
     _bdCloseAllContextMenus();
-    fn?.();
+    return _bdRunMenuAction(fn, labelText);
   };
   item.addEventListener('click', activate);
   item.addEventListener('keydown', ev => {
@@ -45995,7 +46425,12 @@ function bdActivatePreviewPane(options = {}) {
     }
     if (preserveActivePane) return false;
     if (typeof toggleRightPanelTab === 'function') toggleRightPanelTab('preview');
-  } catch {}
+  } catch (error) {
+    // 失敗を成功として返さない。原因を記録し、利用者へ知らせる。
+    try { console.warn('[board] ビューワーを開けませんでした:', error); } catch (_) {}
+    if (typeof showStatus === 'function') showStatus('ビューワーを開けませんでした。パネルレイアウトを確認してから、もう一度お試しください', true);
+    return false;
+  }
   return true;
 }
 
@@ -48492,17 +48927,24 @@ function _bdStartInlineBoardTitleEdit(titleEl) {
       showStatus('ボード名が空です', true);
       return;
     }
+    // 通信を待たずに新しい名前を表示し、フォルダツリーとタブも先に変える（失敗したら戻す）
+    const boardPath = bd.path || (typeof state !== 'undefined' ? state.currentBoardPath : '') || '';
+    titleEl.textContent = draft;
+    if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, draft, 'board');
     try {
       await _bdRenameBoardFile(draft);
       titleEl.textContent = draft;
       showStatus('ボード名を変更しました');
     } catch (e) {
+      if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, currentText, 'board');
       titleEl.textContent = currentText;
       showStatus('ボード名の変更に失敗: ' + (e?.message || ''), true);
     }
   };
   input.addEventListener('keydown', event => {
     event.stopPropagation();
+    // 日本語変換中の Enter は変換の確定なので、名前の確定にしない
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       finish(true);
@@ -52673,8 +53115,21 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
   container.innerHTML = '';
   const fmt = window.gbFmt;
   if (!fmt) { container.textContent = '書式UI未ロード'; return; }
+  // 変更の反映に失敗したら握り潰さず原因つきで知らせる（非同期の失敗も受け取る）。
+  const reportEmitFailure = (error) => {
+    try { console.warn('[board] スタイル変更の反映に失敗しました:', error); } catch (_) {}
+    const reason = String(error?.message || '').trim();
+    if (typeof showStatus === 'function') {
+      showStatus(/[ぁ-んァ-ヶ一-龠]/.test(reason)
+        ? `スタイルの変更を反映できませんでした: ${reason}`
+        : 'スタイルの変更を反映できませんでした。もう一度お試しください', true);
+    }
+  };
   const emit = (field) => {
-    try { onChange && onChange(field); } catch (_) {}
+    try {
+      const result = onChange && onChange(field);
+      if (result && typeof result.then === 'function') Promise.resolve(result).catch(reportEmitFailure);
+    } catch (error) { reportEmitFailure(error); }
     container._bdRefreshFormatPreview?.();
   };
   const editTarget = () => {
@@ -53608,7 +54063,10 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
     });
 
     popup.querySelector('[data-bd-popup-delete]')?.addEventListener('click', async () => {
-      if (liveArr().length <= 1) return;
+      if (liveArr().length <= 1) {
+        showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイルは最低1件必要なため、最後の1件は削除できません`, true);
+        return;
+      }
       const live = currentLive(); if (!live) return;
       const activeRefKey = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
       const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
@@ -54932,6 +55390,13 @@ function bdOpenFilterMenu(anchor) {
     return writeUserPresets(presets);
   }
 
+  // 名前変更・削除が false を返した時の原因を利用者向けに組み立てる（無言で終わらせない）。
+  function presetFailureMessage(head, id, name) {
+    if (name !== undefined && !String(name || '').trim()) return `${head}: 名前が空です`;
+    if (!readUserPresets().some(entry => entry.id === id)) return `${head}: プリセットが見つかりません。一覧を開き直してください`;
+    return `${head}: この端末に保存できませんでした。ブラウザの保存領域の空きや設定を確認してください`;
+  }
+
   function removePreset(id) {
     const presets = readUserPresets();
     const next = presets.filter(entry => entry.id !== id);
@@ -55151,7 +55616,11 @@ function bdOpenFilterMenu(anchor) {
         if (!selected || selected.builtin) return;
         const name = await askName('新しいプリセット名を入力してください', selected.name);
         if (name === null || name === undefined) return;
-        if (!renamePreset(selected.id, name)) return;
+        if (!renamePreset(selected.id, name)) {
+          status(presetFailureMessage('プリセット名を変更できませんでした', selected.id, name), true);
+          return;
+        }
+        status(`プリセット名を変更しました`);
         notify();
         render();
       });
@@ -55160,7 +55629,10 @@ function bdOpenFilterMenu(anchor) {
         if (!selected || selected.builtin) return;
         const ok = await askConfirm(`プリセット「${selected.name}」を削除しますか？`);
         if (!ok) return;
-        if (!removePreset(selected.id)) return;
+        if (!removePreset(selected.id)) {
+          status(presetFailureMessage(`プリセット「${selected.name}」を削除できませんでした`, selected.id), true);
+          return;
+        }
         opts.selectedId = '';
         if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${selected.name}」を削除しました`);
         notify();
@@ -57528,6 +58000,10 @@ const MeldexPublicRuntime = (() => {
           noteCss + '\n'
           + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
         preTransform: viewType === 'entity' ? _preTransformEntityViewForPublish : undefined,
+        // 画面と同じ見た目にする（祖先の変数・文字設定の固定、アプリの基本リセット、ルビの組み方）
+        inheritComputedContext: true,
+        keepDataRuby: true,
+        appReset: true,
         notFound: 'ノートが開かれていません',
       };
     }
@@ -57736,7 +58212,10 @@ const MeldexPublicRuntime = (() => {
       const clone = MeldexExportHtml.cloneAndClean(def.el, {
         preserveFormControls: !!def.preserveFormControls,
       });
-      MeldexExportHtml.convertDataRuby(clone);
+      if (def.inheritComputedContext && typeof MeldexExportHtml.applyComputedContext === 'function') {
+        MeldexExportHtml.applyComputedContext(def.el, clone);
+      }
+      if (!def.keepDataRuby) MeldexExportHtml.convertDataRuby(clone);
       if (typeof def.preTransform === 'function') def.preTransform(def.el, clone);
       await MeldexExportHtml.embedImages(clone, assetCollector);
       MeldexExportHtml.sanitizePublishedClone(clone, {
@@ -57747,7 +58226,8 @@ const MeldexPublicRuntime = (() => {
     const varDecls = typeof MeldexExportHtml.collectCssVars === 'function'
       ? MeldexExportHtml.collectCssVars()
       : '';
-    let cssText = ':root { ' + varDecls + ' }\n';
+    let cssText = (def.appReset && MeldexExportHtml.APP_RESET_CSS ? MeldexExportHtml.APP_RESET_CSS + '\n' : '')
+      + ':root { ' + varDecls + ' }\n';
     cssText += 'html, body { margin: 0; padding: 0; background: var(--bg, #1e1e1e); color: var(--fg, #d4d4d4);'
       + ' font-family: var(--ui-font, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif);'
       + ' font-size: var(--ui-font-size, 15px); }\n';
@@ -58496,11 +58976,17 @@ async function _sn2PrepareSaveAsDocument(exportDoc, targetPath, sourcePath, targ
     return { doc: legacyDoc, text: JSON.stringify(legacyDoc, null, 2), documentId: '', independentCopy: true };
   }
   let documentId = '';
-  if (targetExists && typeof apiFetch === 'function') {
+  if (targetExists) {
+    // 上書き先の文書IDを読めないまま新しいIDを振ると、同じファイルが別文書として扱われ、
+    // 版履歴・リンク・競合判定が黙って切り離される。読めない時は保存を止めて理由を返す。
+    let current = null;
     try {
-      const current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
-      documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
-    } catch {}
+      if (typeof apiFetch !== 'function') throw new Error('ファイルを読み込めません');
+      current = await apiFetch('/file?path=' + encodeURIComponent(targetPath), { silentError: true });
+    } catch (error) {
+      throw new Error(`上書き先のシナリオを確認できなかったため保存を中止しました（${error?.message || error}）`);
+    }
+    documentId = identity.readDocumentId?.(current?.content || '', format) || current?.document_id || '';
   }
   if (!documentId) {
     documentId = identity?.newDocumentId?.() || '';
@@ -58933,9 +59419,385 @@ async function promptSaveCurrentScriptNoteAs() {
   });
 }
 
-// シナリオエディタの現在ビュー（フィルタ・テーマ・縦/横/折返し設定すべて反映済み）を
-// 操作不可の静的 HTML として保存する。embed-font: Regular の woff2 を data URI で
-// 埋め込んで自己完結させる。
+// ==========================================================
+// シナリオの静的スナップショット（HTML保存・PNG・公開で共通）
+// ==========================================================
+// エディタの現在ビュー（フィルタ・テーマ・タイプ書式・縦/横/折返し・ルビ設定）を
+// 操作不可の自己完結HTMLにする。HTML保存・画像（PNG）・公開はすべてこの1つの
+// 生成結果を使い、出力形式ごとに見た目がずれないようにする。
+//
+// 再現の要点:
+// - 描画は .sn2-scroll の複製。祖先（エディタホストや :root）から継承している
+//   CSS変数・文字設定は複製側へ計算済みの値で書き写す（祖先は出力に含まれないため）。
+// - 行選択の列（_handle）は見出しセルと行の両方から外す（片方だけ外すと縦書きで
+//   見出しと行が列幅ぶんずれる）。
+// - ルビはエディタと同じ表現（data-ruby と疑似要素）のまま出力し、ルビ設定
+//   （大きさ・位置・揃え・字間・書体）をそのまま効かせる。
+// - 折り返し表示は段の割り付けがエディタの表示寸法で決まるため、その寸法を固定する。
+const SN2_EXPORT_REMOVE_SELECTOR = [
+  '.sn2-row-bulk-bar', '.sn2-handle-zone', '.sn2-handle', '.sn2-add-row', '.sn2-add-col-btn',
+  '.sn2-resizer', '.sn2-col-resizer', '.sn2-row-resizer', '.sn2-row-check',
+  '[data-col-id="_handle"]', '.sn2-drop-indicator',
+  // 縦書きでスクロール端まで寄せるための編集用余白（画面幅比率の空白）。出力には不要で、
+  // 画像化時に幅の基準が変わると内容がずれる原因になる。
+  '.sn2-pan-spacer-inline', '.sn2-pan-spacer',
+  // 入力中の独自カーソル、コメントの件数バッジ（内部のやり取りを公開しない）
+  '.sn2-custom-caret', '.cmt-badge', '[data-export-remove]',
+  // 文書として出力してはならない要素
+  'script', 'iframe', 'object', 'embed', 'base', 'meta', 'link', 'portal',
+].join(', ');
+const SN2_EXPORT_TRANSIENT_CLASSES = [
+  'sn2-dragging', 'sn2-cell-active', 'sn2-drop-below', 'sn2-drop-above', 'sn2-swap-highlight',
+  'sn2-text-cell-selected', 'sn2-row-selected', 'sn2-role-cell-selected', 'sn2-grid-cell-selected',
+  'sn2-panning', 'cmt-line-highlight',
+];
+// 出力に残す data 属性（表示のCSSが参照するもの）。それ以外（リンク先の内部パス
+// data-path など）は出力・公開に載せない。
+const SN2_EXPORT_DATA_ATTR_RE = /^data-(after|before|align|border|col-border-right|col-id|row-id|kind|outline|overflow|ruby(-[a-z-]+)?|spread-border|valign|status)$/;
+
+function _sn2ExportSafeLink(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('#')) return raw;
+  try {
+    const url = new URL(raw, document.baseURI);
+    return ['https:', 'http:', 'mailto:', 'tel:'].includes(url.protocol) ? url.toString() : '';
+  } catch { return ''; }
+}
+
+// 出力・公開用の属性の清掃（イベント属性・内部パス・危険なリンクを除去）
+function _sn2ExportSanitizeAttributes(clone) {
+  [clone, ...clone.querySelectorAll('*')].forEach(node => {
+    Array.from(node.attributes || []).forEach(attr => {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'srcset' || name === 'title') {
+        node.removeAttribute(attr.name);
+      } else if (name.startsWith('data-') && !SN2_EXPORT_DATA_ATTR_RE.test(name)) {
+        node.removeAttribute(attr.name);
+      } else if (name === 'href' || name === 'xlink:href') {
+        const safe = _sn2ExportSafeLink(attr.value);
+        if (safe && !/^data:/i.test(attr.value)) node.setAttribute(attr.name, safe);
+        else if (!/^data:/i.test(attr.value)) node.removeAttribute(attr.name);
+      }
+    });
+  });
+}
+// 祖先から継承され、エクスポート先では失われる文字・色の計算値
+const SN2_EXPORT_INHERITED_PROPS = [
+  'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
+  'font-feature-settings', 'font-kerning', 'text-rendering', '-webkit-font-smoothing',
+];
+
+function _sn2ExportComputedCustomProperties(el) {
+  const out = [];
+  if (!el) return out;
+  const cs = getComputedStyle(el);
+  for (let i = 0; i < cs.length; i++) {
+    const name = cs[i];
+    if (!name || !name.startsWith('--')) continue;
+    const value = cs.getPropertyValue(name).trim();
+    if (value) out.push([name, value]);
+  }
+  return out;
+}
+
+// 元要素の計算済みスタイルを複製へ固定する（レイアウト依存の寸法・既定書体を出力先でも再現する）
+const SN2_EXPORT_CONTROL_PROPS = [
+  'display', 'box-sizing', 'width', 'height', 'min-width', 'min-height', 'flex-grow', 'flex-shrink', 'flex-basis',
+  'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+  'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+  'border-radius', 'background-color', 'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+  'line-height', 'letter-spacing', 'text-align', 'vertical-align', 'align-items', 'justify-content',
+  'writing-mode', 'text-orientation', 'white-space', 'overflow-x', 'overflow-y', 'text-overflow',
+];
+
+function _sn2ExportFreezeLayout(original, clone) {
+  const vertical = original.classList.contains('sn2-vertical');
+  const freezeMainAxis = (src, dst) => {
+    const cs = getComputedStyle(src);
+    if (cs.display === 'none') return;
+    dst.style.setProperty('box-sizing', 'border-box', 'important');
+    if (vertical) dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
+    else dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
+    dst.style.setProperty('flex', '0 0 auto', 'important');
+  };
+  // 見出しセルはエディタで表示領域に合わせて縮められ、行はその寸法に揃えてある。
+  // 出力先では縮まないため、見出しセルの実寸を固定して行とずれないようにする。
+  const pairs = (selector, fn) => {
+    const a = original.querySelectorAll(selector);
+    const b = clone.querySelectorAll(selector);
+    if (a.length !== b.length) return;
+    a.forEach((el, i) => fn(el, b[i]));
+  };
+  pairs('.sn2-header-cell', freezeMainAxis);
+  // 見出し列そのものの太さ（縦書きは幅、横書きは高さ）もエディタでは縮められている
+  pairs('.sn2-header', (src, dst) => {
+    if (getComputedStyle(src).display === 'none') return;
+    dst.style.setProperty('box-sizing', 'border-box', 'important');
+    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
+    else dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
+    dst.style.setProperty('flex-shrink', '0', 'important');
+  });
+  // 行内のセルも同様（行の寸法はエディタが見出しに合わせて固定済み。セル側は縮み方が
+  // 出力先で変わると本文の折り返し位置まで変わる）
+  // 行の太さ（縦書きは幅、横書きは高さ）もエディタの実寸に揃える
+  pairs('.sn2-row', (src, dst) => {
+    if (getComputedStyle(src).display === 'none') return;
+    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px');
+    else dst.style.setProperty('height', src.offsetHeight + 'px');
+  });
+  pairs('.sn2-row > *', (src, dst) => {
+    if (src.matches('.sn2-row-spacer, .sn2-handle-zone, .sn2-handle')) return;
+    freezeMainAxis(src, dst);
+  });
+  // ボタン・入力欄は既定書体（ブラウザ既定）と既定の枠を持つ。span 化しても同じ見た目に
+  // なるよう計算済みスタイルを書き写しておく。
+  pairs('button, input, select, textarea', (src, dst) => {
+    const cs = getComputedStyle(src);
+    // 値はプロパティで設定されるため複製に残らない。表示中の文字列を元要素から控える。
+    if (src.tagName === 'SELECT') dst.setAttribute('data-export-text', src.selectedIndex >= 0 ? (src.options[src.selectedIndex]?.textContent || '') : '');
+    else if (src.tagName === 'INPUT' && (src.type === 'checkbox' || src.type === 'radio')) dst.setAttribute('data-export-text', src.checked ? '☑' : '☐');
+    else if (src.tagName === 'INPUT' || src.tagName === 'TEXTAREA') dst.setAttribute('data-export-text', src.value || '');
+    SN2_EXPORT_CONTROL_PROPS.forEach(name => {
+      const value = cs.getPropertyValue(name);
+      if (value) dst.style.setProperty(name, value);
+    });
+    if (cs.display === 'inline-block' || cs.display === 'inline') dst.style.setProperty('display', 'inline-block');
+  });
+}
+
+function _sn2ExportStripInteractive(clone) {
+  clone.querySelectorAll(SN2_EXPORT_REMOVE_SELECTOR).forEach(el => el.remove());
+  SN2_EXPORT_TRANSIENT_CLASSES.forEach(cls => {
+    clone.querySelectorAll('.' + cls).forEach(el => el.classList.remove(cls));
+  });
+  clone.querySelectorAll('[contenteditable]').forEach(el => {
+    el.removeAttribute('contenteditable');
+    el.setAttribute('data-readonly', '1');
+    // 編集可能領域にはブラウザ既定で「空白の後で折り返す」改行規則が付く。属性を外しても
+    // エディタと同じ位置で改行されるよう、同じ規則を明示しておく。
+    el.style.setProperty('-webkit-line-break', 'after-white-space');
+  });
+  clone.querySelectorAll('[data-action], [data-sn-action]').forEach(el => {
+    el.removeAttribute('data-action');
+    el.removeAttribute('data-sn-action');
+  });
+  // ボタン（キャラ・タイプ表示）は見た目を保つため span へ置き換える。disabled の
+  // ままだと閲覧ブラウザの既定スタイル（灰色化）が混ざる。
+  clone.querySelectorAll('button').forEach(btn => {
+    const span = document.createElement('span');
+    Array.from(btn.attributes).forEach(attr => {
+      if (/^(type|disabled|aria-haspopup|aria-expanded|tabindex|onclick)$/i.test(attr.name)) return;
+      span.setAttribute(attr.name, attr.value);
+    });
+    span.style.removeProperty('pointer-events');
+    while (btn.firstChild) span.appendChild(btn.firstChild);
+    btn.replaceWith(span);
+  });
+  clone.querySelectorAll('input, textarea, select').forEach(el => {
+    const span = document.createElement('span');
+    span.className = el.className;
+    const frozen = el.getAttribute('style');
+    if (frozen) span.setAttribute('style', frozen);
+    const exportText = el.getAttribute('data-export-text');
+    if (el.dataset) Object.entries(el.dataset).forEach(([key, value]) => { if (key !== 'exportText') span.dataset[key] = value; });
+    if (exportText !== null) span.textContent = exportText;
+    else if (el.type === 'checkbox' || el.type === 'radio') span.textContent = el.checked ? '☑' : '☐';
+    else if (el.tagName === 'SELECT') span.textContent = el.selectedOptions?.[0]?.textContent || el.value || '';
+    else span.textContent = el.value || el.textContent || '';
+    el.replaceWith(span);
+  });
+  clone.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
+  clone.querySelectorAll('[draggable]').forEach(el => el.removeAttribute('draggable'));
+  clone.querySelectorAll('[role="button"], [role="textbox"], [role="separator"]').forEach(el => {
+    el.removeAttribute('role');
+    el.removeAttribute('aria-readonly');
+    el.removeAttribute('aria-multiline');
+  });
+  clone.querySelectorAll('[data-e2e-id]').forEach(el => el.removeAttribute('data-e2e-id'));
+  clone.querySelectorAll('[style*="cursor"]').forEach(el => el.style.removeProperty('cursor'));
+  _sn2ExportSanitizeAttributes(clone);
+}
+
+// 表示中に使われている文字の太さだけを埋め込む（太字の行を合成太字にしない）
+function _sn2ExportUsedFontWeights(scroll) {
+  const used = new Set(['regular']);
+  if (!scroll) return Array.from(used);
+  const nodes = [scroll, ...scroll.querySelectorAll('*')];
+  for (const node of nodes) {
+    const weight = Number.parseInt(getComputedStyle(node).fontWeight, 10) || 400;
+    if (weight >= 600) used.add('bold');
+    else if (weight >= 500) used.add('medium');
+    if (used.size === 3) break;
+  }
+  return ['regular', 'medium', 'bold'].filter(key => used.has(key));
+}
+
+async function _sn2ExportEmbedFontCss(enabled, weights) {
+  if (enabled === false) return '';
+  if (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.embedFont === 'function') {
+    try {
+      const css = await MeldexExportHtml.embedFont(weights && weights.length ? weights : ['regular']);
+      if (css) return css;
+    } catch {}
+  }
+  try {
+    const r = await fetch('fonts/NotoSansJP-Regular.woff2');
+    if (!r.ok) return '';
+    const bin = new Uint8Array(await r.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < bin.length; i += 0x8000) s += String.fromCharCode.apply(null, bin.subarray(i, i + 0x8000));
+    return `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${btoa(s)}') format('woff2'); }`;
+  } catch {
+    return '';
+  }
+}
+
+// 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず
+// 出力が永久に止まるため、各フレームを最大 80ms でタイマーへ切り替える。
+function _sn2ExportNextFrames(count = 2) {
+  const one = () => new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    try { requestAnimationFrame(finish); } catch {}
+    setTimeout(finish, 80);
+  });
+  let chain = Promise.resolve();
+  for (let i = 0; i < count; i++) chain = chain.then(one);
+  return chain;
+}
+
+async function _sn2ExportEditorCss() {
+  let css = '';
+  try { css = await _sn2FetchCssWithImports('gb-scriptnote-editor.css'); } catch {}
+  // CSS内の相対 url()（画像・フォント）は自己完結のため data URI 化する
+  if (css && typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.inlineCssAssets === 'function') {
+    try { css = await MeldexExportHtml.inlineCssAssets(css, document.baseURI); } catch {}
+  }
+  return css;
+}
+
+/**
+ * シナリオの静的スナップショットを作る。
+ * @param {object} editor - アクティブなシナリオエディタ
+ * @param {{purpose?: 'html'|'image'|'publish', embedFont?: boolean}} options
+ */
+async function buildScriptNoteExportDocument(editor, options = {}) {
+  if (!editor?.doc) return null;
+  try { editor._syncAllFromDom?.(); } catch {}
+  // 表示中の DOM がそのまま出力の正本。全体を描き直すと行選択やスクロール位置が失われるため、
+  // 入力中のセル（記法がまだ描画に反映されていない可能性がある）がある時だけ描き直す。
+  const active = document.activeElement;
+  const editingCell = !!(active && editor.host?.contains?.(active) && active.isContentEditable);
+  if (editingCell) {
+    try { editor._render(); } catch {}
+  }
+  // 縦書きの行寸法は描画後のフレームで確定する。2フレーム待ってから複製する。
+  await _sn2ExportNextFrames(2);
+  try { if (document.fonts?.ready) await document.fonts.ready; } catch {}
+  const scroll = editor.host?.querySelector('.sn2-scroll');
+  if (!scroll) return null;
+
+  const vertical = scroll.classList.contains('sn2-vertical');
+  const wrap = scroll.classList.contains('sn2-wrap');
+  const viewWidth = Math.max(320, Math.round(scroll.clientWidth || 1200));
+  const viewHeight = Math.max(200, Math.round(scroll.clientHeight || 800));
+
+  const clone = scroll.cloneNode(true);
+  _sn2ExportFreezeLayout(scroll, clone);
+  _sn2ExportStripInteractive(clone);
+
+  // 祖先由来の CSS 変数（テーマ・ファイルテーマ・UI設定）を計算値で固定する
+  _sn2ExportComputedCustomProperties(scroll).forEach(([name, value]) => {
+    if (!clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+  });
+  const scrollStyle = getComputedStyle(scroll);
+  SN2_EXPORT_INHERITED_PROPS.forEach(name => {
+    const value = scrollStyle.getPropertyValue(name);
+    if (value && !clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+  });
+  const bg = scrollStyle.backgroundColor;
+  // 折り返し表示は段の割り付けを決めた寸法を固定する（縦書きは幅、横書きは高さ）
+  if (wrap && vertical) clone.style.setProperty('width', viewWidth + 'px', 'important');
+  if (wrap && !vertical) clone.style.setProperty('height', viewHeight + 'px', 'important');
+
+  if (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.embedImages === 'function') {
+    try { await MeldexExportHtml.embedImages(clone); } catch {}
+  }
+
+  const [editorCss, fontCss] = await Promise.all([
+    _sn2ExportEditorCss(),
+    _sn2ExportEmbedFontCss(options.embedFont, _sn2ExportUsedFontWeights(scroll)),
+  ]);
+  const rootVars = _sn2ExportComputedCustomProperties(document.documentElement)
+    .map(([name, value]) => `${name}: ${value};`).join(' ');
+
+  const fileStem = String(editor._path || '').split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+  const title = String(editor.doc.title || fileStem || 'シナリオ');
+  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
+  const escHtml = MeldexEscape.html;
+  const pageBg = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'
+    ? bg
+    : 'var(--sn2-page-bg, var(--content-bg, var(--bg, #1e1e1e)))';
+  const csp = options.purpose === 'publish'
+    ? '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:; media-src data:; form-action \'none\'">\n<meta name="referrer" content="no-referrer">\n'
+    : '';
+
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${csp}<meta name="color-scheme" content="dark light">
+<title>${escHtml(title)}</title>
+<style>
+${fontCss}
+/* アプリ本体と同じ基本リセット（gb-theme.css）。無いとセル内余白の寸法計算がずれる */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { ${rootVars} }
+html, body {
+  margin: 0; padding: 0;
+  background: ${pageBg};
+  color: var(--fg, #d4d4d4);
+  font-family: var(--ui-font, 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif);
+  font-size: var(--ui-font-size, 15px);
+}
+${editorCss}
+/* 静的エクスポート用の上書き: 操作 UI を隠し、内容の寸法で配置する */
+body { padding: 16px; box-sizing: border-box; }
+body > .sn2-scroll {
+  flex: none !important;
+  overflow: visible !important;
+  max-height: none !important;
+  max-width: none !important;
+  position: relative !important;
+}
+body > .sn2-scroll:not(.sn2-wrap) { height: auto !important; width: max-content !important; }
+body > .sn2-scroll.sn2-vertical:not(.sn2-wrap) { margin-left: auto; }
+body > .sn2-scroll.sn2-wrap.sn2-vertical { height: auto !important; }
+body > .sn2-scroll.sn2-wrap:not(.sn2-vertical) { width: max-content !important; }
+.sn2-header, .sn2-scroll.sn2-wrap .sn2-header,
+.sn2-scroll.sn2-vertical:not(.sn2-wrap) > .sn2-header { position: relative !important; top: auto !important; left: auto !important; right: auto !important; }
+.sn2-row-bulk-bar, .sn2-handle, .sn2-handle-zone, .sn2-add-row, .sn2-add-col-btn,
+.sn2-resizer, .sn2-col-resizer, .sn2-row-resizer, .sn2-row-check { display: none !important; }
+.sn2-row, .sn2-header-cell { cursor: default !important; }
+*, *::before, *::after { user-select: text !important; -webkit-user-select: text !important; caret-color: transparent; }
+.sn2-text:focus, .sn2-custom-text:focus { outline: none !important; }
+@media print {
+  body { padding: 0; }
+  .sn2-row { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>`;
+  return { html, title, safeTitle, viewportWidth: viewWidth + 32, viewportHeight: viewHeight + 32, vertical };
+}
+
+// シナリオエディタの現在ビューを操作不可の静的 HTML として保存する。
 async function exportCurrentScriptNoteAsHtml() {
   if (typeof _sn2GetActiveEditor !== 'function') {
     if (typeof showStatus === 'function') showStatus('シナリオエディタが利用できません', true);
@@ -58946,195 +59808,21 @@ async function exportCurrentScriptNoteAsHtml() {
     if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
     return;
   }
-  // 最新状態でレンダリング
-  try { editor._syncAllFromDom?.(); } catch {}
-  try { editor._render(); } catch {}
-  // _render() は縦書きモードで requestAnimationFrame 内で行の style.height と
-  // style.minWidth を設定する。クローン前に rAF を 2 回待ってこれらの JS 同期
-  // 処理が完了してから DOM スナップショットを取る (これを待たないと行高さが
-  // 未設定のままクローンされ、エクスポート HTML でテキストが潰れる)。
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const scroll = editor.host?.querySelector('.sn2-scroll');
-  if (!scroll) {
+  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
+  let snapshot = null;
+  try {
+    snapshot = await buildScriptNoteExportDocument(editor, { purpose: 'html' });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('HTML の生成に失敗しました: ' + (error?.message || error), true);
+    return;
+  }
+  if (!snapshot) {
     if (typeof showStatus === 'function') showStatus('レンダリング結果が見つかりません', true);
     return;
   }
-
-  // ステータス表示
-  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
-
-  // クローンしてインタラクティブな属性を除去
-  const clone = scroll.cloneNode(true);
-  // フローティング UI / ドラッグハンドル系を除去
-  clone.querySelectorAll('.sn2-row-bulk-bar, .sn2-handle-zone, .sn2-handle, .sn2-add-row, .sn2-add-col-btn').forEach(el => el.remove());
-  // contenteditable / inputs / data-action を完全除去
-  clone.querySelectorAll('[contenteditable]').forEach(el => {
-    el.removeAttribute('contenteditable');
-    el.setAttribute('data-readonly', '1');
-  });
-  clone.querySelectorAll('[data-action], [data-sn-action]').forEach(el => {
-    el.removeAttribute('data-action');
-    el.removeAttribute('data-sn-action');
-  });
-  clone.querySelectorAll('input, textarea, select, button').forEach(el => {
-    if (el.tagName === 'BUTTON') {
-      // タイプボタンは見た目だけ残してクリック不可に
-      el.setAttribute('disabled', 'disabled');
-      el.style.pointerEvents = 'none';
-    } else {
-      const span = document.createElement('span');
-      span.className = el.className;
-      span.textContent = el.value || el.textContent || '';
-      el.replaceWith(span);
-    }
-  });
-  clone.querySelectorAll('[tabindex]').forEach(el => el.removeAttribute('tabindex'));
-  clone.querySelectorAll('[draggable]').forEach(el => el.removeAttribute('draggable'));
-
-  // span[data-ruby] / .auto-link[data-ruby] を HTML 標準の <ruby><rt> に置換する。
-  // 元の実装は ::after 擬似要素で描画していたが、iOS Safari や Gmail/Dropbox の
-  // 内蔵ブラウザでは ::after ルビの位置計算が壊れて二重描画になるケースがあった。
-  // ネイティブ ruby は全ブラウザで安定して縦書きルビが描画される。
-  clone.querySelectorAll('[data-ruby]').forEach(el => {
-    const rubyText = el.getAttribute('data-ruby');
-    if (!rubyText) return;
-    const baseText = el.textContent || '';
-    const ruby = document.createElement('ruby');
-    ruby.appendChild(document.createTextNode(baseText));
-    const rt = document.createElement('rt');
-    rt.textContent = rubyText;
-    ruby.appendChild(rt);
-    // auto-link も含め、クラス名は保持しない (ネイティブ ruby に任せる)
-    el.replaceWith(ruby);
-  });
-
-  // CSS を取得（gb-fonts.css は woff2 埋め込みに置き換えるので除外）
-  // cache-buster + no-store でブラウザ・中間キャッシュを完全回避する
-  let editorCss = '';
-  try {
-    editorCss = await _sn2FetchCssWithImports('gb-scriptnote-editor.css');
-  } catch {}
-
-  // CSS 変数を :root から収集
-  const rootStyle = getComputedStyle(document.documentElement);
-  const varNames = [
-    '--bg', '--bg2', '--bg3', '--bg4',
-    '--fg', '--fg2', '--accent', '--accent2',
-    '--border', '--selection',
-    '--ui-header-fg', '--ui-header-bg',
-    '--ui-header-font',
-    '--ui-toolbar-fg', '--ui-toolbar-bg',
-    '--ui-toolbar-font', '--ui-muted-font',
-    '--ui-hover-fg', '--ui-hover-bg',
-    '--ui-fg-strong',
-    '--ui-selection-fg', '--ui-selection-bg',
-    '--ui-range-fill-bg', '--ui-range-track-bg',
-    '--ui-scrollbar-track-bg', '--ui-scrollbar-thumb-bg', '--ui-scrollbar-thumb-hover-bg',
-    '--ui-font', '--ui-font-size',
-  ];
-  const varDecls = varNames
-    .map(v => {
-      const val = rootStyle.getPropertyValue(v).trim();
-      return val ? `${v}: ${val};` : '';
-    })
-    .filter(Boolean)
-    .join(' ');
-
-  // Noto Sans JP Regular を data URI で埋め込み（自己完結 HTML 化）
-  let fontFaceCss = '';
-  try {
-    const r = await fetch('fonts/NotoSansJP-Regular.woff2');
-    if (r.ok) {
-      const buf = await r.arrayBuffer();
-      const bin = new Uint8Array(buf);
-      let s = '';
-      for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
-      const b64 = btoa(s);
-      fontFaceCss = `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`;
-    }
-  } catch {}
-
-  const title = (editor.doc.title || 'シナリオ').toString();
-  const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
-  const escHtml = MeldexEscape.html;
-
-  const html = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="color-scheme" content="dark light">
-<title>${escHtml(title)}</title>
-<style>
-${fontFaceCss}
-:root { ${varDecls} }
-html, body {
-  margin: 0; padding: 0;
-  background: var(--bg, #1e1e1e);
-  color: var(--fg, #d4d4d4);
-  font-family: var(--ui-font, 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif);
-  font-size: var(--ui-font-size, 15px);
-}
-${editorCss}
-/* 静的エクスポート用の上書き: 操作 UI を完全に隠す */
-/* .sn2-scroll は通常 flex:1 で親に張り付くが、エクスポートではコンテンツに
-   ぴったり合わせて body 直下に並べる。縦書き row-reverse でもはみ出さない
-   よう幅を fit-content にしてブラウザのスクロールに任せる */
-.sn2-scroll {
-  flex: none !important;
-  overflow: visible !important;
-  height: auto !important;
-  max-height: none !important;
-  width: fit-content !important;
-  max-width: none !important;
-}
-.sn2-row-bulk-bar, .sn2-handle, .sn2-handle-zone, .sn2-add-row, .sn2-add-col-btn,
-.sn2-resizer, .sn2-col-resizer, .sn2-row-resizer { display: none !important; }
-.sn2-row { cursor: default !important; }
-*, *::before, *::after { user-select: text !important; -webkit-user-select: text !important; }
-[disabled] { cursor: default !important; opacity: 1 !important; }
-
-/* iOS Safari / Gmail/Dropbox 内蔵ブラウザ向けの互換 CSS */
-/* ネイティブ ruby を iOS でも正しく縦書きにレンダリングさせる */
-ruby {
-  ruby-position: over;
-}
-.sn2-scroll.sn2-vertical ruby {
-  ruby-position: inter-character;
-}
-rt {
-  font-size: 0.55em;
-  line-height: 1;
-  color: inherit;
-  opacity: 0.75;
-}
-/* iOS で縦書きのグリフが一部横になる対策。writing-mode を -webkit- プレフィックス
-   でも指定し、text-combine-upright で数字・記号を縦中横にする */
-.sn2-scroll.sn2-vertical .sn2-text,
-.sn2-scroll.sn2-vertical .sn2-gutter,
-.sn2-scroll.sn2-vertical .sn2-custom-text {
-  -webkit-writing-mode: vertical-rl;
-  -webkit-text-orientation: upright;
-}
-.sn2-scroll.sn2-vertical .sn2-role-btn {
-  -webkit-writing-mode: vertical-rl;
-  -webkit-text-orientation: mixed;
-}
-.sn2-tcy,
-.sn2-tcy-wide {
-  -webkit-text-combine: horizontal;
-}
-</style>
-</head>
-<body>
-${clone.outerHTML}
-</body>
-</html>`;
-
-  // OS ネイティブの「名前を付けて保存」ダイアログをサーバー側 (Meldex.py)
-  // で開き、選択されたパスに直接書き込む。
   if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
-    await MeldexExportSave.saveText(html, {
-      title: safeTitle,
+    await MeldexExportSave.saveText(snapshot.html, {
+      title: snapshot.safeTitle,
       extension: '.html',
       dialogTitle: 'HTMLとして保存',
       filetypes: [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
@@ -59143,6 +59831,9 @@ ${clone.outerHTML}
       errorMessage: 'HTML の保存に失敗しました',
     });
   }
+}
+if (typeof window !== 'undefined') {
+  window.buildScriptNoteExportDocument = buildScriptNoteExportDocument;
 }
 
 // 行本文 (row.text) を Markdown 出力用のプレーンテキストへ変換する。
@@ -59156,7 +59847,12 @@ function _sn2ScriptNoteRowTextForMarkdown(rawText) {
     return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(raw) : raw;
   }
   return _sn2CollectVisibleSegments(raw).map(segment => {
-    if (segment.type === 'ruby') return `{${segment.plain}|${segment.ruby}}`;
+    // ルビ記法の区切り文字（\ { | }）が親文字・ルビに含まれる場合はエスケープし、
+    // 記法として一意に読めるようにする（例: 親文字 "A|B" → {A\|B|ルビ}）。
+    if (segment.type === 'ruby') {
+      const escRuby = value => String(value || '').replace(/[\\{}|]/g, ch => '\\' + ch);
+      return `{${escRuby(segment.plain)}|${escRuby(segment.ruby)}}`;
+    }
     if (segment.type === 'manual-link') return segment.plain;
     return typeof _sn2UnescapeScriptNotePlainText === 'function' ? _sn2UnescapeScriptNotePlainText(segment.raw) : segment.raw;
   }).join('');
@@ -59189,6 +59885,7 @@ async function exportCurrentScriptNoteAsMarkdown() {
 
   rows.forEach((row, idx) => {
     const role = String(row?.role || '').trim();
+    const displayRole = String(row?.character || role).trim();
     const rawBody = _sn2ScriptNoteRowTextForMarkdown(row?.text || '');
     if (role && breakNames.has(role)) {
       // 区切り（ページ送り）行はセクション区切りの水平線に変換する
@@ -59198,7 +59895,7 @@ async function exportCurrentScriptNoteAsMarkdown() {
       return;
     }
     const lines = rawBody.split('\n');
-    if (role) lines[0] = lines[0] ? `**[${role}]** ${lines[0]}` : `**[${role}]**`;
+    if (displayRole) lines[0] = lines[0] ? `**[${displayRole}]** ${lines[0]}` : `**[${displayRole}]**`;
     blocks.push(lines.join('  \n'));
   });
 
@@ -59232,6 +59929,8 @@ globalThis.GBScriptNoteDialogUI = globalThis.GBScriptNoteDialogUI || {
     body?.style.setProperty('overflow-x', 'hidden', 'important');
     if (compact) body?.style.setProperty('width', '100%');
     root.querySelectorAll('button, input, select, textarea, [role="button"], [role="option"]').forEach(control => {
+      // 埋め込んだ共通部品（フォルダツリー等）は部品側の寸法に任せる。ここで拡大すると共通の見た目が崩れる
+      if (control.closest('[data-ui-component]')) return;
       if (control.type === 'checkbox' || control.type === 'radio') {
         const label = control.closest('label');
         if (label) {
@@ -59252,7 +59951,7 @@ globalThis.GBScriptNoteDialogUI = globalThis.GBScriptNoteDialogUI || {
 /* gb-scriptnote-document.js: シナリオ文書の正規化・旧データ移行・直列化 */
 
 const SCRIPTNOTE_DEFAULT_LAYOUT_MODE = 'manga';
-const SCRIPTNOTE_SCHEMA_VERSION = 3;
+const SCRIPTNOTE_SCHEMA_VERSION = 4;
 const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
   manga: ['めくり', '改ページ', '柱'],
   drama: ['シーン見出し', '場面転換', '柱'],
@@ -59261,6 +59960,7 @@ const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
 };
 const SCRIPTNOTE_LEGACY_SUMMARY_NAMES = ['プロット'];
 const SCRIPTNOTE_DEFAULT_TYPE_BG = 'var(--bg3)';
+const SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS = Object.freeze({ align: 'left', valign: 'top', overflow: 'wrap' });
 
 function _scriptNotePlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -59285,6 +59985,14 @@ function _scriptNoteNormalizeRows(rows, now) {
       ...(item.roleRef && typeof item.roleRef === 'object'
         ? { roleRef: { ...item.roleRef } }
         : (!item.role ? { roleRef: { kind: 'none', id: 'none' } } : {})),
+      character: String(item.character || ''),
+      characterRef: item.characterRef && typeof item.characterRef === 'object'
+        ? { ...item.characterRef }
+        : { kind: 'none', id: 'none' },
+      type: String(item.type || item.role || ''),
+      typeRef: item.typeRef && typeof item.typeRef === 'object'
+        ? { ...item.typeRef }
+        : (item.roleRef && typeof item.roleRef === 'object' ? { ...item.roleRef } : { kind: 'none', id: 'none' }),
       status: String(item.status || ''),
       text: String(item.text || ''),
       columns: _scriptNotePlainObject(item.columns),
@@ -59295,6 +60003,10 @@ function _scriptNoteNormalizeRows(rows, now) {
     id: `sn-${now}-0`,
     role: '',
     roleRef: { kind: 'none', id: 'none' },
+    character: '',
+    characterRef: { kind: 'none', id: 'none' },
+    type: '',
+    typeRef: { kind: 'none', id: 'none' },
     status: '',
     text: '',
     columns: {},
@@ -59379,6 +60091,75 @@ function _scriptNoteStylesEqual(left, right) {
   return keys.every(key => a[key] === b[key]);
 }
 
+// 配置・折り返しはセル／タイプではなく列だけが所有する。
+// 未設定時も列メニューに表示する既定値と実描画を必ず一致させる。
+function _scriptNoteColumnLayoutSettings(doc, columnId) {
+  const editor = _scriptNotePlainObject(doc?.editor);
+  const custom = (Array.isArray(editor.customColumns) ? editor.customColumns : [])
+    .find(column => String(column?.id || '') === String(columnId || ''));
+  const source = String(columnId || '').startsWith('_')
+    ? _scriptNotePlainObject(_scriptNotePlainObject(editor.standardColumnSettings)[columnId])
+    : _scriptNotePlainObject(custom);
+  const align = ['left', 'center', 'right'].includes(source.align)
+    ? source.align : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.align;
+  const valign = ['top', 'middle', 'bottom'].includes(source.valign)
+    ? source.valign : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.valign;
+  const gutter = columnId === '_gutter' || columnId === '_gutter2';
+  const overflow = gutter ? 'overflow' : (['wrap', 'overflow', 'clip'].includes(source.overflow)
+    ? source.overflow : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.overflow);
+  return { align, valign, overflow };
+}
+
+function _scriptNoteMigrateColumnOwnedLayout(doc) {
+  if (!doc || typeof doc !== 'object') return;
+  const editor = _scriptNotePlainObject(doc.editor);
+  const standard = _scriptNotePlainObject(editor.standardColumnSettings);
+  editor.standardColumnSettings = standard;
+  const customColumns = Array.isArray(editor.customColumns) ? editor.customColumns : [];
+  const types = Array.isArray(doc.scenarioTypes) ? doc.scenarioTypes : [];
+  const characters = Array.isArray(doc.characters) ? doc.characters : [];
+  const columns = ['_gutter', '_gutter2', '_character', '_role', '_status', '_text', ...customColumns.map(column => String(column?.id || '')).filter(Boolean)];
+  const appearances = [editor.defaultType, editor.noneType, ...types, ...characters]
+    .filter(item => item && typeof item === 'object');
+  characters.forEach(character => {
+    if (character?.legacyAppearance && typeof character.legacyAppearance === 'object') appearances.push(character.legacyAppearance);
+  });
+  const styleFor = (appearance, columnId) => {
+    if (columnId === '_gutter') return _scriptNotePlainObject(appearance.gutterStyle);
+    if (columnId === '_gutter2') return _scriptNotePlainObject(appearance.gutter2Style);
+    if (columnId === '_role') return _scriptNotePlainObject(appearance.roleStyle);
+    if (columnId === '_text') return _scriptNotePlainObject(appearance.textStyle);
+    return _scriptNotePlainObject(_scriptNotePlainObject(appearance.customStyles)[columnId]);
+  };
+  const legacyKeys = { textAlign: 'align', textValign: 'valign', textOverflow: 'overflow' };
+  columns.forEach(columnId => {
+    const target = columnId.startsWith('_')
+      ? (standard[columnId] = _scriptNotePlainObject(standard[columnId]))
+      : customColumns.find(column => String(column?.id || '') === columnId);
+    if (!target) return;
+    Object.entries(legacyKeys).forEach(([legacyKey, columnKey]) => {
+      const candidates = [];
+      appearances.forEach(appearance => {
+        const style = styleFor(appearance, columnId);
+        if (style[legacyKey]) candidates.push(style[legacyKey]);
+        if (columnId === '_text' && appearance[legacyKey]) candidates.push(appearance[legacyKey]);
+      });
+      const allRule = _scriptNotePlainObject(_scriptNotePlainObject(editor.columnAllRules)[columnId]);
+      if (allRule[legacyKey]) candidates.push(allRule[legacyKey]);
+      const unique = [...new Set(candidates.filter(Boolean))];
+      if (!target[columnKey] && unique.length === 1) target[columnKey] = unique[0];
+      appearances.forEach(appearance => {
+        delete styleFor(appearance, columnId)[legacyKey];
+        if (columnId === '_text') delete appearance[legacyKey];
+      });
+      delete allRule[legacyKey];
+    });
+    if (columnId === '_gutter' || columnId === '_gutter2') target.overflow = 'overflow';
+  });
+  editor.columnLayoutScopeVersion = 1;
+  doc.editor = editor;
+}
+
 function _scriptNoteMigrateUnifiedGutterStyles(doc) {
   if (!doc || typeof doc !== 'object') return;
   const editor = _scriptNotePlainObject(doc.editor);
@@ -59447,7 +60228,7 @@ function freezeLegacyScriptNoteAutoColors(doc) {
     .map(column => String(column?.id || '')).filter(Boolean);
   const columns = [
     ['_gutter', 'gutterStyle'], ['_gutter2', 'gutter2Style'],
-    ['_role', 'roleStyle'], ['_text', 'textStyle'],
+    ['_character', 'roleStyle'], ['_role', 'roleStyle'], ['_text', 'textStyle'],
     ...customIds.map(id => [id, 'customStyles']),
   ];
   const freezeAppearance = appearance => {
@@ -59544,6 +60325,7 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
   if (typeof MeldexRubyPresentation !== 'undefined') {
     MeldexRubyPresentation.ensureDocument(doc, { defaults: options.rubyPresentationDefaults });
   }
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   return doc;
 }
 
@@ -59581,7 +60363,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
     if (pickKind) {
       const value = cfg[pickKind];
       if (typeof value === 'string') {
-        editor.autoColorRule = { _gutter: value, _gutter2: value, _role: value, _text: value };
+        editor.autoColorRule = { _gutter: value, _gutter2: value, _character: value, _role: value, _text: value };
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         editor.autoColorRule = { ...value };
       }
@@ -59599,6 +60381,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   }
 
   _scriptNoteMigrateUnifiedGutterStyles(doc);
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   const roleModel = _scriptNoteRoleModel();
   if (roleModel) roleModel.ensureDocument(doc, options.roleModelOptions || {});
   freezeLegacyScriptNoteAutoColors(doc);
@@ -59634,6 +60417,7 @@ function serializeScriptNoteDoc(doc) {
   ensureScriptNoteDefaultType(doc.editor);
   ensureScriptNoteNoneType(doc.editor);
   _scriptNoteMigrateUnifiedGutterStyles(doc);
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   const serialized = {
     ...doc,
     fileType: doc.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
@@ -59671,6 +60455,270 @@ function createScriptNoteRowIdSet(doc) {
     .map((row) => row?.id)
     .filter(Boolean));
 }
+
+;
+
+/* === gb-view-tabs.js === */
+;
+/* gb-view-tabs.js: ツールバー下のビュータブ（共通部品）
+   ビューの切替・名前変更・複製・並べ替え・削除と、ビュー固有の追加メニューを持つタブ列を作る。
+   見た目はシート・ボードのビュータブと同じ共通トークン（--ui-view-tab-*）を使う。
+   データの保存は呼び出し側が持ち、この部品は表示と操作の受け渡しだけを行う。
+
+   MeldexViewTabs.create({
+     e2ePrefix: 'scriptnote-view',            // data-e2e-id の接頭辞
+     ariaLabel: 'シナリオのビュー',
+     readOnly: () => false,
+     getViews: () => [{ id, name, icon }],    // 表示順
+     getActiveId: () => id,
+     onActivate: id => {},
+     onRename: (id, name) => {},
+     onDuplicate: id => {},
+     onMove: (id, toIndex) => {},
+     onDelete: id => {},
+     viewMenuItems: view => [{ id, label, checked, disabled, run }],   // 任意（ビュー固有の項目）
+     addMenuItems: () => [{ id, label, icon, run }],
+   }) → { element, refresh() }
+*/
+(function initMeldexViewTabs(global) {
+  'use strict';
+
+  function icon(name, size) {
+    return typeof global.lucide === 'function' ? global.lucide(name, size || 14) : '';
+  }
+
+  function token(value) {
+    return String(value ?? '').replace(/[^a-zA-Z0-9_-]+/g, '-');
+  }
+
+  // タブ列は横スクロールするため、メニューは popover（top layer）へ出して見切れを防ぐ。
+  // パネルに .gb-context-menu は付けない（各所の「開いているメニューを全部消す」処理で、
+  // 常設のパネルごと削除されるため）。見た目は gb-view-tabs.css で共通メニューに揃える。
+  function bindMenu(details, panel) {
+    if (typeof panel.showPopover !== 'function') return;
+    panel.setAttribute('popover', 'auto');
+    details.addEventListener('toggle', () => {
+      if (!details.isConnected) return;
+      if (details.open) {
+        if (!panel.matches(':popover-open')) panel.showPopover();
+        const summary = details.querySelector('summary');
+        if (summary && typeof global.positionPopup === 'function') {
+          global.positionPopup(panel, summary.getBoundingClientRect(), { gap: 4 });
+        }
+      } else if (panel.matches(':popover-open')) {
+        panel.hidePopover();
+      }
+    });
+    panel.addEventListener('toggle', () => {
+      if (!panel.matches(':popover-open')) details.open = false;
+    });
+  }
+
+  function create(options) {
+    const settings = options || {};
+    const prefix = settings.e2ePrefix || 'view';
+    const readOnly = () => (typeof settings.readOnly === 'function' ? !!settings.readOnly() : !!settings.readOnly);
+    const root = document.createElement('div');
+    root.className = 'gb-view-tabs';
+    root.dataset.uiComponent = 'view-tabs';
+    root.dataset.e2eId = `${prefix}-tabs`;
+    const list = document.createElement('div');
+    list.className = 'gb-view-tabs-list';
+    list.setAttribute('role', 'tablist');
+    list.setAttribute('aria-label', settings.ariaLabel || 'ビュー');
+    const select = document.createElement('select');
+    select.className = 'tb-select gb-view-tabs-select';
+    select.dataset.e2eId = `${prefix}-select`;
+    select.setAttribute('aria-label', 'ビュー切替');
+    select.title = 'ビュー切替';
+    root.append(list, select);
+    let addElement = null;
+    let lastLabelClick = null;
+
+    const closeMenus = () => root.querySelectorAll('details[open]').forEach(item => { item.open = false; });
+
+    const beginRename = (tab, view) => {
+      if (readOnly()) return;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'gb-view-tab-rename';
+      input.value = view.name || '';
+      input.setAttribute('aria-label', 'ビュー名');
+      input.dataset.e2eId = `${prefix}-rename-input`;
+      let done = false;
+      const finish = cancelled => {
+        if (done) return;
+        done = true;
+        const next = input.value.trim();
+        if (!cancelled && next && next !== view.name) {
+          try { settings.onRename?.(view.id, next); }
+          catch (error) { global.showStatus?.(error?.message || 'ビュー名を変更できません', true); }
+        }
+        refresh();
+      };
+      input.addEventListener('keydown', event => {
+        if (event.isComposing) return;
+        if (event.key === 'Enter') { event.preventDefault(); finish(false); }
+        else if (event.key === 'Escape') { event.preventDefault(); finish(true); }
+      });
+      input.addEventListener('blur', () => finish(false));
+      tab.replaceChildren(input);
+      input.focus();
+      input.select();
+    };
+
+    const menuButton = (panel, item, refToken) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-context-menu-item';
+      button.dataset.e2eId = `${prefix}-${item.id}-${refToken}`;
+      if (item.checked != null) {
+        button.setAttribute('role', 'menuitemcheckbox');
+        button.setAttribute('aria-checked', String(!!item.checked));
+        button.innerHTML = `<span class="gb-view-tab-check" aria-hidden="true">${item.checked ? icon('check', 14) : ''}</span>`;
+        button.appendChild(document.createTextNode(item.label));
+      } else {
+        button.textContent = item.label;
+      }
+      button.disabled = !!item.disabled;
+      button.addEventListener('click', async () => {
+        closeMenus();
+        await item.run?.();
+        if (item.refresh !== false) refresh();
+      });
+      panel.appendChild(button);
+    };
+
+    const separator = panel => {
+      const sep = document.createElement('div');
+      sep.className = 'gb-context-menu-sep';
+      sep.setAttribute('role', 'separator');
+      panel.appendChild(sep);
+    };
+
+    function refresh() {
+      addElement?.remove();
+      const views = settings.getViews?.() || [];
+      const activeId = settings.getActiveId?.();
+      const locked = readOnly();
+      list.replaceChildren();
+      select.replaceChildren();
+      views.forEach((view, index) => {
+        const refToken = token(view.id);
+        const selected = view.id === activeId;
+        const tab = document.createElement('div');
+        tab.className = 'gb-view-tab';
+        tab.classList.toggle('active', selected);
+        tab.dataset.viewId = view.id;
+        tab.dataset.e2eId = `${prefix}-tab-${refToken}`;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', String(selected));
+        tab.draggable = !locked;
+
+        const option = document.createElement('option');
+        option.value = view.id;
+        option.textContent = view.name || 'ビュー';
+        option.selected = selected;
+        select.appendChild(option);
+
+        const label = document.createElement('button');
+        label.type = 'button';
+        label.className = 'gb-view-tab-label';
+        label.dataset.e2eId = `${prefix}-label-${refToken}`;
+        label.innerHTML = icon(view.icon || 'table', 12);
+        const text = document.createElement('span');
+        text.textContent = view.name || 'ビュー';
+        label.appendChild(text);
+        label.title = locked ? (view.name || '') : `${view.name || 'ビュー'}（ダブルクリックで名前を変更）`;
+        label.addEventListener('click', () => {
+          const now = Date.now();
+          const repeated = lastLabelClick?.id === view.id && now - lastLabelClick.time < 350;
+          lastLabelClick = { id: view.id, time: now };
+          // 1回目の切替でタブが描き直されるため、ネイティブの dblclick では判定できない。
+          if (repeated && selected && !locked) {
+            lastLabelClick = null;
+            beginRename(tab, view);
+          } else if (!selected) {
+            settings.onActivate?.(view.id);
+            refresh();
+          }
+        });
+
+        const menu = document.createElement('details');
+        menu.className = 'gb-view-tab-menu';
+        menu.dataset.e2eId = `${prefix}-menu-${refToken}`;
+        const summary = document.createElement('summary');
+        summary.className = 'gb-view-tab-more';
+        summary.dataset.e2eId = `${prefix}-menu-trigger-${refToken}`;
+        summary.setAttribute('aria-label', `${view.name || 'ビュー'}のビュー操作`);
+        summary.innerHTML = icon('moreHorizontal', 14) || '…';
+        const panel = document.createElement('div');
+        panel.className = 'gb-view-tab-menu-panel';
+        panel.setAttribute('role', 'menu');
+        menu.append(summary, panel);
+        bindMenu(menu, panel);
+        menuButton(panel, { id: 'rename', label: '名前を変更', disabled: locked, refresh: false, run: () => beginRename(tab, view) }, refToken);
+        menuButton(panel, { id: 'duplicate', label: '複製', disabled: locked, run: () => settings.onDuplicate?.(view.id) }, refToken);
+        const extra = settings.viewMenuItems?.(view) || [];
+        if (extra.length) {
+          separator(panel);
+          extra.forEach(item => menuButton(panel, { ...item, disabled: locked || item.disabled }, refToken));
+        }
+        separator(panel);
+        menuButton(panel, { id: 'previous', label: '左へ移動', disabled: locked || index <= 0, run: () => settings.onMove?.(view.id, index - 1) }, refToken);
+        menuButton(panel, { id: 'next', label: '右へ移動', disabled: locked || index >= views.length - 1, run: () => settings.onMove?.(view.id, index + 1) }, refToken);
+        separator(panel);
+        menuButton(panel, { id: 'delete', label: '削除', disabled: locked || views.length <= 1, run: () => settings.onDelete?.(view.id) }, refToken);
+
+        let longPress = 0;
+        label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
+        label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
+        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-tab', view.id));
+        tab.addEventListener('dragover', event => { if (!readOnly()) event.preventDefault(); });
+        tab.addEventListener('drop', event => {
+          if (readOnly()) return;
+          event.preventDefault();
+          const fromId = event.dataTransfer?.getData('text/meldex-view-tab');
+          if (fromId && fromId !== view.id) settings.onMove?.(fromId, index);
+          refresh();
+        });
+        tab.append(label, menu);
+        list.appendChild(tab);
+      });
+
+      const addItems = settings.addMenuItems?.() || [];
+      if (addItems.length) {
+        const add = document.createElement('details');
+        add.className = 'gb-view-tab-menu gb-view-tabs-add';
+        add.dataset.e2eId = `${prefix}-add-menu`;
+        const addSummary = document.createElement('summary');
+        addSummary.className = 'gb-view-tabs-add-trigger';
+        addSummary.dataset.e2eId = `${prefix}-add-trigger`;
+        addSummary.setAttribute('aria-label', 'ビューを追加');
+        addSummary.title = 'ビューを追加';
+        addSummary.innerHTML = icon('plus', 16) || '＋';
+        const addPanel = document.createElement('div');
+        addPanel.className = 'gb-view-tab-menu-panel';
+        addPanel.setAttribute('role', 'menu');
+        add.append(addSummary, addPanel);
+        bindMenu(add, addPanel);
+        addItems.forEach(item => menuButton(addPanel, { ...item, disabled: locked || item.disabled }, 'add'));
+        root.insertBefore(add, select);
+        addElement = add;
+      }
+    }
+
+    select.addEventListener('change', () => {
+      settings.onActivate?.(select.value);
+      refresh();
+    });
+    refresh();
+    return { element: root, refresh };
+  }
+
+  global.MeldexViewTabs = Object.freeze({ create });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
 
@@ -60239,16 +61287,71 @@ function _sn2StopSep() {
   function settingsFor(doc) {
     const own = doc?.pageSettings;
     if (own?.paper && own?.grid) return clone(own);
-    return global.MeldexScriptNoteTemplateDefinitions?.get?.(doc?.layoutMode || 'manga')
+    const template = global.MeldexScriptNoteTemplateDefinitions?.get?.(doc?.layoutMode || 'manga')
       || global.MeldexScriptNoteTemplateDefinitions?.get?.('manga');
+    if (!template) return template;
+    // 紙面設定を保存していないシナリオは、エディタで選んでいる組方向（縦書き/横書き）で組む。
+    // 用紙テンプレートの既定組方向で組むと、縦書きのシナリオが横書きで印刷される。
+    const viewMode = doc?.rubyPresentation?.writingMode || doc?.editor?.viewMode;
+    if (viewMode === 'vertical' || viewMode === 'horizontal') {
+      const next = clone(template);
+      next.writingMode = viewMode === 'vertical' ? 'vertical-rl' : 'horizontal-tb';
+      return next;
+    }
+    return template;
   }
 
   function rowText(row) {
     return String(row?.text ?? row?.body ?? row?.content ?? row?.value ?? '');
   }
 
+  // 本文記法（ルビ {親|るび}・手動リンク [表示](ml:…)・エスケープ）を表示用の断片へ分解する
+  function rowSegments(raw) {
+    if (typeof global._sn2CollectVisibleSegments !== 'function') return null;
+    try { return global._sn2CollectVisibleSegments(String(raw || '')); } catch { return null; }
+  }
+
+  function unescapePlain(value) {
+    if (typeof global._sn2UnescapeScriptNotePlainText === 'function') return global._sn2UnescapeScriptNotePlainText(value);
+    return String(value || '').replace(/\\([\\{|}[\]])/g, '$1');
+  }
+
+  function hasRichMarkup(raw) {
+    const segments = rowSegments(raw);
+    return !!segments && segments.some(segment => segment.type === 'ruby' || segment.type === 'manual-link');
+  }
+
+  function appendRichText(target, raw) {
+    const segments = rowSegments(raw);
+    if (!segments) {
+      target.textContent = visibleRowText({ text: raw });
+      return;
+    }
+    segments.forEach(segment => {
+      if (segment.type === 'ruby') {
+        const ruby = document.createElement('ruby');
+        ruby.appendChild(document.createTextNode(segment.plain));
+        const rt = document.createElement('rt');
+        rt.textContent = segment.ruby;
+        ruby.appendChild(rt);
+        target.appendChild(ruby);
+      } else if (segment.type === 'manual-link') {
+        const link = document.createElement('span');
+        link.className = 'sn-print-link';
+        link.textContent = segment.plain;
+        target.appendChild(link);
+      } else {
+        target.appendChild(document.createTextNode(unescapePlain(segment.raw)));
+      }
+    });
+  }
+
   function visibleRowText(row) {
     const raw = rowText(row);
+    const segments = rowSegments(raw);
+    if (segments) {
+      return segments.map(segment => (segment.type === 'plain' ? unescapePlain(segment.raw) : segment.plain)).join('');
+    }
     const withoutRuby = raw.replace(/\{((?:\\.|[^{}|])*)\|(?:\\.|[^{}])*\}/g, '$1');
     if (typeof global._sn2UnescapeScriptNotePlainText === 'function') {
       return global._sn2UnescapeScriptNotePlainText(withoutRuby);
@@ -60264,7 +61367,24 @@ function _sn2StopSep() {
     return normalized.replace(/([\\{|}])/g, '\\$1');
   }
 
-  function rowKind(row) {
+  // 行のタイプ定義（タイプ設定の「区切り」「プロット」「種類」）を引く
+  function rowTypeDef(doc, row) {
+    const types = Array.isArray(doc?.scenarioTypes) ? doc.scenarioTypes : [];
+    const ref = row?.typeRef;
+    if (ref?.kind === 'none') return null;
+    if (ref?.id) {
+      const byId = types.find(type => type && String(type.id || '') === String(ref.id));
+      if (byId) return byId;
+    }
+    const name = String(row?.type || row?.role || '');
+    return name ? (types.find(type => type && String(type.name || '') === name) || null) : null;
+  }
+
+  function rowKind(row, doc) {
+    const typeDef = doc ? rowTypeDef(doc, row) : null;
+    if (typeDef?.isBreak) return 'pageBreak';
+    if (typeDef?.isSummary) return 'heading';
+    if (typeDef?.kind === 'heading' || typeDef?.kind === 'action') return typeDef.kind;
     const raw = String(row?.kind || row?.type || row?.role || '').toLowerCase();
     if (row?.isBreak || /pagebreak|改ページ|めくり|白紙/.test(raw)) return 'pageBreak';
     if (/heading|pillar|scene|幕|場|柱/.test(raw)) return 'heading';
@@ -60284,9 +61404,10 @@ function _sn2StopSep() {
       page = [];
     };
     (Array.isArray(doc?.rows) ? doc.rows : []).forEach((row, rowIndex) => {
-      const kind = rowKind(row);
+      const kind = rowKind(row, doc);
       if (kind === 'pageBreak') {
-        flush();
+        // 先頭の区切り（「1ページ」など）で白紙の1ページ目を作らない
+        if (page.length) flush();
         return;
       }
       if (kind === 'heading' && page.length === capacity - 1) flush();
@@ -60354,8 +61475,17 @@ function _sn2StopSep() {
       row.className = `sn-print-row sn-print-row--${entry.kind}`;
       row.dataset.sourceRow = String(entry.rowIndex);
       row.dataset.sourceRowId = String(entry.row?.id || '');
-      row.textContent = entry.text || '\u3000';
-      if (options.editable) {
+      const raw = rowText(entry.row);
+      const rich = hasRichMarkup(raw);
+      if (rich) appendRichText(row, raw);
+      else row.textContent = entry.text || '\u3000';
+      // ルビ・リンクを含む行は紙面上の直接編集を無効にする（プレーンテキスト編集では
+      // 記法が失われるため）。本文はシナリオ本体で編集する。
+      if (options.editable && rich) {
+        row.dataset.richReadonly = '1';
+        row.title = 'ルビやリンクを含む行は、シナリオ本体で編集してください';
+      }
+      if (options.editable && !rich) {
         row.contentEditable = 'plaintext-only';
         row.setAttribute('role', 'textbox');
         row.setAttribute('aria-label', `${entry.rowIndex + 1}行目を紙面上で編集`);
@@ -60407,6 +61537,7 @@ function _sn2StopSep() {
 .sn-print-page:nth-child(even){padding-left:var(--sn-margin-inner);padding-right:var(--sn-margin-outer)}
 .sn-print-page-content{block-size:100%;inline-size:100%;overflow:hidden}
 .sn-print-row{break-inside:avoid;white-space:pre-wrap}.sn-print-row--heading{font-weight:700;font-family:sans-serif}.sn-print-row--action{font-weight:400}.sn-print-row--cue{font-weight:600}.sn-print-row--dialogue{font-weight:400}
+.sn-print-row ruby{ruby-position:over}.sn-print-row rt{font-size:.5em;line-height:1}.sn-print-link{text-decoration:underline;text-underline-offset:.15em}.sn-print-row[data-rich-readonly]{cursor:default}
 .sn-print-row[contenteditable]{border-radius:2px;outline:none;cursor:text}.sn-print-row[contenteditable]:hover{background:#1677ff0d}.sn-print-row[contenteditable]:focus{background:#1677ff14;box-shadow:0 0 0 1px #1677ff88 inset}
 .sn-print-band-head{position:absolute;inset-block-start:4mm;inset-inline:8mm;display:flex;writing-mode:horizontal-tb;border-block-end:.4pt solid #777;font:8pt sans-serif}.sn-print-band-head span{text-align:center;border-inline-end:.4pt solid #777}
 .sn-print-page-number{position:absolute;inset-block-end:5mm;inset-inline-end:50%;writing-mode:horizontal-tb;font:8pt sans-serif}
@@ -61909,12 +63040,16 @@ function _sn2StopSep() {
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
     const cancellationEnabled = opts.cancellable !== false;
+    const normalizedStartPath = String(startPath || '');
+    const settingsPanel = normalizedStartPath.startsWith('/x-bookmarks/account-posts/')
+      ? 'Xアカウント保存'
+      : (normalizedStartPath.startsWith('/x-bookmarks/') ? 'Xブックマーク' : '');
     let cancelJobId = '';
     let operation = opts.operationProgress === false || !progressApi
       ? null
       : progressApi.begin({
           kind: String(opts.operationKind || 'background-job'),
-          settingsPanel: String(startPath || '').startsWith('/x-bookmarks/') ? 'Xブックマーク' : '',
+          settingsPanel,
           label: _operationLabel(startPath, opts),
           mode: 'indeterminate',
           background: true,
@@ -62355,8 +63490,29 @@ function _sn2StopSep() {
   }
 
   function accountStatus(entry) {
+    const dispatch = entry.last_dispatch || {};
+    const processed = Number(dispatch.processed) || 0;
+    const total = Number(dispatch.total) || 0;
+    const progress = total > 0 ? `${processed}/${total}件` : (processed > 0 ? `${processed}件` : '開始前');
+    if (entry.auto_retry_blocked) {
+      return `自動再開を停止中（同じ工程で3回進展なし） / 停止工程: ${dispatch.stage || '不明'} ${progress} / 「今すぐ取得して再開」で手動再開できます`;
+    }
+    if (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatch.status)) {
+      return `定期実行中 / ${dispatch.stage || '準備中'} ${progress}`;
+    }
+    if (dispatch.status === 'interrupted') {
+      return `再開待ち / ${dispatch.stage || '準備中'} ${progress}${entry.next_run_display ? ` / 再開予定 ${entry.next_run_display}` : ''}`;
+    }
     if (entry.enabled) return entry.next_run_display ? `定期実行ON / 次回 ${entry.next_run_display}` : '定期実行ON';
     return '定期実行OFF（手動のみ）';
+  }
+
+  async function restartBlockedSchedule(entry, username) {
+    if (!await confirmAccountPostsCost(username)) return;
+    await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}/run`, {}, {silentError: true});
+    setStatus(`@${username} の停止状態を解除し、保存を再開しました。進み具合は処理パネルで確認できます。`, false);
+    await window.MeldexImportProgress?.poll?.();
+    await refreshAccounts();
   }
 
   function actionButton(label, action, username, extraClass) {
@@ -62414,7 +63570,7 @@ function _sn2StopSep() {
       actions.append(
         up,
         down,
-        actionButton('今すぐ取得', 'sync', username),
+        actionButton(entry.auto_retry_blocked ? '今すぐ取得して再開' : '今すぐ取得', 'sync', username),
         actionButton('後処理を再開', 'enrich', username),
         actionButton('ブラウザで開く', 'open', username),
         actionButton('削除', 'delete', username, 'gb-btn-danger'),
@@ -62512,7 +63668,8 @@ function _sn2StopSep() {
         await persistOrder();
         renderAccountList();
       } else if (button.dataset.action === 'sync') {
-        await syncAccountPosts(username);
+        if (entry.auto_retry_blocked) await restartBlockedSchedule(entry, username);
+        else await syncAccountPosts(username);
       } else if (button.dataset.action === 'enrich') {
         if (!syncInFlight) await runAccountPostsJob(username, '', true);
       } else if (button.dataset.action === 'open') {
@@ -67979,8 +69136,8 @@ function _sn2StopSep() {
       '</div>' +
       '<div class="csv-convert-columns"><table><thead><tr><th>列名</th><th>タイプ</th><th>数式</th><th>注意</th></tr></thead><tbody></tbody></table></div>' +
       '<div class="csv-dialog-actions"><button type="button" class="gb-btn gb-btn-sm" data-command="cancel">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-command="submit">シートを作成</button></div>';
-    dialog.querySelectorAll('input:not([type="checkbox"])').forEach(control => control.classList.add('gb-input'));
-    dialog.querySelectorAll('select').forEach(control => control.classList.add('gb-select'));
+    dialog.querySelectorAll('input:not([type="checkbox"])').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+    dialog.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select'); });
     dialog.querySelector('[name="mode"]').classList.add('gb-select-medium');
     dialog.querySelector('[name="item-column"]').classList.add('gb-select-column');
     dialog.querySelector('[name="has-header"]').parentElement.classList.add('gb-check');
@@ -70232,18 +71389,37 @@ function _snToolPushStorageHistory(label, beforeSnapshot, keys, detail) {
   return true;
 }
 
-function _snToolReadJsonObject(key) {
+// 端末に保存した設定（テンプレート・フィルタ・行セット等）が読めない時、空として扱うと
+// 次の保存で元の内容が上書きされて消える。上書きの前に一度だけ別キーへ退避する。
+function _snPreserveUnreadableStorage(key, raw) {
+  if (raw == null || raw === '') return;
   try {
-    const value = JSON.parse(localStorage.getItem(key) || '{}');
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  } catch { return {}; }
+    const backupKey = key + '.unreadable-backup';
+    if (localStorage.getItem(backupKey) == null) localStorage.setItem(backupKey, String(raw));
+    console.warn('[scriptnote] 端末の保存設定を読めないため、元の内容を ' + backupKey + ' へ退避しました');
+  } catch {}
+}
+
+function _snToolReadJsonObject(key) {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(key);
+    const value = JSON.parse(raw || '{}');
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  } catch {}
+  _snPreserveUnreadableStorage(key, raw);
+  return {};
 }
 
 function _snToolReadJsonArray(key) {
+  let raw = null;
   try {
-    const value = JSON.parse(localStorage.getItem(key) || '[]');
-    return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item) : [];
-  } catch { return []; }
+    raw = localStorage.getItem(key);
+    const value = JSON.parse(raw || '[]');
+    if (Array.isArray(value)) return value.filter(item => typeof item === 'string' && item);
+  } catch {}
+  _snPreserveUnreadableStorage(key, raw);
+  return [];
 }
 
 function _snToolPresetNames(storageKey, orderKey) {
@@ -70350,10 +71526,7 @@ class ScriptNoteComponent extends ToolComponent {
   <button type="button" class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
   <div class="tb-spacer"></div>
   <button type="button" class="tb-icon-btn" data-sn-action="filter" id="btn-filter" title="タイプ/採用状況でフィルタ" aria-label="タイプ/採用状況でフィルタ"><span class="ico ico-funnel"></span></button>
-  <select id="sn-filter-preset" class="tb-select sn2-toolbar-filter-preset" title="フィルタプリセット" aria-label="フィルタプリセット"><option value="__all__">すべて表示</option></select>
   <div class="sep"></div>
-  <button type="button" class="tb-icon-btn" data-sn-action="saveFilter" title="現在のフィルタを登録" aria-label="現在のフィルタを登録"><span class="ico ico-save"></span></button>
-  <button type="button" class="tb-icon-btn" data-sn-action="manageFilters" title="フィルタプリセットを管理" aria-label="フィルタプリセットを管理"><span class="ico ico-listChecks"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み" aria-label="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
   <button type="button" class="tb-icon-btn" data-sn-action="search" title="テキスト列を検索・置換" aria-label="テキスト列を検索・置換"><span class="ico ico-search"></span></button>
   <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-sn-action="detail" id="btn-detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
@@ -70392,7 +71565,25 @@ class ScriptNoteComponent extends ToolComponent {
           silent: true,
           skipStatus: true,
         };
-        this._loadScenario(this.state.scenarioPath, isPaneActive ? {} : passiveLoadOpts);
+        const loadPath = this.state.scenarioPath;
+        this._lastLoadError = null;
+        const loading = this._loadScenario(loadPath, isPaneActive ? {} : passiveLoadOpts);
+        if (!isPaneActive) {
+          // 非アクティブなパネルの読込は表示を出さない設定で行うが、失敗まで黙ると
+          // 空のパネルだけが残るため、どのシナリオが読めなかったかを知らせる。
+          Promise.resolve(loading).then(loaded => loaded, error => {
+            this._lastLoadError = error;
+            return false;
+          }).then(loaded => {
+            // 新しい読込に追い越された場合（エラーなしの false）は失敗ではない。
+            if (loaded !== false || !this._lastLoadError) return;
+            const name = String(loadPath).split(/[\\/]/).pop() || loadPath;
+            const reason = this._lastLoadError?.message || this._lastLoadError || '';
+            if (typeof showStatus === 'function') {
+              showStatus(`別のパネルのシナリオ「${name}」を読み込めませんでした${reason ? `: ${reason}` : ''}`, true);
+            }
+          });
+        }
         return;
       }
     } else if (!this._editor?.doc) {
@@ -70905,9 +72096,18 @@ class ScriptNoteComponent extends ToolComponent {
       });
     }
     const titleInput = this.el.querySelector('#title-input');
+    // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+    if (titleInput) titleInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        titleInput.blur();
+      }
+    });
     if (titleInput) titleInput.addEventListener('change', async () => {
       const editor = this._editor;
       if (editor?.doc) {
+        const previousTitle = editor.doc.title || '';
         editor._pushUndo('タイトル変更');
         editor.doc.title = titleInput.value;
         editor._markDirty();
@@ -70915,9 +72115,45 @@ class ScriptNoteComponent extends ToolComponent {
         const newTitle = titleInput.value.trim();
         const oldPath = editor._path;
         if (newTitle && oldPath) {
+          // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+          if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
+            applyOptimisticRenameLabel(oldPath, newTitle, 'scriptnote');
+          }
           try {
-            const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
-            if (this._editor !== editor || editor._path !== oldPath || editor.doc?.title !== newTitle) return;
+            // 1) 表示中の文書は自動保存と同じ列でタイトルを確定する（並走すると409になる）。
+            let res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
+            const storageName = window.GBPathUtils?.displayTitle?.storageName;
+            const currentStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+            const needsFileRename = res?.new_path === oldPath && typeof storageName === 'function' && storageName(newTitle) !== currentStem;
+            // タイトルを続けて変えた場合は、後続の change が改名を引き継ぐ。
+            if (editor.doc?.title !== newTitle) return;
+            if (this._editor !== editor || editor._path !== oldPath) {
+              // 1段目（タイトル保存）の後で表示中のシナリオが切り替わった。別の保存と競合し得るため
+              // ファイル名は変えず、先に変えたツリー・タブの名前を実際のファイル名へ戻して知らせる。
+              if (needsFileRename) {
+                if (editor._path === oldPath && newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
+                  applyOptimisticRenameLabel(oldPath, currentStem, 'scriptnote');
+                }
+                if (typeof showStatus === 'function') {
+                  showStatus('タイトルは保存しましたが、表示中のシナリオが切り替わったためファイル名は変更していません。もう一度タイトルを確定すると変更できます', true);
+                }
+              }
+              return;
+            }
+            // 2) タイトル＝ファイル名。保存済みの状態でファイル名を新しいタイトルへ変える。
+            let switchedAfterFileRename = false;
+            if (needsFileRename) {
+              res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote' });
+              if (editor._path !== oldPath) {
+                if (typeof showStatus === 'function') {
+                  showStatus('ファイル名は変更しましたが、同時に別の変更があったため画面へ反映できませんでした。フォルダツリーから開き直してください', true);
+                }
+                return;
+              }
+              // ファイルは既に新しい名前へ移っている。表示が切り替わっていても、このエディタの保存先と
+              // ツリーは新しい名前へ合わせる（旧名へ保存して別ファイルを作らないため）。
+              switchedAfterFileRename = this._editor !== editor;
+            }
             if (res?.new_path) {
               // エディタのパスとレジストリを更新
               if (typeof _sn2Editors !== 'undefined') {
@@ -70926,21 +72162,27 @@ class ScriptNoteComponent extends ToolComponent {
                 if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
               }
               editor._path = res.new_path;
-              this.state.scenarioPath = res.new_path;
+              if (!switchedAfterFileRename) this.state.scenarioPath = res.new_path;
               window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
                 detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
               }));
-              window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
+              if (!switchedAfterFileRename) window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
               if (typeof renameAppPathReferences === 'function') {
                 renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, etag:res.etag, titleOnly:res.title_only, type: 'scriptnote' });
               }
               // タブ名を更新
-              if (typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);
+              if (!switchedAfterFileRename && typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);
               // フォルダツリーのノード名を更新
               if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
             }
           } catch (e) {
-            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）
+            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）。
+            // 先に変えたツリーとタブの名前は、変わらなかったファイル名に合わせて戻す。
+            if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function' && editor._path === oldPath) {
+              const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+              applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
+              titleInput.value = editor.doc.title || '';
+            }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
           }
         }
@@ -71538,6 +72780,8 @@ class ScriptNoteComponent extends ToolComponent {
         throw new Error('競合状態が更新されたため、再読込を中止しました');
       }
       if (restoredDraft) this._editor._dirty = true;
+      // ツールバー直下のビュータブ（絞り込みと操作単位をファイル内のビューとして切り替える）
+      this._editor._mountScenarioViewTabs?.(this.el?.querySelector?.('#se-toolbar'));
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
       this._syncReadOnlyFromFileLock();
@@ -71576,6 +72820,7 @@ class ScriptNoteComponent extends ToolComponent {
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオを読み込みました');
       return true;
     } catch (err) {
+      this._lastLoadError = err;
       if (this.el) this.el.dataset.loadFailed = '1';
       if (!this._editor?.doc) {
         this.state.scenarioPath = '';
@@ -95129,7 +96374,8 @@ function getCurrentPublishContext() {
     };
   }
   if (tab?.type === 'scriptnote' && tab.path) {
-    return { kind: 'scriptnote', label: 'シナリオ', path: tab.path };
+    const stem = String(tab.path).split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+    return { kind: 'scriptnote', label: tab.label || stem || 'シナリオ', path: tab.path };
   }
   return { kind: '', label: '未選択', path: '' };
 }
@@ -95394,7 +96640,7 @@ function renderPublishSettingsPanel(contextSnapshot) {
   if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
-  const isSinglePanel = ['page', 'entity', 'csv', 'calendar'].includes(ctx.kind);
+  const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
   const isDb = ctx.kind === 'database';
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
     <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます') : ''}</div>
@@ -97035,14 +98281,8 @@ async function resetLayoutToDefault() {
 
   function _rootSectionLabel(kind) {
     if (kind === 'home') return 'ホームフォルダ';
-    if (kind === 'workspace') return 'ワークスペースフォルダ';
+    if (kind === 'workspace') return 'ワークスペース';
     return 'ソースフォルダ';
-  }
-
-  function _rootIcon(kind) {
-    if (kind === 'home') return 'home';
-    if (kind === 'workspace') return 'usersRound';
-    return 'folderTree';
   }
 
   function _rootKey(root) {
@@ -97143,8 +98383,9 @@ async function resetLayoutToDefault() {
       } catch (_) {}
     }
 
-    const order = { home: 0, source: 1, workspace: 2 };
-    roots.sort((a, b) => (order[_rootKind(a)] - order[_rootKind(b)]) || String(a.name).localeCompare(String(b.name), 'ja'));
+    // 左のフォルダツリーパネルと同じ区分順・登録順（名前順に並べ替えない）
+    const order = { workspace: 0, source: 1, home: 2 };
+    roots.sort((a, b) => order[_rootKind(a)] - order[_rootKind(b)]);
     return roots;
   }
 
@@ -97179,8 +98420,7 @@ async function resetLayoutToDefault() {
   function _clearSelection(tree) {
     tree.querySelectorAll('[data-gb-folder-picker-selected="1"]').forEach(row => {
       delete row.dataset.gbFolderPickerSelected;
-      row.style.background = '';
-      row.style.color = '';
+      if (row.getAttribute('role') === 'treeitem') row.setAttribute('aria-selected', 'false');
     });
   }
 
@@ -97188,8 +98428,7 @@ async function resetLayoutToDefault() {
     _clearSelection(state.tree);
     if (state.searchResultsEl) _clearSelection(state.searchResultsEl);
     row.dataset.gbFolderPickerSelected = '1';
-    row.style.background = 'var(--accent)';
-    row.style.color = 'var(--ui-fg-strong)';
+    if (row.getAttribute('role') === 'treeitem') row.setAttribute('aria-selected', 'true');
   }
 
   function _icon(name, size) {
@@ -97230,31 +98469,41 @@ async function resetLayoutToDefault() {
     node.className = 'gb-folder-picker-node';
 
     const row = document.createElement('div');
-    row.className = 'gb-folder-picker-row';
+    // 見た目は左のフォルダツリーパネルと同じ（UI共通ルール 4.1）。ルート行はアイコンなし・太字・区分背景
+    row.className = depth === 0 ? 'gb-folder-picker-row is-root' : 'gb-folder-picker-row';
     row.dataset.gbPickerKind = isFile ? 'file' : 'folder';
     row.dataset.gbPickerName = String(name || '').toLocaleLowerCase('ja');
     row.dataset.gbPickerPath = String(path || '').toLocaleLowerCase('ja');
-    row.style.cssText = `display:flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px 4px ${8 + depth * 16}px;border-radius:4px;cursor:pointer;font-size:12px;`;
+    row.dataset.path = path;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', String(depth + 1));
+    row.setAttribute('aria-selected', 'false');
+    if (!isFile) row.setAttribute('aria-expanded', 'false');
+    row.tabIndex = 0;
+    // 行の寸法・字下げ・選択表示は共通トークン（--ui-row-*）を使う CSS 側で決める
+    row.style.setProperty('--gb-picker-depth', String(depth));
 
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'gb-folder-picker-toggle';
+    toggle.tabIndex = -1;
     toggle.title = '展開';
     toggle.setAttribute('aria-label', `${name}を展開`);
     toggle.setAttribute('aria-expanded', 'false');
-    toggle.style.cssText = 'width:18px;height:22px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;flex-shrink:0;';
-    toggle.innerHTML = _icon('chevronRight', 12);
+    toggle.innerHTML = _icon('chevronRight', 16);
     if (isFile) toggle.style.visibility = 'hidden';
     row.appendChild(toggle);
 
-    const icon = document.createElement('span');
-    icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
-    icon.innerHTML = _icon(depth === 0 ? _rootIcon(_rootKind(root)) : (isFile ? _fileIconForType(folder.type) : 'folder'), 14);
-    row.appendChild(icon);
+    if (depth > 0) {
+      const icon = document.createElement('span');
+      icon.className = 'gb-folder-picker-icon';
+      icon.innerHTML = _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
+      row.appendChild(icon);
+    }
 
     const label = document.createElement('span');
+    label.className = 'gb-folder-picker-label';
     label.textContent = name;
-    label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     row.appendChild(label);
     row.title = path;
 
@@ -97270,16 +98519,21 @@ async function resetLayoutToDefault() {
       );
       _markSelectedAcross(state, row);
       _setCurrentPathText(state.current, _rowLabelText(state.selected));
-      state.ok.disabled = false;
+      state.onSelect?.(state.selected, { automatic });
     };
+    const activate = () => { state.onActivate?.(state.selected); };
 
     if (state.nodeByPath) state.nodeByPath.set(path, { row, selectRow, isFile, expand: null });
 
     if (isFile) {
       row.addEventListener('click', () => selectRow());
-      row.addEventListener('dblclick', () => { selectRow(); state.close(state.selected); });
-      row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-      row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
+      row.addEventListener('dblclick', () => { selectRow(); activate(); });
+      row.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        selectRow();
+        if (event.key === 'Enter') activate();
+      });
       node.appendChild(row);
       if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
       return node;
@@ -97289,29 +98543,34 @@ async function resetLayoutToDefault() {
       const expanded = children.style.display !== 'none';
       if (expanded) {
         children.style.display = 'none';
+        row.setAttribute('aria-expanded', 'false');
         toggle.title = '展開';
         toggle.setAttribute('aria-label', `${name}を展開`);
         toggle.setAttribute('aria-expanded', 'false');
-        toggle.innerHTML = _icon('chevronRight', 12);
+        toggle.innerHTML = _icon('chevronRight', 16);
         if (typeof replaceIcons === 'function') replaceIcons(toggle);
         return;
       }
       children.style.display = '';
+      row.setAttribute('aria-expanded', 'true');
       toggle.title = '折りたたむ';
       toggle.setAttribute('aria-label', `${name}を折りたたむ`);
       toggle.setAttribute('aria-expanded', 'true');
-      toggle.innerHTML = _icon('chevronDown', 12);
+      toggle.innerHTML = _icon('chevronDown', 16);
       if (typeof replaceIcons === 'function') replaceIcons(toggle);
       if (children.dataset.loaded === '1') return;
       children.dataset.loaded = '1';
       const loading = document.createElement('div');
       loading.textContent = '読み込み中...';
-      loading.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
+      loading.className = 'gb-folder-picker-message';
+      loading.style.setProperty('--gb-picker-depth', String(depth + 1));
       children.appendChild(loading);
       try {
         const payload = await apiFetch(_browseUrl(root, path, { selectFiles: state.selectFiles }), { skipBrowseCache: true });
         const rows = (Array.isArray(payload) ? payload : (payload.items || []))
-          .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles && (!state.fileTypes || state.fileTypes.includes(item.type)))));
+          .filter(item => item?.path && (item?.type === 'folder' || (state.selectFiles
+            && (!state.fileTypes || state.fileTypes.includes(item.type))
+            && (typeof state.fileFilter !== 'function' || state.fileFilter(item)))));
         rows.sort((a, b) => {
           const aFolder = a.type === 'folder' ? 0 : 1;
           const bFolder = b.type === 'folder' ? 0 : 1;
@@ -97323,7 +98582,8 @@ async function resetLayoutToDefault() {
         if (!rows.length) {
           const empty = document.createElement('div');
           empty.textContent = state.emptyText || (state.selectFiles ? 'この階層にファイル・フォルダはありません。' : 'この階層にフォルダはありません。');
-          empty.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--fg2);`;
+          empty.className = 'gb-folder-picker-message';
+        empty.style.setProperty('--gb-picker-depth', String(depth + 1));
           children.appendChild(empty);
           toggle.style.visibility = 'hidden';
           return;
@@ -97334,7 +98594,8 @@ async function resetLayoutToDefault() {
         children.innerHTML = '';
         const failed = document.createElement('div');
         failed.textContent = 'フォルダ一覧を読み込めませんでした。';
-        failed.style.cssText = `padding:3px 8px 3px ${26 + (depth + 1) * 16}px;font-size:11px;color:var(--red);`;
+        failed.className = 'gb-folder-picker-message is-error';
+        failed.style.setProperty('--gb-picker-depth', String(depth + 1));
         children.appendChild(failed);
       }
     };
@@ -97343,16 +98604,33 @@ async function resetLayoutToDefault() {
       if (entry) entry.expand = expand;
     }
 
+    const foldersSelectable = state.selectFolders !== false;
     row.addEventListener('click', (event) => {
       if (event.target === toggle || toggle.contains(event.target)) return;
-      selectRow();
+      if (foldersSelectable) selectRow();
+      else expand();
     });
-    row.addEventListener('dblclick', () => {
-      selectRow();
-      state.close(state.selected);
+    if (foldersSelectable) {
+      row.addEventListener('dblclick', () => {
+        selectRow();
+        activate();
+      });
+    }
+    row.addEventListener('keydown', (event) => {
+      const expanded = children.style.display !== 'none';
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        if (!expanded) expand();
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        if (expanded) expand();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (!foldersSelectable) { expand(); return; }
+        selectRow();
+        if (event.key === 'Enter') activate();
+      }
     });
-    row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-    row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
     toggle.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -97396,74 +98674,299 @@ async function resetLayoutToDefault() {
     }
   }
 
+  // フォルダツリーからフォルダ/ファイルを選ぶ共通ブラウザ。ダイアログ本文へ埋め込める。
+  // pickFolder() はこれを共通ダイアログに載せたもの。独自のツリーをダイアログ内に作らず、これを使う。
+  function createBrowser(options = {}) {
+    const body = document.createElement('div');
+    body.className = 'gb-folder-picker-body';
+    // 共通部品の目印。ダイアログ側の一括装飾（タッチ用拡大など）はこの中の部品に触れない（UI共通ルール 4.0）
+    body.dataset.uiComponent = 'folder-picker';
+
+    const currentRow = document.createElement('div');
+    currentRow.className = 'gb-folder-picker-current-row';
+    currentRow.dataset.e2eId = 'gb-folder-picker-current-row';
+    currentRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:8px;';
+    const currentLabel = document.createElement('span');
+    currentLabel.textContent = options.currentLabel || '選択中:';
+    currentLabel.style.whiteSpace = 'nowrap';
+    const current = document.createElement('code');
+    current.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--fg);';
+    current.textContent = options.initialPath || '未選択';
+    currentRow.appendChild(currentLabel);
+    currentRow.appendChild(current);
+    body.appendChild(currentRow);
+
+    const tools = document.createElement('div');
+    tools.className = 'gb-folder-picker-tools';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'gb-input gb-folder-picker-search';
+    searchInput.dataset.e2eId = 'gb-folder-picker-search';
+    searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
+    searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
+    const sortSelect = document.createElement('select');
+    sortSelect.className = 'gb-input gb-folder-picker-sort';
+    sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
+    sortSelect.setAttribute('aria-label', '並び順');
+    sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
+    const filterSelect = document.createElement('select');
+    filterSelect.className = 'gb-input gb-folder-picker-filter';
+    filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
+    filterSelect.setAttribute('aria-label', '表示する種類');
+    filterSelect.innerHTML = options.selectFiles
+      ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
+      : '<option value="folder">フォルダ</option>';
+    [searchInput, sortSelect, filterSelect].forEach(control => {
+      tools.appendChild(control);
+    });
+    body.appendChild(tools);
+
+    const tree = document.createElement('div');
+    tree.className = 'gb-folder-picker-tree';
+    tree.dataset.e2eId = 'gb-folder-picker-tree';
+    tree.setAttribute('role', 'tree');
+    tree.style.cssText = 'flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;';
+    body.appendChild(tree);
+
+    let searchResults = null;
+    if (typeof options.searchProvider === 'function') {
+      searchResults = document.createElement('div');
+      searchResults.className = 'gb-folder-picker-search-results';
+      searchResults.style.cssText = tree.style.cssText;
+      searchResults.style.display = 'none';
+      body.appendChild(searchResults);
+    }
+
+    const status = document.createElement('div');
+    status.className = 'gb-folder-picker-status';
+    status.dataset.e2eId = 'gb-folder-picker-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'min-height:18px;font-size:12px;color:var(--fg2);margin-top:6px;';
+    body.appendChild(status);
+
+    const state = {
+      tree,
+      current,
+      selected: null,
+      initialPath: options.initialPath || '',
+      selectFiles: !!options.selectFiles,
+      fileTypes: Array.isArray(options.fileTypes) && options.fileTypes.length ? options.fileTypes.slice() : null,
+      emptyText: options.emptyText || '',
+      nodeByPath: new Map(),
+      searchResultsEl: searchResults,
+      sortDirection: 'asc',
+      filterKind: options.selectFiles ? 'all' : 'folder',
+      roots: null,
+      selectFolders: options.selectFolders !== false,
+      fileFilter: typeof options.fileFilter === 'function' ? options.fileFilter : null,
+      onSelect: typeof options.onSelect === 'function' ? options.onSelect : null,
+      onActivate: typeof options.onActivate === 'function' ? options.onActivate : null,
+    };
+
+    let searchItemsCache = null;
+    async function _ensureSearchItems() {
+      if (searchItemsCache) return searchItemsCache;
+      try {
+        const list = await options.searchProvider();
+        searchItemsCache = Array.isArray(list) ? list : [];
+      } catch (_) {
+        searchItemsCache = [];
+      }
+      return searchItemsCache;
+    }
+
+    function _renderSearchResults(items, query) {
+      searchResults.innerHTML = '';
+      const q = String(query || '').toLowerCase().trim();
+      const filtered = items.filter(d => !q || String(d.name || '').toLowerCase().includes(q) || String(d.path || '').toLowerCase().includes(q));
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.textContent = '該当なし';
+        empty.style.cssText = 'padding:8px;font-size:12px;color:var(--fg2);';
+        searchResults.appendChild(empty);
+        return;
+      }
+      filtered.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+      filtered.forEach(d => {
+        const row = document.createElement('div');
+        row.className = 'gb-folder-picker-row';
+        row.style.setProperty('--gb-picker-depth', '0');
+        const icon = document.createElement('span');
+        icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
+        icon.innerHTML = _icon('database', 14);
+        row.appendChild(icon);
+        const label = document.createElement('span');
+        label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+        label.textContent = d.name || _leafName(d.path);
+        row.appendChild(label);
+        if (d.rootName || d.relPath) {
+          const sub = document.createElement('span');
+          sub.style.cssText = 'font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%;';
+          sub.textContent = d.rootName ? (d.rootName + (d.relPath ? ' / ' + d.relPath : '')) : (d.relPath || '');
+          row.appendChild(sub);
+        }
+        row.title = d.path || '';
+        const selectThis = () => {
+          const matchedRoot = Array.isArray(state.roots) ? state.roots.find(r => {
+            const rp = _normalizePath(r.rootPath || r.path);
+            return rp && (_normalizePath(d.path) === rp || _normalizePath(d.path).startsWith(rp + '/'));
+          }) : null;
+          state.selected = matchedRoot
+            ? _selectionFor(matchedRoot, d.path, d.name, 'file', d.type)
+            : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file', type: d.type || '' };
+          _markSelectedAcross(state, row);
+          _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
+          state.onSelect?.(state.selected, { automatic: false });
+        };
+        row.addEventListener('click', selectThis);
+        row.addEventListener('dblclick', () => { selectThis(); state.onActivate?.(state.selected); });
+        searchResults.appendChild(row);
+      });
+    }
+
+    function _applyLocalTreeView() {
+      if (typeof options.searchProvider === 'function') return;
+      const query = searchInput.value.toLocaleLowerCase('ja').trim();
+      const visit = node => {
+        const row = node.querySelector(':scope > .gb-folder-picker-row');
+        const children = node.querySelector(':scope > .gb-folder-picker-children');
+        const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
+        // some() は最初の一致で止まり後続の兄弟が判定されないため、全件を判定してから集計する
+        const descendantVisible = childNodes.map(visit).some(Boolean);
+        const kind = row?.dataset.gbPickerKind || 'folder';
+        const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
+        const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
+        const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
+        node.hidden = !visible;
+        return visible;
+      };
+      tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
+    }
+    state.applyTreeView = _applyLocalTreeView;
+
+    searchInput.addEventListener('input', async () => {
+      if (typeof options.searchProvider !== 'function') {
+        _applyLocalTreeView();
+        return;
+      }
+        const query = searchInput.value;
+        if (!query.trim()) {
+          searchResults.style.display = 'none';
+          tree.style.display = '';
+          return;
+        }
+        tree.style.display = 'none';
+        searchResults.style.display = '';
+        searchResults.textContent = '読み込み中...';
+        const items = await _ensureSearchItems();
+        if (searchInput.value !== query) return;
+        _renderSearchResults(items, query);
+    });
+    filterSelect.addEventListener('change', () => {
+      state.filterKind = filterSelect.value;
+      if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
+        _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
+      } else _applyLocalTreeView();
+    });
+    sortSelect.addEventListener('change', () => {
+      state.sortDirection = sortSelect.value;
+      state.nodeByPath.clear();
+      searchItemsCache = null;
+      searchInput.value = '';
+      searchResults && (searchResults.style.display = 'none');
+      tree.style.display = '';
+      renderRoots();
+    });
+
+    let loadedRoots = null;
+    async function renderRoots() {
+      tree.textContent = 'フォルダを読み込み中...';
+      status.textContent = '';
+      status.style.color = '';
+      try {
+      const roots = loadedRoots || await loadRoots(options);
+      loadedRoots = roots;
+      state.roots = roots;
+      tree.innerHTML = '';
+      if (!roots.length) {
+        status.textContent = '選択できるフォルダがありません。';
+        return;
+      }
+      // ルートはパネルと同じ区分順・登録順で出す（区分見出しが重複しない）。並び順の指定は各フォルダの中身に効く。
+      // パネルと同じく、ルートが無い区分も見出しだけは出す（表示対象から外した区分は出さない）
+      const sectionKinds = [];
+      if (options.includeWorkspaces !== false) sectionKinds.push('workspace');
+      if (options.includeSources !== false) sectionKinds.push('source');
+      if (options.includeHome !== false) sectionKinds.push('home');
+      const entries = [];
+      sectionKinds.forEach(kind => {
+        const inKind = roots.filter(root => _rootKind(root) === kind);
+        if (!inKind.length) entries.push({ kind, root: null });
+        inKind.forEach(root => entries.push({ kind, root }));
+      });
+      let lastSection = '';
+      entries.forEach(({ kind, root }) => {
+        const section = _rootSectionLabel(kind);
+        if (section !== lastSection) {
+          // パネルの区分見出しと同じ形（開閉の三角＋区分名）。押すとその区分のルートを畳む
+          const heading = document.createElement('button');
+          heading.type = 'button';
+          heading.className = 'gb-folder-picker-section';
+          heading.setAttribute('aria-expanded', 'true');
+          const chevron = document.createElement('span');
+          chevron.className = 'sidebar-section-toggle expanded';
+          chevron.innerHTML = _icon('chevronRight', 10);
+          const text = document.createElement('span');
+          text.textContent = section;
+          heading.append(chevron, text);
+          heading.addEventListener('click', () => {
+            const open = heading.getAttribute('aria-expanded') !== 'true';
+            heading.setAttribute('aria-expanded', open ? 'true' : 'false');
+            chevron.classList.toggle('expanded', open);
+            let next = heading.nextElementSibling;
+            while (next && !next.classList.contains('gb-folder-picker-section')) {
+              next.classList.toggle('is-section-collapsed', !open);
+              next = next.nextElementSibling;
+            }
+          });
+          tree.appendChild(heading);
+          lastSection = section;
+        }
+        if (root) tree.appendChild(_createFolderNode(root, { name: root.name, path: root.path }, 0, state));
+      });
+      if (typeof replaceIcons === 'function') replaceIcons(tree);
+      if (options.revealPath) {
+        try { await _revealPath(state, options.revealPath); } catch (_) {}
+      }
+    } catch (error) {
+      tree.textContent = '';
+      status.textContent = 'フォルダ一覧を読み込めませんでした。';
+      status.style.color = 'var(--red)';
+    }
+    }
+    return {
+      element: body,
+      tree,
+      searchInput,
+      status,
+      state,
+      // DOM接続後に呼ぶ。中略表示は実効幅が必要なため接続前には行わない
+      start() {
+        _setCurrentPathText(current, options.initialPath || '未選択');
+        return renderRoots().then(() => state.roots || []);
+      },
+      reload() {
+        loadedRoots = null;
+        state.nodeByPath.clear();
+        return renderRoots().then(() => state.roots || []);
+      },
+      getSelection: () => state.selected,
+    };
+  }
+
   function pickFolder(options = {}) {
     return new Promise(async resolve => {
-      const body = document.createElement('div');
-      body.className = 'gb-folder-picker-body';
-
-      const currentRow = document.createElement('div');
-      currentRow.className = 'gb-folder-picker-current-row';
-      currentRow.dataset.e2eId = 'gb-folder-picker-current-row';
-      currentRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:8px;';
-      const currentLabel = document.createElement('span');
-      currentLabel.textContent = options.currentLabel || '選択中:';
-      currentLabel.style.whiteSpace = 'nowrap';
-      const current = document.createElement('code');
-      current.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--fg);';
-      current.textContent = options.initialPath || '未選択';
-      currentRow.appendChild(currentLabel);
-      currentRow.appendChild(current);
-      body.appendChild(currentRow);
-
-      const tools = document.createElement('div');
-      tools.className = 'gb-folder-picker-tools';
-      const searchInput = document.createElement('input');
-      searchInput.type = 'search';
-      searchInput.className = 'gb-input gb-folder-picker-search';
-      searchInput.dataset.e2eId = 'gb-folder-picker-search';
-      searchInput.placeholder = options.searchPlaceholder || '名前・パスを検索';
-      searchInput.setAttribute('aria-label', 'フォルダやファイルを検索');
-      const sortSelect = document.createElement('select');
-      sortSelect.className = 'gb-input gb-folder-picker-sort';
-      sortSelect.dataset.e2eId = 'gb-folder-picker-sort';
-      sortSelect.setAttribute('aria-label', '並び順');
-      sortSelect.innerHTML = '<option value="asc">名前 昇順</option><option value="desc">名前 降順</option>';
-      const filterSelect = document.createElement('select');
-      filterSelect.className = 'gb-input gb-folder-picker-filter';
-      filterSelect.dataset.e2eId = 'gb-folder-picker-filter';
-      filterSelect.setAttribute('aria-label', '表示する種類');
-      filterSelect.innerHTML = options.selectFiles
-        ? '<option value="all">すべて</option><option value="folder">フォルダ</option><option value="file">ファイル</option>'
-        : '<option value="folder">フォルダ</option>';
-      [searchInput, sortSelect, filterSelect].forEach(control => {
-        tools.appendChild(control);
-      });
-      body.appendChild(tools);
-
-      const tree = document.createElement('div');
-      tree.className = 'gb-folder-picker-tree';
-      tree.dataset.e2eId = 'gb-folder-picker-tree';
-      tree.setAttribute('role', 'tree');
-      tree.style.cssText = 'flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;';
-      body.appendChild(tree);
-
-      let searchResults = null;
-      if (typeof options.searchProvider === 'function') {
-        searchResults = document.createElement('div');
-        searchResults.className = 'gb-folder-picker-search-results';
-        searchResults.style.cssText = tree.style.cssText;
-        searchResults.style.display = 'none';
-        body.appendChild(searchResults);
-      }
-
-      const status = document.createElement('div');
-      status.className = 'gb-folder-picker-status';
-      status.dataset.e2eId = 'gb-folder-picker-status';
-      status.setAttribute('role', 'status');
-      status.setAttribute('aria-live', 'polite');
-      status.style.cssText = 'min-height:18px;font-size:12px;color:var(--fg2);margin-top:6px;';
-      body.appendChild(status);
-
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'gb-btn gb-btn-sm gb-btn-quiet';
@@ -97476,7 +98979,15 @@ async function resetLayoutToDefault() {
       ok.textContent = '選択';
       ok.disabled = true;
       let closed = false;
-      let state = null;
+      const browser = createBrowser({
+        ...options,
+        onSelect: () => { ok.disabled = false; },
+        onActivate: selection => close(selection),
+      });
+      const body = browser.element;
+      const searchInput = browser.searchInput;
+      const tree = browser.tree;
+      const state = browser.state;
       let modalApi = null;
       const close = value => {
         if (closed) return;
@@ -97486,6 +98997,8 @@ async function resetLayoutToDefault() {
         resolve(value || null);
       };
       const onKeyDown = event => {
+        // ツリー行のEnterは行側で選択してから確定するため、ここでは古い選択で閉じない
+        if (event.target?.closest?.('.gb-folder-picker-tree, .gb-folder-picker-search-results')) return;
         if (event.key === 'Enter' && state?.selected) close(state.selected);
       };
       modalApi = window.GBUI.createModal({
@@ -97514,190 +99027,18 @@ async function resetLayoutToDefault() {
       modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'gb-folder-picker-header-close');
       modalApi.footer.classList.add('gb-folder-picker-actions');
       modalApi.open();
-      // DOM接続前は実効幅が取れないため、中略表示の適用はここ（appendChild後）で行う
-      _setCurrentPathText(current, options.initialPath || '未選択');
       if (typeof replaceIcons === 'function') replaceIcons(overlay);
 
-      state = {
-        tree,
-        current,
-        ok,
-        selected: null,
-        initialPath: options.initialPath || '',
-        selectFiles: !!options.selectFiles,
-        fileTypes: Array.isArray(options.fileTypes) && options.fileTypes.length ? options.fileTypes.slice() : null,
-        emptyText: options.emptyText || '',
-        nodeByPath: new Map(),
-        searchResultsEl: searchResults,
-        sortDirection: 'asc',
-        filterKind: options.selectFiles ? 'all' : 'folder',
-        roots: null,
-        close: value => close(value),
-      };
       document.addEventListener('keydown', onKeyDown, true);
       cancel.addEventListener('click', () => close(null));
       ok.addEventListener('click', () => close(state.selected));
-
-      let searchItemsCache = null;
-      async function _ensureSearchItems() {
-        if (searchItemsCache) return searchItemsCache;
-        try {
-          const list = await options.searchProvider();
-          searchItemsCache = Array.isArray(list) ? list : [];
-        } catch (_) {
-          searchItemsCache = [];
-        }
-        return searchItemsCache;
-      }
-
-      function _renderSearchResults(items, query) {
-        searchResults.innerHTML = '';
-        const q = String(query || '').toLowerCase().trim();
-        const filtered = items.filter(d => !q || String(d.name || '').toLowerCase().includes(q) || String(d.path || '').toLowerCase().includes(q));
-        if (!filtered.length) {
-          const empty = document.createElement('div');
-          empty.textContent = '該当なし';
-          empty.style.cssText = 'padding:8px;font-size:12px;color:var(--fg2);';
-          searchResults.appendChild(empty);
-          return;
-        }
-        filtered.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
-        filtered.forEach(d => {
-          const row = document.createElement('div');
-          row.className = 'gb-folder-picker-row';
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;min-height:28px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;';
-          const icon = document.createElement('span');
-          icon.style.cssText = 'width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;';
-          icon.innerHTML = _icon('database', 14);
-          row.appendChild(icon);
-          const label = document.createElement('span');
-          label.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
-          label.textContent = d.name || _leafName(d.path);
-          row.appendChild(label);
-          if (d.rootName || d.relPath) {
-            const sub = document.createElement('span');
-            sub.style.cssText = 'font-size:11px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%;';
-            sub.textContent = d.rootName ? (d.rootName + (d.relPath ? ' / ' + d.relPath : '')) : (d.relPath || '');
-            row.appendChild(sub);
-          }
-          row.title = d.path || '';
-          const selectThis = () => {
-            const matchedRoot = Array.isArray(state.roots) ? state.roots.find(r => {
-              const rp = _normalizePath(r.rootPath || r.path);
-              return rp && (_normalizePath(d.path) === rp || _normalizePath(d.path).startsWith(rp + '/'));
-            }) : null;
-            state.selected = matchedRoot
-              ? _selectionFor(matchedRoot, d.path, d.name, 'file', d.type)
-              : { path: _normalizePath(d.path), name: d.name || _leafName(d.path), rootPath: '', rootName: d.rootName || '', rootKind: 'source', sourceId: '', workspaceId: '', kind: 'file', type: d.type || '' };
-            _markSelectedAcross(state, row);
-            _setCurrentPathText(state.current, matchedRoot ? _rowLabelText(state.selected) : (d.path || d.name || ''));
-            state.ok.disabled = false;
-          };
-          row.addEventListener('click', selectThis);
-          row.addEventListener('dblclick', () => { selectThis(); state.close(state.selected); });
-          row.addEventListener('mouseenter', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = 'var(--bg3)'; });
-          row.addEventListener('mouseleave', () => { if (!row.dataset.gbFolderPickerSelected) row.style.background = ''; });
-          searchResults.appendChild(row);
-        });
-      }
-
-      function _applyLocalTreeView() {
-        if (typeof options.searchProvider === 'function') return;
-        const query = searchInput.value.toLocaleLowerCase('ja').trim();
-        const visit = node => {
-          const row = node.querySelector(':scope > .gb-folder-picker-row');
-          const children = node.querySelector(':scope > .gb-folder-picker-children');
-          const childNodes = children ? [...children.children].filter(child => child.classList?.contains('gb-folder-picker-node')) : [];
-          const descendantVisible = childNodes.some(visit);
-          const kind = row?.dataset.gbPickerKind || 'folder';
-          const kindVisible = state.filterKind === 'all' || kind === state.filterKind || (state.filterKind === 'file' && kind === 'folder');
-          const matches = !query || row?.dataset.gbPickerName?.includes(query) || row?.dataset.gbPickerPath?.includes(query);
-          const visible = !!row && kindVisible && (matches || descendantVisible || (!query && state.filterKind === 'file' && kind === 'folder'));
-          node.hidden = !visible;
-          return visible;
-        };
-        tree.querySelectorAll(':scope > .gb-folder-picker-node').forEach(visit);
-      }
-      state.applyTreeView = _applyLocalTreeView;
-
-      searchInput.addEventListener('input', async () => {
-        if (typeof options.searchProvider !== 'function') {
-          _applyLocalTreeView();
-          return;
-        }
-          const query = searchInput.value;
-          if (!query.trim()) {
-            searchResults.style.display = 'none';
-            tree.style.display = '';
-            return;
-          }
-          tree.style.display = 'none';
-          searchResults.style.display = '';
-          searchResults.textContent = '読み込み中...';
-          const items = await _ensureSearchItems();
-          if (searchInput.value !== query) return;
-          _renderSearchResults(items, query);
-      });
-      filterSelect.addEventListener('change', () => {
-        state.filterKind = filterSelect.value;
-        if (typeof options.searchProvider === 'function' && searchInput.value.trim()) {
-          _ensureSearchItems().then(items => _renderSearchResults(items, searchInput.value));
-        } else _applyLocalTreeView();
-      });
-      sortSelect.addEventListener('change', () => {
-        state.sortDirection = sortSelect.value;
-        state.nodeByPath.clear();
-        searchItemsCache = null;
-        searchInput.value = '';
-        searchResults && (searchResults.style.display = 'none');
-        tree.style.display = '';
-        renderRoots();
-      });
-
-      let loadedRoots = null;
-      async function renderRoots() {
-        tree.textContent = 'フォルダを読み込み中...';
-        try {
-        const roots = loadedRoots || await loadRoots(options);
-        loadedRoots = roots;
-        state.roots = roots;
-        tree.innerHTML = '';
-        if (!roots.length) {
-          status.textContent = '選択できるフォルダがありません。';
-          return;
-        }
-        let lastSection = '';
-        const orderedRoots = roots.slice().sort((a, b) => {
-          const order = String(a.name || '').localeCompare(String(b.name || ''), 'ja');
-          return state.sortDirection === 'desc' ? -order : order;
-        });
-        orderedRoots.forEach(root => {
-          const section = _rootSectionLabel(_rootKind(root));
-          if (section !== lastSection) {
-            const heading = document.createElement('div');
-            heading.textContent = section;
-            heading.style.cssText = 'padding:8px 6px 4px;font-size:11px;color:var(--fg2);font-weight:bold;';
-            tree.appendChild(heading);
-            lastSection = section;
-          }
-          tree.appendChild(_createFolderNode(root, { name: root.name, path: root.path }, 0, state));
-        });
-        if (typeof replaceIcons === 'function') replaceIcons(tree);
-        if (options.revealPath) {
-          try { await _revealPath(state, options.revealPath); } catch (_) {}
-        }
-      } catch (error) {
-        tree.textContent = '';
-        status.textContent = 'フォルダ一覧を読み込めませんでした。';
-        status.style.color = 'var(--red)';
-      }
-      }
-      await renderRoots();
+      await browser.start();
     });
   }
 
   window.GBFolderPicker = {
     loadRoots,
+    createBrowser,
     pickFolder,
     toSourceRelativePath,
   };
@@ -98475,12 +99816,15 @@ async function resetLayoutToDefault() {
   async function _pickFolderFromTree(card) {
     try {
       const input = card.querySelector('.notion-folder-path');
-      const selected = window.GBFolderPicker?.pickFolder
-        ? await window.GBFolderPicker.pickFolder({
-            title: 'Notion同期するフォルダを選択',
-            initialPath: input?.value || '',
-          })
-        : await _showNotionFolderTreePicker(input?.value || '');
+      // フォルダの選択は共通のフォルダ選択部品だけを使う（UI共通ルール 4.1）
+      if (typeof window.GBFolderPicker?.pickFolder !== 'function') {
+        showStatus('フォルダ選択を表示できませんでした。パスを直接入力してください', true);
+        return;
+      }
+      const selected = await window.GBFolderPicker.pickFolder({
+        title: 'Notion同期するフォルダを選択',
+        initialPath: input?.value || '',
+      });
       if (selected?.path !== undefined && input) {
         input.value = selected.path;
         const saved = await _saveFolderConfig(card, {});
@@ -98489,200 +99833,6 @@ async function resetLayoutToDefault() {
     } catch (e) {
       showStatus('フォルダ選択に失敗しました', true);
     }
-  }
-
-  function _notionCssEscape(value) {
-    return MeldexEscape.cssIdent(value);
-  }
-
-  function _notionFolderLabel(path) {
-    const text = String(path || '').trim();
-    if (!text) return 'ルート';
-    return text.split(/[/\\]/).filter(Boolean).pop() || text;
-  }
-
-  function _showNotionFolderTreePicker(initialPath = '') {
-    return new Promise(resolve => {
-      const pickerDescId = `notion-folder-picker-current-${++_notionModalSeq}`;
-      const body = document.createElement('div');
-      body.className = 'notion-folder-picker-body';
-      body.innerHTML = `
-        <div class="notion-folder-picker-current-row">
-          <span class="notion-sync-label">選択中:</span>
-          <code id="${pickerDescId}" class="notion-folder-picker-current">${esc(initialPath || 'ルート')}</code>
-        </div>
-        <div id="notion-folder-picker-tree" class="notion-folder-picker-tree"></div>
-        <div id="notion-folder-picker-status" class="notion-sync-status-line"></div>`;
-      const cancelButton = document.createElement('button');
-      cancelButton.id = 'notion-folder-picker-cancel';
-      cancelButton.type = 'button';
-      cancelButton.className = 'gb-btn gb-btn-sm notion-sync-action';
-      cancelButton.dataset.e2eId = 'notion-folder-picker-cancel';
-      cancelButton.textContent = 'キャンセル';
-      const okButton = document.createElement('button');
-      okButton.id = 'notion-folder-picker-ok';
-      okButton.type = 'button';
-      okButton.className = 'gb-btn gb-btn-sm gb-btn-primary notion-sync-action';
-      okButton.dataset.e2eId = 'notion-folder-picker-ok';
-      okButton.textContent = '選択';
-      let closed = false;
-      const modalApi = window.GBUI.createModal({
-        id: `notion-folder-picker-${_notionModalSeq}`,
-        title: 'フォルダを選択',
-        body,
-        footer: [cancelButton, okButton],
-        variant: 'mobile-sheet',
-        extraClass: 'notion-folder-picker-modal',
-        initialFocus: '[data-notion-folder-path]',
-        closeLabel: 'フォルダ選択を閉じる',
-        closeOnEsc: true,
-        closeOnOverlay: true,
-        onClose: () => {
-          document.removeEventListener('keydown', onKeyDown, true);
-          if (!closed) {
-            closed = true;
-            resolve(null);
-          }
-        },
-      });
-      const overlay = modalApi.overlay;
-      overlay.classList.add('modal-overlay');
-      overlay.dataset.notionFolderPicker = '1';
-      modalApi.modal.dataset.e2eId = 'notion-folder-picker-dialog';
-      modalApi.modal.setAttribute('aria-describedby', pickerDescId);
-      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'notion-folder-picker-header-close');
-      modalApi.footer.classList.add('btn-row', 'notion-folder-picker-actions');
-      modalApi.open();
-      replaceIcons(overlay);
-
-      const tree = body.querySelector('#notion-folder-picker-tree');
-      const currentEl = body.querySelector(`#${pickerDescId}`);
-      const statusEl = body.querySelector('#notion-folder-picker-status');
-      let selectedPath = String(initialPath || '');
-
-      const close = value => {
-        if (closed) return;
-        closed = true;
-        document.removeEventListener('keydown', onKeyDown, true);
-        modalApi.close(value ? 'select' : 'cancel');
-        resolve(value);
-      };
-      const setStatus = (message, error = false) => {
-        if (!statusEl) return;
-        statusEl.textContent = message || '';
-        statusEl.style.color = error ? 'var(--red)' : 'var(--fg2)';
-      };
-      const markSelected = row => {
-        tree.querySelectorAll('[data-notion-folder-path]').forEach(el => {
-          delete el.dataset.selected;
-          el.style.background = '';
-          el.style.color = '';
-        });
-        row.dataset.selected = '1';
-        row.style.background = 'var(--accent)';
-        row.style.color = 'var(--ui-fg-strong)';
-        selectedPath = row.dataset.notionFolderPath || '';
-        currentEl.textContent = selectedPath || 'ルート';
-      };
-      const createRow = (name, path, depth, icon = 'folder') => {
-        const row = document.createElement('div');
-        row.className = 'notion-folder-picker-row';
-        row.setAttribute('role', 'button');
-        row.setAttribute('aria-label', `${name || _notionFolderLabel(path)}を選択`);
-        row.tabIndex = 0;
-        row.dataset.notionFolderPath = path || '';
-        row.dataset.depth = String(depth);
-        row.style.paddingLeft = `${8 + depth * 16}px`;
-        const iconWrap = document.createElement('span');
-        iconWrap.className = 'notion-folder-picker-icon';
-        iconWrap.innerHTML = typeof lucide === 'function' ? lucide(icon, 12) : '';
-        row.appendChild(iconWrap);
-        const label = document.createElement('span');
-        label.textContent = name || _notionFolderLabel(path);
-        label.className = 'notion-folder-picker-label';
-        row.appendChild(label);
-        row.title = path || 'ルート';
-        row.addEventListener('click', () => markSelected(row));
-        row.addEventListener('dblclick', () => close({ path: row.dataset.notionFolderPath || '' }));
-        row.addEventListener('keydown', event => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            close({ path: row.dataset.notionFolderPath || '' });
-          } else if (event.key === ' ') {
-            event.preventDefault();
-            markSelected(row);
-          }
-        });
-        row.addEventListener('mouseenter', () => { if (!row.dataset.selected) row.classList.add('hover'); });
-        row.addEventListener('mouseleave', () => { if (!row.dataset.selected) row.classList.remove('hover'); });
-        return row;
-      };
-      const expandFolder = async (parentPath, depth, parentRow) => {
-        let insertAfter = parentRow || null;
-        setStatus('読み込み中...');
-        try {
-          const data = await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + '&folders_only=1&sort=name&order=asc');
-          const folders = (Array.isArray(data) ? data : (data.items || [])).filter(item => item.type === 'folder');
-          for (const folder of folders) {
-            const path = folder.path || '';
-            if (tree.querySelector(`[data-notion-folder-path="${_notionCssEscape(path)}"]`)) continue;
-            const row = createRow(folder.name, path, depth + 1, 'folder');
-            const toggle = document.createElement('button');
-            toggle.type = 'button';
-            toggle.className = 'notion-folder-picker-toggle';
-            toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
-            toggle.setAttribute('aria-expanded', 'false');
-            toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-            toggle.addEventListener('click', async event => {
-              event.stopPropagation();
-              const expanded = toggle.dataset.expanded === '1';
-              if (expanded) {
-                const rowDepth = Number(row.dataset.depth || 0);
-                let next = row.nextElementSibling;
-                while (next && Number(next.dataset.depth || 0) > rowDepth) {
-                  const remove = next;
-                  next = next.nextElementSibling;
-                  remove.remove();
-                }
-                toggle.dataset.expanded = '0';
-                toggle.setAttribute('aria-expanded', 'false');
-                toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を展開`);
-                toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronRight', 10) : '>';
-                replaceIcons(toggle);
-                return;
-              }
-              await expandFolder(path, depth + 1, row);
-              toggle.dataset.expanded = '1';
-              toggle.setAttribute('aria-expanded', 'true');
-              toggle.setAttribute('aria-label', `${folder.name || _notionFolderLabel(path)}を折りたたむ`);
-              toggle.innerHTML = typeof lucide === 'function' ? lucide('chevronDown', 10) : 'v';
-              replaceIcons(toggle);
-            });
-            row.prepend(toggle);
-            if (insertAfter?.nextSibling) tree.insertBefore(row, insertAfter.nextSibling);
-            else tree.appendChild(row);
-            if (path === selectedPath) markSelected(row);
-            insertAfter = row;
-          }
-          replaceIcons(tree);
-          setStatus(folders.length ? '' : 'この階層にフォルダはありません。');
-        } catch (error) {
-          setStatus('フォルダ一覧の取得に失敗しました: ' + (error?.message || error), true);
-        }
-      };
-      const onKeyDown = event => {
-        if (event.key === 'Enter') close({ path: selectedPath });
-      };
-
-      tree.innerHTML = '';
-      const rootRow = createRow('ルート', '', 0, 'home');
-      tree.appendChild(rootRow);
-      if (!selectedPath) markSelected(rootRow);
-      expandFolder('', 0, rootRow);
-      okButton.addEventListener('click', () => close({ path: selectedPath }));
-      cancelButton.addEventListener('click', () => close(null));
-      document.addEventListener('keydown', onKeyDown, true);
-    });
   }
 
   // === NotionページURL解決 ===
@@ -99227,12 +100377,25 @@ async function resetLayoutToDefault() {
   function _formatScheduleState(state) {
     if (!state) return '';
     const parts = [];
-    if (state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
+    const dispatch = state.last_dispatch || {};
+    const progress = Number(dispatch.processed) || 0;
+    const total = Number(dispatch.total) || 0;
+    const progressText = total > 0 ? `${progress}/${total}件` : (progress > 0 ? `${progress}件` : '開始前');
+    if (state.auto_retry_blocked) {
+      parts.push('同じ工程で3回進まなかったため自動再開を停止中');
+      parts.push(`停止工程: ${dispatch.stage || '不明'} ${progressText}`);
+      parts.push('「差分を保存」で手動再開できます');
+    } else if (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatch.status)) {
+      parts.push(`実行中: ${dispatch.stage || '準備中'} ${progressText}`);
+    } else if (dispatch.status === 'interrupted') {
+      parts.push(`再開待ち: ${dispatch.stage || '準備中'} ${progressText}`);
+    }
+    if (!state.auto_retry_blocked && state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
     if (state.last_run) {
       const label = state.last_run.status === 'done' ? '成功' : (state.last_run.status === 'error' ? '失敗' : state.last_run.status);
       parts.push(`前回自動実行: ${label}`);
     }
-    if (state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
+    if (!state.auto_retry_blocked && state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
     return parts.join(' / ');
   }
 
@@ -102543,13 +103706,21 @@ async function resetLayoutToDefault() {
     'webclip-inbox': 'Web受信箱',
   };
   const restoredJobs = new Map();
+  const durableSchedules = new Map();
   const foregroundStack = [];
   let pollTimer = null;
   let polling = false;
+  let lastDurablePollAt = 0;
 
   function _progressApi() { return window.MeldexOperationProgress || null; }
   function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
   function _apiAvailable() { return typeof apiFetch === 'function'; }
+  function _settingsPanelForKind(kind) {
+    const normalized = String(kind || '');
+    if (normalized === 'x-account-posts') return 'Xアカウント保存';
+    if (normalized.startsWith('x-bookmark')) return 'Xブックマーク';
+    return '';
+  }
 
   function _jobLabel(job) {
     const kind = _kindLabel(job?.kind);
@@ -102572,6 +103743,18 @@ async function resetLayoutToDefault() {
     if (!api || !job?.id) return null;
     const jobId = String(job.id);
     const activeStatus = ['queued', 'running', 'cancelling'].includes(job.status) ? job.status : 'running';
+    const basePhase = job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中');
+    const externalWait = job.progress?.external_wait === true;
+    const stalled = job.progress?.stalled === true && !externalWait;
+    const displayPhase = stalled
+      ? `停滞: ${basePhase}`
+      : (externalWait ? `外部待機: ${basePhase}` : basePhase);
+    const baseMessage = String(job.progress?.message || '');
+    const displayMessage = stalled
+      ? `30秒以上進んでいません。${baseMessage}`
+      : (externalWait
+        ? `${String(job.progress?.wait_reason || '外部処理の完了待ち')}${baseMessage ? ` / ${baseMessage}` : ''}`
+        : baseMessage);
     let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
     if (handle && ['queued', 'running', 'cancelling'].includes(job.status)
         && api.isTerminalStatus(handle.getState()?.status)) {
@@ -102589,9 +103772,9 @@ async function resetLayoutToDefault() {
       handle = api.begin({
         id: 'job-' + jobId,
         kind: String(job.kind || 'import'),
-        settingsPanel: String(job.kind || '').startsWith('x-bookmark') ? 'Xブックマーク' : '',
+        settingsPanel: _settingsPanelForKind(job.kind),
         label: _jobLabel(job),
-        phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+        phase: displayPhase,
         status: activeStatus,
         mode: Number(job.progress?.total) > 0 ? 'determinate' : 'indeterminate',
         processed: Number(job.progress?.processed) || 0,
@@ -102609,7 +103792,7 @@ async function resetLayoutToDefault() {
     let processed = Math.max(0, Number(job.progress?.processed) || 0);
     handle.update({
       label: _jobLabel(job),
-      phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+      phase: displayPhase,
       status: job.cancel_requested || (activeStatus === 'running' && handle.getState()?.status === 'cancelling') ? 'cancelling' : activeStatus,
       mode: rawTotal > 0 ? 'determinate' : 'indeterminate',
       processed: processed,
@@ -102617,11 +103800,116 @@ async function resetLayoutToDefault() {
       currentItem: job.progress?.current_item || job.progress?.current || '',
       rate: job.progress?.rate,
       eta: job.progress?.eta_seconds ?? job.progress?.eta,
-      message: job.progress?.message || '',
+      message: displayMessage,
       persistentJobId: jobId,
     });
     restoredJobs.set(jobId, { handle: handle, misses: 0 });
     return handle;
+  }
+
+  function _durableProgressText(dispatch) {
+    const processed = Math.max(0, Number(dispatch?.processed) || 0);
+    const total = Math.max(0, Number(dispatch?.total) || 0);
+    return total > 0 ? `${processed}/${total}件` : (processed > 0 ? `${processed}件` : '開始前');
+  }
+
+  function _durableScheduleKey(schedule) {
+    return `durable-schedule-${String(schedule?.id || '').replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+  }
+
+  function _syncDurableSchedule(schedule, volatileJobIds) {
+    const api = _progressApi();
+    const dispatch = schedule?.last_dispatch || {};
+    const dispatchStatus = String(dispatch.status || '');
+    const jobId = String(dispatch.job_id || '');
+    const relevant = schedule?.auto_retry_blocked === true
+      || dispatchStatus === 'interrupted'
+      || (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatchStatus)
+          && (!jobId || !volatileJobIds.has(jobId)));
+    const key = _durableScheduleKey(schedule);
+    if (!relevant) {
+      durableSchedules.get(key)?.dispose?.();
+      durableSchedules.delete(key);
+      return;
+    }
+    if (!api || !schedule?.id) return;
+    const processed = Math.max(0, Number(dispatch.processed) || 0);
+    const total = Math.max(0, Number(dispatch.total) || 0);
+    const stage = String(dispatch.stage || '準備中');
+    const lastProgressAt = Date.parse(dispatch.last_progress_at || '');
+    const externalWait = dispatch.external_wait === true || Boolean(dispatch.wait_reason);
+    const stalled = !schedule.auto_retry_blocked
+      && !externalWait
+      && Number.isFinite(lastProgressAt)
+      && Date.now() - lastProgressAt >= 30000;
+    const retry = async () => {
+      await apiPost(`/import-schedules/${encodeURIComponent(schedule.id)}/run`, {}, {silentError: true});
+      durableSchedules.get(key)?.dispose?.();
+      durableSchedules.delete(key);
+      lastDurablePollAt = 0;
+      await poll();
+    };
+    let handle = durableSchedules.get(key);
+    if (!handle) {
+      handle = api.begin({
+        id: key,
+        kind: String(schedule.category || 'import'),
+        settingsPanel: _settingsPanelForKind(schedule.category),
+        label: _jobLabel({kind: schedule.category, label: schedule.label}),
+        phase: stage,
+        status: dispatchStatus === 'cancelling' ? 'cancelling' : (dispatchStatus === 'running' ? 'running' : 'queued'),
+        mode: total > 0 ? 'determinate' : 'indeterminate',
+        processed,
+        total: total || null,
+        background: true,
+        showImmediately: true,
+        priority: schedule.auto_retry_blocked ? 40 : 15,
+        retry: schedule.auto_retry_blocked ? retry : null,
+      });
+      durableSchedules.set(key, handle);
+    }
+    if (schedule.auto_retry_blocked) {
+      if (handle.getState()?.status !== 'failed') {
+        handle.fail({
+          error: '同じ工程で3回進まなかったため、自動再開を停止しました。',
+          summary: `${stage} / ${_durableProgressText(dispatch)}。「再試行」で手動再開できます。`,
+          retry,
+        });
+      }
+      return;
+    }
+    handle.update({
+      label: _jobLabel({kind: schedule.category, label: schedule.label}),
+      phase: stalled
+        ? `停滞: ${stage}`
+        : (externalWait ? `外部待機: ${stage}` : (dispatchStatus === 'interrupted' ? `再開待ち: ${stage}` : stage)),
+      status: dispatchStatus === 'cancelling' ? 'cancelling' : (dispatchStatus === 'running' ? 'running' : 'queued'),
+      mode: total > 0 ? 'determinate' : 'indeterminate',
+      processed,
+      total: total || null,
+      message: stalled
+        ? `30秒以上進んでいません。最後の位置: ${_durableProgressText(dispatch)}`
+        : (externalWait
+          ? `${String(dispatch.wait_reason || '外部処理の完了待ち')} / ${_durableProgressText(dispatch)}`
+          : (dispatchStatus === 'interrupted' ? `再開予定まで待機中 / ${_durableProgressText(dispatch)}` : _durableProgressText(dispatch))),
+    });
+  }
+
+  async function _pollDurableSchedules(volatileJobIds) {
+    const now = Date.now();
+    if (now - lastDurablePollAt < 5000) return;
+    lastDurablePollAt = now;
+    const data = await apiFetch('/import-schedules', {silentError: true});
+    const schedules = (Array.isArray(data?.schedules) ? data.schedules : [])
+      .filter(schedule => schedule?.category === 'x-bookmarks' || schedule?.category === 'x-account-posts');
+    const currentKeys = new Set(schedules.map(_durableScheduleKey));
+    schedules.forEach(schedule => _syncDurableSchedule(schedule, volatileJobIds));
+    durableSchedules.forEach((handle, key) => {
+      if (!currentKeys.has(key)) {
+        handle.dispose();
+        durableSchedules.delete(key);
+      }
+    });
   }
 
   async function _scheduledJobSnapshot(jobId) {
@@ -102707,6 +103995,7 @@ async function resetLayoutToDefault() {
         seen.add(String(job.id));
         _syncJob(job);
       });
+      await _pollDurableSchedules(seen);
       const missing = [];
       restoredJobs.forEach(function (entry, jobId) {
         if (!seen.has(jobId)) missing.push(_resolveMissingJob(jobId, entry));
@@ -105317,13 +106606,13 @@ async function resetLayoutToDefault() {
     if (!collapsed) {
       if (!tags.length) {
         const emptyWrap = document.createElement('div');
-        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.style.marginLeft = 'var(--ui-row-indent)';
         emptyWrap.appendChild(emptyRow('タグなし'));
         wrap.appendChild(emptyWrap);
       } else {
         const tagsGrid = document.createElement('div');
         tagsGrid.className = 'gb-tag-tree-grid';
-        tagsGrid.style.marginLeft = '18px';
+        tagsGrid.style.marginLeft = 'var(--ui-row-indent)';
         tags.forEach(tag => {
           if (!window.MeldexTagTreeRuntime?.takeTag
             || window.MeldexTagTreeRuntime.takeTag(budget)) {
@@ -105339,7 +106628,6 @@ async function resetLayoutToDefault() {
   function renderGroupNode(group, groupsById, depth, budget) {
     const adminGroup = group?._dictionary_scope === 'admin';
     const wrap = document.createElement('div');
-    wrap.style.marginLeft = (depth * 12) + 'px';
     const key = rowKey('group', group.id);
     const head = treeRowBase('group', key, depth);
     head.appendChild(iconButton(group.collapsed ? 'chevron-right' : 'chevron-down', group.collapsed ? '展開' : '折りたたみ', () => toggleGroupCollapsed(group), '', 'tag-management-group-toggle-' + safeKeyPart(group.id)));
@@ -105394,7 +106682,7 @@ async function resetLayoutToDefault() {
       if (group.tags.length) {
         const tagsGrid = document.createElement('div');
         tagsGrid.className = 'gb-tag-tree-grid';
-        tagsGrid.style.marginLeft = '18px';
+        tagsGrid.style.marginLeft = 'var(--ui-row-indent)';
         group.tags.forEach(tag => {
           if (!window.MeldexTagTreeRuntime?.takeTag
             || window.MeldexTagTreeRuntime.takeTag(budget)) {
@@ -105405,7 +106693,7 @@ async function resetLayoutToDefault() {
       }
       if (group.children.length) {
         const childrenBox = document.createElement('div');
-        childrenBox.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
+        childrenBox.style.cssText = 'margin-left:var(--ui-row-indent);display:flex;flex-direction:column;gap:2px;';
         group.children.forEach(child => childrenBox.appendChild(
           renderGroupNode(child, groupsById, depth + 1, budget),
         ));
@@ -105413,7 +106701,7 @@ async function resetLayoutToDefault() {
       }
       if (!group.tags.length && !group.children.length) {
         const emptyWrap = document.createElement('div');
-        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.style.marginLeft = 'var(--ui-row-indent)';
         emptyWrap.appendChild(emptyRow('空のグループ'));
         wrap.appendChild(emptyWrap);
       }
@@ -105470,13 +106758,7 @@ async function resetLayoutToDefault() {
     row.setAttribute('role', 'treeitem');
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
-    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
-    if (isSelected(key)) {
-      row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 22%, transparent)';
-      row.style.outline = '1px solid color-mix(in srgb, var(--ui-selection-bg) 55%, transparent)';
-    }
-    row.addEventListener('mouseenter', () => { if (!isSelected(key)) row.style.background = 'var(--bg3)'; });
-    row.addEventListener('mouseleave', () => { if (!isSelected(key)) row.style.background = ''; });
+    // 行の寸法・選択表示は共通トークン（--ui-row-*）を使う CSS 側で決める（aria-selected で切替）
     return row;
   }
 
@@ -108000,8 +109282,10 @@ function initPageTitle(titleElement, titleOptions = {}) {
     if (!nv) { el.textContent = oldTitle; return; }
     if (!path || nv === oldTitle) return;
     if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = oldTitle; return; }
+    // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+    if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(path, nv, 'page');
     try {
-      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page', title_only: true });
+      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page' });
       if (!res || !res.ok) throw new Error('rename failed');
       const newPath = res.new_path || (() => {
         const dir = path.substring(0, path.lastIndexOf('/'));
@@ -108019,13 +109303,18 @@ function initPageTitle(titleElement, titleOptions = {}) {
         await _pageTitleConfirmRenameAfterTimeout(el, path, nv, { oldName: oldTitle, onRenamed: titleOptions.onRenamed });
       } else {
         // API失敗時はタイトルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+        if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(path, oldTitle, 'page');
         el.textContent = oldTitle;
         const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
         showStatus(`「${oldTitle}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
       }
     }
   });
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+  // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+  el.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  });
   // 貼り付けは常にプレーンテキストとして挿入する（他所からの太字・斜体・フォント等の書式を持ち込ませない）
   el.addEventListener('paste', (e) => {
     const cd = e.clipboardData;
@@ -108378,10 +109667,18 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
   }
 }
 
+// 戻り値は { outcome } で結果を返す（Ctrl+S 等、結果に応じて表示を変える
+// 呼び出し元向け）。失敗時の利用者向け表示はこの関数内で済ませる。
+//   saved: 保存した / unchanged: 保存が必要な変更なし / skipped: 対象外
+//   load-failed: 読込失敗中のため保存しない / conflict: 競合保留中
+//   missing: 保存先が見つからない / failed: 保存失敗
+// gb-db-core.js 等は戻り値の ok:false を「保存失敗で中止」と解釈するため、
+// ここでは ok キーを使わない（既存の画面遷移の挙動を変えない）。
 async function _runNoteAutoSave(pc, expectedPath) {
   const skipHistory = arguments[2]?.skipHistory === true;
   const currentPath = pc?.dataset?.path;
-  if (!currentPath || pc.dataset.loadFailed === '1') return;
+  if (!currentPath) return { outcome: 'skipped' };
+  if (pc.dataset.loadFailed === '1') return { outcome: 'load-failed' };
   // 修正3（誤PUTの防止・二重防御）: 呼び出し元がタイマー設定時点のパスを
   // expectedPathとして渡している場合（2秒自動保存タイマーからの呼び出し）、
   // 発火時点の pc.dataset.path と一致しなければ何もしない。openPage()側の
@@ -108395,8 +109692,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
   const fm = pc.dataset.frontmatter || '';
   const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
   // 工程1項目2: 内容が保存済みbaselineと完全一致するなら何もしない（PUTを発生させない）
-  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return;
-  if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
+  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return { outcome: 'unchanged' };
+  if (!md.trim() && !prevBody.trim() && fm === prevFm) return { outcome: 'unchanged' };
   const _prevSavedForDiff = prevSaved;
   window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
   try {
@@ -108414,8 +109711,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
     // スキップして返す。何もサーバーへ送っていないため、baseline更新・
     // ドラフト同期完了扱いのどちらも行わない（ローカル編集とIndexedDBドラフトの
     // 継続はoninput側で既に行われている）。
-    if (_noteSaveConflictPending(res)) return;
-    if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
+    if (_noteSaveConflictPending(res)) return { outcome: 'conflict' };
+    if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return { outcome: 'missing' };
     _orphanRemovedNoteLines(_prevSavedForDiff, md, currentPath);
     // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
     if (pc.dataset.path === currentPath) {
@@ -108429,10 +109726,12 @@ async function _runNoteAutoSave(pc, expectedPath) {
         : '内容を更新';
       window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, _prevSavedForDiff, md, detail);
     }
+    return { outcome: 'saved' };
   } catch (error) {
     if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
       showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
     }
+    return { outcome: 'failed' };
   }
 }
 
@@ -109698,6 +110997,52 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
   return isCurrent() ? _insertUploadedFileAtRange(el, range, file, res) : range;
 }
 
+// 利用者向けの失敗理由。サーバー/各処理が用意した日本語の説明だけを使い、
+// 内部の英語エラー文（プログラム上の名前を含み得る）は代わりの説明へ置き換える。
+function _noteUserFacingReason(error, fallback) {
+  const fb = fallback || '原因を確認できませんでした';
+  const raw = error?.userMessage || (typeof error === 'string' ? error : error?.message) || '';
+  const text = String(raw || '').trim();
+  if (!text || !/[ぁ-ゖァ-ヺ一-龯]/.test(text)) return fb;
+  return text;
+}
+
+// OS由来の貼付ファイルを保存して挿入する。保存できなかった場合は、例外でも
+// 応答の ok:false でも、理由つきで失敗を表示する（旧実装は ok:false を無言で無視）。
+async function _pasteNoteClipboardFile(editor, pastedFile) {
+  const isVideo = pastedFile.type.startsWith('video/');
+  const pasteRange = _captureEditableSelection(editor);
+  const currentPath = editor.dataset.path || state.currentPagePath;
+  const generation = editor._openPageLoadSeq;
+  const isCurrent = () => editor.dataset.path === currentPath
+    && editor._openPageLoadSeq === generation && editor.isContentEditable;
+  if (!currentPath) {
+    showStatus('ファイルを貼り付けられませんでした: 保存先のノートが決まっていません', true);
+    return false;
+  }
+  const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
+  try {
+    if (!isCurrent()) return false;
+    const isImage = pastedFile.type.startsWith('image/');
+    const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
+    const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
+    const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
+    if (!res?.ok || !res.path) {
+      showStatus('ファイルの貼り付けに失敗しました: '
+        + _noteUserFacingReason(res?.error, 'ファイルを保存できませんでした'), true);
+      return false;
+    }
+    if (!isCurrent()) return false;
+    _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
+    return true;
+  } catch (err) {
+    console.warn('[note] 貼り付けファイルの保存に失敗しました', err);
+    showStatus('ファイルの貼り付けに失敗しました: '
+      + _noteUserFacingReason(err, 'ファイルを保存できませんでした'), true);
+    return false;
+  }
+}
+
 // クリップボード貼り付け: テキスト + 画像対応
 // クリップボード貼り付け: テキスト + 画像/動画対応（_wireNoteEditableElement から配線）
 function _wireNotePasteHandler(pc) {
@@ -109711,25 +111056,7 @@ function _wireNotePasteHandler(pc) {
   if (pastedFile) {
     if (this.dataset.standaloneFileInput === '1') return;
     e.preventDefault();
-    const editor = this;
-    const isVideo = pastedFile.type.startsWith('video/');
-    const pasteRange = _captureEditableSelection(editor);
-    const currentPath = editor.dataset.path || state.currentPagePath;
-    const generation = editor._openPageLoadSeq;
-    const isCurrent = () => editor.dataset.path === currentPath
-      && editor._openPageLoadSeq === generation && editor.isContentEditable;
-    if (!currentPath) return;
-    const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-    try {
-      if (!isCurrent()) return;
-      const isImage = pastedFile.type.startsWith('image/');
-      const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
-      const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
-      const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
-      if (res?.ok && res.path && isCurrent()) {
-        _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
-      }
-    } catch (err) { showStatus('ファイルの貼り付けに失敗', true); }
+    await _pasteNoteClipboardFile(this, pastedFile);
     return;
   }
 
@@ -110206,9 +111533,8 @@ function setupEditableDropHandler(el) {
     // メモ（アノテーション）のドロップ
     const annData = e.dataTransfer.getData('application/x-annotation');
     if (annData) {
-      const ann = JSON.parse(annData);
-      const linkText = '[アノテート: ' + (ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
-      document.execCommand('insertText', false, linkText + ' ');
+      const linkText = _noteAnnotationDropLinkText(annData);
+      if (linkText) document.execCommand('insertText', false, linkText + ' ');
       return;
     }
 
@@ -110328,6 +111654,24 @@ setupEditableDropHandler((window.GBEditorHost?.element('page-content') || docume
 setupEditableDropHandler(document.getElementById('entity-freetext'));
 
 // ノート選択テキストの外部ドラッグ対応（ボード/別ノートへの転送）
+// アノテートのドロップ内容から挿入するリンク文字列を作る。内容が壊れていて
+// 読み取れない場合は理由を表示して null を返す（旧実装は解析の失敗が無言で消えていた）。
+function _noteAnnotationDropLinkText(annData) {
+  let ann = null;
+  try {
+    ann = JSON.parse(annData);
+  } catch (error) {
+    console.warn('[note] ドロップされたアノテートを読み取れませんでした', error);
+  }
+  if (!ann || typeof ann !== 'object' || ann.id === undefined || ann.id === null || ann.id === '') {
+    if (typeof showStatus === 'function') {
+      showStatus('アノテートを挿入できませんでした: ドロップされた内容を読み取れません', true);
+    }
+    return null;
+  }
+  return '[アノテート: ' + String(ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
+}
+
 function setupEditableDragSource(el) {
   if (!el) return;
   el.addEventListener('dragstart', (e) => {
@@ -112841,7 +114185,10 @@ async function _orphanRemovedNoteLines(prevMd, currMd, filePath) {
           target_file: filePath,
           item_id: id,
           cascade_container: true,
-        }).catch(() => {})
+        }).catch(error => {
+          // 行の削除自体は保存済み。コメントの切り離しだけ失敗した記録を残す。
+          console.warn('[note] 削除した行のコメントを切り離せませんでした', filePath, id, error);
+        })
       ));
     }
     // Audit-P1 H-1: 保存完了後にコメントバッジキャッシュを無効化し、
@@ -112854,9 +114201,13 @@ async function _orphanRemovedNoteLines(prevMd, currMd, filePath) {
         if (pc && pc.dataset.path === filePath) {
           CommentBadges.refreshNote(filePath, pc);
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('[note] コメント表示を更新できませんでした', filePath, error);
+      }
     }
-  } catch (_) {}
+  } catch (error) {
+    console.warn('[note] 削除した行のコメント整理に失敗しました', filePath, error);
+  }
 }
 
 // ブロック要素から line-id を取得。未設定なら新規採番して挿入する（Y案: 遅延付与）。
@@ -113586,10 +114937,21 @@ async function _openLinkInCurrentTab(filePath, name) {
     // DB内エントリかどうか判定
     const parent = filePath.replace(/[/\\][^/\\]+$/, '');
     let isDbEntry = false;
-    try {
-      const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent));
-      if (meta && meta.property_types && Object.keys(meta.property_types).length > 0) isDbEntry = true;
-    } catch {}
+    // 保存先の直下（区切りなし）のノートはシートの中ではないため確認しない。
+    if (parent !== filePath) {
+      try {
+        const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent), { silentError: true });
+        if (meta && meta.property_types && Object.keys(meta.property_types).length > 0) isDbEntry = true;
+      } catch (error) {
+        // 判定できないままノートとして開くと、シートのトピックを通常ノートの
+        // 画面で開いて誤編集し得る。安全側に倒して開かずに理由を表示する。
+        console.warn('[note] リンク先の種類を確認できませんでした', filePath, error);
+        const reason = typeof _noteUserFacingReason === 'function'
+          ? _noteUserFacingReason(error, '通信状態を確認してください') : '通信状態を確認してください';
+        showStatus(`「${name || filePath}」を開けませんでした: シートのトピックかどうかを確認できませんでした（${reason}）`, true);
+        return false;
+      }
+    }
     if (isDbEntry && typeof selectDatabase === 'function' && typeof selectEntity === 'function') {
       await selectDatabase(parent);
       await selectEntity(filePath);
@@ -113635,10 +114997,10 @@ function onAutoLinkClick(el, e) {
     }
   }
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLinkInRightSidebar(filePath, name, {
+  return _runNoteLinkOpen(name, () => openLinkInRightSidebar(filePath, name, {
     linkType: el.dataset.linkType || el.dataset.type || '',
     sourcePaneId: el.closest('.gb-pane')?.dataset?.paneId || '',
-  });
+  }));
 }
 
 // ダブルクリックは現在のパネルでリンク先を開く
@@ -113646,7 +115008,7 @@ function onAutoLinkDblClick(el) {
   const filePath = _resolveAutoLinkPath(el.dataset.path);
   if (!filePath) return;
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLink(filePath, name);
+  return _runNoteLinkOpen(name, () => openLink(filePath, name));
 }
 
 function _contextLinkLabel(el, fallbackPath) {
@@ -113691,8 +115053,8 @@ function _resolveContextLinkTarget(rawTarget) {
       sourcePaneId,
       element: chatLink,
       openAction: () => {
-        if (typeof openChatMarkdownTarget === 'function') openChatMarkdownTarget(path);
-        else openLink(path, _contextLinkLabel(chatLink, path));
+        if (typeof openChatMarkdownTarget === 'function') return openChatMarkdownTarget(path);
+        else return openLink(path, _contextLinkLabel(chatLink, path));
       },
     };
   }
@@ -113708,8 +115070,8 @@ function _resolveContextLinkTarget(rawTarget) {
       sourcePaneId,
       element: chatPropLink,
       openAction: () => {
-        if (typeof _openEntityChat === 'function') _openEntityChat(path);
-        else openLink(path, _contextLinkLabel(chatPropLink, path));
+        if (typeof _openEntityChat === 'function') return _openEntityChat(path);
+        else return openLink(path, _contextLinkLabel(chatPropLink, path));
       },
     };
   }
@@ -113836,10 +115198,7 @@ function _showLinkContextMenu(e, linkTarget) {
     });
     menu.appendChild(item);
   };
-  addItem('externalLink', 'リンク先を開く', () => {
-    if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
-    else openLink(linkTarget.path, linkTarget.label);
-  });
+  addItem('externalLink', 'リンク先を開く', () => _openContextLinkCurrent(linkTarget));
   addItem('copy', 'パスをコピー', () => _copyLinkContextPath(linkTarget));
   const browserUrl = String(linkTarget.path || '').trim();
   const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
@@ -113992,25 +115351,41 @@ document.addEventListener('contextmenu', (e) => {
 let _linkActivationTimer = null;
 let _linkActivationToken = 0;
 
+// リンクを開く処理を完了まで待ち、失敗（例外・拒否）を理由つきで表示する。
+// 旧実装は完了を待たずに呼んでおり、失敗が無言で消えていた。
+function _runNoteLinkOpen(label, open) {
+  let pending;
+  try {
+    pending = Promise.resolve(open());
+  } catch (error) {
+    pending = Promise.reject(error);
+  }
+  return pending.catch(error => {
+    console.warn('[note] リンク先を開けませんでした', label, error);
+    const reason = typeof _noteUserFacingReason === 'function'
+      ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+    if (typeof showStatus === 'function') showStatus(`「${label || 'リンク先'}」を開けませんでした: ${reason}`, true);
+    return false;
+  });
+}
+
 function _openContextLinkCurrent(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
-    linkTarget.openAction();
-    return;
+    return _runNoteLinkOpen(linkTarget.label, () => linkTarget.openAction());
   }
-  openLink(linkTarget.path, linkTarget.label);
+  return _runNoteLinkOpen(linkTarget.label, () => openLink(linkTarget.path, linkTarget.label));
 }
 
 function _openContextLinkRightSidebar(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
-    linkTarget.openAction();
-    return;
+    return _runNoteLinkOpen(linkTarget.label, () => linkTarget.openAction());
   }
-  openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
+  return _runNoteLinkOpen(linkTarget.label, () => openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
-  });
+  }));
 }
 
 function _consumeUnifiedLinkEvent(e, linkTarget) {
@@ -114920,6 +116295,37 @@ function moveBlock(direction) {
 // 通常は文字選択で出る書式設定ポップアップへ統合され、そこが使えない環境
 // （クラウドのスマホ編集UI等）だけ MeldexNoteRuby.showLegacyPopup が使われる。
 
+// 右クリックメニュー等の項目を実行し、完了まで待つ。非同期の失敗も含め、
+// 失敗時は項目名と理由を表示する（旧実装は完了を待たず、失敗が無言で消えていた）。
+async function _runNoteContextMenuAction(item) {
+  try {
+    return await item.action();
+  } catch (error) {
+    console.warn('[note] メニュー項目の実行に失敗しました', item?.label, error);
+    const reason = typeof _noteUserFacingReason === 'function'
+      ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+    if (typeof showStatus === 'function') showStatus(`「${item?.label || '操作'}」を実行できませんでした: ${reason}`, true);
+    return false;
+  }
+}
+
+// 右クリック「貼り付け」。クリップボードの読み取りが拒否・失敗した場合は理由を表示する。
+async function _noteContextPasteFromClipboard() {
+  let text;
+  try {
+    if (!navigator.clipboard?.readText) throw new Error('unsupported');
+    text = await navigator.clipboard.readText();
+  } catch (error) {
+    console.warn('[note] クリップボードを読み取れませんでした', error);
+    if (typeof showStatus === 'function') {
+      showStatus('クリップボードを読み取れませんでした。読み取りの許可を確認するか、Ctrl+V で貼り付けてください', true);
+    }
+    return false;
+  }
+  document.execCommand('insertText', false, text);
+  return true;
+}
+
 async function confirmNoteTableDelete(message) {
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
   if (typeof confirm === 'function') return !!confirm(message);
@@ -114958,7 +116364,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
       s.removeAllRanges();
       s.addRange(savedRange.cloneRange());
     }
-    action();
+    return action();
   };
 
   const menu = document.createElement('div');
@@ -115007,7 +116413,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { type: 'sep' },
     { label: '切り取り', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('cut')) },
     { label: 'コピー', enabled: hasSelection, action: () => restoreAndExec(() => document.execCommand('copy')) },
-    { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => navigator.clipboard.readText().then(t => document.execCommand('insertText', false, t)).catch(() => {})) },
+    { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => _noteContextPasteFromClipboard()) },
     { type: 'sep' },
     { label: '元に戻す', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, false)) document.execCommand('undo'); } },
     { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
@@ -115185,7 +116591,7 @@ function _noteCtxMenuHandler(e, contextOverride) {
       menu.appendChild(el);
       return;
     }
-    const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); item.action(); });
+    const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); _runNoteContextMenuAction(item); });
     menu.appendChild(el);
   });
 
@@ -115320,7 +116726,7 @@ function _showTableToolbar(tableEl, editable) {
     btn.type = 'button';
     btn.className = 'table-mini-toolbar-btn';
     btn.textContent = label;
-    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); action(); });
+    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _runNoteContextMenuAction({ label, action }); });
     toolbar.appendChild(btn);
   });
   document.body.appendChild(toolbar);
@@ -116762,7 +118168,9 @@ function _fileStyleYamlScalar(raw) {
   return value;
 }
 function _fileStyleBlockRegex() {
-  return /style:\s*\n(?:\s+(?:--[\w-]+|__[A-Za-z0-9_-]+):[^\n]*\n?)*/m;
+  // 行頭（最上位キー）の style: だけを対象にする。行頭固定が無いと、入れ子の style: や
+  // linestyle: 等の別キーを書き換え、字下げの崩れたYAMLを作っていた（読込側と同じ条件）。
+  return /^style:[ \t]*\n(?:[ \t]+(?:--[\w-]+|__[A-Za-z0-9_-]+):[^\n]*\n?)*/m;
 }
 function _fileStyleToYaml(style) {
   if (!style || typeof style !== 'object' || Array.isArray(style) || Object.keys(style).length === 0) return '';
@@ -117776,11 +119184,20 @@ function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
 
 async function _saveFileThemeToNoteFrontmatter(theme) {
   const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
-  if (!pc || pc.contentEditable === 'false' || !pc.dataset.path) return false;
+  if (!pc || !pc.dataset.path) return false;
+  const statusFn = (msg) => { if (typeof showStatus === 'function') showStatus(msg, true); };
+  if (pc.dataset.loadFailed === '1') {
+    statusFn('ノートを読み込めていないため、書式を保存できません');
+    return false;
+  }
+  if (pc.contentEditable === 'false') {
+    statusFn('ロック中または読み取り専用のため、書式を変更できません');
+    return false;
+  }
   const path = pc.dataset.path;
   let fmStr = pc.dataset.frontmatter || '';
   // 書込時は必ず style: に統一し、旧 theme: ブロックは除去する（同ファイル内の重複防止）
-  fmStr = fmStr.replace(/theme:\s*\n(?:\s+--[^\n]+\n?)*/m, '');
+  fmStr = fmStr.replace(/^theme:[ \t]*\n(?:[ \t]+--[^\n]+\n?)*/m, '');
   const styleYaml = _fileStyleToYaml(theme);
   if (styleYaml) {
     if (_fileStyleBlockRegex().test(fmStr)) {
@@ -118240,6 +119657,17 @@ function _noteTableInsertColumnNear(cell, where, editable = _noteTableEditable(c
   return selected;
 }
 
+// 確認ダイアログの間に編集ロック・読み取り専用化や再描画が起きた場合は、
+// 削除を中止して理由を表示する（確認前の判定だけを信じて消さない）。
+function _noteTableStillEditableAfterConfirm(table, editable) {
+  if (!_noteTableCanEdit(editable)) return false;
+  if (!table?.isConnected || (editable && !editable.contains(table))) {
+    if (typeof showStatus === 'function') showStatus('表が表示されなくなったため、削除を中止しました', true);
+    return false;
+  }
+  return true;
+}
+
 async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.closest?.('table'))) {
   const table = cell?.closest?.('table');
   const row = cell?.parentElement;
@@ -118248,6 +119676,7 @@ async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.clo
   const removesTable = table.querySelectorAll('tr').length <= 1;
   const ok = await _noteTableConfirm(removesTable ? '最後の行です。表全体を削除しますか？' : 'この行を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
   const beforeHtml = editable ? editable.innerHTML : '';
   _noteTablePushCustomUndo(editable);
@@ -118275,6 +119704,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
   const colCount = Math.max(...rows.map(tr => tr.cells.length));
   const ok = await _noteTableConfirm(colCount <= 1 ? '最後の列です。表全体を削除しますか？' : 'この列を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
   const nextCell = row.cells[colIdx + 1] || row.cells[colIdx - 1] || null;
   _noteTablePushCustomUndo(editable);
@@ -118298,6 +119728,7 @@ async function _noteTableDeleteTable(table, editable = _noteTableEditable(table)
   if (!_noteTableCanEdit(editable)) return false;
   const ok = await _noteTableConfirm('表を削除しますか？');
   if (!ok) return false;
+  if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
   _noteTablePushCustomUndo(editable);
   table.remove();
@@ -118477,7 +119908,16 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
       ev.preventDefault();
       ev.stopPropagation();
       menu.remove();
-      const result = await handler();
+      let result;
+      try {
+        result = await handler();
+      } catch (error) {
+        console.warn('[note] 表の操作に失敗しました', label, error);
+        const reason = typeof _noteUserFacingReason === 'function'
+          ? _noteUserFacingReason(error, '原因を確認できませんでした') : '原因を確認できませんでした';
+        if (typeof showStatus === 'function') showStatus(`「${label}」を実行できませんでした: ${reason}`, true);
+        return;
+      }
       if (result?.isConnected) _showNoteTableCellControls(result);
       else if (cell?.isConnected) _positionNoteTableCellControls(cell);
     });
@@ -118622,6 +120062,7 @@ bindTableCellContextMenu(document.getElementById('entity-freetext'));
 // MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
 // レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
 // div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。
+/* gb-note-enhance.part04.js: Markdown の行頭入力ショートカット（part02 が1000行を超えたため分割） */
 
 // 行頭からキャレットまでのテキスト（改行区切りの現在行部分）を取得する。
 function _noteLineTextBeforeCaret(block, range) {
@@ -120730,17 +122171,35 @@ document.addEventListener('input', _onSlashInput);
   // 両方カバーされる。単独版など、どちらも存在しない環境では 'input' の
   // dispatchのみで、その環境固有の自動保存に委ねる（保存系レーンの管轄に
   // 立ち入らない）。
+  // 保存は非同期なので、完了を待って失敗を拾う（旧実装は try 内で待たずに呼び、
+  // 非同期の失敗が catch に届かず無言で消えていた）。保存処理側が理由を表示済みの
+  // 失敗（false / 失敗結果）は記録だけ残し、想定外の例外は理由を表示する。
   function _flushExistingSaveReservation(editable) {
-    if (!editable) return;
+    if (!editable) return Promise.resolve(false);
+    let pending;
     try {
       if (editable.id === 'dp-editable' && typeof global._dpSave === 'function') {
-        global._dpSave(editable);
-        return;
+        pending = global._dpSave(editable);
+      } else if (typeof global.flushPendingEditorAutosave === 'function') {
+        pending = global.flushPendingEditorAutosave();
+      } else {
+        return Promise.resolve(false);
       }
-      if (typeof global.flushPendingEditorAutosave === 'function') global.flushPendingEditorAutosave();
     } catch (err) {
-      console.warn('MeldexNoteBlockReorder: save reservation flush failed', err);
+      pending = Promise.reject(err);
     }
+    return Promise.resolve(pending).then(result => {
+      const failed = result === false || (Array.isArray(result) && result.some(r =>
+        r?.status === 'rejected' || ['failed', 'conflict', 'missing'].includes(r?.value?.outcome)));
+      if (failed) console.warn('MeldexNoteBlockReorder: save after move did not complete', result);
+      return !failed;
+    }, err => {
+      console.warn('MeldexNoteBlockReorder: save reservation flush failed', err);
+      if (typeof global.showStatus === 'function') {
+        global.showStatus('行の移動後の保存に失敗しました。内容は画面に残っています', true);
+      }
+      return false;
+    });
   }
 
   function _refreshTocIfNeeded() {
@@ -121239,7 +122698,9 @@ document.addEventListener('input', _onSlashInput);
     const range = _rangeAtStartOf(blockEl);
     const info = nbt.resolveCurrentBlock(editable, range) || { kind: 'body', block: blockEl };
     const currentTypeId = nbt.getBlockTypeId(info);
-    const rect = blockEl.getBoundingClientRect();
+    // 階層の親（子リストを持つ項目）は要素全体の矩形が子孫まで含むため、
+    // ハンドル位置と同じく項目自身の矩形を基準にする。
+    const rect = (lr && lr.rowOwnRect(blockEl, editable)) || blockEl.getBoundingClientRect();
     // 工程7-3: 「対象行の下へ」開く
     const anchorRect = { top: rect.bottom, bottom: rect.bottom, left: rect.left, right: rect.right };
     // 計画書§2.3: メニュー表示中も対象行のハイライトを途切れさせない。
@@ -132667,7 +134128,8 @@ function hideBoardNoteTab() {
       this._showStatus('保存中です。少し待ってからもう一度お試しください');
       return;
     }
-    this._pushUndo('イベント編集');
+    // 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     const creator = body.querySelector('[data-cal-event-creator]')?.value || this._getUser();
     const allDay = body.querySelector('[data-cal-event-allday]')?.checked;
     const startInput = body.querySelector('[data-cal-event-start]');
@@ -132714,6 +134176,7 @@ function hideBoardNoteTab() {
     }
     try {
       await apiPut('/cal/events/' + editId, data);
+      this._pushUndo('イベント編集', undoSnapshot);
       if (this.el) this.el.dataset.eventSaveState = 'saved';
       this._showStatus('イベントを保存しました');
       this._loadEvents?.().then(() => this._render()).catch(() => {});
@@ -132853,7 +134316,8 @@ function hideBoardNoteTab() {
 
   CalendarComponent.prototype._createTaskQuick = async function(options) {
     const opts = options || {};
-    this._pushUndo('ToDo作成');
+    // 取り消し履歴は作成成功後にだけ積む（失敗した操作の偽履歴は残さない）
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     try {
       const res = await apiPost('/cal/tasks', {
         title: '無題',
@@ -132862,6 +134326,7 @@ function hideBoardNoteTab() {
         due_date: opts.due_date || '',
         user: this._getUser(),
       });
+      this._pushUndo('ToDo作成', undoSnapshot);
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
@@ -132949,7 +134414,7 @@ function hideBoardNoteTab() {
       this._showStatus('保存中です。少し待ってからもう一度お試しください');
       return false;
     }
-    this._pushUndo('ToDo編集');
+    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     const data = {
       title: body.querySelector('[data-cal-task-title]')?.value || '無題',
       status: body.querySelector('[data-cal-task-status]')?.value || 'todo',
@@ -132966,6 +134431,7 @@ function hideBoardNoteTab() {
     try {
       await apiPut('/cal/tasks/' + editId, data);
       saved = true;
+      this._pushUndo('ToDo編集', undoSnapshot);
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
@@ -133475,25 +134941,134 @@ function hideBoardNoteTab() {
     }
   };
 
-  CalendarComponent.prototype._loadCalendars = async function() {
+  function _calAttErrorDetail(error) {
+    return String(error?.userMessage || error?.message || '').trim();
+  }
+
+  function _calAttFailureMessage(base, error) {
+    const detail = _calAttErrorDetail(error);
+    return detail ? `${base}: ${detail}` : base;
+  }
+
+  function _calAttHasOwnLocalCalendar(calendars, user) {
+    return (calendars || []).some(c => (c.user || '') === user && (c.source || 'local') === 'local');
+  }
+
+  // 既定カレンダーの作成は同名でも毎回新しく作られるため、同時に開いた複数の
+  // カレンダー画面が重ねて作らないよう、利用者ごとに作成処理を1本にまとめる。
+  const _calAttDefaultCalendarCreations = new Map();
+
+  function _calAttEnsureOwnLocalCalendar(user, calendars) {
+    if (_calAttHasOwnLocalCalendar(calendars, user)) return Promise.resolve(calendars);
+    const pending = _calAttDefaultCalendarCreations.get(user);
+    if (pending) return pending;
+    const task = (async () => {
+      const url = '/cal/calendars?user=' + encodeURIComponent(user);
+      // 作成直前に最新の一覧で確かめ直す（別の画面が先に作っていれば作らない）
+      const latest = await apiFetch(url);
+      if (!Array.isArray(latest)) throw new Error('カレンダー一覧を確認できませんでした');
+      if (_calAttHasOwnLocalCalendar(latest, user)) return latest;
+      await apiPost('/cal/calendars', {
+        name: 'マイカレンダー',
+        color: _calAttPaletteColorAt(latest.length),
+        user,
+        source: 'local',
+        folder: DEFAULT_CALENDAR_FOLDER,
+      });
+      const created = await apiFetch(url);
+      if (!Array.isArray(created)) throw new Error('カレンダー一覧を確認できませんでした');
+      return created;
+    })();
+    _calAttDefaultCalendarCreations.set(user, task);
+    const clear = () => {
+      if (_calAttDefaultCalendarCreations.get(user) === task) _calAttDefaultCalendarCreations.delete(user);
+    };
+    task.then(clear, clear);
+    return task;
+  }
+
+  // 読み込みは1本にまとめる。実行中に呼ばれたら、終わった後にもう一度だけ読み直す
+  // （実行中の古い結果で後続の変更を見落とさないため）。
+  CalendarComponent.prototype._loadCalendars = function() {
+    if (this._loadCalendarsInFlight) {
+      this._loadCalendarsQueued = true;
+      return this._loadCalendarsInFlight;
+    }
+    const run = (async () => {
+      let ok = false;
+      do {
+        this._loadCalendarsQueued = false;
+        ok = await this._loadCalendarsOnce();
+      } while (this._loadCalendarsQueued);
+      return ok;
+    })();
+    this._loadCalendarsInFlight = run;
+    const clear = () => {
+      if (this._loadCalendarsInFlight === run) this._loadCalendarsInFlight = null;
+    };
+    run.then(clear, clear);
+    return run;
+  };
+
+  CalendarComponent.prototype._loadCalendarsOnce = async function() {
+    const user = this._getUser();
+    let calendars;
     try {
-      this._calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
-      const user = this._getUser();
-      const hasOwnLocal = this._calendars.some(c => (c.user || '') === user && (c.source || 'local') === 'local');
-      if (!hasOwnLocal) {
-        await apiPost('/cal/calendars', {
-          name: 'マイカレンダー',
-          color: _calAttPaletteColorAt(this._calendars.length),
-          user,
-          source: 'local',
-          folder: DEFAULT_CALENDAR_FOLDER,
-        });
-        this._calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
-      }
-      this._visibleCalIds = new Set(this._calendars.filter(c => c.visible).map(c => c.id));
+      calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
+      if (!Array.isArray(calendars)) throw new Error('');
+    } catch (error) {
+      // 取得失敗は「カレンダーが1件も無い」と区別できないため、既定カレンダーは作らない。
+      // 表示中の一覧も消さずに残す。
+      if (!Array.isArray(this._calendars)) this._calendars = [];
+      this._showStatus?.(_calAttFailureMessage('カレンダー一覧の読み込みに失敗しました', error), true);
+      return false;
+    }
+    try {
+      calendars = await _calAttEnsureOwnLocalCalendar(user, calendars);
+    } catch (error) {
+      this._showStatus?.(_calAttFailureMessage('マイカレンダーを作成できませんでした', error), true);
+    }
+    this._calendars = calendars;
+    this._visibleCalIds = new Set(calendars.filter(c => c.visible).map(c => c.id));
+    this._ensureSelectedCalendar?.();
+    try {
+      this._renderCalendarList();
+    } catch (error) {
+      console.error('[calendar] calendar list render failed:', error);
+    }
+    return true;
+  };
+
+  // 表示切り替えは先に画面へ反映し、保存に失敗したら元の表示へ戻して原因を知らせる。
+  CalendarComponent.prototype._setCalendarVisible = async function(cal, visible) {
+    if (!this._calUserCanEditCalendar(cal)) {
+      this._showStatus('編集権限がありません', true);
+      this._renderCalendarList();
+      return false;
+    }
+    const wasVisible = this._visibleCalIds.has(cal.id);
+    const previousSelectedId = this._selectedCalendarId;
+    const apply = (on) => {
+      if (on) this._visibleCalIds.add(cal.id);
+      else this._visibleCalIds.delete(cal.id);
+    };
+    apply(visible);
+    if (!visible && this._selectedCalendarId === cal.id) this._selectedCalendarId = '';
+    this._ensureSelectedCalendar?.();
+    this._renderCalendarList();
+    this._render();
+    try {
+      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: visible ? 1 : 0 });
+      return true;
+    } catch (error) {
+      apply(wasVisible);
+      this._selectedCalendarId = previousSelectedId;
       this._ensureSelectedCalendar?.();
       this._renderCalendarList();
-    } catch {}
+      this._render();
+      this._showStatus(_calAttFailureMessage('カレンダーの表示切り替えを保存できませんでした', error), true);
+      return false;
+    }
   };
 
   CalendarComponent.prototype._firstCalendar = function() {
@@ -133955,13 +135530,7 @@ function hideBoardNoteTab() {
         this._showStatus('編集権限がありません', true);
         return;
       }
-      if (cb.checked) this._visibleCalIds.add(cal.id);
-      else this._visibleCalIds.delete(cal.id);
-      if (!cb.checked && this._selectedCalendarId === cal.id) this._selectedCalendarId = '';
-      this._ensureSelectedCalendar?.();
-      apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: cb.checked ? 1 : 0 });
-      this._renderCalendarList();
-      this._render();
+      this._setCalendarVisible(cal, cb.checked);
     });
     const dot = document.createElement('span');
     dot.className = 'gb-cal-calendar-dot';
@@ -134036,7 +135605,7 @@ function hideBoardNoteTab() {
           const chosen = nextColor || currentColor;
           if (typeof setColorSwatchValue === 'function') setColorSwatchValue(colorSwatch, chosen);
           else { colorSwatch.dataset.color = chosen; colorSwatch.style.background = chosen; }
-          this._setCalendarColor(cal, chosen);
+          this._setCalendarColor(cal, chosen, { swatch: colorSwatch });
         });
     }
     colorRow.append(colorLabel, colorSwatch);
@@ -134101,7 +135670,7 @@ function hideBoardNoteTab() {
     roleSelect.disabled = !this._calUserIsAdmin();
     roleSelect.title = roleSelect.disabled ? '管理者のみ変更できます' : '編集権限';
     roleSelect.setAttribute('aria-label', '編集権限');
-    roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value));
+    roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value, { control: roleSelect }));
     roleRow.append(roleLabel, roleSelect);
     menu.appendChild(roleRow);
 
@@ -134341,30 +135910,46 @@ function hideBoardNoteTab() {
     });
   };
 
-  CalendarComponent.prototype._setCalendarColor = async function(cal, color) {
+  // 色見本は選んだ時点で新しい色になるため、保存に失敗したら元の色へ戻す。
+  function _calAttRestoreSwatch(swatch, color) {
+    if (!swatch || !color) return;
+    if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, color);
+    else { swatch.dataset.color = color; swatch.style.background = color; }
+  }
+
+  CalendarComponent.prototype._setCalendarColor = async function(cal, color, options = {}) {
+    const previousColor = cal?.color || '';
     if (!this._calUserCanEditCalendar(cal)) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
       this._showStatus('編集権限がありません', true);
-      return;
+      return false;
     }
     const next = String(color || '').trim();
-    if (!next) return;
+    if (!next) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
+      return false;
+    }
     try {
       await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { color: next });
-      cal.color = next;
-      // 一覧取得時の有効色はサーバー側で解決されるが、色変更直後は手元の
-      // イベント配列を再描画するため、継承イベントだけを先に同期する。
-      (this._events || []).forEach(event => {
-        if (event?.calendar_id !== cal.id) return;
-        if (event.uses_calendar_color === false || String(event.color_override || '').trim()) return;
-        event.color = next;
-        event.uses_calendar_color = true;
-      });
-      this._renderCalendarList();
-      this._render();
-      this._showStatus('カレンダーの色を更新しました');
-    } catch {
-      this._showStatus('色の更新に失敗', true);
+    } catch (error) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
+      const detail = String(error?.userMessage || error?.message || '').trim();
+      this._showStatus(detail ? `色の更新に失敗しました: ${detail}` : '色の更新に失敗しました', true);
+      return false;
     }
+    cal.color = next;
+    // 一覧取得時の有効色はサーバー側で解決されるが、色変更直後は手元の
+    // イベント配列を再描画するため、継承イベントだけを先に同期する。
+    (this._events || []).forEach(event => {
+      if (event?.calendar_id !== cal.id) return;
+      if (event.uses_calendar_color === false || String(event.color_override || '').trim()) return;
+      event.color = next;
+      event.uses_calendar_color = true;
+    });
+    this._renderCalendarList();
+    this._render();
+    this._showStatus('カレンダーの色を更新しました');
+    return true;
   };
 
   CalendarComponent.prototype._setCalendarFolder = async function(cal, value) {
@@ -134383,15 +135968,27 @@ function hideBoardNoteTab() {
     }
   };
 
-  CalendarComponent.prototype._setCalendarRole = async function(cal, role) {
-    if (!this._calUserIsAdmin()) return;
+  // 選択欄は選んだ時点で新しい値になるため、保存できなかった時は元の権限へ戻す。
+  CalendarComponent.prototype._setCalendarRole = async function(cal, role, options = {}) {
+    const control = options.control || null;
+    const previousRole = cal?.edit_role || 'owner';
+    const restore = () => { if (control) control.value = previousRole; };
+    if (!this._calUserIsAdmin()) {
+      restore();
+      this._showStatus('管理者のみ変更できます', true);
+      return false;
+    }
     try {
       await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { edit_role: role });
-      cal.edit_role = role;
-      this._showStatus('カレンダー権限を更新しました');
-    } catch {
-      this._showStatus('カレンダー権限の更新に失敗', true);
+    } catch (error) {
+      restore();
+      const detail = String(error?.userMessage || error?.message || '').trim();
+      this._showStatus(detail ? `カレンダー権限の更新に失敗しました: ${detail}` : 'カレンダー権限の更新に失敗しました', true);
+      return false;
     }
+    cal.edit_role = role;
+    this._showStatus('カレンダー権限を更新しました');
+    return true;
   };
 
   CalendarComponent.prototype._moveCalendarToFolder = async function(cal) {
@@ -134786,8 +136383,8 @@ function hideBoardNoteTab() {
         <button type="button" class="att-csv-format" data-format="smaregi">スマレジ向け勤務実績</button>
         <button type="button" class="att-csv-format" data-format="moneyforward">マネーフォワード日次打刻</button>
       </div></div>`;
-    content.querySelectorAll('input').forEach(el => el.classList.add('gb-input'));
-    content.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
+    content.querySelectorAll('input').forEach(el => { if (!el.closest('[data-ui-component]')) el.classList.add('gb-input'); });
+    content.querySelectorAll('button').forEach(el => { if (!el.closest('[data-ui-component]')) el.classList.add('gb-btn', 'gb-btn-sm'); });
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'att-csv-close gb-btn gb-btn-sm';
@@ -135912,75 +137509,440 @@ function hideBoardNoteTab() {
     return text.replace(/^['"]|['"]$/g, '');
   }
 
-  function yamlLite(text) {
-    const lines = String(text || '')
-      .split(/\r?\n/)
-      .map(line => ({ indent: (line.match(/^\s*/) || [''])[0].length, text: line.trim() }))
-      .filter(line => line.text && !line.text.startsWith('#'));
-    function parseBlock(index, indent) {
-      if (index >= lines.length) return { value: {}, index };
-      if (lines[index].indent < indent) return { value: {}, index };
-      return lines[index].text.startsWith('- ')
-        ? parseArray(index, lines[index].indent)
-        : parseObject(index, indent);
-    }
-    function parseObject(index, indent) {
-      const out = {};
-      while (index < lines.length && lines[index].indent >= indent) {
-        const line = lines[index];
-        if (line.indent < indent || line.text.startsWith('- ')) break;
-        if (line.indent > indent) { index += 1; continue; }
-        const pair = yamlPair(line.text);
-        if (!pair) { index += 1; continue; }
-        index += 1;
-        if (pair.raw) out[pair.key] = yamlScalar(pair.raw);
-        else {
-          // PyYAML emits block sequences without extra indentation:
-          //   accept:
-          //   - png
-          // Accept that standard form as the value of the preceding key.
-          const indentlessSequence = index < lines.length
-            && lines[index].indent === line.indent
-            && lines[index].text.startsWith('- ');
-          const nested = indentlessSequence
-            ? parseArray(index, line.indent)
-            : parseBlock(index, indent + 2);
-          out[pair.key] = nested.value;
-          index = nested.index;
-        }
+  // ---------------------------------------------------------------------------
+  // デスクトップ版（PyYAML）が書くYAMLを、Cloud版でも同じ値として読むための読込。
+  // 旧 yamlLite は、80桁で折り返された長い値・複数行の引用符つき文字列・リスト項目の
+  // 中のリスト（`- value:` の下の `- 神聖`）を読めず、値を切り詰めたり後続のキー
+  // （status 等）を落としたりしていた（実データ settings-entry 1061件中423件）。
+  // それをそのまま書き戻すとデータが消えるため、読めない形を見つけた時は結果に
+  // LOSSY_MARK を付け、frontmatterText は書込を拒否する。
+  // ---------------------------------------------------------------------------
+  const LOSSY_MARK = (typeof Symbol === 'function' && Symbol.for)
+    ? Symbol.for('meldex.frontmatter.lossy') : '__meldexFrontmatterLossy';
+
+  function _yamlEscapeToJson(body) {
+    let out = '';
+    for (let i = 0; i < body.length; i += 1) {
+      const ch = body[i];
+      if (ch !== '\\') {
+        // 折り畳みで入った改行などの制御文字は、JSONとして読めるよう符号化する。
+        const code = ch.charCodeAt(0);
+        out += code < 0x20 ? '\\u' + code.toString(16).padStart(4, '0') : ch;
+        continue;
       }
-      return { value: out, index };
+      const next = body[i + 1];
+      i += 1;
+      if (next === undefined) return null;
+      if ('"\\/bfnrt'.includes(next)) out += '\\' + next;
+      else if (next === '0') out += '\\u0000';
+      else if (next === 'a') out += '\\u0007';
+      else if (next === 'v') out += '\\u000b';
+      else if (next === 'e') out += '\\u001b';
+      else if (next === ' ') out += ' ';
+      else if (next === 'N') out += '\\u0085';
+      else if (next === '_') out += '\\u00a0';
+      else if (next === 'L') out += '\\u2028';
+      else if (next === 'P') out += '\\u2029';
+      else if (next === 'x') { out += '\\u00' + body.slice(i + 1, i + 3); i += 2; }
+      else if (next === 'u') { out += '\\u' + body.slice(i + 1, i + 5); i += 4; }
+      else if (next === 'U') {
+        const code = parseInt(body.slice(i + 1, i + 9), 16);
+        if (!Number.isFinite(code)) return null;
+        out += JSON.stringify(String.fromCodePoint(code)).slice(1, -1);
+        i += 8;
+      } else return null;
     }
-    function parseArray(index, indent) {
-      const out = [];
-      while (index < lines.length && lines[index].indent === indent && lines[index].text.startsWith('- ')) {
-        const item = lines[index].text.slice(2).trim();
-        index += 1;
-        let value;
-        if (!item) {
-          const nested = parseBlock(index, indent + 2);
-          value = nested.value;
-          index = nested.index;
-        } else if (item.startsWith('{') || item.startsWith('[')) {
-          value = yamlScalar(item);
-        } else if (yamlPair(item)) {
-          const first = yamlPair(item);
-          value = {};
-          value[first.key] = first.raw ? yamlScalar(first.raw) : {};
-          const nested = parseObject(index, indent + 2);
-          value = { ...value, ...(nested.value || {}) };
-          index = nested.index;
+    return out;
+  }
+
+  function _yamlTrim(text) {
+    return String(text == null ? '' : text).replace(/^[ \t]+|[ \t]+$/g, '');
+  }
+
+  function _yamlResolvePlain(text) {
+    const value = String(text);
+    if (/^(?:~|null|Null|NULL)?$/.test(value)) return null;
+    if (/^(?:true|True|TRUE|yes|Yes|YES|on|On|ON)$/.test(value)) return true;
+    if (/^(?:false|False|FALSE|no|No|NO|off|Off|OFF)$/.test(value)) return false;
+    if (/^[-+]?(?:0|[1-9][0-9_]*)$/.test(value)) return Number(value.replace(/_/g, ''));
+    if (/^0x[0-9a-fA-F_]+$/.test(value)) return parseInt(value.slice(2).replace(/_/g, ''), 16);
+    if (/^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+][0-9]+)?$/.test(value) && /[0-9]/.test(value)) {
+      return Number(value.replace(/_/g, ''));
+    }
+    if (/^[-+]?\.(?:inf|Inf|INF)$/.test(value)) return value.startsWith('-') ? -Infinity : Infinity;
+    if (/^\.(?:nan|NaN|NAN)$/.test(value)) return NaN;
+    return value;
+  }
+
+  // \r\n・\r・\n・U+0085・U+2028・U+2029（ソースに制御文字を直接書かないよう実行時に組み立てる）。
+  const YAML_LINE_BREAKS = new RegExp('\\r\\n|[\\r\\n' + String.fromCharCode(0x85, 0x2028, 0x2029) + ']', 'g');
+
+  function parseYamlDocument(source) {
+    // YAML 1.1（PyYAML）は U+0085・U+2028・U+2029 も改行として扱う。
+    const raw = String(source || '').split(YAML_LINE_BREAKS);
+    const anchors = new Map();
+    // 折り畳み時、\n・\r・U+0085 は空白になるが、U+2028・U+2029 はその文字のまま残る。
+    const keptBreaks = String.fromCharCode(0x2028, 0x2029);
+    const breakChars = String(source || '').match(YAML_LINE_BREAKS) || [];
+    const lines = raw.map((text, i) => ({
+      text,
+      breakBefore: i > 0 ? breakChars[i - 1] : '',
+      indent: (text.match(/^ */) || [''])[0].length,
+      // YAMLの空白はASCIIの空白とタブだけ。全角空白（U+3000）は本文として残す。
+      blank: !/[^ \t]/.test(text),
+      comment: /^[ \t]*#/.test(text),
+    }));
+    const normalizedBreak = (index) => {
+      const value = lines[index] ? lines[index].breakBefore : '';
+      return value && keptBreaks.includes(value) ? value : '\n';
+    };
+    // 内容行 from から次の内容行 to（間は空行だけ）へ移る時に挟む文字（PyYAMLの折り畳み規則）。
+    const foldBetween = (from, to, escapedBreak) => {
+      const lineBreak = normalizedBreak(from + 1);
+      const breaks = [];
+      for (let j = from + 1; j < to; j += 1) breaks.push(normalizedBreak(j + 1));
+      if (escapedBreak) return breaks.join('');
+      return (lineBreak !== '\n' ? lineBreak : (breaks.length ? '' : ' ')) + breaks.join('');
+    };
+    let lossy = false;
+    const markLossy = () => { lossy = true; };
+    if (/\t/.test(String(source || '').replace(/(["'])(?:\\.|(?!\1).)*\1/g, ''))) markLossy();
+
+    const skip = (index) => {
+      while (index < lines.length && (lines[index].blank || lines[index].comment)) index += 1;
+      return index;
+    };
+    const isSeqItem = (text, col) => text.length > col && text[col] === '-' && (text.length === col + 1 || text[col + 1] === ' ');
+
+    function splitKey(content) {
+      // content は行頭（字下げ除く）。キーと値の区切りの ": " または行末の ":" を探す。
+      if (content.startsWith('"') || content.startsWith("'")) {
+        const quote = content[0];
+        let end = 1;
+        for (; end < content.length; end += 1) {
+          if (quote === '"' && content[end] === '\\') { end += 1; continue; }
+          if (content[end] === quote) {
+            if (quote === "'" && content[end + 1] === "'") { end += 1; continue; }
+            break;
+          }
+        }
+        const after = content.slice(end + 1);
+        const m = after.match(/^[ \t]*:(?:[ \t]+|$)/);
+        if (!m) return null;
+        const inner = content.slice(1, end);
+        let key = inner.replace(/''/g, "'");
+        if (quote === '"') {
+          const json = _yamlEscapeToJson(inner);
+          try { key = json === null ? inner : JSON.parse('"' + json + '"'); } catch { key = inner; markLossy(); }
+        }
+        return { key, rest: after.slice(m[0].length) };
+      }
+      if (/^[?&*!|>%@`]/.test(content) || content.startsWith('[') || content.startsWith('{')) return null;
+      const m = content.match(/^(.*?)[ \t]*:(?:[ \t]+|$)/);
+      if (!m || !m[1]) return null;
+      if (/[ \t]#/.test(m[1])) return null;
+      return { key: m[1], rest: content.slice(m[0].length) };
+    }
+
+    function stripComment(text) {
+      const m = text.match(/^(.*?)[ \t]+#.*$/);
+      return m ? m[1] : text;
+    }
+
+    // 1つのスカラー値を読む。first は開始行の値部分、index は開始行、parentIndent は
+    // その値を持つキー（または `-`）の字下げ。継続行（parentIndent より深い行）を折り畳む。
+    function readScalar(first, index, parentIndent) {
+      const text = _yamlTrim(first);
+      if (text.startsWith('&') || text.startsWith('*') || text.startsWith('!') || text.startsWith('?')) { markLossy(); }
+      if (text.startsWith('"') || text.startsWith("'")) return readQuoted(text, index, parentIndent);
+      if (text.startsWith('|') || text.startsWith('>')) return readBlockScalar(text, index, parentIndent);
+      if (text.startsWith('[') || text.startsWith('{')) return readFlow(text, index, parentIndent);
+      const parts = [stripComment(text)];
+      let last = index;
+      let next = index + 1;
+      while (next < lines.length) {
+        const line = lines[next];
+        if (line.blank) { next += 1; continue; }
+        if (line.indent <= parentIndent || line.comment) break;
+        parts.push(foldBetween(last, next, false));
+        parts.push(stripComment(_yamlTrim(line.text)));
+        last = next;
+        next += 1;
+      }
+      return { value: _yamlResolvePlain(_yamlTrim(parts.join(''))), index: last + 1 };
+    }
+
+    function readQuoted(text, index, parentIndent) {
+      const quote = text[0];
+      const chunks = [];
+      let current = text.slice(1);
+      let next = index;
+      for (;;) {
+        let closeAt = -1;
+        for (let i = 0; i < current.length; i += 1) {
+          if (quote === '"' && current[i] === '\\') { i += 1; continue; }
+          if (current[i] === quote) {
+            if (quote === "'" && current[i + 1] === "'") { i += 1; continue; }
+            closeAt = i;
+            break;
+          }
+        }
+        if (closeAt >= 0) {
+          chunks.push(current.slice(0, closeAt));
+          const tail = current.slice(closeAt + 1).trim();
+          if (tail && !tail.startsWith('#')) markLossy();
+          next += 1;
+          break;
+        }
+        chunks.push(current);
+        const from = next;
+        next += 1;
+        while (next < lines.length && lines[next].blank) next += 1;
+        if (next >= lines.length) { markLossy(); break; }
+        // 行の継ぎ目は PyYAML と同じ規則で折り畳む（空行は改行、U+2028 等はそのまま）。
+        chunks.push({ from, to: next });
+        current = lines[next].text.replace(/^[ \t]+/, '');
+      }
+      let body = '';
+      chunks.forEach((chunk, i) => {
+        if (typeof chunk === 'string') {
+          const isLast = i === chunks.length - 1;
+          let piece = isLast ? chunk : chunk;
+          // 行末の空白は継ぎ目で捨てる（二重引用符の `\` 直前の空白は残す）。
+          if (!isLast && !(quote === '"' && /(^|[^\\])(\\\\)*\\$/.test(piece))) piece = piece.replace(/[ \t]+$/, '');
+          body += piece;
+          return;
+        }
+        // 二重引用符の行末 `\` は改行の打ち消し（空白を入れない）。
+        const escapedBreak = quote === '"' && /(^|[^\\])(\\\\)*\\$/.test(body);
+        if (escapedBreak) body = body.slice(0, -1);
+        body += foldBetween(chunk.from, chunk.to, escapedBreak);
+      });
+      if (quote === "'") return { value: body.replace(/''/g, "'"), index: next };
+      const json = _yamlEscapeToJson(body);
+      if (json === null) { markLossy(); return { value: body, index: next }; }
+      try { return { value: JSON.parse('"' + json + '"'), index: next }; }
+      catch { markLossy(); return { value: body, index: next }; }
+    }
+
+    function readBlockScalar(text, index, parentIndent) {
+      const header = text.match(/^([|>])([1-9])?([+-])?([1-9])?\s*(#.*)?$/);
+      if (!header) { markLossy(); return { value: '', index: index + 1 }; }
+      const folded = header[1] === '>';
+      const chomp = header[3] || '';
+      const explicit = Number(header[2] || header[4] || 0);
+      let next = index + 1;
+      const body = [];
+      let blockIndent = explicit ? parentIndent + explicit : 0;
+      while (next < lines.length) {
+        const line = lines[next];
+        if (line.blank) { body.push(''); next += 1; continue; }
+        if (!blockIndent) blockIndent = line.indent;
+        if (line.indent < blockIndent || line.indent <= parentIndent) break;
+        body.push(line.text.slice(blockIndent));
+        next += 1;
+      }
+      let trailing = 0;
+      while (body.length && body[body.length - 1] === '') { body.pop(); trailing += 1; }
+      let value;
+      if (folded) {
+        value = '';
+        body.forEach((line, i) => {
+          if (i === 0) { value = line; return; }
+          const prev = body[i - 1];
+          if (line === '' || prev === '' || /^\s/.test(line) || /^\s/.test(prev)) value += '\n' + line;
+          else value += ' ' + line;
+        });
+        value = value.replace(/\n(?=\n)/g, '\n');
+      } else value = body.join('\n');
+      if (chomp === '+') value += '\n'.repeat(trailing + 1);
+      else if (chomp !== '-' && body.length) value += '\n';
+      return { value, index: next };
+    }
+
+    function readFlow(text, index, parentIndent) {
+      let buffer = text;
+      let next = index + 1;
+      const balanced = (value) => {
+        let depth = 0; let quote = '';
+        for (let i = 0; i < value.length; i += 1) {
+          const ch = value[i];
+          if (quote) {
+            if (quote === '"' && ch === '\\') { i += 1; continue; }
+            if (ch === quote) quote = '';
+            continue;
+          }
+          if (ch === '"' || ch === "'") quote = ch;
+          else if (ch === '[' || ch === '{') depth += 1;
+          else if (ch === ']' || ch === '}') depth -= 1;
+        }
+        return depth <= 0 && !quote;
+      };
+      while (!balanced(buffer) && next < lines.length && (lines[next].blank || lines[next].indent > parentIndent)) {
+        buffer += ' ' + lines[next].text.trim();
+        next += 1;
+      }
+      const trimmed = stripComment(buffer.trim());
+      try { return { value: JSON.parse(trimmed), index: next }; } catch {}
+      const inline = yamlInline(trimmed);
+      if (inline === undefined) { markLossy(); return { value: trimmed, index: next }; }
+      // 簡易 flow 読込は入れ子の引用符や折り返しを完全には扱えないため、JSONで読めない
+      // 複雑な flow は書き戻し不可として印を付ける（単純な [a, b] / {} は安全）。
+      if (/["'][^"']*[,:\[\]{}][^"']*["']/.test(trimmed)) markLossy();
+      return { value: inline, index: next };
+    }
+
+    function cloneValue(value) {
+      return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+    }
+
+    // 値の開始位置（キーの後ろ、または `- ` の後ろ）から1つの値を読む。アンカー（&名前）と
+    // 参照（*名前）を解決する。PyYAMLは同じ辞書を2か所で使うと自動でアンカーを書く。
+    function readValue(rest, index, col, indentlessSeq) {
+      let text = _yamlTrim(rest);
+      let anchor = '';
+      const anchorMatch = text.match(/^&([^ \t,\[\]{}]+)(?:[ \t]+(.*))?$/);
+      if (anchorMatch) {
+        anchor = anchorMatch[1];
+        text = _yamlTrim(anchorMatch[2] || '');
+      }
+      let result;
+      const alias = text.match(/^\*([^ \t,\[\]{}]+)[ \t]*(?:#.*)?$/);
+      if (alias) {
+        if (!anchors.has(alias[1])) markLossy();
+        result = { value: cloneValue(anchors.has(alias[1]) ? anchors.get(alias[1]) : null), index: index + 1 };
+      } else if (text && !text.startsWith('#')) {
+        if (anchor && splitKey(text)) markLossy();
+        result = readScalar(text, index, col);
+      } else {
+        const childIndex = skip(index + 1);
+        if (childIndex < lines.length && lines[childIndex].indent > col) {
+          result = readNodeAt(childIndex, lines[childIndex].indent, lines[childIndex].text.slice(lines[childIndex].indent));
+        } else if (indentlessSeq && childIndex < lines.length && lines[childIndex].indent === col
+          && isSeqItem(lines[childIndex].text, col)) {
+          result = readSeq(childIndex, col);
         } else {
-          value = yamlScalar(item);
+          result = { value: null, index: index + 1 };
         }
-        out.push(value);
+      }
+      if (anchor) anchors.set(anchor, result.value);
+      return result;
+    }
+
+    // index から、字下げ col の位置で始まる値（マップ・リスト・スカラー）を読む。
+    function readNodeAt(index, col, content) {
+      if (isSeqItem(content, 0)) return readSeq(index, col);
+      const pair = splitKey(content);
+      if (pair) return readMap(index, col);
+      return readScalar(content, index, col - 1);
+    }
+
+    function readMap(index, col) {
+      const out = {};
+      let first = true;
+      while (index < lines.length) {
+        index = skip(index);
+        if (index >= lines.length) break;
+        const line = lines[index];
+        const content = first && line.virtual != null ? line.virtual : line.text.slice(col);
+        if (!first || line.virtual == null) {
+          if (line.indent < col) break;
+          if (line.indent > col) { markLossy(); index += 1; continue; }
+          if (isSeqItem(line.text, col)) break;
+        }
+        first = false;
+        const pair = splitKey(content);
+        if (!pair) { markLossy(); index += 1; continue; }
+        // 重複キーはデスクトップ版（yaml.safe_load）と同じく後勝ち。
+        const result = readValue(pair.rest, index, col, true);
+        out[pair.key] = result.value;
+        index = result.index;
       }
       return { value: out, index };
     }
-    return parseBlock(0, 0).value || {};
+
+    function readSeq(index, col) {
+      const out = [];
+      while (index < lines.length) {
+        index = skip(index);
+        if (index >= lines.length) break;
+        const line = lines[index];
+        if (line.indent !== col || !isSeqItem(line.text, col)) {
+          if (line.indent > col) { markLossy(); index += 1; continue; }
+          break;
+        }
+        const after = line.text.slice(col + 1);
+        const contentOffset = (after.match(/^ */) || [''])[0].length;
+        const content = after.slice(contentOffset);
+        if (!content || content.startsWith('#') || content.startsWith('&') || content.startsWith('*')) {
+          const result = readValue(content, index, col, false);
+          out.push(result.value);
+          index = result.index;
+          continue;
+        }
+        const itemCol = col + 1 + contentOffset;
+        if (isSeqItem(content, 0)) {
+          // `- - a` の入れ子リスト: 内側を仮想行として読む。
+          lines[index] = { ...line, text: ' '.repeat(itemCol) + content, indent: itemCol };
+          const child = readSeq(index, itemCol);
+          out.push(child.value);
+          index = child.index;
+          continue;
+        }
+        if (splitKey(content)) {
+          lines[index] = { ...line, virtual: content };
+          const child = readMap(index, itemCol);
+          out.push(child.value);
+          index = child.index;
+          continue;
+        }
+        const scalar = readScalar(content, index, col);
+        out.push(scalar.value);
+        index = scalar.index;
+      }
+      return { value: out, index };
+    }
+
+    let value = {};
+    const start = skip(0);
+    if (start < lines.length) {
+      const line = lines[start];
+      const content = line.text.slice(line.indent);
+      if (content === '---' || content.startsWith('--- ')) markLossy();
+      const node = readNodeAt(start, line.indent, content);
+      value = node.value;
+      if (skip(node.index) < lines.length) markLossy();
+    }
+    return { value, lossy };
+  }
+
+  function markLossyValue(value, lossy) {
+    if (lossy && value && typeof value === 'object') {
+      Object.defineProperty(value, LOSSY_MARK, { value: true, enumerable: true, configurable: true, writable: true });
+    }
+    return value;
+  }
+
+  function isLossy(value) {
+    return !!(value && typeof value === 'object' && value[LOSSY_MARK]);
+  }
+
+  function assertWritable(frontmatter) {
+    if (isLossy(frontmatter)) {
+      throw Object.assign(new Error('このファイルの設定欄には、Cloud版で正確に読めない書き方が含まれるため、内容を守るために保存を中止しました。デスクトップ版で開いて保存すると解消します'), {
+        status: 409, code: 'frontmatter_not_round_trippable',
+      });
+    }
+  }
+
+  function yamlLite(text) {
+    const parsed = parseYamlDocument(text);
+    const value = parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value : {};
+    return markLossyValue(value, parsed.lossy || value !== parsed.value);
   }
 
   function frontmatterText(frontmatter, body) {
+    assertWritable(frontmatter);
     const lines = ['---'];
     Object.entries(frontmatter || {}).forEach(([key, value]) => {
       if (!key || key.startsWith('_')) return;
@@ -136043,6 +138005,10 @@ function hideBoardNoteTab() {
     yamlInline,
     yamlScalar,
     yamlLite,
+    parseYamlDocument,
+    isLossy,
+    assertWritable,
+    LOSSY_MARK,
     frontmatterText,
     readFrontmatter,
     writeFrontmatter,
@@ -148782,14 +150748,11 @@ function hideBoardNoteTab() {
         { id: 'merge-display', label: 'まとめ表示', icon: 'rows3', action: () => _runScriptNoteToolbarAction('mergeDisplay') },
         { id: 'add-column', label: '列を追加', icon: 'plus', action: () => _runScriptNoteToolbarAction('addColumn') },
         { id: 'filter', label: 'フィルタ', icon: 'funnel', action: () => _runScriptNoteToolbarAction('filter') },
-        { id: 'filter-preset', label: 'フィルタプリセット', icon: 'listFilter', action: () => _runScriptNoteToolbarAction('chooseFilterPreset') },
         { id: 'search', label: '検索・置換', icon: 'search', action: () => _runScriptNoteToolbarAction('search') },
         { id: 'detail', label: 'オプション', icon: 'slidersHorizontal', action: () => _runScriptNoteToolbarAction('detail') },
         { id: 'reload', label: '再読み込み', icon: 'refreshCw', action: () => _runScriptNoteToolbarAction('reload') },
         { id: 'save-template', label: 'テンプレートを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveTemplate') },
         { id: 'manage-templates', label: 'テンプレートを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageTemplates') },
-        { id: 'save-filter', label: 'フィルタを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveFilter') },
-        { id: 'manage-filters', label: 'フィルタを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageFilters') },
       ];
     }
     const desktopItems = _desktopToolMenuItemsForMobile(toolType);
@@ -152864,8 +154827,14 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
   let createdEndRef = null;
 
   const deleteCreatedEnd = async (ref) => {
-    if (!ref) return;
-    try { await _apiPutValue(ref, { _delete: true }); } catch {}
+    if (!ref) return true;
+    try {
+      await _apiPutValue(ref, { _delete: true });
+      return true;
+    } catch (rollbackErr) {
+      console.warn('[calendar-mapping] created end value rollback failed:', rollbackErr);
+      return false;
+    }
   };
 
   const applyValues = async (startRaw, endRaw, mode, opts = {}) => {
@@ -152884,11 +154853,25 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
         }
       }
     } catch (err) {
+      let rollbackFailed = false;
       if (opts.rollbackOnFailure) {
-        if (localCreatedEndRef) await deleteCreatedEnd(localCreatedEndRef);
+        if (localCreatedEndRef && !(await deleteCreatedEnd(localCreatedEndRef))) rollbackFailed = true;
         if (startWritten) {
-          try { await _apiPutValue(startRef, { new_value: oldStartRaw }); } catch {}
+          try {
+            await _apiPutValue(startRef, { new_value: oldStartRaw });
+          } catch (rollbackErr) {
+            console.warn('[calendar-mapping] start value rollback failed:', rollbackErr);
+            rollbackFailed = true;
+          }
         }
+      }
+      if (rollbackFailed) {
+        // 途中まで書き込んだ値が残っていることを、保存失敗の原因と一緒に知らせる
+        const detail = String(err?.userMessage || err?.message || '').trim();
+        const wrapped = new Error((detail || '日時の保存に失敗しました')
+          + '。途中まで書き込んだ値を元に戻せませんでした。シートを再読み込みして確認してください');
+        wrapped.cause = err;
+        throw wrapped;
       }
       throw err;
     }
@@ -153672,6 +155655,21 @@ const DB_CACHE_TTL_MS = {
   metadata: 30000,
   rollup: 30000,
 };
+
+// メニュー項目の実行。項目の処理が Promise を返す場合も完了まで待ち、
+// 失敗を握り潰さずに理由つきで表示する（メニュー描画側の共通実行関数）。
+async function _dbRunMenuItemAction(action, ...args) {
+  if (typeof action !== 'function') return undefined;
+  try {
+    return await action(...args);
+  } catch (error) {
+    console.warn('[Meldex] メニューの操作に失敗しました', error);
+    if (typeof showStatus === 'function') {
+      showStatus('操作を完了できませんでした: ' + (error?.message || String(error || '原因不明のエラー')), true);
+    }
+    return undefined;
+  }
+}
 
 // Start a topic read at the beginning of a Sheet open gesture, before editor
 // flushing and pane retargeting. selectEntity() consumes the same promise once;
@@ -156809,7 +158807,17 @@ function _addMenuRenameInput(menu, currentValue, onRename, opts) {
       const newVal = inp.value.trim();
       if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
       menu.remove();
-      if (newVal && newVal !== currentValue) onRename(newVal);
+      // onRename は非同期のことが多い。以前は結果を待たずに捨てていたため、失敗（列名変更の
+      // 拒否など）が画面に何も出なかった。失敗は理由つきで表示する。
+      if (newVal && newVal !== currentValue) {
+        Promise.resolve()
+          .then(() => onRename(newVal))
+          .catch((error) => {
+            const prefix = (opts && opts.failurePrefix) || '名前の変更に失敗: ';
+            if (typeof showStatus === 'function') showStatus(prefix + (error?.message || error), true);
+            else console.error(error);
+          });
+      }
     } else if (e.key === 'Escape') {
       e.preventDefault();
       if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
@@ -156866,7 +158874,7 @@ function _renderColMenuItems(container, itemList) {
       el.setAttribute('aria-disabled', 'true');
     }
     if (item.danger) el.classList.add('danger');
-    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(ev, el); });
+    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); return _dbRunMenuItemAction(item.action, ev, el); });
     container.appendChild(el);
   });
 }
@@ -157120,7 +159128,7 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
         _setSelectedColumns(dbPath, selected, newName);
       }
       _refreshDbColumnMenuView(ctx, dbPath);
-    }, { placeholder: '列名を変更...' });
+    }, { placeholder: '列名を変更...', failurePrefix: '列名の変更に失敗: ' });
   }
 
   const currentPtc = getPropertyTypes(dbPath, ctx)[propName] || { type: 'text' };
@@ -157449,7 +159457,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
 
 // エントリ列の右クリックメニュー
 // ギャラリー/カンバンカード右クリックメニュー
-function showDbCardContextMenu(e, dbPath, entityName, propName) {
+function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}) {
   closeColHeaderMenu();
   const tableCtx = e?.target?.closest?.('tbody')?._meldexCtx;
   const ctx = tableCtx && !tableCtx.destroyed ? tableCtx : typeof _dbPaneContextFromEvent === 'function'
@@ -157545,7 +159553,10 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     { icon: 'link2', label: 'パスをコピー', action: () => {
       const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
       const copyPath = window.GBPathUtils?.resolveForClipboard?.(ep, base) ?? ep;
-      navigator.clipboard.writeText(copyPath).then(() => showStatus('パスをコピーしました'));
+      return navigator.clipboard.writeText(copyPath).then(
+        () => showStatus('パスをコピーしました'),
+        () => showStatus('パスをコピーできませんでした', true),
+      );
     }},
     ...(topicPlacementSource ? [
       { type: 'sep' },
@@ -157605,14 +159616,21 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       el.textContent = item.label;
     }
     if (item.danger) el.classList.add('danger');
-    el.addEventListener('click', () => { closeColHeaderMenu(); item.action(); });
+    el.addEventListener('click', () => { closeColHeaderMenu(); return _dbRunMenuItemAction(item.action); });
     menu.appendChild(el);
   });
   // positionPopup() でマウス位置基準の配置 + ビューポートクランプを一括処理
   // (既知バグ #3「手動 zoom 計算残存」の修正)
   document.body.appendChild(menu);
-  positionPopup(menu, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+  // 行ハンドルのクリック（MeldexRowHandleMenu）は対象行の直下へ開く。
+  const anchorRect = menuOptions?.anchorRect || { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
+  if (menuOptions?.anchorRect) menu.dataset.e2eId = 'db-row-handle-menu';
+  positionPopup(menu, anchorRect, { prefer: 'below' });
   _installColHeaderMenuDismissHandlers();
+  if (menuOptions?.focusFirst) {
+    const first = menu.querySelector('.gb-context-menu-item');
+    if (first) { first.tabIndex = -1; first.focus({ preventScroll: true }); }
+  }
 }
 
 function _hasDependencyPairProps(pts) {
@@ -158135,7 +160153,7 @@ function _addColumnDisplayOrderItem(root, propName, checked, afterItem) {
   actions.className = 'col-vis-actions';
   if (!root?._productionWriteBlocked) {
     const copyBtn = _dbColumnActionButton('copy', '列を複製: ' + propName, '', '複製');
-    copyBtn.addEventListener('click', () => _duplicateColumnFromDisplayOrderModal(root, propName, item));
+    copyBtn.addEventListener('click', () => _dbRunMenuItemAction(_duplicateColumnFromDisplayOrderModal, root, propName, item));
     actions.appendChild(copyBtn);
   }
   if (!root?._productionWriteBlocked
@@ -158238,8 +160256,20 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   const { dbPath, ctx, pivotData } = _dbColumnModalContext(root);
   if (!dbPath || !propName) return;
   const newName = _dbUniqueColumnName(propName + ' コピー', _dbColumnModalNames(root, dbPath, ctx));
-  const pt = JSON.parse(JSON.stringify((getPropertyTypes(dbPath) || {})[propName] || { type: 'text' }));
-  await Promise.resolve(setPropertyType(dbPath, newName, pt));
+  const pt = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || { type: 'text' }));
+  let saved;
+  try {
+    saved = await Promise.resolve(setPropertyType(dbPath, newName, pt, ctx));
+  } catch (error) {
+    console.warn('[Meldex] 列の複製に失敗しました', error);
+    if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした: ${error?.message || error}`, true);
+    return false;
+  }
+  if (saved === false) {
+    // 保護された列などで保存できなかった。値のコピーや表示順の更新へ進まない。
+    if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした。列の保護設定や編集権限を確認してください`, true);
+    return false;
+  }
   _copyColumnViewConfig(dbPath, propName, newName);
   _addColumnDisplayOrderItem(root, newName, true, item);
   _saveColumnDisplayOrderState(root);
@@ -158248,6 +160278,7 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   else if (typeof renderPivot === 'function') renderPivot(ctx);
   const suffix = result.failed ? `（${result.failed}件失敗）` : '';
   if (typeof showStatus === 'function') showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件${suffix}`, !!result.failed);
+  return true;
 }
 
 async function _deleteColumnFromDisplayOrderModal(root, propName, item) {
@@ -159800,6 +161831,7 @@ async function _deleteColumn(dbPath, propName, ctx) {
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const oldBackendPropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : oldCfg.propertyTypes) || {}));
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || oldCfg.propertyTypes?.[propName];
+  const oldMetadata = _ptSnapshotColumnDeleteMetadata(dbPath);
 
   const c = getDbViewConfig(dbPath);
   _deleteViewConfigPropReferences(c, propName);
@@ -159831,12 +161863,10 @@ async function _deleteColumn(dbPath, propName, ctx) {
     state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
   }
 
-  // バックエンドに保存
-  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
-  const savePromise = _savePropertyTypesToBackend(dbPath);
-  if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
-  }
+  // バックエンドに保存（列タイプの保存が確定してから取り消し履歴を積む）
+  const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
+  if (!commit.ok) return false;
+  const layoutError = commit.layoutError;
 
   // Undo/Redo
   if (typeof historyPush === 'function' && typeof _dbScope === 'function') {
@@ -159873,7 +161903,11 @@ async function _deleteColumn(dbPath, propName, ctx) {
   } else {
     selectDatabase(dbPath, renderCtx);
   }
-  showStatus(`列「${propName}」を削除しました`);
+  if (layoutError) {
+    showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${layoutError?.message || layoutError}`, true);
+  } else {
+    showStatus(`列「${propName}」を削除しました`);
+  }
   // 列削除 → 該当 sheet_col/sheet_cell コメントを孤児化 (annotation_unification_plan.md §5.3)
   apiPost('/annotations/orphan-by-target', {
     target_kind: 'sheet_col',
@@ -159882,6 +161916,61 @@ async function _deleteColumn(dbPath, propName, ctx) {
     cascade_container: true,
   }).catch(() => {});
   return true;
+}
+
+// 列削除前の画面上の列タイプ・配置を控える（保存失敗時にそのまま戻す）。
+function _ptSnapshotColumnDeleteMetadata(dbPath) {
+  if (!_ptIsCurrentDbPath(dbPath) || !state.dbMetadata) return null;
+  const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+  return {
+    property_types: clone(state.dbMetadata.property_types),
+    property_layout: clone(state.dbMetadata.property_layout),
+  };
+}
+
+// 列削除の保存。列タイプの保存に失敗したら表示設定と画面上の列を削除前へ戻し、
+// 理由を表示して ok:false を返す（取り消し履歴は呼び出し側が ok の時だけ積む）。
+async function _ptSaveColumnDeleteToBackend(dbPath, propName, snapshot) {
+  const { oldCfg, oldMetadata, oldPT, renderCtx } = snapshot || {};
+  let typesSaved = true;
+  let typesSaveError = null;
+  try {
+    if (await _savePropertyTypesToBackend(dbPath) === false) typesSaved = false;
+  } catch (error) {
+    typesSaved = false;
+    typesSaveError = error;
+  }
+  if (!typesSaved) {
+    // 列タイプが保存されていないので、表示設定と画面上の列も削除前へ戻す
+    console.warn('[Meldex] 列の削除を保存できませんでした', typesSaveError);
+    let restored = true;
+    if (typeof _persistDbViewConfigToBackend === 'function') {
+      restored = await _persistDbViewConfigToBackend(dbPath, oldCfg, { immediate: true }).catch(() => false) !== false;
+    }
+    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+    if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata && oldMetadata) {
+      state.dbMetadata.property_types = oldMetadata.property_types;
+      state.dbMetadata.property_layout = oldMetadata.property_layout;
+    }
+    if (typeof selectDatabase === 'function') selectDatabase(dbPath, renderCtx);
+    const reason = typesSaveError ? ': ' + (typesSaveError?.message || typesSaveError) : '';
+    showStatus(`列「${propName}」を削除できませんでした${reason}${restored ? '' : '。表示設定を元に戻せなかったため、画面を開き直してください'}`, true);
+    return { ok: false, layoutError: null };
+  }
+  let layoutError = null;
+  if (typeof updatePropertyLayoutForDelete === 'function') {
+    try {
+      await updatePropertyLayoutForDelete(dbPath, propName);
+    } catch (error) {
+      layoutError = error;
+      console.warn('[Meldex] 列削除後の配置設定を更新できませんでした', error);
+    }
+  }
+  if (oldPT?.type === 'image') {
+    // 画像参照の再集計は背景の補助処理。失敗は記録だけ残す。
+    Promise.resolve(apiPost('/media/rebuild-refs', {})).catch(error => console.warn('[Meldex] 画像参照の再集計に失敗しました', error));
+  }
+  return { ok: true, layoutError };
 }
 
 // 確認なしで列削除（redo用）
@@ -159894,6 +161983,7 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
+  const oldMetadata = _ptSnapshotColumnDeleteMetadata(dbPath);
   const c = getDbViewConfig(dbPath);
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || c.propertyTypes?.[propName];
   _deleteViewConfigPropReferences(c, propName);
@@ -159919,10 +162009,10 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
     state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
   }
-  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
-  const savePromise = _savePropertyTypesToBackend(dbPath);
-  if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
+  const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
+  if (!commit.ok) return false;
+  if (commit.layoutError) {
+    showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${commit.layoutError?.message || commit.layoutError}`, true);
   }
   if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
     if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
@@ -163931,8 +166021,17 @@ function scheduleDbColorSave(sw, dbPath, save) {
       if (!promise) {
         const key = _dbColorSavePathKey(dbPath);
         // 同じシートの色保存は、設定の読取と履歴登録も含めて順序を保つ。
+        // 前の保存の失敗はその保存自身のチェーンで表示済み。ここでは順序待ちのためだけに受け、
+        // 次の色の保存を止めない。
         const previous = _dbColorSaveQueues.get(key);
-        promise = Promise.resolve(previous).catch(() => {}).then(save).finally(() => {
+        promise = Promise.resolve(previous).catch(() => {}).then(save).catch((error) => {
+          // 自動保存（タイマー）でも flush の待機側でも、失敗を必ず利用者へ伝える。
+          console.warn('[Meldex] 選択肢の背景色を保存できませんでした', error);
+          if (typeof showStatus === 'function') {
+            showStatus('選択肢の背景色を保存できませんでした: ' + (error?.message || error), true);
+          }
+          throw error;
+        }).finally(() => {
           if (_dbPendingColorSaves.get(sw) === pending) _dbPendingColorSaves.delete(sw);
           if (_dbColorSaveQueues.get(key) === promise) _dbColorSaveQueues.delete(key);
         });
@@ -163942,6 +166041,7 @@ function scheduleDbColorSave(sw, dbPath, save) {
     },
   };
   _dbPendingColorSaves.set(sw, pending);
+  // 失敗は保存チェーン内で表示済み。ここでは未処理の拒否にしないためだけに受ける。
   timer = setTimeout(() => pending.flush().catch(() => {}), 250);
   sw._dbOptionColorSaveTimer = timer;
 }
@@ -172271,10 +174371,14 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     if (items.length === 0 && e.key !== 'Escape') return;
     if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
       const addIdx = e.key === 'ArrowDown' ? findAddItemIndex(items, activeInputText(e.target)) : -1;
-      activeIdx = addIdx >= 0 ? addIdx : Math.min(activeIdx + 1, items.length - 1);
+      // 末尾から先頭へ循環する（追加候補へのジャンプは、まだそこに居ない時だけ）
+      activeIdx = (addIdx >= 0 && addIdx !== activeIdx)
+        ? addIdx
+        : (activeIdx >= items.length - 1 ? 0 : activeIdx + 1);
       highlight(items, activeIdx);
     } else if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
-      activeIdx = Math.max(activeIdx - 1, 0);
+      // 先頭から末尾へ循環する
+      activeIdx = activeIdx <= 0 ? items.length - 1 : activeIdx - 1;
       highlight(items, activeIdx);
     } else if (e.key === 'ArrowLeft') {
       activeIdx = 0;
@@ -178103,6 +180207,291 @@ const MeldexMapRelations = (() => {
 
 ;
 
+/* === gb-map-atlas-surface.js === */
+;
+/* Smooth cartographic relief from the native Azgaar Delaunay mesh.
+ * Encoded numeric fields stay immutable and cheap to retain in Undo snapshots.
+ */
+(function(root,factory){const api=factory(root);if(typeof module==='object'&&module.exports)module.exports=api;else root.MeldexMapAtlasSurface=api;})(globalThis,function(root){
+  'use strict';
+  const fields=['points','triangles','heights','temperature','rain','biomes'],decoded=new Map(),images=new Map();
+  const palette=['#c0c79d','#e0c68d','#c3bda0','#c1c38b','#b1c38e','#91b17d','#779c78','#65996d','#69977b','#82967f','#babaa6','#e8ede9','#82a38e'].map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)));
+  const clamp=(n,a=0,b=1)=>Math.max(a,Math.min(b,n));
+  function encodeBytes(bytes){let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return root.btoa(text);}
+  function encode(points,triangles,attributes){
+    const xy=new DataView(new ArrayBuffer(points.length*8)),indices=new DataView(new ArrayBuffer(triangles.length*2));
+    points.forEach((p,i)=>{xy.setFloat32(i*8,p[0],true);xy.setFloat32(i*8+4,p[1],true);});
+    triangles.forEach((n,i)=>indices.setUint16(i*2,n,true));
+    return {version:1,count:points.length,points:encodeBytes(new Uint8Array(xy.buffer)),triangles:encodeBytes(new Uint8Array(indices.buffer)),...Object.fromEntries(fields.slice(2).map(k=>[k,encodeBytes(Uint8Array.from(attributes[k]))]))};
+  }
+  function bytes(text,max){if(typeof text!=='string'||text.length>max||text.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(text))throw Error('地形の描画データが不正です');const s=root.atob(text);return Uint8Array.from(s,c=>c.charCodeAt(0));}
+  function mesh(s,width,height){
+    if(!s||s.version!==1||!Number.isInteger(s.count)||s.count<3||s.count>65535||!Number.isFinite(width)||!Number.isFinite(height)||width<128||height<128)throw Error('地形の描画データが不正です');
+    const n=s.count,limits=[Math.ceil(n*8/3)*4,n*24,...Array(4).fill(Math.ceil(n/3)*4)];
+    if(fields.some((k,i)=>typeof s[k]!=='string'||s[k].length>limits[i]))throw Error('地形の描画データが不正です');
+    const key=[width,height,n,...fields.map(k=>s[k])].join('|');let m=decoded.get(key);if(m)return m;
+    const xy=bytes(s.points,limits[0]),ts=bytes(s.triangles,limits[1]),attributes=Object.fromEntries(fields.slice(2).map(k=>[k,bytes(s[k],limits[2])]));
+    if(xy.length!==n*8||ts.length<6||ts.length%6||ts.length>n*18||Object.values(attributes).some(a=>a.length!==n)||attributes.heights.some(h=>h>100)||attributes.temperature.some(t=>t>128)||attributes.biomes.some(b=>b>12))throw Error('地形の描画データが不正です');
+    const p=new Float64Array(n*2),t=new Uint16Array(ts.length/2),pv=new DataView(xy.buffer),tv=new DataView(ts.buffer);
+    for(let i=0;i<n*2;i++){const v=pv.getFloat32(i*4,true),span=i%2?height:width;if(!Number.isFinite(v)||v<-.25*span||v>1.25*span)throw Error('地形の座標が不正です');p[i]=v;}
+    for(let i=0;i<t.length;i++){t[i]=tv.getUint16(i*2,true);if(t[i]>=n)throw Error('地形の頂点参照が不正です');}
+    // Bound raster work even for a malformed mesh with many overlapping triangles.
+    let coverage=0;
+    for(let i=0;i<t.length;i+=3){const ids=[t[i],t[i+1],t[i+2]],xs=ids.map(j=>p[j*2]),ys=ids.map(j=>p[j*2+1]);coverage+=Math.max(0,Math.min(width,Math.max(...xs))-Math.max(0,Math.min(...xs)))*Math.max(0,Math.min(height,Math.max(...ys))-Math.max(0,Math.min(...ys)))/(width*height);}
+    if(coverage>32)throw Error('地形の面が過剰に重なっています');
+    // Identical immutable fields across Undo snapshots share a bounded decode cache.
+    m={width,height,p,t,...attributes,key};decoded.set(key,m);while(decoded.size>4)decoded.delete(decoded.keys().next().value);return m;
+  }
+  function valid(s,width,height){try{mesh(s,width,height);return true;}catch{return false;}}
+  function vertexColors(m,mode){
+    const rgb=new Float32Array(m.heights.length*3),z=Float64Array.from(m.heights,h=>Math.pow(Math.max(0,h-20)/80,1.6)),nx=new Float64Array(z.length),ny=new Float64Array(z.length),area=new Float64Array(z.length);
+    const {p,t}=m;
+    for(let i=0;i<t.length;i+=3){const a=t[i],b=t[i+1],c=t[i+2],dx=p[b*2]-p[a*2],dy=p[b*2+1]-p[a*2+1],ex=p[c*2]-p[a*2],ey=p[c*2+1]-p[a*2+1],det=dx*ey-dy*ex;if(Math.abs(det)<1e-8)continue;
+      const weight=Math.abs(det),gx=((z[b]-z[a])*ey-(z[c]-z[a])*dy)/det,gy=(dx*(z[c]-z[a])-ex*(z[b]-z[a]))/det;
+      for(const j of [a,b,c]){nx[j]+=gx*weight;ny[j]+=gy*weight;area[j]+=weight;}
+    }
+    for(let i=0;i<z.length;i++){nx[i]=area[i]?nx[i]/area[i]:0;ny[i]=area[i]?ny[i]/area[i]:0;}
+    // Smooth lighting normals only; elevations and hydrology remain unchanged.
+    for(let pass=0;pass<2;pass++){
+      const sx=new Float64Array(z.length),sy=new Float64Array(z.length),degree=new Uint16Array(z.length);
+      for(let i=0;i<t.length;i+=3){const a=t[i],b=t[i+1],c=t[i+2];for(const [j,k,l]of [[a,b,c],[b,c,a],[c,a,b]]){sx[j]+=nx[k]+nx[l];sy[j]+=ny[k]+ny[l];degree[j]+=2;}}
+      for(let i=0;i<z.length;i++)if(degree[i]){nx[i]=nx[i]*.6+sx[i]/degree[i]*.4;ny[i]=ny[i]*.6+sy[i]/degree[i]*.4;}
+    }
+    for(let i=0;i<z.length;i++){
+      const h=m.heights[i],temp=m.temperature[i]-64,moisture=clamp(m.rain[i]/160),base=palette[m.biomes[i]];
+      let color=base.slice();
+      if(mode==='temperature'){const v=clamp((temp+35)/65);color=[92+v*144,152+30*Math.sin(v*Math.PI)-v*60,203-v*132];}
+      else if(mode==='rain')color=[214-moisture*134,192-moisture*58,137+moisture*48];
+      else if(mode==='elevation'){const k=clamp((h-20)/80),stops=[[191,205,159],[143,166,122],[171,157,121],[185,178,161],[242,245,239]],x=k*4,l=Math.min(3,Math.floor(x));color=stops[l].map((v,ch)=>v+(stops[l+1][ch]-v)*(x-l));}
+      else {const rock=clamp((h-52)/32)*.76,snow=clamp((-temp-5)/16)*clamp((h-50)/25);color=color.map((v,ch)=>(v*(1-rock)+[179,172,151][ch]*rock)*(1-snow)+[239,243,235][ch]*snow);}
+      rgb.set(color,i*3);
+    }
+    return {rgb,nx,ny};
+  }
+  function pixels(s,graphWidth,graphHeight,mode='biomes',width=1536){
+    if(!['biomes','elevation','temperature','rain','political'].includes(mode))throw Error('未対応の地図の配色です');
+    const m=mesh(s,graphWidth,graphHeight);width=Math.max(32,Math.min(2048,Math.round(width)));if(graphHeight>graphWidth)width=Math.max(16,Math.round(width*graphWidth/graphHeight));const height=Math.max(16,Math.round(width*graphHeight/graphWidth)),data=new Uint8ClampedArray(width*height*4),{rgb:colors,nx,ny}=vertexColors(m,mode),{p,t}=m,lit=['biomes','elevation','political'].includes(mode),exaggeration=graphWidth*.055;
+    for(let i=0;i<t.length;i+=3){const a=t[i],b=t[i+1],c=t[i+2],ax=p[a*2]/graphWidth*width,ay=p[a*2+1]/graphHeight*height,bx=p[b*2]/graphWidth*width,by=p[b*2+1]/graphHeight*height,cx=p[c*2]/graphWidth*width,cy=p[c*2+1]/graphHeight*height;
+      const den=(by-cy)*(ax-cx)+(cx-bx)*(ay-cy);if(Math.abs(den)<1e-8)continue;
+      const x0=Math.max(0,Math.floor(Math.min(ax,bx,cx))),x1=Math.min(width-1,Math.ceil(Math.max(ax,bx,cx))),y0=Math.max(0,Math.floor(Math.min(ay,by,cy))),y1=Math.min(height-1,Math.ceil(Math.max(ay,by,cy)));
+      for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+        const u=((by-cy)*(x+.5-cx)+(cx-bx)*(y+.5-cy))/den,v=((cy-ay)*(x+.5-cx)+(ax-cx)*(y+.5-cy))/den,w=1-u-v;if(u<-.00001||v<-.00001||w<-.00001)continue;
+        const offset=(y*width+x)*4;
+        let shade=1;
+        if(lit){const gx=(nx[a]*u+nx[b]*v+nx[c]*w)*exaggeration,gy=(ny[a]*u+ny[b]*v+ny[c]*w)*exaggeration;shade=clamp(.75+(-gx*-.55-gy*-.65+.62)/Math.hypot(gx,gy,1)*.40,.48,1.15);}
+        for(let k=0;k<3;k++)data[offset+k]=(colors[a*3+k]*u+colors[b*3+k]*v+colors[c*3+k]*w)*shade;
+        if(mode==='political'){data[offset]=data[offset+1]=data[offset+2]=shade>1?255:0;data[offset+3]=Math.abs(shade-1)*(shade>1?180:230);}
+        else data[offset+3]=255;
+      }
+    }
+    return {width,height,data};
+  }
+  function url(s,width,height,mode){
+    if(typeof root.document?.createElement!=='function')return null;
+    const key=mesh(s,width,height).key+'|'+mode;if(images.has(key))return images.get(key);
+    const result=pixels(s,width,height,mode,1536),canvas=document.createElement('canvas');canvas.width=result.width;canvas.height=result.height;
+    const context=canvas.getContext('2d'),image=context.createImageData(result.width,result.height);image.data.set(result.data);context.putImageData(image,0,0);
+    const value=canvas.toDataURL('image/png');images.set(key,value);while(images.size>4)images.delete(images.keys().next().value);return value;
+  }
+  function sampler(s,width,height){
+    const m=mesh(s,width,height);
+    if(!m.field){
+      const w=width>=height?512:Math.max(32,Math.round(512*width/height)),h=Math.max(32,Math.round(w*height/width)),data=new Float32Array(w*h*6),{p,t}=m;
+      for(let k=0;k<t.length;k+=3){const a=t[k],b=t[k+1],c=t[k+2],ax=p[a*2]/width*w,ay=p[a*2+1]/height*h,bx=p[b*2]/width*w,by=p[b*2+1]/height*h,cx=p[c*2]/width*w,cy=p[c*2+1]/height*h,den=(by-cy)*(ax-cx)+(cx-bx)*(ay-cy);if(Math.abs(den)<1e-8)continue;
+        for(let y=Math.max(0,Math.floor(Math.min(ay,by,cy)));y<=Math.min(h-1,Math.ceil(Math.max(ay,by,cy)));y++)for(let x=Math.max(0,Math.floor(Math.min(ax,bx,cx)));x<=Math.min(w-1,Math.ceil(Math.max(ax,bx,cx)));x++){
+          const u=((by-cy)*(x+.5-cx)+(cx-bx)*(y+.5-cy))/den,v=((cy-ay)*(x+.5-cx)+(ax-cx)*(y+.5-cy))/den,z=1-u-v;if(u<-.00001||v<-.00001||z<-.00001)continue;const at=(y*w+x)*6;
+          data[at]=m.heights[a]*u+m.heights[b]*v+m.heights[c]*z;data[at+1]=m.temperature[a]*u+m.temperature[b]*v+m.temperature[c]*z-64;data[at+2]=m.rain[a]*u+m.rain[b]*v+m.rain[c]*z;
+          for(let ch=0;ch<3;ch++)data[at+3+ch]=palette[m.biomes[a]][ch]*u+palette[m.biomes[b]][ch]*v+palette[m.biomes[c]][ch]*z;
+        }
+      }
+      m.field={w,h,data};
+    }
+    const {w,h,data}=m.field;
+    const cubic=(a,b,c,d,t)=>b+.5*t*(c-a+t*(2*a-5*b+4*c-d+t*(3*(b-c)+d-a)));
+    const derivative=(a,b,c,d,t)=>.5*(c-a+t*(2*(2*a-5*b+4*c-d)+3*t*(3*(b-c)+d-a)));
+    const row=(x,y,u,gradient=false)=>{const at=clamp(y,0,h-1)*w,read=i=>data[(at+clamp(i,0,w-1))*6];return (gradient?derivative:cubic)(read(x-1),read(x),read(x+1),read(x+2),u);};
+    return (x,y,out)=>{const gx=clamp(x/width*w-.5,0,w-1),gy=clamp(y/height*h-.5,0,h-1),ix=Math.min(w-2,Math.floor(gx)),iy=Math.min(h-2,Math.floor(gy)),u=gx-ix,v=gy-iy,a=(iy*w+ix)*6,b=a+6,c=a+w*6,d=c+6;
+      for(let ch=0;ch<6;ch++)out[ch]=data[a+ch]*(1-u)*(1-v)+data[b+ch]*u*(1-v)+data[c+ch]*(1-u)*v+data[d+ch]*u*v;
+      const r0=row(ix,iy-1,u),r1=row(ix,iy,u),r2=row(ix,iy+1,u),r3=row(ix,iy+2,u);
+      out[0]=clamp(cubic(r0,r1,r2,r3,v),0,100);out[6]=cubic(row(ix,iy-1,u,true),row(ix,iy,u,true),row(ix,iy+1,u,true),row(ix,iy+2,u,true),v)*w/width;out[7]=derivative(r0,r1,r2,r3,v)*h/height;return out;
+    };
+  }
+  return Object.freeze({fields,encode,valid,pixels,url,sampler});
+});
+
+;
+
+/* === gb-map-terrain-field.js === */
+;
+/* Continuous, deterministic 2D relief and bounded, reversible terrain strokes. */
+(function(root,factory){const node=typeof module==='object'&&module.exports,api=factory(root,node?require('./gb-map-atlas-surface.js'):root.MeldexMapAtlasSurface);if(node)module.exports=api;else root.MeldexMapTerrainField=api;})(globalThis,function(root,Surface){
+ 'use strict';
+ const kinds=['plain','mountain','hills','desert','wasteland','snow','forest','land','water','river','road','railway','waterway'],scenes=new Map(),images=new Map();
+ const clamp=(n,a=0,b=1)=>Math.max(a,Math.min(b,n));
+ const colors={plain:[177,194,140],mountain:[162,159,139],hills:[153,177,128],desert:[222,196,139],wasteland:[174,164,139],snow:[236,242,238],forest:[99,150,108],land:[180,196,148],water:[114,163,185]};
+ function valid(editor,w,h){
+   if(editor==null)return true;
+   if(!editor||editor.version!==1||!Array.isArray(editor.edits)||editor.edits.length>256)return false;
+   let points=0,cost=0;
+   for(const e of editor.edits){
+     if(!e||!kinds.includes(e.kind)||!Number.isFinite(e.radius)||e.radius<.001||e.radius>Math.max(w,h)/2||!Number.isFinite(e.strength)||e.strength<=0||e.strength>1||!Array.isArray(e.points)||!e.points.length||e.points.length>2048||!e.points.every(p=>Array.isArray(p)&&p.length===2&&p.every(Number.isFinite)&&p[0]>=0&&p[0]<=w&&p[1]>=0&&p[1]<=h))return false;
+     if(e.feature_id!==undefined&&(typeof e.feature_id!=='string'||e.feature_id.length>256))return false;
+     if((e.profile!==undefined||['river','road','railway','waterway'].includes(e.kind))&&(!Array.isArray(e.profile)||e.profile.length!==e.points.length||!e.profile.every(n=>Number.isFinite(n)&&n>=0&&n<=100)))return false;
+     points+=e.points.length;if(points>32768)return false;
+     for(let i=0;i<e.points.length;i++){const a=e.points[i],b=e.points[i+1]||a,x0=clamp(Math.floor((Math.min(a[0],b[0])-e.radius)/w*32),0,31),x1=clamp(Math.floor((Math.max(a[0],b[0])+e.radius)/w*32),0,31),y0=clamp(Math.floor((Math.min(a[1],b[1])-e.radius)/h*32),0,31),y1=clamp(Math.floor((Math.max(a[1],b[1])+e.radius)/h*32),0,31);cost+=(x1-x0+1)*(y1-y0+1);if(cost>262144)return false;}
+   }
+   return true;
+ }
+ function hash(x,y,seed){let n=Math.imul(x,374761393)^Math.imul(y,668265263)^seed;n=Math.imul(n^(n>>>13),1274126177);return ((n^(n>>>16))>>>0)/4294967295;}
+ function noise(x,y,seed){const ix=Math.floor(x),iy=Math.floor(y),u=x-ix,v=y-iy,a=hash(ix,iy,seed),b=hash(ix+1,iy,seed),c=hash(ix,iy+1,seed),d=hash(ix+1,iy+1,seed),f=u*u*(3-2*u),g=v*v*(3-2*v);return [a+(b-a)*f+(c-a)*g+(a-b-c+d)*f*g,((b-a)+(a-b-c+d)*g)*6*u*(1-u),((c-a)+(a-b-c+d)*f)*6*v*(1-v)];}
+ function scene(atlas){
+   if(!atlas.surface||!valid(atlas.editor,atlas.width,atlas.height))throw Error('地形の編集データが不正です');
+   const edits=atlas.editor?.edits||[],key=[atlas.width,atlas.height,...Surface.fields.map(k=>atlas.surface[k]),JSON.stringify(edits)].join('|');if(scenes.has(key))return scenes.get(key);
+   const w=atlas.width,h=atlas.height,base=Surface.sampler(atlas.surface,w,h),bins=Array.from({length:1024},()=>[]),segments=[];
+   let seed=2166136261;for(let i=0;i<atlas.surface.points.length;i+=31)seed=Math.imul(seed^atlas.surface.points.charCodeAt(i),16777619);
+   edits.forEach((e,op)=>e.points.forEach((a,i)=>{const b=e.points[i+1]||a,seg={a,b,op,i},id=segments.push(seg)-1;
+     const x0=clamp(Math.floor((Math.min(a[0],b[0])-e.radius)/w*32),0,31),x1=clamp(Math.floor((Math.max(a[0],b[0])+e.radius)/w*32),0,31),y0=clamp(Math.floor((Math.min(a[1],b[1])-e.radius)/h*32),0,31),y1=clamp(Math.floor((Math.max(a[1],b[1])+e.radius)/h*32),0,31);
+     for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)bins[y*32+x].push(id);
+   }));
+   const distance=new Float64Array(edits.length),nearest=new Int32Array(edits.length),fraction=new Float64Array(edits.length),stamp=new Uint32Array(edits.length);let tick=0;
+   const sample=(x,y,out=new Float64Array(9))=>{
+     base(x,y,out);let height=out[0],gx=out[6],gy=out[7],detail=1;const touched=[];tick++;if(tick===4294967295){stamp.fill(0);tick=1;}
+     for(const id of bins[clamp(Math.floor(y/h*32),0,31)*32+clamp(Math.floor(x/w*32),0,31)]){const s=segments[id],dx=s.b[0]-s.a[0],dy=s.b[1]-s.a[1],len=dx*dx+dy*dy,t=len?clamp(((x-s.a[0])*dx+(y-s.a[1])*dy)/len):0,d=Math.hypot(x-s.a[0]-t*dx,y-s.a[1]-t*dy),op=s.op;if(d>=edits[op].radius)continue;if(stamp[op]!==tick){stamp[op]=tick;distance[op]=d;nearest[op]=id;fraction[op]=t;touched.push(op);}else if(d<distance[op]){distance[op]=d;nearest[op]=id;fraction[op]=t;}}
+     touched.sort((a,b)=>a-b);
+     for(const op of touched){const e=edits[op],s=segments[nearest[op]],t=fraction[op],d=distance[op],dx=s.b[0]-s.a[0],dy=s.b[1]-s.a[1],len=dx*dx+dy*dy,f=Math.cos(Math.PI/2*d/e.radius)**2*e.strength,derivative=-Math.sin(Math.PI*d/e.radius)*Math.PI/(2*e.radius)*e.strength,dfx=d?derivative*(x-s.a[0]-dx*t)/d:0,dfy=d?derivative*(y-s.a[1]-dy*t)/d:0;
+       let target=height,tx=0,ty=0;
+       if(e.profile){const p=e.profile[s.i],q=e.profile[Math.min(s.i+1,e.profile.length-1)];target=p+(q-p)*t;if(len){tx=(q-p)*dx/len;ty=(q-p)*dy/len;}detail*=1-f;}
+       else {target=({plain:25,mountain:78,hills:45,land:26,water:15})[e.kind]??height;if(target===height){tx=gx;ty=gy;}detail=detail*(1-f)+f;}
+       const delta=target-height;gx=gx*(1-f)+tx*f+delta*dfx;gy=gy*(1-f)+ty*f+delta*dfy;height+=delta*f;out[1]-=delta*f*.45;
+       const color=colors[e.kind];if(color)for(let ch=0;ch<3;ch++)out[3+ch]=out[3+ch]*(1-f)+color[ch]*f;
+       if(e.kind==='desert'){out[1]=out[1]*(1-f)+26*f;out[2]*=1-f;}
+       if(e.kind==='snow')out[1]=out[1]*(1-f)-18*f;
+       if(['plain','land','forest'].includes(e.kind)){out[1]=out[1]*(1-f)+Math.max(10,out[1])*f;out[2]=out[2]*(1-f)+Math.max(e.kind==='forest'?110:50,out[2])*f;}
+       if(e.kind==='wasteland')out[2]=out[2]*(1-f)+5*f;
+       if(e.kind==='river'&&delta<0&&height<45&&out[1]>2)for(let ch=0;ch<3;ch++)out[3+ch]=out[3+ch]*(1-f)+[132,174,118][ch]*f;
+     }
+     const high=clamp((height-32)/42),amplitude=3.6*high*detail;let fine=0,nx=0,ny=0,total=0;
+     for(let octave=0,frequency=48/Math.max(w,h),weight=1;octave<5;octave++,frequency*=3,weight*=.48){const n=noise(x*frequency,y*frequency,seed+octave*31),ridge=1-Math.abs(n[0]*2-1),sign=n[0]>.5?-2:2;fine+=(ridge-.6)*weight;nx+=sign*n[1]*frequency*weight;ny+=sign*n[2]*frequency*weight;total+=weight;}
+     height+=fine/total*amplitude;gx+=nx/total*amplitude;gy+=ny/total*amplitude;
+     out[0]=clamp(height,0,100);out[6]=gx;out[7]=gy;out[8]=detail;return out;
+   };
+   const result={key,sample};scenes.set(key,result);while(scenes.size>2)scenes.delete(scenes.keys().next().value);return result;
+ }
+ function pixels(atlas,mode,bounds=[0,0,atlas.width,atlas.height],width=512,height=Math.round(width*bounds[3]/bounds[2]),display={}){
+   if(!bounds.every(Number.isFinite)||bounds[2]<=0||bounds[3]<=0||!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>4104||height>4104||width*height>12e6)throw Error('地形の描画範囲が不正です');
+   const data=new Uint8ClampedArray(width*height*4),s=scene(atlas),v=new Float64Array(9),exaggeration=Math.max(atlas.width,atlas.height)*.025;
+   for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+     s.sample(bounds[0]+(x+.5)/width*bounds[2],bounds[1]+(y+.5)/height*bounds[3],v);const h=v[0],temp=v[1],rain=clamp(v[2]/160),at=(y*width+x)*4;
+     let color=[v[3],v[4],v[5]],shade=1;
+     if(mode==='temperature'){const f=clamp((temp+35)/65);color=[92+f*144,152+30*Math.sin(f*Math.PI)-f*60,203-f*132];}
+     else if(mode==='rain')color=[214-rain*134,192-rain*58,137+rain*48];
+     else if(mode==='elevation'||display.vegetation===false){const f=clamp((h-20)/80);color=[181+f*47,199-f*30+f*f*62,148+f*80];}
+     if(['biomes','elevation','political'].includes(mode)&&display.terrain!==false){const dh=h>20?1.6/80*Math.pow((h-20)/80,.6):0,gx=v[6]*dh*exaggeration,gy=v[7]*dh*exaggeration,normal=Math.hypot(gx,gy,1),light=(gx*.55+gy*.65+.7)/normal;shade=clamp(.64+light*.5,.4,1.2);
+       if(mode==='biomes'){const rock=clamp((h-55)/35)*.6,snow=clamp((-temp-7)/15)*clamp((h-50)/30);color=color.map((c,k)=>(c*(1-rock)+[164,158,141][k]*rock)*(1-snow)+[238,243,239][k]*snow);}
+     }
+     for(let ch=0;ch<3;ch++)data[at+ch]=color[ch]*shade;
+     data[at+3]=255;
+     if(mode==='political'){data[at]=data[at+1]=data[at+2]=shade>1?255:0;data[at+3]=Math.abs(shade-1)*(shade>1?160:210);}
+   }
+   return {width,height,data};
+ }
+ function url(atlas,mode,bounds,width,height,display={}){
+   const key=scene(atlas).key+'|'+JSON.stringify([mode,bounds,width,height,display]);if(images.has(key))return images.get(key);
+   const result=pixels(atlas,mode,bounds,width,height,display),canvas=document.createElement('canvas');canvas.width=result.width;canvas.height=result.height;const ctx=canvas.getContext('2d'),im=ctx.createImageData(result.width,result.height);im.data.set(result.data);ctx.putImageData(im,0,0);const value=canvas.toDataURL('image/png');images.set(key,value);while(images.size>48)images.delete(images.keys().next().value);return value;
+ }
+ function stroke(atlas,kind,points,radius,strength=1){const e={kind,points:points.map(p=>p.slice()),radius,strength};const editor={version:1,edits:[...(atlas.editor?.edits||[]),e]};if(!valid(editor,atlas.width,atlas.height))throw Error('編集回数・点数・範囲の上限を超えます');return editor;}
+ function fit(atlas,kind,points,radius,featureId){
+   if(points.length<2||points.length>32768||typeof featureId!=='string'||!featureId)throw Error('2〜32,768点の川・経路を選択してください');const edits=(atlas.editor?.edits||[]).filter(old=>old.feature_id!==featureId),s=scene({...atlas,editor:{version:1,edits}}),v=new Float64Array(9),p=simplify(points,Math.max(radius*.02,.0001));if(kind==='river'&&s.sample(...p[0],v)[0]<s.sample(...p.at(-1),v)[0])p.reverse();
+   let profile=p.map(point=>s.sample(...point,v)[0]);
+   if(kind==='river'){for(let i=0;i<profile.length;i++)profile[i]=clamp(Math.min(profile[i]-1.2,i?profile[i-1]-Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1])*.002:100),19.8,100);}
+   else if(kind==='waterway')profile.fill(18);
+   else {for(let pass=0;pass<3;pass++){const prev=profile.slice();profile=profile.map((h,i)=>Math.max(20.5,(prev[Math.max(0,i-1)]+h*2+prev[Math.min(prev.length-1,i+1)])/4));}}
+   const e={kind,points:p,radius,strength:1,profile,feature_id:featureId},editor={version:1,edits:[...edits,e]};if(!valid(editor,atlas.width,atlas.height))throw Error('補正範囲または経路の点数を小さくしてください');return editor;
+ }
+ function simplify(points,tolerance){
+   if(points.length<=2)return points.map(p=>p.slice());const keep=new Set([0,points.length-1]),stack=[[0,points.length-1]],limit=tolerance*tolerance;let work=0;
+   while(stack.length){const [a,b]=stack.pop(),p=points[a],q=points[b],dx=q[0]-p[0],dy=q[1]-p[1],len=dx*dx+dy*dy;let best=-1,dist=limit;for(let i=a+1;i<b;i++){if(++work>2e6)throw Error('経路が複雑すぎます。頂点を減らすか、補正する半径を広げてください');const t=len?clamp(((points[i][0]-p[0])*dx+(points[i][1]-p[1])*dy)/len):0,d=(points[i][0]-p[0]-dx*t)**2+(points[i][1]-p[1]-dy*t)**2;if(d>dist){dist=d;best=i;}}if(best>=0){keep.add(best);stack.push([a,best],[best,b]);}}
+   return [...keep].sort((a,b)=>a-b).map(i=>points[i].slice());
+ }
+ return Object.freeze({kinds,valid,scene,pixels,url,stroke,fit,simplify});
+});
+
+;
+
+/* === gb-map-display.js === */
+;
+/* Shared element visibility for the editor, PNG, saved maps and portable viewer. */
+(function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.MeldexMapDisplay=api;})(globalThis,function(){
+ 'use strict';
+ const categories=[['terrain','地形の陰影'],['vegetation','植生の色'],['countries','国家の塗り分け'],['major_roads','主要道路'],['roads','道路・小径'],['railways','鉄道・線路'],['shipping','航路'],['rivers','川・水路'],['borders','国境'],['country_names','国名'],['city_symbols','都市の記号'],['city_names','都市名'],['terrain_names','山・川などの地名'],['other','その他の書き込み']];
+ const keys=categories.map(c=>c[0]);
+ const valid=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>keys.includes(k)&&typeof value[k]==='boolean');
+ const effective=value=>Object.fromEntries(keys.map(k=>[k,value?.[k]!==false]));
+ function category(f){const role=f.cartography?.role;return ({river:'rivers',shipping:'shipping',railway:'railways',border:'borders','country-label':'country_names','mountain-label':'terrain_names','river-label':'terrain_names'})[role]||(role==='road'?(f.cartography.rank==='major'?'major_roads':'roads'):role==='city'?'city_symbols':'other');}
+ function visible(f,v){return f.cartography?.role==='city'?(v.city_names!==false||v.city_symbols!==false):v[category(f)]!==false;}
+ const labels=(f,v)=>f.cartography?.role==='city'?v.city_names!==false:visible(f,v);
+ const symbols=(f,v)=>f.cartography?.role==='city'?v.city_symbols!==false:visible(f,v);
+ return Object.freeze({categories,keys,valid,effective,category,visible,labels,symbols});
+});
+
+;
+
+/* === gb-map-azgaar.js === */
+;
+/* Azgaar's native vector geometry; no remote services or arbitrary SVG markup. */
+(function(root,factory){const node=typeof module==='object'&&module.exports,api=factory(root,node?require('./gb-map-atlas-surface.js'):root.MeldexMapAtlasSurface,node?require('./gb-map-terrain-field.js'):root.MeldexMapTerrainField);if(node)module.exports=api;else root.MeldexMapAzgaar=api;})(globalThis,function(root,Surface,Field){
+  'use strict';
+  const version='1.156.0',revision='67d555b83f0b2f40ae50b03c9bbfd018175acc6d';
+  const workerURL=typeof document==='undefined'?'':new URL('vendor/azgaar/azgaar-worker.js',document.currentScript?.src||location.href).href;
+  const modes=['biomes','elevation','temperature','rain','political'];
+  const pathOK=p=>typeof p==='string'&&p.length>0&&p.length<=4e6&&/^[MmLlHhVvCcSsQqTtAaZz\d\s.,+eE-]+$/.test(p)&&/^[Mm]/.test(p)
+    &&(p.match(/[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/g)||[]).every(n=>Number.isFinite(+n)&&Math.abs(+n)<=1e7);
+  const colorOK=c=>typeof c==='string'&&/^#[\da-f]{6}$/i.test(c);
+  function valid(a){
+    if(!a||a.version!==1||a.engine!=='Azgaar'||!Number.isFinite(a.width)||!Number.isFinite(a.height)||a.width<128||a.height<128||a.width>4096||a.height>4096||!modes.includes(a.presentation))return false;
+    if(a.surface!=null&&!Surface.valid(a.surface,a.width,a.height))return false;
+    if(!Field.valid(a.editor,a.width,a.height)||a.locked!==undefined&&typeof a.locked!=='boolean')return false;
+    if(!Array.isArray(a.shores)||!a.shores.length||a.shores.length>2000||!a.shores.every(pathOK)||!a.modes||!Array.isArray(a.relief)||a.relief.length>30)return false;
+    let size=a.shores.reduce((n,p)=>n+p.length,0);
+    for(const shapes of [...modes.map(m=>a.modes[m]),a.relief]){
+      if(!Array.isArray(shapes)||shapes.length>2000||!shapes.every(s=>s&&pathOK(s.path)&&colorOK(s.color)&&Number.isFinite(s.opacity)&&s.opacity>=0&&s.opacity<=1))return false;
+      size+=shapes.reduce((n,s)=>n+s.path.length,0);
+    }
+    return size<=12*1024*1024;
+  }
+  function svg(a,options={}){
+    if(!valid(a))throw new Error('Azgaar地図の描画データが不正です');
+    const shore=a.shores.map(p=>`<path d="${p}"/>`).join('');
+    const shapes=a.modes[a.presentation].map(s=>`<path d="${s.path}" fill="${s.color}" opacity="${s.opacity}"/>`).join('');
+    const relief=['biomes','political'].includes(a.presentation)?a.relief.map(s=>`<path d="${s.path}" fill="${s.color}" opacity="${s.opacity}"/>`).join(''):'';
+    const bounds=options.bounds||[0,0,a.width,a.height],resolution=options.resolution||2048;
+    if(!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[2]<=0||bounds[3]<=0||Math.max(...bounds.map(Math.abs))>1e7||!Number.isFinite(resolution)||resolution<16||resolution>4096)throw Error('地図の表示範囲が不正です');
+    const rw=Math.max(16,Math.floor(Math.min(resolution,4090,4090*bounds[2]/bounds[3],Math.sqrt(11e6*bounds[2]/bounds[3])))),rh=Math.max(1,Math.round(rw*bounds[3]/bounds[2])),pixel=bounds[2]/rw,bleed=pixel*3,b=[bounds[0]-bleed,bounds[1]-bleed,bounds[2]+bleed*2,bounds[3]+bleed*2];
+    const texture=a.surface&&typeof root.document?.createElement==='function'?Field.url(a,a.presentation,b,rw+6,rh+6,options.display||{}):null;
+    const image=texture?`<image href="${texture}" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" preserveAspectRatio="none"/>`:'';
+    const land=texture?(a.presentation==='political'?((options.display?.countries===false?'':shapes)+image):image):shapes+relief;
+    const masks=(a.editor?.edits||[]).filter(e=>['land','water','waterway'].includes(e.kind)).map(e=>{const white=e.kind==='land',r=e.radius*(e.kind==='waterway'?.15:1);return e.points.length===1?`<circle cx="${e.points[0][0]}" cy="${e.points[0][1]}" r="${r}" fill="${white?'white':'black'}" opacity="${e.strength}"/>`:`<path d="M${e.points.map(p=>p.join(',')).join('L')}" fill="none" stroke="${white?'white':'black'}" stroke-width="${r*2}" opacity="${e.strength}" stroke-linecap="round" stroke-linejoin="round"/>`;}).join('');
+    if(texture)return `<svg xmlns="http://www.w3.org/2000/svg" width="${rw}" height="${rh}" preserveAspectRatio="none" viewBox="${bounds.join(' ')}"><defs><clipPath id="paper"><rect width="${a.width}" height="${a.height}"/></clipPath><mask id="land" maskUnits="userSpaceOnUse" x="0" y="0" width="${a.width}" height="${a.height}"><rect width="${a.width}" height="${a.height}" fill="black"/><g fill="white">${shore}</g>${masks}</mask><filter id="coast" filterUnits="userSpaceOnUse" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}"><feMorphology in="SourceAlpha" operator="dilate" radius="${pixel*.8}" result="edge"/><feComposite in="edge" in2="SourceAlpha" operator="out" result="outline"/><feFlood flood-color="#799caa"/><feComposite in2="outline" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g clip-path="url(#paper)"><rect width="${a.width}" height="${a.height}" fill="#82aaba"/><g filter="url(#coast)"><g mask="url(#land)"><rect x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" fill="#d9ddbe"/>${land}</g></g></g></svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${a.width}" height="${a.height}" viewBox="0 0 ${a.width} ${a.height}"><defs><clipPath id="land">${shore}</clipPath><linearGradient id="ocean" x2="0" y2="1"><stop stop-color="#91b6c3"/><stop offset=".5" stop-color="#779faf"/><stop offset="1" stop-color="#86aebc"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#ocean)"/><g fill="none" stroke="#bfd6d6" stroke-width="3">${shore}</g><g fill="#c3cca3">${shore}</g><g clip-path="url(#land)">${land}</g><g fill="none" stroke="#607e7a" stroke-width=".45">${shore}</g></svg>`;
+  }
+  const url=(a,options)=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg(a,options));
+  function signature(points){let hash=2166136261;const [x,y]=points[0];for(const p of points){const s=`${Math.round((p[0]-x)*1e4)},${Math.round((p[1]-y)*1e4)};`;for(let i=0;i<s.length;i++)hash=Math.imul(hash^s.charCodeAt(i),16777619);}return (hash>>>0).toString(16);}
+  function geometry(f){const g=f.cartography?.geometry;if(!g||!pathOK(g.path)||!Array.isArray(g.scale)||g.scale.length!==2||!g.scale.every(n=>Number.isFinite(n)&&n>0&&n<=128)||!Array.isArray(g.anchor)||g.anchor.length!==2||!g.anchor.every(n=>Number.isFinite(n)&&Math.abs(n)<=1e7)||typeof g.closed!=='boolean'||g.line_style!==undefined&&(!['straight','curve'].includes(g.line_style)||g.line_style!==(f.line_style||'straight'))||g.signature!==signature(f.points))return null;return g;}
+  function attach(f,path,scale,closed=false){f.cartography.geometry={path,scale,anchor:[...f.points[0]],closed,line_style:f.line_style||'straight',signature:signature(f.points)};return f;}
+  function generate(options,signal){
+    return new Promise((resolve,reject)=>{
+      if(signal?.aborted){reject(new DOMException('中止しました','AbortError'));return;}
+      let worker,timer;const finish=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);worker?.terminate();error?reject(error):resolve(result);};
+      const abort=()=>finish(new DOMException('中止しました','AbortError'));
+      try{worker=new Worker(workerURL);worker.onmessage=({data})=>finish(data.ok?null:new Error('Azgaarの生成に失敗しました: '+data.error),data);worker.onerror=()=>finish(new Error('Azgaarを読み込めませんでした。アプリのファイルを確認してください'));signal?.addEventListener('abort',abort,{once:true});timer=setTimeout(()=>finish(new Error('地図生成が時間内に完了しませんでした。地形の細かさを下げて再試行してください')),90000);worker.postMessage(options);}catch(error){finish(error);}
+    });
+  }
+  async function raster(a){const image=new Image();image.src=url(a);await image.decode();const c=document.createElement('canvas');c.width=a.width*2;c.height=a.height*2;c.getContext('2d').drawImage(image,0,0,c.width,c.height);return c.toDataURL('image/png');}
+  return Object.freeze({version,revision,modes,pathOK,colorOK,valid,svg,url,geometry,attach,generate,raster});
+});
+
+;
+
 /* === gb-map-world-terrain.js === */
 ;
 /* Deterministic terrain primitives. No saved heightfield is regenerated on load. */
@@ -178175,10 +180564,10 @@ const MeldexMapRelations = (() => {
 ;
 /* Map documents own geometry; linked Meldex topics keep their own content. */
 (function (root, factory) {
-  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain);
+  const api = factory(typeof module === 'object' && module.exports ? require('./gb-map-world-terrain.js') : root.MeldexMapWorldTerrain, typeof module === 'object' && module.exports ? require('./gb-map-azgaar.js') : root.MeldexMapAzgaar, typeof module === 'object' && module.exports ? require('./gb-map-display.js') : root.MeldexMapDisplay);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.MeldexMapDocument = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (T) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (T, A, Display) {
   'use strict';
   // Immutable image strings are shared by history snapshots instead of copying
   // multi-megabyte base64 payloads for every small geometry edit.
@@ -178202,7 +180591,7 @@ const MeldexMapRelations = (() => {
     const doc = typeof text === 'string' ? JSON.parse(text.replace(/^\uFEFF/, '')) : clone(text);
     const fail = message => { throw new Error(message || 'マップの定義が不正です'); };
     if (!object(doc) || doc.fileType !== 'meldex-map') fail('マップファイルではありません');
-    if (doc.schema_version !== 1) fail('未対応のマップ形式です。対応するMeldexで開いてください');
+    if (![1,2].includes(doc.schema_version)) fail('未対応のマップ形式です。対応するMeldexで開いてください');
     if (!['world', 'local'].includes(doc.coordinate_system) || typeof doc.title !== 'string') fail();
     if (!object(doc.canvas) || !['width', 'height'].every(key => finite(doc.canvas[key]) && doc.canvas[key] >= 128 && doc.canvas[key] <= 16384)) fail();
     if (!['osm', 'gsi', 'blank'].includes(doc.basemap) || doc.coordinate_system === 'local' && doc.basemap !== 'blank') fail();
@@ -178240,6 +180629,7 @@ const MeldexMapRelations = (() => {
         || !Array.isArray(feature.tags) || !feature.tags.every(tag => typeof tag === 'string')
         || !Array.isArray(feature.links) || !feature.links.every(link => object(link) && typeof link.path === 'string'
           && (!/^[a-z][a-z\d+.-]*:/i.test(link.path) || /^[a-z]:[\\/]/i.test(link.path)) && !link.path.includes('\0'))) fail();
+      if (feature.marker_style !== undefined && (feature.kind !== 'pin' || !['symbol','drop'].includes(feature.marker_style))) fail('マーカーのデザインが不正です');
       if (feature.period_ids !== undefined && (!Array.isArray(feature.period_ids) || feature.period_ids.length > 100
         || new Set(feature.period_ids).size !== feature.period_ids.length || !feature.period_ids.every(key => typeof key === 'string' && periodIds.has(key)))) fail('図形の章・時代の参照が不正です');
       if (feature.travel_plan !== undefined) {
@@ -178266,7 +180656,7 @@ const MeldexMapRelations = (() => {
           || !pointOK(v.center) || !finite(v.zoom) || v.zoom < -10 || v.zoom > 22 || !Array.isArray(v.layer_ids) || v.layer_ids.length > 100
           || v.layer_ids.some(id => typeof id !== 'string' || !id) || new Set(v.layer_ids).size !== v.layer_ids.length
           || typeof v.filter !== 'string' || v.filter.length > 1000 || !['', 'pin', 'route', 'region', 'label'].includes(v.feature_kind)
-          || typeof v.period_id !== 'string' || v.period_id.length > 128) fail('保存した表示が不正です');
+          || typeof v.period_id !== 'string' || v.period_id.length > 128 || v.display !== undefined && !Display.valid(v.display)) fail('保存した表示が不正です');
         views.add(v.id);
       }
     }
@@ -178278,6 +180668,10 @@ const MeldexMapRelations = (() => {
     }
     if (doc.background !== null && (doc.coordinate_system !== 'local' || !object(doc.background)
       || typeof doc.background.data_url !== 'string' || doc.background.data_url.length > 20 * 1024 * 1024 || !IMAGE.test(doc.background.data_url))) fail();
+    if (doc.atlas != null && (doc.coordinate_system !== 'local' || !A?.valid(doc.atlas))) fail('Azgaar地図の描画データが不正です');
+    if(doc.display!==undefined&&!Display.valid(doc.display))fail('表示する要素の設定が不正です');
+    if(doc.schema_version===2&&(!doc.atlas?.surface||!doc.atlas.editor?.edits?.length))fail('地形編集の定義が不正です');
+    if(doc.schema_version===1&&doc.atlas?.editor?.edits?.length)fail('地形編集には新しいマップ形式が必要です');
     return doc;
   }
   function visibleInPeriod(feature, periodId) { return !periodId || !feature.period_ids?.length || feature.period_ids.includes(periodId); }
@@ -178644,7 +181038,7 @@ const MeldexMapRelations = (() => {
     }
     cursor(e) { this.el.style.cursor = this.space ? (e.ctrlKey || e.metaKey ? 'zoom-in' : e.shiftKey ? 'crosshair' : 'grab') : ''; }
     down(e) {
-      const v = this.view; if (!v.map || this.control(e) || v._painting) return;
+      const v = this.view; if (!v.map || this.control(e) || v._painting || v._atlasPainting) return;
       this.closeMenu(); this.el.focus({ preventScroll: true });
       const p = this.local(e), hit = v.hit(e), nav = this.space || e.button === 1 || e.button === 2;
       if (e.pointerType === 'touch') {
@@ -178658,7 +181052,7 @@ const MeldexMapRelations = (() => {
       if (this.gesture || ![0, 1, 2].includes(e.button)) return;
       if (!nav && e.target.closest?.('.gb-map-sheet-place')) return;
       if (!nav && ['land', 'sea'].includes(v.tool)) return;
-      let mode = nav ? (this.space && (e.ctrlKey || e.metaKey) ? 'zoom' : this.space && e.shiftKey ? 'rotate' : 'pan')
+      let mode = nav ? (this.space && (e.ctrlKey || e.metaKey) ? 'zoom' : this.space && e.shiftKey ? 'rotate' : 'pan') : v.tool==='river'&&!v.readOnly?'freehand'
         : v.tool === 'erase' ? 'erase' : e.altKey && !e.shiftKey && !v.readOnly ? 'route-drag'
           : v.tool === 'select' ? (hit ? 'feature' : e.pointerType === 'touch' ? 'pan' : 'rectangle') : 'draw';
       if (mode === 'feature') {
@@ -178678,6 +181072,7 @@ const MeldexMapRelations = (() => {
         else if (e.ctrlKey || e.metaKey || e.shiftKey) g.original.clear();
       }
       if (mode === 'erase') g.erased = new Set();
+      if(mode==='freehand'){g.points=[this.point(e)];g.screen=p;v.draft=g.points.slice();v._draft();}
       if (mode === 'rectangle') {
         this.rectangle = document.createElement('div'); this.rectangle.className = 'gb-map-selection-rect'; this.el.appendChild(this.rectangle);
       }
@@ -178696,7 +181091,8 @@ const MeldexMapRelations = (() => {
       if (g.pointerId !== e.pointerId) return;
       this.block(e); const p = this.local(e), dx = p[0] - g.start[0], dy = p[1] - g.start[1]; g.last = p;
       g.moved ||= Math.hypot(dx, dy) >= 4;
-      if (g.mode === 'pan') {
+      if(g.mode==='freehand'){if(Math.hypot(p[0]-g.screen[0],p[1]-g.screen[1])>=2&&g.points.length<2048){g.screen=p;g.points.push(this.point(e));v.draft=g.points.slice();v._draft();}}
+      else if (g.mode === 'pan') {
         const d = rotate([dx, dy], -g.rotation); v.map.setView(v.map.unproject(g.center.subtract(L.point(...d)), g.zoom), g.zoom, { animate: false });
       } else if (g.mode === 'zoom') {
         const factor = v.doc.coordinate_system === 'local' ? Math.max(.1, Math.min(5, 2 ** g.zoom + dx * .005)) : 2 ** (g.zoom + dx * .005);
@@ -178732,7 +181128,8 @@ const MeldexMapRelations = (() => {
       if (g.moved) this.suppressSheetClick = Date.now() + 300;
       if (this.el.hasPointerCapture(e.pointerId)) this.el.releasePointerCapture(e.pointerId);
       this.el.style.cursor = this.space ? 'grab' : '';
-      if (g.mode === 'feature' && g.changes?.length) v.callbacks.action({ type: 'transform', changes: g.changes, source: g.source });
+      if(g.mode==='freehand'){if(!v.readOnly&&g.points.length>=2)v.callbacks.action({type:'add',kind:'route',role:'river',points:g.points,source:g.source});v.cancel();}
+      else if (g.mode === 'feature' && g.changes?.length) v.callbacks.action({ type: 'transform', changes: g.changes, source: g.source });
       else if (g.mode === 'rectangle') {
         const ids = g.moved ? v.inRectangle(g.start, g.last) : [], next = new Set(g.additive ? g.baseSelection : []);
         for (const id of ids) { if (g.additive && next.has(id)) next.delete(id); else next.add(id); } v.choose([...next]);
@@ -178748,7 +181145,7 @@ const MeldexMapRelations = (() => {
       const g = this.gesture; this.gesture = null; this.rectangle?.remove(); this.rectangle = null;
       if (clearTouches && g?.pointerId != null && this.el.hasPointerCapture(g.pointerId)) this.el.releasePointerCapture(g.pointerId);
       if (clearTouches) for (const id of this.touches.keys()) if (this.el.hasPointerCapture(id)) this.el.releasePointerCapture(id);
-      if (g && this.view.map) { this.view._features(); if (g.mode === 'route-drag' || g.mode === 'draw' && g.moved) { this.view.draft = g.draft || []; this.view._draft(); } }
+      if (g && this.view.map) { this.view._features(); if (g.mode==='freehand'||g.mode === 'route-drag' || g.mode === 'draw' && g.moved) { this.view.draft = g.draft || []; this.view._draft(); } }
       if (clearTouches) this.touches.clear();
     }
     reset() { this.cancel(); this.view.cancel(); this.space = false; this.usedSpace = false; this.el.style.cursor = ''; this.closeMenu(); }
@@ -179077,21 +181474,52 @@ const MeldexMapRelations = (() => {
     return {width,height,data};
   }
   function canvas(terrain){const p=pixels(terrain),c=document.createElement('canvas');c.width=p.width;c.height=p.height;const context=c.getContext('2d'),image=context.createImageData(p.width,p.height);image.data.set(p.data);context.putImageData(image,0,0);return c;}
-  function style(f){const role=f.cartography?.role;
+  function baseStyle(f){const role=f.cartography?.role;
     const base={role:typeof role==='string'?role:'',weight:3,fillOpacity:.22,fontSize:16,label:true,symbolSize:20};
     if(role==='river'){const flow=Number.isFinite(f.cartography.flow)?T.clamp(f.cartography.flow,0,1e9):1;return {...base,weight:T.clamp(.5+Math.log1p(flow)*.22,.65,2.6),label:false};}
-    if(role==='road')return {...base,weight:1.05,label:false};
+    if(role==='road')return {...base,weight:f.cartography.rank==='minor'?.65:1.05,dash:f.cartography.rank==='minor'?'2 3':null,label:false};
+    if(role==='railway')return {...base,weight:1.8,dash:'2 4',label:false};
     if(role==='shipping')return {...base,weight:.85,dash:'5 5',label:false};
-    if(role==='border')return {...base,weight:1.15,dash:'4 2',label:false};
+    if(role==='border')return {...base,weight:f.cartography.area?0:1.0,fillOpacity:0,dash:f.cartography.area?null:'3 2',label:false};
     if(role==='lake')return {...base,weight:.3,fillOpacity:.95,label:false};
-    if(role==='city')return {...base,fontSize:f.cartography.capital?12:11,symbolSize:f.icon==='port'?13:f.cartography.capital?10:6};
-    if(role==='country-label')return {...base,fontSize:17};
+    if(role==='city')return {...base,fontSize:f.cartography.capital?12:11,fontWeight:f.cartography.capital?600:400,symbolSize:f.cartography.capital?10:f.icon==='port'?7:5};
+    if(role==='country-label')return {...base,fontSize:14,fontWeight:500};
     if(role==='mountain-label')return {...base,fontSize:12};
     if(role==='river-label')return {...base,fontSize:11};
     return base;
   }
-  function symbol(f,fallback){return f.cartography?.role==='city'?(f.icon==='port'?'⚓':f.cartography.capital?'◉':'●'):fallback;}
-  return Object.freeze({pixels,canvas,style,symbol});
+  function style(f,scale=1){const s=baseStyle(f);return scale===1?s:{...s,fontSize:s.fontSize*scale,symbolSize:s.symbolSize*scale,weight:s.weight*scale,...(s.dash?{dash:s.dash.split(' ').map(n=>Number(n)*scale).join(' ')}:{})};}
+  function symbol(f,fallback){return f.cartography?.role==='city'?(f.cartography.capital?'◉':f.icon==='port'?'○':'●'):fallback;}
+  const DROP=Object.freeze({width:28,height:40,anchorX:14,anchorY:38,centerX:14,centerY:14,radius:6.5,path:'M14 38C11 32 2 23 2 14A12 12 0 0 1 26 14C26 23 17 32 14 38Z'});
+  function marker(f){return f.kind==='pin'&&f.marker_style==='drop'?DROP:null;}
+  function drawMarker(c,f,point,scale=1,glyph=''){
+    const m=marker(f);if(!m)return false;
+    c.save();c.translate(point[0],point[1]);c.scale(scale,scale);c.translate(-m.anchorX,-m.anchorY);c.setLineDash([]);
+    c.fillStyle=f.color;c.strokeStyle='white';c.lineWidth=1.5;const path=new Path2D(m.path);c.fill(path);c.stroke(path);
+    c.fillStyle='white';c.beginPath();c.arc(m.centerX,m.centerY,m.radius,0,Math.PI*2);c.fill();
+    if(['city','castle','mountain','forest','port'].includes(f.icon)&&glyph){c.fillStyle=f.color;c.font='bold 12px sans-serif';c.textAlign='center';c.textBaseline='middle';c.fillText(glyph,m.centerX,m.centerY);}
+    c.restore();return true;
+  }
+  function labelLayout(features,project,measure,options={}){
+    const selected=options.selected||new Set(),occupied=[],result=new Map(),bounds=options.bounds;
+    const entries=features.filter(f=>['pin','label'].includes(f.kind)&&f.label).map((f,index)=>{
+      const cart=style(f,options.scale||1),manual=!cart.role,score=selected.has(f.id)?20000:manual?10000:cart.role==='country-label'?90:f.cartography?.capital?100:f.icon==='port'?40:20;
+      return {f,index,cart,manual,score};
+    }).sort((a,b)=>b.score-a.score||a.index-b.index);
+    for(const {f,cart,manual} of entries){
+      const p=project(f.points[0]),w=Math.min(300,measure(f.label,cart)),h=cart.fontSize+3;
+      const m=marker(f),scale=options.scale||1,r=m?(m.width/2+6)*scale:cart.symbolSize/2+4,y=m?(m.centerY-m.anchorY)*scale:0;
+      const candidates=manual?[m?[r,y]:options.forExport?[f.kind==='pin'?18*scale:0,-cart.fontSize*.35]:[f.kind==='pin'?12:-12,0]]:f.kind==='pin'?[[r,y],[-r-w,y],[-w/2,y-h/2-r],[-w/2,m?h/2+4*scale:h/2+r]]:[[-w/2,0],[-w/2,-h],[-w/2,h]];
+      let chosen=null;
+      for(const [dx,dy] of candidates){const rect=[p[0]+dx-3,p[1]+dy-h/2-2,p[0]+dx+w+3,p[1]+dy+h/2+2];
+        if(!manual&&!selected.has(f.id)&&(bounds&&(rect[0]<bounds[0]||rect[1]<bounds[1]||rect[2]>bounds[2]||rect[3]>bounds[3])||occupied.some(b=>rect[0]<b[2]&&rect[2]>b[0]&&rect[1]<b[3]&&rect[3]>b[1])))continue;
+        chosen={visible:true,dx,dy,rect};occupied.push(rect);break;
+      }
+      result.set(f.id,chosen||{visible:false});
+    }
+    return result;
+  }
+  return Object.freeze({pixels,canvas,style,symbol,labelLayout,marker,drawMarker});
 });
 
 ;
@@ -179104,6 +181532,27 @@ const MeldexMapRelations = (() => {
   const D = () => root.MeldexMapDocument;
   const SYMBOLS = { pin: '●', city: '◆', castle: '♜', mountain: '▲', forest: '♠', port: '⚓' };
   function terrainCanvas(terrain) { return root.MeldexMapTerrainRender.canvas(terrain); }
+  function removeMap(map){
+    if(!map)return;
+    const canvases=[];map.eachLayer(layer=>{if(layer instanceof L.Canvas)canvases.push(layer);});
+    map.stop();map.remove();
+    // Removing a feature group can queue another Canvas redraw after its renderer
+    // has already been removed. Cancel that final frame before it sees no context.
+    for(const renderer of canvases){L.Util.cancelAnimFrame(renderer._redrawRequest);renderer._redrawRequest=null;}
+  }
+  let vectorRenderer;
+  function nativeRenderer(){
+    if(!vectorRenderer)vectorRenderer=L.SVG.extend({_updatePoly(layer,closed){
+      const g=layer.options.meldexGeometry,f=layer.options.meldexFeature;
+      if(!g)return L.SVG.prototype._updatePoly.call(this,layer,closed);
+      const origin=this._map.latLngToLayerPoint([0,0]),z=this._map.options.crs.scale(this._map.getZoom());
+      layer._path.setAttribute('d',g.path);
+      layer._path.setAttribute('transform',`matrix(${z*g.scale[0]} 0 0 ${z*g.scale[1]} ${origin.x+z*(f.points[0][0]-g.anchor[0])} ${origin.y+z*(f.points[0][1]-g.anchor[1])})`);
+      layer._path.setAttribute('vector-effect','non-scaling-stroke');
+      layer._path.dataset.mapFeatureId=f.id;
+    }});
+    return vectorRenderer;
+  }
   class MapView {
     constructor(container, callbacks) {
       this.container = container; this.callbacks = callbacks; this.tool = 'select'; this.draft = []; this.symbol = 'pin';
@@ -179166,8 +181615,9 @@ const MeldexMapRelations = (() => {
     }
     setDocument(doc, readOnly = false) {
       const rebuild = !this.map || this.doc?.coordinate_system !== doc.coordinate_system;
-      if (this.doc?.features !== doc.features) this.interaction.cancel();
+      if (this.doc?.features !== doc.features || readOnly || doc.atlas?.locked) { this.interaction.cancel(); if(this._atlasPainting)this.cancel(); }
       this.doc = doc; this.readOnly = readOnly;
+      this.container.classList.toggle('gb-map-native-atlas',!!doc.atlas);
       if (rebuild) this._create();
       const basemap = doc.basemap + ':' + (doc.basemap_style || 'pale');
       if (this._basemap !== basemap) {
@@ -179192,7 +181642,7 @@ const MeldexMapRelations = (() => {
       }
     }
     _create() {
-      this.interaction.reset(); this.map?.stop(); this.map?.remove(); this.container.replaceChildren(); this._basemap = null; this._terrainData = null; this._backgroundData = null;
+      this.interaction.reset(); removeMap(this.map); this.container.replaceChildren(); this._basemap = null; this._terrainData = null; this._backgroundData = null; this._atlasData=null; this._nativeRenderer=null;this.atlasTiles=null;this._atlasTileKey=null;
       this.container.classList.add('leaflet-container');
       this.host = document.createElement('div'); this.host.className = 'gb-map-viewport'; this.container.appendChild(this.host);
       Object.assign(this.host.style, { width: this.container.clientWidth + 'px', height: this.container.clientHeight + 'px' });
@@ -179201,7 +181651,7 @@ const MeldexMapRelations = (() => {
       this.map = L.map(this.host, { crs: local ? L.CRS.Simple : L.CRS.EPSG3857, minZoom: local ? -5 : 1,
         maxZoom: local ? Math.log2(5) : 19, zoomControl: false, attributionControl: true, worldCopyJump: !local,
         dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false,
-        preferCanvas: true, zoomSnap: 0, zoomAnimation: false, markerZoomAnimation: false });
+        preferCanvas: false, zoomSnap: 0, zoomAnimation: false, markerZoomAnimation: false });
       this.map.mouseEventToContainerPoint = event => this.interaction.native(this.interaction.local(event));
       this.container.appendChild(this.map._controlContainer);
       this.map.setView(local ? [-this.doc.canvas.height / 2, this.doc.canvas.width / 2] : [35.68, 139.76], local ? -2 : 5);
@@ -179232,6 +181682,7 @@ const MeldexMapRelations = (() => {
       this.map.on('moveend zoomend', () => {
         if (!this.map || this._destroyed) return;
         this._indicators();
+        this._layoutLabels();
         this.callbacks.view?.({ center: this.xy(this.map.getCenter()), zoom: this.map.getZoom() });
         this.callbacks.zoom?.(this.map.getZoom());
       });
@@ -179280,8 +181731,22 @@ const MeldexMapRelations = (() => {
       const bounds = [[-doc.canvas.height, 0], [0, doc.canvas.width]];
       if (!this.paper) this.paper = L.rectangle(bounds, { pane: 'map-paper', interactive: false, stroke: false, fillColor: '#ecede2', fillOpacity: 1 }).addTo(this.map);
       else this.paper.setBounds(bounds);
-      if (doc.background?.data_url !== this._backgroundData) {
-        this.background?.remove(); this._backgroundData = doc.background?.data_url;
+      if(doc.atlas?.surface&&!override){
+        const display=root.MeldexMapDisplay.effective({...doc.display,...this.elementVisibility}),baseDisplay={terrain:display.terrain,vegetation:display.vegetation,countries:display.countries};
+        const key=root.MeldexMapTerrainField.scene(doc.atlas).key+'|'+doc.atlas.presentation+'|'+JSON.stringify(baseDisplay)+'|'+doc.atlas.shores.join('')+'|'+JSON.stringify(doc.atlas.modes[doc.atlas.presentation])+'|'+doc.canvas.width+':'+doc.canvas.height;
+        if(this._atlasTileKey===key&&this.atlasTiles)return;
+        this.background?.remove();this.background=null;this._backgroundData=null;this.overlay?.remove();this.overlay=null;this.atlasTiles?.remove();
+        const atlas=doc.atlas,view=this,tileSize=256,pixelRatio=Math.min(2,root.devicePixelRatio||1),cw=doc.canvas.width,ch=doc.canvas.height;
+        const Tiles=L.GridLayer.extend({createTile(coords,done){const tile=document.createElement('img');tile.alt='';tile.setAttribute('role','presentation');const layer=this;
+          setTimeout(()=>{if(!layer._map)return;try{const size=tileSize/(2**coords.z),box=[coords.x*size/cw*atlas.width,coords.y*size/ch*atlas.height,size/cw*atlas.width,size/ch*atlas.height];tile.onload=()=>done(null,tile);tile.onerror=()=>done(new Error('地形タイルを表示できません'),tile);tile.src=root.MeldexMapAzgaar.url(atlas,{bounds:box,resolution:tileSize*pixelRatio,display:baseDisplay});}catch(error){done(error,tile);view.callbacks.message?.(error.message);}},0);return tile;}});
+        this.atlasTiles=new Tiles({tileSize,minZoom:-5,maxZoom:3,pane:'map-background',zIndex:1,bounds:L.latLngBounds(bounds),noWrap:true,keepBuffer:1,updateWhenIdle:true}).addTo(this.map);this._atlasTileKey=key;return;
+      }
+      this.atlasTiles?.remove();this.atlasTiles=null;this._atlasTileKey=null;
+      const atlas=doc.atlas,atlasKey=atlas?atlas.presentation:'';
+      const background=atlas&&root.MeldexMapAzgaar ? (this._atlasData===atlas&&this._atlasMode===atlasKey?this._backgroundData:root.MeldexMapAzgaar.url(atlas)) : doc.background?.data_url;
+      this._atlasData=atlas;this._atlasMode=atlasKey;
+      if (background !== this._backgroundData) {
+        this.background?.remove(); this._backgroundData = background;
         this.background = this._backgroundData ? L.imageOverlay(this._backgroundData, bounds, { interactive: false, pane: 'map-background', zIndex: 1 }).addTo(this.map) : null;
       }
       if (!override && doc.terrain === this._terrainData) return;
@@ -179293,7 +181758,7 @@ const MeldexMapRelations = (() => {
     }
     _visible(feature) {
       const layer = this.doc.layers.find(l => l.id === feature.layer_id);
-      return !!layer && (this.layerVisibility?.[layer.id] ?? layer.visible) && D().visibleInPeriod(feature, this.periodId)
+      return !!layer && root.MeldexMapDisplay.visible(feature,root.MeldexMapDisplay.effective({...this.doc.display,...this.elementVisibility})) && (this.layerVisibility?.[layer.id] ?? layer.visible) && D().visibleInPeriod(feature, this.periodId)
         && (!this.featureKind || feature.kind === this.featureKind)
         && (!this.filter || (feature.label + ' ' + feature.tags.join(' ') + ' ' + feature.description).toLocaleLowerCase().includes(this.filter));
     }
@@ -179303,21 +181768,35 @@ const MeldexMapRelations = (() => {
       this.items.clear();
       for (const layer of [...this.doc.layers].reverse()) for (const feature of this.doc.features.filter(f => f.layer_id === layer.id && this._visible(f))) {
         const selected = this.selectedIds.has(feature.id) || feature.id === this.selectedId, editable = !this.readOnly && !layer.locked && this.tool === 'select';
-        const points = D().drawPoints(feature, this.doc).map(p => this.latlng(p)), cart = root.MeldexMapTerrainRender.style(feature); let item;
+        const points = D().drawPoints(feature, this.doc).map(p => this.latlng(p)), cart = root.MeldexMapTerrainRender.style(feature), marker = root.MeldexMapTerrainRender.marker(feature); let item;
         if (['pin', 'label'].includes(feature.kind)) {
           const el = document.createElement('span'); el.className = 'gb-map-pin' + (selected ? ' selected' : '') + (feature.kind === 'label' ? ' text-only' : '');
           el.style.color = feature.color; el.dataset.mapFeatureId = feature.id; el.dataset.mapRole = cart.role;
           el.dataset.mapRank = feature.cartography?.rank === 'minor' ? 'minor' : 'major';
           if (cart.role) el.style.fontSize = cart.fontSize + 'px';
-          if (cart.role === 'city' && feature.points[0][0] > this.doc.canvas.width * .82) { el.style.flexDirection = 'row-reverse'; el.style.transform = `translateX(calc(-100% + ${cart.symbolSize}px))`; }
-          if (cart.role && feature.kind === 'label') el.style.transform = 'translateX(-50%)';
-          if (feature.kind !== 'label') { const icon = document.createElement('b'); icon.textContent = root.MeldexMapTerrainRender.symbol(feature, SYMBOLS[feature.icon] || SYMBOLS.pin); if (cart.role === 'city') { icon.style.fontSize = cart.symbolSize + 'px'; icon.style.lineHeight = '16px'; } el.appendChild(icon); }
-          const text = document.createElement('span'); text.textContent = feature.label; el.appendChild(text);
-          item = L.marker(points[0], { icon: L.divIcon({ html: el, className: 'gb-map-marker', iconSize: cart.role === 'city' ? [16,16] : [24, 28], iconAnchor: cart.role === 'city' ? [cart.symbolSize/2,8] : cart.role && feature.kind === 'label' ? [0,12] : [12, 14] }),
+          if (!marker && cart.role === 'city' && feature.points[0][0] > this.doc.canvas.width * .82) { el.style.flexDirection = 'row-reverse'; el.style.transform = `translateX(calc(-100% + ${cart.symbolSize}px))`; }
+          if (cart.role && feature.kind === 'label') el.style.transform = this.doc.atlas?'translate(-50%,-50%)':'translateX(-50%)';
+          if (feature.kind !== 'label') {
+            const icon = document.createElement('b'),glyph=root.MeldexMapTerrainRender.symbol(feature,SYMBOLS[feature.icon]||SYMBOLS.pin);
+            if(marker){
+              el.classList.add('gb-map-drop-marker');const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg'),path=document.createElementNS(ns,'path'),hole=document.createElementNS(ns,'circle');
+              svg.setAttribute('viewBox','0 0 '+marker.width+' '+marker.height);svg.setAttribute('width',marker.width);svg.setAttribute('height',marker.height);svg.setAttribute('aria-hidden','true');
+              path.setAttribute('d',marker.path);path.setAttribute('fill',feature.color);path.setAttribute('stroke','white');path.setAttribute('stroke-width','1.5');path.classList.add('gb-map-drop-shape');
+              hole.setAttribute('cx',marker.centerX);hole.setAttribute('cy',marker.centerY);hole.setAttribute('r',marker.radius);hole.setAttribute('fill','white');svg.append(path,hole);
+              if(['city','castle','mountain','forest','port'].includes(feature.icon)){const text=document.createElementNS(ns,'text');text.setAttribute('x',marker.centerX);text.setAttribute('y',marker.centerY);text.setAttribute('text-anchor','middle');text.setAttribute('dominant-baseline','central');text.setAttribute('fill',feature.color);text.setAttribute('font-size','12');text.setAttribute('font-family','sans-serif');text.setAttribute('font-weight','bold');text.textContent=glyph;svg.append(text);}
+              icon.append(svg);
+            }else{icon.textContent=glyph;if(cart.role==='city'){icon.style.fontSize=cart.symbolSize+'px';icon.style.lineHeight='16px';}}
+            el.appendChild(icon);
+          }
+          const text = document.createElement('span'); text.textContent = feature.label;text.hidden=!root.MeldexMapDisplay.labels(feature,root.MeldexMapDisplay.effective({...this.doc.display,...this.elementVisibility}));el.appendChild(text);const symbol=el.querySelector('b');if(symbol)symbol.hidden=!root.MeldexMapDisplay.symbols(feature,root.MeldexMapDisplay.effective({...this.doc.display,...this.elementVisibility}));if(symbol?.hidden)text.style.pointerEvents='auto';
+          item = L.marker(points[0], { icon: L.divIcon({ html: el, className: 'gb-map-marker', iconSize: marker ? [marker.width,marker.height] : cart.role === 'city' ? [16,16] : [24, 28], iconAnchor: marker ? [marker.anchorX,marker.anchorY] : cart.role === 'city' ? [cart.symbolSize/2,8] : cart.role && feature.kind === 'label' ? [0,12] : [12, 14] }),
             draggable: false, opacity: layer.opacity, zIndexOffset: selected ? 1000 : 0, title: feature.label, alt: feature.label || '地点' });
+          if(this.doc.atlas&&cart.role&&feature.kind==='label')item.options.icon.options.iconAnchor=[0,0];
         } else {
+          const geometry=this.doc.coordinate_system==='local'?root.MeldexMapAzgaar?.geometry(feature):null;
           const options = { color: feature.color, weight: selected ? Math.max(4,cart.weight) : cart.weight, opacity: layer.opacity,
             fillOpacity: feature.kind === 'region' ? cart.fillOpacity * layer.opacity : 0, dashArray: cart.dash || (feature.kind === 'route' && feature.dashed ? '8 5' : null) };
+          if(geometry){this._nativeRenderer||=new (nativeRenderer())({padding:.5});Object.assign(options,{renderer:this._nativeRenderer,meldexGeometry:geometry,meldexFeature:feature,fill:geometry.closed,fillOpacity:geometry.closed?(cart.role==='border'?0:cart.role==='river'?1:cart.fillOpacity)*layer.opacity:0});if(cart.role==='river')options.weight=selected?3:.2;}
           item = feature.kind === 'region' ? L.polygon(points, options) : L.polyline(points, options);
           if (feature.label) { const tip = document.createElement('span'); tip.textContent = feature.label; item.bindTooltip(tip); }
         }
@@ -179341,6 +181820,22 @@ const MeldexMapRelations = (() => {
           });
         }
       }
+      this._layoutLabels();
+    }
+    _layoutLabels(){
+      if(!this.doc?.atlas||!this.map)return;
+      this._labelMeasure||=document.createElement('canvas').getContext('2d');
+      const measure=(text,cart)=>{this._labelMeasure.font=`${cart.fontWeight||400} ${cart.fontSize}px sans-serif`;return this._labelMeasure.measureText(text).width;};
+      const features=this.doc.features.filter(f=>this.items.has(f.id)&&root.MeldexMapDisplay.labels(f,root.MeldexMapDisplay.effective({...this.doc.display,...this.elementVisibility}))&&this.doc.layers.some(l=>l.id===f.layer_id&&l.opacity>0)),size=this.map.getSize();
+      this._labelPlan=root.MeldexMapTerrainRender.labelLayout(features,p=>{const q=this.map.latLngToContainerPoint(this.latlng(p));return [q.x,q.y];},measure,{selected:this.selectedIds,bounds:[4,4,size.x-4,size.y-4]});
+      for(const f of features){const role=f.cartography?.role;if(!role||!['pin','label'].includes(f.kind))continue;
+        const el=this.items.get(f.id)?.getElement()?.querySelector('.gb-map-pin'),text=el?.querySelector(':scope>span'),plan=this._labelPlan.get(f.id),cart=root.MeldexMapTerrainRender.style(f);if(!el||!text)continue;
+        text.hidden=!plan?.visible;text.style.fontWeight=String(cart.fontWeight||400);
+        if(f.kind==='label'){el.hidden=!plan?.visible;if(plan?.visible)el.style.transform=`translate(calc(-50% + ${plan.dx+(plan.rect[2]-plan.rect[0]-6)/2}px),calc(-50% + ${plan.dy}px))`;}
+        else if(plan?.visible){el.style.position='relative';el.style.flexDirection='row';el.style.transform='';const symbol=el.querySelector('b'),marker=root.MeldexMapTerrainRender.marker(f);symbol.style.width=(marker?.width||cart.symbolSize)+'px';symbol.style.textAlign='center';
+          Object.assign(text.style,{position:'absolute',left:(marker?.anchorX??cart.symbolSize/2)+plan.dx+'px',top:(marker?.anchorY??8)+plan.dy+'px',marginTop:marker?'0':'',transform:'translateY(-50%)',overflow:'visible'});
+        }
+      }
     }
     hit(event, excluded = new Set()) {
       // Pointer capture retargets a stroke to the surface. Pins have no Canvas
@@ -179358,6 +181853,7 @@ const MeldexMapRelations = (() => {
     }
     preview(id, points) {
       const item = this.items.get(id), feature = this.doc.features.find(f => f.id === id); if (!item || !feature) return;
+      if(this._nativeRenderer&&item.options.renderer===this._nativeRenderer){const f={...feature,points},g=root.MeldexMapAzgaar.geometry(f);item.options.meldexFeature=f;item.options.meldexGeometry=g;const cart=root.MeldexMapTerrainRender.style(f),layer=this.doc.layers.find(l=>l.id===f.layer_id);item.setStyle({fill:!!g?.closed||f.kind==='region',fillOpacity:g?.closed?(cart.role==='border'?0:cart.role==='river'?1:cart.fillOpacity)*(layer?.opacity??1):f.kind==='region'?cart.fillOpacity*(layer?.opacity??1):0});if(!g){item._path?.removeAttribute('transform');item._path?.removeAttribute('vector-effect');}}
       const latlngs = D().drawPoints({ ...feature, points }, this.doc).map(p => this.latlng(p));
       if (feature.kind === 'pin' || feature.kind === 'label') item.setLatLng(latlngs[0]); else item.setLatLngs(latlngs);
       item._mapHandles?.forEach((marker, i) => marker.setLatLng(this.latlng(points[i])));
@@ -179426,6 +181922,7 @@ const MeldexMapRelations = (() => {
     }
     cancel() {
       this.draft = []; this.drafts?.clearLayers(); this.callbacks.draft?.(0, '');
+      if(this._atlasPainting){const id=this._atlasPainting.pointerId;this._atlasPainting=null;if(this.container.hasPointerCapture(id))this.container.releasePointerCapture(id);}
       if (this._painting) { this._painting = null; this._terrainData = null; this._terrain(); if (this.container.hasPointerCapture(this._paintingId)) this.container.releasePointerCapture(this._paintingId); }
     }
     _indicators() {
@@ -179440,7 +181937,15 @@ const MeldexMapRelations = (() => {
       this.compass.parentElement.title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
     }
     _paintPointer(event) {
-      if (!this.map || !['land', 'sea'].includes(this.tool) || this.readOnly || event.target.closest('.leaflet-control') || this.interaction.navigationEvent(event)) return;
+      if (!this.map || !['land', 'sea'].includes(this.tool) || this.readOnly || this.doc.atlas?.locked || event.target.closest('.leaflet-control') || this.interaction.navigationEvent(event)) return;
+      if(this.doc.atlas?.surface){
+        if(event.type==='pointerdown'){if(event.button!==0)return;this._atlasPainting={pointerId:event.pointerId,source:this.doc.features,points:[]};this.container.setPointerCapture(event.pointerId);}
+        const stroke=this._atlasPainting;if(!stroke||stroke.pointerId!==event.pointerId)return;event.preventDefault();event.stopImmediatePropagation();
+        if(['pointercancel','lostpointercapture'].includes(event.type)){this.cancel();return;}
+        if(event.type==='pointerup'){this._atlasPainting=null;if(this.container.hasPointerCapture(event.pointerId))this.container.releasePointerCapture(event.pointerId);this.drafts.clearLayers();if(stroke.points.length)this.callbacks.action({type:'atlas-stroke',source:stroke.source,points:stroke.points,kind:this.tool==='sea'?'water':this.terrainKind||'plain',radius:this.brushSize||70,strength:this.terrainStrength||.7});return;}
+        const p=this.xy(this.map.mouseEventToLatLng(event));if(p[0]<0||p[1]<0||p[0]>this.doc.canvas.width||p[1]>this.doc.canvas.height)return;
+        const previous=stroke.points.at(-1);if(!previous||Math.hypot(...this.screenPoint(p).map((n,i)=>n-this.screenPoint(previous)[i]))>=3){if(stroke.points.length>=2048)return;stroke.points.push(p);this.drafts.clearLayers();L.polyline(stroke.points.map(q=>this.latlng(q)),{color:'#668eae',opacity:.35,weight:(this.brushSize||70)*2*2**this.map.getZoom(),lineCap:'round',interactive:false}).addTo(this.drafts);}return;
+      }
       if (event.type === 'pointerdown') {
         if (event.button !== 0) return;
         event.preventDefault(); event.stopImmediatePropagation();
@@ -179465,34 +181970,44 @@ const MeldexMapRelations = (() => {
     }
     async exportPNG() {
       if (this.doc.coordinate_system !== 'local') throw new Error('PNG書き出しは創作地図で利用できます');
-      const doc = { ...this.doc, layers: this.doc.layers.map(l => ({ ...l, visible: this.layerVisibility?.[l.id] ?? l.visible })) }, periodId = this.periodId,
+      const doc = { ...this.doc, display:root.MeldexMapDisplay.effective({...this.doc.display,...this.elementVisibility}), layers: this.doc.layers.map(l => ({ ...l, visible: this.layerVisibility?.[l.id] ?? l.visible })) }, periodId = this.periodId,
         featureKind = this.featureKind, filter = this.filter, ratio = Math.min(1, 4096 / Math.max(doc.canvas.width, doc.canvas.height));
       const canvas = document.createElement('canvas'); canvas.width = Math.round(doc.canvas.width * ratio); canvas.height = Math.round(doc.canvas.height * ratio);
       const c = canvas.getContext('2d'); c.scale(ratio, ratio); c.fillStyle = '#ecede2'; c.fillRect(0, 0, doc.canvas.width, doc.canvas.height);
-      if (doc.background) { const image = new Image(); image.src = doc.background.data_url; await image.decode(); c.drawImage(image, 0, 0, doc.canvas.width, doc.canvas.height); }
+      if (doc.background||doc.atlas) { const image = new Image(); image.src = doc.atlas?root.MeldexMapAzgaar.url(doc.atlas,{resolution:Math.min(4090,canvas.width),display:doc.display}):doc.background.data_url; await image.decode(); c.drawImage(image, 0, 0, doc.canvas.width, doc.canvas.height); }
       if (doc.terrain) { c.globalAlpha = doc.background ? 0.7 : 1; c.drawImage(terrainCanvas(doc.terrain), 0, 0, doc.canvas.width, doc.canvas.height); c.globalAlpha = 1; }
-      for (const layer of [...doc.layers].reverse().filter(l => l.visible)) for (const f of doc.features.filter(f => f.layer_id === layer.id && D().visibleInPeriod(f, periodId)
+      const labelFeatures=doc.features.filter(f=>root.MeldexMapDisplay.labels(f,doc.display)&&doc.layers.some(l=>l.id===f.layer_id&&l.visible&&l.opacity>0)&&D().visibleInPeriod(f,periodId)&&(!featureKind||f.kind===featureKind)&&(!filter||(f.label+' '+f.tags.join(' ')+' '+f.description).toLocaleLowerCase().includes(filter)));
+      const textScale=doc.atlas?Math.max(1,Math.max(canvas.width,canvas.height)/1600):1;
+      const labelPlan=doc.atlas?root.MeldexMapTerrainRender.labelLayout(labelFeatures,p=>p.map(n=>n*ratio),(text,cart)=>{c.font=`${cart.fontWeight||400} ${cart.fontSize}px sans-serif`;return c.measureText(text).width;},{bounds:[8,8,canvas.width-8,canvas.height-8],scale:textScale,forExport:true}):null;
+      for (const layer of [...doc.layers].reverse().filter(l => l.visible)) for (const f of doc.features.filter(f => root.MeldexMapDisplay.visible(f,doc.display)&&f.layer_id === layer.id && D().visibleInPeriod(f, periodId)
         && (!featureKind || f.kind === featureKind) && (!filter || (f.label + ' ' + f.tags.join(' ') + ' ' + f.description).toLocaleLowerCase().includes(filter)))) {
-        const cart = root.MeldexMapTerrainRender.style(f);
-        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontSize / ratio}px sans-serif`;
+        const cart = root.MeldexMapTerrainRender.style(f,textScale);
+        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontWeight||400} ${cart.fontSize / ratio}px sans-serif`;
         c.setLineDash(cart.dash ? cart.dash.split(' ').map(Number).map(n=>n/ratio) : f.dashed ? [8/ratio,5/ratio] : []);
-        if (f.kind === 'pin') { if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
+        if (f.kind === 'pin'&&root.MeldexMapDisplay.symbols(f,doc.display)) { if(root.MeldexMapTerrainRender.marker(f))root.MeldexMapTerrainRender.drawMarker(c,f,f.points[0],textScale/ratio,root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin));else if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
         if (['route', 'region'].includes(f.kind)) {
           const points = D().drawPoints(f, doc);
+          const g=root.MeldexMapAzgaar?.geometry(f);
+          if(g){const path=new Path2D();path.addPath(new Path2D(g.path),new DOMMatrix([g.scale[0],0,0,g.scale[1],f.points[0][0]-g.anchor[0],f.points[0][1]-g.anchor[1]]));
+            if(g.closed&&cart.role!=='border'){c.globalAlpha=layer.opacity*(cart.role==='river'?1:cart.fillOpacity);c.fill(path);c.globalAlpha=layer.opacity;}
+            c.lineWidth=(cart.role==='river'?.2*textScale:cart.weight)/ratio;if(cart.weight>0)c.stroke(path);
+          } else {
           c.beginPath(); points.forEach((p, i) => i ? c.lineTo(...p) : c.moveTo(...p));
           if (f.kind === 'region') { c.closePath(); c.globalAlpha = layer.opacity * cart.fillOpacity; c.fill(); c.globalAlpha = layer.opacity; }
-          c.stroke();
+          if(cart.weight>0)c.stroke();
+          }
           if (f.kind === 'route' && f.arrow) {
             const a = points[points.length - 2], b = points[points.length - 1];
             c.save(); c.translate(...b); c.rotate(Math.atan2(b[1] - a[1], b[0] - a[0]));
             c.beginPath(); c.moveTo(0, 0); c.lineTo(-16 / ratio, -7 / ratio); c.lineTo(-16 / ratio, 7 / ratio); c.closePath(); c.fill(); c.restore();
           }
         }
-        if (f.label && cart.label) { let x=f.points[0][0]+(f.kind==='pin'?(cart.role==='city'?cart.symbolSize/2+4:18)/ratio:0);const y=f.points[0][1],width=c.measureText(f.label).width;
+        if (f.label && cart.label&&root.MeldexMapDisplay.labels(f,doc.display)&&(!labelPlan||!cart.role||labelPlan.get(f.id)?.visible)) { const marker=root.MeldexMapTerrainRender.marker(f);let x=f.points[0][0]+(f.kind==='pin'?(marker?(marker.width/2+6)*textScale:cart.role==='city'?cart.symbolSize/2+4:18*textScale)/ratio:0);let y=f.points[0][1]+(marker?(marker.centerY-marker.anchorY)*textScale/ratio:0);if(marker)c.textBaseline='middle';const width=c.measureText(f.label).width;
           if(cart.role&&f.kind==='label')x-=width/2;
           if(cart.role==='city'&&x+width>doc.canvas.width-12/ratio)x=f.points[0][0]-(cart.symbolSize/2+4)/ratio-width;
           if(cart.role)x=Math.max(12/ratio,Math.min(doc.canvas.width-width-12/ratio,x));
-          if(cart.role){c.save();c.setLineDash([]);c.strokeStyle='rgba(255,255,244,.8)';c.lineWidth=2.5/ratio;c.strokeText(f.label,x,y);c.restore();} c.fillText(f.label,x,y); }
+          if(labelPlan&&cart.role){const plan=labelPlan.get(f.id);x=f.points[0][0]+plan.dx/ratio;y=f.points[0][1]+plan.dy/ratio;c.textBaseline='middle';}
+          if(cart.role){c.save();c.setLineDash([]);c.strokeStyle='rgba(255,255,244,.8)';c.lineWidth=2.5/ratio;c.strokeText(f.label,x,y);c.restore();} c.fillText(f.label,x,y);c.textBaseline='alphabetic'; }
       }
       c.globalAlpha = 1; c.setLineDash([]); c.resetTransform(); c.fillStyle = 'rgba(255,255,255,.86)'; c.fillRect(16, canvas.height - 67, 205, 50);
       const per100 = 100 / ratio * (doc.scale.distance_per_unit || 1), bar = D().scaleBar(per100);
@@ -179511,7 +182026,7 @@ const MeldexMapRelations = (() => {
       this._destroyed = true;
       this.interaction.destroy();
       this._observer.disconnect();
-      const map = this.map; this.map = null; map?.stop(); map?.remove();
+      const map = this.map; this.map = null; removeMap(map);
       ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'].forEach(type => this.container.removeEventListener(type, this._pointer, true));
     }
   }
@@ -180273,7 +182788,7 @@ const MeldexMapRelations = (() => {
     const view = { id: D.id(), name: name.trim(), center: D.clone(viewport.center), zoom: viewport.zoom, rotation: rotation(state.mapRotation),
       layer_ids: doc.layers.filter(l => state.mapLayerVisibility?.[l.id] ?? l.visible).map(l => l.id),
       filter: typeof state.mapSearch === 'string' ? state.mapSearch.slice(0, 1000) : '',
-      feature_kind: kinds.includes(state.mapFeatureKind) ? state.mapFeatureKind : '', period_id: state.mapPeriodId || '' };
+      feature_kind: kinds.includes(state.mapFeatureKind) ? state.mapFeatureKind : '', display:(typeof module==='object'&&module.exports?require('./gb-map-display.js'):globalThis.MeldexMapDisplay).effective({...doc.display,...state.mapElementVisibility}),period_id: state.mapPeriodId || '' };
     D.parse({ ...doc, saved_views: [view] }); return view;
   }
   function apply(app, view) {
@@ -180281,12 +182796,13 @@ const MeldexMapRelations = (() => {
     if (app._inputDirty) { app._message('入力内容を確認してから表示を切り替えてください'); return false; }
     const doc = app.store.doc;
     app.state.mapLayerVisibility = Object.fromEntries(doc.layers.map(l => [l.id, view.layer_ids.includes(l.id)]));
+    app.state.mapElementVisibility=view.display||{};
     app.state.mapSearch = view.filter; app.state.mapFeatureKind = view.feature_kind; app.state.mapRotation = rotation(view.rotation);
     app.state.mapPeriodId = (doc.periods || []).some(p => p.id === view.period_id) ? view.period_id : '';
     app.state.mapViewport = { center: D.clone(view.center), zoom: view.zoom };
     app.state.mapViewSystem = doc.coordinate_system; app.state.mapSavedViewId = view.id;
     app.search.value = view.filter; app.kindFilter.value = view.feature_kind;
-    app._saveViewState(); app._render(); app.view.map.setView(app.view.latlng(view.center), view.zoom);
+    app._saveViewState(); app._buildSettingsRefresh(); app._render(); app.view.map.setView(app.view.latlng(view.center), view.zoom);
     return true;
   }
   function render(app) {
@@ -180327,109 +182843,198 @@ const MeldexMapRelations = (() => {
 
 ;
 
+/* === gb-map-world-names.js === */
+;
+/* Deterministic fantasy names in Katakana; the Azgaar geography stays intact. */
+(function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.MeldexMapWorldNames=api;})(globalThis,function(){
+ 'use strict';
+ const starts=['ル','ネ','フィ','セ','ヴェ','ラ','リ','ミ','ト','フォ','カ','オ','キ','ニ','ソ','ノ','テ','ユ','イ','ア','フェ','メ','ク','レ'];
+ const middles=['ネ','ル','ナ','リ','ヴァ','ゼ','レ','フィ','ロ','ディ','セ','メ','ティ','ファ','ヴィ','ノ'];
+ const ends=['ス','ル','ナ','リア','レン','リス','ニア','ヴァ','ネル','ノア','ティス','ラ','レア','ノル','リム','フェン'];
+ const forms=['王国','共和国','連邦','公国','諸侯国'];
+ function hash(text){let n=2166136261;for(const c of text)n=Math.imul(n^c.codePointAt(0),16777619);n^=n>>>16;return n>>>0;}
+ function localize(world,seed,mode='katakana'){
+  if(mode==='original')return world;
+  if(mode!=='katakana')throw Error('地名の表記を確認してください');
+  const used=new Map(),capacity=starts.length*middles.length*ends.length;
+  const name=(kind,id)=>{if(!used.has(kind))used.set(kind,new Set());const seen=used.get(kind),at=hash(seed+':katakana-v1:'+kind+':'+id)%capacity;
+   // Sequential probing is bounded, so collisions cannot hang a large world.
+   for(let j=0;j<capacity;j++){const n=(at+j)%capacity,value=starts[Math.floor(n/(middles.length*ends.length))]+middles[Math.floor(n/ends.length)%middles.length]+ends[n%ends.length];if(!seen.has(value)){seen.add(value);return value;}}
+   throw Error('生成できる地名の件数を超えました');
+  };
+  return {...world,
+   states:world.states.map((s,i)=>{const shortName=name('state',s.id??i);return {...s,shortName,name:shortName+forms[hash(seed+':state-form:'+s.id)%forms.length]};}),
+   cities:world.cities.map((s,i)=>({...s,name:name('city',s.id??i)+(s.port?'港':'')})),
+   rivers:world.rivers.map((s,i)=>({...s,name:name('river',s.id??i)+'川'})),
+   lakes:world.lakes.map((s,i)=>({...s,name:name('lake',s.id??i)+'湖'})),
+   routes:world.routes.map((s,i)=>({...s,name:name('route',s.id??i)+(s.group==='searoutes'?'航路':s.group==='roads'?'街道':'小径')}))};
+ }
+ return Object.freeze({version:1,localize});
+});
+
+;
+
 /* === gb-map-world-generator.js === */
 ;
 /* A single guarded transaction builds an internally consistent fantasy world. */
 (function(root,factory){
   const node=typeof module==='object'&&module.exports;
-  const api=factory(node?require('./gb-map-document.js'):root.MeldexMapDocument,node?require('./gb-map-world-terrain.js'):root.MeldexMapWorldTerrain,node?require('./gb-map-world-geography.js'):root.MeldexMapWorldGeography,node?require('./gb-map-world-society.js'):root.MeldexMapWorldSociety,node?require('./gb-map-grid.js'):root.MeldexMapGrid);
+  const api=factory(node?require('./gb-map-document.js'):root.MeldexMapDocument,node?require('./gb-map-azgaar.js'):root.MeldexMapAzgaar,node?require('./gb-map-world-names.js'):root.MeldexMapWorldNames);
   if(node)module.exports=api;else root.MeldexMapWorldGenerator=api;
-})(globalThis,function(D,T,G,S,Grid){
+})(globalThis,function(D,A,Names){
   'use strict';
-  const defaults=Object.freeze({seed:'',name:'新しい世界',template:'continent',land:37,roughness:72,warmth:50,wetness:55,cities:32,nations:10,widthKm:24000});
+  const defaults=Object.freeze({seed:'',name:'新しい世界',naming:'katakana',template:'continent',cells:20000,warmth:50,wetness:55,cities:100,nations:12,widthKm:24000});
   const presentations=[['biomes','自然・植生'],['elevation','標高'],['temperature','気温'],['rain','降水'],['political','国家']];
   function parameters(input={}){
     const o=Object.fromEntries(Object.entries(defaults).map(([key,value])=>[key,input[key]??value]));
-    if(typeof o.seed!=='string'||!o.seed.trim()||o.seed.length>128||typeof o.name!=='string'||!o.name.trim()||[...o.name].length>64||!['continent','island','archipelago'].includes(o.template))throw new Error('シード・世界名・地形の種類を確認してください');
-    for(const [key,lo,hi]of[['land',10,80],['roughness',0,100],['warmth',0,100],['wetness',0,100],['widthKm',100,60000],['cities',4,80],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
+    if(typeof o.seed!=='string'||!o.seed.trim()||o.seed.length>128||typeof o.name!=='string'||!o.name.trim()||[...o.name].length>64||!['continent','island','archipelago','pangea','shattered'].includes(o.template))throw new Error('シード・世界名・地形の種類を確認してください');
+    if(!['katakana','original'].includes(o.naming))throw new Error('地名の表記を確認してください');
+    for(const [key,lo,hi]of[['cells',10000,40000],['warmth',0,100],['wetness',0,100],['widthKm',100,60000],['cities',4,300],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations','cells'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
     if(o.nations>o.cities)throw new Error('国家数は都市数以下にしてください');
     return o;
   }
-  function prepare(source,input){
+  function adopt(source,input,world){
     const doc=D.parse(source),o=parameters(input);
+    if(doc.atlas?.locked)throw new Error('地形をロックしています');
+    if(doc.coordinate_system!=='local')throw new Error('創作地図で実行してください');
+    if(!world?.ok)throw new Error('Azgaarの生成結果を取得できません');
+    world=Names.localize(world,o.seed,o.naming);
+    if(doc.layers.length>93)throw new Error('世界地図には7つのレイヤーを追加します。レイヤーの上限100件を超えます');
+    const previous=new Set(doc.layers.filter(l=>['coherent-world','azgaar-world'].includes(l.generation?.kind)).map(l=>l.id));
+    const group=D.id(),layers={},features=[],scale=[doc.canvas.width/world.width,doc.canvas.height/world.height];
+    const toMap=p=>[p[0]*scale[0],p[1]*scale[1]];
+    for(const [key,name]of[['cities','都市・港'],['labels','地名'],['roads','陸路'],['shipping','航路'],['rivers','河川'],['lakes','湖'],['borders','国家・国境']])
+      layers[key]={id:D.id(),name:name+'（'+o.name+'）',visible:true,locked:false,opacity:1,generation:{kind:'azgaar-world',engine_version:A.version,group,part:key}};
+    const add=(kind,points,key,label,color,role,path,closed=false)=>{const f={...D.feature(kind,points.map(toMap),layers[key].id,label),color,tags:[layers[key].name.split('（')[0]],cartography:{role}};if(kind==='route')f.line_style=role==='border'?'straight':'curve';if(path)A.attach(f,path,scale,closed);features.push(f);return f;};
+    for(const lake of world.lakes)if(lake.points.length>=3)add('region',lake.points,'lakes',lake.name,'#80a9ba','lake',lake.path,true);
+    for(const river of world.rivers){const f=add('route',river.points,'rivers',river.name,'#457e9b','river',river.path,true);f.cartography.basin=river.basin;f.cartography.parent=river.parent;}
+    for(const state of world.states){
+      const polygon=state.polygons.slice().sort((a,b)=>b.length-a.length)[0];
+      if(polygon?.length>=3){const area=add('region',polygon,'borders',state.name,'#796b66','border',state.path,true);if(Array.isArray(world.borders))area.cartography.area=true;}
+      const label=add('label',[state.point],'labels',state.shortName||state.name,'#514b43','country-label');label.description=state.name;
+    }
+    for(const border of world.borders||[])add('route',border.points,'borders',border.pair.map(i=>world.states.find(s=>s.id===i)?.name||'未所属').join(' / '),'#827465','border',border.path);
+    for(const route of world.routes){const sea=route.group==='searoutes',f=add('route',route.points,sea?'shipping':'roads',route.name|| (sea?'航路':'陸路'),sea?'#577d8b':'#8c7058',sea?'shipping':'road',route.path);f.cartography.rank=route.group==='roads'?'major':'minor';f.travel_plan={schema_version:1,unit:'km',speed:sea?15:5,daily_hours:sea?12:8,rest_days:0};}
+    for(const city of world.cities){const f=add('pin',[city.point],'cities',city.name,'#4b443f','city');f.icon=city.port?'port':city.capital?'castle':'city';Object.assign(f.cartography,{capital:city.capital,rank:city.capital?'major':'minor'});f.tags=[city.port?'港':'都市',...(city.capital?['首都']:[])];f.description=(world.states.find(s=>s.id===city.state)?.name||'未所属')+'。Azgaarの地形・気候・居住適性に基づく都市。';}
+    const shape=(path,color,opacity=1)=>({path,color,opacity});
+    doc.atlas={version:1,engine:'Azgaar',engine_version:A.version,revision:A.revision,width:world.width,height:world.height,presentation:'biomes',shores:world.shores,
+      modes:{biomes:world.shapes.map(s=>shape(s.path,s.color)),elevation:world.heights.map(s=>shape(s.path,['#b7c79c','#adba8e','#a4ad83','#9da07b','#a59477','#ae9f8b','#b4aa99','#bdb9aa','#cfcec1','#dddfd7','#eceee8','#f2f4f0','#f8faf7','#ffffff'][Math.min(13,Math.floor((s.height-30)/5))])),temperature:world.temperature.map(s=>shape(s.path,s.color)),rain:world.rain.map(s=>shape(s.path,s.color)),political:world.states.map(s=>shape(s.path,s.color,.65))},
+      relief:world.heights.filter(s=>s.height>=45).map(s=>shape(s.path,s.height>=80?'#fafbf3':'#665d49',s.height>=80?.18:.065)),...(world.surface?{surface:world.surface}:{})};
+    if(!A.valid(doc.atlas))throw new Error('生成結果が地図の上限を超えました。地形の細かさを下げてください');
+    for(const layer of doc.layers)if(previous.has(layer.id))layer.visible=false;
+    doc.layers.push(...Object.values(layers));doc.features.push(...features);doc.terrain=null;doc.background=null;
+    doc.scale={...doc.scale,distance_per_unit:o.widthKm/doc.canvas.width,unit:'km',north_degrees:0};
+    doc.schema_version=1;doc.world_generation={version:4,engine:'Azgaar',engine_version:A.version,revision:A.revision,names_version:Names.version,parameters:o,stats:world.stats,group,layer_ids:Object.values(layers).map(l=>l.id)};
+    D.parse(JSON.stringify(doc));return {doc,stats:world.stats,parameters:o,previousLayers:[...previous],layers};
+  }
+  async function prepare(source,input,signal){
+    const doc=D.parse(source),o=parameters(input),aspect=doc.canvas.height/doc.canvas.width;
+    if(doc.atlas?.locked)throw new Error('地形をロックしています');
     if(doc.coordinate_system!=='local')throw new Error('創作地図で実行してください');
     if(doc.layers.length>93)throw new Error('世界地図には7つのレイヤーを追加します。レイヤーの上限100件を超えます');
-    const cols=doc.canvas.width>=doc.canvas.height?256:Math.max(32,Math.round(256*doc.canvas.width/doc.canvas.height)),rows=Math.max(32,Math.min(256,Math.round(cols*doc.canvas.height/doc.canvas.width)));
-    const terrain=T.generate(o.seed,o.template,o.land/100,o.roughness,{cols,rows}),climateOptions={seed:o.seed,warmth:o.warmth,wetness:o.wetness,north:doc.scale.north_degrees};
-    let analysis=G.analyze(terrain,climateOptions);
-    // Retain resolvable lakes. Fill smaller depressions to their spill surface
-    // so a visible river cannot climb ground hidden beneath an omitted pond.
-    terrain.heights=terrain.heights.map((h,i)=>h>0&&!analysis.lake[i]?Math.max(h,analysis.filled[i]):h);
-    terrain.conditioning_version=1;analysis=G.analyze(terrain,climateOptions);
-    const previous=new Set(doc.layers.filter(l=>l.generation?.kind==='coherent-world').map(l=>l.id));
-    const existing=doc.features.filter(f=>f.kind==='pin'&&!previous.has(f.layer_id)).map(f=>[f.points[0][0]/doc.canvas.width,f.points[0][1]/doc.canvas.height]);
-    const society=S.generate(terrain,analysis,{...o,existing}),rivers=G.rivers(terrain,analysis),group=D.id(),layers={},features=[];
-    const toMap=p=>[p[0]*doc.canvas.width,p[1]*doc.canvas.height];
-    const addLayer=(key,name)=>{const layer={id:D.id(),name,visible:true,locked:false,opacity:1,generation:{kind:'coherent-world',generator_version:3,group,part:key}};layers[key]=layer;return layer;};
-    for(const [key,label]of[['cities','都市・港'],['labels','地名'],['borders','国境'],['roads','陸路'],['shipping','航路'],['rivers','河川'],['lakes','湖']])addLayer(key,label+'（'+o.name+'）');
-    const add=(kind,points,key,label,color,role,extra={})=>{const f={...D.feature(kind,points.map(toMap),layers[key].id,label),color,tags:[({'cities':'都市','labels':'地名','borders':'国家','roads':'陸路','shipping':'航路','rivers':'河川','lakes':'湖'})[key]],cartography:{role},...extra};features.push(f);return f;};
-    for(const [index,river]of rivers.entries())add('route',river.points,'rivers','河川 '+(index+1),'#397f9c','river',{cartography:{role:'river',flow:Math.round(river.flow)},description:'降水の集積と標高から生成した水系。合流して海または湖へ流れます。',line_style:'curve'});
-    for(const state of society.states)add('label',[state.point],'labels',state.name,state.color,'country-label');
-    for(const city of society.cities){const state=society.states[city.country];add('pin',[city.point],'cities',city.name,city.capital?'#65433c':'#46564c','city',{
-      icon:city.port?'port':city.capital?'castle':'city',cartography:{role:'city',capital:city.capital,rank:city.capital||city.port?'major':'minor'},
-      tags:[city.port?'港':'都市',...(city.capital?['首都']:[]),...(state?[state.name]:[])],description:`${state?.name||'未所属'}。${city.port?'外海に接する港。':'水と気候、勾配を考慮した居住地。'}標高の目安 ${Math.round(terrain.heights[city.cell]*6500)}m、年平均気温の目安 ${Math.round(analysis.temperature[city.cell])}℃。`});}
-    for(const border of society.borders)add('route',border.points,'borders',border.pair.map(i=>society.states[i].name).join(' / '),'#806855','border',{line_style:'curve',description:'首都からの移動費用と山地・河川の障壁による国境。'});
-    for(const road of society.roads)add('route',road.points,'roads',society.cities[road.from].name+' — '+society.cities[road.to].name,'#91765a','road',{description:'海と湖を避け、勾配・峠・河川の横断費用を考慮した陸路。',travel_plan:{schema_version:1,unit:'km',speed:5,daily_hours:8,rest_days:0}});
-    for(const route of society.seaRoutes)add('route',route.points,'shipping',society.cities[route.from].name+' — '+society.cities[route.to].name,'#607d8b','shipping',{dashed:true,description:'港から外海へ出て、陸地を横切らない航路。',travel_plan:{schema_version:1,unit:'km',speed:15,daily_hours:12,rest_days:0}});
-    const lakeCells=Array.from(analysis.lake),lakeIds=[...new Set(lakeCells)].filter(Boolean);
-    for(const id of lakeIds){const polygons=Grid.polygons(lakeCells,cols,rows,id);for(const poly of polygons){const outline=polygons.length===1?poly.flatMap((p,i)=>{const q=poly[(i+1)%poly.length];return [[p[0]*.75+q[0]*.25,p[1]*.75+q[1]*.25],[p[0]*.25+q[0]*.75,p[1]*.25+q[1]*.75]];}):poly;
-      add('region',outline.map(([x,y])=>[T.clamp((x-.5)/(cols-1)),T.clamp((y-.5)/(rows-1))]),'lakes','湖 '+id,'#77aabd','lake');}}
-    const mountains=T.components(terrain.heights.map(h=>h>.42),cols,rows).groups.filter(g=>g.length>=5).sort((a,b)=>b.length-a.length).slice(0,8);
-    const mountainNames=S.placeNames(o.seed+':mountains',mountains.length);
-    const mountainLabels=[];
-    mountains.forEach((cells,i)=>{const center=cells.reduce((best,k)=>terrain.heights[k]>terrain.heights[best]?k:best,cells[0]),p=S.point(center,analysis);if(mountainLabels.some(q=>Math.hypot((p[0]-q[0])*cols,(p[1]-q[1])*rows)<cols*.14))return;mountainLabels.push(p);add('label',[p],'labels',mountainNames[i]+'山脈','#6a6257','mountain-label');});
-    terrain.environment=G.environment(terrain,analysis);terrain.environment.owner=Array.from(society.owner);terrain.environment.countries=society.states.map(s=>s.color);terrain.presentation='biomes';
-    if(doc.features.length+features.length>10000||[...doc.features,...features].reduce((sum,f)=>sum+f.points.length,0)>100000)throw new Error('図形または頂点の上限を超えます。元の地図を保持したまま生成を中止しました');
-    const stats={landRatio:analysis.landCount/terrain.heights.length,landmasses:analysis.masses.groups.filter(g=>g.length>=30).length,rivers:rivers.length,lakes:lakeIds.length,cities:society.cities.length,ports:society.cities.filter(c=>c.port).length,nations:society.states.length,roads:society.roads.length,seaRoutes:society.seaRoutes.length};
-    for(const layer of doc.layers)if(previous.has(layer.id))layer.visible=false;
-    doc.layers.push(...Object.values(layers));doc.features.push(...features);doc.terrain=terrain;doc.background=null;
-    doc.scale={...doc.scale,distance_per_unit:o.widthKm/doc.canvas.width,unit:'km'};
-    doc.world_generation={version:3,parameters:o,stats,group,layer_ids:Object.values(layers).map(l=>l.id)};
-    D.parse(JSON.stringify(doc,null,2));
-    return {doc,stats,parameters:o,analysis,society,rivers,previousLayers:[...previous],layers};
+    if(aspect<.125||aspect>8)throw new Error('生成できる地図の縦横比は1:8〜8:1です');
+    const result=adopt(doc,o,await A.generate({seed:o.seed,template:({continent:'continents',island:'highIsland',archipelago:'archipelago',pangea:'pangea',shattered:'shattered'})[o.template],aspect,widthKm:o.widthKm,cells:o.cells,cities:o.cities,nations:o.nations,equator:10+o.warmth*.34,precipitation:20+o.wetness*1.6},signal));
+    result.doc.background={data_url:await A.raster(result.doc.atlas)};
+    D.parse(JSON.stringify(result.doc));return result;
   }
   function show(app){
     app._commitInput();if(app._inputDirty)throw new Error('入力内容を確認してください');
-    if(app.editingDisabled||app.store.doc.coordinate_system!=='local')throw new Error('編集できる創作地図で実行してください');
-    app._generatorPreview?.destroy();app._settlementsPreview?.destroy();app._climatePreview?.destroy();app._worldPreview?.destroy();
+    if(app.editingDisabled||app.store.doc.atlas?.locked||app.store.doc.coordinate_system!=='local')throw new Error('編集できる創作地図で実行してください');
+    app._generatorPreview?.destroy();app._settlementsPreview?.destroy();app._climatePreview?.destroy();app._worldPreview?.destroy();app._terrainPreview?.destroy();
     const store=app.store,path=app.path,canEdit=app._editGuard(),panel=document.createElement('div');panel.className='gb-map-generator gb-map-world-generator';panel.setAttribute('role','region');panel.setAttribute('aria-label','世界地図生成のプレビュー');
-    const title=document.createElement('h3');title.textContent='世界地図を生成';const help=document.createElement('p');help.textContent='地形・水系・気候・植生から都市、国境、陸路と航路をまとめて作成します。プレビューで確認してから採用してください。';panel.append(title,help);
-    let prepared=null,source=null,signature='',preview=null,pending=false;const controls={},previous=store.doc.world_generation?.parameters||{};
+    const title=document.createElement('h3');title.textContent='世界地図を生成';const help=document.createElement('p');help.textContent='Azgaar v1.156.0で地形・水系・気候・植生から都市、国家、陸路と航路を生成します。通信・API料金は発生しません。プレビューで確認してから採用してください。';panel.append(title,help);
+    let prepared=null,source=null,signature='',preview=null,pending=false,controller=null;const controls={},previous=store.doc.world_generation?.parameters||{};
     const status=document.createElement('p');status.setAttribute('role','status');status.textContent='条件を設定してください。';
-    const clear=()=>{prepared=null;preview?.destroy();preview=null;canvas.replaceChildren();adopt.disabled=true;};
+    const clear=()=>{controller?.abort();controller=null;prepared=null;preview?.destroy();preview=null;canvas.replaceChildren();adopt.disabled=true;};
     const input=(key,label,value,attrs={})=>{const wrap=document.createElement('label');wrap.className='gb-map-field';const text=document.createElement('span');text.textContent=label;const c=document.createElement('input');c.className=attrs.type==='number'?'gb-input gb-num-input':'gb-input';c.setAttribute('aria-label',label);Object.assign(c,attrs);c.required=true;c.value=value;c.oninput=c.onchange=()=>{clear();status.textContent='条件が変わりました。プレビューを作り直してください。';};wrap.append(text,c);panel.append(wrap);controls[key]=c;};
     input('name','世界名',previous.name||app.state.label||defaults.name,{maxLength:64});input('seed','シード',previous.seed||String(Date.now()),{maxLength:128});
-    const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append('地形の種類');const template=document.createElement('select');template.className='gb-select';template.setAttribute('aria-label','地形の種類');for(const [key,name]of[['continent','大陸'],['archipelago','群島'],['island','島']])template.add(new Option(name,key));template.value=previous.template||defaults.template;template.onchange=clear;wrap.append(template);panel.append(wrap);controls.template=template;
-    for(const [key,label,min,max]of[['land','陸地の割合（%）',10,80],['roughness','山地の起伏（0〜100）',0,100],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数',4,80],['nations','国家数',1,24],['widthKm','地図の横幅（km）',100,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
-    const mode=document.createElement('select');mode.className='gb-select';mode.setAttribute('aria-label','プレビューの配色');for(const [key,name]of presentations)mode.add(new Option(name,key));mode.onchange=()=>{if(prepared){prepared.doc.terrain.presentation=mode.value;preview?.setDocument(prepared.doc,true);}};
+    const naming=document.createElement('select');naming.className='gb-select';naming.setAttribute('aria-label','地名の表記');for(const [key,label]of[['katakana','カタカナ（基本）'],['original','原語（Azgaar）']])naming.add(new Option(label,key));naming.value=previous.naming||defaults.naming;naming.onchange=clear;const namingLabel=document.createElement('label');namingLabel.className='gb-map-field';namingLabel.append('地名の表記',naming);panel.append(namingLabel);controls.naming=naming;
+    const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append('地形の種類');const template=document.createElement('select');template.className='gb-select';template.setAttribute('aria-label','地形の種類');for(const [key,name]of[['continent','大陸'],['archipelago','群島'],['island','島'],['pangea','超大陸'],['shattered','分裂した大陸']])template.add(new Option(name,key));template.value=previous.template||defaults.template;template.onchange=clear;wrap.append(template);panel.append(wrap);controls.template=template;
+    for(const [key,label,min,max]of[['cells','地形の細かさ（セル数）',10000,40000],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数の目安',4,300],['nations','国家数',1,24],['widthKm','地図の横幅（km）',100,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    const mode=document.createElement('select');mode.className='gb-select';mode.setAttribute('aria-label','プレビューの配色');for(const [key,name]of presentations)mode.add(new Option(name,key));mode.onchange=()=>{if(prepared){prepared.doc.atlas.presentation=mode.value;preview?.setDocument(prepared.doc,true);}};
     const modeLabel=document.createElement('label');modeLabel.className='gb-map-field';modeLabel.append('プレビューの配色',mode);
     const canvas=document.createElement('div');canvas.className='gb-map-generator-preview gb-map-world-preview';panel.append(modeLabel,status,canvas);
     const values=()=>Object.fromEntries(Object.entries(controls).map(([k,c])=>[k,c.type==='number'?Number(c.value):c.value]));
     const conditions=()=>JSON.stringify(Object.values(controls).map(c=>c.value));
     const current=()=>panel.isConnected&&canEdit()&&app.store===store&&app.path===path&&app._active!==false;
-    const cleanup=()=>{MeldexMapChrome.closePanel(panel);preview?.destroy();preview=null;prepared=null;panel.remove();if(app._worldPreview?.panel===panel)app._worldPreview=null;};
+    const cleanup=()=>{controller?.abort();controller=null;MeldexMapChrome.closePanel(panel);preview?.destroy();preview=null;prepared=null;panel.remove();if(app._worldPreview?.panel===panel)app._worldPreview=null;};
     const generate=app._button('世界地図をプレビュー',async()=>{
       if(pending||!current()||!Object.values(controls).every(c=>c.reportValidity()))return;
-      clear();pending=true;generate.disabled=true;status.textContent='地形・水系・都市と交通を生成しています…';
-      try{await new Promise(resolve=>requestAnimationFrame(resolve));if(!current())return;source=store.doc;signature=conditions();prepared=prepare(source,values());prepared.doc.terrain.presentation=mode.value;
+      clear();controller=new AbortController();pending=true;generate.disabled=true;status.textContent='Azgaarで地形・水系・都市と交通を生成しています…';
+      try{await new Promise(resolve=>requestAnimationFrame(resolve));if(!current())return;source=store.doc;signature=conditions();prepared=await prepare(source,values(),controller.signal);prepared.doc.atlas.presentation=mode.value;
         if(!current()||source!==store.doc||signature!==conditions()){clear();return;}
         preview=new MeldexMapView(canvas,{select:()=>{}});preview.setDocument(prepared.doc,true);const s=prepared.stats;
-        status.textContent=`陸地${Math.round(s.landRatio*100)}%・主な陸塊${s.landmasses}・河川${s.rivers}・湖${s.lakes}・都市${s.cities}（港${s.ports}）・国家${s.nations}・陸路${s.roads}・航路${s.seaRoutes}。採用すると背景と縮尺を更新します。以前の世界生成レイヤーは保持して非表示にします。`;
-      }catch(e){clear();status.textContent=e.userMessage||e.message;}finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
+        status.textContent=`陸地${Math.round(s.landRatio*100)}%・主な陸塊${s.landmasses}・河川${s.rivers}・湖${s.lakes}・都市${s.cities}（港${s.ports}）・国家${s.nations}・陸路${s.roads}・航路${s.seaRoutes}。採用すると背景・縮尺・北方向（上）を更新します。以前の世界生成レイヤーは保持して非表示にします。`;
+      }catch(e){clear();status.textContent=e.name==='AbortError'?'生成を中止しました。':e.userMessage||e.message;}finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
     });
     const adopt=app._button('この世界地図を採用',async()=>{
       if(pending||!prepared||!current())return;const candidate=prepared;const valid=()=>current()&&prepared===candidate&&store.doc===source&&signature===conditions();
       if(!valid()){clear();status.textContent='地図または条件が変更されました。プレビューを作り直してください。';return;}
       pending=true;generate.disabled=adopt.disabled=true;
-      try{if((source.terrain||source.background)&&!await cfConfirm('背景と縮尺を生成した世界地図へ更新します。手描き図形を保持し、以前の世界生成レイヤーは非表示にします。採用しますか？'))return;
+      try{if((source.terrain||source.background)&&!await cfConfirm('背景・縮尺・北方向（上）を生成した世界地図へ更新します。手描き図形を保持し、以前の世界生成レイヤーは非表示にします。採用しますか？'))return;
         if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid())return;if(access.readOnly){status.textContent=access.reason||'編集ロック中のため採用できません';return;}
         if(app.update(d=>Object.assign(d,candidate.doc))){for(const id of candidate.previousLayers)if(app.state.mapLayerVisibility)delete app.state.mapLayerVisibility[id];app.state.mapSearch='';app.state.mapFeatureKind='';app.search.value='';app.kindFilter.value='';app._selection=new Set();app._selected=null;app._activeLayer=candidate.layers.cities.id;cleanup();app._buildSettingsRefresh();app._render();app.view.fit();app._saveViewState();}
       }finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
     },{disabled:true});
     panel.append(generate,adopt,app._button('閉じる',cleanup));app._worldPreview={panel,kind:'world',destroy:cleanup};MeldexMapChrome.openPanel(panel);
   }
-  return Object.freeze({defaults,presentations,parameters,prepare,show});
+  return Object.freeze({defaults,presentations,parameters,adopt,prepare,show});
 });
+
+;
+
+/* === gb-map-terrain-controls.js === */
+;
+/* Terrain and visibility controls use Meldex's existing options and modal shell. */
+(function(root){
+ 'use strict';const D=()=>root.MeldexMapDocument,F=()=>root.MeldexMapTerrainField,V=()=>root.MeldexMapDisplay;
+ const brushes=[['plain','平野'],['mountain','山地'],['hills','丘陵'],['desert','砂漠'],['wasteland','荒野'],['snow','雪原'],['forest','森林'],['land','陸地を追加'],['water','海・湖']];
+ const routes=[['major','主要道路'],['road','道路・小径'],['railway','鉄道・線路'],['shipping','航路'],['river','川・水路'],['other','その他']];
+ function input(parent,label,value,attrs,change){const wrap=document.createElement('label');wrap.className='gb-map-field';const text=document.createElement('span');text.textContent=label;const el=document.createElement('input');el.className='gb-input gb-num-input';el.required=true;Object.assign(el,attrs);el.setAttribute('aria-label',label);el.value=value;el.onchange=()=>{if(el.reportValidity())change(el.value);};wrap.append(text,el);parent.append(wrap);return el;}
+ function select(parent,label,values,value,change,disabled=false){const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append(label);const el=document.createElement('select');el.className='gb-select';el.setAttribute('aria-label',label);el.disabled=disabled;for(const [id,text]of values)el.add(new Option(text,id));el.value=value;el.onchange=()=>change(el.value);wrap.append(el);parent.append(wrap);return el;}
+ function display(parent,app){const section=document.createElement('details'),title=document.createElement('summary');title.textContent='表示する要素';section.className='gb-map-element-options';section.append(title);parent.append(section);
+   const current=V().effective({...app.store.doc.display,...app.state.mapElementVisibility});
+   for(const [key,name]of V().categories){const label=document.createElement('label');label.className='gb-check';const check=document.createElement('input');check.type='checkbox';check.checked=current[key];check.setAttribute('aria-label',name+'を表示');check.onchange=()=>{const current=V().effective({...app.store.doc.display,...app.state.mapElementVisibility});if(app.editingDisabled){app.state.mapElementVisibility={...current,[key]:check.checked};}else{const next={...current,[key]:check.checked};if(!app.update(d=>{d.display=next;})&&!Object.entries(next).every(([k,v])=>app.store.doc.display?.[k]===v)){check.checked=current[key];return;}delete app.state.mapElementVisibility;}app._saveViewState();app._render();};label.append(check,document.createTextNode(' '+name));section.append(label);}
+ }
+ function settings(parent,app){
+   display(parent,app);
+   select(parent,'描画する経路の種類',routes,app.view?.routeKind||'major',value=>{app.view.routeKind=value;},app.editingDisabled);
+   parent.append(app._button('川をフリーハンドで描く',()=>app._setTool('river'),{disabled:app.editingDisabled}));
+   if(!app.store.doc.atlas?.surface)return;
+   select(parent,'地形ブラシ',brushes,app.view?.terrainKind||'plain',value=>{app.view.terrainKind=value;app._setTool('land');},app.editingDisabled||app.store.doc.atlas.locked);
+   input(parent,'地形ブラシの強さ',app.view?.terrainStrength||.7,{type:'number',min:.05,max:1,step:.05,disabled:app.editingDisabled},v=>{app.view.terrainStrength=Number(v);});
+   const lock=document.createElement('label');lock.className='gb-check';const c=document.createElement('input');c.type='checkbox';c.setAttribute('aria-label','地形をロック');c.checked=!!app.store.doc.atlas.locked;c.disabled=app.editingDisabled;c.onchange=()=>{app.update(d=>{d.atlas.locked=c.checked;});app._buildSettingsRefresh();app._render();};lock.append(c,document.createTextNode(' 地形をロック'));parent.append(lock);
+   parent.append(app._button('周囲の地形を合わせる',()=>showFit(app),{disabled:app.editingDisabled||app.store.doc.atlas.locked}));
+ }
+ function routeFields(parent,app,feature,locked){const kind=feature.cartography?.role==='road'?(feature.cartography.rank==='major'?'major':'road'):feature.cartography?.role||'other';select(parent,'経路の種類',routes,routes.some(r=>r[0]===kind)?kind:'other',value=>app._editFeature(f=>{f.cartography={...f.cartography,role:value==='major'?'road':value==='other'?'':value,rank:value==='major'?'major':'minor'};delete f.cartography.geometry;}),locked);}
+ function converted(doc,editor){const result=D().clone(doc);result.atlas.editor=editor;result.schema_version=2;result.background=null;D().parse(JSON.stringify(result));return result;}
+ async function paint(app,action){
+   const source=app.store.doc,store=app.store,path=app.path,guard=app._editGuard(),signature=JSON.stringify(source);if(!guard()||!source.atlas?.surface||source.atlas.locked||app._terrainPending)return;
+   const points=action.points.map(p=>[p[0]/source.canvas.width*source.atlas.width,p[1]/source.canvas.height*source.atlas.height]),radius=Math.min(Math.max(source.atlas.width,source.atlas.height)/2,action.radius/source.canvas.width*source.atlas.width);
+   const candidate=converted(source,F().stroke(source.atlas,action.kind,points,radius,action.strength));
+   const valid=()=>guard()&&app.store===store&&app.path===path&&store.doc===source&&JSON.stringify(source)===signature&&!source.atlas.locked&&app._active!==false;
+   if(source.schema_version!==2){app._terrainPending=true;try{if(!await cfConfirm('地形を直接編集できる新形式へ変換します。旧版のMeldexでは開けなくなります。PNGや閲覧パッケージで共有できます。変換と描画は「元に戻す」で取り消せます。続けますか？'))return;if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid()||access.readOnly){app._message(access.reason||'この地図は編集できません');return;}}finally{app._terrainPending=false;}}
+   if(valid()&&app.update(d=>Object.assign(d,candidate))){app._buildSettingsRefresh();app._render();}
+ }
+ function showFit(app){
+   app._commitInput();if(app._inputDirty)throw Error('入力内容を確認してください');
+   const store=app.store,source=store.doc,path=app.path,guard=app._editGuard(),signature=JSON.stringify(source);
+   if(!guard()||!source.atlas?.surface||source.atlas.locked)throw Error('編集できる地形を選択してください');
+   app._worldPreview?.destroy();app._generatorPreview?.destroy();app._settlementsPreview?.destroy();app._climatePreview?.destroy();
+   const selected=source.features.filter(f=>app._selection.has(f.id)&&f.kind==='route');if(!selected.length)throw Error('川・道路・線路・航路を選択してください');
+   if(selected.some(f=>source.layers.find(l=>l.id===f.layer_id)?.locked))throw Error('選択中の経路のレイヤーがロックされています');
+   const panel=document.createElement('div');panel.className='gb-map-generator';const title=document.createElement('h3');title.textContent='周囲の地形を合わせる';const help=document.createElement('p');help.textContent='川は高い側から低い側へ谷を掘り、道路・線路は段差をならし、航路は水路を開きます。線や地点は移動しません。採用すると編集形式v2になり、旧版では開けません。';panel.append(title,help);
+   let candidate=null,preview=null,pending=false,settings=null;const status=document.createElement('p');status.setAttribute('role','status');const area=document.createElement('div');area.className='gb-map-generator-preview';
+   const clear=()=>{candidate=null;settings=null;preview?.destroy();preview=null;area.replaceChildren();adopt.disabled=true;};
+   const radius=input(panel,'周囲を補正する半径（地図単位）',20,{type:'number',min:.1,max:1000,step:.1},clear);
+   const valid=()=>panel.isConnected&&guard()&&app.store===store&&store.doc===source&&JSON.stringify(source)===signature&&app.path===path&&app._active!==false&&!source.atlas.locked&&selected.every(f=>!store.doc.layers.find(l=>l.id===f.layer_id)?.locked);
+   const cleanup=()=>{preview?.destroy();preview=null;candidate=null;MeldexMapChrome.closePanel(panel);panel.remove();if(app._terrainPreview?.panel===panel)app._terrainPreview=null;};
+   const generate=app._button('補正をプレビュー',()=>{if(pending||!valid()||!radius.reportValidity())return;clear();try{let atlas=D().clone(source.atlas);for(const f of selected){const role=f.cartography?.role,kind=role==='river'?'river':role==='railway'?'railway':role==='shipping'?'waterway':'road',points=D().drawPoints(f,source).map(p=>[p[0]/source.canvas.width*atlas.width,p[1]/source.canvas.height*atlas.height]);atlas.editor=F().fit(atlas,kind,points,Number(radius.value)/source.canvas.width*atlas.width,f.id);}candidate=converted(source,atlas.editor);settings=radius.value;preview=new MeldexMapView(area,{select:()=>{}});preview.setDocument(candidate,true);adopt.disabled=false;status.textContent=selected.length+'件の経路の周囲を補正しました。採用前に確認してください。';}catch(error){clear();status.textContent=error.message;}});
+   const adopt=app._button('この地形を採用',async()=>{if(pending||!candidate)return;if(!valid()||settings!==radius.value){clear();status.textContent='地図または補正範囲が変更されました。閉じてから補正をやり直してください。';return;}const result=candidate;pending=true;adopt.disabled=generate.disabled=true;try{const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid()||candidate!==result||settings!==radius.value){clear();status.textContent='地図が変更されました。補正は採用していません。';return;}if(access.readOnly){status.textContent=access.reason||'編集ロック中です';return;}if(app.update(d=>Object.assign(d,result))){cleanup();app._buildSettingsRefresh();app._render();}}finally{pending=false;generate.disabled=false;adopt.disabled=!candidate;}},{disabled:true});
+   panel.append(status,area,generate,adopt,app._button('閉じる',cleanup));app._terrainPreview?.destroy();app._terrainPreview={panel,destroy:cleanup};MeldexMapChrome.openPanel(panel);
+ }
+ root.MeldexMapTerrainControls=Object.freeze({brushes,routes,settings,routeFields,paint,showFit});
+})(globalThis);
 
 ;
 
@@ -180485,12 +183090,12 @@ const MeldexMapControls = (() => {
       if ((app.store.doc.features.length || app.store.doc.terrain || app.store.doc.background) && !await cfConfirm('座標の異なる地図へ切り替えると、現在の地形と図形を置き換えます。続けますか？（元に戻せます）')) {
         root.querySelector('select').value = app.store.doc.coordinate_system; return;
       }
-      if (!canEdit()) return;
-      if (!app.update(next => { Object.assign(next, D().create(next.title, value)); delete next.saved_views; delete next.world_generation; })) return;
+      if (!canEdit()||app.store.doc.atlas?.locked) return;
+      if (!app.update(next => { Object.assign(next, D().create(next.title, value)); delete next.saved_views; delete next.world_generation; delete next.atlas; })) return;
       app.state.mapViewport = null; app.state.mapLayerVisibility = {}; app.state.mapSearch = ''; app.state.mapFeatureKind = ''; app.state.mapSavedViewId = '';
       app.search.value = ''; app.kindFilter.value = ''; app._saveViewState();
       app._selected = null; app._activeLayer = 'places'; app.view.setTool('select'); app._buildSettingsRefresh(); app._render();
-    }, app.editingDisabled);
+    }, app.editingDisabled||doc.atlas?.locked);
     const world = document.createElement('div'); root.appendChild(world); app.worldControls.push(world);
     select(world, '背景地図', [['osm', 'OpenStreetMap'], ['gsi', '地理院（淡色）'], ['gsi-standard', '地理院（標準）'], ['blank', '背景なし']], doc.basemap === 'gsi' && doc.basemap_style === 'standard' ? 'gsi-standard' : doc.basemap, value => {
       app.update(next => { next.basemap = value === 'gsi-standard' ? 'gsi' : value; if (next.basemap === 'gsi') next.basemap_style = value === 'gsi-standard' ? 'standard' : 'pale'; }); app._render();
@@ -180511,20 +183116,22 @@ const MeldexMapControls = (() => {
         if (!canEdit()) return;
         if (image.naturalWidth * image.naturalHeight > 64000000) throw new Error('画像は6400万画素以下にしてください');
         if ((app.store.doc.background || app.store.doc.terrain) && !await cfConfirm('現在の背景をこの画像に置き換えますか？ 地点・図形は保持されます。')) return;
-        if (!canEdit()) return;
+        if (!canEdit()||app.store.doc.atlas?.locked) return;
         app.update(next => {
-          next.background = { data_url: data }; next.terrain = null;
+          next.background = { data_url: data }; next.terrain = null; delete next.atlas; next.schema_version=1;
           if (!next.features.length) { const ratio = Math.min(1, 4096 / Math.max(image.naturalWidth, image.naturalHeight)); next.canvas = { width: Math.max(128, Math.round(image.naturalWidth * ratio)), height: Math.max(128, Math.round(image.naturalHeight * ratio)) }; next.view = null; }
         });
         app._render(); app.view.fit();
       } catch (error) { app._message(error.message); }
     };
-    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled }),
-      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled }),
-      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled }),
-      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled })));
-    if (MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.terrain.presentation || 'biomes',
-      value => { app.update(next => { next.terrain.presentation = value; }); app._render(); }, app.editingDisabled);
+    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled||doc.atlas?.locked }),
+      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
+      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
+      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && kind !== 'town' })));
+    MeldexMapTerrainControls.settings(root,app);
+    if(doc.atlas){const note=document.createElement('p');note.className='gb-map-hint';note.textContent='地形ブラシで平野・山地・植生・陸海を編集できます。川などを描いた後は、選択して「周囲の地形を合わせる」で谷や切れ目を作れます。';local.append(note);}
+    if (doc.atlas || MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.atlas?.presentation || doc.terrain?.presentation || 'biomes',
+      value => { app.update(next => { if(next.atlas)next.atlas.presentation=value;else next.terrain.presentation = value; }); app._render(); }, app.editingDisabled);
     field(app, local, '100地図単位の距離', doc.scale.distance_per_unit === null ? '' : doc.scale.distance_per_unit * 100,
       value => { app.update(next => { next.scale.distance_per_unit = value === '' ? null : Number(value) / 100; }); app._render(); }, { type: 'number', min: 0.000001, step: 'any' });
     select(local, '距離の単位', [['km', 'km'], ['m', 'm'], ['mi', 'mile'], ['unit', '任意単位']], doc.scale.unit,
@@ -180540,10 +183147,10 @@ const MeldexMapControls = (() => {
       app.update(next => { next.scale.distance_per_unit = Number(calibration.value) / units; });
       app._buildSettingsRefresh(); app._render(); app.view._draft();
     }, { disabled: app.editingDisabled }));
-    const brush = field(app, local, '地形ブラシの半径', app.view?.brushSize || 70, value => { app.view.brushSize = Number(value); }, { type: 'number', min: 5, max: 1000, step: 5 });
+    const brush = field(app, local, '地形ブラシの半径', app.view?.brushSize || 70, value => { app.view.brushSize = Number(value); }, { type: 'number', min: doc.atlas?.surface ? .1 : 5, max: 1000, step: doc.atlas?.surface ? .1 : 5 });
     brush.dataset.mapBrush = 'true';
     const note = document.createElement('small'); note.textContent = '縮尺を設定すると、地図上の距離と縮尺バーに反映されます。'; local.appendChild(note);
-    if(doc.world_generation&&!MeldexMapWorldGeography.validEnvironment(doc.terrain)){const hint=document.createElement('small');hint.textContent='地形・方角の編集後は気候と植生の配色を解除します。世界地図を再生成すると、水系や都市を含めて整合を取り直せます。';local.appendChild(hint);}
+    if(!doc.atlas&&doc.world_generation&&!MeldexMapWorldGeography.validEnvironment(doc.terrain)){const hint=document.createElement('small');hint.textContent='地形・方角の編集後は気候と植生の配色を解除します。世界地図を再生成すると、水系や都市を含めて整合を取り直せます。';local.appendChild(hint);}
     app._buildSettingsRefresh = () => {
       app.localControls = app.localControls.filter(el => !root.contains(el)); app.worldControls = app.worldControls.filter(el => !root.contains(el));
       root.replaceChildren(); settings(app);
@@ -180615,6 +183222,7 @@ const MeldexMapControls = (() => {
     addTag.addEventListener('change', commitTags); addTag.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); commitTags(); } });
     tags.appendChild(addTag); root.appendChild(tags);
     field(app, root, '色', f.color, value => app._editFeature(next => { next.color = value; }), { type: 'color', disabled: locked });
+    if(f.kind==='pin')select(root,'マーカーのデザイン',[['symbol','丸印・記号（標準）'],['drop','しずく型']],f.marker_style||'symbol',value=>app._editFeature(next=>{next.marker_style=value;}),locked);
     select(root, '配置レイヤー', app.store.doc.layers.filter(l => !l.locked || l.id === f.layer_id).map(l => [l.id, l.name]), f.layer_id,
       value => app._editFeature(next => { next.layer_id = value; }), locked);
     if (f.points.length > 1) {
@@ -180622,7 +183230,8 @@ const MeldexMapControls = (() => {
       root.appendChild(app._button(app.view.editVertices ? '頂点編集を終了' : '頂点を編集', () => { app.view.editVertices = !app.view.editVertices; app._setTool('select'); app._render(); }, { disabled: locked }));
     }
     if (f.kind === 'route') {
-      select(root, '経路の形', [['straight', '折れ線'], ['curve', '曲線']], f.line_style || 'straight', value => app._editFeature(next => { next.line_style = value; }), locked);
+      MeldexMapTerrainControls.routeFields(root,app,f,locked);
+      select(root, '経路の形', [['straight', '折れ線'], ['curve', '曲線']], f.line_style || 'straight', value => app._editFeature(next => { next.line_style = value; if(next.cartography)delete next.cartography.geometry; }), locked);
       const wrap = document.createElement('label'), input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!f.arrow; input.disabled = locked;
       input.onchange = () => app._editFeature(next => { next.arrow = input.checked; }); wrap.append(input, document.createTextNode('終点に矢印を表示')); root.appendChild(wrap);
     }
@@ -180658,7 +183267,7 @@ const MeldexMapControls = (() => {
   }
   function generator(app) {
     app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
-    if (app.editingDisabled || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    if (app.editingDisabled || app.store.doc.atlas?.locked || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
     app._settlementsPreview?.destroy(); app._climatePreview?.destroy(); app._worldPreview?.destroy();
     const canEdit = app._editGuard(), store = app.store, path = app.path;
     if (app._generator?.isConnected) { app._generator.querySelector('input')?.focus(); return; }
@@ -180684,9 +183293,9 @@ const MeldexMapControls = (() => {
       if (pending || !canEdit() || ![seed, land, roughness].every(input => input.reportValidity())) return;
       clear(); source = store.doc;
       candidate = D().generate(seed.value, template, Number(land.value) / 100, Number(roughness.value)); signature = conditions();
-      D().parse(JSON.stringify({ ...source, terrain: candidate, background: null }, null, 2));
+      D().parse(JSON.stringify({ ...source, schema_version:1, terrain: candidate, background: null, atlas: null }, null, 2));
       previewView?.destroy(); previewView = new MeldexMapView(preview, { action: () => {}, select: () => {} });
-      previewView.setDocument({ ...source, terrain: candidate, background: null }, true);
+      previewView.setDocument({ ...source, schema_version:1, terrain: candidate, background: null, atlas: null }, true);
       adopt.disabled = false;
     });
     const adopt = app._button('この地形を採用', async () => {
@@ -180701,7 +183310,7 @@ const MeldexMapControls = (() => {
         const access = await MeldexEntityDetail.resolveReadOnly(path, false);
         if (!current()) return;
         if (access.readOnly) { app._message(access.reason || 'このマップは編集できません'); return; }
-        if (app.update(doc => { doc.terrain = result; doc.background = null; })) { cleanup(); app._render(); }
+        if (app.update(doc => { doc.terrain = result; doc.background = null; delete doc.atlas; doc.schema_version=1; })) { cleanup(); app._render(); }
       } finally { pending = false; generate.disabled = false; adopt.disabled = !candidate; }
     }, { disabled: true });
     panel.append(generate, adopt, app._button('閉じる', cleanup));
@@ -180770,18 +183379,19 @@ const MeldexMapControls = (() => {
 /* Read-only creative-map packages. Original paths and topic metadata stay local. */
 (function (root, factory) {
   const node = typeof module === 'object' && module.exports;
-  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument, node ? require('./gb-map-world-geography.js') : root.MeldexMapWorldGeography);
+  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument, node ? require('./gb-map-world-geography.js') : root.MeldexMapWorldGeography, node ? require('./gb-map-azgaar.js') : root.MeldexMapAzgaar);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.MeldexMapPackage = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (D, G) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (D, G, A) {
   'use strict';
   const MAX_MAPS = 64, MAX_BYTES = 48 * 1024 * 1024;
   const assets = ['vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/LICENSE',
-    'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
+    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
   const key = path => String(path).replace(/\\/g, '/').toLocaleLowerCase();
   const pick = (obj, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(obj, field)).map(field => [field, D.clone(obj[field])]));
   function portable(doc, links) {
     const result = pick(doc, ['fileType', 'schema_version', 'title', 'coordinate_system']);
+    if(doc.display)result.display=pick(doc.display,globalThis.MeldexMapDisplay?.keys||require('./gb-map-display.js').keys);
     result.canvas = pick(doc.canvas, ['width', 'height']); result.basemap = 'blank';
     result.scale = pick(doc.scale, ['distance_per_unit', 'unit', 'north_degrees']);
     const periods = new Map((doc.periods || []).map((period, index) => [period.id, 'period-' + index]));
@@ -180790,11 +183400,11 @@ const MeldexMapControls = (() => {
     result.layers = doc.layers.map(layer => ({ ...pick(layer, ['name', 'visible', 'locked', 'opacity']), id: layers.get(layer.id) }));
     const cartography = feature => {
       const c = feature.cartography;
-      if (!c || !['river','road','shipping','border','lake','city','country-label','mountain-label','river-label'].includes(c.role)) return {};
-      return { cartography: { role:c.role, ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
+      if (!c || !['river','road','railway','shipping','border','lake','city','country-label','mountain-label','river-label'].includes(c.role)) return {};
+      return { cartography: { role:c.role, ...(c.role==='border'&&c.area===true?{area:true}:{}), ...(A.geometry(feature)?{geometry:pick(c.geometry,['path','scale','anchor','closed','line_style','signature'])}:{}), ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
     };
     result.features = doc.features.map((feature, index) => ({
-      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags']),
+      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style']),
       id: 'feature-' + index, layer_id: layers.get(feature.layer_id),
       ...cartography(feature),
       ...(feature.period_ids ? { period_ids: feature.period_ids.map(id => periods.get(id)) } : {}),
@@ -180810,6 +183420,13 @@ const MeldexMapControls = (() => {
       result.terrain.environment = pick(doc.terrain.environment,['version','signature','temperature','rain','biomes','lakes','owner','countries']);
       if (['biomes','elevation','temperature','rain','political'].includes(doc.terrain.presentation)) result.terrain.presentation=doc.terrain.presentation;
     }
+    if(doc.atlas){
+      const shapes=list=>list.map(s=>pick(s,['path','color','opacity']));
+      result.atlas={...pick(doc.atlas,['version','engine','width','height','presentation','shores']),
+        modes:Object.fromEntries(A.modes.map(mode=>[mode,shapes(doc.atlas.modes[mode])])),relief:shapes(doc.atlas.relief),
+        ...(doc.atlas.surface?{surface:pick(doc.atlas.surface,['version','count','points','triangles','heights','temperature','rain','biomes'])}:{})};
+    }
+    if(doc.atlas?.editor){const allowed=['kind','radius','strength','points','profile'];result.atlas.editor={version:1,edits:doc.atlas.editor.edits.map(e=>({...pick(e,allowed),...(doc.features.some(f=>f.id===e.feature_id)?{feature_id:'feature-'+doc.features.findIndex(f=>f.id===e.feature_id)}:{})}))};}
     result.background = doc.background ? pick(doc.background, ['data_url']) : null; result.view = null;
     return D.parse(result);
   }
@@ -180825,7 +183442,7 @@ const MeldexMapControls = (() => {
       if (seen.size >= MAX_MAPS) throw new Error('持ち出す地図は64件以内にしてください');
       seen.add(pathKey);
       const loaded = await read(path); check();
-      const doc = D.parse(loaded.content);
+      const doc = D.parse(loaded.content);if(!cursor&&options.display)doc.display=D.clone(options.display);
       bytes += new TextEncoder().encode(typeof loaded.content === 'string' ? loaded.content : JSON.stringify(loaded.content)).length;
       if (bytes > MAX_BYTES) throw new Error('持ち出す地図の合計は48MB以内にしてください');
       if (!loaded.etag) throw new Error('地図の保存状態を確認できません');
@@ -180868,7 +183485,7 @@ const MeldexMapControls = (() => {
     entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
     entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,
       root: plan.data.root, maps: plan.data.maps.map(item => ({ id: item.id, title: item.doc.title })), read_only: true }, null, 2)) });
-    entries.push({ name: 'お読みください.txt', data: new TextEncoder().encode('ZIPをすべて展開し、index.htmlをブラウザで開いてください。インターネット接続やMeldexは不要です。\n閲覧用パッケージです。元のマップは.mel-mapで別途保管してください。\n非表示レイヤー・説明・タグも含みます。資料リンク、シート参照、現実地図は含みません。\nLeafletの著作権表示はvendor/leaflet/LICENSEを参照してください。\n') });
+    entries.push({ name: 'お読みください.txt', data: new TextEncoder().encode('ZIPをすべて展開し、index.htmlをブラウザで開いてください。インターネット接続やMeldexは不要です。\n閲覧用パッケージです。元のマップは.mel-mapで別途保管してください。\n非表示レイヤー・説明・タグも含みます。資料リンク、シート参照、現実地図は含みません。\nLeafletとAzgaarの著作権表示はvendor内のLICENSEを参照してください。\n') });
     const bytes = await zip(entries); check();
     return new Blob([bytes], { type: 'application/zip' });
   }
@@ -180893,7 +183510,7 @@ const MeldexMapControls = (() => {
         if (!await app.flush()) throw new Error('現在のマップを保存してから実行してください');
         if (!current()) return;
         signature = JSON.stringify(store.doc);
-        const result = await collect(path, read, { canonicalPath: canonical, includeChildren: children.checked, check });
+        const result = await collect(path, read, { canonicalPath: canonical, includeChildren: children.checked, display:{...store.doc.display,...app.view.elementVisibility}, check });
         if (!current()) return;
         if (signature !== JSON.stringify(store.doc)) throw new Error('地図が変更されました。「内容を確認」からやり直してください');
         if (result.snapshots[0]?.etag !== store.etag) throw new Error('保存先の地図が変更されています。マップを再読込してから実行してください');
@@ -180982,7 +183599,7 @@ const MeldexMapControls = (() => {
     const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
     app.undoButton.dataset.gbTooltipKey = 'history.undo'; app.redoButton.dataset.gbTooltipKey = 'history.redo';
     toolbar.append(menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
-    const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
+    const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', river:'pencil', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
     for (const [tool, button] of app.toolButtons) toolbar.appendChild(convert(button, button.textContent, toolIcons[tool]));
     const spacer = document.createElement('div'); spacer.className = 'tb-spacer'; toolbar.appendChild(spacer);
     app.sidebarToggle = iconButton(app, 'レイヤーと地点一覧', 'layers', () => { app.sidebar.hidden = !app.sidebar.hidden; app.sidebarToggle.setAttribute('aria-pressed', String(!app.sidebar.hidden)); }, 'navigator');
@@ -181077,9 +183694,9 @@ const MeldexMapControls = (() => {
       ...(local ? [{ label: '生成', icon: 'sparkles', submenu: [
         { label: '世界地図を生成', icon: 'globe', action: run(() => MeldexMapWorldGenerator.show(app)), disabled: app.editingDisabled },
         { label: '地形を生成', icon: 'mountain', action: run(() => MeldexMapControls.generator(app)), disabled: app.editingDisabled },
-        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled },
-        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled },
-        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled })),
+        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
+        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
+        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled || !!app.store.doc.atlas && kind !== 'town' })),
       ] }] : []),
       { label: '読み込み・書き出し', icon: 'import', submenu: [command('データ入出力', 'データ入出力', 'arrowLeftRight'), command('マップを書き出す', 'マップを書き出す', 'fileDown'), ...(local ? [command('PNG画像を書き出す', 'PNG', 'image'), command('持ち出しパッケージ', '持ち出しパッケージ', 'package')] : [])] },
       { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },
@@ -181121,7 +183738,7 @@ class MapAppComponent extends ToolComponent {
     this._commitInput(); if (this._inputDirty) { this._message('入力内容を確認してください'); return; }
     this.state.mapBrowseMode = !this.state.mapBrowseMode;
     this.state.mapViewport = { center: this.view.xy(this.view.map.getCenter()), zoom: this.view.map.getZoom() };
-    this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy();
+    this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy();
     this.view.destroy(); this._build(); this._render(); this._saveViewState();
     this._message(this.readOnly ? 'このマップは読み取り専用です。地点や図形は編集できません。'
       : this.state.mapBrowseMode ? '閲覧モードです。地点の移動・作図・編集を停止しています。' : '作図モードです。地点や図形を編集できます。');
@@ -181145,7 +183762,7 @@ class MapAppComponent extends ToolComponent {
     if (this.store && !options.ignoreDraft && !await this.flush()) return false;
     const generation = ++this._generation;
     this._sheetSignature = null; this._sheetCache = new Map(); this._directParents = [];
-    clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
+    clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
     this.el.textContent = 'マップを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false)]);
@@ -181295,13 +183912,14 @@ class MapAppComponent extends ToolComponent {
     const doc = this.store.doc, layer = doc.layers.find(l => l.id === this._activeLayer);
     if (this.editingDisabled) return;
     if (action.source && action.source !== doc.features) { this.view._features(); this._message('地図が変更されたため操作を取り消しました'); return; }
+    if(action.type==='atlas-stroke'){MeldexMapTerrainControls.paint(this,action).catch(e=>this._message(e.message));return;}
     if (action.type === 'transform') {
       const editable = action.changes.filter(change => doc.features.some(f => f.id === change.id && !doc.layers.find(l => l.id === f.layer_id)?.locked));
       this.update(next => { for (const change of editable) next.features.find(f => f.id === change.id).points = MeldexMapDocument.clone(change.points); });
     } else if (action.type === 'erase') {
       this._deleteSelected(action.ids); return;
     } else if (action.type === 'terrain') {
-      this.update(next => { next.terrain = action.terrain; delete next.terrain.environment; delete next.terrain.presentation; });
+      this.update(next => { next.terrain = action.terrain; delete next.atlas; next.schema_version=1; delete next.terrain.environment; delete next.terrain.presentation; });
       this._buildSettingsRefresh();
     }
     else if (action.type === 'add') {
@@ -181309,6 +183927,7 @@ class MapAppComponent extends ToolComponent {
       const feature = MeldexMapDocument.feature(action.kind, action.points, layer.id,
         ({ pin: '地点', route: '経路', region: '領域', label: '地名' })[action.kind]);
       feature.icon = action.icon || 'pin'; feature.color = this.colorInput.value;
+      if(action.kind==='route'){const kind=action.role||this.view.routeKind||'major';feature.cartography={role:kind==='major'?'road':kind==='other'?'':kind,rank:kind==='major'?'major':'minor'};feature.line_style='curve';if(kind==='river')feature.color='#427f9f';if(kind==='railway')feature.color='#555b60';if(kind==='shipping')feature.color='#628798';}
       if (this.update(next => next.features.push(feature))) { this._selected = feature.id; this._selection = new Set([feature.id]); this._inspectorShown = true; }
     } else if (['move', 'vertex'].includes(action.type)) {
       const feature = doc.features.find(f => f.id === action.id);
@@ -181374,6 +183993,7 @@ class MapAppComponent extends ToolComponent {
     this._inputDirty = false; this._render();
   }
   _setTool(tool) {
+    if(this.store.doc.atlas&&(!this.store.doc.atlas.surface||this.store.doc.atlas.locked)&&['land','sea'].includes(tool)){this._message('Azgaarの地形は「世界地図を生成」で更新してください。地点・図形は通常どおり編集できます。');return;}
     if (this.editingDisabled && !['select', 'measure'].includes(tool)) return;
     this.view.setTool(tool, this.symbolInput.value);
     if (tool !== 'select') { this._inspectorShown = false; this._renderInspector(); this.sidebar.hidden = true; this.sidebarToggle?.setAttribute('aria-pressed', 'false'); }
@@ -181381,13 +184001,16 @@ class MapAppComponent extends ToolComponent {
     this._message(({ select: this.editingDisabled ? '地点や図形を選択します。閲覧中は移動しません。' : '地点や図形を選択します。地点はドラッグで移動できます。', pin: '地図をクリックして地点を置きます。',
       label: '地図をクリックして地名を置きます。', symbol: '地図をクリックして記号を置きます。',
       route: '経路の各点をクリックし、「確定」で完了します。', region: '領域の頂点をクリックし、「確定」で閉じます。',
-      measure: '計測する各点をクリックしてください。', land: 'ドラッグして陸地を描きます。', sea: 'ドラッグして海を描きます。', erase: '消す図形をなぞります。元に戻すで復旧できます。' })[tool]);
+      river:'ドラッグして川をベクターで描きます。描いた後に「周囲の地形を合わせる」で谷を作れます。', measure: '計測する各点をクリックしてください。', land: this.store.doc.atlas?'ドラッグして選択中の地形を描きます。':'ドラッグして陸地を描きます。', sea: 'ドラッグして海を描きます。', erase: '消す図形をなぞります。元に戻すで復旧できます。' })[tool]);
     this.view._features();
     MeldexMapChrome.refresh(this);
   }
   _render() {
     if (!this.store || !this.view) return;
+    // Adoption / Redo can replace a legacy terrain while its brush is active.
+    if(this.store.doc.atlas&&(!this.store.doc.atlas.surface||this.store.doc.atlas.locked)&&['land','sea'].includes(this.view.tool))this._setTool('select');
     if (!this.store.doc.layers.some(layer => layer.id === this._activeLayer)) this._activeLayer = this.store.doc.layers[0].id;
+    this.view.elementVisibility=this.state.mapElementVisibility||null;
     this.view.periodId = MeldexMapPeriods.selected(this);
     this.view.setRotation(this.state.mapRotation || 0, false);
     this.view.filter = typeof this.state.mapSearch === 'string' ? this.state.mapSearch.trim().toLocaleLowerCase() : '';
@@ -181403,6 +184026,7 @@ class MapAppComponent extends ToolComponent {
     this.breadcrumbs.replaceChildren(); MeldexMapRelations.breadcrumbs(this, this.breadcrumbs);
     this.sheetSources.replaceChildren(); MeldexMapRelations.sources(this, this.sheetSources);
     MeldexMapRelations.refresh(this).catch(error => { this.sheetStatus.textContent = error.message; });
+    for(const key of ['land','sea']){const b=this.toolButtons.get(key);if(b){b.disabled=this.editingDisabled||!!this.store.doc.atlas&&(!this.store.doc.atlas.surface||!!this.store.doc.atlas.locked);if(this.store.doc.atlas)b.title=this.store.doc.atlas.locked?'地形をロックしています':'ドラッグして地形を描きます';else b.title=b.getAttribute('aria-label')||key;}}
     this.localControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'local'; });
     this.worldControls.forEach(el => { el.hidden = this.store.doc.coordinate_system !== 'world'; });
     MeldexMapChrome.refresh(this);
@@ -181431,7 +184055,7 @@ class MapAppComponent extends ToolComponent {
     this.inspectorToggle = this._button('選択項目', () => { this._inspectorShown = !this._inspectorShown; this._renderInspector(); }); toolbar.appendChild(this.inspectorToggle);
     this.saveStatus = document.createElement('span'); this.saveStatus.className = 'gb-map-save-status'; this.saveStatus.setAttribute('role', 'status'); toolbar.appendChild(this.saveStatus);
     const tools = document.createElement('div'); tools.className = 'gb-map-tools'; tools.setAttribute('aria-label', '地図の編集ツール'); this.el.appendChild(tools);
-    for (const [tool, label] of [['select', '選択'], ['pin', '地点'], ['route', '経路'], ['region', '領域'], ['label', '文字'], ['symbol', '記号'], ['land', '陸地'], ['sea', '海'], ['erase', '消しゴム'], ['measure', '計測']]) {
+    for (const [tool, label] of [['select', '選択'], ['pin', '地点'], ['route', '経路'], ['river','川（フリーハンド）'], ['region', '領域'], ['label', '文字'], ['symbol', '記号'], ['land', '陸地'], ['sea', '海'], ['erase', '消しゴム'], ['measure', '計測']]) {
       const button = this._button(label, () => this._setTool(tool), { id: tool, disabled: this.editingDisabled && !['select', 'measure'].includes(tool) });
       button.setAttribute('aria-pressed', String(tool === 'select')); this.toolButtons.set(tool, button); tools.appendChild(button);
       if (['land', 'sea'].includes(tool)) this.localControls.push(button);
@@ -181482,6 +184106,7 @@ class MapAppComponent extends ToolComponent {
       this._button('100%', () => this.view.zoom100()), this._button('全体', () => this.view.fit()), this.rotationSlider, this.rotationLabel, this._button('回転リセット', () => this.view.setRotation(0)));
     this.message = document.createElement('span'); this.message.setAttribute('role', 'status');
     this.position = document.createElement('span'); status.append(this.message, this.position);
+    const previousView=this.view;
     this.view = new MeldexMapView(surface, {
       action: action => this._action(action), select: id => this._select(id), message: text => this._message(text),
       selection: (ids, active) => this._selectMany(ids, active), edit: id => this._editName(id), command: name => this._command(name),
@@ -181507,6 +184132,7 @@ class MapAppComponent extends ToolComponent {
         } catch (error) { this._message(error.userMessage || error.message); }
       },
     });
+    if(previousView)for(const key of ['routeKind','terrainKind','terrainStrength','brushSize'])if(previousView[key]!==undefined)this.view[key]=previousView[key];
     MeldexMapChrome.decorate(this);
     this._message('地図の種類を選び、地点や地形を追加してください。');
   }
@@ -181617,7 +184243,7 @@ class MapAppComponent extends ToolComponent {
   getDetailContent() { return this.path ? { type: 'map', path: this.path } : null; }
   destroy(options = {}) {
     if (!options.skipFlush && (this.store?.dirty || this.store?.pending || this._inputDirty)) return false;
-    ++this._generation; clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this);
+    ++this._generation; clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this);
     window.removeEventListener('beforeunload', this._beforeUnload); super.destroy(); return true;
   }
 }
@@ -183027,8 +185653,10 @@ async function openFormApp(path, label, options = {}) {
     document.removeEventListener('pointerdown', active.outside, true);
     document.removeEventListener('keydown', active.keydown, true);
     const restore = active.restoreFocus;
+    const onClose = active.onClose;
     active = null;
     restore?.focus?.({ preventScroll: true });
+    try { onClose?.(); } catch (error) { console.warn('[MeldexContextMenuUI] onClose failed', error); }
   }
 
   function _appendSeparator(menu) {
@@ -183082,6 +185710,14 @@ async function openFormApp(path, label, options = {}) {
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
     button.setAttribute('role', 'menuitem');
     button.disabled = item.disabled === true;
+    if (item.e2eId) button.dataset.e2eId = String(item.e2eId);
+    if (item.icon && typeof global.lucide === 'function') {
+      const icon = document.createElement('span');
+      icon.className = 'menu-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = global.lucide(String(item.icon), 16);
+      button.appendChild(icon);
+    }
     const label = document.createElement('span');
     label.className = 'gb-context-menu-item-label';
     label.textContent = String(item.label || '');
@@ -183129,10 +185765,17 @@ async function openFormApp(path, label, options = {}) {
   function openAt(options) {
     close();
     const menu = _buildMenu(options?.items || [], options?.ariaLabel);
+    if (options?.e2eId) menu.dataset.e2eId = String(options.e2eId);
     document.body.appendChild(menu);
-    const x = Number(options?.x || 0);
-    const y = Number(options?.y || 0);
-    _position(menu, { left: x, right: x, top: y, bottom: y }, 'below');
+    // anchorRect を渡すと、点ではなく矩形（行など）を基準に配置する。
+    const anchor = options?.anchorRect;
+    if (anchor && Number.isFinite(Number(anchor.left)) && Number.isFinite(Number(anchor.bottom))) {
+      _position(menu, anchor, options?.prefer || 'below');
+    } else {
+      const x = Number(options?.x || 0);
+      const y = Number(options?.y || 0);
+      _position(menu, { left: x, right: x, top: y, bottom: y }, 'below');
+    }
     const outside = event => {
       if (active?.menu.contains(event.target) || active?.submenu?.contains(event.target)) return;
       close();
@@ -183152,7 +185795,11 @@ async function openFormApp(path, label, options = {}) {
         trigger.setAttribute('aria-expanded', 'false'); trigger.focus({ preventScroll: true });
       }
     };
-    active = { menu, submenu: null, submenuTrigger: null, outside, keydown, restoreFocus: options?.restoreFocus || null };
+    active = {
+      menu, submenu: null, submenuTrigger: null, outside, keydown,
+      restoreFocus: options?.restoreFocus || null,
+      onClose: typeof options?.onClose === 'function' ? options.onClose : null,
+    };
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keydown, true);
     menu.focus({ preventScroll: true });
@@ -183160,6 +185807,170 @@ async function openFormApp(path, label, options = {}) {
   }
 
   global.MeldexContextMenuUI = Object.freeze({ openAt, close, isOpen: () => !!active });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-row-handle-menu.js === */
+;
+/* gb-row-handle-menu.js — 並べ替えハンドル（行のつまみ）の行メニュー共通部品。
+ * ハンドルをドラッグせずにクリック（またはEnter／Space）すると、対象行の直下へ行メニューを開く。
+ * ドラッグとの区別: pointerdownからclickまでの移動量が閾値以上なら何もしない
+ * （各表のドラッグ実装はそのまま。HTML5 DnD はドラッグ後に click 自体が発生しない）。
+ * メニューは MeldexContextMenuUI で開く。既存の独自メニューを使う表は open コールバックで渡す。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexRowHandleMenu) return;
+
+  const DRAG_THRESHOLD = 4;
+  let lastClosedHandle = null;
+  let lastClosedAt = 0;
+
+  function _now() {
+    return global.performance?.now?.() ?? Date.now();
+  }
+
+  // 横書きの表: 行の下端（入り切らない時は上端）に、横位置はハンドルの左端で揃える。
+  // 縦書き（prefer: left/right）: 行の帯の横へ出す。
+  function anchorRect(handle, row, prefer) {
+    const handleRect = handle?.getBoundingClientRect?.();
+    const rowRect = (row && row.getBoundingClientRect?.()) || handleRect;
+    if (!handleRect || !rowRect) return null;
+    if (prefer === 'left' || prefer === 'right') {
+      return { left: rowRect.left, right: rowRect.right, top: handleRect.top, bottom: rowRect.bottom };
+    }
+    return { left: handleRect.left, right: handleRect.right, top: rowRect.top, bottom: rowRect.bottom };
+  }
+
+  function _setOpenState(handle, row, open) {
+    handle?.setAttribute?.('aria-expanded', open ? 'true' : 'false');
+    row?.classList?.toggle?.('gb-row-handle-menu-open', !!open);
+  }
+
+  function open(handle, options = {}) {
+    const ui = global.MeldexContextMenuUI;
+    if (!handle || !ui?.openAt) return null;
+    const items = (typeof options.items === 'function' ? options.items() : options.items) || [];
+    if (!items.length) return null;
+    const row = options.row || null;
+    const prefer = options.prefer || 'below';
+    const rect = anchorRect(handle, row, prefer);
+    if (!rect) return null;
+    _setOpenState(handle, row, true);
+    const menu = ui.openAt({
+      items,
+      anchorRect: rect,
+      prefer,
+      ariaLabel: options.ariaLabel || '行メニュー',
+      e2eId: options.e2eId || '',
+      restoreFocus: options.restoreFocus ? handle : null,
+      onClose: () => {
+        _setOpenState(handle, row, false);
+        lastClosedHandle = handle;
+        lastClosedAt = _now();
+        options.onClose?.();
+      },
+    });
+    menu?.classList?.add('gb-row-handle-menu');
+    if (options.focusFirst) {
+      menu?.querySelector?.(':scope > .gb-context-menu-item:not(.disabled)')?.focus?.({ preventScroll: true });
+    }
+    return menu;
+  }
+
+  /**
+   * ハンドルへクリックメニューを結び付ける。
+   * config:
+   *   getItems(event)  MeldexContextMenuUI の項目配列を返す（空なら開かない）
+   *   open(event, info) 独自メニューを開く場合（info.anchorRect を基準に配置する）
+   *   getRow()         メニューの基準にする行要素
+   *   prefer / getPrefer() 'below'（既定）| 'left' | 'right'
+   *   ignoreSelector   ハンドル内でメニューを開かない子要素（追加ボタン・チェックボックス等）
+   *   onModifiedClick(event) Shift/Ctrl/Cmd+クリック時の処理（未指定ならメニューを開く）
+   *   isEnabled(event) false でメニューを開かない
+   */
+  function bind(handle, config = {}) {
+    if (!handle || handle.dataset?.rowHandleMenuBound === 'true') return handle;
+    handle.dataset.rowHandleMenuBound = 'true';
+    handle.setAttribute('aria-haspopup', 'menu');
+    handle.setAttribute('aria-expanded', 'false');
+    let down = null;
+
+    const ignored = event => !!(config.ignoreSelector && event.target?.closest?.(config.ignoreSelector));
+    const activate = (event, viaKeyboard) => {
+      if (config.isEnabled && config.isEnabled(event) === false) {
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      }
+      const row = config.getRow?.() || null;
+      const prefer = config.getPrefer?.() || config.prefer || 'below';
+      if (typeof config.open === 'function') {
+        event.preventDefault();
+        event.stopPropagation();
+        config.open(event, { anchorRect: anchorRect(handle, row, prefer), prefer, row, viaKeyboard });
+        return true;
+      }
+      const items = config.getItems?.(event) || [];
+      if (!items.length) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      open(handle, {
+        items, row, prefer,
+        ariaLabel: config.ariaLabel,
+        e2eId: config.e2eId,
+        restoreFocus: viaKeyboard,
+        focusFirst: viaKeyboard,
+      });
+      return true;
+    };
+
+    handle.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || ignored(event)) { down = null; return; }
+      down = {
+        x: event.clientX,
+        y: event.clientY,
+        // 開いていたメニューは document の pointerdown（capture）で先に閉じている。
+        // 同じハンドルを押し直した場合は「閉じる」操作として扱い、開き直さない。
+        wasOpen: lastClosedHandle === handle && _now() - lastClosedAt < 120,
+      };
+    }, true);
+
+    handle.addEventListener('click', event => {
+      if (ignored(event)) return;
+      const start = down;
+      down = null;
+      if (event.button) return;
+      if (event.detail !== 0 && start) {
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) >= DRAG_THRESHOLD) return;
+        if (start.wasOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+      if ((event.shiftKey || event.ctrlKey || event.metaKey) && typeof config.onModifiedClick === 'function') {
+        config.onModifiedClick(event);
+        return;
+      }
+      activate(event, event.detail === 0);
+    });
+
+    // button 要素は Enter／Space で click が発生する。それ以外は自前でキー操作を受ける。
+    if (!(handle instanceof HTMLButtonElement)) {
+      if (handle.tabIndex < 0) handle.tabIndex = 0;
+      handle.addEventListener('keydown', event => {
+        if (event.target !== handle || event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'ContextMenu') return;
+        activate(event, true);
+      });
+    }
+    return handle;
+  }
+
+  global.MeldexRowHandleMenu = Object.freeze({ bind, open, anchorRect, DRAG_THRESHOLD });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 ;
@@ -184213,7 +187024,13 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath) {
       if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleIdle === 'function') {
         MeldexAutoLink.scheduleIdle();
       }
-    } catch {}
+    } catch (error) {
+      // 追加・同期した行を表示し直す読込が失敗すると、画面が古いまま残る。黙らせない。
+      console.warn('[Meldex] シートの最新の内容を読み込めませんでした', error);
+      if (isCurrent() && typeof showStatus === 'function') {
+        showStatus('シートの最新の内容を読み込めませんでした。表示が古い可能性があります: ' + (error?.message || error), true);
+      }
+    }
   };
   renderCtx._dbEntityReloadTimer = setTimeout(refresh, 0);
   return renderCtx;
@@ -184231,10 +187048,23 @@ function _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx) {
     for (const item of items) {
       if (typeof _shouldRunFrontendAutoFillOnCreate === 'function' && !_shouldRunFrontendAutoFillOnCreate(item.response)) continue;
       if (typeof _autoFillOnCreate === 'function') {
-        try { await _autoFillOnCreate(dbPath, item.path, {}); } catch {}
+        try {
+          await _autoFillOnCreate(dbPath, item.path, {});
+        } catch (error) {
+          // 行の追加自体は保存済み。自動入力だけが失敗したことを伝える。
+          console.warn('[Meldex] 追加した行の自動入力に失敗しました', error);
+          if (typeof showStatus === 'function') {
+            showStatus(`追加した行「${item.name}」の自動入力ができませんでした: ${error?.message || error}`, true);
+          }
+        }
       }
     }
-  }).then(() => _dbReloadAfterEntityCreate(renderCtx, dbPath, items.map(item => item.name))).catch(() => {});
+  }).then(() => _dbReloadAfterEntityCreate(renderCtx, dbPath, items.map(item => item.name))).catch((error) => {
+    console.warn('[Meldex] 追加した行を表示し直せませんでした', error);
+    if (typeof showStatus === 'function') {
+      showStatus('追加した行を表示し直せませんでした: ' + (error?.message || error), true);
+    }
+  });
 }
 
 
@@ -184371,7 +187201,7 @@ function _handleRelationLinkClick(link, ctx) {
     const mi = document.createElement('div');
     mi.className = 'gb-context-menu-item';
     mi.innerHTML = lucide(it.icon, 14) + ' ' + it.label;
-    mi.addEventListener('click', () => { menu.remove(); it.action(); });
+    mi.addEventListener('click', () => { menu.remove(); return _dbRunMenuItemAction(it.action); });
     menu.appendChild(mi);
   });
   const rect = link.getBoundingClientRect();
@@ -185990,16 +188820,27 @@ function renderEntityRow(entityName, ctx, options) {
   dragHandle.className = 'row-drag-handle';
   dragHandle.draggable = true;
   dragHandle.title = _dbTableUsesManualSort(ctx)
-    ? 'ドラッグして行を並べ替え'
-    : '行を並べ替えるには、並び替えを「マニュアル」にしてください';
+    ? 'クリックでメニュー / ドラッグして行を並べ替え'
+    : 'クリックでメニュー / 行を並べ替えるには、並び替えを「マニュアル」にしてください';
   dragHandle.dataset.e2eId = _dbE2eId(ctx, 'row-drag', entityName);
   dragHandle.setAttribute('role', 'button');
-  dragHandle.setAttribute('aria-label', dragHandle.title);
+  dragHandle.setAttribute('aria-label', `トピックのメニュー: ${entityName}`);
   dragHandle.innerHTML = lucide('gripVertical', 12);
+  // クリック（ドラッグなし）で行メニューを行の直下へ開く。ドラッグ後は click が発生しない。
   dragHandle.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
   });
+  if (window.MeldexRowHandleMenu?.bind) {
+    window.MeldexRowHandleMenu.bind(dragHandle, {
+      getRow: () => dragHandle.closest('tr') || tr,
+      open: (event, info) => {
+        if (typeof showDbCardContextMenu === 'function') {
+          showDbCardContextMenu(event, dbPath, entityName, undefined, { anchorRect: info.anchorRect, focusFirst: info.viaKeyboard });
+        }
+      },
+    });
+  }
   controlsMain.appendChild(dragHandle);
 
   // 複数選択対応チェックボックス
@@ -188179,14 +191020,17 @@ async function selectDatabase(dbPath, ctx, opts) {
           const newName = input.value.trim() || curName;
           toolbarCategoryEl.textContent = newName;
           if (newName !== curName && state.currentDbPath) {
+            const oldPath = state.currentDbPath;
+            // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+            if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(oldPath, newName, 'database');
             try {
-              const oldPath = state.currentDbPath;
-              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database', title_only: true });
+              const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: 'database' });
               const newPath = res?.new_path || oldPath.replace(/[^/]+$/, newName);
+              // ツリー全体を読み直さず、該当する行のパスと名前だけを書き換える
+              if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, newName, res?.file_id);
               if (typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database' });
+                renameAppPathReferences(oldPath, newPath, { label: newName, fileId: res?.file_id, type: 'database', skipDbReload: true });
               }
-              if (typeof refreshOutliner === 'function') refreshOutliner();
               await selectDatabase(newPath, ctx, {
                 silent: true,
                 skipRecent: true,
@@ -188194,11 +191038,20 @@ async function selectDatabase(dbPath, ctx, opts) {
                 skipSaveLastView: false,
               });
               showStatus('シート名を変更しました');
-            } catch (err) { toolbarCategoryEl.textContent = curName; showStatus('名前変更失敗: ' + err.message, true); }
+            } catch (err) {
+              if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(oldPath, curName, 'database');
+              toolbarCategoryEl.textContent = curName;
+              showStatus('名前変更失敗: ' + err.message, true);
+            }
           }
         };
         input.addEventListener('blur', commit);
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); if (e.key === 'Escape') { input.value = curName; input.blur(); } });
+        input.addEventListener('keydown', (e) => {
+          // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+          if (e.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+          if (e.key === 'Escape') { input.value = curName; input.blur(); }
+        });
       };
       toolbarCategoryEl._dbRenameHandler = renameHandler;
       toolbarCategoryEl.addEventListener('dblclick', renameHandler);
@@ -189384,13 +192237,13 @@ function _updateBulkEditBar(ctx) {
     ? window.GBSelectionFloatMenu.button('一括削除...', {
         e2eId: 'db-bulk-delete-' + paneId,
         danger: true,
-        onClick: () => _bulkDeleteEntities(selected, ctx),
+        onClick: () => _dbRunMenuItemAction(_bulkDeleteEntities, selected, ctx),
       })
     : document.createElement('button');
   if (!window.GBSelectionFloatMenu) {
     delBtn.textContent = '一括削除...';
     delBtn.dataset.e2eId = 'db-bulk-delete-' + paneId;
-    delBtn.addEventListener('click', () => _bulkDeleteEntities(selected, ctx));
+    delBtn.addEventListener('click', () => _dbRunMenuItemAction(_bulkDeleteEntities, selected, ctx));
   }
   bar.appendChild(delBtn);
 }
@@ -189903,7 +192756,14 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
   // 名前から保存先を推定してはいけない。改名済みの実体を旧名の仮行が指すことがある。
-  const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  let pivot;
+  try {
+    pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  } catch (error) {
+    console.warn('[Meldex] 一括削除の前の確認に失敗しました', error);
+    showStatus('一括削除できませんでした。選択した行の保存状態を確認できません: ' + (error?.message || error), true);
+    return;
+  }
   const valid = entries.every(entry => {
     const saved = pivot?.entities?.[entry.name];
     return saved && (pivot.new_format !== true || (entry.entryId && saved._id === entry.entryId))
@@ -189926,12 +192786,23 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     entries,
     source: 'bulk-delete',
     confirmation: confirmed,
+  }).catch((error) => {
+    console.warn('[Meldex] 一括削除に失敗しました', error);
+    showStatus('一括削除できませんでした: ' + (error?.message || error), true);
+    return null;
   });
-  const deletedItems = result.trashRefs;
+  if (!result) {
+    if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+    return;
+  }
+  const deletedItems = Array.isArray(result.trashRefs) ? result.trashRefs : [];
   const ok = result.successes.length;
   const fail = result.failures.length;
-  _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
-  const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;
+  // 取り消し履歴はゴミ箱へ移せた分だけ積む（失敗分は履歴に残さない）
+  if (deletedItems.length) _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
+  const firstFailure = result.failures.find(item => item?.error)?.error;
+  const failureReason = firstFailure ? '（' + (firstFailure?.message || firstFailure) + '）' : '';
+  const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' + failureReason : ''}`;
   const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
     ? _dbDeleteCalendarSyncWarningMessage(result.responses)
     : '';
@@ -195177,7 +198048,15 @@ async function _showDbConfigModal(dbPath, ctx) {
   let pivotData = localCtx?.dbPath === dbPath ? localCtx.pivotData : null;
   if (!pivotData && state.currentDbPath === dbPath) pivotData = state.pivotData;
   if (!pivotData) {
-    try { pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath)); } catch { pivotData = null; }
+    try {
+      pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+    } catch (error) {
+      pivotData = null;
+      console.warn('[Meldex] シート設定の列一覧を読み込めませんでした', error);
+      if (typeof showStatus === 'function') {
+        showStatus('シートの列一覧を読み込めませんでした。設定画面の列の選択肢が空になります: ' + (error?.message || error), true);
+      }
+    }
   }
   let dbMetadata = localCtx?.dbPath === dbPath ? localCtx.dbMetadata : null;
   if (!dbMetadata && state.currentDbPath === dbPath) dbMetadata = state.dbMetadata;
@@ -195837,6 +198716,31 @@ function _makeDuplicateSavedViewName(sourceName, views) {
   return candidate;
 }
 
+// ビュー複製の保存。表示設定はバックエンドへ非同期に送られるため、保存の確定を待ち、
+// 失敗したら理由を表示して false を返す（表示切替・履歴・完了通知は呼び出し側が成功後に行う）。
+async function _saveDuplicatedDbViews(dbPath, views, ctx) {
+  let saved = false;
+  let saveError = null;
+  try {
+    if (typeof saveDbViewConfigImmediate === 'function') {
+      const cfg = getDbViewConfig(dbPath);
+      cfg.savedViews = views;
+      saved = await saveDbViewConfigImmediate(dbPath, cfg, { skipHistory: true, ctx });
+    } else {
+      setSavedViews(dbPath, views, { skipHistory: true });
+      saved = true;
+    }
+  } catch (error) {
+    saveError = error;
+    saved = false;
+  }
+  if (saved) return true;
+  console.warn('[Meldex] ビューの複製を保存できませんでした', saveError);
+  const reason = saveError ? ': ' + (saveError?.message || saveError) : '。保存先の空き容量や権限を確認してください';
+  showStatus('ビューを複製できませんでした' + reason, true);
+  return false;
+}
+
 async function duplicateSavedView(idx, ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
@@ -195860,13 +198764,14 @@ async function duplicateSavedView(idx, ctx) {
   duplicate.name = name;
   const insertIdx = idx + 1;
   views.splice(insertIdx, 0, duplicate);
-  setSavedViews(dbPath, views, { skipHistory: true });
+  if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
   loadSavedView(insertIdx, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     const detail = (source.name || 'ビュー') + ' → ' + name;
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), detail);
   }
   showStatus('ビューを複製しました: ' + name);
+  return true;
 }
 
 async function duplicateCurrentDbView(viewMode, label, ctx) {
@@ -195889,12 +198794,13 @@ async function duplicateCurrentDbView(viewMode, label, ctx) {
   const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const duplicate = _makeDbViewStateFromCurrent(dbPath, mode, name, ctx);
   views.push(duplicate);
-  setSavedViews(dbPath, views, { skipHistory: true });
+  if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
   loadSavedView(views.length - 1, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), sourceLabel + ' → ' + name);
   }
   showStatus('ビューを複製しました: ' + name);
+  return true;
 }
 
 function loadSavedView(idx, ctx, options = {}) {
@@ -204625,8 +207531,14 @@ async function onRollupRelationChange(relationPropName, preselect, root) {
   try {
     targetMetadata = typeof _getDbMetadataCached === 'function'
       ? await _getDbMetadataCached(_relDb, true) : null;
-  } catch (_) {
-    if (seq === scope._rollupRelationLoadSeq) sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+  } catch (error) {
+    console.warn('[Meldex] 集計の参照先シートの列設定を読み込めませんでした', error);
+    if (seq === scope._rollupRelationLoadSeq) {
+      sel.replaceChildren(new Option('(取得失敗)', preselect || ''));
+      if (typeof showStatus === 'function') {
+        showStatus('参照先シートの列を読み込めませんでした: ' + (error?.message || error), true);
+      }
+    }
     return;
   }
   if (seq !== scope._rollupRelationLoadSeq || sel !== (typeof _ptGet === 'function' ? _ptGet('rollup-target-prop', scope) : document.getElementById('rollup-target-prop'))) return;
@@ -210862,7 +213774,7 @@ function _createWeekEventCard(dbPath, ev, startH, endH, segmentDate, overlapLayo
         await _saveMappedCalendarDates(dbPath, ev, newStart, newEnd, { preserveMissingEndIfZeroDuration: true });
         showStatus('日時を更新しました');
       } catch (err) {
-        showStatus('リサイズに失敗', true);
+        showStatus(err?.message ? 'リサイズに失敗: ' + err.message : 'リサイズに失敗', true);
       }
       return;
     }
@@ -211034,7 +213946,7 @@ async function _handleEventDrop(dbPath,e,targetDate,opts) {
     try {
       await _saveMappedCalendarDates(dbPath, { _mapped: true, entityName: data.entityName, entityPath: data.entityPath, name: data.name }, newStart, newEnd, { preserveMissingEndIfZeroDuration: true });
       showStatus('日時を更新しました');
-    } catch(err){ showStatus('移動に失敗',true); }
+    } catch(err){ showStatus(err?.message ? '移動に失敗: ' + err.message : '移動に失敗', true); }
     return;
   }
   await _awaitCalendarSnapshotReady(dbPath);
@@ -211058,9 +213970,12 @@ async function _handleEventDrop(dbPath,e,targetDate,opts) {
 // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
 // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、§5.8-2）。
 function _styleCalendarDbDialogControls(root) {
-  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => el.classList.add('gb-input'));
-  root.querySelectorAll('button').forEach(el => el.classList.add('gb-btn', 'gb-btn-sm'));
+  // 埋め込んだ共通部品（[data-ui-component]）の中は部品側の見た目に任せる
+  const own = el => !el.closest('[data-ui-component]');
+  root.querySelectorAll('input:not([type="checkbox"]):not([type="color"]),textarea').forEach(el => { if (own(el)) el.classList.add('gb-input'); });
+  root.querySelectorAll('button').forEach(el => { if (own(el)) el.classList.add('gb-btn', 'gb-btn-sm'); });
   root.querySelectorAll('select').forEach(el => {
+    if (!own(el)) return;
     el.classList.add('gb-select');
     if (el.classList.contains('gb-select-sm')) return;
     const short = el.options.length && Array.from(el.options).every(option => Array.from(option.textContent).length <= 8)
@@ -212250,8 +215165,9 @@ function _showSyncModal(dbPath) {
         if (data?.calendar_db) {
           const entity = data.entities?.[_entityNameFromPath(ctx.entityPath)];
           const next = {};
+          // 候補値の先頭がボツや案のこともあるため、状態で選ぶ（採用→掲載済み→案。ボツは使わない）
           Object.entries(entity || {}).forEach(([key, values]) => {
-            if (Array.isArray(values)) next[key] = values[0]?.value ?? '';
+            if (Array.isArray(values)) next[key] = _calendarSyncPreferredValue(values)?.value ?? '';
           });
           next.linkedAutoGenerated = String(next.linkedAutoGenerated).toLowerCase() === 'true';
           next[ctx.propName] = ctx.newValue;
@@ -212260,6 +215176,7 @@ function _showSyncModal(dbPath) {
         }
       } catch (err) {
         console.warn('[calendar-sync] calendar cell sync failed:', err);
+        _notifyCalendarSyncFailure(err);
         return;
       }
     }
@@ -212295,6 +215212,7 @@ function _showSyncModal(dbPath) {
       }
     } catch (err) {
       console.warn('[calendar-sync] failed:', err);
+      _notifyCalendarSyncFailure(err);
     } finally {
       INFLIGHT_ENTRIES.delete(key);
       PENDING_CONTEXTS.delete(key);
@@ -212478,6 +215396,24 @@ function _showSyncModal(dbPath) {
 
   function _calendarSyncActiveValue(values) {
     return (values || []).find(v => v && _isCalendarSyncActiveStatus(v.status)) || null;
+  }
+
+  // 候補値の状態で値を選ぶ。採用（状態の無い値は採用扱い）→ 掲載済み → 案 の順。ボツは使わない。
+  const CALENDAR_SYNC_STATUS_PRIORITY = ['採用', '掲載済み', '案'];
+  function _calendarSyncPreferredValue(values) {
+    const list = (values || []).filter(v => v && typeof v === 'object');
+    for (const status of CALENDAR_SYNC_STATUS_PRIORITY) {
+      const found = list.find(v => (String(v.status || '').trim() || '採用') === status);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // エントリの保存自体は成功済み。カレンダーへの反映だけ失敗したことを知らせる。
+  function _notifyCalendarSyncFailure(err, base = 'カレンダーへの反映に失敗しました') {
+    if (typeof showStatus !== 'function') return;
+    const detail = String(err?.userMessage || err?.message || '').trim();
+    showStatus(detail ? base + ': ' + detail : base, true);
   }
 
   async function _resolveColor(cs, entityName, dbPath) {
@@ -212732,6 +215668,7 @@ function _showSyncModal(dbPath) {
       }
     } catch (err) {
       console.warn('[calendar-sync] reverse sync failed:', err);
+      _notifyCalendarSyncFailure(err, 'シートへの反映に失敗しました');
     } finally {
       INFLIGHT_ENTRIES.delete(key);
       await _drainPendingForwardSync(key);
@@ -223503,6 +226440,7 @@ function showChatExportMenu(event) {
       ariaLabel: 'チャットのエクスポート形式',
       restoreFocus,
       items: items.map(item => ({
+        icon: item.icon,
         label: item.label,
         action: () => chatExport(item.format),
       })),
@@ -225606,6 +228544,8 @@ _chatInstallTabActivationHook();
   let _updatingFromPlain = false;
   let _lastInputSelection = null;
   let _richVerticalColumn = null;
+  let _richInputComposing = false;
+  const _composerFallbackHistory = { undo: [], redo: [] };
   const INPUT_NAVIGATION_KEYS = new Set(['Home', 'End', 'PageUp', 'PageDown']);
 
   function _chatInput() {
@@ -226075,6 +229015,95 @@ _chatInstallTabActivationHook();
     _updatingFromRich = false;
   }
 
+  function _richInputHtml(source) {
+    const host = document.createElement('div');
+    String(source || '').replace(/\r\n?/g, '\n').split('\n').forEach(line => {
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      const block = document.createElement(heading ? 'h' + heading[1].length : 'div');
+      block.className = 'chat-rich-input-line';
+      _appendRichInline(block, heading ? heading[2] : line);
+      if (!block.childNodes.length) block.appendChild(document.createElement('br'));
+      host.appendChild(block);
+    });
+    return host.innerHTML;
+  }
+
+  function _restoreComposerSnapshot(snapshot) {
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    if (!input || !snapshot) return false;
+    input.value = snapshot.text;
+    if (editor) _renderRichInputFromSource(snapshot.start, snapshot.end);
+    else {
+      input.focus();
+      input.setSelectionRange?.(snapshot.start, snapshot.end);
+    }
+    _updatingFromPlain = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    _updatingFromPlain = false;
+    return true;
+  }
+
+  function _handleComposerFallbackUndo(event) {
+    if (_richInputComposing || event?.isComposing || event?.keyCode === 229) return false;
+    const modifier = !!(event?.ctrlKey || event?.metaKey);
+    const key = String(event?.key || '').toLowerCase();
+    const redo = modifier && (key === 'y' || (key === 'z' && event.shiftKey));
+    const undo = modifier && key === 'z' && !event.shiftKey;
+    if (!undo && !redo) return false;
+    const from = redo ? _composerFallbackHistory.redo : _composerFallbackHistory.undo;
+    const to = redo ? _composerFallbackHistory.undo : _composerFallbackHistory.redo;
+    const snapshot = from.pop();
+    if (!snapshot) return false;
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    const source = String(input?.value || '').replace(/\r\n?/g, '\n');
+    const range = editor ? _richSelectionSourceRange(editor, true, source) : null;
+    to.push({ text: source, start: range?.start ?? source.length, end: range?.end ?? source.length });
+    event.preventDefault();
+    event.stopPropagation();
+    _restoreComposerSnapshot(snapshot);
+    return true;
+  }
+
+  function _applyRichInputSourceEdit(source, nextSource, beforeStart, beforeEnd, nextStart, nextEnd) {
+    const input = _chatInput();
+    const editor = _chatRichInput();
+    if (!input) return false;
+    const before = String(source || '').replace(/\r\n?/g, '\n');
+    const next = String(nextSource || '').replace(/\r\n?/g, '\n');
+    const oldRange = _clampRange(before, beforeStart, beforeEnd);
+    const newRange = _clampRange(next, nextStart, nextEnd);
+
+    // Replace the visible editor as one browser edit. This keeps paste, D&D,
+    // context-menu edits, and rendered markdown formatting in the same native
+    // undo transaction while the hidden textarea remains only a mirror.
+    if (editor && typeof document.execCommand === 'function' && !_richInputComposing) {
+      editor.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      let edited = false;
+      try { edited = document.execCommand('insertHTML', false, _richInputHtml(next)); } catch (_) {}
+      if (edited) {
+        _syncPlainFromRich();
+        if (String(input.value || '').replace(/\r\n?/g, '\n') === next) {
+          _setRichSelectionFromSourceRange(editor, next, newRange.start, newRange.end);
+          _composerFallbackHistory.undo.length = 0;
+          _composerFallbackHistory.redo.length = 0;
+          return true;
+        }
+      }
+    }
+
+    _composerFallbackHistory.undo.push({ text: before, start: oldRange.start, end: oldRange.end });
+    if (_composerFallbackHistory.undo.length > 100) _composerFallbackHistory.undo.shift();
+    _composerFallbackHistory.redo.length = 0;
+    return _restoreComposerSnapshot({ text: next, start: newRange.start, end: newRange.end });
+  }
+
   function _insertPlainTextIntoRich(text) {
     const selection = window.getSelection();
     if (!selection || !selection.rangeCount) return false;
@@ -226292,16 +229321,7 @@ _chatInstallTabActivationHook();
       ? _applyHeading(source, range.start, range.end, value)
       : _applyInlineFormatToRange(source, range.start, range.end, prop, value);
     if (!result) return;
-    input.value = result.text;
-    const editor = _chatRichInput();
-    if (editor) _renderRichInputFromSource(result.start, result.end);
-    else {
-      input.focus();
-      input.setSelectionRange(result.start, result.end);
-    }
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
+    if (!_applyRichInputSourceEdit(source, result.text, range.start, range.end, result.start, result.end)) return;
     _activeTarget = { kind: 'input', start: result.start, end: result.end };
   }
 
@@ -226384,39 +229404,11 @@ _chatInstallTabActivationHook();
     const source = String(input.value || '').replace(/\r\n?/g, '\n');
     const range = _clampRange(source, target.start, target.end);
     const insert = String(replacement || '').replace(/\r\n?/g, '\n');
-    const editor = _chatRichInput();
-
-    // The visible composer is contenteditable. Apply the edit there first so
-    // Chromium/Electron records cut, paste, and delete in its native undo
-    // transaction. Directly replacing the hidden textarea value works visually
-    // but makes Ctrl+Z unable to restore a context-menu edit.
-    if (editor && typeof document.execCommand === 'function') {
-      _setRichSelectionFromSourceRange(editor, source, range.start, range.end);
-      let edited = false;
-      try { edited = document.execCommand('insertText', false, insert); } catch (_) {}
-      if (edited) {
-        _syncPlainFromRich();
-        const nextSource = String(input.value || '').replace(/\r\n?/g, '\n');
-        const caret = Math.min(nextSource.length, range.start + insert.length);
-        target.start = caret;
-        target.end = caret;
-        return true;
-      }
-    }
-
-    // Fallback for the plain textarea or engines without insertText support.
-    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const nextSource = source.slice(0, range.start) + insert + source.slice(range.end);
     const caret = range.start + insert.length;
+    if (!_applyRichInputSourceEdit(source, nextSource, range.start, range.end, caret, caret)) return false;
     target.start = caret;
     target.end = caret;
-    if (editor) _renderRichInputFromSource(caret, caret);
-    else {
-      input.focus();
-      input.setSelectionRange?.(caret, caret);
-    }
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
     return true;
   }
 
@@ -227084,14 +230076,10 @@ _chatInstallTabActivationHook();
     const range = editor ? _richSelectionSourceRange(editor, true, source) : null;
     if (!input || !editor || !range) return false;
     const insert = String(text || '').replace(/\r\n?/g, '\n');
-    input.value = source.slice(0, range.start) + insert + source.slice(range.end);
+    const nextSource = source.slice(0, range.start) + insert + source.slice(range.end);
     const caret = range.start + insert.length;
     _richVerticalColumn = null;
-    _renderRichInputFromSource(caret, caret);
-    _updatingFromPlain = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    _updatingFromPlain = false;
-    return true;
+    return _applyRichInputSourceEdit(source, nextSource, range.start, range.end, caret, caret);
   }
 
   function _ensureRichInput() {
@@ -227164,6 +230152,7 @@ _chatInstallTabActivationHook();
       _syncPlainFromRich();
     });
     editor.addEventListener('keydown', (event) => {
+      if (_handleComposerFallbackUndo(event)) return;
       if (_handleRichInputVerticalNavigation(event, editor)) return;
       if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) {
         event.stopPropagation();
@@ -227186,6 +230175,8 @@ _chatInstallTabActivationHook();
         _richVerticalColumn = null;
       }
     });
+    editor.addEventListener('compositionstart', () => { _richInputComposing = true; });
+    editor.addEventListener('compositionend', () => { _richInputComposing = false; });
     editor.addEventListener('pointerdown', (event) => {
       if (_focusEmptyRichInputAtStart(event, editor)) return;
       _richVerticalColumn = null;
@@ -232933,7 +235924,62 @@ function _refreshFolderUnifiedSearch(query) {
       if (typeof renderFolderGrid === 'function') renderFolderGrid();
       window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), data, text);
     })
-    .catch(() => {});
+    .catch(error => {
+      if (seq !== _folderUnifiedSearchSeq || folderPath !== _folderPath) return;
+      // 前回の検索結果を残したままにしない。名前の一致だけで描き直し、失敗を原因つきで出す。
+      _folderUnifiedSearchPaths = new Set();
+      if (typeof renderFolderGrid === 'function') renderFolderGrid();
+      window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), null, text);
+      _folderReportFailure('フォルダ内を検索できませんでした（名前の一致だけを表示しています）', error);
+    });
+}
+
+// 失敗の理由を、利用者向けの短い文に整える。フォルダツリー側の整形があればそれに揃える。
+function _folderFailureReason(error) {
+  if (typeof _outlinerFailureReason === 'function') return _outlinerFailureReason(error);
+  if (!error) return '';
+  if (error.name === 'AbortError') return '中断されました';
+  if (error instanceof TypeError || error instanceof ReferenceError) return '予期しないエラーが発生しました';
+  return String(error?.message || '').replace(/^HTTP\s*\d+\s*:\s*/i, '').trim().slice(0, 120);
+}
+
+function _folderReportFailure(message, error) {
+  const reason = _folderFailureReason(error);
+  showStatus(reason ? `${message}：${reason}` : message, true);
+}
+
+// 右クリックメニュー項目の実行。非同期の処理も待ち、失敗を原因つきで表示する。
+async function _folderRunMenuAction(fn, label) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[folder menu] 実行に失敗', error);
+    _folderReportFailure(label ? `「${label}」を実行できませんでした` : '操作を実行できませんでした', error);
+    return undefined;
+  }
+}
+
+// 複数項目の複製。部分失敗も成功件数・失敗件数・最初の原因を表示する。
+async function _folderDuplicateItems(items, refresh) {
+  const result = { ok: 0, failed: 0, error: null };
+  for (const target of items || []) {
+    try {
+      await apiPost('/outliner/duplicate', { path: target.path });
+      result.ok += 1;
+    } catch (error) {
+      result.failed += 1;
+      if (!result.error) result.error = error;
+    }
+  }
+  if (result.ok > 0 && typeof refresh === 'function') {
+    try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+  }
+  const reason = result.failed ? _folderFailureReason(result.error) : '';
+  const suffix = reason ? `：${reason}` : '';
+  if (!result.failed) showStatus(`${result.ok} 件を複製しました`);
+  else if (!result.ok) showStatus(`複製に失敗しました${suffix}`, true);
+  else showStatus(`${result.ok} 件を複製しました。${result.failed} 件は失敗しました${suffix}`, true);
+  return result;
 }
 
 function _scheduleFolderUnifiedSearch(query) {
@@ -233913,7 +236959,10 @@ function _folderApplyManualDrop(intent, targetItem) {
   ];
   const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
   setSortSetting(_folderPath || '', 'manual', 'asc');
-  setManualOrder(_folderPath || '', remaining);
+  if (setManualOrder(_folderPath || '', remaining) === false) {
+    showStatus('並び順を保存できませんでした：この端末の保存領域に書き込めません', true);
+    return false;
+  }
   if (typeof pushOutlinerSettingsHistory === 'function') {
     pushOutlinerSettingsHistory('フォルダ: マニュアル並び替え', before, targetItem.name, historyKeys);
   }
@@ -235369,7 +238418,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         icon,
         danger: cls === 'red',
         className: 'tree-ctx-item',
-        action: () => { closeMenu(); fn(); },
+        action: () => { closeMenu(); return _folderRunMenuAction(fn, label); },
       });
     }
     const d = document.createElement('div');
@@ -235380,7 +238429,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       d.textContent = label;
     }
     if (cls) d.style.color = 'var(--' + cls + ')';
-    d.addEventListener('click', () => { closeMenu(); fn(); });
+    d.addEventListener('click', () => { closeMenu(); return _folderRunMenuAction(fn, label); });
     menu.appendChild(d);
   }
   function addSep() {
@@ -235399,7 +238448,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
             icon: itemIcon,
             danger: cls === 'red',
             className: 'tree-ctx-item',
-            action: () => { closeMenu(); fn(); },
+            action: () => { closeMenu(); return _folderRunMenuAction(fn, l); },
           });
         },
       };
@@ -235419,7 +238468,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         if (itemIcon && typeof lucide === 'function') d.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(itemIcon, 14) + '</span>' + esc(l);
         else d.textContent = l;
         if(cls) d.style.color='var(--'+cls+')';
-        d.addEventListener('click', () => { closeMenu(); fn(); });
+        d.addEventListener('click', () => { closeMenu(); return _folderRunMenuAction(fn, l); });
         panel.appendChild(d);
       }
     };
@@ -235438,17 +238487,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       onCopy: () => folderToolbarCopyItems(operationItems),
       onCut: () => folderToolbarCutItems(operationItems),
       onPaste: () => folderToolbarPasteToFolder(pasteTarget),
-      onDuplicate: async () => {
-        let count = 0;
-        for (const target of editableItems) {
-          try {
-            await apiPost('/outliner/duplicate', { path: target.path });
-            count += 1;
-          } catch {}
-        }
-        if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
-        showStatus(count > 0 ? `${count} 件を複製しました` : '複製に失敗しました', count === 0);
-      },
+      onDuplicate: () => _folderDuplicateItems(editableItems, () => (
+        _folderPath ? openFolder(_folderPath.split('/').pop(), _folderPath) : null
+      )),
       onDelete: () => folderToolbarDeleteSelection(),
       copyDisabled: operationItems.length === 0,
       cutDisabled: editableItems.length === 0,
@@ -235766,10 +238807,16 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
-  if (item.path && typeof appendShellVerbsToMenu === 'function') {
-    await appendShellVerbsToMenu(menu, item.path, { editingLocked: lockedForEdit, beforeDisplay: true });
+  // OS項目は取得済みの時だけ表示前に組み込み、未取得なら表示後に下端へ追記する。
+  const shellPath = item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit, beforeDisplay: true });
   }
   if (openSeq !== _folderContextMenuOpenSeq) return;
+  const appendShellAfterDisplay = () => {
+    if (shellPath && !shellReady) appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit }).catch(() => {});
+  };
   if (typeof positionPopup === 'function') {
     positionPopup(menu, menuAnchorRect, { prefer: 'below', gap: 4 });
   } else {
@@ -235779,6 +238826,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   }
+  appendShellAfterDisplay();
   setTimeout(() => {
     const closer = (ev) => {
       const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(ev.target));
@@ -236286,7 +239334,7 @@ function _ensureFolderBulkBarChrome(bar) {
     }
     window.GBSelectionFloatMenu.bindDrag(bar, { host });
     bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
-      if (button.dataset.selectionFloatActionBound === '1') return;
+      if (button.dataset.selectionFloatActionBound === '1' || button.closest('[data-ui-component]')) return;
       button.dataset.selectionFloatActionBound = '1';
       button.classList.add('gb-selection-float-button');
       // bindDrag() が click をバブル段階で stopPropagation するため、data-action の
@@ -237831,25 +240879,61 @@ async function loadFileFolderTags(filePath, container) {
         const removeBtn = document.createElement('span');
         removeBtn.textContent = '\u00d7';
         removeBtn.style.cssText = 'cursor:pointer;color:var(--fg2);margin-left:2px;';
-        removeBtn.addEventListener('click', async (e) => {
+        removeBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          await removeFolderLinkWithHistory(filePath, f.file_id, f.folder, { tagsContainer: container });
-          showStatus('リンク解除しました');
+          return _folderRemoveLinkFromTag(filePath, f, container);
         });
         tag.appendChild(removeBtn);
       }
       container.appendChild(tag);
     });
 
-    // +ボタン
-    const addBtn = document.createElement('span');
-    addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:var(--ui-bg-control,var(--bg3));color:var(--fg2);cursor:pointer;';
-    addBtn.textContent = '+';
-    addBtn.title = 'フォルダにリンク登録';
-    addBtn.dataset.gbTooltip = 'このファイルを別フォルダにもリンク登録します';
-    addBtn.addEventListener('click', () => showAddFolderLinkModal(filePath, container));
-    container.appendChild(addBtn);
-  } catch (e) {}
+    container.appendChild(_folderLinkAddButton(filePath, container));
+  } catch (error) {
+    // 読込失敗で＋ボタンごと消さない。原因を表示し、再試行と追加の操作を残す。
+    console.error('[folder links] 所属フォルダを読み込めませんでした', error);
+    container.innerHTML = '';
+    const retry = document.createElement('span');
+    retry.className = 'folder-link-load-failed';
+    retry.style.cssText = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:11px;background:var(--ui-bg-control,var(--bg3));color:var(--red,var(--fg2));cursor:pointer;';
+    retry.textContent = '読み込めませんでした（再試行）';
+    retry.title = '所属フォルダをもう一度読み込みます';
+    retry.dataset.gbTooltip = '所属フォルダをもう一度読み込みます';
+    retry.addEventListener('click', (e) => {
+      e.stopPropagation();
+      return loadFileFolderTags(filePath, container);
+    });
+    container.appendChild(retry);
+    container.appendChild(_folderLinkAddButton(filePath, container));
+    _folderReportFailure('所属フォルダを読み込めませんでした', error);
+  }
+}
+
+function _folderLinkAddButton(filePath, container) {
+  const addBtn = document.createElement('span');
+  addBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:10px;font-size:14px;background:var(--ui-bg-control,var(--bg3));color:var(--fg2);cursor:pointer;';
+  addBtn.textContent = '+';
+  addBtn.title = 'フォルダにリンク登録';
+  addBtn.dataset.gbTooltip = 'このファイルを別フォルダにもリンク登録します';
+  addBtn.addEventListener('click', () => showAddFolderLinkModal(filePath, container));
+  return addBtn;
+}
+
+// 所属フォルダの解除。失敗を原因つきで表示し、成功表示は解除の完了後だけ。
+async function _folderRemoveLinkFromTag(filePath, link, container) {
+  try {
+    const res = await removeFolderLinkWithHistory(filePath, link.file_id, link.folder, { tagsContainer: container });
+    if (res?.removed === false) {
+      showStatus('リンクを解除できませんでした：既に解除されているか、見つかりません', true);
+      return false;
+    }
+    showStatus('リンク解除しました');
+    return true;
+  } catch (error) {
+    console.error('[folder links] リンクを解除できませんでした', error);
+    _folderReportFailure('リンクを解除できませんでした', error);
+    return false;
+  }
 }
 
 function showAddFolderLinkModal(filePath, tagsContainer) {
@@ -237865,9 +240949,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   content.innerHTML = `
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
     <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『サンプル作品』/第1話登場"></div>
-    <div id="modal-link-tree" style="max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;margin-bottom:8px;background:var(--bg);font-size:12px;">
-      <div style="color:var(--fg2);padding:4px;">読み込み中...</div>
-    </div>
+    <div id="modal-link-tree" class="gb-folder-picker-embed folder-link-register-tree"></div>
     <div class="gb-dialog-inline-status" data-folder-link-status role="status" aria-live="polite" hidden></div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
@@ -237914,128 +240996,34 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   cancelButton.addEventListener('click', () => modalApi.close('cancel'));
   submitButton.addEventListener('click', () => submitAddFolderLink(filePath, o));
   modalApi.open();
-  // フォルダツリーを読み込み
-  _loadFolderLinkTree(modalApi.body.querySelector('#modal-link-tree'));
+  // フォルダツリーは共通のフォルダ選択部品を埋め込む（UI共通ルール 4.1）
+  _mountFolderLinkTree(modalApi.body.querySelector('#modal-link-tree'), o, filePath);
   return modalApi;
 }
 
-async function _loadFolderLinkTree(container) {
-  try {
-    const roots = window.GBFolderPicker?.loadRoots
-      ? await window.GBFolderPicker.loadRoots()
-      : await apiFetch('/outliner-roots');
-    container.innerHTML = '';
-    if (window.GBFolderPicker?.loadRoots) {
-      roots.forEach(root => {
-        const rootEl = _createLinkTreeNode(root.name, root.path, root.rootPath || root.path, true, {
-          sourceId: root.sourceId || '',
-          rootKind: root.kind || root.rootKind || '',
-          workspaceId: root.workspaceId || '',
-        });
-        container.appendChild(rootEl);
-      });
-      return;
-    }
-    // ホームフォルダを先頭に追加（ルートに含まれていない場合）
-    if (_homeFolderPath) {
-      const rootPaths = roots.filter(r => r.visible).map(r => r.path);
-      if (!rootPaths.includes(_homeFolderPath)) {
-        const homeLabel = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
-        const homeEl = _createLinkTreeNode(homeLabel, _homeFolderPath, _homeFolderPath, true);
-        container.appendChild(homeEl);
-      }
-    }
-    for (const root of roots.filter(r => r.visible)) {
-      const rootEl = _createLinkTreeNode(root.name, root.path, root.path, true);
-      container.appendChild(rootEl);
-    }
-  } catch(e) {
-    container.innerHTML = '<div style="color:var(--fg2);padding:4px;">ツリーの読み込みに失敗</div>';
+function _mountFolderLinkTree(container, overlay, filePath) {
+  if (!container) return null;
+  if (typeof window.GBFolderPicker?.createBrowser !== 'function') {
+    container.textContent = 'フォルダツリーを表示できませんでした。パスを直接入力してください。';
+    return null;
   }
-}
-
-function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
-  const div = document.createElement('div');
-  div.style.marginLeft = isRoot ? '0' : '16px';
-
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:3px;';
-  row.onmouseenter = () => { row.style.background = 'var(--bg3)'; };
-  row.onmouseleave = () => { row.style.background = ''; };
-
-  const toggle = document.createElement('span');
-  toggle.textContent = '\u25B6';
-  toggle.style.cssText = 'font-size:9px;width:12px;text-align:center;flex-shrink:0;color:var(--fg2);cursor:pointer;';
-  toggle.dataset.expanded = 'false';
-  row.appendChild(toggle);
-
-  const icon = document.createElement('span');
-  icon.innerHTML = lucide('folder', 14);
-  icon.style.cssText = 'flex-shrink:0;color:var(--fg2);';
-  row.appendChild(icon);
-
-  const label = document.createElement('span');
-  label.textContent = name;
-  label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  row.appendChild(label);
-
-  div.appendChild(row);
-
-  const childrenDiv = document.createElement('div');
-  childrenDiv.style.display = 'none';
-  childrenDiv.dataset.loaded = 'false';
-  div.appendChild(childrenDiv);
-
-  // 展開/折りたたみ処理
-  async function _toggleExpand() {
-    const expanded = toggle.dataset.expanded === 'true';
-    if (expanded) {
-      childrenDiv.style.display = 'none';
-      toggle.textContent = '\u25B6';
-      toggle.dataset.expanded = 'false';
-    } else {
-      childrenDiv.style.display = '';
-      toggle.textContent = '\u25BC';
-      toggle.dataset.expanded = 'true';
-      if (childrenDiv.dataset.loaded === 'false') {
-        childrenDiv.dataset.loaded = 'true';
-        childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">...</div>';
-        try {
-          const sourceParam = options.sourceId ? '&sourceId=' + encodeURIComponent(options.sourceId) : '';
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&root=' + encodeURIComponent(rootPath) + '&folders_only=1&sort=name&order=asc' + sourceParam);
-          childrenDiv.innerHTML = '';
-          const folders = items.filter(it => it.type === 'folder');
-          if (folders.length === 0) {
-            childrenDiv.innerHTML = '<div style="color:var(--fg2);padding:2px 16px;font-size:11px;">（フォルダなし）</div>';
-          } else {
-            folders.forEach(f => {
-              childrenDiv.appendChild(_createLinkTreeNode(f.name, f.path, rootPath, false, options));
-            });
-          }
-        } catch(err) {
-          childrenDiv.innerHTML = '<div style="color:var(--red);padding:2px 16px;font-size:11px;">エラー</div>';
-        }
-      }
-    }
-  }
-
-  // 行クリック → パスをセット + 展開/折りたたみ
-  row.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const input = document.getElementById('modal-link-folder');
-    if (input) input.value = path;
-    // 選択ハイライト
-    document.querySelectorAll('#modal-link-tree .link-tree-selected').forEach(el => {
-      el.classList.remove('link-tree-selected');
-      el.style.background = '';
-    });
-    row.classList.add('link-tree-selected');
-    row.style.background = 'color-mix(in srgb, var(--ui-selection-bg) 20%, transparent)';
-    // 展開/折りたたみもトリガー
-    await _toggleExpand();
+  const browser = window.GBFolderPicker.createBrowser({
+    currentLabel: '選択中:',
+    onSelect: selection => {
+      const input = overlay.querySelector('#modal-link-folder');
+      if (input && selection?.path) input.value = selection.path;
+    },
+    onActivate: selection => {
+      if (!selection?.path) return;
+      const input = overlay.querySelector('#modal-link-folder');
+      if (input) input.value = selection.path;
+      submitAddFolderLink(filePath, overlay);
+    },
   });
-
-  return div;
+  browser.tree.setAttribute('aria-label', 'リンク先のフォルダツリー');
+  container.replaceChildren(browser.element);
+  browser.start();
+  return browser;
 }
 
 async function submitAddFolderLink(filePath, overlay) {
@@ -241625,14 +244613,51 @@ function _isEditMutationShellVerb(verb) {
 
 // --- データ取得 ---
 
+const _shellVerbInflight = new Map(); // path key -> Promise
+// OS項目が無い環境（クラウド版など）や項目0件の場所は、空の結果を短時間だけ記憶する。
+// 毎回「読み込み中...」行が出て消えるちらつきを防ぎ、一時的な失敗は1分後に取り直す。
+const _shellVerbEmptyAt = new Map(); // path key -> 取得時刻
+const _SHELL_VERB_EMPTY_TTL_MS = 60 * 1000;
+
+function _shellVerbEmptyFresh(cacheKey) {
+  const at = _shellVerbEmptyAt.get(cacheKey);
+  if (at == null) return false;
+  if (Date.now() - at < _SHELL_VERB_EMPTY_TTL_MS) return true;
+  _shellVerbEmptyAt.delete(cacheKey);
+  return false;
+}
+
 async function fetchShellVerbs(path) {
   const cacheKey = _shellVerbCacheKey(path);
   if (_shellVerbCache[cacheKey]) return _shellVerbCache[cacheKey];
-  try {
-    const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
-    if (verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
-    return verbs;
-  } catch { return []; }
+  if (_shellVerbEmptyFresh(cacheKey)) return [];
+  // 「…」へのホバーで先読みした取得と、メニュー表示時の取得を1回にまとめる。
+  if (_shellVerbInflight.has(cacheKey)) return _shellVerbInflight.get(cacheKey);
+  const request = (async () => {
+    try {
+      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
+      if (Array.isArray(verbs) && verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
+      else if (Array.isArray(verbs)) _shellVerbEmptyAt.set(cacheKey, Date.now());
+      return Array.isArray(verbs) ? verbs : [];
+    } catch {
+      _shellVerbEmptyAt.set(cacheKey, Date.now());
+      return [];
+    } finally { _shellVerbInflight.delete(cacheKey); }
+  })();
+  _shellVerbInflight.set(cacheKey, request);
+  return request;
+}
+
+// OS項目の取得はPowerShell起動を伴い1秒前後かかる。メニュー本体は待たせず即表示し、
+// 取得済みの時だけ表示前に組み込む（未取得なら表示後にメニュー下端へ追記する）。
+function hasCachedShellVerbs(path) {
+  const cacheKey = _shellVerbCacheKey(path);
+  return !!_shellVerbCache[cacheKey] || _shellVerbEmptyFresh(cacheKey);
+}
+
+function prefetchShellVerbs(path) {
+  if (!path || hasCachedShellVerbs(path)) return;
+  fetchShellVerbs(path).catch(() => {});
 }
 
 async function executeShellVerb(path, verbRaw) {
@@ -243679,13 +246704,18 @@ function getManualOrder(folderPath) {
     return (fid && all[fid]) || all[folderPath] || [];
   } catch { return []; }
 }
+// 保存できたら true、保存領域に書き込めなかったら false を返す（呼び出し側で失敗を表示する）。
 function setManualOrder(folderPath, names) {
   try {
     const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
     const key = _pathToFileId(folderPath) || folderPath;
     all[key] = names;
     localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
-  } catch {}
+    return true;
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner] 手動並び順を保存できませんでした', error);
+    return false;
+  }
 }
 // 保存済みの手動並び順を破棄する。ルート直下（folderPath='_root'）はマニュアル順が
 // 設定側（ソースフォルダの並べ替え）より優先されるため、設定側で並べ替えを保存した際に
@@ -244403,6 +247433,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
     menuBtn.innerHTML = lucide('ellipsis', 14);
     menuBtn.title = 'メニュー';
     menuBtn.dataset.gbTooltip = 'この項目のメニューを開きます';
+    // クリック前のホバー中にOS項目を先読みし、開いた時点で揃っている状態にする。
+    menuBtn.addEventListener('pointerenter', () => {
+      if (item.path && typeof prefetchShellVerbs === 'function') prefetchShellVerbs(item.path);
+    });
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
@@ -244835,7 +247869,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   row.addEventListener('drop', async (e) => {
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
-      await _folderImportOsDrop(e, item);
+      await _outlinerImportOsDropSafely(e, item);
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
@@ -245889,10 +248923,148 @@ function _outlinerAppendMenuItem(menu, options) {
     event.preventDefault();
     event.stopPropagation();
     if (item.disabled) return;
-    if (typeof options?.action === 'function') options.action(event);
+    if (typeof options?.action === 'function') {
+      void _outlinerRunMenuAction(options.action, event, options?.label || options?.title || '');
+    }
   });
   menu.appendChild(item);
   return item;
+}
+
+// 失敗の理由を、利用者向けの短い文に整える（通信の状態コードや内部の例外名は出さない）。
+function _outlinerFailureReason(error) {
+  if (!error) return '';
+  if (error.name === 'AbortError') return '中断されました';
+  const raw = String(error?.userMessage || error?.message || (typeof error === 'string' ? error : '') || '').trim();
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) return 'サーバーに接続できませんでした';
+  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError || error instanceof RangeError) {
+    return '予期しないエラーが発生しました';
+  }
+  let text = raw
+    .replace(/^HTTP\s*\d+\s*:\s*/i, '')
+    .replace(/\(\d+秒\)\s*:\s*\S+$/, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim();
+  if (text.length > 120) text = text.slice(0, 120) + '…';
+  return text;
+}
+
+function _outlinerReportFailure(message, error) {
+  const reason = _outlinerFailureReason(error);
+  if (typeof showStatus === 'function') showStatus(reason ? `${message}：${reason}` : message, true);
+}
+
+// 右クリックメニューの実行。非同期の処理も待ち、失敗を握り潰さずに原因つきで表示する。
+async function _outlinerRunMenuAction(action, event, label) {
+  try {
+    return await action(event);
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner menu] 実行に失敗', error);
+    _outlinerReportFailure(label ? `「${label}」を実行できませんでした` : '操作を実行できませんでした', error);
+    return undefined;
+  }
+}
+
+// 複数項目の複製。部分失敗も件数と最初の原因を返し、表示で握り潰さない。
+async function _outlinerDuplicateItems(items) {
+  const result = { ok: 0, failed: 0, error: null };
+  for (const target of items || []) {
+    try {
+      await apiPost('/outliner/duplicate', { path: target.path });
+      result.ok += 1;
+    } catch (error) {
+      result.failed += 1;
+      if (!result.error) result.error = error;
+    }
+  }
+  return result;
+}
+
+function _outlinerReportBatchResult(result, verbDone, failMessage) {
+  const reason = result.failed ? _outlinerFailureReason(result.error) : '';
+  const suffix = reason ? `：${reason}` : '';
+  if (!result.failed) {
+    showStatus(`${result.ok}件を${verbDone}`);
+  } else if (!result.ok) {
+    showStatus(`${failMessage}${suffix}`, true);
+  } else {
+    showStatus(`${result.ok}件を${verbDone}。${result.failed}件は失敗しました${suffix}`, true);
+  }
+}
+
+async function _outlinerRunDuplicate(items) {
+  const result = await _outlinerDuplicateItems(items);
+  if (result.ok > 0 && typeof loadOutliner === 'function') {
+    try { await loadOutliner(); } catch (error) { console.error('[outliner duplicate] 表示の更新に失敗', error); }
+  }
+  _outlinerReportBatchResult(result, '複製しました', '複製に失敗しました');
+  return result;
+}
+
+// ソースフォルダの表示名変更。失敗は原因つきで表示し、成功表示は保存と再読込の後だけ。
+async function _outlinerRenameSourceFolder(nodeData) {
+  try {
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const root = roots.find(r => r.path === nodeData.path);
+    if (!root) {
+      showStatus('名前を変更できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    const newName = await cfPrompt('表示名を入力:', root.name);
+    if (!newName) return false;
+    root.name = newName;
+    await _putOutlinerRootsWithBase(roots, baseRoots);
+    await loadOutliner();
+    showStatus('名前を変更しました');
+    return true;
+  } catch (error) {
+    console.error('[outliner source folder] 名前の変更に失敗', error);
+    _outlinerReportFailure('名前を変更できませんでした', error);
+    return false;
+  }
+}
+
+async function _outlinerUnregisterSourceFolder(nodeData) {
+  try {
+    // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+    // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+    if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return false;
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const newRoots = roots.filter(r => r.path !== nodeData.path);
+    if (newRoots.length === roots.length) {
+      showStatus('登録を解除できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    await _putOutlinerRootsWithBase(newRoots, baseRoots);
+    await loadOutliner();
+    showStatus('ソースフォルダの登録を解除しました');
+    return true;
+  } catch (error) {
+    console.error('[outliner source folder] 登録解除に失敗', error);
+    _outlinerReportFailure('ソースフォルダの登録を解除できませんでした', error);
+    return false;
+  }
+}
+
+async function _outlinerCopyLink(nodeData) {
+  const linkPath = nodeData?.path;
+  if (!linkPath) return false;
+  const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
+  if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {
+    showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
+    return false;
+  }
+  try {
+    const ok = await MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type);
+    if (ok) showStatus('リンクをコピーしました');
+    else showStatus('リンクをコピーできませんでした：クリップボードに書き込めませんでした', true);
+    return !!ok;
+  } catch (error) {
+    _outlinerReportFailure('リンクをコピーできませんでした', error);
+    return false;
+  }
 }
 
 function _outlinerAppendMenuSeparator(menu) {
@@ -246177,14 +249349,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       onCopy: () => folderToolbarCopyItems(contextOperationItems),
       onCut: () => folderToolbarCutItems(contextOperationItems),
       onPaste: () => folderToolbarPasteToFolder(addParent),
-      onDuplicate: async () => {
-        let count = 0;
-        for (const target of editableContextItems) {
-          try { await apiPost('/outliner/duplicate', { path: target.path }); count += 1; } catch {}
-        }
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        showStatus(count > 0 ? `${count}件を複製しました` : '複製に失敗しました', count === 0);
-      },
+      onDuplicate: () => _outlinerRunDuplicate(editableContextItems),
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
       cutDisabled: editableContextItems.length === 0,
@@ -246403,9 +249568,13 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   // --- バージョン管理（フォルダのみ） ---
   if (!isMulti && (isFolder || isDB) && nodeData.path) {
     addSep();
-    addMenuItem('バージョンを保存', () => {
+    addMenuItem('バージョンを保存', async () => {
       closeTreeContextMenu();
-      if (typeof saveFolderVersion === 'function') saveFolderVersion(nodeData.path);
+      if (typeof saveFolderVersion !== 'function') {
+        showStatus('バージョンを保存できませんでした：この画面ではバージョン管理を使えません', true);
+        return;
+      }
+      await saveFolderVersion(nodeData.path);
     }, null, 'save');
     addMenuItem('バージョン管理', () => {
       closeTreeContextMenu();
@@ -246481,13 +249650,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (!isMulti && nodeData.path) {
     addMenuItem('リンクをコピー', () => {
       closeTreeContextMenu();
-      const linkPath = nodeData.path;
-      const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
-      if (typeof MeldexBroadcast !== 'undefined') {
-        MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type).then(ok => {
-          if (ok) showStatus('リンクをコピーしました');
-        });
-      }
+      return _outlinerCopyLink(nodeData);
     }, null, 'link');
   }
 
@@ -246682,16 +249845,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'folderPen');
     addMenuItem('名前を変更...', async () => {
       closeTreeContextMenu();
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const root = roots.find(r => r.path === nodeData.path);
-      if (!root) return;
-      const newName = await cfPrompt('表示名を入力:', root.name);
-      if (!newName) return;
-      root.name = newName;
-      await _putOutlinerRootsWithBase(roots, baseRoots);
-      await loadOutliner();
-      showStatus('名前を変更しました');
+      await _outlinerRenameSourceFolder(nodeData);
     }, null, 'pencil');
     addMenuItem('チーム管理...', async () => {
       closeTreeContextMenu();
@@ -246700,15 +249854,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
     addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
-      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const newRoots = roots.filter(r => r.path !== nodeData.path);
-      await _putOutlinerRootsWithBase(newRoots, baseRoots);
-      await loadOutliner();
-      showStatus('ソースフォルダの登録を解除しました');
+      await _outlinerUnregisterSourceFolder(nodeData);
     }, null, 'folder-minus');
   }
 
@@ -246797,13 +249943,18 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // OSシェルメニューを未接続DOM上で完成させてから、一度だけ表示する。
-  // 表示後に項目数やポップアップ座標を変えない。
-  if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
-    await appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked, beforeDisplay: true });
+  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
+  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
+  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
   }
   if (openSeq !== _outlinerContextMenuOpenSeq) return;
   _outlinerPlaceContextMenu(menu);
+  if (shellPath && !shellReady) {
+    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
+  }
 }
 
 // 追加先の親パスを決定
@@ -247271,12 +250422,14 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
     // ファイル/フォルダの実体をリネーム
     if (nodeData.path && nv !== old) {
       const oldPath = nodeData.path;
+      // 通信を待たずに、開いているタブやツールバーの名前も先に変える
+      applyOptimisticRenameLabel(oldPath, nv, nodeData.type || 'page');
       try {
         const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page',
-          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
+          title_only: false
         });
         if (!res || !res.new_path) throw new Error('rename failed');
         _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
@@ -247286,6 +250439,7 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
           await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
         } else {
           // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+          applyOptimisticRenameLabel(oldPath, old, nodeData.type || 'page');
           labelEl.textContent = old;
           const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
           showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
@@ -247329,22 +250483,59 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+  // 取り消し・やり直し: 以前は表示名（oldName）をそのまま新しいファイル名として送り、
+  // 戻った先を oldPath と決め打ちしていた。「タイトル＝ファイル名」では、表示タイトルと
+  // ファイル名が違う項目（無題/ を「キャラ」と表示する等）が キャラ/ へ改名される一方、
+  // ツリーと参照は存在しない 無題/ を指してしまう。元のファイル名へ戻してから表示タイトルを
+  // 戻し、ツリーと参照はサーバーが実際に返したパスへ合わせる。
+  const titleOnlyRename = options?.titleOnly === true || oldPath === newPath;
+  const itemType = nodeData.type || 'page';
+  const baseNameOf = (path) => String(path || '').replace(/[\/]+$/, '').split(/[\/]/).pop() || '';
+  const storedStemOf = (fromPath, toPath) => {
+    const fromBase = baseNameOf(fromPath);
+    const toBase = baseNameOf(toPath);
+    for (let index = fromBase.indexOf('.'); index > 0; index = fromBase.indexOf('.', index + 1)) {
+      const ext = fromBase.slice(index);
+      if (toBase.toLowerCase().endsWith(ext.toLowerCase())) return fromBase.slice(0, index);
+    }
+    return fromBase;
+  };
+  const originalStem = storedStemOf(oldPath, newPath);
+  let currentPath = newPath;
+  const renameTo = async (fromPath, fileStem, displayTitle) => {
+    if (titleOnlyRename) {
+      const res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: displayTitle, type: itemType, title_only: true });
+      return { response: res, path: res?.new_path || fromPath };
+    }
+    let res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: fileStem, type: itemType, title_only: false });
+    let path = res?.new_path || fromPath;
+    if (displayTitle && displayTitle !== fileStem) {
+      const titled = await apiPost('/outliner/rename', { old_path: path, new_name: displayTitle, type: itemType, title_only: true });
+      res = { ...res, ...titled, new_path: path, file_id: titled?.file_id || res?.file_id };
+    }
+    return { response: res, path };
+  };
+  const moveTreeTo = (fromPath, toPath, label, response, aliasFrom, aliasTo) => {
+    _renameTreeNode(fromPath, toPath, label, response?.file_id);
+    aliasPairs.forEach(pair => _renameTreeNode(pair[aliasFrom], pair[aliasTo], label, response?.file_id));
+    applyPathReferences(fromPath, toPath, label, response);
+    aliasPairs.forEach(pair => applyPathReferences(pair[aliasFrom], pair[aliasTo], label, response));
+    nodeData.path = toPath;
+    nodeData.pathAliases = aliasPairs.map(pair => pair[aliasTo]);
+  };
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.newPath, pair.oldPath, oldName, r2?.file_id));
-      applyPathReferences(newPath, oldPath, oldName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.newPath, pair.oldPath, oldName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.oldPath);
+      const { response, path } = await renameTo(currentPath, originalStem, oldName);
+      moveTreeTo(currentPath, path, oldName, response, 'newPath', 'oldPath');
+      nodeData.name = oldName;
+      currentPath = path;
+      if (path !== oldPath) showStatus(`元のファイル名に戻せなかったため「${baseNameOf(path)}」になりました`, true);
     },
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, r2?.file_id));
-      applyPathReferences(oldPath, newPath, newName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+      const { response, path } = await renameTo(currentPath, storedStemOf(newPath, oldPath), newName);
+      moveTreeTo(currentPath, path, newName, response, 'oldPath', 'newPath');
+      nodeData.name = newName;
+      currentPath = path;
     }
   );
   const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
@@ -247408,6 +250599,28 @@ function backToPivot() {
   }
   document.querySelectorAll('.tree-node-row.active').forEach(el => el.classList.remove('active'));
 }
+
+// 名前の変更を確定した瞬間に、ツリー・タブ・ツールバーの表示名だけを先に変える。
+// 保存先（パス）の差し替えはサーバーの応答後に renameAppPathReferences が行う。
+// 改名の通信は環境によって数秒かかるため、待たずに名前が変わったことを見せる。
+// 失敗時は同じ関数を元の名前で呼び直して戻す。
+function applyOptimisticRenameLabel(path, label, type) {
+  if (!path || label == null || label === '') return;
+  const text = String(label);
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
+    if (node._nodeData?.path !== path) return;
+    const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
+    if (labelEl && !labelEl.querySelector('input')) labelEl.textContent = text;
+  });
+  try {
+    if (typeof renameAppPathReferences === 'function') {
+      renameAppPathReferences(path, path, { label: text, type: type || 'page', preserveMountedViews: true, skipDbReload: true });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 名前の先行表示に失敗しました', error);
+  }
+}
+if (typeof window !== 'undefined') window.applyOptimisticRenameLabel = applyOptimisticRenameLabel;
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
@@ -248065,7 +251278,19 @@ async function _uploadOutlinerDroppedFile(file, parentPath) {
   }
 }
 
-document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
+// 行・ツリーへのOSドロップ取込。読み取りや取り込みの途中で失敗しても、原因つきで表示する。
+async function _outlinerImportOsDropSafely(event, targetItem) {
+  try {
+    return await _folderImportOsDrop(event, targetItem);
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    if (typeof _outlinerReportFailure === 'function') _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    else showStatus('ファイルを取り込めませんでした', true);
+    return 0;
+  }
+}
+
+async function _outlinerHandleTreeOsDrop(e) {
   e.preventDefault();
   const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
   let parentPath = '';
@@ -248077,7 +251302,7 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
   if (typeof _folderImportOsDrop === 'function') {
-    await _folderImportOsDrop(e, { type: 'folder', path: parentPath || state.vaultPath });
+    await _outlinerImportOsDropSafely(e, { type: 'folder', path: parentPath || state.vaultPath });
     return;
   }
   const progress = window.MeldexOperationProgress?.begin?.({
@@ -248091,7 +251316,15 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  let results;
+  try {
+    results = await MeldexDnD.uploadFiles(files, parentPath, { source: 'outliner-drop' });
+  } catch (error) {
+    console.error('[outliner drop] 取り込みに失敗', error);
+    progress?.fail?.({ error: error });
+    _outlinerReportFailure('ファイルを取り込めませんでした', error);
+    return;
+  }
   results.forEach((result, index) => {
     progress?.update?.({ processed: index + 1, currentItem: result.name || files[index]?.name || '' });
   });
@@ -248099,8 +251332,11 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     progress?.update?.({ phase: '表示を更新しています', total: null, currentItem: '' });
     await loadOutliner();
   } catch (error) {
+    // 取り込み自体は済んでいる。表示の更新失敗を取り込み失敗と混同させない。
+    console.error('[outliner drop] 表示の更新に失敗', error);
     progress?.fail?.({ error: error });
-    throw error;
+    _outlinerReportFailure('ファイルは取り込みましたが、ツリーの表示を更新できませんでした', error);
+    return;
   }
   const succeeded = results.filter(result => result.ok);
   const failed = results.filter(result => !result.ok);
@@ -248119,7 +251355,9 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
     else showStatus(files.length + '個のファイルをインポートしました');
   }
-});
+}
+
+document.getElementById('outliner-tree')?.addEventListener('drop', e => _outlinerHandleTreeOsDrop(e));
 
 ;
 
@@ -249610,7 +252848,8 @@ function renderFavorites() {
   function _renderFavNode(node, parent, depth) {
     const isFavFolder = node.type === 'fav-folder';
     const div = document.createElement('div');
-    div.style.marginLeft = (depth * 12) + 'px';
+    // 入れ子の各段は親の中に入るため、1段ぶんの字下げ（共通トークン）だけを足す
+    if (depth > 0) div.style.marginLeft = 'var(--ui-row-indent)';
     div.dataset.favPath = node.path;
 
     const row = document.createElement('div');
@@ -250926,34 +254165,64 @@ function _visibleFolderSearchToolbar() {
   }) || document.getElementById('folder-toolbar');
 }
 
+// 検索・置換を持たない画面から呼ばれた時の表示。ノートの検索欄へ黙って流さない。
+function _toolbarSearchUnavailable(reason) {
+  if (typeof showStatus === 'function') showStatus(reason || 'この画面では検索・置換を使えません', true);
+  return false;
+}
+
+// 戻り値: false=開けなかった（理由は表示済み）、true=検索・置換を開いた。
 function openCurrentToolbarSearchReplace(tool, options = {}) {
-  const normalized = String(tool || '').toLowerCase();
-  if (normalized === 'page' || normalized === 'note') {
-    if (typeof openFileSearch === 'function') openFileSearch('replace');
-    return;
+  const aliases = {
+    note: 'page', entity: 'page',
+    db: 'database', sheet: 'database', pivot: 'database', tree: 'database', gallery: 'database',
+    kanban: 'database', timeline: 'database', gantt: 'database', chart: 'database', graph: 'database',
+  };
+  const raw = String(tool || '').toLowerCase();
+  const normalized = aliases[raw] || raw;
+  if (normalized === 'page') {
+    if (typeof openFileSearch !== 'function' || !document.getElementById('file-search-bar')) {
+      return _toolbarSearchUnavailable('この画面ではノートの検索・置換を使えません');
+    }
+    openFileSearch('replace');
+    return true;
   }
   if (normalized === 'board') {
-    if (typeof bdOpenFindBar === 'function') bdOpenFindBar('replace');
-    return;
+    if (typeof bdOpenFindBar !== 'function') return _toolbarSearchUnavailable('この画面ではボードの検索・置換を使えません');
+    bdOpenFindBar('replace');
+    return true;
   }
-  if (normalized === 'database' || normalized === 'db' || normalized === 'sheet') {
-    if (typeof openDbFindReplace === 'function') openDbFindReplace('replace');
-    return;
+  if (normalized === 'database') {
+    if (typeof openDbFindReplace !== 'function') return _toolbarSearchUnavailable('この画面ではシートの検索・置換を使えません');
+    openDbFindReplace('replace');
+    return true;
+  }
+  const unsupportedLabels = {
+    calendar: 'カレンダー', media: 'メディア', image: 'メディア', video: 'メディア', audio: 'メディア', pdf: 'メディア',
+    html: 'HTML', csv: 'CSV', 'form-app': 'フォーム', form: 'フォーム', map: 'マップ',
+  };
+  if (unsupportedLabels[normalized]) {
+    return _toolbarSearchUnavailable(`${unsupportedLabels[normalized]}では検索・置換を使えません`);
   }
   if (normalized === 'scriptnote' || normalized === 'scenario') {
     const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
     const searchButton = editor?.host?.closest?.('.gb-se-root')?.querySelector?.('[data-sn-action="search"]') || null;
-    if (typeof editor?._showSearchReplacePopup === 'function') editor._showSearchReplacePopup(searchButton);
-    return;
+    if (typeof editor?._showSearchReplacePopup !== 'function') return _toolbarSearchUnavailable('この画面ではシナリオの検索・置換を使えません');
+    editor._showSearchReplacePopup(searchButton);
+    return true;
   }
   if (normalized === 'folder') {
     const folderPath = (typeof _folderPath !== 'undefined' && _folderPath) ? _folderPath : '';
     const toolbar = _visibleFolderSearchToolbar();
     const trigger = options.trigger || toolbar?.querySelector('button[aria-label="検索と置換"]') || null;
     openVaultSearchReplacePanel(folderPath, { surface: 'main', anchor: toolbar, trigger });
-    return;
+    return true;
   }
+  // 種類の分からない画面はノートの検索欄へ流さない。種類の指定が無い時だけ従来どおりノート扱い。
+  if (normalized) return _toolbarSearchUnavailable();
+  if (!document.getElementById('file-search-bar')) return _toolbarSearchUnavailable();
   if (typeof openFileSearch === 'function') openFileSearch('replace');
+  return true;
 }
 
 function _selectedSearchFolderPath() {
@@ -262526,11 +265795,38 @@ window.addEventListener('error', (e) => {
   });
 });
 
+// 利用者の操作の直後に起きた未処理の失敗は、ログ送信だけでなく画面にも出す。以前はログ送信
+// だけで、メニューからの列名変更などが失敗しても画面に何も出なかった。背景処理の失敗で
+// 通知が乱発しないよう、直前（5秒以内）に操作があった時だけ、同じ内容は10秒に1回に絞る。
+let _lastUserGestureAt = 0;
+const _recentUnhandledNotices = new Map();
+['pointerdown', 'keydown'].forEach((type) => {
+  window.addEventListener(type, () => { _lastUserGestureAt = Date.now(); }, true);
+});
+
+function _shouldNotifyUnhandledRejection(reason) {
+  const name = String(reason?.name || '');
+  if (name === 'AbortError' || reason?.cancelled === true || reason?.silent === true) return false;
+  if (Date.now() - _lastUserGestureAt > 5000) return false;
+  const key = String(reason?.message || reason || '');
+  const last = _recentUnhandledNotices.get(key) || 0;
+  if (Date.now() - last < 10000) return false;
+  _recentUnhandledNotices.set(key, Date.now());
+  if (_recentUnhandledNotices.size > 50) _recentUnhandledNotices.clear();
+  return true;
+}
+
 window.addEventListener('unhandledrejection', (e) => {
   _sendLog('error', {
     message: e.reason?.message || String(e.reason),
     stack: e.reason?.stack || ''
   });
+  try {
+    if (typeof showStatus === 'function' && _shouldNotifyUnhandledRejection(e.reason)) {
+      const message = String(e.reason?.message || e.reason || '').trim();
+      showStatus('操作を完了できませんでした' + (message ? ': ' + message : ''), true);
+    }
+  } catch {}
 });
 
 /* ==============================
@@ -263427,6 +266723,43 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       pageContent.dataset.path = _mapRenamedPath(pageContent.dataset.path, oldPath, newPath);
     }
   });
+  // サブパネル・独立した表示面（openPage の containerEl）で開いたノートは #page-content では
+  // ないため、以前は保存先が旧パスのまま残り、改名後の保存が旧パスへ新しいファイルを作って
+  // いた（2回改名した後の保存で発覚）。保存の調整役に登録された編集面と、配線済みの
+  // ノート編集面すべての保存先を追従させる。
+  const renamedHosts = new Set();
+  try {
+    const saveCoordinator = window.MeldexDocumentSaveCoordinator;
+    if (saveCoordinator?.documentKeyForPath && saveCoordinator.getParticipants) {
+      [newPath, oldPath].forEach(path => {
+        (saveCoordinator.getParticipants(saveCoordinator.documentKeyForPath(path)) || []).forEach(host => renamedHosts.add(host));
+      });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 改名後の保存先の追従に失敗しました', error);
+  }
+  document.querySelectorAll('[data-path]').forEach(el => { if (el._noteEditableWired) renamedHosts.add(el); });
+  renamedHosts.forEach(host => {
+    if (host?.dataset?.path) host.dataset.path = _mapRenamedPath(host.dataset.path, oldPath, newPath);
+  });
+  // ファイル名を変える改名では、サーバーが表示タイトルや先頭の見出しを書き換えることがあり、
+  // 開いているノートの「最後に保存した内容」が古くなる。そのまま保存すると競合（409）になる
+  // ため、改名後の内容を読み直して基準を合わせる（編集中の本文はそのまま残す）。
+  if (!options.titleOnly && options.etag && oldPath !== newPath) {
+    const resyncHosts = new Set([document.getElementById('page-content'), ...renamedHosts]);
+    resyncHosts.forEach(host => {
+      if (host?.dataset?.path !== newPath || host.dataset.lastSavedMd == null) return;
+      if (typeof apiFetch !== 'function' || !window.MeldexNoteSaveAdapter?.syncResolvedBaseline) return;
+      apiFetch('/file?path=' + encodeURIComponent(newPath), { silentError: true })
+        .then(loaded => {
+          if (host.dataset.path !== newPath || typeof loaded?.content !== 'string') return;
+          const fm = loaded.content.match(/^(---\n[\s\S]*?\n---\n?)/);
+          if (fm) host.dataset.frontmatter = fm[1];
+          window.MeldexNoteSaveAdapter.syncResolvedBaseline(newPath, host, loaded.content, loaded.etag || options.etag);
+        })
+        .catch(error => console.warn('[Meldex] 改名後のノートの保存基準を更新できませんでした', error));
+    });
+  }
 
   if (typeof _sn2Editors !== 'undefined' && _sn2Editors) {
     Object.keys(_sn2Editors).forEach(path => {
@@ -267552,6 +270885,36 @@ function _gbNormalizeHtmlViewerUrl(rawUrl) {
   }
 }
 
+const _gbHtmlViewerHistory = { entries: [], index: -1 };
+
+function _gbUpdateHtmlViewerNavButtons() {
+  const canBack = _gbHtmlViewerHistory.index > 0;
+  const canForward = _gbHtmlViewerHistory.index >= 0
+    && _gbHtmlViewerHistory.index < _gbHtmlViewerHistory.entries.length - 1;
+  const back = document.getElementById('html-nav-back');
+  const forward = document.getElementById('html-nav-forward');
+  if (back) {
+    back.disabled = !canBack;
+    back.setAttribute('aria-disabled', canBack ? 'false' : 'true');
+  }
+  if (forward) {
+    forward.disabled = !canForward;
+    forward.setAttribute('aria-disabled', canForward ? 'false' : 'true');
+  }
+}
+
+function _gbRecordHtmlViewerHistory(url) {
+  const current = _gbHtmlViewerHistory.entries[_gbHtmlViewerHistory.index];
+  if (current === url) {
+    _gbUpdateHtmlViewerNavButtons();
+    return;
+  }
+  _gbHtmlViewerHistory.entries.splice(_gbHtmlViewerHistory.index + 1);
+  _gbHtmlViewerHistory.entries.push(url);
+  _gbHtmlViewerHistory.index = _gbHtmlViewerHistory.entries.length - 1;
+  _gbUpdateHtmlViewerNavButtons();
+}
+
 function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   const url = _gbNormalizeHtmlViewerUrl(rawUrl);
   if (!url) {
@@ -267562,6 +270925,10 @@ function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   if (iframe) iframe.src = url;
   const urlBar = options?.skipUrlBar ? null : document.getElementById('html-url-bar');
   if (urlBar) urlBar.value = url;
+  const mainIframe = document.getElementById('html-iframe');
+  if (iframe && iframe === mainIframe && options?.skipHistory !== true) {
+    _gbRecordHtmlViewerHistory(url);
+  }
   return true;
 }
 
@@ -267839,11 +271206,25 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
   }
 });
 
-// HTML ビューワーのナビゲーション
-function htmlNavBack() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.back(); } catch {} }
-function htmlNavForward() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.forward(); } catch {} }
+// HTML ビューワーのナビゲーション。外部URLのiframe履歴は同一オリジン制約で
+// 状態を安全に読めないため、Meldexから明示的に開いたURLだけを管理する。
+function _gbMoveHtmlViewerHistory(delta) {
+  const nextIndex = _gbHtmlViewerHistory.index + delta;
+  if (nextIndex < 0 || nextIndex >= _gbHtmlViewerHistory.entries.length) {
+    _gbUpdateHtmlViewerNavButtons();
+    return false;
+  }
+  const nextUrl = _gbHtmlViewerHistory.entries[nextIndex];
+  if (!_gbSetHtmlViewerSrc(nextUrl, null, { skipHistory: true })) return false;
+  _gbHtmlViewerHistory.index = nextIndex;
+  _gbUpdateHtmlViewerNavButtons();
+  return true;
+}
+function htmlNavBack() { return _gbMoveHtmlViewerHistory(-1); }
+function htmlNavForward() { return _gbMoveHtmlViewerHistory(1); }
 function htmlNavigate(url) { if (!url) return; _gbSetHtmlViewerSrc(url); }
 function htmlRefresh() { const f = _gbPrepareUntrustedIframe(document.getElementById('html-iframe')); if (f) try { f.contentWindow.location.reload(); } catch { f.src = f.src; } }
+_gbUpdateHtmlViewerNavButtons();
 
 // ============================================================
 // 最後のポインタ操作がフォルダツリー内かどうかを追跡
@@ -268324,6 +271705,45 @@ const MeldexExportHtml = (() => {
    *   true の場合、input/textarea/select/button を span/disabled 化せずそのまま残す。
    *   公開フォームのようにユーザー入力を受け付ける必要がある HTML に使う。
    */
+  // 元要素が祖先（パネル・ファイルテーマ）から受け継いでいる CSS 変数と文字設定、および
+  // 本文の余白・行間を計算済みの値で複製へ固定する。出力には祖先が含まれないため。
+  const CONTEXT_TEXT_PROPS = [
+    'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
+    'font-feature-settings', 'text-rendering', 'word-break', 'overflow-wrap', 'line-break',
+  ];
+  const CONTEXT_BOX_PROPS = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
+  function applyComputedContext(originalEl, clone) {
+    if (!originalEl || !clone?.style) return;
+    const cs = getComputedStyle(originalEl);
+    for (let i = 0; i < cs.length; i++) {
+      const name = cs[i];
+      if (!name || !name.startsWith('--')) continue;
+      const value = cs.getPropertyValue(name).trim();
+      if (value && !clone.style.getPropertyValue(name)) clone.style.setProperty(name, value);
+    }
+    [...CONTEXT_TEXT_PROPS, ...CONTEXT_BOX_PROPS].forEach(name => {
+      const value = cs.getPropertyValue(name);
+      if (value) clone.style.setProperty(name, value);
+    });
+    // 行間は、画面側の指定のされ方（倍率か px か）が組方向や要素で異なり、出力用CSSの
+    // 上書きと組み合わさると子要素（コード・表・見出し等）でずれる。本文内の各要素の行間を
+    // 画面の実測値で固定する（複製と元の要素数が一致する時だけ）。
+    const sourceNodes = originalEl.querySelectorAll('*');
+    const cloneNodes = clone.querySelectorAll('*');
+    if (sourceNodes.length === cloneNodes.length) {
+      sourceNodes.forEach((node, index) => {
+        const value = getComputedStyle(node).lineHeight;
+        if (value && value !== 'normal') cloneNodes[index].style.setProperty('line-height', value);
+      });
+    }
+    const maxWidth = cs.getPropertyValue('max-width');
+    if (maxWidth && maxWidth !== 'none') clone.style.setProperty('max-width', maxWidth);
+  }
+
+  // アプリ本体と同じ基本リセット（gb-theme.css）。無いと引用・段落・見出し等にブラウザ既定の
+  // 余白が付き、画面と配置が変わる。
+  const APP_RESET_CSS = '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }';
+
   function cloneAndClean(el, opts) {
     const options = opts || {};
     const clone = el.cloneNode(true);
@@ -268389,6 +271809,14 @@ const MeldexExportHtml = (() => {
   }
 
   const PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST = new Set(['data-publish-form', 'data-form-type']);
+  // 表示用CSSの目印で、内部情報（パス・ID・トークン等）を含まない data 属性。すべての data 属性を
+  // 消すと、完了タスクの装飾・シートのセル折り返し・ボードの図形書式・状態色などが出力で効かなくなる。
+  // ルビの読みは本文の一部。値に内部パスやIDを持つ属性（data-path, data-entity-id 等）は含めない。
+  const PUBLISHED_DISPLAY_DATA_ATTRIBUTES = new Set([
+    'data-ruby', 'data-checked', 'data-cell-overflow', 'data-bd-role', 'data-status', 'data-status-kind',
+    'data-note-status', 'data-chip-border', 'data-chip-bg', 'data-bd-group-color', 'data-shape', 'data-dir',
+    'data-item-type', 'data-today', 'data-small-list', 'data-stage', 'data-cal-dow', 'data-editor-local-id',
+  ]);
   const PUBLISHED_FORBIDDEN_ELEMENTS = 'script,iframe,object,embed,base,meta,link,portal';
 
   function _safePublishedLink(value) {
@@ -268416,7 +271844,8 @@ const MeldexExportHtml = (() => {
           node.removeAttribute(attr.name);
           return;
         }
-        if (name.startsWith('data-') && !(opts.preserveFormControls && PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST.has(name))) {
+        if (name.startsWith('data-') && !PUBLISHED_DISPLAY_DATA_ATTRIBUTES.has(name)
+          && !(opts.preserveFormControls && PUBLISHED_DATA_ATTRIBUTE_ALLOWLIST.has(name))) {
           node.removeAttribute(attr.name);
           return;
         }
@@ -268471,6 +271900,16 @@ const MeldexExportHtml = (() => {
   /** :root の CSS 変数を実値に解決して返す */
   function collectCssVars() {
     const rootStyle = getComputedStyle(document.documentElement);
+    // 決め打ちの一覧だけでは、ノートの見出し色・太さ（--page-*）やファイルテーマ等の変数が
+    // 出力から欠ける。計算済みのカスタムプロパティをすべて書き出す（一覧は互換のため残す）。
+    const allDecls = [];
+    for (let i = 0; i < rootStyle.length; i++) {
+      const name = rootStyle[i];
+      if (!name || !name.startsWith('--')) continue;
+      const value = rootStyle.getPropertyValue(name).trim();
+      if (value) allDecls.push(`${name}: ${value};`);
+    }
+    if (allDecls.length) return allDecls.join(' ');
     const varNames = [
       '--bg', '--bg2', '--bg3', '--bg4',
       '--fg', '--fg2', '--accent', '--accent2',
@@ -268542,7 +271981,7 @@ const MeldexExportHtml = (() => {
 [contenteditable] { -webkit-user-modify: read-only; caret-color: transparent; }
 input, textarea, select { display: none !important; }
 button[disabled] { cursor: default !important; opacity: 1 !important; pointer-events: none; }
-a { pointer-events: none; color: inherit; text-decoration: inherit; }
+a { pointer-events: none; }
 /* 印刷時の背景色保持 */
 * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 `;
@@ -268762,9 +272201,10 @@ ${bodyHtml}
   async function exportToHtml(contentEl, options) {
     const opts = options || {};
     const clone = cloneAndClean(contentEl);
+    if (opts.inheritComputedContext) applyComputedContext(contentEl, clone);
 
-    // ルビ変換
-    convertDataRuby(clone);
+    // ルビ変換（画面と同じ組み方を保つビューは data-ruby の表示をそのまま使う）
+    if (!opts.keepDataRuby) convertDataRuby(clone);
 
     // エディタ固有の前処理コールバック
     if (typeof opts.preTransform === 'function') {
@@ -268779,7 +272219,7 @@ ${bodyHtml}
 
     // CSS
     const varDecls = collectCssVars();
-    let cssText = `:root { ${varDecls} }\n`;
+    let cssText = (opts.appReset ? APP_RESET_CSS + '\n' : '') + `:root { ${varDecls} }\n`;
     cssText += `html, body {
   margin: 0; padding: 0;
   background: var(--bg, #1e1e1e);
@@ -268845,7 +272285,7 @@ ${bodyHtml}
       if (!publishCtx) return false;
     }
     const kind = viewType || publishCtx.kind;
-    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board'];
+    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote'];
     if (!supportedKinds.includes(kind) || kind !== publishCtx.kind) {
       showStatus('このビューは公開HTMLに未対応です', true);
       return false;
@@ -268872,9 +272312,17 @@ ${bodyHtml}
       db_path: kind === 'board' ? '' : (publishCtx.path || cfg.db_path || ''),
       board_snapshot: publishCtx.board || null,
     };
-    const publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
-      ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
-      : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
+    let publicationPackage = null;
+    if (kind === 'scriptnote') {
+      // シナリオは HTML保存・画像と同じ静的スナップショットを公開する（設定の反映を一致させる）
+      publicationPackage = await _buildScriptNotePublicationPackage(publishCtx, cfg);
+      if (!publicationPackage) return false;
+      mergedCfg.title = publicationPackage.title || mergedCfg.title;
+    } else {
+      publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
+        ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
+        : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
+    }
     const html = publicationPackage?.html;
     if (!html) return false;
     if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
@@ -268912,8 +272360,42 @@ ${bodyHtml}
     return !!result;
   }
 
+  function _activeScriptNoteEditorForPath(path) {
+    const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+    if (!editor?.doc) return null;
+    const norm = value => String(value || '').replace(/\\/g, '/');
+    if (path && norm(editor._path) !== norm(path)) return null;
+    return editor;
+  }
+
+  async function _buildScriptNotePublicationPackage(publishCtx, cfg) {
+    if (typeof buildScriptNoteExportDocument !== 'function') {
+      showStatus('シナリオの公開HTMLを生成できませんでした', true);
+      return null;
+    }
+    const editor = _activeScriptNoteEditorForPath(publishCtx?.path);
+    if (!editor) {
+      showStatus('公開対象のシナリオが表示されていないため公開を停止しました', true);
+      return null;
+    }
+    const snapshot = await buildScriptNoteExportDocument(editor, {
+      purpose: 'publish',
+      embedFont: cfg?.embed_font !== false,
+    });
+    if (!snapshot?.html) {
+      showStatus('公開できるシナリオ内容がありません', true);
+      return null;
+    }
+    return { html: snapshot.html, assets: [], title: snapshot.title };
+  }
+
   function _getViewTitle(viewType) {
     switch (viewType) {
+      case 'scriptnote': {
+        const editor = _activeScriptNoteEditorForPath('');
+        const stem = String(editor?._path || '').split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+        return String(editor?.doc?.title || stem || 'シナリオ');
+      }
       case 'page': {
         const pc = document.getElementById('page-content');
         const h1 = pc?.querySelector('h1, h2, h3');
@@ -269061,15 +272543,23 @@ ${bodyHtml}
       `;
   }
 
+  // ノートの HTML 保存・画像・公開で共通の出力設定（画面と同じ見た目にする）
+  function noteExportOptions(pc, vertical, title) {
+    return {
+      title,
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
+      extraCss: noteExportCss(vertical),
+      inheritComputedContext: true,
+      keepDataRuby: true,
+      appReset: true,
+    };
+  }
+
   async function _exportNotePage() {
     const pc = document.getElementById('page-content');
     if (!pc) { showStatus('ノートが開かれていません', true); return null; }
     const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(pc));
-    return exportToHtml(pc, {
-      title: _getViewTitle('page'),
-      cssFiles: ['gb-tools.css', 'gb-ui.css'],
-      extraCss: noteExportCss(vertical),
-    });
+    return exportToHtml(pc, noteExportOptions(pc, vertical, _getViewTitle('page')));
   }
 
   // --- データベース ---
@@ -269226,6 +272716,9 @@ ${bodyHtml}
     sanitizePublishedClone,
     convertDataRuby,
     noteExportCss,
+    noteExportOptions,
+    applyComputedContext,
+    APP_RESET_CSS,
     collectCssVars,
     createAssetCollector,
     ASSET_BASE_TOKEN,
@@ -269280,6 +272773,211 @@ const MeldexExportImage = (() => {
       throw new Error('PNG生成に失敗: ' + (errText || res.statusText));
     }
     return await res.blob();
+  }
+
+  // ================================================================
+  // ブラウザ自身のレイアウトエンジンによる画像化（SVG foreignObject）
+  // ================================================================
+  // html2canvas は writing-mode（縦書き）・ルビ・縦中横・text-orientation を解釈できず、
+  // 縦書きのシナリオやノートを画像化すると文字が横倒し・重なりで崩れる。配布版には
+  // サーバー側の画像化エンジンも同梱されないため、自己完結HTMLを画面外の iframe で
+  // レイアウトし、その結果を SVG foreignObject 経由でキャンバスへ描く。描画は画面と
+  // 同じエンジンが行うので、縦書き・ルビ・装飾がエディタ表示と一致する。
+  // 外部リソースは読めない（SVG画像の制約）ため、フォント・画像は data URI 埋め込み済みの
+  // HTML を渡すこと。data URI の SVG は Chromium でキャンバスを汚染しない。
+  const NATIVE_MAX_CANVAS_EDGE = 32000;
+  const NATIVE_MAX_CANVAS_AREA = 120 * 1000 * 1000;
+
+  function _escapeStyleForXhtml(cssText) {
+    // XHTML の <style> 本文では & と < をエスケープする（CDATA を使わず確実に通す）。
+    return String(cssText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  }
+
+  // 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず
+  // 出力が永久に止まるため、各フレームを最大 80ms でタイマーへ切り替える。
+  function _nextFrames(count) {
+    const one = () => new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      try { requestAnimationFrame(finish); } catch {}
+      setTimeout(finish, 80);
+    });
+    let chain = Promise.resolve();
+    for (let i = 0; i < (count || 1); i++) chain = chain.then(one);
+    return chain;
+  }
+
+  async function _waitForFrameAssets(doc) {
+    try { if (doc.fonts?.ready) await doc.fonts.ready; } catch {}
+    const images = Array.from(doc.images || []);
+    await Promise.all(images.map(img => (img.complete ? null : new Promise(resolve => {
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', resolve, { once: true });
+    }))));
+    await _nextFrames(2);
+  }
+
+  /**
+   * 自己完結HTMLをブラウザのレイアウトエンジンでPNG化する。
+   * @param {string} html - 完全なHTML文書（外部参照なし）
+   * @param {Object} options - { viewportWidth, viewportHeight, dpr, captureSelector, padding, background }
+   * @returns {Promise<Blob>}
+   */
+  async function renderHtmlToPngNative(html, options) {
+    const opts = options || {};
+    const viewportWidth = Math.max(320, Math.round(Number(opts.viewportWidth) || 1200));
+    const viewportHeight = Math.max(200, Math.round(Number(opts.viewportHeight) || 800));
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.tabIndex = -1;
+    iframe.style.cssText = `position:fixed;left:-100000px;top:0;width:${viewportWidth}px;height:${viewportHeight}px;border:0;visibility:hidden;pointer-events:none;`;
+    document.body.appendChild(iframe);
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('画像化用の描画がタイムアウトしました')), 60000);
+        iframe.onload = () => { clearTimeout(timer); resolve(); };
+        iframe.srcdoc = html;
+      });
+      const doc = iframe.contentDocument;
+      if (!doc?.body) throw new Error('画像化用の文書を構築できませんでした');
+      await _waitForFrameAssets(doc);
+      const target = (opts.captureSelector && doc.querySelector(opts.captureSelector)) || doc.body;
+      const padding = Math.max(0, Number(opts.padding) || 0);
+      // 縦書きの本文は左（負の座標）方向へはみ出す。foreignObject は文書の原点より左上を
+      // 描けないため、はみ出し分だけ本文を右下へずらし、文書幅も同じだけ広げてから測る
+      // （本文の折り返し幅は変えない）。
+      const measureMin = () => {
+        let mx = Infinity; let my = Infinity;
+        const nodes = opts.boundsSelector ? target.querySelectorAll(opts.boundsSelector) : [target, ...target.querySelectorAll('*')];
+        nodes.forEach(node => {
+          const r = node.getBoundingClientRect();
+          if (!r.width && !r.height) return;
+          mx = Math.min(mx, r.left + (iframe.contentWindow.scrollX || 0));
+          my = Math.min(my, r.top + (iframe.contentWindow.scrollY || 0));
+        });
+        return { mx: Number.isFinite(mx) ? mx : 0, my: Number.isFinite(my) ? my : 0 };
+      };
+      const firstMin = measureMin();
+      const shiftX = firstMin.mx < padding ? Math.ceil(padding - firstMin.mx) : 0;
+      const shiftY = firstMin.my < padding ? Math.ceil(padding - firstMin.my) : 0;
+      if (shiftX || shiftY) {
+        const bodyStyle = iframe.contentWindow.getComputedStyle(doc.body);
+        doc.body.style.paddingLeft = (parseFloat(bodyStyle.paddingLeft) || 0) + shiftX + 'px';
+        doc.body.style.paddingTop = (parseFloat(bodyStyle.paddingTop) || 0) + shiftY + 'px';
+        iframe.style.width = (viewportWidth + shiftX) + 'px';
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      // 撮影範囲 = 対象要素の外接矩形（はみ出した子孫を含む）。縦書きの右起点レイアウトでも
+      // 左右にはみ出た部分を取りこぼさないよう、子孫の矩形も合わせて測る。
+      const rootRect = target.getBoundingClientRect();
+      let minX = rootRect.left; let minY = rootRect.top; let maxX = rootRect.right; let maxY = rootRect.bottom;
+      if (target !== doc.body) {
+        // boundsSelector があれば内容を持つ要素だけで外接矩形を測る（min-height:100% 等の
+        // 入れ物が作る余白を画像へ含めない）
+        const boundNodes = opts.boundsSelector ? target.querySelectorAll(opts.boundsSelector) : target.querySelectorAll('*');
+        if (opts.boundsSelector && boundNodes.length) {
+          minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+        }
+        boundNodes.forEach(node => {
+          const r = node.getBoundingClientRect();
+          if (!r.width && !r.height) return;
+          minX = Math.min(minX, r.left); minY = Math.min(minY, r.top);
+          maxX = Math.max(maxX, r.right); maxY = Math.max(maxY, r.bottom);
+        });
+      } else {
+        maxX = Math.max(maxX, doc.documentElement.scrollWidth);
+        maxY = Math.max(maxY, doc.documentElement.scrollHeight);
+        minX = Math.min(minX, 0); minY = Math.min(minY, 0);
+      }
+      const scrollX = iframe.contentWindow.scrollX || 0;
+      const scrollY = iframe.contentWindow.scrollY || 0;
+      const x0 = Math.floor(minX + scrollX - padding);
+      const y0 = Math.floor(minY + scrollY - padding);
+      const width = Math.max(1, Math.ceil(maxX - minX + padding * 2));
+      const height = Math.max(1, Math.ceil(maxY - minY + padding * 2));
+      // foreignObject の大きさが描画時の表示領域になる。縦書きは1行の長さを表示領域の高さから
+      // 決めるため、測定した iframe の表示領域より小さくしない（小さいと行の長さが変わる）。
+      const docWidth = Math.max(width + Math.max(0, x0), doc.documentElement.scrollWidth, doc.documentElement.clientWidth);
+      const docHeight = Math.max(height + Math.max(0, y0), doc.documentElement.scrollHeight, doc.documentElement.clientHeight);
+
+      let background = opts.background || '';
+      if (!background) {
+        const bodyBg = iframe.contentWindow.getComputedStyle(doc.body).backgroundColor;
+        const htmlBg = iframe.contentWindow.getComputedStyle(doc.documentElement).backgroundColor;
+        background = [bodyBg, htmlBg].find(c => c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') || '';
+      }
+
+      // 組方向が親と異なる要素（横書きの中の縦書き本文など）は、行の長さの基準が
+      // foreignObject 内では通常表示と変わり、極端に短い行で組まれる。測定した行方向の
+      // 長さ（縦書きは高さ、横書きは幅）を明示して、同じ位置で改行させる。
+      const frameWin = iframe.contentWindow;
+      [doc.body, ...doc.body.querySelectorAll('*')].forEach(node => {
+        const parent = node.parentElement;
+        if (!parent) return;
+        const mode = frameWin.getComputedStyle(node).writingMode;
+        if (mode === frameWin.getComputedStyle(parent).writingMode) return;
+        const vertical = /^vertical|^sideways/.test(mode);
+        if (vertical && !node.style.height) node.style.height = node.getBoundingClientRect().height + 'px';
+        if (!vertical && !node.style.width) node.style.width = node.getBoundingClientRect().width + 'px';
+      });
+
+      const serializer = new XMLSerializer();
+      const styles = Array.from(doc.querySelectorAll('style')).map(node => node.textContent || '').join('\n');
+      const htmlAttrs = Array.from(doc.documentElement.attributes)
+        .filter(attr => attr.name !== 'xmlns' && attr.name !== 'style')
+        .map(attr => ` ${attr.name}="${MeldexEscape.html(attr.value)}"`).join('');
+      // foreignObject 内では文書幅が foreignObject の幅になる。測定した iframe と同じ文書幅に
+      // 固定し、中央寄せ・右寄せ（縦書き）の配置が画像化時にずれないようにする。
+      const layoutWidth = doc.documentElement.clientWidth || (viewportWidth + shiftX);
+      const layoutHeight = doc.documentElement.clientHeight || viewportHeight;
+      const htmlStyle = ` style="width:${layoutWidth}px;min-width:${layoutWidth}px;max-width:${layoutWidth}px;min-height:${layoutHeight}px;${MeldexEscape.html(doc.documentElement.getAttribute('style') || '')}"`;
+      // body を XHTML として直列化（<style>/<script> は除外済みの複製を使う）
+      const bodyClone = doc.body.cloneNode(true);
+      bodyClone.querySelectorAll('script, style, link').forEach(node => node.remove());
+      const bodyXml = serializer.serializeToString(bodyClone);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${x0} ${y0} ${width} ${height}">`
+        + `<foreignObject x="0" y="0" width="${docWidth}" height="${docHeight}">`
+        + `<html xmlns="http://www.w3.org/1999/xhtml"${htmlAttrs}${htmlStyle}><head><style>${_escapeStyleForXhtml(styles)}</style></head>${bodyXml}</html>`
+        + '</foreignObject></svg>';
+
+      const image = new Image();
+      image.decoding = 'sync';
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error('画像化用のSVGを読み込めませんでした'));
+        image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      });
+      // 非表示ウィンドウでは decode() が保留されることがあるため上限時間を設ける（読込自体は onload で完了済み）
+      try { await Promise.race([image.decode?.(), new Promise(resolve => setTimeout(resolve, 2000))]); } catch {}
+
+      // キャンバス上限を超える場合は解像度を下げる（長大なシナリオでも失敗させない）
+      const desiredScale = Math.max(1, Number(opts.dpr) || Math.round(window.devicePixelRatio || 1) || 1);
+      const scale = Math.min(
+        desiredScale,
+        NATIVE_MAX_CANVAS_EDGE / width,
+        NATIVE_MAX_CANVAS_EDGE / height,
+        Math.sqrt(NATIVE_MAX_CANVAS_AREA / (width * height)),
+      );
+      // これ以上縮めると文字が判読できない。崩れた画像を作らず、代わりの手段を案内する。
+      if (!(scale >= 0.2)) {
+        throw new Error('内容が大きすぎるため画像にできません。折り返し表示にするか、HTMLとして保存してください');
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const g = canvas.getContext('2d');
+      if (background) {
+        g.fillStyle = background;
+        g.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      g.scale(scale, scale);
+      g.drawImage(image, 0, 0, width, height);
+      return await new Promise((resolve, reject) => {
+        canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error('Canvas→Blob変換に失敗'))), 'image/png');
+      });
+    } finally {
+      iframe.remove();
+    }
   }
 
   // ================================================================
@@ -269391,10 +273089,36 @@ const MeldexExportImage = (() => {
     try {
       let blob = null;
 
-      if (!opts.useFallbackOnly && typeof MeldexExportHtml !== 'undefined') {
+      // 縦書き・ルビを含み得るビューは、まずブラウザ自身のレイアウトで画像化する。
+      let nativeHtml = '';
+      let nativeError = null;
+      if (opts.native && !opts.useFallbackOnly) {
         try {
-          // 方式C: HTML生成 → サーバーサイドレンダリング
-          const html = await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {});
+          const html = typeof opts.buildHtml === 'function'
+            ? await opts.buildHtml()
+            : (typeof MeldexExportHtml !== 'undefined' ? await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {}) : '');
+          nativeHtml = html || '';
+          if (html) {
+            blob = await renderHtmlToPngNative(html, {
+              viewportWidth: opts.nativeViewportWidth || contentEl?.scrollWidth || 1200,
+              viewportHeight: opts.nativeViewportHeight || 800,
+              dpr: opts.dpr,
+              captureSelector: opts.captureSelector,
+              boundsSelector: opts.boundsSelector,
+              padding: opts.capturePadding,
+            });
+          }
+        } catch (nativeErr) {
+          console.warn('[export-image] native render failed, falling back:', nativeErr);
+          nativeError = nativeErr;
+          blob = null;
+        }
+      }
+
+      if (!blob && !opts.useFallbackOnly && typeof MeldexExportHtml !== 'undefined') {
+        try {
+          // 方式C: HTML生成 → サーバーサイドレンダリング（専用スナップショットがあればそれを使う）
+          const html = nativeHtml || await MeldexExportHtml.exportToHtml(contentEl, opts.htmlOptions || {});
           blob = await _exportViaServer(html, {
             dpr: opts.dpr,
             width: opts.width,
@@ -269405,6 +273129,15 @@ const MeldexExportImage = (() => {
         }
       }
 
+      // html2canvas は縦書き・ルビを描けない。縦書きを含み得るビューでは崩れた画像を
+      // 黙って保存せず、失敗として知らせる（旧経路へ戻らない）。
+      const legacyFallbackForbidden = typeof opts.forbidLegacyFallback === 'function'
+        ? !!opts.forbidLegacyFallback()
+        : !!opts.forbidLegacyFallback;
+      if (!blob && legacyFallbackForbidden) {
+        showStatus('PNG の生成に失敗しました' + (nativeError?.message ? ': ' + nativeError.message : ''), true);
+        return;
+      }
       if (!blob) {
         // フォールバック: html2canvas
         blob = await _fallbackHtml2Canvas(contentEl, opts);
@@ -269472,18 +273205,11 @@ const MeldexExportImage = (() => {
         : 'エントリレイアウト',
     };
 
-    // シナリオは特別処理: rAF×2 で縦書きレンダリング完了を待つ
-    if (viewType === 'scriptnote') {
-      const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
-      if (editor) {
-        try { editor._syncAllFromDom?.(); } catch {}
-        try { editor._render(); } catch {}
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }
-    }
+    // シナリオの描画の確定（入力中セルの再描画・縦書き寸法の待機）は
+    // buildScriptNoteExportDocument が行う。ここで全体を描き直すと行選択が失われる。
     // ノートの縦書きも組み直しに時間がかかるため、同じく描画完了を待ってから撮影する
     if (viewType === 'page' && window.MeldexNoteWritingMode?.isActive?.()) {
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await _nextFrames(2);
     }
 
     const el = getEl();
@@ -269502,7 +273228,38 @@ const MeldexExportImage = (() => {
     }
 
     const htmlOptions = _getHtmlOptionsForView(viewType);
+    // シナリオは本文・タイプ書式・縦書き・ルビをエディタと同じに再現する専用スナップショットを使う
+    if (viewType === 'scriptnote' && typeof buildScriptNoteExportDocument === 'function') {
+      const editor = typeof _sn2GetActiveEditor === 'function' ? _sn2GetActiveEditor() : null;
+      let snapshot = null;
+      await exportToPng(el, {
+        title,
+        native: true,
+        buildHtml: async () => {
+          snapshot = await buildScriptNoteExportDocument(editor, { purpose: 'image' });
+          return snapshot?.html || '';
+        },
+        get nativeViewportWidth() { return snapshot?.viewportWidth || 1200; },
+        get nativeViewportHeight() { return snapshot?.viewportHeight || 800; },
+        captureSelector: '.sn2-scroll',
+        boundsSelector: '.sn2-header, .sn2-row, .sn2-page-break, .sn2-spread-border',
+        capturePadding: 16,
+        forbidLegacyFallback: true,
+        htmlOptions,
+        ignoreElements: _ignoreElementsForView(viewType),
+      });
+      return;
+    }
+    // ノートの縦書きは1行の長さが本文領域の高さで決まる。画像も画面と同じ高さで組む。
+    if (viewType === 'page') {
+      const pane = el.closest?.('.page-scroll, .editor-scroll, .pane-content') || el.parentElement || el;
+      extraOptions.nativeViewportWidth = Math.max(320, Math.round(pane.clientWidth || el.clientWidth || 1200));
+      extraOptions.nativeViewportHeight = Math.max(320, Math.round(pane.clientHeight || el.clientHeight || window.innerHeight || 800));
+    }
     await exportToPng(el, {
+      native: viewType === 'page',
+      captureSelector: viewType === 'page' ? '#page-content' : undefined,
+      forbidLegacyFallback: viewType === 'page' && !!window.MeldexNoteWritingMode?.isActive?.(),
       title,
       htmlOptions,
       layoutViewport: viewType === 'database' ? { width: window.innerWidth, height: window.innerHeight } : undefined,
@@ -269585,6 +273342,10 @@ const MeldexExportImage = (() => {
   function _getHtmlOptionsForView(viewType) {
     switch (viewType) {
       case 'page':
+        if (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportOptions) {
+          const pc = document.getElementById('page-content');
+          return MeldexExportHtml.noteExportOptions(pc, !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isActive()), '');
+        }
         return {
           cssFiles: ['gb-tools.css', 'gb-ui.css'],
           // 組方向を画像にも反映する。スタイルの本体は gb-export-html.js の
@@ -269656,6 +273417,7 @@ const MeldexExportImage = (() => {
   return {
     exportToPng,
     exportCurrentView,
+    renderHtmlToPngNative,
   };
 
 })();
@@ -270187,15 +273949,6 @@ function _restoreToolMenuModalFocus(trigger) {
   try { trigger.focus({ preventScroll: true }); } catch { try { trigger.focus(); } catch {} }
 }
 
-function _setScriptNoteOpenMessage(host, text, depth = 0, isError = false) {
-  if (!host) return;
-  const message = document.createElement('div');
-  message.className = 'scriptnote-open-message' + (isError ? ' is-error' : '');
-  message.style.setProperty('--scriptnote-open-indent', (depth * 16 + 8) + 'px');
-  message.textContent = text;
-  host.replaceChildren(message);
-}
-
 function showScriptNoteOpenModal(mode = 'open', options = {}) {
   const isImport = mode === 'import';
   const existing = document.querySelector(`.gb-scriptnote-open-overlay[data-scriptnote-open-mode="${isImport ? 'import' : 'open'}"]`);
@@ -270225,7 +273978,7 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
   content.innerHTML = `
       <div class="field gb-scriptnote-open-field">
         <label id="scriptnote-open-tree-label" class="gb-scriptnote-open-label">フォルダツリーから${isImport ? '旧シナリオ' : 'シナリオ'}を選択</label>
-        <div id="scriptnote-open-tree" class="gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
+        <div id="scriptnote-open-tree" class="gb-folder-picker-embed gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
       </div>
       <div id="scriptnote-open-selection" class="gb-scriptnote-open-selection" aria-live="polite"></div>
       <div class="gb-scriptnote-open-hint">
@@ -270252,7 +274005,7 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
     extraClass: 'gb-scriptnote-open-modal',
     geometryKey: isImport ? 'scriptnote-import-dialog' : 'scriptnote-open-dialog',
     minWidth: '0',
-    initialFocus: '#scriptnote-open-tree',
+    initialFocus: '#scriptnote-open-tree .gb-folder-picker-search',
     returnFocus: () => trigger,
     closeLabel: isImport ? '旧シナリオからインポートを閉じる' : 'シナリオを開くを閉じる',
     closeOnEsc: true,
@@ -270302,153 +274055,51 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
     if (openScenarioInScriptNote(selectedPath, label)) return;
     showStatus('シナリオを開けませんでした', true);
   };
-  const updateSelection = (path, label, rowEl) => {
+  const updateSelection = (path, label) => {
     selectedPath = path || '';
     selectedLabel = label || '';
-    treeHost.querySelectorAll('.scriptnote-open-row.is-selected').forEach(el => {
-      el.classList.remove('is-selected');
-      el.setAttribute('aria-selected', 'false');
-    });
-    if (rowEl) {
-      rowEl.classList.add('is-selected');
-      rowEl.setAttribute('aria-selected', 'true');
-    }
     selectionEl.textContent = selectedPath
       ? `選択中: ${selectedLabel || selectedPath.split('/').pop().replace(/\.\w+$/, '')}`
       : '選択中: なし';
     openBtn.disabled = !selectedPath;
   };
-  const buildBrowseUrl = (path, rootPath) => {
-    let url = '/browse?path=' + encodeURIComponent(path) + '&all_files=true';
-    if (rootPath) url += '&root=' + encodeURIComponent(rootPath);
-    return url;
-  };
-  const createNodeRow = (item, depth, rootPath) => {
-    const wrapper = document.createElement('div');
-    const row = document.createElement('div');
-    row.className = 'scriptnote-open-row';
-    const itemLabel = item.name || item.label || item.path?.split('/').pop() || '';
-    const rowKey = String(item.path || itemLabel || 'item').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'item';
-    row.dataset.e2eId = 'scriptnote-open-row-' + rowKey;
-    row.dataset.scriptnoteOpenPath = item.path || '';
-    row.style.setProperty('--scriptnote-open-indent', (depth * 16 + 4) + 'px');
-    const isFolder = item.type === 'folder' || item._isRoot;
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'scriptnote-open-toggle';
-    toggle.dataset.e2eId = 'scriptnote-open-toggle-' + rowKey;
-    toggle.dataset.scriptnoteOpenPath = item.path || '';
-    if (isFolder) toggle.innerHTML = lucide('chevronRight', 10); else toggle.textContent = '';
-    toggle.setAttribute('aria-label', isFolder ? 'フォルダを展開: ' + itemLabel : 'フォルダではありません');
-    if (!isFolder) {
-      toggle.disabled = true;
-      toggle.tabIndex = -1;
-      toggle.setAttribute('aria-hidden', 'true');
-    }
-    const label = document.createElement('div');
-    label.className = 'scriptnote-open-row-label';
-    label.textContent = itemLabel;
-    const isSelectableItem = isImport ? isScenarioBrowseItem(item) : isScriptNoteBrowseItem(item);
-    row.classList.toggle('is-selectable', isSelectableItem);
-    row.classList.toggle('is-muted', !isFolder && !isSelectableItem);
-    row.appendChild(toggle);
-    row.appendChild(label);
-    wrapper.appendChild(row);
-    const children = document.createElement('div');
-    children.className = 'scriptnote-open-children';
-    children.hidden = true;
-    wrapper.appendChild(children);
-
-    if (isFolder) {
-      row.setAttribute('role', 'button');
-      row.tabIndex = 0;
-      row.setAttribute('aria-expanded', 'false');
-      row.setAttribute('aria-label', 'フォルダを展開: ' + itemLabel);
-      const toggleFolder = async () => {
-        const willOpen = children.hidden;
-        row.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-        if (!willOpen) {
-          children.hidden = true;
-          toggle.innerHTML = lucide('chevronRight', 10);
-          return;
-        }
-        toggle.innerHTML = lucide('chevronDown', 10);
-        children.hidden = false;
-        if (children.dataset.loaded === 'true') return;
-        _setScriptNoteOpenMessage(children, '読み込み中...', depth + 1);
-        try {
-          const items = await apiFetch(buildBrowseUrl(item.path, rootPath));
-          const visibleItems = (items || [])
-            .filter(child => child && (child.type === 'folder' || (isImport ? isScenarioBrowseItem(child) : isScriptNoteBrowseItem(child))))
-            .sort((a, b) => {
-              const af = a.type === 'folder' ? 0 : 1;
-              const bf = b.type === 'folder' ? 0 : 1;
-              if (af !== bf) return af - bf;
-              return String(a.name || '').localeCompare(String(b.name || ''), 'ja');
-            });
-          children.innerHTML = '';
-          if (!visibleItems.length) {
-            _setScriptNoteOpenMessage(children, isImport ? '旧シナリオなし' : 'シナリオなし', depth + 1);
-          } else {
-            visibleItems.forEach(child => children.appendChild(createNodeRow(child, depth + 1, rootPath)));
-          }
-          children.dataset.loaded = 'true';
-        } catch {
-          _setScriptNoteOpenMessage(children, '読み込み失敗', depth + 1, true);
-        }
-      };
-      toggle.addEventListener('click', (e) => { e.stopPropagation(); toggleFolder(); });
-      row.addEventListener('click', toggleFolder);
-      row.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        toggleFolder();
-      });
-    } else {
-      row.setAttribute('role', 'button');
-      row.tabIndex = isSelectableItem ? 0 : -1;
-      row.setAttribute('aria-selected', selectedPath && item.path === selectedPath ? 'true' : 'false');
-      row.setAttribute('aria-label', itemLabel);
-      row.addEventListener('click', () => updateSelection(item.path, item.name || '', row));
-      row.addEventListener('dblclick', () => {
-        updateSelection(item.path, item.name || '', row);
+  // フォルダツリーは共通のフォルダ選択部品を埋め込む（UI共通ルール 4.1）
+  const isSelectableItem = item => (isImport ? isScenarioBrowseItem(item) : isScriptNoteBrowseItem(item));
+  const browser = typeof window.GBFolderPicker?.createBrowser === 'function'
+    ? window.GBFolderPicker.createBrowser({
+      selectFiles: true,
+      selectFolders: false,
+      fileFilter: isSelectableItem,
+      initialPath: selectedPath,
+      revealPath: selectedPath,
+      currentLabel: isImport ? '選択中の旧シナリオ:' : '選択中のシナリオ:',
+      emptyText: isImport ? 'この階層にフォルダまたは旧シナリオはありません。' : 'この階層にフォルダまたはシナリオはありません。',
+      onSelect: selection => {
+        if (selection?.kind === 'file') updateSelection(selection.path, selection.name || '');
+      },
+      onActivate: selection => {
+        if (selection?.kind !== 'file') return;
+        updateSelection(selection.path, selection.name || '');
         submit();
-      });
-      row.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        updateSelection(item.path, item.name || '', row);
-        if (e.key === 'Enter') submit();
-      });
-      if (selectedPath && item.path === selectedPath) updateSelection(item.path, item.name || '', row);
-    }
-    return wrapper;
-  };
-  const renderTree = async () => {
-    _setScriptNoteOpenMessage(treeHost, '読み込み中...');
-    try {
-      const roots = await apiFetch('/outliner-roots');
-      treeHost.innerHTML = '';
-      if (!Array.isArray(roots) || !roots.length) {
-        _setScriptNoteOpenMessage(treeHost, 'フォルダツリーがありません');
-        return;
-      }
-      roots.forEach(root => {
-        const rootNode = { ...root, type: 'folder', _isRoot: true };
-        treeHost.appendChild(createNodeRow(rootNode, 0, root.path));
-      });
-      if (!selectedPath) updateSelection('', '', null);
-    } catch {
-      _setScriptNoteOpenMessage(treeHost, 'フォルダツリーの読み込みに失敗しました', 0, true);
-    }
-  };
+      },
+    })
+    : null;
+  if (browser) {
+    browser.tree.setAttribute('aria-labelledby', 'scriptnote-open-tree-label');
+    treeHost.replaceChildren(browser.element);
+  } else {
+    treeHost.textContent = 'フォルダツリーを表示できませんでした';
+  }
+  updateSelection(selectedPath, selectedLabel);
   cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
   openBtn.addEventListener('click', submit);
   modalApi.modal.addEventListener('keydown', (e) => {
+    // ツリー行のEnterは共通部品側で選択と確定を行う
+    if (e.target.closest('.gb-folder-picker-tree, .gb-folder-picker-search-results')) return;
     if (e.key === 'Enter' && !openBtn.disabled && !e.target.closest('button')) submit();
   });
-  renderTree();
   modalApi.open();
+  browser?.start();
   return modalApi;
 }
 
@@ -270816,6 +274467,8 @@ function buildToolMenuItems(toolType, component) {
       { label: 'テンプレート...', action: () => { const comp = formComponent; if (comp && typeof comp._showTemplatePicker === 'function') comp._showTemplatePicker(); else showStatus('シナリオを開いてから選んでください', true); }, disabled: !hasFile },
       { label: '現在のシナリオからテンプレートを作成...', action: () => { const comp = formComponent; if (comp && typeof comp._addTemplatePreset === 'function') comp._addTemplatePreset({ allowOverwrite: false, okText: '登録' }); else showStatus('シナリオを開いてから作成してください', true); }, disabled: !hasFile },
       { label: '検索・置換', action: context => { if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace('scriptnote', { trigger: context?.trigger }); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
+      { label: '公開を更新', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('scriptnote'); }, disabled: !hasFile },
     ],
     database: [
       { label: 'シートテンプレート...', action: context => { if (typeof showTemplateGalleryModal === 'function') showTemplateGalleryModal(state.currentDbPath || currentPath, context?.trigger); }, disabled: !hasFile },
@@ -271671,6 +275324,7 @@ async function _exportDictFile(options = {}) {
     globalIndexPromise: null,
     globalIndexFiles: null,
     globalIndexLoadedAt: 0,
+    globalIndexError: '',
     floatingChrome: null,
     leftChromeSyncRaf: 0,
     leftChromePollTimer: 0,
@@ -271740,7 +275394,15 @@ async function _exportDictFile(options = {}) {
     html: 'html',
     entity: 'entity',
     folder: 'folder',
+    scenario: 'scriptnote',
   };
+
+  // navOpen（gb-app.part01.part03.js）が開ける種類。ここに無い種類は理由を表示する。
+  const NAV_OPENABLE_TYPES = new Set([
+    'page', 'csv', 'form-app', 'map', 'board', 'entity', 'pivot', 'database',
+    'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
+    'scriptnote', 'media', 'image', 'video', 'audio', 'html', 'folder', 'archive', 'calendar',
+  ]);
 
   const GLOBAL_INDEX_PAGE_CATEGORIES = new Set(['text', 'data', 'chat', 'archive', 'calendar', 'other']);
 
@@ -271779,6 +275441,28 @@ async function _exportDictFile(options = {}) {
 
   function _notifyActionUnavailable(label) {
     if (typeof showStatus === 'function') showStatus(`${label}を開けませんでした`, true);
+  }
+
+  // 呼び出し先の機能がこの画面に読み込まれていない時の表示。黙って終わらせない。
+  function _notifyUnavailableHere(label) {
+    if (typeof showStatus === 'function') showStatus(`「${label}」はこの画面では使えません`, true);
+    return false;
+  }
+
+  // 例外の文言は内部向けのことが多い。日本語の説明を含む時だけ利用者へ見せる。
+  function _userFacingReason(error) {
+    const own = typeof error?.userMessage === 'string' ? error.userMessage.trim() : '';
+    if (own) return own;
+    const message = String(error?.message || (typeof error === 'string' ? error : '') || '').trim();
+    if (message && /[぀-ヿ㐀-鿿]/.test(message) && !/\b(?:is not|undefined|null|TypeError|ReferenceError|SyntaxError)\b/.test(message)) {
+      return message.length > 120 ? `${message.slice(0, 120)}…` : message;
+    }
+    return '予期しない問題が起きました';
+  }
+
+  function _notifyActionFailed(label, error) {
+    console.error('[command-palette] action failed', error);
+    if (typeof showStatus === 'function') showStatus(`「${label}」を実行できませんでした（${_userFacingReason(error)}）`, true);
   }
 
   function _openSettings(panel) {
@@ -271834,15 +275518,10 @@ async function _exportDictFile(options = {}) {
   }
 
   function _openPanel(type, item) {
-    if (item?.open && typeof item.open === 'function') {
-      item.open();
-      return;
-    }
-    if (typeof _openPanelMenuItem === 'function') {
-      _openPanelMenuItem(type);
-      return;
-    }
-    if (typeof addPanelMenuTool === 'function') addPanelMenuTool(type);
+    if (item?.open && typeof item.open === 'function') return item.open();
+    if (typeof _openPanelMenuItem === 'function') return _openPanelMenuItem(type);
+    if (typeof addPanelMenuTool === 'function') return addPanelMenuTool(type);
+    return _notifyUnavailableHere(`${item?.label || type}パネルを開く`);
   }
 
   function _entryOpenPath(entry) {
@@ -271897,29 +275576,45 @@ async function _exportDictFile(options = {}) {
     state.globalIndexFiles = null;
     state.globalIndexLoadedAt = 0;
     state.globalIndexPromise = null;
+    state.globalIndexError = '';
   }
 
+  function _isNavOpenable(entry, type) {
+    if (type === 'archive') return !!entry?.archivePath;
+    return NAV_OPENABLE_TYPES.has(type);
+  }
+
+  // 戻り値: false=開けなかった（理由は表示済み）、それ以外=開く処理の結果（Promiseのこともある）。
   function _openFile(entry) {
     const openPath = _entryOpenPath(entry);
-    if (!openPath) return;
+    const label = entry?.label || entry?.name || openPath;
+    if (!openPath) {
+      if (typeof showStatus === 'function') showStatus(`「${label || '項目'}」の場所が分からないため開けません`, true);
+      return false;
+    }
     const type = entry.type || _navTypeForEntry(entry);
-    const label = entry.label || entry.name || openPath;
     const mediaType = _mediaTypeForEntry(entry, type);
+    if (!_isNavOpenable(entry, type)) {
+      if (typeof showStatus === 'function') showStatus(`「${label}」は、ここから開けない種類のファイルです`, true);
+      return false;
+    }
     if (typeof navOpen === 'function') {
-      navOpen({
+      return navOpen({
         ...entry,
         type,
         label,
         path: openPath,
         mediaType,
       });
-      return;
     }
-    if (type === 'page' && typeof openPage === 'function') openPage(label, openPath);
+    if (type === 'page' && typeof openPage === 'function') return openPage(label, openPath);
+    return _notifyUnavailableHere(`${label}を開く`);
   }
 
-  function _openUnifiedSearchResult(entry) {
-    _openFile(entry);
+  async function _openUnifiedSearchResult(entry) {
+    const opened = _openFile(entry);
+    if (opened === false) return false;
+    await opened;
     const firstMatch = Array.isArray(entry?.matches) ? entry.matches[0] : null;
     const detail = {
       path: _entryOpenPath(entry),
@@ -271933,6 +275628,7 @@ async function _exportDictFile(options = {}) {
     [0, 180, 600].forEach(delay => setTimeout(() => {
       window.dispatchEvent(new CustomEvent('meldex:search-result-open', { detail }));
     }, delay));
+    return true;
   }
 
   function _readRecentItems() {
@@ -271944,12 +275640,27 @@ async function _exportDictFile(options = {}) {
     }
   }
 
+  function _isAbsolutePathText(path) {
+    return /^[a-z]:\//i.test(path) || path.startsWith('//');
+  }
+
+  // 照合キー。索引の項目は root_type と相対パス・絶対パスを持つ。最近使った項目
+  // （addRecent の保存形式）は root_type を持たず、パスは保存先からの相対パスか
+  // 保存先外の絶対パスなので、root_type の無い相対パスは保存先（vault）からの
+  // 相対パスとして照合し、絶対パスは索引の abs_path と照合する。
   function _entryLocationKeys(entry) {
     const keys = [];
     const root = _normalize(_entryRootKey(entry));
-    const path = _normalize(String(entry?.path || '').replace(/\\/g, '/').replace(/^\/+/, ''));
+    const rawPath = String(entry?.path || '').replace(/\\/g, '/');
+    const path = _normalize(rawPath.replace(/^\/+/, ''));
     const absolute = _normalize(String(entry?.abs_path || entry?.absPath || '').replace(/\\/g, '/'));
-    if (path) keys.push(`${root}\n${path}`);
+    if (path && _isAbsolutePathText(rawPath)) {
+      keys.push(`absolute\n${_normalize(rawPath)}`);
+    } else if (path) {
+      keys.push(`${root || 'vault'}\n${path}`);
+      // macOS 等の絶対パス（/Users/...）も取りこぼさない。
+      if (rawPath.startsWith('/')) keys.push(`absolute\n${_normalize(rawPath)}`);
+    }
     if (absolute) keys.push(`absolute\n${absolute}`);
     return keys;
   }
@@ -271957,13 +275668,29 @@ async function _exportDictFile(options = {}) {
   function _recentCommands() {
     const indexedKeys = new Set((state.globalIndexFiles || []).flatMap(_entryLocationKeys));
     if (!indexedKeys.size) return [];
+    const indexedByKey = new Map();
+    (state.globalIndexFiles || []).forEach((file) => {
+      _entryLocationKeys(file).forEach((key) => { if (!indexedByKey.has(key)) indexedByKey.set(key, file); });
+    });
     const seen = new Set();
     return _readRecentItems()
       .filter(entry => entry && entry.path)
       .filter(entry => {
-        const match = _entryLocationKeys(entry).find(key => indexedKeys.has(key));
-        if (!match || seen.has(match)) return false;
-        seen.add(match);
+        // シート・カレンダーはフォルダなので索引に本体が無く、フォルダノート（名前/名前.md）だけが
+        // 載る。以前は最近使ったシートが一覧に出なかった。フォルダノートでも照合する。
+        const folderNote = (value) => {
+          const text = String(value || '').replace(/[\\/]+$/, '');
+          const name = text.split(/[\\/]/).pop();
+          return text && name ? `${text}/${name}.md` : '';
+        };
+        const isFolderDocument = ['pivot', 'database', 'calendar', 'db'].includes(String(entry.type || ''));
+        const candidates = isFolderDocument
+          ? [entry, { ...entry, path: folderNote(entry.path), abs_path: entry.abs_path ? folderNote(entry.abs_path) : entry.abs_path }]
+          : [entry];
+        const match = candidates.flatMap(_entryLocationKeys).find(key => indexedKeys.has(key));
+        const file = match ? indexedByKey.get(match) : null;
+        if (!file || seen.has(file)) return false;
+        seen.add(file);
         return true;
       })
       .slice(0, MAX_RECENT_ITEMS)
@@ -272027,9 +275754,11 @@ async function _exportDictFile(options = {}) {
         const files = Array.isArray(data?.files) ? data.files : [];
         state.globalIndexFiles = files;
         state.globalIndexLoadedAt = Date.now();
+        state.globalIndexError = '';
         return files;
       })().catch((error) => {
         console.warn('[command-palette] global index load failed', error);
+        state.globalIndexError = `ファイル一覧を読み込めませんでした（${_userFacingReason(error)}）。ファイル名の候補と最近使った項目を表示できません`;
         return state.globalIndexFiles || [];
       }).finally(() => {
         state.globalIndexPromise = null;
@@ -272084,10 +275813,6 @@ async function _exportDictFile(options = {}) {
     }));
   }
 
-  function _layoutSubcommands(layout) {
-    return [];
-  }
-
   function _layoutCommands() {
     return _layoutEntries().map((layout) => {
       const active = document.body?.dataset?.appLayoutActive === layout.id;
@@ -272102,7 +275827,6 @@ async function _exportDictFile(options = {}) {
           keywords: ['app layout', 'アプリレイアウト', layout.id, layout.toolType || ''],
           meta: active ? '選択中' : '切替',
           priority: active ? 85 : 70,
-          subcommands: () => _layoutSubcommands(layout),
         },
       );
     });
@@ -272117,7 +275841,9 @@ async function _exportDictFile(options = {}) {
         `${entry.label}を新規作成`,
         'フォルダツリーの選択位置に追加',
         entry.icon,
-        () => { if (typeof showAddOutlinerItem === 'function') showAddOutlinerItem(entry.type); },
+        () => (typeof showAddOutlinerItem === 'function'
+          ? showAddOutlinerItem(entry.type)
+          : _notifyUnavailableHere(`${entry.label}を新規作成`)),
         { keywords: ['new', 'create', '追加', entry.type], priority: 65 },
       ));
     });
@@ -272126,25 +275852,31 @@ async function _exportDictFile(options = {}) {
         const activePane = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
         const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(activePane) : null;
         const type = tab?.type === 'pivot' ? 'database' : (tab?.type || 'page');
-        if (typeof openCurrentToolbarSearchReplace === 'function') openCurrentToolbarSearchReplace(type);
+        if (typeof openCurrentToolbarSearchReplace !== 'function') return _notifyUnavailableHere('現在のパネルを検索・置換');
+        return openCurrentToolbarSearchReplace(type);
       }, { keywords: ['find', 'replace', '検索', '置換', '現在'], priority: 66 }),
       _command('search:source-folders', 'コマンド', 'ソースフォルダ全体を検索・置換', '表示した対象だけを一括処理', 'folderSearch', () => {
-        if (typeof openVaultSearchReplacePanel === 'function') openVaultSearchReplacePanel('');
+        if (typeof openVaultSearchReplacePanel !== 'function') return _notifyUnavailableHere('ソースフォルダ全体を検索・置換');
+        return openVaultSearchReplacePanel('');
       }, { keywords: ['vault', 'source folder', '全文検索', '一括置換'], priority: 65 }),
       _command('system-sheet:all-files', 'コマンド', '全ファイルをシートで表示', 'すべてのソースフォルダを横断', 'tableProperties', () => {
-        if (typeof openAllFilesSheet === 'function') openAllFilesSheet();
+        if (typeof openAllFilesSheet !== 'function') return _notifyUnavailableHere('全ファイルをシートで表示');
+        return openAllFilesSheet();
       }, { keywords: ['files', 'ファイル', '横断', 'シート'], priority: 61 }),
       _command('trash:open', 'コマンド', '削除済みファイルを開く', 'ゴミ箱', 'trash2', () => _openTrash(), { keywords: ['trash', 'ゴミ箱', '削除'], priority: 60 }),
       _command('settings:open', 'コマンド', '設定を開く', '', 'settings', () => _openSettings(), { keywords: ['preferences', 'config'], priority: 62 }),
       _command('user:settings', 'コマンド', 'ユーザー設定を開く', '', 'userRound', () => _openSettings('ユーザー'), { keywords: ['user', 'profile', 'アカウント'], priority: 58 }),
       _command('knowledge:settings', 'コマンド', 'LLMの記憶継承を開く', '', 'brain', () => {
-        if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('items');
+        if (typeof openKnowledgeHomeView !== 'function') return _notifyUnavailableHere('LLMの記憶継承を開く');
+        return openKnowledgeHomeView('items');
       }, { keywords: ['knowledge', '記憶', 'LLM'], priority: 57 }),
       _command('ideas:open', 'コマンド', 'アイディアインボックスを開く', '', 'lightbulb', () => {
-        if (typeof openIdeaInboxView === 'function') openIdeaInboxView();
+        if (typeof openIdeaInboxView !== 'function') return _notifyUnavailableHere('アイディアインボックスを開く');
+        return openIdeaInboxView();
       }, { keywords: ['idea', 'アイディア'], priority: 56 }),
       _command('taste:open', 'コマンド', '感性原則を開く', '', 'sparkles', () => {
-        if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('taste');
+        if (typeof openKnowledgeHomeView !== 'function') return _notifyUnavailableHere('感性原則を開く');
+        return openKnowledgeHomeView('taste');
       }, { keywords: ['taste', '感性', '個人化'], priority: 56 }),
     );
     return items;
@@ -272152,7 +275884,9 @@ async function _exportDictFile(options = {}) {
 
   function _applyAppLayout(appId) {
     if (typeof window.applyAppLayout === 'function') return window.applyAppLayout(appId);
-    return GBAppLayouts?.applyAppLayout?.(appId);
+    const layouts = typeof GBAppLayouts !== 'undefined' ? GBAppLayouts : null;
+    if (typeof layouts?.applyAppLayout === 'function') return layouts.applyAppLayout(appId);
+    return _notifyUnavailableHere('アプリレイアウトの切り替え');
   }
 
   function _settingsCommands() {
@@ -272379,7 +276113,8 @@ async function _exportDictFile(options = {}) {
     // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
     // 検索結果が返ってから追加で反映する。
     _updateSearchHint(null);
-    if (!hasQueryTokens && !hasTagCondition) { _setPaletteStatus(''); return; }
+    const indexError = state.globalIndexError || '';
+    if (!hasQueryTokens && !hasTagCondition) { _setPaletteStatus(indexError, !!indexError); return; }
 
     _setPaletteStatus('検索中…');
 
@@ -272402,7 +276137,10 @@ async function _exportDictFile(options = {}) {
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
-    if (state.status?.dataset.error !== '1') _setPaletteStatus(`${items.length}件の候補`);
+    if (state.status?.dataset.error !== '1') {
+      if (indexError) _setPaletteStatus(`${items.length}件の候補。${indexError}`, true);
+      else _setPaletteStatus(`${items.length}件の候補`);
+    }
   }
 
   function _moveActive(delta) {
@@ -272437,27 +276175,25 @@ async function _exportDictFile(options = {}) {
   }
 
   function _executeItem(item) {
-    if (!item) return;
+    if (!item) return Promise.resolve(false);
     if (item.id === 'sub:back') {
       _leaveSubcommands();
-      return;
+      return Promise.resolve(true);
     }
     if (item.subcommands) {
       _enterSubcommands(item);
-      return;
+      return Promise.resolve(true);
     }
     const action = item.action;
     closeCommandPalette();
-    if (typeof action === 'function') {
-      setTimeout(() => {
-        try {
-          const result = action();
-          if (result && typeof result.catch === 'function') result.catch(error => console.error('[command-palette] action failed', error));
-        } catch (error) {
-          console.error('[command-palette] action failed', error);
-        }
-      }, 0);
-    }
+    if (typeof action !== 'function') return Promise.resolve(false);
+    // パレットが閉じてフォーカスが戻ってから実行する。失敗は握りつぶさず表示する。
+    return new Promise(resolve => setTimeout(resolve, 0))
+      .then(() => action())
+      .catch((error) => {
+        _notifyActionFailed(item.label, error);
+        return false;
+      });
   }
 
   function _onInputKeydown(event) {
@@ -273798,17 +277534,18 @@ const GB_SHORTCUTS = {
 
   // --- シナリオ ---
   // 実処理は gb-scriptnote-editor.* の既存 keydown / paste ハンドラに委譲する。
-  'scenario.addRow':       { key: 'enter',        label: '行を追加',                  scope: 'scenario' },
+  // セル選択中の Shift+Enter（編集中の Shift+Enter はセル内改行）。同じキーを2つの状態で使い分けるため表示専用。
+  'scenario.addRow':       { key: '', display: 'Shift+Enter（セル選択中）', label: '下に行を追加', scope: 'scenario', readonly: true },
   'scenario.addRowSameType': { key: 'ctrl+enter', label: '同タイプ行を追加',           scope: 'scenario' },
   'scenario.deleteRow':    { key: 'shift+delete', label: '行を削除',                  scope: 'scenario' },
   'scenario.moveUp':       { key: 'ctrl+arrowup', label: '行を上に移動',              scope: 'scenario' },
   'scenario.moveDown':     { key: 'ctrl+arrowdown', label: '行を下に移動',            scope: 'scenario' },
   'scenario.selectAll':    { key: 'ctrl+a',       label: '全行を選択',                scope: 'scenario' },
-  'scenario.newline':      { key: 'shift+enter',  label: 'セル内改行',                scope: 'scenario' },
+  'scenario.newline':      { key: 'shift+enter',  label: 'セル内改行（編集中）',      scope: 'scenario' },
   'scenario.copy':         { key: 'ctrl+c',       label: 'セルのコピー',              scope: 'scenario' },
   'scenario.paste':        { key: 'ctrl+v',       label: 'セルの貼り付け',            scope: 'scenario' },
   'scenario.cut':          { key: 'ctrl+x',       label: 'セルの切り取り',            scope: 'scenario' },
-  'scenario.tab':          { key: 'tab',          label: 'タイプメニューを開く',       scope: 'scenario' },
+  'scenario.tab':          { key: 'tab',          label: 'キャラ選択（Shift+Tab: タイプ選択）', scope: 'scenario' },
   'scenario.escape':       { key: 'escape',       label: '編集キャンセル',             scope: 'scenario' },
   'scenario.deselectAll':  { key: 'ctrl+d',       label: '選択を解除',                scope: 'scenario' },
   'scenario.pasteInCell':  { key: 'ctrl+shift+v', label: 'セル内に貼り付け',           scope: 'scenario' },
@@ -274127,14 +277864,14 @@ function updateNoteShortcutStatusbar(targetEl) {
 }
 
 function getScriptnoteShortcutStatusText() {
-  // 2026-07-17 最新仕様に同期: Tab=タイプ選択・同タイプ行追加・セル内貼付・全選択/選択解除を追加、
+  // Tab=キャラ選択、Shift+Tab=タイプ選択。同タイプ行追加・セル内貼付・全選択/選択解除も表示する。
   // 「上へ/下へ」は行移動であることが分かる表記へ変更
   return [
     _shortcutStatusItem('scenario.addRow', '行追加'),
     _shortcutStatusItem('scenario.addRowSameType', '同タイプ行追加'),
     _shortcutStatusItem('scenario.newline', 'セル内改行'),
     _shortcutStatusItem('scenario.deleteRow', '行削除'),
-    _shortcutStatusItem('scenario.tab', 'タイプ選択'),
+    _shortcutStatusItem('scenario.tab', 'キャラ選択（Shift+Tab: タイプ）'),
     _shortcutStatusItem('scenario.moveUp', '行を上へ'),
     _shortcutStatusItem('scenario.moveDown', '行を下へ'),
     _shortcutStatusItem('scenario.search', '検索'),
@@ -274432,6 +278169,59 @@ function _insertParagraphAfterCurrentNoteBlock() {
   return true;
 }
 
+// 「自動保存を即時反映」（ノート・トピックの自由記述）。保存の完了を待ち、
+// 結果に応じて成功・失敗・保存不要を表示する。保存失敗の詳しい理由は保存処理側
+// （_runNoteAutoSave / 自由記述の保存）が表示済みなので、ここで成功表示で
+// 上書きしない。戻り値は結果の種類（saved / unchanged / failed / load-failed / unavailable）。
+async function _runGlobalEditorSave() {
+  const status = (msg, isError) => { if (typeof showStatus === 'function') showStatus(msg, !!isError); };
+  if (typeof flushPendingEditorAutosave !== 'function') {
+    status('この画面には保存する内容がありません');
+    return 'unavailable';
+  }
+  // 保存予約中のノート、またはノート表示中のメインのノートだけを対象にする
+  // （トピック表示中に裏に残ったノートの状態で誤表示しない）。
+  const pc = window._pendingNoteAutoSavePc
+    || ((typeof state !== 'undefined' && state?.view === 'page' && typeof document !== 'undefined')
+      ? document.getElementById('page-content') : null);
+  const loadFailed = !!(pc?.dataset?.path && pc.dataset.loadFailed === '1');
+  let settled;
+  try {
+    settled = await flushPendingEditorAutosave();
+  } catch (error) {
+    console.warn('[shortcut] 即時保存に失敗しました', error);
+    status('保存に失敗しました。もう一度お試しください', true);
+    return 'failed';
+  }
+  const results = Array.isArray(settled) ? settled : [];
+  const outcomes = results.map(r => (r?.status === 'rejected' ? 'failed' : (r?.value?.outcome || 'saved')));
+  // 保存予約が無くても、ノートに未保存の変更が残っていれば今すぐ保存する
+  // （保存コーディネーター経由なので、進行中の保存とは1回にまとまる）。
+  const noteFlushed = results.some(r => r?.status === 'fulfilled' && typeof r.value?.outcome === 'string');
+  if (!loadFailed && !noteFlushed && pc?.dataset?.path && pc.isConnected !== false
+      && typeof _runNoteAutoSave === 'function') {
+    try {
+      const res = await _runNoteAutoSave(pc);
+      outcomes.push(res?.outcome || 'unchanged');
+    } catch (error) {
+      console.warn('[shortcut] 即時保存に失敗しました', error);
+      status('保存に失敗しました。もう一度お試しください', true);
+      return 'failed';
+    }
+  }
+  if (outcomes.some(o => o === 'failed' || o === 'conflict' || o === 'missing')) return 'failed';
+  if (loadFailed || outcomes.includes('load-failed')) {
+    status('ノートを読み込めていないため保存できません。開き直してからもう一度お試しください', true);
+    return 'load-failed';
+  }
+  if (outcomes.includes('saved')) {
+    status('保存しました');
+    return 'saved';
+  }
+  status('保存が必要な変更はありません');
+  return 'unchanged';
+}
+
 const _shortcutHandlers = {
 
   // ============ 全般 ============
@@ -274450,8 +278240,7 @@ const _shortcutHandlers = {
       if (editor?.save) editor.save();
     }
     else {
-      if (typeof flushPendingEditorAutosave === 'function') flushPendingEditorAutosave();
-      if (typeof showStatus === 'function') showStatus('自動保存を即時反映しました');
+      return _runGlobalEditorSave();
     }
   },
   'global.new': () => {

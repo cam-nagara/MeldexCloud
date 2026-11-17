@@ -62,7 +62,7 @@
     }
     cursor(e) { this.el.style.cursor = this.space ? (e.ctrlKey || e.metaKey ? 'zoom-in' : e.shiftKey ? 'crosshair' : 'grab') : ''; }
     down(e) {
-      const v = this.view; if (!v.map || this.control(e) || v._painting) return;
+      const v = this.view; if (!v.map || this.control(e) || v._painting || v._atlasPainting) return;
       this.closeMenu(); this.el.focus({ preventScroll: true });
       const p = this.local(e), hit = v.hit(e), nav = this.space || e.button === 1 || e.button === 2;
       if (e.pointerType === 'touch') {
@@ -76,7 +76,7 @@
       if (this.gesture || ![0, 1, 2].includes(e.button)) return;
       if (!nav && e.target.closest?.('.gb-map-sheet-place')) return;
       if (!nav && ['land', 'sea'].includes(v.tool)) return;
-      let mode = nav ? (this.space && (e.ctrlKey || e.metaKey) ? 'zoom' : this.space && e.shiftKey ? 'rotate' : 'pan')
+      let mode = nav ? (this.space && (e.ctrlKey || e.metaKey) ? 'zoom' : this.space && e.shiftKey ? 'rotate' : 'pan') : v.tool==='river'&&!v.readOnly?'freehand'
         : v.tool === 'erase' ? 'erase' : e.altKey && !e.shiftKey && !v.readOnly ? 'route-drag'
           : v.tool === 'select' ? (hit ? 'feature' : e.pointerType === 'touch' ? 'pan' : 'rectangle') : 'draw';
       if (mode === 'feature') {
@@ -96,6 +96,7 @@
         else if (e.ctrlKey || e.metaKey || e.shiftKey) g.original.clear();
       }
       if (mode === 'erase') g.erased = new Set();
+      if(mode==='freehand'){g.points=[this.point(e)];g.screen=p;v.draft=g.points.slice();v._draft();}
       if (mode === 'rectangle') {
         this.rectangle = document.createElement('div'); this.rectangle.className = 'gb-map-selection-rect'; this.el.appendChild(this.rectangle);
       }
@@ -114,7 +115,8 @@
       if (g.pointerId !== e.pointerId) return;
       this.block(e); const p = this.local(e), dx = p[0] - g.start[0], dy = p[1] - g.start[1]; g.last = p;
       g.moved ||= Math.hypot(dx, dy) >= 4;
-      if (g.mode === 'pan') {
+      if(g.mode==='freehand'){if(Math.hypot(p[0]-g.screen[0],p[1]-g.screen[1])>=2&&g.points.length<2048){g.screen=p;g.points.push(this.point(e));v.draft=g.points.slice();v._draft();}}
+      else if (g.mode === 'pan') {
         const d = rotate([dx, dy], -g.rotation); v.map.setView(v.map.unproject(g.center.subtract(L.point(...d)), g.zoom), g.zoom, { animate: false });
       } else if (g.mode === 'zoom') {
         const factor = v.doc.coordinate_system === 'local' ? Math.max(.1, Math.min(5, 2 ** g.zoom + dx * .005)) : 2 ** (g.zoom + dx * .005);
@@ -150,7 +152,8 @@
       if (g.moved) this.suppressSheetClick = Date.now() + 300;
       if (this.el.hasPointerCapture(e.pointerId)) this.el.releasePointerCapture(e.pointerId);
       this.el.style.cursor = this.space ? 'grab' : '';
-      if (g.mode === 'feature' && g.changes?.length) v.callbacks.action({ type: 'transform', changes: g.changes, source: g.source });
+      if(g.mode==='freehand'){if(!v.readOnly&&g.points.length>=2)v.callbacks.action({type:'add',kind:'route',role:'river',points:g.points,source:g.source});v.cancel();}
+      else if (g.mode === 'feature' && g.changes?.length) v.callbacks.action({ type: 'transform', changes: g.changes, source: g.source });
       else if (g.mode === 'rectangle') {
         const ids = g.moved ? v.inRectangle(g.start, g.last) : [], next = new Set(g.additive ? g.baseSelection : []);
         for (const id of ids) { if (g.additive && next.has(id)) next.delete(id); else next.add(id); } v.choose([...next]);
@@ -166,7 +169,7 @@
       const g = this.gesture; this.gesture = null; this.rectangle?.remove(); this.rectangle = null;
       if (clearTouches && g?.pointerId != null && this.el.hasPointerCapture(g.pointerId)) this.el.releasePointerCapture(g.pointerId);
       if (clearTouches) for (const id of this.touches.keys()) if (this.el.hasPointerCapture(id)) this.el.releasePointerCapture(id);
-      if (g && this.view.map) { this.view._features(); if (g.mode === 'route-drag' || g.mode === 'draw' && g.moved) { this.view.draft = g.draft || []; this.view._draft(); } }
+      if (g && this.view.map) { this.view._features(); if (g.mode==='freehand'||g.mode === 'route-drag' || g.mode === 'draw' && g.moved) { this.view.draft = g.draft || []; this.view._draft(); } }
       if (clearTouches) this.touches.clear();
     }
     reset() { this.cancel(); this.view.cancel(); this.space = false; this.usedSpace = false; this.el.style.cursor = ''; this.closeMenu(); }

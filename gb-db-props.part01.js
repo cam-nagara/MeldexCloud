@@ -96,7 +96,17 @@ function _addMenuRenameInput(menu, currentValue, onRename, opts) {
       const newVal = inp.value.trim();
       if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
       menu.remove();
-      if (newVal && newVal !== currentValue) onRename(newVal);
+      // onRename は非同期のことが多い。以前は結果を待たずに捨てていたため、失敗（列名変更の
+      // 拒否など）が画面に何も出なかった。失敗は理由つきで表示する。
+      if (newVal && newVal !== currentValue) {
+        Promise.resolve()
+          .then(() => onRename(newVal))
+          .catch((error) => {
+            const prefix = (opts && opts.failurePrefix) || '名前の変更に失敗: ';
+            if (typeof showStatus === 'function') showStatus(prefix + (error?.message || error), true);
+            else console.error(error);
+          });
+      }
     } else if (e.key === 'Escape') {
       e.preventDefault();
       if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
@@ -153,7 +163,7 @@ function _renderColMenuItems(container, itemList) {
       el.setAttribute('aria-disabled', 'true');
     }
     if (item.danger) el.classList.add('danger');
-    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); item.action(ev, el); });
+    if (item.action && !item.disabled) el.addEventListener('click', (ev) => { ev.stopPropagation(); closeColHeaderMenu(); return _dbRunMenuItemAction(item.action, ev, el); });
     container.appendChild(el);
   });
 }
@@ -407,7 +417,7 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
         _setSelectedColumns(dbPath, selected, newName);
       }
       _refreshDbColumnMenuView(ctx, dbPath);
-    }, { placeholder: '列名を変更...' });
+    }, { placeholder: '列名を変更...', failurePrefix: '列名の変更に失敗: ' });
   }
 
   const currentPtc = getPropertyTypes(dbPath, ctx)[propName] || { type: 'text' };

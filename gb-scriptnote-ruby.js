@@ -112,7 +112,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       let m;
       while ((m = re.exec(r.text)) !== null) {
         fileRubies.push({
-          text: unescape(m[1]), ruby: unescape(m[2]), rowIdx: i, role: r.role,
+          text: unescape(m[1]), ruby: unescape(m[2]), rowIdx: i, role: r.character || r.role,
           rawIndex: m.index, rawLength: m[0].length,
         });
       }
@@ -235,8 +235,20 @@ Object.assign(ScriptNoteEditor.prototype, {
 
       const handle = document.createElement('span');
       handle.className = 'sn2-detail-handle sn2-ruby-rule-handle';
-      handle.setAttribute('aria-hidden', 'true');
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'button');
+      handle.dataset.e2eId = 'scriptnote-ruby-rule-drag-' + i;
+      handle.title = '自動ルビルール ' + (i + 1) + ' を並べ替え（ドラッグまたは Alt+↑/↓）';
+      handle.setAttribute('aria-label', handle.title);
+      handle.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
       handle.textContent = '⠿';
+      handle.addEventListener('keydown', (event) => {
+        if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const targetIdx = i + (event.key === 'ArrowUp' ? -1 : 1);
+        this._moveRubyRule(i, targetIdx, container, true);
+      });
       item.appendChild(handle);
 
       const textInp = document.createElement('input');
@@ -316,6 +328,23 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.appendChild(wrap);
   },
 
+  _moveRubyRule(fromIdx, toIdx, panelContainer, restoreFocus = false) {
+    const rules = this.doc.rubyRules || [];
+    if (this._readOnly || !Number.isInteger(fromIdx) || !Number.isInteger(toIdx)
+      || fromIdx < 0 || fromIdx >= rules.length || toIdx < 0 || toIdx >= rules.length
+      || fromIdx === toIdx) return false;
+    this._pushUndo('ルビルール並び替え');
+    const [moved] = rules.splice(fromIdx, 1);
+    rules.splice(toIdx, 0, moved);
+    this._refreshAutoRubyDisplay();
+    this._markDirty({ skipUndo: true });
+    this.renderRubyPanel(panelContainer);
+    if (restoreFocus) requestAnimationFrame(() => {
+      panelContainer.querySelector(`[data-e2e-id="scriptnote-ruby-rule-drag-${toIdx}"]`)?.focus();
+    });
+    return true;
+  },
+
   _setupRubyDragDrop(listEl, panelContainer) {
     let dragIdx = -1;
     const clearDragState = () => {
@@ -347,18 +376,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       e.preventDefault();
       const item = e.target.closest('.sn2-detail-item');
       if (!item || dragIdx < 0) { clearDragState(); return; }
-      const rules = this.doc.rubyRules || [];
       let dropIdx = Number(item.dataset.idx);
       const rect = item.getBoundingClientRect();
       if (e.clientY >= rect.top + rect.height / 2) dropIdx++;
       if (dropIdx === dragIdx || dropIdx === dragIdx + 1) { clearDragState(); return; }
-      this._pushUndo('ルビルール並び替え');
-      const [moved] = rules.splice(dragIdx, 1);
-      rules.splice(dropIdx > dragIdx ? dropIdx - 1 : dropIdx, 0, moved);
-      this._refreshAutoRubyDisplay();
-      this._markDirty({ skipUndo: true });
+      const fromIdx = dragIdx;
+      const toIdx = dropIdx > dragIdx ? dropIdx - 1 : dropIdx;
       clearDragState();
-      this.renderRubyPanel(panelContainer);
+      this._moveRubyRule(fromIdx, toIdx, panelContainer);
     });
   },
 

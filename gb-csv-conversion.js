@@ -247,8 +247,8 @@
       '</div>' +
       '<div class="csv-convert-columns"><table><thead><tr><th>列名</th><th>タイプ</th><th>数式</th><th>注意</th></tr></thead><tbody></tbody></table></div>' +
       '<div class="csv-dialog-actions"><button type="button" class="gb-btn gb-btn-sm" data-command="cancel">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-command="submit">シートを作成</button></div>';
-    dialog.querySelectorAll('input:not([type="checkbox"])').forEach(control => control.classList.add('gb-input'));
-    dialog.querySelectorAll('select').forEach(control => control.classList.add('gb-select'));
+    dialog.querySelectorAll('input:not([type="checkbox"])').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+    dialog.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select'); });
     dialog.querySelector('[name="mode"]').classList.add('gb-select-medium');
     dialog.querySelector('[name="item-column"]').classList.add('gb-select-column');
     dialog.querySelector('[name="has-header"]').parentElement.classList.add('gb-check');

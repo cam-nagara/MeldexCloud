@@ -43,6 +43,7 @@
 /* 空行 */
 .sn2-row[data-kind="blank"] { min-height: 24px; }
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="blank"] { min-height: auto; min-width: 24px; }
+.sn2-row[data-kind="blank"] .sn2-character-btn:not([style*="color"]),
 .sn2-row[data-kind="blank"] .sn2-role-btn:not([style*="color"]) { color: var(--fg2); }
 
 /* === カスタム列 === */
@@ -59,11 +60,11 @@
 .sn2-custom-input,
 .sn2-custom-select {
   width: 100%;
-  padding: 2px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   border: none;
   background: transparent;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   outline: none;
 }
 .sn2-custom-input:focus,
@@ -90,8 +91,8 @@
 .sn2-role-menu {
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border-radius: var(--ui-menu-radius, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
   z-index: 10100;
   width: 210px;
   min-width: 150px;
@@ -121,9 +122,9 @@
 .sn2-role-link:hover,
 .sn2-role-link:focus { background: var(--bg4); outline: none; }
 .sn2-role-input {
-  width: calc(100% - 16px); margin: 4px 8px; padding: 4px 8px;
-  border: 1px solid var(--border); border-radius: 4px;
-  background: var(--bg3); color: var(--fg); font-size: 13px; outline: none;
+  width: calc(100% - 16px); margin: 4px 8px; padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
+  border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px);
+  background: var(--bg3); color: var(--fg); font-size: var(--ui-font-13, 13px); outline: none;
 }
 .sn2-role-input:focus { border-color: var(--blue, #4a90d9); }
 
@@ -213,6 +214,9 @@
 }
 .sn2-ruby-number-input {
   width: 64px;
+  min-width: 64px;
+  box-sizing: border-box;
+  padding-inline: var(--ui-space-2);
 }
 .sn2-ruby-unit {
   font-size: var(--ui-font-10);
@@ -303,10 +307,14 @@
 /* Phase 3c-Q: .sn2-detail-* はクラス名を維持しつつ --ui-* トークン経由に書き直し (ui-design-system-spec-v2.md §3.2) */
 .sn2-detail-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: var(--ui-space-4) var(--ui-space-5); border-bottom: 1px solid var(--ui-border);
+  padding: 0 var(--ui-space-4); border-bottom: 1px solid var(--ui-border);
+  min-height: var(--ui-panel-header-height);
+  font-size: var(--ui-panel-header-font-size);
+  background: var(--ui-header-bg);
+  box-sizing: border-box;
 }
 .sn2-detail-add-btn {
-  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
   background: var(--ui-bg-control); color: var(--ui-fg-default); font-size: var(--ui-font-12); cursor: pointer;
 }
 .sn2-detail-add-btn:hover { background: var(--ui-bg-control-hover); }
@@ -326,7 +334,7 @@
 
 /* DB読み込みボタン */
 .sn2-detail-db-btn {
-  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
   background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-11); cursor: pointer;
 }
 .sn2-detail-db-btn:hover { background: var(--ui-bg-control-hover); }
@@ -346,7 +354,10 @@
   font-size: var(--ui-font-11); color: var(--ui-fg-muted); white-space: nowrap;
 }
 .sn2-detail-settings-input {
-  width: 48px; padding: var(--ui-space-1) var(--ui-space-3);
+  box-sizing: border-box;
+  width: 64px;
+  min-width: 64px;
+  padding: var(--ui-space-1) 8px;
   border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-12); outline: none; text-align: center;
 }
@@ -498,7 +509,10 @@
   line-height: 1.2;
 }
 .sn2-rowset-panel .sn2-rowset-repeat-input {
-  width: 56px;
+  width: 64px;
+  min-width: 64px;
+  box-sizing: border-box;
+  padding-inline: var(--ui-space-2);
   text-align: center;
 }
 .sn2-rowset-save-modal {
@@ -620,11 +634,11 @@
 .sn2-detail-cell-input {
   border: none;
   width: 100%;
-  padding: 3px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   box-sizing: border-box;
   font-size: var(--ui-font-12);
   outline: none;
-  height: 30px;
+  height: var(--ui-h-md, 32px);
   line-height: 30px;
 }
 /* セル内 書式設定「…」ボタン: ホバー時に表示 */
@@ -634,7 +648,7 @@
   top: 50%;
   transform: translateY(-50%);
   font-size: var(--ui-font-10);
-  padding: 0 3px;
+  padding: 0 var(--ui-space-1, 2px);
   background: var(--ui-bg-control-hover);
   color: var(--ui-fg-muted);
   border: 1px solid var(--ui-border);

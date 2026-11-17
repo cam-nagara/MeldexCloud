@@ -686,6 +686,36 @@ function _gbNormalizeHtmlViewerUrl(rawUrl) {
   }
 }
 
+const _gbHtmlViewerHistory = { entries: [], index: -1 };
+
+function _gbUpdateHtmlViewerNavButtons() {
+  const canBack = _gbHtmlViewerHistory.index > 0;
+  const canForward = _gbHtmlViewerHistory.index >= 0
+    && _gbHtmlViewerHistory.index < _gbHtmlViewerHistory.entries.length - 1;
+  const back = document.getElementById('html-nav-back');
+  const forward = document.getElementById('html-nav-forward');
+  if (back) {
+    back.disabled = !canBack;
+    back.setAttribute('aria-disabled', canBack ? 'false' : 'true');
+  }
+  if (forward) {
+    forward.disabled = !canForward;
+    forward.setAttribute('aria-disabled', canForward ? 'false' : 'true');
+  }
+}
+
+function _gbRecordHtmlViewerHistory(url) {
+  const current = _gbHtmlViewerHistory.entries[_gbHtmlViewerHistory.index];
+  if (current === url) {
+    _gbUpdateHtmlViewerNavButtons();
+    return;
+  }
+  _gbHtmlViewerHistory.entries.splice(_gbHtmlViewerHistory.index + 1);
+  _gbHtmlViewerHistory.entries.push(url);
+  _gbHtmlViewerHistory.index = _gbHtmlViewerHistory.entries.length - 1;
+  _gbUpdateHtmlViewerNavButtons();
+}
+
 function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   const url = _gbNormalizeHtmlViewerUrl(rawUrl);
   if (!url) {
@@ -696,6 +726,10 @@ function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   if (iframe) iframe.src = url;
   const urlBar = options?.skipUrlBar ? null : document.getElementById('html-url-bar');
   if (urlBar) urlBar.value = url;
+  const mainIframe = document.getElementById('html-iframe');
+  if (iframe && iframe === mainIframe && options?.skipHistory !== true) {
+    _gbRecordHtmlViewerHistory(url);
+  }
   return true;
 }
 
@@ -973,11 +1007,25 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
   }
 });
 
-// HTML ビューワーのナビゲーション
-function htmlNavBack() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.back(); } catch {} }
-function htmlNavForward() { const f = document.getElementById('html-iframe'); if (f?.contentWindow) try { f.contentWindow.history.forward(); } catch {} }
+// HTML ビューワーのナビゲーション。外部URLのiframe履歴は同一オリジン制約で
+// 状態を安全に読めないため、Meldexから明示的に開いたURLだけを管理する。
+function _gbMoveHtmlViewerHistory(delta) {
+  const nextIndex = _gbHtmlViewerHistory.index + delta;
+  if (nextIndex < 0 || nextIndex >= _gbHtmlViewerHistory.entries.length) {
+    _gbUpdateHtmlViewerNavButtons();
+    return false;
+  }
+  const nextUrl = _gbHtmlViewerHistory.entries[nextIndex];
+  if (!_gbSetHtmlViewerSrc(nextUrl, null, { skipHistory: true })) return false;
+  _gbHtmlViewerHistory.index = nextIndex;
+  _gbUpdateHtmlViewerNavButtons();
+  return true;
+}
+function htmlNavBack() { return _gbMoveHtmlViewerHistory(-1); }
+function htmlNavForward() { return _gbMoveHtmlViewerHistory(1); }
 function htmlNavigate(url) { if (!url) return; _gbSetHtmlViewerSrc(url); }
 function htmlRefresh() { const f = _gbPrepareUntrustedIframe(document.getElementById('html-iframe')); if (f) try { f.contentWindow.location.reload(); } catch { f.src = f.src; } }
+_gbUpdateHtmlViewerNavButtons();
 
 // ============================================================
 // 最後のポインタ操作がフォルダツリー内かどうかを追跡

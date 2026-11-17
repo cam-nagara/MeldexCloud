@@ -186,6 +186,10 @@ const MeldexPublicRuntime = (() => {
           noteCss + '\n'
           + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
         preTransform: viewType === 'entity' ? _preTransformEntityViewForPublish : undefined,
+        // 画面と同じ見た目にする（祖先の変数・文字設定の固定、アプリの基本リセット、ルビの組み方）
+        inheritComputedContext: true,
+        keepDataRuby: true,
+        appReset: true,
         notFound: 'ノートが開かれていません',
       };
     }
@@ -394,7 +398,10 @@ const MeldexPublicRuntime = (() => {
       const clone = MeldexExportHtml.cloneAndClean(def.el, {
         preserveFormControls: !!def.preserveFormControls,
       });
-      MeldexExportHtml.convertDataRuby(clone);
+      if (def.inheritComputedContext && typeof MeldexExportHtml.applyComputedContext === 'function') {
+        MeldexExportHtml.applyComputedContext(def.el, clone);
+      }
+      if (!def.keepDataRuby) MeldexExportHtml.convertDataRuby(clone);
       if (typeof def.preTransform === 'function') def.preTransform(def.el, clone);
       await MeldexExportHtml.embedImages(clone, assetCollector);
       MeldexExportHtml.sanitizePublishedClone(clone, {
@@ -405,7 +412,8 @@ const MeldexPublicRuntime = (() => {
     const varDecls = typeof MeldexExportHtml.collectCssVars === 'function'
       ? MeldexExportHtml.collectCssVars()
       : '';
-    let cssText = ':root { ' + varDecls + ' }\n';
+    let cssText = (def.appReset && MeldexExportHtml.APP_RESET_CSS ? MeldexExportHtml.APP_RESET_CSS + '\n' : '')
+      + ':root { ' + varDecls + ' }\n';
     cssText += 'html, body { margin: 0; padding: 0; background: var(--bg, #1e1e1e); color: var(--fg, #d4d4d4);'
       + ' font-family: var(--ui-font, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif);'
       + ' font-size: var(--ui-font-size, 15px); }\n';

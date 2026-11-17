@@ -74,7 +74,7 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 28px;
+  min-height: var(--ui-h-sm, 28px);
   border: 1px solid transparent;
   border-radius: var(--sa-radius);
   background: transparent;
@@ -88,7 +88,7 @@ textarea {
 }
 
 .sa-text-btn {
-  padding: 0 10px;
+  padding: 0 var(--ui-space-4, 8px);
 }
 
 .sa-icon-btn:hover,
@@ -111,7 +111,7 @@ textarea {
 .sa-title-input {
   min-width: 72px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -163,7 +163,7 @@ textarea {
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
   border-radius: var(--sa-radius);
   background: var(--bg2, var(--sa-bg2));
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .sa-menu.open {
@@ -175,10 +175,10 @@ textarea {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 30px;
-  padding: 0 9px;
+  min-height: var(--ui-h-md, 32px);
+  padding: 0 var(--ui-space-4, 8px);
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: transparent;
   color: var(--fg, var(--sa-fg));
   text-align: left;
@@ -341,7 +341,7 @@ body.sa-resizing-option-panel * {
 
   .sa-icon-btn,
   .sa-text-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .sa-icon-btn {
@@ -350,7 +350,7 @@ body.sa-resizing-option-panel * {
 
   .sa-menu button,
   .sa-context-menu button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .sa-toast {
@@ -365,7 +365,7 @@ body.sa-resizing-option-panel * {
 
   .sa-icon-btn,
   .sa-text-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .sa-icon-btn {
@@ -375,7 +375,7 @@ body.sa-resizing-option-panel * {
   .sa-menu button,
   .sa-context-menu button,
   .sa-toast {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -472,10 +472,10 @@ body.sa-resizing-option-panel * {
 .sa-field textarea {
   width: 100%;
   border: 1px solid var(--border, var(--sa-border));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg, var(--sa-bg));
   color: var(--fg, var(--sa-fg));
-  padding: 7px 8px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
 }
 
 .sa-panel {
@@ -491,9 +491,9 @@ body.sa-resizing-option-panel * {
   min-width: 190px;
   padding: 6px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
-  border-radius: 6px;
+  border-radius: var(--ui-menu-radius, 6px);
   background: var(--bg2, var(--sa-bg2));
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .sa-context-menu.open {
@@ -502,13 +502,13 @@ body.sa-resizing-option-panel * {
 
 .sa-context-menu button {
   width: 100%;
-  min-height: 30px;
+  min-height: var(--ui-h-md, 32px);
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: transparent;
   color: var(--fg, var(--sa-fg));
   text-align: left;
-  padding: 0 9px;
+  padding: 0 var(--ui-space-4, 8px);
   cursor: pointer;
 }
 
@@ -518,7 +518,7 @@ body.sa-resizing-option-panel * {
 
 @media (pointer: coarse), (max-width: 560px) {
   .sa-context-menu button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 

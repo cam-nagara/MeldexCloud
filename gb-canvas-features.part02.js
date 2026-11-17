@@ -707,6 +707,28 @@ function _bdCreateHudMenu(rect, options) {
   });
   return menu;
 }
+// メニュー項目の処理が失敗した時に、黙って終わらせず原因つきで表示する。
+// 非同期の処理は完了まで待ち、途中の失敗も受け取る。戻り値は成功なら true。
+function _bdMenuActionFailureMessage(label, error) {
+  const name = String(label || '').replace(/\s+/g, ' ').trim();
+  const head = name ? `「${name}」を実行できませんでした` : '操作を実行できませんでした';
+  const reason = String(error?.message || '').trim();
+  // 日本語の理由だけを利用者へ見せる（内部の英語メッセージは開発者向けの記録に残す）。
+  if (reason && /[\u3040-\u30ff\u3400-\u9fff]/.test(reason)) return `${head}: ${reason}`;
+  return `${head}（予期しない問題が発生しました。もう一度お試しください）`;
+}
+function _bdRunMenuAction(fn, label) {
+  const fail = (error) => {
+    try { console.warn('[board] メニュー項目の実行に失敗しました:', label, error); } catch (_) {}
+    if (typeof showStatus === 'function') showStatus(_bdMenuActionFailureMessage(label, error), true);
+    return false;
+  };
+  let result;
+  try { result = typeof fn === 'function' ? fn() : undefined; }
+  catch (error) { return Promise.resolve(fail(error)); }
+  if (result && typeof result.then === 'function') return Promise.resolve(result).then(() => true, fail);
+  return Promise.resolve(true);
+}
 function _bdHudMenuItem(htmlLabel, onClick, opts) {
   const d = document.createElement('div');
   d.className = 'gb-context-menu-item';
@@ -717,8 +739,9 @@ function _bdHudMenuItem(htmlLabel, onClick, opts) {
   if (opts?.danger) d.classList.add('danger');
   d.addEventListener('click', (ev) => {
     ev.preventDefault(); ev.stopPropagation();
+    const labelText = d.textContent || '';
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-    try { onClick?.(); } catch {}
+    return _bdRunMenuAction(onClick, labelText);
   });
   d.addEventListener('keydown', ev => {
     if (ev.key === 'Enter' || ev.key === ' ') {
@@ -993,9 +1016,10 @@ function _bdContextMenuItem(parent, label, fn, opts) {
   const activate = ev => {
     ev?.preventDefault?.();
     ev?.stopPropagation?.();
-    if (options.disabled) return;
+    if (options.disabled) return Promise.resolve(false);
+    const labelText = item.textContent || '';
     _bdCloseAllContextMenus();
-    fn?.();
+    return _bdRunMenuAction(fn, labelText);
   };
   item.addEventListener('click', activate);
   item.addEventListener('keydown', ev => {

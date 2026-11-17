@@ -1,3 +1,67 @@
+  }
+  if (revision || force || createOnly) return payload;
+
+  // revision無しの旧呼び出し元を、保存直前に取得した「最新revision」で
+  // 延命してはいけない。古い本文へ最新revisionを付け直すと、読込後に別端末で
+  // 更新された内容をCASに成功させて上書きしてしまう。ここで許可する自動補完は、
+  // 保存先が存在しないことを確認できた時の create_only だけとする。
+  try {
+    const separator = String(path).includes('?') ? '&' : '?';
+    const current = await apiFetch(`${path}${separator}metadata_only=1`, { silentError: true });
+    coordinator?.bindDocumentIdentity?.(
+      new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current,
+    );
+    const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+    error.status = 428;
+    error.meldexCode = 'precondition_required';
+    error.meldexDetail = {
+      code: 'precondition_required',
+      path: new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current_etag: current?.etag || '',
+      current_transport_revision: current?.transport_revision || null,
+    };
+    throw error;
+  } catch (error) {
+    if (error?.status === 404 && !(payload.skip_if_missing || payload.skipIfMissing)) {
+      payload.create_only = true;
+      return payload;
+    }
+    if (error?.status === 404 && (payload.skip_if_missing || payload.skipIfMissing)) return payload;
+    throw error;
+  }
+}
+
+let _gbAppUiConfigWriteTail = Promise.resolve();
+const _gbAppPendingValueWrites = new Map();
+const _gbAppValueWriteTails = new Map();
+let _gbAppValueAccount = window.MeldexDropboxAuth?.getSession?.()?.accountId || '';
+window.addEventListener?.('meldex:dropbox-auth-session-changed', event => {
+  const account = String(event.detail?.accountId || '');
+  if (account !== _gbAppValueAccount) _gbAppPendingValueWrites.clear();
+  _gbAppValueAccount = account;
+});
+window.addEventListener?.('meldex:mode-changed', () => _gbAppPendingValueWrites.clear());
+
+async function _gbAppPutValueConfirmed(path, body, options) {
+  const key = String(path);
+  const previous = _gbAppValueWriteTails.get(key);
+  const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+    const send = payload => apiFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      ...(options || {}), body: JSON.stringify(payload), silentError: true });
+    const uncertain = _gbAppPendingValueWrites.get(key);
+    if (uncertain) {
+      const result = await send(uncertain);
+      _gbAppPendingValueWrites.delete(key);
+      const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+      const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
+      if (withoutId(body) === withoutId(uncertain)) return result;
+      // Only an ordinary candidate patch may follow its own confirmed patch.
+      // Whole-body edits and structural changes retain their original baseline.
+      const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
+      const oldBase = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => uncertain[k] != null);
+      if (body.property && body.candidate_index != null && !body.new_property && !('new_body' in body)
           && !uncertain._delete && !uncertain.new_property && !('new_body' in uncertain)
           && baseKey && oldBase && body[baseKey] === uncertain[oldBase] && result?.revision != null) {
         body = { ...body, [baseKey]: result.revision };
@@ -834,67 +898,3 @@ function showView(viewName, ctx) {
     if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
   }
   if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
-    clearBoardDetailTabs();
-  }
-  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
-  const isDbView = isDbViewName(viewName);
-  const _setDisplay = (id, value) => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = value;
-  };
-  _setDisplay('login-view', 'none');
-  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
-  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
-  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-  _setDisplay('tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
-  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
-  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
-  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
-  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
-  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
-  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
-  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
-  if (typeof _dbTreeSetOptionTabVisible === 'function') {
-    _dbTreeSetOptionTabVisible(resolvedViewName === 'tree');
-  }
-  // app-toolbarの表示切替
-  const appTb = document.getElementById('app-toolbar');
-  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
-  // ページビュー: app-toolbarにリッチテキストツールバー表示
-  const showRtInAppbar = (resolvedViewName === 'page');
-  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
-  const hasAppTb = isDbView || showRtInAppbar;
-  if (appTb) {
-    appTb.classList.toggle('visible', hasAppTb);
-    appTb.dataset.activeToolbar = isDbView ? 'sheet' : (showRtInAppbar ? 'rich-text' : '');
-  }
-  // エントリビュー: エントリ内ツールバー
-  const entityRt = document.getElementById('entity-rt-toolbar');
-  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
-  // ステータスバーのショートカットヘルプ
-  const sc = document.getElementById('sb-shortcuts');
-  if (isDbView) {
-    const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
-    if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
-    else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
-    else sc.textContent = '';
-  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
-    if (typeof updateNoteShortcutStatusbar === 'function') updateNoteShortcutStatusbar(sc);
-    else sc.textContent = 'Ctrl+Alt+1〜3 見出し | Ctrl+Shift+N 本文 | Alt+Shift+←→ 段落レベル';
-  } else if (resolvedViewName === 'scriptnote') {
-    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
-    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
-  } else if (resolvedViewName === 'media') {
-    if (typeof updateMediaViewerShortcutStatusbar === 'function') updateMediaViewerShortcutStatusbar(sc);
-    else sc.textContent = '';
-  } else {
-    sc.textContent = '';
-  }
-
-  state.view = viewName;

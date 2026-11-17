@@ -250,8 +250,14 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
   let createdEndRef = null;
 
   const deleteCreatedEnd = async (ref) => {
-    if (!ref) return;
-    try { await _apiPutValue(ref, { _delete: true }); } catch {}
+    if (!ref) return true;
+    try {
+      await _apiPutValue(ref, { _delete: true });
+      return true;
+    } catch (rollbackErr) {
+      console.warn('[calendar-mapping] created end value rollback failed:', rollbackErr);
+      return false;
+    }
   };
 
   const applyValues = async (startRaw, endRaw, mode, opts = {}) => {
@@ -270,11 +276,25 @@ async function _saveMappedCalendarDates(dbPath, ev, startDate, endDate, options 
         }
       }
     } catch (err) {
+      let rollbackFailed = false;
       if (opts.rollbackOnFailure) {
-        if (localCreatedEndRef) await deleteCreatedEnd(localCreatedEndRef);
+        if (localCreatedEndRef && !(await deleteCreatedEnd(localCreatedEndRef))) rollbackFailed = true;
         if (startWritten) {
-          try { await _apiPutValue(startRef, { new_value: oldStartRaw }); } catch {}
+          try {
+            await _apiPutValue(startRef, { new_value: oldStartRaw });
+          } catch (rollbackErr) {
+            console.warn('[calendar-mapping] start value rollback failed:', rollbackErr);
+            rollbackFailed = true;
+          }
         }
+      }
+      if (rollbackFailed) {
+        // 途中まで書き込んだ値が残っていることを、保存失敗の原因と一緒に知らせる
+        const detail = String(err?.userMessage || err?.message || '').trim();
+        const wrapped = new Error((detail || '日時の保存に失敗しました')
+          + '。途中まで書き込んだ値を元に戻せませんでした。シートを再読み込みして確認してください');
+        wrapped.cause = err;
+        throw wrapped;
       }
       throw err;
     }

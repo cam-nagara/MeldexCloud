@@ -15159,7 +15159,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const targetPath = _joinPath(parent, labelName + '.mel-scenario');
         await createText(targetPath, JSON.stringify({
           fileType: 'meldex-scriptnote',
-          schema_version: 3,
+          schema_version: 4,
           version: 1,
           title: shown(labelName),
           ...(title !== null && title !== label ? {display_title:title} : {}),
@@ -15227,15 +15227,30 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      let titleOnly = window.GBPathUtils?.isDisplayTitleRename('/outliner/rename',body);
-      const newName = titleOnly ? titleHelper.validate(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
       if (!source) throw new Error(`見つかりません: ${oldPath}`);
-      if (!titleOnly && titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
-        const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
-        if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
-          titleOnly = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+      // タイトル＝ファイル名（デスクトップ版の /api/outliner/rename と同じ規則）。
+      // 使えない文字は置き換えたファイル名にし、元の表記は表示タイトルに残す。
+      let titleOnly = false;
+      let newName = '';
+      let displayName = '';
+      let keepDisplayTitle = false;
+      if (titleHelper && ['page','board','database','calendar','scenario','scriptnote','timer','form-app'].includes(body?.type)) {
+        displayName = titleHelper.validate(body?.new_name);
+        const currentStem = source.kind === 'directory' ? _basename(oldPath) : _splitNameAndExt(_basename(oldPath)).stem;
+        const fileName = titleHelper.storageName(displayName);
+        titleOnly = body?.title_only === true || fileName === currentStem;
+        newName = titleOnly ? displayName : fileName;
+        if (!titleOnly) {
+          const existingTitlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
+          let hadDisplayTitle = false;
+          if (source.kind !== 'directory' || await _pathExists(provider,existingTitlePath)) {
+            hadDisplayTitle = !!titleHelper.read(await provider.readText(existingTitlePath),existingTitlePath);
+          }
+          keepDisplayTitle = hadDisplayTitle || displayName !== fileName;
         }
+      } else {
+        newName = _validateItemName(body?.new_name || '', 'new_name');
       }
       if (titleOnly) {
         const titlePath = source.kind === 'directory' ? _joinPath(oldPath,_basename(oldPath)+'.md') : oldPath;
@@ -15270,6 +15285,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             await _moveEntry(provider, oldNotePath, newNotePath);
             await _runPostMutationStep(warnings, 'folder-note-version-history', () => _relocateVersionHistory(provider, _joinPath(oldPath, sourceName + '.md'), newNotePath, false));
           }
+          if (keepDisplayTitle && await _pathExists(provider, newNotePath)) {
+            await provider.writeText(newNotePath, titleHelper.write(await provider.readText(newNotePath), displayName, newNotePath, body?.type));
+          }
         });
         await _runPostMutationStep(warnings, 'stored-paths', () => (
           typeof _rewriteStoredPathsForProvider === 'function'
@@ -15295,7 +15313,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }) : [];
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
-        await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
+        const heading = displayName || newName;
+        // デスクトップ版（meldex_api_outliner の re.sub(r"^# .+", count=1)）と同じく、
+        // ファイル先頭が見出しの時だけ書き換える。以前は m フラグで本文中の最初の
+        // 「# 見出し」を探していたため、frontmatter付きノートの本文見出しを名前で
+        // 上書きしていた（実データ388件が該当）。
+        await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
+      }
+      if (keepDisplayTitle) {
+        await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
       if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
@@ -22425,7 +22451,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', () => { close(); schedule(); });
     document.fonts?.ready.then(schedule);
   }
-  window.MeldexToolbarOverflow = { setup, refresh: schedule, close, teardown(toolbar) {
+  // あふれメニューへ退避した操作は非表示でfocusできない。ダイアログを閉じた後の
+  // focus復帰先などには、見えている「隠れている操作を表示」ボタンを代わりに返す。
+  function focusTarget(el) {
+    if (!el?.isConnected || el.getClientRects().length) return el;
+    for (const [toolbar, entry] of registry) {
+      if (!entry.more.hidden && toolbar.contains(el) && entry.overflow.some(item => item.contains(el))) return entry.more;
+    }
+    return el;
+  }
+  window.MeldexToolbarOverflow = { setup, refresh: schedule, close, focusTarget, teardown(toolbar) {
     const entry = registry.get(toolbar);
     if (!entry) return;
     if (active === entry) close();
@@ -22840,6 +22875,15 @@ document.addEventListener('DOMContentLoaded', () => {
     try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
   })();
   let lastOperations = [];
+  const TRAY_POSITION_KEY = 'meldex-operation-tray-position';
+  // 見出しのドラッグで決めた位置（画面右端・下端からの距離。CSS px）。未移動ならnull。
+  let trayUserPosition = (function () {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TRAY_POSITION_KEY) || 'null');
+      return saved && Number.isFinite(saved.right) && Number.isFinite(saved.bottom) ? saved : null;
+    } catch (_) { return null; }
+  })();
+  let trayDragSuppressClick = false;
   const TRAY_AVOID_SELECTOR = [
     '[data-meldex-operation-avoid]',
     '#controls.gb-toolbar-viewer',
@@ -22922,6 +22966,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tray.dataset.e2eId = 'operation-progress-tray';
     tray.setAttribute('aria-label', '進行中の処理');
     tray.hidden = true;
+    tray.addEventListener('pointerdown', _startTrayDrag);
     document.body.appendChild(tray);
     _syncTrayHost();
     return tray;
@@ -23023,8 +23068,77 @@ document.addEventListener('DOMContentLoaded', () => {
     return rects;
   }
 
+  function _trayZoom() {
+    return typeof _getZoom === 'function' ? _getZoom()
+      : (parseFloat(getComputedStyle(document.documentElement).zoom) || 1);
+  }
+
+  function _trayDragDisabled() {
+    return !!window.matchMedia?.('(max-width: 768px), (pointer: coarse)').matches;
+  }
+
+  // 見出しをつかんで位置を動かす。ボタン上では開始しない。右下基準で保持するので、
+  // 最小化・展開で大きさが変わっても右下の位置は動かない。
+  function _startTrayDrag(event) {
+    if (event.button !== 0 || _trayDragDisabled()) return;
+    const header = event.target.closest?.('.meldex-operation-tray-header');
+    if (!header || !tray.contains(header) || event.target.closest('button, a, input, summary')) return;
+    const zoom = _trayZoom();
+    const start = tray.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startRight = (window.innerWidth - start.right) / zoom;
+    const startBottom = (window.innerHeight - start.bottom) / zoom;
+    let moved = false;
+    tray.classList.add('is-dragging');
+    function onMove(ev) {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      moved = true;
+      ev.preventDefault();
+      trayUserPosition = { right: startRight - dx / zoom, bottom: startBottom - dy / zoom };
+      _applyTrayUserPosition();
+    }
+    function onEnd() {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onEnd, true);
+      window.removeEventListener('pointercancel', onEnd, true);
+      tray.classList.remove('is-dragging');
+      if (!moved) return;
+      trayDragSuppressClick = true;
+      setTimeout(function () { trayDragSuppressClick = false; }, 0);
+      try { localStorage.setItem(TRAY_POSITION_KEY, JSON.stringify(trayUserPosition)); } catch (_) {}
+    }
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onEnd, true);
+    window.addEventListener('pointercancel', onEnd, true);
+  }
+
+  function _applyTrayUserPosition() {
+    if (!tray || !trayUserPosition) return false;
+    const zoom = _trayZoom();
+    const viewW = window.innerWidth / zoom;
+    const viewH = window.innerHeight / zoom;
+    const box = tray.getBoundingClientRect();
+    const width = box.width / zoom;
+    const height = box.height / zoom;
+    // 画面外へ出さない（ウィンドウを縮めた時も見える範囲へ戻す）。
+    const right = Math.min(Math.max(0, trayUserPosition.right), Math.max(0, viewW - width));
+    const bottom = Math.min(Math.max(0, trayUserPosition.bottom), Math.max(0, viewH - Math.min(height, 34)));
+    tray.style.right = right + 'px';
+    tray.style.bottom = bottom + 'px';
+    tray.style.setProperty('--meldex-operation-available-height', Math.max(34, viewH - bottom - 8) + 'px');
+    return true;
+  }
+
   function _syncTrayPosition() {
     if (!tray?.isConnected || tray.hidden) return;
+    if (trayUserPosition && !_trayDragDisabled()) {
+      _applyTrayUserPosition();
+      return;
+    }
+    tray.style.removeProperty('right');
     tray.style.removeProperty('bottom');
     tray.style.removeProperty('--meldex-operation-available-height');
     const rail = document.querySelector('.gb-dock-fixed-right .gb-dock-bar-right');
@@ -23243,16 +23357,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const title = document.createElement('span');
     const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial' || op.status === 'unknown'; });
     const hasActive = visible.some(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; });
+    const activeCount = visible.filter(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; }).length;
     title.textContent = needsAttention
       ? '確認が必要な処理'
-      : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
+      : (hasActive ? '進行中の処理 ' + activeCount + '件' : '完了した処理');
     if (trayMinimized && needsAttention && visible.length > 1) title.textContent += ' ' + visible.length + '件';
     title.className = 'meldex-operation-tray-title';
     let hint = null;
-    if (hasActive) {
+    // 最小化中は件数を最後まで読めることを優先し、補足は広げた時だけ出す。
+    if (hasActive && !trayMinimized) {
       hint = document.createElement('span');
       hint.className = 'meldex-operation-tray-hint';
-      hint.textContent = '他のファイルで作業できます';
+      hint.textContent = '他の作業をして大丈夫です';
     }
     const toggle = document.createElement('button');
     toggle.type = 'button';
@@ -23285,6 +23401,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // 最小化中は件数と状態だけを小さく出し、見出しのクリックで広げる。
       header.addEventListener('click', function (event) {
         if (event.target.closest('button')) return;
+        if (trayDragSuppressClick) { trayDragSuppressClick = false; return; }
         toggle.click();
       });
       el.replaceChildren(header);

@@ -265,13 +265,13 @@ function _updateBulkEditBar(ctx) {
     ? window.GBSelectionFloatMenu.button('一括削除...', {
         e2eId: 'db-bulk-delete-' + paneId,
         danger: true,
-        onClick: () => _bulkDeleteEntities(selected, ctx),
+        onClick: () => _dbRunMenuItemAction(_bulkDeleteEntities, selected, ctx),
       })
     : document.createElement('button');
   if (!window.GBSelectionFloatMenu) {
     delBtn.textContent = '一括削除...';
     delBtn.dataset.e2eId = 'db-bulk-delete-' + paneId;
-    delBtn.addEventListener('click', () => _bulkDeleteEntities(selected, ctx));
+    delBtn.addEventListener('click', () => _dbRunMenuItemAction(_bulkDeleteEntities, selected, ctx));
   }
   bar.appendChild(delBtn);
 }
@@ -784,7 +784,14 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
   // 名前から保存先を推定してはいけない。改名済みの実体を旧名の仮行が指すことがある。
-  const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  let pivot;
+  try {
+    pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, cache: 'no-store' });
+  } catch (error) {
+    console.warn('[Meldex] 一括削除の前の確認に失敗しました', error);
+    showStatus('一括削除できませんでした。選択した行の保存状態を確認できません: ' + (error?.message || error), true);
+    return;
+  }
   const valid = entries.every(entry => {
     const saved = pivot?.entities?.[entry.name];
     return saved && (pivot.new_format !== true || (entry.entryId && saved._id === entry.entryId))
@@ -807,12 +814,23 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     entries,
     source: 'bulk-delete',
     confirmation: confirmed,
+  }).catch((error) => {
+    console.warn('[Meldex] 一括削除に失敗しました', error);
+    showStatus('一括削除できませんでした: ' + (error?.message || error), true);
+    return null;
   });
-  const deletedItems = result.trashRefs;
+  if (!result) {
+    if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+    return;
+  }
+  const deletedItems = Array.isArray(result.trashRefs) ? result.trashRefs : [];
   const ok = result.successes.length;
   const fail = result.failures.length;
-  _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
-  const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;
+  // 取り消し履歴はゴミ箱へ移せた分だけ積む（失敗分は履歴に残さない）
+  if (deletedItems.length) _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
+  const firstFailure = result.failures.find(item => item?.error)?.error;
+  const failureReason = firstFailure ? '（' + (firstFailure?.message || firstFailure) + '）' : '';
+  const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' + failureReason : ''}`;
   const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
     ? _dbDeleteCalendarSyncWarningMessage(result.responses)
     : '';

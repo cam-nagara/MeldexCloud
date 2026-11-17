@@ -11,6 +11,21 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// メニュー項目の実行。項目の処理が Promise を返す場合も完了まで待ち、
+// 失敗を握り潰さずに理由つきで表示する（メニュー描画側の共通実行関数）。
+async function _dbRunMenuItemAction(action, ...args) {
+  if (typeof action !== 'function') return undefined;
+  try {
+    return await action(...args);
+  } catch (error) {
+    console.warn('[Meldex] メニューの操作に失敗しました', error);
+    if (typeof showStatus === 'function') {
+      showStatus('操作を完了できませんでした: ' + (error?.message || String(error || '原因不明のエラー')), true);
+    }
+    return undefined;
+  }
+}
+
 // Start a topic read at the beginning of a Sheet open gesture, before editor
 // flushing and pane retargeting. selectEntity() consumes the same promise once;
 // this overlaps one request and deliberately does not become a stale data cache.

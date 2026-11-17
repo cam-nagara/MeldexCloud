@@ -468,14 +468,11 @@
         { id: 'merge-display', label: 'まとめ表示', icon: 'rows3', action: () => _runScriptNoteToolbarAction('mergeDisplay') },
         { id: 'add-column', label: '列を追加', icon: 'plus', action: () => _runScriptNoteToolbarAction('addColumn') },
         { id: 'filter', label: 'フィルタ', icon: 'funnel', action: () => _runScriptNoteToolbarAction('filter') },
-        { id: 'filter-preset', label: 'フィルタプリセット', icon: 'listFilter', action: () => _runScriptNoteToolbarAction('chooseFilterPreset') },
         { id: 'search', label: '検索・置換', icon: 'search', action: () => _runScriptNoteToolbarAction('search') },
         { id: 'detail', label: 'オプション', icon: 'slidersHorizontal', action: () => _runScriptNoteToolbarAction('detail') },
         { id: 'reload', label: '再読み込み', icon: 'refreshCw', action: () => _runScriptNoteToolbarAction('reload') },
         { id: 'save-template', label: 'テンプレートを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveTemplate') },
         { id: 'manage-templates', label: 'テンプレートを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageTemplates') },
-        { id: 'save-filter', label: 'フィルタを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveFilter') },
-        { id: 'manage-filters', label: 'フィルタを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageFilters') },
       ];
     }
     const desktopItems = _desktopToolMenuItemsForMobile(toolType);

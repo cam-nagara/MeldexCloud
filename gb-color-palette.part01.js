@@ -11,9 +11,9 @@
   style.textContent = `
 .gb-palette {
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
-  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 6px;
+  background: var(--ui-popup-bg, var(--bg3)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: var(--ui-popup-radius, 6px);
   width: calc(24px * 8 + 3px * 7 + 16px);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 .gb-palette-popup { position: fixed; z-index: 10100; }
 .gb-palette-grid {

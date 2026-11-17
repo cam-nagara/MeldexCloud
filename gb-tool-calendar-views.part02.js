@@ -60,6 +60,27 @@ CalendarComponent.prototype._ganttDateValue = function(date, original, isEnd) {
   return this._localDateTimeStr(value);
 };
 
+// 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）。
+CalendarComponent.prototype._commitGanttEventPatch = async function(ev, patch, label) {
+  const undoSnapshot = this._eventIsUndoable(ev) && typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : null;
+  try {
+    await _calApplyEventTimePatch(this, ev, patch);
+  } catch (error) {
+    this._showStatus?.('ガントの更新に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    try { await this._loadEvents(); } catch (reloadError) { console.warn('[calendar] gantt reload failed:', reloadError); }
+    this._render();
+    return false;
+  }
+  if (undoSnapshot) this._pushUndo(label, undoSnapshot);
+  try {
+    await this._loadEvents();
+  } catch (reloadError) {
+    console.warn('[calendar] gantt reload failed:', reloadError);
+  }
+  this._render();
+  return true;
+};
+
 CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range, win) {
   const reason = this._ganttEventEditReason(ev);
   if (reason) {
@@ -110,16 +131,7 @@ CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range
         start: this._ganttDateValue(nextStart, ev.start, false),
         end: this._ganttDateValue(nextEnd, ev.end || ev.start, true),
       };
-      if (this._eventIsUndoable(ev)) this._pushUndo(mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
-      try {
-        await _calApplyEventTimePatch(this, ev, patch);
-        await this._loadEvents();
-        this._render();
-      } catch (error) {
-        this._showStatus?.('ガントの更新に失敗しました: ' + (error?.message || error), true);
-        await this._loadEvents();
-        this._render();
-      }
+      await this._commitGanttEventPatch(ev, patch, mode === 'move' ? 'ガントで予定を移動' : 'ガントで予定をリサイズ');
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
@@ -262,8 +274,8 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
 <div class="field" style="flex:1;"><label>終了</label><input id="sh-end" class="sh-end" type="time" value="${esc(endValue)}"></div></div>
 <div class="field"><label>種別</label><select id="sh-type" class="sh-type"><option value="work" ${shiftType==='work'?'selected':''}>勤務</option><option value="off" ${shiftType==='off'?'selected':''}>休み</option><option value="holiday" ${shiftType==='holiday'?'selected':''}>祝日</option></select></div>
 <div class="field"><label>メモ</label><textarea id="sh-note" class="sh-note" rows="3">${esc(existing?.note||'')}</textarea></div>`;
-  content.querySelectorAll('input, textarea').forEach(control => control.classList.add('gb-input'));
-  content.querySelectorAll('select').forEach(control => control.classList.add('gb-select', 'gb-select-medium'));
+  content.querySelectorAll('input, textarea').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-input'); });
+  content.querySelectorAll('select').forEach(control => { if (!control.closest('[data-ui-component]')) control.classList.add('gb-select', 'gb-select-medium'); });
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.id = 'sh-cancel'; cancelButton.className = 'sh-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
@@ -352,8 +364,16 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     if (busy || deleteConfirmPending) return;
     deleteConfirmPending = true;
     let confirmed = false;
+    let confirmFailed = false;
     try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このシフトを削除しますか？'); }
-    catch {} finally { deleteConfirmPending = false; }
+    catch (error) {
+      confirmFailed = true;
+      console.warn('[calendar] shift delete confirmation failed:', error);
+    } finally { deleteConfirmPending = false; }
+    if (confirmFailed) {
+      status.textContent = '削除の確認を表示できませんでした。もう一度お試しください。';
+      return;
+    }
     if (!confirmed) return;
     setBusy(true); status.textContent = '削除中...';
     const deleted = await this._deleteShift(existing.id, { skipConfirm: true });

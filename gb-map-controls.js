@@ -48,12 +48,12 @@ const MeldexMapControls = (() => {
       if ((app.store.doc.features.length || app.store.doc.terrain || app.store.doc.background) && !await cfConfirm('座標の異なる地図へ切り替えると、現在の地形と図形を置き換えます。続けますか？（元に戻せます）')) {
         root.querySelector('select').value = app.store.doc.coordinate_system; return;
       }
-      if (!canEdit()) return;
-      if (!app.update(next => { Object.assign(next, D().create(next.title, value)); delete next.saved_views; delete next.world_generation; })) return;
+      if (!canEdit()||app.store.doc.atlas?.locked) return;
+      if (!app.update(next => { Object.assign(next, D().create(next.title, value)); delete next.saved_views; delete next.world_generation; delete next.atlas; })) return;
       app.state.mapViewport = null; app.state.mapLayerVisibility = {}; app.state.mapSearch = ''; app.state.mapFeatureKind = ''; app.state.mapSavedViewId = '';
       app.search.value = ''; app.kindFilter.value = ''; app._saveViewState();
       app._selected = null; app._activeLayer = 'places'; app.view.setTool('select'); app._buildSettingsRefresh(); app._render();
-    }, app.editingDisabled);
+    }, app.editingDisabled||doc.atlas?.locked);
     const world = document.createElement('div'); root.appendChild(world); app.worldControls.push(world);
     select(world, '背景地図', [['osm', 'OpenStreetMap'], ['gsi', '地理院（淡色）'], ['gsi-standard', '地理院（標準）'], ['blank', '背景なし']], doc.basemap === 'gsi' && doc.basemap_style === 'standard' ? 'gsi-standard' : doc.basemap, value => {
       app.update(next => { next.basemap = value === 'gsi-standard' ? 'gsi' : value; if (next.basemap === 'gsi') next.basemap_style = value === 'gsi-standard' ? 'standard' : 'pale'; }); app._render();
@@ -74,20 +74,22 @@ const MeldexMapControls = (() => {
         if (!canEdit()) return;
         if (image.naturalWidth * image.naturalHeight > 64000000) throw new Error('画像は6400万画素以下にしてください');
         if ((app.store.doc.background || app.store.doc.terrain) && !await cfConfirm('現在の背景をこの画像に置き換えますか？ 地点・図形は保持されます。')) return;
-        if (!canEdit()) return;
+        if (!canEdit()||app.store.doc.atlas?.locked) return;
         app.update(next => {
-          next.background = { data_url: data }; next.terrain = null;
+          next.background = { data_url: data }; next.terrain = null; delete next.atlas; next.schema_version=1;
           if (!next.features.length) { const ratio = Math.min(1, 4096 / Math.max(image.naturalWidth, image.naturalHeight)); next.canvas = { width: Math.max(128, Math.round(image.naturalWidth * ratio)), height: Math.max(128, Math.round(image.naturalHeight * ratio)) }; next.view = null; }
         });
         app._render(); app.view.fit();
       } catch (error) { app._message(error.message); }
     };
-    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled }),
-      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled }),
-      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled }),
-      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled })));
-    if (MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.terrain.presentation || 'biomes',
-      value => { app.update(next => { next.terrain.presentation = value; }); app._render(); }, app.editingDisabled);
+    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled||doc.atlas?.locked }),
+      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
+      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
+      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && kind !== 'town' })));
+    MeldexMapTerrainControls.settings(root,app);
+    if(doc.atlas){const note=document.createElement('p');note.className='gb-map-hint';note.textContent='地形ブラシで平野・山地・植生・陸海を編集できます。川などを描いた後は、選択して「周囲の地形を合わせる」で谷や切れ目を作れます。';local.append(note);}
+    if (doc.atlas || MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.atlas?.presentation || doc.terrain?.presentation || 'biomes',
+      value => { app.update(next => { if(next.atlas)next.atlas.presentation=value;else next.terrain.presentation = value; }); app._render(); }, app.editingDisabled);
     field(app, local, '100地図単位の距離', doc.scale.distance_per_unit === null ? '' : doc.scale.distance_per_unit * 100,
       value => { app.update(next => { next.scale.distance_per_unit = value === '' ? null : Number(value) / 100; }); app._render(); }, { type: 'number', min: 0.000001, step: 'any' });
     select(local, '距離の単位', [['km', 'km'], ['m', 'm'], ['mi', 'mile'], ['unit', '任意単位']], doc.scale.unit,
@@ -103,10 +105,10 @@ const MeldexMapControls = (() => {
       app.update(next => { next.scale.distance_per_unit = Number(calibration.value) / units; });
       app._buildSettingsRefresh(); app._render(); app.view._draft();
     }, { disabled: app.editingDisabled }));
-    const brush = field(app, local, '地形ブラシの半径', app.view?.brushSize || 70, value => { app.view.brushSize = Number(value); }, { type: 'number', min: 5, max: 1000, step: 5 });
+    const brush = field(app, local, '地形ブラシの半径', app.view?.brushSize || 70, value => { app.view.brushSize = Number(value); }, { type: 'number', min: doc.atlas?.surface ? .1 : 5, max: 1000, step: doc.atlas?.surface ? .1 : 5 });
     brush.dataset.mapBrush = 'true';
     const note = document.createElement('small'); note.textContent = '縮尺を設定すると、地図上の距離と縮尺バーに反映されます。'; local.appendChild(note);
-    if(doc.world_generation&&!MeldexMapWorldGeography.validEnvironment(doc.terrain)){const hint=document.createElement('small');hint.textContent='地形・方角の編集後は気候と植生の配色を解除します。世界地図を再生成すると、水系や都市を含めて整合を取り直せます。';local.appendChild(hint);}
+    if(!doc.atlas&&doc.world_generation&&!MeldexMapWorldGeography.validEnvironment(doc.terrain)){const hint=document.createElement('small');hint.textContent='地形・方角の編集後は気候と植生の配色を解除します。世界地図を再生成すると、水系や都市を含めて整合を取り直せます。';local.appendChild(hint);}
     app._buildSettingsRefresh = () => {
       app.localControls = app.localControls.filter(el => !root.contains(el)); app.worldControls = app.worldControls.filter(el => !root.contains(el));
       root.replaceChildren(); settings(app);
@@ -178,6 +180,7 @@ const MeldexMapControls = (() => {
     addTag.addEventListener('change', commitTags); addTag.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); commitTags(); } });
     tags.appendChild(addTag); root.appendChild(tags);
     field(app, root, '色', f.color, value => app._editFeature(next => { next.color = value; }), { type: 'color', disabled: locked });
+    if(f.kind==='pin')select(root,'マーカーのデザイン',[['symbol','丸印・記号（標準）'],['drop','しずく型']],f.marker_style||'symbol',value=>app._editFeature(next=>{next.marker_style=value;}),locked);
     select(root, '配置レイヤー', app.store.doc.layers.filter(l => !l.locked || l.id === f.layer_id).map(l => [l.id, l.name]), f.layer_id,
       value => app._editFeature(next => { next.layer_id = value; }), locked);
     if (f.points.length > 1) {
@@ -185,7 +188,8 @@ const MeldexMapControls = (() => {
       root.appendChild(app._button(app.view.editVertices ? '頂点編集を終了' : '頂点を編集', () => { app.view.editVertices = !app.view.editVertices; app._setTool('select'); app._render(); }, { disabled: locked }));
     }
     if (f.kind === 'route') {
-      select(root, '経路の形', [['straight', '折れ線'], ['curve', '曲線']], f.line_style || 'straight', value => app._editFeature(next => { next.line_style = value; }), locked);
+      MeldexMapTerrainControls.routeFields(root,app,f,locked);
+      select(root, '経路の形', [['straight', '折れ線'], ['curve', '曲線']], f.line_style || 'straight', value => app._editFeature(next => { next.line_style = value; if(next.cartography)delete next.cartography.geometry; }), locked);
       const wrap = document.createElement('label'), input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!f.arrow; input.disabled = locked;
       input.onchange = () => app._editFeature(next => { next.arrow = input.checked; }); wrap.append(input, document.createTextNode('終点に矢印を表示')); root.appendChild(wrap);
     }
@@ -221,7 +225,7 @@ const MeldexMapControls = (() => {
   }
   function generator(app) {
     app._commitInput(); if (app._inputDirty) throw new Error('入力内容を確認してください');
-    if (app.editingDisabled || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
+    if (app.editingDisabled || app.store.doc.atlas?.locked || app.store.doc.coordinate_system !== 'local') throw new Error('編集できる創作地図で実行してください');
     app._settlementsPreview?.destroy(); app._climatePreview?.destroy(); app._worldPreview?.destroy();
     const canEdit = app._editGuard(), store = app.store, path = app.path;
     if (app._generator?.isConnected) { app._generator.querySelector('input')?.focus(); return; }
@@ -247,9 +251,9 @@ const MeldexMapControls = (() => {
       if (pending || !canEdit() || ![seed, land, roughness].every(input => input.reportValidity())) return;
       clear(); source = store.doc;
       candidate = D().generate(seed.value, template, Number(land.value) / 100, Number(roughness.value)); signature = conditions();
-      D().parse(JSON.stringify({ ...source, terrain: candidate, background: null }, null, 2));
+      D().parse(JSON.stringify({ ...source, schema_version:1, terrain: candidate, background: null, atlas: null }, null, 2));
       previewView?.destroy(); previewView = new MeldexMapView(preview, { action: () => {}, select: () => {} });
-      previewView.setDocument({ ...source, terrain: candidate, background: null }, true);
+      previewView.setDocument({ ...source, schema_version:1, terrain: candidate, background: null, atlas: null }, true);
       adopt.disabled = false;
     });
     const adopt = app._button('この地形を採用', async () => {
@@ -264,7 +268,7 @@ const MeldexMapControls = (() => {
         const access = await MeldexEntityDetail.resolveReadOnly(path, false);
         if (!current()) return;
         if (access.readOnly) { app._message(access.reason || 'このマップは編集できません'); return; }
-        if (app.update(doc => { doc.terrain = result; doc.background = null; })) { cleanup(); app._render(); }
+        if (app.update(doc => { doc.terrain = result; doc.background = null; delete doc.atlas; doc.schema_version=1; })) { cleanup(); app._render(); }
       } finally { pending = false; generate.disabled = false; adopt.disabled = !candidate; }
     }, { disabled: true });
     panel.append(generate, adopt, app._button('閉じる', cleanup));

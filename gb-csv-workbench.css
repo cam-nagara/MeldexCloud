@@ -19,25 +19,25 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
 .csv-workbench-bar input,
 .csv-workbench-bar select {
   min-width: 0;
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg);
   color: var(--fg);
 }
 
 .csv-workbench-bar .csv-search-input {
   width: min(260px, 32vw);
-  padding: 0 7px;
+  padding: 0 var(--ui-space-3, 6px);
 }
 
 .csv-workbench-bar .csv-replace-input {
   width: min(220px, 25vw);
-  padding: 0 7px;
+  padding: 0 var(--ui-space-3, 6px);
 }
 
 .csv-workbench-bar button {
-  min-height: 26px;
+  min-height: var(--ui-h-sm, 28px);
 }
 
 .csv-workbench-status {
@@ -127,11 +127,11 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
   max-height: calc(100vh - 24px);
   overflow: auto;
   padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
+  border-radius: var(--ui-dialog-radius, 6px);
   background: var(--bg);
   color: var(--fg);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, .25);
+  box-shadow: var(--ui-dialog-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .csv-column-menu button,
@@ -140,7 +140,7 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
   width: 100%;
   align-items: center;
   gap: 7px;
-  min-height: 30px;
+  min-height: var(--ui-h-md, 32px);
 }
 
 .csv-column-menu button {
@@ -230,5 +230,5 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
   }
   .csv-convert-dialog .gb-btn,
   .csv-convert-dialog .gb-input,
-  .csv-convert-dialog .gb-select { min-height: 44px; }
+  .csv-convert-dialog .gb-select { min-height: var(--ui-h-touch, 44px); }
 }

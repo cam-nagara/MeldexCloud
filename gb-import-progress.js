@@ -19,13 +19,21 @@
     'webclip-inbox': 'Web受信箱',
   };
   const restoredJobs = new Map();
+  const durableSchedules = new Map();
   const foregroundStack = [];
   let pollTimer = null;
   let polling = false;
+  let lastDurablePollAt = 0;
 
   function _progressApi() { return window.MeldexOperationProgress || null; }
   function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
   function _apiAvailable() { return typeof apiFetch === 'function'; }
+  function _settingsPanelForKind(kind) {
+    const normalized = String(kind || '');
+    if (normalized === 'x-account-posts') return 'Xアカウント保存';
+    if (normalized.startsWith('x-bookmark')) return 'Xブックマーク';
+    return '';
+  }
 
   function _jobLabel(job) {
     const kind = _kindLabel(job?.kind);
@@ -48,6 +56,18 @@
     if (!api || !job?.id) return null;
     const jobId = String(job.id);
     const activeStatus = ['queued', 'running', 'cancelling'].includes(job.status) ? job.status : 'running';
+    const basePhase = job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中');
+    const externalWait = job.progress?.external_wait === true;
+    const stalled = job.progress?.stalled === true && !externalWait;
+    const displayPhase = stalled
+      ? `停滞: ${basePhase}`
+      : (externalWait ? `外部待機: ${basePhase}` : basePhase);
+    const baseMessage = String(job.progress?.message || '');
+    const displayMessage = stalled
+      ? `30秒以上進んでいません。${baseMessage}`
+      : (externalWait
+        ? `${String(job.progress?.wait_reason || '外部処理の完了待ち')}${baseMessage ? ` / ${baseMessage}` : ''}`
+        : baseMessage);
     let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
     if (handle && ['queued', 'running', 'cancelling'].includes(job.status)
         && api.isTerminalStatus(handle.getState()?.status)) {
@@ -65,9 +85,9 @@
       handle = api.begin({
         id: 'job-' + jobId,
         kind: String(job.kind || 'import'),
-        settingsPanel: String(job.kind || '').startsWith('x-bookmark') ? 'Xブックマーク' : '',
+        settingsPanel: _settingsPanelForKind(job.kind),
         label: _jobLabel(job),
-        phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+        phase: displayPhase,
         status: activeStatus,
         mode: Number(job.progress?.total) > 0 ? 'determinate' : 'indeterminate',
         processed: Number(job.progress?.processed) || 0,
@@ -85,7 +105,7 @@
     let processed = Math.max(0, Number(job.progress?.processed) || 0);
     handle.update({
       label: _jobLabel(job),
-      phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+      phase: displayPhase,
       status: job.cancel_requested || (activeStatus === 'running' && handle.getState()?.status === 'cancelling') ? 'cancelling' : activeStatus,
       mode: rawTotal > 0 ? 'determinate' : 'indeterminate',
       processed: processed,
@@ -93,11 +113,116 @@
       currentItem: job.progress?.current_item || job.progress?.current || '',
       rate: job.progress?.rate,
       eta: job.progress?.eta_seconds ?? job.progress?.eta,
-      message: job.progress?.message || '',
+      message: displayMessage,
       persistentJobId: jobId,
     });
     restoredJobs.set(jobId, { handle: handle, misses: 0 });
     return handle;
+  }
+
+  function _durableProgressText(dispatch) {
+    const processed = Math.max(0, Number(dispatch?.processed) || 0);
+    const total = Math.max(0, Number(dispatch?.total) || 0);
+    return total > 0 ? `${processed}/${total}件` : (processed > 0 ? `${processed}件` : '開始前');
+  }
+
+  function _durableScheduleKey(schedule) {
+    return `durable-schedule-${String(schedule?.id || '').replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+  }
+
+  function _syncDurableSchedule(schedule, volatileJobIds) {
+    const api = _progressApi();
+    const dispatch = schedule?.last_dispatch || {};
+    const dispatchStatus = String(dispatch.status || '');
+    const jobId = String(dispatch.job_id || '');
+    const relevant = schedule?.auto_retry_blocked === true
+      || dispatchStatus === 'interrupted'
+      || (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatchStatus)
+          && (!jobId || !volatileJobIds.has(jobId)));
+    const key = _durableScheduleKey(schedule);
+    if (!relevant) {
+      durableSchedules.get(key)?.dispose?.();
+      durableSchedules.delete(key);
+      return;
+    }
+    if (!api || !schedule?.id) return;
+    const processed = Math.max(0, Number(dispatch.processed) || 0);
+    const total = Math.max(0, Number(dispatch.total) || 0);
+    const stage = String(dispatch.stage || '準備中');
+    const lastProgressAt = Date.parse(dispatch.last_progress_at || '');
+    const externalWait = dispatch.external_wait === true || Boolean(dispatch.wait_reason);
+    const stalled = !schedule.auto_retry_blocked
+      && !externalWait
+      && Number.isFinite(lastProgressAt)
+      && Date.now() - lastProgressAt >= 30000;
+    const retry = async () => {
+      await apiPost(`/import-schedules/${encodeURIComponent(schedule.id)}/run`, {}, {silentError: true});
+      durableSchedules.get(key)?.dispose?.();
+      durableSchedules.delete(key);
+      lastDurablePollAt = 0;
+      await poll();
+    };
+    let handle = durableSchedules.get(key);
+    if (!handle) {
+      handle = api.begin({
+        id: key,
+        kind: String(schedule.category || 'import'),
+        settingsPanel: _settingsPanelForKind(schedule.category),
+        label: _jobLabel({kind: schedule.category, label: schedule.label}),
+        phase: stage,
+        status: dispatchStatus === 'cancelling' ? 'cancelling' : (dispatchStatus === 'running' ? 'running' : 'queued'),
+        mode: total > 0 ? 'determinate' : 'indeterminate',
+        processed,
+        total: total || null,
+        background: true,
+        showImmediately: true,
+        priority: schedule.auto_retry_blocked ? 40 : 15,
+        retry: schedule.auto_retry_blocked ? retry : null,
+      });
+      durableSchedules.set(key, handle);
+    }
+    if (schedule.auto_retry_blocked) {
+      if (handle.getState()?.status !== 'failed') {
+        handle.fail({
+          error: '同じ工程で3回進まなかったため、自動再開を停止しました。',
+          summary: `${stage} / ${_durableProgressText(dispatch)}。「再試行」で手動再開できます。`,
+          retry,
+        });
+      }
+      return;
+    }
+    handle.update({
+      label: _jobLabel({kind: schedule.category, label: schedule.label}),
+      phase: stalled
+        ? `停滞: ${stage}`
+        : (externalWait ? `外部待機: ${stage}` : (dispatchStatus === 'interrupted' ? `再開待ち: ${stage}` : stage)),
+      status: dispatchStatus === 'cancelling' ? 'cancelling' : (dispatchStatus === 'running' ? 'running' : 'queued'),
+      mode: total > 0 ? 'determinate' : 'indeterminate',
+      processed,
+      total: total || null,
+      message: stalled
+        ? `30秒以上進んでいません。最後の位置: ${_durableProgressText(dispatch)}`
+        : (externalWait
+          ? `${String(dispatch.wait_reason || '外部処理の完了待ち')} / ${_durableProgressText(dispatch)}`
+          : (dispatchStatus === 'interrupted' ? `再開予定まで待機中 / ${_durableProgressText(dispatch)}` : _durableProgressText(dispatch))),
+    });
+  }
+
+  async function _pollDurableSchedules(volatileJobIds) {
+    const now = Date.now();
+    if (now - lastDurablePollAt < 5000) return;
+    lastDurablePollAt = now;
+    const data = await apiFetch('/import-schedules', {silentError: true});
+    const schedules = (Array.isArray(data?.schedules) ? data.schedules : [])
+      .filter(schedule => schedule?.category === 'x-bookmarks' || schedule?.category === 'x-account-posts');
+    const currentKeys = new Set(schedules.map(_durableScheduleKey));
+    schedules.forEach(schedule => _syncDurableSchedule(schedule, volatileJobIds));
+    durableSchedules.forEach((handle, key) => {
+      if (!currentKeys.has(key)) {
+        handle.dispose();
+        durableSchedules.delete(key);
+      }
+    });
   }
 
   async function _scheduledJobSnapshot(jobId) {
@@ -183,6 +308,7 @@
         seen.add(String(job.id));
         _syncJob(job);
       });
+      await _pollDurableSchedules(seen);
       const missing = [];
       restoredJobs.forEach(function (entry, jobId) {
         if (!seen.has(jobId)) missing.push(_resolveMissingJob(jobId, entry));

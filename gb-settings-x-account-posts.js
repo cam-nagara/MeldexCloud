@@ -326,8 +326,29 @@
   }
 
   function accountStatus(entry) {
+    const dispatch = entry.last_dispatch || {};
+    const processed = Number(dispatch.processed) || 0;
+    const total = Number(dispatch.total) || 0;
+    const progress = total > 0 ? `${processed}/${total}件` : (processed > 0 ? `${processed}件` : '開始前');
+    if (entry.auto_retry_blocked) {
+      return `自動再開を停止中（同じ工程で3回進展なし） / 停止工程: ${dispatch.stage || '不明'} ${progress} / 「今すぐ取得して再開」で手動再開できます`;
+    }
+    if (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatch.status)) {
+      return `定期実行中 / ${dispatch.stage || '準備中'} ${progress}`;
+    }
+    if (dispatch.status === 'interrupted') {
+      return `再開待ち / ${dispatch.stage || '準備中'} ${progress}${entry.next_run_display ? ` / 再開予定 ${entry.next_run_display}` : ''}`;
+    }
     if (entry.enabled) return entry.next_run_display ? `定期実行ON / 次回 ${entry.next_run_display}` : '定期実行ON';
     return '定期実行OFF（手動のみ）';
+  }
+
+  async function restartBlockedSchedule(entry, username) {
+    if (!await confirmAccountPostsCost(username)) return;
+    await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}/run`, {}, {silentError: true});
+    setStatus(`@${username} の停止状態を解除し、保存を再開しました。進み具合は処理パネルで確認できます。`, false);
+    await window.MeldexImportProgress?.poll?.();
+    await refreshAccounts();
   }
 
   function actionButton(label, action, username, extraClass) {
@@ -385,7 +406,7 @@
       actions.append(
         up,
         down,
-        actionButton('今すぐ取得', 'sync', username),
+        actionButton(entry.auto_retry_blocked ? '今すぐ取得して再開' : '今すぐ取得', 'sync', username),
         actionButton('後処理を再開', 'enrich', username),
         actionButton('ブラウザで開く', 'open', username),
         actionButton('削除', 'delete', username, 'gb-btn-danger'),
@@ -483,7 +504,8 @@
         await persistOrder();
         renderAccountList();
       } else if (button.dataset.action === 'sync') {
-        await syncAccountPosts(username);
+        if (entry.auto_retry_blocked) await restartBlockedSchedule(entry, username);
+        else await syncAccountPosts(username);
       } else if (button.dataset.action === 'enrich') {
         if (!syncInFlight) await runAccountPostsJob(username, '', true);
       } else if (button.dataset.action === 'open') {

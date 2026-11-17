@@ -196,15 +196,32 @@
     return items;
   }
 
-  function queueDraft(path, content, lastSyncedAt) {
+  function _queueDraftSource(path, contentSource, lastSyncedAt) {
     const safePath = String(path || '').trim();
     const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
     if (!safePath || _isPathLocked(safePath)) return;
     timers.set(key, setTimeout(() => {
       timers.delete(key);
+      let content;
+      try {
+        content = typeof contentSource === 'function' ? contentSource() : contentSource;
+      } catch (_) {
+        return;
+      }
       saveDraft(safePath, content, lastSyncedAt);
     }, 250));
+  }
+
+  function queueDraft(path, content, lastSyncedAt) {
+    _queueDraftSource(path, content, lastSyncedAt);
+  }
+
+  // 大きい文書では直列化自体が入力を止めるため、デバウンス満了時にだけ
+  // 最新内容を生成する入口を用意する。従来のqueueDraft契約は変更しない。
+  function queueDraftFactory(path, contentFactory, lastSyncedAt) {
+    if (typeof contentFactory !== 'function') return queueDraft(path, contentFactory, lastSyncedAt);
+    _queueDraftSource(path, contentFactory, lastSyncedAt);
   }
 
   async function clearAllDrafts() {
@@ -541,6 +558,7 @@
   window.MeldexDraftRecovery = {
     reserveDraft,
     queueDraft,
+    queueDraftFactory,
     saveDraft,
     clearDraft,
     clearAllDrafts,

@@ -658,8 +658,9 @@
     input.addEventListener('change', async () => {
       const file = input.files[0];
       if (!file) return;
-      const text = await file.text();
       try {
+        // ファイルの読み取り失敗（読めない・消えた等）も取り込み失敗として知らせる
+        const text = await file.text();
         const res = await apiPost('/cal/sync/ical/import', { ics: text, user: this._getUser() });
         this._showStatus(`iCalインポート完了: ${res.imported}件`);
         await this._loadEvents();

@@ -46,8 +46,8 @@
   background: var(--ui-popup-bg, var(--bg2));
   color: var(--fg);
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 /* gb-context-menu のグローバルルール (.gb-context-menu > div / :hover) が
    ヘッダ・タブ・検索欄・グリッド等の段落全体に padding や hover 背景を被せてしまうのを無効化。
@@ -286,7 +286,7 @@
   .gb-icon-picker-preset,
   .gb-icon-picker-more,
   .gb-icon-picker-actions .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .gb-icon-picker-search {

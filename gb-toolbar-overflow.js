@@ -281,7 +281,16 @@
     window.addEventListener('resize', () => { close(); schedule(); });
     document.fonts?.ready.then(schedule);
   }
-  window.MeldexToolbarOverflow = { setup, refresh: schedule, close, teardown(toolbar) {
+  // あふれメニューへ退避した操作は非表示でfocusできない。ダイアログを閉じた後の
+  // focus復帰先などには、見えている「隠れている操作を表示」ボタンを代わりに返す。
+  function focusTarget(el) {
+    if (!el?.isConnected || el.getClientRects().length) return el;
+    for (const [toolbar, entry] of registry) {
+      if (!entry.more.hidden && toolbar.contains(el) && entry.overflow.some(item => item.contains(el))) return entry.more;
+    }
+    return el;
+  }
+  window.MeldexToolbarOverflow = { setup, refresh: schedule, close, focusTarget, teardown(toolbar) {
     const entry = registry.get(toolbar);
     if (!entry) return;
     if (active === entry) close();

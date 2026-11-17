@@ -1,3 +1,129 @@
+    const data = nodeEl._nodeData;
+    if (!data) return;
+    const row = nodeEl.querySelector('.tree-node-row');
+    if (row) applyNodeColor(row, color);
+    if (data.path) setNodeColor(data.path, color);
+  });
+  pushOutlinerSettingsHistory(
+    color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
+    before,
+    detail,
+    [NODE_COLORS_KEY]
+  );
+  showStatus(color ? '色を設定しました' : '色をリセットしました');
+}
+
+/* ==============================
+   タイムアウト事後確認（作成・リネーム共通）
+   ============================== */
+// APIタイムアウト時のポーリング間隔。合計30秒で打ち切る
+const OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS = [2000, 4000, 8000, 16000];
+// 同一キーの事後確認ポーリングが二重に走らないようにする
+const _outlinerPostTimeoutConfirmInFlight = new Set();
+
+// E2Eから待機時間を短縮できるようにする（通常はundefinedで既定値）
+function _outlinerPostTimeoutConfirmDelays() {
+  const o = window.__outlinerPostTimeoutConfirmDelaysForE2E;
+  return (Array.isArray(o) && o.length) ? o : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
+}
+
+// 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
+async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, options = {}) {
+  const sourceId = contextNodeEl?._nodeData?.sourceId || '';
+  let rootPath = '';
+  let cur = contextNodeEl || null;
+  while (cur) {
+    if (cur._nodeData?._isRoot) { rootPath = cur._nodeData.path; break; }
+    cur = cur.parentElement ? cur.parentElement.closest('.tree-node') : null;
+  }
+  const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
+  const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => { controller.abort(); resolve(null); }, options.timeoutMs || 5000);
+  });
+  try {
+    return await Promise.race([apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
+      { skipBrowseCache: true, cache: 'reload', timeoutMs: options.timeoutMs || 5000, signal: controller.signal }), timeout]);
+  } catch {
+    return null;
+  } finally { clearTimeout(timer); }
+}
+
+// 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
+// oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
+function _outlinerFindRenamedItem(items, oldDisplayName, newName, originalPath) {
+  if (!Array.isArray(items)) return null;
+  // Title-only edits keep their path; another item may have the same display name.
+  if (originalPath) {
+    const original = items.find(it => it && it.path === originalPath);
+    if (original) return original.name === newName ? original : null;
+  }
+  if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
+  return items.find(it => it && it.name === newName) || null;
+}
+
+function _resolveOutlinerCreateInsertTarget(parentPath, options) {
+  const expandUnloaded = options?.expandUnloaded !== false;
+  let container;
+  let deferTreeInsert = false;
+  if (parentPath) {
+    const parentNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(parentPath) : null;
+    if (parentNode) {
+      const childrenDiv = parentNode.querySelector(':scope > .tree-children');
+      if (childrenDiv) {
+        const toggle = parentNode.querySelector('.tree-toggle');
+        if (childrenDiv.dataset.loaded === 'false') {
+          deferTreeInsert = true;
+          if (expandUnloaded && toggle && toggle.dataset.expanded !== 'true') toggle.click();
+        } else {
+          childrenDiv.classList.remove('collapsed');
+          if (toggle) { toggle.classList.add('expanded'); toggle.dataset.expanded = 'true'; }
+          container = childrenDiv;
+        }
+      }
+    }
+    if (!container && _homeFolderPath && parentPath === _homeFolderPath) {
+      container = document.getElementById('body-home');
+    }
+    // 親ノードがDOM上に見つからず、ホームフォルダにも該当しない場合はルートへ誤挿入せず
+    // 「挿入先不明」を返す。呼び出し元は誤挿入せず全体再読込に委ねる
+    if (!container && !deferTreeInsert) return { container: null, deferTreeInsert: false };
+  }
+  if (!container && !deferTreeInsert) container = document.getElementById('outliner-tree');
+  return { container, deferTreeInsert };
+}
+
+function _insertOutlinerCreateNode(container, newNode, anchorNode) {
+  if (!container || !newNode) return;
+  if (anchorNode && (container.parentElement === anchorNode
+      || anchorNode._nodeData?.path === container.closest('.tree-node')?._nodeData?.path)) {
+    container.insertBefore(newNode, container.firstChild);
+    return;
+  }
+  const sel = anchorNode || treeSelection.lastClicked;
+  if (sel && sel._nodeData && sel.parentElement === container) {
+    const selType = sel._nodeData.type;
+    if (anchorNode || (selType !== 'folder' && selType !== 'database')) {
+      container.insertBefore(newNode, sel.nextSibling);
+      return;
+    }
+  }
+  container.appendChild(newNode);
+}
+
+function _selectOutlinerCreateNode(newNode) {
+  if (!newNode) return;
+  treeSelection.clear();
+  treeSelection.add(newNode);
+  treeSelection.lastClicked = newNode;
+  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+  newNode.querySelector('.tree-node-row')?.classList.add('active');
+}
+
+function _createOutlinerPendingCreateNode(type, label) {
+  const item = {
     name: label || '無題',
     type,
     path: '__meldex_pending_create_' + Date.now() + '_' + Math.random().toString(36).slice(2),
@@ -292,12 +418,14 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
     // ファイル/フォルダの実体をリネーム
     if (nodeData.path && nv !== old) {
       const oldPath = nodeData.path;
+      // 通信を待たずに、開いているタブやツールバーの名前も先に変える
+      applyOptimisticRenameLabel(oldPath, nv, nodeData.type || 'page');
       try {
         const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
           new_name: nv,
           type: nodeData.type || 'page',
-          title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page')
+          title_only: false
         });
         if (!res || !res.new_path) throw new Error('rename failed');
         _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
@@ -307,6 +435,7 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
           await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
         } else {
           // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+          applyOptimisticRenameLabel(oldPath, old, nodeData.type || 'page');
           labelEl.textContent = old;
           const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
           showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
@@ -350,22 +479,59 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+  // 取り消し・やり直し: 以前は表示名（oldName）をそのまま新しいファイル名として送り、
+  // 戻った先を oldPath と決め打ちしていた。「タイトル＝ファイル名」では、表示タイトルと
+  // ファイル名が違う項目（無題/ を「キャラ」と表示する等）が キャラ/ へ改名される一方、
+  // ツリーと参照は存在しない 無題/ を指してしまう。元のファイル名へ戻してから表示タイトルを
+  // 戻し、ツリーと参照はサーバーが実際に返したパスへ合わせる。
+  const titleOnlyRename = options?.titleOnly === true || oldPath === newPath;
+  const itemType = nodeData.type || 'page';
+  const baseNameOf = (path) => String(path || '').replace(/[\/]+$/, '').split(/[\/]/).pop() || '';
+  const storedStemOf = (fromPath, toPath) => {
+    const fromBase = baseNameOf(fromPath);
+    const toBase = baseNameOf(toPath);
+    for (let index = fromBase.indexOf('.'); index > 0; index = fromBase.indexOf('.', index + 1)) {
+      const ext = fromBase.slice(index);
+      if (toBase.toLowerCase().endsWith(ext.toLowerCase())) return fromBase.slice(0, index);
+    }
+    return fromBase;
+  };
+  const originalStem = storedStemOf(oldPath, newPath);
+  let currentPath = newPath;
+  const renameTo = async (fromPath, fileStem, displayTitle) => {
+    if (titleOnlyRename) {
+      const res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: displayTitle, type: itemType, title_only: true });
+      return { response: res, path: res?.new_path || fromPath };
+    }
+    let res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: fileStem, type: itemType, title_only: false });
+    let path = res?.new_path || fromPath;
+    if (displayTitle && displayTitle !== fileStem) {
+      const titled = await apiPost('/outliner/rename', { old_path: path, new_name: displayTitle, type: itemType, title_only: true });
+      res = { ...res, ...titled, new_path: path, file_id: titled?.file_id || res?.file_id };
+    }
+    return { response: res, path };
+  };
+  const moveTreeTo = (fromPath, toPath, label, response, aliasFrom, aliasTo) => {
+    _renameTreeNode(fromPath, toPath, label, response?.file_id);
+    aliasPairs.forEach(pair => _renameTreeNode(pair[aliasFrom], pair[aliasTo], label, response?.file_id));
+    applyPathReferences(fromPath, toPath, label, response);
+    aliasPairs.forEach(pair => applyPathReferences(pair[aliasFrom], pair[aliasTo], label, response));
+    nodeData.path = toPath;
+    nodeData.pathAliases = aliasPairs.map(pair => pair[aliasTo]);
+  };
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: newPath, new_name: oldName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(newPath, oldPath, oldName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.newPath, pair.oldPath, oldName, r2?.file_id));
-      applyPathReferences(newPath, oldPath, oldName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.newPath, pair.oldPath, oldName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.oldPath);
+      const { response, path } = await renameTo(currentPath, originalStem, oldName);
+      moveTreeTo(currentPath, path, oldName, response, 'newPath', 'oldPath');
+      nodeData.name = oldName;
+      currentPath = path;
+      if (path !== oldPath) showStatus(`元のファイル名に戻せなかったため「${baseNameOf(path)}」になりました`, true);
     },
     async () => {
-      const r2 = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newName, type: nodeData.type || 'page', title_only: ['page','board','database','calendar','scenario','scriptnote','timer'].includes(nodeData.type || 'page') });
-      _renameTreeNode(oldPath, newPath, newName, r2?.file_id);
-      aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, r2?.file_id));
-      applyPathReferences(oldPath, newPath, newName, r2);
-      aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, r2));
-      nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
+      const { response, path } = await renameTo(currentPath, storedStemOf(newPath, oldPath), newName);
+      moveTreeTo(currentPath, path, newName, response, 'oldPath', 'newPath');
+      nodeData.name = newName;
+      currentPath = path;
     }
   );
   const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
@@ -429,6 +595,28 @@ function backToPivot() {
   }
   document.querySelectorAll('.tree-node-row.active').forEach(el => el.classList.remove('active'));
 }
+
+// 名前の変更を確定した瞬間に、ツリー・タブ・ツールバーの表示名だけを先に変える。
+// 保存先（パス）の差し替えはサーバーの応答後に renameAppPathReferences が行う。
+// 改名の通信は環境によって数秒かかるため、待たずに名前が変わったことを見せる。
+// 失敗時は同じ関数を元の名前で呼び直して戻す。
+function applyOptimisticRenameLabel(path, label, type) {
+  if (!path || label == null || label === '') return;
+  const text = String(label);
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
+    if (node._nodeData?.path !== path) return;
+    const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
+    if (labelEl && !labelEl.querySelector('input')) labelEl.textContent = text;
+  });
+  try {
+    if (typeof renameAppPathReferences === 'function') {
+      renameAppPathReferences(path, path, { label: text, type: type || 'page', preserveMountedViews: true, skipDbReload: true });
+    }
+  } catch (error) {
+    console.warn('[Meldex] 名前の先行表示に失敗しました', error);
+  }
+}
+if (typeof window !== 'undefined') window.applyOptimisticRenameLabel = applyOptimisticRenameLabel;
 
 // ツリーノードのパス・名前をDOM上で直接更新（リネーム後の即時反映用）
 function _renameTreeNode(oldPath, newPath, newName, fileId) {
@@ -709,192 +897,3 @@ function _outlinerKeyboardIsExpandable(nodeEl) {
   const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
   return !!toggle && toggle.dataset.expanded !== undefined;
 }
-
-function _outlinerKeyboardIsExpanded(nodeEl) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  return !!toggle && toggle.dataset.expanded === 'true';
-}
-
-// 標準Tree View操作（§2.4）: 閉じている子項目なら親へ選択を移す
-function _outlinerKeyboardParentNode(nodeEl) {
-  const container = nodeEl?.parentElement || null;
-  return container?.closest?.('.tree-node') || null;
-}
-
-// 標準Tree View操作（§2.4）: 展開済みの親なら最初の子へ選択を移す
-function _outlinerKeyboardFirstChildNode(nodeEl) {
-  const childrenDiv = nodeEl?.querySelector?.(':scope > .tree-children') || null;
-  return childrenDiv?.querySelector?.(':scope > .tree-node') || null;
-}
-
-function _handleOutlinerTreeKeydown(event) {
-  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
-  const target = event.target;
-  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
-  if (!scopeSelector) return;
-  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
-  event.preventDefault();
-  event.stopPropagation();
-  _outlinerKeyboardMarkActive();
-  if (event.key === 'ArrowLeft') {
-    if (!current) return;
-    if (_outlinerKeyboardIsExpandable(current) && _outlinerKeyboardIsExpanded(current)) {
-      _outlinerKeyboardToggle(current, false);
-      return;
-    }
-    // 展開中でない（閉じた子項目・葉）場合は親へ選択を移す
-    const parent = _outlinerKeyboardParentNode(current);
-    if (parent) _outlinerKeyboardSelectNode(parent);
-    return;
-  }
-  if (event.key === 'ArrowRight') {
-    if (!current) return;
-    if (_outlinerKeyboardIsExpandable(current)) {
-      if (!_outlinerKeyboardIsExpanded(current)) {
-        _outlinerKeyboardToggle(current, true);
-        return;
-      }
-      // 展開済みなら最初の子へ選択を移す
-      const firstChild = _outlinerKeyboardFirstChildNode(current);
-      if (firstChild) {
-        _outlinerKeyboardSelectNode(firstChild);
-      } else {
-        // 展開直後（子の読み込み中）に2打目のArrowRightが押された場合、
-        // まだ子ノードがDOMに存在せずno-opになってしまう。読み込み完了後に
-        // 最初の子へフォーカス移動するデフォルト動作を予約しておく
-        // （gb-outliner.part01.part02.js の読み込み完了処理が消化する）。
-        const childrenDiv = current.querySelector?.(':scope > .tree-children') || null;
-        if (childrenDiv && childrenDiv.dataset.loading === 'true') {
-          childrenDiv._outlinerPendingArrowRightFocusNode = current;
-        }
-      }
-    }
-    return;
-  }
-  if (event.key === 'Enter') {
-    if (current) _outlinerKeyboardActivateNode(current);
-    return;
-  }
-  if (event.key === 'F2') {
-    if (current) _outlinerKeyboardStartRename(current);
-    return;
-  }
-  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
-  }
-  const nodes = _getVisibleTreeNodes(scopeSelector);
-  if (!nodes.length) return;
-  const rawIndex = nodes.indexOf(current);
-  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
-  const nextIndex = event.key === 'ArrowUp'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(nodes.length - 1, currentIndex + 1);
-  _outlinerKeyboardSelectNode(nodes[nextIndex]);
-}
-
-// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
-// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
-// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
-// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
-// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
-// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
-// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
-// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
-// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
-// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
-// （非仮想化フォルダの既存挙動は変更しない）。
-function _outlinerKeyboardVirtualContainerFor(nodeEl) {
-  const childrenDiv = nodeEl && nodeEl.parentElement;
-  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
-}
-
-function _outlinerKeyboardTryVirtualStep(current, key) {
-  const vr = window.GBOutlinerVirtualRender;
-  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
-
-  let childrenDiv = null;
-  let path = null;
-  let recoveringUnmounted = false;
-  if (current) {
-    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
-    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
-    path = current._nodeData && current._nodeData.path;
-  } else {
-    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
-    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
-    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
-    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
-    childrenDiv = vr.containerForPath(lastPath);
-    if (!childrenDiv) return false;
-    path = lastPath;
-    recoveringUnmounted = true;
-  }
-
-  const state = childrenDiv._virtualState;
-  if (!state || !path) return false;
-  const currentIndex = state.flat.findIndex(entry => entry.id === path);
-  if (currentIndex < 0) return false;
-
-  const delta = key === 'ArrowUp' ? -1 : 1;
-  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
-  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
-  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
-  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
-
-  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
-  if (!target) return false;
-  _outlinerKeyboardSelectNode(target);
-  return true;
-}
-
-(function initOutlinerTreeKeyboardNavigation() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
-  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
-})();
-
-// ドラッグ中のホイールスクロール対応
-(function() {
-  let _isDragging = false;
-  document.addEventListener('dragstart', () => { _isDragging = true; });
-  document.addEventListener('dragend', () => { _isDragging = false; });
-  document.addEventListener('drop', () => { _isDragging = false; });
-  // ドラッグ中にホイールでスクロール可能にする
-  const scrollTargets = ['tree-scroll-container'];
-  scrollTargets.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });
-})();
-
-(function initOutlinerLassoSelection() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  const LASSO_DRAG_THRESHOLD = 4;
-  let active = false;
-  let tracking = false;
-  let box = null;
-  let startX = 0;
-  let startY = 0;
-  let startClientX = 0;
-  let startClientY = 0;
-  let selectionMode = 'replace';
-  let selectionScope = '#outliner-tree,#body-home';
-  let baseSelection = [];
-  let pointerId = null;
-  let pointerCaptured = false;
-  let _savedScrollerPosition = null;
-
-  function _outlinerLassoMode(event) {
-    if (event.ctrlKey || event.metaKey) return 'toggle';
-    if (event.shiftKey) return 'add';
-    return 'replace';
-  }

@@ -25,8 +25,17 @@ function scheduleDbColorSave(sw, dbPath, save) {
       if (!promise) {
         const key = _dbColorSavePathKey(dbPath);
         // 同じシートの色保存は、設定の読取と履歴登録も含めて順序を保つ。
+        // 前の保存の失敗はその保存自身のチェーンで表示済み。ここでは順序待ちのためだけに受け、
+        // 次の色の保存を止めない。
         const previous = _dbColorSaveQueues.get(key);
-        promise = Promise.resolve(previous).catch(() => {}).then(save).finally(() => {
+        promise = Promise.resolve(previous).catch(() => {}).then(save).catch((error) => {
+          // 自動保存（タイマー）でも flush の待機側でも、失敗を必ず利用者へ伝える。
+          console.warn('[Meldex] 選択肢の背景色を保存できませんでした', error);
+          if (typeof showStatus === 'function') {
+            showStatus('選択肢の背景色を保存できませんでした: ' + (error?.message || error), true);
+          }
+          throw error;
+        }).finally(() => {
           if (_dbPendingColorSaves.get(sw) === pending) _dbPendingColorSaves.delete(sw);
           if (_dbColorSaveQueues.get(key) === promise) _dbColorSaveQueues.delete(key);
         });
@@ -36,6 +45,7 @@ function scheduleDbColorSave(sw, dbPath, save) {
     },
   };
   _dbPendingColorSaves.set(sw, pending);
+  // 失敗は保存チェーン内で表示済み。ここでは未処理の拒否にしないためだけに受ける。
   timer = setTimeout(() => pending.flush().catch(() => {}), 250);
   sw._dbOptionColorSaveTimer = timer;
 }

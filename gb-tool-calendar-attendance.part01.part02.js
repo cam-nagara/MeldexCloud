@@ -92,30 +92,46 @@
     });
   };
 
-  CalendarComponent.prototype._setCalendarColor = async function(cal, color) {
+  // 色見本は選んだ時点で新しい色になるため、保存に失敗したら元の色へ戻す。
+  function _calAttRestoreSwatch(swatch, color) {
+    if (!swatch || !color) return;
+    if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, color);
+    else { swatch.dataset.color = color; swatch.style.background = color; }
+  }
+
+  CalendarComponent.prototype._setCalendarColor = async function(cal, color, options = {}) {
+    const previousColor = cal?.color || '';
     if (!this._calUserCanEditCalendar(cal)) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
       this._showStatus('編集権限がありません', true);
-      return;
+      return false;
     }
     const next = String(color || '').trim();
-    if (!next) return;
+    if (!next) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
+      return false;
+    }
     try {
       await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { color: next });
-      cal.color = next;
-      // 一覧取得時の有効色はサーバー側で解決されるが、色変更直後は手元の
-      // イベント配列を再描画するため、継承イベントだけを先に同期する。
-      (this._events || []).forEach(event => {
-        if (event?.calendar_id !== cal.id) return;
-        if (event.uses_calendar_color === false || String(event.color_override || '').trim()) return;
-        event.color = next;
-        event.uses_calendar_color = true;
-      });
-      this._renderCalendarList();
-      this._render();
-      this._showStatus('カレンダーの色を更新しました');
-    } catch {
-      this._showStatus('色の更新に失敗', true);
+    } catch (error) {
+      _calAttRestoreSwatch(options.swatch, previousColor);
+      const detail = String(error?.userMessage || error?.message || '').trim();
+      this._showStatus(detail ? `色の更新に失敗しました: ${detail}` : '色の更新に失敗しました', true);
+      return false;
     }
+    cal.color = next;
+    // 一覧取得時の有効色はサーバー側で解決されるが、色変更直後は手元の
+    // イベント配列を再描画するため、継承イベントだけを先に同期する。
+    (this._events || []).forEach(event => {
+      if (event?.calendar_id !== cal.id) return;
+      if (event.uses_calendar_color === false || String(event.color_override || '').trim()) return;
+      event.color = next;
+      event.uses_calendar_color = true;
+    });
+    this._renderCalendarList();
+    this._render();
+    this._showStatus('カレンダーの色を更新しました');
+    return true;
   };
 
   CalendarComponent.prototype._setCalendarFolder = async function(cal, value) {
@@ -134,15 +150,27 @@
     }
   };
 
-  CalendarComponent.prototype._setCalendarRole = async function(cal, role) {
-    if (!this._calUserIsAdmin()) return;
+  // 選択欄は選んだ時点で新しい値になるため、保存できなかった時は元の権限へ戻す。
+  CalendarComponent.prototype._setCalendarRole = async function(cal, role, options = {}) {
+    const control = options.control || null;
+    const previousRole = cal?.edit_role || 'owner';
+    const restore = () => { if (control) control.value = previousRole; };
+    if (!this._calUserIsAdmin()) {
+      restore();
+      this._showStatus('管理者のみ変更できます', true);
+      return false;
+    }
     try {
       await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { edit_role: role });
-      cal.edit_role = role;
-      this._showStatus('カレンダー権限を更新しました');
-    } catch {
-      this._showStatus('カレンダー権限の更新に失敗', true);
+    } catch (error) {
+      restore();
+      const detail = String(error?.userMessage || error?.message || '').trim();
+      this._showStatus(detail ? `カレンダー権限の更新に失敗しました: ${detail}` : 'カレンダー権限の更新に失敗しました', true);
+      return false;
     }
+    cal.edit_role = role;
+    this._showStatus('カレンダー権限を更新しました');
+    return true;
   };
 
   CalendarComponent.prototype._moveCalendarToFolder = async function(cal) {

@@ -1483,7 +1483,8 @@ function renderFavorites() {
   function _renderFavNode(node, parent, depth) {
     const isFavFolder = node.type === 'fav-folder';
     const div = document.createElement('div');
-    div.style.marginLeft = (depth * 12) + 'px';
+    // 入れ子の各段は親の中に入るため、1段ぶんの字下げ（共通トークン）だけを足す
+    if (depth > 0) div.style.marginLeft = 'var(--ui-row-indent)';
     div.dataset.favPath = node.path;
 
     const row = document.createElement('div');

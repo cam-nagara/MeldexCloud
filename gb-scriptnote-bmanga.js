@@ -332,6 +332,7 @@
     const pages = [{ pageIndex: 0, rows: [] }];
     sourceRows.forEach((row, index) => {
       const role = String(row?.role || '');
+      const displayRole = String(row?.character || role);
       const roleType = _getEffectiveRoleType(doc, row);
       const isBreak = !!role && !!(roleType?.isBreak || roleType?.kind === 'break');
       const isSummary = !!role && !!(roleType?.isSummary || roleType?.kind === 'summary');
@@ -355,7 +356,7 @@
         body = affix.before + body + affix.after;
       }
       const rowId = String(row?.id || `row-${index}`);
-      const rowPayload = { rowId, type: isBreak ? '' : role, body, rubies };
+      const rowPayload = { rowId, type: isBreak ? '' : displayRole, body, rubies };
       const rowRubyPresentation = contractVersion === VERSION_V2 ? _rowPresentation(row, doc) : null;
       if (rowRubyPresentation) rowPayload.presentation = { ruby: rowRubyPresentation };
       if (isBreak) {
@@ -366,7 +367,7 @@
         return;
       }
       // 「空白行を出力しない」: 区切り/プロットではなく、役名も本文も空の行だけを除外する。
-      if (opts.skipBlank && !isSummary && !role && !body) return;
+      if (opts.skipBlank && !isSummary && !displayRole && !body) return;
       pages[pages.length - 1].rows.push(rowPayload);
     });
     const payload = {

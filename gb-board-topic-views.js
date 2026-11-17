@@ -369,6 +369,34 @@
     return result;
   }
 
+  // ビュー操作が失敗した理由を利用者向けの文言にする（内部の英語メッセージは出さない）。
+  function viewActionFailureText(text, error, result) {
+    const head = `「${String(text || 'ビュー操作')}」を実行できませんでした`;
+    if (result?.reason === 'read-only') return `${head}: 読み取り専用のため変更できません`;
+    const message = String(error?.message || '').trim();
+    if (message === 'View was not found' || message === 'BoardView was not found') return `${head}: ビューが見つかりません`;
+    if (/index is invalid/.test(message)) return `${head}: 移動先が範囲外です`;
+    if (message && /[ぁ-んァ-ヶ一-龠]/.test(message)) return `${head}: ${message}`;
+    return `${head}（予期しない問題が発生しました。もう一度お試しください）`;
+  }
+
+  function reportViewActionFailure(text, error, result) {
+    if (error) { try { console.warn('[board] ビュー操作に失敗しました:', text, error); } catch (_) {} }
+    global.showStatus?.(viewActionFailureText(text, error, result), true);
+  }
+
+  // 同期・非同期どちらの操作も待ち、失敗（例外・拒否・{ok:false}）を通知する。成功なら true。
+  async function runViewAction(text, run) {
+    try {
+      const result = await run();
+      if (result && result.ok === false) { reportViewActionFailure(text, null, result); return false; }
+      return true;
+    } catch (error) {
+      reportViewActionFailure(text, error);
+      return false;
+    }
+  }
+
   function attachToolbar(container, controller, options) {
     if (!container?.appendChild || !controller) return null;
     const settings = options || {};
@@ -502,7 +530,9 @@
           button.dataset.e2eId = `board-common-view-${actionId}-${refToken}`;
           button.disabled = settings.readOnly === true || !!disabled;
           button.addEventListener('click', async () => {
-            await run(); menu.open = false;
+            // 失敗してもメニューを閉じ、原因を表示する（開いたまま無表示にしない）。
+            try { await runViewAction(text, run); }
+            finally { menu.open = false; }
             if (refreshAfter) refresh();
           }); panel.appendChild(button);
         };
@@ -512,9 +542,7 @@
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
         separator();
-        action('削除', async () => {
-          controller.removeMixed(ref);
-        }, false, 'delete');
+        action('削除', () => controller.removeMixed(ref), false, 'delete');
         let longPress = 0;
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
@@ -522,9 +550,14 @@
         tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-ref', JSON.stringify(ref)));
         tab.addEventListener('dragover', event => { if (!settings.readOnly) event.preventDefault(); });
         tab.addEventListener('drop', event => {
-          if (settings.readOnly) return; event.preventDefault();
-          try { controller.reorderMixed(JSON.parse(event.dataTransfer?.getData('text/meldex-view-ref') || '{}'), index); }
-          catch {} refresh();
+          if (settings.readOnly) return;
+          const payload = event.dataTransfer?.getData('text/meldex-view-ref') || '';
+          if (!payload) return; // ビュー以外のドロップは対象外
+          event.preventDefault();
+          let dropped = null;
+          try { dropped = JSON.parse(payload); }
+          catch (error) { reportViewActionFailure('ビューの並べ替え', error); refresh(); return; }
+          runViewAction('ビューの並べ替え', () => controller.reorderMixed(dropped, index)).then(() => refresh());
         });
         tab.appendChild(label); tab.appendChild(menu); tabs.appendChild(tab);
       });
@@ -544,7 +577,11 @@
         button.dataset.bdTopicViewMutation = `add-${kind}`;
         button.dataset.e2eId = `board-common-view-add-${kind}`;
         button.dataset.viewKind = kind; button.innerHTML = `${iconHtml(kind === 'board' ? 'board' : 'sheet', kind)} ${text}`;
-        button.addEventListener('click', () => { run(); add.open = false; refresh(); }); addMenu.appendChild(button);
+        button.addEventListener('click', async () => {
+          try { await runViewAction(`${text}ビューを追加`, run); }
+          finally { add.open = false; }
+          refresh();
+        }); addMenu.appendChild(button);
       });
       // 再描画でも「＋」はタブ列の直後に戻す（末尾へ足すと後付けのシャッフル等と順序が入れ替わる）。
       root.insertBefore(add, select.nextSibling);

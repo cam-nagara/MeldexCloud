@@ -12,25 +12,33 @@
 .modal-overlay.no-dim { background: transparent; pointer-events: none; }
 .modal-overlay.no-dim > .modal { pointer-events: auto; box-shadow: var(--ui-shadow-lg); }
 .modal {
-  background: var(--ui-modal-bg, var(--ui-bg-surface)); color: var(--ui-modal-fg, var(--ui-fg-default)); border: 1px solid var(--ui-modal-border, var(--ui-border)); border-radius: var(--ui-radius-md);
-  box-shadow: var(--ui-shadow-lg);
+  background: var(--ui-modal-bg, var(--ui-bg-surface)); color: var(--ui-modal-fg, var(--ui-fg-default)); border: 1px solid var(--ui-modal-border, var(--ui-border)); border-radius: var(--ui-dialog-radius);
+  box-shadow: var(--ui-dialog-shadow);
   box-sizing: border-box;
-  padding: var(--ui-space-6); min-width: 400px; max-width: 80vw; max-height: 85vh;
+  padding: var(--ui-dialog-body-padding); min-width: 400px; max-width: 80vw; max-height: 85vh;
   display: flex; flex-direction: column; overflow: hidden;
 }
-.modal h3 { margin-bottom: var(--ui-space-5); color: var(--ui-accent); flex-shrink: 0; }
+.modal h3 { margin-bottom: var(--ui-space-5); font-size: var(--ui-font-16); font-weight: var(--ui-weight-semibold); color: var(--ui-header-fg); flex-shrink: 0; }
 .modal .btn-row { display: flex; gap: var(--ui-space-4); margin-top: var(--ui-space-5); justify-content: flex-end; flex-shrink: 0; }
 .modal .modal-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+/* 旧 .modal 内のボタンも共通ボタン（.gb-btn）と同じトークンを使う。別系統の寸法・hover を持たない */
 .modal button:where(:not([data-style-preview-native="1"])) {
-  padding: var(--ui-space-2) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
-  background: var(--ui-bg-control); color: var(--ui-fg-default); cursor: pointer; font-size: var(--ui-font-13);
+  min-height: var(--ui-h-md); padding: 0 var(--ui-space-5); box-sizing: border-box;
+  border: var(--ui-button-border-width) solid var(--ui-button-border); border-radius: var(--ui-radius-sm);
+  background: var(--ui-button-bg); color: var(--ui-button-fg); cursor: pointer;
+  font-size: var(--ui-button-font-size); font-weight: var(--ui-button-font-weight); font-family: var(--ui-button-font);
 }
 .modal button.primary { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
-.modal button:where(:not([data-style-preview-native="1"])):hover { opacity: 0.9; }
-.modal input, .modal textarea, .modal select {
-  background: var(--ui-bg-app); color: var(--ui-fg-default); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
-  padding: var(--ui-space-2) var(--ui-space-4); font-size: var(--ui-font-13); width: 100%; box-sizing: border-box;
+.modal button:where(:not([data-style-preview-native="1"])):hover {
+  color: var(--ui-button-hover-fg); background: var(--ui-button-hover-bg); border-color: var(--ui-button-hover-border);
 }
+.modal button.primary:hover { background: color-mix(in srgb, var(--ui-accent) 88%, #fff); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
+/* 旧 .modal 内の入力欄も共通入力欄（.gb-input）と同じトークンを使う */
+.modal input, .modal textarea, .modal select {
+  background: var(--ui-bg-field, var(--ui-bg-app)); color: var(--ui-fg-default); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  padding: 0 var(--ui-space-3); font-size: var(--ui-font-13); width: 100%; box-sizing: border-box;
+}
+.modal input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]), .modal select { min-height: var(--ui-h-md); }
 .modal select.gb-select {
   width: auto;
   min-width: 0;
@@ -40,14 +48,14 @@
   line-height: calc(var(--ui-h-md) - 2px);
 }
 .modal select.gb-select-sm {
-  height: 28px;
-  min-height: 28px;
+  height: var(--ui-h-sm, 28px);
+  min-height: var(--ui-h-sm, 28px);
   padding: 0 var(--ui-space-7) 0 var(--ui-space-2);
   font-size: var(--ui-font-11);
   line-height: 26px;
 }
 .modal input[type=checkbox] { --gb-checkbox-size-override: 14px; }
-.modal textarea { min-height: 60px; resize: vertical; font-family: inherit; }
+.modal textarea { min-height: 60px; padding: var(--ui-space-2) var(--ui-space-3); resize: vertical; font-family: inherit; line-height: 1.4; }
 .modal .field { margin-bottom: var(--ui-space-4); }
 .modal .field label { display: block; margin-bottom: var(--ui-space-1); color: var(--ui-fg-muted); font-size: var(--ui-font-12); }
 /* .modal 内の補助説明行は既存 .gb-section-desc を流用しつつ下余白だけ追加 */
@@ -119,7 +127,7 @@
     --gb-checkbox-size-override: 18px;
   }
   .shell-verb-settings-actions button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 .gb-validation-results-list,
@@ -206,8 +214,8 @@
      既定の .gb-btn-sm だと高さ・幅ともスマホの44pxタップ領域に届かない。
      「OK」のような短いラベルは幅が特に不足するため min-width も明示する。 */
   .show-confirm-dialog-actions .gb-btn {
-    min-height: 44px;
-    min-width: 44px;
+    min-height: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
   }
 }
 .gb-modal-shell,
@@ -224,10 +232,11 @@
   display: flex;
   align-items: center;
   gap: var(--ui-space-4);
-  min-height: 46px;
-  padding: 0 var(--ui-space-6);
+  min-height: var(--ui-dialog-header-height);
+  padding: 0 var(--ui-dialog-body-padding);
   border-bottom: 1px solid var(--ui-border);
-  background: var(--ui-bg-panel);
+  background: var(--ui-header-bg);
+  box-sizing: border-box;
   cursor: move;
   flex-shrink: 0;
   user-select: none;
@@ -240,7 +249,8 @@
   flex: 1 1 auto;
   min-width: 0;
   font-size: var(--ui-font-16);
-  color: var(--ui-accent);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--ui-header-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -249,7 +259,7 @@
 .gb-modal-shell-body {
   flex: 1 1 auto;
   min-height: 0;
-  padding: var(--ui-space-6);
+  padding: var(--ui-dialog-body-padding);
   overflow: auto;
 }
 .gb-validation-results-modal,
@@ -274,8 +284,10 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--ui-space-4);
+  min-height: var(--ui-dialog-footer-min-height);
+  box-sizing: border-box;
   margin: 0 !important;
-  padding: var(--ui-space-4) var(--ui-space-6);
+  padding: var(--ui-space-4) var(--ui-dialog-body-padding);
   border-top: 1px solid var(--ui-border);
   background: var(--ui-bg-panel);
   flex-shrink: 0;
@@ -520,7 +532,7 @@
 }
 .col-vis-action-btn {
   min-width: 72px;
-  height: 28px;
+  height: var(--ui-h-sm, 28px);
   padding: 0 var(--ui-space-2);
   flex: 0 0 auto;
   font-size: var(--ui-font-12);
@@ -618,7 +630,7 @@ input.gb-middle-ellipsis-input-active {
      「一覧から選択を押しても何も起きない」ように見える。 */
   position: fixed; z-index: 10080;
   background: var(--ui-popup-bg, var(--ui-bg-panel)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
-  border-radius: var(--ui-radius-md); box-shadow: var(--ui-shadow-lg);
+  border-radius: var(--ui-popup-radius, 6px); box-shadow: var(--ui-shadow-lg);
   padding: var(--ui-space-3); min-width: 280px; max-width: 420px; max-height: 360px; overflow-y: auto;
 }
 .db-picker-popup > input {
@@ -669,7 +681,7 @@ input.gb-middle-ellipsis-input-active {
 .msr-rules-label { font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-bottom: 2px; }
 .msr-rule-row { display: flex; align-items: center; gap: var(--ui-space-2); margin-bottom: 2px; font-size: var(--ui-font-11); }
 .msr-rule-row select { font-size: var(--ui-font-11); }
-.msr-rule-row input { width: 80px; font-size: var(--ui-font-11); padding: 1px 3px; }
+.msr-rule-row input { width: 80px; font-size: var(--ui-font-11); padding: 1px var(--ui-space-1, 2px); }
 /* ボタンアクション行 */
 .btn-action-row {
   border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
@@ -723,11 +735,11 @@ button.pt-select-option-preview,
 button.pt-chip-style-sample {
   justify-self: start;
   max-width: 160px;
-  min-height: 20px;
-  padding: 1px 8px;
+  min-height: var(--ui-h-xs, 22px);
+  padding: 1px var(--ui-space-4, 8px);
   border: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -741,7 +753,7 @@ button.pt-chip-style-sample:focus-visible { outline: 2px solid var(--a11y-focus-
 button.pt-chip-style-sample--relation,
 .pt-modal button.pt-chip-style-sample--relation {
   display: inline-flex; align-items: center;
-  border: 1px solid var(--border); border-radius: 4px;
+  border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg3); color: var(--fg);
 }
 .pt-chip-style-preview { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -872,7 +884,7 @@ button.pt-chip-style-sample--relation,
 .cond-picker-modal .btn-row button,
 .cond-modal .cond-add-btn,
 .cond-modal .cond-del-btn {
-  min-height: 32px;
+  min-height: var(--ui-h-md, 32px);
 }
 .cond-modal .gb-fmt-swatch,
 .cond-modal .gb-fmt-swatch-bg,
@@ -924,10 +936,10 @@ button.pt-chip-style-sample--relation,
 .tree-node { user-select: none; }
 .tree-node-row {
   position: relative;
-  --tree-row-height: 22px;
-  display: flex; align-items: center; gap: 4px;
+  --tree-row-height: var(--ui-row-height);
+  display: flex; align-items: center; gap: var(--ui-row-gap);
   height: auto; min-height: var(--tree-row-height); box-sizing: border-box;
-  padding: 3px 4px; cursor: pointer; border-radius: 3px; font-size: 14px; line-height: var(--outliner-item-line-height, 115%);
+  padding: var(--ui-row-padding-y) var(--ui-row-padding-x); cursor: pointer; border-radius: var(--ui-row-radius); font-size: var(--ui-row-font-size); line-height: var(--outliner-item-line-height, 115%);
   background: var(--outliner-item-bg); color: var(--outliner-item-fg);
 }
 .tree-node-row.tree-root-row {
@@ -966,7 +978,7 @@ button.pt-chip-style-sample--relation,
   .tree-node-row:has(.tree-hover-btns) .tree-label { padding-right: 40px; }
 }
 .tree-hover-btn {
-  width: 18px; height: 18px; border-radius: 3px; cursor: pointer;
+  width: var(--ui-h-2xs, 18px); height: var(--ui-h-2xs, 18px); border-radius: var(--ui-radius-xs, 3px); cursor: pointer;
   display: flex; align-items: center; justify-content: center; color: var(--outliner-muted-fg);
   background: color-mix(in srgb, var(--outliner-item-bg) 72%, transparent);
 }
@@ -1021,7 +1033,7 @@ button.pt-chip-style-sample--relation,
 .tree-icon { flex-shrink: 0; }
 .tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-children {
-  padding-left: 14px;
+  padding-left: var(--ui-row-indent);
   position: relative;
 }
 .tree-children.collapsed { display: none; }
@@ -1218,7 +1230,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 }
 /* ツリーメニュー固有（danger等） — 基本スタイルは .gb-context-menu */
 .gb-context-menu > div {
-  padding: 4px 12px; font-size: 13px; cursor: pointer;
+  padding: var(--ui-menu-item-padding-y) var(--ui-menu-item-padding-x); font-size: var(--ui-menu-item-font-size); cursor: pointer;
 }
 .gb-context-menu > div:hover { background: var(--bg4); }
 .gb-context-menu > div.danger { color: var(--red); }
@@ -1373,7 +1385,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 #search-panel .sp-input-row { display: flex; gap: 4px; margin-bottom: 4px; }
 #search-panel .sp-input-row input[type="text"] {
   flex: 1; background: var(--search-panel-bg); color: var(--search-fg); border: 1px solid var(--search-border);
-  border-radius: 3px; padding: 4px 8px; font-size: 13px; outline: none;
+  border-radius: var(--ui-radius-xs, 3px); padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); font-size: var(--ui-font-13, 13px); outline: none;
 }
 #search-panel .sp-input-row input:focus { border-color: var(--search-accent); }
 #search-panel .sp-opts { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--search-muted-fg); }
@@ -1386,15 +1398,15 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .sp-match .sp-highlight { background: var(--ui-selection-bg); color: var(--ui-selection-fg); border-radius: 1px; }
 .sp-match .sp-line { color: var(--search-muted-fg); margin-right: 6px; font-size: 11px; }
 #search-panel .sp-status { padding: 4px 8px; font-size: 11px; color: var(--search-muted-fg); border-top: 1px solid var(--search-border); }
-.sp-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid var(--search-border); border-radius:4px; color:var(--search-muted-fg); cursor:pointer; flex-shrink:0; }
+.sp-btn { width: var(--ui-h-sm, 28px); height:var(--ui-h-sm, 28px); display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid var(--search-border); border-radius:var(--ui-radius-sm, 4px); color:var(--search-muted-fg); cursor:pointer; flex-shrink:0; }
 .sp-btn:hover { background:var(--search-hover-bg); color:var(--search-fg); }
 .sp-btn-label { width:auto; padding:0 8px; font-size:12px; }
 /* フィルタポップアップ本体。document.body直下・position:fixedで生成される（共通ルール）。 */
 .gf-filter-popup {
   background: var(--ui-popup-bg, var(--ui-bg-control));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
-  border-radius: var(--ui-radius-md, 8px);
-  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
   padding: 8px;
   min-width: 220px;
   max-width: min(320px, calc(100vw - 16px));
@@ -1508,18 +1520,18 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   #sidebar-search-input,
   #search-panel .sp-input-row input[type="text"] {
     box-sizing: border-box;
-    min-height: 44px;
-    padding: 0 10px !important;
+    min-height: var(--ui-h-touch, 44px);
+    padding: 0 var(--ui-space-4, 8px) !important;
     font-size: 15px !important;
     line-height: 1.25;
   }
   #sidebar-search-bar > button,
   #search-panel .sp-btn {
     box-sizing: border-box;
-    width: 44px !important;
-    min-width: 44px;
-    height: 44px !important;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px) !important;
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px) !important;
+    min-height: var(--ui-h-touch, 44px);
     touch-action: manipulation;
   }
   #search-panel .sp-input-row {
@@ -1537,11 +1549,11 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   .meldex-search-scope-popup label,
   .meldex-search-scope-popup > button {
     box-sizing: border-box;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     touch-action: manipulation;
   }
   .meldex-search-scope-popup > button {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   #search-panel .sp-btn-label {
     width: auto !important;
@@ -1590,10 +1602,10 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 #file-search-bar.open { display: flex; }
 #file-search-bar:not(.replace-open) #fsb-replace,
 #file-search-bar:not(.replace-open) [data-action^="doFileReplace"] { display: none; }
-#file-search-bar textarea { min-height: var(--ui-h-sm, 28px); background: var(--ui-bg-field, var(--ui-bg-app, var(--search-panel-bg))); color: var(--search-fg); border: 1px solid var(--ui-border, var(--search-border)); border-radius: 3px; padding: 3px 6px; font-size: 13px; outline: none; font-family: inherit; line-height: 1.4; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.24); }
+#file-search-bar textarea { min-height: var(--ui-h-sm, 28px); background: var(--ui-bg-field, var(--ui-bg-app, var(--search-panel-bg))); color: var(--search-fg); border: 1px solid var(--ui-border, var(--search-border)); border-radius: var(--ui-radius-xs, 3px); padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px); font-size: var(--ui-font-13, 13px); outline: none; font-family: inherit; line-height: 1.4; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.24); }
 #file-search-bar textarea:focus { border-color: var(--search-accent); box-shadow: inset 0 1px 2px rgba(0,0,0,0.24), 0 0 0 2px color-mix(in srgb, var(--search-accent) 28%, transparent); }
 #file-search-bar textarea.multiline { height: auto; min-height: 5.6em; overflow-y: auto; }
-#file-search-bar button { min-height: var(--ui-h-sm, 28px); padding: 2px 6px; font-size: 12px; background: var(--ui-bg-control, var(--search-hover-bg)); color: var(--search-fg); border: 1px solid var(--ui-border-strong, var(--search-border)); border-radius: 3px; cursor: pointer; box-shadow: 0 1px 1px rgba(0,0,0,0.22); }
+#file-search-bar button { min-height: var(--ui-h-sm, 28px); padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px); font-size: var(--ui-font-12, 12px); background: var(--ui-bg-control, var(--search-hover-bg)); color: var(--search-fg); border: 1px solid var(--ui-border-strong, var(--search-border)); border-radius: var(--ui-radius-xs, 3px); cursor: pointer; box-shadow: 0 1px 1px rgba(0,0,0,0.22); }
 #file-search-bar button:hover { background: var(--search-hover-bg); }
 #file-search-bar button:active { background: var(--ui-bg-control-active, var(--search-hover-bg)); }
 #file-search-bar .fsb-count { font-size: 11px; color: var(--search-muted-fg); min-width: 50px; text-align: center; }
@@ -1607,7 +1619,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   }
   #file-search-bar textarea {
     min-height: 44px;
-    padding: 10px 12px;
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
     box-sizing: border-box;
   }
   #file-search-bar #fsb-query {
@@ -1619,8 +1631,8 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
     width: auto !important;
   }
   #file-search-bar button {
-    min-height: 44px;
-    padding: 0 12px;
+    min-height: var(--ui-h-touch, 44px);
+    padding: 0 var(--ui-space-5, 12px);
     box-sizing: border-box;
   }
   #file-search-bar .fsb-count {
@@ -1655,9 +1667,9 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   background: var(--ui-bg-field, var(--ui-bg-app, var(--search-panel-bg)));
   color: var(--search-fg);
   border: 1px solid var(--ui-border, var(--search-border));
-  border-radius: 3px;
-  padding: 3px 6px;
-  font-size: 13px;
+  border-radius: var(--ui-radius-xs, 3px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-13, 13px);
   line-height: 1.4;
   outline: none;
   font-family: inherit;
@@ -1668,12 +1680,12 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .db-find-bar textarea.multiline { height: auto; min-height: 5.6em; overflow-y: auto; }
 .db-find-bar button {
   min-height: var(--ui-h-sm, 28px);
-  padding: 2px 6px;
-  font-size: 12px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-12, 12px);
   background: var(--ui-bg-control, var(--search-hover-bg));
   color: var(--search-fg);
   border: 1px solid var(--ui-border-strong, var(--search-border));
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   cursor: pointer;
   box-shadow: 0 1px 1px rgba(0,0,0,0.22);
 }

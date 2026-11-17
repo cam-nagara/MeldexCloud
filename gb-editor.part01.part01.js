@@ -48,8 +48,10 @@ function initPageTitle(titleElement, titleOptions = {}) {
     if (!nv) { el.textContent = oldTitle; return; }
     if (!path || nv === oldTitle) return;
     if (typeof isItemLocked === 'function' && isItemLocked(path)) { el.textContent = oldTitle; return; }
+    // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
+    if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(path, nv, 'page');
     try {
-      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page', title_only: true });
+      const res = await apiPost('/outliner/rename', { old_path: path, new_name: nv, type: 'page' });
       if (!res || !res.ok) throw new Error('rename failed');
       const newPath = res.new_path || (() => {
         const dir = path.substring(0, path.lastIndexOf('/'));
@@ -67,13 +69,18 @@ function initPageTitle(titleElement, titleOptions = {}) {
         await _pageTitleConfirmRenameAfterTimeout(el, path, nv, { oldName: oldTitle, onRenamed: titleOptions.onRenamed });
       } else {
         // API失敗時はタイトルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
+        if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(path, oldTitle, 'page');
         el.textContent = oldTitle;
         const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
         showStatus(`「${oldTitle}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
       }
     }
   });
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+  // Enter で確定して入力を終える（日本語変換中の Enter は変換の確定なので除外）
+  el.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  });
   // 貼り付けは常にプレーンテキストとして挿入する（他所からの太字・斜体・フォント等の書式を持ち込ませない）
   el.addEventListener('paste', (e) => {
     const cd = e.clipboardData;
@@ -426,10 +433,18 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
   }
 }
 
+// 戻り値は { outcome } で結果を返す（Ctrl+S 等、結果に応じて表示を変える
+// 呼び出し元向け）。失敗時の利用者向け表示はこの関数内で済ませる。
+//   saved: 保存した / unchanged: 保存が必要な変更なし / skipped: 対象外
+//   load-failed: 読込失敗中のため保存しない / conflict: 競合保留中
+//   missing: 保存先が見つからない / failed: 保存失敗
+// gb-db-core.js 等は戻り値の ok:false を「保存失敗で中止」と解釈するため、
+// ここでは ok キーを使わない（既存の画面遷移の挙動を変えない）。
 async function _runNoteAutoSave(pc, expectedPath) {
   const skipHistory = arguments[2]?.skipHistory === true;
   const currentPath = pc?.dataset?.path;
-  if (!currentPath || pc.dataset.loadFailed === '1') return;
+  if (!currentPath) return { outcome: 'skipped' };
+  if (pc.dataset.loadFailed === '1') return { outcome: 'load-failed' };
   // 修正3（誤PUTの防止・二重防御）: 呼び出し元がタイマー設定時点のパスを
   // expectedPathとして渡している場合（2秒自動保存タイマーからの呼び出し）、
   // 発火時点の pc.dataset.path と一致しなければ何もしない。openPage()側の
@@ -443,8 +458,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
   const fm = pc.dataset.frontmatter || '';
   const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
   // 工程1項目2: 内容が保存済みbaselineと完全一致するなら何もしない（PUTを発生させない）
-  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return;
-  if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
+  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return { outcome: 'unchanged' };
+  if (!md.trim() && !prevBody.trim() && fm === prevFm) return { outcome: 'unchanged' };
   const _prevSavedForDiff = prevSaved;
   window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
   try {
@@ -462,8 +477,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
     // スキップして返す。何もサーバーへ送っていないため、baseline更新・
     // ドラフト同期完了扱いのどちらも行わない（ローカル編集とIndexedDBドラフトの
     // 継続はoninput側で既に行われている）。
-    if (_noteSaveConflictPending(res)) return;
-    if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
+    if (_noteSaveConflictPending(res)) return { outcome: 'conflict' };
+    if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return { outcome: 'missing' };
     _orphanRemovedNoteLines(_prevSavedForDiff, md, currentPath);
     // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
     if (pc.dataset.path === currentPath) {
@@ -477,10 +492,12 @@ async function _runNoteAutoSave(pc, expectedPath) {
         : '内容を更新';
       window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, _prevSavedForDiff, md, detail);
     }
+    return { outcome: 'saved' };
   } catch (error) {
     if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
       showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
     }
+    return { outcome: 'failed' };
   }
 }
 
@@ -1746,6 +1763,52 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
   return isCurrent() ? _insertUploadedFileAtRange(el, range, file, res) : range;
 }
 
+// 利用者向けの失敗理由。サーバー/各処理が用意した日本語の説明だけを使い、
+// 内部の英語エラー文（プログラム上の名前を含み得る）は代わりの説明へ置き換える。
+function _noteUserFacingReason(error, fallback) {
+  const fb = fallback || '原因を確認できませんでした';
+  const raw = error?.userMessage || (typeof error === 'string' ? error : error?.message) || '';
+  const text = String(raw || '').trim();
+  if (!text || !/[ぁ-ゖァ-ヺ一-龯]/.test(text)) return fb;
+  return text;
+}
+
+// OS由来の貼付ファイルを保存して挿入する。保存できなかった場合は、例外でも
+// 応答の ok:false でも、理由つきで失敗を表示する（旧実装は ok:false を無言で無視）。
+async function _pasteNoteClipboardFile(editor, pastedFile) {
+  const isVideo = pastedFile.type.startsWith('video/');
+  const pasteRange = _captureEditableSelection(editor);
+  const currentPath = editor.dataset.path || state.currentPagePath;
+  const generation = editor._openPageLoadSeq;
+  const isCurrent = () => editor.dataset.path === currentPath
+    && editor._openPageLoadSeq === generation && editor.isContentEditable;
+  if (!currentPath) {
+    showStatus('ファイルを貼り付けられませんでした: 保存先のノートが決まっていません', true);
+    return false;
+  }
+  const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
+  try {
+    if (!isCurrent()) return false;
+    const isImage = pastedFile.type.startsWith('image/');
+    const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
+    const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
+    const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
+    if (!res?.ok || !res.path) {
+      showStatus('ファイルの貼り付けに失敗しました: '
+        + _noteUserFacingReason(res?.error, 'ファイルを保存できませんでした'), true);
+      return false;
+    }
+    if (!isCurrent()) return false;
+    _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
+    return true;
+  } catch (err) {
+    console.warn('[note] 貼り付けファイルの保存に失敗しました', err);
+    showStatus('ファイルの貼り付けに失敗しました: '
+      + _noteUserFacingReason(err, 'ファイルを保存できませんでした'), true);
+    return false;
+  }
+}
+
 // クリップボード貼り付け: テキスト + 画像対応
 // クリップボード貼り付け: テキスト + 画像/動画対応（_wireNoteEditableElement から配線）
 function _wireNotePasteHandler(pc) {
@@ -1759,25 +1822,7 @@ function _wireNotePasteHandler(pc) {
   if (pastedFile) {
     if (this.dataset.standaloneFileInput === '1') return;
     e.preventDefault();
-    const editor = this;
-    const isVideo = pastedFile.type.startsWith('video/');
-    const pasteRange = _captureEditableSelection(editor);
-    const currentPath = editor.dataset.path || state.currentPagePath;
-    const generation = editor._openPageLoadSeq;
-    const isCurrent = () => editor.dataset.path === currentPath
-      && editor._openPageLoadSeq === generation && editor.isContentEditable;
-    if (!currentPath) return;
-    const dir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-    try {
-      if (!isCurrent()) return;
-      const isImage = pastedFile.type.startsWith('image/');
-      const fname = pastedFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : isImage ? '.png' : '.bin'));
-      const uploadFile = pastedFile.name ? pastedFile : new File([pastedFile], fname, { type: pastedFile.type });
-      const [res] = await MeldexDnD.uploadFiles([uploadFile], dir, { source: 'note-paste' });
-      if (res?.ok && res.path && isCurrent()) {
-        _insertUploadedFileAtRange(editor, pasteRange, uploadFile, res);
-      }
-    } catch (err) { showStatus('ファイルの貼り付けに失敗', true); }
+    await _pasteNoteClipboardFile(this, pastedFile);
     return;
   }
 

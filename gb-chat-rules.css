@@ -45,7 +45,7 @@
   .chat-rules-dialog-body .gb-btn,
   .chat-rules-dialog-modal .gb-modal-close,
   .chat-rules-dialog-body .gb-check {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -92,7 +92,7 @@
 
   .gb-chat-skills-root .gb-btn,
   .gb-chat-skills-modal .gb-modal-close {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .gb-chat-skills-root .gb-input,
@@ -102,7 +102,7 @@
   }
 
   .gb-chat-skills-root .gb-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -135,12 +135,12 @@
 }
 
 .chat-rules-modal .chat-rules-btn {
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px);
+  font-size: var(--ui-font-12, 12px);
   background: var(--bg3);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   cursor: pointer;
 }
 .chat-rules-modal .chat-rules-btn:hover { filter: brightness(1.1); }
@@ -282,12 +282,12 @@
 
 .chat-rules-modal .chat-rules-input {
   width: 100%;
-  padding: 4px 6px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  font-size: 13px;
+  border-radius: var(--ui-radius-xs, 3px);
+  font-size: var(--ui-font-13, 13px);
   box-sizing: border-box;
   outline: none;
 }
@@ -297,12 +297,12 @@
   width: 100%;
   flex: 1;
   min-height: 120px;
-  padding: 6px 8px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  font-size: 13px;
+  border-radius: var(--ui-radius-xs, 3px);
+  font-size: var(--ui-font-13, 13px);
   font-family: inherit;
   resize: vertical;
   box-sizing: border-box;

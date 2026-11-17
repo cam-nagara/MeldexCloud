@@ -109,17 +109,18 @@ const GB_SHORTCUTS = {
 
   // --- シナリオ ---
   // 実処理は gb-scriptnote-editor.* の既存 keydown / paste ハンドラに委譲する。
-  'scenario.addRow':       { key: 'enter',        label: '行を追加',                  scope: 'scenario' },
+  // セル選択中の Shift+Enter（編集中の Shift+Enter はセル内改行）。同じキーを2つの状態で使い分けるため表示専用。
+  'scenario.addRow':       { key: '', display: 'Shift+Enter（セル選択中）', label: '下に行を追加', scope: 'scenario', readonly: true },
   'scenario.addRowSameType': { key: 'ctrl+enter', label: '同タイプ行を追加',           scope: 'scenario' },
   'scenario.deleteRow':    { key: 'shift+delete', label: '行を削除',                  scope: 'scenario' },
   'scenario.moveUp':       { key: 'ctrl+arrowup', label: '行を上に移動',              scope: 'scenario' },
   'scenario.moveDown':     { key: 'ctrl+arrowdown', label: '行を下に移動',            scope: 'scenario' },
   'scenario.selectAll':    { key: 'ctrl+a',       label: '全行を選択',                scope: 'scenario' },
-  'scenario.newline':      { key: 'shift+enter',  label: 'セル内改行',                scope: 'scenario' },
+  'scenario.newline':      { key: 'shift+enter',  label: 'セル内改行（編集中）',      scope: 'scenario' },
   'scenario.copy':         { key: 'ctrl+c',       label: 'セルのコピー',              scope: 'scenario' },
   'scenario.paste':        { key: 'ctrl+v',       label: 'セルの貼り付け',            scope: 'scenario' },
   'scenario.cut':          { key: 'ctrl+x',       label: 'セルの切り取り',            scope: 'scenario' },
-  'scenario.tab':          { key: 'tab',          label: 'タイプメニューを開く',       scope: 'scenario' },
+  'scenario.tab':          { key: 'tab',          label: 'キャラ選択（Shift+Tab: タイプ選択）', scope: 'scenario' },
   'scenario.escape':       { key: 'escape',       label: '編集キャンセル',             scope: 'scenario' },
   'scenario.deselectAll':  { key: 'ctrl+d',       label: '選択を解除',                scope: 'scenario' },
   'scenario.pasteInCell':  { key: 'ctrl+shift+v', label: 'セル内に貼り付け',           scope: 'scenario' },
@@ -438,14 +439,14 @@ function updateNoteShortcutStatusbar(targetEl) {
 }
 
 function getScriptnoteShortcutStatusText() {
-  // 2026-07-17 最新仕様に同期: Tab=タイプ選択・同タイプ行追加・セル内貼付・全選択/選択解除を追加、
+  // Tab=キャラ選択、Shift+Tab=タイプ選択。同タイプ行追加・セル内貼付・全選択/選択解除も表示する。
   // 「上へ/下へ」は行移動であることが分かる表記へ変更
   return [
     _shortcutStatusItem('scenario.addRow', '行追加'),
     _shortcutStatusItem('scenario.addRowSameType', '同タイプ行追加'),
     _shortcutStatusItem('scenario.newline', 'セル内改行'),
     _shortcutStatusItem('scenario.deleteRow', '行削除'),
-    _shortcutStatusItem('scenario.tab', 'タイプ選択'),
+    _shortcutStatusItem('scenario.tab', 'キャラ選択（Shift+Tab: タイプ）'),
     _shortcutStatusItem('scenario.moveUp', '行を上へ'),
     _shortcutStatusItem('scenario.moveDown', '行を下へ'),
     _shortcutStatusItem('scenario.search', '検索'),
@@ -743,6 +744,59 @@ function _insertParagraphAfterCurrentNoteBlock() {
   return true;
 }
 
+// 「自動保存を即時反映」（ノート・トピックの自由記述）。保存の完了を待ち、
+// 結果に応じて成功・失敗・保存不要を表示する。保存失敗の詳しい理由は保存処理側
+// （_runNoteAutoSave / 自由記述の保存）が表示済みなので、ここで成功表示で
+// 上書きしない。戻り値は結果の種類（saved / unchanged / failed / load-failed / unavailable）。
+async function _runGlobalEditorSave() {
+  const status = (msg, isError) => { if (typeof showStatus === 'function') showStatus(msg, !!isError); };
+  if (typeof flushPendingEditorAutosave !== 'function') {
+    status('この画面には保存する内容がありません');
+    return 'unavailable';
+  }
+  // 保存予約中のノート、またはノート表示中のメインのノートだけを対象にする
+  // （トピック表示中に裏に残ったノートの状態で誤表示しない）。
+  const pc = window._pendingNoteAutoSavePc
+    || ((typeof state !== 'undefined' && state?.view === 'page' && typeof document !== 'undefined')
+      ? document.getElementById('page-content') : null);
+  const loadFailed = !!(pc?.dataset?.path && pc.dataset.loadFailed === '1');
+  let settled;
+  try {
+    settled = await flushPendingEditorAutosave();
+  } catch (error) {
+    console.warn('[shortcut] 即時保存に失敗しました', error);
+    status('保存に失敗しました。もう一度お試しください', true);
+    return 'failed';
+  }
+  const results = Array.isArray(settled) ? settled : [];
+  const outcomes = results.map(r => (r?.status === 'rejected' ? 'failed' : (r?.value?.outcome || 'saved')));
+  // 保存予約が無くても、ノートに未保存の変更が残っていれば今すぐ保存する
+  // （保存コーディネーター経由なので、進行中の保存とは1回にまとまる）。
+  const noteFlushed = results.some(r => r?.status === 'fulfilled' && typeof r.value?.outcome === 'string');
+  if (!loadFailed && !noteFlushed && pc?.dataset?.path && pc.isConnected !== false
+      && typeof _runNoteAutoSave === 'function') {
+    try {
+      const res = await _runNoteAutoSave(pc);
+      outcomes.push(res?.outcome || 'unchanged');
+    } catch (error) {
+      console.warn('[shortcut] 即時保存に失敗しました', error);
+      status('保存に失敗しました。もう一度お試しください', true);
+      return 'failed';
+    }
+  }
+  if (outcomes.some(o => o === 'failed' || o === 'conflict' || o === 'missing')) return 'failed';
+  if (loadFailed || outcomes.includes('load-failed')) {
+    status('ノートを読み込めていないため保存できません。開き直してからもう一度お試しください', true);
+    return 'load-failed';
+  }
+  if (outcomes.includes('saved')) {
+    status('保存しました');
+    return 'saved';
+  }
+  status('保存が必要な変更はありません');
+  return 'unchanged';
+}
+
 const _shortcutHandlers = {
 
   // ============ 全般 ============
@@ -761,8 +815,7 @@ const _shortcutHandlers = {
       if (editor?.save) editor.save();
     }
     else {
-      if (typeof flushPendingEditorAutosave === 'function') flushPendingEditorAutosave();
-      if (typeof showStatus === 'function') showStatus('自動保存を即時反映しました');
+      return _runGlobalEditorSave();
     }
   },
   'global.new': () => {

@@ -107,8 +107,8 @@
 
 .left-chrome-icon-btn,
 .left-chrome-settings {
-  width: 34px;
-  height: 34px;
+  width: var(--ui-h-lg, 36px);
+  height: var(--ui-h-lg, 36px);
   flex: 0 0 34px;
   border-radius: var(--ui-radius-sm, 4px);
   padding: 0;
@@ -237,10 +237,10 @@ html[data-single-window="1"] .left-chrome-floating {
   box-sizing: border-box;
   overflow: hidden;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: var(--ui-radius-md, 6px);
+  border-radius: var(--ui-popup-radius, 6px);
   background: var(--bg);
   color: var(--fg);
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.42);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 
 .cmd-palette-header {
@@ -263,13 +263,13 @@ html[data-single-window="1"] .left-chrome-floating {
 .cmd-palette-input {
   flex: 1 1 auto;
   min-width: 0;
-  height: 42px;
+  height: var(--ui-h-touch, 44px);
   border: none;
   outline: none;
   background: transparent;
   color: var(--fg);
   font: inherit;
-  font-size: 16px;
+  font-size: var(--ui-font-16, 16px);
 }
 
 .cmd-palette-scope {
@@ -427,8 +427,8 @@ html[data-single-window="1"] .left-chrome-floating {
   }
 
   .left-chrome-floating:not(.is-docked) .left-chrome-floating-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     flex-basis: 44px;
   }
 

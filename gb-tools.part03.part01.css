@@ -12,9 +12,9 @@
 .bd-toolbar-group { display: flex; align-items: center; gap: 4px; min-height: 28px; }
 .bd-toolbar-group-meta { margin-left: auto; }
 .bd-toolbar-label { font-size: 11px; color: var(--fg2); white-space: nowrap; }
-.bd-toolbar-select { min-width: 118px; padding: 3px 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+.bd-toolbar-select { min-width: 118px; padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px); font-size: var(--ui-font-12, 12px); border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px); background: var(--bg); color: var(--fg); }
 .bd-toolbar-btn.active { background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--accent); }
-.bd-toolbar-icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 3px 6px; }
+.bd-toolbar-icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px); }
 /* ツールバーのスタイルプレビュー (#bd-card-style-preview / #bd-line-style-preview) */
 /* 横幅はピッカートリガーの縮小に合わせて従来の半分に縮める。内部の SVG/span は親幅に追従。 */
 .bd-style-preview { display: inline-flex; align-items: center; justify-content: center; flex: 1 1 auto; width: 100%; min-width: 0; min-height: 24px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); overflow: hidden; }
@@ -40,8 +40,8 @@
   background: var(--ui-popup-bg, var(--bg3));
   color: var(--fg);
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  border-radius: var(--ui-menu-radius, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
   box-sizing: border-box;
 }
 
@@ -82,9 +82,9 @@
   display: flex; flex-direction: column; gap: 6px;
   min-width: 280px; max-width: 420px; max-height: 60vh;
   padding: 8px; box-sizing: border-box;
-  background: var(--bg); color: var(--fg);
-  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  background: var(--ui-popup-bg, var(--bg2)); color: var(--fg);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
 }
 .bd-style-manager-popup-list { display: flex; flex-direction: column; gap: 6px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .bd-style-manager-popup-actions { display: flex; gap: 4px; justify-content: flex-start; padding-top: 6px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -203,7 +203,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 22px;
+  min-height: var(--ui-h-xs, 22px);
   border: 0;
   border-radius: var(--ui-radius-xs);
   background: transparent;
@@ -358,12 +358,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: var(--ui-h-md, 32px);
+  height: var(--ui-h-md, 32px);
   padding: 0;
   transform: translateY(-50%);
   border: 1px solid color-mix(in srgb, var(--bd-link-type-icon-color, var(--fg)) 52%, var(--border));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: color-mix(in srgb, var(--bg2) 88%, transparent);
   color: var(--bd-link-type-icon-color, var(--fg));
   box-shadow: 0 1px 4px rgba(0,0,0,0.24);
@@ -395,7 +395,7 @@
   /* タッチにはカーソルオーバーが無いため、隠したままだとボタンへ到達できない。
      選択中のカードでだけ出す（.bd-node.bd-selected は既に overflow: visible なので
      ボタンの見切れも同時に解消される）。 */
-  .bd-link-open-btn { right: 2px; width: 44px; height: 44px; opacity: 0; touch-action: manipulation; }
+  .bd-link-open-btn { right: 2px; width: var(--ui-h-touch, 44px); height: var(--ui-h-touch, 44px); opacity: 0; touch-action: manipulation; }
   .bd-node.bd-selected .bd-link-open-btn { opacity: 1; }
 }
 .bd-link-tooltip { position: fixed; z-index: 9999; background: var(--ui-popup-bg, var(--bg2)); color: var(--fg2); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 4px; padding: 8px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
@@ -456,10 +456,10 @@
 /* --- 検索・置換バー --- */
 .bd-find-bar { position: absolute; top: 8px; right: 16px; z-index: 200; background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 6px; padding: 6px 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 4px; font-size: 13px; min-width: 320px; }
 .bd-find-bar-row { display: flex; gap: 4px; align-items: center; }
-.bd-find-bar .bd-find-input { flex: 1; min-width: 160px; padding: 4px 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; font-size: 13px; outline: none; }
+.bd-find-bar .bd-find-input { flex: 1; min-width: 160px; padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--ui-radius-xs, 3px); font-size: var(--ui-font-13, 13px); outline: none; }
 .bd-find-bar .bd-find-input:focus { border-color: var(--accent); }
 .bd-find-bar .bd-find-count { font-size: 11px; color: var(--fg2); min-width: 50px; text-align: right; }
-.bd-find-bar .bd-find-btn { padding: 3px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; cursor: pointer; font-size: 12px; min-width: 28px; line-height: 1; }
+.bd-find-bar .bd-find-btn { padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--ui-radius-xs, 3px); cursor: pointer; font-size: var(--ui-font-12, 12px); min-width: var(--ui-h-sm, 28px); line-height: 1; }
 .bd-find-bar .bd-find-btn:hover { background: var(--bg3); }
 /* 検索マッチのワードハイライト (カード全体ではなく、該当ワード部分だけに mark を挿入)。
    text-shadow によるテキストフチがハイライトの背景を覆い隠すため、mark 部分のフチを無効化する。 */
@@ -476,7 +476,7 @@
 /* v0.5.250: z-index を 8 → 11 に引き上げて bd-text (z-index:9) の上に出す。
    カード選択中 (.bd-selected .bd-text) は pointer-events:auto になるため、
    z-index が下だと bd-text にイベントを奪われ、ボタン左側が押せなくなる現象が発生していた。 */
-.bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 2px; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
+.bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: var(--ui-h-xs, 22px); height: var(--ui-h-xs, 22px); padding: 0; border: 1px solid var(--border); border-radius: var(--ui-radius-pill, 999px); background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 2px; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
 .bd-card-menu-btn > span { width: 3px; height: 3px; flex: 0 0 3px; border-radius: 999px; background: currentColor; }
 .bd-card-menu-btn:hover { background: var(--bg3); color: var(--fg); }
 /* 画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く (v0.5.248)。
@@ -692,7 +692,7 @@
 .bd-frame-label { position: absolute; top: -18px; left: 8px; font-size: 11px; color: var(--bd-group-color, var(--accent)); font-weight: bold; pointer-events: auto; cursor: default; padding: 0 4px; border-radius: 2px; }
 .bd-frame-label:hover { background: var(--bg3); }
 .bd-frame-label[contenteditable="true"] { outline: none; cursor: text; color: var(--fg); }
-.bd-conn-action-btn { position: absolute; transform: translate(-50%, -50%); min-width: 28px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg2) 96%, transparent); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--fg); z-index: 10; padding: 0 8px; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+.bd-conn-action-btn { position: absolute; transform: translate(-50%, -50%); min-width: var(--ui-h-sm, 28px); height: var(--ui-h-xs, 22px); display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg2) 96%, transparent); border: 1px solid var(--border); border-radius: var(--ui-radius-pill, 999px); cursor: pointer; font-size: var(--ui-font-12, 12px); color: var(--fg); z-index: 10; padding: 0 var(--ui-space-4, 8px); line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
 .bd-conn-label { position: absolute; transform: translate(-50%, -50%); transform-origin: center center; font-size: 11px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); color: var(--fg2); background: color-mix(in srgb, var(--bg) 92%, transparent); padding: 1px 6px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap; cursor: default; pointer-events: auto; z-index: 4; }
 .bd-conn-label:hover { border-color: var(--border); }
 .bd-conn-label[contenteditable="true"] { border-color: var(--accent); outline: none; cursor: text; color: var(--fg); }
@@ -831,7 +831,7 @@
 .bd-style-editor-fields.bd-style-editor-fields--fmt { display: flex; flex-direction: column; gap: var(--ui-space-3); grid-template-columns: initial; align-items: stretch; overflow: auto; min-height: 0; flex: 1; }
 .bd-style-editor-fields.bd-style-editor-fields--fmt > .gb-fmt-popup-row { justify-content: flex-start; }
 .bd-style-name-row { display: flex; align-items: center; gap: var(--ui-space-2); }
-.bd-style-name-row .bd-style-name-input { flex: 1; min-width: 0; height: 22px; padding: 0 var(--ui-space-2); box-sizing: border-box; line-height: 1; border: 1px solid var(--border); border-radius: var(--ui-radius-sm); background: var(--bg3); color: var(--fg); font-size: var(--ui-font-12); }
+.bd-style-name-row .bd-style-name-input { flex: 1; min-width: 0; height: var(--ui-h-xs, 22px); padding: 0 var(--ui-space-2); box-sizing: border-box; line-height: 1; border: 1px solid var(--border); border-radius: var(--ui-radius-sm); background: var(--bg3); color: var(--fg); font-size: var(--ui-font-12); }
 .bd-depth-style-ref-row .gb-fmt-sel { flex: 1 1 180px; min-width: 160px; }
 .bd-depth-style-item.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-selection-bg) 60%, transparent); }
 .bd-depth-style-item.dragging { opacity: 0.55; }
@@ -888,19 +888,19 @@
   }
   .bd-bulk-import-select,
   .bd-bulk-import-dialog .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .gb-toolbar-board {
     overflow-x: auto;
     scrollbar-width: thin;
   }
   .gb-toolbar-board .bd-toolbar-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     touch-action: manipulation;
   }
   .gb-toolbar-board .bd-toolbar-icon-btn {
-    min-width: 44px;
-    height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     padding: 0 var(--ui-space-3);
   }
   .gb-toolbar-board .bd-style-picker-trigger {
@@ -912,8 +912,8 @@
     touch-action: pan-y;
   }
   .gb-toolbar-board .bd-toolbar-meta-btn {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .bd-style-picker-menu {
     min-width: min(280px, calc(100vw - 8px));
@@ -934,7 +934,7 @@
   }
   .bd-find-bar .bd-find-input,
   .bd-find-bar .bd-find-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .bd-find-bar .bd-find-input {
     min-width: 0;
@@ -947,7 +947,7 @@
   .bd-detail-field input,
   .bd-detail-field select,
   .bd-detail-field .gb-select {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: var(--ui-font-14);
   }
   .bd-detail-field .gb-fs-bg-fit-control,
@@ -964,15 +964,15 @@
   .bd-card-menu-btn {
     top: 6px;
     right: 6px;
-    width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     opacity: 1;
-    font-size: 14px;
+    font-size: var(--ui-font-14, 14px);
     touch-action: manipulation;
   }
   .bd-conn-action-btn {
-    min-width: 44px;
-    height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     touch-action: manipulation;
   }
   /* 「…」ボタン見切れ修正 (2026-08-13導入、2026-08-19に .bd-node の overflow: visible を
@@ -1062,9 +1062,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  width: var(--ui-h-xs, 22px);
   min-width: 24px;
-  height: 24px;
+  height: var(--ui-h-xs, 22px);
   background: var(--page-copy-button-bg, var(--bg3));
   border: var(--page-copy-button-border-width, 1px) solid var(--page-copy-button-border, var(--border));
   border-radius: var(--page-copy-button-radius, 4px);
@@ -1143,8 +1143,8 @@
   user-select: none;
 }
 .table-mini-toolbar-btn {
-  padding: 2px 6px;
-  font-size: 11px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-11, 11px);
   line-height: 1.4;
   background: var(--page-table-toolbar-button-bg, var(--bg3));
   border: var(--page-table-toolbar-button-border-width, 1px) solid var(--page-table-toolbar-button-border, var(--border));

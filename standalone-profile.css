@@ -29,8 +29,8 @@
   width: min(300px, calc(100vw - 24px));
   padding: 12px;
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border, var(--sa-border))));
-  border-radius: 8px;
-  background: var(--bg2, var(--sa-bg2));
+  border-radius: var(--ui-menu-radius, 6px);
+  background: var(--ui-popup-bg, var(--bg2, var(--sa-bg2)));
   color: var(--fg, var(--sa-fg));
   box-shadow: var(--ui-shadow-lg, 0 14px 36px rgba(0, 0, 0, 0.32));
 }
@@ -69,10 +69,10 @@
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--border, var(--sa-border));
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg, var(--sa-bg));
   color: var(--fg, var(--sa-fg));
-  padding: 6px 8px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   font: inherit;
 }
 

@@ -52,11 +52,11 @@
   justify-content: center;
   flex: 0 0 32px !important;
   width: 32px !important;
-  min-width: 32px !important;
-  min-height: 28px;
+  min-width: var(--ui-h-md, 32px) !important;
+  min-height: var(--ui-h-sm, 28px);
   padding: 0 !important;
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
 }
 .gb-toolbar-main.gb-toolbar-overflow-host > .tb-file-title {
   flex: 0 0 var(--ui-toolbar-title-width) !important;
@@ -99,8 +99,8 @@
   padding: 6px;
   color: var(--fg);
   background: var(--ui-popup-bg, var(--bg2));
-  border: 1px solid var(--ui-border-strong, var(--border));
-  border-radius: var(--ui-radius-md, 6px);
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
+  border-radius: var(--ui-popup-radius, 6px);
   box-shadow: var(--ui-shadow-lg, 0 8px 24px #0008);
 }
 .gb-toolbar-overflow-popup .gb-tbo-row {
@@ -126,7 +126,7 @@
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
-  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: 44px !important; min-height: 44px; }
+  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; min-height: var(--ui-h-touch, 44px); }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }

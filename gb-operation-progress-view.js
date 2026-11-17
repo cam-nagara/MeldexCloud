@@ -16,6 +16,15 @@
     try { return localStorage.getItem(TRAY_MINIMIZED_KEY) === '1'; } catch (_) { return false; }
   })();
   let lastOperations = [];
+  const TRAY_POSITION_KEY = 'meldex-operation-tray-position';
+  // 見出しのドラッグで決めた位置（画面右端・下端からの距離。CSS px）。未移動ならnull。
+  let trayUserPosition = (function () {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TRAY_POSITION_KEY) || 'null');
+      return saved && Number.isFinite(saved.right) && Number.isFinite(saved.bottom) ? saved : null;
+    } catch (_) { return null; }
+  })();
+  let trayDragSuppressClick = false;
   const TRAY_AVOID_SELECTOR = [
     '[data-meldex-operation-avoid]',
     '#controls.gb-toolbar-viewer',
@@ -98,6 +107,7 @@
     tray.dataset.e2eId = 'operation-progress-tray';
     tray.setAttribute('aria-label', '進行中の処理');
     tray.hidden = true;
+    tray.addEventListener('pointerdown', _startTrayDrag);
     document.body.appendChild(tray);
     _syncTrayHost();
     return tray;
@@ -199,8 +209,77 @@
     return rects;
   }
 
+  function _trayZoom() {
+    return typeof _getZoom === 'function' ? _getZoom()
+      : (parseFloat(getComputedStyle(document.documentElement).zoom) || 1);
+  }
+
+  function _trayDragDisabled() {
+    return !!window.matchMedia?.('(max-width: 768px), (pointer: coarse)').matches;
+  }
+
+  // 見出しをつかんで位置を動かす。ボタン上では開始しない。右下基準で保持するので、
+  // 最小化・展開で大きさが変わっても右下の位置は動かない。
+  function _startTrayDrag(event) {
+    if (event.button !== 0 || _trayDragDisabled()) return;
+    const header = event.target.closest?.('.meldex-operation-tray-header');
+    if (!header || !tray.contains(header) || event.target.closest('button, a, input, summary')) return;
+    const zoom = _trayZoom();
+    const start = tray.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startRight = (window.innerWidth - start.right) / zoom;
+    const startBottom = (window.innerHeight - start.bottom) / zoom;
+    let moved = false;
+    tray.classList.add('is-dragging');
+    function onMove(ev) {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      moved = true;
+      ev.preventDefault();
+      trayUserPosition = { right: startRight - dx / zoom, bottom: startBottom - dy / zoom };
+      _applyTrayUserPosition();
+    }
+    function onEnd() {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onEnd, true);
+      window.removeEventListener('pointercancel', onEnd, true);
+      tray.classList.remove('is-dragging');
+      if (!moved) return;
+      trayDragSuppressClick = true;
+      setTimeout(function () { trayDragSuppressClick = false; }, 0);
+      try { localStorage.setItem(TRAY_POSITION_KEY, JSON.stringify(trayUserPosition)); } catch (_) {}
+    }
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onEnd, true);
+    window.addEventListener('pointercancel', onEnd, true);
+  }
+
+  function _applyTrayUserPosition() {
+    if (!tray || !trayUserPosition) return false;
+    const zoom = _trayZoom();
+    const viewW = window.innerWidth / zoom;
+    const viewH = window.innerHeight / zoom;
+    const box = tray.getBoundingClientRect();
+    const width = box.width / zoom;
+    const height = box.height / zoom;
+    // 画面外へ出さない（ウィンドウを縮めた時も見える範囲へ戻す）。
+    const right = Math.min(Math.max(0, trayUserPosition.right), Math.max(0, viewW - width));
+    const bottom = Math.min(Math.max(0, trayUserPosition.bottom), Math.max(0, viewH - Math.min(height, 34)));
+    tray.style.right = right + 'px';
+    tray.style.bottom = bottom + 'px';
+    tray.style.setProperty('--meldex-operation-available-height', Math.max(34, viewH - bottom - 8) + 'px');
+    return true;
+  }
+
   function _syncTrayPosition() {
     if (!tray?.isConnected || tray.hidden) return;
+    if (trayUserPosition && !_trayDragDisabled()) {
+      _applyTrayUserPosition();
+      return;
+    }
+    tray.style.removeProperty('right');
     tray.style.removeProperty('bottom');
     tray.style.removeProperty('--meldex-operation-available-height');
     const rail = document.querySelector('.gb-dock-fixed-right .gb-dock-bar-right');
@@ -419,16 +498,18 @@
     const title = document.createElement('span');
     const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial' || op.status === 'unknown'; });
     const hasActive = visible.some(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; });
+    const activeCount = visible.filter(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; }).length;
     title.textContent = needsAttention
       ? '確認が必要な処理'
-      : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
+      : (hasActive ? '進行中の処理 ' + activeCount + '件' : '完了した処理');
     if (trayMinimized && needsAttention && visible.length > 1) title.textContent += ' ' + visible.length + '件';
     title.className = 'meldex-operation-tray-title';
     let hint = null;
-    if (hasActive) {
+    // 最小化中は件数を最後まで読めることを優先し、補足は広げた時だけ出す。
+    if (hasActive && !trayMinimized) {
       hint = document.createElement('span');
       hint.className = 'meldex-operation-tray-hint';
-      hint.textContent = '他のファイルで作業できます';
+      hint.textContent = '他の作業をして大丈夫です';
     }
     const toggle = document.createElement('button');
     toggle.type = 'button';
@@ -461,6 +542,7 @@
       // 最小化中は件数と状態だけを小さく出し、見出しのクリックで広げる。
       header.addEventListener('click', function (event) {
         if (event.target.closest('button')) return;
+        if (trayDragSuppressClick) { trayDragSuppressClick = false; return; }
         toggle.click();
       });
       el.replaceChildren(header);

@@ -63,20 +63,29 @@
         return;
       }
 
+      // カスタム列テキストの編集中も、Enterは内容を確定してセルのアクティブ状態へ戻る
+      // （Shift+Enter・矢印・Deleteはセル内の通常のテキスト編集として既定動作に任せる）
+      const customTextEl = e.target.closest?.('.sn2-custom-text');
+      if (customTextEl && e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+          && !(typeof this._isActiveNonEditingTarget === 'function' && this._isActiveNonEditingTarget(customTextEl))) {
+        e.preventDefault();
+        this._commitCellEditToActive?.(customTextEl);
+        return;
+      }
+
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
       // アクティブセルのみ（非編集中）の場合、旧来のテキスト編集キー処理
-      // （Enter分割・Backspace/Delete行結合・Shift+Delete行削除等）は行わない。
-      // 矢印/Tab/Enter/Escapeはホストのkeydownルーティングでナビゲーションが処理済み。
+      // （Backspace行結合・Shift+Delete行削除等）は行わない。
+      // 矢印/Tab/Enter/Escape/Delete はホストのkeydownルーティングでナビゲーションが処理済み。
       if (typeof this._isActiveNonEditingTarget === 'function' && this._isActiveNonEditingTarget(text)) return;
       const isVertical = this.doc.editor?.viewMode === 'vertical';
 
-      if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey)) {
-        if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.addRow', e)) return;
+      // Enter: 編集内容を確定し、そのセルのアクティブ（非編集）状態へ戻る（行は分割しない）。
+      // IME変換中のEnterはホストkeydown冒頭のガードで既に除外されている。
+      if (e.key === 'Enter' && !e.shiftKey && !(e.ctrlKey || e.metaKey) && !e.altKey) {
         e.preventDefault();
-        const splitOffset = this._getTextOffset(text);
-        this._pushUndo('行追加');
-        this._splitRow(text, { keepRole: false, visibleOffset: splitOffset });
+        this._commitCellEditToActive?.(text);
         return;
       }
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
@@ -153,14 +162,14 @@
         return;
       }
 
-      // Tab: タイプ↔テキスト切り替え
+      // Tabでキャラ、Shift+Tabでタイプの選択メニューを開く。
       if (e.key === 'Tab') {
         if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById('scenario.tab', e)) return;
         e.preventDefault();
         const row = text.closest('.sn2-row');
         if (!row) return;
-        const roleBtn = row.querySelector('.sn2-role-btn');
-        if (roleBtn) this._showRoleMenu(roleBtn);
+        const target = this._roleMenuAnchor(row, e.shiftKey ? 'type' : 'character');
+        if (target) this._showRoleMenu(target, { kind: e.shiftKey ? 'type' : 'character' });
         return;
       }
 
@@ -179,9 +188,9 @@
         return;
       }
 
-      // 行間移動: 横書き=ArrowUp/Down、縦書き=ArrowLeft/Right
-      // 非Shift: 2段階移動 (1) セル内で先頭/末尾へ移動 → (2) 既に境界なら隣のセルへ
-      // Shift押下時: セル境界に達したら行選択を拡張、それ以外はブラウザのデフォルト
+      // 行方向の矢印: 横書き=ArrowUp/Down、縦書き=ArrowLeft/Right
+      // 編集中はセル内でキャレットを動かすだけで、隣の行のセルへは移動しない
+      // （セル間移動は Enter で確定してアクティブ状態に戻ってから矢印で行う）
       const prevKey = isVertical ? 'ArrowRight' : 'ArrowUp';
       const nextKey = isVertical ? 'ArrowLeft' : 'ArrowDown';
       if (e.key === prevKey || e.key === nextKey) {
@@ -200,7 +209,7 @@
             let probe = nextIdx + dir;
             while (probe >= 0 && probe < this.doc.rows.length) {
               const rr = this.doc.rows[probe];
-              if (this._isRoleVisible(rr.role || '', rr.status || '')) break;
+              if (this._isRoleVisible(rr)) break;
               probe += dir;
             }
             if (probe < 0 || probe >= this.doc.rows.length) break;
@@ -216,103 +225,11 @@
           }
           return;
         }
-        if (e.shiftKey) {
-          // Shift+矢印: セル境界に達したらテキストセル範囲選択を拡張、それ以外はブラウザのデフォルトに任せる
-          const sel = window.getSelection();
-          if (!sel?.rangeCount) return;
-          // focusが属するセルを起点にする（複数セル選択時はfocusが別セルにいる）
-          const focusText = sel.focusNode?.nodeType === 1
-            ? sel.focusNode.closest?.('.sn2-text') || text
-            : sel.focusNode?.parentElement?.closest?.('.sn2-text') || text;
-          if (!this._isAtBoundary(focusText, isPrev, true)) return;
-          e.preventDefault();
-          const curRow = focusText.closest('.sn2-row');
-          if (!curRow) return;
-          const curRowId = curRow.dataset.rowId;
-          const curIdx = this.doc.rows.findIndex(r => r.id === curRowId);
-          if (curIdx < 0) return;
-          if (!this._textCellSelection) this._textCellSelection = new Set();
-          // アンカー検証: _textCellAnchorIdx が現在の選択に含まれていなければ curRow を新アンカーにする
-          const anchorRow = (this._textCellAnchorIdx >= 0) ? this.doc.rows[this._textCellAnchorIdx] : null;
-          let anchorIdx;
-          if (anchorRow && this._textCellSelection.has(anchorRow.id)) {
-            anchorIdx = this._textCellAnchorIdx;
-          } else {
-            this._textCellAnchorIdx = curIdx;
-            anchorIdx = curIdx;
-          }
-          // 次の行を探す（フィルタ非表示はスキップ）
-          const dir = isPrev ? -1 : 1;
-          let nextIdx = curIdx + dir;
-          while (nextIdx >= 0 && nextIdx < this.doc.rows.length) {
-            const rr = this.doc.rows[nextIdx];
-            if (this._isRoleVisible(rr.role || '', rr.status || '')) break;
-            nextIdx += dir;
-          }
-          if (nextIdx < 0 || nextIdx >= this.doc.rows.length) return;
-          // アンカー〜nextIdx の連続範囲で選択を再構築（排他制御とUI更新は _setTextCellRange 側で行う）
-          if (typeof this._setTextCellRange === 'function') this._setTextCellRange(anchorIdx, nextIdx);
-          // 次の行のテキストにフォーカス移動（境界端に置く）
-          const nextRowEl = this.host?.querySelector(`.sn2-row[data-row-id="${this.doc.rows[nextIdx].id}"]`);
-          const nextText = nextRowEl?.querySelector('.sn2-text');
-          if (nextText) {
-            this._focusText(nextText, isPrev ? 'end' : 'start');
-            nextText.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
-          }
-          return;
-        }
-        // 非Shift: 視覚的境界行 + 絶対先頭/末尾の判定で 3 段階に分岐
-        // (1) 境界行でない (複数行セルの中間行): ブラウザのデフォルト (1 行移動)
-        // (2) 境界行 + 絶対先頭/末尾でない: セルの先頭/末尾へジャンプ
-        // (3) 境界行 + 絶対先頭/末尾: 隣のセルへ移動
-        if (!this._isAtBoundary(text, isPrev)) {
-          // 境界行でない: ブラウザに任せる (preventDefault しない)
-          return;
-        }
-        // 境界行内: 絶対先頭/末尾チェック
-        // _focusText が range を (textNode, 0) に設定するため、container が
-        // element の場合と text node の場合で compareBoundaryPoints が
-        // equal を返さない。ここでは (text, 0) から現在位置まで (または
-        // 現在位置から text の末端まで) の実テキスト長で判定する。
-        const csel = window.getSelection();
-        if (!csel?.rangeCount) return;
-        const crange = csel.getRangeAt(0);
-        let atAbsoluteEdge;
-        try {
-          const logicalLen = typeof this._logicalTextLenWithBr === 'function'
-            ? this._logicalTextLenWithBr(text)
-            : this._textLenWithBr(text);
-          const caretOffset = this._getTextOffset(text);
-          if (caretOffset >= 0) {
-            atAbsoluteEdge = isPrev ? caretOffset <= 0 : caretOffset >= logicalLen;
-          } else if (isPrev) {
-            const ref = document.createRange();
-            ref.setStart(text, 0);
-            ref.setEnd(crange.startContainer, crange.startOffset);
-            atAbsoluteEdge = ref.toString().length === 0;
-          } else {
-            const ref = document.createRange();
-            ref.selectNodeContents(text);
-            ref.setStart(crange.endContainer, crange.endOffset);
-            atAbsoluteEdge = ref.toString().length === 0;
-          }
-        } catch (err) { atAbsoluteEdge = false; }
-        e.preventDefault();
-        if (!atAbsoluteEdge) {
-          // 境界行内だが先頭/末尾でない: セルの絶対先頭/末尾へジャンプ
-          this._focusText(text, isPrev ? 'start' : 'end');
-          return;
-        }
-        // 既に絶対先頭/末尾: 隣のセルへ移動
-        const row = text.closest('.sn2-row');
-        let next = isPrev ? row?.previousElementSibling : row?.nextElementSibling;
-        // nextがヘッダーや存在しない場合、段を跨いで移動
-        if (!next || !next.classList.contains('sn2-row')) {
-          next = this._findAdjacentRow(row, isPrev);
-        }
-        if (!next) return;
-        const nextText = next.querySelector('.sn2-text');
-        if (nextText) this._focusText(nextText, isPrev ? 'end' : 'start');
+        // Shift+矢印: セル内のテキスト選択としてブラウザの既定動作に任せる（隣のセルへは広げない）
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        // 矢印はキャレットをセル内で動かすだけで、セルの外へは出ない。
+        // 境界行（先頭行で上・末尾行で下）では何もしない。それ以外はブラウザの1行移動に任せる。
+        if (this._isAtBoundary(text, isPrev)) e.preventDefault();
         return;
       }
 
@@ -347,7 +264,9 @@
         if ((sel.anchorNode === text && sel.anchorOffset === 0) ||
             (sel.anchorNode === text.firstChild && sel.anchorOffset === 0) ||
             (!text.textContent && !text.firstChild)) {
+          // セル先頭の Backspace は何もしない。前の行との結合は Shift+Backspace だけ（2026-11-17の操作仕様）。
           e.preventDefault();
+          if (!e.shiftKey) return;
           this._pushUndo('行結合');
           this._mergeWithPrev(text);
           return;
@@ -375,8 +294,7 @@
             this._focusText(text, 'end');
             return;
           }
-          this._pushUndo('行結合');
-          this._mergeWithNext(text);
+          // 通常のテキスト編集と同じく、末尾での Delete は何もしない（次の行とは結合しない）
           return;
         }
       }
@@ -493,17 +411,24 @@
         const lineText = isLast ? escapedLines[i] + afterText : escapedLines[i];
         const newRow = {
           id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          character: lineText ? currentRow.character : '',
+          characterRef: lineText && currentRow.characterRef ? { ...currentRow.characterRef } : { kind: 'none', id: '__none__' },
+          type: lineText ? (currentRow.type || currentRow.role) : '',
+          typeRef: lineText && (currentRow.typeRef || currentRow.roleRef) ? { ...(currentRow.typeRef || currentRow.roleRef) } : { kind: 'none', id: '__none__' },
           role: lineText ? currentRow.role : '', // 空白行はタイプなし
           status: newStatus,
           text: lineText,
           columns: {},
         };
-        if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
-          globalThis.GBScriptNoteRoleModel.assignRowRole(
-            this.doc,
-            newRow,
-            lineText ? (currentRow.roleRef || currentRow.role) : ''
+        if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+          globalThis.GBScriptNoteRoleModel.assignRowType(
+            this.doc, newRow, lineText ? (currentRow.typeRef || currentRow.roleRef || currentRow.type || currentRow.role) : ''
           );
+          globalThis.GBScriptNoteRoleModel.assignRowCharacter?.(
+            this.doc, newRow, lineText ? (currentRow.characterRef || currentRow.character) : ''
+          );
+        } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+          globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, lineText ? (currentRow.roleRef || currentRow.role) : '');
         }
         newRows.push(newRow);
       }
@@ -546,15 +471,23 @@
         this._handleRoleCellClick?.(roleBtn, e);
         return;
       }
+      const characterBtn = e.target.closest?.('.sn2-character-btn');
+      if (characterBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const rowId = characterBtn.dataset.rowId || '';
+        this._setActiveCell?.(rowId, '_character', false);
+        return;
+      }
       // ハンドルクリック時はD&Dのみ（クリックは何もしない）
     });
 
     host.addEventListener('dblclick', (e) => {
-      const roleBtn = e.target.closest?.('.sn2-role-btn');
+      const roleBtn = e.target.closest?.('.sn2-role-btn, .sn2-character-btn');
       if (!roleBtn) return;
       e.preventDefault();
       e.stopPropagation();
-      this._showRoleMenu(roleBtn);
+      this._showRoleMenu(roleBtn, { kind: roleBtn.classList.contains('sn2-character-btn') ? 'character' : 'type' });
     });
 
     // テキスト列の右クリックメニュー（＋長押しでも同メニュー）
@@ -791,8 +724,8 @@
       if (e.button !== 0) return;
       const handle = e.target.closest?.('.sn2-handle');
       if (!handle) return;
-      // チェックボックスクリックはドラッグ対象外
-      if (e.target.closest?.('.sn2-row-check')) return;
+      // 追加ボタンとチェックボックスはドラッグ対象外
+      if (e.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
       const row = handle.closest('.sn2-row');
       if (!row) return;
       pdragPending = true;

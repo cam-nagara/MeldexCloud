@@ -124,8 +124,17 @@
   flex: 0 0 auto;
   font-size: var(--ui-font-12);
 }
-.sn2-db-import-picker select {
-  min-width: min(520px, 70vw);
+.sn2-db-import-browser {
+  display: grid;
+  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+  gap: var(--ui-space-3);
+  flex: 1 1 auto;
+  min-height: 280px;
+  overflow: hidden;
+}
+/* 共通フォルダ選択部品の埋め込み先（.gb-folder-picker-embed）。行の見た目は部品側に任せる */
+.sn2-db-import-tree {
+  overflow: hidden;
 }
 .sn2-db-import-sheet {
   display: flex;
@@ -264,16 +273,18 @@
   width: 72px;
 }
 .sn2-role-opts-input-num {
-  width: 48px;
-  padding: 2px var(--ui-space-2);
+  box-sizing: border-box;
+  width: 96px;
+  min-width: 64px;
+  padding: 2px 8px;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-app);
   color: var(--ui-fg-default);
   font-size: var(--ui-font-11);
-  text-align: center;
+  text-align: left;
 }
-.sn2-role-opts-input-num--sm { width: 36px; }
+.sn2-role-opts-input-num--sm { width: 64px; }
 .sn2-role-opts-sel {
   font-size: var(--ui-font-11);
   padding: 1px;
@@ -299,9 +310,10 @@
 .sn2-detail-settings-label--w48 { width: 48px; }
 .sn2-detail-settings-label--mr2 { margin-right: 2px; }
 .sn2-detail-settings-label--ml0 { margin-left: 0; }
-.sn2-detail-settings-input--w56 { width: 56px; }
-.sn2-detail-settings-input--w48 { width: 48px; }
-.sn2-detail-settings-input--w36 { width: 36px; }
+.sn2-detail-settings-input--w64,
+.sn2-detail-settings-input--w56,
+.sn2-detail-settings-input--w48,
+.sn2-detail-settings-input--w36 { width: 64px; min-width: 64px; }
 .sn2-detail-settings-input--w28 { width: 28px; }
 .sn2-detail-ac-title {
   font-size: var(--ui-font-12);

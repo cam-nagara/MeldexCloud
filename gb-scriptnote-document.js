@@ -1,7 +1,7 @@
 /* gb-scriptnote-document.js: シナリオ文書の正規化・旧データ移行・直列化 */
 
 const SCRIPTNOTE_DEFAULT_LAYOUT_MODE = 'manga';
-const SCRIPTNOTE_SCHEMA_VERSION = 3;
+const SCRIPTNOTE_SCHEMA_VERSION = 4;
 const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
   manga: ['めくり', '改ページ', '柱'],
   drama: ['シーン見出し', '場面転換', '柱'],
@@ -10,6 +10,7 @@ const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
 };
 const SCRIPTNOTE_LEGACY_SUMMARY_NAMES = ['プロット'];
 const SCRIPTNOTE_DEFAULT_TYPE_BG = 'var(--bg3)';
+const SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS = Object.freeze({ align: 'left', valign: 'top', overflow: 'wrap' });
 
 function _scriptNotePlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -34,6 +35,14 @@ function _scriptNoteNormalizeRows(rows, now) {
       ...(item.roleRef && typeof item.roleRef === 'object'
         ? { roleRef: { ...item.roleRef } }
         : (!item.role ? { roleRef: { kind: 'none', id: 'none' } } : {})),
+      character: String(item.character || ''),
+      characterRef: item.characterRef && typeof item.characterRef === 'object'
+        ? { ...item.characterRef }
+        : { kind: 'none', id: 'none' },
+      type: String(item.type || item.role || ''),
+      typeRef: item.typeRef && typeof item.typeRef === 'object'
+        ? { ...item.typeRef }
+        : (item.roleRef && typeof item.roleRef === 'object' ? { ...item.roleRef } : { kind: 'none', id: 'none' }),
       status: String(item.status || ''),
       text: String(item.text || ''),
       columns: _scriptNotePlainObject(item.columns),
@@ -44,6 +53,10 @@ function _scriptNoteNormalizeRows(rows, now) {
     id: `sn-${now}-0`,
     role: '',
     roleRef: { kind: 'none', id: 'none' },
+    character: '',
+    characterRef: { kind: 'none', id: 'none' },
+    type: '',
+    typeRef: { kind: 'none', id: 'none' },
     status: '',
     text: '',
     columns: {},
@@ -128,6 +141,75 @@ function _scriptNoteStylesEqual(left, right) {
   return keys.every(key => a[key] === b[key]);
 }
 
+// 配置・折り返しはセル／タイプではなく列だけが所有する。
+// 未設定時も列メニューに表示する既定値と実描画を必ず一致させる。
+function _scriptNoteColumnLayoutSettings(doc, columnId) {
+  const editor = _scriptNotePlainObject(doc?.editor);
+  const custom = (Array.isArray(editor.customColumns) ? editor.customColumns : [])
+    .find(column => String(column?.id || '') === String(columnId || ''));
+  const source = String(columnId || '').startsWith('_')
+    ? _scriptNotePlainObject(_scriptNotePlainObject(editor.standardColumnSettings)[columnId])
+    : _scriptNotePlainObject(custom);
+  const align = ['left', 'center', 'right'].includes(source.align)
+    ? source.align : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.align;
+  const valign = ['top', 'middle', 'bottom'].includes(source.valign)
+    ? source.valign : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.valign;
+  const gutter = columnId === '_gutter' || columnId === '_gutter2';
+  const overflow = gutter ? 'overflow' : (['wrap', 'overflow', 'clip'].includes(source.overflow)
+    ? source.overflow : SCRIPTNOTE_COLUMN_LAYOUT_DEFAULTS.overflow);
+  return { align, valign, overflow };
+}
+
+function _scriptNoteMigrateColumnOwnedLayout(doc) {
+  if (!doc || typeof doc !== 'object') return;
+  const editor = _scriptNotePlainObject(doc.editor);
+  const standard = _scriptNotePlainObject(editor.standardColumnSettings);
+  editor.standardColumnSettings = standard;
+  const customColumns = Array.isArray(editor.customColumns) ? editor.customColumns : [];
+  const types = Array.isArray(doc.scenarioTypes) ? doc.scenarioTypes : [];
+  const characters = Array.isArray(doc.characters) ? doc.characters : [];
+  const columns = ['_gutter', '_gutter2', '_character', '_role', '_status', '_text', ...customColumns.map(column => String(column?.id || '')).filter(Boolean)];
+  const appearances = [editor.defaultType, editor.noneType, ...types, ...characters]
+    .filter(item => item && typeof item === 'object');
+  characters.forEach(character => {
+    if (character?.legacyAppearance && typeof character.legacyAppearance === 'object') appearances.push(character.legacyAppearance);
+  });
+  const styleFor = (appearance, columnId) => {
+    if (columnId === '_gutter') return _scriptNotePlainObject(appearance.gutterStyle);
+    if (columnId === '_gutter2') return _scriptNotePlainObject(appearance.gutter2Style);
+    if (columnId === '_role') return _scriptNotePlainObject(appearance.roleStyle);
+    if (columnId === '_text') return _scriptNotePlainObject(appearance.textStyle);
+    return _scriptNotePlainObject(_scriptNotePlainObject(appearance.customStyles)[columnId]);
+  };
+  const legacyKeys = { textAlign: 'align', textValign: 'valign', textOverflow: 'overflow' };
+  columns.forEach(columnId => {
+    const target = columnId.startsWith('_')
+      ? (standard[columnId] = _scriptNotePlainObject(standard[columnId]))
+      : customColumns.find(column => String(column?.id || '') === columnId);
+    if (!target) return;
+    Object.entries(legacyKeys).forEach(([legacyKey, columnKey]) => {
+      const candidates = [];
+      appearances.forEach(appearance => {
+        const style = styleFor(appearance, columnId);
+        if (style[legacyKey]) candidates.push(style[legacyKey]);
+        if (columnId === '_text' && appearance[legacyKey]) candidates.push(appearance[legacyKey]);
+      });
+      const allRule = _scriptNotePlainObject(_scriptNotePlainObject(editor.columnAllRules)[columnId]);
+      if (allRule[legacyKey]) candidates.push(allRule[legacyKey]);
+      const unique = [...new Set(candidates.filter(Boolean))];
+      if (!target[columnKey] && unique.length === 1) target[columnKey] = unique[0];
+      appearances.forEach(appearance => {
+        delete styleFor(appearance, columnId)[legacyKey];
+        if (columnId === '_text') delete appearance[legacyKey];
+      });
+      delete allRule[legacyKey];
+    });
+    if (columnId === '_gutter' || columnId === '_gutter2') target.overflow = 'overflow';
+  });
+  editor.columnLayoutScopeVersion = 1;
+  doc.editor = editor;
+}
+
 function _scriptNoteMigrateUnifiedGutterStyles(doc) {
   if (!doc || typeof doc !== 'object') return;
   const editor = _scriptNotePlainObject(doc.editor);
@@ -196,7 +278,7 @@ function freezeLegacyScriptNoteAutoColors(doc) {
     .map(column => String(column?.id || '')).filter(Boolean);
   const columns = [
     ['_gutter', 'gutterStyle'], ['_gutter2', 'gutter2Style'],
-    ['_role', 'roleStyle'], ['_text', 'textStyle'],
+    ['_character', 'roleStyle'], ['_role', 'roleStyle'], ['_text', 'textStyle'],
     ...customIds.map(id => [id, 'customStyles']),
   ];
   const freezeAppearance = appearance => {
@@ -293,6 +375,7 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
   if (typeof MeldexRubyPresentation !== 'undefined') {
     MeldexRubyPresentation.ensureDocument(doc, { defaults: options.rubyPresentationDefaults });
   }
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   return doc;
 }
 
@@ -330,7 +413,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
     if (pickKind) {
       const value = cfg[pickKind];
       if (typeof value === 'string') {
-        editor.autoColorRule = { _gutter: value, _gutter2: value, _role: value, _text: value };
+        editor.autoColorRule = { _gutter: value, _gutter2: value, _character: value, _role: value, _text: value };
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         editor.autoColorRule = { ...value };
       }
@@ -348,6 +431,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   }
 
   _scriptNoteMigrateUnifiedGutterStyles(doc);
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   const roleModel = _scriptNoteRoleModel();
   if (roleModel) roleModel.ensureDocument(doc, options.roleModelOptions || {});
   freezeLegacyScriptNoteAutoColors(doc);
@@ -383,6 +467,7 @@ function serializeScriptNoteDoc(doc) {
   ensureScriptNoteDefaultType(doc.editor);
   ensureScriptNoteNoneType(doc.editor);
   _scriptNoteMigrateUnifiedGutterStyles(doc);
+  _scriptNoteMigrateColumnOwnedLayout(doc);
   const serialized = {
     ...doc,
     fileType: doc.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),

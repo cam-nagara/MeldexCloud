@@ -77,9 +77,20 @@ Object.assign(ScriptNoteEditor.prototype, {
       case 'scenario.copy':
         document.execCommand('copy');
         return true;
-      case 'scenario.cut':
+      case 'scenario.cut': {
+        // 矩形セル範囲の切り取り: 表としてコピーしてから範囲の内容を空にする（Undo可能）
+        const nativeSel = window.getSelection();
+        const hasNativeText = !!(nativeSel?.rangeCount && !nativeSel.isCollapsed);
+        if (!hasNativeText && this._gridCellSelection?.size && !this._readOnly
+            && typeof this._copyActiveCellToClipboard === 'function') {
+          this._copyActiveCellToClipboard();
+          this._clearSelectedGridCells?.();
+          this._restoreActiveCellHighlight?.();
+          return true;
+        }
         document.execCommand('cut');
         return true;
+      }
       case 'scenario.paste':
         return false;
       case 'scenario.pasteInCell':
@@ -125,7 +136,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     let targetIdx = idx + dir;
     while (targetIdx >= 0 && targetIdx < this.doc.rows.length) {
       const targetRow = this.doc.rows[targetIdx];
-      if (this._isRoleVisible(targetRow.role, targetRow.status || '')) break;
+      if (this._isRoleVisible(targetRow)) break;
       targetIdx += dir;
     }
     if (targetIdx < 0 || targetIdx >= this.doc.rows.length) return false;
@@ -162,6 +173,15 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _runAddRowShortcut(keepRole, e) {
+    // 「行を追加」はセルがアクティブ（編集中でない）時の Shift+Enter。
+    // 編集中の同じキーはセル内改行（2026-11-17の操作仕様）。
+    if (!keepRole) {
+      if (this._cellEditMode) return this._runNewlineShortcut(e);
+      if (this._activeCellRowId && typeof this._insertEmptyRowBelow === 'function') {
+        this._insertEmptyRowBelow();
+        return true;
+      }
+    }
     const text = this._shortcutTextTarget(e);
     if (!text) return false;
     const splitOffset = this._getTextOffset(text);
@@ -227,12 +247,24 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!text) return false;
     const row = text.closest('.sn2-row');
     if (!row) return false;
-    const roleBtn = row.querySelector('.sn2-role-btn');
-    if (roleBtn) this._showRoleMenu(roleBtn);
+    const isType = !!e?.shiftKey;
+    const roleBtn = this._roleMenuAnchor(row, isType ? 'type' : 'character');
+    if (roleBtn) this._showRoleMenu(roleBtn, { kind: isType ? 'type' : 'character' });
     return true;
   },
 
   _runDeleteRowShortcut(e) {
+    // 矩形セル範囲があれば、その範囲を含むすべての行を削除して元の位置付近をアクティブにする。
+    // テキスト編集中でない時（アクティブセル・範囲選択の表示中）も同じ。
+    const focused = document.activeElement;
+    const selectionOwnsFocus = focused === this.host
+      || (typeof this._isActiveNonEditingTarget === 'function' && this._isActiveNonEditingTarget(focused));
+    if (typeof this._deleteRowsKeepingActiveCell === 'function' && selectionOwnsFocus
+        && (this._gridCellSelection?.size || this._activeCellRowId)) {
+      if (this._readOnly) return true;
+      const anchorCol = this._activeCellColId || this._gridCellAnchor?.colId || '_text';
+      return this._deleteRowsKeepingActiveCell(this._rowIdsForCellSelection(), anchorCol) || true;
+    }
     const text = this._shortcutTextTarget(e);
     if (!text) return false;
     const row = text.closest('.sn2-row');
@@ -240,6 +272,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const rowId = row.dataset.rowId;
     const idx = this.doc.rows.findIndex(r => r.id === rowId);
     if (idx < 0 || this.doc.rows.length <= 1) return false;
+    if (this._scenarioViewEditUnit?.() === 'page' && typeof this._deleteScenarioPagesForRows === 'function') {
+      return this._deleteScenarioPagesForRows([rowId], '_text') || true;
+    }
     this._pushUndo('行削除');
     this.doc.rows.splice(idx, 1);
     this._calcCache = null;
@@ -585,6 +620,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     host.addEventListener('pointerup', (e) => {
       const wasTextCellClick = !!textDragCell;
       textDragCell = null;
+      // Ctrl+クリックはセルの複数選択（click で処理する）なので、選択を解除しない。
+      if ((e.ctrlKey || e.metaKey) && !dragSelecting) {
+        dragPending = false;
+        return;
+      }
       if (dragPending && !dragSelecting) {
         dragPending = false;
         // ドラッグでない単クリック: すべての選択系を解除

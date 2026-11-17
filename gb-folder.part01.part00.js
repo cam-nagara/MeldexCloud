@@ -39,7 +39,62 @@ function _refreshFolderUnifiedSearch(query) {
       if (typeof renderFolderGrid === 'function') renderFolderGrid();
       window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), data, text);
     })
-    .catch(() => {});
+    .catch(error => {
+      if (seq !== _folderUnifiedSearchSeq || folderPath !== _folderPath) return;
+      // 前回の検索結果を残したままにしない。名前の一致だけで描き直し、失敗を原因つきで出す。
+      _folderUnifiedSearchPaths = new Set();
+      if (typeof renderFolderGrid === 'function') renderFolderGrid();
+      window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), null, text);
+      _folderReportFailure('フォルダ内を検索できませんでした（名前の一致だけを表示しています）', error);
+    });
+}
+
+// 失敗の理由を、利用者向けの短い文に整える。フォルダツリー側の整形があればそれに揃える。
+function _folderFailureReason(error) {
+  if (typeof _outlinerFailureReason === 'function') return _outlinerFailureReason(error);
+  if (!error) return '';
+  if (error.name === 'AbortError') return '中断されました';
+  if (error instanceof TypeError || error instanceof ReferenceError) return '予期しないエラーが発生しました';
+  return String(error?.message || '').replace(/^HTTP\s*\d+\s*:\s*/i, '').trim().slice(0, 120);
+}
+
+function _folderReportFailure(message, error) {
+  const reason = _folderFailureReason(error);
+  showStatus(reason ? `${message}：${reason}` : message, true);
+}
+
+// 右クリックメニュー項目の実行。非同期の処理も待ち、失敗を原因つきで表示する。
+async function _folderRunMenuAction(fn, label) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[folder menu] 実行に失敗', error);
+    _folderReportFailure(label ? `「${label}」を実行できませんでした` : '操作を実行できませんでした', error);
+    return undefined;
+  }
+}
+
+// 複数項目の複製。部分失敗も成功件数・失敗件数・最初の原因を表示する。
+async function _folderDuplicateItems(items, refresh) {
+  const result = { ok: 0, failed: 0, error: null };
+  for (const target of items || []) {
+    try {
+      await apiPost('/outliner/duplicate', { path: target.path });
+      result.ok += 1;
+    } catch (error) {
+      result.failed += 1;
+      if (!result.error) result.error = error;
+    }
+  }
+  if (result.ok > 0 && typeof refresh === 'function') {
+    try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+  }
+  const reason = result.failed ? _folderFailureReason(result.error) : '';
+  const suffix = reason ? `：${reason}` : '';
+  if (!result.failed) showStatus(`${result.ok} 件を複製しました`);
+  else if (!result.ok) showStatus(`複製に失敗しました${suffix}`, true);
+  else showStatus(`${result.ok} 件を複製しました。${result.failed} 件は失敗しました${suffix}`, true);
+  return result;
 }
 
 function _scheduleFolderUnifiedSearch(query) {
@@ -1019,7 +1074,10 @@ function _folderApplyManualDrop(intent, targetItem) {
   ];
   const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
   setSortSetting(_folderPath || '', 'manual', 'asc');
-  setManualOrder(_folderPath || '', remaining);
+  if (setManualOrder(_folderPath || '', remaining) === false) {
+    showStatus('並び順を保存できませんでした：この端末の保存領域に書き込めません', true);
+    return false;
+  }
   if (typeof pushOutlinerSettingsHistory === 'function') {
     pushOutlinerSettingsHistory('フォルダ: マニュアル並び替え', before, targetItem.name, historyKeys);
   }

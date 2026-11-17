@@ -53,15 +53,15 @@
     right: max(12px, env(safe-area-inset-right));
     bottom: max(72px, calc(env(safe-area-inset-bottom) + 64px));
     z-index: 260;
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border, #333);
-    border-radius: 999px;
+    border-radius: var(--ui-radius-pill, 999px);
     background: var(--bg2, #252525);
     color: var(--fg, #d4d4d4);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
@@ -269,10 +269,10 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-annotationbar-btn,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-menu-item,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-sheet-close {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     border: 1px solid var(--border, #333);
-    border-radius: 8px;
+    border-radius: var(--ui-radius-lg, 8px);
     background: var(--bg3, #2d2d2d);
     color: var(--fg, #d4d4d4);
     display: inline-flex;
@@ -285,21 +285,21 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-editbar-btn {
     flex: 0 0 auto;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0 9px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+    padding: 0 var(--ui-space-4, 8px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-inputbar-btn {
     flex: 0 0 auto;
-    min-height: 44px;
-    padding: 0 10px;
+    min-height: var(--ui-h-touch, 44px);
+    padding: 0 var(--ui-space-4, 8px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-chatbar-btn {
     flex: 0 0 auto;
-    min-height: 44px;
-    padding: 0 12px;
+    min-height: var(--ui-h-touch, 44px);
+    padding: 0 var(--ui-space-5, 12px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-chatbar-send {
@@ -313,7 +313,7 @@
     min-width: 50px;
     flex-direction: column;
     gap: 2px;
-    padding: 4px 6px;
+    padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-annotationbar-btn {
@@ -321,7 +321,7 @@
     min-width: 58px;
     flex-direction: column;
     gap: 2px;
-    padding: 4px 8px;
+    padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-annotationbar-btn.active {

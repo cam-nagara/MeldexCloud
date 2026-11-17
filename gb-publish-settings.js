@@ -34,7 +34,8 @@ function getCurrentPublishContext() {
     };
   }
   if (tab?.type === 'scriptnote' && tab.path) {
-    return { kind: 'scriptnote', label: 'シナリオ', path: tab.path };
+    const stem = String(tab.path).split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');
+    return { kind: 'scriptnote', label: tab.label || stem || 'シナリオ', path: tab.path };
   }
   return { kind: '', label: '未選択', path: '' };
 }
@@ -299,7 +300,7 @@ function renderPublishSettingsPanel(contextSnapshot) {
   if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
-  const isSinglePanel = ['page', 'entity', 'csv', 'calendar'].includes(ctx.kind);
+  const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
   const isDb = ctx.kind === 'database';
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
     <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます') : ''}</div>

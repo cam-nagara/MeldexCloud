@@ -297,7 +297,7 @@
   }
 
   .dup-monitor-modal .gb-modal-footer .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 
@@ -320,7 +320,7 @@
 }
 
 .dup-settings-field select {
-  min-height: 32px;
+  min-height: var(--ui-h-md, 32px);
 }
 
 .dup-settings-actions {
@@ -466,6 +466,6 @@
   }
 
   .dup-settings-actions .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

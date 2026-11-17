@@ -1,3 +1,4 @@
+      return PALETTE_TARGET_SPECS.some(([selector]) => {
         try {
           return node.matches?.(selector) || !!node.querySelector?.(selector);
         } catch {
@@ -897,4 +898,3 @@
         : (themeDef?.ui?.cssVars?.['--bd-bg'] || themeDef?.board?.backgroundColor || ''));
       if (typeof global.bdApplyCanvasBackground === 'function') {
         global.bdApplyCanvasBackground(canvas, bg);
-      } else {

@@ -49,7 +49,7 @@
     const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
     app.undoButton.dataset.gbTooltipKey = 'history.undo'; app.redoButton.dataset.gbTooltipKey = 'history.redo';
     toolbar.append(menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
-    const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
+    const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', river:'pencil', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
     for (const [tool, button] of app.toolButtons) toolbar.appendChild(convert(button, button.textContent, toolIcons[tool]));
     const spacer = document.createElement('div'); spacer.className = 'tb-spacer'; toolbar.appendChild(spacer);
     app.sidebarToggle = iconButton(app, 'レイヤーと地点一覧', 'layers', () => { app.sidebar.hidden = !app.sidebar.hidden; app.sidebarToggle.setAttribute('aria-pressed', String(!app.sidebar.hidden)); }, 'navigator');
@@ -144,9 +144,9 @@
       ...(local ? [{ label: '生成', icon: 'sparkles', submenu: [
         { label: '世界地図を生成', icon: 'globe', action: run(() => MeldexMapWorldGenerator.show(app)), disabled: app.editingDisabled },
         { label: '地形を生成', icon: 'mountain', action: run(() => MeldexMapControls.generator(app)), disabled: app.editingDisabled },
-        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled },
-        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled },
-        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled })),
+        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
+        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
+        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled || !!app.store.doc.atlas && kind !== 'town' })),
       ] }] : []),
       { label: '読み込み・書き出し', icon: 'import', submenu: [command('データ入出力', 'データ入出力', 'arrowLeftRight'), command('マップを書き出す', 'マップを書き出す', 'fileDown'), ...(local ? [command('PNG画像を書き出す', 'PNG', 'image'), command('持ち出しパッケージ', '持ち出しパッケージ', 'package')] : [])] },
       { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },

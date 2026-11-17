@@ -239,6 +239,12 @@
       return { ok: false, status: 'superseded', target };
     }
     if (result.ok) result.detail = publish(result, options?.reason);
+    else if (result.status === 'fallback' && typeof global.dispatchEvent === 'function'
+      && typeof global.CustomEvent === 'function') {
+      global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
+        detail: { dbPath: target.dbPath, status: result.status, message: String(result.error?.message || '') },
+      }));
+    }
     return result;
   }
 

@@ -38,9 +38,7 @@
     let applyAll = !!this.doc.editor.columnAllRules[colId];
     const rule0 = this.doc.editor.columnAllRules[colId] || {};
     const getTargets = () => {
-      const types = Array.isArray(this.doc.scenarioTypes) && this.doc.scenarioTypes.length
-        ? this.doc.scenarioTypes
-        : (Array.isArray(this.doc.characters) ? this.doc.characters : []);
+      const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
       const selectedIds = this._detailTypeSelection || new Set();
       const selected = types.filter(type => selectedIds.has(type.id));
       return selected.length ? selected : types;
@@ -56,15 +54,6 @@
           if (val === '' || val === null || val === undefined) delete s[prop];
           else s[prop] = val;
         });
-        if (type.id && Array.isArray(this.doc.characters)) {
-          this.doc.characters.filter(c => c && c.typeId === type.id).forEach(c => {
-            const cs = this._getColStyle(c, colId);
-            Object.entries(changes).forEach(([prop, val]) => {
-              if (val === '' || val === null || val === undefined) delete cs[prop];
-              else cs[prop] = val;
-            });
-          });
-        }
       });
       if (applyAll) {
         // undo スナップショット直列化では空の columnAllRules が整理されるため、取得直前に作り直す
@@ -84,7 +73,7 @@
         this.renderDetailPanel(panelContainer);
       }
     };
-    const FULL_RENDER_PROPS = new Set(['textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow']);
+    const FULL_RENDER_PROPS = new Set(['textBefore', 'textAfter']);
     const popupValues = {
       bgColor: rule0.bgColor || '',
       textColor: rule0.textColor || '',
@@ -99,15 +88,19 @@
       accentColor: rule0.accentColor || '',
       textBefore: rule0.textBefore || '',
       textAfter: rule0.textAfter || '',
-      textAlign: rule0.textAlign || '',
-      textValign: rule0.textValign || '',
-      textOverflow: rule0.textOverflow || '',
     };
     const STYLE_COPY_PROPS = Object.keys(popupValues);
+    const popupFields = [
+      'textColor', 'fontSize', 'fontFamily', 'bold', 'italic',
+      'textStrokeColor', 'textStrokeWidth', 'bgColor', 'leftAccent', 'underline', 'accentColor',
+      ...(colId === '_text' ? ['textBefore', 'textAfter'] : []),
+    ];
     // 貼り付けで applyChanges → renderDetailPanel が走るとヘッダー要素が作り直されるため、
     // 開き直し用に現在のヘッダーセルを取り直す
     const freshHeaderAnchor = () => {
-      const managedHeader = panelContainer?.querySelector?.('.sn2-role-manage-format-header');
+      const managedHeader = panelContainer?.querySelector?.(
+        `.sn2-role-manage-format-header[data-column-id="${MeldexEscape.cssIdent(colId)}"]`,
+      );
       if (managedHeader) return managedHeader;
       const ids = ['_role', '_text', ...((this.doc.editor?.customColumns || []).map(c => c.id))];
       const i = ids.indexOf(colId);
@@ -116,6 +109,7 @@
     };
     openFormatPopup(anchorEl, {
       values: popupValues,
+      fields: popupFields,
       verticalWriting: this.doc.editor?.viewMode === 'vertical',
       className: 'gb-fmt-popup--colbulk',
       positionAnchor: this._detailMultiSelectionPositionAnchor?.(anchorEl, panelContainer),
@@ -219,6 +213,14 @@
             <input type="checkbox" data-opt-check="isSpread"${chara.isSpread ? ' checked' : ''}> 見開き
           </label>
           ${fieldHelp('「区切り」ON時のみ有効。連続時の偶数回目はページ送りせずコマ送り扱いになります')}
+        </div>
+        <div class="sn2-role-opts-row">
+          <span class="sn2-role-opts-field-label">交互に使う区切り</span>
+          <select class="sn2-role-opts-sel" data-opt-alternate-break data-e2e-id="scriptnote-type-alternate-break"${chara.isBreak && isScenarioType ? '' : ' disabled'}>
+            <option value="">なし</option>
+            ${(roleAdapter?.types || []).filter(type => type && type !== chara && type.isBreak).map(type => `<option value="${e(type.id)}"${chara.alternateBreakTypeId === type.id ? ' selected' : ''}>${e(type.name || '名称未設定')}</option>`).join('')}
+          </select>
+          ${fieldHelp('右改頁と左改頁のように交互に並べる区切りの相手。ページを追加・削除・移動すると、以降の区切りの左右を自動で振り直します')}
         </div>
         <div class="sn2-role-opts-row">
           <label class="sn2-role-opts-check-lbl">
@@ -352,12 +354,18 @@
           else delete chara.indent;
           this._calcCache = null;
           this._render(); this._markDirty();
+          this._refreshRoleManagementPreviews?.(panelContainer);
           return;
         }
         chara[key] = val;
         // 枠線関連プロパティはDOM再構築が必要
-        if (key === 'outlineWidth') { this._render(); this._markDirty(); return; }
+        if (key === 'outlineWidth') {
+          this._render(); this._markDirty();
+          this._refreshRoleManagementPreviews?.(panelContainer);
+          return;
+        }
         this._refreshRowStyles(); this._markDirty();
+        this._refreshRoleManagementPreviews?.(panelContainer);
         const item = anchorEl.closest('.sn2-detail-item');
         if (item?._applyPreview) item._applyPreview();
       });
@@ -368,7 +376,28 @@
         this._pushUndo('オプション設定変更');
         chara[sel.dataset.optSel] = sel.value;
         this._render(); this._markDirty();
+        this._refreshRoleManagementPreviews?.(panelContainer);
       });
+    });
+    // 交互に使う区切り: 相手のタイプにも同じ組を設定し、以前の相手との組は外す。
+    popup.querySelector('[data-opt-alternate-break]')?.addEventListener('change', event => {
+      const types = roleAdapter?.types || [];
+      const nextId = event.target.value || '';
+      this._pushUndo('交互に使う区切りの変更');
+      types.forEach(type => {
+        if (type === chara) return;
+        if (type.alternateBreakTypeId === chara.id || (nextId && type.id !== nextId && type.alternateBreakTypeId === nextId)) delete type.alternateBreakTypeId;
+      });
+      const previousPartner = types.find(type => type.id === chara.alternateBreakTypeId);
+      if (previousPartner && previousPartner.alternateBreakTypeId === chara.id) delete previousPartner.alternateBreakTypeId;
+      if (nextId) {
+        chara.alternateBreakTypeId = nextId;
+        const partner = types.find(type => type.id === nextId);
+        if (partner) partner.alternateBreakTypeId = chara.id;
+      } else {
+        delete chara.alternateBreakTypeId;
+      }
+      this._markDirty({ skipUndo: true });
     });
     // チェックボックス（区切り、プロット、枠線表示）
     popup.querySelectorAll('[data-opt-check]').forEach(cb => {
@@ -399,6 +428,7 @@
         // 区切り/プロットはページ採番に影響するのでキャッシュクリア
         if (key === 'isBreak' || key === 'isSummary') this._calcCache = null;
         this._render(); this._markDirty();
+        this._refreshRoleManagementPreviews?.(panelContainer);
       });
     });
     // 枠線カラーピッカー
@@ -410,6 +440,7 @@
             if (color === 'transparent') { delete chara.outlineColor; } else { chara.outlineColor = color; }
             Object.assign(btn.style, { background: chara.outlineColor || 'var(--border)' });
             this._render(); this._markDirty();
+            this._refreshRoleManagementPreviews?.(panelContainer);
           });
         }
       });
@@ -511,7 +542,12 @@
 
   _renameRoleInRows(oldName, newName) {
     if (!oldName || oldName === newName) return;
-    this.doc.rows.forEach(r => { if (r.role === oldName) r.role = newName; });
+    this.doc.rows.forEach(r => {
+      if (r.type === oldName || r.role === oldName) {
+        r.type = newName;
+        r.role = newName;
+      }
+    });
     this.host?.querySelectorAll('.sn2-row').forEach(rowEl => {
       const rowId = rowEl.dataset.rowId;
       const row = this.doc.rows.find(r => r.id === rowId);
@@ -527,7 +563,13 @@
     const targets = new Set((Array.isArray(roleNames) ? roleNames : [roleNames]).filter(Boolean));
     if (!targets.size) return;
     this.doc.rows.forEach(row => {
-      if (targets.has(row.role)) row.role = '';
+      if (!targets.has(row.type || row.role)) return;
+      if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+        globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, '');
+      } else {
+        row.type = '';
+        row.role = '';
+      }
     });
     this._calcCache = null;
     this.host?.querySelectorAll('.sn2-row').forEach(rowEl => {
@@ -657,15 +699,12 @@
       else scrollEl.style.removeProperty(name);
     };
 
-    // ヘッダー + テーマタブへの誘導バナー
+    // ヘッダー。長い移行説明は共通ルールに従い常設せず、各項目のtitleへ集約する。
     const header = document.createElement('div');
     header.className = 'sn2-detail-header';
-    header.innerHTML = '<span class="sn2-detail-theme-header-strong">挙動</span>';
+    header.innerHTML = '<span class="sn2-detail-theme-header-strong">表示設定</span>';
+    header.title = '枠線、余白、見開き区切り、区切り列など、シナリオ表示の挙動を設定します';
     wrap.appendChild(header);
-    const migrBanner = document.createElement('div');
-    migrBanner.className = 'sn2-detail-theme-banner';
-    migrBanner.textContent = '※ 色・基本テキスト・ルビなどのスタイル項目はオプションパネルの「テーマ」タブに移行しました。このタブは挙動系（枠線モード・見開き区切り・自動配色・カウント設定など）専用です。';
-    wrap.appendChild(migrBanner);
 
     // 設定セクション
     const borderMode = this.doc.editor?.borderMode || 'all';
@@ -691,6 +730,11 @@
     settings.className = 'sn2-detail-settings';
     const spreadBorderStartValue = clampNumberText(this.doc.editor?.spreadBorder?.start, 1, 1, 999);
     const spreadBorderEveryValue = clampNumberText(this.doc.editor?.spreadBorder?.every, 2, 1, 99);
+    const pageBreakGapValue = clampNumberText(this.doc.editor?.pageBreakGap, 24, 0, 200);
+    const spreadBorderGapValue = clampNumberText(this.doc.editor?.spreadBorder?.gap, 0, 0, 200);
+    const countDef = this._getCountDef?.() || { primaryLabel: 'p', secondaryLabel: 'コマ' };
+    const primaryColumnLabel = `ページ列（${String(countDef.primaryLabel || 'p')}）`;
+    const secondaryColumnLabel = `コマ列（${String(countDef.secondaryLabel || 'コマ')}）`;
     settings.innerHTML = `
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">枠線</label>
@@ -703,12 +747,12 @@
         <label class="sn2-detail-settings-label">色</label>
         <button type="button" class="gb-fmt-swatch gb-fmt-swatch-bg gb-fmt-swatch--xs" data-setting-color="borderColor" data-e2e-id="scriptnote-theme-border-color" title="枠線の色" aria-label="枠線の色"></button>
         <label class="sn2-detail-settings-label">太さ</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="borderWidth" data-e2e-id="scriptnote-theme-border-width" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="borderWidth" data-e2e-id="scriptnote-theme-border-width" value="${e(borderWidthValue)}" placeholder="1" min="0" max="10" step="0.5">
         <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
         <label class="sn2-detail-settings-label">余白</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="margin" data-e2e-id="scriptnote-theme-margin" value="${e(editorMargin)}" placeholder="16px" title="余白（段間隔が未指定の時は折り返しの段間隔にもなる）">
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="margin" data-e2e-id="scriptnote-theme-margin" value="${e(editorMargin)}" placeholder="16px" title="余白（段間隔が未指定の時は折り返しの段間隔にもなる）">
         <label class="sn2-detail-settings-label">段間隔</label>
-        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w48" data-setting="wrapGap" data-e2e-id="scriptnote-theme-wrap-gap" value="${e(editorWrapGap)}" placeholder="余白と同じ" title="折り返しで生じる段と段の間隔（未指定なら余白と同じ）">
+        <input type="text" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="wrapGap" data-e2e-id="scriptnote-theme-wrap-gap" value="${e(editorWrapGap)}" placeholder="余白と同じ" title="折り返しで生じる段と段の間隔（未指定なら余白と同じ）">
       </div>
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
@@ -717,6 +761,9 @@
         <label class="sn2-detail-settings-label sn2-detail-settings-label--mr2">
           <input type="checkbox" data-setting="pageBreakSpacing" data-e2e-id="scriptnote-theme-page-break-spacing" title="区切り行の前に1行分の余白を表示" aria-label="ページ間を空ける" ${pageBreakSpacing ? ' checked' : ''}> ページ間を空ける
         </label>
+        <label class="sn2-detail-settings-label">間隔</label>
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="pageBreakGap" data-e2e-id="scriptnote-theme-page-break-gap" value="${e(pageBreakGapValue)}" min="0" max="200" step="1"${pageBreakSpacing ? '' : ' disabled'} title="ページ区切りの直前に空ける幅">
+        <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
       </div>
       <div class="sn2-detail-settings-row sn2-detail-settings-row--nowrap">
         <label class="sn2-detail-settings-label">ホイール速度</label>
@@ -728,20 +775,23 @@
           <input type="checkbox" data-setting="spreadBorderEnabled" data-e2e-id="scriptnote-theme-spread-border-enabled"${this.doc.editor?.spreadBorder?.enabled ? ' checked' : ''}> 見開き区切り
         </label>
         <label class="sn2-detail-settings-label">開始</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderStart" data-e2e-id="scriptnote-theme-spread-border-start" value="${e(spreadBorderStartValue)}" min="1" max="999" title="区切り線を引く最初のページ番号">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="spreadBorderStart" data-e2e-id="scriptnote-theme-spread-border-start" value="${e(spreadBorderStartValue)}" min="1" max="999" title="区切り線を引く最初のページ番号">
         <label class="sn2-detail-settings-label">間隔</label>
-        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w36" data-setting="spreadBorderEvery" data-e2e-id="scriptnote-theme-spread-border-every" value="${e(spreadBorderEveryValue)}" min="1" max="99" title="何ページごとに区切り線を引くか">
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="spreadBorderEvery" data-e2e-id="scriptnote-theme-spread-border-every" value="${e(spreadBorderEveryValue)}" min="1" max="99" title="何ページごとに区切り線を引くか">
         <span class="sn2-detail-settings-label">p</span>
+        <label class="sn2-detail-settings-label">前余白</label>
+        <input type="number" class="sn2-detail-settings-input sn2-detail-settings-input--w64" data-setting="spreadBorderGap" data-e2e-id="scriptnote-theme-spread-border-gap" value="${e(spreadBorderGapValue)}" min="0" max="200" step="1"${this.doc.editor?.spreadBorder?.enabled ? '' : ' disabled'} title="見開き区切り線の直前に空ける幅">
+        <span class="sn2-detail-settings-label sn2-detail-settings-label--ml0">px</span>
       </div>
       <div class="sn2-detail-settings-row">
         <label class="sn2-detail-settings-label">列間枠線</label>
         <div id="sn2-col-border-ui" class="sn2-detail-colborder-ui"></div>
       </div>
       <div class="sn2-detail-settings-row">
-        <label class="sn2-detail-settings-label">大区切り</label>
-        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter" data-e2e-id="scriptnote-theme-primary-style">書式設定…</button>
-        <label class="sn2-detail-settings-label">小区切り</label>
-        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter2" data-e2e-id="scriptnote-theme-secondary-style">書式設定…</button>
+        <label class="sn2-detail-settings-label">${e(primaryColumnLabel)}</label>
+        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter" data-e2e-id="scriptnote-theme-primary-style" title="ページ列のフォント、文字色、背景色、装飾を設定">書式設定…</button>
+        <label class="sn2-detail-settings-label">${e(secondaryColumnLabel)}</label>
+        <button type="button" class="sn2-detail-add-btn" data-gutter-style="_gutter2" data-e2e-id="scriptnote-theme-secondary-style" title="コマ列のフォント、文字色、背景色、装飾を設定">書式設定…</button>
       </div>`;
     // 行全体をスクロールさせず、ラベルと操作部を一つの組として折り返す。
     settings.querySelectorAll('.sn2-detail-settings-row:not(.sn2-detail-settings-row--nowrap)').forEach(row => {
@@ -840,10 +890,17 @@
         document.querySelectorAll('#btn-merge-display').forEach(btn => btn.classList.toggle('active', el.checked));
       } else if (key === 'pageBreakSpacing') {
         this.doc.editor.pageBreakSpacing = el.checked;
+        const gapInput = settings.querySelector('[data-setting="pageBreakGap"]');
+        if (gapInput) gapInput.disabled = !el.checked;
+        this._render();
+      } else if (key === 'pageBreakGap') {
+        this.doc.editor.pageBreakGap = Math.max(0, Math.min(200, Number(el.value) || 0));
         this._render();
       } else if (key === 'spreadBorderEnabled') {
         if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
         this.doc.editor.spreadBorder.enabled = el.checked;
+        const gapInput = settings.querySelector('[data-setting="spreadBorderGap"]');
+        if (gapInput) gapInput.disabled = !el.checked;
         this._render();
       } else if (key === 'spreadBorderStart') {
         if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
@@ -852,6 +909,10 @@
       } else if (key === 'spreadBorderEvery') {
         if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
         this.doc.editor.spreadBorder.every = Math.max(1, parseInt(el.value) || 2);
+        this._render();
+      } else if (key === 'spreadBorderGap') {
+        if (!this.doc.editor.spreadBorder) this.doc.editor.spreadBorder = {};
+        this.doc.editor.spreadBorder.gap = Math.max(0, Math.min(200, Number(el.value) || 0));
         this._render();
       } else {
         return;

@@ -6,12 +6,12 @@
    共通ドロップダウン
    ============================================================ */
 .gb-select {
-  font-size: 12px;
-  padding: 2px 6px;
+  font-size: var(--ui-font-12, 12px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
   background: var(--bg3);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius-xs, 3px);
   cursor: pointer;
   outline: none;
 }
@@ -29,23 +29,23 @@
    ============================================================ */
 .gb-context-menu {
   position: fixed;
-  z-index: 200;
+  z-index: var(--ui-z-menu);
   /* ポップアップ視認性向上: 背景は --ui-popup-bg（テーマで変更可）、未定義時は --ui-bg-control (bg3) にフォールバック。
      border を --ui-border-strong で強化、外側に強い影 + 内側に薄い白ハイライトを重ねて
      ダークテーマでも境界が明瞭に見えるようにする */
   background: var(--ui-popup-bg, var(--ui-bg-control));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
-  border-radius: var(--ui-radius-md);
-  padding: var(--ui-space-2) 0;
-  min-width: 160px;
+  border-radius: var(--ui-menu-radius);
+  padding: var(--ui-menu-padding-y) 0;
+  min-width: var(--ui-menu-min-width);
   box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
-  font-size: var(--ui-font-13);
+  font-size: var(--ui-menu-item-font-size);
 }
 /* 詳細度を上げて gb-tools.css:1081 の `.gb-context-menu > div { padding: 4px 12px }` に勝つ。
    そうしないと padding が上書きされ、sep は 1px + padding で太い横線になり、item も意図外の padding になる。*/
 .gb-context-menu > .gb-context-menu-item,
 .gb-context-menu-item {
-  padding: 5px 14px;
+  padding: var(--ui-menu-item-padding-y) var(--ui-menu-item-padding-x);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -193,7 +193,7 @@ button.gb-context-menu-item {
   }
   .note-ruby-popup .note-ruby-input,
   .note-ruby-popup .note-ruby-ok {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   #slash-menu {
     min-width: min(280px, calc(100vw - 16px));
@@ -201,9 +201,9 @@ button.gb-context-menu-item {
   .note-table-cell-plus,
   .note-table-cell-menu-btn,
   .copy-btn {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
   }
   .note-table-cell-plus svg,
   .note-table-cell-menu-btn svg,
@@ -292,9 +292,9 @@ button.gb-context-menu-item {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  min-width: 22px;
-  height: 22px;
+  width: var(--ui-h-xs, 22px);
+  min-width: var(--ui-h-xs, 22px);
+  height: var(--ui-h-xs, 22px);
   padding: 0;
   margin: 0;
   background: var(--page-table-control-bg, var(--bg2));
@@ -314,8 +314,8 @@ button.gb-context-menu-item {
   font-size: 16px;
 }
 .note-table-cell-menu-btn {
-  border-radius: 6px;
-  font-size: 16px;
+  border-radius: var(--ui-radius-md, 6px);
+  font-size: var(--ui-font-16, 16px);
   font-weight: 700;
 }
 .note-table-cell-plus svg,
@@ -367,9 +367,10 @@ button.gb-context-menu-item {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 24px;
+  padding: var(--ui-empty-padding);
   color: var(--fg2);
-  gap: 12px;
+  gap: var(--ui-empty-gap);
+  font-size: var(--ui-empty-font-size);
   min-height: 200px;
   max-width: 100%;
   box-sizing: border-box;
@@ -473,8 +474,8 @@ button.gb-context-menu-item {
   background: var(--bg2); user-select: none;
 }
 .csv-cell-input {
-  width: 100%; padding: 2px 4px; font-size: 13px; background: var(--bg); color: var(--fg);
-  border: 1px solid var(--accent); border-radius: 2px; outline: none; box-sizing: border-box;
+  width: 100%; padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px); font-size: var(--ui-font-13, 13px); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--accent); border-radius: var(--ui-radius-xs, 3px); outline: none; box-sizing: border-box;
 }
 /* Part 2-1: CSV セル選択状態 */
 .csv-cell-selected { outline: 2px solid var(--accent); }
@@ -570,8 +571,8 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 .entity-row-more-btn {
   position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; cursor: pointer;
-  color: var(--fg2); background: var(--bg2); border-radius: 3px; font-size: 14px; user-select: none;
+  width: var(--ui-h-2xs, 18px); height: var(--ui-h-2xs, 18px); padding: 0; cursor: pointer;
+  color: var(--fg2); background: var(--bg2); border-radius: var(--ui-radius-xs, 3px); font-size: var(--ui-font-14, 14px); user-select: none;
   opacity: 0; pointer-events: none; transition: opacity 0.1s, background 0.1s, color 0.1s;
   z-index: 2;
 }
@@ -588,8 +589,8 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 .entity-row-open-btn {
   position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; cursor: pointer;
-  color: var(--fg2); background: var(--bg2); border-radius: 3px; user-select: none;
+  width: var(--ui-h-2xs, 18px); height: var(--ui-h-2xs, 18px); padding: 0; cursor: pointer;
+  color: var(--fg2); background: var(--bg2); border-radius: var(--ui-radius-xs, 3px); user-select: none;
   opacity: 0; pointer-events: none; transition: opacity 0.1s, background 0.1s, color 0.1s;
   z-index: 2;
 }
@@ -615,16 +616,16 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: var(--ui-h-sm, 28px);
+  min-width: var(--ui-h-sm, 28px);
+  height: var(--ui-h-sm, 28px);
+  min-height: var(--ui-h-sm, 28px);
   padding: 0;
   margin: 0;
   color: var(--fg2);
   background: transparent;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
   line-height: 1;
   -webkit-appearance: none;
@@ -655,16 +656,16 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: var(--ui-h-sm, 28px);
+  min-width: var(--ui-h-sm, 28px);
+  height: var(--ui-h-sm, 28px);
+  min-height: var(--ui-h-sm, 28px);
   padding: 0;
   margin: 0;
   color: inherit;
   background: transparent;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   cursor: pointer;
   line-height: 1;
   -webkit-appearance: none;
@@ -693,18 +694,18 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 @media (pointer: coarse), (max-width: 640px) {
   .note-more-btn {
     display: inline-flex !important;
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     opacity: 1;
     pointer-events: auto;
   }
   .ann-note-window-close-btn {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     opacity: 1;
     pointer-events: auto;
   }
@@ -713,17 +714,17 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 /* ボタンプロパティ */
 .db-action-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  padding: 3px 10px; font-size: 12px; background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong));
-  border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); font-size: var(--ui-font-12, 12px); background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong));
+  border: none; border-radius: var(--ui-radius-sm, 4px); cursor: pointer; white-space: nowrap;
 }
 .db-action-btn svg { display: block; width: 14px; height: 14px; flex: 0 0 14px; }
 .db-action-btn:hover { opacity: 0.85; }
 .db-action-btn:active { opacity: 0.7; }
 @media (pointer: coarse), (max-width: 640px) {
   .db-action-btn {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 8px 12px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
     box-sizing: border-box;
   }
 }

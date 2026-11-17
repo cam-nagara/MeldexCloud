@@ -939,9 +939,9 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
 .status-policies-view .sp-label-input {
   width: 100%;
   min-width: 0;
-  height: 26px;
-  padding: 2px 6px;
-  font-size: 12px;
+  height: var(--ui-h-sm, 28px);
+  padding: var(--ui-space-1, 2px) var(--ui-space-3, 6px);
+  font-size: var(--ui-font-12, 12px);
 }
 
 .status-policies-view .sp-status-input:disabled {
@@ -1000,9 +1000,9 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
 
 .status-policies-view .sp-desc-input {
   width: 100%;
-  min-height: 42px;
+  min-height: var(--ui-h-touch, 44px);
   resize: vertical;
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
 }
 
 .status-policies-view .sp-actions {

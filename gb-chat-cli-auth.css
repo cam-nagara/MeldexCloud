@@ -41,5 +41,5 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 640px), (pointer: coarse) {
-  .chat-cli-auth-actions .gb-btn { min-height: 44px; }
+  .chat-cli-auth-actions .gb-btn { min-height: var(--ui-h-touch, 44px); }
 }

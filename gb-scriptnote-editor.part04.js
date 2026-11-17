@@ -28,7 +28,9 @@
     if (idx < 0) return;
 
     // ルビ対応: DOMを同期してからテキストを分割
-    this._syncRowFromDom(textEl, { skipUndo: true });
+    // 行追加の最後に一度だけdirty化する。ここで回復用文書を作ると、分割前と
+    // 分割後の全体JSON化が同じEnter操作内で重複する。
+    this._syncRowFromDom(textEl, { skipUndo: true, skipDirty: true });
     const fullText = this.doc.rows[idx].text;
     const sel = window.getSelection();
     let beforeText = fullText, afterText = '';
@@ -52,17 +54,30 @@
     if (this._filterStatuses && this._filterStatuses.size === 1) {
       newStatus = [...this._filterStatuses][0];
     }
-    const newRow = { id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: newRole, status: newStatus, text: afterText, columns: {} };
-    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+    const newRow = {
+      id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      role: newRole,
+      character: opts?.keepRole ? (this.doc.rows[idx].character || '') : '',
+      status: newStatus,
+      text: afterText,
+      columns: {},
+    };
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
       const roleValue = opts?.keepRole && !this._filterRoles?.size
-        ? (this.doc.rows[idx].roleRef || newRole)
+        ? (this.doc.rows[idx].typeRef || this.doc.rows[idx].roleRef || newRole)
         : newRole;
-      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, roleValue);
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, newRow, roleValue);
+      globalThis.GBScriptNoteRoleModel.assignRowCharacter(
+        this.doc,
+        newRow,
+        opts?.keepRole ? (this.doc.rows[idx].characterRef || this.doc.rows[idx].character || '') : '',
+      );
     }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
-    // ルビ対応: 全体再描画で正しくDOMを構築
-    this._render();
+    // 通常表示では変更した2行だけを差し替える。折り返し・絞り込み・まとめ表示など
+    // 全体配置が必要な状態だけ従来の全体再描画へ戻す。
+    if (!this._renderSplitRowsIncrementally(row, idx, newRow)) this._render();
     this._markDirty({ skipUndo: true });
     // 新しい行にフォーカス。E2E/高速操作では rAF だけだと次操作が先行するため即時にも反映する。
     const focusNewRow = () => {
@@ -76,6 +91,59 @@
     };
     focusNewRow();
     requestAnimationFrame(focusNewRow);
+  }
+
+  _renderSplitRowsIncrementally(previousRowEl, rowIndex, newRow) {
+    if (!previousRowEl?.isConnected || !this.host) return false;
+    if (this.doc.editor?.wrapMode || this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled) return false;
+    if (this._filterRoles || this._filterStatuses
+        || (this._hideRoles && this._hideRoles.size)
+        || (this._hideStatuses && this._hideStatuses.size)) return false;
+    const editorEl = previousRowEl.parentElement;
+    if (!editorEl?.classList?.contains('sn2-editor')) return false;
+    const oldRow = this.doc.rows[rowIndex];
+    if (!oldRow || this.doc.rows[rowIndex + 1] !== newRow) return false;
+
+    const calc = this._calcPagePanel();
+    const customCols = this._getCustomColumns();
+    const visibleCols = Array.from(previousRowEl.children)
+      .map(cell => cell.dataset?.colId)
+      .filter(Boolean)
+      .map(id => ({ id }));
+    const prevRow = rowIndex > 0 ? this.doc.rows[rowIndex - 1] : null;
+    const prevCalc = rowIndex > 0 ? calc[rowIndex - 1] : null;
+    const rebuiltOld = this._buildRowEl(oldRow, rowIndex, calc[rowIndex], false, prevRow, prevCalc, customCols, visibleCols);
+    const newRowEl = this._buildRowEl(newRow, rowIndex + 1, calc[rowIndex + 1], false, oldRow, calc[rowIndex], customCols, visibleCols);
+    if (this.doc.editor?.viewMode === 'vertical' && previousRowEl.style.height) {
+      rebuiltOld.style.height = previousRowEl.style.height;
+      newRowEl.style.height = previousRowEl.style.height;
+    }
+    previousRowEl.replaceWith(rebuiltOld, newRowEl);
+    this._updateGuttersFrom(rowIndex);
+    const rowIndexById = new Map(this.doc.rows.map((row, index) => [row.id, index]));
+    const customColumnById = new Map(customCols.map(col => [col.id, col]));
+    this.host.querySelectorAll('.sn2-row').forEach(rowEl => {
+      const currentIndex = rowIndexById.get(rowEl.dataset.rowId);
+      if (!Number.isInteger(currentIndex) || currentIndex < rowIndex) return;
+      const ordinal = currentIndex + 1;
+      const model = this.doc.rows[currentIndex];
+      rowEl.querySelector('.sn2-row-add-btn')?.setAttribute('aria-label', `${ordinal}行目の前後に行を追加`);
+      rowEl.querySelector('.sn2-row-check')?.setAttribute('aria-label', `行を選択: ${ordinal}`);
+      rowEl.querySelector('.sn2-text')?.setAttribute('aria-label', `本文、${ordinal}行、タイプ${model?.role || '未設定'}`);
+      rowEl.querySelectorAll('.sn2-custom-cell').forEach(cell => {
+        const col = customColumnById.get(cell.dataset.colId);
+        if (!col) return;
+        const control = cell.querySelector('.sn2-custom-input, .sn2-custom-select, .sn2-custom-text');
+        control?.setAttribute('aria-label', `${col.label || col.id || '列'}列、${ordinal}行`);
+      });
+    });
+    this._adjustRubySpacing();
+    const scroll = this.host.querySelector('.sn2-scroll');
+    if (scroll) this._setupPanSpacer(scroll, editorEl, this.doc.editor?.viewMode || 'horizontal');
+    if (this._path && typeof CommentBadges !== 'undefined') {
+      try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
+    }
+    return true;
   }
 
   _mergeWithPrev(textEl) {
@@ -225,12 +293,13 @@
     const rows = this.host.querySelectorAll('.sn2-row');
     const isVert = this.doc.editor?.viewMode === 'vertical';
     const mergeDisplay = !!this.doc.editor?.mergeDisplay;
+    const rowIndexById = new Map(this.doc.rows.map((row, index) => [row.id, index]));
     const clearCc = (el) => { delete el.dataset.ccBg; delete el.dataset.ccColor; delete el.dataset.ccWeight; delete el.dataset.ccSize; };
     const setCc = (el, gs) => { if (gs.bgColor) el.dataset.ccBg = gs.bgColor; if (gs.textColor) el.dataset.ccColor = gs.textColor; if (gs.fontWeight) el.dataset.ccWeight = gs.fontWeight; if (gs.fontSize) el.dataset.ccSize = gs.fontSize; };
     let prevVisibleCalc = null;
     for (const rowEl of rows) {
       const rowId = rowEl.dataset.rowId;
-      const docIdx = this.doc.rows.findIndex(r => r.id === rowId);
+      const docIdx = rowIndexById.get(rowId) ?? -1;
       if (docIdx < 0) continue;
       const rowCalc = calc[docIdx];
       if (!rowCalc) continue;
@@ -325,7 +394,7 @@
       const nowEmpty = !text;
       row.text = text;
       if (wasEmpty !== nowEmpty) this._calcCache = null;
-      this._markDirty(options.skipUndo ? { skipUndo: true } : {});
+      if (!options.skipDirty) this._markDirty(options.skipUndo ? { skipUndo: true } : {});
     }
   }
 
@@ -356,12 +425,23 @@
     const rows = new Map();
     const spanToInfo = new Map();
     const cells = new Map();
-    spans.forEach((span, index) => {
-      const rect = span.getBoundingClientRect();
+    // 書き込み（余白の解除）→全ルビの測定→書き込み（位置の変数）を分けてまとめる。
+    // ルビごとに書いて測ると、ルビの数だけ画面全体の再レイアウトが走る。
+    spans.forEach(span => {
+      span.style.marginLeft = '';
+      span.style.marginTop = '';
+    });
+    const measured = [...spans].map(span => ({
+      span,
+      rect: span.getBoundingClientRect(),
+      fontSize: parseFloat(getComputedStyle(span).fontSize) || 16,
+    }));
+    const baseEdges = [];
+    measured.forEach(({ span, rect, fontSize }, index) => {
       const parentStart = (isVertical ? rect.top : rect.left) / z;
       const parentEnd = (isVertical ? rect.bottom : rect.right) / z;
       const rubyText = span.dataset.rubyRendered || span.dataset.ruby;
-      const baseEm = parseFloat(getComputedStyle(span).fontSize) || 16;
+      const baseEm = fontSize;
       const info = model.createRubyLayoutInfo({
         parentStart,
         parentEnd,
@@ -381,10 +461,9 @@
       rows.get(lineKey).push(info);
       spanToInfo.set(span, info);
       const crossSize = (isVertical ? rect.width : rect.height) / z;
-      span.style.setProperty('--sn2-ruby-base-edge', ((crossSize + baseEm) * 0.5) + 'px');
-      span.style.marginLeft = '';
-      span.style.marginTop = '';
+      baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
     });
+    baseEdges.forEach(([span, value]) => span.style.setProperty('--sn2-ruby-base-edge', value));
     this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z);
     rows.forEach(infos => {
       model.resolveRubyOverlaps(infos).forEach(info => {
@@ -567,12 +646,17 @@
 
       const annData = e.dataTransfer.getData('application/x-annotation');
       if (annData) {
+        // 解析できない時に取り消し履歴だけが積まれないよう、解析を先に済ませる。
+        let ann = null;
         try {
-          const ann = JSON.parse(annData);
-          this._pushUndo('アノテートテキスト挿入');
-          document.execCommand('insertText', false, ann.text || '[メモ]');
-          this._syncRowFromDom(textDiv, { skipUndo: true });
-        } catch {}
+          ann = JSON.parse(annData);
+        } catch (error) {
+          if (typeof showStatus === 'function') showStatus('アノテートの内容を読み取れなかったため挿入しませんでした', true);
+          return;
+        }
+        this._pushUndo('アノテートテキスト挿入');
+        document.execCommand('insertText', false, ann?.text || '[メモ]');
+        this._syncRowFromDom(textDiv, { skipUndo: true });
         return;
       }
 
@@ -608,28 +692,39 @@
     if (this._readOnly) {
       // 詳細パネル等の間接入口が先にモデルを書き換えても、ロック取得時の
       // スナップショットへ戻してdirty化・下書き・PUTを発生させない。
+      let restoreError = null;
       if (this._readOnlySnapshot) {
         try {
           this.doc = createScriptNoteDoc(JSON.parse(this._readOnlySnapshot));
           this._calcCache = null;
           this._render();
-        } catch {}
+        } catch (error) {
+          restoreError = error;
+          console.warn('編集ロック中の表示を元に戻せませんでした:', error);
+        }
       }
-      if (typeof showStatus === 'function') showStatus('編集ロック中のため変更できません', true);
+      if (typeof showStatus === 'function') {
+        showStatus(restoreError
+          ? `編集ロック中のため変更できません。表示を元に戻せなかったため、シナリオを開き直してください（${restoreError?.message || restoreError}）`
+          : '編集ロック中のため変更できません', true);
+      }
       return false;
     }
     this._dirty = true;
     // 本体の2秒autosaveより先に、通常編集を回復用ストアへ退避する。
-    // MeldexDraftRecovery.queueDraft()側が同一pathを250msでデバウンスするため、
-    // 連続入力でIndexedDB書込を増やさず、保存・遷移失敗時にも直近内容を残せる。
+    // 大きい文書の全体JSON化も250msのデバウンス満了後に行い、Enter連打や
+    // 連続入力の同期区間で同じ文書を何度も直列化しない。
     if (this._path && this.doc) {
       try {
-        const draftJson = JSON.stringify(serializeScriptNoteDoc(this.doc), null, 2);
-        window.MeldexDraftRecovery?.queueDraft?.(
-          this._path,
-          draftJson,
-          this._lastSavedEtag || '',
-        );
+        const recovery = window.MeldexDraftRecovery;
+        const draftDocument = this.doc;
+        const buildDraft = () => JSON.stringify(serializeScriptNoteDoc(draftDocument), null, 2);
+        if (typeof recovery?.queueDraftFactory === 'function') {
+          recovery.queueDraftFactory(this._path, buildDraft, this._lastSavedEtag || '');
+        } else {
+          // 旧単独版やテスト用モックとの互換性を維持する。
+          recovery?.queueDraft?.(this._path, buildDraft(), this._lastSavedEtag || '');
+        }
       } catch (_) {
         // 下書き直列化の失敗で編集操作自体を壊さない。本体save()/flush()側でも
         // 失敗時にsaveDraft()をawaitし、閉鎖・遷移を停止する。

@@ -131,10 +131,10 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
-  padding: 8px 16px;
+  min-height: var(--ui-h-touch, 44px);
+  padding: var(--ui-space-4, 8px) var(--ui-space-6, 16px);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg, 8px);
   background: var(--surface);
   color: var(--fg);
   font-weight: 700;
@@ -222,10 +222,10 @@ h1 {
   font-weight: 700;
 }
 .version-picker select {
-  min-height: 40px;
-  padding: 7px 10px;
+  min-height: var(--ui-h-xl, 40px);
+  padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--surface-2);
   color: var(--fg);
   font: inherit;
@@ -545,11 +545,11 @@ h1 {
 .feedback-field select,
 .feedback-field textarea {
   width: 100%;
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
   box-sizing: border-box;
-  padding: 10px 12px;
+  padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--surface-2);
   color: var(--fg);
   font: inherit;
@@ -582,8 +582,8 @@ h1 {
 }
 .feedback-consent input {
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: var(--ui-h-2xs, 18px);
+  height: var(--ui-h-2xs, 18px);
   margin-top: 1px;
   accent-color: var(--accent);
 }
@@ -594,7 +594,7 @@ h1 {
   gap: 12px;
 }
 .feedback-actions .button {
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 .feedback-queue {
   color: var(--muted);

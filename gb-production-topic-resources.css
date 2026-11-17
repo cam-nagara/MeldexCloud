@@ -26,9 +26,9 @@
 .gb-production-topic-resource-open,
 .gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
 .gb-production-topic-resource-actions > button {
-  min-height: 36px;
+  min-height: var(--ui-h-lg, 36px);
   border: 1px solid var(--cal-control-border, var(--border));
-  border-radius: 6px;
+  border-radius: var(--ui-radius-md, 6px);
   background: var(--cal-control-bg, var(--bg));
   color: var(--cal-control-fg, var(--fg));
   cursor: pointer;
@@ -88,6 +88,6 @@
   .gb-production-topic-resource-open,
   .gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
   .gb-production-topic-resource-actions > button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }

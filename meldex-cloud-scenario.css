@@ -131,7 +131,8 @@
   text-orientation: upright !important;
   font-feature-settings: "vert" 1, "vpal" 1;
 }
-/* タイプ列: mixed（半角スペースの幅を正常に保つ） */
+/* キャラ／タイプ列: mixed（半角スペースの幅を正常に保つ） */
+.sn2-scroll.sn2-vertical .sn2-character-btn,
 .sn2-scroll.sn2-vertical .sn2-role-btn {
   writing-mode: vertical-rl !important;
   text-orientation: mixed !important;
@@ -159,6 +160,7 @@
   writing-mode: horizontal-tb;
   text-orientation: mixed;
   text-align: center;
+  white-space: nowrap;
 }
 
 /* 縦書き: 各セルの高さをCSS変数で制御 */
@@ -175,9 +177,19 @@
      行の各セル位置がズレて見える */
   padding: 6px 4px;
   border-right: none;
+  /* ページ／コマの自動生成ラベルは接頭辞と番号を別の縦列へ分断しない。 */
+  white-space: nowrap !important;
+  word-break: normal !important;
+  overflow: visible;
 }
 .sn2-scroll.sn2-vertical .sn2-gutter2 {
   height: var(--sn2-vcol-_gutter2, auto);
+}
+.sn2-scroll.sn2-vertical .sn2-character-btn {
+  width: auto;
+  height: var(--sn2-vcol-_character, auto);
+  border-left: none;
+  border-right: none;
 }
 .sn2-scroll.sn2-vertical .sn2-role-btn {
   width: auto;
@@ -194,15 +206,15 @@
 }
 .sn2-scroll.sn2-vertical .sn2-handle {
   width: auto;
-  height: var(--sn2-vcol-_handle, 36px);
+  height: var(--sn2-vcol-_handle, 54px);
   padding: 2px 4px 0;
   box-sizing: border-box;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0;
+  gap: 2px;
 }
-.sn2-scroll.sn2-vertical .sn2-handle > span {
+.sn2-scroll.sn2-vertical .sn2-row-grip {
   transform: rotate(90deg);
 }
 
@@ -301,9 +313,10 @@
   border-bottom: var(--sn2-border-width, 1px) solid var(--fg2, #888);
 }
 /* 各セルの高さをCSS変数で対応 */
-.sn2-header-vertical .sn2-header-cell[data-col-id="_handle"] { height: var(--sn2-vcol-_handle, 36px); padding: 2px 4px 0; box-sizing: border-box; }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_handle"] { height: var(--sn2-vcol-_handle, 54px); padding: 2px 4px 0; box-sizing: border-box; }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_gutter"] { height: var(--sn2-vcol-_gutter, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_gutter2"] { height: var(--sn2-vcol-_gutter2, auto); }
+.sn2-header-vertical .sn2-header-cell[data-col-id="_character"] { height: var(--sn2-vcol-_character, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_role"] { height: var(--sn2-vcol-_role, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_status"] { height: var(--sn2-vcol-_status, auto); }
 .sn2-header-vertical .sn2-header-cell[data-col-id="_text"] { flex: 0 0 auto !important; height: var(--sn2-vcol-_text, var(--sn2-col-_text, 300px)) !important; }
@@ -345,8 +358,8 @@
 .sn2-header-popup {
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border-radius: var(--ui-popup-radius, 6px);
+  box-shadow: var(--ui-popup-shadow, 0 8px 24px rgba(0,0,0,0.45));
   min-width: 160px;
   padding: 4px;
   z-index: 10000;
@@ -372,8 +385,8 @@
 .sn2-ruby-popup-input {
   flex: 0 1 140px;
   min-width: 60px;
-  height: 24px;
-  font-size: 13px;
+  height: var(--ui-h-xs, 22px);
+  font-size: var(--ui-font-13, 13px);
 }
 .sn2-ruby-popup-options {
   display: flex;
@@ -479,18 +492,29 @@
 .sn2-text[data-align="center"] { text-align: center; }
 .sn2-text[data-align="right"] { text-align: right; }
 /* 垂直配置: セルの高さは維持（stretch）、内容の位置をflex配置で制御 */
+/* 区切り列・追加列の値は、縦中横などの部分要素を含んでも1つの文の流れとして配置する。
+   flex-column にすると「コマ」と番号のような文字列と部分要素が別のflex itemになり、
+   縦書きでは別の行へ改行されてしまう。.sn2-text と同じ align-content 方式で配置する。 */
+.sn2-gutter[data-valign],
+.sn2-gutter2[data-valign],
+.sn2-custom-text[data-valign] { display: block; }
 .sn2-gutter[data-valign="top"],
 .sn2-gutter2[data-valign="top"],
-.sn2-role-btn[data-valign="top"],
-.sn2-custom-text[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-custom-text[data-valign="top"] { align-content: start; }
 .sn2-gutter[data-valign="middle"],
 .sn2-gutter2[data-valign="middle"],
-.sn2-role-btn[data-valign="middle"],
-.sn2-custom-text[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-custom-text[data-valign="middle"] { align-content: center; }
 .sn2-gutter[data-valign="bottom"],
 .sn2-gutter2[data-valign="bottom"],
-.sn2-role-btn[data-valign="bottom"],
-.sn2-custom-text[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
+.sn2-custom-text[data-valign="bottom"] { align-content: end; }
+/* ボタンは align-content を受けないため flex を使う。中身は _wrapTcy が1つの
+   .sn2-cell-flow へまとめ、部分要素が別の行へ分かれないようにする。 */
+.sn2-character-btn[data-valign="top"],
+.sn2-role-btn[data-valign="top"] { display: flex; flex-direction: column; justify-content: flex-start; }
+.sn2-character-btn[data-valign="middle"],
+.sn2-role-btn[data-valign="middle"] { display: flex; flex-direction: column; justify-content: center; }
+.sn2-character-btn[data-valign="bottom"],
+.sn2-role-btn[data-valign="bottom"] { display: flex; flex-direction: column; justify-content: flex-end; }
 .sn2-status-btn[data-valign],
 .sn2-custom-cell[data-valign] { flex-direction: row; }
 .sn2-status-btn[data-valign="top"],
@@ -516,21 +540,27 @@
 .sn2-custom-cell[data-align="center"] { justify-content: center; }
 .sn2-custom-cell[data-align="right"] { justify-content: flex-end; }
 /* 折返設定: タイプ列・ガター列・カスタム列テキスト（.sn2-text と同じ3モード） */
+.sn2-character-btn[data-overflow="wrap"],
 .sn2-role-btn[data-overflow="wrap"],
 .sn2-gutter[data-overflow="wrap"],
 .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; text-overflow: clip; }
+.sn2-character-btn[data-overflow="overflow"],
 .sn2-role-btn[data-overflow="overflow"],
 .sn2-gutter[data-overflow="overflow"],
 .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; overflow: visible; text-overflow: clip; }
+.sn2-character-btn[data-overflow="clip"],
 .sn2-role-btn[data-overflow="clip"],
 .sn2-gutter[data-overflow="clip"],
 .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="wrap"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="wrap"] { white-space: pre-wrap; word-break: break-all; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="overflow"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="overflow"] { white-space: nowrap; word-break: normal; overflow: visible; }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-gutter[data-overflow="clip"],
 .sn2-scroll.sn2-vertical .sn2-custom-text[data-overflow="clip"] { white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: clip; }
@@ -590,20 +620,32 @@
 }
 
 /* 枠線モード */
-.sn2-editor[data-border="all"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
-.sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-editor[data-border="all"] .sn2-row,
+.sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: none; }
 .sn2-editor[data-border="vertical"] .sn2-row { border-bottom: none; }
 .sn2-editor[data-border="none"] .sn2-row { border-bottom: none; }
+/* 行間枠線もセル側へ描き、左端の操作列（＋・ハンドル・チェック）には延ばさない。 */
+.sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-editor[data-border="horizontal"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-bottom: var(--sn2-border-width) solid var(--sn2-border-color);
+}
 /* 横書き列間枠線（allまたはverticalのとき各セルにborder-right） */
 .sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
 .sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
   border-right: var(--sn2-border-width) solid var(--sn2-border-color);
 }
 /* 縦書き枠線モード: 行間はborder-left（horizontal=行間枠線、vertical=列間枠線） */
-.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
-.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: none; border-left: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row,
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row { border-bottom: none; border-left: none; }
 .sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row { border-left: none; }
 .sn2-scroll.sn2-vertical .sn2-editor[data-border="none"] .sn2-row { border-left: none; }
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-left: var(--sn2-border-width) solid var(--sn2-border-color);
+}
+.sn2-scroll.sn2-vertical .sn2-editor[data-border="horizontal"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
+  border-bottom: none;
+}
 /* 縦書き: 列間枠線をborder-right→border-bottomに変換 */
 .sn2-scroll.sn2-vertical .sn2-editor[data-border="all"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer),
 .sn2-scroll.sn2-vertical .sn2-editor[data-border="vertical"] .sn2-row > *:not(.sn2-handle):not(.sn2-row-spacer) {
@@ -613,9 +655,17 @@
 
 /* 見開き区切り線（outline行との競合を避けるため詳細度を上げたルールも追加） */
 .sn2-row[data-spread-border],
-.sn2-row[data-outline][data-spread-border] { border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-row[data-outline][data-spread-border] {
+  margin-top: var(--sn2-spread-border-gap, 0px);
+  border-top: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important;
+}
 .sn2-scroll.sn2-vertical .sn2-row[data-spread-border],
-.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] { border-top: none !important; border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important; }
+.sn2-scroll.sn2-vertical .sn2-row[data-outline][data-spread-border] {
+  margin-top: 0;
+  margin-right: var(--sn2-spread-border-gap, 0px);
+  border-top: none !important;
+  border-right: var(--sn2-spread-border-width, 2px) solid var(--sn2-spread-border-color, var(--sn2-border-color)) !important;
+}
 /* 見開き区切り線は行選択メニュー列（ハンドル列）には表示しない。
    線は行のborderで引かれるため、ハンドル列の区間だけページ背景色で覆って消す */
 .sn2-row[data-spread-border] > .sn2-handle::before {
@@ -659,6 +709,7 @@
    ::before オーバーレイ方式は前置文字（data-before の ::before）と同一疑似要素を
    奪い合い、前置文字付きセルだけハイライトされなくなるため使わないこと */
 .sn2-row:hover > .sn2-gutter[style*="background"],
+.sn2-row:hover > .sn2-character-btn[style*="background"],
 .sn2-row:hover > .sn2-role-btn[style*="background"],
 .sn2-row:hover > .sn2-status-btn[style*="background"],
 .sn2-row:hover > .sn2-text[style*="background"],
@@ -666,6 +717,7 @@
   filter: brightness(1.35);
 }
 .sn2-row:focus-within > .sn2-gutter[style*="background"],
+.sn2-row:focus-within > .sn2-character-btn[style*="background"],
 .sn2-row:focus-within > .sn2-role-btn[style*="background"],
 .sn2-row:focus-within > .sn2-status-btn[style*="background"],
 .sn2-row:focus-within > .sn2-text[style*="background"],
@@ -684,7 +736,7 @@
 /* ドラッグハンドル — 常にページ背景色、チェックボックス+グリップを内包 */
 .sn2-handle {
   flex: 0 0 auto;
-  width: var(--sn2-col-_handle, 36px);
+  width: var(--sn2-col-_handle, 54px);
   padding: 4px 2px 0;
   font-size: 12px;
   color: transparent;
@@ -697,23 +749,42 @@
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
 }
+/* シートと同じ、最左の行追加ボタン（クリック=下、Alt+クリック=上）。 */
+.sn2-row-add-btn {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+  border-radius: var(--ui-radius-xs, 3px);
+}
+.sn2-row-add-btn:hover,
+.sn2-row-add-btn:focus-visible { color: var(--ui-hover-fg); background: var(--bg3); opacity: 1; }
+.sn2-row-grip { flex: 0 0 auto; width: 12px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
 /* 行選択チェックボックス（ハンドルdiv内に配置） */
 .sn2-row-check {
-  flex: 0 0 auto; width: 14px;
-  margin: 0; cursor: pointer;
+  --gb-checkbox-size-override: 16px;
+  flex: 0 0 auto; width: 16px; height: 16px;
+  margin: 0; cursor: pointer; display: inline-grid; place-content: center; align-self: center;
   opacity: 0; transition: opacity 0.15s;
-  accent-color: var(--ui-selection-bg, var(--blue, #4a90d9));
+  accent-color: var(--accent, var(--ui-selection-bg, var(--blue, #4a90d9)));
 }
 /* ドラッグ選択矩形（スタイルはJS側で全設定） */
 .sn2-drag-select-rect { pointer-events: none; }
 .sn2-row:hover .sn2-row-check,
 .sn2-row-check:checked { opacity: 1; }
+.sn2-row:hover .sn2-row-add-btn { opacity: 1; }
 .sn2-row:hover .sn2-handle { color: var(--fg2); }
 .sn2-handle:hover { color: var(--fg) !important; }
 @media (hover: none), (pointer: coarse) {
   .sn2-row-check { opacity: 1; }
+  .sn2-row-add-btn { opacity: 1; }
   .sn2-handle { color: var(--fg2); }
 }
 .sn2-row.sn2-dragging { opacity: 0.3; }
@@ -752,21 +823,23 @@
   text-align: right;
   user-select: none;
   white-space: nowrap;
+  word-break: normal;
 }
 /* ガター2（小区切り：コマ番号等） */
 .sn2-gutter2 {
   width: var(--sn2-col-_gutter2, 48px);
 }
 
-/* タイプボタン */
+/* キャラ／タイプボタン */
+.sn2-character-btn,
 .sn2-role-btn {
   flex: 0 0 auto;
   width: var(--sn2-col-_role, 88px);
-  padding: 6px 6px;
+  padding: var(--ui-space-3, 6px) var(--ui-space-3, 6px);
   border: none;
   background: transparent;
   color: var(--fg2);
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -775,15 +848,16 @@
   text-overflow: ellipsis;
   align-self: stretch;
 }
+.sn2-character-btn { width: var(--sn2-col-_character, 88px); }
 
 .sn2-status-btn {
   flex: 0 0 auto;
   width: var(--sn2-col-_status, 92px);
-  padding: 4px 6px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   border: none;
   background: transparent;
   color: var(--fg2);
-  font-size: 11px;
+  font-size: var(--ui-font-11, 11px);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -814,6 +888,7 @@
 /* 列間枠線: 各列のborder-rightで実装（隣接列のborder-leftは不要 — 二重線防止） */
 .sn2-gutter[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-gutter2[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-character-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-role-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-status-btn[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-text[data-col-border-right] { border-right: var(--sn2-border-width) solid var(--sn2-border-color); }
@@ -821,11 +896,13 @@
 /* 縦書き: 列間枠線をborder-bottomに変更 */
 .sn2-scroll.sn2-vertical .sn2-gutter[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-scroll.sn2-vertical .sn2-gutter2[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
+.sn2-scroll.sn2-vertical .sn2-character-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-scroll.sn2-vertical .sn2-role-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-scroll.sn2-vertical .sn2-status-btn[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-scroll.sn2-vertical .sn2-text[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 .sn2-scroll.sn2-vertical .sn2-custom-cell[data-col-border-right] { border-right: none; border-bottom: var(--sn2-border-width) solid var(--sn2-border-color); }
 
+.sn2-character-btn:hover,
 .sn2-role-btn:hover { background: var(--bg3); color: var(--fg); }
 .sn2-role-btn.sn2-role-cell-selected {
   outline: 2px solid var(--accent, #4a90d9);
@@ -943,12 +1020,12 @@
 .sn2-search-popup input[type="text"] {
   width: 100%;
   box-sizing: border-box;
-  padding: 4px 6px;
+  padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--ui-radius-sm, 4px);
+  font-size: var(--ui-font-12, 12px);
 }
 .sn2-text .auto-link[data-ruby],
 .sn2-custom-text .auto-link[data-ruby] {
@@ -1060,50 +1137,34 @@
 }
 
 /* テキスト前後文字列（タイプオプション） — テキスト列の色・書式を継承 */
-/* data-before がある場合、prefix (::before) と本文を横並びのflexアイテムにする。
-   text-indentによるhanging indent（旧実装）は、prefix幅を固定1emで見積もるため
-   実際の文字幅とズレるうえ、継承されたtext-indentがルビ用span[data-ruby]
-   （display:inline-blockで新たな整形コンテキストになる）の内部にまで及び、
-   本文字だけがずれてルビ位置が狂う副作用があった（主因はspan[data-ruby]側の
-   text-indent:0リセットで解消済み、下記参照）。
-   flexなら prefix は内容なりの幅を占め（width固定不要）、本文は残りの幅で
-   折り返す独立ボックスになるため、1行目・折り返し行のどちらも本文の開始位置が
-   自然に揃う。data-valign併用時は縦方向中央寄せに display:block!important
-   （align-contentベース、下記参照）を要求するため、この構造は使わず旧方式を残す。 */
-.sn2-text[data-before]:not(:empty):not([data-valign]) {
-  display: flex;
-  align-items: flex-start;
-}
-.sn2-text[data-before]:not(:empty):not([data-valign])::before {
+/* 前の文字列（「（ 等）は行頭の外側へ「ぶら下げ」て表示する。
+   疑似要素の行方向の大きさを0にし、justify-content:flex-end で内容を行頭側へ
+   はみ出させる。これで前の文字列があってもなくても、本文1文字目は2行目以降と同じ
+   位置から始まり、記号はセルの余白側（横書き=左、縦書き=上）に出る。
+   旧方式（記号ぶんの幅を確保するflex、text-indent:-1em の固定幅ぶら下げ）は、
+   本文1行目だけが記号の幅だけ下（横書きは右）へずれていた。
+   横書きでは記号を半角幅の字形にして、8pxの左余白に収める。 */
+.sn2-text[data-before]:not(:empty)::before {
   content: attr(data-before);
-  flex: 0 0 auto;
-  color: inherit;
-  pointer-events: none;
-}
-/* data-valign併用時のみ旧方式（prefix幅1em固定のhanging indent）を維持 */
-.sn2-text[data-before]:not(:empty)[data-valign] {
-  padding-left: calc(8px + 1em);
-  text-indent: -1em;
-}
-.sn2-text[data-before]:not(:empty)[data-valign]::before {
-  content: attr(data-before);
-  display: inline-block;
-  width: 1em;
+  display: inline-flex;
+  inline-size: 0;
+  justify-content: flex-end;
+  white-space: nowrap;
   text-indent: 0;
   color: inherit;
   pointer-events: none;
 }
-/* 縦書きモードでは上下方向での揃えになる（横書き用flex構造は使わずblockへ戻す） */
+.sn2-scroll:not(.sn2-vertical) .sn2-text[data-before]:not(:empty)::before {
+  font-feature-settings: "halt" 1;
+}
+/* ○など余白より大きい前の文字列がセル外へはみ出さないよう、記号の幅ぶんだけ
+   行頭側の余白を広げる（幅は描画時に --sn2-before-reserve へ設定）。
+   インデント指定時はインラインの余白が優先される。 */
+.sn2-scroll:not(.sn2-vertical) .sn2-text[data-before]:not(:empty) {
+  padding-inline-start: max(8px, calc(var(--sn2-before-reserve, 0px) + 2px));
+}
 .sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty) {
-  display: block;
-  padding-left: 6px;
-  padding-top: 6px;
-  text-indent: 0;
-}
-.sn2-scroll.sn2-vertical .sn2-text[data-before]:not(:empty)::before {
-  display: inline;
-  width: auto;
-  height: auto;
+  padding-inline-start: max(6px, calc(var(--sn2-before-reserve, 0px) + 2px));
 }
 .sn2-text[data-after]:not(:empty)::after {
   content: attr(data-after);
@@ -1114,7 +1175,7 @@
    横書き: 行の上側に margin-top、縦書き(vertical-rl): 行の右側に margin-right
    親コンテナ内で同種(.sn2-row)の最初の要素（＝シナリオ先頭行）は打ち消して余白をつけない */
 .sn2-row[data-kind="break"] {
-  margin-top: 1.8em;
+  margin-top: var(--sn2-page-break-gap, 24px);
 }
 .sn2-row[data-kind="break"]:first-of-type {
   margin-top: 0;
@@ -1124,7 +1185,7 @@
 }
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="break"] {
   margin-top: 0;
-  margin-right: 1.8em;
+  margin-right: var(--sn2-page-break-gap, 24px);
 }
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="break"]:first-of-type {
   margin-right: 0;
@@ -1136,6 +1197,19 @@
   margin-top: 0;
   margin-right: 0;
 }
+.sn2-row[data-kind="break"][data-spread-border] {
+  margin-top: calc(var(--sn2-page-break-gap, 24px) + var(--sn2-spread-border-gap, 0px));
+}
+.sn2-scroll.sn2-no-page-break-spacing .sn2-row[data-kind="break"][data-spread-border] {
+  margin-top: var(--sn2-spread-border-gap, 0px);
+}
+.sn2-scroll.sn2-vertical .sn2-row[data-kind="break"][data-spread-border] {
+  margin-top: 0;
+  margin-right: calc(var(--sn2-page-break-gap, 24px) + var(--sn2-spread-border-gap, 0px));
+}
+.sn2-scroll.sn2-vertical.sn2-no-page-break-spacing .sn2-row[data-kind="break"][data-spread-border] {
+  margin-right: var(--sn2-spread-border-gap, 0px);
+}
 
 /* アクティブセル（Excel風ナビゲーション: 非編集状態のカーソル位置表示）
    クリック直後や矢印/Tab移動で「選ばれているがまだ編集していない」セルを示す。
@@ -1144,7 +1218,7 @@
 .sn2-cell-active {
   position: relative;
   z-index: 7;
-  box-shadow: inset 0 0 0 2px var(--accent, #4a90d9);
+  box-shadow: inset 0 0 0 2px var(--sn2-active-cell-color, var(--accent, #4a90d9));
   outline: none;
 }
 
@@ -1195,6 +1269,7 @@
 /* 空行 */
 .sn2-row[data-kind="blank"] { min-height: 24px; }
 .sn2-scroll.sn2-vertical .sn2-row[data-kind="blank"] { min-height: auto; min-width: 24px; }
+.sn2-row[data-kind="blank"] .sn2-character-btn:not([style*="color"]),
 .sn2-row[data-kind="blank"] .sn2-role-btn:not([style*="color"]) { color: var(--fg2); }
 
 /* === カスタム列 === */
@@ -1211,11 +1286,11 @@
 .sn2-custom-input,
 .sn2-custom-select {
   width: 100%;
-  padding: 2px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   border: none;
   background: transparent;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   outline: none;
 }
 .sn2-custom-input:focus,
@@ -1242,8 +1317,8 @@
 .sn2-role-menu {
   background: var(--ui-popup-bg, var(--bg2));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border-radius: var(--ui-menu-radius, 6px);
+  box-shadow: var(--ui-shadow-lg, 0 8px 24px rgba(0,0,0,0.45));
   z-index: 10100;
   width: 210px;
   min-width: 150px;
@@ -1273,9 +1348,9 @@
 .sn2-role-link:hover,
 .sn2-role-link:focus { background: var(--bg4); outline: none; }
 .sn2-role-input {
-  width: calc(100% - 16px); margin: 4px 8px; padding: 4px 8px;
-  border: 1px solid var(--border); border-radius: 4px;
-  background: var(--bg3); color: var(--fg); font-size: 13px; outline: none;
+  width: calc(100% - 16px); margin: 4px 8px; padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
+  border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px);
+  background: var(--bg3); color: var(--fg); font-size: var(--ui-font-13, 13px); outline: none;
 }
 .sn2-role-input:focus { border-color: var(--blue, #4a90d9); }
 
@@ -1365,6 +1440,9 @@
 }
 .sn2-ruby-number-input {
   width: 64px;
+  min-width: 64px;
+  box-sizing: border-box;
+  padding-inline: var(--ui-space-2);
 }
 .sn2-ruby-unit {
   font-size: var(--ui-font-10);
@@ -1455,10 +1533,14 @@
 /* Phase 3c-Q: .sn2-detail-* はクラス名を維持しつつ --ui-* トークン経由に書き直し (ui-design-system-spec-v2.md §3.2) */
 .sn2-detail-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: var(--ui-space-4) var(--ui-space-5); border-bottom: 1px solid var(--ui-border);
+  padding: 0 var(--ui-space-4); border-bottom: 1px solid var(--ui-border);
+  min-height: var(--ui-panel-header-height);
+  font-size: var(--ui-panel-header-font-size);
+  background: var(--ui-header-bg);
+  box-sizing: border-box;
 }
 .sn2-detail-add-btn {
-  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
   background: var(--ui-bg-control); color: var(--ui-fg-default); font-size: var(--ui-font-12); cursor: pointer;
 }
 .sn2-detail-add-btn:hover { background: var(--ui-bg-control-hover); }
@@ -1478,7 +1560,7 @@
 
 /* DB読み込みボタン */
 .sn2-detail-db-btn {
-  padding: 3px 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
+  padding: var(--ui-space-1, 2px) var(--ui-space-4, 8px); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm);
   background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-11); cursor: pointer;
 }
 .sn2-detail-db-btn:hover { background: var(--ui-bg-control-hover); }
@@ -1498,7 +1580,10 @@
   font-size: var(--ui-font-11); color: var(--ui-fg-muted); white-space: nowrap;
 }
 .sn2-detail-settings-input {
-  width: 48px; padding: var(--ui-space-1) var(--ui-space-3);
+  box-sizing: border-box;
+  width: 64px;
+  min-width: 64px;
+  padding: var(--ui-space-1) 8px;
   border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-app); color: var(--ui-fg-default); font-size: var(--ui-font-12); outline: none; text-align: center;
 }
@@ -1650,7 +1735,10 @@
   line-height: 1.2;
 }
 .sn2-rowset-panel .sn2-rowset-repeat-input {
-  width: 56px;
+  width: 64px;
+  min-width: 64px;
+  box-sizing: border-box;
+  padding-inline: var(--ui-space-2);
   text-align: center;
 }
 .sn2-rowset-save-modal {
@@ -1772,11 +1860,11 @@
 .sn2-detail-cell-input {
   border: none;
   width: 100%;
-  padding: 3px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   box-sizing: border-box;
   font-size: var(--ui-font-12);
   outline: none;
-  height: 30px;
+  height: var(--ui-h-md, 32px);
   line-height: 30px;
 }
 /* セル内 書式設定「…」ボタン: ホバー時に表示 */
@@ -1786,7 +1874,7 @@
   top: 50%;
   transform: translateY(-50%);
   font-size: var(--ui-font-10);
-  padding: 0 3px;
+  padding: 0 var(--ui-space-1, 2px);
   background: var(--ui-bg-control-hover);
   color: var(--ui-fg-muted);
   border: 1px solid var(--ui-border);
@@ -1965,8 +2053,17 @@
   flex: 0 0 auto;
   font-size: var(--ui-font-12);
 }
-.sn2-db-import-picker select {
-  min-width: min(520px, 70vw);
+.sn2-db-import-browser {
+  display: grid;
+  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+  gap: var(--ui-space-3);
+  flex: 1 1 auto;
+  min-height: 280px;
+  overflow: hidden;
+}
+/* 共通フォルダ選択部品の埋め込み先（.gb-folder-picker-embed）。行の見た目は部品側に任せる */
+.sn2-db-import-tree {
+  overflow: hidden;
 }
 .sn2-db-import-sheet {
   display: flex;
@@ -2105,16 +2202,18 @@
   width: 72px;
 }
 .sn2-role-opts-input-num {
-  width: 48px;
-  padding: 2px var(--ui-space-2);
+  box-sizing: border-box;
+  width: 96px;
+  min-width: 64px;
+  padding: 2px 8px;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-app);
   color: var(--ui-fg-default);
   font-size: var(--ui-font-11);
-  text-align: center;
+  text-align: left;
 }
-.sn2-role-opts-input-num--sm { width: 36px; }
+.sn2-role-opts-input-num--sm { width: 64px; }
 .sn2-role-opts-sel {
   font-size: var(--ui-font-11);
   padding: 1px;
@@ -2140,9 +2239,10 @@
 .sn2-detail-settings-label--w48 { width: 48px; }
 .sn2-detail-settings-label--mr2 { margin-right: 2px; }
 .sn2-detail-settings-label--ml0 { margin-left: 0; }
-.sn2-detail-settings-input--w56 { width: 56px; }
-.sn2-detail-settings-input--w48 { width: 48px; }
-.sn2-detail-settings-input--w36 { width: 36px; }
+.sn2-detail-settings-input--w64,
+.sn2-detail-settings-input--w56,
+.sn2-detail-settings-input--w48,
+.sn2-detail-settings-input--w36 { width: 64px; min-width: 64px; }
 .sn2-detail-settings-input--w28 { width: 28px; }
 .sn2-detail-ac-title {
   font-size: var(--ui-font-12);
@@ -2191,7 +2291,7 @@
    .tb-file-title 固定幅 240px は維持し、入力開始時の幅変動を防ぐ。 */
 #se-toolbar .title-input {
   background: transparent; border: 1px solid transparent; color: var(--ui-fg-default);
-  box-sizing: border-box; height: 30px; min-height: 30px;
+  box-sizing: border-box; height: var(--ui-toolbar-title-height, 30px); min-height: var(--ui-toolbar-title-height, 30px);
   font-size: var(--ui-font-16); line-height: 30px; font-weight: var(--ui-weight-semibold);
 }
 #se-toolbar .title-input:focus { background: var(--ui-bg-app); border-color: var(--ui-accent); outline: none; border-radius: var(--ui-radius-xs); }
@@ -2668,15 +2768,15 @@
   #se-toolbar .tb-text-btn,
   #se-toolbar .tb-select,
   #se-toolbar .title-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   #se-toolbar .tb-icon-btn {
     width: 44px;
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   #se-toolbar .tb-text-btn {
-    padding: 0 12px;
+    padding: 0 var(--ui-space-5, 12px);
   }
   #se-toolbar .title-input {
     min-width: 180px;
@@ -2692,7 +2792,7 @@
   .sn2-preset-modal-actions .gb-btn,
   .sn2-preset-manager-add,
   .sn2-preset-manager-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-preset-manager-row {
@@ -2704,7 +2804,7 @@
     flex-wrap: wrap;
   }
   .sn2-preset-manager-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-sep-modal {
     min-width: 0;
@@ -2778,11 +2878,11 @@
   }
   .sn2-ruby-popup-input {
     flex: 1 1 auto; /* タッチ環境は操作面を優先して幅いっぱいに戻す */
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-ruby-popup .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-ruby-popup-check {
     min-height: 44px;
@@ -2859,7 +2959,7 @@
     font-size: 15px;
   }
   .sn2-header-popup .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-header-sub-popup {
     max-width: calc(100vw - 16px);
@@ -2875,18 +2975,18 @@
   .sn2-role-menu .sn2-role-input,
   .sn2-role-menu .sn2-role-link,
   .sn2-role-menu .meldex-dropdown-close-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-role-menu .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .sn2-search-popup {
     box-sizing: border-box;
     min-width: min(320px, calc(100vw - 16px)) !important;
   }
   .sn2-search-popup .meldex-dropdown-close-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
   .gb-fmt-popup--col-style {
     box-sizing: border-box;
@@ -2934,7 +3034,7 @@
   .gb-fmt-popup--role-opts .sn2-role-opts-input-num,
   .gb-fmt-popup--role-opts .sn2-role-opts-sel,
   .gb-fmt-popup--role-opts .sn2-detail-add-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-detail-settings {
@@ -3003,9 +3103,9 @@
     display: none;
   }
   .sn2-detail-add-btn {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 8px 12px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+    padding: var(--ui-space-4, 8px) var(--ui-space-5, 12px);
     font-size: 15px;
     line-height: 1.2;
   }
@@ -3031,7 +3131,7 @@
   .sn2-ruby-number-input,
   .sn2-ruby-presentation-control,
   .sn2-ruby-rule-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-ruby-number-input {
@@ -3075,10 +3175,10 @@
     min-height: 44px;
   }
   .sn2-ruby-panel .sn2-ruby-delete-rule.gb-btn.gb-btn-icon.gb-btn-xs {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-ruby-btn-icon svg,
   .sn2-ruby-delete-rule svg {
@@ -3098,7 +3198,7 @@
   .sn2-rowset-panel .sn2-rowset-role-select,
   .sn2-rowset-panel .sn2-rowset-repeat-input,
   .sn2-rowset-save-input {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-rowset-list-label {
@@ -3121,10 +3221,10 @@
     min-height: 44px;
   }
   .sn2-rowset-panel .sn2-rowset-delete-row.gb-btn.gb-btn-icon.gb-btn-xs {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
   }
   .sn2-rowset-add-row {
     margin: 8px 12px;
@@ -3151,7 +3251,7 @@
     padding-right: 16px;
   }
   .sn2-rowset-save-actions .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-save-as-modal {
@@ -3171,7 +3271,7 @@
   .sn2-save-folder-display,
   .sn2-save-folder-select,
   .sn2-save-folder-toggle {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
   .sn2-save-as-modal .gb-modal-close,
@@ -3207,8 +3307,8 @@
     padding: 6px 4px;
   }
   .sn2-detail-cell-input {
-    min-height: 44px;
-    height: 44px;
+    min-height: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
     line-height: 1.25;
     font-size: 15px;
   }
@@ -3216,8 +3316,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     right: 2px;
     font-size: 15px;
   }
@@ -3239,13 +3339,12 @@
     gap: 4px;
     font-size: 15px;
   }
-  .sn2-db-import-picker select {
-    width: 100%;
-    min-width: 0;
-    min-height: 44px;
+  .sn2-db-import-browser {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(120px, 0.7fr) minmax(220px, 1.3fr);
   }
   .sn2-db-import-modal .btn-row button {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     min-width: 88px;
     font-size: 15px;
   }
@@ -3266,8 +3365,9 @@
   box-sizing: border-box;
   min-height: 0;
   overflow: hidden;
-  gap: 10px;
-  padding: 10px;
+  gap: 0;
+  padding: 0;
+  background: var(--ui-bg-panel);
 }
 .sn2-role-manage-section {
   display: flex;
@@ -3276,8 +3376,9 @@
   min-height: 150px;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-sm);
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
   background: var(--ui-bg-panel);
 }
 .sn2-role-manage-separator {
@@ -3290,8 +3391,8 @@
 .sn2-role-manage-separator::before {
   content: '';
   position: absolute;
-  inset: 4px 0;
-  border-top: 2px solid var(--ui-border);
+  inset: 5px 0 auto;
+  border-top: 1px solid var(--ui-border);
 }
 .sn2-role-manage-separator:hover::before,
 .sn2-role-manage-separator:focus-visible::before { border-color: var(--ui-accent); }
@@ -3300,7 +3401,7 @@
   flex: 0 0 auto;
   align-items: center;
   min-height: 32px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
 }
@@ -3327,58 +3428,109 @@
 }
 .sn2-role-manage-table {
   width: 100%;
-  min-width: 560px;
+  min-width: 0;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: var(--ui-font-11);
+  font-size: var(--ui-font-12);
 }
-.sn2-role-manage-table--characters { min-width: 560px; }
 .sn2-role-manage-table th {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 5px 6px;
+  height: 30px;
+  padding: 4px 2px;
+  overflow: hidden;
+  border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
   color: var(--ui-fg-muted);
-  text-align: left;
+  font-size: var(--ui-font-10);
+  text-align: center;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sn2-role-manage-table th { box-sizing: border-box; }
 .sn2-role-manage-format-header { cursor: pointer; }
+.sn2-role-manage-format-header:hover,
+.sn2-role-manage-format-header:focus-visible {
+  color: var(--ui-hover-fg);
+  background: var(--ui-hover-bg);
+  outline: none;
+  box-shadow: inset 0 -2px 0 var(--ui-accent);
+}
+.sn2-role-manage-table select.is-keyboard-editing {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+.sn2-role-manage-table input.is-keyboard-editing {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+/* 見出しの右境界線。ドラッグで列幅を変える（th は overflow:hidden なので内側に置く）。 */
 .sn2-role-column-resizer {
   position: absolute;
   top: 0;
-  right: -4px;
+  right: 0;
   bottom: 0;
   z-index: 3;
-  width: 8px;
+  width: 6px;
   cursor: col-resize;
   touch-action: none;
 }
 .sn2-role-column-resizer:hover,
-.sn2-role-column-resizer:focus-visible { background: color-mix(in srgb, var(--ui-accent) 35%, transparent); }
+.sn2-role-column-resizer.is-resizing { background: color-mix(in srgb, var(--sn2-active-cell-color) 45%, transparent); }
 .sn2-role-manage-table td {
-  height: 32px;
-  padding: 3px 5px;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 2px;
+  overflow: hidden;
+  border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
   vertical-align: middle;
 }
-.sn2-role-manage-table th:first-child,
-.sn2-role-manage-table td:first-child { width: 32px; padding-inline: 2px; text-align: center; }
-.sn2-role-manage-table th:nth-child(2),
-.sn2-role-manage-table td:nth-child(2) { width: 32px; text-align: center; }
-.sn2-role-manage-table--types th:nth-child(3) { width: 34%; }
-.sn2-role-manage-table--types th:nth-child(4) { width: 36%; }
-.sn2-role-manage-table--types th:last-child { width: 72px; }
-.sn2-role-manage-table--characters th:nth-child(3) { width: 42px; }
-.sn2-role-manage-table--characters th:nth-child(4) { width: 27%; }
-.sn2-role-manage-table--characters th:nth-child(5) { width: 30%; }
-.sn2-role-manage-table--characters th:last-child { width: 72px; }
+.sn2-role-manage-table th:last-child,
+.sn2-role-manage-table td:last-child { border-right: 0; }
+/* アクティブなセル: 操作部品にフォーカスがあるセルを、シナリオ本体のアクティブセルと
+   同じ内側2pxの枠・同じ色（アプリのアクセントカラー）で示す。オプションパネル内では
+   --accent / --ui-accent がパネル用アクセントへ差し替わるため、ルートで解決した値を使う。
+   部品自身の枠線や背景色の書式見本に埋もれないよう、セル側に描く。 */
+:root { --sn2-active-cell-color: var(--accent, #4a90d9); }
+.sn2-role-manage-table tbody td:focus-within {
+  box-shadow: inset 0 0 0 2px var(--sn2-active-cell-color);
+}
+.sn2-role-manage-col--control,
+.sn2-role-manage-cell--control,
+.sn2-role-manage-col--color,
+.sn2-role-manage-cell--color,
+.sn2-role-manage-col--settings,
+.sn2-role-manage-actions { text-align: center; }
+.sn2-role-manage-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+.sn2-role-manage-check {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.sn2-role-manage-row:hover .sn2-role-manage-check,
+.sn2-role-manage-row.selected .sn2-role-manage-check,
+.sn2-role-manage-check:focus-visible,
+.sn2-role-manage-check:disabled { opacity: 1; }
 .sn2-role-manage-grip {
   display: inline-grid;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 26px;
   padding: 0;
   place-items: center;
   border: 0;
@@ -3402,7 +3554,8 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 26px;
+  height: var(--ui-h-sm, 28px);
+  padding: 0 var(--ui-space-2, 4px);
   border: 1px solid transparent;
   border-radius: var(--ui-radius-xs);
   background: transparent;
@@ -3417,6 +3570,7 @@
   background: var(--ui-bg-app);
   outline: none;
 }
+.sn2-role-manage-name[readonly] { cursor: default; caret-color: transparent; }
 .sn2-role-manage-name--static {
   display: flex;
   align-items: center;
@@ -3429,6 +3583,39 @@
   font: inherit;
   user-select: none;
 }
+.sn2-role-name-editor {
+  position: relative;
+  min-width: 0;
+}
+.sn2-role-name-editor .sn2-role-name-preview { padding-right: 18px; }
+.sn2-role-name-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sn2-role-style-trigger {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  z-index: 2;
+  display: none;
+  width: 17px;
+  height: 20px;
+  padding: 0 2px;
+  transform: translateY(-50%);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  background: var(--ui-bg-control-hover);
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  line-height: 1;
+  cursor: pointer;
+}
+.sn2-role-manage-cell--type-name:hover .sn2-role-style-trigger,
+.sn2-role-manage-cell--type-name:focus-within .sn2-role-style-trigger,
+.sn2-role-manage-cell--name:hover .sn2-role-style-trigger,
+.sn2-role-manage-cell--name:focus-within .sn2-role-style-trigger,
+.sn2-role-style-trigger:focus-visible { display: block; }
 .sn2-role-manage-grip--disabled {
   opacity: 0.35;
   cursor: default;
@@ -3437,9 +3624,59 @@
 .sn2-role-manage-row--none {
   background: color-mix(in srgb, var(--ui-bg-surface) 40%, transparent);
 }
+.sn2-role-manage-cell--muted {
+  color: var(--ui-fg-muted);
+  text-align: center;
+}
+/* キャラ表「シート」列: 元トピックへのリンク。 */
+.sn2-role-manage-cell--sheet-link { min-width: 0; }
+.sn2-role-sheet-link {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sn2-role-sheet-link:hover,
+.sn2-role-sheet-link:focus-visible { background: var(--ui-bg-control-hover); outline: none; }
+/* 連携先の選択: 空欄と余白クリックで選べる。変更ボタンは行にポインタがある時だけ目立たせる。 */
+.sn2-role-manage-cell--sheet-link-pickable { cursor: pointer; }
+.sn2-role-sheet-link-wrap { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.sn2-role-sheet-link-wrap .sn2-role-sheet-link { flex: 1 1 auto; width: auto; }
+.sn2-role-sheet-link-pick {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-fg-muted);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.sn2-role-manage-row:hover .sn2-role-sheet-link-pick,
+.sn2-role-sheet-link-pick:hover,
+.sn2-role-sheet-link-pick:focus-visible { background: var(--ui-bg-control-hover); color: var(--ui-fg-default); opacity: 1; outline: none; }
+.sn2-db-import-sheet tr.sn2-db-import-link-picked > td { background: var(--ui-bg-selected); box-shadow: inset 0 1px 0 var(--ui-accent), inset 0 -1px 0 var(--ui-accent); }
 .sn2-role-name-color {
   width: 28px;
-  height: 24px;
+  height: 26px;
   padding: 1px;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
@@ -3449,7 +3686,7 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 26px;
+  height: 30px;
   overflow: hidden;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
@@ -3458,13 +3695,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sn2-role-style-preview[data-valign="top"] { align-items: flex-start; }
+.sn2-role-style-preview[data-valign="center"] { align-items: center; }
+.sn2-role-style-preview[data-valign="bottom"] { align-items: flex-end; }
+.sn2-role-style-preview[data-valign]:not([data-valign=""]) { display: flex; justify-content: center; }
+.sn2-role-style-preview[data-overflow="wrap"] { height: auto; min-height: 26px; overflow-wrap: anywhere; }
+.sn2-role-preview-cell--bordered { border-right: 2px solid var(--sn2-border-color, var(--ui-border-strong, var(--ui-border))); }
+.sn2-role-manage-row--outlined .sn2-role-style-preview,
+.sn2-role-manage-row--outlined .sn2-role-name-preview {
+  outline: var(--sn2-role-outline-width, 1px) solid var(--sn2-role-outline-color, var(--ui-border-strong, var(--ui-border)));
+  outline-offset: -1px;
+}
+.sn2-role-style-preview:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
 .sn2-role-manage-actions {
-  display: flex;
-  align-items: center;
-  gap: 3px;
   white-space: nowrap;
 }
-.sn2-role-manage-actions .sn2-detail-add-btn { min-width: 28px; padding-inline: 6px; }
+.sn2-role-manage-actions .sn2-detail-add-btn {
+  min-width: 52px;
+  max-width: 100%;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
+  font-size: var(--ui-font-10);
+}
 .sn2-role-unset-badge {
   display: inline-block;
   margin-top: 2px;
@@ -3481,11 +3735,14 @@
 }
 .sn2-role-manage-toolbar {
   flex: 0 0 auto;
+  padding: 6px 8px;
   border-top: 1px solid var(--ui-border);
   background: var(--ui-bg-surface);
 }
+.sn2-role-manage-toolbar .sn2-detail-toolbar-spacer { display: none; }
 .sn2-role-bulk-type {
-  min-width: 132px;
+  flex: 1 1 132px;
+  min-width: 0;
   max-width: 220px;
 }
 .sn2-role-delete-modal {
@@ -3525,15 +3782,54 @@
 }
 .sn2-role-delete-field select {
   width: 100%;
+  min-height: var(--ui-h-lg, 36px);
+}
+
+.sn2-character-settings-popup {
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  min-width: min(280px, calc(100vw - 24px));
+  padding: 0;
+}
+.sn2-character-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+.sn2-character-settings-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+.sn2-character-settings-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.sn2-character-settings-field > :last-child {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+}
+.sn2-character-settings-note {
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  line-height: 1.5;
 }
 
 
 @media (max-width: 640px), (pointer: coarse) {
   .sn2-role-management {
-    gap: 10px;
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    gap: 0;
+    padding: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .sn2-role-manage-section {
     min-height: 150px;
@@ -3571,22 +3867,23 @@
   .sn2-role-name-color {
     width: 44px;
   }
-  .sn2-role-manage-grip { width: 44px; height: 44px; }
-  .sn2-role-manage-actions {
-    gap: 4px;
-  }
+  .sn2-role-manage-grip { flex-basis: 22px; width: 22px; height: 44px; }
+  .sn2-role-sheet-link-pick { width: 44px; height: 44px; }
+  .sn2-role-column-resizer { width: 12px; }
+  .sn2-role-style-trigger { display: block; width: 24px; height: 32px; }
+  .sn2-role-name-editor .sn2-role-name-preview { padding-right: 26px; }
   .sn2-role-manage-actions .sn2-detail-add-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
     padding-inline: 8px;
   }
   .sn2-role-manage-toolbar {
     width: auto;
     max-width: none;
-    overflow-x: auto;
-    flex-wrap: nowrap;
+    overflow-x: hidden;
+    flex-wrap: wrap;
   }
   .sn2-role-bulk-type {
-    flex: 0 0 170px;
+    flex: 1 1 170px;
     min-height: 44px;
     font-size: 15px;
   }
@@ -3594,7 +3891,7 @@
     width: 100%;
   }
   .sn2-role-delete-field select {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
 }
@@ -3705,7 +4002,7 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  min-height: 22px;
+  min-height: var(--ui-h-xs, 22px);
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-xs);
   cursor: pointer;
@@ -3715,7 +4012,7 @@
 .rules-font-btn,
 .rules-clear,
 .rules-remove {
-  min-width: 22px;
+  min-width: var(--ui-h-xs, 22px);
   padding: 0 var(--ui-space-2);
   background: transparent;
   color: var(--ui-fg-default);

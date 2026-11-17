@@ -2,20 +2,11 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
+  // フィルタメニューで絞り込みを変えた時に呼ばれる。絞り込みは表示中のビューへ保存する
+  // （旧機能のフィルタプリセット選択欄は、ビュータブへ置き換えた）。
   _setFilterPresetSelection(value) {
-    const filterPreset = this.host?.closest?.('.gb-scriptnote-root')?.querySelector('#sn-filter-preset') || document.getElementById('sn-filter-preset');
-    if (filterPreset) {
-      if (value === '__custom__' && !filterPreset.querySelector('option[value="__custom__"]')) {
-        const opt = document.createElement('option');
-        opt.value = '__custom__';
-        opt.textContent = 'カスタム';
-        filterPreset.insertBefore(opt, filterPreset.options[1] || null);
-      }
-      filterPreset.value = value;
-    }
-    const comp = (typeof getActiveScriptNoteComponent === 'function') ? getActiveScriptNoteComponent() : null;
-    if (comp?._editor === this) comp._activeFilterPreset = value;
     this._activeFilterPreset = value;
+    this._onScenarioFilterChanged?.();
   },
 
   _rebindRoleFilters(beforeRoles, afterRoles) {
@@ -30,8 +21,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       this[key] = new Set([...values].map(name => renamed.get(name) ?? name));
       changed = true;
     }
-    // 保存済みプリセットは他文書でも使う名前ベースの条件なので書き換えない。
-    if (changed) this._setFilterPresetSelection('__custom__');
+    // ビューの絞り込み条件（この文書内）も同じ名前へ付け替える。
+    this._renameScenarioViewRoles?.(renamed);
+    if (changed) this._syncFilterButtonState?.();
   },
 
   _isRoleVisible(roleOrRow, statusValue = '') {
@@ -39,7 +31,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const role = row ? String(row.role || '') : String(roleOrRow || '');
     const status = row ? String(row.status || '') : String(statusValue || '');
     const effective = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row || role);
-    const roleKeys = new Set([role, effective?.name, effective?.type?.name].filter((value) => value != null));
+    const roleKeys = new Set([
+      role,
+      row?.character,
+      effective?.name,
+      effective?.type?.name,
+      effective?.character?.name,
+    ].filter((value) => value != null));
     if (this._hideRoles && [...roleKeys].some((key) => this._hideRoles.has(key))) return false;
     if (this._filterRoles && ![...roleKeys].some((key) => this._filterRoles.has(key))) return false;
     if (this.doc?.editor?.statusEnabled) {
@@ -54,6 +52,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const anchorForPosition = positionAnchor || anchorBtn;
     const roles = new Set();
     this.doc.rows.forEach((row) => {
+      if (row.character) roles.add(row.character);
       if (row.role) roles.add(row.role);
       const typeName = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row)?.type?.name;
       if (typeName) roles.add(typeName);

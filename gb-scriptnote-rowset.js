@@ -85,12 +85,16 @@ function _snRowsetPushStorageHistory(label, beforeSnapshot, detail) {
 Object.assign(ScriptNoteEditor.prototype, {
 
   _readRowsetPresets() {
+    let raw = null;
     try {
-      const parsed = JSON.parse(localStorage.getItem(SN2_ROWSET_PRESETS_STORAGE_KEY) || '{}');
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
+      raw = localStorage.getItem(SN2_ROWSET_PRESETS_STORAGE_KEY);
+      const parsed = JSON.parse(raw || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {}
+    // 読めない内容を空として扱うと、次の保存で全プリセットが上書きされて消える。
+    // 上書きの前に元の内容を退避しておく（既に退避済みなら上書きしない）。
+    if (typeof _snPreserveUnreadableStorage === 'function') _snPreserveUnreadableStorage(SN2_ROWSET_PRESETS_STORAGE_KEY, raw);
+    return {};
   },
 
   _writeRowsetPresets(presets, options = {}) {
@@ -271,16 +275,23 @@ Object.assign(ScriptNoteEditor.prototype, {
     delPresetBtn.addEventListener('click', async () => {
       const val = presetSel.value;
       if (!val) return;
-      const presets = this._readRowsetPresets();
-      if (!presets[val]) return;
-      if (!await _snRowsetConfirmDelete(`プリセット「${val}」を削除しますか？`)) return;
-      delete presets[val];
-      this._writeRowsetPresets(presets, {
-        label: 'シナリオ: 行セットプリセット削除',
-        detail: val,
-      });
-      this._refreshRowsetPresetOptions(presetSel);
-      if (typeof showStatus === 'function') showStatus(`プリセット「${val}」を削除しました`);
+      try {
+        const presets = this._readRowsetPresets();
+        if (!presets[val]) return;
+        if (!await _snRowsetConfirmDelete(`プリセット「${val}」を削除しますか？`)) return;
+        delete presets[val];
+        this._writeRowsetPresets(presets, {
+          label: 'シナリオ: 行セットプリセット削除',
+          detail: val,
+        });
+        this._refreshRowsetPresetOptions(presetSel);
+        if (typeof showStatus === 'function') showStatus(`プリセット「${val}」を削除しました`);
+      } catch (error) {
+        console.warn('行セットプリセットの削除に失敗しました:', error);
+        if (typeof showStatus === 'function') {
+          showStatus(`プリセット「${val}」を削除できませんでした: ${error?.message || error}`, true);
+        }
+      }
     });
     presetRow.appendChild(delPresetBtn);
     wrap.appendChild(presetRow);
@@ -306,7 +317,19 @@ Object.assign(ScriptNoteEditor.prototype, {
       const handle = document.createElement('span');
       handle.className = 'sn2-detail-handle sn2-rowset-handle';
       handle.innerHTML = _snRowsetIcon('gripVertical', 14, '↕');
-      handle.setAttribute('aria-hidden', 'true');
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'button');
+      handle.dataset.e2eId = 'scriptnote-rowset-drag-' + i;
+      handle.title = '行セット ' + (i + 1) + ' 行目を並べ替え（ドラッグまたは Alt+↑/↓）';
+      handle.setAttribute('aria-label', handle.title);
+      handle.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
+      handle.addEventListener('keydown', (event) => {
+        if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const targetIdx = i + (event.key === 'ArrowUp' ? -1 : 1);
+        this._moveRowsetEntry(i, targetIdx, container, true);
+      });
       item.appendChild(handle);
 
       // タイプ選択
@@ -441,6 +464,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._rowsetRows.forEach(entry => {
         newRows.push({
           id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          character: '',
+          characterRef: { kind: 'none', id: '__none__' },
+          type: entry.role || '',
           role: entry.role || '',
           status: newStatus,
           text: '',
@@ -448,7 +474,12 @@ Object.assign(ScriptNoteEditor.prototype, {
         });
       });
     }
-    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      newRows.forEach((row) => {
+        globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, row.type);
+        globalThis.GBScriptNoteRoleModel.assignRowCharacter?.(this.doc, row, '');
+      });
+    } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
       newRows.forEach((row) => globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, row.role));
     }
     this.doc.rows.splice(insertIdx + 1, 0, ...newRows);
@@ -482,6 +513,19 @@ Object.assign(ScriptNoteEditor.prototype, {
       sel.appendChild(opt);
     });
     if (prevVal && [...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
+  },
+
+  _moveRowsetEntry(fromIdx, toIdx, panelContainer, restoreFocus = false) {
+    if (!Number.isInteger(fromIdx) || !Number.isInteger(toIdx)
+      || fromIdx < 0 || fromIdx >= this._rowsetRows.length
+      || toIdx < 0 || toIdx >= this._rowsetRows.length || fromIdx === toIdx) return false;
+    const [moved] = this._rowsetRows.splice(fromIdx, 1);
+    this._rowsetRows.splice(toIdx, 0, moved);
+    this.renderRowsetPanel(panelContainer);
+    if (restoreFocus) requestAnimationFrame(() => {
+      panelContainer.querySelector(`[data-e2e-id="scriptnote-rowset-drag-${toIdx}"]`)?.focus();
+    });
+    return true;
   },
 
   _setupRowsetDragDrop(listEl, panelContainer) {
@@ -519,10 +563,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       const rect = item.getBoundingClientRect();
       if (e.clientY >= rect.top + rect.height / 2) dropIdx++;
       if (dropIdx === dragIdx || dropIdx === dragIdx + 1) { clearDragState(); return; }
-      const [moved] = this._rowsetRows.splice(dragIdx, 1);
-      this._rowsetRows.splice(dropIdx > dragIdx ? dropIdx - 1 : dropIdx, 0, moved);
+      const fromIdx = dragIdx;
+      const toIdx = dropIdx > dragIdx ? dropIdx - 1 : dropIdx;
       clearDragState();
-      this.renderRowsetPanel(panelContainer);
+      this._moveRowsetEntry(fromIdx, toIdx, panelContainer);
     });
   },
 

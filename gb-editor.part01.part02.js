@@ -44,9 +44,8 @@
     // メモ（アノテーション）のドロップ
     const annData = e.dataTransfer.getData('application/x-annotation');
     if (annData) {
-      const ann = JSON.parse(annData);
-      const linkText = '[アノテート: ' + (ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
-      document.execCommand('insertText', false, linkText + ' ');
+      const linkText = _noteAnnotationDropLinkText(annData);
+      if (linkText) document.execCommand('insertText', false, linkText + ' ');
       return;
     }
 
@@ -166,6 +165,24 @@ setupEditableDropHandler((window.GBEditorHost?.element('page-content') || docume
 setupEditableDropHandler(document.getElementById('entity-freetext'));
 
 // ノート選択テキストの外部ドラッグ対応（ボード/別ノートへの転送）
+// アノテートのドロップ内容から挿入するリンク文字列を作る。内容が壊れていて
+// 読み取れない場合は理由を表示して null を返す（旧実装は解析の失敗が無言で消えていた）。
+function _noteAnnotationDropLinkText(annData) {
+  let ann = null;
+  try {
+    ann = JSON.parse(annData);
+  } catch (error) {
+    console.warn('[note] ドロップされたアノテートを読み取れませんでした', error);
+  }
+  if (!ann || typeof ann !== 'object' || ann.id === undefined || ann.id === null || ann.id === '') {
+    if (typeof showStatus === 'function') {
+      showStatus('アノテートを挿入できませんでした: ドロップされた内容を読み取れません', true);
+    }
+    return null;
+  }
+  return '[アノテート: ' + String(ann.text || '').substring(0, 30) + '](annotation:' + ann.id + ')';
+}
+
 function setupEditableDragSource(el) {
   if (!el) return;
   el.addEventListener('dragstart', (e) => {

@@ -182,12 +182,16 @@
     const opts = options || {};
     const progressApi = window.MeldexOperationProgress;
     const cancellationEnabled = opts.cancellable !== false;
+    const normalizedStartPath = String(startPath || '');
+    const settingsPanel = normalizedStartPath.startsWith('/x-bookmarks/account-posts/')
+      ? 'Xアカウント保存'
+      : (normalizedStartPath.startsWith('/x-bookmarks/') ? 'Xブックマーク' : '');
     let cancelJobId = '';
     let operation = opts.operationProgress === false || !progressApi
       ? null
       : progressApi.begin({
           kind: String(opts.operationKind || 'background-job'),
-          settingsPanel: String(startPath || '').startsWith('/x-bookmarks/') ? 'Xブックマーク' : '',
+          settingsPanel,
           label: _operationLabel(startPath, opts),
           mode: 'indeterminate',
           background: true,

@@ -364,13 +364,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         }
       } else {
         const cellLabel = CELL_LABELS[col.id] !== undefined ? CELL_LABELS[col.id] : (col.label || col.id);
-        // _text列: textStyle → charaフォールバック（エディタと一致）
-        // _gutter/_gutter2: 列スタイルのみ（エディタではtextBefore/After/Align未使用）
-        const ta = isText ? (cs.textAlign || chara.textAlign || 'center') : (cs.textAlign || 'center');
-        const va = isText ? (cs.textValign || chara.textValign || '') : (cs.textValign || '');
+        const layout = typeof _scriptNoteColumnLayoutSettings === 'function'
+          ? _scriptNoteColumnLayoutSettings(this.doc, col.id)
+          : { align: 'left', valign: 'top', overflow: 'wrap' };
+        const ta = layout.align;
+        const va = layout.valign;
         const tb = isText ? (cs.textBefore ?? chara.textBefore ?? '') : '';
         const taf = isText ? (cs.textAfter ?? chara.textAfter ?? '') : '';
-        const toVal = isText ? (cs.textOverflow || chara.textOverflow || '') : (cs.textOverflow || '');
+        const toVal = layout.overflow;
         const preview = document.createElement('div');
         preview.className = 'sn2-detail-cell-preview';
         const previewProps = { ...dynStyle };
@@ -430,11 +431,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         const strokeColor = isText ? (cs.textStrokeColor || chara.textStrokeColor || '') : (cs.textStrokeColor || '');
         const strokeWidth = isText ? (cs.textStrokeWidth || chara.textStrokeWidth || '') : (cs.textStrokeWidth || '');
         const accentColor = cs.accentColor || chara.accentColor || fg || 'var(--accent)';
-        const ta = isText ? (cs.textAlign || chara.textAlign || 'center') : (cs.textAlign || 'center');
-        const va = isText ? (cs.textValign || chara.textValign || '') : (cs.textValign || '');
+        const layout = typeof _scriptNoteColumnLayoutSettings === 'function'
+          ? _scriptNoteColumnLayoutSettings(this.doc, pc.colId)
+          : { align: 'left', valign: 'top', overflow: 'wrap' };
+        const ta = layout.align;
+        const va = layout.valign;
         const tb = isText ? (cs.textBefore ?? chara.textBefore ?? '') : '';
         const taf = isText ? (cs.textAfter ?? chara.textAfter ?? '') : '';
-        const toVal = isText ? (cs.textOverflow || chara.textOverflow || '') : (cs.textOverflow || '');
+        const toVal = layout.overflow;
         const nextProps = {
           background: bg, backgroundSize: '', backgroundPosition: '',
           color: fg,
@@ -758,7 +762,15 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   // シート読み込みモーダル
-  async _showDbImportModal(panelContainer) {
+  // options.linkCharacterId を渡すと、キャラ表の1行の連携先として、シートのトピックを1件だけ選ぶ。
+  async _showDbImportModal(panelContainer, options = {}) {
+    const linkCharacterId = String(options?.linkCharacterId || '');
+    const linkMode = !!linkCharacterId;
+    const linkCharacter = linkMode
+      ? this._roleManagementAdapter?.().characters.find(item => item.id === linkCharacterId) || null
+      : null;
+    if (linkMode && !linkCharacter) return;
+    const existingLink = linkCharacter?.sheetLink?.path ? linkCharacter.sheetLink : null;
     if (!globalThis.GBUI?.createModal || typeof globalThis.MeldexProductionSheetEmbed?.create !== 'function') {
       if (typeof showStatus === 'function') showStatus('シート表示を初期化できませんでした', true);
       return;
@@ -766,34 +778,69 @@ Object.assign(ScriptNoteEditor.prototype, {
     const owner = document.activeElement;
     const body = document.createElement('div');
     body.className = 'sn2-db-import-content';
-    body.innerHTML = `<label class="sn2-db-import-picker">読み込むシート
-        <select id="sn2-db-sheet" class="gb-select" disabled>
-          <option value="">シートを選択してください</option>
-        </select>
-      </label>
+    body.innerHTML = `<div class="sn2-db-import-picker">読み込むシート</div>
       <div id="sn2-db-status" class="sn2-db-import-status" role="status" aria-live="polite"></div>
       <button type="button" class="gb-btn gb-btn-sm sn2-db-import-retry" data-sn2-db-retry hidden>再試行</button>
-      <div id="sn2-db-tree" class="sn2-db-import-sheet" tabindex="0">
-        <div class="sn2-db-import-empty">シートを選択すると、ここに内容を表示します</div>
+      <div class="sn2-db-import-browser">
+        <div id="sn2-db-tree" class="gb-folder-picker-embed sn2-db-import-tree"></div>
+        <div id="sn2-db-preview" class="sn2-db-import-sheet" tabindex="0">
+          <div class="sn2-db-import-empty">シートを選択すると、ここに内容を表示します</div>
+        </div>
       </div>
       <div id="sn2-db-selected" class="sn2-db-import-selected">読込対象: 0件</div>`;
+    // フォルダツリーは共通のフォルダ選択部品を埋め込む（独自ツリーを作らない: UI共通ルール 4.1）
+    const browser = typeof globalThis.GBFolderPicker?.createBrowser === 'function'
+      ? globalThis.GBFolderPicker.createBrowser({
+        selectFiles: true,
+        selectFolders: false,
+        fileFilter: item => isSheetItem(item),
+        currentLabel: '選択中のシート:',
+        emptyText: 'この階層にフォルダまたはシートはありません。',
+        onSelect: (selection, info) => {
+          if (info?.automatic || selection?.kind !== 'file' || !selection.path) return;
+          showSheet(selection.path);
+        },
+      })
+      : null;
+    if (browser) {
+      browser.tree.setAttribute('aria-label', '読み込むシートのフォルダツリー');
+      body.querySelector('#sn2-db-tree').appendChild(browser.element);
+    }
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button'; cancelButton.id = 'sn2-db-cancel'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
     const importButton = document.createElement('button');
-    importButton.type = 'button'; importButton.id = 'sn2-db-ok'; importButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; importButton.textContent = '読み込み';
+    importButton.type = 'button'; importButton.id = 'sn2-db-ok'; importButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; importButton.textContent = linkMode ? '連携' : '読み込み';
+    importButton.dataset.e2eId = linkMode ? 'scriptnote-db-link-ok' : 'scriptnote-db-import-ok';
+    const unlinkButton = linkMode && existingLink ? document.createElement('button') : null;
+    if (unlinkButton) {
+      unlinkButton.type = 'button'; unlinkButton.className = 'gb-btn gb-btn-sm sn2-db-link-clear'; unlinkButton.textContent = '連携を解除';
+      unlinkButton.dataset.e2eId = 'scriptnote-db-link-clear';
+    }
+    let pickedName = linkMode ? String(existingLink?.name || '') : '';
+    let pickedSheet = linkMode ? String(existingLink?.sheet || '') : '';
     let busy = false;
     let embed = null;
     let sheetObserver = null;
     let selectedSheetPath = '';
     let selectionUpdateQueued = false;
     let sheetLoadSeq = 0;
+    let treeLoadSeq = 0;
+    let retryAction = null;
+    const resolveImportReturnFocus = () => {
+      // あふれメニューから開くと、開いた時点のfocusはメニュー消滅で本文へ落ちている。
+      if (owner?.isConnected && owner !== document.body) return owner;
+      return panelContainer?.querySelector?.(
+        '[data-e2e-id="scriptnote-character-import-db"], [data-e2e-id="scriptnote-detail-import-db"]',
+      ) || null;
+    };
     const modalApi = globalThis.GBUI.createModal({
-      id: 'scriptnote-db-import', title: 'シートからキャラ読み込み', body, footer: [cancelButton, importButton],
-      variant: 'standard', geometryKey: 'scriptnote-db-import', minWidth: '0', initialFocus: '#sn2-db-tree',
-      returnFocus: owner, closeLabel: 'シートからキャラ読み込みを閉じる', closeOnEsc: true, closeOnOverlay: true,
-      onBeforeClose: () => !busy,
+      id: 'scriptnote-db-import', title: linkMode ? `シートのトピックと連携: ${linkCharacter.name || 'キャラ'}` : 'シートからキャラ読み込み',
+      body, footer: unlinkButton ? [unlinkButton, cancelButton, importButton] : [cancelButton, importButton],
+      variant: 'standard', geometryKey: 'scriptnote-db-import', minWidth: '0', initialFocus: '#sn2-db-tree .gb-folder-picker-search',
+      returnFocus: resolveImportReturnFocus, closeLabel: linkMode ? 'シートのトピックと連携を閉じる' : 'シートからキャラ読み込みを閉じる', closeOnEsc: true, closeOnOverlay: true,
       onClose: () => {
         sheetLoadSeq += 1;
+        treeLoadSeq += 1;
         sheetObserver?.disconnect();
         sheetObserver = null;
         embed?.destroy?.();
@@ -802,14 +849,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     const overlay = modalApi.overlay;
     const dialog = modalApi.modal;
-    overlay.dataset.sn2Dialog = 'db-import';
+    overlay.dataset.sn2Dialog = linkMode ? 'db-link' : 'db-import';
     overlay.dataset.e2eId = 'scriptnote-db-import-overlay';
     dialog.dataset.e2eId = 'scriptnote-db-import-dialog';
     globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
     dialog.classList.add('sn2-db-import-modal');
     modalApi.body.classList.add('sn2-db-import-body');
-    const treeHost = dialog.querySelector('#sn2-db-tree');
-    const sheetSelect = dialog.querySelector('#sn2-db-sheet');
+    const previewHost = dialog.querySelector('#sn2-db-preview');
     const status = dialog.querySelector('#sn2-db-status');
     const selectedLabel = dialog.querySelector('#sn2-db-selected');
     const retryButton = dialog.querySelector('[data-sn2-db-retry]');
@@ -818,23 +864,56 @@ Object.assign(ScriptNoteEditor.prototype, {
       const source = Array.isArray(embed.ctx._lastEntityNames) ? embed.ctx._lastEntityNames : [];
       return [...new Set(source.map(name => String(name || '').trim()).filter(Boolean))];
     };
+    const pickedValid = () => !!(pickedName && pickedSheet === selectedSheetPath && visibleNames().includes(pickedName));
+    const markPickedRow = () => {
+      previewHost.querySelectorAll('tbody tr[data-entity-name]').forEach(tr => {
+        const on = pickedValid() && tr.dataset.entityName === pickedName;
+        // 変更時だけ書き込む（MutationObserverの自己再帰を避ける）
+        if (tr.classList.contains('sn2-db-import-link-picked') !== on) tr.classList.toggle('sn2-db-import-link-picked', on);
+        if ((tr.getAttribute('aria-selected') === 'true') !== on) tr.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    };
     const setBusy = (next) => {
       busy = next;
       dialog.setAttribute('aria-busy', next ? 'true' : 'false');
-      cancelButton.disabled = next;
-      sheetSelect.disabled = next || sheetSelect.options.length <= 1;
-      importButton.disabled = next || visibleNames().length === 0;
+      importButton.disabled = next || (linkMode ? !pickedValid() : visibleNames().length === 0);
       retryButton.disabled = next;
+      if (unlinkButton) unlinkButton.disabled = next;
     };
     const updateSelection = () => {
+      if (linkMode) {
+        const valid = pickedValid();
+        const text = valid ? `連携先: ${pickedName}` : '連携先: 未選択';
+        if (selectedLabel.textContent !== text) selectedLabel.textContent = text;
+        importButton.disabled = busy || !valid;
+        markPickedRow();
+        return;
+      }
       const count = visibleNames().length;
       selectedLabel.textContent = selectedSheetPath ? `現在の表示から読み込む: ${count}件` : '読込対象: 0件';
       importButton.disabled = busy || count === 0;
     };
+    if (linkMode) {
+      // シートの行をクリックしてトピックを1件選ぶ。選択中はセル編集などシート側の操作を動かさない。
+      const pickFromEvent = event => {
+        const tr = event.target?.closest?.('tbody tr[data-entity-name]');
+        if (!tr || !previewHost.contains(tr) || tr.classList.contains('new-entity-row')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type !== 'click') return;
+        pickedName = String(tr.dataset.entityName || '').trim();
+        pickedSheet = selectedSheetPath;
+        updateSelection();
+      };
+      previewHost.addEventListener('click', pickFromEvent, true);
+      previewHost.addEventListener('dblclick', pickFromEvent, true);
+    }
     const queueSelectionUpdate = () => {
       if (selectionUpdateQueued) return;
       selectionUpdateQueued = true;
-      requestAnimationFrame(() => {
+      // 描画フレームを待つと、ウィンドウが裏にある間は件数が更新されない。
+      // 件数の数え直しは軽いので、同じ変更通知のまとまりの直後に1回だけ行う。
+      Promise.resolve().then(() => {
         selectionUpdateQueued = false;
         if (dialog.isConnected) updateSelection();
       });
@@ -842,16 +921,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     const showSheet = async path => {
       const loadSeq = ++sheetLoadSeq;
       selectedSheetPath = String(path || '');
+      retryAction = null;
       sheetObserver?.disconnect();
       sheetObserver = null;
       embed?.destroy?.();
       embed = null;
-      treeHost.replaceChildren();
+      previewHost.replaceChildren();
       if (!selectedSheetPath) {
         const empty = document.createElement('div');
         empty.className = 'sn2-db-import-empty';
         empty.textContent = 'シートを選択すると、ここに内容を表示します';
-        treeHost.appendChild(empty);
+        previewHost.appendChild(empty);
         updateSelection();
         return;
       }
@@ -862,7 +942,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       try {
         nextEmbed = globalThis.MeldexProductionSheetEmbed.create({ idSuffix: `scriptnote-character-import-${Date.now()}-${loadSeq}` });
         embed = nextEmbed;
-        if (!nextEmbed.mount(treeHost) || await nextEmbed.open(selectedSheetPath, { silent: true }) === false) {
+        if (!nextEmbed.mount(previewHost) || await nextEmbed.open(selectedSheetPath, { silent: true }) === false) {
           throw new Error('シートを表示できませんでした');
         }
         if (loadSeq !== sheetLoadSeq) {
@@ -880,7 +960,9 @@ Object.assign(ScriptNoteEditor.prototype, {
         }
         sheetObserver = new MutationObserver(queueSelectionUpdate);
         sheetObserver.observe(nextEmbed.containerEl, { childList: true, subtree: true, attributes: true });
-        status.textContent = 'ビューや列ヘッダのフィルターで絞り込み、現在表示されているトピックを読み込みます。';
+        status.textContent = linkMode
+          ? '連携するトピックの行をクリックしてください'
+          : 'ビューや列ヘッダのフィルターで絞り込み、現在表示されているトピックを読み込みます。';
       } catch (error) {
         if (loadSeq !== sheetLoadSeq) return;
         nextEmbed?.destroy?.();
@@ -895,51 +977,73 @@ Object.assign(ScriptNoteEditor.prototype, {
         }
       }
     };
+    const itemType = item => String(item?.type || item?.kind || item?.file_type || '').trim().toLowerCase();
+    const isSheetItem = item => {
+      const type = itemType(item);
+      const path = String(item?.path || item?.name || '').split(/[?#]/)[0].toLowerCase();
+      return ['database', 'pivot', 'sheet', 'spreadsheet', 'db'].includes(type)
+        || path.endsWith('.mel-sheet')
+        || globalThis.MeldexDnD?.resolveOpenType?.(type, path.split('.').pop()) === 'pivot';
+    };
     const loadTree = async () => {
+      const loadSeq = ++treeLoadSeq;
+      retryButton.hidden = true;
+      retryAction = null;
+      if (!browser) {
+        status.textContent = 'フォルダツリーを表示できませんでした';
+        return;
+      }
       setBusy(true);
       status.textContent = 'シート一覧を読み込んでいます...';
-      retryButton.hidden = true;
-      const visited = new Set();
-      const sheets = [];
-      const scanFolder = async (folder, depth = 0) => {
-        const path = String(folder?.path || '');
-        if (visited.has(path) || depth > 4) return;
-        visited.add(path);
-        if (folder.type === 'database') sheets.push({ path, name: folder.name || path });
-        const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true');
-        const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
-        for (const child of childFolders) await scanFolder(child, depth + 1);
-      };
       try {
-        const roots = await apiFetch('/outliner-roots');
-        if (!Array.isArray(roots) || !roots.length) throw new Error('フォルダツリーがありません');
-        for (const root of roots) {
-          await scanFolder({ ...root, type: root.type || 'folder' }, -1);
-        }
-        const previousPath = selectedSheetPath;
-        sheetSelect.replaceChildren(new Option('シートを選択してください', ''));
-        sheets.sort((a, b) => a.path.localeCompare(b.path, 'ja')).forEach(sheet => {
-          const option = new Option(sheet.name === sheet.path ? sheet.name : `${sheet.name} — ${sheet.path}`, sheet.path);
-          sheetSelect.appendChild(option);
-        });
-        sheetSelect.value = sheets.some(sheet => sheet.path === previousPath) ? previousPath : '';
-        if (!sheets.length) status.textContent = 'シートが見つかりませんでした';
-        else status.textContent = '読み込むシートを選択してください';
-        if (sheetSelect.value) await showSheet(sheetSelect.value);
+        const roots = await (browser.state.roots ? browser.reload() : browser.start());
+        if (loadSeq !== treeLoadSeq || !dialog.isConnected) return;
+        if (!roots.length) throw new Error('フォルダツリーがありません');
+        status.textContent = linkMode ? 'シートをフォルダツリーから選択してください' : '読み込むシートをフォルダツリーから選択してください';
       } catch (error) {
+        if (loadSeq !== treeLoadSeq || !dialog.isConnected) return;
         console.error('シート一覧の読み込みに失敗しました:', error);
         status.textContent = `シート一覧を読み込めませんでした。再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        retryAction = loadTree;
         retryButton.hidden = false;
       } finally {
-        globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
-        setBusy(false);
-        updateSelection();
+        if (loadSeq === treeLoadSeq && dialog.isConnected) {
+          globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
+          setBusy(false);
+          updateSelection();
+        }
       }
     };
     cancelButton.addEventListener('click', () => modalApi.close('cancel'));
-    sheetSelect.addEventListener('change', () => showSheet(sheetSelect.value));
-    retryButton.addEventListener('click', () => selectedSheetPath ? showSheet(selectedSheetPath) : loadTree());
+    retryButton.addEventListener('click', () => {
+      if (retryAction) retryAction();
+      else if (selectedSheetPath) showSheet(selectedSheetPath);
+      else loadTree();
+    });
+    const topicPathIn = (sheetPath, name, sourcePivot) => {
+      try {
+        if (typeof _entityPath === 'function') return String(_entityPath(sheetPath, name, sourcePivot) || '');
+      } catch (_) {}
+      const stored = sourcePivot?.entities?.[name]?._entry_path;
+      return String(stored || (sheetPath ? `${sheetPath}/${name}.md` : ''));
+    };
+    unlinkButton?.addEventListener('click', () => {
+      if (busy) return;
+      this._setCharacterSheetLink?.(linkCharacterId, null, panelContainer);
+      modalApi.close('submit');
+    });
     importButton.addEventListener('click', () => {
+      if (linkMode) {
+        if (busy || !pickedValid()) return;
+        const topicPath = topicPathIn(selectedSheetPath, pickedName, embed?.ctx?.pivotData || null);
+        if (!topicPath) {
+          status.textContent = 'トピックの場所を確認できませんでした。再試行できます。';
+          return;
+        }
+        this._setCharacterSheetLink?.(linkCharacterId, { path: topicPath, name: pickedName, sheet: selectedSheetPath }, panelContainer);
+        modalApi.close('submit');
+        return;
+      }
       const selectedNames = visibleNames();
       if (busy || selectedNames.length === 0) return;
       let beforeSnapshot = '';
@@ -957,8 +1061,16 @@ Object.assign(ScriptNoteEditor.prototype, {
           ? new Set(this._detailCharacterSelection)
           : null;
         const roleAdapter = this._roleManagementAdapter();
+        // 読み込んだキャラへ元トピックへのリンクを記録する（キャラ表の「シート」列）。
+        const sourcePivot = embed?.ctx?.pivotData || null;
+        const topicPathFor = name => topicPathIn(selectedSheetPath, name, sourcePivot);
         selectedNames.forEach(name => {
-          if (!roleAdapter.characters.some(character => character.name === name)) roleAdapter.addCharacter(name);
+          let character = roleAdapter.characters.find(item => item.name === name);
+          if (!character) character = roleAdapter.addCharacter(name);
+          const topicPath = topicPathFor(name);
+          if (character && topicPath && !character.sheetLink?.path) {
+            character.sheetLink = { path: topicPath, name, sheet: selectedSheetPath };
+          }
         });
         this._detailCharacterSelection?.clear();
         roleAdapter.touch();
@@ -991,6 +1103,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     modalApi.open();
     updateSelection();
     await loadTree();
+    // 連携済みなら、そのシートを開いて現在の連携先を選択状態で表示する。
+    if (linkMode && existingLink?.sheet && dialog.isConnected && !selectedSheetPath) {
+      await showSheet(String(existingLink.sheet));
+    }
   },
 
   _showColorPicker(anchorEl, chara, prop, panelContainer) {
@@ -1244,7 +1360,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       'textColor', 'fontSize', 'fontFamily',
       'bold', 'italic', 'textStrokeColor', 'textStrokeWidth',
       'bgColor', 'leftAccent', 'underline', 'accentColor',
-      ...(!isTypeOverride ? [...(isTextCol ? ['textBefore', 'textAfter'] : []), 'textAlign', 'textValign', 'textOverflow'] : []),
+      ...(!isTypeOverride && isTextCol ? ['textBefore', 'textAfter'] : []),
     ];
     const refreshItem = () => { const item = anchorEl.closest('.sn2-detail-item'); if (item?._applyPreview) item._applyPreview(); };
     const ec = this._resolveCharaColors(chara, colId) || {};
@@ -1265,9 +1381,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       accentColor: isTypeOverride ? scopedValue('accentColor') : (style.accentColor || chara.accentColor || ''),
       textBefore: isTextCol ? (style.textBefore ?? chara.textBefore ?? '') : (style.textBefore ?? ''),
       textAfter: isTextCol ? (style.textAfter ?? chara.textAfter ?? '') : (style.textAfter ?? ''),
-      textAlign: isTextCol ? (style.textAlign || chara.textAlign || '') : (style.textAlign ?? ''),
-      textValign: isTextCol ? (style.textValign || chara.textValign || '') : (style.textValign ?? ''),
-      textOverflow: isTextCol ? (style.textOverflow || chara.textOverflow || '') : (style.textOverflow ?? ''),
     };
     const UNDO_LABELS = {
       bgColor: 'タイプ色変更', textColor: 'タイプ色変更',
@@ -1276,13 +1389,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       textStrokeColor: 'タイプ装飾変更', textStrokeWidth: 'タイプ装飾変更',
       leftAccent: 'タイプ装飾変更', underline: 'タイプ装飾変更', accentColor: 'タイプ装飾変更',
       textBefore: 'タイプ設定変更', textAfter: 'タイプ設定変更',
-      textAlign: 'タイプ配置変更', textValign: 'タイプ配置変更', textOverflow: 'タイプ配置変更',
     };
     const liveValues = { ...values };
     const STYLE_COPY_PROPS = [
       'bgColor', 'textColor', 'fontWeight', 'fontStyle', 'fontSize', 'fontFamily',
       'textStrokeColor', 'textStrokeWidth', 'leftAccent', 'underline', 'accentColor',
-      ...(!isTypeOverride ? [...(isTextCol ? ['textBefore', 'textAfter'] : []), 'textAlign', 'textValign', 'textOverflow'] : []),
+      ...(!isTypeOverride && isTextCol ? ['textBefore', 'textAfter'] : []),
     ];
     const handleChange = (prop, value) => {
         liveValues[prop] = value;
@@ -1293,6 +1405,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           else style[prop] = value;
           this._render();
           this._markDirty();
+          this._refreshRoleManagementPreviews?.(panelContainer);
           return;
         }
         if (prop === 'bgColor' || prop === 'textColor') {
@@ -1343,11 +1456,10 @@ Object.assign(ScriptNoteEditor.prototype, {
             else typeStyle[prop] = value;
           }
         }
-        const needRender = (prop === 'textAlign' || prop === 'textValign' || prop === 'textOverflow');
-        if (needRender) this._render();
-        else this._refreshRowStyles();
+        this._refreshRowStyles();
         this._markDirty();
         refreshItem();
+        this._refreshRoleManagementPreviews?.(panelContainer);
     };
     // 書式貼り付け: コピーした書式を1回のUndo単位でまとめて適用し、表示更新のため開き直す
     const applyCopiedStyle = (clip, props) => {
@@ -1393,6 +1505,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._render();
         this._markDirty();
         refreshItem();
+        this._refreshRoleManagementPreviews?.(panelContainer);
       },
     });
   },

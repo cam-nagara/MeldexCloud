@@ -361,7 +361,7 @@
   padding: var(--ui-space-4);
   background: var(--ui-popup-bg, var(--ui-bg-panel));
   border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
-  border-radius: var(--ui-radius-md);
+  border-radius: var(--ui-popup-radius, 6px);
   box-shadow: var(--ui-shadow-lg);
 }
 .db-date-popover[hidden] {
@@ -392,7 +392,7 @@
 .db-date-popover-field input {
   width: 100%;
   min-width: 0;
-  height: 30px;
+  height: var(--ui-h-md, 32px);
   box-sizing: border-box;
   padding: var(--ui-space-1) var(--ui-space-3);
   border: 1px solid var(--ui-border);

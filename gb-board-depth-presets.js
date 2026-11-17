@@ -403,6 +403,13 @@
     return writeUserPresets(presets);
   }
 
+  // 名前変更・削除が false を返した時の原因を利用者向けに組み立てる（無言で終わらせない）。
+  function presetFailureMessage(head, id, name) {
+    if (name !== undefined && !String(name || '').trim()) return `${head}: 名前が空です`;
+    if (!readUserPresets().some(entry => entry.id === id)) return `${head}: プリセットが見つかりません。一覧を開き直してください`;
+    return `${head}: この端末に保存できませんでした。ブラウザの保存領域の空きや設定を確認してください`;
+  }
+
   function removePreset(id) {
     const presets = readUserPresets();
     const next = presets.filter(entry => entry.id !== id);
@@ -622,7 +629,11 @@
         if (!selected || selected.builtin) return;
         const name = await askName('新しいプリセット名を入力してください', selected.name);
         if (name === null || name === undefined) return;
-        if (!renamePreset(selected.id, name)) return;
+        if (!renamePreset(selected.id, name)) {
+          status(presetFailureMessage('プリセット名を変更できませんでした', selected.id, name), true);
+          return;
+        }
+        status(`プリセット名を変更しました`);
         notify();
         render();
       });
@@ -631,7 +642,10 @@
         if (!selected || selected.builtin) return;
         const ok = await askConfirm(`プリセット「${selected.name}」を削除しますか？`);
         if (!ok) return;
-        if (!removePreset(selected.id)) return;
+        if (!removePreset(selected.id)) {
+          status(presetFailureMessage(`プリセット「${selected.name}」を削除できませんでした`, selected.id), true);
+          return;
+        }
         opts.selectedId = '';
         if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${selected.name}」を削除しました`);
         notify();

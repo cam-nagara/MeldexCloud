@@ -63,7 +63,7 @@
   color: var(--ui-fg-default);
   background: var(--ui-bg-app);
   border: 1px solid var(--ui-border);
-  border-radius: 2px;
+  border-radius: var(--ui-radius-xs, 3px);
   text-align: center;
 }
 .cs-number-input {
@@ -120,8 +120,8 @@
 
   .cs-row-group--number .cs-number-input {
     width: 64px;
-    height: 44px;
-    min-height: 44px;
+    height: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
     font-size: var(--ui-font-14);
   }
 
@@ -194,7 +194,7 @@
   .fs-theme-management .fs-theme-select {
     flex-basis: 100%;
     width: 100%;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     font-size: var(--ui-font-14);
   }
   .fs-theme-management .fs-theme-actions {
@@ -314,7 +314,7 @@
 .settings-theme-preview-rail .gb-rail-shell-bottom { width: 100%; }
 .settings-theme-preview-rail .gb-dock-icon { flex: 0 0 var(--gb-rail-button-size, 34px); padding: 0; }
 .settings-modal[data-settings-mobile-layout="1"] .settings-theme-preview-rail .left-chrome-floating-btn {
-  width: 44px; min-width: 44px; height: 44px; min-height: 44px; flex-basis: 44px;
+  width: var(--ui-h-touch, 44px); min-width: var(--ui-h-touch, 44px); height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); flex-basis: 44px;
 }
 .settings-theme-preview-rail--left .gb-rail-shell-bottom { border-top: 0; padding: 2px 0 4px; gap: 2px; }
 .settings-theme-preview-tree,
@@ -480,7 +480,7 @@
 .settings-theme-preview-pane-tabs .gb-pane-nav-btn[aria-disabled="true"] { opacity: .28; cursor: pointer; }
 .settings-theme-outliner-search { min-height: 30px; display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-bottom: 1px solid var(--outliner-border, var(--border)); color: var(--outliner-placeholder-fg, var(--fg2)); font-size: 11px; }
 .settings-theme-outliner-search > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-theme-outliner-search .tb-icon-btn { width: 24px; min-width: 24px; height: 24px; padding: 0; }
+.settings-theme-outliner-search .tb-icon-btn { width: var(--ui-h-xs, 22px); min-width: 24px; height: var(--ui-h-xs, 22px); padding: 0; }
 .settings-theme-preview-outliner .sidebar-section-header { min-width: 0; }
 .settings-theme-preview-outliner .sidebar-section-label,
 .settings-theme-preview-outliner .tree-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -621,7 +621,7 @@
     padding-block: 12px;
     touch-action: manipulation;
   }
-  .settings-theme-accent-row .gb-select { flex: 1 1 150px; min-height: 44px; }
+  .settings-theme-accent-row .gb-select { flex: 1 1 150px; min-height: var(--ui-h-touch, 44px); }
   .settings-theme-accent-swatch { width: 44px; height: 44px; flex-basis: 44px; }
   .settings-theme-preview { min-height: 360px; }
   .settings-theme-preview-shell { grid-template-columns: 44px minmax(0, 1fr) 44px; grid-template-rows: auto minmax(220px, 1fr); }
@@ -636,7 +636,7 @@
      44pxのタップ領域を保ち、間隔だけ詰める。 */
   .settings-theme-preview-rail { gap: 1px; }
   .settings-theme-preview-rail .gb-dock-icon,
-  .settings-theme-preview-rail .left-chrome-floating-btn { width: 44px; min-width: 44px; height: 44px; min-height: 44px; flex-basis: 44px; }
+  .settings-theme-preview-rail .left-chrome-floating-btn { width: var(--ui-h-touch, 44px); min-width: var(--ui-h-touch, 44px); height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); flex-basis: 44px; }
   .settings-theme-preview-target { min-height: 44px; }
 }
 @media (max-width: 640px) {
@@ -647,7 +647,7 @@
   }
   .settings-modal[data-settings-mobile-layout="1"] .settings-theme-preview-details-btn {
     width: 100%;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 }
 .cs-theme-palette-matrix {
@@ -966,7 +966,7 @@
   overflow: auto;
   padding: var(--ui-space-1);
   background: var(--ui-bg-panel);
-  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--ui-border)));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
   border-radius: var(--ui-radius-sm);
   box-shadow: var(--ui-shadow-md);
 }
@@ -1227,7 +1227,7 @@
   }
   .draft-recovery-actions .gb-btn,
   .draft-recovery-footer .gb-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .draft-recovery-actions .gb-btn {
     flex: 1 1 96px;

@@ -526,7 +526,18 @@
     return merged;
   }
 
+  // デスクトップ版（PyYAML）と同じ値として読む共通読込へ委ねる。旧読込は、折り返された
+  // 引用符つきの値の継ぎ目を改行に変え（実データ151件で値が変わる）、リスト項目内の
+  // リストを読めなかった。共通読込が無い画面（単独のクイックメモ等）だけ旧読込を使う。
   function _yamlLiteObject(text) {
+    const shared = window.MeldexCloudFrontmatterLite;
+    if (shared && typeof shared.yamlLite === 'function' && typeof shared.assertWritable === 'function') {
+      return shared.yamlLite(text);
+    }
+    return _yamlLiteObjectLegacy(text);
+  }
+
+  function _yamlLiteObjectLegacy(text) {
     const anchors = new Map();
     const lines = _yamlLiteMergeQuotedLines(String(text || '').replace(/\t/g, '  ').split(/\r?\n/))
       .map((raw) => ({ raw, indent: (String(raw || '').match(/^ */) || [''])[0].length, text: String(raw || '').trim() }))

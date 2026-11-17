@@ -1,3 +1,4 @@
+      const apps = getThemeUiApplications();
       const tone = getThemeUiAutoTone();
       applyThemeUiApplications(apps, { forceTargets: true });
       dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
@@ -897,4 +898,3 @@
     try {
       return !!(node.matches?.(PALETTE_TARGET_SELECTOR) || node.querySelector?.(PALETTE_TARGET_SELECTOR));
     } catch {
-      return PALETTE_TARGET_SPECS.some(([selector]) => {

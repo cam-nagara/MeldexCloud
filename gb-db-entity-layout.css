@@ -270,9 +270,9 @@
   background: var(--bg3);
   color: var(--fg);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: var(--ui-radius-sm, 4px);
   font: inherit;
-  padding: 2px 4px;
+  padding: var(--ui-space-1, 2px) var(--ui-space-2, 4px);
   box-sizing: border-box;
 }
 .el-cell.el-label-editing .el-cell-content { pointer-events: auto; }
@@ -329,7 +329,7 @@
 .el-dialog-content .gb-check > span { min-width: 0; overflow-wrap: anywhere; }
 .el-chart-axis-settings { display: grid; grid-template-columns: minmax(140px, 1.3fr) minmax(100px, 1fr) 32px 32px; gap: var(--ui-space-4); align-items: center; padding-block: var(--ui-space-2); }
 .el-chart-axis-settings.is-radar { grid-template-columns: minmax(140px, 1.3fr) minmax(90px, 1fr) 76px 32px 32px; }
-.el-chart-axis-settings .gb-btn { width: 32px; min-width: 32px; padding-inline: 0; }
+.el-chart-axis-settings .gb-btn { width: 32px; min-width: var(--ui-h-md, 32px); padding-inline: 0; }
 .el-chart-axis-heading { color: var(--ui-fg-muted); font-size: var(--ui-font-12); }
 .el-chart-axis-heading > :last-child { grid-column: span 2; text-align: center; }
 .el-chart-axis-settings input { min-width: 0; width: 100%; box-sizing: border-box; }
@@ -530,7 +530,7 @@
 .el-preset-details { margin-top: 8px; }
 .el-preset-details[hidden] { display: none; }
 .el-preset-name-row { margin-bottom: 8px; }
-.el-preset-popup input { font: inherit; padding: 6px 8px; }
+.el-preset-popup input { font: inherit; padding: var(--ui-space-3, 6px) var(--ui-space-4, 8px); }
 .el-preset-name-row input { flex: 1; min-width: 120px; }
 .el-preset-message { min-height: 1.5em; margin: 6px 0 0; color: var(--fg2); }
 .el-preset-message[data-error="true"] { color: var(--red); }

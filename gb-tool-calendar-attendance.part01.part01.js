@@ -334,25 +334,134 @@
     }
   };
 
-  CalendarComponent.prototype._loadCalendars = async function() {
+  function _calAttErrorDetail(error) {
+    return String(error?.userMessage || error?.message || '').trim();
+  }
+
+  function _calAttFailureMessage(base, error) {
+    const detail = _calAttErrorDetail(error);
+    return detail ? `${base}: ${detail}` : base;
+  }
+
+  function _calAttHasOwnLocalCalendar(calendars, user) {
+    return (calendars || []).some(c => (c.user || '') === user && (c.source || 'local') === 'local');
+  }
+
+  // 既定カレンダーの作成は同名でも毎回新しく作られるため、同時に開いた複数の
+  // カレンダー画面が重ねて作らないよう、利用者ごとに作成処理を1本にまとめる。
+  const _calAttDefaultCalendarCreations = new Map();
+
+  function _calAttEnsureOwnLocalCalendar(user, calendars) {
+    if (_calAttHasOwnLocalCalendar(calendars, user)) return Promise.resolve(calendars);
+    const pending = _calAttDefaultCalendarCreations.get(user);
+    if (pending) return pending;
+    const task = (async () => {
+      const url = '/cal/calendars?user=' + encodeURIComponent(user);
+      // 作成直前に最新の一覧で確かめ直す（別の画面が先に作っていれば作らない）
+      const latest = await apiFetch(url);
+      if (!Array.isArray(latest)) throw new Error('カレンダー一覧を確認できませんでした');
+      if (_calAttHasOwnLocalCalendar(latest, user)) return latest;
+      await apiPost('/cal/calendars', {
+        name: 'マイカレンダー',
+        color: _calAttPaletteColorAt(latest.length),
+        user,
+        source: 'local',
+        folder: DEFAULT_CALENDAR_FOLDER,
+      });
+      const created = await apiFetch(url);
+      if (!Array.isArray(created)) throw new Error('カレンダー一覧を確認できませんでした');
+      return created;
+    })();
+    _calAttDefaultCalendarCreations.set(user, task);
+    const clear = () => {
+      if (_calAttDefaultCalendarCreations.get(user) === task) _calAttDefaultCalendarCreations.delete(user);
+    };
+    task.then(clear, clear);
+    return task;
+  }
+
+  // 読み込みは1本にまとめる。実行中に呼ばれたら、終わった後にもう一度だけ読み直す
+  // （実行中の古い結果で後続の変更を見落とさないため）。
+  CalendarComponent.prototype._loadCalendars = function() {
+    if (this._loadCalendarsInFlight) {
+      this._loadCalendarsQueued = true;
+      return this._loadCalendarsInFlight;
+    }
+    const run = (async () => {
+      let ok = false;
+      do {
+        this._loadCalendarsQueued = false;
+        ok = await this._loadCalendarsOnce();
+      } while (this._loadCalendarsQueued);
+      return ok;
+    })();
+    this._loadCalendarsInFlight = run;
+    const clear = () => {
+      if (this._loadCalendarsInFlight === run) this._loadCalendarsInFlight = null;
+    };
+    run.then(clear, clear);
+    return run;
+  };
+
+  CalendarComponent.prototype._loadCalendarsOnce = async function() {
+    const user = this._getUser();
+    let calendars;
     try {
-      this._calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
-      const user = this._getUser();
-      const hasOwnLocal = this._calendars.some(c => (c.user || '') === user && (c.source || 'local') === 'local');
-      if (!hasOwnLocal) {
-        await apiPost('/cal/calendars', {
-          name: 'マイカレンダー',
-          color: _calAttPaletteColorAt(this._calendars.length),
-          user,
-          source: 'local',
-          folder: DEFAULT_CALENDAR_FOLDER,
-        });
-        this._calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
-      }
-      this._visibleCalIds = new Set(this._calendars.filter(c => c.visible).map(c => c.id));
+      calendars = await apiFetch('/cal/calendars?user=' + encodeURIComponent(this._getUser()));
+      if (!Array.isArray(calendars)) throw new Error('');
+    } catch (error) {
+      // 取得失敗は「カレンダーが1件も無い」と区別できないため、既定カレンダーは作らない。
+      // 表示中の一覧も消さずに残す。
+      if (!Array.isArray(this._calendars)) this._calendars = [];
+      this._showStatus?.(_calAttFailureMessage('カレンダー一覧の読み込みに失敗しました', error), true);
+      return false;
+    }
+    try {
+      calendars = await _calAttEnsureOwnLocalCalendar(user, calendars);
+    } catch (error) {
+      this._showStatus?.(_calAttFailureMessage('マイカレンダーを作成できませんでした', error), true);
+    }
+    this._calendars = calendars;
+    this._visibleCalIds = new Set(calendars.filter(c => c.visible).map(c => c.id));
+    this._ensureSelectedCalendar?.();
+    try {
+      this._renderCalendarList();
+    } catch (error) {
+      console.error('[calendar] calendar list render failed:', error);
+    }
+    return true;
+  };
+
+  // 表示切り替えは先に画面へ反映し、保存に失敗したら元の表示へ戻して原因を知らせる。
+  CalendarComponent.prototype._setCalendarVisible = async function(cal, visible) {
+    if (!this._calUserCanEditCalendar(cal)) {
+      this._showStatus('編集権限がありません', true);
+      this._renderCalendarList();
+      return false;
+    }
+    const wasVisible = this._visibleCalIds.has(cal.id);
+    const previousSelectedId = this._selectedCalendarId;
+    const apply = (on) => {
+      if (on) this._visibleCalIds.add(cal.id);
+      else this._visibleCalIds.delete(cal.id);
+    };
+    apply(visible);
+    if (!visible && this._selectedCalendarId === cal.id) this._selectedCalendarId = '';
+    this._ensureSelectedCalendar?.();
+    this._renderCalendarList();
+    this._render();
+    try {
+      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: visible ? 1 : 0 });
+      return true;
+    } catch (error) {
+      apply(wasVisible);
+      this._selectedCalendarId = previousSelectedId;
       this._ensureSelectedCalendar?.();
       this._renderCalendarList();
-    } catch {}
+      this._render();
+      this._showStatus(_calAttFailureMessage('カレンダーの表示切り替えを保存できませんでした', error), true);
+      return false;
+    }
   };
 
   CalendarComponent.prototype._firstCalendar = function() {
@@ -814,13 +923,7 @@
         this._showStatus('編集権限がありません', true);
         return;
       }
-      if (cb.checked) this._visibleCalIds.add(cal.id);
-      else this._visibleCalIds.delete(cal.id);
-      if (!cb.checked && this._selectedCalendarId === cal.id) this._selectedCalendarId = '';
-      this._ensureSelectedCalendar?.();
-      apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: cb.checked ? 1 : 0 });
-      this._renderCalendarList();
-      this._render();
+      this._setCalendarVisible(cal, cb.checked);
     });
     const dot = document.createElement('span');
     dot.className = 'gb-cal-calendar-dot';
@@ -895,7 +998,7 @@
           const chosen = nextColor || currentColor;
           if (typeof setColorSwatchValue === 'function') setColorSwatchValue(colorSwatch, chosen);
           else { colorSwatch.dataset.color = chosen; colorSwatch.style.background = chosen; }
-          this._setCalendarColor(cal, chosen);
+          this._setCalendarColor(cal, chosen, { swatch: colorSwatch });
         });
     }
     colorRow.append(colorLabel, colorSwatch);
@@ -960,7 +1063,7 @@
     roleSelect.disabled = !this._calUserIsAdmin();
     roleSelect.title = roleSelect.disabled ? '管理者のみ変更できます' : '編集権限';
     roleSelect.setAttribute('aria-label', '編集権限');
-    roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value));
+    roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value, { control: roleSelect }));
     roleRow.append(roleLabel, roleSelect);
     menu.appendChild(roleRow);
 

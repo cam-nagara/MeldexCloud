@@ -267,6 +267,7 @@ async function _deleteColumn(dbPath, propName, ctx) {
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const oldBackendPropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : oldCfg.propertyTypes) || {}));
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || oldCfg.propertyTypes?.[propName];
+  const oldMetadata = _ptSnapshotColumnDeleteMetadata(dbPath);
 
   const c = getDbViewConfig(dbPath);
   _deleteViewConfigPropReferences(c, propName);
@@ -298,12 +299,10 @@ async function _deleteColumn(dbPath, propName, ctx) {
     state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
   }
 
-  // バックエンドに保存
-  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
-  const savePromise = _savePropertyTypesToBackend(dbPath);
-  if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
-  }
+  // バックエンドに保存（列タイプの保存が確定してから取り消し履歴を積む）
+  const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
+  if (!commit.ok) return false;
+  const layoutError = commit.layoutError;
 
   // Undo/Redo
   if (typeof historyPush === 'function' && typeof _dbScope === 'function') {
@@ -340,7 +339,11 @@ async function _deleteColumn(dbPath, propName, ctx) {
   } else {
     selectDatabase(dbPath, renderCtx);
   }
-  showStatus(`列「${propName}」を削除しました`);
+  if (layoutError) {
+    showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${layoutError?.message || layoutError}`, true);
+  } else {
+    showStatus(`列「${propName}」を削除しました`);
+  }
   // 列削除 → 該当 sheet_col/sheet_cell コメントを孤児化 (annotation_unification_plan.md §5.3)
   apiPost('/annotations/orphan-by-target', {
     target_kind: 'sheet_col',
@@ -349,6 +352,61 @@ async function _deleteColumn(dbPath, propName, ctx) {
     cascade_container: true,
   }).catch(() => {});
   return true;
+}
+
+// 列削除前の画面上の列タイプ・配置を控える（保存失敗時にそのまま戻す）。
+function _ptSnapshotColumnDeleteMetadata(dbPath) {
+  if (!_ptIsCurrentDbPath(dbPath) || !state.dbMetadata) return null;
+  const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
+  return {
+    property_types: clone(state.dbMetadata.property_types),
+    property_layout: clone(state.dbMetadata.property_layout),
+  };
+}
+
+// 列削除の保存。列タイプの保存に失敗したら表示設定と画面上の列を削除前へ戻し、
+// 理由を表示して ok:false を返す（取り消し履歴は呼び出し側が ok の時だけ積む）。
+async function _ptSaveColumnDeleteToBackend(dbPath, propName, snapshot) {
+  const { oldCfg, oldMetadata, oldPT, renderCtx } = snapshot || {};
+  let typesSaved = true;
+  let typesSaveError = null;
+  try {
+    if (await _savePropertyTypesToBackend(dbPath) === false) typesSaved = false;
+  } catch (error) {
+    typesSaved = false;
+    typesSaveError = error;
+  }
+  if (!typesSaved) {
+    // 列タイプが保存されていないので、表示設定と画面上の列も削除前へ戻す
+    console.warn('[Meldex] 列の削除を保存できませんでした', typesSaveError);
+    let restored = true;
+    if (typeof _persistDbViewConfigToBackend === 'function') {
+      restored = await _persistDbViewConfigToBackend(dbPath, oldCfg, { immediate: true }).catch(() => false) !== false;
+    }
+    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+    if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata && oldMetadata) {
+      state.dbMetadata.property_types = oldMetadata.property_types;
+      state.dbMetadata.property_layout = oldMetadata.property_layout;
+    }
+    if (typeof selectDatabase === 'function') selectDatabase(dbPath, renderCtx);
+    const reason = typesSaveError ? ': ' + (typesSaveError?.message || typesSaveError) : '';
+    showStatus(`列「${propName}」を削除できませんでした${reason}${restored ? '' : '。表示設定を元に戻せなかったため、画面を開き直してください'}`, true);
+    return { ok: false, layoutError: null };
+  }
+  let layoutError = null;
+  if (typeof updatePropertyLayoutForDelete === 'function') {
+    try {
+      await updatePropertyLayoutForDelete(dbPath, propName);
+    } catch (error) {
+      layoutError = error;
+      console.warn('[Meldex] 列削除後の配置設定を更新できませんでした', error);
+    }
+  }
+  if (oldPT?.type === 'image') {
+    // 画像参照の再集計は背景の補助処理。失敗は記録だけ残す。
+    Promise.resolve(apiPost('/media/rebuild-refs', {})).catch(error => console.warn('[Meldex] 画像参照の再集計に失敗しました', error));
+  }
+  return { ok: true, layoutError };
 }
 
 // 確認なしで列削除（redo用）
@@ -361,6 +419,7 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
+  const oldMetadata = _ptSnapshotColumnDeleteMetadata(dbPath);
   const c = getDbViewConfig(dbPath);
   const oldPT = (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[propName] : null) || c.propertyTypes?.[propName];
   _deleteViewConfigPropReferences(c, propName);
@@ -386,10 +445,10 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
     state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
   }
-  if (typeof updatePropertyLayoutForDelete === 'function') updatePropertyLayoutForDelete(dbPath, propName).catch(() => {});
-  const savePromise = _savePropertyTypesToBackend(dbPath);
-  if (oldPT?.type === 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
+  const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
+  if (!commit.ok) return false;
+  if (commit.layoutError) {
+    showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${commit.layoutError?.message || commit.layoutError}`, true);
   }
   if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
     if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;

@@ -808,8 +808,21 @@ function _bdBuildStyleFields(container, kind, style, onChange, options) {
   container.innerHTML = '';
   const fmt = window.gbFmt;
   if (!fmt) { container.textContent = '書式UI未ロード'; return; }
+  // 変更の反映に失敗したら握り潰さず原因つきで知らせる（非同期の失敗も受け取る）。
+  const reportEmitFailure = (error) => {
+    try { console.warn('[board] スタイル変更の反映に失敗しました:', error); } catch (_) {}
+    const reason = String(error?.message || '').trim();
+    if (typeof showStatus === 'function') {
+      showStatus(/[ぁ-んァ-ヶ一-龠]/.test(reason)
+        ? `スタイルの変更を反映できませんでした: ${reason}`
+        : 'スタイルの変更を反映できませんでした。もう一度お試しください', true);
+    }
+  };
   const emit = (field) => {
-    try { onChange && onChange(field); } catch (_) {}
+    try {
+      const result = onChange && onChange(field);
+      if (result && typeof result.then === 'function') Promise.resolve(result).catch(reportEmitFailure);
+    } catch (error) { reportEmitFailure(error); }
     container._bdRefreshFormatPreview?.();
   };
   const editTarget = () => {

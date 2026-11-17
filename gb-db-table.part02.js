@@ -1248,16 +1248,27 @@ function renderEntityRow(entityName, ctx, options) {
   dragHandle.className = 'row-drag-handle';
   dragHandle.draggable = true;
   dragHandle.title = _dbTableUsesManualSort(ctx)
-    ? 'ドラッグして行を並べ替え'
-    : '行を並べ替えるには、並び替えを「マニュアル」にしてください';
+    ? 'クリックでメニュー / ドラッグして行を並べ替え'
+    : 'クリックでメニュー / 行を並べ替えるには、並び替えを「マニュアル」にしてください';
   dragHandle.dataset.e2eId = _dbE2eId(ctx, 'row-drag', entityName);
   dragHandle.setAttribute('role', 'button');
-  dragHandle.setAttribute('aria-label', dragHandle.title);
+  dragHandle.setAttribute('aria-label', `トピックのメニュー: ${entityName}`);
   dragHandle.innerHTML = lucide('gripVertical', 12);
+  // クリック（ドラッグなし）で行メニューを行の直下へ開く。ドラッグ後は click が発生しない。
   dragHandle.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
   });
+  if (window.MeldexRowHandleMenu?.bind) {
+    window.MeldexRowHandleMenu.bind(dragHandle, {
+      getRow: () => dragHandle.closest('tr') || tr,
+      open: (event, info) => {
+        if (typeof showDbCardContextMenu === 'function') {
+          showDbCardContextMenu(event, dbPath, entityName, undefined, { anchorRect: info.anchorRect, focusFirst: info.viaKeyboard });
+        }
+      },
+    });
+  }
   controlsMain.appendChild(dragHandle);
 
   // 複数選択対応チェックボックス

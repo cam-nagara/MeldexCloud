@@ -58,7 +58,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
+  min-height: var(--ui-h-md, 32px);
   padding: 0 var(--ui-space-4);
   line-height: 1;
 }
@@ -103,7 +103,7 @@
   .meldex-support-dialog .gb-btn,
   #meldex-error-support-notice .gb-btn,
   .meldex-support-details summary {
-    min-height: 44px !important;
+    min-height: var(--ui-h-touch, 44px) !important;
   }
   .meldex-support-actions {
     align-items: stretch;
@@ -128,7 +128,7 @@ body[data-cloud-mobile="1"] .meldex-support-dialog .gb-btn,
 body[data-mobile-ui-local="1"] .meldex-support-dialog .gb-btn,
 body[data-cloud-mobile="1"] .meldex-support-details summary,
 body[data-mobile-ui-local="1"] .meldex-support-details summary {
-  min-height: 44px !important;
+  min-height: var(--ui-h-touch, 44px) !important;
 }
 
 body[data-cloud-mobile="1"] #meldex-error-support-notice .meldex-error-notice-close,
@@ -309,7 +309,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   .chat-cli-watch-path,
   .chat-cli-session-row,
   .chat-cli-quote-btn {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
   .chat-cli-main-toggle,
   .chat-cli-provider-toggle {
@@ -342,7 +342,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
     font-size: var(--ui-font-12);
   }
   .chat-cli-quote-btn {
-    min-width: 44px;
+    min-width: var(--ui-h-touch, 44px);
   }
 }
 
@@ -581,7 +581,7 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-raw {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  min-height: 44px;
+  min-height: var(--ui-h-touch, 44px);
 }
 body[data-cloud-mobile="1"] .gb-owner-key-action,
 body[data-mobile-ui="1"] .gb-owner-key-action,

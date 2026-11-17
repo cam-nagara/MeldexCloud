@@ -93,7 +93,7 @@
 
   .gb-attachment-cleanup-footer .gb-btn,
   .gb-attachment-cleanup-modal .gb-modal-close {
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
 
   .gb-attachment-cleanup-status {

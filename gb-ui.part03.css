@@ -158,8 +158,8 @@ input[type="range"]::-moz-range-thumb {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: var(--ui-h-2xs, 18px);
+  height: var(--ui-h-2xs, 18px);
   padding: 0;
   background: transparent;
   border: 1px solid var(--ui-border);
@@ -370,8 +370,8 @@ input[type="range"]::-moz-range-thumb {
   background: var(--ui-modal-bg, var(--ui-bg-surface));
   color: var(--ui-modal-fg, var(--ui-fg-default));
   border: 1px solid var(--ui-modal-border, var(--ui-border));
-  border-radius: var(--ui-radius-md);
-  box-shadow: var(--ui-shadow-lg);
+  border-radius: var(--ui-dialog-radius);
+  box-shadow: var(--ui-dialog-shadow);
   max-width: 90vw;
   max-height: 90vh;
   min-width: 320px;
@@ -380,8 +380,8 @@ input[type="range"]::-moz-range-thumb {
 .gb-modal-header {
   display: flex;
   align-items: center;
-  height: 48px;
-  padding: 0 var(--ui-space-6);
+  height: var(--ui-dialog-header-height);
+  padding: 0 var(--ui-dialog-body-padding);
   background: var(--ui-header-bg);
   border-bottom: 1px solid var(--ui-border);
   flex-shrink: 0;
@@ -402,8 +402,8 @@ input[type="range"]::-moz-range-thumb {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--ui-dialog-close-size);
+  height: var(--ui-dialog-close-size);
   padding: 0;
   background: transparent;
   border: none;
@@ -433,7 +433,7 @@ input[type="range"]::-moz-range-thumb {
 .gb-modal-body {
   flex: 1 1 auto;
   min-height: 120px;
-  padding: var(--ui-space-6);
+  padding: var(--ui-dialog-body-padding);
   background: var(--ui-modal-bg, var(--ui-bg-surface));
   color: var(--ui-modal-fg, var(--ui-fg-default));
   overflow: auto;
@@ -448,8 +448,8 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   justify-content: flex-end;
   gap: var(--ui-space-4);
-  min-height: 52px;
-  padding: var(--ui-space-4) var(--ui-space-6);
+  min-height: var(--ui-dialog-footer-min-height);
+  padding: var(--ui-space-4) var(--ui-dialog-body-padding);
   background: var(--ui-bg-panel);
   border-top: 1px solid var(--ui-border);
   flex-shrink: 0;
@@ -586,9 +586,9 @@ input[type="range"]::-moz-range-thumb {
   .gb-confirm-actions { gap: var(--ui-space-3); }
   .gb-confirm-actions .gb-btn {
     min-width: 96px;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
   }
-  .gb-confirm-input { min-height: 44px; }
+  .gb-confirm-input { min-height: var(--ui-h-touch, 44px); }
 }
 
 /* ------------------------------------------------------------

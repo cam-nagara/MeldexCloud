@@ -1,18 +1,19 @@
 /* Read-only creative-map packages. Original paths and topic metadata stay local. */
 (function (root, factory) {
   const node = typeof module === 'object' && module.exports;
-  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument, node ? require('./gb-map-world-geography.js') : root.MeldexMapWorldGeography);
+  const api = factory(node ? require('./gb-map-document.js') : root.MeldexMapDocument, node ? require('./gb-map-world-geography.js') : root.MeldexMapWorldGeography, node ? require('./gb-map-azgaar.js') : root.MeldexMapAzgaar);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.MeldexMapPackage = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (D, G) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (D, G, A) {
   'use strict';
   const MAX_MAPS = 64, MAX_BYTES = 48 * 1024 * 1024;
   const assets = ['vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/LICENSE',
-    'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
+    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
   const key = path => String(path).replace(/\\/g, '/').toLocaleLowerCase();
   const pick = (obj, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(obj, field)).map(field => [field, D.clone(obj[field])]));
   function portable(doc, links) {
     const result = pick(doc, ['fileType', 'schema_version', 'title', 'coordinate_system']);
+    if(doc.display)result.display=pick(doc.display,globalThis.MeldexMapDisplay?.keys||require('./gb-map-display.js').keys);
     result.canvas = pick(doc.canvas, ['width', 'height']); result.basemap = 'blank';
     result.scale = pick(doc.scale, ['distance_per_unit', 'unit', 'north_degrees']);
     const periods = new Map((doc.periods || []).map((period, index) => [period.id, 'period-' + index]));
@@ -21,11 +22,11 @@
     result.layers = doc.layers.map(layer => ({ ...pick(layer, ['name', 'visible', 'locked', 'opacity']), id: layers.get(layer.id) }));
     const cartography = feature => {
       const c = feature.cartography;
-      if (!c || !['river','road','shipping','border','lake','city','country-label','mountain-label','river-label'].includes(c.role)) return {};
-      return { cartography: { role:c.role, ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
+      if (!c || !['river','road','railway','shipping','border','lake','city','country-label','mountain-label','river-label'].includes(c.role)) return {};
+      return { cartography: { role:c.role, ...(c.role==='border'&&c.area===true?{area:true}:{}), ...(A.geometry(feature)?{geometry:pick(c.geometry,['path','scale','anchor','closed','line_style','signature'])}:{}), ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
     };
     result.features = doc.features.map((feature, index) => ({
-      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags']),
+      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style']),
       id: 'feature-' + index, layer_id: layers.get(feature.layer_id),
       ...cartography(feature),
       ...(feature.period_ids ? { period_ids: feature.period_ids.map(id => periods.get(id)) } : {}),
@@ -41,6 +42,13 @@
       result.terrain.environment = pick(doc.terrain.environment,['version','signature','temperature','rain','biomes','lakes','owner','countries']);
       if (['biomes','elevation','temperature','rain','political'].includes(doc.terrain.presentation)) result.terrain.presentation=doc.terrain.presentation;
     }
+    if(doc.atlas){
+      const shapes=list=>list.map(s=>pick(s,['path','color','opacity']));
+      result.atlas={...pick(doc.atlas,['version','engine','width','height','presentation','shores']),
+        modes:Object.fromEntries(A.modes.map(mode=>[mode,shapes(doc.atlas.modes[mode])])),relief:shapes(doc.atlas.relief),
+        ...(doc.atlas.surface?{surface:pick(doc.atlas.surface,['version','count','points','triangles','heights','temperature','rain','biomes'])}:{})};
+    }
+    if(doc.atlas?.editor){const allowed=['kind','radius','strength','points','profile'];result.atlas.editor={version:1,edits:doc.atlas.editor.edits.map(e=>({...pick(e,allowed),...(doc.features.some(f=>f.id===e.feature_id)?{feature_id:'feature-'+doc.features.findIndex(f=>f.id===e.feature_id)}:{})}))};}
     result.background = doc.background ? pick(doc.background, ['data_url']) : null; result.view = null;
     return D.parse(result);
   }
@@ -56,7 +64,7 @@
       if (seen.size >= MAX_MAPS) throw new Error('持ち出す地図は64件以内にしてください');
       seen.add(pathKey);
       const loaded = await read(path); check();
-      const doc = D.parse(loaded.content);
+      const doc = D.parse(loaded.content);if(!cursor&&options.display)doc.display=D.clone(options.display);
       bytes += new TextEncoder().encode(typeof loaded.content === 'string' ? loaded.content : JSON.stringify(loaded.content)).length;
       if (bytes > MAX_BYTES) throw new Error('持ち出す地図の合計は48MB以内にしてください');
       if (!loaded.etag) throw new Error('地図の保存状態を確認できません');
@@ -99,7 +107,7 @@
     entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
     entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,
       root: plan.data.root, maps: plan.data.maps.map(item => ({ id: item.id, title: item.doc.title })), read_only: true }, null, 2)) });
-    entries.push({ name: 'お読みください.txt', data: new TextEncoder().encode('ZIPをすべて展開し、index.htmlをブラウザで開いてください。インターネット接続やMeldexは不要です。\n閲覧用パッケージです。元のマップは.mel-mapで別途保管してください。\n非表示レイヤー・説明・タグも含みます。資料リンク、シート参照、現実地図は含みません。\nLeafletの著作権表示はvendor/leaflet/LICENSEを参照してください。\n') });
+    entries.push({ name: 'お読みください.txt', data: new TextEncoder().encode('ZIPをすべて展開し、index.htmlをブラウザで開いてください。インターネット接続やMeldexは不要です。\n閲覧用パッケージです。元のマップは.mel-mapで別途保管してください。\n非表示レイヤー・説明・タグも含みます。資料リンク、シート参照、現実地図は含みません。\nLeafletとAzgaarの著作権表示はvendor内のLICENSEを参照してください。\n') });
     const bytes = await zip(entries); check();
     return new Blob([bytes], { type: 'application/zip' });
   }
@@ -124,7 +132,7 @@
         if (!await app.flush()) throw new Error('現在のマップを保存してから実行してください');
         if (!current()) return;
         signature = JSON.stringify(store.doc);
-        const result = await collect(path, read, { canonicalPath: canonical, includeChildren: children.checked, check });
+        const result = await collect(path, read, { canonicalPath: canonical, includeChildren: children.checked, display:{...store.doc.display,...app.view.elementVisibility}, check });
         if (!current()) return;
         if (signature !== JSON.stringify(store.doc)) throw new Error('地図が変更されました。「内容を確認」からやり直してください');
         if (result.snapshots[0]?.etag !== store.etag) throw new Error('保存先の地図が変更されています。マップを再読込してから実行してください');

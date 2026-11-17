@@ -217,10 +217,10 @@
 
 .cloud-conflict-btn {
   box-sizing: border-box;
-  min-height: 34px;
-  padding: 6px 12px;
+  min-height: var(--ui-h-lg, 36px);
+  padding: var(--ui-space-3, 6px) var(--ui-space-5, 12px);
   border: 1px solid var(--border, #333);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-sm, 4px);
   background: var(--bg3, #2d2d2d);
   color: var(--fg, #d4d4d4);
   cursor: pointer;
@@ -316,7 +316,7 @@
 
   .cloud-conflict-footer .cloud-conflict-btn {
     flex: 1 1 140px;
-    min-height: 44px;
+    min-height: var(--ui-h-touch, 44px);
     min-width: 0;
   }
 }

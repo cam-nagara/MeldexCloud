@@ -3,6 +3,15 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
+  // ショートカットで開く選択メニューの表示位置。キャラ列・タイプ列を非表示にしていても
+  // 選べるよう、列のボタンが無い時は同じ行の本文セル（無ければ行）を基準にする。
+  _roleMenuAnchor(rowEl, kind) {
+    if (!rowEl) return null;
+    return rowEl.querySelector(kind === 'type' ? '.sn2-role-btn' : '.sn2-character-btn')
+      || rowEl.querySelector('.sn2-text')
+      || rowEl;
+  },
+
   _showRoleMenu(roleBtn, opts) {
     this._closeRoleMenu();
     // タイプメニューの操作中は、直前の文字選択から遅延表示される
@@ -25,13 +34,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     const idx = this.doc.rows.findIndex(r => r.id === rowId);
     if (idx < 0) return;
     const currentRow = this.doc.rows[idx];
-    const currentRole = currentRow.role;
-    const currentResolved = globalThis.GBScriptNoteRoleModel?.resolveRole?.(this.doc, currentRow);
+    const menuKind = opts?.kind || (roleBtn.classList.contains('sn2-character-btn') ? 'character' : 'type');
+    const isCharacterMenu = menuKind === 'character';
+    const currentRole = isCharacterMenu ? currentRow.character : currentRow.role;
+    const currentResolved = isCharacterMenu
+      ? globalThis.GBScriptNoteRoleModel?.resolveRowCharacter?.(this.doc, currentRow)
+      : globalThis.GBScriptNoteRoleModel?.resolveRowType?.(this.doc, currentRow);
 
     const menu = document.createElement('div');
     menu.className = 'sn2-role-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', 'タイプを選択');
+    menu.setAttribute('aria-label', isCharacterMenu ? 'キャラを選択' : 'タイプを選択');
     menu.tabIndex = -1;
 
     const pageSettings = typeof PAGE_SETTINGS !== 'undefined' && Array.isArray(PAGE_SETTINGS)
@@ -41,13 +54,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     const chars = this._getCharacterList();
 
     const select = (val) => {
-      this._pushUndo('タイプ変更');
-      this._setRowRole(idx, rowEl, val === '（なし）' ? '' : val);
+      this._pushUndo(isCharacterMenu ? 'キャラ変更' : 'タイプ変更');
+      if (isCharacterMenu) this._setRowCharacter(idx, rowEl, val === '（なし）' ? '' : val);
+      else this._setRowRole(idx, rowEl, val === '（なし）' ? '' : val);
       this._closeRoleMenu();
       if (opts?.fromNav) {
-        const btn = rowEl.querySelector('.sn2-role-btn');
+        const btn = rowEl.querySelector(isCharacterMenu ? '.sn2-character-btn' : '.sn2-role-btn');
         if (btn && typeof this._setActiveCell === 'function') {
-          this._setActiveCell(rowId, '_role', false);
+          this._setActiveCell(rowId, isCharacterMenu ? '_character' : '_role', false);
         } else {
           this._restoreRangeAfterRoleMenu(rowEl);
         }
@@ -56,7 +70,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
 
-    const roleChoices = globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc)
+    const roleChoices = (isCharacterMenu
+      ? globalThis.GBScriptNoteRoleModel?.buildCharacterChoices?.(this.doc)
+      : globalThis.GBScriptNoteRoleModel?.buildTypeChoices?.(this.doc))
+      || globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc)
       || this.doc.characters.filter((item) => !item.isDefault && item.name).map((item) => ({
         kind: 'character',
         id: item.id || item.name,
@@ -64,7 +81,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         label: item.name,
         ref: item.name,
       }));
-    if (currentResolved?.kind === 'type'
+    if (!isCharacterMenu && currentResolved?.kind === 'type'
       && !roleChoices.some((choice) => choice?.kind === 'type' && choice.id === currentResolved.id)) {
       const noneIndex = roleChoices.findIndex((choice) => choice?.kind === 'none');
       const retainedChoice = {
@@ -77,7 +94,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (noneIndex >= 0) roleChoices.splice(noneIndex, 0, retainedChoice);
       else roleChoices.push(retainedChoice);
     }
-    roleChoices.filter((choice) => choice?.kind !== 'none').forEach((choice) => {
+    roleChoices.filter((choice) => choice?.kind === menuKind).forEach((choice) => {
       const choiceName = String(choice.name || choice.label || '');
       if (!choiceName) return;
       const btn = document.createElement('button');
@@ -88,7 +105,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.type = 'button';
       btn.setAttribute('role', 'menuitem');
       btn.textContent = choice.label || choiceName;
-      const style = this._getCharaStyle(choiceName);
+      const style = this._getCharaStyle(choiceName, menuKind);
       if (style) btn.style.cssText = style;
       btn.addEventListener('click', () => select(choice.ref || choiceName));
       menu.appendChild(btn);
@@ -115,11 +132,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     input.type = 'text';
     input.className = 'sn2-role-input';
     input.placeholder = 'キャラ名を入力';
-    input.setAttribute('aria-label', 'タイプ名を入力');
+    input.setAttribute('aria-label', 'キャラ名を入力');
     input.title = '';
     input.value = currentRole;
     inputWrap.appendChild(input);
-    menu.appendChild(inputWrap);
+    if (isCharacterMenu) menu.appendChild(inputWrap);
 
     // 行本文へ手動リンクを設定する（タイプ選択とは独立したアクション）
     const linkButton = document.createElement('button');
@@ -159,33 +176,27 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       const inMenu = menu.contains(document.activeElement);
       if (!inMenu) return;
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        // 上下キーは端で反対側へ循環する。キャラメニューは「候補…→自由入力→先頭候補」の順で一周する。
         e.preventDefault();
         const step = e.shiftKey ? 5 : 1;
-        if (document.activeElement === input) {
-          focusFlat(Math.min(flatBtns.length - 1, step - 1));
-        } else if (flatIdx >= flatBtns.length - 1) {
+        const total = flatBtns.length + (isCharacterMenu ? 1 : 0);
+        if (!total) return;
+        const cur = (isCharacterMenu && document.activeElement === input) ? flatBtns.length : flatIdx;
+        let next;
+        if (cur < 0) next = e.key === 'ArrowDown' ? step - 1 : total - step;
+        else next = cur + (e.key === 'ArrowDown' ? step : -step);
+        next = ((next % total) + total) % total;
+        if (isCharacterMenu && next === flatBtns.length) {
           input.focus(); input.select(); flatIdx = -1;
         } else {
-          focusFlat(Math.min(flatBtns.length - 1, flatIdx + step));
-        }
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        const step = e.shiftKey ? 5 : 1;
-        if (document.activeElement === input) {
-          focusFlat(Math.max(0, flatBtns.length - step));
-        } else if (flatIdx <= 0) {
-          input.focus(); input.select(); flatIdx = -1;
-        } else {
-          focusFlat(Math.max(0, flatIdx - step));
+          focusFlat(next);
         }
         return;
       }
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (document.activeElement === input) { select(input.value.trim()); return; }
+        if (isCharacterMenu && document.activeElement === input) { select(input.value.trim()); return; }
         if (flatIdx >= 0 && flatBtns[flatIdx]) { flatBtns[flatIdx].click(); }
         return;
       }
@@ -194,12 +205,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       if (e.key === 'Tab') {
         e.preventDefault();
-        if (document.activeElement === input) { focusFlat(0); }
+        if (!isCharacterMenu) { focusFlat((flatIdx + 1) % Math.max(1, flatBtns.length)); }
+        else if (document.activeElement === input) { focusFlat(0); }
         else { input.focus(); input.select(); flatIdx = -1; }
         return;
       }
       // 文字入力→入力欄にフォーカス移動
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && document.activeElement !== input) {
+      if (isCharacterMenu && e.key.length === 1 && !e.ctrlKey && !e.metaKey && document.activeElement !== input) {
         input.focus();
       }
     };
@@ -235,8 +247,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._roleMenuCloseHandler = close;
       document.addEventListener('pointerdown', close, true);
     }, 0);
-    input.focus();
-    input.select();
+    if (isCharacterMenu) {
+      input.focus();
+      input.select();
+    } else {
+      const activeIndex = flatBtns.findIndex(button => button.classList.contains('active'));
+      focusFlat(activeIndex >= 0 ? activeIndex : 0);
+    }
   },
 
   _closeRoleMenu() {
@@ -411,8 +428,8 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _setRowRole(idx, rowEl, newRole) {
     const targetRow = this.doc.rows[idx];
-    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
-      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, targetRow, newRole);
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, targetRow, newRole);
       newRole = targetRow.role;
     } else {
       targetRow.role = newRole;
@@ -423,7 +440,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       ? this.doc.characters.find(c => !c.isDefault && c.name === newRole)
       : null);
     let kind = 'dialogue';
-    if (!newRole) kind = 'blank';
+    if (!newRole && !targetRow.character) kind = 'blank';
     else if (charaForKind?.isSummary) kind = 'summary';
     else if (charaForKind?.isBreak) kind = 'break';
     else if (['dialogue', 'action', 'heading'].includes(charaForKind?.kind)) kind = charaForKind.kind;
@@ -462,6 +479,24 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._calcCache = null;
     this._updateGuttersFrom(Math.max(0, idx));
     this._markDirty({ skipUndo: true }); // undoは呼び出し元で管理
+  },
+
+  _setRowCharacter(idx, rowEl, newCharacter) {
+    const targetRow = this.doc.rows[idx];
+    if (globalThis.GBScriptNoteRoleModel?.assignRowCharacter) {
+      globalThis.GBScriptNoteRoleModel.assignRowCharacter(this.doc, targetRow, newCharacter);
+      newCharacter = targetRow.character;
+    } else {
+      targetRow.character = newCharacter;
+    }
+    const characterBtn = rowEl.querySelector('.sn2-character-btn');
+    if (characterBtn) {
+      characterBtn.textContent = newCharacter || '';
+      if (this.doc.editor?.viewMode === 'vertical') this._wrapTcy(characterBtn);
+    }
+    // キャラ選択時に初期タイプが補われた場合も、タイプ変更と同じ経路で
+    // 行種別・枠線・表示・ページ/コマ番号まで更新する。
+    this._setRowRole(idx, rowEl, targetRow.typeRef || targetRow.roleRef || targetRow.type || targetRow.role || '');
   },
 
   _syncCharactersFromRows() {
