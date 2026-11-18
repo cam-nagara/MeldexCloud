@@ -302,7 +302,12 @@ async function _initChatSourceFolderSelector() {
   } catch {
     _chatVaultsCache = [];
   }
-  try { _chatSourceFoldersCache = await apiFetch('/outliner-roots', { silentError: true }); } catch { _chatSourceFoldersCache = []; }
+  try {
+    const rootsPayload = await apiFetch('/outliner-roots', { silentError: true });
+    _chatSourceFoldersCache = Array.isArray(rootsPayload) ? rootsPayload : [];
+  } catch {
+    _chatSourceFoldersCache = [];
+  }
   try {
     const workspacesPayload = await apiFetch('/workspaces', { silentError: true });
     _chatWorkspacesCache = Array.isArray(workspacesPayload?.workspaces) ? workspacesPayload.workspaces : [];
@@ -810,7 +815,7 @@ function chatAddMessage(role, content, options = {}) {
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
   const model = options?.model || _chatState.model;
-  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model));
+  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model, options?.reasoning_level || ''));
   const icon = isControl ? (typeof lucide === 'function' ? lucide('workflow', 16) : '') : (isUser ? getUserAvatarHtml(getUsername(), 18) : getProviderIconHtml(provider, 18));
 
   // ラッパー（名前+アイコン+バブル）

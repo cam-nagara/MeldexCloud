@@ -126,7 +126,9 @@
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
-  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; min-height: var(--ui-h-touch, 44px); }
+  /* PCのツールバー用22px指定（.gb-toolbar-main …）より詳細度で勝たせ、スマホでは44pxの操作面にする。 */
+  .gb-toolbar-overflow-button,
+  .gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }

@@ -148,7 +148,8 @@ function _captureDbNavigationBeforeLeave(paneId) {
     _navPushWithViewState({ ...(live?.dbPath === entry.path ? live : {}),
       paneId: nav.paneId, containerEl: root, dbPath: entry.path,
       viewMode: mode === 'timeline' && ['calendar', 'tasks', 'shifts', 'gantt'].includes(live?.viewMode) ? live.viewMode : mode,
-    }, null);
+    // 直前にエントリを開く操作が記録した「戻った時に強調する行」を、離脱時の取り直しで消さない。
+    }, entry.scrollState?.focusedEntity || null);
     return;
   }
 }

@@ -1,3 +1,65 @@
+      return '*';
+    }
+  }
+
+  function _postToParent(message) {
+    if (typeof window !== 'undefined' && window.parent) window.parent.postMessage(message, _parentMessageTargetOrigin());
+  }
+
+  function _drawWidth(tool, pressures, width) {
+    const normalized = tool === 'stroke' ? 'pen' : tool;
+    const base = Math.max(1, Number(width) || _ann.widths?.[normalized] || _widthDefaults[normalized] || 3);
+    if (normalized === 'pen' && Array.isArray(pressures) && pressures.length) {
+      const avg = pressures.reduce((a, b) => a + (Number(b) || 0), 0) / pressures.length;
+      return Math.max(1, base * (0.5 + Math.max(0, Math.min(1, avg))));
+    }
+    return base;
+  }
+
+  function _normalizeMarkupOpacity(value, fallback = 1) {
+    return _normalizeCoreAnnotationOpacity(value, fallback);
+  }
+
+  let _annLastSaveFailureAt = 0;
+  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
+    const now = Date.now();
+    if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
+      showStatus(message, true);
+      _annLastSaveFailureAt = now;
+    }
+    try { console.warn(message, error); } catch {}
+  }
+
+  function _markupElementHit(el, x, y, tolerance = 10) {
+    return _coreAnnotationElementHit(el, x, y, tolerance);
+  }
+
+  function _safeAnnotationHtml(html) {
+    if (typeof _sanitizeAnnotationHtml === 'function') return _sanitizeAnnotationHtml(html);
+    const template = document.createElement('template');
+    template.innerHTML = html || '';
+    template.content.querySelectorAll('script,style,iframe,object,embed').forEach(el => el.remove());
+    template.content.querySelectorAll('*').forEach(el => {
+      [...el.attributes].forEach(attr => {
+        if (/^on/i.test(attr.name) || attr.name === 'href' || attr.name === 'src') el.removeAttribute(attr.name);
+      });
+    });
+    return template.innerHTML;
+  }
+
+  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
+    const raw = item?.data;
+    if (raw == null || raw === '') return {};
+    if (typeof raw !== 'string') return raw || {};
+    try {
+      return JSON.parse(raw) || {};
+    } catch (error) {
+      _reportMarkupSaveFailure(error, message);
+      return null;
+    }
+  }
+
+  function _annotationUser() {
     if (typeof getUsername === 'function') return getUsername();
     try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; }
     catch { return 'anonymous'; }
@@ -836,65 +898,3 @@
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) return;
-    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
-    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
-    const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
-    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
-    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
-    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = shapeTypes.has(type)
-      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
-      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
-    savedEl.dataset.annClientId = annClientId;
-    if (_saveBoardAnnotation({
-      target_path: _ann.targetPath,
-      type,
-      data: strokeData,
-      color: _ann.color,
-      opacity: _ann.opacity,
-      user: _annotationUser(),
-    }, (res) => {
-      if (res?.id) savedEl.dataset.annId = res.id;
-    }, () => { savedEl.remove(); })) {
-      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
-      return;
-    }
-    // 親に保存依頼
-    _postToParent({
-      type: 'ann-save-stroke',
-      annType: type,
-      data: strokeData,
-      color: _ann.color, opacity: _ann.opacity, targetPath: _ann.targetPath,
-      annClientId,
-    });
-    // 確定描画
-    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
-  });
-
-  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
-    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
-    const points = _anchoredWorldPoints(type, data);
-    if (type === 'stroke' || type === 'marker') {
-      el.setAttribute('d', _pathD(points));
-      el.setAttribute('fill', 'none');
-      el.setAttribute('stroke', color);
-      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
-      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
-      el.setAttribute('stroke-linecap', 'round');
-      el.setAttribute('stroke-linejoin', 'round');
-    } else {
-      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
-      el.setAttribute('fill', color);
-      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
-      el.setAttribute('stroke', color);
-      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
-      el.setAttribute('stroke-opacity', String(normalizedOpacity));
-      if (preview) el.setAttribute('stroke-dasharray', '4,4');
-      else el.removeAttribute('stroke-dasharray');
-    }
-    return el;
-  }
-
-  const _anchoredAnnotationEntries = new Set();
-  let _anchoredRefreshHandle = 0;

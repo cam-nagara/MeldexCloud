@@ -32,6 +32,12 @@
     if (!object(doc.canvas) || !['width', 'height'].every(key => finite(doc.canvas[key]) && doc.canvas[key] >= 128 && doc.canvas[key] <= 16384)) fail();
     if (!['osm', 'gsi', 'blank'].includes(doc.basemap) || doc.coordinate_system === 'local' && doc.basemap !== 'blank') fail();
     if (doc.basemap_style !== undefined && !['standard', 'pale'].includes(doc.basemap_style)) fail();
+    // 地図の見た目（創作地図）。旧版はこの項目を読み飛ばすため、追加しても旧版で開ける。
+    if (doc.map_style != null && (!object(doc.map_style) || !Object.keys(doc.map_style).every(k => ['theme', 'contours', 'contour_interval', 'label_font'].includes(k))
+      || doc.map_style.theme !== undefined && !['standard', 'parchment', 'mono', 'ink'].includes(doc.map_style.theme)
+      || doc.map_style.contours !== undefined && typeof doc.map_style.contours !== 'boolean'
+      || doc.map_style.contour_interval !== undefined && ![5, 10, 20].includes(doc.map_style.contour_interval)
+      || doc.map_style.label_font !== undefined && !['standard', 'fell', 'medieval'].includes(doc.map_style.label_font))) fail('地図のスタイル設定が不正です');
     if (!object(doc.scale) || !['km', 'm', 'mi', 'unit'].includes(doc.scale.unit)
       || !finite(doc.scale.north_degrees) || Math.abs(doc.scale.north_degrees) > 360
       || doc.scale.distance_per_unit !== null && (!finite(doc.scale.distance_per_unit) || doc.scale.distance_per_unit <= 0 || doc.scale.distance_per_unit > 1e9)) fail();
@@ -66,6 +72,7 @@
         || !Array.isArray(feature.links) || !feature.links.every(link => object(link) && typeof link.path === 'string'
           && (!/^[a-z][a-z\d+.-]*:/i.test(link.path) || /^[a-z]:[\\/]/i.test(link.path)) && !link.path.includes('\0'))) fail();
       if (feature.marker_style !== undefined && (feature.kind !== 'pin' || !['symbol','drop'].includes(feature.marker_style))) fail('マーカーのデザインが不正です');
+      if (feature.stamp !== undefined && (feature.kind !== 'pin' || !Display.stampIds.has(feature.stamp))) fail('地点の記号が不正です');
       if (feature.period_ids !== undefined && (!Array.isArray(feature.period_ids) || feature.period_ids.length > 100
         || new Set(feature.period_ids).size !== feature.period_ids.length || !feature.period_ids.every(key => typeof key === 'string' && periodIds.has(key)))) fail('図形の章・時代の参照が不正です');
       if (feature.travel_plan !== undefined) {

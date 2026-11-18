@@ -1511,7 +1511,10 @@ function _enableDropdownKeyNav(dd, itemSelector) {
         || (text.includes('追加') && text.toLowerCase().includes(lower));
     });
   };
+  // 強調中の候補要素（検索で候補が作り直されたかの判定に使う）。
+  let activeEl = null;
   const highlight = (items, idx) => {
+    activeEl = items[idx] || null;
     items.forEach((el, i) => {
       el.style.outline = i === idx ? '2px solid var(--accent)' : '';
       el.style.outlineOffset = i === idx ? '-2px' : '';
@@ -1580,7 +1583,10 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
       const addIdx = e.key === 'ArrowDown' ? findAddItemIndex(items, activeInputText(e.target)) : -1;
       // 末尾から先頭へ循環する（追加候補へのジャンプは、まだそこに居ない時だけ）
-      activeIdx = (addIdx >= 0 && addIdx !== activeIdx)
+      // 検索入力で候補が作り直された直後は、古い番号が偶然追加候補と同じでも
+      // 追加候補は表示上まだ選ばれていない（強調は消えた要素に付いていた）。
+      const onAddItem = addIdx >= 0 && addIdx === activeIdx && items[addIdx] === activeEl;
+      activeIdx = (addIdx >= 0 && !onAddItem)
         ? addIdx
         : (activeIdx >= items.length - 1 ? 0 : activeIdx + 1);
       highlight(items, activeIdx);

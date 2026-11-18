@@ -195,7 +195,10 @@ function lucide(name, size) {
     paths = window.LUCIDE_FULL[name];
   }
   paths = paths || '';
-  return `<svg data-icon="${name}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
+  // アイコン名は保存データ（ビュー設定等）から来ることがあるため、属性へは安全な文字だけを書く。
+  const safeName = String(name ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  size = String(size).replace(/[^0-9A-Za-z.%]/g, '') || 14;
+  return `<svg data-icon="${safeName}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
 }
 
 // メニュー選択状態アイコン
@@ -248,6 +251,62 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
+// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+const UI_TOOLBAR_APP_ICON_LABELS = {
+  database: 'シート',
+  page: 'ノート',
+  scriptnote: 'シナリオ',
+  board: 'ボード',
+  calendar: 'カレンダー',
+  'form-app': 'フォーム',
+  map: 'マップ',
+  csv: 'CSV',
+  folder: 'フォルダ',
+  media: 'ビューワー',
+  'quick-memo': 'クイックメモ',
+};
+const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
+const UI_TOOLBAR_APP_ICON_SIZE = 24;
+
+function toolbarAppIconName(type) {
+  return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
+}
+
+function toolbarAppIconHtml(type) {
+  const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+  const name = toolbarAppIconName(key);
+  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+}
+
+function toolbarAppIconElement(type) {
+  const template = document.createElement('template');
+  template.innerHTML = toolbarAppIconHtml(type);
+  return template.content.firstElementChild;
+}
+
+function hydrateToolbarAppIcons(root) {
+  const scope = root?.querySelectorAll ? root : document;
+  const nodes = [];
+  if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
+  scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
+  nodes.forEach(el => {
+    if (el.querySelector('svg')) return;
+    const key = el.getAttribute('data-app-icon') || '';
+    const name = toolbarAppIconName(key);
+    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
+    if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
+  });
+}
+if (typeof window !== 'undefined') {
+  window.toolbarAppIconHtml = toolbarAppIconHtml;
+  window.toolbarAppIconElement = toolbarAppIconElement;
+  window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
+}
+
 function fileTypeIcon(type, size) {
   const map = {
     image: 'image', video: 'video', audio: 'audio',
@@ -259,6 +318,7 @@ function fileTypeIcon(type, size) {
 
 function replaceIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
+  hydrateToolbarAppIcons(scope);
   scope.querySelectorAll('.ico').forEach(el => {
     const cls = el.className;
     let name = '';
@@ -390,6 +450,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-redo2')) name = 'redo2';
     // 単独アプリパリティ v0.6.200（シナリオ/ボードのエクスポートメニュー用アイコン）
     else if (cls.includes('ico-image')) name = 'image';
+    // クイックメモの作成メニュー「動画」(ico-video)が未登録で空アイコンになっていたため追加。
+    else if (cls.includes('ico-video')) name = 'video';
     else if (cls.includes('ico-fileCode')) name = 'fileCode';
     else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
@@ -836,65 +898,3 @@ function initIframeMarkup(scrollContainer) {
       const origin = window.location?.origin || '';
       return origin && origin !== 'null' ? origin : '*';
     } catch {
-      return '*';
-    }
-  }
-
-  function _postToParent(message) {
-    if (typeof window !== 'undefined' && window.parent) window.parent.postMessage(message, _parentMessageTargetOrigin());
-  }
-
-  function _drawWidth(tool, pressures, width) {
-    const normalized = tool === 'stroke' ? 'pen' : tool;
-    const base = Math.max(1, Number(width) || _ann.widths?.[normalized] || _widthDefaults[normalized] || 3);
-    if (normalized === 'pen' && Array.isArray(pressures) && pressures.length) {
-      const avg = pressures.reduce((a, b) => a + (Number(b) || 0), 0) / pressures.length;
-      return Math.max(1, base * (0.5 + Math.max(0, Math.min(1, avg))));
-    }
-    return base;
-  }
-
-  function _normalizeMarkupOpacity(value, fallback = 1) {
-    return _normalizeCoreAnnotationOpacity(value, fallback);
-  }
-
-  let _annLastSaveFailureAt = 0;
-  function _reportMarkupSaveFailure(error, message = 'アノテートの保存に失敗しました') {
-    const now = Date.now();
-    if (typeof showStatus === 'function' && now - _annLastSaveFailureAt > 1500) {
-      showStatus(message, true);
-      _annLastSaveFailureAt = now;
-    }
-    try { console.warn(message, error); } catch {}
-  }
-
-  function _markupElementHit(el, x, y, tolerance = 10) {
-    return _coreAnnotationElementHit(el, x, y, tolerance);
-  }
-
-  function _safeAnnotationHtml(html) {
-    if (typeof _sanitizeAnnotationHtml === 'function') return _sanitizeAnnotationHtml(html);
-    const template = document.createElement('template');
-    template.innerHTML = html || '';
-    template.content.querySelectorAll('script,style,iframe,object,embed').forEach(el => el.remove());
-    template.content.querySelectorAll('*').forEach(el => {
-      [...el.attributes].forEach(attr => {
-        if (/^on/i.test(attr.name) || attr.name === 'href' || attr.name === 'src') el.removeAttribute(attr.name);
-      });
-    });
-    return template.innerHTML;
-  }
-
-  function _parseMarkupAnnotationData(item, message = '一部のアノテートデータを読み込めませんでした') {
-    const raw = item?.data;
-    if (raw == null || raw === '') return {};
-    if (typeof raw !== 'string') return raw || {};
-    try {
-      return JSON.parse(raw) || {};
-    } catch (error) {
-      _reportMarkupSaveFailure(error, message);
-      return null;
-    }
-  }
-
-  function _annotationUser() {

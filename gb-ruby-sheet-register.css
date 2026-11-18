@@ -1,0 +1,77 @@
+/* ルビ設定ポップアップ（ノート .note-ruby-popup / シナリオ .sn2-ruby-popup）の「シートに登録」段。
+   項目は共通の .gb-context-menu-item / .gb-context-menu-label / .gb-context-menu-sep を使う。 */
+.gb-ruby-sheet-register {
+  margin-top: var(--ui-space-2, 6px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2, 6px);
+  min-width: 0;
+}
+.gb-ruby-sheet-register-toggle {
+  align-self: flex-start;
+}
+.gb-ruby-sheet-register-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--ui-border-subtle, var(--ui-border-strong));
+  padding-top: var(--ui-space-2, 6px);
+}
+.gb-ruby-sheet-register-panel[hidden],
+.gb-ruby-sheet-register-result[hidden] {
+  display: none;
+}
+.gb-ruby-sheet-register-list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-width: 0;
+}
+.gb-ruby-sheet-register .gb-ruby-sheet-register-item {
+  min-width: 0;
+  gap: var(--ui-space-3, 8px);
+}
+.gb-ruby-sheet-register-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-ruby-sheet-register-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: right;
+}
+.gb-ruby-sheet-register .gb-context-menu-label.is-error,
+.gb-ruby-sheet-register-result.is-error {
+  color: var(--ui-danger);
+}
+.gb-ruby-sheet-register-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2, 6px);
+  font-size: var(--ui-font-12);
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--ui-fg-muted);
+}
+/* フォルダ選択・確認ダイアログを開いている間はポップアップを隠す（閉じずに戻ってくる） */
+.is-ruby-sheet-dialog-open {
+  visibility: hidden;
+}
+@media (max-width: 900px), (pointer: coarse) {
+  .gb-ruby-sheet-register-toggle {
+    min-height: var(--ui-h-touch, 44px);
+  }
+}

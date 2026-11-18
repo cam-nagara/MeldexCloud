@@ -14,6 +14,15 @@
       const target = document.querySelector(`.gb-cal-day-event[data-event-id="${cssEscape(ctx.targetRef.eventId)}"], .gb-cal-clock-event-slice[data-event-id="${cssEscape(ctx.targetRef.eventId)}"]`);
       if (target) return target;
     }
+    if (kind === 'map_feature' && ctx?.targetRef?.featureId) {
+      const target = document.querySelector(`.gb-map-app [data-map-feature-id="${cssEscape(ctx.targetRef.featureId)}"]`)
+        || document.querySelector('.gb-map-app .gb-map-inspector, .gb-map-app');
+      if (target) return target;
+    }
+    if (kind === 'form_field' && ctx?.targetRef?.field) {
+      const target = document.querySelector(`.gb-form-app [data-form-field="${cssEscape(ctx.targetRef.field)}"]`);
+      if (target) return target;
+    }
     if (kind === 'text_range' && container) {
       if (container.kind === 'board_card' && container.id) {
         const target = document.getElementById('bdn-' + container.id);
@@ -60,6 +69,7 @@
       board_card: 'ボードカード', sheet_cell: 'シートのセル',
       board_line: 'ボードライン',
       calendar_event: 'カレンダーイベント',
+      map_feature: 'マップの地点・図形', form_field: 'フォームの項目',
       text_range: '選択範囲', none: '未紐付',
     })[ctx.targetKind] || ctx.targetKind;
     let body = null;
@@ -116,6 +126,8 @@
             refreshVisibleCalendarCommentBadges();
           }
         } catch {}
+        // マップ・フォーム
+        try { refreshOpenMapsAndForms(ctx.filePath); } catch {}
       }
       // アノテートパネルが開いていれば一覧を更新
       if (typeof loadRpAnnotationList === 'function') {
@@ -128,10 +140,45 @@
     }
   }
 
+  // === マップ・フォーム ===
+  // マップは地点一覧の行、フォームは項目に件数を出す。押すとその対象のコメントだけを一覧に出す。
+  async function refreshMap(app) {
+    const root = app?.placeList;
+    const filePath = app?.path || '';
+    if (!root || !filePath) return;
+    if (!_isCommentLayerEnabled()) { root.querySelectorAll('.cmt-badge').forEach(el => el.remove()); return; }
+    const items = await fetchComments(filePath);
+    if (app.path !== filePath || !root.isConnected) return;
+    const counts = buildCountMap(items).map_feature;
+    root.querySelectorAll('[data-map-feature-id]').forEach(row => {
+      const featureId = row.dataset.mapFeatureId;
+      _ensureBadge(row, counts.get(featureId) || 0, () => _openPanelForTarget(filePath, 'map_feature', { file: filePath, featureId }));
+    });
+  }
+
+  async function refreshForm(app) {
+    const root = app?.surface || app?.el;
+    const filePath = app?.path || '';
+    if (!root || !filePath) return;
+    if (!_isCommentLayerEnabled()) { root.querySelectorAll('[data-form-field] > .cmt-badge').forEach(el => el.remove()); return; }
+    const items = await fetchComments(filePath);
+    if (app.path !== filePath || !root.isConnected) return;
+    const counts = buildCountMap(items).form_field;
+    root.querySelectorAll('[data-form-field]').forEach(fieldEl => {
+      const field = fieldEl.dataset.formField;
+      _ensureBadge(fieldEl, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+    });
+  }
+
+  function refreshOpenMapsAndForms(filePath) {
+    document.querySelectorAll('.gb-map-app').forEach(el => { if (el._gbMapApp?.path === filePath) refreshMap(el._gbMapApp).catch(() => {}); });
+    document.querySelectorAll('.gb-form-app').forEach(el => { if (el._gbFormApp?.path === filePath) refreshForm(el._gbFormApp).catch(() => {}); });
+  }
+
   // Alt+Shift+C のキー捕捉は GB_SHORTCUTS（'global.addComment'）へ統合済み
 
   window.CommentBadges = {
-    refreshNote, refreshScriptnote, refreshBoard, refreshSheet, refreshCalendar,
+    refreshNote, refreshScriptnote, refreshBoard, refreshSheet, refreshCalendar, refreshMap, refreshForm, refreshOpenMapsAndForms,
     refreshVisibleCalendar: refreshVisibleCalendarCommentBadges,
     getBoardLineCount,
     invalidate, fetchComments, buildCountMap,

@@ -953,6 +953,18 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-group-actions {
     min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
   }
+  /* 設定の共通配置（gb-settings-fields.css, da53c2e4）は項目行を横1行・折り返しなしに
+     !important で固定し、入力欄を320px基準で縮める。スマホ幅のNotion同期では入力と
+     全幅ボタンが並んで入力欄が14px幅まで潰れるため、ID付きで縦積みを優先する。 */
+  #notion-sync-modal-body :is(.notion-sync-row, .notion-sync-token-row) {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  #notion-sync-modal-body :is(.notion-sync-row, .notion-sync-token-row) > :is(input, select, textarea, .notion-sync-label) {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
+  }
   .notion-sync-section-summary,
   .notion-sync-help a {
     min-height: 44px;

@@ -312,6 +312,7 @@ function _migrateLegacyViewConfig(dbPath, cfg) {
   return { cfg: config, changed: true };
 }
 function _persistMigratedDbViewConfig(dbPath, cfg) {
+  if (typeof _clearDbViewConfigReadMemo === 'function') _clearDbViewConfigReadMemo();
   try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
 }
 function _sanitizeDbViewConfigForBackend(cfg) {
@@ -525,7 +526,35 @@ if (typeof window !== 'undefined' && !window.__MeldexSheetViewConfigPathMutation
   window.__MeldexPwaPathMutationHooks = window.__MeldexPwaPathMutationHooks || [];
   window.__MeldexPwaPathMutationHooks.push(window.__MeldexSheetViewConfigPathMutationHook);
 }
+// 表の描画1回の間だけ、表示設定の読み取り結果を使い回す（2026-11-18）。
+// 描画中は列見出し・セルごとに表示設定を読み、そのたびに保存領域の読み取り・JSON解析・
+// 全ビューの正規化をしていた（85列×10行で約3600回）。列が多いシートでビュー切替が
+// 重かった主因。描画は同期処理なので、その間に外から設定が変わることはない。
+// 書き込みがあれば即座に破棄する。
+let _dbViewConfigReadMemo = null;
+let _dbViewConfigReadMemoDepth = 0;
+function _withDbViewConfigReadMemo(fn) {
+  if (typeof window !== 'undefined' && window.__meldexDisableViewConfigReadMemo === true) return fn();
+  if (_dbViewConfigReadMemoDepth === 0) _dbViewConfigReadMemo = new Map();
+  _dbViewConfigReadMemoDepth += 1;
+  try {
+    return fn();
+  } finally {
+    _dbViewConfigReadMemoDepth -= 1;
+    if (_dbViewConfigReadMemoDepth === 0) _dbViewConfigReadMemo = null;
+  }
+}
+function _clearDbViewConfigReadMemo() {
+  if (_dbViewConfigReadMemo) _dbViewConfigReadMemo.clear();
+}
 function getDbViewConfig(dbPath) {
+  const memoKey = String(dbPath || '');
+  if (_dbViewConfigReadMemo && _dbViewConfigReadMemo.has(memoKey)) return _dbViewConfigReadMemo.get(memoKey);
+  const cfg = _readDbViewConfigFromStorage(dbPath);
+  if (_dbViewConfigReadMemo) _dbViewConfigReadMemo.set(memoKey, cfg);
+  return cfg;
+}
+function _readDbViewConfigFromStorage(dbPath) {
   const fileId = MeldexSheetViewConfigEnvironment.fileId(dbPath);
   let cfg = {};
   if (fileId) {
@@ -623,6 +652,7 @@ function withDbViewConfigHistory(dbPath, label, mutator, detail, onRestore) {
   return result;
 }
 function saveDbViewConfig(dbPath, cfg, options = {}) {
+  if (typeof _clearDbViewConfigReadMemo === 'function') _clearDbViewConfigReadMemo();
   const key = getDbViewConfigStorageKey(dbPath);
   const label = options.historyLabel || options.label || '';
   const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
@@ -641,6 +671,8 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
       options.historyScope
     );
   }
+  // ビュー切替・グループ化列などの変更に、オプションパネルの列設定（ビューの基準列）を追従させる。
+  if (typeof _ptScheduleViewTargetRefresh === 'function') _ptScheduleViewTargetRefresh(dbPath);
 }
 
 async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
@@ -660,6 +692,7 @@ async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
       options.historyDetail || '', options.onRestore, options.historyScope
     );
   }
+  if (typeof _ptScheduleViewTargetRefresh === 'function') _ptScheduleViewTargetRefresh(dbPath);
   return true;
 }
 function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {

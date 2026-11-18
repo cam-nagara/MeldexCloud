@@ -392,7 +392,11 @@
     }
     const status = panel.querySelector('[data-cal-attendance-export-status]');
     const formatButtons = [...panel.querySelectorAll('.att-csv-format')];
-    formatButtons.forEach(button => { button.style.minHeight = '44px'; button.style.width = '100%'; });
+    // 2列に並ぶ狭い幅でも長い形式名を切らずに折り返す（高さは44px以上で内容に合わせる）。
+    formatButtons.forEach(button => {
+      button.style.minHeight = '44px'; button.style.width = '100%';
+      button.style.height = 'auto'; button.style.whiteSpace = 'normal'; button.style.overflowWrap = 'anywhere';
+    });
     const setBusy = (next) => {
       busy = next;
       panel.setAttribute('aria-busy', next ? 'true' : 'false');

@@ -694,12 +694,20 @@ input.gb-middle-ellipsis-input-active {
 /* 小型操作ボタン (×削除, +追加 等) */
 .pt-small-btn { font-size: var(--ui-font-11); padding: 1px var(--ui-space-3); cursor: pointer; }
 .pt-small-btn.muted { color: var(--ui-fg-muted); }
+/* AI自動生成のプロンプトへ差し込む列のボタン: 入力欄の下に値の列へ揃えて並べる（入力欄の横に置くと縦に潰れる） */
+.pt-ai-ref-row { margin-left: calc(128px + var(--ui-space-5, 12px)); }
+.pt-ai-ref-row .pt-small-btn { white-space: nowrap; }
+/* 列のメモ: 保存状態は入力欄の下に出す（横に置くと1文字ずつ縦に折り返していた） */
+.pt-column-memo-value { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pt-column-memo-value > textarea { width: 100%; box-sizing: border-box; }
 /* ヒント行 */
 .pt-hint { font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-top: 2px; }
 .pt-select-option-list {
   display: grid;
   /* 行ごとのチップ幅を一覧全体でそろえる（各行は subgrid で同じ列を使う） */
-  grid-template-columns: minmax(40px, max-content) minmax(56px, 1fr) 28px 28px;
+  /* 右パネル（約300px）で項目名の右に置いても、操作2つが一覧の外へはみ出さない最小幅にする。
+     チップは省略表示（ellipsis）、入力欄は残り幅を使う。 */
+  grid-template-columns: minmax(24px, max-content) minmax(32px, 1fr) 28px 28px;
   min-width: 0;
   gap: var(--ui-space-2);
   margin-bottom: var(--ui-space-2);
@@ -1235,9 +1243,47 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .gb-context-menu > div:hover { background: var(--bg4); }
 .gb-context-menu > div.danger { color: var(--red); }
 .gb-context-menu > div.danger:hover { background: color-mix(in srgb,var(--red) 15%,transparent); }
-.tree-node-row.drag-over-above { box-shadow: inset 0 2px 0 var(--outliner-accent); }
-.tree-node-row.drag-over-below { box-shadow: inset 0 -2px 0 var(--outliner-accent); }
-.tree-node-row.drag-over-inside { background: color-mix(in srgb, var(--outliner-item-selected-bg) 45%, transparent); }
+/* フォルダツリーのD&Dインジケーター（UI共通ルール §19）:
+   線=行と行の間への移動。行の上端/下端の境界に、字下げ位置から右端までの2px線を描く
+   （行の内側の影にすると行の強調や枠と誤読されるため、境界へはみ出す絶対配置の線にする）。
+   枠=フォルダ（シート）の中への移動。行全体をアクセント色の枠で囲む。 */
+.tree-node-row.drag-over-above,
+.tree-node-row.drag-over-below { box-shadow: none; }
+.tree-node-row.drag-over-above::after,
+.tree-node-row.drag-over-below::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--outliner-accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.tree-node-row.drag-over-above::after { top: -1px; }
+.tree-node-row.drag-over-below::after { bottom: -1px; }
+.tree-node-row.drag-over-above::before,
+.tree-node-row.drag-over-below::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 2px solid var(--outliner-accent);
+  border-radius: 50%;
+  background: var(--outliner-bg, var(--bg2));
+  pointer-events: none;
+  z-index: 3;
+}
+.tree-node-row.drag-over-above::before { top: -3px; }
+.tree-node-row.drag-over-below::before { bottom: -3px; }
+.tree-node-row.drag-over-inside {
+  background: color-mix(in srgb, var(--outliner-accent) 14%, transparent);
+  outline: 2px solid var(--outliner-accent);
+  outline-offset: -2px;
+}
 .tree-node-row.dragging { opacity: 0.4; }
 
 /* リッチテキスト */

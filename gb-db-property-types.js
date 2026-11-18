@@ -87,4 +87,5 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
 __loadSplitScript('gb-db-property-types.js', [
   'gb-db-property-types.part01.js',
   'gb-db-property-types.part02.js',
+  'gb-db-ai-column.js',
 ]);

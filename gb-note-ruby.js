@@ -145,6 +145,21 @@
     showLegacyPopup(editable, range);
   }
 
+  // 編集ホストが属するファイルのパス（シート登録の候補を作品フォルダ等から探すため）。
+  // サブパネル等は祖先の data-path 系に持つ。無ければ開いているノート。
+  function notePathForEditable(editable) {
+    var node = editable;
+    for (var guard = 0; node && node.nodeType === 1 && guard < 12; guard += 1) {
+      var ds = node.dataset || {};
+      var value = ds.notePath || ds.pagePath || ds.filePath || ds.entityPath || ds.path;
+      if (value) return String(value);
+      node = node.parentElement;
+    }
+    // 本体の state はトップレベルの let 宣言なので window には載らない
+    var st = typeof state !== 'undefined' ? state : global.state;
+    return st ? String(st.currentEntityPath || st.currentPagePath || '') : '';
+  }
+
   // ノート専用のルビ編集ポップアップ。
   function showLegacyPopup(editable, range) {
     if (!editable || !range) return;
@@ -179,9 +194,27 @@
     popup.append(label, row);
     popup.addEventListener('mousedown', function (ev) { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
     document.body.appendChild(popup);
+    var anchorRect = range.getBoundingClientRect();
     if (typeof global._positionEditorPopup === 'function') {
-      global._positionEditorPopup(popup, range.getBoundingClientRect());
+      global._positionEditorPopup(popup, anchorRect);
     }
+    var sheetRegister = global.MeldexRubySheetRegister;
+    // 「シートに登録」: 選択中の文字列とルビを、ふりがな列のあるシートへ登録する（共通部品）
+    if (sheetRegister && typeof sheetRegister.attach === 'function') {
+      sheetRegister.attach(popup, {
+        getText: function () { return text; },
+        getRuby: function () { return input.value; },
+        rubyInput: input,
+        getPath: function () { return notePathForEditable(editable); },
+        reposition: function () {
+          if (typeof global._positionEditorPopup === 'function') global._positionEditorPopup(popup, anchorRect);
+        },
+        close: function () { closePopup(); },
+      });
+    }
+    var isSheetDialogOpen = function () {
+      return !!(sheetRegister && typeof sheetRegister.isBusy === 'function' && sheetRegister.isBusy(popup));
+    };
     var closeHandler = null;
     var keyHandler = null;
     var cleanup = function () {
@@ -210,9 +243,12 @@
       ev.stopPropagation();
     });
     closeHandler = function onPointerDown(ev) {
+      // シート登録のダイアログ（フォルダ選択・確認）を操作中は閉じない
+      if (isSheetDialogOpen()) return;
       if (!popup.contains(ev.target)) closePopup(editable);
     };
     keyHandler = function onKeyDown(ev) {
+      if (isSheetDialogOpen()) return;
       // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
       if (ev.key === 'Tab') {
         ev.preventDefault();

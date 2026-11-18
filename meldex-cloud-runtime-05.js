@@ -4899,12 +4899,39 @@
         && !pivotData.entities[oldName]._entry_path ? oldName : null;
       legacyNames.set(key, matched || fallback);
     }
+    // 同じ行名を持つ古いトピック（行IDの付け直し前のもの等）が名前の対応表を取ると、
+    // 現在の行のトピックが対応先を失い「C · ent_…」のような重複行として表示されていた。
+    // 旧シートの行ID（_id）で直接対応付け、まだ対応の無いトピックを現在の行へ結び付ける。
+    const placedKeys = new Set(placements.map(item => topicKey(item.topicRef)));
+    const claimedNames = new Set([...legacyNames.values()].filter(Boolean));
+    const entityNameById = new Map();
+    Object.entries(pivotData.entities).forEach(([entityName, entity]) => {
+      if (entity?._id && entity._topicCanonicalOnly !== true) entityNameById.set(String(entity._id), entityName);
+    });
+    records.forEach((record, key) => {
+      if (legacyNames.get(key) || !placedKeys.has(key)) return;
+      const entityName = entityNameById.get(String(record?.topicId || ''));
+      if (!entityName || claimedNames.has(entityName)) return;
+      if (!matchesLegacyEntry(view, record, pivotData.entities[entityName])) return;
+      legacyNames.set(key, entityName);
+      claimedNames.add(entityName);
+    });
     const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
     for (const [key, name] of legacyNames) {
       if (name && !placementKeys.has(key)) delete pivotData.entities[name];
     }
     const columns = columnsForDocument(view.document, requestedViewId);
     const propertyNames = columns.map(column => String(column?.name || column?.columnId || '')).filter(Boolean);
+    // 旧シート自身の列は、まだ値が無くても旧シートが正本。以前は「値を持つ列」（/pivot の
+    // properties）だけを正本扱いしており、値の無い列には保存先を持たない仮の値を作っていた。
+    // そのため空のセルが「値のあるセル」として開かれ、新規作成ではなく更新が走り、保存先が
+    // 分からない更新は直前に開いていたトピックへ向かって拒否されていた（リレーションを設定
+    // しても登録できない不具合）。
+    let currentTypes = null;
+    try { currentTypes = global.getPropertyTypes?.(dbPath) || null; } catch { currentTypes = null; }
+    const legacyColumnTypes = { ...(view.document?.legacySheet?.propertyTypes || {}), ...(currentTypes || {}) };
+    const isLegacyColumn = columnName => baseProperties.includes(columnName)
+      || Object.prototype.hasOwnProperty.call(legacyColumnTypes, columnName);
     pivotData.properties = [...new Set([...baseProperties, ...propertyNames])];
     placements.forEach((placement) => {
       const ref = placement.topicRef;
@@ -4923,7 +4950,7 @@
         const columnName = String(column?.name || column?.columnId || '');
         const value = propertyForColumn(record, placement, column);
         if (!columnName) return;
-        if (legacyName && baseProperties.includes(columnName)) {
+        if (legacyName && isLegacyColumn(columnName)) {
           // 元シートの値が正本。配置キャッシュで候補ID・保存先・新しい値を落とさない。
           const native = savedEntity?.[columnName];
           entity[columnName] = Array.isArray(native) ? native.map(candidate => ({ ...candidate,
@@ -5226,6 +5253,15 @@
     if (result?.detail) rememberView(result.detail);
     const view = viewsByPath.get(path) || null;
     if (result?.ok && view && !view.readOnly && checkpointId(view.checkpoint)) return { view };
+    // 移行の確定が「競合」（409）で拒否されただけなら、旧シート（正本）は書き込める。
+    // 以前はこれも閲覧専用と同じに扱い、列名変更そのものを拒否していた（改名・移動した
+    // シートや、行IDが他のシートと重なるシートで列名を一切変えられなかった）。
+    const migrationStatus = Number(result?.error?.status || result?.error?.response?.status
+      || result?.error?.payload?.status || 0);
+    if (result?.ok && result.mode === 'preview' && migrationStatus === 409) {
+      viewsByPath.delete(path);
+      return { unavailable: true, message: '共通保管庫への移行が他の変更と競合しています' };
+    }
     if (result?.ok && (result.mode === 'preview' || view?.readOnly)) {
       return { readOnly: true, message: 'このシートは閲覧専用または他の操作と競合しているため、列名を変更しませんでした' };
     }
@@ -5259,8 +5295,35 @@
     return views;
   }
 
+  // 直前の移行・列名変更で得た書き込み可能な表示定義をそのまま使う。以前は列名変更のたびに
+  // 移行をやり直しており（サーバー往復3回＋全トピックの再移行）、見出しが数秒変わらず、
+  // 移行完了の通知でフォルダツリーまで読み直していた。古い checkpoint だった場合は
+  // PATCH の競合で検出し、最新の文書へ載せ直す（patchSheetViews の rebase）。
+  function cachedViewForColumnChange(dbPath) {
+    const view = viewsByPath.get(normalizePath(dbPath)) || null;
+    if (view && !view.readOnly && view.document && checkpointId(view.checkpoint)) return { view, cached: true };
+    return null;
+  }
+
+  function findColumnInView(view, options) {
+    const requestedViewId = options.viewId || options.ctx?.currentViewId;
+    let current = columnsForDocument(view.document, requestedViewId).find(column => column.name === options.oldName);
+    if (!current) {
+      for (const sheetView of (view.document.sheetViews || [])) {
+        const id = sheetView?.viewId || sheetView?.sheetViewId;
+        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
+        if (current) break;
+      }
+    }
+    return current || null;
+  }
+
   async function renameColumn(options) {
-    const refreshed = await refreshViewForColumnChange(options.dbPath);
+    let refreshed = cachedViewForColumnChange(options.dbPath);
+    // 移行後に追加した列（挿入直後の列名入力など）は手元の表示定義にまだ無い。
+    // その時だけ移行し直して列の安定IDを得る。
+    if (refreshed && !findColumnInView(refreshed.view, options)) refreshed = null;
+    if (!refreshed) refreshed = await refreshViewForColumnChange(options.dbPath);
     if (refreshed.readOnly) throw new Error(refreshed.message);
     if (refreshed.unavailable) {
       // 共通保管庫へ移行できないシートでは、共通化の対象（他の場所の同じ列）が存在しない。
@@ -5277,18 +5340,9 @@
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
     }
-    const requestedViewId = options.viewId || options.ctx?.currentViewId;
-    const currentColumns = columnsForDocument(view.document, requestedViewId);
-    let current = currentColumns.find(column => column.name === options.oldName);
     // テンプレート適用直後など、画面側の viewId と canonical 側の active view が
     // 一時的にずれていても、同じ文書内の列の安定IDを失わないよう全ビューを探す。
-    if (!current) {
-      for (const sheetView of (view.document.sheetViews || [])) {
-        const id = sheetView?.viewId || sheetView?.sheetViewId;
-        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
-        if (current) break;
-      }
-    }
+    let current = findColumnInView(view, options);
     // 旧シートには存在するが、移行済みビューの columns へまだ投影されていない列も
     // legacy の型と決定的IDから安全に補完する。
     if (!current) {
@@ -5352,6 +5406,29 @@
           view.document = clone(currentSnapshot.viewDocument);
           view.checkpoint = clone(currentSnapshot.checkpoint);
           return true;
+        }
+        if (refreshed.cached && currentSnapshot?.viewDocument
+            && checkpointId(currentSnapshot?.checkpoint)
+            && checkpointId(currentSnapshot.checkpoint) !== baseCheckpointId) {
+          // 手元の表示定義が古かった（他の操作で checkpoint が進んでいた）。旧シートの列名は
+          // 変更済みなので、最新の文書に同じ列名変更を載せ直す。列名の付け替えは同じ名前に
+          // 対して冪等なので、先の PATCH が実は保存済みだった場合も結果は変わらない。
+          const rebasedViews = renamedSheetViews(
+            currentSnapshot.viewDocument, options.oldName, options.newName, familyId, current,
+          );
+          const rebased = await global.apiFetch(`/topic-views/${encodeURIComponent(view.document.documentId)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+            body: JSON.stringify({
+              baseCheckpointId: checkpointId(currentSnapshot.checkpoint),
+              mutationId: mutationId('column-rename'),
+              changes: { sheetViews: rebasedViews },
+            }),
+          }).catch(() => null);
+          if (rebased?.viewDocument) {
+            view.document = clone(rebased.viewDocument);
+            view.checkpoint = clone(rebased.checkpoint);
+            return true;
+          }
         }
         if (checkpointId(currentSnapshot?.checkpoint) !== baseCheckpointId) {
           const unknown = new Error('列名変更と列定義の保存結果が競合しています');
@@ -6442,7 +6519,10 @@
       const view = ref.surface === 'board'
         ? result.boardViews.find(item => item.boardViewId === ref.viewId)
         : result.sheetViews.find(item => item.viewId === ref.viewId);
-      return view ? { ...clone(ref), view: clone(view), name: view.name, viewMode: view.viewMode || ref.surface } : null;
+      return view ? {
+        ...clone(ref), view: clone(view), name: view.name, viewMode: view.viewMode || ref.surface,
+        icon: typeof view.icon === 'string' ? view.icon : '',
+      } : null;
     }).filter(Boolean);
   }
 
@@ -6491,6 +6571,17 @@
     if (!nextName) throw new TypeError('View name is required');
     if (list.some(item => item !== view && String(item.name || '').trim() === nextName)) throw new Error('同じ名前のビューがあります');
     view.name = nextName; return result;
+  }
+
+  // ビューのアイコン（利用者が選んだもの）を保存する。spec が空なら既定（ビュー種別のアイコン）へ戻す。
+  // 旧版は icon を知らないので読み飛ばす（追加フィールド）。
+  function setMixedViewIcon(document, ref, spec) {
+    const { document: result, view } = findMixedView(document, ref);
+    if (!view) throw new RangeError('View was not found');
+    const next = typeof spec === 'string' ? spec.trim() : '';
+    if (next) view.icon = next;
+    else delete view.icon;
+    return result;
   }
 
   function reorderMixedView(document, ref, toIndex) {
@@ -6646,6 +6737,7 @@
       reorderMixed: (ref, index) => commit('ビューを並べ替え', (doc) => reorderMixedView(doc, ref, index)),
       removeMixed: (ref) => commit('ビューを削除', (doc) => removeMixedView(doc, ref)),
       duplicateMixed: (ref, value) => commit('ビューを複製', (doc) => duplicateMixedView(doc, ref, value)),
+      setIconMixed: (ref, spec) => commit('ビューのアイコンを変更', (doc) => setMixedViewIcon(doc, ref, spec)),
     });
   }
 
@@ -6768,13 +6860,16 @@
       if (settings.setActiveViewRef) settings.setActiveViewRef(clone(ref));
       else if (ref.surface === 'board') settings.setActiveBoardViewId?.(ref.viewId);
     };
-    const iconHtml = (surface, viewMode) => {
+    const iconHtml = (surface, viewMode, customIcon) => {
       const icons = {
         board: 'presentation', pivot: 'table', tree: 'listTree', gallery: 'layoutGrid',
         kanban: 'columns', calendar: 'calendar', timeline: 'clock', gantt: 'ganttChart', chart: 'barChart2',
         graph: 'gitBranch', form: 'clipboardList',
       };
       const icon = surface === 'board' ? icons.board : (icons[viewMode] || icons.pivot);
+      if (global.MeldexViewTabs && typeof global.MeldexViewTabs.renderIcon === 'function') {
+        return global.MeldexViewTabs.renderIcon(customIcon, icon, 12);
+      }
       return typeof global.lucide === 'function' ? global.lucide(icon, 12) : '';
     };
     // タブの横スクロール領域からメニューをtop layerへ出して、切り取りを防ぐ。
@@ -6838,7 +6933,7 @@
         option.selected = selected; select.appendChild(option);
         const label = document.createElement('button'); label.type = 'button'; label.className = 'view-tab-label';
         label.dataset.e2eId = `board-common-view-label-${refToken}`;
-        label.innerHTML = iconHtml(ref.surface, entry.viewMode);
+        label.innerHTML = iconHtml(ref.surface, entry.viewMode, entry.icon);
         const labelText = document.createElement('span');
         labelText.textContent = String(entry.name || (ref.surface === 'board' ? 'ボード' : 'シート'));
         label.appendChild(labelText);
@@ -6881,6 +6976,13 @@
         };
         action('名前を変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
         action('複製', () => controller.duplicateMixed(ref), false, 'duplicate');
+        if (typeof controller.setIconMixed === 'function' && global.MeldexViewTabs?.openIconPicker) {
+          action('アイコンを変更', () => global.MeldexViewTabs.openIconPicker({
+            anchorEl: tab.isConnected ? tab : root,
+            current: entry.icon || '',
+            onChange: spec => runViewAction('アイコンを変更', () => controller.setIconMixed(ref, spec)).then(() => refresh()),
+          }), false, 'icon', false);
+        }
         separator();
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
@@ -6890,18 +6992,6 @@
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
         ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
-        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-ref', JSON.stringify(ref)));
-        tab.addEventListener('dragover', event => { if (!settings.readOnly) event.preventDefault(); });
-        tab.addEventListener('drop', event => {
-          if (settings.readOnly) return;
-          const payload = event.dataTransfer?.getData('text/meldex-view-ref') || '';
-          if (!payload) return; // ビュー以外のドロップは対象外
-          event.preventDefault();
-          let dropped = null;
-          try { dropped = JSON.parse(payload); }
-          catch (error) { reportViewActionFailure('ビューの並べ替え', error); refresh(); return; }
-          runViewAction('ビューの並べ替え', () => controller.reorderMixed(dropped, index)).then(() => refresh());
-        });
         tab.appendChild(label); tab.appendChild(menu); tabs.appendChild(tab);
       });
       const add = document.createElement('details'); add.className = 'bd-topic-view-overflow bd-common-view-add';
@@ -6930,6 +7020,19 @@
       root.insertBefore(add, select.nextSibling);
       addElement = add;
     };
+    // 並べ替えのドラッグ操作とドロップ位置の表示は共通部品（メインパネルのタブと同じ縦線）。
+    // タブ列全体で受けるので、最後のタブの後ろへも置ける。
+    global.MeldexViewTabs?.bindReorder?.(tabs, {
+      itemSelector: ':scope > .bd-common-view-tab',
+      dataType: 'text/meldex-view-ref',
+      readOnly: () => settings.readOnly === true,
+      onMove: (fromIndex, toIndex) => {
+        const entry = orderedViews(normalizeDocument(settings.getDocument()))[fromIndex];
+        if (!entry) return;
+        runViewAction('ビューの並べ替え', () => controller.reorderMixed({ surface: entry.surface, viewId: entry.viewId }, toIndex))
+          .then(() => refresh());
+      },
+    });
     select.addEventListener('change', () => {
       const entry = orderedViews(normalizeDocument(settings.getDocument()))[Number(select.value)];
       if (!entry) return;
@@ -6941,7 +7044,7 @@
 
   global.MeldexBoardTopicViews = Object.freeze({
     normalizeDocument, addView, renameView, reorderView, removeView, duplicateView,
-    orderedViews, addSheetView, renameMixedView, reorderMixedView, removeMixedView, duplicateMixedView,
+    orderedViews, addSheetView, renameMixedView, reorderMixedView, removeMixedView, duplicateMixedView, setMixedViewIcon,
     captureViewState, applyViewState, createController, attachToolbar,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
@@ -14314,7 +14417,10 @@ const GBLayout = (() => {
     tabsScroll.className = 'gb-pane-tabs-scroll';
 
     // タブ
-    if (node.tabs && node.tabs.length > 0) {
+    // サブパネルは土台タブ（サブパネル本体）を出さず、開いているファイル／フォルダのタブを並べる。
+    const subpanelTabStrip = node.meldexRole === 'subpanel-workspace' && typeof window.GBSubPanel?.renderTabStrip === 'function';
+    if (subpanelTabStrip) window.GBSubPanel.renderTabStrip(tabsScroll, node);
+    if (!subpanelTabStrip && node.tabs && node.tabs.length > 0) {
       node.tabs.forEach((tab, i) => {
         const tabEl = document.createElement('div');
         tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
@@ -14504,7 +14610,7 @@ const GBLayout = (() => {
       if (typeof setActivePane === 'function') setActivePane(node.id);
       if (typeof showPanelMenu === 'function') showPanelMenu(e, { paneId: node.id });
     });
-    if (!_isSidebarPaneNode(node)) tabsScroll.appendChild(addTabBtn);
+    if (!_isSidebarPaneNode(node) && !subpanelTabStrip) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
     if (ctrls.childElementCount) tabBar.appendChild(ctrls);
@@ -14518,6 +14624,7 @@ const GBLayout = (() => {
         .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     };
     tabBar.addEventListener('dragover', (e) => {
+      if (subpanelTabStrip) return; // サブパネルのタブ列が自前で受け付ける
       const types = e.dataTransfer.types;
       const isMainReorder = types.includes(MAIN_TAB_REORDER_MIME);
       const isTab = types.includes('application/x-gb-tab');
@@ -14561,6 +14668,7 @@ const GBLayout = (() => {
       _clearDropMarkers();
     });
     tabBar.addEventListener('drop', async (e) => {
+      if (subpanelTabStrip) return; // サブパネルのタブ列が自前で受け付ける
       const mainReorderData = e.dataTransfer.getData(MAIN_TAB_REORDER_MIME);
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
       const hasNode = typeof MeldexDnD !== 'undefined'
@@ -14617,6 +14725,21 @@ const GBLayout = (() => {
       // === フォルダツリーからのファイル D&D（ペインのタブとして開く） ===
       if (node.locked) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
+        return;
+      }
+      // サブパネルのタブを移す: サブパネル側の保存を確定してタブを閉じてから、このパネルで開く。
+      let subpanelTabData = null;
+      try { subpanelTabData = JSON.parse(e.dataTransfer.getData(window.GBSubPanel?.TAB_MIME || 'application/x-meldex-subpanel-tab') || 'null'); } catch (err) { subpanelTabData = null; }
+      if (subpanelTabData?.id && typeof window.GBSubPanel?.takeTab === 'function') {
+        const moved = await window.GBSubPanel.takeTab(subpanelTabData.id);
+        if (!moved?.path) return;
+        const insertAt = _resolveInsertIndex();
+        const movedTabId = GBTabs.addTab(node.id, moved.label || '', moved.type, moved.path, { ...(moved.state || {}) }, { preferTargetPane: true });
+        if (movedTabId) {
+          const endIdx = node.tabs.length - 1;
+          if (node.tabs[endIdx]?.id === movedTabId && endIdx > insertAt) GBTabs.moveTab(node.id, movedTabId, node.id, insertAt);
+          GBTabs.activateTab(GBTabs.findPaneIdForTab?.(movedTabId) || node.id, movedTabId);
+        }
         return;
       }
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
@@ -22905,6 +23028,7 @@ class CalendarComponent extends ToolComponent {
     void startDay;
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
 <div class="gb-toolbar gb-toolbar-main gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
+  ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('calendar') : ''}
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
   <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
@@ -23695,6 +23819,15 @@ class CalendarComponent extends ToolComponent {
     // scroll offset: every production surface remains visible at once.
     const tablist = this.el.querySelector('.gb-cal-surface-switch');
     if (activeButton && tablist) tablist.scrollLeft = 0;
+    // 表示面の切替でカレンダー専用の操作が出入りしても、ツールバーの幅は変わらないため
+    // 共通の幅計測（あふれメニュー）が再計測されないことがある。切替後の描画で必ず測り直す。
+    if (this._lastOverflowSurface !== this._surface) {
+      this._lastOverflowSurface = this._surface;
+      const refresh = () => window.MeldexCalToolbarOverflow?.refresh?.();
+      refresh();
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refresh);
+      setTimeout(refresh, 50);
+    }
   }
 
   _persistViewToTabState(view) {
@@ -25328,6 +25461,9 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     if (label) label.style.display = 'block';
   });
   panel.querySelectorAll('.field input,.field select,.field textarea').forEach(control => {
+    // 共通ルールで項目名（128px）と入力欄は同じ行に並ぶ。幅100%固定だと項目名の分だけ
+    // 本文の外へはみ出すため、項目名の残り幅を埋めて縮む指定にする。
+    control.style.flex = '1 1 0%';
     control.style.width = '100%';
     control.style.minWidth = '0';
     control.style.maxWidth = '100%';
@@ -25997,7 +26133,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
         details: host => renderEntries(template, host),
       }));
   };
-  return window.MeldexTemplatePicker.open({
+  const picker = window.MeldexTemplatePicker.open({
     id: 'calendar-tool-template-list',
     title: '週間テンプレート',
     loadItems,
@@ -26009,6 +26145,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
     itemActions: [
       {
         label: '編集',
+        e2eId: 'tmpl-edit',
         run: (item, ctx) => {
           ctx.close('edit');
           queueMicrotask(() => this._editTemplate(String(item.id), owner));
@@ -26017,6 +26154,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
       },
       {
         label: '削除',
+        e2eId: 'tmpl-delete',
         danger: true,
         run: async (item, ctx) => {
           const confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？');
@@ -26048,6 +26186,9 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
       close: 'tmpl-close',
     },
   });
+  // ほかのカレンダーのダイアログと同じく、外枠にも安定した識別子を付ける。
+  if (picker?.overlay) picker.overlay.dataset.e2eId = 'calendar-tool-template-list-overlay';
+  return picker;
 };
 
 CalendarComponent.prototype._createTemplate = async function(knownTemplates) {
@@ -44485,8 +44626,10 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
   const idFor = (base) => idSuffix ? `${base}-${idSuffix}` : base;
   return `
     <div class="gb-toolbar gb-toolbar-main gb-toolbar-board" data-bd-role="toolbar-top">
+      ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('board') : ''}
       <button type="button" class="tb-icon-btn tool-menu-btn bd-toolbar-btn bd-toolbar-icon-btn" title="メニュー" aria-label="ボードメニュー" data-action="showToolMenu(event,'board')">${_bdIcon('menu', 16)}</button>
       <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
+      ${window.MeldexFileIcons?.toolbarIconHtml?.('board') ?? ''}
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>
       <div class="sep"></div>
       <button type="button" data-bd-action="undo" data-gb-tooltip-key="history.undo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button>${_bdIcon('undo2', 16)}</button>
@@ -60476,9 +60619,15 @@ function createScriptNoteRowIdSet(doc) {
      onDuplicate: id => {},
      onMove: (id, toIndex) => {},
      onDelete: id => {},
+     onChangeIcon: (id, spec) => {},          // 任意。渡すと「アイコンを変更」を出す（spec='' は既定に戻す）
      viewMenuItems: view => [{ id, label, checked, disabled, run }],   // 任意（ビュー固有の項目）
      addMenuItems: () => [{ id, label, icon, run }],
    }) → { element, refresh() }
+   getViews の icon は既定アイコン（lucide名）、customIcon は利用者が選んだアイコン（GBIconAssets の指定）。
+
+   ビュータブを持つ他のアプリ（シート・ボード）も、並べ替えのドラッグ操作とドロップ位置の表示は
+   MeldexViewTabs.bindReorder、ビューのアイコンの表示と選択は renderIcon / openIconPicker を使う
+   （UI共通ルール 4.0「タブのドラッグ並べ替え」）。
 */
 (function initMeldexViewTabs(global) {
   'use strict';
@@ -60489,6 +60638,162 @@ function createScriptNoteRowIdSet(doc) {
 
   function token(value) {
     return String(value ?? '').replace(/[^a-zA-Z0-9_-]+/g, '-');
+  }
+
+  /* --- ビューのアイコン（全アプリのビュータブで共通） --- */
+
+  // 利用者が選んだアイコン（customSpec）を優先し、無ければビュー種別の既定アイコン（lucide名）を描く。
+  function renderIcon(customSpec, fallbackName, size) {
+    const spec = String(customSpec || '').trim();
+    const px = size || 12;
+    if (spec && global.GBIconAssets && typeof global.GBIconAssets.render === 'function') {
+      return global.GBIconAssets.render(spec, px, { className: 'gb-view-tab-custom-icon' });
+    }
+    return icon(fallbackName || 'table', px);
+  }
+
+  // 保存するアイコン指定を整える（空・文字列以外は「既定」= ''）。
+  function normalizeIconSpec(value) {
+    if (typeof value !== 'string') return '';
+    const spec = value.trim();
+    if (!spec || spec.length > 1024) return '';
+    return global.GBIconAssets && typeof global.GBIconAssets.normalizeSpec === 'function'
+      ? String(global.GBIconAssets.normalizeSpec(spec) || '')
+      : spec;
+  }
+
+  // アイコン選択は共通の GBIconAssets.openPicker。「既定に戻す」は onChange('') を呼ぶ。
+  function openIconPicker(options) {
+    const settings = options || {};
+    if (!global.GBIconAssets || typeof global.GBIconAssets.openPicker !== 'function') {
+      global.showStatus?.('アイコンを選択できません', true);
+      return null;
+    }
+    // メニュー項目のクリックから呼ばれると、そのクリックが開いたばかりの選択画面の
+    // 「外側クリックで閉じる」へ届いて即座に閉じていた。クリック処理が終わってから開く。
+    setTimeout(() => global.GBIconAssets.openPicker({
+      anchorEl: settings.anchorEl?.isConnected ? settings.anchorEl : null,
+      title: settings.title || 'ビューのアイコン',
+      current: settings.current || '',
+      allowReset: true,
+      resetLabel: settings.resetLabel || '既定に戻す',
+      onSelect: spec => settings.onChange?.(normalizeIconSpec(spec || '')),
+      onReset: () => settings.onChange?.(''),
+    }), 0);
+    return null;
+  }
+
+  /* --- タブの並べ替え（ドラッグ＆ドロップ）: 全アプリのビュータブで共通 ---
+     見た目と判定はメインパネルのタブと同じ。カーソルが各タブの中央より左なら「そのタブの前」、
+     全タブの中央より右なら「最後のタブの後ろ」。表示は .gb-view-tab-drop-before / -after
+     （縦線。寸法・色は共通トークン --ui-tab-drop-indicator-*）。 */
+
+  const DROP_BEFORE = 'gb-view-tab-drop-before';
+  const DROP_AFTER = 'gb-view-tab-drop-after';
+  const DRAGGING = 'gb-view-tab-dragging';
+
+  // rects: 横並びのタブの [{ left, width }]（表示順）。戻り値 { overIndex, side } または null。
+  function resolveDropSlot(rects, clientX) {
+    const list = Array.isArray(rects) ? rects : [];
+    if (!list.length) return null;
+    const x = Number(clientX);
+    for (let index = 0; index < list.length; index += 1) {
+      const rect = list[index] || {};
+      const left = Number(rect.left) || 0;
+      const width = Number(rect.width) || 0;
+      if (Number.isFinite(x) && x < left + width / 2) return { overIndex: index, side: 'before' };
+    }
+    return { overIndex: list.length - 1, side: 'after' };
+  }
+
+  // 取り除いた後の並びでの挿入位置（onMove へ渡す toIndex）。
+  function dropTargetIndex(fromIndex, overIndex, side) {
+    let target = side === 'after' ? overIndex + 1 : overIndex;
+    if (fromIndex >= 0 && fromIndex < target) target -= 1;
+    return Math.max(0, target);
+  }
+
+  function clearDropIndicator(container) {
+    const scope = container || (typeof document !== 'undefined' ? document : null);
+    scope?.querySelectorAll?.(`.${DROP_BEFORE}, .${DROP_AFTER}`)
+      .forEach(item => item.classList.remove(DROP_BEFORE, DROP_AFTER));
+  }
+
+  let activeDrag = null;
+
+  // container: タブを並べる要素（再描画しても同じ要素を使い続けること）。
+  // options: { itemSelector, dataType, readOnly(), onMove(fromIndex, toIndex, { fromItem }) }
+  // 同じ container へ再度呼ぶと options だけ差し替える。
+  function bindReorder(container, options) {
+    if (!container || typeof container.addEventListener !== 'function') return null;
+    if (container._meldexViewTabReorder) {
+      container._meldexViewTabReorder.options = options || {};
+      return container._meldexViewTabReorder;
+    }
+    const binding = { options: options || {} };
+    const opt = () => binding.options || {};
+    const locked = () => {
+      const readOnly = opt().readOnly;
+      return typeof readOnly === 'function' ? !!readOnly() : !!readOnly;
+    };
+    const items = () => Array.from(container.querySelectorAll(opt().itemSelector || ':scope > .gb-view-tab'));
+    const itemOf = target => items().find(item => item === target || item.contains?.(target)) || null;
+    const ours = () => !!activeDrag && activeDrag.container === container;
+    const slotOf = event => {
+      const list = items();
+      const slot = resolveDropSlot(list.map(item => item.getBoundingClientRect()), event.clientX);
+      return slot ? { ...slot, item: list[slot.overIndex] } : null;
+    };
+    const finish = () => {
+      clearDropIndicator(container);
+      if (activeDrag && activeDrag.container === container) {
+        activeDrag.item?.classList?.remove(DRAGGING, 'dragging');
+        activeDrag = null;
+      }
+    };
+    container.addEventListener('dragstart', event => {
+      const item = itemOf(event.target);
+      if (!item) return;
+      if (locked()) { event.preventDefault?.(); return; }
+      activeDrag = { container, item, fromIndex: items().indexOf(item) };
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        try { event.dataTransfer.setData(opt().dataType || 'text/x-meldex-view-tab', String(activeDrag.fromIndex)); } catch (_) {}
+      }
+      item.classList.add(DRAGGING, 'dragging');
+      // ドロップで元のタブが描き直されても、終了処理を必ず行う。
+      if (typeof document !== 'undefined') document.addEventListener?.('dragend', finish, { once: true, capture: true });
+    });
+    container.addEventListener('dragover', event => {
+      if (!ours() || locked()) return;
+      event.preventDefault();
+      event.stopPropagation?.();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const slot = slotOf(event);
+      clearDropIndicator(container);
+      if (slot?.item) slot.item.classList.add(slot.side === 'before' ? DROP_BEFORE : DROP_AFTER);
+    });
+    container.addEventListener('dragleave', event => {
+      if (!ours()) return;
+      if (event.relatedTarget && container.contains(event.relatedTarget)) return;
+      clearDropIndicator(container);
+    });
+    container.addEventListener('drop', event => {
+      if (!ours()) return;
+      event.preventDefault();
+      event.stopPropagation?.();
+      const drag = activeDrag;
+      const slot = slotOf(event);
+      finish();
+      if (locked() || !slot || drag.fromIndex < 0) return;
+      const toIndex = dropTargetIndex(drag.fromIndex, slot.overIndex, slot.side);
+      if (toIndex === drag.fromIndex) return;
+      try { opt().onMove?.(drag.fromIndex, toIndex, { fromItem: drag.item }); }
+      catch (error) { global.showStatus?.(error?.message || 'ビューを並べ替えできません', true); }
+    });
+    container.addEventListener('dragend', finish);
+    container._meldexViewTabReorder = binding;
+    return binding;
   }
 
   // タブ列は横スクロールするため、メニューは popover（top layer）へ出して見切れを防ぐ。
@@ -60625,7 +60930,7 @@ function createScriptNoteRowIdSet(doc) {
         label.type = 'button';
         label.className = 'gb-view-tab-label';
         label.dataset.e2eId = `${prefix}-label-${refToken}`;
-        label.innerHTML = icon(view.icon || 'table', 12);
+        label.innerHTML = renderIcon(view.customIcon, view.icon || 'table', 12);
         const text = document.createElement('span');
         text.textContent = view.name || 'ビュー';
         label.appendChild(text);
@@ -60659,6 +60964,20 @@ function createScriptNoteRowIdSet(doc) {
         bindMenu(menu, panel);
         menuButton(panel, { id: 'rename', label: '名前を変更', disabled: locked, refresh: false, run: () => beginRename(tab, view) }, refToken);
         menuButton(panel, { id: 'duplicate', label: '複製', disabled: locked, run: () => settings.onDuplicate?.(view.id) }, refToken);
+        if (typeof settings.onChangeIcon === 'function') {
+          menuButton(panel, {
+            id: 'icon', label: 'アイコンを変更', disabled: locked, refresh: false,
+            run: () => openIconPicker({
+              anchorEl: tab.isConnected ? tab : root,
+              current: view.customIcon || '',
+              onChange: spec => {
+                try { settings.onChangeIcon(view.id, spec); }
+                catch (error) { global.showStatus?.(error?.message || 'アイコンを変更できません', true); }
+                refresh();
+              },
+            }),
+          }, refToken);
+        }
         const extra = settings.viewMenuItems?.(view) || [];
         if (extra.length) {
           separator(panel);
@@ -60674,15 +60993,6 @@ function createScriptNoteRowIdSet(doc) {
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
         ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
-        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-tab', view.id));
-        tab.addEventListener('dragover', event => { if (!readOnly()) event.preventDefault(); });
-        tab.addEventListener('drop', event => {
-          if (readOnly()) return;
-          event.preventDefault();
-          const fromId = event.dataTransfer?.getData('text/meldex-view-tab');
-          if (fromId && fromId !== view.id) settings.onMove?.(fromId, index);
-          refresh();
-        });
         tab.append(label, menu);
         list.appendChild(tab);
       });
@@ -60709,6 +61019,18 @@ function createScriptNoteRowIdSet(doc) {
       }
     }
 
+    // 並べ替えはタブ列全体で受ける（最後のタブの後ろへも置ける）。
+    bindReorder(list, {
+      itemSelector: ':scope > .gb-view-tab',
+      dataType: 'text/meldex-view-tab',
+      readOnly,
+      onMove: (fromIndex, toIndex) => {
+        const view = (settings.getViews?.() || [])[fromIndex];
+        if (view) settings.onMove?.(view.id, toIndex);
+        refresh();
+      },
+    });
+
     select.addEventListener('change', () => {
       settings.onActivate?.(select.value);
       refresh();
@@ -60717,7 +61039,10 @@ function createScriptNoteRowIdSet(doc) {
     return { element: root, refresh };
   }
 
-  global.MeldexViewTabs = Object.freeze({ create });
+  global.MeldexViewTabs = Object.freeze({
+    create, bindReorder, resolveDropSlot, dropTargetIndex, clearDropIndicator,
+    renderIcon, normalizeIconSpec, openIconPicker,
+  });
 }(typeof globalThis !== 'undefined' ? globalThis : window));
 
 ;
@@ -70064,6 +70389,7 @@ function _migrateLegacyViewConfig(dbPath, cfg) {
   return { cfg: config, changed: true };
 }
 function _persistMigratedDbViewConfig(dbPath, cfg) {
+  if (typeof _clearDbViewConfigReadMemo === 'function') _clearDbViewConfigReadMemo();
   try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
 }
 function _sanitizeDbViewConfigForBackend(cfg) {
@@ -70277,7 +70603,35 @@ if (typeof window !== 'undefined' && !window.__MeldexSheetViewConfigPathMutation
   window.__MeldexPwaPathMutationHooks = window.__MeldexPwaPathMutationHooks || [];
   window.__MeldexPwaPathMutationHooks.push(window.__MeldexSheetViewConfigPathMutationHook);
 }
+// 表の描画1回の間だけ、表示設定の読み取り結果を使い回す（2026-11-18）。
+// 描画中は列見出し・セルごとに表示設定を読み、そのたびに保存領域の読み取り・JSON解析・
+// 全ビューの正規化をしていた（85列×10行で約3600回）。列が多いシートでビュー切替が
+// 重かった主因。描画は同期処理なので、その間に外から設定が変わることはない。
+// 書き込みがあれば即座に破棄する。
+let _dbViewConfigReadMemo = null;
+let _dbViewConfigReadMemoDepth = 0;
+function _withDbViewConfigReadMemo(fn) {
+  if (typeof window !== 'undefined' && window.__meldexDisableViewConfigReadMemo === true) return fn();
+  if (_dbViewConfigReadMemoDepth === 0) _dbViewConfigReadMemo = new Map();
+  _dbViewConfigReadMemoDepth += 1;
+  try {
+    return fn();
+  } finally {
+    _dbViewConfigReadMemoDepth -= 1;
+    if (_dbViewConfigReadMemoDepth === 0) _dbViewConfigReadMemo = null;
+  }
+}
+function _clearDbViewConfigReadMemo() {
+  if (_dbViewConfigReadMemo) _dbViewConfigReadMemo.clear();
+}
 function getDbViewConfig(dbPath) {
+  const memoKey = String(dbPath || '');
+  if (_dbViewConfigReadMemo && _dbViewConfigReadMemo.has(memoKey)) return _dbViewConfigReadMemo.get(memoKey);
+  const cfg = _readDbViewConfigFromStorage(dbPath);
+  if (_dbViewConfigReadMemo) _dbViewConfigReadMemo.set(memoKey, cfg);
+  return cfg;
+}
+function _readDbViewConfigFromStorage(dbPath) {
   const fileId = MeldexSheetViewConfigEnvironment.fileId(dbPath);
   let cfg = {};
   if (fileId) {
@@ -70375,6 +70729,7 @@ function withDbViewConfigHistory(dbPath, label, mutator, detail, onRestore) {
   return result;
 }
 function saveDbViewConfig(dbPath, cfg, options = {}) {
+  if (typeof _clearDbViewConfigReadMemo === 'function') _clearDbViewConfigReadMemo();
   const key = getDbViewConfigStorageKey(dbPath);
   const label = options.historyLabel || options.label || '';
   const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
@@ -70393,6 +70748,8 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
       options.historyScope
     );
   }
+  // ビュー切替・グループ化列などの変更に、オプションパネルの列設定（ビューの基準列）を追従させる。
+  if (typeof _ptScheduleViewTargetRefresh === 'function') _ptScheduleViewTargetRefresh(dbPath);
 }
 
 async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
@@ -70412,6 +70769,7 @@ async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
       options.historyDetail || '', options.onRestore, options.historyScope
     );
   }
+  if (typeof _ptScheduleViewTargetRefresh === 'function') _ptScheduleViewTargetRefresh(dbPath);
   return true;
 }
 function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {
@@ -71503,8 +71861,10 @@ class ScriptNoteComponent extends ToolComponent {
   static _buildHTML() {
     return `
 <div id="se-toolbar" class="gb-toolbar gb-toolbar-main">
+  ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('scriptnote') : ''}
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
+  ${window.MeldexFileIcons?.toolbarIconHtml?.('scriptnote') ?? ''}
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
   <button type="button" class="tb-text-btn sn2-template-button" data-sn-action="templatePicker" title="テンプレート" aria-label="テンプレート" aria-haspopup="dialog"><span class="ico ico-layoutTemplate"></span><span class="sn2-template-button-label">マンガシナリオ</span></button>
   <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート" hidden>
@@ -72176,12 +72536,16 @@ class ScriptNoteComponent extends ToolComponent {
               if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
             }
           } catch (e) {
-            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）。
-            // 先に変えたツリーとタブの名前は、変わらなかったファイル名に合わせて戻す。
-            if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function' && editor._path === oldPath) {
-              const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
-              applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
-              titleInput.value = editor.doc.title || '';
+            // タイトル＝ファイル名（v0.7.495）を優先し、ファイル名を変えられなかった時はタイトルも
+            // 元に戻す（2026-11-18 ユーザー判断）。先に変えたツリーとタブの名前も元のファイル名へ戻す。
+            // 失敗を待つ間にタイトルを打ち直した場合は、その新しい入力を消さない。
+            if (newTitle !== previousTitle && editor._path === oldPath && editor.doc?.title === titleInput.value) {
+              editor.doc.title = previousTitle;
+              titleInput.value = previousTitle;
+              if (typeof applyOptimisticRenameLabel === 'function') {
+                const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+                applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
+              }
             }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
           }
@@ -76198,6 +76562,11 @@ function _meldexMapTabHistoryScope(tab) {
   return path ? `map:${path}` : '';
 }
 
+function _meldexFormAppTabHistoryScope(tab) {
+  const path = String(tab?.path || tab?.state?.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return path ? `form-app:${path}` : '';
+}
+
 // 共通履歴（スコープなし）を使うタブ種別。
 function _meldexCommonHistoryTabScope() { return ''; }
 
@@ -76219,6 +76588,7 @@ const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
   calendar: _meldexScheduleTabHistoryScope,
   page: _meldexPageTabHistoryScope,
   map: _meldexMapTabHistoryScope,
+  'form-app': _meldexFormAppTabHistoryScope,
   entity: _meldexCommonHistoryTabScope,
   media: _meldexCommonHistoryTabScope,
   html: _meldexCommonHistoryTabScope,
@@ -93192,7 +93562,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['共通', ['共通本文背景色', 'アプリ基礎背景色', 'サブ背景色', '強調背景色', 'ポップアップ', 'ダイアログ', 'パネルタブバー', 'パネルタブ選択背景', '折りたたみ/ドックバー', 'パネル内タブバー', 'パネル内タブ 通常', 'パネル内タブ 選択']],
     ['フォルダ', ['カード', 'カード枠線']],
     ['ノート', ['引用ブロック']],
-    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['シート', ['ヘッダー', 'トピック列', 'セル']],
     ['ボード', ['ボード背景']],
     ['スケジュール', ['全体', 'ツールバー', 'サイドバー', 'コンテンツ', '右サイドバー', 'セル']],
     ['補助パネル', ['フォルダツリー', 'ビューワーカード', 'チャット入力']],
@@ -93201,7 +93571,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['共通', ['通常文字', 'サブテキスト', 'ヘッダー', 'ツールバー', '強調文字', 'リンク', 'エラー・警告']],
     ['ノート', ['タイトル', '見出し H1', '見出し H2', '見出し H3', '見出し H4', '見出し H5', '見出し H6', '本文', '引用ブロック']],
     ['シナリオ', ['基本テキスト']],
-    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['シート', ['ヘッダー', 'トピック列', 'セル']],
     ['スケジュール', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
     ['補助パネル', ['チャット本文']],
   ],
@@ -93517,7 +93887,7 @@ const SETTINGS_THEME_PREVIEW_SAMPLE_SPECS = Object.freeze({
   ]),
   sheet: Object.freeze([
     ['header-name', 'シート', 'ヘッダー'], ['header-status', 'シート', 'ヘッダー'],
-    ['entity', 'シート', 'エントリ列'], ['cell', 'シート', 'セル'], ['selected', 'シート', '選択'],
+    ['entity', 'シート', 'トピック列'], ['cell', 'シート', 'セル'], ['selected', 'シート', '選択'],
     ['active', 'シート', 'アクティブセル枠'], ['status', 'シート', '採用ステータス'],
     ['badge-1', 'シート', 'ソースバッジ 1'], ['badge-2', 'シート', 'ソースバッジ 2'],
   ]),
@@ -93752,7 +94122,8 @@ function _settingsThemePreviewSupplement(appId) {
     target.app ? ownSections.has(target.app)
       : appId === 'main' || !windowOnly.has(target.id)
   ).map(_settingsThemePreviewPaletteTarget).join('');
-  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+  // 見本の開閉は背景色設定の対象（外側の見本面の data-action）へ伝えない。空の data-action で委譲を止める。
+  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}" data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
 }
 
 function _settingsThemePreviewPaletteTarget(target) {
@@ -101106,6 +101477,8 @@ async function resetLayoutToDefault() {
       const schedContainer = document.createElement('div');
       schedContainer.className = 'gb-section gb-section--boxed';
       schedContainer.style.cssText = 'margin-top:6px;padding:8px;';
+      // 時計アイコン（定期実行の設定）などの部品へ、セットごとの安定IDを引き継がせる。
+      schedContainer.dataset.e2eId = `external-import-set-schedule-${stableId}`;
       card.appendChild(schedContainer);
       // 定期実行の判断・実行はバックエンド（meldex_import_scheduler.py）が担う。
       // ここでは周期を選ばせて保存し、確定した次回予定・前回結果を表示するだけ
@@ -111740,7 +112113,7 @@ function updateNoteToc(editor) {
     : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
-  const mobileClose = '<button type="button" class="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
+  const mobileClose = '<button type="button" class="note-toc-mobile-close" data-e2e-id="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
   const bindMobileClose = () => {
     toc.querySelector('.note-toc-mobile-close')?.addEventListener('click', () => {
       if (typeof toggleNoteToc === 'function') toggleNoteToc();
@@ -116917,6 +117290,21 @@ document.addEventListener('click', (e) => {
     showLegacyPopup(editable, range);
   }
 
+  // 編集ホストが属するファイルのパス（シート登録の候補を作品フォルダ等から探すため）。
+  // サブパネル等は祖先の data-path 系に持つ。無ければ開いているノート。
+  function notePathForEditable(editable) {
+    var node = editable;
+    for (var guard = 0; node && node.nodeType === 1 && guard < 12; guard += 1) {
+      var ds = node.dataset || {};
+      var value = ds.notePath || ds.pagePath || ds.filePath || ds.entityPath || ds.path;
+      if (value) return String(value);
+      node = node.parentElement;
+    }
+    // 本体の state はトップレベルの let 宣言なので window には載らない
+    var st = typeof state !== 'undefined' ? state : global.state;
+    return st ? String(st.currentEntityPath || st.currentPagePath || '') : '';
+  }
+
   // ノート専用のルビ編集ポップアップ。
   function showLegacyPopup(editable, range) {
     if (!editable || !range) return;
@@ -116951,9 +117339,27 @@ document.addEventListener('click', (e) => {
     popup.append(label, row);
     popup.addEventListener('mousedown', function (ev) { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
     document.body.appendChild(popup);
+    var anchorRect = range.getBoundingClientRect();
     if (typeof global._positionEditorPopup === 'function') {
-      global._positionEditorPopup(popup, range.getBoundingClientRect());
+      global._positionEditorPopup(popup, anchorRect);
     }
+    var sheetRegister = global.MeldexRubySheetRegister;
+    // 「シートに登録」: 選択中の文字列とルビを、ふりがな列のあるシートへ登録する（共通部品）
+    if (sheetRegister && typeof sheetRegister.attach === 'function') {
+      sheetRegister.attach(popup, {
+        getText: function () { return text; },
+        getRuby: function () { return input.value; },
+        rubyInput: input,
+        getPath: function () { return notePathForEditable(editable); },
+        reposition: function () {
+          if (typeof global._positionEditorPopup === 'function') global._positionEditorPopup(popup, anchorRect);
+        },
+        close: function () { closePopup(); },
+      });
+    }
+    var isSheetDialogOpen = function () {
+      return !!(sheetRegister && typeof sheetRegister.isBusy === 'function' && sheetRegister.isBusy(popup));
+    };
     var closeHandler = null;
     var keyHandler = null;
     var cleanup = function () {
@@ -116982,9 +117388,12 @@ document.addEventListener('click', (e) => {
       ev.stopPropagation();
     });
     closeHandler = function onPointerDown(ev) {
+      // シート登録のダイアログ（フォルダ選択・確認）を操作中は閉じない
+      if (isSheetDialogOpen()) return;
       if (!popup.contains(ev.target)) closePopup(editable);
     };
     keyHandler = function onKeyDown(ev) {
+      if (isSheetDialogOpen()) return;
       // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
       if (ev.key === 'Tab') {
         ev.preventDefault();
@@ -117050,6 +117459,562 @@ document.addEventListener('click', (e) => {
 
   // 後方互換: 既存の呼び出し（右クリックメニュー等）が直接この名前を呼んでいる
   global.showNoteRubyPopup = showLegacyPopup;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-ruby-sheet-register.js === */
+;
+/* gb-ruby-sheet-register.js
+ * ルビ設定ポップアップ（ノート / シナリオ共通）の「シートに登録」。
+ *
+ * 選択中の文字列をトピック名、入力済みのルビを「ふりがな」列の値として、
+ * ふりがな列を持つシートへ登録する。登録先は
+ *   前回使ったシート → 作品フォルダ → ソースフォルダ → ホーム → ワークスペース
+ * の順に候補を並べ、無い時は「フォルダツリーから選ぶ...」（GBFolderPicker）と
+ * 「新規シートを作成...」を使う。候補は1回の要求（/ruby-sheets）で取得し、
+ * シートごとに列定義を取り直さない。
+ *
+ * 呼び出し側（gb-note-ruby.js / gb-scriptnote-editor.part04.js）は attach() で
+ * ポップアップに段を足し、ダイアログを開いている間は isBusy(popup) を見て
+ * 外側クリック・Tab巡回・Esc の処理を止める。
+ */
+(function (global) {
+  'use strict';
+  if (global.MeldexRubySheetRegister) return;
+
+  var LAST_KEY = 'meldex.rubySheetRegister.last.v1';
+  var DEFAULT_PROP = 'ふりがな';
+  var NEW_SHEET_DEFAULT_NAME = 'ルビ辞書';
+  var BUSY_ATTR = 'rubySheetBusy';
+
+  // --- 純粋な判定（テストで固定） ---------------------------------------------
+
+  function normPath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').trim();
+  }
+
+  function samePath(a, b) {
+    var x = normPath(a).toLowerCase();
+    var y = normPath(b).toLowerCase();
+    return !!x && x === y;
+  }
+
+  // 候補の並べ替え: 前回使ったシートを先頭グループにし、他のグループからは除く。
+  // グループの順は サーバーの返す優先度（作品 → ソース → ホーム → ワークスペース）を保つ。
+  var GROUP_ORDER = ['last', 'work', 'source', 'home', 'workspace'];
+  function orderCandidateGroups(payload, last) {
+    var groups = Array.isArray(payload && payload.groups) ? payload.groups : [];
+    var lastPath = last && last.path ? normPath(last.path) : '';
+    var lastSheet = null;
+    var seen = {};
+    var out = [];
+    groups.forEach(function (group) {
+      var sheets = [];
+      (Array.isArray(group && group.sheets) ? group.sheets : []).forEach(function (sheet) {
+        var key = normPath(sheet && sheet.path).toLowerCase();
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        if (lastPath && key === lastPath.toLowerCase()) { lastSheet = sheet; return; }
+        sheets.push(sheet);
+      });
+      if (sheets.length) {
+        out.push({ kind: String(group.kind || ''), label: String(group.label || ''), rootName: String(group.rootName || ''), sheets: sheets });
+      }
+    });
+    if (lastPath) {
+      var sheet = lastSheet || {
+        path: lastPath,
+        name: String(last.name || lastPath.split('/').pop() || ''),
+        relPath: String(last.relPath || last.name || ''),
+        furiganaProps: Array.isArray(last.furiganaProps) ? last.furiganaProps : [],
+      };
+      out.unshift({ kind: 'last', label: '前回使ったシート', rootName: '', sheets: [sheet] });
+    }
+    out.sort(function (a, b) {
+      var ia = GROUP_ORDER.indexOf(a.kind); var ib = GROUP_ORDER.indexOf(b.kind);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    return out;
+  }
+
+  // 登録の分岐: 同名トピックが無ければ作成、同じ読みが既にあれば何もしない、
+  // 違う読みしか無ければ候補値として追加（採用の読みが既にある時は「案」で足す）。
+  function planRegistration(lookup, ruby) {
+    var value = String(ruby || '').trim();
+    if (!value) return { action: 'none' };
+    if (!lookup || !lookup.exists) return { action: 'create', status: '採用' };
+    var readings = Array.isArray(lookup.readings) ? lookup.readings : [];
+    if (readings.some(function (r) { return String(r && r.value || '').trim() === value; })) {
+      return { action: 'exists-same' };
+    }
+    var hasAdopted = readings.some(function (r) { return r && r.status === '採用' && String(r.value || '').trim(); });
+    return { action: 'append', status: hasAdopted ? '案' : '採用', existing: readings.map(function (r) { return String(r.value || ''); }) };
+  }
+
+  function rubyPropertyFor(sheet, lookup) {
+    var a = sheet && Array.isArray(sheet.furiganaProps) ? sheet.furiganaProps : [];
+    var b = lookup && Array.isArray(lookup.furiganaProps) ? lookup.furiganaProps : [];
+    return String(a[0] || b[0] || DEFAULT_PROP);
+  }
+
+  // --- 環境 -------------------------------------------------------------------
+
+  function readLast() {
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(LAST_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return parsed && parsed.path ? parsed : null;
+    } catch (_) { return null; }
+  }
+
+  function writeLast(sheet) {
+    try {
+      if (!sheet || !sheet.path || !global.localStorage) return;
+      global.localStorage.setItem(LAST_KEY, JSON.stringify({
+        path: normPath(sheet.path),
+        name: String(sheet.name || ''),
+        relPath: String(sheet.relPath || ''),
+        furiganaProps: Array.isArray(sheet.furiganaProps) ? sheet.furiganaProps.slice(0, 4) : [],
+      }));
+    } catch (_) {}
+  }
+
+  function workFolderFor(path) {
+    try {
+      if (typeof global.getWorkFolder === 'function') return String(global.getWorkFolder(path || undefined) || '');
+    } catch (_) {}
+    return '';
+  }
+
+  function api(path, opts) {
+    if (typeof global.apiFetch !== 'function') return Promise.reject(new Error('この画面ではシートに登録できません'));
+    return global.apiFetch(path, opts);
+  }
+
+  function post(path, body) {
+    if (typeof global.apiPost === 'function') return global.apiPost(path, body);
+    return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }
+
+  function put(path, body) {
+    if (typeof global.apiPut === 'function') return global.apiPut(path, body);
+    return api(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }
+
+  function status(message, isError) {
+    if (typeof global.showStatus === 'function') global.showStatus(message, !!isError);
+  }
+
+  function errorText(err) {
+    var text = global.MeldexErrorMessages && typeof global.MeldexErrorMessages.toStatusText === 'function'
+      ? global.MeldexErrorMessages.toStatusText(err, {})
+      : '';
+    return text || (err && err.message) || String(err || '');
+  }
+
+  function fetchCandidates(currentPath) {
+    var params = [];
+    var work = workFolderFor(currentPath);
+    if (currentPath) params.push('path=' + encodeURIComponent(currentPath));
+    if (work) params.push('work=' + encodeURIComponent(work));
+    return api('/ruby-sheets' + (params.length ? '?' + params.join('&') : ''), { silentError: true, skipBrowseCache: true });
+  }
+
+  function lookupEntry(sheetPath, name) {
+    return api('/ruby-sheets/entry?sheet=' + encodeURIComponent(sheetPath) + '&name=' + encodeURIComponent(name), { silentError: true });
+  }
+
+  function dbScope(path) {
+    if (typeof global._dbScopeForPath === 'function') return global._dbScopeForPath(path);
+    return 'db:' + normPath(path);
+  }
+
+  function afterDictionaryChange(sheetPath) {
+    // 自動リンク辞書・読み取得（/api/ruby）はサーバー側で保存先の変化を検知して作り直す。
+    // 画面が持っている辞書の写しだけ読み直す。
+    try { if (typeof global.loadLinkDict === 'function') global.loadLinkDict(); } catch (_) {}
+    try {
+      // 本体の state はトップレベルの let 宣言なので window には載らない
+      var st = typeof state !== 'undefined' ? state : global.state;
+      if (st && samePath(st.currentDbPath, sheetPath) && typeof global.selectDatabase === 'function') {
+        global.selectDatabase(sheetPath, null, { silent: true });
+      }
+    } catch (_) {}
+  }
+
+  function pushCreateHistory(sheet, name, created) {
+    if (typeof global.historyPush !== 'function') return;
+    var path = String((created && (created.path || created.entry_path)) || (normPath(sheet.path) + '/' + name + '.md'));
+    var entryId = String((created && (created.entry_id || created.id)) || '');
+    var properties = created && created.__properties;
+    global.historyPush('ルビをシートに登録: ' + name,
+      async function () {
+        var identity = global.GbDbEntryIdentity;
+        if (!identity || typeof identity.deleteEntries !== 'function') throw new Error('この画面では取り消せません');
+        var result = await identity.deleteEntries({
+          dbPath: sheet.path,
+          ctx: null,
+          entries: [{ name: name, path: path, entryId: entryId }],
+          source: 'ruby-sheet-register-undo',
+        });
+        if (result && result.failures && result.failures.length) throw result.failures[0].error;
+        afterDictionaryChange(sheet.path);
+      },
+      async function () {
+        var redo = await post('/entity/create', { parent_path: sheet.path, name: name, properties: properties });
+        path = String((redo && (redo.path || redo.entry_path)) || path);
+        entryId = String((redo && (redo.entry_id || redo.id)) || '');
+        afterDictionaryChange(sheet.path);
+      },
+      dbScope(sheet.path));
+  }
+
+  // 1件の登録。結果 { kind: 'created'|'appended'|'exists-same'|'cancelled', sheet, name, ruby }
+  async function registerTo(sheet, text, ruby, hooks) {
+    hooks = hooks || {};
+    var name = String(text || '').trim();
+    var value = String(ruby || '').trim();
+    if (!sheet || !sheet.path || !name || !value) throw new Error('登録する文字列とルビを入力してください');
+    var lookup = await lookupEntry(sheet.path, name);
+    var plan = planRegistration(lookup, value);
+    var prop = rubyPropertyFor(sheet, lookup);
+    var sheetName = String(sheet.name || normPath(sheet.path).split('/').pop() || '');
+    if (plan.action === 'exists-same') {
+      writeLast(sheet);
+      return { kind: 'exists-same', sheet: sheet, name: name, ruby: value };
+    }
+    if (plan.action === 'append') {
+      var existing = plan.existing.filter(Boolean).join('、') || '（なし）';
+      var confirmFn = typeof global.cfConfirm === 'function' ? global.cfConfirm : null;
+      var withDialog = hooks.withDialog || function (fn) { return fn(); };
+      var question = 'シート「' + sheetName + '」には「' + name + '」が既にあります（' + prop + ': ' + existing + '）。\n'
+        + '読み「' + value + '」を' + (plan.status === '案' ? '案として' : '') + '追加しますか？';
+      var ok = confirmFn ? await withDialog(function () { return confirmFn(question, { okLabel: '追加' }); }) : false;
+      if (!ok) return { kind: 'cancelled', sheet: sheet, name: name, ruby: value };
+      var body = lookup.legacy
+        ? { folder_path: lookup.path, property: prop, value: value, status: plan.status }
+        : { entry_path: lookup.path, property: prop, value: value, status: plan.status };
+      await post('/value', body);
+      writeLast(sheet);
+      afterDictionaryChange(sheet.path);
+      return { kind: 'appended', sheet: sheet, name: name, ruby: value, status: plan.status };
+    }
+    var properties = {};
+    properties[prop] = [{ value: value, status: '採用' }];
+    var created = await post('/entity/create', { parent_path: sheet.path, name: name, properties: properties });
+    if (created && typeof created === 'object') created.__properties = properties;
+    pushCreateHistory(sheet, name, created);
+    writeLast(sheet);
+    afterDictionaryChange(sheet.path);
+    return { kind: 'created', sheet: sheet, name: name, ruby: value };
+  }
+
+  function resultMessage(result) {
+    var sheetName = String(result.sheet && (result.sheet.name || normPath(result.sheet.path).split('/').pop()) || '');
+    if (result.kind === 'created') return '「' + result.name + '」をシート「' + sheetName + '」に登録しました';
+    if (result.kind === 'appended') return '「' + result.name + '」の読み「' + result.ruby + '」をシート「' + sheetName + '」に追加しました';
+    if (result.kind === 'exists-same') return '「' + result.name + '」の読み「' + result.ruby + '」はシート「' + sheetName + '」に登録済みです';
+    return '';
+  }
+
+  // 新規シート: 作成先（既定は作品フォルダ → 現在のファイルのフォルダ）と名前を選び、
+  // 「ふりがな（ふりがな型）」列を持つシートを作る。トピック名の列はシートの既定の名前列。
+  async function createSheet(currentPath, hooks) {
+    hooks = hooks || {};
+    var withDialog = hooks.withDialog || function (fn) { return fn(); };
+    var parentDefault = workFolderFor(currentPath) || normPath(currentPath).split('/').slice(0, -1).join('/');
+    var parent = parentDefault;
+    var picker = global.GBFolderPicker;
+    if (picker && typeof picker.pickFolder === 'function') {
+      var selection = await withDialog(function () {
+        return picker.pickFolder({
+          title: '新しいシートの作成先を選択',
+          initialPath: parentDefault || '',
+          revealPath: parentDefault || '',
+        });
+      });
+      if (!selection || !selection.path) return null;
+      parent = selection.path;
+    }
+    var label = NEW_SHEET_DEFAULT_NAME;
+    if (typeof global.cfPrompt === 'function') {
+      label = await withDialog(function () { return global.cfPrompt('新しいシートの名前', NEW_SHEET_DEFAULT_NAME, { okLabel: '作成' }); });
+      if (label == null) return null;
+      label = String(label).trim() || NEW_SHEET_DEFAULT_NAME;
+    }
+    var created = await post('/outliner/add', { type: 'database', label: label, parent: parent || '' });
+    var sheetPath = String((created && created.node && created.node.path) || '');
+    if (!sheetPath) throw new Error('シートを作成できませんでした');
+    var propertyTypes = {};
+    propertyTypes[DEFAULT_PROP] = { type: 'furigana' };
+    await put('/db-metadata?path=' + encodeURIComponent(sheetPath), { property_types: propertyTypes });
+    try { if (typeof global.refreshOutliner === 'function') global.refreshOutliner(); } catch (_) {}
+    return {
+      path: sheetPath,
+      name: String((created.node && created.node.label) || label),
+      relPath: sheetPath,
+      furiganaProps: [DEFAULT_PROP],
+    };
+  }
+
+  async function pickSheetFromTree(currentPath, hooks) {
+    var picker = global.GBFolderPicker;
+    if (!picker || typeof picker.pickFolder !== 'function') return null;
+    var withDialog = (hooks && hooks.withDialog) || function (fn) { return fn(); };
+    var selection = await withDialog(function () {
+      return picker.pickFolder({
+        title: '登録先のシートを選択',
+        selectFiles: true,
+        fileTypes: ['database'],
+        emptyText: 'この階層にフォルダとシートはありません。',
+        searchProvider: typeof global._getAllDatabases === 'function' ? function () { return global._getAllDatabases(true); } : undefined,
+        searchPlaceholder: 'シート名で検索...',
+        revealPath: workFolderFor(currentPath) || '',
+      });
+    });
+    if (!selection || !selection.path) return null;
+    return {
+      path: selection.path,
+      name: String(selection.label || selection.name || normPath(selection.path).split('/').pop() || ''),
+      relPath: String(selection.path),
+      furiganaProps: [],
+    };
+  }
+
+  // --- UI ---------------------------------------------------------------------
+
+  function isBusy(popup) {
+    return !!(popup && popup.dataset && popup.dataset[BUSY_ATTR] === '1');
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function menuButton(label, detail, e2eId) {
+    var button = el('button', 'gb-context-menu-item gb-ruby-sheet-register-item');
+    button.type = 'button';
+    if (e2eId) button.dataset.e2eId = e2eId;
+    var main = el('span', 'gb-context-menu-item-label gb-ruby-sheet-register-name', label);
+    button.appendChild(main);
+    if (detail) {
+      var sub = el('span', 'gb-ruby-sheet-register-path', detail);
+      button.appendChild(sub);
+      button.title = label + '（' + detail + '）';
+    }
+    return button;
+  }
+
+  /**
+   * ルビ設定ポップアップに「シートに登録」の段を足す。
+   * opts: { getText(), getRuby(), rubyInput, getPath(), reposition(), focusAfter }
+   */
+  function attach(popup, opts) {
+    opts = opts || {};
+    if (!popup) return null;
+    var mount = opts.mount || popup;
+    var section = el('div', 'gb-ruby-sheet-register');
+    section.dataset.e2eId = 'ruby-sheet-register';
+    var toggle = el('button', 'gb-btn gb-btn-sm gb-btn-quiet gb-ruby-sheet-register-toggle', 'シートに登録');
+    toggle.type = 'button';
+    toggle.dataset.e2eId = 'ruby-sheet-register-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.title = '選択中の文字列とルビを、ふりがな列のあるシートに登録します';
+    var panel = el('div', 'gb-ruby-sheet-register-panel');
+    panel.hidden = true;
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-label', '登録先のシート');
+    panel.dataset.e2eId = 'ruby-sheet-register-panel';
+    var list = el('div', 'gb-ruby-sheet-register-list');
+    var result = el('div', 'gb-ruby-sheet-register-result');
+    result.setAttribute('role', 'status');
+    result.setAttribute('aria-live', 'polite');
+    result.hidden = true;
+    var sep = el('div', 'gb-context-menu-sep');
+    var treeButton = menuButton('フォルダツリーから選ぶ...', '', 'ruby-sheet-register-tree');
+    var newButton = menuButton('新規シートを作成...', '', 'ruby-sheet-register-new');
+    if (!(global.GBFolderPicker && typeof global.GBFolderPicker.pickFolder === 'function')) treeButton.hidden = true;
+    panel.append(list, sep, treeButton, newButton);
+    section.append(toggle, panel, result);
+    mount.appendChild(section);
+
+    var loaded = false;
+    var working = false;
+
+    function currentPath() {
+      try { return normPath(typeof opts.getPath === 'function' ? opts.getPath() : ''); } catch (_) { return ''; }
+    }
+    function ruby() { return String(typeof opts.getRuby === 'function' ? opts.getRuby() : '').trim(); }
+    function text() { return String(typeof opts.getText === 'function' ? opts.getText() : '').trim(); }
+    function reposition() { try { if (typeof opts.reposition === 'function') opts.reposition(); } catch (_) {} }
+
+    function syncEnabled() {
+      var enabled = !!ruby() && !!text() && !working;
+      toggle.disabled = !enabled;
+      panel.querySelectorAll('button').forEach(function (button) { button.disabled = !enabled; });
+    }
+
+    // ダイアログ（フォルダ選択・確認・名前入力）の間はポップアップを隠し、
+    // 呼び出し側の外側クリック・Tab巡回・Esc の処理を止める。
+    async function withDialog(fn) {
+      popup.dataset[BUSY_ATTR] = '1';
+      popup.classList.add('is-ruby-sheet-dialog-open');
+      try {
+        return await fn();
+      } finally {
+        popup.classList.remove('is-ruby-sheet-dialog-open');
+        // ダイアログを閉じたクリックが外側クリックとして届かないよう、解除を1拍遅らせる
+        setTimeout(function () { delete popup.dataset[BUSY_ATTR]; }, 0);
+        if (popup.isConnected) {
+          try { toggle.focus({ preventScroll: true }); } catch (_) {}
+        }
+      }
+    }
+
+    function showResult(message, sheet, isError) {
+      result.textContent = '';
+      result.hidden = !message;
+      result.classList.toggle('is-error', !!isError);
+      if (!message) { reposition(); return; }
+      result.appendChild(el('span', 'gb-ruby-sheet-register-result-text', message));
+      if (sheet && sheet.path && typeof global.selectDatabase === 'function') {
+        var open = el('button', 'gb-btn gb-btn-sm gb-btn-quiet gb-ruby-sheet-register-open', 'シートを開く');
+        open.type = 'button';
+        open.dataset.e2eId = 'ruby-sheet-register-open';
+        open.addEventListener('click', function () {
+          if (typeof opts.close === 'function') opts.close();
+          global.selectDatabase(sheet.path);
+        });
+        result.appendChild(open);
+      }
+      reposition();
+    }
+
+    async function run(getSheet) {
+      if (working) return;
+      var value = ruby();
+      var name = text();
+      if (!value || !name) return;
+      working = true;
+      syncEnabled();
+      try {
+        var sheet = await getSheet();
+        if (!sheet) return;
+        var outcome = await registerTo(sheet, name, value, { withDialog: withDialog });
+        if (outcome.kind === 'cancelled') return;
+        var message = resultMessage(outcome);
+        status(message, false);
+        if (popup.isConnected) {
+          panel.hidden = true;
+          toggle.setAttribute('aria-expanded', 'false');
+          loaded = false;
+          showResult(message, outcome.sheet, false);
+        }
+      } catch (err) {
+        var msg = 'シートに登録できませんでした: ' + errorText(err);
+        status(msg, true);
+        if (popup.isConnected) showResult(msg, null, true);
+      } finally {
+        working = false;
+        if (popup.isConnected) syncEnabled();
+      }
+    }
+
+    function renderGroups(groups) {
+      list.textContent = '';
+      if (!groups.length) {
+        list.appendChild(el('div', 'gb-context-menu-label gb-ruby-sheet-register-empty', 'ふりがな列のあるシートは見つかりませんでした'));
+        return;
+      }
+      groups.forEach(function (group) {
+        var heading = group.label + (group.rootName && group.kind !== 'last' ? '（' + group.rootName + '）' : '');
+        list.appendChild(el('div', 'gb-context-menu-label gb-ruby-sheet-register-group', heading));
+        group.sheets.forEach(function (sheet) {
+          var button = menuButton(String(sheet.name || ''), String(sheet.relPath || ''), 'ruby-sheet-register-candidate');
+          button.dataset.sheetPath = String(sheet.path || '');
+          button.dataset.groupKind = group.kind;
+          button.addEventListener('click', function () { run(function () { return Promise.resolve(sheet); }); });
+          list.appendChild(button);
+        });
+      });
+    }
+
+    async function load() {
+      list.textContent = '';
+      list.appendChild(el('div', 'gb-context-menu-label', 'シートを読み込み中...'));
+      reposition();
+      try {
+        var payload = await fetchCandidates(currentPath());
+        if (!popup.isConnected) return;
+        renderGroups(orderCandidateGroups(payload, readLast()));
+        if (payload && payload.truncated) {
+          list.appendChild(el('div', 'gb-context-menu-label', '候補が多いため一部だけを表示しています'));
+        }
+        loaded = true;
+      } catch (err) {
+        if (!popup.isConnected) return;
+        list.textContent = '';
+        renderGroups(orderCandidateGroups({ groups: [] }, readLast()));
+        var failed = el('div', 'gb-context-menu-label is-error', '候補を読み込めませんでした');
+        var retry = el('button', 'gb-btn gb-btn-sm gb-btn-quiet', '再試行');
+        retry.type = 'button';
+        retry.addEventListener('click', function () { load(); });
+        list.append(failed, retry);
+      }
+      syncEnabled();
+      reposition();
+    }
+
+    toggle.addEventListener('click', function () {
+      if (toggle.disabled) return;
+      var open = panel.hidden;
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        showResult('', null, false);
+        if (!loaded) load(); else reposition();
+        var first = panel.querySelector('button:not([hidden]):not(:disabled)');
+        if (first) { try { first.focus({ preventScroll: true }); } catch (_) {} }
+      } else {
+        reposition();
+      }
+    });
+    treeButton.addEventListener('click', function () {
+      run(function () { return pickSheetFromTree(currentPath(), { withDialog: withDialog }); });
+    });
+    newButton.addEventListener('click', function () {
+      run(function () {
+        return createSheet(currentPath(), { withDialog: withDialog }).then(function (sheet) {
+          if (sheet) status('シート「' + sheet.name + '」を作成しました', false);
+          return sheet;
+        });
+      });
+    });
+    if (opts.rubyInput) {
+      opts.rubyInput.addEventListener('input', function () {
+        syncEnabled();
+        if (!result.hidden) showResult('', null, false);
+      });
+    }
+    syncEnabled();
+    return { element: section, toggle: toggle, panel: panel, refresh: syncEnabled };
+  }
+
+  global.MeldexRubySheetRegister = {
+    attach: attach,
+    isBusy: isBusy,
+    registerTo: registerTo,
+    createSheet: createSheet,
+    orderCandidateGroups: orderCandidateGroups,
+    planRegistration: planRegistration,
+    rubyPropertyFor: rubyPropertyFor,
+    resultMessage: resultMessage,
+    LAST_KEY: LAST_KEY,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 ;
@@ -125370,7 +126335,7 @@ let _overlayVisible = true;
 const _ANNOTATION_TARGET_VIEW_TYPES = new Set([
   'entity', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
   'chart', 'graph', 'form', 'compare', 'board', 'folder',
-  'media', 'html', 'csv', 'scriptnote', 'calendar',
+  'media', 'html', 'csv', 'scriptnote', 'calendar', 'form-app', 'map',
 ]);
 const _ANNOTATION_DB_VIEW_TYPES = new Set([
   'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
@@ -125578,6 +126543,12 @@ function toggleAnnotationToolbar() {
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-tb-annotation');
   const isVisible = toolbar.classList.contains('visible');
+  // マップは移動・拡大で画面上の描き込みがずれるため、描画ツールではなく地点・図形（無ければ地図全体）へのコメントを付ける。
+  if (!isVisible && _getAnnotationViewName() === 'map') {
+    const mapTab = _getActiveAnnotationTab();
+    const mapApp = mapTab && typeof getComponentInstance === 'function' ? getComponentInstance(mapTab.id) : null;
+    if (mapApp?.addAnnotation?.()) return;
+  }
   const embedded = _usesEmbeddedAnnotationSurface(_getAnnotationViewName());
   if (isVisible) {
     closeAnnotationToolbar();
@@ -126184,6 +127155,8 @@ function getAnnotationTarget() {
     if (path) return path;
   }
   if (viewName === 'calendar') return 'calendar:panel';
+  if (viewName === 'map') return tabPath('mapPath');
+  if (viewName === 'form-app') return tabPath('formPath');
   if (viewName === 'html') return tabPath('mediaPath', 'pagePath') || statePath('currentPagePath') || document.getElementById('html-url-bar')?.value || 'viewer';
   if (viewName === 'compare') {
     const left = activeTab?.state?.pathA || activeTab?.state?.leftPath || '';
@@ -128698,6 +129671,7 @@ function _normalizeDetailTab(tab) {
     'calendar-production',
     'map-settings',
     'map-selection',
+    'form-field',
     'board-card',
     'board-line',
     'board-note',
@@ -128731,6 +129705,7 @@ function _resolveDetailTabForType(type, defaultTab) {
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
     map: ['map-settings', 'map-selection'],
+    'form-app': ['form-field'],
     csv: ['publish'],
     scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
@@ -128763,7 +129738,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'form-field', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -128839,6 +129814,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
       ${_detailTabButtonHtml('map-settings', 'detail-tab-map', '地図')}
       ${_detailTabButtonHtml('map-selection', 'detail-tab-map', '地点・図形')}
+      ${_detailTabButtonHtml('form-field', 'detail-tab-form', '項目')}
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
@@ -128858,6 +129834,7 @@ function _detailTabShellHtml() {
     <div id="detail-tab-calendar-production" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-map-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-map-selection" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-form-field" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>
@@ -131544,6 +132521,8 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = type !== 'map'; });
   if (type !== 'map' && ['map-settings', 'map-selection'].includes(_currentDetailTab)) switchDetailTab(null);
+  document.querySelectorAll('.detail-tab-form').forEach(el => { el.hidden = type !== 'form-app'; });
+  if (type !== 'form-app' && _currentDetailTab === 'form-field') switchDetailTab(null);
   const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map', 'form-app']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
@@ -136442,7 +137421,11 @@ function hideBoardNoteTab() {
     }
     const status = panel.querySelector('[data-cal-attendance-export-status]');
     const formatButtons = [...panel.querySelectorAll('.att-csv-format')];
-    formatButtons.forEach(button => { button.style.minHeight = '44px'; button.style.width = '100%'; });
+    // 2列に並ぶ狭い幅でも長い形式名を切らずに折り返す（高さは44px以上で内容に合わせる）。
+    formatButtons.forEach(button => {
+      button.style.minHeight = '44px'; button.style.width = '100%';
+      button.style.height = 'auto'; button.style.whiteSpace = 'normal'; button.style.overflowWrap = 'anywhere';
+    });
     const setBusy = (next) => {
       busy = next;
       panel.setAttribute('aria-busy', next ? 'true' : 'false');
@@ -156440,6 +157423,16 @@ async function _apiPutValue(valObj, updates) {
     if (saved?.revision != null) valObj.entry_revision = Number(saved.revision);
     return saved;
   }
+  // 保存先（候補値ファイル・トピックのパス）を持たない値は、更新先を特定できない。
+  // 以前は「直前に開いていたトピック」へ黙って書き込もうとし、別の行への書き込みとして
+  // 409で拒否されていた。別の行を書き換えないよう、ここで止めて呼出元へ伝える。
+  if (valObj && !valObj.file && valObj.candidate_index == null
+      && !valObj.entry_path && !valObj.entity_path && !valObj.folder_path
+      && (valObj._topicValueMissing || valObj._topicDbPath)) {
+    const error = new Error('保存先のトピックを特定できないため、値を保存しませんでした。シートを再読み込みしてからやり直してください');
+    error.code = 'value_target_unknown';
+    throw error;
+  }
   const queuedEntityPath = _resolveEntityPathFromValObj(valObj);
   const mutationDbPath = _dbPathFromEntityPath(queuedEntityPath) || state.currentDbPath || '';
   return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async (latestEntityPath) => {
@@ -157917,17 +158910,33 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
     return result;
   }
 
-  function applyMetadataResult(dbPath, result, payload) {
+  // 手元の列定義を変えた回数（シートごと）。保存の応答が戻るまでに手元で別の変更（列名変更・
+  // 列の追加）があったら、その応答が持つ古い列定義で手元を上書きしない。以前は、列を挿入した
+  // 直後に列名を変えると、挿入の保存応答が後から戻って列名変更前の定義に戻し、次の挿入が
+  // その古い定義をサーバーへ書いて列名変更を消していた（2026-11-18 再現）。
+  const localGenerations = new Map();
+  function markLocalSchemaChange(dbPath) {
+    const key = normalize(dbPath);
+    const next = (localGenerations.get(key) || 0) + 1;
+    localGenerations.set(key, next);
+    return next;
+  }
+  function localSchemaGeneration(dbPath) {
+    return localGenerations.get(normalize(dbPath)) || 0;
+  }
+
+  function applyMetadataResult(dbPath, result, payload, generation) {
     const revision = Number(result?.schema_revision);
+    const stale = Number.isInteger(generation) && generation !== localSchemaGeneration(dbPath);
     contextTargets(dbPath).forEach(ctx => {
       if (!ctx.dbMetadata) ctx.dbMetadata = {};
-      Object.assign(ctx.dbMetadata, clone(payload || {}));
+      if (!stale) Object.assign(ctx.dbMetadata, clone(payload || {}));
       if (result?.property_ids) ctx.dbMetadata.property_ids = clone(result.property_ids);
       if (Number.isInteger(revision)) ctx.dbMetadata.schema_revision = revision;
     });
     if (typeof state !== 'undefined' && normalize(state.currentDbPath) === normalize(dbPath)) {
       if (!state.dbMetadata) state.dbMetadata = {};
-      Object.assign(state.dbMetadata, clone(payload || {}));
+      if (!stale) Object.assign(state.dbMetadata, clone(payload || {}));
       if (result?.property_ids) state.dbMetadata.property_ids = clone(result.property_ids);
       if (Number.isInteger(revision)) state.dbMetadata.schema_revision = revision;
     }
@@ -157978,6 +158987,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
   }
 
   async function saveMetadata(dbPath, payload, ctx, options = {}) {
+    const generation = markLocalSchemaChange(dbPath);
     return enqueue(dbPath, async () => {
       let metadata = metadataForContext(ctx, dbPath);
       if (!metadata) {
@@ -157998,7 +159008,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
           return current?.schema_operations?.[body.operation_id] || null;
         }
       );
-      return applyMetadataResult(dbPath, result || {}, payload);
+      return applyMetadataResult(dbPath, result || {}, payload, generation);
     });
   }
 
@@ -158393,6 +159403,8 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
 
   window.GbDbSchemaMutation = {
     ensurePropertyIds,
+    localSchemaGeneration,
+    markLocalSchemaChange,
     migrateSelectOptions,
     migrateStatuses,
     newId,
@@ -159800,7 +160812,8 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   const entityFilterActive = typeof isDbColumnFilterActive === 'function'
     && isDbColumnFilterActive(dbPath, '__entity__', ctx);
   const items = [
-    { type: 'submenu', label: '並び替え', children: _makeDbGlobalSortMenuItems(dbPath, ctx) },
+    // トピック名列の「並び替え」は列の一覧を並べた行ソートで、列の操作と紛らわしいため外した
+    // （2026-11-18 ユーザー指示）。行の並び替えはツールバーの並び替えと各列のメニューから行う。
     {
       label: lucide('filter', 14) + ' この列をフィルター...' + (entityFilterActive ? '（適用中）' : ''),
       action: () => {
@@ -160540,9 +161553,16 @@ function _showLegacyAdvancedFilterModal(ctx) {
   return modalApi;
 }
 
+// 設定欄の共通配置（gb-settings-fields.css）は入力欄に flex-basis:320px を与えるため、
+// 幅クラス（gb-select-short/medium/column）の width だけでは幅が決まらない。
+// 幅クラスと同じ基準幅を flex-basis にも与えて、条件選択が横へ伸びないようにする。
+const _CONDITION_CONTROL_BASIS = [['gb-select-short', 96], ['gb-select-medium', 164], ['gb-select-column', 280]];
+
 function styleConditionControl(el, extraCss = '') {
   if (!el) return el;
-  el.style.cssText = `display:block;width:100%;min-width:0;min-height:32px;box-sizing:border-box;${extraCss}`;
+  const basis = _CONDITION_CONTROL_BASIS.find(([cls]) => el.classList?.contains(cls))?.[1];
+  const flexCss = basis ? `flex:0 1 ${basis}px;` : '';
+  el.style.cssText = `display:block;width:100%;min-width:0;min-height:32px;box-sizing:border-box;${flexCss}${extraCss}`;
   return el;
 }
 
@@ -162216,6 +163236,8 @@ function _renamePropertyTypeReferences(cfg, oldName, newName, propertyTypes) {
   (cfg.calendarSync?.colorRules || []).forEach(rule => {
     if (rule?.when?.prop === oldName) rule.when.prop = newName;
   });
+  // AI自動生成列のプロンプト内の {列名} も新しい列名へ付け替える（gb-db-ai-column.js）。
+  if (typeof _ptRenameAiPromptRefs === 'function') _ptRenameAiPromptRefs(cfg, oldName, newName);
 }
 
 function _deleteViewConfigPropReferences(target, propName) {
@@ -162523,6 +163545,8 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
     }
   };
   const applyTypesToOpenContexts = (types, layout, viewConfig) => {
+    // 先に送った列定義の保存応答が後から戻っても、この手元の変更を古い定義で戻させない。
+    globalThis.GbDbSchemaMutation?.markLocalSchemaChange?.(dbPath);
     const targets = [];
     const add = candidate => {
       if (candidate && !targets.includes(candidate)) targets.push(candidate);
@@ -163766,6 +164790,37 @@ async function _ptReloadOtherDbContexts(dbPath, currentCtx) {
   }
 }
 
+// マウス・タッチを押している間は true。表の作り直しを押下中に行うとクリックが失われる。
+let _ptPointerPressed = false;
+if (typeof document !== 'undefined' && document.addEventListener) {
+  const _ptPress = (event) => { if (event?.isPrimary !== false) _ptPointerPressed = true; };
+  const _ptRelease = () => { _ptPointerPressed = false; };
+  document.addEventListener('pointerdown', _ptPress, true);
+  document.addEventListener('pointerup', _ptRelease, true);
+  document.addEventListener('pointercancel', _ptRelease, true);
+  window.addEventListener?.('blur', _ptRelease);
+}
+
+// 押下中なら離した後（クリックの処理が終わった次のタスク）まで待つ。最長1.5秒。
+function _ptAfterPointerRelease() {
+  if (!_ptPointerPressed) return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('pointerup', onRelease, true);
+      document.removeEventListener('pointercancel', onRelease, true);
+      clearTimeout(timer);
+      setTimeout(resolve, 0);
+    };
+    const onRelease = () => finish();
+    const timer = setTimeout(finish, 1500);
+    document.addEventListener('pointerup', onRelease, true);
+    document.addEventListener('pointercancel', onRelease, true);
+  });
+}
+
 async function applyPropertyType(propName, root, options = {}) {
   const scope = _ptResolveRoot(root);
   window._ptActiveRoot = scope;
@@ -163959,6 +165014,11 @@ async function applyPropertyType(propName, root, options = {}) {
     }
   }
 
+  // 列メモ・AI自動生成は専用欄で保存する。入力の待ち時間中に保存された最新値も消さないよう、
+  // 保存直前の値から引き継ぐ。
+  if (typeof _ptPreserveIndependentColumnFields === 'function') {
+    _ptPreserveIndependentColumnFields(config, (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null) || prev);
+  }
   // Undo/Redo 用に変更前の型設定を控える（setPropertyType が書き換える前に取る）
   const beforeCfg = JSON.parse(JSON.stringify(prev));
   // 分割ペインの初回表示直後は state のグローバル参照がまだ対象ペインへ追従していない場合がある。
@@ -163974,6 +165034,35 @@ async function applyPropertyType(propName, root, options = {}) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
+  // 手元の列設定は setPropertyType が即座に更新済み。保存（大きいシートやDropboxでは数秒）の
+  // 完了を待たずに表を描き直し、リレーションの参照先も並行して読み込む。以前は保存完了→
+  // 描画→参照先の読込→描画の直列で、設定が反映されるまで失敗したように見えていた。
+  // 保存に失敗した場合は下の処理で元の設定へ戻して描き直す。
+  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
+  const _relTargetMayHaveChanged = _relTypes.includes(type)
+    && (prev.type !== type
+      || (config.relationDb || '') !== (prev.relationDb || '')
+      || type === 'multi-source-relation');
+  const _renderNow = () => {
+    if (typeof _renderCurrentDbView === 'function') return _renderCurrentDbView(ctx, dbPath);
+    if (options.render !== false) return renderPivot(ctx);
+    return null;
+  };
+  let earlyRenderFailed = false;
+  try {
+    // 入力欄から表をクリックした時は、フォーカス移動の自動保存がここへ来る。押している間に
+    // 表を作り直すとクリックが消える（新規トピック行のクリックが効かなかった）ため、離した後に描く。
+    await _ptAfterPointerRelease();
+    await Promise.resolve(_renderNow());
+  } catch (error) {
+    console.warn('列設定の即時反映に失敗:', error);
+    earlyRenderFailed = true;
+  }
+  const relationPreload = (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function')
+    ? Promise.resolve()
+      .then(() => _preloadRelationMapsForDb(dbPath, pivotData, ctx))
+      .then(() => ({ ok: true }), error => ({ ok: false, error }))
+    : null;
   try {
     const saved = await savePromise;
     if (saved === false) throw new Error('保護されている列のため変更できません');
@@ -164016,31 +165105,25 @@ async function applyPropertyType(propName, root, options = {}) {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
   let refreshWarning = false;
-  try {
-    if (options.render !== false) {
-      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
-      else await Promise.resolve(renderPivot(ctx));
+  // 即時反映に失敗した時だけ、保存後にもう一度描き直す（成功していれば同じ内容の描き直しになる）。
+  if (earlyRenderFailed) {
+    try { await Promise.resolve(_renderNow()); } catch (error) {
+      console.warn('列設定保存後の表示更新に失敗:', error);
+      refreshWarning = true;
     }
-  } catch (error) {
-    console.warn('列設定保存後の表示更新に失敗:', error);
-    refreshWarning = true;
   }
   // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
-  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
-  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
-  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
-  const _relTargetMayHaveChanged = _relTypes.includes(type)
-    && (prev.type !== type
-      || (config.relationDb || '') !== (prev.relationDb || '')
-      || type === 'multi-source-relation');
-  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
-    try {
-      await Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
-        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-        else if (options.render !== false) renderPivot(ctx);
-      });
-    } catch (error) {
-      console.warn('列設定保存後の参照先読み込みに失敗:', error);
+  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。保存と並行して取得した
+  // マップが揃ったら描き直し、再読み込みを押さなくても名前で表示されるようにする。
+  if (relationPreload) {
+    const loaded = await relationPreload;
+    if (loaded.ok) {
+      try { _renderNow(); } catch (error) {
+        console.warn('列設定保存後の表示更新に失敗:', error);
+        refreshWarning = true;
+      }
+    } else {
+      console.warn('列設定保存後の参照先読み込みに失敗:', loaded.error);
       refreshWarning = true;
     }
   }
@@ -164215,6 +165298,18 @@ function showDbPropertySettingsForColumn(dbPath, propName, opts) {
 function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride) {
   const target = container || document.getElementById('detail-tab-db-property-settings');
   if (!target) return;
+  // 列を選んでいない時は、表示中のビューの基準列（カンバンのグループ化列など）の設定を出す。
+  // 明示的に列を選んだ時はその列を優先し、ビュー由来の表示は解除する。
+  if (propName) {
+    target._ptViewFallback = null;
+    // 明示的に選んだ列は、そのビューにいる間だけ優先する。ビューを切り替えたら新しいビューの
+    // 基準列（カンバンならグループ化の列）へ切り替えるため、選んだ時点のビューを覚える。
+    target._ptExplicitView = typeof _ptActiveViewKey === 'function'
+      ? { dbPath, key: _ptActiveViewKey(dbPath, _ptContextForDbPath(dbPath, ctxOverride)) } : null;
+  } else if (typeof _ptViewFallbackForPanel === 'function') {
+    target._ptExplicitView = null;
+    propName = _ptViewFallbackForPanel(target, dbPath, _ptContextForDbPath(dbPath, ctxOverride));
+  }
   if (!propName) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
@@ -164240,6 +165335,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
     const propHints = (pivotData?.properties || []).map(p => `{${p}}`).join(', ');
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
+      ${typeof _ptColumnMemoFieldHtml === 'function' ? _ptColumnMemoFieldHtml(dbPath, '__entity__', ctx) : ''}
       <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="トピック名"'}></div>
       ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
       ${labelLocked ? '' : `<div class="field">
@@ -164333,6 +165429,10 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
       }
       if (typeof renderPivot === 'function') renderPivot(ctx);
     });
+    const entityRoot = target.querySelector('[data-db-property-settings-root]');
+    if (entityRoot) entityRoot._ptDbPath = dbPath;
+    if (typeof _ptBindColumnMemoField === 'function') _ptBindColumnMemoField(entityRoot, dbPath, '__entity__', ctx);
+    if (typeof _ptDecorateViewFallback === 'function') _ptDecorateViewFallback(target, dbPath, ctx);
     return;
   }
   const types = getPropertyTypes(dbPath, ctx);
@@ -164369,6 +165469,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
   const scopeId = 'tab-' + Math.random().toString(36).slice(2, 8);
   target.innerHTML = `<div class="db-prop-settings" data-pt-root>
     <div class="gb-section-head">列設定</div>
+    ${typeof _ptColumnMemoFieldHtml === 'function' ? _ptColumnMemoFieldHtml(dbPath, propName, ctx) : ''}
     <div class="field"><label>列名</label>
       <input id="pt-prop-name" type="text" value="${esc(propName)}" placeholder="列名">
     </div>
@@ -164390,6 +165491,10 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
   _bindDbPropertySettingsAutosave(root, propName);
   if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
   _bindDbPropertyIconField(root, dbPath, propName, ctx);
+  // 列メモ（一番上）とAI自動生成は専用の保存。列設定全体の自動保存とは別に保存する。
+  if (typeof _ptBindColumnMemoField === 'function') _ptBindColumnMemoField(root, dbPath, propName, ctx);
+  if (typeof _ptRenderAiAutofillSection === 'function') _ptRenderAiAutofillSection(root, dbPath, propName, ctx);
+  if (typeof _ptDecorateViewFallback === 'function') _ptDecorateViewFallback(target, dbPath, ctx);
 }
 
 /* 列ごとのユーザー設定アイコン（property_types[prop].icon、GBIconAssets の spec 文字列）。
@@ -164667,17 +165772,23 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     if (root.contains(e.relatedTarget)) return;
     flushPending();
   });
+  // 列メモ・AI自動生成・ビューの基準列の切替（data-pt-independent）は専用に保存するため、
+  // 列設定全体の自動保存を走らせない。
+  const isIndependent = (e) => typeof _ptIsIndependentFieldEvent === 'function' && _ptIsIndependentFieldEvent(e);
   root.addEventListener('input', (e) => {
     if (e.target?.closest?.('.db-picker-popup')) return;
+    if (isIndependent(e)) return;
     schedule();
   });
-  root.addEventListener('change', () => {
+  root.addEventListener('change', (e) => {
+    if (isIndependent(e)) return;
     _ptRefreshAutoFillVisibility(root);
     schedule(120);
   });
   root.addEventListener('click', (e) => {
     // アイコンはピッカーの確定時に専用保存する。開く・取り消すだけでは列を保存しない。
     if (e.target?.closest?.('#pt-icon-btn')) return;
+    if (isIndependent(e) || e.target?.closest?.('[data-pt-view-context]')) return;
     if (e.target?.closest?.('button')) setTimeout(() => schedule(120), 0);
   });
   root.querySelector('#pt-type')?.addEventListener('change', () => {
@@ -164805,6 +165916,747 @@ function _ptImageOptionsHtml(options) {
       ${row('pt-image-thumb-size', 'サムネイルサイズ', '保存サムネイルサイズ(px)', uploadThumbSize, 64, 1024)}
     </fieldset>`;
 }
+/* シートの列設定タブの追加機能（gb-db-property-types.js から分割読込）
+ *  1. 列メモ（列設定の一番上。property_types[列].description、トピック名列は表示設定 entityColumnMemo）
+ *  2. ビューに応じた列設定の表示（列を選んでいない時、カンバンのグループ化列などを出す）
+ *  3. AI自動生成列（property_types[列].ai_autofill。生成はデスクトップ版のサーバーで行う）
+ */
+
+const PT_AI_SUPPORTED_TYPES = ['text', 'furigana', 'number', 'select', 'link', 'date'];
+const PT_AI_TRIGGERS = ['on_create', 'on_source_change'];
+const PT_AI_OVERWRITE_MODES = ['empty_only', 'always'];
+const PT_AI_PROVIDER_FALLBACK = [
+  { key: 'claude_code', label: 'Claude Code', kind: 'cli' },
+  { key: 'codex', label: 'Codex CLI', kind: 'cli' },
+  { key: 'antigravity_cli', label: 'Antigravity CLI', kind: 'cli' },
+  { key: 'anthropic', label: 'Anthropic API', kind: 'api' },
+  { key: 'openai', label: 'OpenAI API', kind: 'api' },
+  { key: 'gemini', label: 'Gemini API', kind: 'api' },
+];
+const PT_AI_MAX_PROMPT_CHARS = 4000;
+const PT_MEMO_MAX_CHARS = 4000;
+
+/* ---------- 共通 ---------- */
+
+function _ptIsCloudSurface() {
+  try {
+    return !!(window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || ''));
+  } catch {
+    return false;
+  }
+}
+
+function _ptColumnWriteBlockedMessage(dbPath, propName, ctx) {
+  if (typeof _cellUiWriteBlockedMessage === 'function') {
+    const message = _cellUiWriteBlockedMessage(ctx);
+    if (message) return message;
+  }
+  if (propName && propName !== '__entity__' && typeof _dbSchemaProtectionLevel === 'function') {
+    const level = _dbSchemaProtectionLevel(dbPath, propName);
+    if (level === 'all' || level === 'computed' || level === 'required') return '読み取り専用';
+  }
+  return '';
+}
+
+function _ptCloneJson(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+// 列メモ・AI自動生成は専用欄で個別に保存する。型や選択肢の自動保存（applyPropertyType）が
+// 列設定を組み立て直す時、直前の保存値を引き継いで消さない。
+function _ptPreserveIndependentColumnFields(config, stored) {
+  if (!config || typeof config !== 'object' || !stored || typeof stored !== 'object') return config;
+  if (typeof stored.description === 'string' && stored.description && !('description' in config)) {
+    config.description = stored.description;
+  }
+  if (stored.ai_autofill && typeof stored.ai_autofill === 'object' && !('ai_autofill' in config)) {
+    config.ai_autofill = _ptCloneJson(stored.ai_autofill);
+  }
+  return config;
+}
+
+// 列名変更時に、AI自動生成のプロンプト内の {旧名} を {新名} へ付け替える。
+function _ptRenameAiPromptRefs(cfg, oldName, newName) {
+  const ai = cfg?.ai_autofill;
+  if (!ai || typeof ai !== 'object' || typeof ai.prompt !== 'string' || !oldName || oldName === newName) return;
+  ai.prompt = ai.prompt.split('{' + oldName + '}').join('{' + newName + '}');
+}
+
+// 列設定の独立欄（メモ・AI）の操作で、列設定全体の自動保存を走らせない。
+function _ptIsIndependentFieldEvent(event) {
+  return !!event?.target?.closest?.('[data-pt-independent]');
+}
+
+/* ---------- 1. 列メモ ---------- */
+
+function _ptColumnMemoValue(dbPath, propName, ctx) {
+  if (propName === '__entity__') {
+    return String(getDbViewConfig(dbPath)?.entityColumnMemo || '');
+  }
+  const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null;
+  return String(types?.[propName]?.description || '');
+}
+
+function _ptColumnMemoFieldHtml(dbPath, propName, ctx) {
+  const value = _ptColumnMemoValue(dbPath, propName, ctx);
+  const blocked = _ptColumnWriteBlockedMessage(dbPath, propName, ctx);
+  const help = typeof fieldHelp === 'function'
+    ? fieldHelp('この列の用途や入力のきまりを書き残せます。入力を止めると自動で保存します', { e2eId: 'pt-column-memo-help' })
+    : '';
+  return `<div class="field pt-column-memo" data-pt-independent="memo">
+      <label for="pt-column-memo">メモ ${help}${blocked ? ` <span class="pt-hint">${esc(blocked)}</span>` : ''}</label>
+      <div class="pt-column-memo-value">
+        <textarea id="pt-column-memo" rows="3" maxlength="${PT_MEMO_MAX_CHARS}" placeholder="この列のメモ" aria-label="列のメモ" data-e2e-id="pt-column-memo"${blocked ? ' readonly' : ''}>${esc(value)}</textarea>
+        <div class="pt-autosave-status" aria-live="polite" data-pt-memo-status></div>
+      </div>
+    </div>`;
+}
+
+async function _ptSaveColumnMemo(dbPath, propName, ctx, text) {
+  const nextText = String(text || '').slice(0, PT_MEMO_MAX_CHARS);
+  if (propName === '__entity__') {
+    const config = _cloneDbViewObject(getDbViewConfig(dbPath));
+    if (nextText.trim()) config.entityColumnMemo = nextText;
+    else delete config.entityColumnMemo;
+    const saved = await saveDbViewConfigImmediate(dbPath, config, { ctx, historyLabel: 'シート設定: 列メモ' });
+    if (!saved) throw new Error('表示設定を保存できませんでした');
+    return true;
+  }
+  const types = getPropertyTypes(dbPath, ctx) || {};
+  const before = _ptCloneJson(types[propName] || { type: 'text' });
+  const next = { ...before };
+  if (nextText.trim()) next.description = nextText;
+  else delete next.description;
+  if (JSON.stringify(before) === JSON.stringify(next)) return true;
+  const ok = await Promise.resolve(setPropertyType(dbPath, propName, next, ctx));
+  if (ok === false) throw new Error('この列のメモは変更できません');
+  if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, before, next, ctx);
+  return true;
+}
+
+function _ptBindColumnMemoField(root, dbPath, propName, ctx) {
+  const textarea = root?.querySelector?.('#pt-column-memo');
+  if (!textarea || textarea.dataset.ptMemoBound) return;
+  textarea.dataset.ptMemoBound = '1';
+  const status = root.querySelector('[data-pt-memo-status]');
+  let savedText = textarea.value;
+  let timer = null;
+  let pending = null;
+  const commit = () => {
+    clearTimeout(timer);
+    timer = null;
+    if (textarea.readOnly) return Promise.resolve(true);
+    const text = textarea.value;
+    if (text === savedText) return pending || Promise.resolve(true);
+    if (status) status.textContent = '保存中...';
+    const run = (pending || Promise.resolve()).then(() => _ptSaveColumnMemo(dbPath, propName, ctx, text))
+      .then(() => {
+        savedText = text;
+        if (status) status.textContent = '保存済み';
+        return true;
+      })
+      .catch((error) => {
+        if (status) status.textContent = '保存できませんでした';
+        if (typeof showStatus === 'function') showStatus('列のメモを保存できませんでした: ' + (error?.message || error), true);
+        return false;
+      });
+    pending = run.finally(() => { if (pending === run) pending = null; });
+    return run;
+  };
+  textarea.addEventListener('input', () => {
+    if (status) status.textContent = '保存待ち...';
+    clearTimeout(timer);
+    timer = setTimeout(commit, 700);
+  });
+  textarea.addEventListener('blur', () => { commit(); });
+  textarea.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      clearTimeout(timer);
+      textarea.value = savedText;
+      if (status) status.textContent = '';
+      textarea.blur();
+    }
+  });
+  const previousFlush = root._ptFlushAutosave;
+  root._ptFlushAutosave = async () => {
+    await commit();
+    if (typeof previousFlush === 'function') return previousFlush();
+    return undefined;
+  };
+}
+
+/* ---------- 2. ビューに応じた列設定 ---------- */
+
+const PT_VIEW_LABELS = {
+  pivot: 'テーブル', tree: 'ツリー', gallery: 'ギャラリー', kanban: 'カンバン', calendar: 'カレンダー',
+  timeline: 'タイムライン', gantt: 'ガント', chart: 'チャート', graph: 'グラフ', form: 'フォーム',
+};
+
+function _ptViewModeFor(dbPath, ctx) {
+  if (typeof getCurrentViewMode === 'function') return getCurrentViewMode(dbPath, { ctx }) || 'pivot';
+  return ctx?.viewMode || 'pivot';
+}
+
+// ビューごとに「その時に適切な列」の対応表。先頭が既定で表示する列。
+function _ptViewSettingsTargets(dbPath, ctx) {
+  const viewMode = _ptViewModeFor(dbPath, ctx);
+  const targets = [];
+  const add = (role, prop) => {
+    const name = prop === '_entity' ? '__entity__' : String(prop || '');
+    if (!name || targets.some(item => item.prop === name)) return;
+    targets.push({ role, prop: name });
+  };
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  if (viewMode === 'pivot') {
+    add('グループ化の基準', safe(() => getGroupBy(dbPath, ctx)));
+  } else if (viewMode === 'kanban') {
+    const groupBy = safe(() => getKanbanGroupBy(dbPath, ctx)) || '_status';
+    if (groupBy !== '_status') add('グループ化の基準', groupBy);
+  } else if (viewMode === 'calendar') {
+    const mapping = safe(() => getCalendarMapping(dbPath, { ctx })) || {};
+    add('開始日時', mapping.startProp);
+    add('終了日時', mapping.endProp);
+    add('タイトル', mapping.titleProp);
+    add('色分け', mapping.colorProp);
+  } else if (viewMode === 'timeline' || viewMode === 'gantt') {
+    const cfg = safe(() => getTimelineConfig(dbPath, { ctx, viewType: viewMode })) || {};
+    add('時間の基準', cfg.timeProp);
+    add('終了', cfg.endProp);
+    add('行の基準', cfg.rowProp);
+  } else if (viewMode === 'chart') {
+    const cfg = safe(() => getChartConfig(dbPath, { ctx })) || {};
+    add('横軸', cfg.xProperty);
+    add('縦軸', cfg.yProperty);
+  } else if (viewMode === 'graph') {
+    const cfg = safe(() => getGraphConfig(dbPath, { ctx })) || {};
+    add('色分け', cfg.colorProperty);
+  } else if (viewMode === 'tree') {
+    const cfg = safe(() => getDbTreeViewConfig(dbPath, ctx)) || {};
+    add('親を表す列', cfg.parentProp);
+    add('表示名', cfg.labelProp);
+    add('並び順', cfg.orderProp);
+  } else if (viewMode === 'gallery') {
+    const types = safe(() => getPropertyTypes(dbPath, ctx)) || {};
+    const imageProp = Object.keys(types).find(name => types[name]?.type === 'image');
+    add('画像', imageProp);
+    const cfg = safe(() => _getGalleryConfig(dbPath, ctx)) || {};
+    (cfg.cardProps || []).slice(0, 3).forEach(prop => add('カードに表示', prop));
+  } else if (viewMode === 'form') {
+    const data = ctx?.pivotData || (typeof state !== 'undefined' ? state.pivotData : null) || {};
+    const types = safe(() => getPropertyTypes(dbPath, ctx)) || {};
+    const cfg = safe(() => getActiveFormConfig(dbPath, data.properties || [], types, ctx)) || {};
+    add('トピック名に使う項目', cfg.entityNameProp);
+    (cfg.fields || []).slice(0, 3).forEach(prop => add('フォームの項目', prop));
+  }
+  const pivotData = ctx?.pivotData || (typeof _ptPivotDataForDbPath === 'function' ? _ptPivotDataForDbPath(dbPath) : null);
+  const known = new Set([
+    ...(pivotData?.properties || []),
+    ...Object.keys((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {}),
+    '__entity__',
+  ]);
+  const visibleTargets = targets.filter(item => known.has(item.prop)
+    && (item.prop === '__entity__' || typeof isDbPropertyDeleted !== 'function' || !isDbPropertyDeleted(dbPath, item.prop)));
+  return { viewMode, viewLabel: PT_VIEW_LABELS[viewMode] || 'ビュー', targets: visibleTargets };
+}
+
+// 表示中のビューの識別（保存ビューの位置・ID・種類）。明示的に選んだ列をビュー切替で解除する判定に使う。
+function _ptActiveViewKey(dbPath, ctx) {
+  try {
+    const idx = typeof getCurrentViewIdx === 'function' ? getCurrentViewIdx(dbPath) : -1;
+    const views = typeof getDbViewConfig === 'function' ? (getDbViewConfig(dbPath)?.savedViews || []) : [];
+    const view = idx >= 0 ? views[idx] : null;
+    return [idx, view?.id || '', _ptViewSettingsTargets(dbPath, ctx).viewMode].join('|');
+  } catch (_) {
+    return '';
+  }
+}
+
+function _ptViewTargetSignature(dbPath, ctx) {
+  const info = _ptViewSettingsTargets(dbPath, ctx);
+  return [dbPath, info.viewMode, ...info.targets.map(item => item.role + '=' + item.prop)].join('|');
+}
+
+// 列を選んでいない時に表示する列（ユーザーが明示的に選んだ列があればそちらが優先）。
+function _ptResolveViewFallbackProp(dbPath, ctx, preferred) {
+  const info = _ptViewSettingsTargets(dbPath, ctx);
+  if (!info.targets.length) return { info, target: null };
+  const target = info.targets.find(item => item.prop === preferred) || info.targets[0];
+  return { info, target };
+}
+
+function _ptViewContextHeaderHtml(info, active) {
+  if (!info || !info.targets.length) return '';
+  const label = (prop) => prop === '__entity__'
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(info.dbPath || '') : 'トピック名')
+    : prop;
+  const chips = info.targets.length > 1
+    ? `<div class="pt-formula-tools pt-view-targets" role="group" aria-label="${esc(info.viewLabel)}の基準列">${info.targets.map(item =>
+        `<button type="button" class="pt-small-btn${item.prop === active?.prop ? '' : ' muted'}" data-pt-view-target="${esc(item.prop)}" aria-pressed="${item.prop === active?.prop ? 'true' : 'false'}">${esc(item.role)}: ${esc(label(item.prop))}</button>`
+      ).join('')}</div>`
+    : '';
+  return `<div class="field pt-view-context" data-pt-view-context data-e2e-id="pt-view-context">
+      <div class="pt-hint">${esc(info.viewLabel)}の${esc(active?.role || '基準')}を表示しています</div>
+      ${chips}
+    </div>`;
+}
+
+// 列が選ばれていない時は、表示中のビューの基準列の設定を出す。
+// 戻り値: 表示する列名（無ければ ''）。描画後に _ptDecorateViewFallback で見出しを付ける。
+function _ptViewFallbackForPanel(target, dbPath, ctx) {
+  if (!target || !dbPath) return '';
+  const preferred = target.dataset?.ptViewTargetProp || '';
+  const { info, target: resolved } = _ptResolveViewFallbackProp(dbPath, ctx, preferred);
+  info.dbPath = dbPath;
+  // 基準列が無いビューでも「列を選んでいない状態」を覚えておき、ビューを切り替えた時に追従する。
+  target._ptViewFallback = { info, active: resolved || null, signature: _ptViewTargetSignature(dbPath, ctx), dbPath };
+  return resolved ? resolved.prop : '';
+}
+
+function _ptDecorateViewFallback(target, dbPath, ctx) {
+  const fallback = target?._ptViewFallback;
+  if (!fallback || !fallback.active || fallback.dbPath !== dbPath) return;
+  const root = target.querySelector('[data-pt-root], [data-db-property-settings-root]');
+  if (!root || root.querySelector('[data-pt-view-context]')) return;
+  root.insertAdjacentHTML('afterbegin', _ptViewContextHeaderHtml(fallback.info, fallback.active));
+  root.querySelectorAll('[data-pt-view-target]').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      target.dataset.ptViewTargetProp = btn.dataset.ptViewTarget || '';
+      renderDbPropertySettingsPanel(dbPath, '', target, ctx);
+    });
+  });
+}
+
+let _ptViewRefreshTimer = null;
+const _ptViewRefreshPaths = new Set();
+
+// 表示設定の保存（ビュー切替・グループ化列の変更など）の後に呼ばれる。列を選んでいない状態で
+// 列設定タブが開いている時だけ、基準列が変わった場合に限り描き直す（全体再描画はしない）。
+function _ptScheduleViewTargetRefresh(dbPath) {
+  if (typeof document === 'undefined') return;
+  _ptViewRefreshPaths.add(String(dbPath || ''));
+  if (_ptViewRefreshTimer) return;
+  _ptViewRefreshTimer = setTimeout(() => {
+    _ptViewRefreshTimer = null;
+    const paths = new Set(_ptViewRefreshPaths);
+    _ptViewRefreshPaths.clear();
+    const container = document.getElementById('detail-tab-db-property-settings');
+    if (!container || !container.isConnected) return;
+    const explicit = container._ptExplicitView;
+    if (explicit && !container._ptViewFallback) {
+      // 明示的に選んだ列の表示中にビューを切り替えた: 新しいビューに基準列があればそちらへ移る。
+      const samePath = [...paths].some(path => !path
+        || (typeof _ptNormalizeDbPath === 'function' ? _ptNormalizeDbPath(path) === _ptNormalizeDbPath(explicit.dbPath) : path === explicit.dbPath));
+      if (!samePath) return;
+      if (container.contains(document.activeElement) && document.activeElement?.matches?.('input, textarea, select')) return;
+      const ctx = typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(explicit.dbPath) : null;
+      if (_ptActiveViewKey(explicit.dbPath, ctx) === explicit.key) return;
+      if (!_ptViewSettingsTargets(explicit.dbPath, ctx).targets.length) return;
+      if (typeof state !== 'undefined' && state.selectedColumn?.dbPath === explicit.dbPath) state.selectedColumn = null;
+      renderDbPropertySettingsPanel(explicit.dbPath, '', container, ctx);
+      return;
+    }
+    const fallback = container._ptViewFallback;
+    if (!fallback) return;
+    const normalized = typeof _ptNormalizeDbPath === 'function' ? _ptNormalizeDbPath(fallback.dbPath) : fallback.dbPath;
+    const matches = [...paths].some(path => !path
+      || (typeof _ptNormalizeDbPath === 'function' ? _ptNormalizeDbPath(path) : path) === normalized);
+    if (!matches) return;
+    if (container.contains(document.activeElement) && document.activeElement?.matches?.('input, textarea, select')) return;
+    const ctx = typeof _ptContextForDbPath === 'function' ? _ptContextForDbPath(fallback.dbPath) : null;
+    const signature = _ptViewTargetSignature(fallback.dbPath, ctx);
+    if (signature === fallback.signature) return;
+    renderDbPropertySettingsPanel(fallback.dbPath, '', container, ctx);
+  }, 0);
+}
+
+/* ---------- 3. AI自動生成列 ---------- */
+
+function _ptNormalizeAiAutofillConfig(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const triggers = (Array.isArray(raw.triggers) ? raw.triggers : [raw.triggers])
+    .map(value => String(value || '').trim())
+    .filter((value, index, list) => PT_AI_TRIGGERS.includes(value) && list.indexOf(value) === index);
+  const overwrite = PT_AI_OVERWRITE_MODES.includes(raw.overwrite) ? raw.overwrite : 'empty_only';
+  const provider = PT_AI_PROVIDER_FALLBACK.some(item => item.key === raw.provider) ? raw.provider : '';
+  const model = /^[A-Za-z0-9][A-Za-z0-9._:\-/]{0,127}$/.test(String(raw.model || '').trim()) ? String(raw.model).trim() : '';
+  return {
+    version: 1,
+    enabled: raw.enabled === true,
+    prompt: String(raw.prompt || '').slice(0, PT_AI_MAX_PROMPT_CHARS),
+    triggers,
+    overwrite,
+    provider,
+    model,
+  };
+}
+
+let _ptAiSettingsCache = null;
+let _ptAiSettingsLoadedAt = 0;
+
+async function _ptLoadAiSettings(force) {
+  if (_ptIsCloudSurface() || typeof apiFetch !== 'function') return null;
+  if (!force && _ptAiSettingsCache && Date.now() - _ptAiSettingsLoadedAt < 60000) return _ptAiSettingsCache;
+  try {
+    const result = await apiFetch('/sheet-ai-column/settings', { silentError: true });
+    if (result?.ok) {
+      _ptAiSettingsCache = result;
+      _ptAiSettingsLoadedAt = Date.now();
+    }
+  } catch {
+    // 古い本体・接続失敗時は候補の既定一覧で設定だけ編集できる
+  }
+  return _ptAiSettingsCache;
+}
+
+function _ptAiProviderOptionsHtml(current, providers) {
+  const list = Array.isArray(providers) && providers.length ? providers : PT_AI_PROVIDER_FALLBACK;
+  const options = [`<option value=""${!current ? ' selected' : ''}>アプリ全体の既定</option>`];
+  list.forEach(item => {
+    const suffix = item.available === false ? '（未設定）' : '';
+    options.push(`<option value="${esc(item.key)}"${item.key === current ? ' selected' : ''}>${esc(item.label + suffix)}</option>`);
+  });
+  return options.join('');
+}
+
+function _ptAiSectionHtml(dbPath, propName, ctx, type) {
+  const types = getPropertyTypes(dbPath, ctx) || {};
+  const config = _ptNormalizeAiAutofillConfig(types[propName]?.ai_autofill) || _ptNormalizeAiAutofillConfig({});
+  const blocked = _ptColumnWriteBlockedMessage(dbPath, propName, ctx);
+  const disabledAttr = blocked ? ' disabled' : '';
+  const cloud = _ptIsCloudSurface();
+  const canRun = !cloud && typeof runBackgroundJob === 'function';
+  const pivotData = ctx?.pivotData || (typeof _ptPivotDataForDbPath === 'function' ? _ptPivotDataForDbPath(dbPath) : null);
+  const refProps = (typeof filterDeletedDbProperties === 'function'
+    ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
+    : (pivotData?.properties || [])).filter(prop => prop !== propName);
+  const refButtons = [...refProps, 'トピック名', '本文']
+    .map(prop => `<button type="button" class="pt-small-btn" data-pt-ai-ref="${esc(prop)}"${disabledAttr}>{${esc(prop)}}</button>`)
+    .join('');
+  const help = (text, id) => (typeof fieldHelp === 'function' ? fieldHelp(text, { e2eId: id }) : '');
+  return `<div id="pt-ai-autofill" class="pt-ai-autofill" data-pt-independent="ai" data-e2e-id="pt-ai-autofill"${PT_AI_SUPPORTED_TYPES.includes(type) ? '' : ' hidden'}
+      style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">
+      <div class="gb-check-help-row">
+        <label class="pt-check-label"><input id="pt-ai-enabled" type="checkbox"${config.enabled ? ' checked' : ''}${disabledAttr} data-e2e-id="pt-ai-enabled"> AI自動生成</label>
+        ${help('列ごとのプロンプトでAIにセルの値を作らせます。生成はデスクトップ版で実行され、AIの使用量に記録されます', 'pt-ai-enabled-help')}
+        ${blocked ? `<span class="pt-hint">${esc(blocked)}</span>` : ''}
+      </div>
+      <div id="pt-ai-body"${config.enabled ? '' : ' hidden'}>
+        <div class="field"><label for="pt-ai-prompt">プロンプト ${help('{列名} で他の列の値、{トピック名} でトピック名、{本文} で本文を参照できます', 'pt-ai-prompt-help')}</label>
+          <textarea id="pt-ai-prompt" rows="5" maxlength="${PT_AI_MAX_PROMPT_CHARS}" placeholder="例: {あらすじ} を30字で要約"${blocked ? ' readonly' : ''} data-e2e-id="pt-ai-prompt">${esc(config.prompt)}</textarea>
+        </div>
+        <div class="pt-formula-props pt-ai-ref-row" role="group" aria-label="参照できる列">${refButtons}</div>
+        <fieldset class="gb-field-pair-group"><legend>自動で生成するとき</legend>
+          <label class="pt-check-label"><input id="pt-ai-trigger-create" type="checkbox"${config.triggers.includes('on_create') ? ' checked' : ''}${disabledAttr}> トピックを作成したとき</label>
+          <label class="pt-check-label"><input id="pt-ai-trigger-source" type="checkbox"${config.triggers.includes('on_source_change') ? ' checked' : ''}${disabledAttr}> 参照している列が変わったとき</label>
+        </fieldset>
+        <div class="field"><label for="pt-ai-overwrite">上書き</label>
+          <select id="pt-ai-overwrite"${disabledAttr}>
+            <option value="empty_only"${config.overwrite === 'empty_only' ? ' selected' : ''}>空欄のときだけ</option>
+            <option value="always"${config.overwrite === 'always' ? ' selected' : ''}>常に上書き</option>
+          </select>
+        </div>
+        <div class="field"><label for="pt-ai-provider">使用するAI</label>
+          <select id="pt-ai-provider"${disabledAttr} data-e2e-id="pt-ai-provider">${_ptAiProviderOptionsHtml(config.provider, _ptAiSettingsCache?.providers)}</select>
+        </div>
+        <div class="field"><label for="pt-ai-model">モデル ${help('空欄ならAIごとの既定（チャットの設定）を使います', 'pt-ai-model-help')}</label>
+          <input id="pt-ai-model" type="text" value="${esc(config.model)}" placeholder="空欄で既定"${disabledAttr}>
+        </div>
+        ${cloud ? `<div class="pt-hint" data-pt-ai-cloud-note>生成はデスクトップ版で実行できます</div>` : `
+        <div class="gb-check-help-row" data-pt-ai-app-row>
+          <label class="pt-check-label"><input id="pt-ai-app-auto" type="checkbox" disabled data-e2e-id="pt-ai-app-auto"> 自動生成を許可（全シート共通）</label>
+          ${help('既定はオフです。オフの間は手動の生成だけ行います。オンでも1分あたりの件数に上限があります', 'pt-ai-app-auto-help')}
+        </div>`}
+        ${canRun ? `<div class="pt-formula-tools pt-ai-actions">
+          <button type="button" class="gb-btn gb-btn-sm" data-pt-ai-run="selected"${disabledAttr} data-e2e-id="pt-ai-run-selected">選択中のトピックを生成</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-pt-ai-run="all"${disabledAttr} data-e2e-id="pt-ai-run-all">列全体を生成</button>
+        </div>` : ''}
+        <div class="pt-autosave-status" aria-live="polite" data-pt-ai-status></div>
+      </div>
+    </div>`;
+}
+
+function _ptCollectAiConfig(section, previous) {
+  const get = id => section.querySelector('#' + id);
+  const triggers = [];
+  if (get('pt-ai-trigger-create')?.checked) triggers.push('on_create');
+  if (get('pt-ai-trigger-source')?.checked) triggers.push('on_source_change');
+  return _ptNormalizeAiAutofillConfig({
+    ...(previous || {}),
+    enabled: !!get('pt-ai-enabled')?.checked,
+    prompt: get('pt-ai-prompt')?.value || '',
+    triggers,
+    overwrite: get('pt-ai-overwrite')?.value || 'empty_only',
+    provider: get('pt-ai-provider')?.value || '',
+    model: get('pt-ai-model')?.value || '',
+  });
+}
+
+async function _ptSaveAiConfig(dbPath, propName, ctx, nextAi) {
+  const types = getPropertyTypes(dbPath, ctx) || {};
+  const before = _ptCloneJson(types[propName] || { type: 'text' });
+  const next = { ...before, ai_autofill: nextAi };
+  if (JSON.stringify(before) === JSON.stringify(next)) return true;
+  const ok = await Promise.resolve(setPropertyType(dbPath, propName, next, ctx));
+  if (ok === false) throw new Error('この列のAI自動生成は変更できません');
+  if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, before, next, ctx);
+  return true;
+}
+
+function _ptAiEntityEntryPath(dbPath, entityName, pivotData) {
+  const entity = pivotData?.entities?.[entityName];
+  if (entity?._entry_path) return entity._entry_path;
+  return typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, pivotData) : '';
+}
+
+function _ptAiCellIsEmpty(entity, propName) {
+  const values = Array.isArray(entity?.[propName]) ? entity[propName] : [];
+  const adopted = typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(values) : values[0];
+  return !String(adopted?.value ?? '').trim();
+}
+
+// 1セルの生成結果を、通常の値書き込み（編集ロック・自動バージョン・取り消し）で保存する。
+async function _ptAiWriteCellValue(dbPath, ctx, entityName, propName, value) {
+  const data = ctx?.pivotData || state.pivotData;
+  const entityData = data?.entities?.[entityName];
+  if (!entityData) throw new Error('対象のトピックが見つかりません');
+  const raw = Array.isArray(entityData[propName]) ? entityData[propName] : [];
+  const adopted = typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(raw) : raw[0];
+  const label = 'AIで生成: ' + propName;
+  const entityPath = _ptAiEntityEntryPath(dbPath, entityName, data);
+  if (adopted) {
+    const oldValue = adopted.value ?? '';
+    if (String(oldValue) === String(value)) return;
+    await _apiPutValue(adopted, { new_value: value, __source: 'sheet-ai-column' });
+    if (typeof _dbUndoValue === 'function') _dbUndoValue(label, adopted, oldValue, value, undefined, undefined, { dbPath, ctx });
+    adopted.value = value;
+  } else {
+    const result = await _apiPostValue(entityPath, propName, value, '採用', '', '', { __source: 'sheet-ai-column' });
+    const added = {
+      value, status: '採用', file: result?.path || result?.file || entityPath, property: propName,
+      candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length,
+    };
+    entityData[propName] = [...raw, added];
+    if (typeof _dbUndoValue === 'function') _dbUndoValue(label, added, '', value, undefined, undefined, { dbPath, ctx });
+  }
+  if (typeof _buttonActionRefreshTargetCell === 'function') {
+    _buttonActionRefreshTargetCell(dbPath, entityPath, entityName, propName, ctx);
+  } else if (typeof _renderCurrentDbView === 'function') {
+    _renderCurrentDbView(ctx, dbPath);
+  }
+}
+
+async function _ptAiConfirmBulk(dbPath, propName, count) {
+  let estimate = null;
+  try {
+    estimate = await apiPost('/sheet-ai-column/estimate', { db_path: dbPath, prop: propName, count }, { silentError: true });
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('AI生成を開始できません: ' + (error?.message || error), true);
+    return false;
+  }
+  const costText = estimate?.is_cli
+    ? `${estimate.provider_label || 'CLI'}（定額のCLI。従量課金なし）`
+    : `${estimate?.provider_label || ''} 概算 約${Number(estimate?.estimated_cost_jpy || 0).toLocaleString()}円（約$${Number(estimate?.estimated_cost_usd || 0).toFixed(2)}、1ドル=${estimate?.usd_jpy_rate || 156}円換算）`;
+  const message = `列「${propName}」の${count}件をAIで生成します。\n使用するAI: ${costText}\n\n元に戻す時は、シートのバージョン履歴から生成前の状態へ戻せます。実行しますか？`;
+  return typeof cfConfirm === 'function' ? cfConfirm(message, { okLabel: '生成' }) : false;
+}
+
+async function _ptAiRun(mode, dbPath, propName, ctx, section) {
+  const status = section.querySelector('[data-pt-ai-status]');
+  const setStatus = (text) => { if (status) status.textContent = text; };
+  const flush = section._ptAiFlush;
+  if (typeof flush === 'function') await flush();
+  const config = _ptNormalizeAiAutofillConfig((getPropertyTypes(dbPath, ctx) || {})[propName]?.ai_autofill);
+  if (!config?.enabled || !config.prompt.trim()) {
+    if (typeof showStatus === 'function') showStatus('AI自動生成を有効にして、プロンプトを入力してください', true);
+    return;
+  }
+  const pivotData = ctx?.pivotData || state.pivotData || {};
+  const entities = pivotData.entities || {};
+  let names = mode === 'selected'
+    ? (typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [])
+    : Object.keys(entities);
+  if (!names.length) {
+    if (typeof showStatus === 'function') showStatus(mode === 'selected' ? 'トピックを選択してください' : '生成するトピックはありません', true);
+    return;
+  }
+  if (config.overwrite !== 'always') names = names.filter(name => _ptAiCellIsEmpty(entities[name], propName));
+  if (!names.length) {
+    if (typeof showStatus === 'function') showStatus('空欄のトピックはありません');
+    return;
+  }
+  if (names.length === 1 && mode === 'selected') {
+    const entityName = names[0];
+    setStatus('生成中...');
+    try {
+      const result = await runBackgroundJob('/sheet-ai-column/generate', {
+        db_path: dbPath, prop: propName, entry_path: _ptAiEntityEntryPath(dbPath, entityName, pivotData),
+      }, { operationKind: 'sheet-ai-column', operationLabel: `AIで生成: ${propName}`, successMessage: 'AIで生成しました' });
+      if (typeof result?.value !== 'string') throw new Error(result?.error || 'AIの返答を受け取れませんでした');
+      await _ptAiWriteCellValue(dbPath, ctx, entityName, propName, result.value);
+      setStatus('');
+      if (typeof showStatus === 'function') showStatus(`「${entityName}」の${propName}をAIで生成しました`);
+    } catch (error) {
+      setStatus('');
+      if (error?.name !== 'AbortError' && typeof showStatus === 'function') showStatus('AIで生成できませんでした: ' + (error?.message || error), true);
+    }
+    return;
+  }
+  if (!await _ptAiConfirmBulk(dbPath, propName, names.length)) return;
+  setStatus('生成中...');
+  try {
+    const result = await runBackgroundJob('/sheet-ai-column/run', {
+      db_path: dbPath, prop: propName,
+      entry_paths: names.map(name => _ptAiEntityEntryPath(dbPath, name, pivotData)).filter(Boolean),
+    }, { operationKind: 'sheet-ai-column', operationLabel: `AIで生成: ${propName}（${names.length}件）` });
+    setStatus('');
+    const failed = Number(result?.failed || 0);
+    if (typeof showStatus === 'function') {
+      showStatus(`AIで${Number(result?.written || 0)}件生成しました` + (failed ? `（${failed}件失敗）` : ''), failed > 0);
+    }
+  } catch (error) {
+    setStatus('');
+    if (error?.name !== 'AbortError' && typeof showStatus === 'function') showStatus('AIで生成できませんでした: ' + (error?.message || error), true);
+  } finally {
+    if (globalThis.GbDbEntryIdentity && ctx) {
+      try { await globalThis.GbDbEntryIdentity.reload(ctx, dbPath); } catch {}
+    } else if (typeof selectDatabase === 'function') {
+      try { await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true }); } catch {}
+    }
+  }
+}
+
+function _ptRenderAiAutofillSection(root, dbPath, propName, ctx) {
+  if (!root || !dbPath || !propName || propName === '__entity__') return;
+  if (root.querySelector('#pt-ai-autofill')) return;
+  const anchor = root.querySelector('.pt-autosave-status:not([data-pt-memo-status])') || null;
+  const type = typeof _ptReadUiType === 'function' ? _ptReadUiType(root) : ((getPropertyTypes(dbPath, ctx) || {})[propName]?.type || 'text');
+  const holder = document.createElement('div');
+  holder.innerHTML = _ptAiSectionHtml(dbPath, propName, ctx, type);
+  const section = holder.firstElementChild;
+  if (anchor) root.insertBefore(section, anchor);
+  else root.appendChild(section);
+  _ptBindAiAutofillSection(root, section, dbPath, propName, ctx);
+}
+
+function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
+  const get = id => section.querySelector('#' + id);
+  const status = section.querySelector('[data-pt-ai-status]');
+  const body = get('pt-ai-body');
+  let saved = _ptNormalizeAiAutofillConfig((getPropertyTypes(dbPath, ctx) || {})[propName]?.ai_autofill);
+  let timer = null;
+  let pending = null;
+  const commit = () => {
+    clearTimeout(timer);
+    timer = null;
+    const next = _ptCollectAiConfig(section, saved);
+    const savedComparable = saved || _ptNormalizeAiAutofillConfig({});
+    if (JSON.stringify(next) === JSON.stringify(savedComparable)) return pending || Promise.resolve(true);
+    if (status) status.textContent = '保存中...';
+    const run = (pending || Promise.resolve()).then(() => _ptSaveAiConfig(dbPath, propName, ctx, next))
+      .then(() => {
+        saved = next;
+        const autoWanted = next.enabled && next.triggers.length;
+        const appAuto = _ptAiSettingsCache?.settings?.auto_enabled === true;
+        if (status) status.textContent = autoWanted && !appAuto && !_ptIsCloudSurface()
+          ? '保存済み（全シート共通の自動生成がオフのため、自動では生成しません）'
+          : '保存済み';
+        return true;
+      })
+      .catch((error) => {
+        if (status) status.textContent = '保存できませんでした';
+        if (typeof showStatus === 'function') showStatus('AI自動生成の設定を保存できませんでした: ' + (error?.message || error), true);
+        return false;
+      });
+    pending = run.finally(() => { if (pending === run) pending = null; });
+    return run;
+  };
+  const schedule = (delay) => {
+    if (status) status.textContent = '保存待ち...';
+    clearTimeout(timer);
+    timer = setTimeout(commit, delay);
+  };
+  section._ptAiFlush = commit;
+  section.addEventListener('input', (event) => {
+    if (event.target?.id === 'pt-ai-app-auto') return;
+    schedule(700);
+  });
+  section.addEventListener('change', (event) => {
+    if (event.target?.id === 'pt-ai-app-auto') return;
+    if (event.target?.id === 'pt-ai-enabled' && body) body.hidden = !event.target.checked;
+    schedule(150);
+  });
+  section.addEventListener('focusout', (event) => {
+    if (section.contains(event.relatedTarget)) return;
+    commit();
+  });
+  section.querySelectorAll('[data-pt-ai-ref]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const textarea = get('pt-ai-prompt');
+      if (!textarea || textarea.readOnly) return;
+      const text = '{' + (btn.dataset.ptAiRef || '') + '}';
+      if (typeof _ptInsertFormulaText === 'function') _ptInsertFormulaText(textarea, text);
+      else { textarea.value += text; textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+    });
+  });
+  section.querySelectorAll('[data-pt-ai-run]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try { await _ptAiRun(btn.dataset.ptAiRun, dbPath, propName, ctx, section); }
+      finally { btn.disabled = false; }
+    });
+  });
+  const typeSelect = root.querySelector('#pt-type');
+  typeSelect?.addEventListener('change', () => {
+    const type = typeof _ptReadUiType === 'function' ? _ptReadUiType(root) : typeSelect.value;
+    section.hidden = !PT_AI_SUPPORTED_TYPES.includes(type);
+  });
+  const previousFlush = root._ptFlushAutosave;
+  root._ptFlushAutosave = async () => {
+    await commit();
+    if (typeof previousFlush === 'function') return previousFlush();
+    return undefined;
+  };
+  // 使用できるAIの一覧と、全シート共通の自動生成の許可（デスクトップ版のみ）を後から読む。
+  _ptLoadAiSettings(false).then((result) => {
+    if (!result || !section.isConnected) return;
+    const providerSelect = get('pt-ai-provider');
+    if (providerSelect && document.activeElement !== providerSelect) {
+      const current = providerSelect.value;
+      providerSelect.innerHTML = _ptAiProviderOptionsHtml(current, result.providers);
+    }
+    const appToggle = get('pt-ai-app-auto');
+    if (appToggle) {
+      appToggle.checked = result.settings?.auto_enabled === true;
+      appToggle.disabled = !!_ptColumnWriteBlockedMessage(dbPath, propName, ctx);
+      appToggle.addEventListener('change', async () => {
+        const wanted = appToggle.checked;
+        appToggle.disabled = true;
+        try {
+          const saved = await apiPut('/sheet-ai-column/settings', { auto_enabled: wanted });
+          _ptAiSettingsCache = { ...(_ptAiSettingsCache || {}), settings: saved?.settings || { auto_enabled: wanted } };
+          _ptAiSettingsLoadedAt = Date.now();
+          if (typeof showStatus === 'function') showStatus(wanted ? '全シート共通の自動生成を許可しました' : '全シート共通の自動生成をオフにしました');
+        } catch (error) {
+          appToggle.checked = !wanted;
+          if (typeof showStatus === 'function') showStatus('自動生成の許可を変更できませんでした: ' + (error?.message || error), true);
+        } finally {
+          appToggle.disabled = false;
+        }
+      });
+    }
+  });
+}
+
+window.MeldexSheetAiColumn = Object.freeze({
+  supportedTypes: PT_AI_SUPPORTED_TYPES.slice(),
+  normalizeConfig: _ptNormalizeAiAutofillConfig,
+  viewSettingsTargets: _ptViewSettingsTargets,
+});
 ;
 
 ;
@@ -166116,6 +167968,19 @@ function applyDbOptionHeaderColor(el, hex) {
   el.style.setProperty('--db-option-fg', dbOptionTextColorFor(safeHex));
 }
 
+// カンバンのグループ（列全体）を選択肢の背景色で塗る。見出しは濃く、列の地は薄くする。
+function applyDbOptionKanbanColumnColor(col, hex) {
+  if (!col) return;
+  const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
+  if (!safeHex) {
+    col.classList.remove('db-option-color-column');
+    col.style.removeProperty('--db-option-bg');
+    return;
+  }
+  col.classList.add('db-option-color-column');
+  col.style.setProperty('--db-option-bg', safeHex);
+}
+
 // ドロップダウン項目先頭に挿入する色ドット（DOM要素）。hex が無効なら null
 function createDbOptionColorDot(hex) {
   const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
@@ -166145,7 +168010,7 @@ function getDbOptionColorForGroup(dbPath, groupByProp, groupKey, ctx) {
   if (!dbPath || !groupByProp || typeof getPropertyTypes !== 'function') return '';
   const ptc = (getPropertyTypes(dbPath, ctx) || {})[groupByProp];
   if (!ptc || (ptc.type !== 'select' && ptc.type !== 'multi-select')) return '';
-  return getDbOptionColor(ptc, groupKey);
+  return getDbOptionStyle(ptc, groupKey)?.bgColor || getDbOptionColor(ptc, groupKey);
 }
 
 function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
@@ -166194,6 +168059,7 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
         const title = header.querySelector('span:not(.kanban-dot):not(.kanban-count)');
         if ((title?.textContent || '').trim() !== String(option)) return;
         applyDbOptionHeaderColor(header, safeHex);
+        applyDbOptionKanbanColumnColor(header.closest('.kanban-column'), safeHex);
         const existing = header.querySelector('.kanban-dot');
         if (existing) existing.remove();
         const dot = createDbOptionColorDot(safeHex);
@@ -168001,6 +169867,62 @@ function attachInlineBlurCommit(inp, commit, options = {}) {
 // レジストリに未登録のため、_dbPaneContextFromEvent()（DOM祖先探索 + レジストリ参照）は
 // 常に解決に失敗し、メイン画面側の別ペイン（またはnull）へ誤って解決され得る
 // （showColHeaderMenu() と同根。2026-07-15 フェーズD1で確認）。
+// 列名変更の旧名→新名をシートごとに覚える。列メニューは開いた時点の列名を持つため、
+// 列名変更の反映前に開いたメニューから「右に列を挿入」すると、基準列が見つからずに
+// 末尾へ追加されていた（列名変更の待ち時間中に続けて挿入すると再現）。
+const _dbColumnRenameAliases = new Map();
+
+function _dbRememberColumnRename(dbPath, oldName, newName) {
+  const key = String(dbPath || '');
+  if (!key || !oldName || !newName || oldName === newName) return () => {};
+  let aliases = _dbColumnRenameAliases.get(key);
+  if (!aliases) { aliases = new Map(); _dbColumnRenameAliases.set(key, aliases); }
+  aliases.set(oldName, newName);
+  // 新名を別の列が旧名として使い直す場合に循環しないよう、新名側の古い対応は消す。
+  if (aliases.get(newName) === oldName) aliases.delete(newName);
+  return function forget() {
+    if (aliases.get(oldName) === newName) aliases.delete(oldName);
+  };
+}
+
+// 列名変更の保存が終わるまで、同じシートの列挿入を待たせる。待たずに挿入すると、旧名を含む
+// 古い列定義で新しい列を書き込み、列の型の保存と列名変更がサーバーで競合した（409）。
+// 併せて、新しい列の仮の名前に変更中の旧名を使わない（insertPropertyInline）ことと、古い
+// 保存応答で手元の列定義を戻さない（GbDbSchemaMutation の世代確認）ことで、列定義が失われる
+// 不具合（2026-11-18 再現: 3回続けた挿入で列が1つだけ残った）を防ぐ。
+const _dbColumnRenameLocalGates = new Map();
+
+function _dbOpenColumnRenameGate(dbPath) {
+  const key = String(dbPath || '');
+  let release = () => {};
+  const promise = new Promise(resolve => { release = resolve; });
+  const gate = { promise, released: false };
+  _dbColumnRenameLocalGates.set(key, gate);
+  return () => {
+    if (gate.released) return;
+    gate.released = true;
+    if (_dbColumnRenameLocalGates.get(key) === gate) _dbColumnRenameLocalGates.delete(key);
+    release();
+  };
+}
+
+function _dbPendingColumnRenameGate(dbPath) {
+  const gate = _dbColumnRenameLocalGates.get(String(dbPath || ''));
+  return gate && !gate.released ? gate.promise : null;
+}
+
+function _dbResolveCurrentColumnName(dbPath, name, existingNames) {
+  const aliases = _dbColumnRenameAliases.get(String(dbPath || ''));
+  const existing = Array.isArray(existingNames) ? existingNames : null;
+  if (existing && existing.includes(name)) return name;
+  let current = name;
+  for (let hop = 0; aliases && hop < 16 && aliases.has(current); hop += 1) {
+    current = aliases.get(current);
+    if (existing && existing.includes(current)) return current;
+  }
+  return existing ? name : current;
+}
+
 function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   if (th.querySelector('.th-rename-input')) return;
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
@@ -168064,6 +169986,23 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
       restoreActiveCellByProp(oldName, ctx);
       return;
     }
+    // 保存の完了を待たずに、見出しへ新しい列名をすぐ出す（失敗・取り消し時は描き直しで戻る）。
+    inp.remove();
+    if (label) {
+      label.textContent = newName;
+      label.style.display = '';
+    }
+    th.classList.add('is-column-renaming');
+    th.setAttribute('aria-busy', 'true');
+    const forgetRename = _dbRememberColumnRename(targetDbPath, oldName, newName);
+    const releaseRenameGate = _dbOpenColumnRenameGate(targetDbPath);
+    // 別の列の列名を入力中なら、描き直しでその入力欄を消さない（その列の確定時に描き直す）。
+    const otherRenameActive = () => !!(ctx?.containerEl || document).querySelector?.('.th-rename-input');
+    const renderUnlessEditing = (activeProp) => {
+      if (otherRenameActive()) return;
+      renderPivot(ctx);
+      restoreActiveCellByProp(activeProp, ctx);
+    };
     try {
       if (typeof renameDbProperty === 'function') {
         if (window.MeldexTopicPlacementUI?.renameColumn) {
@@ -168073,8 +170012,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
             rollback: () => renameDbProperty(targetDbPath, newName, oldName, ctx),
           });
           if (!renamed) {
-            renderPivot(ctx);
-            restoreActiveCellByProp(oldName, ctx);
+            releaseRenameGate();
+            forgetRename();
+            if (label && label.isConnected) label.textContent = oldName;
+            th.classList.remove('is-column-renaming');
+            th.removeAttribute('aria-busy');
+            renderUnlessEditing(oldName);
             return;
           }
         } else {
@@ -168082,21 +170025,28 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
         }
       }
     } catch (err) {
+      releaseRenameGate();
       showStatus(
         err?.resultUnknown
           ? '列名変更の保存結果を確認できません。再読み込み後の表示を確認してください。'
           : '列名の変更に失敗: ' + (err?.message || err),
         true
       );
-      renderPivot(ctx);
       const currentProps = (ctx?.pivotData || state.pivotData)?.properties || [];
-      restoreActiveCellByProp(currentProps.includes(newName) ? newName : oldName, ctx);
+      const kept = currentProps.includes(newName) ? newName : oldName;
+      if (kept === oldName) forgetRename();
+      if (label && label.isConnected) label.textContent = kept;
+      th.classList.remove('is-column-renaming');
+      th.removeAttribute('aria-busy');
+      renderUnlessEditing(kept);
       return;
     }
+    releaseRenameGate();
+    th.classList.remove('is-column-renaming');
+    th.removeAttribute('aria-busy');
     const selected = _getSelectedColumns(targetDbPath).map(name => name === oldName ? newName : name);
     _setSelectedColumns(targetDbPath, selected, newName);
-    renderPivot(ctx);
-    restoreActiveCellByProp(newName, ctx);
+    renderUnlessEditing(newName);
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;
@@ -170042,6 +171992,11 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
       : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
   const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
+  const renameGate = typeof _dbPendingColumnRenameGate === 'function' ? _dbPendingColumnRenameGate(dbPath) : null;
+  if (renameGate) {
+    renameGate.then(() => insertPropertyInline(refProp, direction, ctx || ctxOrDbPath, typeConfig));
+    return;
+  }
   const pivotData = (ctx && ctx.pivotData) || state.pivotData;
   const fallbackOrder = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
@@ -170053,10 +172008,28 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const _newColType = (_hasTypeConfig && typeConfig.type) ? typeConfig.type : 'text';
   const _initialName = (_hasTypeConfig && typeof typeConfig.initialName === 'string') ? typeConfig.initialName.trim() : '';
   const base = _initialName || (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
+  // 列名変更した旧名は新しい列の仮の名前に使わない（名前で列を指す保存処理と重ならないように）。
+  const renamedAway = typeof _dbColumnRenameAliases !== 'undefined'
+    ? [...(_dbColumnRenameAliases.get(String(dbPath)) || new Map()).keys()]
+    : [];
+  // 列順に無い列（定義だけ残っている列）とも重ならないよう、列定義の名前も避ける。
+  const definedNames = Object.keys((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {});
+  const taken = new Set([...order, ...definedNames, ...(pivotData?.properties || []), ...renamedAway]);
   let idx = 1, name = base;
-  while (order.includes(name)) { idx++; name = base + idx; }
-  const refIdx = order.indexOf(refProp);
-  if (refIdx >= 0) {
+  while (taken.has(name)) { idx++; name = base + idx; }
+  // メニューを開いた後に基準列の列名が変わっていても、今の名前で位置を決める。
+  const currentRefProp = typeof _dbResolveCurrentColumnName === 'function'
+    ? _dbResolveCurrentColumnName(dbPath, refProp, order)
+    : refProp;
+  const refIdx = order.indexOf(currentRefProp);
+  if (refIdx < 0 && refProp === '__entity__') {
+    // トピック名列は列順に含まれないことがある（常に先頭）。その右＝先頭へ入れる。
+    order.splice(0, 0, name);
+  } else if (refIdx < 0 && refProp) {
+    // 基準列が見つからない時に黙って末尾へ入れない（以前は右端へ追加されていた）。
+    if (typeof showStatus === 'function') showStatus('挿入する位置の列が見つかりません: ' + refProp, true);
+    return;
+  } else if (refIdx >= 0) {
     const insertIdx = direction === 'left' ? refIdx : refIdx + 1;
     order.splice(insertIdx, 0, name);
   } else {
@@ -172502,7 +174475,7 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     <div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${targets.map(name => esc(name)).join(' / ')}</div>
     <div class="field">
       <label for="bulk-col-width-input">幅 (px)</label>
-      <input id="bulk-col-width-input" class="gb-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="width:100%;min-width:0;box-sizing:border-box;">
+      <input id="bulk-col-width-input" class="gb-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="flex:1 1 0%;width:100%;min-width:0;box-sizing:border-box;">
     </div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
@@ -174303,7 +176276,10 @@ function _enableDropdownKeyNav(dd, itemSelector) {
         || (text.includes('追加') && text.toLowerCase().includes(lower));
     });
   };
+  // 強調中の候補要素（検索で候補が作り直されたかの判定に使う）。
+  let activeEl = null;
   const highlight = (items, idx) => {
+    activeEl = items[idx] || null;
     items.forEach((el, i) => {
       el.style.outline = i === idx ? '2px solid var(--accent)' : '';
       el.style.outlineOffset = i === idx ? '-2px' : '';
@@ -174372,7 +176348,10 @@ function _enableDropdownKeyNav(dd, itemSelector) {
     if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
       const addIdx = e.key === 'ArrowDown' ? findAddItemIndex(items, activeInputText(e.target)) : -1;
       // 末尾から先頭へ循環する（追加候補へのジャンプは、まだそこに居ない時だけ）
-      activeIdx = (addIdx >= 0 && addIdx !== activeIdx)
+      // 検索入力で候補が作り直された直後は、古い番号が偶然追加候補と同じでも
+      // 追加候補は表示上まだ選ばれていない（強調は消えた要素に付いていた）。
+      const onAddItem = addIdx >= 0 && addIdx === activeIdx && items[addIdx] === activeEl;
+      activeIdx = (addIdx >= 0 && !onAddItem)
         ? addIdx
         : (activeIdx >= items.length - 1 ? 0 : activeIdx + 1);
       highlight(items, activeIdx);
@@ -178504,6 +180483,16 @@ if (typeof window !== 'undefined') {
     }
     return '';
   }
+  // 値入力の履歴は、表示中のフォーム（フォームアプリ）またはシートのフォーム表示の範囲へ積む。
+  // 範囲なし（共通履歴）へ積むと、別ファイルのCtrl+Zで画面外の入力が戻ってしまう。
+  function historyScope(ctx) {
+    const app = ctx.options?.ctx?.formApp;
+    if (app && typeof app._historyScope === 'function') return app._historyScope();
+    if (typeof ctx.options?.historyScope === 'function') return ctx.options.historyScope();
+    const dbPath = ctx.options?.ctx?.dbPath || ctx.dbPath || '';
+    if (dbPath && typeof _dbViewConfigHistoryScope === 'function') return _dbViewConfigHistoryScope(dbPath);
+    return dbPath ? 'db:' + String(dbPath).replace(/\\/g, '/') : '';
+  }
   async function saveScalar(ctx, prop, value, candidate) {
     const path = ctx.entityPath;
     const dbPath = typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(path) : ctx.dbPath;
@@ -178527,7 +180516,7 @@ if (typeof window !== 'undefined') {
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
         const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(); };
-        historyPush('フォーム: ' + prop, () => restore(old), () => restore(value), '');
+        historyPush('フォーム: ' + prop + 'を変更', () => restore(old), () => restore(value), historyScope(ctx), prop);
       }
       return candidate;
     }
@@ -178547,7 +180536,7 @@ if (typeof window !== 'undefined') {
         noteRevision(ctx, next);
         Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
         ctx.data.properties[prop].push(created); ctx.rerender();
-      }, '');
+      }, historyScope(ctx), prop);
     }
     return created;
   }
@@ -178570,6 +180559,7 @@ if (typeof window !== 'undefined') {
     let candidate = candidates[0] || null;
     const row = _buildFormInputRow(prop, cfg, ctx.propTypes?.[prop] || { type: 'text' });
     row.classList.add('gb-form-layout-field'); row.querySelector('.gb-form-input-label')?.remove();
+    row.dataset.formField = prop;
     const input = row.querySelector('input,textarea,select');
     const type = input.dataset.formType;
     let savedValue = String(candidate?.value ?? '');
@@ -178697,6 +180687,7 @@ if (typeof window !== 'undefined') {
       peers.push(row); placed.set(cell.prop, peers);
       const element = document.createElement('div'); element.className = 'el-cell el-cell-field gb-form-new-cell';
       element.dataset.cellId = cell.id;
+      element.dataset.formField = cell.prop;
       element.style.zIndex = String(layout.cells.indexOf(cell));
       for (const [key, value] of Object.entries({ left: cell.x, top: cell.y, width: cell.w, height: cell.h })) element.style[key] = value + 'px';
       _elApplyCellStyle(element, cell, { editMode: false });
@@ -179440,11 +181431,11 @@ const MeldexSheetLocation = (() => {
     const wrap = document.createElement('span'); wrap.className = 'db-location-controls';
     let loc = null; try { loc = D().parse(val.value, val.link); } catch (_) {}
     const edit = button(loc ? loc.label || loc.point.join(', ') : '場所を設定: ' + String(val.value || ''), () => editCell(edit, entityPath, propName, val, options));
-    edit.classList.add('value-text', 'db-location-value'); wrap.appendChild(edit);
+    edit.classList.add('value-text', 'db-location-value'); edit.dataset.e2eId = `db-location-edit-${entityPath}-${propName}`; wrap.appendChild(edit);
     if (loc) {
       const map = button(val.link?.path ? 'マップで開く' : 'Googleマップで開く', async event => {
         event.stopPropagation(); try { await open(val.value, val.link); } catch (error) { showStatus(error.message, true); }
-      }); map.classList.add('db-location-open'); wrap.appendChild(map);
+      }); map.classList.add('db-location-open'); map.dataset.e2eId = `db-location-open-${entityPath}-${propName}`; wrap.appendChild(map);
     }
     return wrap;
   }
@@ -179544,6 +181535,16 @@ const MeldexMapRelations = (() => {
         } catch (error) { app._message(error.message); }
       });
     }, { disabled: locked }));
+    if (app.store.doc.atlas?.surface && feature.points?.length) {
+      const wrap = document.createElement('label'); wrap.className = 'gb-map-field'; wrap.append('詳細地図の範囲');
+      const span = document.createElement('select'); span.className = 'gb-select'; span.setAttribute('aria-label', '詳細地図の範囲');
+      for (const [value, label] of detailSpans) span.add(new Option(label, value));
+      span.value = '16'; span.disabled = locked; wrap.append(span); root.appendChild(wrap);
+      const detail = app._button('詳細地図を作成', async () => {
+        try { await createDetailMap(app, feature, Number(span.value) || 16); } catch (error) { app._message(error.userMessage || error.message); }
+      }, { disabled: locked });
+      detail.dataset.e2eId = 'map-create-detail-map'; root.appendChild(detail);
+    }
     root.appendChild(app._button('子地図を新規作成', async () => {
       const canEdit = app._editGuard(feature.id), parentPath = app.path;
       const name = await cfPrompt('子地図の名前', (feature.label || '地点') + 'の詳細地図');
@@ -179559,6 +181560,65 @@ const MeldexMapRelations = (() => {
         await openChild(app, feature, { path, label: result.node.label });
       }
     }, { disabled: locked }));
+  }
+  // 詳細地図: 親地図（Azgaar方式）の地点の周りを切り出し、起伏・海岸線を引き継いだ子地図を作る。
+  // 国→地方、地方→山や島、のように縮尺を下げて同じ世界の続きを描ける。街路は子地図の「都市・集落の詳細図」で作る。
+  const detailSpans = Object.freeze([['8', '周囲の広い範囲（親の1/8）'], ['16', '周囲（親の1/16）'], ['32', '近く（親の1/32）'], ['64', 'ごく近く（親の1/64）']]);
+  function detailTerrain(parent, feature, divisor) {
+    const atlas = parent.atlas, field = globalThis.MeldexMapTerrainField;
+    if (!atlas?.surface || !field) throw new Error('詳細地図は、起伏のあるAzgaar方式の地図から作れます');
+    const [px, py] = feature.points[0];
+    const ax = px / parent.canvas.width * atlas.width, ay = py / parent.canvas.height * atlas.height;
+    const span = atlas.width / divisor, spanY = span * 0.6;
+    const x0 = Math.max(0, Math.min(atlas.width - span, ax - span / 2)), y0 = Math.max(0, Math.min(atlas.height - spanY, ay - spanY / 2));
+    const scene = field.scene(atlas), cols = 256, rows = 154, heights = new Array(cols * rows);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const h = scene.sample(x0 + (x + .5) / cols * span, y0 + (y + .5) / rows * spanY)[0];
+      heights[y * cols + x] = h < 20 ? Math.max(-1, Math.min(0, (h - 20) / 20)) : Math.max(0.001, Math.min(1, (h - 20) / 80));
+    }
+    return { box: [x0, y0, span, spanY], terrain: { cols, rows, heights } };
+  }
+  async function createDetailMap(app, feature, divisor) {
+    const parent = app.store.doc, canEdit = app._editGuard(feature.id), parentPath = app.path;
+    const { box, terrain } = detailTerrain(parent, feature, divisor);
+    const name = await cfPrompt('詳細地図の名前', (feature.label || '地点') + 'の詳細地図');
+    if (!name?.trim() || !canEdit() || app._selected !== feature.id) return;
+    const normalized = parentPath.replace(/\\/g, '/'), folder = normalized.slice(0, normalized.lastIndexOf('/') + 1);
+    const result = await apiPost('/outliner/add', { type: 'map', label: name.trim(), parent: folder });
+    const path = result.node?.path;
+    if (!path) throw new Error('詳細地図の作成結果を確認できません');
+    const loaded = await apiFetch('/file?path=' + encodeURIComponent(path)), child = D().parse(loaded.content);
+    child.coordinate_system = 'local'; child.basemap = 'blank';
+    child.canvas = { width: 2000, height: Math.round(2000 * box[3] / box[2]) };
+    child.terrain = terrain;
+    child.atlas = globalThis.MeldexMapAzgaar.fromLegacyTerrain(child);
+    child.terrain = null;
+    child.atlas.presentation = parent.atlas.presentation || 'biomes';
+    if (parent.map_style) child.map_style = D().clone(parent.map_style);
+    // 縮尺: 親の1地図単位の距離 × 切り出した幅（親の地図単位）÷ 子の横幅。
+    const parentUnits = box[2] / parent.atlas.width * parent.canvas.width;
+    if (parent.scale?.distance_per_unit) child.scale = { ...child.scale, distance_per_unit: parent.scale.distance_per_unit * parentUnits / child.canvas.width, unit: parent.scale.unit };
+    // 範囲内の地点（都市・地名）を引き継ぐ。
+    const layer = child.layers[0], toChild = ([x, y]) => [((x / parent.canvas.width * parent.atlas.width) - box[0]) / box[2] * child.canvas.width, ((y / parent.canvas.height * parent.atlas.height) - box[1]) / box[3] * child.canvas.height];
+    for (const source of parent.features) {
+      if (!['pin', 'label'].includes(source.kind) || false) continue;
+      const point = toChild(source.points[0]);
+      if (point[0] < 0 || point[1] < 0 || point[0] > child.canvas.width || point[1] > child.canvas.height) continue;
+      const copy = D().feature(source.kind, [point], layer.id, source.label);
+      copy.color = source.color; copy.icon = source.icon; copy.tags = [...(source.tags || [])]; copy.description = source.description || '';
+      if (source.stamp) copy.stamp = source.stamp;
+      if (source.marker_style) copy.marker_style = source.marker_style;
+      child.features.push(copy);
+    }
+    D().parse(JSON.stringify(child));
+    await apiPut('/file?path=' + encodeURIComponent(path), { content: JSON.stringify(child), if_match_etag: loaded.etag });
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'map-detail-created' });
+    if (!canEdit() || app._selected !== feature.id) { app._message('詳細地図を作成しました: ' + path); return; }
+    app._editFeature(next => {
+      if (!next.links.some(link => link.role === 'child-map' && key(link.path) === key(path))) next.links.push({ path, label: child.display_title || child.title || name.trim(), type: 'map', role: 'child-map' });
+    });
+    if (!await app.flush()) { app._message('詳細地図を作成しましたが親地図を保存できません: ' + path); return; }
+    await openChild(app, feature, { path, label: result.node.label });
   }
   function sources(app, root) {
     const heading = document.createElement('h3'); heading.textContent = 'シートの場所'; root.appendChild(heading);
@@ -180395,6 +182455,36 @@ const MeldexMapRelations = (() => {
    }
    return {width,height,data};
  }
+ // Azgaar方式の地形から、都市・気候・国家・植生の生成が使う格子（高さ -1〜1、0以下は海）を作る。
+ // 旧方式の地形を持たない地図でも同じ生成を使えるようにするための読み取り専用の写しで、保存しない。
+ const grids=new WeakMap();
+ function grid(doc){
+   const atlas=doc?.atlas;if(!atlas?.surface)return null;
+   const cached=grids.get(atlas);if(cached)return cached;
+   const sc=scene(atlas),cols=256,rows=Math.max(32,Math.min(256,Math.round(cols*(doc.canvas?.height||atlas.height)/(doc.canvas?.width||atlas.width)))),heights=new Array(cols*rows);
+   for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const h=sc.sample((x+.5)/cols*atlas.width,(y+.5)/rows*atlas.height)[0];heights[y*cols+x]=h<20?clamp((h-20)/20,-1,0):clamp((h-20)/80,0.001,1);}
+   const result=Object.freeze({cols,rows,heights:Object.freeze(heights)});grids.set(atlas,result);return result;
+ }
+ // 等高線: 表示範囲を格子に区切って高さ（0〜100、20未満は海）を測り、一定間隔の高さで線を引く（マーチングスクエア法）。
+ function contours(atlas,bounds,interval=10,samples=48){
+   const sc=scene(atlas),[x0,y0,w,h]=bounds,cols=Math.max(2,Math.min(160,Math.round(samples))),rows=Math.max(2,Math.min(160,Math.round(samples*h/w))),stride=cols+1,grid=new Float32Array(stride*(rows+1));
+   const step=[10,20,5].includes(interval)?interval:10;
+   for(let j=0;j<=rows;j++)for(let i=0;i<=cols;i++){const x=clamp(x0+i*w/cols,0,atlas.width),y=clamp(y0+j*h/rows,0,atlas.height);grid[j*stride+i]=sc.sample(x,y)[0];}
+   const lines=[];
+   for(let level=20+step;level<100;level+=step){
+     let d='';
+     for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+       const a=grid[j*stride+i],b=grid[j*stride+i+1],c=grid[(j+1)*stride+i+1],e=grid[(j+1)*stride+i];
+       const code=(a>=level?8:0)|(b>=level?4:0)|(c>=level?2:0)|(e>=level?1:0);if(code===0||code===15)continue;
+       const px=i*w/cols+x0,py=j*h/rows+y0,cw=w/cols,ch=h/rows,t=(p,q)=>p===q?.5:(level-p)/(q-p);
+       const top=[px+cw*t(a,b),py],right=[px+cw,py+ch*t(b,c)],bottom=[px+cw*t(e,c),py+ch],left=[px,py+ch*t(a,e)];
+       const segs=({1:[[left,bottom]],2:[[bottom,right]],3:[[left,right]],4:[[top,right]],5:[[top,left],[bottom,right]],6:[[top,bottom]],7:[[top,left]],8:[[top,left]],9:[[top,bottom]],10:[[top,right],[left,bottom]],11:[[top,right]],12:[[left,right]],13:[[bottom,right]],14:[[left,bottom]]})[code];
+       for(const [p,q] of segs)d+=`M${p[0].toFixed(2)},${p[1].toFixed(2)}L${q[0].toFixed(2)},${q[1].toFixed(2)}`;
+     }
+     if(d)lines.push({level,major:(level-20)%(step*5)===0,d});
+   }
+   return lines;
+ }
  function url(atlas,mode,bounds,width,height,display={}){
    const key=scene(atlas).key+'|'+JSON.stringify([mode,bounds,width,height,display]);if(images.has(key))return images.get(key);
    const result=pixels(atlas,mode,bounds,width,height,display),canvas=document.createElement('canvas');canvas.width=result.width;canvas.height=result.height;const ctx=canvas.getContext('2d'),im=ctx.createImageData(result.width,result.height);im.data.set(result.data);ctx.putImageData(im,0,0);const value=canvas.toDataURL('image/png');images.set(key,value);while(images.size>48)images.delete(images.keys().next().value);return value;
@@ -180413,7 +182503,7 @@ const MeldexMapRelations = (() => {
    while(stack.length){const [a,b]=stack.pop(),p=points[a],q=points[b],dx=q[0]-p[0],dy=q[1]-p[1],len=dx*dx+dy*dy;let best=-1,dist=limit;for(let i=a+1;i<b;i++){if(++work>2e6)throw Error('経路が複雑すぎます。頂点を減らすか、補正する半径を広げてください');const t=len?clamp(((points[i][0]-p[0])*dx+(points[i][1]-p[1])*dy)/len):0,d=(points[i][0]-p[0]-dx*t)**2+(points[i][1]-p[1]-dy*t)**2;if(d>dist){dist=d;best=i;}}if(best>=0){keep.add(best);stack.push([a,best],[best,b]);}}
    return [...keep].sort((a,b)=>a-b).map(i=>points[i].slice());
  }
- return Object.freeze({kinds,valid,scene,pixels,url,stroke,fit,simplify});
+ return Object.freeze({kinds,valid,scene,pixels,url,contours,grid,stroke,fit,simplify});
 });
 
 ;
@@ -180431,7 +182521,10 @@ const MeldexMapRelations = (() => {
  function visible(f,v){return f.cartography?.role==='city'?(v.city_names!==false||v.city_symbols!==false):v[category(f)]!==false;}
  const labels=(f,v)=>f.cartography?.role==='city'?v.city_names!==false:visible(f,v);
  const symbols=(f,v)=>f.cartography?.role==='city'?v.city_symbols!==false:visible(f,v);
- return Object.freeze({categories,keys,valid,effective,category,visible,labels,symbols});
+ // 地点の記号に使える同梱素材（vendor/map-assets/symbols、CC0）。名前は保存値、ラベルは画面表示。
+ const stamps=Object.freeze([['castle','城'],['castleTall','高い城'],['castleWide','城塞'],['church','教会'],['churchLarge','大聖堂'],['tower','塔'],['towerTall','高い塔'],['watchtower','見張り塔'],['lighthouse','灯台'],['house','家'],['houses','町並み'],['houseSmall','小さな家'],['mill','風車小屋'],['waterWheel','水車'],['mine','鉱山'],['well','井戸'],['stable','厩舎'],['tent','天幕'],['campfire','野営地'],['graveyard','墓地'],['ruins','遺跡'],['pyramid','ピラミッド'],['rocksMountain','山'],['rocksTall','岩山'],['vulcano','火山'],['treePine','針葉樹'],['treePines','針葉樹林'],['treeTall','広葉樹'],['bush','茂み'],['palm','ヤシ'],['cactus','サボテン'],['lake','湖'],['ship','船'],['dock','港'],['bridge','橋'],['gate','門'],['wall','城壁'],['flag','旗'],['banner','旗印'],['chest','宝'],['skull','危険地帯'],['compass','方位記号']].map(([id,label])=>Object.freeze([id,label]))),stampIds=new Set(stamps.map(s=>s[0]));
+ const stampURL=id=>stampIds.has(id)?'vendor/map-assets/symbols/'+id+'.png':'';
+ return Object.freeze({categories,keys,valid,effective,category,visible,labels,symbols,stamps,stampIds,stampURL});
 });
 
 ;
@@ -180459,6 +182552,16 @@ const MeldexMapRelations = (() => {
     }
     return size<=12*1024*1024;
   }
+  // 「陸地を追加」「海・湖」「水路」の描き込みを陸の切り抜きへ加える。強さは起伏に使い、陸と海の境目は不透明に描く。
+  function landMasks(a){return (a.editor?.edits||[]).filter(e=>['land','water','waterway'].includes(e.kind)).map(e=>{const white=e.kind==='land',r=e.radius*(e.kind==='waterway'?.15:1);return e.points.length===1?`<circle cx="${e.points[0][0]}" cy="${e.points[0][1]}" r="${r}" fill="${white?'white':'black'}"/>`:`<path d="M${e.points.map(p=>p.join(',')).join('L')}" fill="none" stroke="${white?'white':'black'}" stroke-width="${r*2}" stroke-linecap="round" stroke-linejoin="round"/>`;}).join('');}
+  // 地図の見た目のスタイル。色は海・海岸線・陸の下地、filter は起伏テクスチャの色調、line は等高線の色。
+  const styles=Object.freeze({
+    standard:{label:'標準',ocean:'#82aaba',coast:'#799caa',land:'#d9ddbe',filter:'',line:'#6f6650',lineOpacity:.45},
+    parchment:{label:'羊皮紙（中世ファンタジー）',ocean:'#cdb98f',coast:'#5b4126',land:'#eadbb4',filter:'<feColorMatrix type="matrix" values=".39 .77 .19 0 0 .35 .69 .17 0 0 .27 .53 .13 0 0 0 0 0 1 0"/><feComponentTransfer><feFuncR type="linear" slope=".9" intercept=".08"/><feFuncG type="linear" slope=".85" intercept=".06"/><feFuncB type="linear" slope=".75" intercept=".03"/></feComponentTransfer>',line:'#6b4a2b',lineOpacity:.55},
+    mono:{label:'モノクロ',ocean:'#d8d8d8',coast:'#3c3c3c',land:'#f2f2f2',filter:'<feColorMatrix type="saturate" values="0"/>',line:'#3c3c3c',lineOpacity:.5},
+    ink:{label:'インク（線画）',ocean:'#f3f1ea',coast:'#1d1d1d',land:'#fdfcf7',filter:'<feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".35"/></feComponentTransfer>',line:'#1d1d1d',lineOpacity:.7},
+  });
+  const styleIds=Object.keys(styles);
   function svg(a,options={}){
     if(!valid(a))throw new Error('Azgaar地図の描画データが不正です');
     const shore=a.shores.map(p=>`<path d="${p}"/>`).join('');
@@ -180468,11 +182571,38 @@ const MeldexMapRelations = (() => {
     if(!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[2]<=0||bounds[3]<=0||Math.max(...bounds.map(Math.abs))>1e7||!Number.isFinite(resolution)||resolution<16||resolution>4096)throw Error('地図の表示範囲が不正です');
     const rw=Math.max(16,Math.floor(Math.min(resolution,4090,4090*bounds[2]/bounds[3],Math.sqrt(11e6*bounds[2]/bounds[3])))),rh=Math.max(1,Math.round(rw*bounds[3]/bounds[2])),pixel=bounds[2]/rw,bleed=pixel*3,b=[bounds[0]-bleed,bounds[1]-bleed,bounds[2]+bleed*2,bounds[3]+bleed*2];
     const texture=a.surface&&typeof root.document?.createElement==='function'?Field.url(a,a.presentation,b,rw+6,rh+6,options.display||{}):null;
-    const image=texture?`<image href="${texture}" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" preserveAspectRatio="none"/>`:'';
+    const style=styles[options.style]||styles.standard;
+    const image=texture?`<image href="${texture}" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" preserveAspectRatio="none"${style.filter?' filter="url(#tone)"':''}/>`:'';
+    const contourLines=texture&&options.contours?Field.contours(a,b,options.contourInterval||10,Math.min(96,Math.max(24,Math.round(rw/8)))).map(c=>`<path d="${c.d}" stroke-width="${(c.major?1.6:.8)*pixel}"/>`).join(''):'';
+    const contourGroup=contourLines?`<g fill="none" stroke="${style.line}" opacity="${style.lineOpacity}" stroke-linecap="round">${contourLines}</g>`:'';
     const land=texture?(a.presentation==='political'?((options.display?.countries===false?'':shapes)+image):image):shapes+relief;
-    const masks=(a.editor?.edits||[]).filter(e=>['land','water','waterway'].includes(e.kind)).map(e=>{const white=e.kind==='land',r=e.radius*(e.kind==='waterway'?.15:1);return e.points.length===1?`<circle cx="${e.points[0][0]}" cy="${e.points[0][1]}" r="${r}" fill="${white?'white':'black'}" opacity="${e.strength}"/>`:`<path d="M${e.points.map(p=>p.join(',')).join('L')}" fill="none" stroke="${white?'white':'black'}" stroke-width="${r*2}" opacity="${e.strength}" stroke-linecap="round" stroke-linejoin="round"/>`;}).join('');
-    if(texture)return `<svg xmlns="http://www.w3.org/2000/svg" width="${rw}" height="${rh}" preserveAspectRatio="none" viewBox="${bounds.join(' ')}"><defs><clipPath id="paper"><rect width="${a.width}" height="${a.height}"/></clipPath><mask id="land" maskUnits="userSpaceOnUse" x="0" y="0" width="${a.width}" height="${a.height}"><rect width="${a.width}" height="${a.height}" fill="black"/><g fill="white">${shore}</g>${masks}</mask><filter id="coast" filterUnits="userSpaceOnUse" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}"><feMorphology in="SourceAlpha" operator="dilate" radius="${pixel*.8}" result="edge"/><feComposite in="edge" in2="SourceAlpha" operator="out" result="outline"/><feFlood flood-color="#799caa"/><feComposite in2="outline" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g clip-path="url(#paper)"><rect width="${a.width}" height="${a.height}" fill="#82aaba"/><g filter="url(#coast)"><g mask="url(#land)"><rect x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" fill="#d9ddbe"/>${land}</g></g></g></svg>`;
+    const masks=landMasks(a);
+    if(texture)return `<svg xmlns="http://www.w3.org/2000/svg" width="${rw}" height="${rh}" preserveAspectRatio="none" viewBox="${bounds.join(' ')}"><defs><clipPath id="paper"><rect width="${a.width}" height="${a.height}"/></clipPath><mask id="land" maskUnits="userSpaceOnUse" x="0" y="0" width="${a.width}" height="${a.height}"><rect width="${a.width}" height="${a.height}" fill="black"/><g fill="white">${shore}</g>${masks}</mask><filter id="coast" filterUnits="userSpaceOnUse" x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}"><feMorphology in="SourceAlpha" operator="dilate" radius="${pixel*.8}" result="edge"/><feComposite in="edge" in2="SourceAlpha" operator="out" result="outline"/><feFlood flood-color="${style.coast}"/><feComposite in2="outline" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>${style.filter?`<filter id="tone" color-interpolation-filters="sRGB">${style.filter}</filter>`:''}</defs><g clip-path="url(#paper)"><rect width="${a.width}" height="${a.height}" fill="${style.ocean}"/><g filter="url(#coast)"><g mask="url(#land)"><rect x="${b[0]}" y="${b[1]}" width="${b[2]}" height="${b[3]}" fill="${style.land}"/>${land}${contourGroup}</g></g></g></svg>`;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${a.width}" height="${a.height}" viewBox="0 0 ${a.width} ${a.height}"><defs><clipPath id="land">${shore}</clipPath><linearGradient id="ocean" x2="0" y2="1"><stop stop-color="#91b6c3"/><stop offset=".5" stop-color="#779faf"/><stop offset="1" stop-color="#86aebc"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#ocean)"/><g fill="none" stroke="#bfd6d6" stroke-width="3">${shore}</g><g fill="#c3cca3">${shore}</g><g clip-path="url(#land)">${land}</g><g fill="none" stroke="#607e7a" stroke-width=".45">${shore}</g></svg>`;
+  }
+  // 旧方式の格子地形（高さ -1〜1、0以下は海）を、Azgaar方式の地形（起伏の面・海岸線・配色）へ変換する。
+  // 変換前の地図は版として残してから呼ぶこと（呼び出し側の責任）。陸地ブラシや等高線は変換後の地形で使える。
+  function fromLegacyTerrain(doc){
+    // 地形の座標は最大4096まで（大きなキャンバスは縮めた座標で持ち、表示はキャンバスへ引き伸ばす）。
+    const t=doc?.terrain,CW=doc?.canvas?.width,CH=doc?.canvas?.height,k=Math.min(1,4096/Math.max(CW||1,CH||1)),W=Math.max(128,Math.round(CW*k)),H=Math.max(128,Math.round(CH*k));
+    if(!t||!Number.isInteger(t.cols)||!Number.isInteger(t.rows)||!Array.isArray(t.heights)||t.heights.length!==t.cols*t.rows)throw new Error('旧方式の地形が不正です');
+    const step=Math.max(1,Math.ceil(Math.sqrt(t.cols*t.rows/60000))),cols=Math.max(2,Math.floor((t.cols-1)/step)+1),rows=Math.max(2,Math.floor((t.rows-1)/step)+1);
+    const at=(x,y)=>t.heights[Math.min(t.rows-1,y*step)*t.cols+Math.min(t.cols-1,x*step)];
+    const points=[],triangles=[],heights=[],temperature=[],rain=[],biomes=[];
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+      const v=at(x,y),h=Math.round(v>0?20+v*80:Math.max(0,20+v*20)),lat=Math.abs(y/(rows-1)-.5)*2,temp=Math.round(Math.max(-35,Math.min(60,30-55*lat-Math.max(0,h-20)*.4)));
+      points.push([x/(cols-1)*W,y/(rows-1)*H]);heights.push(Math.min(100,h));temperature.push(temp+64);rain.push(90);
+      biomes.push(h<20?0:temp<-10?11:temp<0?10:temp<5?9:h>78?10:h<28?4:temp>24?5:6);
+    }
+    for(let y=0;y<rows-1;y++)for(let x=0;x<cols-1;x++){const i=y*cols+x;triangles.push(i,i+1,i+cols,i+1,i+cols+1,i+cols);}
+    const cw=W/t.cols,ch=H/t.rows,runs=[];
+    for(let y=0;y<t.rows;y++){let x=0;while(x<t.cols){if(t.heights[y*t.cols+x]>0){const x0=x;while(x<t.cols&&t.heights[y*t.cols+x]>0)x++;runs.push(`M${(x0*cw).toFixed(2)},${(y*ch).toFixed(2)}h${((x-x0)*cw).toFixed(2)}v${ch.toFixed(2)}h${(-(x-x0)*cw).toFixed(2)}Z`);}else x++;}}
+    const shore=runs.join('')||'M0,0h0Z',land=c=>[{path:shore,color:c,opacity:1}];
+    const atlas={version:1,engine:'Azgaar',engine_version:version,revision,width:W,height:H,presentation:'biomes',shores:[shore],
+      modes:{biomes:land('#b1c38e'),elevation:land('#b7c79c'),temperature:land('#d8c48f'),rain:land('#9fc0a8'),political:land('#c9c2a8')},relief:[],
+      surface:Surface.encode(points,triangles,{heights,temperature,rain,biomes})};
+    if(!valid(atlas))throw new Error('旧方式の地形を変換できません（海岸線が複雑すぎます）');
+    return atlas;
   }
   const url=(a,options)=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg(a,options));
   function signature(points){let hash=2166136261;const [x,y]=points[0];for(const p of points){const s=`${Math.round((p[0]-x)*1e4)},${Math.round((p[1]-y)*1e4)};`;for(let i=0;i<s.length;i++)hash=Math.imul(hash^s.charCodeAt(i),16777619);}return (hash>>>0).toString(16);}
@@ -180487,7 +182617,7 @@ const MeldexMapRelations = (() => {
     });
   }
   async function raster(a){const image=new Image();image.src=url(a);await image.decode();const c=document.createElement('canvas');c.width=a.width*2;c.height=a.height*2;c.getContext('2d').drawImage(image,0,0,c.width,c.height);return c.toDataURL('image/png');}
-  return Object.freeze({version,revision,modes,pathOK,colorOK,valid,svg,url,geometry,attach,generate,raster});
+  return Object.freeze({version,revision,modes,styles,styleIds,pathOK,colorOK,valid,svg,landMasks,fromLegacyTerrain,url,geometry,attach,generate,raster});
 });
 
 ;
@@ -180596,6 +182726,12 @@ const MeldexMapRelations = (() => {
     if (!object(doc.canvas) || !['width', 'height'].every(key => finite(doc.canvas[key]) && doc.canvas[key] >= 128 && doc.canvas[key] <= 16384)) fail();
     if (!['osm', 'gsi', 'blank'].includes(doc.basemap) || doc.coordinate_system === 'local' && doc.basemap !== 'blank') fail();
     if (doc.basemap_style !== undefined && !['standard', 'pale'].includes(doc.basemap_style)) fail();
+    // 地図の見た目（創作地図）。旧版はこの項目を読み飛ばすため、追加しても旧版で開ける。
+    if (doc.map_style != null && (!object(doc.map_style) || !Object.keys(doc.map_style).every(k => ['theme', 'contours', 'contour_interval', 'label_font'].includes(k))
+      || doc.map_style.theme !== undefined && !['standard', 'parchment', 'mono', 'ink'].includes(doc.map_style.theme)
+      || doc.map_style.contours !== undefined && typeof doc.map_style.contours !== 'boolean'
+      || doc.map_style.contour_interval !== undefined && ![5, 10, 20].includes(doc.map_style.contour_interval)
+      || doc.map_style.label_font !== undefined && !['standard', 'fell', 'medieval'].includes(doc.map_style.label_font))) fail('地図のスタイル設定が不正です');
     if (!object(doc.scale) || !['km', 'm', 'mi', 'unit'].includes(doc.scale.unit)
       || !finite(doc.scale.north_degrees) || Math.abs(doc.scale.north_degrees) > 360
       || doc.scale.distance_per_unit !== null && (!finite(doc.scale.distance_per_unit) || doc.scale.distance_per_unit <= 0 || doc.scale.distance_per_unit > 1e9)) fail();
@@ -180630,6 +182766,7 @@ const MeldexMapRelations = (() => {
         || !Array.isArray(feature.links) || !feature.links.every(link => object(link) && typeof link.path === 'string'
           && (!/^[a-z][a-z\d+.-]*:/i.test(link.path) || /^[a-z]:[\\/]/i.test(link.path)) && !link.path.includes('\0'))) fail();
       if (feature.marker_style !== undefined && (feature.kind !== 'pin' || !['symbol','drop'].includes(feature.marker_style))) fail('マーカーのデザインが不正です');
+      if (feature.stamp !== undefined && (feature.kind !== 'pin' || !Display.stampIds.has(feature.stamp))) fail('地点の記号が不正です');
       if (feature.period_ids !== undefined && (!Array.isArray(feature.period_ids) || feature.period_ids.length > 100
         || new Set(feature.period_ids).size !== feature.period_ids.length || !feature.period_ids.every(key => typeof key === 'string' && periodIds.has(key)))) fail('図形の章・時代の参照が不正です');
       if (feature.travel_plan !== undefined) {
@@ -181531,7 +183668,26 @@ const MeldexMapRelations = (() => {
   'use strict';
   const D = () => root.MeldexMapDocument;
   const SYMBOLS = { pin: '●', city: '◆', castle: '♜', mountain: '▲', forest: '♠', port: '⚓' };
+  // 同梱素材の記号画像。PNG書き出しでも同じ画像を使うため、読み込み済みの画像を使い回す。
+  const stampImages = new Map();
+  function stampImage(id) {
+    const url = root.MeldexMapDisplay.stampURL(id); if (!url) return null;
+    let image = stampImages.get(id);
+    if (!image) { image = new Image(); image.decoding = 'async'; image.src = url; stampImages.set(id, image); }
+    return image;
+  }
   function terrainCanvas(terrain) { return root.MeldexMapTerrainRender.canvas(terrain); }
+  // 前回と今回の描き込みの差（追加・取り消し・やり直し）が及ぶ範囲を、地形座標の [x0,y0,x1,y1] で返す。
+  function atlasEditsChangedBox(previous,next){
+    const key=e=>JSON.stringify(e),before=new Map(previous.map(e=>[key(e),e])),after=new Map(next.map(e=>[key(e),e]));
+    const changed=[...previous.filter(e=>!after.has(key(e))),...next.filter(e=>!before.has(key(e)))];
+    if(!changed.length)return null;
+    // 並び順だけが変わった時は重なり順が変わるため全体を描き直す。
+    if(changed.length>16)return null;
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(const e of changed){const r=(e.radius||0)*2;for(const [x,y] of e.points||[]){x0=Math.min(x0,x-r);y0=Math.min(y0,y-r);x1=Math.max(x1,x+r);y1=Math.max(y1,y+r);}}
+    return Number.isFinite(x0)?[x0,y0,x1,y1]:null;
+  }
   function removeMap(map){
     if(!map)return;
     const canvases=[];map.eachLayer(layer=>{if(layer instanceof L.Canvas)canvases.push(layer);});
@@ -181727,19 +183883,30 @@ const MeldexMapRelations = (() => {
     }
     _terrain(override) {
       const doc = this.doc;
+      // 地図のスタイル（羊皮紙の質感）と地名の書体は、地図の外枠の属性からCSSで切り替える。
+      if (this.container) { this.container.dataset.mapTheme = doc.map_style?.theme || 'standard'; this.container.dataset.mapLabelFont = doc.map_style?.label_font || 'standard'; }
       if (doc.coordinate_system !== 'local') return;
       const bounds = [[-doc.canvas.height, 0], [0, doc.canvas.width]];
       if (!this.paper) this.paper = L.rectangle(bounds, { pane: 'map-paper', interactive: false, stroke: false, fillColor: '#ecede2', fillOpacity: 1 }).addTo(this.map);
       else this.paper.setBounds(bounds);
       if(doc.atlas?.surface&&!override){
         const display=root.MeldexMapDisplay.effective({...doc.display,...this.elementVisibility}),baseDisplay={terrain:display.terrain,vegetation:display.vegetation,countries:display.countries};
-        const key=root.MeldexMapTerrainField.scene(doc.atlas).key+'|'+doc.atlas.presentation+'|'+JSON.stringify(baseDisplay)+'|'+doc.atlas.shores.join('')+'|'+JSON.stringify(doc.atlas.modes[doc.atlas.presentation])+'|'+doc.canvas.width+':'+doc.canvas.height;
-        if(this._atlasTileKey===key&&this.atlasTiles)return;
+        root.MeldexMapTerrainField.scene(doc.atlas);
+        // 地形（素の起伏・海岸線・配色）が同じで描き込みだけが変わった時は、描き込みの範囲に掛かるタイルだけを描き直す。
+        // 全タイルを作り直すと1枚ごとに起伏の計算が走り、1筆ごとに数秒固まっていた。
+        const baseKey=[doc.atlas.width,doc.atlas.height,...root.MeldexMapAtlasSurface.fields.map(k=>doc.atlas.surface[k])].join('|')+'|'+doc.atlas.presentation+'|'+JSON.stringify(baseDisplay)+'|'+JSON.stringify(doc.map_style||{})+'|'+doc.atlas.shores.join('')+'|'+JSON.stringify(doc.atlas.modes[doc.atlas.presentation])+'|'+doc.canvas.width+':'+doc.canvas.height;
+        const edits=doc.atlas.editor?.edits||[],editsKey=JSON.stringify(edits);
+        if(this._atlasTileKey===baseKey&&this.atlasTiles){
+          this._atlasTileAtlas=doc.atlas;
+          if(this._atlasEditsKey!==editsKey){const box=atlasEditsChangedBox(this._atlasEdits||[],edits);this._atlasEdits=JSON.parse(editsKey);this._atlasEditsKey=editsKey;this._redrawAtlasTiles(box);}
+          return;
+        }
         this.background?.remove();this.background=null;this._backgroundData=null;this.overlay?.remove();this.overlay=null;this.atlasTiles?.remove();
-        const atlas=doc.atlas,view=this,tileSize=256,pixelRatio=Math.min(2,root.devicePixelRatio||1),cw=doc.canvas.width,ch=doc.canvas.height;
+        const view=this,tileSize=256,pixelRatio=Math.min(2,root.devicePixelRatio||1),cw=doc.canvas.width,ch=doc.canvas.height;
+        this._atlasTileAtlas=doc.atlas;this._atlasTileDisplay=baseDisplay;this._atlasTileStyle=doc.map_style||{};this._atlasTileGeometry={tileSize,pixelRatio,cw,ch};
         const Tiles=L.GridLayer.extend({createTile(coords,done){const tile=document.createElement('img');tile.alt='';tile.setAttribute('role','presentation');const layer=this;
-          setTimeout(()=>{if(!layer._map)return;try{const size=tileSize/(2**coords.z),box=[coords.x*size/cw*atlas.width,coords.y*size/ch*atlas.height,size/cw*atlas.width,size/ch*atlas.height];tile.onload=()=>done(null,tile);tile.onerror=()=>done(new Error('地形タイルを表示できません'),tile);tile.src=root.MeldexMapAzgaar.url(atlas,{bounds:box,resolution:tileSize*pixelRatio,display:baseDisplay});}catch(error){done(error,tile);view.callbacks.message?.(error.message);}},0);return tile;}});
-        this.atlasTiles=new Tiles({tileSize,minZoom:-5,maxZoom:3,pane:'map-background',zIndex:1,bounds:L.latLngBounds(bounds),noWrap:true,keepBuffer:1,updateWhenIdle:true}).addTo(this.map);this._atlasTileKey=key;return;
+          setTimeout(()=>{if(!layer._map)return;try{let ready=false;tile.onload=()=>{if(ready)return;ready=true;done(null,tile);};tile.onerror=()=>done(new Error('地形タイルを表示できません'),tile);view._paintAtlasTile(tile,coords);}catch(error){done(error,tile);view.callbacks.message?.(error.message);}},0);return tile;}});
+        this.atlasTiles=new Tiles({tileSize,minZoom:-5,maxZoom:3,pane:'map-background',zIndex:1,bounds:L.latLngBounds(bounds),noWrap:true,keepBuffer:1,updateWhenIdle:true}).addTo(this.map);this._atlasTileKey=baseKey;this._atlasEdits=JSON.parse(editsKey);this._atlasEditsKey=editsKey;return;
       }
       this.atlasTiles?.remove();this.atlasTiles=null;this._atlasTileKey=null;
       const atlas=doc.atlas,atlasKey=atlas?atlas.presentation:'';
@@ -181764,6 +183931,11 @@ const MeldexMapRelations = (() => {
     }
     _features() {
       if (!this.features) return;
+      // 地点・図形と表示条件が前回と同じなら作り直さない（地形を1筆描くたびに全件を作り直し、0.8秒以上固まっていた）。
+      const doc = this.doc, featuresKey = JSON.stringify([doc.features, doc.layers, doc.display, this.elementVisibility, this.layerVisibility, this.periodId,
+        this.featureKind, this.filter, [...(this.selectedIds || [])], this.selectedId, this.readOnly, this.tool, this.editVertices, doc.coordinate_system, doc.canvas, !!doc.atlas]);
+      if (this._featuresKey === featuresKey && this._featuresKeyGroup === this.features && this._featuresKeyMap === this.map) return;
+      this._featuresKey = featuresKey; this._featuresKeyGroup = this.features; this._featuresKeyMap = this.map;
       this.features.clearLayers();
       this.items.clear();
       for (const layer of [...this.doc.layers].reverse()) for (const feature of this.doc.features.filter(f => f.layer_id === layer.id && this._visible(f))) {
@@ -181785,6 +183957,7 @@ const MeldexMapRelations = (() => {
               hole.setAttribute('cx',marker.centerX);hole.setAttribute('cy',marker.centerY);hole.setAttribute('r',marker.radius);hole.setAttribute('fill','white');svg.append(path,hole);
               if(['city','castle','mountain','forest','port'].includes(feature.icon)){const text=document.createElementNS(ns,'text');text.setAttribute('x',marker.centerX);text.setAttribute('y',marker.centerY);text.setAttribute('text-anchor','middle');text.setAttribute('dominant-baseline','central');text.setAttribute('fill',feature.color);text.setAttribute('font-size','12');text.setAttribute('font-family','sans-serif');text.setAttribute('font-weight','bold');text.textContent=glyph;svg.append(text);}
               icon.append(svg);
+            }else if(feature.stamp&&root.MeldexMapDisplay.stampURL(feature.stamp)){const image=document.createElement('img');image.className='gb-map-stamp';image.src=root.MeldexMapDisplay.stampURL(feature.stamp);image.alt='';image.draggable=false;stampImage(feature.stamp);icon.classList.add('gb-map-stamp-host');icon.appendChild(image);
             }else{icon.textContent=glyph;if(cart.role==='city'){icon.style.fontSize=cart.symbolSize+'px';icon.style.lineHeight='16px';}}
             el.appendChild(icon);
           }
@@ -181936,15 +184109,35 @@ const MeldexMapRelations = (() => {
       this.compass.style.transform = `rotate(${(this.doc.coordinate_system === 'world' ? 0 : this.doc.scale.north_degrees) + this.rotation}deg)`;
       this.compass.parentElement.title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
     }
+    _atlasTileBox(coords){const g=this._atlasTileGeometry,a=this._atlasTileAtlas,size=g.tileSize/(2**coords.z);return [coords.x*size/g.cw*a.width,coords.y*size/g.ch*a.height,size/g.cw*a.width,size/g.ch*a.height];}
+    _paintAtlasTile(tile,coords,resolution){const g=this._atlasTileGeometry;tile.src=root.MeldexMapAzgaar.url(this._atlasTileAtlas,{bounds:this._atlasTileBox(coords),resolution:resolution||g.tileSize*g.pixelRatio,display:this._atlasTileDisplay,style:this._atlasTileStyle?.theme,contours:!!this._atlasTileStyle?.contours,contourInterval:this._atlasTileStyle?.contour_interval||10});}
+    // 描き込みの範囲に掛かるタイルだけを、まず粗く・すぐに、続けて本来の細かさで描き直す。
+    // 1枚ずつ別の処理単位に分け、描いている間も画面操作を止めない。
+    _redrawAtlasTiles(box){
+      const tiles=this.atlasTiles?._tiles;if(!tiles)return;
+      const generation=this._atlasRedrawGeneration=(this._atlasRedrawGeneration||0)+1,layer=this.atlasTiles,g=this._atlasTileGeometry;
+      const targets=Object.values(tiles).filter(item=>{if(!item?.el||!item.coords)return false;const t=this._atlasTileBox(item.coords);return !box||!(t[0]>box[2]||t[1]>box[3]||t[0]+t[2]<box[0]||t[1]+t[3]<box[1]);});
+      // 前回の描き直しで細かい描き直しがまだのタイルは、今回の列へ引き継ぐ（粗いまま残さない）。
+      const carried=(this._atlasRedrawQueue||[]).filter(([item,resolution])=>!resolution&&!targets.includes(item)&&layer===this._atlasRedrawLayer);
+      const queue=[...targets.map(item=>[item,64]),...targets.map(item=>[item,0]),...carried];
+      this._atlasRedrawQueue=queue;this._atlasRedrawLayer=layer;
+      const next=()=>{
+        if(generation!==this._atlasRedrawGeneration||layer!==this.atlasTiles||!queue.length)return;
+        const [item,resolution]=queue.shift();
+        if(item.el.isConnected)try{this._paintAtlasTile(item.el,item.coords,resolution);}catch(error){this.callbacks.message?.(error.message);}
+        setTimeout(next,0);
+      };
+      setTimeout(next,0);
+    }
     _paintPointer(event) {
       if (!this.map || !['land', 'sea'].includes(this.tool) || this.readOnly || this.doc.atlas?.locked || event.target.closest('.leaflet-control') || this.interaction.navigationEvent(event)) return;
       if(this.doc.atlas?.surface){
         if(event.type==='pointerdown'){if(event.button!==0)return;this._atlasPainting={pointerId:event.pointerId,source:this.doc.features,points:[]};this.container.setPointerCapture(event.pointerId);}
         const stroke=this._atlasPainting;if(!stroke||stroke.pointerId!==event.pointerId)return;event.preventDefault();event.stopImmediatePropagation();
         if(['pointercancel','lostpointercapture'].includes(event.type)){this.cancel();return;}
-        if(event.type==='pointerup'){this._atlasPainting=null;if(this.container.hasPointerCapture(event.pointerId))this.container.releasePointerCapture(event.pointerId);this.drafts.clearLayers();if(stroke.points.length)this.callbacks.action({type:'atlas-stroke',source:stroke.source,points:stroke.points,kind:this.tool==='sea'?'water':this.terrainKind||'plain',radius:this.brushSize||70,strength:this.terrainStrength||.7});return;}
+        if(event.type==='pointerup'){this._atlasPainting=null;if(this.container.hasPointerCapture(event.pointerId))this.container.releasePointerCapture(event.pointerId);this.drafts.clearLayers();if(stroke.points.length)this.callbacks.action({type:'atlas-stroke',source:stroke.source,points:stroke.points,kind:this.tool==='sea'?'water':this.terrainKind||'land',radius:this.brushSize||70,strength:this.terrainStrength||.7});return;}
         const p=this.xy(this.map.mouseEventToLatLng(event));if(p[0]<0||p[1]<0||p[0]>this.doc.canvas.width||p[1]>this.doc.canvas.height)return;
-        const previous=stroke.points.at(-1);if(!previous||Math.hypot(...this.screenPoint(p).map((n,i)=>n-this.screenPoint(previous)[i]))>=3){if(stroke.points.length>=2048)return;stroke.points.push(p);this.drafts.clearLayers();L.polyline(stroke.points.map(q=>this.latlng(q)),{color:'#668eae',opacity:.35,weight:(this.brushSize||70)*2*2**this.map.getZoom(),lineCap:'round',interactive:false}).addTo(this.drafts);}return;
+        const previous=stroke.points.at(-1);if(!previous||Math.hypot(...this.screenPoint(p).map((n,i)=>n-this.screenPoint(previous)[i]))>=3){if(stroke.points.length>=2048)return;stroke.points.push(p);this.drafts.clearLayers();L.polyline(stroke.points.map(q=>this.latlng(q)),{color:this.tool==='sea'||this.terrainKind==='water'?'#82aaba':(this.terrainKind||'land')==='land'?'#d9ddbe':'#9fb187',opacity:.8,weight:(this.brushSize||70)*2*2**this.map.getZoom(),lineCap:'round',interactive:false}).addTo(this.drafts);}return;
       }
       if (event.type === 'pointerdown') {
         if (event.button !== 0) return;
@@ -181982,9 +184175,11 @@ const MeldexMapRelations = (() => {
       for (const layer of [...doc.layers].reverse().filter(l => l.visible)) for (const f of doc.features.filter(f => root.MeldexMapDisplay.visible(f,doc.display)&&f.layer_id === layer.id && D().visibleInPeriod(f, periodId)
         && (!featureKind || f.kind === featureKind) && (!filter || (f.label + ' ' + f.tags.join(' ') + ' ' + f.description).toLocaleLowerCase().includes(filter)))) {
         const cart = root.MeldexMapTerrainRender.style(f,textScale);
-        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontWeight||400} ${cart.fontSize / ratio}px sans-serif`;
+        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontWeight||400} ${cart.fontSize / ratio}px ${({fell:"'Meldex Map Fell',serif",medieval:"'Meldex Map Medieval',serif"})[doc.map_style?.label_font]||'sans-serif'}`;
         c.setLineDash(cart.dash ? cart.dash.split(' ').map(Number).map(n=>n/ratio) : f.dashed ? [8/ratio,5/ratio] : []);
-        if (f.kind === 'pin'&&root.MeldexMapDisplay.symbols(f,doc.display)) { if(root.MeldexMapTerrainRender.marker(f))root.MeldexMapTerrainRender.drawMarker(c,f,f.points[0],textScale/ratio,root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin));else if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
+        const stamp=f.kind==='pin'&&!root.MeldexMapTerrainRender.marker(f)&&f.stamp?stampImage(f.stamp):null;
+        if (stamp?.complete&&stamp.naturalWidth&&root.MeldexMapDisplay.symbols(f,doc.display)) { const size=36/ratio; c.drawImage(stamp,f.points[0][0]-size/2,f.points[0][1]-size/2,size,size); }
+        else if (f.kind === 'pin'&&root.MeldexMapDisplay.symbols(f,doc.display)) { if(root.MeldexMapTerrainRender.marker(f))root.MeldexMapTerrainRender.drawMarker(c,f,f.points[0],textScale/ratio,root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin));else if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
         if (['route', 'region'].includes(f.kind)) {
           const points = D().drawPoints(f, doc);
           const g=root.MeldexMapAzgaar?.geometry(f);
@@ -182046,7 +184241,7 @@ const MeldexMapRelations = (() => {
   'use strict';
   function generate(source, options) {
     const doc = D.parse(source), { seed, count, spacing, prefix, color } = options;
-    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから都市候補を作成してください');
+    if (doc.coordinate_system !== 'local' || !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('創作地図で地形を生成してから都市候補を作成してください');
     if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || !Number.isInteger(count) || count < 1 || count > 100
       || !Number.isFinite(spacing) || spacing < 1 || spacing > 1e7 || typeof prefix !== 'string' || !prefix.trim() || prefix.length > 64
       || typeof color !== 'string' || !/^#[\da-f]{6}$/i.test(color)) throw new Error('都市生成の条件を確認してください');
@@ -182054,7 +184249,7 @@ const MeldexMapRelations = (() => {
     let state = 2166136261;
     for (const character of seed) state = Math.imul(state ^ character.codePointAt(0), 16777619) >>> 0;
     const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
-    const { cols, rows, heights } = doc.terrain, candidates = [];
+    const { cols, rows, heights } = (doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), candidates = [];
     for (let y = 0; y < rows - 1; y++) for (let x = 0; x < cols - 1; x++) {
       // Four corners bound the interpolated centre shown by the renderer.
       const corners = [heights[y * cols + x], heights[y * cols + x + 1], heights[(y + 1) * cols + x], heights[(y + 1) * cols + x + 1]];
@@ -182282,7 +184477,7 @@ const MeldexMapRelations = (() => {
   ].map(Object.freeze));
   function generate(source, options) {
     const doc = D.parse(source), { seed, warmth, wetness, equator, columns, name } = options;
-    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから気候帯の下案を作成してください');
+    if (doc.coordinate_system !== 'local' || !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('創作地図で地形を生成してから気候帯の下案を作成してください');
     if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || typeof name !== 'string' || !name.trim() || name.length > 64
       || ![warmth, wetness, equator].every(value => Number.isFinite(value) && value >= 0 && value <= 100)
       || !Number.isInteger(columns) || columns < 4 || columns > 32) throw new Error('気候帯生成の条件を確認してください');
@@ -182292,7 +184487,7 @@ const MeldexMapRelations = (() => {
     const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
     const phases = [random() * Math.PI * 2, random() * Math.PI * 2];
     const rows = Math.max(4, Math.min(24, Math.round(columns * doc.canvas.height / doc.canvas.width)));
-    const terrain = doc.terrain, angle = ((doc.scale.north_degrees % 360 + 360) % 360) * Math.PI / 180;
+    const terrain = (doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), angle = ((doc.scale.north_degrees % 360 + 360) % 360) * Math.PI / 180;
     const sx = Math.sin(angle), sy = -Math.cos(angle), extent = (Math.abs(sx) * doc.canvas.width + Math.abs(sy) * doc.canvas.height) / 2;
     const sample = (x, y) => {
       const gx = Math.min(terrain.cols - 1, x * terrain.cols), gy = Math.min(terrain.rows - 1, y * terrain.rows);
@@ -182527,7 +184722,7 @@ const MeldexMapRelations = (() => {
     const { count, columns, seed } = options;
     if (!Number.isInteger(count) || count < 1 || count > 32 || !Number.isInteger(columns) || columns < 8 || columns > 64) throw new Error('国家数は1〜32、横の区画数は8〜64で指定してください');
     const rows = Math.max(8, Math.min(48, Math.round(columns * doc.canvas.height / doc.canvas.width))), random = G.rng(seed);
-    const heights = Array.from({ length: columns * rows }, (_, i) => G.sample(doc.terrain, (i % columns + .5) / columns, (Math.floor(i / columns) + .5) / rows));
+    const heights = Array.from({ length: columns * rows }, (_, i) => G.sample((doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), (i % columns + .5) / columns, (Math.floor(i / columns) + .5) / rows));
     const land = heights.map((h, i) => h >= .035 ? i : -1).filter(i => i >= 0), centers = [];
     const separation = (a, b) => ((a % columns - b % columns) * doc.canvas.width / columns) ** 2 + ((Math.floor(a / columns) - Math.floor(b / columns)) * doc.canvas.height / rows) ** 2;
     if (!land.length) return { features: [], detail: '区画中央に陸地がありません。' };
@@ -182629,7 +184824,7 @@ const MeldexMapRelations = (() => {
     const doc = D.parse(source);
     if (!Object.hasOwn(names, kind) || doc.coordinate_system !== 'local') throw new Error('創作地図で実行してください');
     if (typeof options.seed !== 'string' || !options.seed.trim() || options.seed.length > 128 || typeof options.name !== 'string' || !options.name.trim() || options.name.length > 64) throw new Error('シードと名前を入力してください');
-    if (kind !== 'town' && !doc.terrain) throw new Error('先に地形を生成してください');
+    if (kind !== 'town' && !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('先に地形を生成してください');
     const plan = ({ nations, vegetation, town })[kind](doc, options);
     const layer = { id: D.id(), name: options.name.trim() + '（生成）', visible: true, locked: false, opacity: kind === 'town' ? 1 : .65,
       generation: { ...D.clone(options), kind, generator_version: 1 } };
@@ -182884,12 +185079,20 @@ const MeldexMapRelations = (() => {
 })(globalThis,function(D,A,Names){
   'use strict';
   const defaults=Object.freeze({seed:'',name:'新しい世界',naming:'katakana',template:'continent',cells:20000,warmth:50,wetness:55,cities:100,nations:12,widthKm:24000});
+  // 地図の規模の目安（世界〜地方）。都市・村の街路は「都市・集落の詳細図」、地点の周りは「詳細地図を作成」で作る。
+  const scales=Object.freeze([
+    {id:'world',label:'世界（約24000km）',widthKm:24000,template:'continent',cities:100,nations:12,cells:20000},
+    {id:'continent',label:'大陸（約6000km）',widthKm:6000,template:'pangea',cities:80,nations:8,cells:20000},
+    {id:'country',label:'国（約1500km）',widthKm:1500,template:'island',cities:40,nations:3,cells:20000},
+    {id:'region',label:'地方・山岳（約300km）',widthKm:300,template:'island',cities:12,nations:1,cells:30000},
+    {id:'custom',label:'自由に指定',widthKm:0,template:'continent',cities:100,nations:12,cells:20000},
+  ]);
   const presentations=[['biomes','自然・植生'],['elevation','標高'],['temperature','気温'],['rain','降水'],['political','国家']];
   function parameters(input={}){
     const o=Object.fromEntries(Object.entries(defaults).map(([key,value])=>[key,input[key]??value]));
     if(typeof o.seed!=='string'||!o.seed.trim()||o.seed.length>128||typeof o.name!=='string'||!o.name.trim()||[...o.name].length>64||!['continent','island','archipelago','pangea','shattered'].includes(o.template))throw new Error('シード・世界名・地形の種類を確認してください');
     if(!['katakana','original'].includes(o.naming))throw new Error('地名の表記を確認してください');
-    for(const [key,lo,hi]of[['cells',10000,40000],['warmth',0,100],['wetness',0,100],['widthKm',100,60000],['cities',4,300],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations','cells'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
+    for(const [key,lo,hi]of[['cells',10000,40000],['warmth',0,100],['wetness',0,100],['widthKm',10,60000],['cities',4,300],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations','cells'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
     if(o.nations>o.cities)throw new Error('国家数は都市数以下にしてください');
     return o;
   }
@@ -182950,7 +185153,12 @@ const MeldexMapRelations = (() => {
     input('name','世界名',previous.name||app.state.label||defaults.name,{maxLength:64});input('seed','シード',previous.seed||String(Date.now()),{maxLength:128});
     const naming=document.createElement('select');naming.className='gb-select';naming.setAttribute('aria-label','地名の表記');for(const [key,label]of[['katakana','カタカナ（基本）'],['original','原語（Azgaar）']])naming.add(new Option(label,key));naming.value=previous.naming||defaults.naming;naming.onchange=clear;const namingLabel=document.createElement('label');namingLabel.className='gb-map-field';namingLabel.append('地名の表記',naming);panel.append(namingLabel);controls.naming=naming;
     const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append('地形の種類');const template=document.createElement('select');template.className='gb-select';template.setAttribute('aria-label','地形の種類');for(const [key,name]of[['continent','大陸'],['archipelago','群島'],['island','島'],['pangea','超大陸'],['shattered','分裂した大陸']])template.add(new Option(name,key));template.value=previous.template||defaults.template;template.onchange=clear;wrap.append(template);panel.append(wrap);controls.template=template;
-    for(const [key,label,min,max]of[['cells','地形の細かさ（セル数）',10000,40000],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数の目安',4,300],['nations','国家数',1,24],['widthKm','地図の横幅（km）',100,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    for(const [key,label,min,max]of[['cells','地形の細かさ（セル数）',10000,40000],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数の目安',4,300],['nations','国家数',1,24],['widthKm','地図の横幅（km）',10,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    // 地図の規模: 世界地図だけでなく、大陸・国・地方（山岳・盆地）の地図も作れる。選ぶと横幅・地形・都市数・国家数の目安を入れる（あとから個別に変更できる）。
+    const scaleWrap=document.createElement('label');scaleWrap.className='gb-map-field';scaleWrap.append('地図の規模');const scale=document.createElement('select');scale.className='gb-select';scale.setAttribute('aria-label','地図の規模');
+    for(const [key,name]of scales.map(s=>[s.id,s.label]))scale.add(new Option(name,key));scale.value=scales.find(s=>Number(controls.widthKm.value)>=s.widthKm*.7&&Number(controls.widthKm.value)<=s.widthKm*1.5)?.id||'custom';
+    scale.onchange=()=>{const preset=scales.find(s=>s.id===scale.value);if(preset&&preset.id!=='custom'){controls.widthKm.value=preset.widthKm;controls.template.value=preset.template;controls.cities.value=preset.cities;controls.nations.value=preset.nations;controls.cells.value=preset.cells;}clear();};
+    scaleWrap.append(scale);panel.insertBefore(scaleWrap,panel.querySelector('.gb-map-field'));
     const mode=document.createElement('select');mode.className='gb-select';mode.setAttribute('aria-label','プレビューの配色');for(const [key,name]of presentations)mode.add(new Option(name,key));mode.onchange=()=>{if(prepared){prepared.doc.atlas.presentation=mode.value;preview?.setDocument(prepared.doc,true);}};
     const modeLabel=document.createElement('label');modeLabel.className='gb-map-field';modeLabel.append('プレビューの配色',mode);
     const canvas=document.createElement('div');canvas.className='gb-map-generator-preview gb-map-world-preview';panel.append(modeLabel,status,canvas);
@@ -182978,7 +185186,7 @@ const MeldexMapRelations = (() => {
     },{disabled:true});
     panel.append(generate,adopt,app._button('閉じる',cleanup));app._worldPreview={panel,kind:'world',destroy:cleanup};MeldexMapChrome.openPanel(panel);
   }
-  return Object.freeze({defaults,presentations,parameters,adopt,prepare,show});
+  return Object.freeze({defaults,scales,presentations,parameters,adopt,prepare,show});
 });
 
 ;
@@ -182988,7 +185196,7 @@ const MeldexMapRelations = (() => {
 /* Terrain and visibility controls use Meldex's existing options and modal shell. */
 (function(root){
  'use strict';const D=()=>root.MeldexMapDocument,F=()=>root.MeldexMapTerrainField,V=()=>root.MeldexMapDisplay;
- const brushes=[['plain','平野'],['mountain','山地'],['hills','丘陵'],['desert','砂漠'],['wasteland','荒野'],['snow','雪原'],['forest','森林'],['land','陸地を追加'],['water','海・湖']];
+ const brushes=[['land','陸地を追加'],['water','海・湖'],['plain','平野'],['mountain','山地'],['hills','丘陵'],['desert','砂漠'],['wasteland','荒野'],['snow','雪原'],['forest','森林']];
  const routes=[['major','主要道路'],['road','道路・小径'],['railway','鉄道・線路'],['shipping','航路'],['river','川・水路'],['other','その他']];
  function input(parent,label,value,attrs,change){const wrap=document.createElement('label');wrap.className='gb-map-field';const text=document.createElement('span');text.textContent=label;const el=document.createElement('input');el.className='gb-input gb-num-input';el.required=true;Object.assign(el,attrs);el.setAttribute('aria-label',label);el.value=value;el.onchange=()=>{if(el.reportValidity())change(el.value);};wrap.append(text,el);parent.append(wrap);return el;}
  function select(parent,label,values,value,change,disabled=false){const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append(label);const el=document.createElement('select');el.className='gb-select';el.setAttribute('aria-label',label);el.disabled=disabled;for(const [id,text]of values)el.add(new Option(text,id));el.value=value;el.onchange=()=>change(el.value);wrap.append(el);parent.append(wrap);return el;}
@@ -183000,19 +185208,25 @@ const MeldexMapRelations = (() => {
    display(parent,app);
    select(parent,'描画する経路の種類',routes,app.view?.routeKind||'major',value=>{app.view.routeKind=value;},app.editingDisabled);
    parent.append(app._button('川をフリーハンドで描く',()=>app._setTool('river'),{disabled:app.editingDisabled}));
+   const labelStyle=app.store.doc.map_style||{};
+   select(parent,'地名の書体',[['standard','標準'],['fell','古地図風（IM FELL）'],['medieval','中世風（MedievalSharp）']],labelStyle.label_font||'standard',value=>{if(app.update(d=>{d.map_style={...(d.map_style||{}),label_font:value};},true,'マップ: 地名の書体を変更')){app._buildSettingsRefresh?.();app._render();}},app.editingDisabled);
    if(!app.store.doc.atlas?.surface)return;
-   select(parent,'地形ブラシ',brushes,app.view?.terrainKind||'plain',value=>{app.view.terrainKind=value;app._setTool('land');},app.editingDisabled||app.store.doc.atlas.locked);
+   const style=app.store.doc.map_style||{},setStyle=(patch,label)=>{if(app.update(d=>{d.map_style={...(d.map_style||{}),...patch};},true,label)){app._buildSettingsRefresh?.();app._render();}};
+   select(parent,'地図のスタイル',root.MeldexMapAzgaar.styleIds.map(id=>[id,root.MeldexMapAzgaar.styles[id].label]),style.theme||'standard',value=>setStyle({theme:value},'マップ: スタイルを変更'),app.editingDisabled);
+   const contour=document.createElement('label');contour.className='gb-check';const cc=document.createElement('input');cc.type='checkbox';cc.setAttribute('aria-label','等高線を表示');cc.checked=!!style.contours;cc.disabled=app.editingDisabled;cc.onchange=()=>setStyle({contours:cc.checked},'マップ: 等高線の表示を変更');contour.append(cc,document.createTextNode(' 等高線を表示'));parent.append(contour);
+   select(parent,'等高線の間隔',[['5','細かい'],['10','標準'],['20','粗い']],String(style.contour_interval||10),value=>setStyle({contour_interval:Number(value)},'マップ: 等高線の間隔を変更'),app.editingDisabled||!style.contours);
+   select(parent,'地形ブラシ',brushes,app.view?.terrainKind||'land',value=>{app.view.terrainKind=value;app._setTool('land');},app.editingDisabled||app.store.doc.atlas.locked);
    input(parent,'地形ブラシの強さ',app.view?.terrainStrength||.7,{type:'number',min:.05,max:1,step:.05,disabled:app.editingDisabled},v=>{app.view.terrainStrength=Number(v);});
    const lock=document.createElement('label');lock.className='gb-check';const c=document.createElement('input');c.type='checkbox';c.setAttribute('aria-label','地形をロック');c.checked=!!app.store.doc.atlas.locked;c.disabled=app.editingDisabled;c.onchange=()=>{app.update(d=>{d.atlas.locked=c.checked;});app._buildSettingsRefresh();app._render();};lock.append(c,document.createTextNode(' 地形をロック'));parent.append(lock);
    parent.append(app._button('周囲の地形を合わせる',()=>showFit(app),{disabled:app.editingDisabled||app.store.doc.atlas.locked}));
  }
  function routeFields(parent,app,feature,locked){const kind=feature.cartography?.role==='road'?(feature.cartography.rank==='major'?'major':'road'):feature.cartography?.role||'other';select(parent,'経路の種類',routes,routes.some(r=>r[0]===kind)?kind:'other',value=>app._editFeature(f=>{f.cartography={...f.cartography,role:value==='major'?'road':value==='other'?'':value,rank:value==='major'?'major':'minor'};delete f.cartography.geometry;}),locked);}
- function converted(doc,editor){const result=D().clone(doc);result.atlas.editor=editor;result.schema_version=2;result.background=null;D().parse(JSON.stringify(result));return result;}
+ function converted(doc,editor){const result=D().clone(doc);result.atlas.editor=editor;const upgrade=result.schema_version!==2;result.schema_version=2;result.background=null;if(upgrade)D().parse(JSON.stringify(result));return result;}
  async function paint(app,action){
-   const source=app.store.doc,store=app.store,path=app.path,guard=app._editGuard(),signature=JSON.stringify(source);if(!guard()||!source.atlas?.surface||source.atlas.locked||app._terrainPending)return;
+   const source=app.store.doc,store=app.store,path=app.path,guard=app._editGuard(),upgrading=source.schema_version!==2,signature=upgrading?JSON.stringify(source):'';if(!guard()||!source.atlas?.surface||source.atlas.locked||app._terrainPending)return;
    const points=action.points.map(p=>[p[0]/source.canvas.width*source.atlas.width,p[1]/source.canvas.height*source.atlas.height]),radius=Math.min(Math.max(source.atlas.width,source.atlas.height)/2,action.radius/source.canvas.width*source.atlas.width);
    const candidate=converted(source,F().stroke(source.atlas,action.kind,points,radius,action.strength));
-   const valid=()=>guard()&&app.store===store&&app.path===path&&store.doc===source&&JSON.stringify(source)===signature&&!source.atlas.locked&&app._active!==false;
+   const valid=()=>guard()&&app.store===store&&app.path===path&&store.doc===source&&(!upgrading||JSON.stringify(source)===signature)&&!source.atlas.locked&&app._active!==false;
    if(source.schema_version!==2){app._terrainPending=true;try{if(!await cfConfirm('地形を直接編集できる新形式へ変換します。旧版のMeldexでは開けなくなります。PNGや閲覧パッケージで共有できます。変換と描画は「元に戻す」で取り消せます。続けますか？'))return;if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid()||access.readOnly){app._message(access.reason||'この地図は編集できません');return;}}finally{app._terrainPending=false;}}
    if(valid()&&app.update(d=>Object.assign(d,candidate))){app._buildSettingsRefresh();app._render();}
  }
@@ -183124,10 +185338,10 @@ const MeldexMapControls = (() => {
         app._render(); app.view.fit();
       } catch (error) { app._message(error.message); }
     };
-    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled||doc.atlas?.locked }),
-      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
-      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
-      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && kind !== 'town' })));
+    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }),
+      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface }),
+      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface }),
+      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface && kind !== 'town' })));
     MeldexMapTerrainControls.settings(root,app);
     if(doc.atlas){const note=document.createElement('p');note.className='gb-map-hint';note.textContent='地形ブラシで平野・山地・植生・陸海を編集できます。川などを描いた後は、選択して「周囲の地形を合わせる」で谷や切れ目を作れます。';local.append(note);}
     if (doc.atlas || MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.atlas?.presentation || doc.terrain?.presentation || 'biomes',
@@ -183223,6 +185437,8 @@ const MeldexMapControls = (() => {
     tags.appendChild(addTag); root.appendChild(tags);
     field(app, root, '色', f.color, value => app._editFeature(next => { next.color = value; }), { type: 'color', disabled: locked });
     if(f.kind==='pin')select(root,'マーカーのデザイン',[['symbol','丸印・記号（標準）'],['drop','しずく型']],f.marker_style||'symbol',value=>app._editFeature(next=>{next.marker_style=value;}),locked);
+    // 同梱素材（城・教会・森・山など）の記号。しずく型マーカーの時は使わない。
+    if(f.kind==='pin'&&f.marker_style!=='drop')select(root,'記号の絵',[['','なし（文字の記号）'],...globalThis.MeldexMapDisplay.stamps],f.stamp||'',value=>app._editFeature(next=>{if(value)next.stamp=value;else delete next.stamp;}),locked);
     select(root, '配置レイヤー', app.store.doc.layers.filter(l => !l.locked || l.id === f.layer_id).map(l => [l.id, l.name]), f.layer_id,
       value => app._editFeature(next => { next.layer_id = value; }), locked);
     if (f.points.length > 1) {
@@ -183236,6 +185452,7 @@ const MeldexMapControls = (() => {
       input.onchange = () => app._editFeature(next => { next.arrow = input.checked; }); wrap.append(input, document.createTextNode('終点に矢印を表示')); root.appendChild(wrap);
     }
     MeldexMapTravel.inspector(app, root, f, locked);
+    const annotate = app._button('アノテートを追加', event => app.addAnnotation(event.currentTarget)); annotate.dataset.e2eId = 'map-feature-add-annotation'; root.appendChild(annotate);
     const linksTitle = document.createElement('h4'); linksTitle.textContent = '関連するファイル・トピック'; root.appendChild(linksTitle);
     for (const link of f.links.filter(link => link.role !== 'child-map')) {
       const row = document.createElement('div'); row.className = 'gb-map-link-row';
@@ -183386,12 +185603,17 @@ const MeldexMapControls = (() => {
   'use strict';
   const MAX_MAPS = 64, MAX_BYTES = 48 * 1024 * 1024;
   const assets = ['vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/LICENSE',
-    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
+    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css',
+    // 同梱素材（記号・羊皮紙・地名の書体）とライセンス文書。閲覧パッケージでも同じ見た目にするため。
+    'vendor/map-assets/LICENSE-kenney-cartography.txt', 'vendor/map-assets/textures/parchmentBasic.png',
+    'vendor/map-assets/fonts/IMFellEnglish-Regular.ttf', 'vendor/map-assets/fonts/IMFellEnglish-Italic.ttf', 'vendor/map-assets/fonts/OFL-IMFellEnglish.txt',
+    'vendor/map-assets/fonts/MedievalSharp-Regular.ttf', 'vendor/map-assets/fonts/OFL-MedievalSharp.txt'];
   const key = path => String(path).replace(/\\/g, '/').toLocaleLowerCase();
   const pick = (obj, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(obj, field)).map(field => [field, D.clone(obj[field])]));
   function portable(doc, links) {
     const result = pick(doc, ['fileType', 'schema_version', 'title', 'coordinate_system']);
     if(doc.display)result.display=pick(doc.display,globalThis.MeldexMapDisplay?.keys||require('./gb-map-display.js').keys);
+    if(doc.map_style)result.map_style=pick(doc.map_style,['theme','contours','contour_interval','label_font']);
     result.canvas = pick(doc.canvas, ['width', 'height']); result.basemap = 'blank';
     result.scale = pick(doc.scale, ['distance_per_unit', 'unit', 'north_degrees']);
     const periods = new Map((doc.periods || []).map((period, index) => [period.id, 'period-' + index]));
@@ -183404,7 +185626,7 @@ const MeldexMapControls = (() => {
       return { cartography: { role:c.role, ...(c.role==='border'&&c.area===true?{area:true}:{}), ...(A.geometry(feature)?{geometry:pick(c.geometry,['path','scale','anchor','closed','line_style','signature'])}:{}), ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
     };
     result.features = doc.features.map((feature, index) => ({
-      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style']),
+      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style', 'stamp']),
       id: 'feature-' + index, layer_id: layers.get(feature.layer_id),
       ...cartography(feature),
       ...(feature.period_ids ? { period_ids: feature.period_ids.map(id => periods.get(id)) } : {}),
@@ -183481,6 +185703,11 @@ const MeldexMapControls = (() => {
     // The HTML template is served as text so the app's HTML bootstrap (local
     // session credentials) is never injected into a portable document.
     const entries = await Promise.all(assets.map(async name => ({ name: name === 'map-package-viewer.txt' ? 'index.html' : name, data: await loadAsset(name) })));
+    check();
+    // 地点に使った記号の画像だけを入れる（全種類は入れない）。
+    const display = globalThis.MeldexMapDisplay || require('./gb-map-display.js');
+    const stamps = [...new Set((plan.data.maps || []).flatMap(map => (map.doc?.features || []).map(feature => feature.stamp)).filter(id => display.stampIds.has(id)))];
+    for (const id of stamps) entries.push({ name: display.stampURL(id), data: await loadAsset(display.stampURL(id)) });
     check();
     entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
     entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,
@@ -183598,7 +185825,10 @@ const MeldexMapControls = (() => {
     const title = app._mapTitle = document.createElement('span'); title.className = 'tb-title tb-file-title'; title.textContent = app.state.label || 'マップ'; title.title = title.textContent;
     const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
     app.undoButton.dataset.gbTooltipKey = 'history.undo'; app.redoButton.dataset.gbTooltipKey = 'history.redo';
-    toolbar.append(menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
+    const appIcon = typeof toolbarAppIconElement === 'function' ? toolbarAppIconElement('map') : document.createComment('app-icon');
+    toolbar.append(appIcon, menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
+    const fileIcon = window.MeldexFileIcons?.toolbarIconHtml?.('map');
+    if (fileIcon) title.insertAdjacentHTML('beforebegin', fileIcon);
     const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', river:'pencil', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };
     for (const [tool, button] of app.toolButtons) toolbar.appendChild(convert(button, button.textContent, toolIcons[tool]));
     const spacer = document.createElement('div'); spacer.className = 'tb-spacer'; toolbar.appendChild(spacer);
@@ -183693,10 +185923,9 @@ const MeldexMapControls = (() => {
       { label: app.state.mapBrowseMode ? '作図モードに戻る' : '閲覧モード', icon: app.state.mapBrowseMode ? 'pencil' : 'eye', action: run(() => app._toggleBrowseMode()) },
       ...(local ? [{ label: '生成', icon: 'sparkles', submenu: [
         { label: '世界地図を生成', icon: 'globe', action: run(() => MeldexMapWorldGenerator.show(app)), disabled: app.editingDisabled },
-        { label: '地形を生成', icon: 'mountain', action: run(() => MeldexMapControls.generator(app)), disabled: app.editingDisabled },
-        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
-        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas },
-        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled || !!app.store.doc.atlas && kind !== 'town' })),
+        { label: '都市候補を生成', icon: 'mapPin', action: run(() => MeldexMapSettlements.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas && !app.store.doc.atlas.surface },
+        { label: '気候帯を生成', icon: 'cloudSun', action: run(() => MeldexMapClimate.show(app)), disabled: app.editingDisabled || !!app.store.doc.atlas && !app.store.doc.atlas.surface },
+        ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled || !!app.store.doc.atlas && !app.store.doc.atlas.surface && kind !== 'town' })),
       ] }] : []),
       { label: '読み込み・書き出し', icon: 'import', submenu: [command('データ入出力', 'データ入出力', 'arrowLeftRight'), command('マップを書き出す', 'マップを書き出す', 'fileDown'), ...(local ? [command('PNG画像を書き出す', 'PNG', 'image'), command('持ち出しパッケージ', '持ち出しパッケージ', 'package')] : [])] },
       { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },
@@ -183720,14 +185949,15 @@ const MeldexMapControls = (() => {
 class MapAppComponent extends ToolComponent {
   create() {
     this.el = document.createElement('section'); this.el.className = 'gb-map-app';
-    this.el.setAttribute('aria-label', 'マップ'); this.el.dataset.e2eId = 'map-app';
+    this.el.setAttribute('aria-label', 'マップ'); this.el.dataset.e2eId = 'map-app'; this.el._gbMapApp = this;
     this._generation = 0; this._draftOwner = MeldexMapDocument.id(); this._activeLayer = 'places';
     this._beforeUnload = event => { if (this.store?.dirty || this._inputDirty) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', this._beforeUnload);
     this.el.addEventListener('keydown', event => { if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); } });
     return this.el;
   }
-  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(t => t.id === this.tabId); }
+  // サブパネル等のレイアウト外の仮想ペインでも自分のタブを見つける。
+  _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(t => t.id === this.tabId); }
   get editingDisabled() { return this.readOnly || !!this.state.mapBrowseMode; }
   _saveViewState() {
     const tab = this._tab(); if (tab) tab.state = { ...tab.state, ...this.state };
@@ -183790,6 +186020,7 @@ class MapAppComponent extends ToolComponent {
       this._activeLayer = this.store.doc.layers[0].id; this._selected = null; this._selection = new Set(); this._inputDirty = false;
       this._inspectorShown = false;
       this._build(); this._render(); this._changed();
+      this._convertLegacyTerrain(generation).catch(error => this._message('旧方式の地形を変換できませんでした: ' + (error.userMessage || error.message)));
       MeldexMapRelations.findParents(this).catch(() => {});
       this._syncDetailPanel();
       if (typeof addRecent === 'function') addRecent(this.state.label, path, 'map');
@@ -183891,6 +186122,7 @@ class MapAppComponent extends ToolComponent {
       const before = MeldexMapDocument.clone(this.store.doc);
       if (!this.store.update(mutator, false)) return false;
       const scope = this._historyScope();
+      if (label === 'マップを編集') label = this._historyLabel(before, this.store.doc);
       historyPush(label,
         () => this._restoreHistorySnapshot(before, scope),
         undefined,
@@ -183898,6 +186130,32 @@ class MapAppComponent extends ToolComponent {
       return true;
     }
     catch (error) { this._message(error.message); return false; }
+  }
+  // 履歴名を変更内容から決める（ほとんどの操作が既定名「マップを編集」で登録されていたため）。
+  _historyLabel(before, after) {
+    const same = key => JSON.stringify(before?.[key] ?? null) === JSON.stringify(after?.[key] ?? null);
+    const beforeFeatures = before?.features || [], afterFeatures = after?.features || [];
+    const name = feature => feature?.label ? '「' + String(feature.label).slice(0, 20) + '」' : '';
+    if (afterFeatures.length > beforeFeatures.length) {
+      const added = afterFeatures.find(f => !beforeFeatures.some(b => b.id === f.id));
+      return 'マップ: ' + (({ pin: '地点', route: '経路', region: '領域', label: '地名' })[added?.kind] || '地点・図形') + 'を追加';
+    }
+    if (afterFeatures.length < beforeFeatures.length) return 'マップ: 地点・図形を削除';
+    if (!same('features')) {
+      const changed = afterFeatures.filter(f => JSON.stringify(f) !== JSON.stringify(beforeFeatures.find(b => b.id === f.id)));
+      if (changed.length > 1) return 'マップ: ' + changed.length + '件の地点・図形を変更';
+      const previous = beforeFeatures.find(b => b.id === changed[0]?.id);
+      if (changed[0] && previous && JSON.stringify(changed[0].points) !== JSON.stringify(previous.points)) return 'マップ: ' + name(changed[0]) + '位置を変更';
+      return 'マップ: ' + name(changed[0]) + '内容を変更';
+    }
+    if (!same('layers')) return 'マップ: レイヤーを変更';
+    if (!same('scale')) return 'マップ: 縮尺・方位を変更';
+    if (!same('atlas') || !same('terrain')) return 'マップ: 地形を変更';
+    if (!same('background')) return 'マップ: 背景を変更';
+    if (!same('periods')) return 'マップ: 時代・章を変更';
+    if (!same('display')) return 'マップ: 表示を変更';
+    if (!same('title')) return 'マップ: 名前を変更';
+    return 'マップを編集';
   }
   _editGuard(featureId = null) {
     const store = this.store, generation = this._generation, system = store?.doc.coordinate_system;
@@ -184145,7 +186403,50 @@ class MapAppComponent extends ToolComponent {
     this.rotationSlider.value = v.rotation; this.rotationLabel.textContent = Math.round(v.rotation) + '°';
   }
   _renderLayers() { MeldexMapControls.layers(this); }
-  _renderPlaces() { MeldexMapControls.places(this); }
+  // マップの方式はAzgaar方式に統一した。旧方式の格子地形だけを持つ地図は、開いた時に変換前の版を保存してから変換する。
+  // 版を保存できない時は変換しない（元データを失わないため）。画像を背景にした地図は対象外。
+  async _convertLegacyTerrain(generation) {
+    const doc = this.store?.doc;
+    if (!doc || this.readOnly || this.editingDisabled || doc.coordinate_system !== 'local' || !doc.terrain || doc.atlas || doc.background) return false;
+    const store = this.store, path = this.path, label = '旧方式の地形（Azgaar方式へ変換する前）';
+    // 変換できるかを先に確かめる（変換できない地図で、開くたびに版だけが増えないように）。
+    const atlas = MeldexMapAzgaar.fromLegacyTerrain(doc);
+    // 取り消しで旧方式へ戻した地図を開き直した時などに、同じ変換前の版を重ねて作らない。
+    let existing = [];
+    try { const listed = await apiFetch('/version/list?path=' + encodeURIComponent(path)); existing = listed?.versions || listed?.items || (Array.isArray(listed) ? listed : []); } catch {}
+    if (!existing.some(item => item?.label === label)) {
+      try { await apiPost('/version/save', { path, label, auto: false }); }
+      catch (error) { this._message('変換前の版を保存できないため、旧方式のまま開きました'); return false; }
+    }
+    if (generation !== this._generation || this.store !== store || store.doc !== doc) return false;
+    if (!this.update(next => { next.atlas = atlas; next.terrain = null; }, true, 'マップ: Azgaar方式へ変換')) return false;
+    this._buildSettingsRefresh?.(); this._render();
+    this._message('旧方式の地形をAzgaar方式へ変換しました（変換前の状態はバージョンに保存しました）');
+    return true;
+  }
+  _renderPlaces() { MeldexMapControls.places(this); window.CommentBadges?.refreshMap?.(this)?.catch?.(() => {}); }
+  // アノテート（コメント）の対象。選択中の地点・図形があればそれへ、無ければマップ全体へ付ける。
+  annotationContext() {
+    if (!this.path) return null;
+    const feature = this.store?.doc?.features?.find(item => item.id === this._selected);
+    if (!feature) return { targetKind: 'none', filePath: this.path, targetRef: null, snapshot: '' };
+    return { targetKind: 'map_feature', filePath: this.path, targetRef: { file: this.path, featureId: feature.id },
+      snapshot: String(feature.label || '名前なし').slice(0, 120) };
+  }
+  addAnnotation(anchorEl) {
+    const context = this.annotationContext();
+    if (!context || !window.CommentBadges?.addCommentHere) return false;
+    window.CommentBadges.addCommentHere(context, { anchorEl: anchorEl || this.inspector || this.el });
+    return true;
+  }
+  // アノテート一覧から地点・図形へ移動する。
+  revealAnnotationTarget(ref = {}) {
+    const id = ref.featureId;
+    const feature = id && this.store?.doc?.features?.find(item => item.id === id);
+    if (!feature) return false;
+    this._select(feature.id); this.view?.focus?.(feature);
+    return true;
+  }
   _renderInspector() {
     MeldexMapControls.inspector(this);
     this.inspector.hidden = false;
@@ -184153,7 +186454,9 @@ class MapAppComponent extends ToolComponent {
   }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.mapPath;
-    if (!path || this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    if (this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
+    if (!path) { window.GBOptionTargetContext?.clear?.('map-new'); return; }
     if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
     window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
   }
@@ -184381,6 +186684,13 @@ class FormAppComponent extends ToolComponent {
     this.el.className = 'gb-form-app';
     this.el.setAttribute('aria-label', 'フォーム');
     this.el.dataset.e2eId = 'form-app';
+    this.el._gbFormApp = this;
+    this.el.addEventListener('focusin', event => {
+      const field = event.target?.closest?.('[data-form-field]')?.dataset?.formField || '';
+      if (!field || field === this._selectedField) return;
+      this._selectedField = field;
+      this._renderFieldInspector();
+    });
     this._draftOwner = globalThis.crypto?.randomUUID?.() || _elGenId('form-draft');
     this.el.addEventListener('keydown', event => {
       if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); }
@@ -184395,8 +186705,15 @@ class FormAppComponent extends ToolComponent {
     window.addEventListener('beforeunload', this._beforeUnload);
     return this.el;
   }
-  _historyScope() { return this._embedded ? 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath) : ''; }
-  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
+  // 単独で開いたフォームも、ファイルごとの履歴範囲を持つ（共通履歴へ積むと別ファイルのCtrl+Zで戻ってしまう）。
+  // 形式は共通の解決表 _meldexFormAppTabHistoryScope と一致させる。
+  _historyScope() {
+    if (this._embedded) return 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath);
+    const path = String(this.path || this._tab()?.path || this.state.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    return path ? 'form-app:' + path : '';
+  }
+  // サブパネル等のレイアウト外の仮想ペインでも自分のタブを見つける。
+  _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
     this._syncDetailPanel();
@@ -184880,12 +187197,15 @@ class FormAppComponent extends ToolComponent {
       return button;
     };
     const menu = iconButton('メニュー', 'menu', event => showToolMenu(event, 'form-app', this));
+    if (typeof toolbarAppIconElement === 'function') bar.appendChild(toolbarAppIconElement('form-app'));
     menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-haspopup', 'menu'); bar.appendChild(menu);
     bar.appendChild(iconButton('フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('form-app', event)));
     this.titleElement = document.createElement('span');
     this.titleElement.className = 'tb-title tb-file-title';
     this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
     this.titleElement.title = this.titleElement.textContent;
+    const fileIcon = window.MeldexFileIcons?.toolbarIconHtml?.('form-app');
+    if (fileIcon) bar.insertAdjacentHTML('beforeend', fileIcon);
     bar.appendChild(this.titleElement);
     const separator = document.createElement('div'); separator.className = 'sep'; bar.appendChild(separator);
     const source = document.createElement('label'); source.className = 'gb-form-source-sheet'; source.textContent = '参照先シート';
@@ -184933,8 +187253,21 @@ class FormAppComponent extends ToolComponent {
     this.surface = document.createElement('div'); this.surface.className = 'form-view gb-form-app-surface'; this.el.appendChild(this.surface);
     if (this.sheetError || !this.ctx.dbPath) {
       const hint = document.createElement('p'); hint.textContent = this.sheetError || '入力先のシートを選択してください。入力したトピックはシートへ保存され、配置と入力設定はこのフォームに保存されます。'; this.surface.appendChild(hint);
-    } else renderDbFormView(this.ctx);
+    } else {
+      const rendered = renderDbFormView(this.ctx);
+      Promise.resolve(rendered).then(() => window.CommentBadges?.refreshForm?.(this)).catch(() => {});
+    }
     this._changed();
+  }
+  // アノテート一覧からフォームの項目へ移動する。
+  revealAnnotationTarget(ref = {}) {
+    const field = ref.field;
+    if (!field) return false;
+    const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
+    if (!target) return false;
+    target.scrollIntoView?.({ block: 'center' });
+    target.querySelector('input,textarea,select,[tabindex]')?.focus?.({ preventScroll: true });
+    return true;
   }
   async flush() {
     this._commitFocusedControl();
@@ -184955,9 +187288,62 @@ class FormAppComponent extends ToolComponent {
   }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.formPath;
-    if (!path || this._embedded || this.paneId !== GBLayout.activePane) return;
-    if (typeof _syncDetailPanel === 'function') return _syncDetailPanel(this.state.label || 'フォーム', path, 'form-app');
+    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
+    if (!path) { window.GBOptionTargetContext?.clear?.('form-new'); return; }
+    if (typeof _syncDetailPanel === 'function') {
+      return Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
+        this._renderFieldInspector();
+        if (this.paneId === GBLayout.activePane && typeof switchDetailTab === 'function' && typeof _resolveDetailTabForType === 'function') {
+          // 利用者が別のタブ（プロパティ等）を選んでいる時は切り替えない。何も選ばれていない時か、表示されないタブの時だけ。
+          const current = typeof _currentDetailTab !== 'undefined' ? _currentDetailTab : null;
+          const currentButton = current ? document.querySelector(`[data-detail-tab="${current}"]`) : null;
+          if (!current || (currentButton && currentButton.hidden)) switchDetailTab(_resolveDetailTabForType('form-app', 'form-field'));
+        }
+        return result;
+      });
+    }
     window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
+  }
+  // オプションパネルの「項目」タブ: 選択中（入力中）の項目の設定と操作を出す。
+  _renderFieldInspector() {
+    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    const root = document.getElementById('detail-tab-form-field');
+    if (!root) return;
+    root.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = '選択項目'; root.appendChild(title);
+    const field = this._selectedField;
+    const layout = this.getLayout?.();
+    const config = layout && globalThis.MeldexDbFormModel?.forLayout ? MeldexDbFormModel.forLayout(layout) : null;
+    if (!field || !config?.fields?.includes(field)) {
+      const hint = document.createElement('p'); hint.textContent = '項目を選ぶと設定と操作が出ます。'; root.appendChild(hint);
+      return;
+    }
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(this.ctx?.dbPath, this.ctx) || {} : {};
+    const rule = MeldexDbFormModel.ruleFor?.(config, field, typeof getValidationRules === 'function' ? getValidationRules(this.ctx?.dbPath) : []) || {};
+    const rows = [
+      ['列', field],
+      ['表示名', config.labels?.[field] || field],
+      ['列タイプ', typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(types[field]?.type || 'text') : (types[field]?.type || 'text')],
+      ['入力必須', rule.required ? 'はい' : 'いいえ'],
+      ['参照先シート', this.ctx?.dbMetadata?.display_title || String(this.ctx?.dbPath || '').split(/[\\/]/).pop() || '未選択'],
+    ];
+    const list = document.createElement('dl'); list.className = 'gb-form-field-inspector';
+    for (const [name, value] of rows) {
+      const dt = document.createElement('dt'); dt.textContent = name;
+      const dd = document.createElement('dd'); dd.textContent = value;
+      list.append(dt, dd);
+    }
+    root.appendChild(list);
+    const annotate = this._button('アノテートを追加', event => {
+      const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
+      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget });
+    });
+    annotate.dataset.e2eId = 'form-field-add-annotation';
+    root.appendChild(annotate);
+    const design = this._button('配置を編集', () => this._design());
+    design.disabled = this.definitionReadOnly || !layout;
+    root.appendChild(design);
   }
   saveDefinition() {
     this._commitFocusedControl();
@@ -193834,72 +196220,72 @@ function _appendTimelineCardPropsOption(menu, text, checked, onChange) {
   return _appendDbDisplayPropOption(menu, text, checked, { onToggle: onChange });
 }
 
-function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.tl-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
-  let showEntryName = _timelineShowsEntryName(cfg);
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
-  const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, {
-      label: 'シート表示: タイムライン表示列',
-      detail,
-      ctx,
-    });
-    renderTimeline(ctx);
+// ギャラリー・カンバン・タイムラインの「表示列」。ビューの「列管理」と同じ共通部品で、
+// 並び順＝カードに出る順を一覧の上の欄にそのまま出す（2026-11-18）。以前は一覧が列の順の
+// まま固定で、↑↓の効き方も開いた時点のまま変わらず、カードの並びと一致していなかった。
+//   options.cfg            現在の設定（cardProps / showEntryName / showBodyExcerpt ...）
+//   options.props          カードに出せる列（表で表示中の列）
+//   options.save(nextCfg, detail)  保存と再描画
+function _showDbCardPropsManager(anchor, options) {
+  let cfg = { ...(options.cfg || {}) };
+  const props = Array.isArray(options.props) ? options.props : [];
+  const defaultOrder = Array.isArray(options.defaultCardProps) ? options.defaultCardProps : [];
+  const ordered = () => (Array.isArray(cfg.cardProps) ? cfg.cardProps : defaultOrder).filter(prop => props.includes(prop));
+  const save = (patch, detail) => {
+    cfg = { ...cfg, ...patch };
+    options.save?.(cfg, detail);
   };
-  _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-    onToggle(checked) {
-      showEntryName = checked;
-      saveCardProps('トピック名');
+  const manager = window.MeldexColumnManager?.open({
+    anchor,
+    title: '表示列',
+    className: ['tl-card-props-menu', options.className || ''].join(' ').trim(),
+    e2eId: options.e2eId || 'db-card-props-manager',
+    renderExtra(container) {
+      _appendDbDisplayPropOption(container, 'トピック名', cfg.showEntryName !== false, {
+        onToggle(checked) { save({ showEntryName: checked }, 'トピック名'); },
+      });
+      if (typeof _appendDbCardDisplayControls === 'function') {
+        const display = typeof _dbCardViewDisplayConfig === 'function'
+          ? _dbCardViewDisplayConfig(cfg)
+          : { cardImageThumbCount: 3, cardPropLineCount: 1 };
+        _appendDbCardDisplayControls(container, display, (next, detail) => {
+          save({ cardImageThumbCount: next.cardImageThumbCount, cardPropLineCount: next.cardPropLineCount }, detail);
+        });
+      }
+      _appendDbDisplayPropOption(container, '本文冒頭', cfg.showBodyExcerpt === true, {
+        onToggle(checked) { save({ showBodyExcerpt: checked }, '本文冒頭'); },
+      });
+    },
+    getItems() {
+      const shown = ordered();
+      const rest = props.filter(prop => !shown.includes(prop));
+      return [
+        ...shown.map(prop => ({ id: prop, label: prop, visible: true })),
+        ...rest.map(prop => ({ id: prop, label: prop, visible: false })),
+      ];
+    },
+    onChange(items, detail) {
+      save({ cardProps: items.filter(item => item.visible).map(item => item.id) }, detail);
     },
   });
-  _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-    cardImageThumbCount = next.cardImageThumbCount;
-    cardPropLineCount = next.cardPropLineCount;
-    saveCardProps(detail);
+  return manager;
+}
+
+function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: _timelineShowsEntryName(cfg) },
+    props,
+    className: 'timeline-card-props-menu',
+    e2eId: 'timeline-card-props-manager',
+    save(next, detail) {
+      setTimelineConfig(dbPath, { ...cfg, ...next }, {
+        label: 'シート表示: タイムライン表示列',
+        detail,
+        ctx,
+      });
+      renderTimeline(ctx);
+    },
   });
-  _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-    onToggle(checked) { showBodyExcerpt = checked; saveCardProps('本文冒頭'); },
-  });
-  props.forEach(prop => {
-    _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-      canMoveUp: ordered.indexOf(prop) > 0,
-      canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-      onToggle(checked) {
-        ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-        saveCardProps(prop);
-      },
-      onMove(delta) {
-        const idx = ordered.indexOf(prop);
-        const nextIdx = idx + delta;
-        if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-        [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-        saveCardProps(prop);
-      },
-    });
-  });
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'tl-card-props-menu-close',
-      attr: 'data-tl-card-props-close',
-    });
-  }
-  _positionTimelineCardPropsMenu(menu, anchor);
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
 }
 
 function _positionTimelineCardPropsMenu(menu, anchor) {
@@ -197753,31 +200139,65 @@ function _bindDbViewTabsWheelScroll(tabs) {
   }, { passive: false });
 }
 
-function _clearDbViewTabDropIndicator(tabs) {
-  const scope = tabs || document;
-  scope.querySelectorAll?.('.view-tab.db-view-drop-before, .view-tab.db-view-drop-after')
-    .forEach(tab => tab.classList.remove('db-view-drop-before', 'db-view-drop-after', 'drag-over-tab'));
+// ビュー（index=fromIdx）を取り除いた後の並びで toIdx の位置へ移し、表示中のビューを追従させて保存する。
+// 並べ替えのドラッグ操作とドロップ位置の表示は共通部品 MeldexViewTabs.bindReorder（UI共通ルール 4.0）。
+function _moveDbSavedView(dbPath, fromIdx, toIdx, ctx) {
+  const views = getSavedViews(dbPath);
+  if (!Number.isInteger(fromIdx) || fromIdx < 0 || fromIdx >= views.length) return false;
+  const insertIdx = Math.max(0, Math.min(Number(toIdx) || 0, views.length - 1));
+  if (insertIdx === fromIdx) return false;
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  const moved = views.splice(fromIdx, 1)[0];
+  if (!moved) return false;
+  views.splice(insertIdx, 0, moved);
+  setSavedViews(dbPath, views, { skipHistory: true });
+  let ci = getCurrentViewIdx(dbPath);
+  if (ci === fromIdx) ci = insertIdx;
+  else if (fromIdx < ci && insertIdx >= ci) ci--;
+  else if (fromIdx > ci && insertIdx <= ci) ci++;
+  setCurrentViewIdx(dbPath, ci, { skipHistory: true });
+  if (ctx) {
+    ctx.currentViewIdx = ci;
+    ctx.currentViewId = String(views[ci]?.id || '');
+  }
+  if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
+  }
+  return true;
 }
 
-function _dbViewTabDropSide(tab, event) {
-  const rect = tab.getBoundingClientRect();
-  const x = typeof event?.clientX === 'number' ? event.clientX : rect.left + rect.width / 2;
-  return x < rect.left + rect.width / 2 ? 'before' : 'after';
+// 保存済みビューの既定アイコン（ビュー種別）。利用者が選んだアイコンは view.icon に保存する。
+function _dbSavedViewDefaultIcon(view) {
+  return VIEW_TYPES.find(vt => vt.mode === (view?.viewMode || 'pivot'))?.icon || 'table';
 }
 
-function _markDbViewTabDropIndicator(tab, event) {
-  const tabs = tab?.closest?.('.db-view-tabs');
-  if (!tab || !tabs) return 'after';
-  _clearDbViewTabDropIndicator(tabs);
-  const side = _dbViewTabDropSide(tab, event);
-  tab.classList.add('drag-over-tab', side === 'before' ? 'db-view-drop-before' : 'db-view-drop-after');
-  return side;
+function _dbSavedViewIconHtml(view, size = 12) {
+  if (typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.renderIcon === 'function') {
+    return MeldexViewTabs.renderIcon(view?.icon, _dbSavedViewDefaultIcon(view), size);
+  }
+  return lucide(_dbSavedViewDefaultIcon(view), size);
 }
 
-function _dbViewDropTargetIndex(fromIdx, overIdx, side) {
-  let targetIdx = side === 'after' ? overIdx + 1 : overIdx;
-  if (fromIdx < targetIdx) targetIdx--;
-  return Math.max(0, targetIdx);
+// ビューのアイコンを変える（spec='' で既定に戻す）。ビュー表示設定の保存・取り消し履歴に載せる。
+function setDbSavedViewIcon(idx, spec, ctx) {
+  ctx = ctx || _currentPaneState();
+  const dbPath = ctx.dbPath || state.currentDbPath;
+  if (!dbPath) return false;
+  const cfg = getDbViewConfig(dbPath);
+  const view = (cfg.savedViews || [])[idx];
+  if (!view) return false;
+  const next = typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.normalizeIconSpec === 'function'
+    ? MeldexViewTabs.normalizeIconSpec(spec) : String(spec || '').trim();
+  if ((view.icon || '') === next) return false;
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  if (next) view.icon = next;
+  else delete view.icon;
+  saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+  if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: ビューのアイコン変更', before, captureDbViewConfigHistory(dbPath));
+  }
+  renderDbViewTabs(ctx);
+  return true;
 }
 
 function _syncDbToolbarFilterButtonIcon() {
@@ -197830,10 +200250,9 @@ function renderDbViewTabs(ctx) {
     tab.className = 'view-tab' + (curIdx === i ? ' active' : '');
     tab.dataset.e2eId = `db-saved-view-${e2eScope}-${i}`;
     tab.style.position = 'relative';
-    const vtDef = VIEW_TYPES.find(vt => vt.mode === (v.viewMode || 'pivot'));
     const labelSpan = document.createElement('span');
     labelSpan.className = 'view-tab-label';
-    labelSpan.innerHTML = (vtDef ? lucide(vtDef.icon, 12) + ' ' : '') + esc(v.name);
+    labelSpan.innerHTML = _dbSavedViewIconHtml(v, 12) + ' ' + esc(v.name);
     tab.appendChild(labelSpan);
     // ホバー時の「...」ボタン
     const moreBtn = document.createElement('span');
@@ -197872,59 +200291,22 @@ function renderDbViewTabs(ctx) {
       addLongPressHandler(tab, (e) => showViewTabMenu(e, i, false, ctx));
     }
 
-    // D&D: タブ順序入れ替え
+    // D&D: タブ順序入れ替え（ドラッグ操作とドロップ位置の表示はタブ列全体で共通部品が受ける）
     tab.draggable = true;
-    tab.addEventListener('dragstart', (e) => {
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/x-view-idx', String(i));
-        e.dataTransfer.setData('text/x-view-db-path', dbPath);
-      }
-      tab.classList.add('dragging');
-    });
-    tab.addEventListener('dragend', () => {
-      tab.classList.remove('dragging');
-      _clearDbViewTabDropIndicator(tabs);
-    });
-    tab.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      _markDbViewTabDropIndicator(tab, e);
-    });
-    tab.addEventListener('dragleave', (e) => {
-      if (e.relatedTarget && tab.contains(e.relatedTarget)) return;
-      tab.classList.remove('drag-over-tab', 'db-view-drop-before', 'db-view-drop-after');
-    });
-    tab.addEventListener('drop', (e) => {
-      e.preventDefault();
-      const side = _dbViewTabDropSide(tab, e);
-      _clearDbViewTabDropIndicator(tabs);
-      const fromIdx = parseInt(e.dataTransfer?.getData('text/x-view-idx'), 10);
-      const fromDbPath = e.dataTransfer?.getData('text/x-view-db-path');
-      if (fromDbPath !== dbPath || isNaN(fromIdx) || fromIdx === i) return;
-      const views2 = getSavedViews(dbPath);
-      if (fromIdx < 0 || fromIdx >= views2.length || i < 0 || i >= views2.length) return;
-      const insertIdx = Math.min(_dbViewDropTargetIndex(fromIdx, i, side), views2.length - 1);
-      if (insertIdx === fromIdx) return;
-      const moved = views2.splice(fromIdx, 1)[0];
-      if (!moved) return;
-      views2.splice(insertIdx, 0, moved);
-      const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-      setSavedViews(dbPath, views2, { skipHistory: true });
-      // currentViewIdxも調整
-      let ci = getCurrentViewIdx(dbPath);
-      if (ci === fromIdx) ci = insertIdx;
-      else if (fromIdx < ci && insertIdx >= ci) ci--;
-      else if (fromIdx > ci && insertIdx <= ci) ci++;
-      setCurrentViewIdx(dbPath, ci, { skipHistory: true });
-      if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
-        pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
-      }
-      renderDbViewTabs(ctx);
-    });
 
     tabs.appendChild(tab);
   });
+
+  // 並べ替えの受け手はタブ列（再描画しても同じ要素）に一度だけ付け、毎回このペインの状態へ差し替える。
+  if (typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.bindReorder === 'function') {
+    MeldexViewTabs.bindReorder(tabs, {
+      itemSelector: ':scope > .view-tab',
+      dataType: 'text/x-view-idx',
+      onMove: (fromIdx, toIdx) => {
+        if (_moveDbSavedView(dbPath, fromIdx, toIdx, ctx)) renderDbViewTabs(ctx);
+      },
+    });
+  }
 
   // + ボタン（ビュータイプ選択ドロップダウン付き）
   const addBtn = document.createElement('button');
@@ -198841,6 +201223,64 @@ function loadSavedView(idx, ctx, options = {}) {
   else renderPivot(ctx);
 }
 
+// ビューごとの列の表示と並び順（2026-11-18「表示列を切替」から改名・作り直し）。
+// 項目を押しても閉じず、並べ替え・複数選択・非表示の列をまとめた欄を持つ。
+function openDbViewColumnManager(idx, ctx, anchorEl) {
+  ctx = ctx || _currentPaneState();
+  const dbPath = ctx.dbPath || state.currentDbPath;
+  const allColumns = () => {
+    const data = ctx.pivotData || state.pivotData || {};
+    const names = [...(data.properties || [])];
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {};
+    Object.keys(types || {}).forEach(name => { if (!names.includes(name)) names.push(name); });
+    const propertyNames = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
+    return ['__entity__', ...propertyNames];
+  };
+  const columnDisplayName = name => name === '__entity__'
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
+    : name;
+  const targetView = () => (getDbViewConfig(dbPath).savedViews || [])[idx] || null;
+  const getItems = () => {
+    const view = targetView();
+    const columns = allColumns();
+    const savedOrder = Array.isArray(view?.colOrder) ? view.colOrder.filter(name => columns.includes(name)) : [];
+    const order = [...new Set([...savedOrder, ...columns])];
+    if (!savedOrder.includes('__entity__')) {
+      order.splice(order.indexOf('__entity__'), 1);
+      order.unshift('__entity__');
+    }
+    const hidden = new Set(view?.hiddenCols || []);
+    return order.map(name => ({ id: name, label: columnDisplayName(name), visible: !hidden.has(name) }));
+  };
+  const anchor = anchorEl
+    || _paneEl(ctx, '.db-view-tabs')?.querySelectorAll('.view-tab')[idx]
+    || _paneEl(ctx, '.db-view-tabs');
+  return window.MeldexColumnManager?.open({
+    anchor,
+    title: '列管理',
+    className: 'db-view-column-manager',
+    e2eId: 'db-view-column-manager',
+    getItems,
+    onChange(items, detail) {
+      const cfg = getDbViewConfig(dbPath);
+      const target = (cfg.savedViews || [])[idx];
+      if (!target) return;
+      const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+      target.hiddenCols = items.filter(item => !item.visible).map(item => item.id);
+      target.colOrder = items.map(item => item.id);
+      saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+      if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+        pushDbViewConfigHistory(dbPath, 'シート表示: 列管理', before, captureDbViewConfigHistory(dbPath), detail || '');
+      }
+      const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+      if (activeIdx === idx) {
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+        else renderPivot(ctx);
+      }
+    },
+  });
+}
+
 function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   closeColHeaderMenu();
   const menu = document.createElement('div');
@@ -198866,22 +201306,6 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const columnDisplayName = name => name === '__entity__'
     ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
     : name;
-
-  const setVisibleColumns = (nextHidden, detail) => {
-    const cfg = getDbViewConfig(dbPath);
-    const views = cfg.savedViews || [];
-    const target = views[idx];
-    if (!target) return;
-    const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-    target.hiddenCols = [...new Set(nextHidden)].filter(name => allColumns.includes(name));
-    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
-    if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
-      pushDbViewConfigHistory(dbPath, 'シート表示: 表示列切替', before, captureDbViewConfigHistory(dbPath), detail || '');
-    }
-    const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
-    if (activeIdx === idx) loadSavedView(idx, ctx, { skipHistory: true });
-    else renderDbViewTabs(ctx);
-  };
 
   const swapViews = (fromIdx, toIdx) => {
     const cfg = getDbViewConfig(dbPath);
@@ -198911,27 +201335,19 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
       }, 0);
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
+    { label: 'アイコンを変更', e2eId: 'db-view-change-icon', action: () => {
+      if (typeof MeldexViewTabs === 'undefined' || typeof MeldexViewTabs.openIconPicker !== 'function') return;
+      const tabs = _paneEl(ctx, '.db-view-tabs');
+      MeldexViewTabs.openIconPicker({
+        anchorEl: targetTab?.isConnected ? targetTab : (tabs?.querySelectorAll('.view-tab')[idx] || null),
+        current: currentView?.icon || '',
+        onChange: spec => setDbSavedViewIcon(idx, spec, ctx),
+      });
+    }},
     { type: 'sep' },
-    {
-      type: 'submenu',
-      label: lucide('columns3', 14) + ' 表示列を切替',
-      children: [
-        { label: 'すべて表示', action: () => setVisibleColumns([], 'すべて表示') },
-        { label: 'すべて非表示', action: () => setVisibleColumns(allColumns, 'すべて非表示') },
-        { type: 'sep' },
-        ...allColumns.map(name => {
-          const hidden = (currentView?.hiddenCols || []).includes(name);
-          return {
-            label: (hidden ? '<span style="display:inline-block;width:14px"></span>' : lucide('check', 14)) + ' ' + columnDisplayName(name),
-            action: () => {
-              const next = new Set(currentView?.hiddenCols || []);
-              if (next.has(name)) next.delete(name); else next.add(name);
-              setVisibleColumns([...next], columnDisplayName(name));
-            },
-          };
-        }),
-      ],
-    },
+    { label: lucide('columns3', 14) + ' 列管理', e2eId: 'db-view-column-manager', action: () => {
+      openDbViewColumnManager(idx, ctx, targetTab?.isConnected ? targetTab : null);
+    }},
     {
       type: 'submenu',
       label: lucide('layoutDashboard', 14) + ' ビュータイプを変更',
@@ -199419,74 +201835,17 @@ function _attachDbCardInlineEditor(host, options) {
 }
 
 function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.gallery-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu gallery-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
-  let showEntryName = cfg.showEntryName !== false;
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
-    ? _dbCardViewDisplayConfig(cfg)
-    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
-  const save = (detail) => {
-    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
-    renderGallery(ctx);
-  };
-  if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-      onToggle(checked) {
-        showEntryName = checked;
-        save('トピック名');
-      },
-    });
-    if (typeof _appendDbCardDisplayControls === 'function') {
-      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-        cardImageThumbCount = next.cardImageThumbCount;
-        cardPropLineCount = next.cardPropLineCount;
-        save(detail);
-      });
-    }
-    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
-    });
-    props.forEach(prop => {
-      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-        canMoveUp: ordered.indexOf(prop) > 0,
-        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-        onToggle(checked) {
-          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-          save(prop);
-        },
-        onMove(delta) {
-          const idx = ordered.indexOf(prop);
-          const nextIdx = idx + delta;
-          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-          save(prop);
-        },
-      });
-    });
-  }
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'gallery-card-props-menu-close',
-      attr: 'data-gallery-card-props-close',
-    });
-  }
-  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
-  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: cfg.showEntryName !== false },
+    props,
+    defaultCardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : (props || []).slice(0, 4),
+    className: 'gallery-card-props-menu',
+    e2eId: 'gallery-card-props-manager',
+    save(next, detail) {
+      _setGalleryDisplayProps(dbPath, { ...cfg, ...next }, { ctx, detail });
+      renderGallery(ctx);
+    },
+  });
 }
 
 function _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx) {
@@ -199608,9 +201967,6 @@ function renderGallery(ctx) {
       card.appendChild(title);
     }
 
-    // プロパティ一覧（先頭4件）
-    const propsDiv = document.createElement('div');
-    propsDiv.className = 'gallery-card-props';
     let shown = 0;
     const cardPropNames = Array.isArray(galleryCfg.cardProps)
       ? galleryCfg.cardProps.filter(propName => visibleProps.includes(propName))
@@ -199619,11 +201975,52 @@ function renderGallery(ctx) {
     // 補完（フィルタリングされていない全画像型列の走査・拡張子推測によるフォールバック）は行わない。
     // 有効な画像型列が複数ある場合は、列の表示順に、各列のサムネ数（cardImageThumbCount）まで
     // 個別に並べる（総数の上限は「サムネ数×有効な画像型列数」）。
-    const selectedImageCols = cardPropNames.filter(propName => propTypes[propName]?.type === 'image');
+    // 「表示列」の並び順どおりにカードへ積む（2026-11-18）。以前は画像の列を必ず先頭へ
+    // まとめていたため、設定した順番と表示がずれていた。画像以外の列が続く間は1つの枠に入れる。
+    let hasContentImage = false;
+    let propsDiv = null;
+    const currentPropsDiv = () => {
+      if (!propsDiv) {
+        propsDiv = document.createElement('div');
+        propsDiv.className = 'gallery-card-props';
+        card.appendChild(propsDiv);
+      }
+      return propsDiv;
+    };
+    const appendImageColumn = (propName) => {
+      propsDiv = null;
+      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+      const imageItems = _dbCardImageItemsFromValues(vals);
+      if (!imageItems.length) {
+        if (galleryCfg.showBodyExcerpt === true) return;
+        const empty = document.createElement('span');
+        empty.className = 'gallery-card-image-preview';
+        empty.textContent = '画像を追加';
+        _attachDbCardInlineEditor(empty, {
+          dbPath, entityName, propName, propertyConfig: propTypes[propName] || {},
+          values: entityData[propName] || [], entityData, ctx,
+        });
+        card.appendChild(empty);
+        return;
+      }
+      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
+        className: 'gallery-card-image-preview',
+        entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
+        thumbCount: galleryCfg.cardImageThumbCount,
+        columns: Math.min(2, galleryCfg.cardImageThumbCount),
+        propName,
+      }) || hasContentImage;
+    };
+    // 本文冒頭は画像が1枚も無い時だけ、トピック名の直後に出す（カンバンと同じ位置）。
+    const hasAnyImage = cardPropNames.some(propName => propTypes[propName]?.type === 'image'
+      && _dbCardImageItemsFromValues(filterValues(entityData[propName] || [], undefined, ctx?.filter)).length);
+    if (galleryCfg.showBodyExcerpt === true && !hasAnyImage) {
+      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
+    }
     for (const propName of cardPropNames) {
       // sourceプロパティ: メタデータから表示
       const ptcG = propTypes[propName];
-      if (ptcG?.type === 'image') continue; // 画像はループの外でまとめて表示する
+      if (ptcG?.type === 'image') { appendImageColumn(propName); continue; }
       let displayVal = '';
       const metadataSource = typeof _dbPropertyMetadataSource === 'function'
         ? _dbPropertyMetadataSource(ptcG)
@@ -199662,39 +202059,10 @@ function renderGallery(ctx) {
         dbPath, entityName, propName, propertyConfig: ptcG, values: entityData[propName] || [],
         entityData, ctx, readOnly: !!metadataSource,
       });
-      propsDiv.appendChild(propRow);
+      currentPropsDiv().appendChild(propRow);
       shown++;
     }
-    // 有効な画像型列が無ければ画像領域は表示しない。列の表示順（cardPropNames の順序）で、
-    // 各列ごとに独立したサムネブロックを追加する（列ごとに cardImageThumbCount 枚まで）。
-    let hasContentImage = false;
-    selectedImageCols.forEach(propName => {
-      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
-      const imageItems = _dbCardImageItemsFromValues(vals);
-      if (!imageItems.length) {
-        if (galleryCfg.showBodyExcerpt === true) return;
-        const empty = document.createElement('span');
-        empty.className = 'gallery-card-image-preview';
-        empty.textContent = '画像を追加';
-        _attachDbCardInlineEditor(empty, {
-          dbPath, entityName, propName, propertyConfig: propTypes[propName] || {},
-          values: entityData[propName] || [], entityData, ctx,
-        });
-        card.appendChild(empty);
-        return;
-      }
-      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
-        className: 'gallery-card-image-preview',
-        entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
-        thumbCount: galleryCfg.cardImageThumbCount,
-        columns: Math.min(2, galleryCfg.cardImageThumbCount),
-        propName,
-      }) || hasContentImage;
-    });
-    if (galleryCfg.showBodyExcerpt === true && !hasContentImage) {
-      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
-    }
-    card.appendChild(propsDiv);
+    void hasContentImage;
 
     // リレーション表示
     const allRelations = [];
@@ -199836,74 +202204,17 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
 }
 
 function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.kanban-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu kanban-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
-  let showEntryName = cfg.showEntryName !== false;
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
-    ? _dbCardViewDisplayConfig(cfg)
-    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
-  const save = (detail) => {
-    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
-    renderKanban(ctx);
-  };
-  if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-      onToggle(checked) {
-        showEntryName = checked;
-        save('トピック名');
-      },
-    });
-    if (typeof _appendDbCardDisplayControls === 'function') {
-      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-        cardImageThumbCount = next.cardImageThumbCount;
-        cardPropLineCount = next.cardPropLineCount;
-        save(detail);
-      });
-    }
-    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
-    });
-    props.forEach(prop => {
-      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-        canMoveUp: ordered.indexOf(prop) > 0,
-        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-        onToggle(checked) {
-          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-          save(prop);
-        },
-        onMove(delta) {
-          const idx = ordered.indexOf(prop);
-          const nextIdx = idx + delta;
-          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-          save(prop);
-        },
-      });
-    });
-  }
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'kanban-card-props-menu-close',
-      attr: 'data-kanban-card-props-close',
-    });
-  }
-  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
-  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: cfg.showEntryName !== false },
+    props,
+    defaultCardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : _kanbanDefaultCardProps(props, cfg.groupBy),
+    className: 'kanban-card-props-menu',
+    e2eId: 'kanban-card-props-manager',
+    save(next, detail) {
+      _setKanbanDisplayProps(dbPath, { ...cfg, ...next }, { ctx, detail });
+      renderKanban(ctx);
+    },
+  });
 }
 
 function _buildKanbanToolbar(dbPath, groupByProp, visibleProps, kanbanCfg, activeCardProps, ctx) {
@@ -200045,12 +202356,16 @@ function renderKanban(ctx) {
     } else if (typeof createDbOptionColorDot === 'function' && typeof getDbOptionColor === 'function') {
       const groupPtc = propTypes[groupByProp];
       if (groupPtc && (groupPtc.type === 'select' || groupPtc.type === 'multi-select')) {
-        optionHeaderColor = getDbOptionColor(groupPtc, colKey);
+        // セル・チップと同じ解決順（書式の背景色 → 選択肢の色）。以前は選択肢の色だけを見ており、
+        // 書式で背景色を付けた選択肢のグループが無色になっていた。
+        optionHeaderColor = (typeof getDbOptionStyle === 'function' ? getDbOptionStyle(groupPtc, colKey)?.bgColor : '')
+          || getDbOptionColor(groupPtc, colKey);
         const optionDot = createDbOptionColorDot(optionHeaderColor);
         if (optionDot) { optionDot.classList.add('kanban-dot'); colHeader.appendChild(optionDot); }
       }
     }
     if (typeof applyDbOptionHeaderColor === 'function') applyDbOptionHeaderColor(colHeader, optionHeaderColor);
+    if (typeof applyDbOptionKanbanColumnColor === 'function') applyDbOptionKanbanColumnColor(col, optionHeaderColor);
     const colTitle = document.createElement('span');
     colTitle.textContent = colKey;
     colHeader.appendChild(colTitle);
@@ -200270,6 +202585,22 @@ function renderKanban(ctx) {
   container.appendChild(toolbar);
   container.appendChild(board);
 }
+
+
+// 表・カンバン・ギャラリーの描画1回の間、表示設定の読み取りを使い回す（gb-sheet-view-config.js）。
+(function wrapDbRenderersWithViewConfigMemo() {
+  if (typeof _withDbViewConfigReadMemo !== 'function') return;
+  ['renderPivot', 'renderKanban', 'renderGallery', '_renderCurrentDbView', 'loadSavedView'].forEach((name) => {
+    const inner = globalThis[name];
+    if (typeof inner !== 'function' || inner.__meldexViewConfigMemo) return;
+    const wrapped = function (...args) {
+      return _withDbViewConfigReadMemo(() => inner.apply(this, args));
+    };
+    wrapped.__meldexViewConfigMemo = true;
+    wrapped.__meldexInner = inner;
+    globalThis[name] = wrapped;
+  });
+})();
 
 /* ==============================
    タイムラインビュー
@@ -209235,6 +211566,15 @@ function _dbActionFocusTrigger(triggerEl) {
 async function _renderEntityActions(data, entityPath) {
   const container = document.getElementById('entity-freetext');
   if (!container) return;
+  // トピック詳細（MeldexEntityDetail）では本文がタブの中にあり、本文タブ以外を表示中は隠れる。
+  // アクションは本文の表示状態に関係なく使えるよう、本文を含むタブ区画の直前（詳細の直下）に置く。
+  const detailRoot = container.closest('[data-meldex-entity-detail]');
+  let insertBeforeEl = container;
+  if (detailRoot && container.parentElement !== detailRoot) {
+    while (insertBeforeEl.parentElement && insertBeforeEl.parentElement !== detailRoot) insertBeforeEl = insertBeforeEl.parentElement;
+  }
+  const barHost = insertBeforeEl.parentElement;
+  barHost.querySelector(':scope > .db-action-bar')?.remove();
   container.parentElement.querySelector('.db-action-bar')?.remove();
 
   const dbPath = _dbActionBaseDbPath(entityPath);
@@ -209242,8 +211582,8 @@ async function _renderEntityActions(data, entityPath) {
   if (state.currentEntityPath && state.currentEntityPath !== entityPath) return;
   if (!meta || !meta.actions || meta.actions.length === 0) return;
 
-  let bar = container.parentElement.querySelector('.db-action-bar');
-  bar = document.createElement('div');
+  barHost.querySelector(':scope > .db-action-bar')?.remove();
+  const bar = document.createElement('div');
   bar.className = 'db-action-bar';
   bar.style.cssText = 'padding:8px 0;display:flex;gap:8px;flex-wrap:wrap;';
 
@@ -209263,7 +211603,8 @@ async function _renderEntityActions(data, entityPath) {
     bar.appendChild(btn);
   });
 
-  container.parentElement.insertBefore(bar, container);
+  if (!insertBeforeEl.isConnected || insertBeforeEl.parentElement !== barHost) return;
+  barHost.insertBefore(bar, insertBeforeEl);
 }
 
 // === アクションモーダル表示 ===
@@ -211243,8 +213584,29 @@ window.applyChatCustomInstructionsFromForm = applyChatCustomInstructionsFromForm
       <div data-sk-alert aria-live="polite"></div>
       <div data-sk-list data-e2e-id="skills-list"><div class="gb-section-desc">読み込み中...</div></div>
     `;
-    root.querySelector('[data-sk-create]')?.addEventListener('click', () => openCreateForm());
+    const createButton = root.querySelector('[data-sk-create]');
+    createButton?.addEventListener('click', () => openCreateForm());
+    appendConsultButton(createButton);
     loadSkillsList(root);
+  }
+
+  // 「チャットで相談して作成」: チャットの入力欄へ定型の依頼文を入れ、AIと相談しながらスキルを作る。
+  function appendConsultButton(createButton) {
+    if (!createButton?.parentNode || !window.GBChatSkillPicker?.startConsultation) return;
+    const group = document.createElement('div');
+    group.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;';
+    const consult = document.createElement('button');
+    consult.type = 'button';
+    consult.className = 'gb-btn gb-btn-sm';
+    consult.dataset.skConsult = '';
+    consult.dataset.e2eId = 'skills-consult';
+    consult.setAttribute('data-gb-tooltip', 'チャットの入力欄に依頼文を入れます。AIが質問しながら案を作り、合意してから保存します');
+    consult.textContent = 'チャットで相談して作成';
+    consult.addEventListener('click', () => {
+      if (!window.GBChatSkillPicker.startConsultation()) showStatus('AIチャットの入力欄を開けませんでした', true);
+    });
+    createButton.parentNode.insertBefore(group, createButton);
+    group.append(consult, createButton);
   }
 
   async function loadSkillsList(root) {
@@ -211450,6 +213812,7 @@ window.applyChatCustomInstructionsFromForm = applyChatCustomInstructionsFromForm
         showStatus(res.error, true);
       } else {
         showStatus(form.mode === 'edit' ? 'スキルを更新しました' : 'スキルを作成しました');
+        window.GBChatSkillPicker?.invalidate?.();
         state.view = 'list';
         state.form = null;
         renderRoot();
@@ -211481,6 +213844,7 @@ window.applyChatCustomInstructionsFromForm = applyChatCustomInstructionsFromForm
         return;
       }
       showStatus('スキルを削除しました');
+      window.GBChatSkillPicker?.invalidate?.();
     } catch {
       return; // apiFetch が失敗理由のトーストを既に表示している
     }
@@ -211499,7 +213863,324 @@ window.applyChatCustomInstructionsFromForm = applyChatCustomInstructionsFromForm
   }
 
   window.ensureChatSkillsSheet = ensureChatSkillsSheet;
-  window.GBChatSkills = { open: ensureChatSkillsSheet };
+  window.GBChatSkills = { open: ensureChatSkillsSheet, close: closeSkillsModal };
+})();
+
+;
+
+/* === gb-chat-skill-picker.js === */
+;
+/* gb-chat-skill-picker.js
+ * AIチャット入力欄の「＋」メニュー（ファイル添付・スキルの選択と実行・スキル管理）。
+ * 選んだスキルは入力欄の上に「使用スキル」チップで表示し、送信した発言へ
+ * skills: [名前] と本文先頭の「【スキル: 名前】」目印を付けて送る。
+ * サーバー側（meldex_skills.explicit_skill_names_from_messages）が目印を読み、
+ * スキル本文を今回の依頼へ必ず適用する指示として注入する（通常チャット・CLIチャット共通）。
+ * 入力欄で「/スキル名 追加の指示」と書いて送信しても同じスキルを使える。
+ */
+(function () {
+  'use strict';
+
+  const MARKER_PREFIX = '【スキル: ';
+  const MARKER_SUFFIX = '】';
+  const MARKER_RE = /^\s*【スキル[:：]\s*(.+?)\s*】\s*$/;
+  const DEFAULT_RUN_TEXT = 'このスキルを実行してください。';
+  const CACHE_TTL_MS = 30000;
+  const CONSULT_TEXT = '新しいスキルを作りたいです。目的と使う場面を伝えるので、必要なことを質問しながら、名前・説明・トリガー・本文の案を作ってください。合意してから保存してください。\n\n目的: ';
+
+  const state = {
+    selected: null, // { name, description }
+    cache: { sourceFolder: '', items: [], loadedAt: 0, pending: null },
+  };
+
+  function sourceFolder() {
+    return typeof _chatSourceFolderValue === 'function' ? String(_chatSourceFolderValue() || '') : '';
+  }
+
+  // Cloud版（PWA/Dropbox/ブラウザ保存）にはスキルの保存先APIが無いため、スキル関連の項目を無効にする。
+  function skillsAvailable() {
+    const runtime = window.MeldexRuntimeAdapter;
+    if (runtime?.isPwaMode?.()) return false;
+    return !['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
+  }
+
+  function markerFor(name) {
+    return MARKER_PREFIX + String(name || '').trim() + MARKER_SUFFIX;
+  }
+
+  // 本文先頭の「【スキル: 名前】」行を取り除いた残りと、そこに書かれていた名前を返す。
+  function splitMarkers(text) {
+    const lines = String(text || '').split('\n');
+    const names = [];
+    while (lines.length) {
+      const match = MARKER_RE.exec(lines[0]);
+      if (!match) break;
+      names.push(match[1]);
+      lines.shift();
+    }
+    return { names, rest: lines.join('\n').trim() };
+  }
+
+  async function loadSkills(options = {}) {
+    if (!skillsAvailable()) return [];
+    const folder = sourceFolder();
+    if (!folder) return [];
+    const cache = state.cache;
+    const fresh = cache.sourceFolder === folder && Date.now() - cache.loadedAt < CACHE_TTL_MS;
+    if (fresh && !options.force) return cache.items;
+    if (cache.pending && cache.sourceFolder === folder) return cache.pending;
+    cache.sourceFolder = folder;
+    cache.pending = (async () => {
+      try {
+        const res = await apiFetch('/skills?source_folder=' + encodeURIComponent(folder));
+        if (cache.sourceFolder !== folder) return [];
+        cache.items = Array.isArray(res?.skills) ? res.skills : [];
+        cache.loadedAt = Date.now();
+        return cache.items;
+      } finally {
+        cache.pending = null;
+      }
+    })();
+    return cache.pending;
+  }
+
+  function cachedSkills() {
+    return state.cache.sourceFolder === sourceFolder() ? state.cache.items : [];
+  }
+
+  /* ---------- 入力欄上の「使用スキル」チップ ---------- */
+
+  function ensureBar() {
+    let bar = document.getElementById('chat-skill-bar');
+    if (bar) return bar;
+    const anchor = document.getElementById('chat-attachments-bar');
+    if (!anchor?.parentNode) return null;
+    bar = document.createElement('div');
+    bar.id = 'chat-skill-bar';
+    bar.dataset.e2eId = 'chat-skill-bar';
+    bar.style.cssText = 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;font-size:11px;';
+    anchor.parentNode.insertBefore(bar, anchor);
+    return bar;
+  }
+
+  function renderChip() {
+    const bar = ensureBar();
+    if (!bar) return;
+    bar.replaceChildren();
+    const skill = state.selected;
+    if (!skill) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = 'flex';
+    const chip = document.createElement('span');
+    chip.className = 'gb-tag-chip';
+    chip.dataset.e2eId = 'chat-skill-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;max-width:100%;';
+    const label = document.createElement('span');
+    label.textContent = '使用スキル: ' + skill.name;
+    label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px;';
+    if (skill.description) label.setAttribute('data-gb-tooltip', skill.description);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.dataset.e2eId = 'chat-skill-chip-clear';
+    close.setAttribute('aria-label', 'スキルの選択を解除');
+    close.setAttribute('data-gb-tooltip', 'スキルの選択を解除');
+    close.style.cssText = 'background:transparent;color:var(--fg2);border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;';
+    close.addEventListener('click', () => clearSelection());
+    chip.append(label, close);
+    bar.appendChild(chip);
+  }
+
+  function select(skill) {
+    const name = String(skill?.name || '').trim();
+    if (!name) return;
+    state.selected = { name, description: String(skill.description || '') };
+    renderChip();
+    if (!window.GBChatFormatting?.focusInput?.()) document.getElementById('chat-input')?.focus?.();
+  }
+
+  function clearSelection() {
+    state.selected = null;
+    renderChip();
+  }
+
+  /* ---------- 送信時の変換 ---------- */
+
+  // 送信前に呼ぶ。スキルが関係しない送信なら null を返す（送信内容は変えない）。
+  // 関係する場合は、目印付きの本文と skills を返す。選択の解除は commitSend で行う。
+  function prepareSend(rawText) {
+    const raw = String(rawText || '').trim();
+    let name = state.selected?.name || '';
+    let rest = raw;
+    if (name) {
+      const parsed = splitMarkers(raw);
+      if (parsed.names.some(item => item.toLowerCase() === name.toLowerCase())) rest = parsed.rest;
+    } else if (raw.startsWith('/')) {
+      // 「/スキル名 追加の指示」。長い名前から照合し、名前の直後は空白・改行・末尾に限る。
+      const names = cachedSkills().map(item => String(item?.name || '')).filter(Boolean)
+        .sort((a, b) => b.length - a.length);
+      const lower = raw.toLowerCase();
+      const hit = names.find(item => {
+        const head = '/' + item.toLowerCase();
+        return lower.startsWith(head) && (lower.length === head.length || /\s/.test(lower[head.length]));
+      });
+      if (!hit) return null;
+      name = hit;
+      rest = raw.slice(hit.length + 1).trim();
+    } else {
+      return null;
+    }
+    return { text: markerFor(name) + '\n' + (rest || DEFAULT_RUN_TEXT), skills: [name] };
+  }
+
+  function commitSend() {
+    clearSelection();
+  }
+
+  function onInput(event) {
+    const value = String(event?.target?.value || '');
+    if (value.startsWith('/') && skillsAvailable()) loadSkills().catch(() => {});
+  }
+
+  /* ---------- 「＋」メニュー ---------- */
+
+  function anchorRect(anchor) {
+    const rect = anchor?.getBoundingClientRect?.();
+    return rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+  }
+
+  function openManage() {
+    if (window.GBChatSkills?.open) window.GBChatSkills.open();
+    else if (typeof showStatus === 'function') showStatus('スキル管理を読み込み中です。少し待ってから開き直してください。', true);
+  }
+
+  function startConsultation() {
+    const input = document.getElementById('chat-input');
+    window.GBChatSkills?.close?.();
+    if (!input) return false;
+    // スキル管理画面から呼ばれてチャット入力欄が見えていない時だけ、右サイドバーのチャットを開く。
+    if (!input.offsetParent && typeof window.openRightPanelTab === 'function') {
+      try { window.openRightPanelTab('chat'); } catch {}
+    }
+    input.value = CONSULT_TEXT;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+    if (!window.GBChatFormatting?.focusInput?.()) input.focus();
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+    return true;
+  }
+
+  function setItemTooltips(menu, tooltips) {
+    if (!menu) return;
+    Object.entries(tooltips).forEach(([e2eId, text]) => {
+      const el = menu.querySelector(`[data-e2e-id="${e2eId}"]`);
+      if (!el || !text) return;
+      el.setAttribute('data-gb-tooltip', text);
+      el.setAttribute('aria-description', text);
+    });
+  }
+
+  function openComposerMenu(event) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    const anchor = event?.target?.closest?.('button') || event?.currentTarget || document.querySelector('[data-chat-composer-plus]');
+    const rect = anchorRect(anchor);
+    const available = skillsAvailable();
+    const unavailable = 'Cloud版ではスキルを使えません';
+    const menu = window.MeldexContextMenuUI?.openAt?.({
+      ariaLabel: '追加メニュー',
+      e2eId: 'chat-composer-plus-menu',
+      anchorRect: rect,
+      restoreFocus: anchor,
+      items: [
+        { label: 'ファイルを添付', icon: 'paperclip', e2eId: 'chat-plus-attach', action: () => chatAttachmentPick() },
+        { type: 'separator' },
+        { label: 'スキルを使う…', icon: 'puzzle', e2eId: 'chat-plus-skill', disabled: !available, action: () => openSkillList(anchor) },
+        { label: 'チャットで相談してスキルを作る', icon: 'messageSquare', e2eId: 'chat-plus-skill-consult', disabled: !available, action: () => startConsultation() },
+        { label: 'スキルを管理…', icon: 'settings', e2eId: 'chat-plus-skill-manage', disabled: !available, action: () => openManage() },
+      ],
+    });
+    if (!menu) {
+      chatAttachmentPick();
+      return null;
+    }
+    setItemTooltips(menu, {
+      'chat-plus-attach': '画像やPDFを添付します',
+      'chat-plus-skill': available ? '選んだスキルを次の送信で必ず使います。入力欄で「/スキル名」と書いても使えます' : unavailable,
+      'chat-plus-skill-consult': available ? 'AIと相談しながら新しいスキルを作ります' : unavailable,
+      'chat-plus-skill-manage': available ? 'スキルの一覧・作成・編集・削除' : unavailable,
+    });
+    return menu;
+  }
+
+  async function openSkillList(anchor) {
+    if (!skillsAvailable()) return null;
+    if (!sourceFolder()) {
+      if (typeof showStatus === 'function') showStatus('フォルダツリーで対象フォルダを選択すると、そのフォルダのスキルを使えます', true);
+      return null;
+    }
+    let skills;
+    try {
+      skills = await loadSkills({ force: true });
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus('スキルを読み込めませんでした: ' + (error?.message || error), true);
+      return null;
+    }
+    const selectedName = state.selected?.name || '';
+    const tooltips = {};
+    const items = skills.map((skill, index) => {
+      const e2eId = 'chat-skill-option-' + index;
+      const triggers = Array.isArray(skill.triggers) ? skill.triggers.join('、') : String(skill.triggers || '');
+      tooltips[e2eId] = [skill.description, triggers ? 'トリガー: ' + triggers : ''].filter(Boolean).join('\n');
+      return {
+        label: skill.name,
+        icon: skill.name === selectedName ? 'check' : 'puzzle',
+        e2eId,
+        action: () => select(skill),
+      };
+    });
+    if (!items.length) items.push({ label: 'スキルはまだありません', disabled: true, e2eId: 'chat-skill-option-empty' });
+    items.push({ type: 'separator' });
+    if (selectedName) items.push({ label: 'スキルの選択を解除', icon: 'x', e2eId: 'chat-skill-option-clear', action: () => clearSelection() });
+    items.push({ label: 'チャットで相談してスキルを作る', icon: 'messageSquare', e2eId: 'chat-skill-option-consult', action: () => startConsultation() });
+    items.push({ label: 'スキルを管理…', icon: 'settings', e2eId: 'chat-skill-option-manage', action: () => openManage() });
+    const menu = window.MeldexContextMenuUI?.openAt?.({
+      ariaLabel: 'スキルを選択',
+      e2eId: 'chat-skill-list-menu',
+      anchorRect: anchorRect(anchor),
+      restoreFocus: anchor,
+      items,
+    });
+    setItemTooltips(menu, tooltips);
+    return menu;
+  }
+
+  function bindInput() {
+    const input = document.getElementById('chat-input');
+    if (!input || input.dataset.skillPickerBound === '1') return;
+    input.dataset.skillPickerBound = '1';
+    input.addEventListener('input', onInput);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindInput, { once: true });
+  else bindInput();
+
+  window.chatComposerPlusMenu = openComposerMenu;
+  window.GBChatSkillPicker = Object.freeze({
+    openComposerMenu,
+    openSkillList,
+    select,
+    clearSelection,
+    selected: () => (state.selected ? { ...state.selected } : null),
+    prepareSend,
+    commitSend,
+    startConsultation,
+    skillsAvailable,
+    markerFor,
+    splitMarkers,
+    invalidate: () => { state.cache.loadedAt = 0; },
+  });
 })();
 
 ;
@@ -217636,6 +220317,14 @@ function _commentGroupKey(c) {
     const key = `calendar_event:${ref.file || ''}:${ref.eventId || ''}`;
     return { key, label: `${orphanPrefix}イベント · ${file}` + (snap ? ` · "${snap}"` : '') };
   }
+  if (kind === 'map_feature') {
+    const key = `map_feature:${ref.file || ''}:${ref.featureId || ''}`;
+    return { key, label: `${orphanPrefix}地点・図形 · ${file}` + (snap ? ` · "${snap}"` : '') };
+  }
+  if (kind === 'form_field') {
+    const key = `form_field:${ref.file || ''}:${ref.field || ''}`;
+    return { key, label: `${orphanPrefix}フォームの項目 · ${file}` + (snap ? ` · "${snap}"` : '') };
+  }
   if (kind === 'text_range') {
     const cont = ref.container || null;
     const cKey = cont ? `${cont.kind}:${cont.id || cont.entryId || ''}:${cont.colId || ''}` : 'doc';
@@ -217654,6 +220343,7 @@ function _kindLabel(kind) {
     board_card: 'カード', sheet_cell: 'セル', text_range: '選択範囲',
     board_line: 'ライン',
     calendar_event: 'イベント',
+    map_feature: '地点・図形', form_field: 'フォームの項目',
   })[kind] || kind;
 }
 
@@ -217839,6 +220529,8 @@ function _rpCommentNavType(c, file) {
   if (/\.board\.md$/i.test(file)) return 'board';
   if (/\.(?:scriptnote|scenario)\.json$/i.test(file)) return 'scriptnote';
   if (/\.calendar\.json$/i.test(file)) return 'calendar';
+  if (kind === 'map_feature' || /\.mel-map$/i.test(file)) return 'map';
+  if (kind === 'form_field' || /\.mel-form$/i.test(file)) return 'form-app';
   return 'page';
 }
 
@@ -217859,6 +220551,10 @@ function _jumpToCommentTarget(c) {
     const label = file.split(/[\\/]/).pop() || file;
     const type = _rpCommentNavType(c, file);
     try { navOpen({ type, label, path: file }); } catch {}
+  }
+  if (c?.target_kind === 'map_feature' || c?.target_kind === 'form_field') {
+    _jumpToMapOrFormTarget(c.target_kind, file, ref);
+    return;
   }
   setTimeout(() => {
     let target = null;
@@ -217890,6 +220586,23 @@ function _jumpToCommentTarget(c) {
     if (!target) return;
     _flashRpCommentTarget(target);
   }, 350);
+}
+
+// マップの地点・図形、フォームの項目へ移動する。開いた直後は読込が終わっていないため、出るまで少し待つ。
+function _jumpToMapOrFormTarget(kind, file, ref, attempt = 0) {
+  const selector = kind === 'map_feature' ? '.gb-map-app' : '.gb-form-app';
+  const key = kind === 'map_feature' ? '_gbMapApp' : '_gbFormApp';
+  const app = [...document.querySelectorAll(selector)].map(el => el[key]).find(item => item?.path === file && item.el?.isConnected);
+  if (app?.revealAnnotationTarget?.(ref)) {
+    const target = kind === 'map_feature'
+      ? app.placeList?.querySelector?.(`[data-map-feature-id="${_rpEscSel(ref.featureId || '')}"]`)
+      : app.surface?.querySelector?.(`[data-form-field="${_rpEscSel(ref.field || '')}"]`);
+    if (target) _flashRpCommentTarget(target);
+    return true;
+  }
+  if (attempt < 20) setTimeout(() => _jumpToMapOrFormTarget(kind, file, ref, attempt + 1), 150);
+  else if (typeof showStatus === 'function') showStatus(kind === 'map_feature' ? '地点・図形が見つかりません（削除された可能性があります）' : 'フォームの項目が見つかりません（配置から外された可能性があります）', true);
+  return false;
 }
 
 // 新規コメント作成: selection / shortcut / context menu と同じcomposerへ集約する。
@@ -220451,10 +223164,21 @@ function getProviderIconHtml(provider, size = 16) {
   return `<span class="chat-provider-icon" style="display:inline-flex;align-items:center;justify-content:center;width:${box}px;height:${box}px;border-radius:50%;background:${bg};color:${color};border:1px solid ${border};box-sizing:border-box;flex:0 0 auto;" title="${esc(meta.label)}" aria-label="${esc(meta.label)}">${lucide('bot', size)}</span>`;
 }
 
-function getProviderLabel(provider, model) {
-  if (model) return model;
+function getProviderLabel(provider, model, reasoningLevel = '') {
   const meta = CHAT_PROVIDER_META[_chatProviderKey(provider)];
-  return meta ? meta.label : (provider || 'LLM');
+  const base = model || (meta ? meta.label : (provider || 'LLM'));
+  if (!reasoningLevel || typeof _chatReasoningLevelLabel !== 'function') return base;
+  const depth = _chatReasoningLevelLabel(_chatProviderKey(provider), model, reasoningLevel);
+  return depth ? base + ' · 思考: ' + depth : base;
+}
+
+// 返信へ残す思考の深さ。指定できないプロバイダ・モデルでは記録しない（旧記録と同じくモデル名だけを出す）。
+function _chatReasoningRecordLevel(provider, model, generation) {
+  const key = _chatProviderKey(provider);
+  if (typeof _chatGenerationReasoningSupported === 'function' && !_chatGenerationReasoningSupported(key)) return '';
+  if (typeof _chatReasoningLevelOptions === 'function' && _chatReasoningLevelOptions(key, model).length <= 1) return '';
+  const level = _chatNormalizeReasoningLevel(generation?.reasoning_level);
+  return level || '';
 }
 
 function chatAllowWebSearch() {
@@ -220877,6 +223601,7 @@ function _renderChatModelOptions(models, options = {}) {
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
   }
   if (!options.skipRoomPersist) _chatSaveCurrentRoomModelSettings();
+  if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
 }
 
 // プロバイダ変更時にモデル一覧を更新
@@ -220920,6 +223645,7 @@ function updateChatModels(options = {}) {
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
     _chatState.pendingModel = '';
     _chatSaveCurrentRoomModelSettings();
+    if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
   };
 })();
 
@@ -223257,7 +225983,12 @@ async function _initChatSourceFolderSelector() {
   } catch {
     _chatVaultsCache = [];
   }
-  try { _chatSourceFoldersCache = await apiFetch('/outliner-roots', { silentError: true }); } catch { _chatSourceFoldersCache = []; }
+  try {
+    const rootsPayload = await apiFetch('/outliner-roots', { silentError: true });
+    _chatSourceFoldersCache = Array.isArray(rootsPayload) ? rootsPayload : [];
+  } catch {
+    _chatSourceFoldersCache = [];
+  }
   try {
     const workspacesPayload = await apiFetch('/workspaces', { silentError: true });
     _chatWorkspacesCache = Array.isArray(workspacesPayload?.workspaces) ? workspacesPayload.workspaces : [];
@@ -223765,7 +226496,7 @@ function chatAddMessage(role, content, options = {}) {
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
   const model = options?.model || _chatState.model;
-  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model));
+  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model, options?.reasoning_level || ''));
   const icon = isControl ? (typeof lucide === 'function' ? lucide('workflow', 16) : '') : (isUser ? getUserAvatarHtml(getUsername(), 18) : getProviderIconHtml(provider, 18));
 
   // ラッパー（名前+アイコン+バブル）
@@ -224616,7 +227347,8 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   }
   const input = document.getElementById('chat-input');
   const attachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
-  const text = String(input?.value || '').trim();
+  const skillSend = window.GBChatSkillPicker?.prepareSend?.(String(input?.value || '').trim()) || null;
+  const text = skillSend ? skillSend.text : String(input?.value || '').trim();
   if (!text && attachments.length === 0) return false;
   if (attachments.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
     if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
@@ -224649,6 +227381,10 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const scope = _chatCurrentQueueScope();
   const queuedDraft = _chatBuildQueuedDraft(text, attachments, scope);
   const message = queuedDraft.message;
+  if (skillSend) {
+    message.skills = skillSend.skills.slice();
+    window.GBChatSkillPicker?.commitSend?.();
+  }
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
   const insertion = Number.isInteger(queuedDraft.index)
@@ -224902,7 +227638,9 @@ async function chatSend(options = {}) {
   }
   let _pendingAtts = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
   if (!usingDeferredMessages && !input) return false;
-  const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : input.value.trim();
+  // ＋メニューで選んだスキル（または「/スキル名」）を、目印付きの本文と skills にする。
+  const skillSend = usingDeferredMessages ? null : (window.GBChatSkillPicker?.prepareSend?.(input.value.trim()) || null);
+  const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : (skillSend ? skillSend.text : input.value.trim());
   if (!usingDeferredMessages && !text && _pendingAtts.length === 0) {
     if (_chatQueuedMessages().length) return _chatSendQueuedMessagesAfterStream();
     return;
@@ -225073,6 +227811,10 @@ async function chatSend(options = {}) {
     }
     const userTimestamp = _chatLocalTimestamp();
     const userMessage = { role: 'user', content: _userContent, timestamp: userTimestamp };
+    if (skillSend) {
+      userMessage.skills = skillSend.skills.slice();
+      window.GBChatSkillPicker?.commitSend?.();
+    }
     _ensureChatMessageId(userMessage);
     chatAddMessage('user', _userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
     _chatState.messages.push(userMessage);
@@ -225087,6 +227829,10 @@ async function chatSend(options = {}) {
     || (_chatProviderKey(streamProvider) === _chatProviderKey(_chatState.provider)
       ? _chatState.model
       : (localStorage.getItem('chat-model:' + _chatProviderKey(streamProvider)) || _chatDefaultModel(streamProvider)));
+  // 送信時点の生成設定を固定し、返信の発言者名へ使った思考の深さを残す。
+  const streamGeneration = options.generationSettings || chatGenerationSettings(streamProvider, streamModel);
+  const streamReasoningLevel = _chatReasoningRecordLevel(streamProvider, streamModel, streamGeneration);
+  const streamReasoningRecord = streamReasoningLevel ? { reasoning_level: streamReasoningLevel } : {};
   const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
   const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
   const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
@@ -225126,7 +227872,7 @@ async function chatSend(options = {}) {
   spinnerWrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;align-self:flex-start;';
   const spinnerHeader = document.createElement('div');
   spinnerHeader.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
-  const modelName = getProviderLabel(streamProvider, streamModel);
+  const modelName = getProviderLabel(streamProvider, streamModel, streamReasoningLevel);
   spinnerHeader.innerHTML = getProviderIconHtml(streamProvider, 16) + '<span>' + esc(modelName) + '</span>';
   spinnerWrapper.appendChild(spinnerHeader);
   const spinnerDiv = document.createElement('div');
@@ -225152,6 +227898,7 @@ async function chatSend(options = {}) {
       msg_id: assistantMessageId,
       provider: streamProvider,
       model: streamModel,
+      ...streamReasoningRecord,
       timestamp: assistantTimestamp,
     };
   };
@@ -225283,7 +228030,7 @@ async function chatSend(options = {}) {
         allow_web_search: chatAllowWebSearch(),
         allow_auto_compress: chatAllowAutoCompress(),
         allow_code_execution: chatAllowCodeExecution(),
-        ...(options.generationSettings || chatGenerationSettings()),
+        ...streamGeneration,
         ...chatCustomInstructionSettings(),
       }),
     });
@@ -225429,7 +228176,7 @@ async function chatSend(options = {}) {
         assistantDiv = addAssistantToVisibleStream(fullText || '[コード実行結果]', renderOptions);
       }
       if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
-      const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp() };
+      const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, ...streamReasoningRecord, timestamp: assistantTimestamp || _chatLocalTimestamp() };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
@@ -225462,7 +228209,7 @@ async function chatSend(options = {}) {
       if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, responseCitations);
       else if (assistantDiv) assistantDiv.textContent = abortedText;
       if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
-      const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
+      const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, ...streamReasoningRecord, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
@@ -225491,6 +228238,7 @@ async function chatSend(options = {}) {
         msg_id: assistantMessageId,
         provider: streamProvider,
         model: streamModel,
+        ...streamReasoningRecord,
         timestamp: assistantTimestamp || _chatLocalTimestamp(),
         error: true,
         error_code: e?.meldexCode || 'stream_failed',
@@ -226248,7 +228996,7 @@ function _chatHtmlEscape(value) {
 function _chatExportRoleLabel(message) {
   const role = String(message?.role || '').toLowerCase();
   if (role === 'user') return typeof getUsername === 'function' ? getUsername() : 'User';
-  if (role === 'assistant') return getProviderLabel(message?.provider || _chatState.provider, message?.model || _chatState.model);
+  if (role === 'assistant') return getProviderLabel(message?.provider || _chatState.provider, message?.model || _chatState.model, message?.reasoning_level || '');
   return role || 'Message';
 }
 
@@ -226549,7 +229297,7 @@ async function renderChatHistory() {
       const targetInfo = item.title && targetName && item.title !== targetName
         ? `<div style="margin-top:3px;font-size:10px;color:var(--fg2);display:flex;align-items:center;gap:4px;">${lucide('fileText', 10)} <span>${esc(targetName)}</span></div>`
         : '';
-      const msgCount = item.messageCount ? `<span style="font-size:10px;color:var(--fg2);">${item.messageCount}件</span>` : '';
+      const msgCount = item.messageCount ? `<span style="font-size:10px;color:var(--fg2);">${Number(item.messageCount) || 0}件</span>` : '';
       const modifiedLabel = _chatFormatHistoryModifiedTimestamp(item.modified);
       const modifiedInfo = modifiedLabel
         ? `<div data-chat-history-modified style="margin-top:3px;font-size:10px;color:var(--fg2);">最終更新 ${esc(modifiedLabel)}</div>`
@@ -230305,7 +233053,7 @@ function _chatReadNativeGenerationMap() {
   } catch { return {}; }
 }
 
-function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider)) {
+function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider), options = {}) {
   const map = _chatReadNativeGenerationMap();
   const key = _chatNativeGenerationKey(provider, model);
   const saved = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
@@ -230320,7 +233068,8 @@ function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider
     reasoning_level: levels.includes(raw) ? raw : !saved ? migratedLevel : 'off',
     speed_mode: _chatSpeedOptions(provider, model).some(item => item[0] === saved?.speed_mode) ? saved.speed_mode : 'default',
   };
-  if (legacy != null && Object.keys(map).length === 0) _chatStoreNativeGenerationSettings(settings, provider, model);
+  // 旧来の共通値の引き継ぎは、実際に使うモデルが決まってから一度だけ行う（表示の更新だけでは保存しない）。
+  if (!options.readOnly && legacy != null && Object.keys(map).length === 0) _chatStoreNativeGenerationSettings(settings, provider, model);
   return settings;
 }
 
@@ -230443,18 +233192,46 @@ function _chatReasoningLevelOptions(provider, model = _chatGenerationModel(provi
   return base;
 }
 
-function _chatGenerationReasoningRowHtml() {
+// 思考の深さはメッセージ入力欄の下（#chat-reasoning-level）で選ぶ。LLM設定ポップアップには置かない。
+// 値はプロバイダ×モデルごとに保存し、指定できないモデルでは選択欄ごと隠す。
+function _chatReasoningLevelLabel(provider, model, level) {
+  const value = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(level) : String(level || '');
+  if (!value) return '';
+  const found = _chatReasoningLevelOptions(provider, model).find(([key]) => key === value);
+  if (found) return found[1];
+  return ({ off: '既定', low: '低', medium: '中', high: '高', xhigh: '最高', max: '最大', ultracode: 'Ultracode', ultra: 'Ultra' })[value] || value;
+}
+
+function _chatRefreshReasoningControl() {
+  const select = document.getElementById('chat-reasoning-level');
+  if (!select) return;
   const provider = _chatGenerationCurrentProvider();
-  const options = _chatReasoningLevelOptions(provider);
+  const model = _chatGenerationModel(provider);
+  const options = _chatReasoningLevelOptions(provider, model);
   const supported = _chatGenerationReasoningSupported(provider) && options.length > 1;
-  const storedRaw = _chatNativeGenerationSettings().reasoning_level;
-  const stored = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(storedRaw) : storedRaw;
-  const select = `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;" ${supported ? '' : 'disabled'}>
-      ${options.map(([value, label]) => `<option value="${value}" ${stored === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
-    </select>`;
-  const row = _chatGenerationSettingsRow('思考の深さ', select);
-  if (supported) return row;
-  return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このモデルでは思考の深さを指定できません</div>`;
+  select.dataset.generationProvider = provider;
+  select.dataset.generationModel = model;
+  select.hidden = !supported;
+  select.disabled = !supported;
+  if (!supported) { select.innerHTML = ''; return; }
+  const stored = _chatNativeGenerationSettings(provider, model, { readOnly: true }).reasoning_level;
+  select.innerHTML = options.map(([value, label]) => `<option value="${value}">思考: ${esc(label)}</option>`).join('');
+  select.value = options.some(([value]) => value === stored) ? stored : 'off';
+}
+
+function _chatBindReasoningControl() {
+  const select = document.getElementById('chat-reasoning-level');
+  if (!select || select.dataset.reasoningBound === '1') return;
+  select.dataset.reasoningBound = '1';
+  select.addEventListener('change', () => {
+    const provider = select.dataset.generationProvider || _chatGenerationCurrentProvider();
+    const model = select.dataset.generationModel ?? _chatGenerationModel(provider);
+    const current = _chatNativeGenerationSettings(provider, model);
+    const level = select.value || 'off';
+    _chatStoreNativeGenerationSettings({ ...current, reasoning_level: level }, provider, model);
+    localStorage.setItem('chat-reasoning-level', level);
+    if (typeof _chatSaveCurrentRoomModelSettings === 'function') _chatSaveCurrentRoomModelSettings();
+  });
 }
 
 // 現行世代のClaudeモデル（Fable 5 / Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
@@ -230559,12 +233336,14 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
-  const reasoning = menu.querySelector('#chat-menu-reasoning-level');
-  if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
-  if (reasoning) _chatStoreNativeGenerationSettings({
-    reasoning_level: reasoning.value || 'off',
-    speed_mode: menu.querySelector('#chat-menu-speed-mode')?.value || 'default',
-  }, menu.dataset.generationProvider, menu.dataset.generationModel);
+  const speed = menu.querySelector('#chat-menu-speed-mode');
+  if (speed) {
+    const current = _chatNativeGenerationSettings(menu.dataset.generationProvider, menu.dataset.generationModel);
+    _chatStoreNativeGenerationSettings({
+      ...current,
+      speed_mode: speed.value || 'default',
+    }, menu.dataset.generationProvider, menu.dataset.generationModel);
+  }
   const preset = menu.querySelector('#chat-menu-param-preset');
   if (preset) localStorage.setItem('chat-param-preset', preset.value || 'standard');
   Object.entries(CHAT_GENERATION_NUMERIC_SETTINGS).forEach(([id, config]) => {
@@ -230595,12 +233374,11 @@ function showChatGenerationSettingsMenu(event) {
   menu.innerHTML = `
     <div class="chat-generation-settings-heading" style="display:flex;align-items:center;gap:4px;font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">
       <span data-chat-generation-title>LLM設定</span>
-      <span data-chat-generation-tuning-hint>${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</span>
+      <span data-chat-generation-tuning-hint>${fieldHelp('応答の賢さは入力欄の下の思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</span>
     </div>
     ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
     ${_chatGenerationCodeExecutionControlHtml()}
-    ${_chatGenerationReasoningRowHtml()}
     ${_chatGenerationSpeedRowHtml()}
     ${_chatGenerationResponseTuningHtml()}
   `;
@@ -230655,6 +233433,12 @@ function showChatGenerationSettingsMenu(event) {
 
 window.showChatGenerationSettingsMenu = showChatGenerationSettingsMenu;
 window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
+window._chatRefreshReasoningControl = _chatRefreshReasoningControl;
+window._chatReasoningLevelLabel = _chatReasoningLevelLabel;
+if (typeof document !== 'undefined') {
+  _chatBindReasoningControl();
+  _chatRefreshReasoningControl();
+}
 
 ;
 
@@ -232603,13 +235387,14 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     return sendBtn;
   }
 
-  function createCliChatActivity(provider) {
+  function createCliChatActivity(provider, reasoningLevel = '') {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-cli-activity';
     wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;min-width:0;align-self:flex-start;box-sizing:border-box;';
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
-    const label = cliChatModelLabel(provider);
+    const baseLabel = cliChatModelLabel(provider);
+    const label = reasoningLevel && typeof getProviderLabel === 'function' ? getProviderLabel(provider, baseLabel, reasoningLevel) : baseLabel;
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
     body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
@@ -232746,9 +235531,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       : [];
     const usingDeferredMessages = deferredMessages.length > 0;
     let attachments = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+    // ＋メニューで選んだスキル（または「/スキル名」）を、目印付きの本文と skills にする。
+    const skillSend = usingDeferredMessages ? null : (window.GBChatSkillPicker?.prepareSend?.(input.value.trim()) || null);
     const textValue = usingDeferredMessages && typeof _chatQueuedMessagesText === 'function'
       ? _chatQueuedMessagesText(deferredMessages).trim()
-      : input.value.trim();
+      : (skillSend ? skillSend.text : input.value.trim());
     if (!usingDeferredMessages && !textValue && attachments.length === 0) {
       if (typeof _chatQueuedMessages === 'function' && _chatQueuedMessages().length && typeof _chatSendQueuedMessagesAfterStream === 'function') {
         return _chatSendQueuedMessagesAfterStream();
@@ -232851,6 +235638,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         else _chatState.pendingAttachments = [];
       }
       const userMessage = { role: 'user', content: userContent, timestamp: userTimestamp };
+      if (skillSend) {
+        userMessage.skills = skillSend.skills.slice();
+        window.GBChatSkillPicker?.commitSend?.();
+      }
       if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(userMessage);
       if (typeof chatAddMessage === 'function') {
         chatAddMessage('user', userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
@@ -232879,6 +235670,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     // 送信開始時に固定する。旧形式の待機メッセージへ後から選んだ高速設定を持ち込まない。
     const streamGenerationSettings = { ...(options.generationSettings
       || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings(provider, streamModelSelection) : {})) };
+    const streamReasoningLevel = typeof _chatReasoningRecordLevel === 'function'
+      ? _chatReasoningRecordLevel(provider, streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection, streamGenerationSettings)
+      : '';
+    const streamReasoningRecord = streamReasoningLevel ? { reasoning_level: streamReasoningLevel } : {};
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -232914,7 +235709,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     });
     if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
-    const activity = createCliChatActivity(provider);
+    const activity = createCliChatActivity(provider, streamReasoningLevel);
     const _scrollHandler = () => {};
     if (!detachedScope && msgContainer && typeof _chatBindFollowController === 'function') {
       _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
@@ -232957,6 +235752,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         msg_id: assistantMessageId,
         provider,
         model: streamModelLabel,
+        ...streamReasoningRecord,
         timestamp: assistantTimestamp,
       };
     };
@@ -233265,7 +236061,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(fullText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
-        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
+        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, ...streamReasoningRecord, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
         if (cliThinkingText.trim()) assistantMessage.thinking = cliThinkingText;
         streamMessages.push(assistantMessage);
         sendOk = true;
@@ -233292,6 +236088,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           msg_id: assistantMessageId,
           provider,
           model: streamModelLabel,
+          ...streamReasoningRecord,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           aborted: !clientIdleAbortMessage,
           auto_stopped: !!clientIdleAbortMessage,
@@ -233319,6 +236116,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           msg_id: assistantMessageId,
           provider,
           model: streamModelLabel,
+          ...streamReasoningRecord,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
           error_code: error?.errorCode || 'cli_exit_nonzero',
@@ -234778,6 +237576,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       board_line: new Map(),
       sheet_cell: new Map(),
       calendar_event: new Map(),
+      map_feature: new Map(),
+      form_field: new Map(),
     };
     for (const a of items) {
       if (a.orphan || a.resolved) continue;
@@ -234795,6 +237595,10 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         m.sheet_cell.set(key, (m.sheet_cell.get(key) || 0) + 1);
       } else if (k === 'calendar_event' && r.eventId) {
         m.calendar_event.set(r.eventId, (m.calendar_event.get(r.eventId) || 0) + 1);
+      } else if (k === 'map_feature' && r.featureId) {
+        m.map_feature.set(r.featureId, (m.map_feature.get(r.featureId) || 0) + 1);
+      } else if (k === 'form_field' && r.field) {
+        m.form_field.set(r.field, (m.form_field.get(r.field) || 0) + 1);
       }
       // text_range は container 要素のバッジに +1 する（container があれば）
       if (k === 'text_range' && r.container) {
@@ -235501,6 +238305,25 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       };
     }
 
+    // 3b) フォームの項目: フォームアプリ内の [data-form-field]
+    const formField = scan && scan.closest ? scan.closest('.gb-form-app [data-form-field]') : null;
+    const formApp = formField?.closest?.('.gb-form-app')?._gbFormApp || null;
+    if (formField && formApp?.path) {
+      const field = formField.dataset.formField;
+      return {
+        targetKind: 'form_field', filePath: formApp.path,
+        targetRef: { file: formApp.path, field },
+        snapshot: field.slice(0, 120),
+      };
+    }
+
+    // 3c) マップの地点・図形: 選択中の項目（無ければマップ全体）
+    const mapApp = scan && scan.closest ? scan.closest('.gb-map-app')?._gbMapApp : null;
+    if (mapApp && typeof mapApp.annotationContext === 'function') {
+      const mapContext = mapApp.annotationContext();
+      if (mapContext) return mapContext;
+    }
+
     // 3) フォールバック: 未紐付
     const curPath = _validCommentFilePath((typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '');
     return { targetKind: 'none', filePath: curPath || '', targetRef: null, snapshot: '' };
@@ -235626,6 +238449,15 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       const target = document.querySelector(`.gb-cal-day-event[data-event-id="${cssEscape(ctx.targetRef.eventId)}"], .gb-cal-clock-event-slice[data-event-id="${cssEscape(ctx.targetRef.eventId)}"]`);
       if (target) return target;
     }
+    if (kind === 'map_feature' && ctx?.targetRef?.featureId) {
+      const target = document.querySelector(`.gb-map-app [data-map-feature-id="${cssEscape(ctx.targetRef.featureId)}"]`)
+        || document.querySelector('.gb-map-app .gb-map-inspector, .gb-map-app');
+      if (target) return target;
+    }
+    if (kind === 'form_field' && ctx?.targetRef?.field) {
+      const target = document.querySelector(`.gb-form-app [data-form-field="${cssEscape(ctx.targetRef.field)}"]`);
+      if (target) return target;
+    }
     if (kind === 'text_range' && container) {
       if (container.kind === 'board_card' && container.id) {
         const target = document.getElementById('bdn-' + container.id);
@@ -235672,6 +238504,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       board_card: 'ボードカード', sheet_cell: 'シートのセル',
       board_line: 'ボードライン',
       calendar_event: 'カレンダーイベント',
+      map_feature: 'マップの地点・図形', form_field: 'フォームの項目',
       text_range: '選択範囲', none: '未紐付',
     })[ctx.targetKind] || ctx.targetKind;
     let body = null;
@@ -235728,6 +238561,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             refreshVisibleCalendarCommentBadges();
           }
         } catch {}
+        // マップ・フォーム
+        try { refreshOpenMapsAndForms(ctx.filePath); } catch {}
       }
       // アノテートパネルが開いていれば一覧を更新
       if (typeof loadRpAnnotationList === 'function') {
@@ -235740,10 +238575,45 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     }
   }
 
+  // === マップ・フォーム ===
+  // マップは地点一覧の行、フォームは項目に件数を出す。押すとその対象のコメントだけを一覧に出す。
+  async function refreshMap(app) {
+    const root = app?.placeList;
+    const filePath = app?.path || '';
+    if (!root || !filePath) return;
+    if (!_isCommentLayerEnabled()) { root.querySelectorAll('.cmt-badge').forEach(el => el.remove()); return; }
+    const items = await fetchComments(filePath);
+    if (app.path !== filePath || !root.isConnected) return;
+    const counts = buildCountMap(items).map_feature;
+    root.querySelectorAll('[data-map-feature-id]').forEach(row => {
+      const featureId = row.dataset.mapFeatureId;
+      _ensureBadge(row, counts.get(featureId) || 0, () => _openPanelForTarget(filePath, 'map_feature', { file: filePath, featureId }));
+    });
+  }
+
+  async function refreshForm(app) {
+    const root = app?.surface || app?.el;
+    const filePath = app?.path || '';
+    if (!root || !filePath) return;
+    if (!_isCommentLayerEnabled()) { root.querySelectorAll('[data-form-field] > .cmt-badge').forEach(el => el.remove()); return; }
+    const items = await fetchComments(filePath);
+    if (app.path !== filePath || !root.isConnected) return;
+    const counts = buildCountMap(items).form_field;
+    root.querySelectorAll('[data-form-field]').forEach(fieldEl => {
+      const field = fieldEl.dataset.formField;
+      _ensureBadge(fieldEl, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+    });
+  }
+
+  function refreshOpenMapsAndForms(filePath) {
+    document.querySelectorAll('.gb-map-app').forEach(el => { if (el._gbMapApp?.path === filePath) refreshMap(el._gbMapApp).catch(() => {}); });
+    document.querySelectorAll('.gb-form-app').forEach(el => { if (el._gbFormApp?.path === filePath) refreshForm(el._gbFormApp).catch(() => {}); });
+  }
+
   // Alt+Shift+C のキー捕捉は GB_SHORTCUTS（'global.addComment'）へ統合済み
 
   window.CommentBadges = {
-    refreshNote, refreshScriptnote, refreshBoard, refreshSheet, refreshCalendar,
+    refreshNote, refreshScriptnote, refreshBoard, refreshSheet, refreshCalendar, refreshMap, refreshForm, refreshOpenMapsAndForms,
     refreshVisibleCalendar: refreshVisibleCalendarCommentBadges,
     getBoardLineCount,
     invalidate, fetchComments, buildCountMap,
@@ -235883,6 +238753,9 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
 
 /* === gb-folder.js === */
 ;
+// gb-folder.part01〜part03 は1つの元ファイルを任意の位置で分けたもので、境界がブロックの途中に
+// ある。独立した部品を間に挟むと、その中身が閉じていないブロックの内側に入り実行されない
+// （2026-08-15〜11-18、移動の取り消し・貼り付け方法の選択が無効だった）。独立部品は必ず末尾に置く。
 /**
  * Folder view link and membership helpers.
  */
@@ -239811,648 +242684,6 @@ function applyFvPanelLayout() {
         el._panelType = 'detail';
         _applyPanelSize(el, detailPos, detailSize);
         const r = _resizeEl(detailPos); if (r) r.style.display = '';
-/* One-history batch operations for folder links. */
-function _folderLinkRequestId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function _folderLinkBatchItems(items) {
-  const unique = new Map();
-  (items || []).forEach(item => {
-    const path = item?.file_path || item?.path || '';
-    const fileId = item?.file_id || '';
-    const key = fileId || path;
-    if (key && !unique.has(key)) unique.set(key, { file_path: path, file_id: fileId });
-  });
-  return Array.from(unique.values());
-}
-
-function _refreshFolderLinkBatch(items, folderPath, tagsContainer) {
-  items.forEach(item => {
-    if (typeof _folderInvalidateMembershipsForPath === 'function') _folderInvalidateMembershipsForPath(item.file_path);
-    if (typeof _refreshFolderLinkUi === 'function') _refreshFolderLinkUi(item.file_path, folderPath, tagsContainer);
-  });
-}
-
-function _pushFolderLinkBatchHistory(label, undoPath, redoPath, items, folderPath, folderId, tagsContainer) {
-  if (typeof historyPush !== 'function' || !items.length) return;
-  let undoPending = _folderLinkBatchItems(items);
-  let redoPending = [];
-  const itemKey = item => String(item?.file_id || item?.file_path || item?.path || '');
-  const appendUnique = (target, additions) => _folderLinkBatchItems(target.concat(additions));
-  const run = async (path, takePending, setPending, addOpposite) => {
-    const requested = takePending();
-    if (!requested.length) return;
-    const result = await apiPost(path, {
-      items: requested,
-      ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
-      request_id: _folderLinkRequestId('history'),
-    });
-    const rows = new Map((result?.results || []).map(row => [itemKey(row), row]));
-    const failed = [];
-    const transitioned = [];
-    const ownedStatus = path.endsWith('/add') ? 'created' : 'removed';
-    requested.forEach(item => {
-      const row = rows.get(itemKey(item));
-      if (!row || row.status === 'failed') failed.push(item);
-      else if (row.status === ownedStatus) transitioned.push(item);
-    });
-    setPending(failed);
-    addOpposite(transitioned);
-    _refreshFolderLinkBatch(requested, folderPath, tagsContainer);
-    if (failed.length) throw new Error(`${failed.length} 件のリンク操作に失敗しました。成功分を反映し、残りは再試行できます`);
-  };
-  historyPush(label, async () => run(
-    undoPath,
-    () => undoPending,
-    value => { undoPending = value; },
-    value => { redoPending = appendUnique(redoPending, value); },
-  ), async () => run(
-    redoPath,
-    () => redoPending,
-    value => { redoPending = value; },
-    value => { undoPending = appendUnique(undoPending, value); },
-  ), '', `${items.length} 件 → ${folderPath || folderId}`);
-}
-
-async function addFolderLinksBatchWithHistory(items, folderPath, options = {}) {
-  const normalized = _folderLinkBatchItems(items);
-  const folderId = options.folderId || '';
-  const payload = {
-    items: normalized,
-    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
-    request_id: options.requestId || _folderLinkRequestId('add'),
-  };
-  const result = await apiPost('/folder-links/batch/add', payload);
-  const created = (result?.results || []).filter(row => row.status === 'created');
-  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括登録', '/folder-links/batch/remove', '/folder-links/batch/add', created, folderPath, folderId, options.tagsContainer || null);
-  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
-  return result;
-}
-
-async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}) {
-  const normalized = _folderLinkBatchItems(items);
-  const folderId = options.folderId || '';
-  const payload = {
-    items: normalized,
-    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
-    request_id: options.requestId || _folderLinkRequestId('remove'),
-  };
-  const result = await apiPost('/folder-links/batch/remove', payload);
-  const removed = (result?.results || []).filter(row => row.status === 'removed');
-  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括解除', '/folder-links/batch/add', '/folder-links/batch/remove', removed, folderPath, folderId, options.tagsContainer || null);
-  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
-  return result;
-}
-
-async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
-  const targets = Array.isArray(items) ? items : [];
-  if (targets.some(item => item?.contained_reference)) {
-    showStatus('ファイル内参照のリンクは、参照元の文書で変更してください', true);
-    return { handled: true, result: null };
-  }
-  const linked = targets.filter(item => item?.linked);
-  if (!linked.length) return { handled: false, result: null };
-  if (linked.length !== targets.length) {
-    showStatus('リンク解除と実ファイル削除は分けて実行してください', true);
-    return { handled: true, result: null };
-  }
-  const folderPath = linked[0].link_folder_path || fallbackFolderPath || '';
-  if (!folderPath || linked.some(item => (item.link_folder_path || folderPath) !== folderPath)) {
-    showStatus('表示元フォルダを特定できないため、リンク解除を中止しました', true);
-    return { handled: true, result: null };
-  }
-  const confirmed = await cfConfirm(`このフォルダから ${linked.length} 件のリンクを解除します。元ファイルは残ります。`);
-  if (!confirmed) return { handled: true, result: null };
-  const result = await removeFolderLinksBatchWithHistory(linked, folderPath);
-  if (typeof options.refresh === 'function') await options.refresh();
-  const removed = result?.removed_count || 0;
-  showStatus(removed ? `${removed} 件のリンクを解除しました（元ファイルは残ります）` : 'リンクはすでに解除されています');
-  return { handled: true, result };
-}
-/**
- * Meldex Folder Paste Link Choice & Conversion Actions
- *
- * 設計方針: app/docs/folder-paste-link-choice-and-conversion-plan-2026-08-14.md
- * 責務:
- * - 貼り付け方法の選択ダイアログ（コピー／リンクファイルを作成／キャンセル）
- * - 「今後表示しない」設定と設定画面でのトグル復帰
- * - 貼り付け時の単一ヒストリー（Undo/Redo）接続
- */
-(function (global) {
-  'use strict';
-
-  const STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE = 'meldex_suppress_folder_paste_link_choice';
-
-  async function refreshHistoryView(options) {
-    try {
-      if (typeof options.refresh === 'function') await options.refresh();
-      else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
-    } catch (error) {
-      return { historyWarning: '操作は反映済みですが一覧を更新できません。再読込してください' };
-    }
-    return true;
-  }
-
-  async function replayHistoryItems(items, applied, operation, options) {
-    const failures = [];
-    for (const item of items) {
-      if (item.applied === applied) continue;
-      try {
-        await operation(item);
-        item.applied = applied;
-      } catch (error) { failures.push(error?.message || String(error)); }
-    }
-    const outcome = await refreshHistoryView(options);
-    if (failures.length) throw new Error(`${failures.length}件の操作に失敗しました。成功分は保持し、残りを再試行できます: ${failures.join(' / ')}`);
-    return outcome;
-  }
-
-  function _parentPath(path) {
-    const normalized = _normalizePath(path);
-    const slash = normalized.lastIndexOf('/');
-    return slash >= 0 ? normalized.slice(0, slash) : '';
-  }
-
-  function registerFileMoveHistory(records, options = {}) {
-    const moves = (records || []).filter(item => item?.oldPath && item?.newPath && item.oldPath !== item.newPath)
-      .map(item => ({
-        ...item,
-        oldParent: item.oldParent != null ? _normalizePath(item.oldParent) : _parentPath(item.oldPath),
-        newParent: item.newParent != null ? _normalizePath(item.newParent) : _parentPath(item.newPath),
-        currentPath: item.currentPath || item.newPath,
-        applied: item.applied !== false,
-      }));
-    if (!moves.length || typeof historyPush !== 'function') return false;
-    const replay = async undo => {
-      const ordered = undo ? [...moves].reverse() : moves;
-      const progress = global.MeldexImportProgress?.beginOperation?.(
-        undo ? 'ファイル移動を取り消しています' : 'ファイル移動をやり直しています',
-        ordered.length,
-        { delayMs: 0, kind: 'file-move-history' },
-      );
-      const failures = [];
-      let processed = 0;
-      for (const move of ordered) {
-        const expectedApplied = undo;
-        if (move.applied !== expectedApplied) {
-          processed += 1;
-          global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
-          continue;
-        }
-        const from = move.currentPath;
-        try {
-          const destination = undo ? move.oldParent : move.newParent;
-          const response = await apiPost('/outliner/move', {
-            path: from,
-            dest_folder: destination,
-            conflict_policy: 'error',
-          });
-          move.currentPath = response?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
-          move.applied = !undo;
-          try {
-            if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(from, move.currentPath, {
-                label: response?.new_name || move.name || move.item?.name || '',
-                fileId: response?.file_id || move.fileId || move.item?.file_id,
-                type: move.type || move.item?.type || 'file',
-              });
-            }
-            if (typeof handleRelocateResponse === 'function') handleRelocateResponse(response);
-          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
-        } catch (error) {
-          failures.push({ path: from, error });
-        }
-        processed += 1;
-        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
-      }
-      const refreshOutcome = await refreshHistoryView(options);
-      global.MeldexImportProgress?.finishOperation?.(progress, {
-        failed: failures.length,
-        summary: `${processed - failures.length}件移動・${failures.length}件失敗`,
-        details: failures,
-      });
-      if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
-      if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
-    };
-    historyPush(
-      options.label || `ファイル移動: ${moves.length} 件`,
-      () => replay(true),
-      () => replay(false),
-      options.scope || '',
-      options.detail || `${moves.length} 件`,
-    );
-    return true;
-  }
-
-  function isFolderPasteLinkChoiceSuppressed() {
-    try {
-      return localStorage.getItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE) === 'true';
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function setFolderPasteLinkChoiceSuppressed(suppressed) {
-    try {
-      if (suppressed) {
-        localStorage.setItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE, 'true');
-      } else {
-        localStorage.removeItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE);
-      }
-    } catch (_) {}
-  }
-
-  function _normalizePath(path) {
-    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  }
-
-  function shouldPromptFolderPasteChoice(items, destFolder, clipMode) {
-    if (clipMode === 'cut') return false;
-    if (isFolderPasteLinkChoiceSuppressed()) return false;
-    if (!items || !items.length || !destFolder) return false;
-    const normDest = _normalizePath(destFolder);
-    // 同一フォルダ内への貼り付け（複製）はダイアログを出さず通常コピー
-    const allSameFolder = items.every(item => {
-      const parent = _normalizePath(item.parent || (item.path ? item.path.split(/[\\/]/).slice(0, -1).join('/') : ''));
-      return parent === normDest;
-    });
-    if (allSameFolder) return false;
-    return true;
-  }
-
-  async function showFolderPasteChoiceModal(options = {}) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (choice, suppress = false) => {
-        if (settled) return;
-        settled = true;
-        resolve({ choice, suppress });
-      };
-
-      const title = '貼り付け方法を選択';
-      const body = document.createElement('div');
-      body.className = 'folder-paste-choice-body';
-
-      const p1 = document.createElement('p');
-      p1.textContent = 'リンクなら容量を増やさず、同じファイルを複数のフォルダに置けます。';
-      p1.style.margin = '0';
-
-      const p2 = document.createElement('p');
-      p2.textContent = 'どこから開いても同じ元ファイルを編集します。別々に編集する場合はコピーしてください。';
-      p2.style.margin = '0';
-
-      const p3 = document.createElement('p');
-      p3.textContent = 'Alt＋ドラッグでもリンクファイルを作れます。';
-      p3.style.cssText = 'margin:0;font-size:12px;color:var(--fg2);';
-
-      const checkLabel = document.createElement('label');
-      checkLabel.className = 'gb-check folder-paste-choice-check';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.id = 'folder-paste-link-suppress-check';
-      const checkSpan = document.createElement('span');
-      checkSpan.textContent = '今後表示しない（以後はコピー）';
-      checkLabel.append(checkbox, checkSpan);
-
-      body.append(p1, p2, p3, checkLabel);
-
-      const footer = document.createElement('div');
-      footer.className = 'folder-paste-choice-actions';
-
-      const cancelBtn = document.createElement('button');
-      cancelBtn.type = 'button';
-      cancelBtn.className = 'gb-btn gb-btn-secondary';
-      cancelBtn.dataset.choice = 'cancel';
-      cancelBtn.dataset.e2eId = 'folder-paste-choice-cancel';
-      cancelBtn.textContent = 'キャンセル';
-
-      const linkBtn = document.createElement('button');
-      linkBtn.type = 'button';
-      linkBtn.className = 'gb-btn gb-btn-secondary';
-      linkBtn.dataset.choice = 'link';
-      linkBtn.dataset.e2eId = 'folder-paste-choice-link';
-      linkBtn.textContent = 'リンクファイルを作成';
-
-      const copyBtn = document.createElement('button');
-      copyBtn.type = 'button';
-      copyBtn.className = 'gb-btn gb-btn-primary';
-      copyBtn.dataset.choice = 'copy';
-      copyBtn.dataset.e2eId = 'folder-paste-choice-copy';
-      copyBtn.textContent = 'コピー';
-
-      footer.append(cancelBtn, linkBtn, copyBtn);
-
-      let modalController = null;
-
-      const handleChoice = (choice) => {
-        const suppress = checkbox.checked;
-        if (choice !== 'cancel' && suppress) {
-          setFolderPasteLinkChoiceSuppressed(true);
-        }
-        if (modalController?.close) {
-          modalController.close(choice);
-        }
-        finish(choice, suppress);
-      };
-
-      cancelBtn.addEventListener('click', () => handleChoice('cancel'));
-      linkBtn.addEventListener('click', () => handleChoice('link'));
-      copyBtn.addEventListener('click', () => handleChoice('copy'));
-
-      if (global.GBUI?.createModal) {
-        modalController = global.GBUI.createModal({
-          title,
-          body,
-          footer,
-          variant: 'standard',
-          geometryKey: 'folder-paste-link-choice',
-          closeOnEsc: true,
-          closeOnOverlay: true,
-          initialFocus: copyBtn,
-          onClose: () => {
-            if (!settled) {
-              finish('cancel', false);
-            }
-          },
-        });
-        if (modalController?.open) modalController.open();
-      } else {
-        const confirmed = confirm(`${title}\n\nリンクなら容量を増やさず、同じファイルを複数のフォルダに置けます。\nリンクファイルを作成しますか？\n[OK] リンクファイルを作成 / [キャンセル] コピー`);
-        finish(confirmed ? 'link' : 'copy', false);
-      }
-    });
-  }
-
-  async function executeFolderPasteWithChoice(clip, destFolder, options = {}) {
-    if (!clip?.items?.length || !destFolder) return;
-    if (typeof _folderToolbarIsLockedPath === 'function' && _folderToolbarIsLockedPath(destFolder)) {
-      if (typeof showStatus === 'function') showStatus('編集ロック中のフォルダには貼り付けできません', true);
-      return;
-    }
-
-    const mode = clip.mode || 'copy';
-    const items = clip.items;
-
-    // ダイアログ表示判定
-    if (shouldPromptFolderPasteChoice(items, destFolder, mode)) {
-      const { choice } = await showFolderPasteChoiceModal({ items, destFolder });
-      if (choice === 'cancel') return;
-      if (choice === 'link') {
-        if (typeof addFolderLinksBatchWithHistory === 'function') {
-          const result = await addFolderLinksBatchWithHistory(items, destFolder, options);
-          const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-          if (refresh) await refresh();
-          const created = result?.created_count || 0;
-          const unchanged = result?.unchanged_count || 0;
-          const failed = result?.failed_count || 0;
-          let msg = '';
-          if (created) msg += `${created} 件のリンクを作成しました`;
-          if (unchanged) msg += (msg ? '、' : '') + `${unchanged} 件は既にリンク済みです`;
-          if (failed) msg += (msg ? '、' : '') + `${failed} 件は失敗しました`;
-          if (typeof showStatus === 'function') showStatus(msg || 'リンクを作成しました', failed > 0);
-          return;
-        }
-      }
-      // choice === 'copy' の場合は通常コピー処理へ進む
-    }
-
-    // cut または copy の実行
-    const pastedPaths = [];
-    const failed = [];
-    let skipped = 0;
-    const executedMoves = [];
-    const executedCopies = [];
-    const progress = global.MeldexImportProgress?.beginOperation?.(
-      mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
-      items.length,
-      { delayMs: 0, kind: mode === 'cut' ? 'file-move' : 'file-copy' },
-    );
-    let processed = 0;
-
-    for (const item of items) {
-      try {
-        if (item.type === 'folder' && typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path)) {
-          failed.push(item);
-          continue;
-        }
-        if (mode === 'cut') {
-          const itemParent = item.parent || (typeof _folderToolbarParentPath === 'function' ? _folderToolbarParentPath(item.path) : '');
-          const normDest = typeof _folderToolbarNormalizePath === 'function' ? _folderToolbarNormalizePath(destFolder) : destFolder;
-          if (itemParent === normDest) {
-            skipped++;
-            continue;
-          }
-          if (typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path)) {
-            failed.push(item);
-            continue;
-          }
-          const oldPath = item.path;
-          const res = await apiPost('/outliner/move', {
-            path: item.path,
-            dest_folder: destFolder,
-            conflict_policy: 'error',
-          });
-          try {
-            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
-          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
-          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
-          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
-          const newPath = res?.new_path || item.path;
-          pastedPaths.push(newPath);
-          executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
-        } else {
-          const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
-          const newPath = res?.new_path || '';
-          if (newPath) {
-            pastedPaths.push(newPath);
-            executedCopies.push({ origPath: item.path, newPath, applied: true, item });
-          }
-        }
-      } catch (_) {
-        failed.push(item);
-      } finally {
-        processed += 1;
-        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
-      }
-    }
-    global.MeldexImportProgress?.finishOperation?.(progress, {
-      failed: failed.length,
-      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
-      details: failed.map(item => ({ path: item.path || item.name || '', message: '処理できませんでした' })),
-    });
-
-    if (mode === 'cut') {
-      if (typeof options.onCutResult === 'function') {
-        options.onCutResult(failed);
-      } else if (typeof _folderToolbarClipboard !== 'undefined') {
-        _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
-      }
-      registerFileMoveHistory(executedMoves, {
-        ...options,
-        label: 'フォルダ: 切り取り貼り付け',
-        detail: `${executedMoves.length} 件 → ${destFolder}`,
-      });
-    } else {
-      if (executedCopies.length && typeof historyPush === 'function') {
-        const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
-          const result = await apiPost('/outliner/delete', { path: c.newPath });
-          c.trash = result?.trash_name ? { trash_name: result.trash_name, ...(result.trash_root ? { trash_root: result.trash_root } : {}) } : null;
-        }, options);
-        const copyRedo = () => replayHistoryItems(executedCopies, true, async c => {
-          // 元ファイルの後続編集でコピーの内容が変わらないよう、削除した実体を復元する。
-          const result = c.trash
-            ? await apiPost('/outliner/restore', c.trash)
-            : await apiPost('/outliner/save-as', { path: c.origPath, dest_folder: destFolder });
-          c.newPath = result?.restored_path || result?.new_path || c.newPath;
-        }, options);
-        historyPush('フォルダ: コピー貼り付け', copyUndo, copyRedo, '', `${executedCopies.length} 件 → ${destFolder}`);
-      }
-    }
-
-    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-    if (refresh) await refresh(pastedPaths.filter(Boolean));
-
-    if (failed.length) {
-      if (typeof showStatus === 'function') showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
-    } else if (pastedPaths.length) {
-      if (typeof showStatus === 'function') showStatus(pastedPaths.length + ' 件を貼り付けました');
-    } else if (skipped) {
-      if (typeof showStatus === 'function') showStatus('同じフォルダへの移動のため、変更はありません');
-    }
-    if (typeof updateFolderToolbarActions === 'function') updateFolderToolbarActions();
-  }
-
-  async function materializeFolderLinkWithHistory(filePath, folderPath, options = {}) {
-    if (!filePath || !folderPath) return null;
-    const confirmed = typeof global.cfConfirm === 'function'
-      ? await global.cfConfirm(`「${folderPath}」のリンクを実体化しますか？\n独立したコピーを作成し、以後は別々に編集できるようになります。`)
-      : confirm('リンクを実体化しますか？');
-    if (!confirmed) return null;
-
-    const fileId = options.fileId || '';
-    const ownerToken = options.ownerToken || `mat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const payload = {
-      file_path: filePath,
-      folder_path: folderPath,
-      file_id: fileId,
-      owner_token: ownerToken,
-    };
-
-    let res = null;
-    try {
-      res = await apiPost('/folder-links/materialize', payload);
-    } catch (err) {
-      if (typeof showStatus === 'function') showStatus('実体化に失敗しました: ' + (err?.message || err || ''), true);
-      return null;
-    }
-
-    const matPath = res?.materialized_path || '';
-    const oldFileId = res?.old_file_id || fileId;
-
-    if (matPath && typeof historyPush === 'function') {
-      let currentMatPath = matPath;
-      let removed = false;
-      const undoFn = async () => {
-        if (!removed) {
-          await apiPost('/outliner/delete', { path: currentMatPath });
-          removed = true;
-        }
-        const result = await apiPost('/folder-links/batch/add', {
-          items: [{ file_path: filePath, file_id: oldFileId }],
-          folder_path: folderPath,
-          owner_token: ownerToken,
-        });
-        if (result?.failed_count || result?.results?.some(row => row.status === 'failed')) {
-          await refreshHistoryView(options);
-          throw new Error('リンクを復元できませんでした。実体の削除は完了済みで、リンク復元を再試行できます');
-        }
-        return refreshHistoryView(options);
-      };
-      const redoFn = async () => {
-        const result = await apiPost('/folder-links/materialize', payload);
-        currentMatPath = result?.materialized_path || currentMatPath;
-        removed = false;
-        return refreshHistoryView(options);
-      };
-      historyPush('フォルダリンク: 実体化', undoFn, redoFn, '', `${filePath} → ${matPath}`);
-    }
-
-    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-    if (refresh) await refresh([matPath].filter(Boolean));
-    if (typeof showStatus === 'function') showStatus('実体化しました（以後は別々に編集できます）');
-    return res;
-  }
-
-  async function promoteFolderLinkToSourceWithHistory(filePath, folderPath, options = {}) {
-    if (!filePath || !folderPath) return null;
-    const confirmed = typeof global.cfConfirm === 'function'
-      ? await global.cfConfirm(`物理ファイルを「${folderPath}」へ移し、元の場所にはリンクを残します。\nよろしいですか？（内容は1つのままです）`)
-      : confirm('この場所をリンク元にしますか？');
-    if (!confirmed) return null;
-
-    const fileId = options.fileId || '';
-    const ownerToken = options.ownerToken || `prm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const payload = {
-      file_path: filePath,
-      folder_path: folderPath,
-      file_id: fileId,
-      owner_token: ownerToken,
-    };
-
-    let res = null;
-    try {
-      res = await apiPost('/folder-links/promote-to-source', payload);
-    } catch (err) {
-      if (typeof showStatus === 'function') showStatus('リンク元化に失敗しました: ' + (err?.message || err || ''), true);
-      return null;
-    }
-
-    const newSourcePath = res?.new_source_path || '';
-    const oldSourcePath = res?.old_source_path || filePath;
-    const newLinkFolder = res?.new_link_folder || '';
-
-    if (newSourcePath && typeof historyPush === 'function') {
-      let currentSourcePath = newSourcePath;
-      let undoFolder = newLinkFolder;
-      const promote = async folder => {
-        const result = await apiPost('/folder-links/promote-to-source', {
-          ...payload, file_path: currentSourcePath, folder_path: folder,
-          file_id: res?.file_id || fileId,
-        });
-        currentSourcePath = result?.new_source_path || currentSourcePath;
-        if (folder === folderPath) undoFolder = result?.new_link_folder || undoFolder;
-        return refreshHistoryView(options);
-      };
-      const undoFn = () => promote(undoFolder);
-      const redoFn = () => promote(folderPath);
-      historyPush('フォルダリンク: リンク元ファイル化', undoFn, redoFn, '', `${oldSourcePath} ⇄ ${newSourcePath}`);
-    }
-
-    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-    if (refresh) await refresh([newSourcePath].filter(Boolean));
-    if (typeof showStatus === 'function') showStatus('この場所をリンク元ファイルに設定しました');
-    return res;
-  }
-
-  global.MeldexFolderLinkActions = {
-    isFolderPasteLinkChoiceSuppressed,
-    setFolderPasteLinkChoiceSuppressed,
-    shouldPromptFolderPasteChoice,
-    showFolderPasteChoiceModal,
-    executeFolderPasteWithChoice,
-    registerFileMoveHistory,
-    materializeFolderLinkWithHistory,
-    promoteFolderLinkToSourceWithHistory,
-    STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE,
-  };
-  global.showFolderPasteChoiceModal = showFolderPasteChoiceModal;
-  global.shouldPromptFolderPasteChoice = shouldPromptFolderPasteChoice;
-  global.executeFolderPasteWithChoice = executeFolderPasteWithChoice;
-  global.MeldexFileMoveHistory = Object.freeze({ register: registerFileMoveHistory });
-  global.materializeFolderLinkWithHistory = materializeFolderLinkWithHistory;
-  global.promoteFolderLinkToSourceWithHistory = promoteFolderLinkToSourceWithHistory;
-})(typeof window !== 'undefined' ? window : globalThis);
       }
     }
   }
@@ -242434,6 +244665,652 @@ function _installFolderBlankContextMenu(container) {
     if (item) showFolderItemContextMenu(e, item, { blankTarget: true });
   });
 }
+/* One-history batch operations for folder links. */
+function _folderLinkRequestId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function _folderLinkBatchItems(items) {
+  const unique = new Map();
+  (items || []).forEach(item => {
+    const path = item?.file_path || item?.path || '';
+    const fileId = item?.file_id || '';
+    const key = fileId || path;
+    if (key && !unique.has(key)) unique.set(key, { file_path: path, file_id: fileId });
+  });
+  return Array.from(unique.values());
+}
+
+function _refreshFolderLinkBatch(items, folderPath, tagsContainer) {
+  items.forEach(item => {
+    if (typeof _folderInvalidateMembershipsForPath === 'function') _folderInvalidateMembershipsForPath(item.file_path);
+    if (typeof _refreshFolderLinkUi === 'function') _refreshFolderLinkUi(item.file_path, folderPath, tagsContainer);
+  });
+}
+
+function _pushFolderLinkBatchHistory(label, undoPath, redoPath, items, folderPath, folderId, tagsContainer) {
+  if (typeof historyPush !== 'function' || !items.length) return;
+  let undoPending = _folderLinkBatchItems(items);
+  let redoPending = [];
+  const itemKey = item => String(item?.file_id || item?.file_path || item?.path || '');
+  const appendUnique = (target, additions) => _folderLinkBatchItems(target.concat(additions));
+  const run = async (path, takePending, setPending, addOpposite) => {
+    const requested = takePending();
+    if (!requested.length) return;
+    const result = await apiPost(path, {
+      items: requested,
+      ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+      request_id: _folderLinkRequestId('history'),
+    });
+    const rows = new Map((result?.results || []).map(row => [itemKey(row), row]));
+    const failed = [];
+    const transitioned = [];
+    const ownedStatus = path.endsWith('/add') ? 'created' : 'removed';
+    requested.forEach(item => {
+      const row = rows.get(itemKey(item));
+      if (!row || row.status === 'failed') failed.push(item);
+      else if (row.status === ownedStatus) transitioned.push(item);
+    });
+    setPending(failed);
+    addOpposite(transitioned);
+    _refreshFolderLinkBatch(requested, folderPath, tagsContainer);
+    if (failed.length) throw new Error(`${failed.length} 件のリンク操作に失敗しました。成功分を反映し、残りは再試行できます`);
+  };
+  historyPush(label, async () => run(
+    undoPath,
+    () => undoPending,
+    value => { undoPending = value; },
+    value => { redoPending = appendUnique(redoPending, value); },
+  ), async () => run(
+    redoPath,
+    () => redoPending,
+    value => { redoPending = value; },
+    value => { undoPending = appendUnique(undoPending, value); },
+  ), '', `${items.length} 件 → ${folderPath || folderId}`);
+}
+
+async function addFolderLinksBatchWithHistory(items, folderPath, options = {}) {
+  const normalized = _folderLinkBatchItems(items);
+  const folderId = options.folderId || '';
+  const payload = {
+    items: normalized,
+    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+    request_id: options.requestId || _folderLinkRequestId('add'),
+  };
+  const result = await apiPost('/folder-links/batch/add', payload);
+  const created = (result?.results || []).filter(row => row.status === 'created');
+  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括登録', '/folder-links/batch/remove', '/folder-links/batch/add', created, folderPath, folderId, options.tagsContainer || null);
+  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
+  return result;
+}
+
+async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}) {
+  const normalized = _folderLinkBatchItems(items);
+  const folderId = options.folderId || '';
+  const payload = {
+    items: normalized,
+    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+    request_id: options.requestId || _folderLinkRequestId('remove'),
+  };
+  const result = await apiPost('/folder-links/batch/remove', payload);
+  const removed = (result?.results || []).filter(row => row.status === 'removed');
+  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括解除', '/folder-links/batch/add', '/folder-links/batch/remove', removed, folderPath, folderId, options.tagsContainer || null);
+  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
+  return result;
+}
+
+async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
+  const targets = Array.isArray(items) ? items : [];
+  if (targets.some(item => item?.contained_reference)) {
+    showStatus('ファイル内参照のリンクは、参照元の文書で変更してください', true);
+    return { handled: true, result: null };
+  }
+  const linked = targets.filter(item => item?.linked);
+  if (!linked.length) return { handled: false, result: null };
+  if (linked.length !== targets.length) {
+    showStatus('リンク解除と実ファイル削除は分けて実行してください', true);
+    return { handled: true, result: null };
+  }
+  const folderPath = linked[0].link_folder_path || fallbackFolderPath || '';
+  if (!folderPath || linked.some(item => (item.link_folder_path || folderPath) !== folderPath)) {
+    showStatus('表示元フォルダを特定できないため、リンク解除を中止しました', true);
+    return { handled: true, result: null };
+  }
+  const confirmed = await cfConfirm(`このフォルダから ${linked.length} 件のリンクを解除します。元ファイルは残ります。`);
+  if (!confirmed) return { handled: true, result: null };
+  const result = await removeFolderLinksBatchWithHistory(linked, folderPath);
+  if (typeof options.refresh === 'function') await options.refresh();
+  const removed = result?.removed_count || 0;
+  showStatus(removed ? `${removed} 件のリンクを解除しました（元ファイルは残ります）` : 'リンクはすでに解除されています');
+  return { handled: true, result };
+}
+/**
+ * Meldex Folder Paste Link Choice & Conversion Actions
+ *
+ * 設計方針: app/docs/folder-paste-link-choice-and-conversion-plan-2026-08-14.md
+ * 責務:
+ * - 貼り付け方法の選択ダイアログ（コピー／リンクファイルを作成／キャンセル）
+ * - 「今後表示しない」設定と設定画面でのトグル復帰
+ * - 貼り付け時の単一ヒストリー（Undo/Redo）接続
+ */
+(function (global) {
+  'use strict';
+
+  const STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE = 'meldex_suppress_folder_paste_link_choice';
+
+  async function refreshHistoryView(options) {
+    try {
+      if (typeof options.refresh === 'function') await options.refresh();
+      else if (typeof _folderToolbarRefresh === 'function') await _folderToolbarRefresh();
+    } catch (error) {
+      return { historyWarning: '操作は反映済みですが一覧を更新できません。再読込してください' };
+    }
+    return true;
+  }
+
+  async function replayHistoryItems(items, applied, operation, options) {
+    const failures = [];
+    for (const item of items) {
+      if (item.applied === applied) continue;
+      try {
+        await operation(item);
+        item.applied = applied;
+      } catch (error) { failures.push(error?.message || String(error)); }
+    }
+    const outcome = await refreshHistoryView(options);
+    if (failures.length) throw new Error(`${failures.length}件の操作に失敗しました。成功分は保持し、残りを再試行できます: ${failures.join(' / ')}`);
+    return outcome;
+  }
+
+  function _parentPath(path) {
+    const normalized = _normalizePath(path);
+    const slash = normalized.lastIndexOf('/');
+    return slash >= 0 ? normalized.slice(0, slash) : '';
+  }
+
+  function registerFileMoveHistory(records, options = {}) {
+    const moves = (records || []).filter(item => item?.oldPath && item?.newPath && item.oldPath !== item.newPath)
+      .map(item => ({
+        ...item,
+        oldParent: item.oldParent != null ? _normalizePath(item.oldParent) : _parentPath(item.oldPath),
+        newParent: item.newParent != null ? _normalizePath(item.newParent) : _parentPath(item.newPath),
+        currentPath: item.currentPath || item.newPath,
+        applied: item.applied !== false,
+      }));
+    if (!moves.length || typeof historyPush !== 'function') return false;
+    const replay = async undo => {
+      const ordered = undo ? [...moves].reverse() : moves;
+      const progress = global.MeldexImportProgress?.beginOperation?.(
+        undo ? 'ファイル移動を取り消しています' : 'ファイル移動をやり直しています',
+        ordered.length,
+        { delayMs: 0, kind: 'file-move-history' },
+      );
+      const failures = [];
+      let processed = 0;
+      for (const move of ordered) {
+        const expectedApplied = undo;
+        if (move.applied !== expectedApplied) {
+          processed += 1;
+          global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+          continue;
+        }
+        const from = move.currentPath;
+        try {
+          const destination = undo ? move.oldParent : move.newParent;
+          const response = await apiPost('/outliner/move', {
+            path: from,
+            dest_folder: destination,
+            conflict_policy: 'error',
+          });
+          move.currentPath = response?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
+          move.applied = !undo;
+          try {
+            if (typeof renameAppPathReferences === 'function') {
+              renameAppPathReferences(from, move.currentPath, {
+                label: response?.new_name || move.name || move.item?.name || '',
+                fileId: response?.file_id || move.fileId || move.item?.file_id,
+                type: move.type || move.item?.type || 'file',
+              });
+            }
+            if (typeof handleRelocateResponse === 'function') handleRelocateResponse(response);
+          } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
+        } catch (error) {
+          failures.push({ path: from, error });
+        }
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+      }
+      const refreshOutcome = await refreshHistoryView(options);
+      global.MeldexImportProgress?.finishOperation?.(progress, {
+        failed: failures.length,
+        summary: `${processed - failures.length}件移動・${failures.length}件失敗`,
+        details: failures,
+      });
+      if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
+      if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
+      // 共通履歴は戻り値の historyWarning を最後の表示に使う。返さないと「↩ 操作名」で
+      // 上書きされ、一覧を更新できなかったことが利用者に伝わらない。
+      return refreshOutcome;
+    };
+    historyPush(
+      options.label || `ファイル移動: ${moves.length} 件`,
+      () => replay(true),
+      () => replay(false),
+      options.scope || '',
+      options.detail || `${moves.length} 件`,
+    );
+    return true;
+  }
+
+  function isFolderPasteLinkChoiceSuppressed() {
+    try {
+      return localStorage.getItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE) === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setFolderPasteLinkChoiceSuppressed(suppressed) {
+    try {
+      if (suppressed) {
+        localStorage.setItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE, 'true');
+      } else {
+        localStorage.removeItem(STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE);
+      }
+    } catch (_) {}
+  }
+
+  function _normalizePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function shouldPromptFolderPasteChoice(items, destFolder, clipMode) {
+    if (clipMode === 'cut') return false;
+    if (isFolderPasteLinkChoiceSuppressed()) return false;
+    if (!items || !items.length || !destFolder) return false;
+    const normDest = _normalizePath(destFolder);
+    // 同一フォルダ内への貼り付け（複製）はダイアログを出さず通常コピー
+    const allSameFolder = items.every(item => {
+      const parent = _normalizePath(item.parent || (item.path ? item.path.split(/[\\/]/).slice(0, -1).join('/') : ''));
+      return parent === normDest;
+    });
+    if (allSameFolder) return false;
+    return true;
+  }
+
+  async function showFolderPasteChoiceModal(options = {}) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (choice, suppress = false) => {
+        if (settled) return;
+        settled = true;
+        resolve({ choice, suppress });
+      };
+
+      const title = '貼り付け方法を選択';
+      const body = document.createElement('div');
+      body.className = 'folder-paste-choice-body';
+
+      const p1 = document.createElement('p');
+      p1.textContent = 'リンクなら容量を増やさず、同じファイルを複数のフォルダに置けます。';
+      p1.style.margin = '0';
+
+      const p2 = document.createElement('p');
+      p2.textContent = 'どこから開いても同じ元ファイルを編集します。別々に編集する場合はコピーしてください。';
+      p2.style.margin = '0';
+
+      const p3 = document.createElement('p');
+      p3.textContent = 'Alt＋ドラッグでもリンクファイルを作れます。';
+      p3.style.cssText = 'margin:0;font-size:12px;color:var(--fg2);';
+
+      const checkLabel = document.createElement('label');
+      checkLabel.className = 'gb-check folder-paste-choice-check';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = 'folder-paste-link-suppress-check';
+      const checkSpan = document.createElement('span');
+      checkSpan.textContent = '今後表示しない（以後はコピー）';
+      checkLabel.append(checkbox, checkSpan);
+
+      body.append(p1, p2, p3, checkLabel);
+
+      const footer = document.createElement('div');
+      footer.className = 'folder-paste-choice-actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'gb-btn gb-btn-secondary';
+      cancelBtn.dataset.choice = 'cancel';
+      cancelBtn.dataset.e2eId = 'folder-paste-choice-cancel';
+      cancelBtn.textContent = 'キャンセル';
+
+      const linkBtn = document.createElement('button');
+      linkBtn.type = 'button';
+      linkBtn.className = 'gb-btn gb-btn-secondary';
+      linkBtn.dataset.choice = 'link';
+      linkBtn.dataset.e2eId = 'folder-paste-choice-link';
+      linkBtn.textContent = 'リンクファイルを作成';
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'gb-btn gb-btn-primary';
+      copyBtn.dataset.choice = 'copy';
+      copyBtn.dataset.e2eId = 'folder-paste-choice-copy';
+      copyBtn.textContent = 'コピー';
+
+      footer.append(cancelBtn, linkBtn, copyBtn);
+
+      let modalController = null;
+
+      const handleChoice = (choice) => {
+        const suppress = checkbox.checked;
+        if (choice !== 'cancel' && suppress) {
+          setFolderPasteLinkChoiceSuppressed(true);
+        }
+        if (modalController?.close) {
+          modalController.close(choice);
+        }
+        finish(choice, suppress);
+      };
+
+      cancelBtn.addEventListener('click', () => handleChoice('cancel'));
+      linkBtn.addEventListener('click', () => handleChoice('link'));
+      copyBtn.addEventListener('click', () => handleChoice('copy'));
+
+      if (global.GBUI?.createModal) {
+        modalController = global.GBUI.createModal({
+          title,
+          body,
+          footer,
+          variant: 'standard',
+          geometryKey: 'folder-paste-link-choice',
+          closeOnEsc: true,
+          closeOnOverlay: true,
+          initialFocus: copyBtn,
+          onClose: () => {
+            if (!settled) {
+              finish('cancel', false);
+            }
+          },
+        });
+        if (modalController?.open) modalController.open();
+      } else {
+        const confirmed = confirm(`${title}\n\nリンクなら容量を増やさず、同じファイルを複数のフォルダに置けます。\nリンクファイルを作成しますか？\n[OK] リンクファイルを作成 / [キャンセル] コピー`);
+        finish(confirmed ? 'link' : 'copy', false);
+      }
+    });
+  }
+
+  async function executeFolderPasteWithChoice(clip, destFolder, options = {}) {
+    if (!clip?.items?.length || !destFolder) return;
+    if (typeof _folderToolbarIsLockedPath === 'function' && _folderToolbarIsLockedPath(destFolder)) {
+      if (typeof showStatus === 'function') showStatus('編集ロック中のフォルダには貼り付けできません', true);
+      return;
+    }
+
+    const mode = clip.mode || 'copy';
+    const items = clip.items;
+
+    // ダイアログ表示判定
+    if (shouldPromptFolderPasteChoice(items, destFolder, mode)) {
+      const { choice } = await showFolderPasteChoiceModal({ items, destFolder });
+      if (choice === 'cancel') return;
+      if (choice === 'link') {
+        if (typeof addFolderLinksBatchWithHistory === 'function') {
+          const result = await addFolderLinksBatchWithHistory(items, destFolder, options);
+          const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
+          if (refresh) await refresh();
+          const created = result?.created_count || 0;
+          const unchanged = result?.unchanged_count || 0;
+          const failed = result?.failed_count || 0;
+          let msg = '';
+          if (created) msg += `${created} 件のリンクを作成しました`;
+          if (unchanged) msg += (msg ? '、' : '') + `${unchanged} 件は既にリンク済みです`;
+          if (failed) msg += (msg ? '、' : '') + `${failed} 件は失敗しました`;
+          if (typeof showStatus === 'function') showStatus(msg || 'リンクを作成しました', failed > 0);
+          return;
+        }
+      }
+      // choice === 'copy' の場合は通常コピー処理へ進む
+    }
+
+    // cut または copy の実行
+    const pastedPaths = [];
+    const failed = [];
+    let skipped = 0;
+    const executedMoves = [];
+    const executedCopies = [];
+    const progress = global.MeldexImportProgress?.beginOperation?.(
+      mode === 'cut' ? 'ファイルを移動中' : 'ファイルを貼り付け中',
+      items.length,
+      { delayMs: 0, kind: mode === 'cut' ? 'file-move' : 'file-copy' },
+    );
+    let processed = 0;
+
+    for (const item of items) {
+      try {
+        if (item.type === 'folder' && typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path)) {
+          failed.push(item);
+          continue;
+        }
+        if (mode === 'cut') {
+          const itemParent = item.parent || (typeof _folderToolbarParentPath === 'function' ? _folderToolbarParentPath(item.path) : '');
+          const normDest = typeof _folderToolbarNormalizePath === 'function' ? _folderToolbarNormalizePath(destFolder) : destFolder;
+          if (itemParent === normDest) {
+            skipped++;
+            continue;
+          }
+          if (typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path)) {
+            failed.push(item);
+            continue;
+          }
+          const oldPath = item.path;
+          const res = await apiPost('/outliner/move', {
+            path: item.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
+          try {
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+          } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
+          try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
+          catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
+          const newPath = res?.new_path || item.path;
+          pastedPaths.push(newPath);
+          executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
+        } else {
+          const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
+          const newPath = res?.new_path || '';
+          if (newPath) {
+            pastedPaths.push(newPath);
+            executedCopies.push({ origPath: item.path, newPath, applied: true, item });
+          }
+        }
+      } catch (_) {
+        failed.push(item);
+      } finally {
+        processed += 1;
+        global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
+      }
+    }
+    global.MeldexImportProgress?.finishOperation?.(progress, {
+      failed: failed.length,
+      summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
+      details: failed.map(item => ({ path: item.path || item.name || '', message: '処理できませんでした' })),
+    });
+
+    if (mode === 'cut') {
+      if (typeof options.onCutResult === 'function') {
+        options.onCutResult(failed);
+      } else if (typeof _folderToolbarClipboard !== 'undefined') {
+        _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
+      }
+      registerFileMoveHistory(executedMoves, {
+        ...options,
+        label: 'フォルダ: 切り取り貼り付け',
+        detail: `${executedMoves.length} 件 → ${destFolder}`,
+      });
+    } else {
+      if (executedCopies.length && typeof historyPush === 'function') {
+        const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
+          const result = await apiPost('/outliner/delete', { path: c.newPath });
+          c.trash = result?.trash_name ? { trash_name: result.trash_name, ...(result.trash_root ? { trash_root: result.trash_root } : {}) } : null;
+        }, options);
+        const copyRedo = () => replayHistoryItems(executedCopies, true, async c => {
+          // 元ファイルの後続編集でコピーの内容が変わらないよう、削除した実体を復元する。
+          const result = c.trash
+            ? await apiPost('/outliner/restore', c.trash)
+            : await apiPost('/outliner/save-as', { path: c.origPath, dest_folder: destFolder });
+          c.newPath = result?.restored_path || result?.new_path || c.newPath;
+        }, options);
+        historyPush('フォルダ: コピー貼り付け', copyUndo, copyRedo, '', `${executedCopies.length} 件 → ${destFolder}`);
+      }
+    }
+
+    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
+    if (refresh) await refresh(pastedPaths.filter(Boolean));
+
+    if (failed.length) {
+      if (typeof showStatus === 'function') showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
+    } else if (pastedPaths.length) {
+      if (typeof showStatus === 'function') showStatus(pastedPaths.length + ' 件を貼り付けました');
+    } else if (skipped) {
+      if (typeof showStatus === 'function') showStatus('同じフォルダへの移動のため、変更はありません');
+    }
+    if (typeof updateFolderToolbarActions === 'function') updateFolderToolbarActions();
+  }
+
+  async function materializeFolderLinkWithHistory(filePath, folderPath, options = {}) {
+    if (!filePath || !folderPath) return null;
+    const confirmed = typeof global.cfConfirm === 'function'
+      ? await global.cfConfirm(`「${folderPath}」のリンクを実体化しますか？\n独立したコピーを作成し、以後は別々に編集できるようになります。`)
+      : confirm('リンクを実体化しますか？');
+    if (!confirmed) return null;
+
+    const fileId = options.fileId || '';
+    const ownerToken = options.ownerToken || `mat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = {
+      file_path: filePath,
+      folder_path: folderPath,
+      file_id: fileId,
+      owner_token: ownerToken,
+    };
+
+    let res = null;
+    try {
+      res = await apiPost('/folder-links/materialize', payload);
+    } catch (err) {
+      if (typeof showStatus === 'function') showStatus('実体化に失敗しました: ' + (err?.message || err || ''), true);
+      return null;
+    }
+
+    const matPath = res?.materialized_path || '';
+    const oldFileId = res?.old_file_id || fileId;
+
+    if (matPath && typeof historyPush === 'function') {
+      let currentMatPath = matPath;
+      let removed = false;
+      const undoFn = async () => {
+        if (!removed) {
+          await apiPost('/outliner/delete', { path: currentMatPath });
+          removed = true;
+        }
+        const result = await apiPost('/folder-links/batch/add', {
+          items: [{ file_path: filePath, file_id: oldFileId }],
+          folder_path: folderPath,
+          owner_token: ownerToken,
+        });
+        if (result?.failed_count || result?.results?.some(row => row.status === 'failed')) {
+          await refreshHistoryView(options);
+          throw new Error('リンクを復元できませんでした。実体の削除は完了済みで、リンク復元を再試行できます');
+        }
+        return refreshHistoryView(options);
+      };
+      const redoFn = async () => {
+        const result = await apiPost('/folder-links/materialize', payload);
+        currentMatPath = result?.materialized_path || currentMatPath;
+        removed = false;
+        return refreshHistoryView(options);
+      };
+      historyPush('フォルダリンク: 実体化', undoFn, redoFn, '', `${filePath} → ${matPath}`);
+    }
+
+    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
+    if (refresh) await refresh([matPath].filter(Boolean));
+    if (typeof showStatus === 'function') showStatus('実体化しました（以後は別々に編集できます）');
+    return res;
+  }
+
+  async function promoteFolderLinkToSourceWithHistory(filePath, folderPath, options = {}) {
+    if (!filePath || !folderPath) return null;
+    const confirmed = typeof global.cfConfirm === 'function'
+      ? await global.cfConfirm(`物理ファイルを「${folderPath}」へ移し、元の場所にはリンクを残します。\nよろしいですか？（内容は1つのままです）`)
+      : confirm('この場所をリンク元にしますか？');
+    if (!confirmed) return null;
+
+    const fileId = options.fileId || '';
+    const ownerToken = options.ownerToken || `prm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = {
+      file_path: filePath,
+      folder_path: folderPath,
+      file_id: fileId,
+      owner_token: ownerToken,
+    };
+
+    let res = null;
+    try {
+      res = await apiPost('/folder-links/promote-to-source', payload);
+    } catch (err) {
+      if (typeof showStatus === 'function') showStatus('リンク元化に失敗しました: ' + (err?.message || err || ''), true);
+      return null;
+    }
+
+    const newSourcePath = res?.new_source_path || '';
+    const oldSourcePath = res?.old_source_path || filePath;
+    const newLinkFolder = res?.new_link_folder || '';
+
+    if (newSourcePath && typeof historyPush === 'function') {
+      let currentSourcePath = newSourcePath;
+      let undoFolder = newLinkFolder;
+      const promote = async folder => {
+        const result = await apiPost('/folder-links/promote-to-source', {
+          ...payload, file_path: currentSourcePath, folder_path: folder,
+          file_id: res?.file_id || fileId,
+        });
+        currentSourcePath = result?.new_source_path || currentSourcePath;
+        if (folder === folderPath) undoFolder = result?.new_link_folder || undoFolder;
+        return refreshHistoryView(options);
+      };
+      const undoFn = () => promote(undoFolder);
+      const redoFn = () => promote(folderPath);
+      historyPush('フォルダリンク: リンク元ファイル化', undoFn, redoFn, '', `${oldSourcePath} ⇄ ${newSourcePath}`);
+    }
+
+    const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
+    if (refresh) await refresh([newSourcePath].filter(Boolean));
+    if (typeof showStatus === 'function') showStatus('この場所をリンク元ファイルに設定しました');
+    return res;
+  }
+
+  global.MeldexFolderLinkActions = {
+    isFolderPasteLinkChoiceSuppressed,
+    setFolderPasteLinkChoiceSuppressed,
+    shouldPromptFolderPasteChoice,
+    showFolderPasteChoiceModal,
+    executeFolderPasteWithChoice,
+    registerFileMoveHistory,
+    materializeFolderLinkWithHistory,
+    promoteFolderLinkToSourceWithHistory,
+    STORAGE_KEY_SUPPRESS_FOLDER_PASTE_LINK_CHOICE,
+  };
+  global.showFolderPasteChoiceModal = showFolderPasteChoiceModal;
+  global.shouldPromptFolderPasteChoice = shouldPromptFolderPasteChoice;
+  global.executeFolderPasteWithChoice = executeFolderPasteWithChoice;
+  global.MeldexFileMoveHistory = Object.freeze({ register: registerFileMoveHistory });
+  global.materializeFolderLinkWithHistory = materializeFolderLinkWithHistory;
+  global.promoteFolderLinkToSourceWithHistory = promoteFolderLinkToSourceWithHistory;
+})(typeof window !== 'undefined' ? window : globalThis);
+;
 
 ;
 
@@ -246486,13 +249363,53 @@ function _outlinerExternalDragItems(event, payloadOverride) {
     && _treeNodeIsAncestor({ _nodeData: parent }, { _nodeData: row })));
 }
 
+// ドロップ位置の判定（UI共通ルール §19 ツリーD&D）:
+// - フォルダ・シート（中へ入れられる行）だけが 'inside'（行を囲む枠）になる。
+//   上25%=上の線 / 中央=枠 / 下25%=下の線。展開中は下側も枠にする
+//   （行の下端の線は最初の子の直前と重なり「フォルダの後ろ」と誤読されるため）。
+// - ファイル行は上半分=上の線 / 下半分=下の線だけで、枠にはならない。
 function _outlinerRowDropPosition(event, row, item) {
   const container = item.type === 'folder' || item.type === 'database';
   if (item._isRoot || item._form_parent_path || (event.altKey && container)) return 'inside';
   const rect = row.getBoundingClientRect();
   const fraction = (event.clientY - rect.top) / Math.max(1, rect.height);
-  if (container && fraction >= 0.25 && fraction <= 0.75) return 'inside';
+  if (container) {
+    const expanded = row.querySelector(':scope > .tree-toggle')?.dataset?.expanded === 'true';
+    if (fraction >= 0.25 && (expanded || fraction <= 0.75)) return 'inside';
+  }
   return fraction < 0.5 ? 'above' : 'below';
+}
+
+// ドラッグ中に閉じたフォルダの枠表示が続いたら、そのフォルダを展開する。
+// dragover は同じ行で連続発火するため、同じ行なら既存タイマーを維持する（毎回作り直さない）。
+const OUTLINER_DRAG_EXPAND_DELAY_MS = 700;
+let _outlinerDragExpandState = null;
+
+function _cancelOutlinerDragExpand(row) {
+  const state = _outlinerDragExpandState;
+  if (!state || (row && state.row !== row)) return;
+  clearTimeout(state.timer);
+  _outlinerDragExpandState = null;
+}
+
+function _scheduleOutlinerDragExpand(row, toggle, position) {
+  if (position !== 'inside' || !row || !toggle || !toggle.dataset
+      || toggle.dataset.expanded !== 'false') {
+    _cancelOutlinerDragExpand();
+    return;
+  }
+  if (_outlinerDragExpandState?.row === row) return;
+  _cancelOutlinerDragExpand();
+  const state = { row, timer: 0 };
+  state.timer = setTimeout(() => {
+    if (_outlinerDragExpandState !== state) return;
+    _outlinerDragExpandState = null;
+    // ドロップ・ドラッグ終了・別の行への移動で枠が消えていれば展開しない。
+    if (!row.isConnected || !row.classList.contains('drag-over-inside')) return;
+    if (toggle.dataset.expanded !== 'false') return;
+    toggle.click();
+  }, OUTLINER_DRAG_EXPAND_DELAY_MS);
+  _outlinerDragExpandState = state;
 }
 
 function _outlinerRowDropTarget(node, item, position, rootPath) {
@@ -247233,7 +250150,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener('meldex:topic-records-updated', (event) => {
     // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
     // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
-    if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
+    // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
+    // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
+    if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
     // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
     // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
     // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
@@ -247782,6 +250701,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
   row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
+    _cancelOutlinerDragExpand();
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
     draggedNode = null;
@@ -247811,6 +250731,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
       e.preventDefault(); e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
       clearDragIndicators(); row.classList.add('drag-over-inside');
+      _scheduleOutlinerDragExpand(row, toggle, 'inside');
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
@@ -247835,10 +250756,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
           || externalItems.some(source => source.type === 'entity' || source.linked || source.path === item.path
             || _treeNodeIsAncestor({ _nodeData: source }, { _nodeData: target }))) {
         e.dataTransfer.dropEffect = 'none';
+        _cancelOutlinerDragExpand(row);
         return;
       }
       e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
       row.classList.add('drag-over-' + position);
+      _scheduleOutlinerDragExpand(row, toggle, position);
       return;
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
@@ -247855,18 +250778,23 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
     if (item._form_parent_path) {
       row.classList.add('drag-over-inside');
+      _cancelOutlinerDragExpand(row);
       return;
     }
 
-    row.classList.add('drag-over-' + _outlinerRowDropPosition(e, row, item));
+    const position = _outlinerRowDropPosition(e, row, item);
+    row.classList.add('drag-over-' + position);
+    _scheduleOutlinerDragExpand(row, toggle, position);
   });
 
   row.addEventListener('dragleave', (e) => {
     if (e.relatedTarget && row.contains(e.relatedTarget)) return;
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
+    _cancelOutlinerDragExpand(row);
   });
 
   row.addEventListener('drop', async (e) => {
+    _cancelOutlinerDragExpand();
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
       await _outlinerImportOsDropSafely(e, item);
@@ -253104,8 +256032,16 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
 (function() {
   const homeBody = document.getElementById('body-home');
   if (!homeBody) return;
+  // 行と行の間・字下げの余白（.tree-node 内で行以外の所）はホーム直下への移動先にしない。
+  // ここで枠を出すとセクション全体を囲む枠が行の間で点滅し、ドロップ先を誤読させる。
+  const overTreeGutter = (e) => !!(e.target && e.target !== homeBody && e.target.closest?.('.tree-node'));
   homeBody.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (overTreeGutter(e)) {
+      homeBody.style.outline = '';
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
     const external = !draggedNode && (_outlinerExternalDragItems(e).length
       || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')));
     if (!draggedNode && !external) return;
@@ -253116,6 +256052,7 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
   homeBody.addEventListener('drop', async (e) => {
     e.preventDefault();
     homeBody.style.outline = '';
+    if (overTreeGutter(e)) { if (typeof clearDragIndicators === 'function') clearDragIndicators(); return; }
     if (!draggedNode && _homeFolderPath) {
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const items = _outlinerExternalDragItems(e, resolved?.payload).filter(source =>
@@ -260694,7 +263631,7 @@ const GBPaneBridge = (() => {
   const _ANNOTATION_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
-    'board', 'scriptnote', 'calendar',
+    'board', 'scriptnote', 'calendar', 'form-app', 'map',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
@@ -260764,6 +263701,7 @@ const GBPaneBridge = (() => {
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
     if (tabType === 'map') return tabPath('mapPath');
+    if (tabType === 'form-app') return tabPath('formPath');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
@@ -260915,6 +263853,10 @@ const GBPaneBridge = (() => {
     }
     if (GBLayout.activePane !== paneInfo.paneId && typeof GBLayout.setActivePane === 'function') {
       GBLayout.setActivePane(paneInfo.paneId, { sync: true });
+    }
+    if (paneInfo.activeTab?.type === 'map') {
+      const mapApp = typeof getComponentInstance === 'function' ? getComponentInstance(paneInfo.activeTab.id) : null;
+      return !!mapApp?.addAnnotation?.();
     }
     _mountFloatingAnnotationUi({ paneId: paneInfo.paneId });
     if (typeof toggleAnnotationToolbar === 'function') {
@@ -263587,8 +266529,12 @@ const GBSubPanel = (() => {
   }
 
   function _createInnerPane(entry) {
+    // マップ・フォームは自分のタブをレイアウトから探すが、この仮想ペインはレイアウトの外にあるため、
+    // 開く対象のパスを状態にも入れておく（入れないと「作成するか開いてください」と表示されていた）。
+    const pathState = entry.type === 'map' ? { mapPath: entry.path } : entry.type === 'form-app' ? { formPath: entry.path } : {};
+    const state = entry.path ? { ...(entry.state || {}), ...pathState } : (entry.state || null);
     const tab = typeof GBTabs !== 'undefined' && typeof GBTabs.createTab === 'function'
-      ? GBTabs.createTab(entry.label, entry.type, entry.path || '', entry.state || null)
+      ? GBTabs.createTab(entry.label, entry.type, entry.path || '', state)
       : {
         id: 'subpanel-tab-' + Date.now().toString(36),
         type: entry.type,
@@ -264021,7 +266967,7 @@ const GBSubPanel = (() => {
         || (kind === 'page' ? { paneId: INNER_PANE_ID, pagePath: entry.path, viewMode: 'page', containerEl: _contentEl } : null),
       resolveComponent: () => typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null,
       activate: () => {
-        if (['board', 'scriptnote'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
+        if (['board', 'scriptnote', 'form-app', 'map'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
       },
       syncDetail: () => {
         const component = typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null;
@@ -264037,7 +266983,10 @@ const GBSubPanel = (() => {
         if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
         return component?.reload?.();
       },
-      historyScope: () => kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
+      // フォーム・マップは本体と同じ範囲名をコンポーネント自身から取る（書式がずれると取り消しが別範囲へ行く）。
+      historyScope: () => ['form-app', 'map'].includes(kind) && typeof getComponentInstance(_pane?.tabs?.[0]?.id)?._historyScope === 'function'
+          ? getComponentInstance(_pane?.tabs?.[0]?.id)._historyScope()
+        : kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
         : kind === 'scriptnote' ? getComponentInstance(_pane?.tabs?.[0]?.id)?._editor?._historyScope?.()
         : kind === 'calendar' && typeof _meldexScheduleTabHistoryScope === 'function' ? _meldexScheduleTabHistoryScope(_pane?.tabs?.[0])
         : kind === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(entry.path)
@@ -264325,11 +267274,98 @@ const GBSubPanel = (() => {
     if (typeof openRightPanelTab === 'function') openRightPanelTab('subpanel');
   }
 
-  async function open(target, options) {
+  // ---- サブパネルのタブ（メインパネルと同じくファイル／フォルダを1件ずつタブにする） ----
+  // 表示の仕組み（保存の確定→退避→描画）は従来の1件表示をそのまま使い、表示中のタブだけを描く。
+  // タブの一覧は「サブパネル」の土台タブの state.subTabs としてレイアウトへ保存し、再起動後も残す。
+  const TAB_MIME = 'application/x-meldex-subpanel-tab';
+  const MAIN_TAB_MIME = 'application/x-meldex-main-tab-reorder';
+  let _tabs = [];
+  let _activeId = '';
+  let _tabSeq = 0;
+  let _stripEl = null;
+  let _restored = false;
+
+  function _newTabId() { return 'sp-tab-' + Date.now().toString(36) + '-' + (++_tabSeq); }
+  function _activeTab() { return _tabs.find(tab => tab.id === _activeId) || null; }
+  function _sameTarget(a, b) { return !!(a && b && a.type === b.type && String(a.path || '') === String(b.path || '')); }
+  function _hostPane() {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
+    return GBLayout.getAllPanes(GBLayout.root).find(pane => pane?.meldexRole === 'subpanel-workspace') || null;
+  }
+  function _hostTab() { return _hostPane()?.tabs?.[0] || null; }
+  function _portableState(state) {
+    if (!state || typeof state !== 'object') return {};
+    try {
+      const text = JSON.stringify(state);
+      return text.length <= 20000 ? JSON.parse(text) : {};
+    } catch { return {}; }
+  }
+  function _persistTabs() {
+    const host = _hostTab();
+    if (!host) return;
+    host.state = {
+      ...(host.state || {}),
+      subTabs: _tabs.map(tab => {
+        const entry = tab.history[tab.index] || tab.entry;
+        return { type: entry.type, path: entry.path, label: entry.label, state: _portableState(entry.state) };
+      }),
+      activeSubTab: Math.max(0, _tabs.findIndex(tab => tab.id === _activeId)),
+    };
+    try { GBLayout.saveLayout?.(); } catch { /* 保存できなくても表示は続ける */ }
+  }
+  function _syncActiveHistory() {
+    const tab = _activeTab();
+    if (!tab) return;
+    tab.history = _navHistory;
+    tab.index = _navIndex;
+    tab.entry = _navHistory[_navIndex] || tab.entry;
+  }
+  function _useTabHistory(tab) {
+    _navHistory = tab ? tab.history : [];
+    _navIndex = tab ? tab.index : -1;
+  }
+  function _restoreTabsFromLayout() {
+    if (_restored) return;
+    const host = _hostTab();
+    if (!host) return;
+    _restored = true;
+    const saved = Array.isArray(host.state?.subTabs) ? host.state.subTabs : [];
+    _tabs = saved.filter(item => item && item.type && item.path).slice(0, 50).map(item => {
+      const entry = { type: String(item.type), path: String(item.path), label: item.label || _basename(item.path), state: item.state && typeof item.state === 'object' ? item.state : {} };
+      return { id: _newTabId(), entry, history: [entry], index: 0 };
+    });
+    const index = Math.min(_tabs.length - 1, Math.max(0, Number(host.state?.activeSubTab) || 0));
+    _activeId = _tabs[index]?.id || '';
+  }
+
+  async function _showTab(tab) {
+    if (!tab) return false;
     const seq = ++_opSeq;
+    return _guardedTransition(seq, () => {
+      _activeId = tab.id;
+      _useTabHistory(tab);
+      _renderTarget(tab.history[tab.index]);
+      _updateNavUi();
+      _renderStrip();
+      _persistTabs();
+      return true;
+    });
+  }
+
+  async function activateTab(id) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return false;
+    if (tab.id === _activeId && _current && _sameTarget(_current, tab.history[tab.index])) { _renderStrip(); return true; }
+    return _showTab(tab);
+  }
+
+  async function open(target, options) {
+    const opts = options || {};
+    const seq = ++_opSeq;
+    _restoreTabsFromLayout();
     // スマホのドロワー表示は _openMobileDrawer が自前で開くため、右レールの操作はしない。
     try {
-      if ((options || {}).reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
+      if (opts.reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
     } catch { /* 右レールを開けない環境でも、表示処理そのものは続ける */ }
     let entry;
     try {
@@ -264344,14 +267380,247 @@ const GBSubPanel = (() => {
     const mobile = _isMobileDrawerEnabled();
     if (mobile) _ensureRootInDocument();
     else _ensureRoot();
+    // 同じファイルのタブがあればそれを表示する（同じファイルを2つのタブで開かない）。
+    let tab = _tabs.find(item => _sameTarget(item.history[item.index], entry));
+    let added = false;
+    if (!tab) {
+      tab = { id: _newTabId(), entry, history: [entry], index: 0 };
+      const activeIndex = _tabs.findIndex(item => item.id === _activeId);
+      const at = Number.isInteger(opts.index) ? Math.max(0, Math.min(_tabs.length, opts.index)) : (activeIndex >= 0 ? activeIndex + 1 : _tabs.length);
+      _tabs.splice(at, 0, tab);
+      added = true;
+    } else {
+      tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state: { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) } };
+    }
     const transitioned = await _guardedTransition(seq, () => {
-      _pushHistory(entry);
-      _renderTarget(entry);
+      _activeId = tab.id;
+      _useTabHistory(tab);
+      _renderTarget(tab.history[tab.index]);
       _updateNavUi();
+      _renderStrip();
+      _persistTabs();
       return true;
     });
-    if (!transitioned) return false;
-    return mobile ? _openMobileDrawer(entry) : true;
+    if (!transitioned) {
+      // 保存を確認できずに切り替えられなかった時は、追加しただけのタブを残さない。
+      if (added && tab.id !== _activeId) _tabs = _tabs.filter(item => item !== tab);
+      _renderStrip();
+      return false;
+    }
+    return mobile ? _openMobileDrawer(tab.history[tab.index]) : true;
+  }
+
+  // タブを閉じる。表示中のタブなら保存を確定してから閉じ、隣のタブを表示する。
+  async function closeTab(id, options = {}) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return true;
+    if (tab.id !== _activeId) {
+      _tabs = _tabs.filter(item => item !== tab);
+      _renderStrip(); _persistTabs();
+      return true;
+    }
+    if (options.alreadyFlushed) {
+      if (await _retractCurrentContent({ remount: true }) === false) return false;
+    } else if (!await _guardedTransition(++_opSeq, () => true)) return false;
+    const index = _tabs.indexOf(tab);
+    if (index >= 0) _tabs.splice(index, 1);
+    _current = null;
+    const next = _tabs[index] || _tabs[index - 1] || null;
+    if (next) {
+      _activeId = next.id;
+      _useTabHistory(next);
+      _renderTarget(next.history[next.index]);
+      _updateNavUi();
+    } else {
+      _activeId = '';
+      _useTabHistory(null);
+      _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
+    }
+    _renderStrip(); _persistTabs();
+    return true;
+  }
+
+  // メインパネル等へ移すため、保存を確定してからタブを取り出す（取り出したタブの対象を返す）。
+  async function takeTab(id) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return null;
+    const entry = { ...(tab.history[tab.index] || tab.entry) };
+    if (tab.id === _activeId) {
+      _captureCurrentEntryState();
+      const live = _current && _sameTarget(_current, entry) ? { ..._current } : entry;
+      if (!await closeTab(id)) return null;
+      return live;
+    }
+    await closeTab(id);
+    return entry;
+  }
+
+  function _moveTabWithin(id, index) {
+    const from = _tabs.findIndex(item => item.id === id);
+    if (from < 0) return;
+    const [tab] = _tabs.splice(from, 1);
+    const at = Math.max(0, Math.min(_tabs.length, index > from ? index - 1 : index));
+    _tabs.splice(at, 0, tab);
+    _renderStrip(); _persistTabs();
+  }
+
+  function _showTabMenu(event, tab) {
+    event.preventDefault();
+    event.stopPropagation();
+    const entry = tab.history[tab.index] || tab.entry;
+    window.MeldexContextMenuUI?.openAt({
+      x: event.clientX, y: event.clientY, ariaLabel: (entry.label || 'タブ') + 'のタブ操作', e2eId: 'subpanel-tab-menu',
+      items: [
+        { label: 'メインパネルで開く', icon: 'squareArrowOutUpLeft', action: async () => { if (await activateTab(tab.id)) await promoteToMainPane(); } },
+        { label: '閉じる', icon: 'x', action: () => closeTab(tab.id) },
+        { label: 'ほかのタブを閉じる', icon: 'xSquare', disabled: _tabs.length < 2, action: async () => {
+          for (const other of [..._tabs]) if (other.id !== tab.id && !await closeTab(other.id)) return;
+        } },
+      ],
+    });
+  }
+
+  function _clearStripMarkers(strip) {
+    strip.querySelectorAll('.gb-tab-drop-before,.gb-tab-drop-after').forEach(el => el.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
+  }
+
+  function _insertIndexAt(strip, clientX) {
+    const els = [...strip.querySelectorAll(':scope > .gb-tab')];
+    const before = els.find(el => { const r = el.getBoundingClientRect(); return clientX < r.left + r.width / 2; });
+    if (!before) return _tabs.length;
+    const i = _tabs.findIndex(tab => tab.id === before.dataset.subpanelTabId);
+    return i < 0 ? _tabs.length : i;
+  }
+
+  function _dropKinds(event) {
+    const types = Array.from(event.dataTransfer?.types || []);
+    return {
+      own: types.includes(TAB_MIME),
+      main: types.includes(MAIN_TAB_MIME),
+      node: types.includes('application/x-meldex-node') || !!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind?.(event, 'node')),
+    };
+  }
+
+  async function _handleStripDrop(event, strip) {
+    const kinds = _dropKinds(event);
+    if (!kinds.own && !kinds.main && !kinds.node) return;
+    event.preventDefault(); event.stopPropagation();
+    _clearStripMarkers(strip);
+    const index = _insertIndexAt(strip, event.clientX);
+    // サブパネル内の並べ替え
+    let own = null;
+    try { own = JSON.parse(event.dataTransfer.getData(TAB_MIME) || 'null'); } catch { own = null; }
+    if (own?.id) { _moveTabWithin(own.id, index); return; }
+    // メインパネルのタブを移す（メイン側の保存を確定して閉じてから、サブパネルで開く）
+    let main = null;
+    try { main = JSON.parse(event.dataTransfer.getData(MAIN_TAB_MIME) || 'null'); } catch { main = null; }
+    const mainPane = main?.paneId && typeof GBLayout !== 'undefined' ? GBLayout.findNode(GBLayout.root, main.paneId)?.node : null;
+    const mainTab = mainPane?.tabs?.find(tab => tab.id === main.tabId) || null;
+    if (mainTab?.path) {
+      const target = { type: mainTab.type, path: mainTab.path, label: mainTab.label, state: { ...(mainTab.state || {}) } };
+      if (await GBTabs.closeTab(main.paneId, mainTab.id) === false) return;
+      await open(target, { index });
+      return;
+    }
+    // フォルダツリー等からのファイル／フォルダ（1件ずつ）
+    const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData?.(event, 'node') : null;
+    let payload = resolved?.payload || null;
+    if (!payload) { try { payload = JSON.parse(event.dataTransfer.getData('application/x-meldex-node') || 'null'); } catch { payload = null; } }
+    const items = Array.isArray(payload?.items) && payload.items.length ? payload.items : (payload?.path ? [payload] : []);
+    if (!items.length) return;
+    if (items.length > 1) {
+      if (resolved) MeldexDnD.failDrop?.(resolved);
+      if (typeof showStatus === 'function') showStatus('複数選択はタブ列へ一括追加できないため、全件を変更しませんでした', true);
+      return;
+    }
+    const item = items[0];
+    const normalized = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.normalizeOpenTargetAsync?.({ name: item.name, path: item.path, type: item.type }) : null;
+    const ok = await open(normalized || { type: item.type, path: item.path, label: item.name }, { index });
+    if (resolved) (ok ? MeldexDnD.completeDrop?.(resolved) : MeldexDnD.failDrop?.(resolved));
+  }
+
+  function _installStripDrop(strip) {
+    if (strip.dataset.subpanelStripDrop === '1') return;
+    strip.dataset.subpanelStripDrop = '1';
+    strip.addEventListener('dragover', event => {
+      const kinds = _dropKinds(event);
+      if (!kinds.own && !kinds.main && !kinds.node) return;
+      event.preventDefault(); event.stopPropagation();
+      event.dataTransfer.dropEffect = kinds.own || kinds.main ? 'move' : 'copy';
+      _clearStripMarkers(strip);
+      const els = [...strip.querySelectorAll(':scope > .gb-tab')];
+      const before = els.find(el => { const r = el.getBoundingClientRect(); return event.clientX < r.left + r.width / 2; });
+      if (before) before.classList.add('gb-tab-drop-before'); else els.at(-1)?.classList.add('gb-tab-drop-after');
+    });
+    strip.addEventListener('dragleave', event => {
+      if (strip.contains(event.relatedTarget)) return;
+      _clearStripMarkers(strip);
+    });
+    strip.addEventListener('drop', event => { _handleStripDrop(event, strip); });
+  }
+
+  function _renderStrip() {
+    // タブバーは描画中（まだ画面に付く前）にも渡されるため、接続を待たずに中身を作る。
+    const strip = _stripEl;
+    if (!strip) return;
+    strip.querySelectorAll(':scope > .gb-tab, :scope > .gb-subpanel-tabs-empty').forEach(el => el.remove());
+    if (!_tabs.length) {
+      const empty = document.createElement('span');
+      empty.className = 'gb-subpanel-tabs-empty';
+      empty.textContent = 'サブパネル';
+      strip.appendChild(empty);
+      return;
+    }
+    for (const tab of _tabs) {
+      const entry = tab.history[tab.index] || tab.entry;
+      const el = document.createElement('div');
+      el.className = 'gb-tab' + (tab.id === _activeId ? ' active' : '');
+      el.dataset.subpanelTabId = tab.id;
+      el.dataset.tabTitle = entry.label || 'タブ';
+      el.dataset.e2eId = 'subpanel-tab-' + tab.id;
+      el.setAttribute('role', 'tab');
+      el.setAttribute('aria-selected', tab.id === _activeId ? 'true' : 'false');
+      el.title = entry.path || entry.label || '';
+      el.draggable = true;
+      const icon = document.createElement('span');
+      icon.className = 'gb-tab-icon';
+      if (typeof lucide === 'function') {
+        const fallback = lucide(_tabIcon(entry.type), 14);
+        icon.innerHTML = window.MeldexFileIcons?.tabIcon?.({ type: entry.type, path: entry.path, label: entry.label }, 14, fallback) ?? fallback;
+      }
+      const label = document.createElement('span');
+      label.className = 'gb-tab-label';
+      label.textContent = entry.label || _toolLabel(entry.type);
+      el.append(icon, label);
+      el.addEventListener('click', () => { activateTab(tab.id); });
+      el.addEventListener('auxclick', event => { if (event.button === 1) { event.preventDefault(); closeTab(tab.id); } });
+      el.addEventListener('contextmenu', event => _showTabMenu(event, tab));
+      el.addEventListener('dragstart', event => {
+        event.dataTransfer.setData(TAB_MIME, JSON.stringify({ id: tab.id }));
+        if (typeof MeldexDnD !== 'undefined') MeldexDnD.writeNodePayload?.(event.dataTransfer, { name: entry.label, label: entry.label, path: entry.path, type: entry.type }, 'subpanel');
+        event.dataTransfer.effectAllowed = 'copyMove';
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', () => el.classList.remove('dragging'));
+      strip.appendChild(el);
+    }
+  }
+
+  // パネルのタブバー（gb-layout の renderPane）から呼ばれる。サブパネルの土台タブの代わりに、
+  // 開いているファイル／フォルダのタブを並べる。保存済みのタブは、パネルが見えている時に表示する。
+  function renderTabStrip(container, node) {
+    _restoreTabsFromLayout();
+    _stripEl = container;
+    container.classList.add('gb-subpanel-tab-strip');
+    _installStripDrop(container);
+    _renderStrip();
+    const active = _activeTab();
+    if (active && !node?.collapsed && (!_current || !_sameTarget(_current, active.history[active.index]))) {
+      setTimeout(() => {
+        if (_activeTab() === active && !_sameTarget(_current, active.history[active.index])) _showTab(active);
+      }, 0);
+    }
   }
 
   async function closeContent(options = {}) {
@@ -264361,11 +267630,12 @@ const GBSubPanel = (() => {
       if (options.alreadyFlushed && await _closeForMobileDrawer({ alreadyFlushed: true }) === false) return false;
       return (await drawer.close()) !== false;
     }
+    // 表示中のタブを閉じる（ほかのタブは残す）。
+    if (_activeId) return closeTab(_activeId, { alreadyFlushed: !!options.alreadyFlushed });
     if (options.alreadyFlushed) {
       if (await _retractCurrentContent({ remount: true }) === false) return false;
       _current = null;
-      _navHistory = [];
-      _navIndex = -1;
+      _useTabHistory(null);
       _showEmptyState();
       window.GBEditorHost?.returnToMain?.();
       return true;
@@ -264373,8 +267643,7 @@ const GBSubPanel = (() => {
     const seq = ++_opSeq;
     return _guardedTransition(seq, () => {
       _current = null;
-      _navHistory = [];
-      _navIndex = -1;
+      _useTabHistory(null);
       _showEmptyState();
       window.GBEditorHost?.returnToMain?.();
       return true;
@@ -264388,8 +267657,10 @@ const GBSubPanel = (() => {
     const entry = _navHistory[targetIndex];
     return _guardedTransition(seq, () => {
       _navIndex = targetIndex;
+      _syncActiveHistory();
       _renderTarget(entry);
       _updateNavUi();
+      _renderStrip(); _persistTabs();
       return true;
     });
   }
@@ -264401,8 +267672,10 @@ const GBSubPanel = (() => {
     const entry = _navHistory[targetIndex];
     return _guardedTransition(seq, () => {
       _navIndex = targetIndex;
+      _syncActiveHistory();
       _renderTarget(entry);
       _updateNavUi();
+      _renderStrip(); _persistTabs();
       return true;
     });
   }
@@ -264451,7 +267724,8 @@ const GBSubPanel = (() => {
     if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(actualPaneId, { sync: true });
     if (seq !== _opSeq) return false;
     if (await closeContent({ alreadyFlushed: true }) === false) return false;
-    if (window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
+    // ほかのタブが残っている時はサブパネルを開いたままにする。
+    if (!_tabs.length && window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
     return true;
   }
 
@@ -264490,7 +267764,8 @@ const GBSubPanel = (() => {
       if (entry.state?.viewerUrl) entry.state.viewerUrl = updateViewerUrl(entry.state.viewerUrl);
       if (exact && options.label != null) entry.label = options.label;
     };
-    [_current, ..._navHistory, ...(_pane?.tabs || [])].forEach(update);
+    [_current, ..._navHistory, ...(_pane?.tabs || []), ..._tabs.flatMap(tab => [tab.entry, ...tab.history])].forEach(update);
+    _renderStrip(); _persistTabs();
     _sheetEmbed?.onPathRename?.(oldPath, newPath)?.catch?.(error => {
       if (typeof showStatus === 'function') showStatus('移動後のシートを確認できませんでした: ' + error.message, true);
     });
@@ -264516,6 +267791,14 @@ const GBSubPanel = (() => {
     navBack,
     navForward,
     promoteToMainPane,
+    activateTab,
+    closeTab,
+    takeTab,
+    // すべてのタブを閉じる（保存を確定できないタブがあればそこで止める）。
+    closeAll: async () => { for (const tab of [..._tabs].reverse()) if (!await closeTab(tab.id)) return false; return closeContent(); },
+    renderTabStrip,
+    getTabs: () => _tabs.map(tab => ({ id: tab.id, active: tab.id === _activeId, ...(tab.history[tab.index] || tab.entry) })),
+    TAB_MIME,
     createRootElement,
     isOpen,
     getCurrentTarget,
@@ -267193,7 +270476,8 @@ function _captureDbNavigationBeforeLeave(paneId) {
     _navPushWithViewState({ ...(live?.dbPath === entry.path ? live : {}),
       paneId: nav.paneId, containerEl: root, dbPath: entry.path,
       viewMode: mode === 'timeline' && ['calendar', 'tasks', 'shifts', 'gantt'].includes(live?.viewMode) ? live.viewMode : mode,
-    }, null);
+    // 直前にエントリを開く操作が記録した「戻った時に強調する行」を、離脱時の取り直しで消さない。
+    }, entry.scrollState?.focusedEntity || null);
     return;
   }
 }
@@ -271525,11 +274809,34 @@ function _isHeartbeatCloudMode() {
     || document.body?.dataset?.cloudMode === 'browser';
 }
 
+// クイックメモ・Xブックマーク・Xアカウントの保存先シートへ、選んだシートテンプレートを
+// 適用する（保存の完了は本体の定期確認で受け取る）。適用済みのシートは記録で飛ばされる。
+let _importSheetChangesRevision = null;
+function _applyImportSheetChangeTemplates(state) {
+  const revision = typeof state?.revision === 'string' ? state.revision : '';
+  if (!revision || revision === _importSheetChangesRevision) return;
+  const applyMany = window.MeldexImportSheetTemplates?.applyMany;
+  if (typeof applyMany !== 'function') return;
+  _importSheetChangesRevision = revision;
+  const byImporter = new Map();
+  (Array.isArray(state.items) ? state.items : []).forEach(item => {
+    if (!item?.importer || !item?.path) return;
+    if (!byImporter.has(item.importer)) byImporter.set(item.importer, []);
+    byImporter.get(item.importer).push(item.path);
+  });
+  byImporter.forEach((paths, importer) => {
+    Promise.resolve(applyMany(importer, paths)).catch(error => {
+      console.warn('[Meldex] インポート先シートへテンプレートを適用できませんでした', importer, error);
+    });
+  });
+}
+
 function _sendHeartbeat() {
   if (_heartbeatInFlight) return _heartbeatInFlight;
   _heartbeatInFlight = fetch('/api/heartbeat', { method: 'POST' })
     .then(response => response.ok ? response.json() : null)
     .then(async data => {
+      _applyImportSheetChangeTemplates(data?.import_sheet_changes);
       const revision = data?.webclip_directory_revision;
       if (typeof revision !== 'string') return;
       const changedSheetPaths = Array.isArray(data?.webclip_changed_sheet_paths)
@@ -272789,8 +276096,9 @@ const MeldexExportImage = (() => {
   const NATIVE_MAX_CANVAS_AREA = 120 * 1000 * 1000;
 
   function _escapeStyleForXhtml(cssText) {
-    // XHTML の <style> 本文では & と < をエスケープする（CDATA を使わず確実に通す）。
-    return String(cssText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    // XHTML の <style> 本文は XML として解釈されるため、共通の XML エスケープを通す
+    // （CDATA を使わず確実に通す。実体参照は XML 解析で元の文字に戻る）。
+    return MeldexEscape.xml(cssText || '');
   }
 
   // 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず
@@ -279319,8 +282627,8 @@ document.addEventListener('DOMContentLoaded', _updateAllTooltips);
       <div class="gb-section-title">インポート先のシートテンプレート</div>
       <div class="gb-section-desc">${DEFINITIONS[key].description} 既存の列や値は上書きしません。</div>
       <div class="gb-field-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap;margin-top:8px;">
-        <select class="gb-select" data-import-sheet-template-select aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
-        <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply>現在の保存先にも適用</button>
+        <select class="gb-select" data-import-sheet-template-select data-e2e-id="import-sheet-template-select-${key}" aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
+        <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply data-e2e-id="import-sheet-template-apply-${key}">現在の保存先にも適用</button>
       </div>
       <div class="gb-section-desc" data-import-sheet-template-status role="status" aria-live="polite"></div>
     `;

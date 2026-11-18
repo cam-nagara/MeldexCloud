@@ -238,8 +238,23 @@
     });
   }
 
+  // 単独アプリで新規作成するファイルの初期内容（アプリ種別ごと）。
+  function newDocumentContent(appId, title) {
+    const safeTitle = String(title || '');
+    if (appId === 'note') return '';
+    if (appId === 'scenario') return JSON.stringify({
+      fileType: 'meldex-scriptnote', schema_version: 4, version: 1,
+      title: safeTitle === '無題' ? '' : safeTitle, layoutMode: 'manga',
+      editor: { wrapMode: true, statusEnabled: false, viewMode: 'horizontal' },
+      scenarioTypes: [], characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},
+    }, null, 2) + '\n';
+    if (appId === 'sheet') return '';
+    return `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${safeTitle || '無題'}\n\n`;
+  }
+
   root.MeldexStandaloneCloudFileRoutes = Object.freeze({
     handle,
+    newDocumentContent,
     regenerateCopiedDocumentIdentity,
     trashWithConfirmation,
     fileAsDataUrl,

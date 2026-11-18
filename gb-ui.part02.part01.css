@@ -1265,10 +1265,12 @@
 @media (max-width: 760px) {
   .settings-simple-theme-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
 }
-[data-settings-simple-theme] [data-simple-theme-item] { display: grid; grid-template-columns: minmax(0, 330px) 24px; justify-content: start; align-items: center; gap: var(--ui-space-3); }
+/* 項目名の列幅は設定共通の項目名幅（gb-settings-fields.css の128px、da53c2e4）に揃え、
+   項目名とスウォッチを離さない。 */
+[data-settings-simple-theme] [data-simple-theme-item] { display: grid; grid-template-columns: minmax(0, 128px) 24px; justify-content: start; align-items: center; gap: var(--ui-space-3); }
 [data-simple-theme-item] .cs-swatch { box-sizing: border-box; }
 @media (max-width: 640px), (pointer: coarse) {
-  [data-settings-simple-theme] [data-simple-theme-item] { grid-template-columns: minmax(0, 1fr) 44px; }
+  [data-settings-simple-theme] [data-simple-theme-item] { grid-template-columns: minmax(0, 128px) 44px; }
   [data-simple-theme-item] .cs-swatch { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
 }
 [data-settings-simple-theme] .cs-row-label { width: auto; min-width: 0; }

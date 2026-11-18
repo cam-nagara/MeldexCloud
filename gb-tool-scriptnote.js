@@ -212,8 +212,10 @@ class ScriptNoteComponent extends ToolComponent {
   static _buildHTML() {
     return `
 <div id="se-toolbar" class="gb-toolbar gb-toolbar-main">
+  ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('scriptnote') : ''}
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
+  ${window.MeldexFileIcons?.toolbarIconHtml?.('scriptnote') ?? ''}
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
   <button type="button" class="tb-text-btn sn2-template-button" data-sn-action="templatePicker" title="テンプレート" aria-label="テンプレート" aria-haspopup="dialog"><span class="ico ico-layoutTemplate"></span><span class="sn2-template-button-label">マンガシナリオ</span></button>
   <select id="scenario-note-layout-select" class="tb-select sn2-toolbar-layout-select" title="テンプレート" aria-label="テンプレート" hidden>
@@ -885,12 +887,16 @@ class ScriptNoteComponent extends ToolComponent {
               if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
             }
           } catch (e) {
-            // リネーム失敗はタイトル変更自体には影響させない（保存時にファイル名は旧名のまま）。
-            // 先に変えたツリーとタブの名前は、変わらなかったファイル名に合わせて戻す。
-            if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function' && editor._path === oldPath) {
-              const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
-              applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
-              titleInput.value = editor.doc.title || '';
+            // タイトル＝ファイル名（v0.7.495）を優先し、ファイル名を変えられなかった時はタイトルも
+            // 元に戻す（2026-11-18 ユーザー判断）。先に変えたツリーとタブの名前も元のファイル名へ戻す。
+            // 失敗を待つ間にタイトルを打ち直した場合は、その新しい入力を消さない。
+            if (newTitle !== previousTitle && editor._path === oldPath && editor.doc?.title === titleInput.value) {
+              editor.doc.title = previousTitle;
+              titleInput.value = previousTitle;
+              if (typeof applyOptimisticRenameLabel === 'function') {
+                const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+                applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
+              }
             }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
           }

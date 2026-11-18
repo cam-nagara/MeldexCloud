@@ -51,6 +51,14 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 
 ライセンス表記: [app/stamps/TWEMOJI-LICENSE.txt](app/stamps/TWEMOJI-LICENSE.txt)
 
+## Maps
+
+- Leaflet — BSD 2-Clause License — https://github.com/Leaflet/Leaflet
+- Azgaar Fantasy Map Generator — MIT License — https://github.com/Azgaar/Fantasy-Map-Generator
+- Cartography Pack by Kenney (www.kenney.nl) — CC0 1.0 — map symbols and parchment textures
+- IM FELL English by Igino Marini — SIL Open Font License 1.1
+- MedievalSharp by wmk69 — SIL Open Font License 1.1
+
 ## JavaScript Libraries
 
 - [html2canvas](https://github.com/niklasvh/html2canvas) — MIT License

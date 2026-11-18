@@ -84,6 +84,7 @@ class CalendarComponent extends ToolComponent {
     void startDay;
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
 <div class="gb-toolbar gb-toolbar-main gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
+  ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('calendar') : ''}
   <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
   <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
   <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
@@ -874,6 +875,15 @@ class CalendarComponent extends ToolComponent {
     // scroll offset: every production surface remains visible at once.
     const tablist = this.el.querySelector('.gb-cal-surface-switch');
     if (activeButton && tablist) tablist.scrollLeft = 0;
+    // 表示面の切替でカレンダー専用の操作が出入りしても、ツールバーの幅は変わらないため
+    // 共通の幅計測（あふれメニュー）が再計測されないことがある。切替後の描画で必ず測り直す。
+    if (this._lastOverflowSurface !== this._surface) {
+      this._lastOverflowSurface = this._surface;
+      const refresh = () => window.MeldexCalToolbarOverflow?.refresh?.();
+      refresh();
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refresh);
+      setTimeout(refresh, 50);
+    }
   }
 
   _persistViewToTabState(view) {

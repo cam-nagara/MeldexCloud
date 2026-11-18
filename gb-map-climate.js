@@ -12,7 +12,7 @@
   ].map(Object.freeze));
   function generate(source, options) {
     const doc = D.parse(source), { seed, warmth, wetness, equator, columns, name } = options;
-    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから気候帯の下案を作成してください');
+    if (doc.coordinate_system !== 'local' || !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('創作地図で地形を生成してから気候帯の下案を作成してください');
     if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || typeof name !== 'string' || !name.trim() || name.length > 64
       || ![warmth, wetness, equator].every(value => Number.isFinite(value) && value >= 0 && value <= 100)
       || !Number.isInteger(columns) || columns < 4 || columns > 32) throw new Error('気候帯生成の条件を確認してください');
@@ -22,7 +22,7 @@
     const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
     const phases = [random() * Math.PI * 2, random() * Math.PI * 2];
     const rows = Math.max(4, Math.min(24, Math.round(columns * doc.canvas.height / doc.canvas.width)));
-    const terrain = doc.terrain, angle = ((doc.scale.north_degrees % 360 + 360) % 360) * Math.PI / 180;
+    const terrain = (doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), angle = ((doc.scale.north_degrees % 360 + 360) % 360) * Math.PI / 180;
     const sx = Math.sin(angle), sy = -Math.cos(angle), extent = (Math.abs(sx) * doc.canvas.width + Math.abs(sy) * doc.canvas.height) / 2;
     const sample = (x, y) => {
       const gx = Math.min(terrain.cols - 1, x * terrain.cols), gy = Math.min(terrain.rows - 1, y * terrain.rows);

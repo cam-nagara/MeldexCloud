@@ -1,3 +1,4 @@
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
     clearBoardDetailTabs();
   }
   // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
@@ -897,4 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
         );
       }
     } catch {}
-  });

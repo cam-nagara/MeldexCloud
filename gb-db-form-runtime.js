@@ -30,6 +30,16 @@
     }
     return '';
   }
+  // 値入力の履歴は、表示中のフォーム（フォームアプリ）またはシートのフォーム表示の範囲へ積む。
+  // 範囲なし（共通履歴）へ積むと、別ファイルのCtrl+Zで画面外の入力が戻ってしまう。
+  function historyScope(ctx) {
+    const app = ctx.options?.ctx?.formApp;
+    if (app && typeof app._historyScope === 'function') return app._historyScope();
+    if (typeof ctx.options?.historyScope === 'function') return ctx.options.historyScope();
+    const dbPath = ctx.options?.ctx?.dbPath || ctx.dbPath || '';
+    if (dbPath && typeof _dbViewConfigHistoryScope === 'function') return _dbViewConfigHistoryScope(dbPath);
+    return dbPath ? 'db:' + String(dbPath).replace(/\\/g, '/') : '';
+  }
   async function saveScalar(ctx, prop, value, candidate) {
     const path = ctx.entityPath;
     const dbPath = typeof _dbPathFromEntityPath === 'function' ? _dbPathFromEntityPath(path) : ctx.dbPath;
@@ -53,7 +63,7 @@
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
         const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(); };
-        historyPush('フォーム: ' + prop, () => restore(old), () => restore(value), '');
+        historyPush('フォーム: ' + prop + 'を変更', () => restore(old), () => restore(value), historyScope(ctx), prop);
       }
       return candidate;
     }
@@ -73,7 +83,7 @@
         noteRevision(ctx, next);
         Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
         ctx.data.properties[prop].push(created); ctx.rerender();
-      }, '');
+      }, historyScope(ctx), prop);
     }
     return created;
   }
@@ -96,6 +106,7 @@
     let candidate = candidates[0] || null;
     const row = _buildFormInputRow(prop, cfg, ctx.propTypes?.[prop] || { type: 'text' });
     row.classList.add('gb-form-layout-field'); row.querySelector('.gb-form-input-label')?.remove();
+    row.dataset.formField = prop;
     const input = row.querySelector('input,textarea,select');
     const type = input.dataset.formType;
     let savedValue = String(candidate?.value ?? '');
@@ -223,6 +234,7 @@
       peers.push(row); placed.set(cell.prop, peers);
       const element = document.createElement('div'); element.className = 'el-cell el-cell-field gb-form-new-cell';
       element.dataset.cellId = cell.id;
+      element.dataset.formField = cell.prop;
       element.style.zIndex = String(layout.cells.indexOf(cell));
       for (const [key, value] of Object.entries({ left: cell.x, top: cell.y, width: cell.w, height: cell.h })) element.style[key] = value + 'px';
       _elApplyCellStyle(element, cell, { editMode: false });

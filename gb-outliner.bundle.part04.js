@@ -1,3 +1,54 @@
+          if (toggle.dataset.expanded !== 'true') toggle.click();
+          setSortSetting(item.path, 'manual', 'asc');
+          saveManualOrderFromDOM(childrenDiv, item.path);
+          if (!movedAcrossFolders) {
+            pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
+          }
+        }
+      } else if (vr && vr.isVirtualContainer(targetParent)) {
+        const movedPaths = moved.map(n => n._nodeData?.path).filter(Boolean);
+        moved.forEach(n => { disposeOrReuse(n); });
+        vr.reorderAround(targetParent, movedPaths, item.path, position);
+      } else if (position === 'above') {
+        moved.forEach(n => {
+          const data = n._nodeData;
+          const reusable = disposeOrReuse(n);
+          targetParent.insertBefore(reusable || createTreeNodeFromBrowse(data, rootPath), div);
+        });
+      } else {
+        let ref = div.nextSibling;
+        moved.forEach(n => {
+          const data = n._nodeData;
+          const reusable = disposeOrReuse(n);
+          targetParent.insertBefore(reusable || createTreeNodeFromBrowse(data, rootPath), ref);
+        });
+      }
+      if (position !== 'inside') {
+        const logicalParentPath = vr?.parentPathForItem(targetParent, item.path);
+        const parentNode = targetParent.closest('.tree-node');
+        const parentPath = logicalParentPath !== undefined
+          ? (logicalParentPath || parentNode?._nodeData?.path || '_root')
+          : (parentNode?._nodeData?.path || '_root');
+        setSortSetting(parentPath, 'manual', 'asc');
+        if (vr && vr.isVirtualContainer(targetParent)) {
+          vr.saveManualOrderFromVirtualModel(targetParent, parentPath);
+        } else {
+          saveManualOrderFromDOM(targetParent, parentPath);
+        }
+        if (!movedAcrossFolders) {
+          pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
+        }
+      }
+      if (nodes.some(node => node._nodeData?._form_parent_path)) await loadOutliner();
+    })();
+  });
+
+  _registerTreeNode(div);
+  return div;
+}
+
+function clearDragIndicators() {
+  const home = document.getElementById('body-home');
   if (home) home.style.outline = '';
   document.querySelectorAll('.drag-over-above,.drag-over-below,.drag-over-inside').forEach(el => {
     el.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
@@ -847,53 +898,3 @@ async function _outlinerCopyLink(nodeData) {
   if (!linkPath) return false;
   const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
   if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {
-    showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
-    return false;
-  }
-  try {
-    const ok = await MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type);
-    if (ok) showStatus('リンクをコピーしました');
-    else showStatus('リンクをコピーできませんでした：クリップボードに書き込めませんでした', true);
-    return !!ok;
-  } catch (error) {
-    _outlinerReportFailure('リンクをコピーできませんでした', error);
-    return false;
-  }
-}
-
-function _outlinerAppendMenuSeparator(menu) {
-  const separator = document.createElement('div');
-  separator.className = 'gb-context-menu-sep cm-sep';
-  separator.setAttribute('role', 'separator');
-  menu.appendChild(separator);
-  return separator;
-}
-
-function _outlinerAppendSubmenu(menu, label, icon, panel) {
-  const trigger = _outlinerAppendMenuItem(menu, { label, icon, hasSubmenu: true, className: 'tree-ctx-item' });
-  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  trigger.addEventListener('mouseenter', () => setExpanded(true));
-  trigger.addEventListener('mouseleave', () => setTimeout(() => {
-    if (panel.style.display === 'none') setExpanded(false);
-  }, 220));
-  trigger.addEventListener('click', () => {
-    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
-    setExpanded(true);
-  });
-  panel.addEventListener('mouseenter', () => setExpanded(true));
-  panel.addEventListener('mouseleave', () => setExpanded(false));
-  attachHoverSubmenu(trigger, panel);
-  return trigger;
-}
-
-function _outlinerPlaceContextMenu(menu) {
-  document.body.appendChild(menu);
-  const rect = menu.getBoundingClientRect();
-  const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px';
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  const first = menu.querySelector('button.gb-context-menu-item:not(:disabled)');
-  first?.focus?.({ preventScroll: true });
-  _outlinerBindContextMenuClose(menu);
-}

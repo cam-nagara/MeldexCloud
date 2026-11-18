@@ -239,7 +239,7 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form'].includes(ext)
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form', '.mel-map'].includes(ext)
       || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 

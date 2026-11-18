@@ -242,6 +242,16 @@
   --ui-toolbar-title-height: 30px;
   --ui-toolbar-title-font-size: var(--ui-font-16);
   --ui-toolbar-separator-height: 18px;
+  /* ツールバー左端のアプリアイコン（どのアプリかを見分ける目印。他のアイコン16pxより大きく出す） */
+  --ui-toolbar-app-icon-size: 24px;
+  --ui-toolbar-app-icon-box: 28px; /* 幅。高さはアイコンと同じ24pxで、帯の高さを押し広げない */
+  --ui-toolbar-app-icon-gap: var(--ui-space-2);
+  --ui-toolbar-app-icon-color: var(--ui-accent, var(--accent));
+  /* ファイル名直前のファイルアイコン（フォルダツリーと同じアイコン。クリックでアイコン選択） */
+  --ui-toolbar-file-icon-size: var(--ui-icon-md); /* 16px。ファイル名の文字16pxに合わせる */
+  --ui-toolbar-file-icon-box: var(--ui-toolbar-control-size); /* 22px正方。ツールバーのボタンと同じ当たり */
+  --ui-toolbar-file-icon-gap: var(--ui-space-1);
+  --ui-toolbar-file-icon-color: var(--ui-toolbar-fg);
 
   /* 部品の共通寸法（UI共通ルール 4.0／19。全画面がこの値を参照し、比較テストで固定する） */
   /* ダイアログ */
@@ -267,6 +277,12 @@
   --ui-view-tab-font-size: var(--ui-font-12);
   --ui-view-tab-row-padding: var(--ui-space-1) var(--ui-space-3);
   --ui-view-tab-row-border: var(--ui-border-width) solid var(--ui-border);
+  /* タブの並べ替え中のドロップ位置の縦線（メインパネルのタブ・全アプリのビュータブで共通） */
+  --ui-tab-drop-indicator-width: 3px;
+  --ui-tab-drop-indicator-color: var(--accent, #4a90d9);
+  --ui-tab-drop-indicator-overhang: -2px;
+  --ui-tab-drop-indicator-offset: -1px;
+  --ui-tab-drop-indicator-radius: 1px;
   /* ペイン上部のファイルタブ */
   --ui-pane-tab-height: 30px;
   /* パネル見出し（見出し・小見出しの2種類） */
@@ -583,6 +599,81 @@
   content: none;
   border: 0;
   box-shadow: none;
+}
+/* 主要アプリツールバー左端のアプリアイコン（UI共通ルール19）。操作を持たない目印で、
+   あふれメニューへ退避せず、狭い幅でも縮めない。 */
+.tb-app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--ui-toolbar-app-icon-box);
+  width: var(--ui-toolbar-app-icon-box);
+  min-width: var(--ui-toolbar-app-icon-box);
+  height: var(--ui-toolbar-app-icon-size);
+  margin: 0 var(--ui-toolbar-app-icon-gap) 0 0;
+  padding: 0;
+  color: var(--ui-toolbar-app-icon-color);
+  pointer-events: none;
+  user-select: none;
+  box-sizing: border-box;
+}
+/* 主要アプリツールバーは左右paddingが0なので、左端に余白を足して画面端へ貼り付かせない。 */
+.gb-toolbar.gb-toolbar-main > .tb-app-icon {
+  margin-left: var(--ui-toolbar-app-icon-gap);
+}
+.tb-app-icon > svg {
+  display: block;
+  width: var(--ui-toolbar-app-icon-size);
+  height: var(--ui-toolbar-app-icon-size);
+  vertical-align: 0 !important;
+  flex: 0 0 auto;
+}
+/* ファイル名直前のファイルアイコン（UI共通ルール19）。アプリアイコンとは別部品で、フォルダツリーと
+   同じアイコンを出す。変更できる時だけボタンになり、あふれメニューへ退避せず、狭い幅でも縮めない。 */
+.tb-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--ui-toolbar-file-icon-box);
+  width: var(--ui-toolbar-file-icon-box);
+  min-width: var(--ui-toolbar-file-icon-box);
+  height: var(--ui-toolbar-file-icon-box);
+  margin: 0 0 0 var(--ui-toolbar-file-icon-gap);
+  padding: 0;
+  border: var(--ui-border-width) solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-file-icon-color);
+  line-height: 1;
+  user-select: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.tb-file-icon svg,
+.tb-file-icon img {
+  display: block;
+  width: var(--ui-toolbar-file-icon-size);
+  height: var(--ui-toolbar-file-icon-size);
+  max-width: var(--ui-toolbar-file-icon-size);
+  max-height: var(--ui-toolbar-file-icon-size);
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+.tb-file-icon > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tb-file-icon[data-file-icon-editable="true"] {
+  cursor: pointer;
+}
+.tb-file-icon[data-file-icon-editable="true"]:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--ui-border);
+}
+.tb-file-icon[data-file-icon-editable="true"]:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-accent);
+  outline-offset: 0;
 }
 .gb-toolbar-title {
   display: inline-flex;

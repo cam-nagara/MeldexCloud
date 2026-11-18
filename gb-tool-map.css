@@ -31,3 +31,13 @@
 .gb-map-element-options .gb-check{display:flex;gap:6px;margin:5px 0}.gb-map-pin b[hidden]{display:none}
 
 .gb-map-drop-marker>b{width:28px;height:40px;line-height:0;flex:none}.gb-map-drop-marker>b>svg{display:block;overflow:visible;filter:drop-shadow(0 1px 1px #0004)}.gb-map-drop-marker>span{align-self:flex-start;line-height:20px;margin-top:4px}.gb-map-drop-marker.selected{outline:0;background:transparent}.gb-map-drop-marker.selected .gb-map-drop-shape{stroke:#d87923;stroke-width:2.5}
+
+/* 同梱素材（vendor/map-assets）: 地点の記号・羊皮紙の質感・地名の書体 */
+@font-face{font-family:'Meldex Map Fell';src:url('vendor/map-assets/fonts/IMFellEnglish-Regular.ttf') format('truetype');font-display:swap}
+@font-face{font-family:'Meldex Map Fell';font-style:italic;src:url('vendor/map-assets/fonts/IMFellEnglish-Italic.ttf') format('truetype');font-display:swap}
+@font-face{font-family:'Meldex Map Medieval';src:url('vendor/map-assets/fonts/MedievalSharp-Regular.ttf') format('truetype');font-display:swap}
+.gb-map-pin b.gb-map-stamp-host{display:inline-flex;width:36px;height:36px;align-items:center;justify-content:center}
+.gb-map-stamp{width:36px;height:36px;object-fit:contain;pointer-events:none;filter:contrast(1.4) drop-shadow(0 0 1.5px rgba(255,255,255,.95))}
+[data-map-theme="parchment"]::after{content:'';position:absolute;inset:0;z-index:350;pointer-events:none;background:url('vendor/map-assets/textures/parchmentBasic.png') center/1024px repeat;mix-blend-mode:multiply;opacity:.45}
+[data-map-label-font="fell"] .gb-map-pin span{font-family:'Meldex Map Fell','Yu Mincho','Hiragino Mincho ProN','Noto Serif JP',serif}
+[data-map-label-font="medieval"] .gb-map-pin span{font-family:'Meldex Map Medieval','Yu Mincho','Hiragino Mincho ProN','Noto Serif JP',serif}

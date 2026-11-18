@@ -14,9 +14,15 @@
      onDuplicate: id => {},
      onMove: (id, toIndex) => {},
      onDelete: id => {},
+     onChangeIcon: (id, spec) => {},          // 任意。渡すと「アイコンを変更」を出す（spec='' は既定に戻す）
      viewMenuItems: view => [{ id, label, checked, disabled, run }],   // 任意（ビュー固有の項目）
      addMenuItems: () => [{ id, label, icon, run }],
    }) → { element, refresh() }
+   getViews の icon は既定アイコン（lucide名）、customIcon は利用者が選んだアイコン（GBIconAssets の指定）。
+
+   ビュータブを持つ他のアプリ（シート・ボード）も、並べ替えのドラッグ操作とドロップ位置の表示は
+   MeldexViewTabs.bindReorder、ビューのアイコンの表示と選択は renderIcon / openIconPicker を使う
+   （UI共通ルール 4.0「タブのドラッグ並べ替え」）。
 */
 (function initMeldexViewTabs(global) {
   'use strict';
@@ -27,6 +33,162 @@
 
   function token(value) {
     return String(value ?? '').replace(/[^a-zA-Z0-9_-]+/g, '-');
+  }
+
+  /* --- ビューのアイコン（全アプリのビュータブで共通） --- */
+
+  // 利用者が選んだアイコン（customSpec）を優先し、無ければビュー種別の既定アイコン（lucide名）を描く。
+  function renderIcon(customSpec, fallbackName, size) {
+    const spec = String(customSpec || '').trim();
+    const px = size || 12;
+    if (spec && global.GBIconAssets && typeof global.GBIconAssets.render === 'function') {
+      return global.GBIconAssets.render(spec, px, { className: 'gb-view-tab-custom-icon' });
+    }
+    return icon(fallbackName || 'table', px);
+  }
+
+  // 保存するアイコン指定を整える（空・文字列以外は「既定」= ''）。
+  function normalizeIconSpec(value) {
+    if (typeof value !== 'string') return '';
+    const spec = value.trim();
+    if (!spec || spec.length > 1024) return '';
+    return global.GBIconAssets && typeof global.GBIconAssets.normalizeSpec === 'function'
+      ? String(global.GBIconAssets.normalizeSpec(spec) || '')
+      : spec;
+  }
+
+  // アイコン選択は共通の GBIconAssets.openPicker。「既定に戻す」は onChange('') を呼ぶ。
+  function openIconPicker(options) {
+    const settings = options || {};
+    if (!global.GBIconAssets || typeof global.GBIconAssets.openPicker !== 'function') {
+      global.showStatus?.('アイコンを選択できません', true);
+      return null;
+    }
+    // メニュー項目のクリックから呼ばれると、そのクリックが開いたばかりの選択画面の
+    // 「外側クリックで閉じる」へ届いて即座に閉じていた。クリック処理が終わってから開く。
+    setTimeout(() => global.GBIconAssets.openPicker({
+      anchorEl: settings.anchorEl?.isConnected ? settings.anchorEl : null,
+      title: settings.title || 'ビューのアイコン',
+      current: settings.current || '',
+      allowReset: true,
+      resetLabel: settings.resetLabel || '既定に戻す',
+      onSelect: spec => settings.onChange?.(normalizeIconSpec(spec || '')),
+      onReset: () => settings.onChange?.(''),
+    }), 0);
+    return null;
+  }
+
+  /* --- タブの並べ替え（ドラッグ＆ドロップ）: 全アプリのビュータブで共通 ---
+     見た目と判定はメインパネルのタブと同じ。カーソルが各タブの中央より左なら「そのタブの前」、
+     全タブの中央より右なら「最後のタブの後ろ」。表示は .gb-view-tab-drop-before / -after
+     （縦線。寸法・色は共通トークン --ui-tab-drop-indicator-*）。 */
+
+  const DROP_BEFORE = 'gb-view-tab-drop-before';
+  const DROP_AFTER = 'gb-view-tab-drop-after';
+  const DRAGGING = 'gb-view-tab-dragging';
+
+  // rects: 横並びのタブの [{ left, width }]（表示順）。戻り値 { overIndex, side } または null。
+  function resolveDropSlot(rects, clientX) {
+    const list = Array.isArray(rects) ? rects : [];
+    if (!list.length) return null;
+    const x = Number(clientX);
+    for (let index = 0; index < list.length; index += 1) {
+      const rect = list[index] || {};
+      const left = Number(rect.left) || 0;
+      const width = Number(rect.width) || 0;
+      if (Number.isFinite(x) && x < left + width / 2) return { overIndex: index, side: 'before' };
+    }
+    return { overIndex: list.length - 1, side: 'after' };
+  }
+
+  // 取り除いた後の並びでの挿入位置（onMove へ渡す toIndex）。
+  function dropTargetIndex(fromIndex, overIndex, side) {
+    let target = side === 'after' ? overIndex + 1 : overIndex;
+    if (fromIndex >= 0 && fromIndex < target) target -= 1;
+    return Math.max(0, target);
+  }
+
+  function clearDropIndicator(container) {
+    const scope = container || (typeof document !== 'undefined' ? document : null);
+    scope?.querySelectorAll?.(`.${DROP_BEFORE}, .${DROP_AFTER}`)
+      .forEach(item => item.classList.remove(DROP_BEFORE, DROP_AFTER));
+  }
+
+  let activeDrag = null;
+
+  // container: タブを並べる要素（再描画しても同じ要素を使い続けること）。
+  // options: { itemSelector, dataType, readOnly(), onMove(fromIndex, toIndex, { fromItem }) }
+  // 同じ container へ再度呼ぶと options だけ差し替える。
+  function bindReorder(container, options) {
+    if (!container || typeof container.addEventListener !== 'function') return null;
+    if (container._meldexViewTabReorder) {
+      container._meldexViewTabReorder.options = options || {};
+      return container._meldexViewTabReorder;
+    }
+    const binding = { options: options || {} };
+    const opt = () => binding.options || {};
+    const locked = () => {
+      const readOnly = opt().readOnly;
+      return typeof readOnly === 'function' ? !!readOnly() : !!readOnly;
+    };
+    const items = () => Array.from(container.querySelectorAll(opt().itemSelector || ':scope > .gb-view-tab'));
+    const itemOf = target => items().find(item => item === target || item.contains?.(target)) || null;
+    const ours = () => !!activeDrag && activeDrag.container === container;
+    const slotOf = event => {
+      const list = items();
+      const slot = resolveDropSlot(list.map(item => item.getBoundingClientRect()), event.clientX);
+      return slot ? { ...slot, item: list[slot.overIndex] } : null;
+    };
+    const finish = () => {
+      clearDropIndicator(container);
+      if (activeDrag && activeDrag.container === container) {
+        activeDrag.item?.classList?.remove(DRAGGING, 'dragging');
+        activeDrag = null;
+      }
+    };
+    container.addEventListener('dragstart', event => {
+      const item = itemOf(event.target);
+      if (!item) return;
+      if (locked()) { event.preventDefault?.(); return; }
+      activeDrag = { container, item, fromIndex: items().indexOf(item) };
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        try { event.dataTransfer.setData(opt().dataType || 'text/x-meldex-view-tab', String(activeDrag.fromIndex)); } catch (_) {}
+      }
+      item.classList.add(DRAGGING, 'dragging');
+      // ドロップで元のタブが描き直されても、終了処理を必ず行う。
+      if (typeof document !== 'undefined') document.addEventListener?.('dragend', finish, { once: true, capture: true });
+    });
+    container.addEventListener('dragover', event => {
+      if (!ours() || locked()) return;
+      event.preventDefault();
+      event.stopPropagation?.();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const slot = slotOf(event);
+      clearDropIndicator(container);
+      if (slot?.item) slot.item.classList.add(slot.side === 'before' ? DROP_BEFORE : DROP_AFTER);
+    });
+    container.addEventListener('dragleave', event => {
+      if (!ours()) return;
+      if (event.relatedTarget && container.contains(event.relatedTarget)) return;
+      clearDropIndicator(container);
+    });
+    container.addEventListener('drop', event => {
+      if (!ours()) return;
+      event.preventDefault();
+      event.stopPropagation?.();
+      const drag = activeDrag;
+      const slot = slotOf(event);
+      finish();
+      if (locked() || !slot || drag.fromIndex < 0) return;
+      const toIndex = dropTargetIndex(drag.fromIndex, slot.overIndex, slot.side);
+      if (toIndex === drag.fromIndex) return;
+      try { opt().onMove?.(drag.fromIndex, toIndex, { fromItem: drag.item }); }
+      catch (error) { global.showStatus?.(error?.message || 'ビューを並べ替えできません', true); }
+    });
+    container.addEventListener('dragend', finish);
+    container._meldexViewTabReorder = binding;
+    return binding;
   }
 
   // タブ列は横スクロールするため、メニューは popover（top layer）へ出して見切れを防ぐ。
@@ -163,7 +325,7 @@
         label.type = 'button';
         label.className = 'gb-view-tab-label';
         label.dataset.e2eId = `${prefix}-label-${refToken}`;
-        label.innerHTML = icon(view.icon || 'table', 12);
+        label.innerHTML = renderIcon(view.customIcon, view.icon || 'table', 12);
         const text = document.createElement('span');
         text.textContent = view.name || 'ビュー';
         label.appendChild(text);
@@ -197,6 +359,20 @@
         bindMenu(menu, panel);
         menuButton(panel, { id: 'rename', label: '名前を変更', disabled: locked, refresh: false, run: () => beginRename(tab, view) }, refToken);
         menuButton(panel, { id: 'duplicate', label: '複製', disabled: locked, run: () => settings.onDuplicate?.(view.id) }, refToken);
+        if (typeof settings.onChangeIcon === 'function') {
+          menuButton(panel, {
+            id: 'icon', label: 'アイコンを変更', disabled: locked, refresh: false,
+            run: () => openIconPicker({
+              anchorEl: tab.isConnected ? tab : root,
+              current: view.customIcon || '',
+              onChange: spec => {
+                try { settings.onChangeIcon(view.id, spec); }
+                catch (error) { global.showStatus?.(error?.message || 'アイコンを変更できません', true); }
+                refresh();
+              },
+            }),
+          }, refToken);
+        }
         const extra = settings.viewMenuItems?.(view) || [];
         if (extra.length) {
           separator(panel);
@@ -212,15 +388,6 @@
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
         ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
-        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-tab', view.id));
-        tab.addEventListener('dragover', event => { if (!readOnly()) event.preventDefault(); });
-        tab.addEventListener('drop', event => {
-          if (readOnly()) return;
-          event.preventDefault();
-          const fromId = event.dataTransfer?.getData('text/meldex-view-tab');
-          if (fromId && fromId !== view.id) settings.onMove?.(fromId, index);
-          refresh();
-        });
         tab.append(label, menu);
         list.appendChild(tab);
       });
@@ -247,6 +414,18 @@
       }
     }
 
+    // 並べ替えはタブ列全体で受ける（最後のタブの後ろへも置ける）。
+    bindReorder(list, {
+      itemSelector: ':scope > .gb-view-tab',
+      dataType: 'text/meldex-view-tab',
+      readOnly,
+      onMove: (fromIndex, toIndex) => {
+        const view = (settings.getViews?.() || [])[fromIndex];
+        if (view) settings.onMove?.(view.id, toIndex);
+        refresh();
+      },
+    });
+
     select.addEventListener('change', () => {
       settings.onActivate?.(select.value);
       refresh();
@@ -255,5 +434,8 @@
     return { element: root, refresh };
   }
 
-  global.MeldexViewTabs = Object.freeze({ create });
+  global.MeldexViewTabs = Object.freeze({
+    create, bindReorder, resolveDropSlot, dropTargetIndex, clearDropIndicator,
+    renderIcon, normalizeIconSpec, openIconPicker,
+  });
 }(typeof globalThis !== 'undefined' ? globalThis : window));

@@ -1,108 +1,3 @@
-    if (pathname === '/version/read-folder' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _readFolderVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', true);
-    }
-    if (pathname === '/version/read-folder-file' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _readFolderVersionFile(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '', url.searchParams.get('file') || '');
-    }
-    if (pathname === '/version/save-folder' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const actor = _versionActor(url, body);
-      return _saveFolderVersion(provider, body?.path || '', {
-        label: body?.label || '', auto: !!body?.auto,
-        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
-      });
-    }
-    if (pathname === '/version/restore-folder' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _restoreFolderVersion(provider, body?.path || '', body?.version || '', body || {});
-    }
-    if (pathname === '/version/delete-folder' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _deleteFolderVersion(provider, body?.path || '', body?.version || '');
-    }
-    if (pathname === '/version/undelete-folder' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _undeleteFolderVersion(provider, body?.path || '', body?.token || '');
-    }
-    if (pathname === '/version/list' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _listFileVersions(provider, url.searchParams.get('path') || '');
-    }
-    if (pathname === '/version/read' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _readFileVersion(provider, url.searchParams.get('path') || '', url.searchParams.get('version') || '');
-    }
-    if (pathname === '/version/save' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const actor = _versionActor(url, body);
-      return _saveFileVersion(provider, body?.path || '', {
-        label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto,
-        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
-      });
-    }
-    if (pathname === '/version-panel/timeline' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      return _buildCloudVersionTimeline(provider, url);
-    }
-    if (pathname === '/version/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _restoreFileVersion(provider, body?.path || '', body?.version || '', body || {});
-    }
-    if (pathname === '/version/delete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _deleteFileVersion(provider, body?.path || '', body?.version || '');
-    }
-    if (pathname === '/version/undelete' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      return _undeleteFileVersion(provider, body?.path || '', body?.token || '');
-    }
-
-    if (/^\/cal(\/|$)/.test(pathname)) {
-      if (method === 'GET') {
-        if (pathname === '/cal/sync/status') return { enabled: false, configured: false, unsupported: true };
-        return [];
-      }
-      return _phaseUnsupported('カレンダー', 'Phase 3');
-    }
-    if (/^\/calendar-db(\/|$)/.test(pathname)) {
-      if (method === 'GET') return [];
-      return _phaseUnsupported('カレンダー', 'Phase 3');
-    }
-    if (/^\/chat\/(list|search)/.test(pathname) && method === 'GET') return [];
-    if (pathname === '/chat/load' && method === 'GET') return { messages: [], title: '', unsupported: true };
-    if (pathname === '/chat/save' && method === 'POST') return _phaseUnsupported('チャット', 'Phase 3');
-    if (pathname === '/chat/stream' && method === 'POST') return _phaseUnsupported('チャット', 'Phase 3');
-    if (/^\/collab\/(rooms|messages)/.test(pathname) && method === 'GET') return [];
-    if (/^\/collab\//.test(pathname)) return _phaseUnsupported('チャット', 'Phase 3');
-
-    if (pathname === '/outliner/add' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const parent = _normalizeFolderPath(body?.parent || '');
-      const type = String(body?.type || '');
-      const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
-      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
-      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
-      const shown = name => title !== null && title !== label ? title : name;
-      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
-      const createText = async (path, text) => {
-        if (typeof provider.uploadBytesConditional !== 'function') {
-          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
-        }
-        const identity = window.MeldexDocumentIdentity;
-        const format = identity?.formatForPath?.(path, text);
-        const content = format ? identity.ensureDocumentId(text, format).text : text;
-        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
-      };
-      const blockedCreate = {
-        database: ['シート', 'Phase 4'],
-        calendar: ['カレンダー', 'Phase 3'],
-      }[type];
-      if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
-      if (type === 'folder') {
-        const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
@@ -311,6 +206,114 @@
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+    }
+
+/* === gb-data-access-dropbox-fileops-file-revision.js === */
+/* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
+    function _pwaFileTransport() {
+      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
+    }
+
+    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
+      let meta = writeMeta?.meta || writeMeta || null;
+      if (!meta?.id && typeof provider?.getMetadata === 'function') {
+        meta = await provider.getMetadata(filePath).catch(() => meta);
+      }
+      if (!meta?.id) {
+        const stat = typeof provider?.statPath === 'function'
+          ? await provider.statPath(filePath).catch(() => null)
+          : null;
+        meta = stat?.meta || meta;
+      }
+      const token = String(etag || '');
+      const providerId = String(meta?.id || '');
+      const identity = window.MeldexDocumentIdentity;
+      let content = fileContent;
+      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
+        content = await provider.readText(filePath).catch(() => '');
+      }
+      const identityFormat = identity?.formatForPath?.(filePath, content);
+      const documentId = identityFormat
+        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        : '';
+      return {
+        etag: token,
+        transport_revision: { transport: _pwaFileTransport(), token },
+        ...(documentId ? {
+          document_id: documentId,
+          document_key: `document:${documentId}`,
+        } : {}),
+        ...(providerId ? {
+          provider_id: providerId,
+          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
+        } : {}),
+      };
+    }
+
+    function _throwPreconditionRequired(filePath, currentEtag) {
+      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
+      error.status = 428;
+      error.code = 'precondition_required';
+      error.meldexCode = 'precondition_required';
+      error.detail = {
+        code: 'precondition_required',
+        path: _normalizeFolderPath(filePath),
+        current_etag: String(currentEtag || ''),
+      };
+      throw error;
+    }
+
+    function _dropboxTransportRevisionToken(bodyValue) {
+      const expectedTransport = _pwaFileTransport();
+      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
+      let transport = '';
+      let token = '';
+      if (revision && typeof revision === 'object') {
+        transport = String(revision.transport || revision.kind || expectedTransport);
+        token = String(revision.token || revision.revision || revision.etag || '').trim();
+      } else {
+        const raw = String(revision || '').trim();
+        if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('browser-local:')) {
+          transport = 'browser-local';
+          token = raw.slice('browser-local:'.length);
+        }
+        else if (raw.startsWith('dropbox-rev:')) {
+          transport = 'dropbox-rev';
+          token = raw.slice('dropbox-rev:'.length);
+        } else {
+          transport = expectedTransport;
+          token = raw;
+        }
+      }
+      if (transport && transport !== expectedTransport) {
+        const error = new Error('異なる保存経路のrevisionは使用できません');
+        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
+        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
+        throw error;
+      }
+      return token;
+    }
+
+    async function _readFileSnapshot(provider, filePath, entry) {
+      if (typeof provider.readBytesSnapshot === 'function') {
+        const snapshot = await provider.readBytesSnapshot(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      if (typeof provider.readBytesFresh === 'function') {
+        const snapshot = await provider.readBytesFresh(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      const before = await _fileEtag(provider, filePath, entry);
+      const bytes = new TextEncoder().encode(await provider.readText(filePath));
+      const after = await _fileEtag(provider, filePath, entry);
+      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+      return { bytes, etag: after };
+    }
+
+    function _savedNoteMetadata(filePath, content) {
+      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
+      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
     }
 
 /* === gb-data-access-dropbox-fileops-copy-routes.js === */
@@ -895,6 +898,3 @@
       if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
         await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
           const sidecarPath = _csvMetadataPath(originalPath);
-          await _directoryHandle(provider, _dirname(sidecarPath), true);
-          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
-          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);

@@ -34,6 +34,10 @@
     installPrompt: null,
     textHistory: { canUndo: false, canRedo: false },
     drawingHistory: { canUndo: false, canRedo: false },
+    // ペンモードで取り消し・やり直しの対象にする面。キャンバスを触ると 'pen'、
+    // 添え書き欄（本文欄）にフォーカスすると 'text'。ペン以外のモードは常に本文。
+    historySurface: 'pen',
+    attachmentPreviewKey: '',
     // 右サイドバーの「プロパティ」タブが、いま開いているメモのファイルを知るために使う。
     // 新規メモ（未保存）のときは空文字のまま。
     currentPath: '',
@@ -179,6 +183,9 @@
         editor: els.editor,
         onChanged() {
           autoFillTitle();
+          // 画像・動画モードは本文欄に添付を持つ。取り消し等で添付が増減した時だけ
+          // 表示を作り直す（入力のたびに大きな画像を複製しない）。
+          if (state.currentMode === 'image' || state.currentMode === 'video') renderAttachmentPreview({ ifChanged: true });
           scheduleSave();
         },
         onHistoryChange(next) {
@@ -340,6 +347,8 @@
       event.preventDefault();
       const files = Array.from(event.clipboardData.files);
       const mode = files[0]?.type?.startsWith('video/') ? 'video' : 'image';
+      // 画像・動画メモの添え書き欄へ同じ種類を貼った時は、今のメモへ追加する。
+      if (state.currentMode === mode) { attachMemoFiles(files); return; }
       if (await startNewMemo(mode)) attachMemoFiles(files);
     });
     const attachmentSurface = els.editor.closest('.qm-surface');
@@ -374,6 +383,13 @@
     });
     on(els.undoBtn, 'click', () => runHistory('undo'));
     on(els.redoBtn, 'click', () => runHistory('redo'));
+    on(els.editor, 'focusin', () => setHistorySurface('text'));
+    on(els.drawingCanvas, 'pointerdown', () => setHistorySurface('pen'));
+    on(els.drawingCanvas, 'focus', () => setHistorySurface('pen'));
+    // 本文欄の中のキーは本文の取り消し基盤（quick-memo-editor.js）が先に処理する。
+    // ここではキャンバスやボタン、何もない所にフォーカスがある時に、いまのモードの
+    // 履歴へ振り分ける。タイトル等の入力欄はブラウザ標準の取り消しに任せる。
+    on(document, 'keydown', handleHistoryShortcut);
     on(els.addTagBtn, 'click', addNewTag);
     on(els.listBtn, 'click', () => libraryController.show());
     on(els.menuListBtn, 'click', () => { closeMenu({ restoreFocus: true }); libraryController.show(); });
@@ -442,7 +458,10 @@
     if (state.currentMode === 'voice' && nextMode !== 'voice') _stopVoiceCapture();
     state.currentMode = nextMode;
     document.body.dataset.memoMode = state.currentMode;
-    els.editor.style.display = state.currentMode === 'text' ? '' : 'none';
+    // 本文欄は全モードで表示する。ペン・ボイス・画像・動画では5行分の添え書き欄（CSS）。
+    els.editor.style.display = '';
+    els.editor.dataset.placeholder = state.currentMode === 'text' ? 'すぐ書けます' : 'メモを書き添える';
+    state.historySurface = 'pen';
     els.drawingCanvas.style.display = state.currentMode === 'pen' ? '' : 'none';
     els.voicePanel.style.display = state.currentMode === 'voice' ? '' : 'none';
     els.voiceRecordBtn.disabled = !speechAvailable;
@@ -453,25 +472,67 @@
       if (shown) hasToolbarForMode = true;
     });
     if (els.toolbar) els.toolbar.style.display = hasToolbarForMode ? '' : 'none';
-    editorController.setActive(state.currentMode === 'text');
+    editorController.setActive(true);
     drawingController.setActive(state.currentMode === 'pen');
-    const historyVisible = state.currentMode === 'text' || state.currentMode === 'pen';
-    els.undoBtn.style.display = historyVisible ? '' : 'none';
-    els.redoBtn.style.display = historyVisible ? '' : 'none';
+    // どのモードにも本文（添え書き）の履歴があるため、取り消し・やり直しは常に表示する。
+    els.undoBtn.style.display = '';
+    els.redoBtn.style.display = '';
     updateHistoryButtons();
     renderAttachmentPreview();
     if (state.currentMode === 'text') focusEditorSoon();
   }
 
+  function activeHistoryKind() {
+    return state.currentMode === 'pen' && state.historySurface !== 'text' ? 'pen' : 'text';
+  }
+
+  function setHistorySurface(surface) {
+    const next = surface === 'text' ? 'text' : 'pen';
+    if (state.historySurface === next) return;
+    state.historySurface = next;
+    updateHistoryButtons();
+  }
+
   function updateHistoryButtons() {
-    const history = state.currentMode === 'pen' ? state.drawingHistory : state.textHistory;
+    const history = activeHistoryKind() === 'pen' ? state.drawingHistory : state.textHistory;
     els.undoBtn.disabled = !history.canUndo;
     els.redoBtn.disabled = !history.canRedo;
   }
 
   function runHistory(action) {
-    const controller = state.currentMode === 'pen' ? drawingController : editorController;
+    const controller = activeHistoryKind() === 'pen' ? drawingController : editorController;
     controller?.[action]?.();
+  }
+
+  function historyShortcutAction(event) {
+    const registry = window.MeldexShortcutRegistry;
+    const id = registry?.matchEvent ? registry.matchEvent(event, ['quickmemo']) : '';
+    if (id === 'quickmemo.undo') return 'undo';
+    if (id === 'quickmemo.redo' || id === 'quickmemo.redoAlt') return 'redo';
+    if (registry?.matchEvent) return '';
+    // 共通レジストリを読み込めない時の既定キー。
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return '';
+    const key = String(event.key || '').toLowerCase();
+    if (key === 'z') return event.shiftKey ? 'redo' : 'undo';
+    if (key === 'y' && !event.shiftKey) return 'redo';
+    return '';
+  }
+
+  function handleHistoryShortcut(event) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    const action = historyShortcutAction(event);
+    if (!action) return;
+    const target = event.target;
+    // 本文欄は自前の取り消しで処理済み。タイトル・検索・ダイアログ等の入力欄は標準動作に任せる。
+    if (target instanceof Element) {
+      if (els.editor.contains(target)) return;
+      if (target.closest('input, textarea, select, [contenteditable="true"], dialog, [role="dialog"], [role="menu"], .qm-tag-picker-overlay')) return;
+      if (target !== document.body && target !== document.documentElement && !els.editorView.contains(target)) return;
+    }
+    if (els.editorView.style.display === 'none') return;
+    if (drawingController.isAdjustingSize?.()) return;
+    event.preventDefault();
+    runHistory(action);
   }
 
   function autoFillTitle() {
@@ -644,12 +705,24 @@
     }
   }
 
-  function renderAttachmentPreview() {
+  function renderAttachmentPreview(options = {}) {
     const host = els.attachmentPreview;
     if (!host) return;
+    const sources = ['image', 'video'].includes(state.currentMode)
+      ? Array.from(els.editor.querySelectorAll(state.currentMode === 'image' ? 'img[src]' : 'video[src]'))
+      : [];
+    const key = state.currentMode + '|' + sources.map(node => {
+      const src = node.getAttribute('src') || '';
+      return src.length + ':' + src.slice(-24);
+    }).join(',');
+    // 本文欄に添付だけがある時も「書き添える」案内を出す（:empty が効かないため）。
+    if (sources.length) els.editor.dataset.captionEmpty = els.editor.textContent.trim() ? '0' : '1';
+    else delete els.editor.dataset.captionEmpty;
+    if (options.ifChanged && key === state.attachmentPreviewKey) return;
+    state.attachmentPreviewKey = key;
     host.replaceChildren();
     if (!['image', 'video'].includes(state.currentMode)) { host.hidden = true; return; }
-    els.editor.querySelectorAll(state.currentMode === 'image' ? 'img[src]' : 'video[src]').forEach(source => {
+    sources.forEach(source => {
       const media = source.cloneNode(true);
       if (media instanceof HTMLVideoElement) { media.controls = true; media.playsInline = true; }
       host.appendChild(media);
@@ -2369,7 +2442,7 @@
       const before = els.editor.innerHTML;
       els.editor.focus();
       document.execCommand('insertText', false, text + ' ');
-      // ボイスモードでは本文欄が非表示で、execCommandは挿入できない。
+      // 挿入位置を取れない場合（フォーカスを得られない等）は末尾へ足す。
       if (els.editor.innerHTML === before) els.editor.appendChild(document.createTextNode(text + ' '));
     });
   }

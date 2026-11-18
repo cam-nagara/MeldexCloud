@@ -144,6 +144,15 @@ function _dbActionFocusTrigger(triggerEl) {
 async function _renderEntityActions(data, entityPath) {
   const container = document.getElementById('entity-freetext');
   if (!container) return;
+  // トピック詳細（MeldexEntityDetail）では本文がタブの中にあり、本文タブ以外を表示中は隠れる。
+  // アクションは本文の表示状態に関係なく使えるよう、本文を含むタブ区画の直前（詳細の直下）に置く。
+  const detailRoot = container.closest('[data-meldex-entity-detail]');
+  let insertBeforeEl = container;
+  if (detailRoot && container.parentElement !== detailRoot) {
+    while (insertBeforeEl.parentElement && insertBeforeEl.parentElement !== detailRoot) insertBeforeEl = insertBeforeEl.parentElement;
+  }
+  const barHost = insertBeforeEl.parentElement;
+  barHost.querySelector(':scope > .db-action-bar')?.remove();
   container.parentElement.querySelector('.db-action-bar')?.remove();
 
   const dbPath = _dbActionBaseDbPath(entityPath);
@@ -151,8 +160,8 @@ async function _renderEntityActions(data, entityPath) {
   if (state.currentEntityPath && state.currentEntityPath !== entityPath) return;
   if (!meta || !meta.actions || meta.actions.length === 0) return;
 
-  let bar = container.parentElement.querySelector('.db-action-bar');
-  bar = document.createElement('div');
+  barHost.querySelector(':scope > .db-action-bar')?.remove();
+  const bar = document.createElement('div');
   bar.className = 'db-action-bar';
   bar.style.cssText = 'padding:8px 0;display:flex;gap:8px;flex-wrap:wrap;';
 
@@ -172,7 +181,8 @@ async function _renderEntityActions(data, entityPath) {
     bar.appendChild(btn);
   });
 
-  container.parentElement.insertBefore(bar, container);
+  if (!insertBeforeEl.isConnected || insertBeforeEl.parentElement !== barHost) return;
+  barHost.insertBefore(bar, insertBeforeEl);
 }
 
 // === アクションモーダル表示 ===

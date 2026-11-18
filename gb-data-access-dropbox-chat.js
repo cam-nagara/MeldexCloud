@@ -122,6 +122,8 @@
       if (Array.isArray(msg[key])) clean[key] = msg[key];
     });
     if (msg.usage && typeof msg.usage === 'object' && !Array.isArray(msg.usage)) clean.usage = msg.usage;
+    // 返信に記録した思考の深さ（デスクトップ側 meldex_api_chat.py と同じ許可値）。
+    if (['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'ultra'].includes(String(msg.reasoning_level || '').trim())) clean.reasoning_level = String(msg.reasoning_level).trim();
     if (msg.aborted === true) clean.aborted = true;
     if (str(msg.thinking).trim()) clean.thinking = str(msg.thinking).trim();
     if (str(msg.tool_audit_warning).trim()) clean.tool_audit_warning = str(msg.tool_audit_warning).trim();

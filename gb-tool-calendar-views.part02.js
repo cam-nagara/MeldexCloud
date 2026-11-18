@@ -579,7 +579,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
         details: host => renderEntries(template, host),
       }));
   };
-  return window.MeldexTemplatePicker.open({
+  const picker = window.MeldexTemplatePicker.open({
     id: 'calendar-tool-template-list',
     title: '週間テンプレート',
     loadItems,
@@ -591,6 +591,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
     itemActions: [
       {
         label: '編集',
+        e2eId: 'tmpl-edit',
         run: (item, ctx) => {
           ctx.close('edit');
           queueMicrotask(() => this._editTemplate(String(item.id), owner));
@@ -599,6 +600,7 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
       },
       {
         label: '削除',
+        e2eId: 'tmpl-delete',
         danger: true,
         run: async (item, ctx) => {
           const confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このテンプレートを削除しますか？');
@@ -630,6 +632,9 @@ CalendarComponent.prototype._showScheduleTemplateModal = async function(returnFo
       close: 'tmpl-close',
     },
   });
+  // ほかのカレンダーのダイアログと同じく、外枠にも安定した識別子を付ける。
+  if (picker?.overlay) picker.overlay.dataset.e2eId = 'calendar-tool-template-list-overlay';
+  return picker;
 };
 
 CalendarComponent.prototype._createTemplate = async function(knownTemplates) {

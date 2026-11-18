@@ -498,7 +498,8 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   const entityFilterActive = typeof isDbColumnFilterActive === 'function'
     && isDbColumnFilterActive(dbPath, '__entity__', ctx);
   const items = [
-    { type: 'submenu', label: '並び替え', children: _makeDbGlobalSortMenuItems(dbPath, ctx) },
+    // トピック名列の「並び替え」は列の一覧を並べた行ソートで、列の操作と紛らわしいため外した
+    // （2026-11-18 ユーザー指示）。行の並び替えはツールバーの並び替えと各列のメニューから行う。
     {
       label: lucide('filter', 14) + ' この列をフィルター...' + (entityFilterActive ? '（適用中）' : ''),
       action: () => {

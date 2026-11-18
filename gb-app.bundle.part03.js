@@ -1,3 +1,4 @@
+    let nextIndex = currentIndex;
     if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
     else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
     else if (ev.key === 'Home') nextIndex = 0;
@@ -897,4 +898,3 @@ async function _gbAppPrepareFullFileWrite(path, body) {
 
   if (revision && coordinator?.revisionTokenForWrite) {
     payload.if_match_etag = coordinator.revisionTokenForWrite(revision);
-    return payload;

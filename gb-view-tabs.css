@@ -159,6 +159,32 @@
 .gb-view-tab-menu-panel .gb-context-menu-item { display: flex; align-items: center; gap: 4px; width: 100%; }
 .gb-view-tab-check { display: inline-flex; width: 14px; height: 14px; flex: 0 0 14px; }
 
+/* ビューのアイコン（利用者が選んだ絵文字・画像も既定アイコンと同じ大きさにそろえる） */
+.gb-view-tab-label .gb-view-tab-custom-icon { --gb-icon-size: 14px; flex-shrink: 0; }
+
+/* タブの並べ替え中のドロップ位置（共通部品 MeldexViewTabs.bindReorder が付ける）。
+   メインパネルのタブ（.gb-tab-drop-before / -after）と同じ縦線を、同じ共通トークンで描く。
+   シート・ボードのビュータブ（.view-tab）にも同じクラスを付ける。 */
+.gb-view-tab-drop-before,
+.gb-view-tab-drop-after {
+  position: relative;
+}
+.gb-view-tab-drop-before::before,
+.gb-view-tab-drop-after::after {
+  content: '';
+  position: absolute;
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  background: var(--ui-tab-drop-indicator-color);
+  border-radius: var(--ui-tab-drop-indicator-radius);
+  z-index: 10;
+  pointer-events: none;
+}
+.gb-view-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-view-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
+.gb-view-tab-dragging { opacity: 0.5; }
+
 .gb-view-tabs-select { display: none; min-width: 128px; max-width: 100%; }
 
 @media (pointer: coarse), (max-width: 640px) {

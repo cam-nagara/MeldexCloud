@@ -361,72 +361,72 @@ function _appendTimelineCardPropsOption(menu, text, checked, onChange) {
   return _appendDbDisplayPropOption(menu, text, checked, { onToggle: onChange });
 }
 
-function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.tl-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:220px;max-height:320px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? cfg.cardProps.filter(prop => props.includes(prop)) : [];
-  let showEntryName = _timelineShowsEntryName(cfg);
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = _dbCardViewDisplayConfig(cfg);
-  const saveCardProps = (detail) => {
-    setTimelineConfig(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, {
-      label: 'シート表示: タイムライン表示列',
-      detail,
-      ctx,
-    });
-    renderTimeline(ctx);
+// ギャラリー・カンバン・タイムラインの「表示列」。ビューの「列管理」と同じ共通部品で、
+// 並び順＝カードに出る順を一覧の上の欄にそのまま出す（2026-11-18）。以前は一覧が列の順の
+// まま固定で、↑↓の効き方も開いた時点のまま変わらず、カードの並びと一致していなかった。
+//   options.cfg            現在の設定（cardProps / showEntryName / showBodyExcerpt ...）
+//   options.props          カードに出せる列（表で表示中の列）
+//   options.save(nextCfg, detail)  保存と再描画
+function _showDbCardPropsManager(anchor, options) {
+  let cfg = { ...(options.cfg || {}) };
+  const props = Array.isArray(options.props) ? options.props : [];
+  const defaultOrder = Array.isArray(options.defaultCardProps) ? options.defaultCardProps : [];
+  const ordered = () => (Array.isArray(cfg.cardProps) ? cfg.cardProps : defaultOrder).filter(prop => props.includes(prop));
+  const save = (patch, detail) => {
+    cfg = { ...cfg, ...patch };
+    options.save?.(cfg, detail);
   };
-  _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-    onToggle(checked) {
-      showEntryName = checked;
-      saveCardProps('トピック名');
+  const manager = window.MeldexColumnManager?.open({
+    anchor,
+    title: '表示列',
+    className: ['tl-card-props-menu', options.className || ''].join(' ').trim(),
+    e2eId: options.e2eId || 'db-card-props-manager',
+    renderExtra(container) {
+      _appendDbDisplayPropOption(container, 'トピック名', cfg.showEntryName !== false, {
+        onToggle(checked) { save({ showEntryName: checked }, 'トピック名'); },
+      });
+      if (typeof _appendDbCardDisplayControls === 'function') {
+        const display = typeof _dbCardViewDisplayConfig === 'function'
+          ? _dbCardViewDisplayConfig(cfg)
+          : { cardImageThumbCount: 3, cardPropLineCount: 1 };
+        _appendDbCardDisplayControls(container, display, (next, detail) => {
+          save({ cardImageThumbCount: next.cardImageThumbCount, cardPropLineCount: next.cardPropLineCount }, detail);
+        });
+      }
+      _appendDbDisplayPropOption(container, '本文冒頭', cfg.showBodyExcerpt === true, {
+        onToggle(checked) { save({ showBodyExcerpt: checked }, '本文冒頭'); },
+      });
+    },
+    getItems() {
+      const shown = ordered();
+      const rest = props.filter(prop => !shown.includes(prop));
+      return [
+        ...shown.map(prop => ({ id: prop, label: prop, visible: true })),
+        ...rest.map(prop => ({ id: prop, label: prop, visible: false })),
+      ];
+    },
+    onChange(items, detail) {
+      save({ cardProps: items.filter(item => item.visible).map(item => item.id) }, detail);
     },
   });
-  _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-    cardImageThumbCount = next.cardImageThumbCount;
-    cardPropLineCount = next.cardPropLineCount;
-    saveCardProps(detail);
+  return manager;
+}
+
+function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: _timelineShowsEntryName(cfg) },
+    props,
+    className: 'timeline-card-props-menu',
+    e2eId: 'timeline-card-props-manager',
+    save(next, detail) {
+      setTimelineConfig(dbPath, { ...cfg, ...next }, {
+        label: 'シート表示: タイムライン表示列',
+        detail,
+        ctx,
+      });
+      renderTimeline(ctx);
+    },
   });
-  _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-    onToggle(checked) { showBodyExcerpt = checked; saveCardProps('本文冒頭'); },
-  });
-  props.forEach(prop => {
-    _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-      canMoveUp: ordered.indexOf(prop) > 0,
-      canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-      onToggle(checked) {
-        ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-        saveCardProps(prop);
-      },
-      onMove(delta) {
-        const idx = ordered.indexOf(prop);
-        const nextIdx = idx + delta;
-        if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-        [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-        saveCardProps(prop);
-      },
-    });
-  });
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'tl-card-props-menu-close',
-      attr: 'data-tl-card-props-close',
-    });
-  }
-  _positionTimelineCardPropsMenu(menu, anchor);
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
 }
 
 function _positionTimelineCardPropsMenu(menu, anchor) {

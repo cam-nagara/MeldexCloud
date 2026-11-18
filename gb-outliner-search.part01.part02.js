@@ -127,8 +127,16 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
 (function() {
   const homeBody = document.getElementById('body-home');
   if (!homeBody) return;
+  // 行と行の間・字下げの余白（.tree-node 内で行以外の所）はホーム直下への移動先にしない。
+  // ここで枠を出すとセクション全体を囲む枠が行の間で点滅し、ドロップ先を誤読させる。
+  const overTreeGutter = (e) => !!(e.target && e.target !== homeBody && e.target.closest?.('.tree-node'));
   homeBody.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (overTreeGutter(e)) {
+      homeBody.style.outline = '';
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
     const external = !draggedNode && (_outlinerExternalDragItems(e).length
       || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node')));
     if (!draggedNode && !external) return;
@@ -139,6 +147,7 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
   homeBody.addEventListener('drop', async (e) => {
     e.preventDefault();
     homeBody.style.outline = '';
+    if (overTreeGutter(e)) { if (typeof clearDragIndicators === 'function') clearDragIndicators(); return; }
     if (!draggedNode && _homeFolderPath) {
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const items = _outlinerExternalDragItems(e, resolved?.payload).filter(source =>

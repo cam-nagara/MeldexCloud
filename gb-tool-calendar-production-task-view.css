@@ -1305,19 +1305,20 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 
 .gb-production-list-switch-btn.gb-production-tab-drop-before::before,
 .gb-production-list-switch-btn.gb-production-tab-drop-after::after {
+  /* メインパネルのタブ・他のビュータブと同じ縦線（共通トークン --ui-tab-drop-indicator-*） */
   content: "";
   position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 2px;
-  border-radius: var(--ui-radius-pill, 999px);
-  background: var(--cal-accent, var(--accent));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  border-radius: var(--ui-tab-drop-indicator-radius);
+  background: var(--ui-tab-drop-indicator-color);
+  z-index: 10;
   pointer-events: none;
 }
 
-.gb-production-list-switch-btn.gb-production-tab-drop-before::before { left: -3px; }
-.gb-production-list-switch-btn.gb-production-tab-drop-after::after { right: -3px; }
+.gb-production-list-switch-btn.gb-production-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-production-list-switch-btn.gb-production-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
 
 .gb-production-list-tab-more {
   display: inline-flex;

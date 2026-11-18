@@ -418,6 +418,11 @@ td:hover .cell-add-btn { display: inline-flex; }
 #pivot-table td .cell-value > .cell-value-more,
 .pivot-table td .cell-value > .cell-value-more {
   right: 2px !important;
+  /* 値（16〜21px）の中央に22pxのボタンを置くと、セル上端からはみ出して上にずれて見えた
+     （全列タイプ共通）。値の1行目の上端に揃え、通常の行ではセルの上下中央、複数行の
+     セルや高い行でも同じ行の他の列と同じ高さに置く。 */
+  top: 0 !important;
+  transform: none !important;
   min-width: 22px;
   min-height: 22px;
   align-items: center;
@@ -440,6 +445,9 @@ td.active-cell .cell-value > .cell-value-more {
   body #pivot-table td .cell-value > .cell-value-more,
   body .pivot-table td .cell-value > .cell-value-more {
     right: 2px !important;
+    /* タッチ操作の44pxボタンは従来どおり値の上下中央に置く。 */
+    top: 50% !important;
+    transform: translateY(-50%) !important;
     display: inline-flex !important;
     min-width: 44px;
     min-height: 44px;
@@ -1746,6 +1754,9 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   padding: 8px 12px; font-size: 13px; font-weight: bold;
   border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 6px;
   flex-shrink: 0; user-select: none;
+}
+.kanban-column.db-option-color-column {
+  background: color-mix(in srgb, var(--db-option-bg) 16%, var(--bg2));
 }
 .kanban-column-header.db-option-color-header {
   background: var(--db-option-bg);

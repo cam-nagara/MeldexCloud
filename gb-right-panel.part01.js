@@ -1267,6 +1267,14 @@ function _commentGroupKey(c) {
     const key = `calendar_event:${ref.file || ''}:${ref.eventId || ''}`;
     return { key, label: `${orphanPrefix}イベント · ${file}` + (snap ? ` · "${snap}"` : '') };
   }
+  if (kind === 'map_feature') {
+    const key = `map_feature:${ref.file || ''}:${ref.featureId || ''}`;
+    return { key, label: `${orphanPrefix}地点・図形 · ${file}` + (snap ? ` · "${snap}"` : '') };
+  }
+  if (kind === 'form_field') {
+    const key = `form_field:${ref.file || ''}:${ref.field || ''}`;
+    return { key, label: `${orphanPrefix}フォームの項目 · ${file}` + (snap ? ` · "${snap}"` : '') };
+  }
   if (kind === 'text_range') {
     const cont = ref.container || null;
     const cKey = cont ? `${cont.kind}:${cont.id || cont.entryId || ''}:${cont.colId || ''}` : 'doc';
@@ -1285,6 +1293,7 @@ function _kindLabel(kind) {
     board_card: 'カード', sheet_cell: 'セル', text_range: '選択範囲',
     board_line: 'ライン',
     calendar_event: 'イベント',
+    map_feature: '地点・図形', form_field: 'フォームの項目',
   })[kind] || kind;
 }
 

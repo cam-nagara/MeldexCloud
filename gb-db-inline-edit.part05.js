@@ -85,7 +85,7 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     <div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${targets.map(name => esc(name)).join(' / ')}</div>
     <div class="field">
       <label for="bulk-col-width-input">幅 (px)</label>
-      <input id="bulk-col-width-input" class="gb-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="width:100%;min-width:0;box-sizing:border-box;">
+      <input id="bulk-col-width-input" class="gb-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="flex:1 1 0%;width:100%;min-width:0;box-sizing:border-box;">
     </div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';

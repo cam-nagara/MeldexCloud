@@ -869,13 +869,14 @@
     return sendBtn;
   }
 
-  function createCliChatActivity(provider) {
+  function createCliChatActivity(provider, reasoningLevel = '') {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-cli-activity';
     wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;min-width:0;align-self:flex-start;box-sizing:border-box;';
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
-    const label = cliChatModelLabel(provider);
+    const baseLabel = cliChatModelLabel(provider);
+    const label = reasoningLevel && typeof getProviderLabel === 'function' ? getProviderLabel(provider, baseLabel, reasoningLevel) : baseLabel;
     header.innerHTML = (typeof getProviderIconHtml === 'function' ? getProviderIconHtml(provider, 16) : icon('terminal', 16)) + '<span>' + esc(label) + '</span>';
     const body = document.createElement('div');
     body.style.cssText = 'background:var(--bg3);padding:8px 16px;border-radius:12px 12px 12px 2px;font-size:13px;color:var(--fg2);display:flex;align-items:center;gap:8px;max-width:100%;min-width:0;box-sizing:border-box;';
@@ -1012,9 +1013,11 @@
       : [];
     const usingDeferredMessages = deferredMessages.length > 0;
     let attachments = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
+    // ＋メニューで選んだスキル（または「/スキル名」）を、目印付きの本文と skills にする。
+    const skillSend = usingDeferredMessages ? null : (window.GBChatSkillPicker?.prepareSend?.(input.value.trim()) || null);
     const textValue = usingDeferredMessages && typeof _chatQueuedMessagesText === 'function'
       ? _chatQueuedMessagesText(deferredMessages).trim()
-      : input.value.trim();
+      : (skillSend ? skillSend.text : input.value.trim());
     if (!usingDeferredMessages && !textValue && attachments.length === 0) {
       if (typeof _chatQueuedMessages === 'function' && _chatQueuedMessages().length && typeof _chatSendQueuedMessagesAfterStream === 'function') {
         return _chatSendQueuedMessagesAfterStream();
@@ -1117,6 +1120,10 @@
         else _chatState.pendingAttachments = [];
       }
       const userMessage = { role: 'user', content: userContent, timestamp: userTimestamp };
+      if (skillSend) {
+        userMessage.skills = skillSend.skills.slice();
+        window.GBChatSkillPicker?.commitSend?.();
+      }
       if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(userMessage);
       if (typeof chatAddMessage === 'function') {
         chatAddMessage('user', userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
@@ -1145,6 +1152,10 @@
     // 送信開始時に固定する。旧形式の待機メッセージへ後から選んだ高速設定を持ち込まない。
     const streamGenerationSettings = { ...(options.generationSettings
       || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings(provider, streamModelSelection) : {})) };
+    const streamReasoningLevel = typeof _chatReasoningRecordLevel === 'function'
+      ? _chatReasoningRecordLevel(provider, streamModelSelection === cliChatDefaultModelSentinel() ? '' : streamModelSelection, streamGenerationSettings)
+      : '';
+    const streamReasoningRecord = streamReasoningLevel ? { reasoning_level: streamReasoningLevel } : {};
     const cliSessionScope = cliChatSessionScope(provider, streamSessionId, streamSourceFolder, streamWorkspaceId, streamTargetPath, streamWorkFolder);
     const cliSessionContinuity = cliChatSessionContinuityForRequest(cliSessionScope);
     const streamController = new AbortController();
@@ -1180,7 +1191,7 @@
     });
     if (streamVisibleInCurrentChat()) cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
-    const activity = createCliChatActivity(provider);
+    const activity = createCliChatActivity(provider, streamReasoningLevel);
     const _scrollHandler = () => {};
     if (!detachedScope && msgContainer && typeof _chatBindFollowController === 'function') {
       _chatBindFollowController(streamSessionId, msgContainer, { resume: true });
@@ -1223,6 +1234,7 @@
         msg_id: assistantMessageId,
         provider,
         model: streamModelLabel,
+        ...streamReasoningRecord,
         timestamp: assistantTimestamp,
       };
     };
@@ -1531,7 +1543,7 @@
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(fullText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
-        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
+        const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, ...streamReasoningRecord, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
         if (cliThinkingText.trim()) assistantMessage.thinking = cliThinkingText;
         streamMessages.push(assistantMessage);
         sendOk = true;
@@ -1558,6 +1570,7 @@
           msg_id: assistantMessageId,
           provider,
           model: streamModelLabel,
+          ...streamReasoningRecord,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           aborted: !clientIdleAbortMessage,
           auto_stopped: !!clientIdleAbortMessage,
@@ -1585,6 +1598,7 @@
           msg_id: assistantMessageId,
           provider,
           model: streamModelLabel,
+          ...streamReasoningRecord,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
           error_code: error?.errorCode || 'cli_exit_nonzero',

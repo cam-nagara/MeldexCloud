@@ -15,6 +15,10 @@ Meldex は以下のサードパーティ製ソフトウェア、フォント、�
 | Twemoji | グラフィック CC-BY 4.0 / コード MIT | 旧チャットスタンプ互換スプライト | https://github.com/twitter/twemoji | SVGスプライト同梱 | 必須 | `app/stamps/TWEMOJI-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | html2canvas | MIT License | 画像書き出しフォールバック | https://github.com/niklasvh/html2canvas | JS同梱 | 必須 | `app/vendor/html2canvas.min.js` header, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | PDF.js | Apache License 2.0 / NOTICE retention | PDFビューア | https://github.com/mozilla/pdf.js | JS/worker同梱 | 必須 | `app/vendor/pdfjs/LICENSE`, `app/vendor/pdfjs/NOTICE`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
+| Leaflet | BSD 2-Clause License | マップの表示 | https://github.com/Leaflet/Leaflet | JS/CSS同梱 | 必須 | `app/vendor/leaflet/LICENSE`, `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
+| Azgaar Fantasy Map Generator | MIT License（生成した地図は制限なく利用可） | マップの世界地図生成 | https://github.com/Azgaar/Fantasy-Map-Generator | JS(worker)同梱 | 必須 | `app/vendor/azgaar/LICENSE`, `app/vendor/azgaar/THIRD_PARTY_NOTICES.txt`, `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
+| Kenney Cartography Pack | CC0 1.0（表記任意） | マップの地点の記号・羊皮紙の質感 | https://kenney.nl/assets/cartography-pack | PNG同梱 | 任意（出典台帳に記録） | `app/vendor/map-assets/LICENSE-kenney-cartography.txt`, `app/vendor/map-assets/provenance.json`, `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
+| IM FELL English / MedievalSharp | SIL Open Font License 1.1 | マップの地名の書体 | https://github.com/google/fonts | TTF同梱 | 必須 | `app/vendor/map-assets/fonts/OFL-*.txt`, `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
 | Radicale | GPLv3 | ローカル CalDAV サーバー | https://github.com/Kozea/Radicale | Pythonパッケージ同梱時はGPL対象 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
 | pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | Pythonパッケージ同梱時は動的利用相当 | 必須（`app/requirements-editor.txt` で無条件インストール対象。2026-08-12以降、Windows exe配布では常に同梱） | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
 | pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | Pythonパッケージ同梱時は動的利用相当 | 必須（`app/requirements-editor.txt` で無条件インストール対象。2026-08-12以降、Windows exe配布では常に同梱） | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
@@ -69,6 +73,34 @@ PERFORMANCE OF THIS SOFTWARE.
 - **同梱形態**: `app/vendor/pdfjs/`
 - **ライセンス全文**: `app/vendor/pdfjs/LICENSE`
 - **NOTICE**: `app/vendor/pdfjs/NOTICE`
+
+## マップ
+
+### Leaflet
+
+- **ライセンス**: BSD 2-Clause License
+- **出典**: https://github.com/Leaflet/Leaflet
+- **同梱形態**: `app/vendor/leaflet/`（ライセンス全文 `LICENSE`）
+
+### Azgaar Fantasy Map Generator
+
+- **ライセンス**: MIT License（作成した地図・画像は制限なく利用可）
+- **出典**: https://github.com/Azgaar/Fantasy-Map-Generator
+- **同梱形態**: `app/vendor/azgaar/azgaar-worker.js`（`LICENSE`、`THIRD_PARTY_NOTICES.txt`、`provenance.json`）
+
+### Kenney Cartography Pack
+
+- **ライセンス**: Creative Commons Zero (CC0 1.0)。表記は任意
+- **出典**: Kenney (https://kenney.nl/assets/cartography-pack)
+- **用途**: マップの地点の記号（城・教会・塔・森・山など）、羊皮紙スタイルの質感
+- **同梱形態**: `app/vendor/map-assets/symbols/`、`app/vendor/map-assets/textures/`（出典台帳 `provenance.json`）
+
+### IM FELL English / MedievalSharp
+
+- **ライセンス**: SIL Open Font License 1.1
+- **出典**: Igino Marini（IM FELL English）、wmk69（MedievalSharp）／ Google Fonts
+- **用途**: マップの地名の書体（古地図風・中世風）
+- **同梱形態**: `app/vendor/map-assets/fonts/`（ライセンス全文 `OFL-IMFellEnglish.txt`、`OFL-MedievalSharp.txt`）
 
 ## Emoji Graphics
 

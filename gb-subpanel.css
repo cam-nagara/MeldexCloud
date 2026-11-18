@@ -311,3 +311,15 @@
   border-radius: 3px; outline: none; cursor: text;
 }
 .gb-subpanel-title-text.meldex-entity-detail-header-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* サブパネルのタブ化（ファイル／フォルダのタブをパネルのタブバーに並べる）。
+   見出しの名前はタブと重複するため出さない（トピックの詳細の名前欄は残す）。 */
+.gb-subpanel-titlebar .gb-subpanel-title-icon,
+.gb-subpanel-titlebar .gb-subpanel-title-text:not(.meldex-entity-detail-header-title) { display: none; }
+.gb-subpanel-tab-strip .gb-subpanel-tabs-empty {
+  align-self: center;
+  padding: 0 var(--ui-space-2, 8px);
+  color: var(--ui-fg-muted, var(--fg2));
+  font-size: var(--ui-font-12, 12px);
+  white-space: nowrap;
+}

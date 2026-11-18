@@ -1,3 +1,54 @@
+  if (!nodeEl || !row) return false;
+  const focusSeq = ++_outlinerKeyboardFocusSeq;
+  try {
+    const opened = window.GBOutlinerActivation?.activateNode(nodeEl);
+    Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
+  } catch (err) {
+    _outlinerKeyboardRestoreFocus(row, focusSeq);
+    throw err;
+  }
+  return true;
+}
+
+// F2: 名前変更開始（ダブルクリックの旧割当はここへ移動済み）
+function _outlinerKeyboardStartRename(nodeEl) {
+  const row = _outlinerKeyboardRow(nodeEl);
+  const label = row?.querySelector(':scope > .tree-label');
+  const item = nodeEl?._nodeData;
+  if (!row || !label || !item) return false;
+  return window.GBOutlinerActivation?.startRenameForNode(nodeEl, label, item) || false;
+}
+
+function _outlinerKeyboardScopeFromTarget(target) {
+  if (target?.closest?.('#body-home')) return '#body-home';
+  if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
+  if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
+  if (target?.id === 'tree-scroll-container') return '#outliner-tree';
+  return '';
+}
+
+function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
+  const direct = target?.closest?.('.tree-node') || null;
+  if (direct && (!scopeSelector || direct.closest(scopeSelector))) return direct;
+  if (treeSelection.lastClicked && (!scopeSelector || treeSelection.lastClicked.closest(scopeSelector))) return treeSelection.lastClicked;
+  const activeRow = document.querySelector(`${scopeSelector || '#outliner-tree'} .tree-node-row.active`);
+  return activeRow?.closest?.('.tree-node') || null;
+}
+
+function _outlinerKeyboardToggle(nodeEl, expand) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  if (!toggle || toggle.dataset.expanded === undefined) return false;
+  const expanded = toggle.dataset.expanded === 'true';
+  if (expand === true && !expanded) { toggle.click(); return true; }
+  if (expand === false && expanded) { toggle.click(); return true; }
+  return false;
+}
+
+function _outlinerKeyboardIsExpandable(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded !== undefined;
+}
+
 function _outlinerKeyboardIsExpanded(nodeEl) {
   const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
   return !!toggle && toggle.dataset.expanded === 'true';

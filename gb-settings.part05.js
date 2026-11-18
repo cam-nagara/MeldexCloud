@@ -93,7 +93,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['共通', ['共通本文背景色', 'アプリ基礎背景色', 'サブ背景色', '強調背景色', 'ポップアップ', 'ダイアログ', 'パネルタブバー', 'パネルタブ選択背景', '折りたたみ/ドックバー', 'パネル内タブバー', 'パネル内タブ 通常', 'パネル内タブ 選択']],
     ['フォルダ', ['カード', 'カード枠線']],
     ['ノート', ['引用ブロック']],
-    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['シート', ['ヘッダー', 'トピック列', 'セル']],
     ['ボード', ['ボード背景']],
     ['スケジュール', ['全体', 'ツールバー', 'サイドバー', 'コンテンツ', '右サイドバー', 'セル']],
     ['補助パネル', ['フォルダツリー', 'ビューワーカード', 'チャット入力']],
@@ -102,7 +102,7 @@ const SETTINGS_THEME_DETAIL_STYLE_GROUPS = Object.freeze({
     ['共通', ['通常文字', 'サブテキスト', 'ヘッダー', 'ツールバー', '強調文字', 'リンク', 'エラー・警告']],
     ['ノート', ['タイトル', '見出し H1', '見出し H2', '見出し H3', '見出し H4', '見出し H5', '見出し H6', '本文', '引用ブロック']],
     ['シナリオ', ['基本テキスト']],
-    ['シート', ['ヘッダー', 'エントリ列', 'セル']],
+    ['シート', ['ヘッダー', 'トピック列', 'セル']],
     ['スケジュール', ['見出し', '土曜', '日曜', '時刻', '補助表示']],
     ['補助パネル', ['チャット本文']],
   ],
@@ -418,7 +418,7 @@ const SETTINGS_THEME_PREVIEW_SAMPLE_SPECS = Object.freeze({
   ]),
   sheet: Object.freeze([
     ['header-name', 'シート', 'ヘッダー'], ['header-status', 'シート', 'ヘッダー'],
-    ['entity', 'シート', 'エントリ列'], ['cell', 'シート', 'セル'], ['selected', 'シート', '選択'],
+    ['entity', 'シート', 'トピック列'], ['cell', 'シート', 'セル'], ['selected', 'シート', '選択'],
     ['active', 'シート', 'アクティブセル枠'], ['status', 'シート', '採用ステータス'],
     ['badge-1', 'シート', 'ソースバッジ 1'], ['badge-2', 'シート', 'ソースバッジ 2'],
   ]),
@@ -653,7 +653,8 @@ function _settingsThemePreviewSupplement(appId) {
     target.app ? ownSections.has(target.app)
       : appId === 'main' || !windowOnly.has(target.id)
   ).map(_settingsThemePreviewPaletteTarget).join('');
-  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
+  // 見本の開閉は背景色設定の対象（外側の見本面の data-action）へ伝えない。空の data-action で委譲を止める。
+  return `<details class="settings-theme-extra-elements"><summary data-e2e-id="settings-theme-extra-elements-${esc(appId)}" data-action="">その他の要素・状態の見本</summary>${samples}<section class="settings-theme-preview-group"><h3>状態別の自動配色</h3><div class="settings-theme-extra-samples">${auto}</div></section></details>`;
 }
 
 function _settingsThemePreviewPaletteTarget(target) {

@@ -218,7 +218,14 @@
       const baseImage = baseDataUrl ? await loadImage(baseDataUrl) : null;
       if (epoch !== renderEpoch) return;
       resetContext();
-      if (baseImage) context.drawImage(baseImage, 0, 0, logicalWidth, logicalHeight);
+      if (baseImage) {
+        // 保存済みの手書きは縦横比を保って左上に置く。キャンバスの高さが
+        // 添え書き欄やパネルの大きさで変わっても、絵が縦に潰れない。
+        const naturalWidth = baseImage.naturalWidth || logicalWidth;
+        const naturalHeight = baseImage.naturalHeight || logicalHeight;
+        const fit = Math.min(logicalWidth / naturalWidth, logicalHeight / naturalHeight);
+        context.drawImage(baseImage, 0, 0, naturalWidth * fit, naturalHeight * fit);
+      }
       for (let index = 0; index < cursor; index += 1) {
         const command = commands[index];
         if (command.type === 'stroke') drawStroke(context, command, logicalWidth, logicalHeight);
@@ -257,14 +264,125 @@
       options.onChanged?.();
     }
 
+    // ペン・消しゴムのカーソルは、線幅と同じ直径の円をキャンバスの上に重ねて表示する。
+    // CSSカーソル画像は最大128pxの制限と拡大率のずれがあるため使わず、キャンバスと
+    // 同じ座標系（親要素内のCSS px）に置いた要素で実寸を保つ。
+    const brushCursor = document.createElement('div');
+    brushCursor.className = 'qm-brush-cursor';
+    brushCursor.setAttribute('aria-hidden', 'true');
+    brushCursor.hidden = true;
+    (canvas.parentElement || document.body).appendChild(brushCursor);
+    let cursorPoint = null;
+    let sizeDrag = null;
+
+    function clampWidth(value) {
+      const min = Number(options.widthInput.min) || 2;
+      const max = Number(options.widthInput.max) || 24;
+      return Math.max(min, Math.min(max, Math.round(Number(value) || min)));
+    }
+
+    // キャンバス要素内のCSS px（親要素基準）へ変換する。表示倍率で
+    // getBoundingClientRect と offsetWidth がずれても、線と円の比率を一致させる。
+    function localScale() {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        rect,
+        sx: rect.width ? canvas.offsetWidth / rect.width : 1,
+        sy: rect.height ? canvas.offsetHeight / rect.height : 1,
+      };
+    }
+
+    function brushDiameter() {
+      const width = clampWidth(options.widthInput.value);
+      const scale = logicalWidth ? canvas.offsetWidth / logicalWidth : 1;
+      return Math.max(1, width * (Number.isFinite(scale) && scale > 0 ? scale : 1));
+    }
+
+    function usesBrushCursor() {
+      return tool === 'pen' || tool === 'eraser' || Boolean(sizeDrag);
+    }
+
+    function hideBrushCursor() {
+      brushCursor.hidden = true;
+    }
+
+    function renderBrushCursor() {
+      if (!cursorPoint || !usesBrushCursor() || canvas.style.display === 'none') {
+        hideBrushCursor();
+        return;
+      }
+      const { rect, sx, sy } = localScale();
+      const diameter = brushDiameter();
+      const x = canvas.offsetLeft + (cursorPoint.clientX - rect.left) * sx;
+      const y = canvas.offsetTop + (cursorPoint.clientY - rect.top) * sy;
+      brushCursor.style.width = `${diameter}px`;
+      brushCursor.style.height = `${diameter}px`;
+      brushCursor.style.transform = `translate(${x - diameter / 2}px, ${y - diameter / 2}px)`;
+      brushCursor.dataset.tool = sizeDrag ? 'resize' : tool;
+      brushCursor.hidden = false;
+    }
+
+    function trackBrushCursor(event) {
+      if (event.pointerType === 'touch') {
+        cursorPoint = null;
+        hideBrushCursor();
+        return;
+      }
+      if (!sizeDrag) cursorPoint = { clientX: event.clientX, clientY: event.clientY };
+      renderBrushCursor();
+    }
+
     function selectTool(nextTool) {
       tool = nextTool;
       [options.penBtn, options.fillBtn, options.eraserBtn].forEach((button) => button.classList.remove('is-active'));
       ({ pen: options.penBtn, fill: options.fillBtn, eraser: options.eraserBtn })[tool].classList.add('is-active');
-      canvas.style.cursor = tool === 'fill' ? 'cell' : 'crosshair';
+      // ペン・消しゴムはサイズ円を出すためOSカーソルを隠す。塗りは従来どおり。
+      canvas.style.cursor = tool === 'fill' ? 'cell' : 'none';
+      renderBrushCursor();
+    }
+
+    // Ctrl+Alt+横ドラッグで線幅を変える。描画はしない。
+    const SIZE_DRAG_PX_PER_STEP = 5;
+    function beginSizeDrag(event) {
+      sizeDrag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startWidth: clampWidth(options.widthInput.value),
+      };
+      cursorPoint = { clientX: event.clientX, clientY: event.clientY };
+      try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+      event.preventDefault();
+      renderBrushCursor();
+    }
+
+    function updateSizeDrag(event) {
+      if (!sizeDrag || sizeDrag.pointerId !== event.pointerId) return false;
+      const next = clampWidth(sizeDrag.startWidth + (event.clientX - sizeDrag.startX) / SIZE_DRAG_PX_PER_STEP);
+      if (String(next) !== String(options.widthInput.value)) {
+        options.widthInput.value = String(next);
+        options.widthInput.dispatchEvent(new Event('input', { bubbles: true }));
+        options.widthInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      renderBrushCursor();
+      return true;
+    }
+
+    function endSizeDrag(event) {
+      if (!sizeDrag || sizeDrag.pointerId !== event.pointerId) return false;
+      updateSizeDrag(event);
+      sizeDrag = null;
+      persistSettings();
+      cursorPoint = { clientX: event.clientX, clientY: event.clientY };
+      renderBrushCursor();
+      return true;
     }
 
     function beginStroke(event) {
+      if (event.ctrlKey && event.altKey && (event.button == null || event.button === 0) && !activeStroke) {
+        beginSizeDrag(event);
+        return;
+      }
+      if (sizeDrag) return;
       if (rendering || activeStroke || (event.button != null && event.button !== 0)) return;
       const point = pointFromEvent(canvas, event);
       if (tool === 'fill') {
@@ -421,15 +539,37 @@
     options.swatch.addEventListener('click', openColorEditor);
     options.colorInput.addEventListener('input', updateSwatch);
     options.opacityInput.addEventListener('input', updateSwatch);
-    options.widthInput.addEventListener('input', persistSettings);
+    options.widthInput.addEventListener('input', () => {
+      persistSettings();
+      renderBrushCursor();
+    });
     options.penBtn.addEventListener('click', () => selectTool('pen'));
     options.fillBtn.addEventListener('click', () => selectTool('fill'));
     options.eraserBtn.addEventListener('click', () => selectTool('eraser'));
     options.clearBtn.addEventListener('click', clear);
-    canvas.addEventListener('pointerdown', beginStroke);
-    canvas.addEventListener('pointermove', continueStroke);
-    canvas.addEventListener('pointerup', endStroke);
-    canvas.addEventListener('pointercancel', endStroke);
+    canvas.addEventListener('pointerdown', (event) => {
+      trackBrushCursor(event);
+      beginStroke(event);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (updateSizeDrag(event)) return;
+      trackBrushCursor(event);
+      continueStroke(event);
+    });
+    canvas.addEventListener('pointerup', (event) => {
+      if (endSizeDrag(event)) return;
+      endStroke(event);
+    });
+    canvas.addEventListener('pointercancel', (event) => {
+      if (endSizeDrag(event)) return;
+      endStroke(event);
+    });
+    canvas.addEventListener('pointerenter', trackBrushCursor);
+    canvas.addEventListener('pointerleave', () => {
+      if (sizeDrag) return;
+      cursorPoint = null;
+      hideBrushCursor();
+    });
     // Keep native touch gestures from swallowing the first button tap after drawing.
     canvas.addEventListener('touchstart', event => event.preventDefault(), { passive: false });
     document.addEventListener('pointerdown', (event) => {
@@ -458,8 +598,14 @@
       state: () => ({ canUndo: cursor > 0, canRedo: cursor < commands.length }),
       setActive(value) {
         if (value) window.requestAnimationFrame(resize);
-        else options.popover.hidden = true;
+        else {
+          options.popover.hidden = true;
+          cursorPoint = null;
+          sizeDrag = null;
+          hideBrushCursor();
+        }
       },
+      isAdjustingSize: () => Boolean(sizeDrag),
     };
   }
 

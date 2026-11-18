@@ -135,8 +135,29 @@
       <div data-sk-alert aria-live="polite"></div>
       <div data-sk-list data-e2e-id="skills-list"><div class="gb-section-desc">読み込み中...</div></div>
     `;
-    root.querySelector('[data-sk-create]')?.addEventListener('click', () => openCreateForm());
+    const createButton = root.querySelector('[data-sk-create]');
+    createButton?.addEventListener('click', () => openCreateForm());
+    appendConsultButton(createButton);
     loadSkillsList(root);
+  }
+
+  // 「チャットで相談して作成」: チャットの入力欄へ定型の依頼文を入れ、AIと相談しながらスキルを作る。
+  function appendConsultButton(createButton) {
+    if (!createButton?.parentNode || !window.GBChatSkillPicker?.startConsultation) return;
+    const group = document.createElement('div');
+    group.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;';
+    const consult = document.createElement('button');
+    consult.type = 'button';
+    consult.className = 'gb-btn gb-btn-sm';
+    consult.dataset.skConsult = '';
+    consult.dataset.e2eId = 'skills-consult';
+    consult.setAttribute('data-gb-tooltip', 'チャットの入力欄に依頼文を入れます。AIが質問しながら案を作り、合意してから保存します');
+    consult.textContent = 'チャットで相談して作成';
+    consult.addEventListener('click', () => {
+      if (!window.GBChatSkillPicker.startConsultation()) showStatus('AIチャットの入力欄を開けませんでした', true);
+    });
+    createButton.parentNode.insertBefore(group, createButton);
+    group.append(consult, createButton);
   }
 
   async function loadSkillsList(root) {
@@ -342,6 +363,7 @@
         showStatus(res.error, true);
       } else {
         showStatus(form.mode === 'edit' ? 'スキルを更新しました' : 'スキルを作成しました');
+        window.GBChatSkillPicker?.invalidate?.();
         state.view = 'list';
         state.form = null;
         renderRoot();
@@ -373,6 +395,7 @@
         return;
       }
       showStatus('スキルを削除しました');
+      window.GBChatSkillPicker?.invalidate?.();
     } catch {
       return; // apiFetch が失敗理由のトーストを既に表示している
     }
@@ -391,5 +414,5 @@
   }
 
   window.ensureChatSkillsSheet = ensureChatSkillsSheet;
-  window.GBChatSkills = { open: ensureChatSkillsSheet };
+  window.GBChatSkills = { open: ensureChatSkillsSheet, close: closeSkillsModal };
 })();

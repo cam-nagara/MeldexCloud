@@ -151,7 +151,7 @@
         || (kind === 'page' ? { paneId: INNER_PANE_ID, pagePath: entry.path, viewMode: 'page', containerEl: _contentEl } : null),
       resolveComponent: () => typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null,
       activate: () => {
-        if (['board', 'scriptnote'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
+        if (['board', 'scriptnote', 'form-app', 'map'].includes(kind)) getComponentInstance(_pane?.tabs?.[0]?.id)?.activate?.();
       },
       syncDetail: () => {
         const component = typeof getComponentInstance === 'function' ? getComponentInstance(_pane?.tabs?.[0]?.id) : null;
@@ -167,7 +167,10 @@
         if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
         return component?.reload?.();
       },
-      historyScope: () => kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
+      // フォーム・マップは本体と同じ範囲名をコンポーネント自身から取る（書式がずれると取り消しが別範囲へ行く）。
+      historyScope: () => ['form-app', 'map'].includes(kind) && typeof getComponentInstance(_pane?.tabs?.[0]?.id)?._historyScope === 'function'
+          ? getComponentInstance(_pane?.tabs?.[0]?.id)._historyScope()
+        : kind === 'database' && typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(entry.path)
         : kind === 'scriptnote' ? getComponentInstance(_pane?.tabs?.[0]?.id)?._editor?._historyScope?.()
         : kind === 'calendar' && typeof _meldexScheduleTabHistoryScope === 'function' ? _meldexScheduleTabHistoryScope(_pane?.tabs?.[0])
         : kind === 'board' && typeof _bdHistoryScope === 'function' ? _bdHistoryScope(entry.path)
@@ -455,11 +458,98 @@
     if (typeof openRightPanelTab === 'function') openRightPanelTab('subpanel');
   }
 
-  async function open(target, options) {
+  // ---- サブパネルのタブ（メインパネルと同じくファイル／フォルダを1件ずつタブにする） ----
+  // 表示の仕組み（保存の確定→退避→描画）は従来の1件表示をそのまま使い、表示中のタブだけを描く。
+  // タブの一覧は「サブパネル」の土台タブの state.subTabs としてレイアウトへ保存し、再起動後も残す。
+  const TAB_MIME = 'application/x-meldex-subpanel-tab';
+  const MAIN_TAB_MIME = 'application/x-meldex-main-tab-reorder';
+  let _tabs = [];
+  let _activeId = '';
+  let _tabSeq = 0;
+  let _stripEl = null;
+  let _restored = false;
+
+  function _newTabId() { return 'sp-tab-' + Date.now().toString(36) + '-' + (++_tabSeq); }
+  function _activeTab() { return _tabs.find(tab => tab.id === _activeId) || null; }
+  function _sameTarget(a, b) { return !!(a && b && a.type === b.type && String(a.path || '') === String(b.path || '')); }
+  function _hostPane() {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return null;
+    return GBLayout.getAllPanes(GBLayout.root).find(pane => pane?.meldexRole === 'subpanel-workspace') || null;
+  }
+  function _hostTab() { return _hostPane()?.tabs?.[0] || null; }
+  function _portableState(state) {
+    if (!state || typeof state !== 'object') return {};
+    try {
+      const text = JSON.stringify(state);
+      return text.length <= 20000 ? JSON.parse(text) : {};
+    } catch { return {}; }
+  }
+  function _persistTabs() {
+    const host = _hostTab();
+    if (!host) return;
+    host.state = {
+      ...(host.state || {}),
+      subTabs: _tabs.map(tab => {
+        const entry = tab.history[tab.index] || tab.entry;
+        return { type: entry.type, path: entry.path, label: entry.label, state: _portableState(entry.state) };
+      }),
+      activeSubTab: Math.max(0, _tabs.findIndex(tab => tab.id === _activeId)),
+    };
+    try { GBLayout.saveLayout?.(); } catch { /* 保存できなくても表示は続ける */ }
+  }
+  function _syncActiveHistory() {
+    const tab = _activeTab();
+    if (!tab) return;
+    tab.history = _navHistory;
+    tab.index = _navIndex;
+    tab.entry = _navHistory[_navIndex] || tab.entry;
+  }
+  function _useTabHistory(tab) {
+    _navHistory = tab ? tab.history : [];
+    _navIndex = tab ? tab.index : -1;
+  }
+  function _restoreTabsFromLayout() {
+    if (_restored) return;
+    const host = _hostTab();
+    if (!host) return;
+    _restored = true;
+    const saved = Array.isArray(host.state?.subTabs) ? host.state.subTabs : [];
+    _tabs = saved.filter(item => item && item.type && item.path).slice(0, 50).map(item => {
+      const entry = { type: String(item.type), path: String(item.path), label: item.label || _basename(item.path), state: item.state && typeof item.state === 'object' ? item.state : {} };
+      return { id: _newTabId(), entry, history: [entry], index: 0 };
+    });
+    const index = Math.min(_tabs.length - 1, Math.max(0, Number(host.state?.activeSubTab) || 0));
+    _activeId = _tabs[index]?.id || '';
+  }
+
+  async function _showTab(tab) {
+    if (!tab) return false;
     const seq = ++_opSeq;
+    return _guardedTransition(seq, () => {
+      _activeId = tab.id;
+      _useTabHistory(tab);
+      _renderTarget(tab.history[tab.index]);
+      _updateNavUi();
+      _renderStrip();
+      _persistTabs();
+      return true;
+    });
+  }
+
+  async function activateTab(id) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return false;
+    if (tab.id === _activeId && _current && _sameTarget(_current, tab.history[tab.index])) { _renderStrip(); return true; }
+    return _showTab(tab);
+  }
+
+  async function open(target, options) {
+    const opts = options || {};
+    const seq = ++_opSeq;
+    _restoreTabsFromLayout();
     // スマホのドロワー表示は _openMobileDrawer が自前で開くため、右レールの操作はしない。
     try {
-      if ((options || {}).reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
+      if (opts.reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
     } catch { /* 右レールを開けない環境でも、表示処理そのものは続ける */ }
     let entry;
     try {
@@ -474,14 +564,247 @@
     const mobile = _isMobileDrawerEnabled();
     if (mobile) _ensureRootInDocument();
     else _ensureRoot();
+    // 同じファイルのタブがあればそれを表示する（同じファイルを2つのタブで開かない）。
+    let tab = _tabs.find(item => _sameTarget(item.history[item.index], entry));
+    let added = false;
+    if (!tab) {
+      tab = { id: _newTabId(), entry, history: [entry], index: 0 };
+      const activeIndex = _tabs.findIndex(item => item.id === _activeId);
+      const at = Number.isInteger(opts.index) ? Math.max(0, Math.min(_tabs.length, opts.index)) : (activeIndex >= 0 ? activeIndex + 1 : _tabs.length);
+      _tabs.splice(at, 0, tab);
+      added = true;
+    } else {
+      tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state: { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) } };
+    }
     const transitioned = await _guardedTransition(seq, () => {
-      _pushHistory(entry);
-      _renderTarget(entry);
+      _activeId = tab.id;
+      _useTabHistory(tab);
+      _renderTarget(tab.history[tab.index]);
       _updateNavUi();
+      _renderStrip();
+      _persistTabs();
       return true;
     });
-    if (!transitioned) return false;
-    return mobile ? _openMobileDrawer(entry) : true;
+    if (!transitioned) {
+      // 保存を確認できずに切り替えられなかった時は、追加しただけのタブを残さない。
+      if (added && tab.id !== _activeId) _tabs = _tabs.filter(item => item !== tab);
+      _renderStrip();
+      return false;
+    }
+    return mobile ? _openMobileDrawer(tab.history[tab.index]) : true;
+  }
+
+  // タブを閉じる。表示中のタブなら保存を確定してから閉じ、隣のタブを表示する。
+  async function closeTab(id, options = {}) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return true;
+    if (tab.id !== _activeId) {
+      _tabs = _tabs.filter(item => item !== tab);
+      _renderStrip(); _persistTabs();
+      return true;
+    }
+    if (options.alreadyFlushed) {
+      if (await _retractCurrentContent({ remount: true }) === false) return false;
+    } else if (!await _guardedTransition(++_opSeq, () => true)) return false;
+    const index = _tabs.indexOf(tab);
+    if (index >= 0) _tabs.splice(index, 1);
+    _current = null;
+    const next = _tabs[index] || _tabs[index - 1] || null;
+    if (next) {
+      _activeId = next.id;
+      _useTabHistory(next);
+      _renderTarget(next.history[next.index]);
+      _updateNavUi();
+    } else {
+      _activeId = '';
+      _useTabHistory(null);
+      _showEmptyState();
+      window.GBEditorHost?.returnToMain?.();
+    }
+    _renderStrip(); _persistTabs();
+    return true;
+  }
+
+  // メインパネル等へ移すため、保存を確定してからタブを取り出す（取り出したタブの対象を返す）。
+  async function takeTab(id) {
+    const tab = _tabs.find(item => item.id === id);
+    if (!tab) return null;
+    const entry = { ...(tab.history[tab.index] || tab.entry) };
+    if (tab.id === _activeId) {
+      _captureCurrentEntryState();
+      const live = _current && _sameTarget(_current, entry) ? { ..._current } : entry;
+      if (!await closeTab(id)) return null;
+      return live;
+    }
+    await closeTab(id);
+    return entry;
+  }
+
+  function _moveTabWithin(id, index) {
+    const from = _tabs.findIndex(item => item.id === id);
+    if (from < 0) return;
+    const [tab] = _tabs.splice(from, 1);
+    const at = Math.max(0, Math.min(_tabs.length, index > from ? index - 1 : index));
+    _tabs.splice(at, 0, tab);
+    _renderStrip(); _persistTabs();
+  }
+
+  function _showTabMenu(event, tab) {
+    event.preventDefault();
+    event.stopPropagation();
+    const entry = tab.history[tab.index] || tab.entry;
+    window.MeldexContextMenuUI?.openAt({
+      x: event.clientX, y: event.clientY, ariaLabel: (entry.label || 'タブ') + 'のタブ操作', e2eId: 'subpanel-tab-menu',
+      items: [
+        { label: 'メインパネルで開く', icon: 'squareArrowOutUpLeft', action: async () => { if (await activateTab(tab.id)) await promoteToMainPane(); } },
+        { label: '閉じる', icon: 'x', action: () => closeTab(tab.id) },
+        { label: 'ほかのタブを閉じる', icon: 'xSquare', disabled: _tabs.length < 2, action: async () => {
+          for (const other of [..._tabs]) if (other.id !== tab.id && !await closeTab(other.id)) return;
+        } },
+      ],
+    });
+  }
+
+  function _clearStripMarkers(strip) {
+    strip.querySelectorAll('.gb-tab-drop-before,.gb-tab-drop-after').forEach(el => el.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
+  }
+
+  function _insertIndexAt(strip, clientX) {
+    const els = [...strip.querySelectorAll(':scope > .gb-tab')];
+    const before = els.find(el => { const r = el.getBoundingClientRect(); return clientX < r.left + r.width / 2; });
+    if (!before) return _tabs.length;
+    const i = _tabs.findIndex(tab => tab.id === before.dataset.subpanelTabId);
+    return i < 0 ? _tabs.length : i;
+  }
+
+  function _dropKinds(event) {
+    const types = Array.from(event.dataTransfer?.types || []);
+    return {
+      own: types.includes(TAB_MIME),
+      main: types.includes(MAIN_TAB_MIME),
+      node: types.includes('application/x-meldex-node') || !!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind?.(event, 'node')),
+    };
+  }
+
+  async function _handleStripDrop(event, strip) {
+    const kinds = _dropKinds(event);
+    if (!kinds.own && !kinds.main && !kinds.node) return;
+    event.preventDefault(); event.stopPropagation();
+    _clearStripMarkers(strip);
+    const index = _insertIndexAt(strip, event.clientX);
+    // サブパネル内の並べ替え
+    let own = null;
+    try { own = JSON.parse(event.dataTransfer.getData(TAB_MIME) || 'null'); } catch { own = null; }
+    if (own?.id) { _moveTabWithin(own.id, index); return; }
+    // メインパネルのタブを移す（メイン側の保存を確定して閉じてから、サブパネルで開く）
+    let main = null;
+    try { main = JSON.parse(event.dataTransfer.getData(MAIN_TAB_MIME) || 'null'); } catch { main = null; }
+    const mainPane = main?.paneId && typeof GBLayout !== 'undefined' ? GBLayout.findNode(GBLayout.root, main.paneId)?.node : null;
+    const mainTab = mainPane?.tabs?.find(tab => tab.id === main.tabId) || null;
+    if (mainTab?.path) {
+      const target = { type: mainTab.type, path: mainTab.path, label: mainTab.label, state: { ...(mainTab.state || {}) } };
+      if (await GBTabs.closeTab(main.paneId, mainTab.id) === false) return;
+      await open(target, { index });
+      return;
+    }
+    // フォルダツリー等からのファイル／フォルダ（1件ずつ）
+    const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData?.(event, 'node') : null;
+    let payload = resolved?.payload || null;
+    if (!payload) { try { payload = JSON.parse(event.dataTransfer.getData('application/x-meldex-node') || 'null'); } catch { payload = null; } }
+    const items = Array.isArray(payload?.items) && payload.items.length ? payload.items : (payload?.path ? [payload] : []);
+    if (!items.length) return;
+    if (items.length > 1) {
+      if (resolved) MeldexDnD.failDrop?.(resolved);
+      if (typeof showStatus === 'function') showStatus('複数選択はタブ列へ一括追加できないため、全件を変更しませんでした', true);
+      return;
+    }
+    const item = items[0];
+    const normalized = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.normalizeOpenTargetAsync?.({ name: item.name, path: item.path, type: item.type }) : null;
+    const ok = await open(normalized || { type: item.type, path: item.path, label: item.name }, { index });
+    if (resolved) (ok ? MeldexDnD.completeDrop?.(resolved) : MeldexDnD.failDrop?.(resolved));
+  }
+
+  function _installStripDrop(strip) {
+    if (strip.dataset.subpanelStripDrop === '1') return;
+    strip.dataset.subpanelStripDrop = '1';
+    strip.addEventListener('dragover', event => {
+      const kinds = _dropKinds(event);
+      if (!kinds.own && !kinds.main && !kinds.node) return;
+      event.preventDefault(); event.stopPropagation();
+      event.dataTransfer.dropEffect = kinds.own || kinds.main ? 'move' : 'copy';
+      _clearStripMarkers(strip);
+      const els = [...strip.querySelectorAll(':scope > .gb-tab')];
+      const before = els.find(el => { const r = el.getBoundingClientRect(); return event.clientX < r.left + r.width / 2; });
+      if (before) before.classList.add('gb-tab-drop-before'); else els.at(-1)?.classList.add('gb-tab-drop-after');
+    });
+    strip.addEventListener('dragleave', event => {
+      if (strip.contains(event.relatedTarget)) return;
+      _clearStripMarkers(strip);
+    });
+    strip.addEventListener('drop', event => { _handleStripDrop(event, strip); });
+  }
+
+  function _renderStrip() {
+    // タブバーは描画中（まだ画面に付く前）にも渡されるため、接続を待たずに中身を作る。
+    const strip = _stripEl;
+    if (!strip) return;
+    strip.querySelectorAll(':scope > .gb-tab, :scope > .gb-subpanel-tabs-empty').forEach(el => el.remove());
+    if (!_tabs.length) {
+      const empty = document.createElement('span');
+      empty.className = 'gb-subpanel-tabs-empty';
+      empty.textContent = 'サブパネル';
+      strip.appendChild(empty);
+      return;
+    }
+    for (const tab of _tabs) {
+      const entry = tab.history[tab.index] || tab.entry;
+      const el = document.createElement('div');
+      el.className = 'gb-tab' + (tab.id === _activeId ? ' active' : '');
+      el.dataset.subpanelTabId = tab.id;
+      el.dataset.tabTitle = entry.label || 'タブ';
+      el.dataset.e2eId = 'subpanel-tab-' + tab.id;
+      el.setAttribute('role', 'tab');
+      el.setAttribute('aria-selected', tab.id === _activeId ? 'true' : 'false');
+      el.title = entry.path || entry.label || '';
+      el.draggable = true;
+      const icon = document.createElement('span');
+      icon.className = 'gb-tab-icon';
+      if (typeof lucide === 'function') {
+        const fallback = lucide(_tabIcon(entry.type), 14);
+        icon.innerHTML = window.MeldexFileIcons?.tabIcon?.({ type: entry.type, path: entry.path, label: entry.label }, 14, fallback) ?? fallback;
+      }
+      const label = document.createElement('span');
+      label.className = 'gb-tab-label';
+      label.textContent = entry.label || _toolLabel(entry.type);
+      el.append(icon, label);
+      el.addEventListener('click', () => { activateTab(tab.id); });
+      el.addEventListener('auxclick', event => { if (event.button === 1) { event.preventDefault(); closeTab(tab.id); } });
+      el.addEventListener('contextmenu', event => _showTabMenu(event, tab));
+      el.addEventListener('dragstart', event => {
+        event.dataTransfer.setData(TAB_MIME, JSON.stringify({ id: tab.id }));
+        if (typeof MeldexDnD !== 'undefined') MeldexDnD.writeNodePayload?.(event.dataTransfer, { name: entry.label, label: entry.label, path: entry.path, type: entry.type }, 'subpanel');
+        event.dataTransfer.effectAllowed = 'copyMove';
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', () => el.classList.remove('dragging'));
+      strip.appendChild(el);
+    }
+  }
+
+  // パネルのタブバー（gb-layout の renderPane）から呼ばれる。サブパネルの土台タブの代わりに、
+  // 開いているファイル／フォルダのタブを並べる。保存済みのタブは、パネルが見えている時に表示する。
+  function renderTabStrip(container, node) {
+    _restoreTabsFromLayout();
+    _stripEl = container;
+    container.classList.add('gb-subpanel-tab-strip');
+    _installStripDrop(container);
+    _renderStrip();
+    const active = _activeTab();
+    if (active && !node?.collapsed && (!_current || !_sameTarget(_current, active.history[active.index]))) {
+      setTimeout(() => {
+        if (_activeTab() === active && !_sameTarget(_current, active.history[active.index])) _showTab(active);
+      }, 0);
+    }
   }
 
   async function closeContent(options = {}) {
@@ -491,11 +814,12 @@
       if (options.alreadyFlushed && await _closeForMobileDrawer({ alreadyFlushed: true }) === false) return false;
       return (await drawer.close()) !== false;
     }
+    // 表示中のタブを閉じる（ほかのタブは残す）。
+    if (_activeId) return closeTab(_activeId, { alreadyFlushed: !!options.alreadyFlushed });
     if (options.alreadyFlushed) {
       if (await _retractCurrentContent({ remount: true }) === false) return false;
       _current = null;
-      _navHistory = [];
-      _navIndex = -1;
+      _useTabHistory(null);
       _showEmptyState();
       window.GBEditorHost?.returnToMain?.();
       return true;
@@ -503,8 +827,7 @@
     const seq = ++_opSeq;
     return _guardedTransition(seq, () => {
       _current = null;
-      _navHistory = [];
-      _navIndex = -1;
+      _useTabHistory(null);
       _showEmptyState();
       window.GBEditorHost?.returnToMain?.();
       return true;
@@ -518,8 +841,10 @@
     const entry = _navHistory[targetIndex];
     return _guardedTransition(seq, () => {
       _navIndex = targetIndex;
+      _syncActiveHistory();
       _renderTarget(entry);
       _updateNavUi();
+      _renderStrip(); _persistTabs();
       return true;
     });
   }
@@ -531,8 +856,10 @@
     const entry = _navHistory[targetIndex];
     return _guardedTransition(seq, () => {
       _navIndex = targetIndex;
+      _syncActiveHistory();
       _renderTarget(entry);
       _updateNavUi();
+      _renderStrip(); _persistTabs();
       return true;
     });
   }
@@ -581,7 +908,8 @@
     if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(actualPaneId, { sync: true });
     if (seq !== _opSeq) return false;
     if (await closeContent({ alreadyFlushed: true }) === false) return false;
-    if (window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
+    // ほかのタブが残っている時はサブパネルを開いたままにする。
+    if (!_tabs.length && window.GBIndependentSubpanel?.close && await window.GBIndependentSubpanel.close() === false) return false;
     return true;
   }
 
@@ -620,7 +948,8 @@
       if (entry.state?.viewerUrl) entry.state.viewerUrl = updateViewerUrl(entry.state.viewerUrl);
       if (exact && options.label != null) entry.label = options.label;
     };
-    [_current, ..._navHistory, ...(_pane?.tabs || [])].forEach(update);
+    [_current, ..._navHistory, ...(_pane?.tabs || []), ..._tabs.flatMap(tab => [tab.entry, ...tab.history])].forEach(update);
+    _renderStrip(); _persistTabs();
     _sheetEmbed?.onPathRename?.(oldPath, newPath)?.catch?.(error => {
       if (typeof showStatus === 'function') showStatus('移動後のシートを確認できませんでした: ' + error.message, true);
     });
@@ -646,6 +975,14 @@
     navBack,
     navForward,
     promoteToMainPane,
+    activateTab,
+    closeTab,
+    takeTab,
+    // すべてのタブを閉じる（保存を確定できないタブがあればそこで止める）。
+    closeAll: async () => { for (const tab of [..._tabs].reverse()) if (!await closeTab(tab.id)) return false; return closeContent(); },
+    renderTabStrip,
+    getTabs: () => _tabs.map(tab => ({ id: tab.id, active: tab.id === _activeId, ...(tab.history[tab.index] || tab.entry) })),
+    TAB_MIME,
     createRootElement,
     isOpen,
     getCurrentTarget,

@@ -6,12 +6,20 @@
 })(globalThis,function(D,A,Names){
   'use strict';
   const defaults=Object.freeze({seed:'',name:'新しい世界',naming:'katakana',template:'continent',cells:20000,warmth:50,wetness:55,cities:100,nations:12,widthKm:24000});
+  // 地図の規模の目安（世界〜地方）。都市・村の街路は「都市・集落の詳細図」、地点の周りは「詳細地図を作成」で作る。
+  const scales=Object.freeze([
+    {id:'world',label:'世界（約24000km）',widthKm:24000,template:'continent',cities:100,nations:12,cells:20000},
+    {id:'continent',label:'大陸（約6000km）',widthKm:6000,template:'pangea',cities:80,nations:8,cells:20000},
+    {id:'country',label:'国（約1500km）',widthKm:1500,template:'island',cities:40,nations:3,cells:20000},
+    {id:'region',label:'地方・山岳（約300km）',widthKm:300,template:'island',cities:12,nations:1,cells:30000},
+    {id:'custom',label:'自由に指定',widthKm:0,template:'continent',cities:100,nations:12,cells:20000},
+  ]);
   const presentations=[['biomes','自然・植生'],['elevation','標高'],['temperature','気温'],['rain','降水'],['political','国家']];
   function parameters(input={}){
     const o=Object.fromEntries(Object.entries(defaults).map(([key,value])=>[key,input[key]??value]));
     if(typeof o.seed!=='string'||!o.seed.trim()||o.seed.length>128||typeof o.name!=='string'||!o.name.trim()||[...o.name].length>64||!['continent','island','archipelago','pangea','shattered'].includes(o.template))throw new Error('シード・世界名・地形の種類を確認してください');
     if(!['katakana','original'].includes(o.naming))throw new Error('地名の表記を確認してください');
-    for(const [key,lo,hi]of[['cells',10000,40000],['warmth',0,100],['wetness',0,100],['widthKm',100,60000],['cities',4,300],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations','cells'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
+    for(const [key,lo,hi]of[['cells',10000,40000],['warmth',0,100],['wetness',0,100],['widthKm',10,60000],['cities',4,300],['nations',1,24]])if(!Number.isFinite(o[key])||o[key]<lo||o[key]>hi||['cities','nations','cells'].includes(key)&&!Number.isInteger(o[key]))throw new Error('世界地図生成の数値条件を確認してください');
     if(o.nations>o.cities)throw new Error('国家数は都市数以下にしてください');
     return o;
   }
@@ -72,7 +80,12 @@
     input('name','世界名',previous.name||app.state.label||defaults.name,{maxLength:64});input('seed','シード',previous.seed||String(Date.now()),{maxLength:128});
     const naming=document.createElement('select');naming.className='gb-select';naming.setAttribute('aria-label','地名の表記');for(const [key,label]of[['katakana','カタカナ（基本）'],['original','原語（Azgaar）']])naming.add(new Option(label,key));naming.value=previous.naming||defaults.naming;naming.onchange=clear;const namingLabel=document.createElement('label');namingLabel.className='gb-map-field';namingLabel.append('地名の表記',naming);panel.append(namingLabel);controls.naming=naming;
     const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append('地形の種類');const template=document.createElement('select');template.className='gb-select';template.setAttribute('aria-label','地形の種類');for(const [key,name]of[['continent','大陸'],['archipelago','群島'],['island','島'],['pangea','超大陸'],['shattered','分裂した大陸']])template.add(new Option(name,key));template.value=previous.template||defaults.template;template.onchange=clear;wrap.append(template);panel.append(wrap);controls.template=template;
-    for(const [key,label,min,max]of[['cells','地形の細かさ（セル数）',10000,40000],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数の目安',4,300],['nations','国家数',1,24],['widthKm','地図の横幅（km）',100,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    for(const [key,label,min,max]of[['cells','地形の細かさ（セル数）',10000,40000],['warmth','暖かさ（0〜100）',0,100],['wetness','湿り気（0〜100）',0,100],['cities','都市数の目安',4,300],['nations','国家数',1,24],['widthKm','地図の横幅（km）',10,60000]])input(key,label,previous[key]??defaults[key],{type:'number',min,max,step:1});
+    // 地図の規模: 世界地図だけでなく、大陸・国・地方（山岳・盆地）の地図も作れる。選ぶと横幅・地形・都市数・国家数の目安を入れる（あとから個別に変更できる）。
+    const scaleWrap=document.createElement('label');scaleWrap.className='gb-map-field';scaleWrap.append('地図の規模');const scale=document.createElement('select');scale.className='gb-select';scale.setAttribute('aria-label','地図の規模');
+    for(const [key,name]of scales.map(s=>[s.id,s.label]))scale.add(new Option(name,key));scale.value=scales.find(s=>Number(controls.widthKm.value)>=s.widthKm*.7&&Number(controls.widthKm.value)<=s.widthKm*1.5)?.id||'custom';
+    scale.onchange=()=>{const preset=scales.find(s=>s.id===scale.value);if(preset&&preset.id!=='custom'){controls.widthKm.value=preset.widthKm;controls.template.value=preset.template;controls.cities.value=preset.cities;controls.nations.value=preset.nations;controls.cells.value=preset.cells;}clear();};
+    scaleWrap.append(scale);panel.insertBefore(scaleWrap,panel.querySelector('.gb-map-field'));
     const mode=document.createElement('select');mode.className='gb-select';mode.setAttribute('aria-label','プレビューの配色');for(const [key,name]of presentations)mode.add(new Option(name,key));mode.onchange=()=>{if(prepared){prepared.doc.atlas.presentation=mode.value;preview?.setDocument(prepared.doc,true);}};
     const modeLabel=document.createElement('label');modeLabel.className='gb-map-field';modeLabel.append('プレビューの配色',mode);
     const canvas=document.createElement('div');canvas.className='gb-map-generator-preview gb-map-world-preview';panel.append(modeLabel,status,canvas);
@@ -100,5 +113,5 @@
     },{disabled:true});
     panel.append(generate,adopt,app._button('閉じる',cleanup));app._worldPreview={panel,kind:'world',destroy:cleanup};MeldexMapChrome.openPanel(panel);
   }
-  return Object.freeze({defaults,presentations,parameters,adopt,prepare,show});
+  return Object.freeze({defaults,scales,presentations,parameters,adopt,prepare,show});
 });

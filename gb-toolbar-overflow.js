@@ -2,7 +2,9 @@
  * delegated handlers, editor selection and application state remain intact. */
 (function () {
   'use strict';
-  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
+  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"]):not([id^="cloud-mobile-"])';
+  // スマホ用の各バー（cloud-mobile-*bar）は1行を横スクロールさせる設計で、中身を1つの行要素に包んでいる。
+  // あふれ処理の対象にすると行要素ごと隠れて操作が消えるため対象外にする。
   const hiddenClass = 'gb-tbo-hidden';
   const registry = new Map();
   let active = null;
@@ -146,7 +148,7 @@
     const items = Array.from(toolbar.children).filter(el => el !== more && !el.hidden && getComputedStyle(el).display !== 'none');
     entry.sources = new Map(items.map(el => [el, controls(el)]));
     const candidates = items.filter(el => entry.sources.get(el).length && !matches(el, entry.keep) &&
-      !el.matches('.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title, #sidebar-search-input') &&
+      !el.matches('.tb-app-icon, .tb-file-icon, .qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title, #sidebar-search-input') &&
       !el.querySelector('#titleInput, #title-input, .sa-title-input'));
     const fits = () => {
       const box = toolbar.getBoundingClientRect();
@@ -165,7 +167,9 @@
       more.hidden = false;
       items.filter(el => el.matches('.sep, .tb-spacer')).forEach(el => el.classList.add(hiddenClass));
       // Preserve configured priority operations; otherwise collapse from the right.
-      candidates.sort((a, b) => Number(matches(a, entry.priority)) - Number(matches(b, entry.priority)) || items.indexOf(b) - items.indexOf(a));
+      // data-toolbar-overflow-priority の付いた群れ（フォルダ表示の「追加」等）も最後まで残す。
+      const keepsLonger = el => matches(el, entry.priority) || el.matches('[data-toolbar-overflow-priority]');
+      candidates.sort((a, b) => Number(keepsLonger(a)) - Number(keepsLonger(b)) || items.indexOf(b) - items.indexOf(a));
       for (const el of candidates) {
         if (fits()) break;
         el.classList.add(hiddenClass);

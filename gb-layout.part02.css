@@ -636,7 +636,8 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 /* タブの D&D 並び替えインジケータ (DOM 挿入は bar のレイアウトを変動させるため、
    target タブ自身の box-shadow inset で描く) */
 /* ドロップインジケータ: アクティブタブの背景に隠れないよう疑似要素で
-   絶対配置 + z-index で常に前面に描画。太さ 3px + 上下 2px はみ出しで視認性を確保。 */
+   絶対配置 + z-index で常に前面に描画。太さ・はみ出し・色は全アプリのビュータブ
+   （gb-view-tabs.css の .gb-view-tab-drop-*）と同じ共通トークン --ui-tab-drop-indicator-*。 */
 .gb-tab.gb-tab-drop-before,
 .gb-tab.gb-tab-drop-after {
   position: relative;
@@ -645,16 +646,16 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 .gb-tab.gb-tab-drop-after::after {
   content: '';
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 3px;
-  background: var(--accent, #4a90d9);
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  background: var(--ui-tab-drop-indicator-color);
   z-index: 10;
   pointer-events: none;
-  border-radius: 1px;
+  border-radius: var(--ui-tab-drop-indicator-radius);
 }
-.gb-tab.gb-tab-drop-before::before { left: -1px; }
-.gb-tab.gb-tab-drop-after::after { right: -1px; }
+.gb-tab.gb-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-tab.gb-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
 
 
 /* === 列（カラム）: 水平スプリットの子 or 単独ルート === */

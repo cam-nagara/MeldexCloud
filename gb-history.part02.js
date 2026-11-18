@@ -727,6 +727,11 @@ function _meldexMapTabHistoryScope(tab) {
   return path ? `map:${path}` : '';
 }
 
+function _meldexFormAppTabHistoryScope(tab) {
+  const path = String(tab?.path || tab?.state?.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return path ? `form-app:${path}` : '';
+}
+
 // 共通履歴（スコープなし）を使うタブ種別。
 function _meldexCommonHistoryTabScope() { return ''; }
 
@@ -748,6 +753,7 @@ const _MELDEX_TAB_HISTORY_SCOPE_RESOLVERS = Object.freeze({
   calendar: _meldexScheduleTabHistoryScope,
   page: _meldexPageTabHistoryScope,
   map: _meldexMapTabHistoryScope,
+  'form-app': _meldexFormAppTabHistoryScope,
   entity: _meldexCommonHistoryTabScope,
   media: _meldexCommonHistoryTabScope,
   html: _meldexCommonHistoryTabScope,

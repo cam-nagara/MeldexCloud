@@ -82,10 +82,10 @@ const MeldexMapControls = (() => {
         app._render(); app.view.fit();
       } catch (error) { app._message(error.message); }
     };
-    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地形を生成', () => generator(app), { disabled: app.editingDisabled||doc.atlas?.locked }),
-      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
-      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas }),
-      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && kind !== 'town' })));
+    local.append(imageInput, app._button('世界地図を生成', () => MeldexMapWorldGenerator.show(app), { disabled: app.editingDisabled||doc.atlas?.locked }), app._button('地図画像を読み込む', () => imageInput.click(), { disabled: app.editingDisabled||doc.atlas?.locked }),
+      app._button('都市を生成', () => MeldexMapSettlements.show(app), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface }),
+      app._button('気候帯を生成', () => MeldexMapClimate.show(app), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface }),
+      ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => app._button(label, () => MeldexMapWorldBuilding.show(app, kind), { disabled: app.editingDisabled || !!doc.atlas && !doc.atlas.surface && kind !== 'town' })));
     MeldexMapTerrainControls.settings(root,app);
     if(doc.atlas){const note=document.createElement('p');note.className='gb-map-hint';note.textContent='地形ブラシで平野・山地・植生・陸海を編集できます。川などを描いた後は、選択して「周囲の地形を合わせる」で谷や切れ目を作れます。';local.append(note);}
     if (doc.atlas || MeldexMapWorldGeography.validEnvironment(doc.terrain)) select(local, '地図の配色', MeldexMapWorldGenerator.presentations, doc.atlas?.presentation || doc.terrain?.presentation || 'biomes',
@@ -181,6 +181,8 @@ const MeldexMapControls = (() => {
     tags.appendChild(addTag); root.appendChild(tags);
     field(app, root, '色', f.color, value => app._editFeature(next => { next.color = value; }), { type: 'color', disabled: locked });
     if(f.kind==='pin')select(root,'マーカーのデザイン',[['symbol','丸印・記号（標準）'],['drop','しずく型']],f.marker_style||'symbol',value=>app._editFeature(next=>{next.marker_style=value;}),locked);
+    // 同梱素材（城・教会・森・山など）の記号。しずく型マーカーの時は使わない。
+    if(f.kind==='pin'&&f.marker_style!=='drop')select(root,'記号の絵',[['','なし（文字の記号）'],...globalThis.MeldexMapDisplay.stamps],f.stamp||'',value=>app._editFeature(next=>{if(value)next.stamp=value;else delete next.stamp;}),locked);
     select(root, '配置レイヤー', app.store.doc.layers.filter(l => !l.locked || l.id === f.layer_id).map(l => [l.id, l.name]), f.layer_id,
       value => app._editFeature(next => { next.layer_id = value; }), locked);
     if (f.points.length > 1) {
@@ -194,6 +196,7 @@ const MeldexMapControls = (() => {
       input.onchange = () => app._editFeature(next => { next.arrow = input.checked; }); wrap.append(input, document.createTextNode('終点に矢印を表示')); root.appendChild(wrap);
     }
     MeldexMapTravel.inspector(app, root, f, locked);
+    const annotate = app._button('アノテートを追加', event => app.addAnnotation(event.currentTarget)); annotate.dataset.e2eId = 'map-feature-add-annotation'; root.appendChild(annotate);
     const linksTitle = document.createElement('h4'); linksTitle.textContent = '関連するファイル・トピック'; root.appendChild(linksTitle);
     for (const link of f.links.filter(link => link.role !== 'child-map')) {
       const row = document.createElement('div'); row.className = 'gb-map-link-row';

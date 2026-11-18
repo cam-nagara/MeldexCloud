@@ -78,13 +78,53 @@ function _outlinerExternalDragItems(event, payloadOverride) {
     && _treeNodeIsAncestor({ _nodeData: parent }, { _nodeData: row })));
 }
 
+// ドロップ位置の判定（UI共通ルール §19 ツリーD&D）:
+// - フォルダ・シート（中へ入れられる行）だけが 'inside'（行を囲む枠）になる。
+//   上25%=上の線 / 中央=枠 / 下25%=下の線。展開中は下側も枠にする
+//   （行の下端の線は最初の子の直前と重なり「フォルダの後ろ」と誤読されるため）。
+// - ファイル行は上半分=上の線 / 下半分=下の線だけで、枠にはならない。
 function _outlinerRowDropPosition(event, row, item) {
   const container = item.type === 'folder' || item.type === 'database';
   if (item._isRoot || item._form_parent_path || (event.altKey && container)) return 'inside';
   const rect = row.getBoundingClientRect();
   const fraction = (event.clientY - rect.top) / Math.max(1, rect.height);
-  if (container && fraction >= 0.25 && fraction <= 0.75) return 'inside';
+  if (container) {
+    const expanded = row.querySelector(':scope > .tree-toggle')?.dataset?.expanded === 'true';
+    if (fraction >= 0.25 && (expanded || fraction <= 0.75)) return 'inside';
+  }
   return fraction < 0.5 ? 'above' : 'below';
+}
+
+// ドラッグ中に閉じたフォルダの枠表示が続いたら、そのフォルダを展開する。
+// dragover は同じ行で連続発火するため、同じ行なら既存タイマーを維持する（毎回作り直さない）。
+const OUTLINER_DRAG_EXPAND_DELAY_MS = 700;
+let _outlinerDragExpandState = null;
+
+function _cancelOutlinerDragExpand(row) {
+  const state = _outlinerDragExpandState;
+  if (!state || (row && state.row !== row)) return;
+  clearTimeout(state.timer);
+  _outlinerDragExpandState = null;
+}
+
+function _scheduleOutlinerDragExpand(row, toggle, position) {
+  if (position !== 'inside' || !row || !toggle || !toggle.dataset
+      || toggle.dataset.expanded !== 'false') {
+    _cancelOutlinerDragExpand();
+    return;
+  }
+  if (_outlinerDragExpandState?.row === row) return;
+  _cancelOutlinerDragExpand();
+  const state = { row, timer: 0 };
+  state.timer = setTimeout(() => {
+    if (_outlinerDragExpandState !== state) return;
+    _outlinerDragExpandState = null;
+    // ドロップ・ドラッグ終了・別の行への移動で枠が消えていれば展開しない。
+    if (!row.isConnected || !row.classList.contains('drag-over-inside')) return;
+    if (toggle.dataset.expanded !== 'false') return;
+    toggle.click();
+  }, OUTLINER_DRAG_EXPAND_DELAY_MS);
+  _outlinerDragExpandState = state;
 }
 
 function _outlinerRowDropTarget(node, item, position, rootPath) {
@@ -825,7 +865,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener('meldex:topic-records-updated', (event) => {
     // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
     // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
-    if (['open', 'outliner-expand'].includes(event.detail?.reason)) return;
+    // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
+    // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
+    if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
     // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
     // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
     // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
@@ -856,45 +898,3 @@ async function refreshOutlinerFromButton(event) {
   const btn = event?.currentTarget?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
     || event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
     || null;
-  if (btn?.disabled) return;
-  if (btn) {
-    btn.disabled = true;
-    btn.setAttribute('aria-busy', 'true');
-  }
-  // 更新前の展開状態を維持するため、自動展開の制限とカウンタを初期化する
-  _outlinerForceExpansionMode = true;
-  _outlinerAutoExpandScheduled = 0;
-  _outlinerAutoExpandOverflowNotified = false;
-  try {
-    const results = await refreshOutliner({ force: true, reason: 'manual-refresh' });
-    const failedCount = (results || []).filter(result => result?.status === 'rejected').length;
-    if (typeof showStatus === 'function') {
-      showStatus(failedCount ? 'フォルダツリーの一部更新に失敗しました' : 'フォルダツリーを更新しました', !!failedCount);
-    }
-  } catch (error) {
-    if (typeof showStatus === 'function') showStatus('フォルダツリーの更新に失敗しました', true);
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.removeAttribute('aria-busy');
-    }
-    if (!_outlinerAutoExpandQueue.length && !_outlinerAutoExpandRunning) {
-      _outlinerForceExpansionMode = false;
-    }
-  }
-}
-
-function captureOutlinerSettingsHistory(keys) {
-  const targetKeys = keys && keys.length ? keys : OUTLINER_SETTINGS_HISTORY_KEYS;
-  if (typeof captureLocalStorageSettings === 'function') {
-    return captureLocalStorageSettings(targetKeys);
-  }
-  const storage = {};
-  targetKeys.forEach(key => {
-    try { storage[key] = localStorage.getItem(key); }
-    catch { storage[key] = null; }
-  });
-  return { keys: targetKeys.slice(), storage };
-}
-
-function pushOutlinerSettingsHistory(label, beforeSnapshot, detail, keys) {

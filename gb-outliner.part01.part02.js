@@ -433,6 +433,7 @@
 
   row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
+    _cancelOutlinerDragExpand();
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
     draggedNode = null;
@@ -462,6 +463,7 @@
       e.preventDefault(); e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
       clearDragIndicators(); row.classList.add('drag-over-inside');
+      _scheduleOutlinerDragExpand(row, toggle, 'inside');
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
@@ -486,10 +488,12 @@
           || externalItems.some(source => source.type === 'entity' || source.linked || source.path === item.path
             || _treeNodeIsAncestor({ _nodeData: source }, { _nodeData: target }))) {
         e.dataTransfer.dropEffect = 'none';
+        _cancelOutlinerDragExpand(row);
         return;
       }
       e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
       row.classList.add('drag-over-' + position);
+      _scheduleOutlinerDragExpand(row, toggle, position);
       return;
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
@@ -506,18 +510,23 @@
 
     if (item._form_parent_path) {
       row.classList.add('drag-over-inside');
+      _cancelOutlinerDragExpand(row);
       return;
     }
 
-    row.classList.add('drag-over-' + _outlinerRowDropPosition(e, row, item));
+    const position = _outlinerRowDropPosition(e, row, item);
+    row.classList.add('drag-over-' + position);
+    _scheduleOutlinerDragExpand(row, toggle, position);
   });
 
   row.addEventListener('dragleave', (e) => {
     if (e.relatedTarget && row.contains(e.relatedTarget)) return;
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
+    _cancelOutlinerDragExpand(row);
   });
 
   row.addEventListener('drop', async (e) => {
+    _cancelOutlinerDragExpand();
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
       await _outlinerImportOsDropSafely(e, item);

@@ -1091,7 +1091,10 @@ function lucide(name, size) {
     paths = window.LUCIDE_FULL[name];
   }
   paths = paths || '';
-  return `<svg data-icon="${name}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
+  // アイコン名は保存データ（ビュー設定等）から来ることがあるため、属性へは安全な文字だけを書く。
+  const safeName = String(name ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  size = String(size).replace(/[^0-9A-Za-z.%]/g, '') || 14;
+  return `<svg data-icon="${safeName}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
 }
 
 // メニュー選択状態アイコン
@@ -1144,6 +1147,62 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
+// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+const UI_TOOLBAR_APP_ICON_LABELS = {
+  database: 'シート',
+  page: 'ノート',
+  scriptnote: 'シナリオ',
+  board: 'ボード',
+  calendar: 'カレンダー',
+  'form-app': 'フォーム',
+  map: 'マップ',
+  csv: 'CSV',
+  folder: 'フォルダ',
+  media: 'ビューワー',
+  'quick-memo': 'クイックメモ',
+};
+const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
+const UI_TOOLBAR_APP_ICON_SIZE = 24;
+
+function toolbarAppIconName(type) {
+  return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
+}
+
+function toolbarAppIconHtml(type) {
+  const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+  const name = toolbarAppIconName(key);
+  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+}
+
+function toolbarAppIconElement(type) {
+  const template = document.createElement('template');
+  template.innerHTML = toolbarAppIconHtml(type);
+  return template.content.firstElementChild;
+}
+
+function hydrateToolbarAppIcons(root) {
+  const scope = root?.querySelectorAll ? root : document;
+  const nodes = [];
+  if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
+  scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
+  nodes.forEach(el => {
+    if (el.querySelector('svg')) return;
+    const key = el.getAttribute('data-app-icon') || '';
+    const name = toolbarAppIconName(key);
+    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
+    if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
+  });
+}
+if (typeof window !== 'undefined') {
+  window.toolbarAppIconHtml = toolbarAppIconHtml;
+  window.toolbarAppIconElement = toolbarAppIconElement;
+  window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
+}
+
 function fileTypeIcon(type, size) {
   const map = {
     image: 'image', video: 'video', audio: 'audio',
@@ -1155,6 +1214,7 @@ function fileTypeIcon(type, size) {
 
 function replaceIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
+  hydrateToolbarAppIcons(scope);
   scope.querySelectorAll('.ico').forEach(el => {
     const cls = el.className;
     let name = '';
@@ -1286,6 +1346,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-redo2')) name = 'redo2';
     // 単独アプリパリティ v0.6.200（シナリオ/ボードのエクスポートメニュー用アイコン）
     else if (cls.includes('ico-image')) name = 'image';
+    // クイックメモの作成メニュー「動画」(ico-video)が未登録で空アイコンになっていたため追加。
+    else if (cls.includes('ico-video')) name = 'video';
     else if (cls.includes('ico-fileCode')) name = 'fileCode';
     else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」

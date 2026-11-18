@@ -59,30 +59,8 @@
   box-sizing: border-box;
 }
 
-.db-view-switcher .view-tab.db-view-drop-before::before,
-.db-view-switcher .view-tab.db-view-drop-after::after {
-  content: "";
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
-  pointer-events: none;
-}
-
-.db-view-switcher .view-tab.db-view-drop-before::before {
-  left: -2px;
-}
-
-.db-view-switcher .view-tab.db-view-drop-after::after {
-  right: -2px;
-}
-
-.db-view-switcher .view-tab.drag-over-tab {
-  border-bottom-color: transparent;
-}
+/* 並べ替え中のドロップ位置の縦線は共通部品（gb-view-tabs.css の .gb-view-tab-drop-*）が描く。
+   メインパネルのタブと同じ共通トークン --ui-tab-drop-indicator-* を使う。 */
 
 .db-main-view-switcher .view-tab.active {
   background: var(--ui-inner-tab-active-bg);

@@ -71,17 +71,33 @@
     return result;
   }
 
-  function applyMetadataResult(dbPath, result, payload) {
+  // 手元の列定義を変えた回数（シートごと）。保存の応答が戻るまでに手元で別の変更（列名変更・
+  // 列の追加）があったら、その応答が持つ古い列定義で手元を上書きしない。以前は、列を挿入した
+  // 直後に列名を変えると、挿入の保存応答が後から戻って列名変更前の定義に戻し、次の挿入が
+  // その古い定義をサーバーへ書いて列名変更を消していた（2026-11-18 再現）。
+  const localGenerations = new Map();
+  function markLocalSchemaChange(dbPath) {
+    const key = normalize(dbPath);
+    const next = (localGenerations.get(key) || 0) + 1;
+    localGenerations.set(key, next);
+    return next;
+  }
+  function localSchemaGeneration(dbPath) {
+    return localGenerations.get(normalize(dbPath)) || 0;
+  }
+
+  function applyMetadataResult(dbPath, result, payload, generation) {
     const revision = Number(result?.schema_revision);
+    const stale = Number.isInteger(generation) && generation !== localSchemaGeneration(dbPath);
     contextTargets(dbPath).forEach(ctx => {
       if (!ctx.dbMetadata) ctx.dbMetadata = {};
-      Object.assign(ctx.dbMetadata, clone(payload || {}));
+      if (!stale) Object.assign(ctx.dbMetadata, clone(payload || {}));
       if (result?.property_ids) ctx.dbMetadata.property_ids = clone(result.property_ids);
       if (Number.isInteger(revision)) ctx.dbMetadata.schema_revision = revision;
     });
     if (typeof state !== 'undefined' && normalize(state.currentDbPath) === normalize(dbPath)) {
       if (!state.dbMetadata) state.dbMetadata = {};
-      Object.assign(state.dbMetadata, clone(payload || {}));
+      if (!stale) Object.assign(state.dbMetadata, clone(payload || {}));
       if (result?.property_ids) state.dbMetadata.property_ids = clone(result.property_ids);
       if (Number.isInteger(revision)) state.dbMetadata.schema_revision = revision;
     }
@@ -132,6 +148,7 @@
   }
 
   async function saveMetadata(dbPath, payload, ctx, options = {}) {
+    const generation = markLocalSchemaChange(dbPath);
     return enqueue(dbPath, async () => {
       let metadata = metadataForContext(ctx, dbPath);
       if (!metadata) {
@@ -152,7 +169,7 @@
           return current?.schema_operations?.[body.operation_id] || null;
         }
       );
-      return applyMetadataResult(dbPath, result || {}, payload);
+      return applyMetadataResult(dbPath, result || {}, payload, generation);
     });
   }
 
@@ -547,6 +564,8 @@
 
   window.GbDbSchemaMutation = {
     ensurePropertyIds,
+    localSchemaGeneration,
+    markLocalSchemaChange,
     migrateSelectOptions,
     migrateStatuses,
     newId,

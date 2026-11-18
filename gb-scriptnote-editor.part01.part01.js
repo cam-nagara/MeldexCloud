@@ -1441,9 +1441,12 @@ class ScriptNoteEditor {
       { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
       { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
     ];
+    // 列のアイコン（列メニューの「アイコンを変更」で選ぶ）。固定列は standardColumnSettings、追加列は列定義に持つ。
+    const stdHeaderSettings = this.doc.editor?.standardColumnSettings || {};
+    allStdCols.forEach(col => { col.icon = typeof stdHeaderSettings[col.id]?.icon === 'string' ? stdHeaderSettings[col.id].icon : ''; });
     const allColumns = [
       ...allStdCols,
-      ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80 })),
+      ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80, icon: typeof c.icon === 'string' ? c.icon : '' })),
     ];
     const columnsById = new Map(allColumns.map(column => [column.id, column]));
     const cols = this._getVisibleColumnIds().map(id => columnsById.get(id)).filter(Boolean);
@@ -1475,8 +1478,10 @@ class ScriptNoteEditor {
         cell.className = 'sn2-header-cell' + (isTextFlex ? ' sn2-header-flex' : '');
         cell.textContent = col.label;
         cell.dataset.colId = col.id;
+        cell.dataset.colLabel = col.label;
         cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}${e2eSuffix}`;
         if (viewMode === 'vertical' && col.id !== '_handle') this._wrapTcy(cell);
+        if (col.id !== '_handle') this._prependScriptNoteHeaderIcon?.(cell, col.icon);
         if (col.width) cell.style.width = viewMode === 'vertical' ? '' : `var(--sn2-col-${col.id}, ${col.width}px)`;
         // ヘッダーセルのD&D並べ替え（_handle以外）
         if (col.id !== '_handle') {

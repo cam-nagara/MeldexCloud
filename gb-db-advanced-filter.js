@@ -94,9 +94,16 @@ function _showLegacyAdvancedFilterModal(ctx) {
   return modalApi;
 }
 
+// 設定欄の共通配置（gb-settings-fields.css）は入力欄に flex-basis:320px を与えるため、
+// 幅クラス（gb-select-short/medium/column）の width だけでは幅が決まらない。
+// 幅クラスと同じ基準幅を flex-basis にも与えて、条件選択が横へ伸びないようにする。
+const _CONDITION_CONTROL_BASIS = [['gb-select-short', 96], ['gb-select-medium', 164], ['gb-select-column', 280]];
+
 function styleConditionControl(el, extraCss = '') {
   if (!el) return el;
-  el.style.cssText = `display:block;width:100%;min-width:0;min-height:32px;box-sizing:border-box;${extraCss}`;
+  const basis = _CONDITION_CONTROL_BASIS.find(([cls]) => el.classList?.contains(cls))?.[1];
+  const flexCss = basis ? `flex:0 1 ${basis}px;` : '';
+  el.style.cssText = `display:block;width:100%;min-width:0;min-height:32px;box-sizing:border-box;${flexCss}${extraCss}`;
   return el;
 }
 

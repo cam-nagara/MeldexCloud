@@ -510,8 +510,9 @@
   .sn2-role-manage-grip { flex-basis: 22px; width: 22px; height: 44px; }
   .sn2-role-sheet-link-pick { width: 44px; height: 44px; }
   .sn2-role-column-resizer { width: 12px; }
-  .sn2-role-style-trigger { display: block; width: 24px; height: 32px; }
-  .sn2-role-name-editor .sn2-role-name-preview { padding-right: 26px; }
+  /* 行内オーバーレイの小型操作もスマホでは44pxの操作面にする（UI共通ルール）。 */
+  .sn2-role-style-trigger { display: block; width: var(--ui-h-touch, 44px); height: var(--ui-h-touch, 44px); }
+  .sn2-role-name-editor .sn2-role-name-preview { padding-right: calc(var(--ui-h-touch, 44px) + 2px); }
   .sn2-role-manage-actions .sn2-detail-add-btn {
     min-width: var(--ui-h-touch, 44px);
     padding-inline: 8px;

@@ -1560,7 +1560,10 @@ const GBLayout = (() => {
     tabsScroll.className = 'gb-pane-tabs-scroll';
 
     // タブ
-    if (node.tabs && node.tabs.length > 0) {
+    // サブパネルは土台タブ（サブパネル本体）を出さず、開いているファイル／フォルダのタブを並べる。
+    const subpanelTabStrip = node.meldexRole === 'subpanel-workspace' && typeof window.GBSubPanel?.renderTabStrip === 'function';
+    if (subpanelTabStrip) window.GBSubPanel.renderTabStrip(tabsScroll, node);
+    if (!subpanelTabStrip && node.tabs && node.tabs.length > 0) {
       node.tabs.forEach((tab, i) => {
         const tabEl = document.createElement('div');
         tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
@@ -1750,7 +1753,7 @@ const GBLayout = (() => {
       if (typeof setActivePane === 'function') setActivePane(node.id);
       if (typeof showPanelMenu === 'function') showPanelMenu(e, { paneId: node.id });
     });
-    if (!_isSidebarPaneNode(node)) tabsScroll.appendChild(addTabBtn);
+    if (!_isSidebarPaneNode(node) && !subpanelTabStrip) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
     if (ctrls.childElementCount) tabBar.appendChild(ctrls);
@@ -1764,6 +1767,7 @@ const GBLayout = (() => {
         .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     };
     tabBar.addEventListener('dragover', (e) => {
+      if (subpanelTabStrip) return; // サブパネルのタブ列が自前で受け付ける
       const types = e.dataTransfer.types;
       const isMainReorder = types.includes(MAIN_TAB_REORDER_MIME);
       const isTab = types.includes('application/x-gb-tab');
@@ -1807,6 +1811,7 @@ const GBLayout = (() => {
       _clearDropMarkers();
     });
     tabBar.addEventListener('drop', async (e) => {
+      if (subpanelTabStrip) return; // サブパネルのタブ列が自前で受け付ける
       const mainReorderData = e.dataTransfer.getData(MAIN_TAB_REORDER_MIME);
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
       const hasNode = typeof MeldexDnD !== 'undefined'
@@ -1863,6 +1868,21 @@ const GBLayout = (() => {
       // === フォルダツリーからのファイル D&D（ペインのタブとして開く） ===
       if (node.locked) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
+        return;
+      }
+      // サブパネルのタブを移す: サブパネル側の保存を確定してタブを閉じてから、このパネルで開く。
+      let subpanelTabData = null;
+      try { subpanelTabData = JSON.parse(e.dataTransfer.getData(window.GBSubPanel?.TAB_MIME || 'application/x-meldex-subpanel-tab') || 'null'); } catch (err) { subpanelTabData = null; }
+      if (subpanelTabData?.id && typeof window.GBSubPanel?.takeTab === 'function') {
+        const moved = await window.GBSubPanel.takeTab(subpanelTabData.id);
+        if (!moved?.path) return;
+        const insertAt = _resolveInsertIndex();
+        const movedTabId = GBTabs.addTab(node.id, moved.label || '', moved.type, moved.path, { ...(moved.state || {}) }, { preferTargetPane: true });
+        if (movedTabId) {
+          const endIdx = node.tabs.length - 1;
+          if (node.tabs[endIdx]?.id === movedTabId && endIdx > insertAt) GBTabs.moveTab(node.id, movedTabId, node.id, insertAt);
+          GBTabs.activateTab(GBTabs.findPaneIdForTab?.(movedTabId) || node.id, movedTabId);
+        }
         return;
       }
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;

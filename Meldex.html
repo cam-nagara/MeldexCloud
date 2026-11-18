@@ -250,7 +250,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=efe6a2b22b236feb"></script><script src="gb-cloud-runtime-config.js?v=1b56ed2b48515867"></script><script src="meldex-cloud-runtime-04.js?v=dbd07e6a2a5e0723"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=7d0acc5a48dfab99"></script><script src="gb-cloud-runtime-config.js?v=668fd1f26c0b47df"></script><script src="meldex-cloud-runtime-04.js?v=0157869510382351"></script>
 
 
 
@@ -329,7 +329,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
-<link rel="stylesheet" href="meldex-cloud-core.css?v=da14bdb9d6b08a5d">
+
+<link rel="stylesheet" href="meldex-cloud-core.css?v=909757a83c167478">
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:var(--bg,#1e1e1e);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -450,8 +451,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <div id="tab-bar" style="display:none;"></div>
 <div id="app-toolbar" class="gb-toolbar-main">
   <div id="tb-db" class="gb-toolbar gb-toolbar-main" style="display:none;">
+    <span class="tb-app-icon" data-app-icon="database" role="img" aria-label="シート"></span>
     <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'database')"><span class="ico ico-menu"></span></button>
     <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('database', event)"><span class="ico ico-folderTree"></span></button>
+    <span class="tb-file-icon" data-file-icon-app="database" role="img" aria-label="ファイルアイコン"></span>
     <span id="toolbar-category" class="tb-title tb-file-title"></span>
     <div class="tb-spacer"></div>
     <div class="db-toolbar-actions-right"></div>
@@ -557,8 +560,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     </div>
     <div id="page-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;position:relative;">
       <div id="page-rt-toolbar" class="gb-toolbar gb-toolbar-main">
+        <span class="tb-app-icon" data-app-icon="page" role="img" aria-label="ノート"></span>
         <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
+        <span class="tb-file-icon" data-file-icon-app="page" role="img" aria-label="ファイルアイコン"></span>
         <div id="page-title" class="tb-file-title tb-file-title--input" contenteditable="true"></div>
         <div class="sep"></div>
         <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-listCollapse"></span></button>
@@ -615,8 +620,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     </div>
     <div id="csv-view" style="display:none;flex:1;overflow:hidden;flex-direction:column;">
       <div id="csv-toolbar" class="gb-toolbar">
+        <span class="tb-app-icon" data-app-icon="csv" role="img" aria-label="CSV"></span>
         <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'csv')"><span class="ico ico-menu"></span></button>
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('csv', event)"><span class="ico ico-folderTree"></span></button>
+        <span class="tb-file-icon" data-file-icon-app="csv" role="img" aria-label="ファイルアイコン"></span>
         <span id="csv-title" class="tb-title tb-file-title"></span>
         <button type="button" class="tb-icon-btn" id="csv-undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-action="meldexUndo()" data-undo-button><span class="ico ico-undo2"></span></button>
         <button type="button" class="tb-icon-btn" id="csv-redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-action="meldexRedo()" data-redo-button><span class="ico ico-redo2"></span></button>
@@ -631,10 +638,11 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     </div>
     <div id="folder-view" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
       <div id="folder-toolbar" class="folder-toolbar" style="display:flex;align-items:center;padding:6px 16px;border-bottom:1px solid var(--border);flex-shrink:0;gap:8px;">
+        <span class="tb-app-icon" data-app-icon="folder" role="img" aria-label="フォルダ"></span>
         <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'folder')"><span class="ico ico-menu"></span></button>
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('folder', event)"><span class="ico ico-folderTree"></span></button>
         <button id="folder-toolbar-up" class="tb-icon-btn" type="button" title="上のフォルダへ" aria-label="上のフォルダへ" data-e2e-id="folder-toolbar-up"></button>
-        <div id="folder-toolbar-actions" class="folder-toolbar-file-actions" role="toolbar" aria-label="フォルダ操作">
+        <div id="folder-toolbar-actions" class="folder-toolbar-file-actions" data-toolbar-overflow-priority role="toolbar" aria-label="フォルダ操作">
           <button id="folder-toolbar-add" class="tb-icon-btn" type="button" title="追加" aria-label="追加" aria-haspopup="menu" aria-expanded="false" data-e2e-id="folder-toolbar-add"></button>
           <button id="folder-toolbar-copy" class="tb-icon-btn" type="button" title="コピー" aria-label="コピー" data-e2e-id="folder-toolbar-copy"></button>
           <button id="folder-toolbar-cut" class="tb-icon-btn" type="button" title="切り取り" aria-label="切り取り" data-e2e-id="folder-toolbar-cut"></button>
@@ -643,6 +651,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <button id="folder-toolbar-undo" class="tb-icon-btn" type="button" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-e2e-id="folder-toolbar-undo" data-undo-button></button>
           <button id="folder-toolbar-redo" class="tb-icon-btn" type="button" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-e2e-id="folder-toolbar-redo" data-redo-button></button>
         </div>
+        <span class="tb-file-icon" data-file-icon-app="folder" role="img" aria-label="ファイルアイコン"></span>
         <span id="folder-title" style="font-size:16px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
         <span id="folder-item-count" style="font-size:12px;color:var(--fg2);"></span>
         <button id="folder-btn-slideshow" type="button" title="スライドショー" aria-label="スライドショー" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="openFolderSlideshow()"><span class="ico ico-play"></span></button>
@@ -803,9 +812,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           </div>
         </div>
         <div class="chat-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
-          <button type="button" title="画像を添付（マルチモーダル）" aria-label="画像を添付" data-action="chatAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:14px;height:14px;"></span></button>
+          <button type="button" title="ファイルを添付・スキルを使う" aria-label="追加メニュー" aria-haspopup="menu" data-chat-composer-plus data-action="chatComposerPlusMenu(event)" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:14px;height:14px;"></span></button>
           <select id="chat-provider" title="AIプロバイダ" aria-label="AIプロバイダ" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="gemini">Gemini</option><option value="anthropic">Claude</option><option value="openai">ChatGPT</option><option value="local_llm">ローカルLLM</option><option value="codex">Codex CLI</option><option value="claude_code">Claude Code</option><option value="antigravity_cli">Antigravity CLI</option></select>
           <select id="chat-model" title="AIモデル" aria-label="AIモデル" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;max-width:200px;"></select>
+          <select id="chat-reasoning-level" title="思考の深さ" aria-label="思考の深さ" hidden style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;max-width:96px;"></select>
           <button type="button" title="モデル一覧を更新" aria-label="モデル一覧を更新" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;" data-action="chatRefreshModels()"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
           <button type="button" title="LLM設定" aria-label="LLM設定" data-action="showChatGenerationSettingsMenu(event)" style="font-size:12px;padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-settings" style="width:14px;height:14px;"></span></button>
         </div>
@@ -896,7 +906,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-05.js?v=25d2118477dcfdf9"></script>
+<script src="meldex-cloud-runtime-05.js?v=c2c443c370e21246"></script>
 
 
 

@@ -1,3 +1,54 @@
+    showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
+    return false;
+  }
+  try {
+    const ok = await MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type);
+    if (ok) showStatus('リンクをコピーしました');
+    else showStatus('リンクをコピーできませんでした：クリップボードに書き込めませんでした', true);
+    return !!ok;
+  } catch (error) {
+    _outlinerReportFailure('リンクをコピーできませんでした', error);
+    return false;
+  }
+}
+
+function _outlinerAppendMenuSeparator(menu) {
+  const separator = document.createElement('div');
+  separator.className = 'gb-context-menu-sep cm-sep';
+  separator.setAttribute('role', 'separator');
+  menu.appendChild(separator);
+  return separator;
+}
+
+function _outlinerAppendSubmenu(menu, label, icon, panel) {
+  const trigger = _outlinerAppendMenuItem(menu, { label, icon, hasSubmenu: true, className: 'tree-ctx-item' });
+  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  trigger.addEventListener('mouseenter', () => setExpanded(true));
+  trigger.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') setExpanded(false);
+  }, 220));
+  trigger.addEventListener('click', () => {
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
+    setExpanded(true);
+  });
+  panel.addEventListener('mouseenter', () => setExpanded(true));
+  panel.addEventListener('mouseleave', () => setExpanded(false));
+  attachHoverSubmenu(trigger, panel);
+  return trigger;
+}
+
+function _outlinerPlaceContextMenu(menu) {
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const z = _getZoom();
+  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  const first = menu.querySelector('button.gb-context-menu-item:not(:disabled)');
+  first?.focus?.({ preventScroll: true });
+  _outlinerBindContextMenuClose(menu);
+}
+
 function _outlinerBindContextMenuClose(menu) {
   let removed = false;
   let pointerArmed = false;
@@ -847,54 +898,3 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   if (openSeq !== _outlinerContextMenuOpenSeq) return;
   _outlinerPlaceContextMenu(menu);
   if (shellPath && !shellReady) {
-    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
-  }
-}
-
-// 追加先の親パスを決定
-// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
-// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
-function _outlinerContainerAcceptsItemType(nodeData, itemType) {
-  if (nodeData?.type !== 'database') return true;
-  return String(itemType || '') === 'entity';
-}
-
-// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
-// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
-function _outlinerItemFitsInSheet(nodeData) {
-  return window.MeldexSheetAttachments?.itemFitsInSheet
-    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
-    : true;
-}
-
-function getAddParentPath(nodeEl, nodeData, options = {}) {
-  const isContainer = nodeData.type === 'folder'
-    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
-  if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
-  if (nodeData._form_parent_path) {
-    const path = String(nodeData.path || '').replace(/\\/g, '/');
-    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
-  }
-  if (nodeData._isRoot && nodeData.path) return nodeData.path;
-  if (isContainer) {
-    // フォルダ/DBが展開中ならその中、閉じているなら同階層
-    const toggle = nodeEl.querySelector('.tree-toggle');
-    if (toggle && toggle.dataset.expanded === 'true') return nodeData.path;
-  }
-  // ファイルやエントリ、閉じたフォルダ → 親フォルダのパス
-  const parentContainer = nodeEl.parentElement;
-  const parentNode = parentContainer?.closest('.tree-node');
-  if (parentNode && parentNode._nodeData) return parentNode._nodeData.path;
-  // ホーム内のルート直下ノード → ホームフォルダパスを返す
-  if (nodeEl.closest('#body-home') && _homeFolderPath) return _homeFolderPath;
-  return ''; // ソースフォルダルート
-}
-
-// 選択中の全ノードに色を適用
-function applyColorToSelection(color) {
-  const before = captureOutlinerSettingsHistory([NODE_COLORS_KEY]);
-  const detail = [...treeSelection.items]
-    .map(nodeEl => nodeEl._nodeData?.path || nodeEl._nodeData?.name || '')
-    .filter(Boolean)
-    .join(', ');
-  treeSelection.items.forEach(nodeEl => {

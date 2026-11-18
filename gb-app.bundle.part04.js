@@ -1,3 +1,4 @@
+    return payload;
   }
   if (revision || force || createOnly) return payload;
 
@@ -897,4 +898,3 @@ function showView(viewName, ctx) {
     const fvBar = document.getElementById('fv-bulk-bar');
     if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
   }
-  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {

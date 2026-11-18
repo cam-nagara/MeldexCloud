@@ -353,6 +353,8 @@
     const last = modal?.lastElementChild;
     if (!last) return null;
     if (last.matches('.gb-modal-shell-header, .gb-modal-header, h1, h2, h3, header')) return null;
+    // 本文欄は、その時点でボタンしか無くても下端バーではない（入力欄は後から描かれることがある）。
+    if (last.matches('.gb-modal-shell-body, .gb-modal-body, .modal-body')) return null;
     if (last.querySelector('button') && !last.querySelector('input, textarea, select')) return last;
     return null;
   }

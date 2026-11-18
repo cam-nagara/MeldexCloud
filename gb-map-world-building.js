@@ -29,7 +29,7 @@
     const { count, columns, seed } = options;
     if (!Number.isInteger(count) || count < 1 || count > 32 || !Number.isInteger(columns) || columns < 8 || columns > 64) throw new Error('国家数は1〜32、横の区画数は8〜64で指定してください');
     const rows = Math.max(8, Math.min(48, Math.round(columns * doc.canvas.height / doc.canvas.width))), random = G.rng(seed);
-    const heights = Array.from({ length: columns * rows }, (_, i) => G.sample(doc.terrain, (i % columns + .5) / columns, (Math.floor(i / columns) + .5) / rows));
+    const heights = Array.from({ length: columns * rows }, (_, i) => G.sample((doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), (i % columns + .5) / columns, (Math.floor(i / columns) + .5) / rows));
     const land = heights.map((h, i) => h >= .035 ? i : -1).filter(i => i >= 0), centers = [];
     const separation = (a, b) => ((a % columns - b % columns) * doc.canvas.width / columns) ** 2 + ((Math.floor(a / columns) - Math.floor(b / columns)) * doc.canvas.height / rows) ** 2;
     if (!land.length) return { features: [], detail: '区画中央に陸地がありません。' };
@@ -131,7 +131,7 @@
     const doc = D.parse(source);
     if (!Object.hasOwn(names, kind) || doc.coordinate_system !== 'local') throw new Error('創作地図で実行してください');
     if (typeof options.seed !== 'string' || !options.seed.trim() || options.seed.length > 128 || typeof options.name !== 'string' || !options.name.trim() || options.name.length > 64) throw new Error('シードと名前を入力してください');
-    if (kind !== 'town' && !doc.terrain) throw new Error('先に地形を生成してください');
+    if (kind !== 'town' && !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('先に地形を生成してください');
     const plan = ({ nations, vegetation, town })[kind](doc, options);
     const layer = { id: D.id(), name: options.name.trim() + '（生成）', visible: true, locked: false, opacity: kind === 'town' ? 1 : .65,
       generation: { ...D.clone(options), kind, generator_version: 1 } };

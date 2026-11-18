@@ -2,14 +2,15 @@
 class MapAppComponent extends ToolComponent {
   create() {
     this.el = document.createElement('section'); this.el.className = 'gb-map-app';
-    this.el.setAttribute('aria-label', 'マップ'); this.el.dataset.e2eId = 'map-app';
+    this.el.setAttribute('aria-label', 'マップ'); this.el.dataset.e2eId = 'map-app'; this.el._gbMapApp = this;
     this._generation = 0; this._draftOwner = MeldexMapDocument.id(); this._activeLayer = 'places';
     this._beforeUnload = event => { if (this.store?.dirty || this._inputDirty) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', this._beforeUnload);
     this.el.addEventListener('keydown', event => { if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); } });
     return this.el;
   }
-  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(t => t.id === this.tabId); }
+  // サブパネル等のレイアウト外の仮想ペインでも自分のタブを見つける。
+  _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(t => t.id === this.tabId); }
   get editingDisabled() { return this.readOnly || !!this.state.mapBrowseMode; }
   _saveViewState() {
     const tab = this._tab(); if (tab) tab.state = { ...tab.state, ...this.state };
@@ -72,6 +73,7 @@ class MapAppComponent extends ToolComponent {
       this._activeLayer = this.store.doc.layers[0].id; this._selected = null; this._selection = new Set(); this._inputDirty = false;
       this._inspectorShown = false;
       this._build(); this._render(); this._changed();
+      this._convertLegacyTerrain(generation).catch(error => this._message('旧方式の地形を変換できませんでした: ' + (error.userMessage || error.message)));
       MeldexMapRelations.findParents(this).catch(() => {});
       this._syncDetailPanel();
       if (typeof addRecent === 'function') addRecent(this.state.label, path, 'map');
@@ -173,6 +175,7 @@ class MapAppComponent extends ToolComponent {
       const before = MeldexMapDocument.clone(this.store.doc);
       if (!this.store.update(mutator, false)) return false;
       const scope = this._historyScope();
+      if (label === 'マップを編集') label = this._historyLabel(before, this.store.doc);
       historyPush(label,
         () => this._restoreHistorySnapshot(before, scope),
         undefined,
@@ -180,6 +183,32 @@ class MapAppComponent extends ToolComponent {
       return true;
     }
     catch (error) { this._message(error.message); return false; }
+  }
+  // 履歴名を変更内容から決める（ほとんどの操作が既定名「マップを編集」で登録されていたため）。
+  _historyLabel(before, after) {
+    const same = key => JSON.stringify(before?.[key] ?? null) === JSON.stringify(after?.[key] ?? null);
+    const beforeFeatures = before?.features || [], afterFeatures = after?.features || [];
+    const name = feature => feature?.label ? '「' + String(feature.label).slice(0, 20) + '」' : '';
+    if (afterFeatures.length > beforeFeatures.length) {
+      const added = afterFeatures.find(f => !beforeFeatures.some(b => b.id === f.id));
+      return 'マップ: ' + (({ pin: '地点', route: '経路', region: '領域', label: '地名' })[added?.kind] || '地点・図形') + 'を追加';
+    }
+    if (afterFeatures.length < beforeFeatures.length) return 'マップ: 地点・図形を削除';
+    if (!same('features')) {
+      const changed = afterFeatures.filter(f => JSON.stringify(f) !== JSON.stringify(beforeFeatures.find(b => b.id === f.id)));
+      if (changed.length > 1) return 'マップ: ' + changed.length + '件の地点・図形を変更';
+      const previous = beforeFeatures.find(b => b.id === changed[0]?.id);
+      if (changed[0] && previous && JSON.stringify(changed[0].points) !== JSON.stringify(previous.points)) return 'マップ: ' + name(changed[0]) + '位置を変更';
+      return 'マップ: ' + name(changed[0]) + '内容を変更';
+    }
+    if (!same('layers')) return 'マップ: レイヤーを変更';
+    if (!same('scale')) return 'マップ: 縮尺・方位を変更';
+    if (!same('atlas') || !same('terrain')) return 'マップ: 地形を変更';
+    if (!same('background')) return 'マップ: 背景を変更';
+    if (!same('periods')) return 'マップ: 時代・章を変更';
+    if (!same('display')) return 'マップ: 表示を変更';
+    if (!same('title')) return 'マップ: 名前を変更';
+    return 'マップを編集';
   }
   _editGuard(featureId = null) {
     const store = this.store, generation = this._generation, system = store?.doc.coordinate_system;
@@ -427,7 +456,50 @@ class MapAppComponent extends ToolComponent {
     this.rotationSlider.value = v.rotation; this.rotationLabel.textContent = Math.round(v.rotation) + '°';
   }
   _renderLayers() { MeldexMapControls.layers(this); }
-  _renderPlaces() { MeldexMapControls.places(this); }
+  // マップの方式はAzgaar方式に統一した。旧方式の格子地形だけを持つ地図は、開いた時に変換前の版を保存してから変換する。
+  // 版を保存できない時は変換しない（元データを失わないため）。画像を背景にした地図は対象外。
+  async _convertLegacyTerrain(generation) {
+    const doc = this.store?.doc;
+    if (!doc || this.readOnly || this.editingDisabled || doc.coordinate_system !== 'local' || !doc.terrain || doc.atlas || doc.background) return false;
+    const store = this.store, path = this.path, label = '旧方式の地形（Azgaar方式へ変換する前）';
+    // 変換できるかを先に確かめる（変換できない地図で、開くたびに版だけが増えないように）。
+    const atlas = MeldexMapAzgaar.fromLegacyTerrain(doc);
+    // 取り消しで旧方式へ戻した地図を開き直した時などに、同じ変換前の版を重ねて作らない。
+    let existing = [];
+    try { const listed = await apiFetch('/version/list?path=' + encodeURIComponent(path)); existing = listed?.versions || listed?.items || (Array.isArray(listed) ? listed : []); } catch {}
+    if (!existing.some(item => item?.label === label)) {
+      try { await apiPost('/version/save', { path, label, auto: false }); }
+      catch (error) { this._message('変換前の版を保存できないため、旧方式のまま開きました'); return false; }
+    }
+    if (generation !== this._generation || this.store !== store || store.doc !== doc) return false;
+    if (!this.update(next => { next.atlas = atlas; next.terrain = null; }, true, 'マップ: Azgaar方式へ変換')) return false;
+    this._buildSettingsRefresh?.(); this._render();
+    this._message('旧方式の地形をAzgaar方式へ変換しました（変換前の状態はバージョンに保存しました）');
+    return true;
+  }
+  _renderPlaces() { MeldexMapControls.places(this); window.CommentBadges?.refreshMap?.(this)?.catch?.(() => {}); }
+  // アノテート（コメント）の対象。選択中の地点・図形があればそれへ、無ければマップ全体へ付ける。
+  annotationContext() {
+    if (!this.path) return null;
+    const feature = this.store?.doc?.features?.find(item => item.id === this._selected);
+    if (!feature) return { targetKind: 'none', filePath: this.path, targetRef: null, snapshot: '' };
+    return { targetKind: 'map_feature', filePath: this.path, targetRef: { file: this.path, featureId: feature.id },
+      snapshot: String(feature.label || '名前なし').slice(0, 120) };
+  }
+  addAnnotation(anchorEl) {
+    const context = this.annotationContext();
+    if (!context || !window.CommentBadges?.addCommentHere) return false;
+    window.CommentBadges.addCommentHere(context, { anchorEl: anchorEl || this.inspector || this.el });
+    return true;
+  }
+  // アノテート一覧から地点・図形へ移動する。
+  revealAnnotationTarget(ref = {}) {
+    const id = ref.featureId;
+    const feature = id && this.store?.doc?.features?.find(item => item.id === id);
+    if (!feature) return false;
+    this._select(feature.id); this.view?.focus?.(feature);
+    return true;
+  }
   _renderInspector() {
     MeldexMapControls.inspector(this);
     this.inspector.hidden = false;
@@ -435,7 +507,9 @@ class MapAppComponent extends ToolComponent {
   }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.mapPath;
-    if (!path || this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    if (this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
+    if (!path) { window.GBOptionTargetContext?.clear?.('map-new'); return; }
     if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
     window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
   }

@@ -7,7 +7,7 @@
   'use strict';
   function generate(source, options) {
     const doc = D.parse(source), { seed, count, spacing, prefix, color } = options;
-    if (doc.coordinate_system !== 'local' || !doc.terrain) throw new Error('創作地図で地形を生成してから都市候補を作成してください');
+    if (doc.coordinate_system !== 'local' || !(doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null)) throw new Error('創作地図で地形を生成してから都市候補を作成してください');
     if (typeof seed !== 'string' || !seed.trim() || seed.length > 128 || !Number.isInteger(count) || count < 1 || count > 100
       || !Number.isFinite(spacing) || spacing < 1 || spacing > 1e7 || typeof prefix !== 'string' || !prefix.trim() || prefix.length > 64
       || typeof color !== 'string' || !/^#[\da-f]{6}$/i.test(color)) throw new Error('都市生成の条件を確認してください');
@@ -15,7 +15,7 @@
     let state = 2166136261;
     for (const character of seed) state = Math.imul(state ^ character.codePointAt(0), 16777619) >>> 0;
     const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
-    const { cols, rows, heights } = doc.terrain, candidates = [];
+    const { cols, rows, heights } = (doc.terrain || globalThis.MeldexMapTerrainField?.grid?.(doc) || null), candidates = [];
     for (let y = 0; y < rows - 1; y++) for (let x = 0; x < cols - 1; x++) {
       // Four corners bound the interpolated centre shown by the renderer.
       const corners = [heights[y * cols + x], heights[y * cols + x + 1], heights[(y + 1) * cols + x], heights[(y + 1) * cols + x + 1]];

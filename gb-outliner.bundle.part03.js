@@ -1,3 +1,45 @@
+  if (btn?.disabled) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+  }
+  // 更新前の展開状態を維持するため、自動展開の制限とカウンタを初期化する
+  _outlinerForceExpansionMode = true;
+  _outlinerAutoExpandScheduled = 0;
+  _outlinerAutoExpandOverflowNotified = false;
+  try {
+    const results = await refreshOutliner({ force: true, reason: 'manual-refresh' });
+    const failedCount = (results || []).filter(result => result?.status === 'rejected').length;
+    if (typeof showStatus === 'function') {
+      showStatus(failedCount ? 'フォルダツリーの一部更新に失敗しました' : 'フォルダツリーを更新しました', !!failedCount);
+    }
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('フォルダツリーの更新に失敗しました', true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+    }
+    if (!_outlinerAutoExpandQueue.length && !_outlinerAutoExpandRunning) {
+      _outlinerForceExpansionMode = false;
+    }
+  }
+}
+
+function captureOutlinerSettingsHistory(keys) {
+  const targetKeys = keys && keys.length ? keys : OUTLINER_SETTINGS_HISTORY_KEYS;
+  if (typeof captureLocalStorageSettings === 'function') {
+    return captureLocalStorageSettings(targetKeys);
+  }
+  const storage = {};
+  targetKeys.forEach(key => {
+    try { storage[key] = localStorage.getItem(key); }
+    catch { storage[key] = null; }
+  });
+  return { keys: targetKeys.slice(), storage };
+}
+
+function pushOutlinerSettingsHistory(label, beforeSnapshot, detail, keys) {
   if (typeof pushLocalStorageSettingsHistory !== 'function') return false;
   const afterSnapshot = captureOutlinerSettingsHistory(keys);
   return pushLocalStorageSettingsHistory(
@@ -474,6 +516,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
   row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
+    _cancelOutlinerDragExpand();
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
     draggedNode = null;
@@ -503,6 +546,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
       e.preventDefault(); e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
       clearDragIndicators(); row.classList.add('drag-over-inside');
+      _scheduleOutlinerDragExpand(row, toggle, 'inside');
       return;
     }
     const topicMime = window.MeldexTopicPlacementUI?.MIME;
@@ -527,10 +571,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
           || externalItems.some(source => source.type === 'entity' || source.linked || source.path === item.path
             || _treeNodeIsAncestor({ _nodeData: source }, { _nodeData: target }))) {
         e.dataTransfer.dropEffect = 'none';
+        _cancelOutlinerDragExpand(row);
         return;
       }
       e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
       row.classList.add('drag-over-' + position);
+      _scheduleOutlinerDragExpand(row, toggle, position);
       return;
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
@@ -547,18 +593,23 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
     if (item._form_parent_path) {
       row.classList.add('drag-over-inside');
+      _cancelOutlinerDragExpand(row);
       return;
     }
 
-    row.classList.add('drag-over-' + _outlinerRowDropPosition(e, row, item));
+    const position = _outlinerRowDropPosition(e, row, item);
+    row.classList.add('drag-over-' + position);
+    _scheduleOutlinerDragExpand(row, toggle, position);
   });
 
   row.addEventListener('dragleave', (e) => {
     if (e.relatedTarget && row.contains(e.relatedTarget)) return;
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
+    _cancelOutlinerDragExpand(row);
   });
 
   row.addEventListener('drop', async (e) => {
+    _cancelOutlinerDragExpand();
     if (typeof _folderCanAcceptOsDrop === 'function' && _folderCanAcceptOsDrop(e, item)) {
       e.preventDefault(); e.stopPropagation(); clearDragIndicators();
       await _outlinerImportOsDropSafely(e, item);
@@ -847,54 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
             const reusable = disposeOrReuse(n);
             childrenDiv.appendChild(reusable || createTreeNodeFromBrowse(data, rootPath));
           });
-          if (toggle.dataset.expanded !== 'true') toggle.click();
-          setSortSetting(item.path, 'manual', 'asc');
-          saveManualOrderFromDOM(childrenDiv, item.path);
-          if (!movedAcrossFolders) {
-            pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-          }
-        }
-      } else if (vr && vr.isVirtualContainer(targetParent)) {
-        const movedPaths = moved.map(n => n._nodeData?.path).filter(Boolean);
-        moved.forEach(n => { disposeOrReuse(n); });
-        vr.reorderAround(targetParent, movedPaths, item.path, position);
-      } else if (position === 'above') {
-        moved.forEach(n => {
-          const data = n._nodeData;
-          const reusable = disposeOrReuse(n);
-          targetParent.insertBefore(reusable || createTreeNodeFromBrowse(data, rootPath), div);
-        });
-      } else {
-        let ref = div.nextSibling;
-        moved.forEach(n => {
-          const data = n._nodeData;
-          const reusable = disposeOrReuse(n);
-          targetParent.insertBefore(reusable || createTreeNodeFromBrowse(data, rootPath), ref);
-        });
-      }
-      if (position !== 'inside') {
-        const logicalParentPath = vr?.parentPathForItem(targetParent, item.path);
-        const parentNode = targetParent.closest('.tree-node');
-        const parentPath = logicalParentPath !== undefined
-          ? (logicalParentPath || parentNode?._nodeData?.path || '_root')
-          : (parentNode?._nodeData?.path || '_root');
-        setSortSetting(parentPath, 'manual', 'asc');
-        if (vr && vr.isVirtualContainer(targetParent)) {
-          vr.saveManualOrderFromVirtualModel(targetParent, parentPath);
-        } else {
-          saveManualOrderFromDOM(targetParent, parentPath);
-        }
-        if (!movedAcrossFolders) {
-          pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-        }
-      }
-      if (nodes.some(node => node._nodeData?._form_parent_path)) await loadOutliner();
-    })();
-  });
-
-  _registerTreeNode(div);
-  return div;
-}
-
-function clearDragIndicators() {
-  const home = document.getElementById('body-home');

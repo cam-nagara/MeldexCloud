@@ -120,6 +120,19 @@ function applyDbOptionHeaderColor(el, hex) {
   el.style.setProperty('--db-option-fg', dbOptionTextColorFor(safeHex));
 }
 
+// カンバンのグループ（列全体）を選択肢の背景色で塗る。見出しは濃く、列の地は薄くする。
+function applyDbOptionKanbanColumnColor(col, hex) {
+  if (!col) return;
+  const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
+  if (!safeHex) {
+    col.classList.remove('db-option-color-column');
+    col.style.removeProperty('--db-option-bg');
+    return;
+  }
+  col.classList.add('db-option-color-column');
+  col.style.setProperty('--db-option-bg', safeHex);
+}
+
 // ドロップダウン項目先頭に挿入する色ドット（DOM要素）。hex が無効なら null
 function createDbOptionColorDot(hex) {
   const safeHex = _dbOptionColorIsValidHex(hex) ? hex.trim() : '';
@@ -149,7 +162,7 @@ function getDbOptionColorForGroup(dbPath, groupByProp, groupKey, ctx) {
   if (!dbPath || !groupByProp || typeof getPropertyTypes !== 'function') return '';
   const ptc = (getPropertyTypes(dbPath, ctx) || {})[groupByProp];
   if (!ptc || (ptc.type !== 'select' && ptc.type !== 'multi-select')) return '';
-  return getDbOptionColor(ptc, groupKey);
+  return getDbOptionStyle(ptc, groupKey)?.bgColor || getDbOptionColor(ptc, groupKey);
 }
 
 function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
@@ -198,6 +211,7 @@ function refreshDbOptionColorInOpenViews(dbPath, propName, option, color, ctx) {
         const title = header.querySelector('span:not(.kanban-dot):not(.kanban-count)');
         if ((title?.textContent || '').trim() !== String(option)) return;
         applyDbOptionHeaderColor(header, safeHex);
+        applyDbOptionKanbanColumnColor(header.closest('.kanban-column'), safeHex);
         const existing = header.querySelector('.kanban-dot');
         if (existing) existing.remove();
         const dot = createDbOptionColorDot(safeHex);

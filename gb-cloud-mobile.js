@@ -430,6 +430,14 @@
     if (!document.body) return;
     document.querySelectorAll('.gb-pane-tabs').forEach((tabBar) => {
       if (tabBar.closest('.settings-theme-preview-shell')) return;
+      // パネル自身のタブバーだけが対象。トピックのリンク一覧など、パネル内の部品が
+      // 同じ見た目のクラスを使っても戻るボタンを重複させない（安定IDが衝突する）。
+      if (!tabBar.parentElement?.classList?.contains('gb-pane')) {
+        Array.from(tabBar.children)
+          .filter(el => el.classList?.contains('cloud-mobile-pane-tree-back'))
+          .forEach(el => el.remove());
+        return;
+      }
       let button = Array.from(tabBar.children).find(el => el.classList?.contains('cloud-mobile-pane-tree-back'));
       if (!button) {
         button = document.createElement('button');

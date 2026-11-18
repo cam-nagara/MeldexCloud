@@ -20,7 +20,7 @@
         allow_web_search: chatAllowWebSearch(),
         allow_auto_compress: chatAllowAutoCompress(),
         allow_code_execution: chatAllowCodeExecution(),
-        ...(options.generationSettings || chatGenerationSettings()),
+        ...streamGeneration,
         ...chatCustomInstructionSettings(),
       }),
     });
@@ -166,7 +166,7 @@
         assistantDiv = addAssistantToVisibleStream(fullText || '[コード実行結果]', renderOptions);
       }
       if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
-      const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp() };
+      const assistantMessage = { role: 'assistant', content: fullText || '[コード実行結果]', msg_id: assistantMessageId, provider: streamProvider, model: streamModel, ...streamReasoningRecord, timestamp: assistantTimestamp || _chatLocalTimestamp() };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
@@ -199,7 +199,7 @@
       if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, responseCitations);
       else if (assistantDiv) assistantDiv.textContent = abortedText;
       if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, responseThinking);
-      const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
+      const assistantMessage = { role: 'assistant', content: abortedText, msg_id: assistantMessageId, provider: streamProvider, model: streamModel, ...streamReasoningRecord, timestamp: assistantTimestamp || _chatLocalTimestamp(), aborted: true };
       if (responseCitations.length > 0) assistantMessage.citations = responseCitations;
       if (responseUsage) assistantMessage.usage = responseUsage;
       if (responseCodeExecBlocks.length > 0) assistantMessage.code_exec_blocks = responseCodeExecBlocks;
@@ -228,6 +228,7 @@
         msg_id: assistantMessageId,
         provider: streamProvider,
         model: streamModel,
+        ...streamReasoningRecord,
         timestamp: assistantTimestamp || _chatLocalTimestamp(),
         error: true,
         error_code: e?.meldexCode || 'stream_failed',
@@ -985,7 +986,7 @@ function _chatHtmlEscape(value) {
 function _chatExportRoleLabel(message) {
   const role = String(message?.role || '').toLowerCase();
   if (role === 'user') return typeof getUsername === 'function' ? getUsername() : 'User';
-  if (role === 'assistant') return getProviderLabel(message?.provider || _chatState.provider, message?.model || _chatState.model);
+  if (role === 'assistant') return getProviderLabel(message?.provider || _chatState.provider, message?.model || _chatState.model, message?.reasoning_level || '');
   return role || 'Message';
 }
 

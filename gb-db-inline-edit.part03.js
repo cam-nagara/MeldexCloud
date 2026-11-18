@@ -9,6 +9,11 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
       : (typeof _currentPaneState === 'function' ? _currentPaneState() : null));
   const dbPath = (typeof ctxOrDbPath === 'string' ? ctxOrDbPath : '') || (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
+  const renameGate = typeof _dbPendingColumnRenameGate === 'function' ? _dbPendingColumnRenameGate(dbPath) : null;
+  if (renameGate) {
+    renameGate.then(() => insertPropertyInline(refProp, direction, ctx || ctxOrDbPath, typeConfig));
+    return;
+  }
   const pivotData = (ctx && ctx.pivotData) || state.pivotData;
   const fallbackOrder = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
@@ -20,10 +25,28 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const _newColType = (_hasTypeConfig && typeConfig.type) ? typeConfig.type : 'text';
   const _initialName = (_hasTypeConfig && typeof typeConfig.initialName === 'string') ? typeConfig.initialName.trim() : '';
   const base = _initialName || (typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(_newColType) : '') || 'テキスト';
+  // 列名変更した旧名は新しい列の仮の名前に使わない（名前で列を指す保存処理と重ならないように）。
+  const renamedAway = typeof _dbColumnRenameAliases !== 'undefined'
+    ? [...(_dbColumnRenameAliases.get(String(dbPath)) || new Map()).keys()]
+    : [];
+  // 列順に無い列（定義だけ残っている列）とも重ならないよう、列定義の名前も避ける。
+  const definedNames = Object.keys((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {});
+  const taken = new Set([...order, ...definedNames, ...(pivotData?.properties || []), ...renamedAway]);
   let idx = 1, name = base;
-  while (order.includes(name)) { idx++; name = base + idx; }
-  const refIdx = order.indexOf(refProp);
-  if (refIdx >= 0) {
+  while (taken.has(name)) { idx++; name = base + idx; }
+  // メニューを開いた後に基準列の列名が変わっていても、今の名前で位置を決める。
+  const currentRefProp = typeof _dbResolveCurrentColumnName === 'function'
+    ? _dbResolveCurrentColumnName(dbPath, refProp, order)
+    : refProp;
+  const refIdx = order.indexOf(currentRefProp);
+  if (refIdx < 0 && refProp === '__entity__') {
+    // トピック名列は列順に含まれないことがある（常に先頭）。その右＝先頭へ入れる。
+    order.splice(0, 0, name);
+  } else if (refIdx < 0 && refProp) {
+    // 基準列が見つからない時に黙って末尾へ入れない（以前は右端へ追加されていた）。
+    if (typeof showStatus === 'function') showStatus('挿入する位置の列が見つかりません: ' + refProp, true);
+    return;
+  } else if (refIdx >= 0) {
     const insertIdx = direction === 'left' ? refIdx : refIdx + 1;
     order.splice(insertIdx, 0, name);
   } else {

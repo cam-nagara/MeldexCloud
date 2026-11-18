@@ -6580,6 +6580,72 @@
     return { ruby: candidates.length ? candidates[0].ruby : null, candidates };
   }
 
+  // ルビ設定ポップアップの「シートに登録」（デスクトップ版 /api/ruby-sheets と同じ形）。
+  // フォルダノートだけを読み、ふりがな型（または旧名 ふりがな/ルビ/フリガナ/ruby）の列を持つ
+  // シートを作品フォルダ → ソースフォルダの順に返す。フォルダノートの読み取りは並列にする。
+  const _CLOUD_RUBY_SHEET_LEGACY = ['ふりがな', 'ルビ', 'フリガナ', 'ruby'];
+  async function _cloudRubySheetColumns(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const types = note?.frontmatter?.property_types;
+      if (!types || typeof types !== 'object' || Array.isArray(types)) return [];
+      const furigana = Object.entries(types)
+        .filter(([, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana')
+        .map(([name]) => name);
+      const legacy = Object.keys(types).filter(name => _CLOUD_RUBY_SHEET_LEGACY.includes(name) && !furigana.includes(name));
+      return furigana.concat(legacy);
+    } catch {
+      return [];
+    }
+  }
+
+  async function _cloudRubySheets(provider, url) {
+    const work = _normalizeFolderPath(url.searchParams.get('work') || '');
+    const roots = [];
+    if (work) roots.push({ kind: 'work', label: '作品フォルダ', root: work, depth: 6 });
+    roots.push({ kind: 'source', label: 'ソースフォルダ', root: '', depth: 4 });
+    const seen = new Set();
+    const groups = [];
+    for (const group of roots) {
+      const dbs = [];
+      const baseKind = group.root ? await _databaseKind(provider, group.root).catch(() => '') : '';
+      if (baseKind === 'settings-db') dbs.push({ path: group.root, kind: baseKind });
+      dbs.push(...await _findDatabaseFolders(provider, group.root, group.depth).catch(() => []));
+      const targets = dbs.filter(db => db.kind === 'settings-db' && !seen.has(db.path));
+      targets.forEach(db => seen.add(db.path));
+      const columns = await Promise.all(targets.map(db => _cloudRubySheetColumns(provider, db.path)));
+      const sheets = [];
+      targets.forEach((db, index) => {
+        if (!columns[index].length) return;
+        const rel = group.root && db.path.startsWith(group.root + '/') ? db.path.slice(group.root.length + 1) : db.path;
+        sheets.push({ path: db.path, name: _basename(db.path), relPath: rel || _basename(db.path), furiganaProps: columns[index] });
+      });
+      sheets.sort((a, b) => a.relPath.localeCompare(b.relPath, 'ja'));
+      groups.push({ kind: group.kind, label: group.label, rootName: _basename(group.root) || '', sheets });
+    }
+    return { groups, truncated: false };
+  }
+
+  async function _cloudRubySheetEntry(provider, url) {
+    const sheet = _normalizeFolderPath(url.searchParams.get('sheet') || '');
+    const name = String(url.searchParams.get('name') || '').trim();
+    if (!sheet || !name) {
+      const error = new Error('sheet, name は必須です');
+      error.status = 400;
+      throw error;
+    }
+    const columns = await _cloudRubySheetColumns(provider, sheet);
+    const rows = await _cloudLinkDictRows(provider, sheet).catch(() => []);
+    const row = rows.find(item => String(item.name || '').trim() === name);
+    if (!row) return { exists: false, furiganaProps: columns, readings: [], path: '' };
+    return {
+      exists: true,
+      furiganaProps: columns,
+      readings: _cloudLinkDictReadings(row.properties, columns),
+      path: row.path || _joinPath(sheet, _sheetStoreFileName(name)),
+    };
+  }
+
   async function _handleCalendar(provider, method, body, url, pathname) {
     const historyRoute = pathname.match(/^\/cal\/history\/(event|todo|shift)\/([^/]+)(?:\/([^/]+)(\/restore)?)?$/);
     if (historyRoute) {
@@ -6804,6 +6870,8 @@
     // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
     // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
     if (pathname === '/ruby' && method === 'GET') return _cloudRubyReading(await _requirePwaProvider('read'), url);
+    if (pathname === '/ruby-sheets' && method === 'GET') return _cloudRubySheets(await _requirePwaProvider('read'), url);
+    if (pathname === '/ruby-sheets/entry' && method === 'GET') return _cloudRubySheetEntry(await _requirePwaProvider('read'), url);
 
     if (pathname === '/version/current-db-snapshot' && method === 'GET') {
       return _readCurrentDbSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

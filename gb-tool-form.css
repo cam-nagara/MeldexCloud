@@ -14,3 +14,11 @@
 @container form-app-surface (max-width:700px) {
   .gb-form-app .gb-form-editor { grid-template-columns:minmax(0,1fr); }
 }
+
+/* オプションパネル「項目」タブ（選択中のフォーム項目） */
+#detail-tab-form-field { padding: var(--ui-space-3, 12px); display: flex; flex-direction: column; gap: var(--ui-space-2, 8px); }
+#detail-tab-form-field h3 { margin: 0; font-size: var(--ui-font-13, 13px); }
+#detail-tab-form-field p { margin: 0; color: var(--ui-fg-muted, var(--fg2)); font-size: 12px; }
+.gb-form-field-inspector { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+.gb-form-field-inspector dt { color: var(--ui-fg-muted, var(--fg2)); }
+.gb-form-field-inspector dd { margin: 0; overflow-wrap: anywhere; }

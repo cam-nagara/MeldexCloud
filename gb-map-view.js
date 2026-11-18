@@ -3,7 +3,26 @@
   'use strict';
   const D = () => root.MeldexMapDocument;
   const SYMBOLS = { pin: '●', city: '◆', castle: '♜', mountain: '▲', forest: '♠', port: '⚓' };
+  // 同梱素材の記号画像。PNG書き出しでも同じ画像を使うため、読み込み済みの画像を使い回す。
+  const stampImages = new Map();
+  function stampImage(id) {
+    const url = root.MeldexMapDisplay.stampURL(id); if (!url) return null;
+    let image = stampImages.get(id);
+    if (!image) { image = new Image(); image.decoding = 'async'; image.src = url; stampImages.set(id, image); }
+    return image;
+  }
   function terrainCanvas(terrain) { return root.MeldexMapTerrainRender.canvas(terrain); }
+  // 前回と今回の描き込みの差（追加・取り消し・やり直し）が及ぶ範囲を、地形座標の [x0,y0,x1,y1] で返す。
+  function atlasEditsChangedBox(previous,next){
+    const key=e=>JSON.stringify(e),before=new Map(previous.map(e=>[key(e),e])),after=new Map(next.map(e=>[key(e),e]));
+    const changed=[...previous.filter(e=>!after.has(key(e))),...next.filter(e=>!before.has(key(e)))];
+    if(!changed.length)return null;
+    // 並び順だけが変わった時は重なり順が変わるため全体を描き直す。
+    if(changed.length>16)return null;
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(const e of changed){const r=(e.radius||0)*2;for(const [x,y] of e.points||[]){x0=Math.min(x0,x-r);y0=Math.min(y0,y-r);x1=Math.max(x1,x+r);y1=Math.max(y1,y+r);}}
+    return Number.isFinite(x0)?[x0,y0,x1,y1]:null;
+  }
   function removeMap(map){
     if(!map)return;
     const canvases=[];map.eachLayer(layer=>{if(layer instanceof L.Canvas)canvases.push(layer);});
@@ -199,19 +218,30 @@
     }
     _terrain(override) {
       const doc = this.doc;
+      // 地図のスタイル（羊皮紙の質感）と地名の書体は、地図の外枠の属性からCSSで切り替える。
+      if (this.container) { this.container.dataset.mapTheme = doc.map_style?.theme || 'standard'; this.container.dataset.mapLabelFont = doc.map_style?.label_font || 'standard'; }
       if (doc.coordinate_system !== 'local') return;
       const bounds = [[-doc.canvas.height, 0], [0, doc.canvas.width]];
       if (!this.paper) this.paper = L.rectangle(bounds, { pane: 'map-paper', interactive: false, stroke: false, fillColor: '#ecede2', fillOpacity: 1 }).addTo(this.map);
       else this.paper.setBounds(bounds);
       if(doc.atlas?.surface&&!override){
         const display=root.MeldexMapDisplay.effective({...doc.display,...this.elementVisibility}),baseDisplay={terrain:display.terrain,vegetation:display.vegetation,countries:display.countries};
-        const key=root.MeldexMapTerrainField.scene(doc.atlas).key+'|'+doc.atlas.presentation+'|'+JSON.stringify(baseDisplay)+'|'+doc.atlas.shores.join('')+'|'+JSON.stringify(doc.atlas.modes[doc.atlas.presentation])+'|'+doc.canvas.width+':'+doc.canvas.height;
-        if(this._atlasTileKey===key&&this.atlasTiles)return;
+        root.MeldexMapTerrainField.scene(doc.atlas);
+        // 地形（素の起伏・海岸線・配色）が同じで描き込みだけが変わった時は、描き込みの範囲に掛かるタイルだけを描き直す。
+        // 全タイルを作り直すと1枚ごとに起伏の計算が走り、1筆ごとに数秒固まっていた。
+        const baseKey=[doc.atlas.width,doc.atlas.height,...root.MeldexMapAtlasSurface.fields.map(k=>doc.atlas.surface[k])].join('|')+'|'+doc.atlas.presentation+'|'+JSON.stringify(baseDisplay)+'|'+JSON.stringify(doc.map_style||{})+'|'+doc.atlas.shores.join('')+'|'+JSON.stringify(doc.atlas.modes[doc.atlas.presentation])+'|'+doc.canvas.width+':'+doc.canvas.height;
+        const edits=doc.atlas.editor?.edits||[],editsKey=JSON.stringify(edits);
+        if(this._atlasTileKey===baseKey&&this.atlasTiles){
+          this._atlasTileAtlas=doc.atlas;
+          if(this._atlasEditsKey!==editsKey){const box=atlasEditsChangedBox(this._atlasEdits||[],edits);this._atlasEdits=JSON.parse(editsKey);this._atlasEditsKey=editsKey;this._redrawAtlasTiles(box);}
+          return;
+        }
         this.background?.remove();this.background=null;this._backgroundData=null;this.overlay?.remove();this.overlay=null;this.atlasTiles?.remove();
-        const atlas=doc.atlas,view=this,tileSize=256,pixelRatio=Math.min(2,root.devicePixelRatio||1),cw=doc.canvas.width,ch=doc.canvas.height;
+        const view=this,tileSize=256,pixelRatio=Math.min(2,root.devicePixelRatio||1),cw=doc.canvas.width,ch=doc.canvas.height;
+        this._atlasTileAtlas=doc.atlas;this._atlasTileDisplay=baseDisplay;this._atlasTileStyle=doc.map_style||{};this._atlasTileGeometry={tileSize,pixelRatio,cw,ch};
         const Tiles=L.GridLayer.extend({createTile(coords,done){const tile=document.createElement('img');tile.alt='';tile.setAttribute('role','presentation');const layer=this;
-          setTimeout(()=>{if(!layer._map)return;try{const size=tileSize/(2**coords.z),box=[coords.x*size/cw*atlas.width,coords.y*size/ch*atlas.height,size/cw*atlas.width,size/ch*atlas.height];tile.onload=()=>done(null,tile);tile.onerror=()=>done(new Error('地形タイルを表示できません'),tile);tile.src=root.MeldexMapAzgaar.url(atlas,{bounds:box,resolution:tileSize*pixelRatio,display:baseDisplay});}catch(error){done(error,tile);view.callbacks.message?.(error.message);}},0);return tile;}});
-        this.atlasTiles=new Tiles({tileSize,minZoom:-5,maxZoom:3,pane:'map-background',zIndex:1,bounds:L.latLngBounds(bounds),noWrap:true,keepBuffer:1,updateWhenIdle:true}).addTo(this.map);this._atlasTileKey=key;return;
+          setTimeout(()=>{if(!layer._map)return;try{let ready=false;tile.onload=()=>{if(ready)return;ready=true;done(null,tile);};tile.onerror=()=>done(new Error('地形タイルを表示できません'),tile);view._paintAtlasTile(tile,coords);}catch(error){done(error,tile);view.callbacks.message?.(error.message);}},0);return tile;}});
+        this.atlasTiles=new Tiles({tileSize,minZoom:-5,maxZoom:3,pane:'map-background',zIndex:1,bounds:L.latLngBounds(bounds),noWrap:true,keepBuffer:1,updateWhenIdle:true}).addTo(this.map);this._atlasTileKey=baseKey;this._atlasEdits=JSON.parse(editsKey);this._atlasEditsKey=editsKey;return;
       }
       this.atlasTiles?.remove();this.atlasTiles=null;this._atlasTileKey=null;
       const atlas=doc.atlas,atlasKey=atlas?atlas.presentation:'';
@@ -236,6 +266,11 @@
     }
     _features() {
       if (!this.features) return;
+      // 地点・図形と表示条件が前回と同じなら作り直さない（地形を1筆描くたびに全件を作り直し、0.8秒以上固まっていた）。
+      const doc = this.doc, featuresKey = JSON.stringify([doc.features, doc.layers, doc.display, this.elementVisibility, this.layerVisibility, this.periodId,
+        this.featureKind, this.filter, [...(this.selectedIds || [])], this.selectedId, this.readOnly, this.tool, this.editVertices, doc.coordinate_system, doc.canvas, !!doc.atlas]);
+      if (this._featuresKey === featuresKey && this._featuresKeyGroup === this.features && this._featuresKeyMap === this.map) return;
+      this._featuresKey = featuresKey; this._featuresKeyGroup = this.features; this._featuresKeyMap = this.map;
       this.features.clearLayers();
       this.items.clear();
       for (const layer of [...this.doc.layers].reverse()) for (const feature of this.doc.features.filter(f => f.layer_id === layer.id && this._visible(f))) {
@@ -257,6 +292,7 @@
               hole.setAttribute('cx',marker.centerX);hole.setAttribute('cy',marker.centerY);hole.setAttribute('r',marker.radius);hole.setAttribute('fill','white');svg.append(path,hole);
               if(['city','castle','mountain','forest','port'].includes(feature.icon)){const text=document.createElementNS(ns,'text');text.setAttribute('x',marker.centerX);text.setAttribute('y',marker.centerY);text.setAttribute('text-anchor','middle');text.setAttribute('dominant-baseline','central');text.setAttribute('fill',feature.color);text.setAttribute('font-size','12');text.setAttribute('font-family','sans-serif');text.setAttribute('font-weight','bold');text.textContent=glyph;svg.append(text);}
               icon.append(svg);
+            }else if(feature.stamp&&root.MeldexMapDisplay.stampURL(feature.stamp)){const image=document.createElement('img');image.className='gb-map-stamp';image.src=root.MeldexMapDisplay.stampURL(feature.stamp);image.alt='';image.draggable=false;stampImage(feature.stamp);icon.classList.add('gb-map-stamp-host');icon.appendChild(image);
             }else{icon.textContent=glyph;if(cart.role==='city'){icon.style.fontSize=cart.symbolSize+'px';icon.style.lineHeight='16px';}}
             el.appendChild(icon);
           }
@@ -408,15 +444,35 @@
       this.compass.style.transform = `rotate(${(this.doc.coordinate_system === 'world' ? 0 : this.doc.scale.north_degrees) + this.rotation}deg)`;
       this.compass.parentElement.title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
     }
+    _atlasTileBox(coords){const g=this._atlasTileGeometry,a=this._atlasTileAtlas,size=g.tileSize/(2**coords.z);return [coords.x*size/g.cw*a.width,coords.y*size/g.ch*a.height,size/g.cw*a.width,size/g.ch*a.height];}
+    _paintAtlasTile(tile,coords,resolution){const g=this._atlasTileGeometry;tile.src=root.MeldexMapAzgaar.url(this._atlasTileAtlas,{bounds:this._atlasTileBox(coords),resolution:resolution||g.tileSize*g.pixelRatio,display:this._atlasTileDisplay,style:this._atlasTileStyle?.theme,contours:!!this._atlasTileStyle?.contours,contourInterval:this._atlasTileStyle?.contour_interval||10});}
+    // 描き込みの範囲に掛かるタイルだけを、まず粗く・すぐに、続けて本来の細かさで描き直す。
+    // 1枚ずつ別の処理単位に分け、描いている間も画面操作を止めない。
+    _redrawAtlasTiles(box){
+      const tiles=this.atlasTiles?._tiles;if(!tiles)return;
+      const generation=this._atlasRedrawGeneration=(this._atlasRedrawGeneration||0)+1,layer=this.atlasTiles,g=this._atlasTileGeometry;
+      const targets=Object.values(tiles).filter(item=>{if(!item?.el||!item.coords)return false;const t=this._atlasTileBox(item.coords);return !box||!(t[0]>box[2]||t[1]>box[3]||t[0]+t[2]<box[0]||t[1]+t[3]<box[1]);});
+      // 前回の描き直しで細かい描き直しがまだのタイルは、今回の列へ引き継ぐ（粗いまま残さない）。
+      const carried=(this._atlasRedrawQueue||[]).filter(([item,resolution])=>!resolution&&!targets.includes(item)&&layer===this._atlasRedrawLayer);
+      const queue=[...targets.map(item=>[item,64]),...targets.map(item=>[item,0]),...carried];
+      this._atlasRedrawQueue=queue;this._atlasRedrawLayer=layer;
+      const next=()=>{
+        if(generation!==this._atlasRedrawGeneration||layer!==this.atlasTiles||!queue.length)return;
+        const [item,resolution]=queue.shift();
+        if(item.el.isConnected)try{this._paintAtlasTile(item.el,item.coords,resolution);}catch(error){this.callbacks.message?.(error.message);}
+        setTimeout(next,0);
+      };
+      setTimeout(next,0);
+    }
     _paintPointer(event) {
       if (!this.map || !['land', 'sea'].includes(this.tool) || this.readOnly || this.doc.atlas?.locked || event.target.closest('.leaflet-control') || this.interaction.navigationEvent(event)) return;
       if(this.doc.atlas?.surface){
         if(event.type==='pointerdown'){if(event.button!==0)return;this._atlasPainting={pointerId:event.pointerId,source:this.doc.features,points:[]};this.container.setPointerCapture(event.pointerId);}
         const stroke=this._atlasPainting;if(!stroke||stroke.pointerId!==event.pointerId)return;event.preventDefault();event.stopImmediatePropagation();
         if(['pointercancel','lostpointercapture'].includes(event.type)){this.cancel();return;}
-        if(event.type==='pointerup'){this._atlasPainting=null;if(this.container.hasPointerCapture(event.pointerId))this.container.releasePointerCapture(event.pointerId);this.drafts.clearLayers();if(stroke.points.length)this.callbacks.action({type:'atlas-stroke',source:stroke.source,points:stroke.points,kind:this.tool==='sea'?'water':this.terrainKind||'plain',radius:this.brushSize||70,strength:this.terrainStrength||.7});return;}
+        if(event.type==='pointerup'){this._atlasPainting=null;if(this.container.hasPointerCapture(event.pointerId))this.container.releasePointerCapture(event.pointerId);this.drafts.clearLayers();if(stroke.points.length)this.callbacks.action({type:'atlas-stroke',source:stroke.source,points:stroke.points,kind:this.tool==='sea'?'water':this.terrainKind||'land',radius:this.brushSize||70,strength:this.terrainStrength||.7});return;}
         const p=this.xy(this.map.mouseEventToLatLng(event));if(p[0]<0||p[1]<0||p[0]>this.doc.canvas.width||p[1]>this.doc.canvas.height)return;
-        const previous=stroke.points.at(-1);if(!previous||Math.hypot(...this.screenPoint(p).map((n,i)=>n-this.screenPoint(previous)[i]))>=3){if(stroke.points.length>=2048)return;stroke.points.push(p);this.drafts.clearLayers();L.polyline(stroke.points.map(q=>this.latlng(q)),{color:'#668eae',opacity:.35,weight:(this.brushSize||70)*2*2**this.map.getZoom(),lineCap:'round',interactive:false}).addTo(this.drafts);}return;
+        const previous=stroke.points.at(-1);if(!previous||Math.hypot(...this.screenPoint(p).map((n,i)=>n-this.screenPoint(previous)[i]))>=3){if(stroke.points.length>=2048)return;stroke.points.push(p);this.drafts.clearLayers();L.polyline(stroke.points.map(q=>this.latlng(q)),{color:this.tool==='sea'||this.terrainKind==='water'?'#82aaba':(this.terrainKind||'land')==='land'?'#d9ddbe':'#9fb187',opacity:.8,weight:(this.brushSize||70)*2*2**this.map.getZoom(),lineCap:'round',interactive:false}).addTo(this.drafts);}return;
       }
       if (event.type === 'pointerdown') {
         if (event.button !== 0) return;
@@ -454,9 +510,11 @@
       for (const layer of [...doc.layers].reverse().filter(l => l.visible)) for (const f of doc.features.filter(f => root.MeldexMapDisplay.visible(f,doc.display)&&f.layer_id === layer.id && D().visibleInPeriod(f, periodId)
         && (!featureKind || f.kind === featureKind) && (!filter || (f.label + ' ' + f.tags.join(' ') + ' ' + f.description).toLocaleLowerCase().includes(filter)))) {
         const cart = root.MeldexMapTerrainRender.style(f,textScale);
-        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontWeight||400} ${cart.fontSize / ratio}px sans-serif`;
+        c.globalAlpha = layer.opacity; c.strokeStyle = c.fillStyle = f.color; c.lineWidth = cart.weight / ratio; c.font = `${cart.fontWeight||400} ${cart.fontSize / ratio}px ${({fell:"'Meldex Map Fell',serif",medieval:"'Meldex Map Medieval',serif"})[doc.map_style?.label_font]||'sans-serif'}`;
         c.setLineDash(cart.dash ? cart.dash.split(' ').map(Number).map(n=>n/ratio) : f.dashed ? [8/ratio,5/ratio] : []);
-        if (f.kind === 'pin'&&root.MeldexMapDisplay.symbols(f,doc.display)) { if(root.MeldexMapTerrainRender.marker(f))root.MeldexMapTerrainRender.drawMarker(c,f,f.points[0],textScale/ratio,root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin));else if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
+        const stamp=f.kind==='pin'&&!root.MeldexMapTerrainRender.marker(f)&&f.stamp?stampImage(f.stamp):null;
+        if (stamp?.complete&&stamp.naturalWidth&&root.MeldexMapDisplay.symbols(f,doc.display)) { const size=36/ratio; c.drawImage(stamp,f.points[0][0]-size/2,f.points[0][1]-size/2,size,size); }
+        else if (f.kind === 'pin'&&root.MeldexMapDisplay.symbols(f,doc.display)) { if(root.MeldexMapTerrainRender.marker(f))root.MeldexMapTerrainRender.drawMarker(c,f,f.points[0],textScale/ratio,root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin));else if (cart.role === 'city') { c.save(); c.font = `${cart.symbolSize/ratio}px sans-serif`; c.textAlign='center'; c.textBaseline='middle'; c.fillText(root.MeldexMapTerrainRender.symbol(f,SYMBOLS[f.icon]||SYMBOLS.pin),...f.points[0]); c.restore(); } else c.fillText(SYMBOLS[f.icon] || SYMBOLS.pin, f.points[0][0], f.points[0][1]); }
         if (['route', 'region'].includes(f.kind)) {
           const points = D().drawPoints(f, doc);
           const g=root.MeldexMapAzgaar?.geometry(f);

@@ -1491,6 +1491,9 @@ CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatu
     if (label) label.style.display = 'block';
   });
   panel.querySelectorAll('.field input,.field select,.field textarea').forEach(control => {
+    // 共通ルールで項目名（128px）と入力欄は同じ行に並ぶ。幅100%固定だと項目名の分だけ
+    // 本文の外へはみ出すため、項目名の残り幅を埋めて縮む指定にする。
+    control.style.flex = '1 1 0%';
     control.style.width = '100%';
     control.style.minWidth = '0';
     control.style.maxWidth = '100%';

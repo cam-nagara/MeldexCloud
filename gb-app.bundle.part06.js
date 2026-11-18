@@ -1,3 +1,4 @@
+  });
 }
 
 // main-viewsへのD&Dドロップ
@@ -897,4 +898,3 @@ function showMobileToolMenu(e) {
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', 'ツールメニュー');
   menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
-  let menuClosed = false;

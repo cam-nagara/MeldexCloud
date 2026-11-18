@@ -162,31 +162,65 @@ function _bindDbViewTabsWheelScroll(tabs) {
   }, { passive: false });
 }
 
-function _clearDbViewTabDropIndicator(tabs) {
-  const scope = tabs || document;
-  scope.querySelectorAll?.('.view-tab.db-view-drop-before, .view-tab.db-view-drop-after')
-    .forEach(tab => tab.classList.remove('db-view-drop-before', 'db-view-drop-after', 'drag-over-tab'));
+// ビュー（index=fromIdx）を取り除いた後の並びで toIdx の位置へ移し、表示中のビューを追従させて保存する。
+// 並べ替えのドラッグ操作とドロップ位置の表示は共通部品 MeldexViewTabs.bindReorder（UI共通ルール 4.0）。
+function _moveDbSavedView(dbPath, fromIdx, toIdx, ctx) {
+  const views = getSavedViews(dbPath);
+  if (!Number.isInteger(fromIdx) || fromIdx < 0 || fromIdx >= views.length) return false;
+  const insertIdx = Math.max(0, Math.min(Number(toIdx) || 0, views.length - 1));
+  if (insertIdx === fromIdx) return false;
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  const moved = views.splice(fromIdx, 1)[0];
+  if (!moved) return false;
+  views.splice(insertIdx, 0, moved);
+  setSavedViews(dbPath, views, { skipHistory: true });
+  let ci = getCurrentViewIdx(dbPath);
+  if (ci === fromIdx) ci = insertIdx;
+  else if (fromIdx < ci && insertIdx >= ci) ci--;
+  else if (fromIdx > ci && insertIdx <= ci) ci++;
+  setCurrentViewIdx(dbPath, ci, { skipHistory: true });
+  if (ctx) {
+    ctx.currentViewIdx = ci;
+    ctx.currentViewId = String(views[ci]?.id || '');
+  }
+  if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
+  }
+  return true;
 }
 
-function _dbViewTabDropSide(tab, event) {
-  const rect = tab.getBoundingClientRect();
-  const x = typeof event?.clientX === 'number' ? event.clientX : rect.left + rect.width / 2;
-  return x < rect.left + rect.width / 2 ? 'before' : 'after';
+// 保存済みビューの既定アイコン（ビュー種別）。利用者が選んだアイコンは view.icon に保存する。
+function _dbSavedViewDefaultIcon(view) {
+  return VIEW_TYPES.find(vt => vt.mode === (view?.viewMode || 'pivot'))?.icon || 'table';
 }
 
-function _markDbViewTabDropIndicator(tab, event) {
-  const tabs = tab?.closest?.('.db-view-tabs');
-  if (!tab || !tabs) return 'after';
-  _clearDbViewTabDropIndicator(tabs);
-  const side = _dbViewTabDropSide(tab, event);
-  tab.classList.add('drag-over-tab', side === 'before' ? 'db-view-drop-before' : 'db-view-drop-after');
-  return side;
+function _dbSavedViewIconHtml(view, size = 12) {
+  if (typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.renderIcon === 'function') {
+    return MeldexViewTabs.renderIcon(view?.icon, _dbSavedViewDefaultIcon(view), size);
+  }
+  return lucide(_dbSavedViewDefaultIcon(view), size);
 }
 
-function _dbViewDropTargetIndex(fromIdx, overIdx, side) {
-  let targetIdx = side === 'after' ? overIdx + 1 : overIdx;
-  if (fromIdx < targetIdx) targetIdx--;
-  return Math.max(0, targetIdx);
+// ビューのアイコンを変える（spec='' で既定に戻す）。ビュー表示設定の保存・取り消し履歴に載せる。
+function setDbSavedViewIcon(idx, spec, ctx) {
+  ctx = ctx || _currentPaneState();
+  const dbPath = ctx.dbPath || state.currentDbPath;
+  if (!dbPath) return false;
+  const cfg = getDbViewConfig(dbPath);
+  const view = (cfg.savedViews || [])[idx];
+  if (!view) return false;
+  const next = typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.normalizeIconSpec === 'function'
+    ? MeldexViewTabs.normalizeIconSpec(spec) : String(spec || '').trim();
+  if ((view.icon || '') === next) return false;
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  if (next) view.icon = next;
+  else delete view.icon;
+  saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+  if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: ビューのアイコン変更', before, captureDbViewConfigHistory(dbPath));
+  }
+  renderDbViewTabs(ctx);
+  return true;
 }
 
 function _syncDbToolbarFilterButtonIcon() {
@@ -239,10 +273,9 @@ function renderDbViewTabs(ctx) {
     tab.className = 'view-tab' + (curIdx === i ? ' active' : '');
     tab.dataset.e2eId = `db-saved-view-${e2eScope}-${i}`;
     tab.style.position = 'relative';
-    const vtDef = VIEW_TYPES.find(vt => vt.mode === (v.viewMode || 'pivot'));
     const labelSpan = document.createElement('span');
     labelSpan.className = 'view-tab-label';
-    labelSpan.innerHTML = (vtDef ? lucide(vtDef.icon, 12) + ' ' : '') + esc(v.name);
+    labelSpan.innerHTML = _dbSavedViewIconHtml(v, 12) + ' ' + esc(v.name);
     tab.appendChild(labelSpan);
     // ホバー時の「...」ボタン
     const moreBtn = document.createElement('span');
@@ -281,59 +314,22 @@ function renderDbViewTabs(ctx) {
       addLongPressHandler(tab, (e) => showViewTabMenu(e, i, false, ctx));
     }
 
-    // D&D: タブ順序入れ替え
+    // D&D: タブ順序入れ替え（ドラッグ操作とドロップ位置の表示はタブ列全体で共通部品が受ける）
     tab.draggable = true;
-    tab.addEventListener('dragstart', (e) => {
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/x-view-idx', String(i));
-        e.dataTransfer.setData('text/x-view-db-path', dbPath);
-      }
-      tab.classList.add('dragging');
-    });
-    tab.addEventListener('dragend', () => {
-      tab.classList.remove('dragging');
-      _clearDbViewTabDropIndicator(tabs);
-    });
-    tab.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      _markDbViewTabDropIndicator(tab, e);
-    });
-    tab.addEventListener('dragleave', (e) => {
-      if (e.relatedTarget && tab.contains(e.relatedTarget)) return;
-      tab.classList.remove('drag-over-tab', 'db-view-drop-before', 'db-view-drop-after');
-    });
-    tab.addEventListener('drop', (e) => {
-      e.preventDefault();
-      const side = _dbViewTabDropSide(tab, e);
-      _clearDbViewTabDropIndicator(tabs);
-      const fromIdx = parseInt(e.dataTransfer?.getData('text/x-view-idx'), 10);
-      const fromDbPath = e.dataTransfer?.getData('text/x-view-db-path');
-      if (fromDbPath !== dbPath || isNaN(fromIdx) || fromIdx === i) return;
-      const views2 = getSavedViews(dbPath);
-      if (fromIdx < 0 || fromIdx >= views2.length || i < 0 || i >= views2.length) return;
-      const insertIdx = Math.min(_dbViewDropTargetIndex(fromIdx, i, side), views2.length - 1);
-      if (insertIdx === fromIdx) return;
-      const moved = views2.splice(fromIdx, 1)[0];
-      if (!moved) return;
-      views2.splice(insertIdx, 0, moved);
-      const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-      setSavedViews(dbPath, views2, { skipHistory: true });
-      // currentViewIdxも調整
-      let ci = getCurrentViewIdx(dbPath);
-      if (ci === fromIdx) ci = insertIdx;
-      else if (fromIdx < ci && insertIdx >= ci) ci--;
-      else if (fromIdx > ci && insertIdx <= ci) ci++;
-      setCurrentViewIdx(dbPath, ci, { skipHistory: true });
-      if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
-        pushDbViewConfigHistory(dbPath, 'シート表示: ビュー並び替え', before, captureDbViewConfigHistory(dbPath));
-      }
-      renderDbViewTabs(ctx);
-    });
 
     tabs.appendChild(tab);
   });
+
+  // 並べ替えの受け手はタブ列（再描画しても同じ要素）に一度だけ付け、毎回このペインの状態へ差し替える。
+  if (typeof MeldexViewTabs !== 'undefined' && typeof MeldexViewTabs.bindReorder === 'function') {
+    MeldexViewTabs.bindReorder(tabs, {
+      itemSelector: ':scope > .view-tab',
+      dataType: 'text/x-view-idx',
+      onMove: (fromIdx, toIdx) => {
+        if (_moveDbSavedView(dbPath, fromIdx, toIdx, ctx)) renderDbViewTabs(ctx);
+      },
+    });
+  }
 
   // + ボタン（ビュータイプ選択ドロップダウン付き）
   const addBtn = document.createElement('button');
@@ -1250,6 +1246,64 @@ function loadSavedView(idx, ctx, options = {}) {
   else renderPivot(ctx);
 }
 
+// ビューごとの列の表示と並び順（2026-11-18「表示列を切替」から改名・作り直し）。
+// 項目を押しても閉じず、並べ替え・複数選択・非表示の列をまとめた欄を持つ。
+function openDbViewColumnManager(idx, ctx, anchorEl) {
+  ctx = ctx || _currentPaneState();
+  const dbPath = ctx.dbPath || state.currentDbPath;
+  const allColumns = () => {
+    const data = ctx.pivotData || state.pivotData || {};
+    const names = [...(data.properties || [])];
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {};
+    Object.keys(types || {}).forEach(name => { if (!names.includes(name)) names.push(name); });
+    const propertyNames = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, names) : names;
+    return ['__entity__', ...propertyNames];
+  };
+  const columnDisplayName = name => name === '__entity__'
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
+    : name;
+  const targetView = () => (getDbViewConfig(dbPath).savedViews || [])[idx] || null;
+  const getItems = () => {
+    const view = targetView();
+    const columns = allColumns();
+    const savedOrder = Array.isArray(view?.colOrder) ? view.colOrder.filter(name => columns.includes(name)) : [];
+    const order = [...new Set([...savedOrder, ...columns])];
+    if (!savedOrder.includes('__entity__')) {
+      order.splice(order.indexOf('__entity__'), 1);
+      order.unshift('__entity__');
+    }
+    const hidden = new Set(view?.hiddenCols || []);
+    return order.map(name => ({ id: name, label: columnDisplayName(name), visible: !hidden.has(name) }));
+  };
+  const anchor = anchorEl
+    || _paneEl(ctx, '.db-view-tabs')?.querySelectorAll('.view-tab')[idx]
+    || _paneEl(ctx, '.db-view-tabs');
+  return window.MeldexColumnManager?.open({
+    anchor,
+    title: '列管理',
+    className: 'db-view-column-manager',
+    e2eId: 'db-view-column-manager',
+    getItems,
+    onChange(items, detail) {
+      const cfg = getDbViewConfig(dbPath);
+      const target = (cfg.savedViews || [])[idx];
+      if (!target) return;
+      const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+      target.hiddenCols = items.filter(item => !item.visible).map(item => item.id);
+      target.colOrder = items.map(item => item.id);
+      saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+      if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
+        pushDbViewConfigHistory(dbPath, 'シート表示: 列管理', before, captureDbViewConfigHistory(dbPath), detail || '');
+      }
+      const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
+      if (activeIdx === idx) {
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+        else renderPivot(ctx);
+      }
+    },
+  });
+}
+
 function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   closeColHeaderMenu();
   const menu = document.createElement('div');
@@ -1275,22 +1329,6 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
   const columnDisplayName = name => name === '__entity__'
     ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名')
     : name;
-
-  const setVisibleColumns = (nextHidden, detail) => {
-    const cfg = getDbViewConfig(dbPath);
-    const views = cfg.savedViews || [];
-    const target = views[idx];
-    if (!target) return;
-    const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-    target.hiddenCols = [...new Set(nextHidden)].filter(name => allColumns.includes(name));
-    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
-    if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
-      pushDbViewConfigHistory(dbPath, 'シート表示: 表示列切替', before, captureDbViewConfigHistory(dbPath), detail || '');
-    }
-    const activeIdx = _getCurrentDbViewIndexFromConfig(cfg, { ctx });
-    if (activeIdx === idx) loadSavedView(idx, ctx, { skipHistory: true });
-    else renderDbViewTabs(ctx);
-  };
 
   const swapViews = (fromIdx, toIdx) => {
     const cfg = getDbViewConfig(dbPath);
@@ -1320,25 +1358,17 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
       }, 0);
     }},
     { label: 'このビューを複製...', action: () => duplicateSavedView(idx, ctx) },
+    { label: 'アイコンを変更', e2eId: 'db-view-change-icon', action: () => {
+      if (typeof MeldexViewTabs === 'undefined' || typeof MeldexViewTabs.openIconPicker !== 'function') return;
+      const tabs = _paneEl(ctx, '.db-view-tabs');
+      MeldexViewTabs.openIconPicker({
+        anchorEl: targetTab?.isConnected ? targetTab : (tabs?.querySelectorAll('.view-tab')[idx] || null),
+        current: currentView?.icon || '',
+        onChange: spec => setDbSavedViewIcon(idx, spec, ctx),
+      });
+    }},
     { type: 'sep' },
-    {
-      type: 'submenu',
-      label: lucide('columns3', 14) + ' 表示列を切替',
-      children: [
-        { label: 'すべて表示', action: () => setVisibleColumns([], 'すべて表示') },
-        { label: 'すべて非表示', action: () => setVisibleColumns(allColumns, 'すべて非表示') },
-        { type: 'sep' },
-        ...allColumns.map(name => {
-          const hidden = (currentView?.hiddenCols || []).includes(name);
-          return {
-            label: (hidden ? '<span style="display:inline-block;width:14px"></span>' : lucide('check', 14)) + ' ' + columnDisplayName(name),
-            action: () => {
-              const next = new Set(currentView?.hiddenCols || []);
-              if (next.has(name)) next.delete(name); else next.add(name);
-              setVisibleColumns([...next], columnDisplayName(name));
-            },
-          };
-        }),
-      ],
-    },
+    { label: lucide('columns3', 14) + ' 列管理', e2eId: 'db-view-column-manager', action: () => {
+      openDbViewColumnManager(idx, ctx, targetTab?.isConnected ? targetTab : null);
+    }},
     {

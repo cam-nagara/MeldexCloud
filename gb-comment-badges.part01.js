@@ -228,6 +228,8 @@
       board_line: new Map(),
       sheet_cell: new Map(),
       calendar_event: new Map(),
+      map_feature: new Map(),
+      form_field: new Map(),
     };
     for (const a of items) {
       if (a.orphan || a.resolved) continue;
@@ -245,6 +247,10 @@
         m.sheet_cell.set(key, (m.sheet_cell.get(key) || 0) + 1);
       } else if (k === 'calendar_event' && r.eventId) {
         m.calendar_event.set(r.eventId, (m.calendar_event.get(r.eventId) || 0) + 1);
+      } else if (k === 'map_feature' && r.featureId) {
+        m.map_feature.set(r.featureId, (m.map_feature.get(r.featureId) || 0) + 1);
+      } else if (k === 'form_field' && r.field) {
+        m.form_field.set(r.field, (m.form_field.get(r.field) || 0) + 1);
       }
       // text_range は container 要素のバッジに +1 する（container があれば）
       if (k === 'text_range' && r.container) {
@@ -949,6 +955,25 @@
         targetRef: { file: filePath, lineId: rowId },
         snapshot: (snRow.querySelector('.sn2-text')?.textContent || '').trim().slice(0, 120),
       };
+    }
+
+    // 3b) フォームの項目: フォームアプリ内の [data-form-field]
+    const formField = scan && scan.closest ? scan.closest('.gb-form-app [data-form-field]') : null;
+    const formApp = formField?.closest?.('.gb-form-app')?._gbFormApp || null;
+    if (formField && formApp?.path) {
+      const field = formField.dataset.formField;
+      return {
+        targetKind: 'form_field', filePath: formApp.path,
+        targetRef: { file: formApp.path, field },
+        snapshot: field.slice(0, 120),
+      };
+    }
+
+    // 3c) マップの地点・図形: 選択中の項目（無ければマップ全体）
+    const mapApp = scan && scan.closest ? scan.closest('.gb-map-app')?._gbMapApp : null;
+    if (mapApp && typeof mapApp.annotationContext === 'function') {
+      const mapContext = mapApp.annotationContext();
+      if (mapContext) return mapContext;
     }
 
     // 3) フォールバック: 未紐付

@@ -652,6 +652,8 @@ function _renamePropertyTypeReferences(cfg, oldName, newName, propertyTypes) {
   (cfg.calendarSync?.colorRules || []).forEach(rule => {
     if (rule?.when?.prop === oldName) rule.when.prop = newName;
   });
+  // AI自動生成列のプロンプト内の {列名} も新しい列名へ付け替える（gb-db-ai-column.js）。
+  if (typeof _ptRenameAiPromptRefs === 'function') _ptRenameAiPromptRefs(cfg, oldName, newName);
 }
 
 function _deleteViewConfigPropReferences(target, propName) {
@@ -959,6 +961,8 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
     }
   };
   const applyTypesToOpenContexts = (types, layout, viewConfig) => {
+    // 先に送った列定義の保存応答が後から戻っても、この手元の変更を古い定義で戻させない。
+    globalThis.GbDbSchemaMutation?.markLocalSchemaChange?.(dbPath);
     const targets = [];
     const add = candidate => {
       if (candidate && !targets.includes(candidate)) targets.push(candidate);

@@ -484,74 +484,17 @@ function _attachDbCardInlineEditor(host, options) {
 }
 
 function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.gallery-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu gallery-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
-  let showEntryName = cfg.showEntryName !== false;
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
-    ? _dbCardViewDisplayConfig(cfg)
-    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
-  const save = (detail) => {
-    _setGalleryDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
-    renderGallery(ctx);
-  };
-  if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-      onToggle(checked) {
-        showEntryName = checked;
-        save('トピック名');
-      },
-    });
-    if (typeof _appendDbCardDisplayControls === 'function') {
-      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-        cardImageThumbCount = next.cardImageThumbCount;
-        cardPropLineCount = next.cardPropLineCount;
-        save(detail);
-      });
-    }
-    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
-    });
-    props.forEach(prop => {
-      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-        canMoveUp: ordered.indexOf(prop) > 0,
-        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-        onToggle(checked) {
-          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-          save(prop);
-        },
-        onMove(delta) {
-          const idx = ordered.indexOf(prop);
-          const nextIdx = idx + delta;
-          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-          save(prop);
-        },
-      });
-    });
-  }
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'gallery-card-props-menu-close',
-      attr: 'data-gallery-card-props-close',
-    });
-  }
-  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
-  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: cfg.showEntryName !== false },
+    props,
+    defaultCardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : (props || []).slice(0, 4),
+    className: 'gallery-card-props-menu',
+    e2eId: 'gallery-card-props-manager',
+    save(next, detail) {
+      _setGalleryDisplayProps(dbPath, { ...cfg, ...next }, { ctx, detail });
+      renderGallery(ctx);
+    },
+  });
 }
 
 function _buildGalleryToolbar(dbPath, galleryCfg, visibleProps, activeCardProps, ctx) {
@@ -673,9 +616,6 @@ function renderGallery(ctx) {
       card.appendChild(title);
     }
 
-    // プロパティ一覧（先頭4件）
-    const propsDiv = document.createElement('div');
-    propsDiv.className = 'gallery-card-props';
     let shown = 0;
     const cardPropNames = Array.isArray(galleryCfg.cardProps)
       ? galleryCfg.cardProps.filter(propName => visibleProps.includes(propName))
@@ -684,11 +624,52 @@ function renderGallery(ctx) {
     // 補完（フィルタリングされていない全画像型列の走査・拡張子推測によるフォールバック）は行わない。
     // 有効な画像型列が複数ある場合は、列の表示順に、各列のサムネ数（cardImageThumbCount）まで
     // 個別に並べる（総数の上限は「サムネ数×有効な画像型列数」）。
-    const selectedImageCols = cardPropNames.filter(propName => propTypes[propName]?.type === 'image');
+    // 「表示列」の並び順どおりにカードへ積む（2026-11-18）。以前は画像の列を必ず先頭へ
+    // まとめていたため、設定した順番と表示がずれていた。画像以外の列が続く間は1つの枠に入れる。
+    let hasContentImage = false;
+    let propsDiv = null;
+    const currentPropsDiv = () => {
+      if (!propsDiv) {
+        propsDiv = document.createElement('div');
+        propsDiv.className = 'gallery-card-props';
+        card.appendChild(propsDiv);
+      }
+      return propsDiv;
+    };
+    const appendImageColumn = (propName) => {
+      propsDiv = null;
+      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+      const imageItems = _dbCardImageItemsFromValues(vals);
+      if (!imageItems.length) {
+        if (galleryCfg.showBodyExcerpt === true) return;
+        const empty = document.createElement('span');
+        empty.className = 'gallery-card-image-preview';
+        empty.textContent = '画像を追加';
+        _attachDbCardInlineEditor(empty, {
+          dbPath, entityName, propName, propertyConfig: propTypes[propName] || {},
+          values: entityData[propName] || [], entityData, ctx,
+        });
+        card.appendChild(empty);
+        return;
+      }
+      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
+        className: 'gallery-card-image-preview',
+        entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
+        thumbCount: galleryCfg.cardImageThumbCount,
+        columns: Math.min(2, galleryCfg.cardImageThumbCount),
+        propName,
+      }) || hasContentImage;
+    };
+    // 本文冒頭は画像が1枚も無い時だけ、トピック名の直後に出す（カンバンと同じ位置）。
+    const hasAnyImage = cardPropNames.some(propName => propTypes[propName]?.type === 'image'
+      && _dbCardImageItemsFromValues(filterValues(entityData[propName] || [], undefined, ctx?.filter)).length);
+    if (galleryCfg.showBodyExcerpt === true && !hasAnyImage) {
+      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
+    }
     for (const propName of cardPropNames) {
       // sourceプロパティ: メタデータから表示
       const ptcG = propTypes[propName];
-      if (ptcG?.type === 'image') continue; // 画像はループの外でまとめて表示する
+      if (ptcG?.type === 'image') { appendImageColumn(propName); continue; }
       let displayVal = '';
       const metadataSource = typeof _dbPropertyMetadataSource === 'function'
         ? _dbPropertyMetadataSource(ptcG)
@@ -727,39 +708,10 @@ function renderGallery(ctx) {
         dbPath, entityName, propName, propertyConfig: ptcG, values: entityData[propName] || [],
         entityData, ctx, readOnly: !!metadataSource,
       });
-      propsDiv.appendChild(propRow);
+      currentPropsDiv().appendChild(propRow);
       shown++;
     }
-    // 有効な画像型列が無ければ画像領域は表示しない。列の表示順（cardPropNames の順序）で、
-    // 各列ごとに独立したサムネブロックを追加する（列ごとに cardImageThumbCount 枚まで）。
-    let hasContentImage = false;
-    selectedImageCols.forEach(propName => {
-      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
-      const imageItems = _dbCardImageItemsFromValues(vals);
-      if (!imageItems.length) {
-        if (galleryCfg.showBodyExcerpt === true) return;
-        const empty = document.createElement('span');
-        empty.className = 'gallery-card-image-preview';
-        empty.textContent = '画像を追加';
-        _attachDbCardInlineEditor(empty, {
-          dbPath, entityName, propName, propertyConfig: propTypes[propName] || {},
-          values: entityData[propName] || [], entityData, ctx,
-        });
-        card.appendChild(empty);
-        return;
-      }
-      hasContentImage = _appendDbCardImagePreview(card, imageItems, {
-        className: 'gallery-card-image-preview',
-        entityPath: _entityPath(dbPath, entityName, ctx?.pivotData), ctx, ptc: propTypes[propName], viewType: 'gallery',
-        thumbCount: galleryCfg.cardImageThumbCount,
-        columns: Math.min(2, galleryCfg.cardImageThumbCount),
-        propName,
-      }) || hasContentImage;
-    });
-    if (galleryCfg.showBodyExcerpt === true && !hasContentImage) {
-      window.MeldexDbBodyExcerpt?.append(card, card.dataset.meldexEntityPath);
-    }
-    card.appendChild(propsDiv);
+    void hasContentImage;
 
     // リレーション表示
     const allRelations = [];
@@ -901,74 +853,17 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
 }
 
 function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
-  document.querySelectorAll('.kanban-card-props-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tl-card-props-menu kanban-card-props-menu';
-  menu.style.cssText = 'position:fixed;z-index:10000;min-width:240px;max-height:340px;overflow:auto;padding:6px;';
-  let ordered = Array.isArray(cfg.cardProps) ? [...cfg.cardProps].filter(prop => props.includes(prop)) : [];
-  let showEntryName = cfg.showEntryName !== false;
-  let showBodyExcerpt = cfg.showBodyExcerpt === true;
-  let { cardImageThumbCount, cardPropLineCount } = typeof _dbCardViewDisplayConfig === 'function'
-    ? _dbCardViewDisplayConfig(cfg)
-    : { cardImageThumbCount: 3, cardPropLineCount: 1 };
-  const save = (detail) => {
-    _setKanbanDisplayProps(dbPath, { ...cfg, cardProps: ordered, showEntryName, showBodyExcerpt, cardImageThumbCount, cardPropLineCount }, { ctx, detail });
-    renderKanban(ctx);
-  };
-  if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
-      onToggle(checked) {
-        showEntryName = checked;
-        save('トピック名');
-      },
-    });
-    if (typeof _appendDbCardDisplayControls === 'function') {
-      _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
-        cardImageThumbCount = next.cardImageThumbCount;
-        cardPropLineCount = next.cardPropLineCount;
-        save(detail);
-      });
-    }
-    _appendDbDisplayPropOption(menu, '本文冒頭', showBodyExcerpt, {
-      onToggle(checked) { showBodyExcerpt = checked; save('本文冒頭'); },
-    });
-    props.forEach(prop => {
-      _appendDbDisplayPropOption(menu, prop, ordered.includes(prop), {
-        canMoveUp: ordered.indexOf(prop) > 0,
-        canMoveDown: ordered.indexOf(prop) >= 0 && ordered.indexOf(prop) < ordered.length - 1,
-        onToggle(checked) {
-          ordered = checked ? [...ordered, prop].filter((name, idx, arr) => arr.indexOf(name) === idx) : ordered.filter(name => name !== prop);
-          save(prop);
-        },
-        onMove(delta) {
-          const idx = ordered.indexOf(prop);
-          const nextIdx = idx + delta;
-          if (idx < 0 || nextIdx < 0 || nextIdx >= ordered.length) return;
-          [ordered[idx], ordered[nextIdx]] = [ordered[nextIdx], ordered[idx]];
-          save(prop);
-        },
-      });
-    });
-  }
-  document.body.appendChild(menu);
-  if (typeof attachMeldexDropdownCloseButton === 'function') {
-    attachMeldexDropdownCloseButton(menu, {
-      trigger: anchor,
-      className: 'kanban-card-props-menu-close',
-      attr: 'data-kanban-card-props-close',
-    });
-  }
-  if (typeof _positionTimelineCardPropsMenu === 'function') _positionTimelineCardPropsMenu(menu, anchor);
-  else if (typeof positionPopup === 'function') positionPopup(menu, anchor.getBoundingClientRect());
-  setTimeout(() => {
-    const closer = (ev) => {
-      if (!menu.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('pointerdown', closer);
-      }
-    };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
+  return _showDbCardPropsManager(anchor, {
+    cfg: { ...cfg, showEntryName: cfg.showEntryName !== false },
+    props,
+    defaultCardProps: Array.isArray(cfg.cardProps) ? cfg.cardProps : _kanbanDefaultCardProps(props, cfg.groupBy),
+    className: 'kanban-card-props-menu',
+    e2eId: 'kanban-card-props-manager',
+    save(next, detail) {
+      _setKanbanDisplayProps(dbPath, { ...cfg, ...next }, { ctx, detail });
+      renderKanban(ctx);
+    },
+  });
 }
 
 function _buildKanbanToolbar(dbPath, groupByProp, visibleProps, kanbanCfg, activeCardProps, ctx) {
@@ -1110,12 +1005,16 @@ function renderKanban(ctx) {
     } else if (typeof createDbOptionColorDot === 'function' && typeof getDbOptionColor === 'function') {
       const groupPtc = propTypes[groupByProp];
       if (groupPtc && (groupPtc.type === 'select' || groupPtc.type === 'multi-select')) {
-        optionHeaderColor = getDbOptionColor(groupPtc, colKey);
+        // セル・チップと同じ解決順（書式の背景色 → 選択肢の色）。以前は選択肢の色だけを見ており、
+        // 書式で背景色を付けた選択肢のグループが無色になっていた。
+        optionHeaderColor = (typeof getDbOptionStyle === 'function' ? getDbOptionStyle(groupPtc, colKey)?.bgColor : '')
+          || getDbOptionColor(groupPtc, colKey);
         const optionDot = createDbOptionColorDot(optionHeaderColor);
         if (optionDot) { optionDot.classList.add('kanban-dot'); colHeader.appendChild(optionDot); }
       }
     }
     if (typeof applyDbOptionHeaderColor === 'function') applyDbOptionHeaderColor(colHeader, optionHeaderColor);
+    if (typeof applyDbOptionKanbanColumnColor === 'function') applyDbOptionKanbanColumnColor(col, optionHeaderColor);
     const colTitle = document.createElement('span');
     colTitle.textContent = colKey;
     colHeader.appendChild(colTitle);
@@ -1335,6 +1234,22 @@ function renderKanban(ctx) {
   container.appendChild(toolbar);
   container.appendChild(board);
 }
+
+
+// 表・カンバン・ギャラリーの描画1回の間、表示設定の読み取りを使い回す（gb-sheet-view-config.js）。
+(function wrapDbRenderersWithViewConfigMemo() {
+  if (typeof _withDbViewConfigReadMemo !== 'function') return;
+  ['renderPivot', 'renderKanban', 'renderGallery', '_renderCurrentDbView', 'loadSavedView'].forEach((name) => {
+    const inner = globalThis[name];
+    if (typeof inner !== 'function' || inner.__meldexViewConfigMemo) return;
+    const wrapped = function (...args) {
+      return _withDbViewConfigReadMemo(() => inner.apply(this, args));
+    };
+    wrapped.__meldexViewConfigMemo = true;
+    wrapped.__meldexInner = inner;
+    globalThis[name] = wrapped;
+  });
+})();
 
 /* ==============================
    タイムラインビュー

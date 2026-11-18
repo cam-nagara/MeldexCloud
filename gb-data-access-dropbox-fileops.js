@@ -4,6 +4,8 @@ __loadSplitScript('gb-data-access-dropbox-fileops.js', [
   'gb-data-access-dropbox-fileops.part01.js',
   'gb-data-access-dropbox-folder-links.js',
   'gb-data-access-dropbox-fileops.part02.js',
+  'gb-data-access-dropbox-fileops-file-revision.js',
+  'gb-data-access-dropbox-fileops-copy-routes.js',
   'gb-data-access-dropbox-fileops-move-route.js',
   'gb-data-access-dropbox-fileops-identity-claims.js',
   'gb-data-access-dropbox-fileops-trash-routes.js',

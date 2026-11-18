@@ -849,7 +849,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     resizer.setAttribute('role', 'separator');
     resizer.setAttribute('aria-orientation', 'vertical');
     resizer.setAttribute('aria-label', `${label || '列'}の幅を調整`);
-    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す';
+    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す／右クリックで数値指定';
     const colFor = () => table.querySelector(`:scope > colgroup > col[data-role-col-key="${MeldexEscape.cssIdent(key)}"]`);
     const clamp = width => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(width)));
     // 見出しのクリック（書式の一括設定）へ伝わらないようにする。
@@ -889,6 +889,52 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     if (!colFor()) return;
     header.appendChild(resizer);
+    // 見出し（境界線を含む）の右クリック・メニューキーで「列幅を数値指定...」を出す。
+    // 見出しメニューを持たない列にも数値指定の入口を用意するため、共通の右クリックメニューを使う。
+    const suffix = String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-');
+    header.addEventListener('contextmenu', event => {
+      if (!window.MeldexContextMenuUI?.openAt) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = header.getBoundingClientRect();
+      const fromPointer = event.clientX > 0 || event.clientY > 0;
+      window.MeldexContextMenuUI.openAt({
+        ...(fromPointer ? { x: event.clientX, y: event.clientY } : { anchorRect: rect }),
+        ariaLabel: `${label || '列'}列メニュー`,
+        e2eId: `scriptnote-${kind}-column-menu-${suffix}`,
+        restoreFocus: header.tabIndex >= 0 ? header : null,
+        items: [{
+          label: '列幅を数値指定...',
+          icon: 'ruler',
+          e2eId: `scriptnote-${kind}-column-width-${suffix}`,
+          action: () => this._showRoleManagementColumnWidthDialog(header, table, kind, key, label),
+        }],
+      });
+    });
+  },
+
+  // タイプ表・キャラ表の列幅を数値で指定する。保存先はドラッグと同じ列幅記憶。
+  _showRoleManagementColumnWidthDialog(header, table, kind, key, label = '') {
+    const MIN_WIDTH = 28;
+    const MAX_WIDTH = 640;
+    const stored = Number(this._roleManagementColumnWidthStore()[`${kind}:${key}`]);
+    const current = Number.isFinite(stored) && stored > 0
+      ? stored
+      : Math.round(header?.getBoundingClientRect?.().width || 0);
+    return this._showScriptNoteColumnWidthModal({
+      targetLabel: label,
+      current,
+      min: MIN_WIDTH,
+      max: MAX_WIDTH,
+      returnFocus: header?.tabIndex >= 0 ? header : null,
+      onApply: (width) => {
+        this._saveRoleManagementColumnWidth(kind, key, width);
+        // ダイアログ表示中に表が描き直されても、表示中の同種の表すべてへ反映する。
+        const tables = new Set([table, ...document.querySelectorAll(`table[data-role-management-kind="${MeldexEscape.cssIdent(kind)}"]`)]);
+        tables.forEach(target => { if (target?.isConnected) this._applyRoleManagementColumnWidths(target, kind); });
+        return true;
+      },
+    });
   },
 
   _showTypeManagementSettingsMenu(anchor, type, panelContainer) {
@@ -1468,18 +1514,20 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _showCharacterNameStylePopup(anchor, character, adapter, panelContainer) {
     if (typeof openFormatPopup !== 'function') return;
-    character.roleStyle = character.roleStyle && typeof character.roleStyle === 'object'
-      ? character.roleStyle : {};
-    const style = character.roleStyle;
+    // 開いただけでは文書を書き換えない（空の書式を作るのは実際に変更した時だけ）。
+    const currentStyle = () => (character.roleStyle && typeof character.roleStyle === 'object' ? character.roleStyle : null);
+    const ensureStyle = () => currentStyle() || (character.roleStyle = {});
+    const initial = currentStyle() || {};
     openFormatPopup(anchor, {
       values: {
-        bgColor: style.bgColor || '',
-        textColor: style.textColor || character.nameColor || '',
+        bgColor: initial.bgColor || '',
+        textColor: initial.textColor || character.nameColor || '',
       },
       fields: ['bgColor', 'textColor'],
       className: 'gb-fmt-popup--character-name-style',
       onChange: (prop, value) => {
         this._pushUndo('キャラ名書式変更');
+        const style = ensureStyle();
         if (value === '' || value == null) delete style[prop];
         else style[prop] = value;
         if (prop === 'textColor') character.nameColor = value || '';
@@ -1490,8 +1538,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       },
       onReset: () => {
         this._pushUndo('キャラ名書式リセット');
-        delete style.bgColor;
-        delete style.textColor;
+        const style = currentStyle();
+        if (style) {
+          delete style.bgColor;
+          delete style.textColor;
+        }
         character.nameColor = '';
         adapter.touch();
         this._refreshRowStyles();

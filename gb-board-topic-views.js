@@ -99,7 +99,10 @@
       const view = ref.surface === 'board'
         ? result.boardViews.find(item => item.boardViewId === ref.viewId)
         : result.sheetViews.find(item => item.viewId === ref.viewId);
-      return view ? { ...clone(ref), view: clone(view), name: view.name, viewMode: view.viewMode || ref.surface } : null;
+      return view ? {
+        ...clone(ref), view: clone(view), name: view.name, viewMode: view.viewMode || ref.surface,
+        icon: typeof view.icon === 'string' ? view.icon : '',
+      } : null;
     }).filter(Boolean);
   }
 
@@ -148,6 +151,17 @@
     if (!nextName) throw new TypeError('View name is required');
     if (list.some(item => item !== view && String(item.name || '').trim() === nextName)) throw new Error('同じ名前のビューがあります');
     view.name = nextName; return result;
+  }
+
+  // ビューのアイコン（利用者が選んだもの）を保存する。spec が空なら既定（ビュー種別のアイコン）へ戻す。
+  // 旧版は icon を知らないので読み飛ばす（追加フィールド）。
+  function setMixedViewIcon(document, ref, spec) {
+    const { document: result, view } = findMixedView(document, ref);
+    if (!view) throw new RangeError('View was not found');
+    const next = typeof spec === 'string' ? spec.trim() : '';
+    if (next) view.icon = next;
+    else delete view.icon;
+    return result;
   }
 
   function reorderMixedView(document, ref, toIndex) {
@@ -303,6 +317,7 @@
       reorderMixed: (ref, index) => commit('ビューを並べ替え', (doc) => reorderMixedView(doc, ref, index)),
       removeMixed: (ref) => commit('ビューを削除', (doc) => removeMixedView(doc, ref)),
       duplicateMixed: (ref, value) => commit('ビューを複製', (doc) => duplicateMixedView(doc, ref, value)),
+      setIconMixed: (ref, spec) => commit('ビューのアイコンを変更', (doc) => setMixedViewIcon(doc, ref, spec)),
     });
   }
 
@@ -425,13 +440,16 @@
       if (settings.setActiveViewRef) settings.setActiveViewRef(clone(ref));
       else if (ref.surface === 'board') settings.setActiveBoardViewId?.(ref.viewId);
     };
-    const iconHtml = (surface, viewMode) => {
+    const iconHtml = (surface, viewMode, customIcon) => {
       const icons = {
         board: 'presentation', pivot: 'table', tree: 'listTree', gallery: 'layoutGrid',
         kanban: 'columns', calendar: 'calendar', timeline: 'clock', gantt: 'ganttChart', chart: 'barChart2',
         graph: 'gitBranch', form: 'clipboardList',
       };
       const icon = surface === 'board' ? icons.board : (icons[viewMode] || icons.pivot);
+      if (global.MeldexViewTabs && typeof global.MeldexViewTabs.renderIcon === 'function') {
+        return global.MeldexViewTabs.renderIcon(customIcon, icon, 12);
+      }
       return typeof global.lucide === 'function' ? global.lucide(icon, 12) : '';
     };
     // タブの横スクロール領域からメニューをtop layerへ出して、切り取りを防ぐ。
@@ -495,7 +513,7 @@
         option.selected = selected; select.appendChild(option);
         const label = document.createElement('button'); label.type = 'button'; label.className = 'view-tab-label';
         label.dataset.e2eId = `board-common-view-label-${refToken}`;
-        label.innerHTML = iconHtml(ref.surface, entry.viewMode);
+        label.innerHTML = iconHtml(ref.surface, entry.viewMode, entry.icon);
         const labelText = document.createElement('span');
         labelText.textContent = String(entry.name || (ref.surface === 'board' ? 'ボード' : 'シート'));
         label.appendChild(labelText);
@@ -538,6 +556,13 @@
         };
         action('名前を変更', () => beginRename(tab, ref, entry.name), false, 'rename', false);
         action('複製', () => controller.duplicateMixed(ref), false, 'duplicate');
+        if (typeof controller.setIconMixed === 'function' && global.MeldexViewTabs?.openIconPicker) {
+          action('アイコンを変更', () => global.MeldexViewTabs.openIconPicker({
+            anchorEl: tab.isConnected ? tab : root,
+            current: entry.icon || '',
+            onChange: spec => runViewAction('アイコンを変更', () => controller.setIconMixed(ref, spec)).then(() => refresh()),
+          }), false, 'icon', false);
+        }
         separator();
         action('左へ移動', () => controller.reorderMixed(ref, index - 1), index <= 0, 'previous');
         action('右へ移動', () => controller.reorderMixed(ref, index + 1), index >= ordered.length - 1, 'next');
@@ -547,18 +572,6 @@
         label.addEventListener('contextmenu', event => { event.preventDefault(); menu.open = true; });
         label.addEventListener('pointerdown', () => { longPress = setTimeout(() => { menu.open = true; }, 550); });
         ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => label.addEventListener(type, () => clearTimeout(longPress)));
-        tab.addEventListener('dragstart', event => event.dataTransfer?.setData('text/meldex-view-ref', JSON.stringify(ref)));
-        tab.addEventListener('dragover', event => { if (!settings.readOnly) event.preventDefault(); });
-        tab.addEventListener('drop', event => {
-          if (settings.readOnly) return;
-          const payload = event.dataTransfer?.getData('text/meldex-view-ref') || '';
-          if (!payload) return; // ビュー以外のドロップは対象外
-          event.preventDefault();
-          let dropped = null;
-          try { dropped = JSON.parse(payload); }
-          catch (error) { reportViewActionFailure('ビューの並べ替え', error); refresh(); return; }
-          runViewAction('ビューの並べ替え', () => controller.reorderMixed(dropped, index)).then(() => refresh());
-        });
         tab.appendChild(label); tab.appendChild(menu); tabs.appendChild(tab);
       });
       const add = document.createElement('details'); add.className = 'bd-topic-view-overflow bd-common-view-add';
@@ -587,6 +600,19 @@
       root.insertBefore(add, select.nextSibling);
       addElement = add;
     };
+    // 並べ替えのドラッグ操作とドロップ位置の表示は共通部品（メインパネルのタブと同じ縦線）。
+    // タブ列全体で受けるので、最後のタブの後ろへも置ける。
+    global.MeldexViewTabs?.bindReorder?.(tabs, {
+      itemSelector: ':scope > .bd-common-view-tab',
+      dataType: 'text/meldex-view-ref',
+      readOnly: () => settings.readOnly === true,
+      onMove: (fromIndex, toIndex) => {
+        const entry = orderedViews(normalizeDocument(settings.getDocument()))[fromIndex];
+        if (!entry) return;
+        runViewAction('ビューの並べ替え', () => controller.reorderMixed({ surface: entry.surface, viewId: entry.viewId }, toIndex))
+          .then(() => refresh());
+      },
+    });
     select.addEventListener('change', () => {
       const entry = orderedViews(normalizeDocument(settings.getDocument()))[Number(select.value)];
       if (!entry) return;
@@ -598,7 +624,7 @@
 
   global.MeldexBoardTopicViews = Object.freeze({
     normalizeDocument, addView, renameView, reorderView, removeView, duplicateView,
-    orderedViews, addSheetView, renameMixedView, reorderMixedView, removeMixedView, duplicateMixedView,
+    orderedViews, addSheetView, renameMixedView, reorderMixedView, removeMixedView, duplicateMixedView, setMixedViewIcon,
     captureViewState, applyViewState, createController, attachToolbar,
   });
 }(typeof globalThis !== 'undefined' ? globalThis : window));

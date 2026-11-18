@@ -292,7 +292,7 @@ async function renderChatHistory() {
       const targetInfo = item.title && targetName && item.title !== targetName
         ? `<div style="margin-top:3px;font-size:10px;color:var(--fg2);display:flex;align-items:center;gap:4px;">${lucide('fileText', 10)} <span>${esc(targetName)}</span></div>`
         : '';
-      const msgCount = item.messageCount ? `<span style="font-size:10px;color:var(--fg2);">${item.messageCount}件</span>` : '';
+      const msgCount = item.messageCount ? `<span style="font-size:10px;color:var(--fg2);">${Number(item.messageCount) || 0}件</span>` : '';
       const modifiedLabel = _chatFormatHistoryModifiedTimestamp(item.modified);
       const modifiedInfo = modifiedLabel
         ? `<div data-chat-history-modified style="margin-top:3px;font-size:10px;color:var(--fg2);">最終更新 ${esc(modifiedLabel)}</div>`

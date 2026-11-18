@@ -5,6 +5,13 @@ class FormAppComponent extends ToolComponent {
     this.el.className = 'gb-form-app';
     this.el.setAttribute('aria-label', 'フォーム');
     this.el.dataset.e2eId = 'form-app';
+    this.el._gbFormApp = this;
+    this.el.addEventListener('focusin', event => {
+      const field = event.target?.closest?.('[data-form-field]')?.dataset?.formField || '';
+      if (!field || field === this._selectedField) return;
+      this._selectedField = field;
+      this._renderFieldInspector();
+    });
     this._draftOwner = globalThis.crypto?.randomUUID?.() || _elGenId('form-draft');
     this.el.addEventListener('keydown', event => {
       if (this.handleKeyDown(event)) { event.preventDefault(); event.stopPropagation(); }
@@ -19,8 +26,15 @@ class FormAppComponent extends ToolComponent {
     window.addEventListener('beforeunload', this._beforeUnload);
     return this.el;
   }
-  _historyScope() { return this._embedded ? 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath) : ''; }
-  _tab() { return GBLayout.findNode(GBLayout.root, this.paneId)?.node?.tabs?.find(tab => tab.id === this.tabId); }
+  // 単独で開いたフォームも、ファイルごとの履歴範囲を持つ（共通履歴へ積むと別ファイルのCtrl+Zで戻ってしまう）。
+  // 形式は共通の解決表 _meldexFormAppTabHistoryScope と一致させる。
+  _historyScope() {
+    if (this._embedded) return 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath);
+    const path = String(this.path || this._tab()?.path || this.state.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    return path ? 'form-app:' + path : '';
+  }
+  // サブパネル等のレイアウト外の仮想ペインでも自分のタブを見つける。
+  _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
     this._syncDetailPanel();
@@ -504,12 +518,15 @@ class FormAppComponent extends ToolComponent {
       return button;
     };
     const menu = iconButton('メニュー', 'menu', event => showToolMenu(event, 'form-app', this));
+    if (typeof toolbarAppIconElement === 'function') bar.appendChild(toolbarAppIconElement('form-app'));
     menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-haspopup', 'menu'); bar.appendChild(menu);
     bar.appendChild(iconButton('フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('form-app', event)));
     this.titleElement = document.createElement('span');
     this.titleElement.className = 'tb-title tb-file-title';
     this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
     this.titleElement.title = this.titleElement.textContent;
+    const fileIcon = window.MeldexFileIcons?.toolbarIconHtml?.('form-app');
+    if (fileIcon) bar.insertAdjacentHTML('beforeend', fileIcon);
     bar.appendChild(this.titleElement);
     const separator = document.createElement('div'); separator.className = 'sep'; bar.appendChild(separator);
     const source = document.createElement('label'); source.className = 'gb-form-source-sheet'; source.textContent = '参照先シート';
@@ -557,8 +574,21 @@ class FormAppComponent extends ToolComponent {
     this.surface = document.createElement('div'); this.surface.className = 'form-view gb-form-app-surface'; this.el.appendChild(this.surface);
     if (this.sheetError || !this.ctx.dbPath) {
       const hint = document.createElement('p'); hint.textContent = this.sheetError || '入力先のシートを選択してください。入力したトピックはシートへ保存され、配置と入力設定はこのフォームに保存されます。'; this.surface.appendChild(hint);
-    } else renderDbFormView(this.ctx);
+    } else {
+      const rendered = renderDbFormView(this.ctx);
+      Promise.resolve(rendered).then(() => window.CommentBadges?.refreshForm?.(this)).catch(() => {});
+    }
     this._changed();
+  }
+  // アノテート一覧からフォームの項目へ移動する。
+  revealAnnotationTarget(ref = {}) {
+    const field = ref.field;
+    if (!field) return false;
+    const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
+    if (!target) return false;
+    target.scrollIntoView?.({ block: 'center' });
+    target.querySelector('input,textarea,select,[tabindex]')?.focus?.({ preventScroll: true });
+    return true;
   }
   async flush() {
     this._commitFocusedControl();
@@ -579,9 +609,62 @@ class FormAppComponent extends ToolComponent {
   }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.formPath;
-    if (!path || this._embedded || this.paneId !== GBLayout.activePane) return;
-    if (typeof _syncDetailPanel === 'function') return _syncDetailPanel(this.state.label || 'フォーム', path, 'form-app');
+    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
+    if (!path) { window.GBOptionTargetContext?.clear?.('form-new'); return; }
+    if (typeof _syncDetailPanel === 'function') {
+      return Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
+        this._renderFieldInspector();
+        if (this.paneId === GBLayout.activePane && typeof switchDetailTab === 'function' && typeof _resolveDetailTabForType === 'function') {
+          // 利用者が別のタブ（プロパティ等）を選んでいる時は切り替えない。何も選ばれていない時か、表示されないタブの時だけ。
+          const current = typeof _currentDetailTab !== 'undefined' ? _currentDetailTab : null;
+          const currentButton = current ? document.querySelector(`[data-detail-tab="${current}"]`) : null;
+          if (!current || (currentButton && currentButton.hidden)) switchDetailTab(_resolveDetailTabForType('form-app', 'form-field'));
+        }
+        return result;
+      });
+    }
     window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
+  }
+  // オプションパネルの「項目」タブ: 選択中（入力中）の項目の設定と操作を出す。
+  _renderFieldInspector() {
+    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    const root = document.getElementById('detail-tab-form-field');
+    if (!root) return;
+    root.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = '選択項目'; root.appendChild(title);
+    const field = this._selectedField;
+    const layout = this.getLayout?.();
+    const config = layout && globalThis.MeldexDbFormModel?.forLayout ? MeldexDbFormModel.forLayout(layout) : null;
+    if (!field || !config?.fields?.includes(field)) {
+      const hint = document.createElement('p'); hint.textContent = '項目を選ぶと設定と操作が出ます。'; root.appendChild(hint);
+      return;
+    }
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(this.ctx?.dbPath, this.ctx) || {} : {};
+    const rule = MeldexDbFormModel.ruleFor?.(config, field, typeof getValidationRules === 'function' ? getValidationRules(this.ctx?.dbPath) : []) || {};
+    const rows = [
+      ['列', field],
+      ['表示名', config.labels?.[field] || field],
+      ['列タイプ', typeof getPropertyTypeLabel === 'function' ? getPropertyTypeLabel(types[field]?.type || 'text') : (types[field]?.type || 'text')],
+      ['入力必須', rule.required ? 'はい' : 'いいえ'],
+      ['参照先シート', this.ctx?.dbMetadata?.display_title || String(this.ctx?.dbPath || '').split(/[\\/]/).pop() || '未選択'],
+    ];
+    const list = document.createElement('dl'); list.className = 'gb-form-field-inspector';
+    for (const [name, value] of rows) {
+      const dt = document.createElement('dt'); dt.textContent = name;
+      const dd = document.createElement('dd'); dd.textContent = value;
+      list.append(dt, dd);
+    }
+    root.appendChild(list);
+    const annotate = this._button('アノテートを追加', event => {
+      const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
+      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget });
+    });
+    annotate.dataset.e2eId = 'form-field-add-annotation';
+    root.appendChild(annotate);
+    const design = this._button('配置を編集', () => this._design());
+    design.disabled = this.definitionReadOnly || !layout;
+    root.appendChild(design);
   }
   saveDefinition() {
     this._commitFocusedControl();

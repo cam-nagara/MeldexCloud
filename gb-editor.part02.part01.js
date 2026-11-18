@@ -4,7 +4,7 @@ function updateNoteToc(editor) {
     : window.GBEditorHost?.element('note-toc') || document.getElementById('note-toc');
   if (!pc || !toc) return;
 
-  const mobileClose = '<button type="button" class="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
+  const mobileClose = '<button type="button" class="note-toc-mobile-close" data-e2e-id="note-toc-mobile-close" aria-label="目次を閉じる" title="目次を閉じる">×</button>';
   const bindMobileClose = () => {
     toc.querySelector('.note-toc-mobile-close')?.addEventListener('click', () => {
       if (typeof toggleNoteToc === 'function') toggleNoteToc();

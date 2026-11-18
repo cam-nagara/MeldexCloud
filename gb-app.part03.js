@@ -1326,11 +1326,34 @@ function _isHeartbeatCloudMode() {
     || document.body?.dataset?.cloudMode === 'browser';
 }
 
+// クイックメモ・Xブックマーク・Xアカウントの保存先シートへ、選んだシートテンプレートを
+// 適用する（保存の完了は本体の定期確認で受け取る）。適用済みのシートは記録で飛ばされる。
+let _importSheetChangesRevision = null;
+function _applyImportSheetChangeTemplates(state) {
+  const revision = typeof state?.revision === 'string' ? state.revision : '';
+  if (!revision || revision === _importSheetChangesRevision) return;
+  const applyMany = window.MeldexImportSheetTemplates?.applyMany;
+  if (typeof applyMany !== 'function') return;
+  _importSheetChangesRevision = revision;
+  const byImporter = new Map();
+  (Array.isArray(state.items) ? state.items : []).forEach(item => {
+    if (!item?.importer || !item?.path) return;
+    if (!byImporter.has(item.importer)) byImporter.set(item.importer, []);
+    byImporter.get(item.importer).push(item.path);
+  });
+  byImporter.forEach((paths, importer) => {
+    Promise.resolve(applyMany(importer, paths)).catch(error => {
+      console.warn('[Meldex] インポート先シートへテンプレートを適用できませんでした', importer, error);
+    });
+  });
+}
+
 function _sendHeartbeat() {
   if (_heartbeatInFlight) return _heartbeatInFlight;
   _heartbeatInFlight = fetch('/api/heartbeat', { method: 'POST' })
     .then(response => response.ok ? response.json() : null)
     .then(async data => {
+      _applyImportSheetChangeTemplates(data?.import_sheet_changes);
       const revision = data?.webclip_directory_revision;
       if (typeof revision !== 'string') return;
       const changedSheetPaths = Array.isArray(data?.webclip_changed_sheet_paths)

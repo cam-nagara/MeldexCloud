@@ -30,13 +30,23 @@ function _sn2NormalizeViewFilter(filter) {
   return { visible, hidden, visibleStatuses, hiddenStatuses };
 }
 
+// 利用者が選んだビューのアイコン（GBIconAssets の指定）。未設定・不正値は '' = 既定アイコン。
+function _sn2NormalizeViewIcon(value) {
+  if (typeof value !== 'string') return '';
+  const spec = value.trim();
+  return spec && spec.length <= 1024 ? spec : '';
+}
+
 function _sn2NormalizeView(view, index) {
   const source = view && typeof view === 'object' ? view : {};
+  const icon = _sn2NormalizeViewIcon(source.icon);
   return {
     id: String(source.id || (index === 0 ? SN2_VIEW_ALL_ID : _sn2NewViewId())),
     name: String(source.name || '').trim() || (index === 0 ? 'すべて' : `ビュー${index + 1}`),
     filter: _sn2NormalizeViewFilter(source.filter),
     editUnit: source.editUnit === 'page' ? 'page' : 'row',
+    // 追加フィールド（旧版は読み飛ばす）。未設定の時は書かない。
+    ...(icon ? { icon } : {}),
   };
 }
 
@@ -233,6 +243,21 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
   },
 
+  // ビューのアイコンを変える（spec='' で既定に戻す）。文書の取り消し履歴と保存に載せる。
+  _setScenarioViewIcon(viewId, spec) {
+    const view = this._ensureScenarioViews().find(item => item.id === viewId);
+    if (!view) return false;
+    const next = _sn2NormalizeViewIcon(typeof MeldexViewTabs !== 'undefined' && MeldexViewTabs.normalizeIconSpec
+      ? MeldexViewTabs.normalizeIconSpec(spec) : spec);
+    if ((view.icon || '') === next) return false;
+    return this._mutateScenarioViews('ビューのアイコン変更', views => {
+      const target = views.find(item => item.id === viewId);
+      if (!target) return;
+      if (next) target.icon = next;
+      else delete target.icon;
+    }) !== false;
+  },
+
   // タイプ・キャラの改名に合わせて、各ビューの絞り込み条件の名前も付け替える。
   _renameScenarioViewRoles(renamed) {
     if (!(renamed instanceof Map) || !renamed.size || !Array.isArray(this.doc?.views)) return;
@@ -263,6 +288,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           id: view.id,
           name: view.name,
           icon: view.editUnit === 'page' ? 'bookOpen' : (view.filter ? 'funnel' : 'table'),
+          customIcon: view.icon || '',
         })),
         getActiveId: () => this._activeScenarioView()?.id,
         onActivate: id => this._activateScenarioView(id),
@@ -270,6 +296,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         onDuplicate: id => this._duplicateScenarioView(id),
         onMove: (id, index) => this._moveScenarioView(id, index),
         onDelete: id => this._deleteScenarioView(id),
+        onChangeIcon: (id, spec) => this._setScenarioViewIcon(id, spec),
         viewMenuItems: view => {
           const current = this._ensureScenarioViews().find(item => item.id === view.id);
           return [

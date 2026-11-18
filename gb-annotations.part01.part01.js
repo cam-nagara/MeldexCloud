@@ -205,7 +205,7 @@ let _overlayVisible = true;
 const _ANNOTATION_TARGET_VIEW_TYPES = new Set([
   'entity', 'page', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline',
   'chart', 'graph', 'form', 'compare', 'board', 'folder',
-  'media', 'html', 'csv', 'scriptnote', 'calendar',
+  'media', 'html', 'csv', 'scriptnote', 'calendar', 'form-app', 'map',
 ]);
 const _ANNOTATION_DB_VIEW_TYPES = new Set([
   'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
@@ -413,6 +413,12 @@ function toggleAnnotationToolbar() {
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-tb-annotation');
   const isVisible = toolbar.classList.contains('visible');
+  // マップは移動・拡大で画面上の描き込みがずれるため、描画ツールではなく地点・図形（無ければ地図全体）へのコメントを付ける。
+  if (!isVisible && _getAnnotationViewName() === 'map') {
+    const mapTab = _getActiveAnnotationTab();
+    const mapApp = mapTab && typeof getComponentInstance === 'function' ? getComponentInstance(mapTab.id) : null;
+    if (mapApp?.addAnnotation?.()) return;
+  }
   const embedded = _usesEmbeddedAnnotationSurface(_getAnnotationViewName());
   if (isVisible) {
     closeAnnotationToolbar();
@@ -1019,6 +1025,8 @@ function getAnnotationTarget() {
     if (path) return path;
   }
   if (viewName === 'calendar') return 'calendar:panel';
+  if (viewName === 'map') return tabPath('mapPath');
+  if (viewName === 'form-app') return tabPath('formPath');
   if (viewName === 'html') return tabPath('mediaPath', 'pagePath') || statePath('currentPagePath') || document.getElementById('html-url-bar')?.value || 'viewer';
   if (viewName === 'compare') {
     const left = activeTab?.state?.pathA || activeTab?.state?.leftPath || '';

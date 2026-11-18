@@ -1,3 +1,54 @@
+    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
+  }
+}
+
+// 追加先の親パスを決定
+// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
+// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
+function _outlinerContainerAcceptsItemType(nodeData, itemType) {
+  if (nodeData?.type !== 'database') return true;
+  return String(itemType || '') === 'entity';
+}
+
+// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
+// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
+function _outlinerItemFitsInSheet(nodeData) {
+  return window.MeldexSheetAttachments?.itemFitsInSheet
+    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
+    : true;
+}
+
+function getAddParentPath(nodeEl, nodeData, options = {}) {
+  const isContainer = nodeData.type === 'folder'
+    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
+  if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
+  if (nodeData._form_parent_path) {
+    const path = String(nodeData.path || '').replace(/\\/g, '/');
+    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
+  }
+  if (nodeData._isRoot && nodeData.path) return nodeData.path;
+  if (isContainer) {
+    // フォルダ/DBが展開中ならその中、閉じているなら同階層
+    const toggle = nodeEl.querySelector('.tree-toggle');
+    if (toggle && toggle.dataset.expanded === 'true') return nodeData.path;
+  }
+  // ファイルやエントリ、閉じたフォルダ → 親フォルダのパス
+  const parentContainer = nodeEl.parentElement;
+  const parentNode = parentContainer?.closest('.tree-node');
+  if (parentNode && parentNode._nodeData) return parentNode._nodeData.path;
+  // ホーム内のルート直下ノード → ホームフォルダパスを返す
+  if (nodeEl.closest('#body-home') && _homeFolderPath) return _homeFolderPath;
+  return ''; // ソースフォルダルート
+}
+
+// 選択中の全ノードに色を適用
+function applyColorToSelection(color) {
+  const before = captureOutlinerSettingsHistory([NODE_COLORS_KEY]);
+  const detail = [...treeSelection.items]
+    .map(nodeEl => nodeEl._nodeData?.path || nodeEl._nodeData?.name || '')
+    .filter(Boolean)
+    .join(', ');
+  treeSelection.items.forEach(nodeEl => {
     const data = nodeEl._nodeData;
     if (!data) return;
     const row = nodeEl.querySelector('.tree-node-row');
@@ -847,53 +898,3 @@ function _outlinerKeyboardSelectNode(nodeEl) {
 // Enter／メニュー「開く」と同じ共通アクティベーション経路を使う
 function _outlinerKeyboardActivateNode(nodeEl) {
   const row = _outlinerKeyboardRow(nodeEl);
-  if (!nodeEl || !row) return false;
-  const focusSeq = ++_outlinerKeyboardFocusSeq;
-  try {
-    const opened = window.GBOutlinerActivation?.activateNode(nodeEl);
-    Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
-  } catch (err) {
-    _outlinerKeyboardRestoreFocus(row, focusSeq);
-    throw err;
-  }
-  return true;
-}
-
-// F2: 名前変更開始（ダブルクリックの旧割当はここへ移動済み）
-function _outlinerKeyboardStartRename(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  const label = row?.querySelector(':scope > .tree-label');
-  const item = nodeEl?._nodeData;
-  if (!row || !label || !item) return false;
-  return window.GBOutlinerActivation?.startRenameForNode(nodeEl, label, item) || false;
-}
-
-function _outlinerKeyboardScopeFromTarget(target) {
-  if (target?.closest?.('#body-home')) return '#body-home';
-  if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-  if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-  if (target?.id === 'tree-scroll-container') return '#outliner-tree';
-  return '';
-}
-
-function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
-  const direct = target?.closest?.('.tree-node') || null;
-  if (direct && (!scopeSelector || direct.closest(scopeSelector))) return direct;
-  if (treeSelection.lastClicked && (!scopeSelector || treeSelection.lastClicked.closest(scopeSelector))) return treeSelection.lastClicked;
-  const activeRow = document.querySelector(`${scopeSelector || '#outliner-tree'} .tree-node-row.active`);
-  return activeRow?.closest?.('.tree-node') || null;
-}
-
-function _outlinerKeyboardToggle(nodeEl, expand) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  if (!toggle || toggle.dataset.expanded === undefined) return false;
-  const expanded = toggle.dataset.expanded === 'true';
-  if (expand === true && !expanded) { toggle.click(); return true; }
-  if (expand === false && expanded) { toggle.click(); return true; }
-  return false;
-}
-
-function _outlinerKeyboardIsExpandable(nodeEl) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  return !!toggle && toggle.dataset.expanded !== undefined;
-}

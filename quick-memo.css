@@ -398,6 +398,7 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 #widthInput { width: 90px; }
 
 .qm-surface {
+  position: relative;
   flex: 1 1 0;
   min-height: 160px;
   display: flex;
@@ -438,8 +439,62 @@ button:disabled { cursor: default; opacity: .42; border-color: transparent; box-
 .qm-attachment-preview[hidden] { display: none; }
 .qm-attachment-preview img, .qm-attachment-preview video { display: block; max-width: 100%; max-height: 160px; margin: 0 auto 8px; }
 .qm-attachment-preview audio { display: block; width: 100%; }
-body[data-memo-mode="pen"] .qm-editor,
-body[data-memo-mode="voice"] .qm-editor { flex: 0 1 30%; min-height: 60px; }
+/* ペン・ボイス・画像・動画の添え書き欄: 本文欄（html）を5行分の高さで下端へ置く。
+   保存形式は本文と同じで、描画・音声・添付と一緒に保存される。下端の＋と保存ボタンに
+   重ならないよう、その分だけ下を空ける。 */
+body:not([data-memo-mode="text"]) .qm-editor {
+  order: 1;
+  flex: 0 1 auto;
+  height: calc(1.7em * 5 + 18px);
+  min-height: calc(1.7em * 2 + 18px);
+  margin: auto 6px calc(var(--qm-create-clearance) - 12px);
+  padding: 8px 10px;
+  scroll-padding-bottom: 0;
+  border: 1px solid var(--ui-border, var(--qm-border));
+  border-radius: var(--ui-radius-md, 6px);
+  background: var(--qm-bg);
+}
+body:not([data-memo-mode="text"]) .qm-editor:focus-visible { outline-offset: -1px; }
+body[data-memo-mode="pen"] .qm-canvas { min-height: 96px; }
+body[data-memo-mode="voice"] .qm-voice { flex: 1 1 0; }
+/* 録音中の文字起こしは本文欄（添え書き欄）へ直接入るため、同じ文の二重表示をしない。 */
+body[data-memo-mode="voice"] .qm-voice-transcript { display: none; }
+/* 画像・動画は上の一覧に表示するので、本文欄の中では隠して文字だけを見せる。 */
+body[data-memo-mode="image"] .qm-editor :is(img, video),
+body[data-memo-mode="video"] .qm-editor :is(img, video) { display: none; }
+body[data-memo-mode="image"] .qm-editor p:has(> :is(img, video)),
+body[data-memo-mode="video"] .qm-editor p:has(> :is(img, video)) { margin: 0; }
+body[data-memo-mode="image"] .qm-editor[data-caption-empty="1"]::before,
+body[data-memo-mode="video"] .qm-editor[data-caption-empty="1"]::before { content: attr(data-placeholder); color: var(--qm-muted); }
+body[data-memo-mode="image"] .qm-attachment-preview,
+body[data-memo-mode="video"] .qm-attachment-preview { flex: 1 1 auto; max-height: none; }
+/* ペン・消しゴムのサイズ円（quick-memo-drawing.js）。直径は線幅の実寸。 */
+.qm-brush-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  border: 1px solid rgb(255 255 255 / 90%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 65%), inset 0 0 0 1px rgb(0 0 0 / 35%);
+  pointer-events: none;
+  will-change: transform;
+}
+.qm-brush-cursor[hidden] { display: none; }
+.qm-brush-cursor::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 2px;
+  margin: -1px 0 0 -1px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 65%);
+}
+.qm-brush-cursor[data-tool="eraser"] { border-style: dashed; }
+.qm-brush-cursor[data-tool="resize"] { border-color: var(--qm-accent); }
 .qm-save-wrap { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 10010; }
 .qm-complete-button { display: flex; align-items: center; justify-content: center; gap: 6px; height: var(--ui-h-touch, 44px); min-width: 80px; padding: 0 var(--ui-space-6, 16px); border-radius: 24px; background: var(--qm-blue); color: var(--ui-accent-fg, var(--qm-fg)); }
 .qm-save-dialog { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; min-width: 200px; max-width: calc(100vw - 32px); border: 1px solid var(--qm-border); border-radius: var(--ui-dialog-radius, 6px); padding: 20px; background: var(--qm-panel); color: var(--qm-fg); text-align: center; }

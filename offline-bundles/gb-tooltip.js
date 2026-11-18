@@ -87,13 +87,13 @@
     '.cell-number',
     '.relation-link'
   ];
+  // シートのセル入力と候補一覧だけを対象にする。右クリックメニューや選択時の
+  // 一括操作バーはアイコンだけのボタンを含むため、ここへ入れない（入れると説明が出なくなる）。
   const TRANSIENT_TOOLTIP_EXCLUDE_SELECTORS = [
     '.status-dropdown',
     '.cell-inline-dd',
     '.user-dropdown',
-    '.gb-context-menu:not(.chat-generation-settings-menu):not(.gb-icon-picker)',
     '.db-picker-popup',
-    '.gb-selection-float-bar',
     '.value-input',
     '.cell-inline-input',
     '.cell-date-editor'

@@ -34,9 +34,13 @@
   min-width: 0;
   max-width: 128px;
   margin: 0 !important;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 項目名は省略せず128px幅の中で折り返す。省略すると末尾の「?」ヘルプまで隠れ、
+     説明を確認する手段がなくなる（共通ルール「項目名の折り返し」）。 */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
 }
 
 /* 行内の入力だけを縮める。readonly/disabled、min/max、イベントは変更しない。 */
@@ -157,9 +161,11 @@ input.gb-fmt-num { min-width: 64px; }
 :is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(span,label):first-child {
   flex:0 1 128px;
   min-width:0;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+  overflow-wrap:anywhere;
+  line-height:1.3;
 }
 :is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(input:not([type="checkbox"]),select,textarea) {
   flex:1 1 120px;

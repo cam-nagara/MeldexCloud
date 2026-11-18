@@ -443,8 +443,12 @@ const GBSubPanel = (() => {
   }
 
   function _createInnerPane(entry) {
+    // マップ・フォームは自分のタブをレイアウトから探すが、この仮想ペインはレイアウトの外にあるため、
+    // 開く対象のパスを状態にも入れておく（入れないと「作成するか開いてください」と表示されていた）。
+    const pathState = entry.type === 'map' ? { mapPath: entry.path } : entry.type === 'form-app' ? { formPath: entry.path } : {};
+    const state = entry.path ? { ...(entry.state || {}), ...pathState } : (entry.state || null);
     const tab = typeof GBTabs !== 'undefined' && typeof GBTabs.createTab === 'function'
-      ? GBTabs.createTab(entry.label, entry.type, entry.path || '', entry.state || null)
+      ? GBTabs.createTab(entry.label, entry.type, entry.path || '', state)
       : {
         id: 'subpanel-tab-' + Date.now().toString(36),
         type: entry.type,

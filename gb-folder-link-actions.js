@@ -102,6 +102,9 @@
       });
       if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
       if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
+      // 共通履歴は戻り値の historyWarning を最後の表示に使う。返さないと「↩ 操作名」で
+      // 上書きされ、一覧を更新できなかったことが利用者に伝わらない。
+      return refreshOutcome;
     };
     historyPush(
       options.label || `ファイル移動: ${moves.length} 件`,

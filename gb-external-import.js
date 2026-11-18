@@ -158,6 +158,8 @@
       const schedContainer = document.createElement('div');
       schedContainer.className = 'gb-section gb-section--boxed';
       schedContainer.style.cssText = 'margin-top:6px;padding:8px;';
+      // 時計アイコン（定期実行の設定）などの部品へ、セットごとの安定IDを引き継がせる。
+      schedContainer.dataset.e2eId = `external-import-set-schedule-${stableId}`;
       card.appendChild(schedContainer);
       // 定期実行の判断・実行はバックエンド（meldex_import_scheduler.py）が担う。
       // ここでは周期を選ばせて保存し、確定した次回予定・前回結果を表示するだけ

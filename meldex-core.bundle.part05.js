@@ -1,3 +1,65 @@
+  .sa-markup-toolbar {
+    left: 8px;
+    right: 8px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    transform: none;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: calc(100vw - 16px);
+    padding: 6px;
+  }
+  .sa-markup-toolbar .sa-tb-btn,
+  .sa-markup-toolbar .sa-markup-color-btn,
+  .sa-markup-toolbar .sa-markup-close-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .sa-markup-toolbar .sa-tb-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  .sa-markup-toolbar .sa-markup-close-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+  .sa-markup-palette {
+    width: min(260px, calc(100vw - 16px));
+    gap: 6px;
+    padding: 8px;
+  }
+  .sa-markup-color-dot {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}`;
+
+function _ensureStandaloneMarkupToolbarStyles() {
+  if (document.getElementById('meldex-standalone-markup-toolbar-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'meldex-standalone-markup-toolbar-styles';
+  style.textContent = STANDALONE_MARKUP_TOOLBAR_CSS;
+  document.head.appendChild(style);
+}
+
+function createMarkupToolbar(markup, parentEl) {
+  _ensureStandaloneMarkupToolbarStyles();
+  let tb = parentEl.querySelector('.sa-markup-toolbar');
+  if (tb) return tb;
+  tb = document.createElement('div');
+  tb.className = 'sa-toolbar sa-markup-toolbar';
+  tb.dataset.markupToolbar = '1';
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', 'アノテートツールバー');
+  let palette = null;
+  let closePaletteTimer = null;
+  let paletteOutsideHandler = null;
+  let paletteKeyHandler = null;
+  const closePalette = () => {
     if (closePaletteTimer) clearTimeout(closePaletteTimer);
     closePaletteTimer = null;
     if (paletteOutsideHandler) document.removeEventListener('pointerdown', paletteOutsideHandler, true);

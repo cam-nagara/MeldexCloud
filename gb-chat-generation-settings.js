@@ -18,7 +18,7 @@ function _chatReadNativeGenerationMap() {
   } catch { return {}; }
 }
 
-function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider)) {
+function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider(), model = _chatGenerationModel(provider), options = {}) {
   const map = _chatReadNativeGenerationMap();
   const key = _chatNativeGenerationKey(provider, model);
   const saved = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
@@ -33,7 +33,8 @@ function _chatNativeGenerationSettings(provider = _chatGenerationCurrentProvider
     reasoning_level: levels.includes(raw) ? raw : !saved ? migratedLevel : 'off',
     speed_mode: _chatSpeedOptions(provider, model).some(item => item[0] === saved?.speed_mode) ? saved.speed_mode : 'default',
   };
-  if (legacy != null && Object.keys(map).length === 0) _chatStoreNativeGenerationSettings(settings, provider, model);
+  // 旧来の共通値の引き継ぎは、実際に使うモデルが決まってから一度だけ行う（表示の更新だけでは保存しない）。
+  if (!options.readOnly && legacy != null && Object.keys(map).length === 0) _chatStoreNativeGenerationSettings(settings, provider, model);
   return settings;
 }
 
@@ -156,18 +157,46 @@ function _chatReasoningLevelOptions(provider, model = _chatGenerationModel(provi
   return base;
 }
 
-function _chatGenerationReasoningRowHtml() {
+// 思考の深さはメッセージ入力欄の下（#chat-reasoning-level）で選ぶ。LLM設定ポップアップには置かない。
+// 値はプロバイダ×モデルごとに保存し、指定できないモデルでは選択欄ごと隠す。
+function _chatReasoningLevelLabel(provider, model, level) {
+  const value = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(level) : String(level || '');
+  if (!value) return '';
+  const found = _chatReasoningLevelOptions(provider, model).find(([key]) => key === value);
+  if (found) return found[1];
+  return ({ off: '既定', low: '低', medium: '中', high: '高', xhigh: '最高', max: '最大', ultracode: 'Ultracode', ultra: 'Ultra' })[value] || value;
+}
+
+function _chatRefreshReasoningControl() {
+  const select = document.getElementById('chat-reasoning-level');
+  if (!select) return;
   const provider = _chatGenerationCurrentProvider();
-  const options = _chatReasoningLevelOptions(provider);
+  const model = _chatGenerationModel(provider);
+  const options = _chatReasoningLevelOptions(provider, model);
   const supported = _chatGenerationReasoningSupported(provider) && options.length > 1;
-  const storedRaw = _chatNativeGenerationSettings().reasoning_level;
-  const stored = typeof _chatNormalizeReasoningLevel === 'function' ? _chatNormalizeReasoningLevel(storedRaw) : storedRaw;
-  const select = `<select id="chat-menu-reasoning-level" class="gb-input" style="max-width:130px;" ${supported ? '' : 'disabled'}>
-      ${options.map(([value, label]) => `<option value="${value}" ${stored === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}
-    </select>`;
-  const row = _chatGenerationSettingsRow('思考の深さ', select);
-  if (supported) return row;
-  return `${row}<div data-chat-reasoning-unsupported-note style="font-size:11px;color:var(--fg2);margin-top:-4px;">このモデルでは思考の深さを指定できません</div>`;
+  select.dataset.generationProvider = provider;
+  select.dataset.generationModel = model;
+  select.hidden = !supported;
+  select.disabled = !supported;
+  if (!supported) { select.innerHTML = ''; return; }
+  const stored = _chatNativeGenerationSettings(provider, model, { readOnly: true }).reasoning_level;
+  select.innerHTML = options.map(([value, label]) => `<option value="${value}">思考: ${esc(label)}</option>`).join('');
+  select.value = options.some(([value]) => value === stored) ? stored : 'off';
+}
+
+function _chatBindReasoningControl() {
+  const select = document.getElementById('chat-reasoning-level');
+  if (!select || select.dataset.reasoningBound === '1') return;
+  select.dataset.reasoningBound = '1';
+  select.addEventListener('change', () => {
+    const provider = select.dataset.generationProvider || _chatGenerationCurrentProvider();
+    const model = select.dataset.generationModel ?? _chatGenerationModel(provider);
+    const current = _chatNativeGenerationSettings(provider, model);
+    const level = select.value || 'off';
+    _chatStoreNativeGenerationSettings({ ...current, reasoning_level: level }, provider, model);
+    localStorage.setItem('chat-reasoning-level', level);
+    if (typeof _chatSaveCurrentRoomModelSettings === 'function') _chatSaveCurrentRoomModelSettings();
+  });
 }
 
 // 現行世代のClaudeモデル（Fable 5 / Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5）はtemperature/top_pに
@@ -272,12 +301,14 @@ function _persistChatGenerationSettings(menu, options = {}) {
   if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
   const code = menu.querySelector('#chat-menu-allow-code-execution');
   if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
-  const reasoning = menu.querySelector('#chat-menu-reasoning-level');
-  if (reasoning) localStorage.setItem('chat-reasoning-level', reasoning.value || 'off');
-  if (reasoning) _chatStoreNativeGenerationSettings({
-    reasoning_level: reasoning.value || 'off',
-    speed_mode: menu.querySelector('#chat-menu-speed-mode')?.value || 'default',
-  }, menu.dataset.generationProvider, menu.dataset.generationModel);
+  const speed = menu.querySelector('#chat-menu-speed-mode');
+  if (speed) {
+    const current = _chatNativeGenerationSettings(menu.dataset.generationProvider, menu.dataset.generationModel);
+    _chatStoreNativeGenerationSettings({
+      ...current,
+      speed_mode: speed.value || 'default',
+    }, menu.dataset.generationProvider, menu.dataset.generationModel);
+  }
   const preset = menu.querySelector('#chat-menu-param-preset');
   if (preset) localStorage.setItem('chat-param-preset', preset.value || 'standard');
   Object.entries(CHAT_GENERATION_NUMERIC_SETTINGS).forEach(([id, config]) => {
@@ -308,12 +339,11 @@ function showChatGenerationSettingsMenu(event) {
   menu.innerHTML = `
     <div class="chat-generation-settings-heading" style="display:flex;align-items:center;gap:4px;font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">
       <span data-chat-generation-title>LLM設定</span>
-      <span data-chat-generation-tuning-hint>${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</span>
+      <span data-chat-generation-tuning-hint>${fieldHelp('応答の賢さは入力欄の下の思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</span>
     </div>
     ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
     ${_chatGenerationCodeExecutionControlHtml()}
-    ${_chatGenerationReasoningRowHtml()}
     ${_chatGenerationSpeedRowHtml()}
     ${_chatGenerationResponseTuningHtml()}
   `;
@@ -368,3 +398,9 @@ function showChatGenerationSettingsMenu(event) {
 
 window.showChatGenerationSettingsMenu = showChatGenerationSettingsMenu;
 window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
+window._chatRefreshReasoningControl = _chatRefreshReasoningControl;
+window._chatReasoningLevelLabel = _chatReasoningLevelLabel;
+if (typeof document !== 'undefined') {
+  _chatBindReasoningControl();
+  _chatRefreshReasoningControl();
+}

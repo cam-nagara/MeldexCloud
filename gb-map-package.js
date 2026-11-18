@@ -8,12 +8,17 @@
   'use strict';
   const MAX_MAPS = 64, MAX_BYTES = 48 * 1024 * 1024;
   const assets = ['vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/LICENSE',
-    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css'];
+    'gb-map-display.js', 'gb-map-terrain-field.js', 'gb-map-atlas-surface.js', 'gb-map-azgaar.js', 'vendor/azgaar/LICENSE', 'gb-map-world-terrain.js', 'gb-map-document.js', 'gb-map-world-geography.js', 'gb-map-terrain-render.js', 'gb-map-interaction.js', 'gb-map-view.js', 'gb-tool-map.css', 'map-package-viewer.txt', 'map-package-viewer.js', 'map-package-viewer.css',
+    // 同梱素材（記号・羊皮紙・地名の書体）とライセンス文書。閲覧パッケージでも同じ見た目にするため。
+    'vendor/map-assets/LICENSE-kenney-cartography.txt', 'vendor/map-assets/textures/parchmentBasic.png',
+    'vendor/map-assets/fonts/IMFellEnglish-Regular.ttf', 'vendor/map-assets/fonts/IMFellEnglish-Italic.ttf', 'vendor/map-assets/fonts/OFL-IMFellEnglish.txt',
+    'vendor/map-assets/fonts/MedievalSharp-Regular.ttf', 'vendor/map-assets/fonts/OFL-MedievalSharp.txt'];
   const key = path => String(path).replace(/\\/g, '/').toLocaleLowerCase();
   const pick = (obj, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(obj, field)).map(field => [field, D.clone(obj[field])]));
   function portable(doc, links) {
     const result = pick(doc, ['fileType', 'schema_version', 'title', 'coordinate_system']);
     if(doc.display)result.display=pick(doc.display,globalThis.MeldexMapDisplay?.keys||require('./gb-map-display.js').keys);
+    if(doc.map_style)result.map_style=pick(doc.map_style,['theme','contours','contour_interval','label_font']);
     result.canvas = pick(doc.canvas, ['width', 'height']); result.basemap = 'blank';
     result.scale = pick(doc.scale, ['distance_per_unit', 'unit', 'north_degrees']);
     const periods = new Map((doc.periods || []).map((period, index) => [period.id, 'period-' + index]));
@@ -26,7 +31,7 @@
       return { cartography: { role:c.role, ...(c.role==='border'&&c.area===true?{area:true}:{}), ...(A.geometry(feature)?{geometry:pick(c.geometry,['path','scale','anchor','closed','line_style','signature'])}:{}), ...(typeof c.capital === 'boolean' ? {capital:c.capital}:{}), ...(['minor','major'].includes(c.rank)?{rank:c.rank}:{}), ...(Number.isFinite(c.flow)&&c.flow>=0&&c.flow<=1e9?{flow:c.flow}:{}) } };
     };
     result.features = doc.features.map((feature, index) => ({
-      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style']),
+      ...pick(feature, ['kind', 'points', 'label', 'description', 'color', 'tags', 'marker_style', 'stamp']),
       id: 'feature-' + index, layer_id: layers.get(feature.layer_id),
       ...cartography(feature),
       ...(feature.period_ids ? { period_ids: feature.period_ids.map(id => periods.get(id)) } : {}),
@@ -103,6 +108,11 @@
     // The HTML template is served as text so the app's HTML bootstrap (local
     // session credentials) is never injected into a portable document.
     const entries = await Promise.all(assets.map(async name => ({ name: name === 'map-package-viewer.txt' ? 'index.html' : name, data: await loadAsset(name) })));
+    check();
+    // 地点に使った記号の画像だけを入れる（全種類は入れない）。
+    const display = globalThis.MeldexMapDisplay || require('./gb-map-display.js');
+    const stamps = [...new Set((plan.data.maps || []).flatMap(map => (map.doc?.features || []).map(feature => feature.stamp)).filter(id => display.stampIds.has(id)))];
+    for (const id of stamps) entries.push({ name: display.stampURL(id), data: await loadAsset(display.stampURL(id)) });
     check();
     entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
     entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,

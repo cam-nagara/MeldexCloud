@@ -841,10 +841,21 @@ function getProviderIconHtml(provider, size = 16) {
   return `<span class="chat-provider-icon" style="display:inline-flex;align-items:center;justify-content:center;width:${box}px;height:${box}px;border-radius:50%;background:${bg};color:${color};border:1px solid ${border};box-sizing:border-box;flex:0 0 auto;" title="${esc(meta.label)}" aria-label="${esc(meta.label)}">${lucide('bot', size)}</span>`;
 }
 
-function getProviderLabel(provider, model) {
-  if (model) return model;
+function getProviderLabel(provider, model, reasoningLevel = '') {
   const meta = CHAT_PROVIDER_META[_chatProviderKey(provider)];
-  return meta ? meta.label : (provider || 'LLM');
+  const base = model || (meta ? meta.label : (provider || 'LLM'));
+  if (!reasoningLevel || typeof _chatReasoningLevelLabel !== 'function') return base;
+  const depth = _chatReasoningLevelLabel(_chatProviderKey(provider), model, reasoningLevel);
+  return depth ? base + ' · 思考: ' + depth : base;
+}
+
+// 返信へ残す思考の深さ。指定できないプロバイダ・モデルでは記録しない（旧記録と同じくモデル名だけを出す）。
+function _chatReasoningRecordLevel(provider, model, generation) {
+  const key = _chatProviderKey(provider);
+  if (typeof _chatGenerationReasoningSupported === 'function' && !_chatGenerationReasoningSupported(key)) return '';
+  if (typeof _chatReasoningLevelOptions === 'function' && _chatReasoningLevelOptions(key, model).length <= 1) return '';
+  const level = _chatNormalizeReasoningLevel(generation?.reasoning_level);
+  return level || '';
 }
 
 function chatAllowWebSearch() {
@@ -1267,6 +1278,7 @@ function _renderChatModelOptions(models, options = {}) {
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
   }
   if (!options.skipRoomPersist) _chatSaveCurrentRoomModelSettings();
+  if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
 }
 
 // プロバイダ変更時にモデル一覧を更新
@@ -1310,6 +1322,7 @@ function updateChatModels(options = {}) {
     localStorage.setItem('chat-model:' + provider, _chatState.model || '');
     _chatState.pendingModel = '';
     _chatSaveCurrentRoomModelSettings();
+    if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
   };
 })();
 

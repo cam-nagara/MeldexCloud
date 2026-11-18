@@ -386,7 +386,7 @@
   const _ANNOTATION_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
-    'board', 'scriptnote', 'calendar',
+    'board', 'scriptnote', 'calendar', 'form-app', 'map',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form',
@@ -456,6 +456,7 @@
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
     if (tabType === 'map') return tabPath('mapPath');
+    if (tabType === 'form-app') return tabPath('formPath');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
@@ -607,6 +608,10 @@
     }
     if (GBLayout.activePane !== paneInfo.paneId && typeof GBLayout.setActivePane === 'function') {
       GBLayout.setActivePane(paneInfo.paneId, { sync: true });
+    }
+    if (paneInfo.activeTab?.type === 'map') {
+      const mapApp = typeof getComponentInstance === 'function' ? getComponentInstance(paneInfo.activeTab.id) : null;
+      return !!mapApp?.addAnnotation?.();
     }
     _mountFloatingAnnotationUi({ paneId: paneInfo.paneId });
     if (typeof toggleAnnotationToolbar === 'function') {

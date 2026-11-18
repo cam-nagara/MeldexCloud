@@ -190,6 +190,37 @@ async function _ptReloadOtherDbContexts(dbPath, currentCtx) {
   }
 }
 
+// マウス・タッチを押している間は true。表の作り直しを押下中に行うとクリックが失われる。
+let _ptPointerPressed = false;
+if (typeof document !== 'undefined' && document.addEventListener) {
+  const _ptPress = (event) => { if (event?.isPrimary !== false) _ptPointerPressed = true; };
+  const _ptRelease = () => { _ptPointerPressed = false; };
+  document.addEventListener('pointerdown', _ptPress, true);
+  document.addEventListener('pointerup', _ptRelease, true);
+  document.addEventListener('pointercancel', _ptRelease, true);
+  window.addEventListener?.('blur', _ptRelease);
+}
+
+// 押下中なら離した後（クリックの処理が終わった次のタスク）まで待つ。最長1.5秒。
+function _ptAfterPointerRelease() {
+  if (!_ptPointerPressed) return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('pointerup', onRelease, true);
+      document.removeEventListener('pointercancel', onRelease, true);
+      clearTimeout(timer);
+      setTimeout(resolve, 0);
+    };
+    const onRelease = () => finish();
+    const timer = setTimeout(finish, 1500);
+    document.addEventListener('pointerup', onRelease, true);
+    document.addEventListener('pointercancel', onRelease, true);
+  });
+}
+
 async function applyPropertyType(propName, root, options = {}) {
   const scope = _ptResolveRoot(root);
   window._ptActiveRoot = scope;
@@ -383,6 +414,11 @@ async function applyPropertyType(propName, root, options = {}) {
     }
   }
 
+  // 列メモ・AI自動生成は専用欄で保存する。入力の待ち時間中に保存された最新値も消さないよう、
+  // 保存直前の値から引き継ぐ。
+  if (typeof _ptPreserveIndependentColumnFields === 'function') {
+    _ptPreserveIndependentColumnFields(config, (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null) || prev);
+  }
   // Undo/Redo 用に変更前の型設定を控える（setPropertyType が書き換える前に取る）
   const beforeCfg = JSON.parse(JSON.stringify(prev));
   // 分割ペインの初回表示直後は state のグローバル参照がまだ対象ペインへ追従していない場合がある。
@@ -398,6 +434,35 @@ async function applyPropertyType(propName, root, options = {}) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
+  // 手元の列設定は setPropertyType が即座に更新済み。保存（大きいシートやDropboxでは数秒）の
+  // 完了を待たずに表を描き直し、リレーションの参照先も並行して読み込む。以前は保存完了→
+  // 描画→参照先の読込→描画の直列で、設定が反映されるまで失敗したように見えていた。
+  // 保存に失敗した場合は下の処理で元の設定へ戻して描き直す。
+  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
+  const _relTargetMayHaveChanged = _relTypes.includes(type)
+    && (prev.type !== type
+      || (config.relationDb || '') !== (prev.relationDb || '')
+      || type === 'multi-source-relation');
+  const _renderNow = () => {
+    if (typeof _renderCurrentDbView === 'function') return _renderCurrentDbView(ctx, dbPath);
+    if (options.render !== false) return renderPivot(ctx);
+    return null;
+  };
+  let earlyRenderFailed = false;
+  try {
+    // 入力欄から表をクリックした時は、フォーカス移動の自動保存がここへ来る。押している間に
+    // 表を作り直すとクリックが消える（新規トピック行のクリックが効かなかった）ため、離した後に描く。
+    await _ptAfterPointerRelease();
+    await Promise.resolve(_renderNow());
+  } catch (error) {
+    console.warn('列設定の即時反映に失敗:', error);
+    earlyRenderFailed = true;
+  }
+  const relationPreload = (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function')
+    ? Promise.resolve()
+      .then(() => _preloadRelationMapsForDb(dbPath, pivotData, ctx))
+      .then(() => ({ ok: true }), error => ({ ok: false, error }))
+    : null;
   try {
     const saved = await savePromise;
     if (saved === false) throw new Error('保護されている列のため変更できません');
@@ -440,31 +505,25 @@ async function applyPropertyType(propName, root, options = {}) {
     for (const k in _formulaCache) delete _formulaCache[k];
   }
   let refreshWarning = false;
-  try {
-    if (options.render !== false) {
-      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
-      else await Promise.resolve(renderPivot(ctx));
+  // 即時反映に失敗した時だけ、保存後にもう一度描き直す（成功していれば同じ内容の描き直しになる）。
+  if (earlyRenderFailed) {
+    try { await Promise.resolve(_renderNow()); } catch (error) {
+      console.warn('列設定保存後の表示更新に失敗:', error);
+      refreshWarning = true;
     }
-  } catch (error) {
-    console.warn('列設定保存後の表示更新に失敗:', error);
-    refreshWarning = true;
   }
   // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
-  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
-  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
-  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
-  const _relTargetMayHaveChanged = _relTypes.includes(type)
-    && (prev.type !== type
-      || (config.relationDb || '') !== (prev.relationDb || '')
-      || type === 'multi-source-relation');
-  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
-    try {
-      await Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
-        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-        else if (options.render !== false) renderPivot(ctx);
-      });
-    } catch (error) {
-      console.warn('列設定保存後の参照先読み込みに失敗:', error);
+  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。保存と並行して取得した
+  // マップが揃ったら描き直し、再読み込みを押さなくても名前で表示されるようにする。
+  if (relationPreload) {
+    const loaded = await relationPreload;
+    if (loaded.ok) {
+      try { _renderNow(); } catch (error) {
+        console.warn('列設定保存後の表示更新に失敗:', error);
+        refreshWarning = true;
+      }
+    } else {
+      console.warn('列設定保存後の参照先読み込みに失敗:', loaded.error);
       refreshWarning = true;
     }
   }
@@ -639,6 +698,18 @@ function showDbPropertySettingsForColumn(dbPath, propName, opts) {
 function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride) {
   const target = container || document.getElementById('detail-tab-db-property-settings');
   if (!target) return;
+  // 列を選んでいない時は、表示中のビューの基準列（カンバンのグループ化列など）の設定を出す。
+  // 明示的に列を選んだ時はその列を優先し、ビュー由来の表示は解除する。
+  if (propName) {
+    target._ptViewFallback = null;
+    // 明示的に選んだ列は、そのビューにいる間だけ優先する。ビューを切り替えたら新しいビューの
+    // 基準列（カンバンならグループ化の列）へ切り替えるため、選んだ時点のビューを覚える。
+    target._ptExplicitView = typeof _ptActiveViewKey === 'function'
+      ? { dbPath, key: _ptActiveViewKey(dbPath, _ptContextForDbPath(dbPath, ctxOverride)) } : null;
+  } else if (typeof _ptViewFallbackForPanel === 'function') {
+    target._ptExplicitView = null;
+    propName = _ptViewFallbackForPanel(target, dbPath, _ptContextForDbPath(dbPath, ctxOverride));
+  }
   if (!propName) {
     target.innerHTML = `<div class="gb-empty-placeholder" style="padding:16px;">列を選択してください</div>`;
     return;
@@ -664,6 +735,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
     const propHints = (pivotData?.properties || []).map(p => `{${p}}`).join(', ');
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
+      ${typeof _ptColumnMemoFieldHtml === 'function' ? _ptColumnMemoFieldHtml(dbPath, '__entity__', ctx) : ''}
       <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="トピック名"'}></div>
       ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
       ${labelLocked ? '' : `<div class="field">
@@ -757,6 +829,10 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
       }
       if (typeof renderPivot === 'function') renderPivot(ctx);
     });
+    const entityRoot = target.querySelector('[data-db-property-settings-root]');
+    if (entityRoot) entityRoot._ptDbPath = dbPath;
+    if (typeof _ptBindColumnMemoField === 'function') _ptBindColumnMemoField(entityRoot, dbPath, '__entity__', ctx);
+    if (typeof _ptDecorateViewFallback === 'function') _ptDecorateViewFallback(target, dbPath, ctx);
     return;
   }
   const types = getPropertyTypes(dbPath, ctx);
@@ -793,6 +869,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
   const scopeId = 'tab-' + Math.random().toString(36).slice(2, 8);
   target.innerHTML = `<div class="db-prop-settings" data-pt-root>
     <div class="gb-section-head">列設定</div>
+    ${typeof _ptColumnMemoFieldHtml === 'function' ? _ptColumnMemoFieldHtml(dbPath, propName, ctx) : ''}
     <div class="field"><label>列名</label>
       <input id="pt-prop-name" type="text" value="${esc(propName)}" placeholder="列名">
     </div>
@@ -814,6 +891,10 @@ function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride)
   _bindDbPropertySettingsAutosave(root, propName);
   if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
   _bindDbPropertyIconField(root, dbPath, propName, ctx);
+  // 列メモ（一番上）とAI自動生成は専用の保存。列設定全体の自動保存とは別に保存する。
+  if (typeof _ptBindColumnMemoField === 'function') _ptBindColumnMemoField(root, dbPath, propName, ctx);
+  if (typeof _ptRenderAiAutofillSection === 'function') _ptRenderAiAutofillSection(root, dbPath, propName, ctx);
+  if (typeof _ptDecorateViewFallback === 'function') _ptDecorateViewFallback(target, dbPath, ctx);
 }
 
 /* 列ごとのユーザー設定アイコン（property_types[prop].icon、GBIconAssets の spec 文字列）。
@@ -1091,17 +1172,23 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     if (root.contains(e.relatedTarget)) return;
     flushPending();
   });
+  // 列メモ・AI自動生成・ビューの基準列の切替（data-pt-independent）は専用に保存するため、
+  // 列設定全体の自動保存を走らせない。
+  const isIndependent = (e) => typeof _ptIsIndependentFieldEvent === 'function' && _ptIsIndependentFieldEvent(e);
   root.addEventListener('input', (e) => {
     if (e.target?.closest?.('.db-picker-popup')) return;
+    if (isIndependent(e)) return;
     schedule();
   });
-  root.addEventListener('change', () => {
+  root.addEventListener('change', (e) => {
+    if (isIndependent(e)) return;
     _ptRefreshAutoFillVisibility(root);
     schedule(120);
   });
   root.addEventListener('click', (e) => {
     // アイコンはピッカーの確定時に専用保存する。開く・取り消すだけでは列を保存しない。
     if (e.target?.closest?.('#pt-icon-btn')) return;
+    if (isIndependent(e) || e.target?.closest?.('[data-pt-view-context]')) return;
     if (e.target?.closest?.('button')) setTimeout(() => schedule(120), 0);
   });
   root.querySelector('#pt-type')?.addEventListener('change', () => {

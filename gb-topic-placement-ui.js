@@ -183,12 +183,39 @@
         && !pivotData.entities[oldName]._entry_path ? oldName : null;
       legacyNames.set(key, matched || fallback);
     }
+    // 同じ行名を持つ古いトピック（行IDの付け直し前のもの等）が名前の対応表を取ると、
+    // 現在の行のトピックが対応先を失い「C · ent_…」のような重複行として表示されていた。
+    // 旧シートの行ID（_id）で直接対応付け、まだ対応の無いトピックを現在の行へ結び付ける。
+    const placedKeys = new Set(placements.map(item => topicKey(item.topicRef)));
+    const claimedNames = new Set([...legacyNames.values()].filter(Boolean));
+    const entityNameById = new Map();
+    Object.entries(pivotData.entities).forEach(([entityName, entity]) => {
+      if (entity?._id && entity._topicCanonicalOnly !== true) entityNameById.set(String(entity._id), entityName);
+    });
+    records.forEach((record, key) => {
+      if (legacyNames.get(key) || !placedKeys.has(key)) return;
+      const entityName = entityNameById.get(String(record?.topicId || ''));
+      if (!entityName || claimedNames.has(entityName)) return;
+      if (!matchesLegacyEntry(view, record, pivotData.entities[entityName])) return;
+      legacyNames.set(key, entityName);
+      claimedNames.add(entityName);
+    });
     const placementKeys = new Set(placements.map(item => topicKey(item.topicRef)));
     for (const [key, name] of legacyNames) {
       if (name && !placementKeys.has(key)) delete pivotData.entities[name];
     }
     const columns = columnsForDocument(view.document, requestedViewId);
     const propertyNames = columns.map(column => String(column?.name || column?.columnId || '')).filter(Boolean);
+    // 旧シート自身の列は、まだ値が無くても旧シートが正本。以前は「値を持つ列」（/pivot の
+    // properties）だけを正本扱いしており、値の無い列には保存先を持たない仮の値を作っていた。
+    // そのため空のセルが「値のあるセル」として開かれ、新規作成ではなく更新が走り、保存先が
+    // 分からない更新は直前に開いていたトピックへ向かって拒否されていた（リレーションを設定
+    // しても登録できない不具合）。
+    let currentTypes = null;
+    try { currentTypes = global.getPropertyTypes?.(dbPath) || null; } catch { currentTypes = null; }
+    const legacyColumnTypes = { ...(view.document?.legacySheet?.propertyTypes || {}), ...(currentTypes || {}) };
+    const isLegacyColumn = columnName => baseProperties.includes(columnName)
+      || Object.prototype.hasOwnProperty.call(legacyColumnTypes, columnName);
     pivotData.properties = [...new Set([...baseProperties, ...propertyNames])];
     placements.forEach((placement) => {
       const ref = placement.topicRef;
@@ -207,7 +234,7 @@
         const columnName = String(column?.name || column?.columnId || '');
         const value = propertyForColumn(record, placement, column);
         if (!columnName) return;
-        if (legacyName && baseProperties.includes(columnName)) {
+        if (legacyName && isLegacyColumn(columnName)) {
           // 元シートの値が正本。配置キャッシュで候補ID・保存先・新しい値を落とさない。
           const native = savedEntity?.[columnName];
           entity[columnName] = Array.isArray(native) ? native.map(candidate => ({ ...candidate,
@@ -510,6 +537,15 @@
     if (result?.detail) rememberView(result.detail);
     const view = viewsByPath.get(path) || null;
     if (result?.ok && view && !view.readOnly && checkpointId(view.checkpoint)) return { view };
+    // 移行の確定が「競合」（409）で拒否されただけなら、旧シート（正本）は書き込める。
+    // 以前はこれも閲覧専用と同じに扱い、列名変更そのものを拒否していた（改名・移動した
+    // シートや、行IDが他のシートと重なるシートで列名を一切変えられなかった）。
+    const migrationStatus = Number(result?.error?.status || result?.error?.response?.status
+      || result?.error?.payload?.status || 0);
+    if (result?.ok && result.mode === 'preview' && migrationStatus === 409) {
+      viewsByPath.delete(path);
+      return { unavailable: true, message: '共通保管庫への移行が他の変更と競合しています' };
+    }
     if (result?.ok && (result.mode === 'preview' || view?.readOnly)) {
       return { readOnly: true, message: 'このシートは閲覧専用または他の操作と競合しているため、列名を変更しませんでした' };
     }
@@ -543,8 +579,35 @@
     return views;
   }
 
+  // 直前の移行・列名変更で得た書き込み可能な表示定義をそのまま使う。以前は列名変更のたびに
+  // 移行をやり直しており（サーバー往復3回＋全トピックの再移行）、見出しが数秒変わらず、
+  // 移行完了の通知でフォルダツリーまで読み直していた。古い checkpoint だった場合は
+  // PATCH の競合で検出し、最新の文書へ載せ直す（patchSheetViews の rebase）。
+  function cachedViewForColumnChange(dbPath) {
+    const view = viewsByPath.get(normalizePath(dbPath)) || null;
+    if (view && !view.readOnly && view.document && checkpointId(view.checkpoint)) return { view, cached: true };
+    return null;
+  }
+
+  function findColumnInView(view, options) {
+    const requestedViewId = options.viewId || options.ctx?.currentViewId;
+    let current = columnsForDocument(view.document, requestedViewId).find(column => column.name === options.oldName);
+    if (!current) {
+      for (const sheetView of (view.document.sheetViews || [])) {
+        const id = sheetView?.viewId || sheetView?.sheetViewId;
+        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
+        if (current) break;
+      }
+    }
+    return current || null;
+  }
+
   async function renameColumn(options) {
-    const refreshed = await refreshViewForColumnChange(options.dbPath);
+    let refreshed = cachedViewForColumnChange(options.dbPath);
+    // 移行後に追加した列（挿入直後の列名入力など）は手元の表示定義にまだ無い。
+    // その時だけ移行し直して列の安定IDを得る。
+    if (refreshed && !findColumnInView(refreshed.view, options)) refreshed = null;
+    if (!refreshed) refreshed = await refreshViewForColumnChange(options.dbPath);
     if (refreshed.readOnly) throw new Error(refreshed.message);
     if (refreshed.unavailable) {
       // 共通保管庫へ移行できないシートでは、共通化の対象（他の場所の同じ列）が存在しない。
@@ -561,18 +624,9 @@
     if (!view?.document || !baseCheckpointId) {
       throw new Error('列の共通化候補を確認できないため、列名を変更しませんでした');
     }
-    const requestedViewId = options.viewId || options.ctx?.currentViewId;
-    const currentColumns = columnsForDocument(view.document, requestedViewId);
-    let current = currentColumns.find(column => column.name === options.oldName);
     // テンプレート適用直後など、画面側の viewId と canonical 側の active view が
     // 一時的にずれていても、同じ文書内の列の安定IDを失わないよう全ビューを探す。
-    if (!current) {
-      for (const sheetView of (view.document.sheetViews || [])) {
-        const id = sheetView?.viewId || sheetView?.sheetViewId;
-        current = columnsForDocument(view.document, id).find(column => column.name === options.oldName);
-        if (current) break;
-      }
-    }
+    let current = findColumnInView(view, options);
     // 旧シートには存在するが、移行済みビューの columns へまだ投影されていない列も
     // legacy の型と決定的IDから安全に補完する。
     if (!current) {
@@ -636,6 +690,29 @@
           view.document = clone(currentSnapshot.viewDocument);
           view.checkpoint = clone(currentSnapshot.checkpoint);
           return true;
+        }
+        if (refreshed.cached && currentSnapshot?.viewDocument
+            && checkpointId(currentSnapshot?.checkpoint)
+            && checkpointId(currentSnapshot.checkpoint) !== baseCheckpointId) {
+          // 手元の表示定義が古かった（他の操作で checkpoint が進んでいた）。旧シートの列名は
+          // 変更済みなので、最新の文書に同じ列名変更を載せ直す。列名の付け替えは同じ名前に
+          // 対して冪等なので、先の PATCH が実は保存済みだった場合も結果は変わらない。
+          const rebasedViews = renamedSheetViews(
+            currentSnapshot.viewDocument, options.oldName, options.newName, familyId, current,
+          );
+          const rebased = await global.apiFetch(`/topic-views/${encodeURIComponent(view.document.documentId)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
+            body: JSON.stringify({
+              baseCheckpointId: checkpointId(currentSnapshot.checkpoint),
+              mutationId: mutationId('column-rename'),
+              changes: { sheetViews: rebasedViews },
+            }),
+          }).catch(() => null);
+          if (rebased?.viewDocument) {
+            view.document = clone(rebased.viewDocument);
+            view.checkpoint = clone(rebased.checkpoint);
+            return true;
+          }
         }
         if (checkpointId(currentSnapshot?.checkpoint) !== baseCheckpointId) {
           const unknown = new Error('列名変更と列定義の保存結果が競合しています');

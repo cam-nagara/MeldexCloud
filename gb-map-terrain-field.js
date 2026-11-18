@@ -70,6 +70,36 @@
    }
    return {width,height,data};
  }
+ // Azgaar方式の地形から、都市・気候・国家・植生の生成が使う格子（高さ -1〜1、0以下は海）を作る。
+ // 旧方式の地形を持たない地図でも同じ生成を使えるようにするための読み取り専用の写しで、保存しない。
+ const grids=new WeakMap();
+ function grid(doc){
+   const atlas=doc?.atlas;if(!atlas?.surface)return null;
+   const cached=grids.get(atlas);if(cached)return cached;
+   const sc=scene(atlas),cols=256,rows=Math.max(32,Math.min(256,Math.round(cols*(doc.canvas?.height||atlas.height)/(doc.canvas?.width||atlas.width)))),heights=new Array(cols*rows);
+   for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const h=sc.sample((x+.5)/cols*atlas.width,(y+.5)/rows*atlas.height)[0];heights[y*cols+x]=h<20?clamp((h-20)/20,-1,0):clamp((h-20)/80,0.001,1);}
+   const result=Object.freeze({cols,rows,heights:Object.freeze(heights)});grids.set(atlas,result);return result;
+ }
+ // 等高線: 表示範囲を格子に区切って高さ（0〜100、20未満は海）を測り、一定間隔の高さで線を引く（マーチングスクエア法）。
+ function contours(atlas,bounds,interval=10,samples=48){
+   const sc=scene(atlas),[x0,y0,w,h]=bounds,cols=Math.max(2,Math.min(160,Math.round(samples))),rows=Math.max(2,Math.min(160,Math.round(samples*h/w))),stride=cols+1,grid=new Float32Array(stride*(rows+1));
+   const step=[10,20,5].includes(interval)?interval:10;
+   for(let j=0;j<=rows;j++)for(let i=0;i<=cols;i++){const x=clamp(x0+i*w/cols,0,atlas.width),y=clamp(y0+j*h/rows,0,atlas.height);grid[j*stride+i]=sc.sample(x,y)[0];}
+   const lines=[];
+   for(let level=20+step;level<100;level+=step){
+     let d='';
+     for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+       const a=grid[j*stride+i],b=grid[j*stride+i+1],c=grid[(j+1)*stride+i+1],e=grid[(j+1)*stride+i];
+       const code=(a>=level?8:0)|(b>=level?4:0)|(c>=level?2:0)|(e>=level?1:0);if(code===0||code===15)continue;
+       const px=i*w/cols+x0,py=j*h/rows+y0,cw=w/cols,ch=h/rows,t=(p,q)=>p===q?.5:(level-p)/(q-p);
+       const top=[px+cw*t(a,b),py],right=[px+cw,py+ch*t(b,c)],bottom=[px+cw*t(e,c),py+ch],left=[px,py+ch*t(a,e)];
+       const segs=({1:[[left,bottom]],2:[[bottom,right]],3:[[left,right]],4:[[top,right]],5:[[top,left],[bottom,right]],6:[[top,bottom]],7:[[top,left]],8:[[top,left]],9:[[top,bottom]],10:[[top,right],[left,bottom]],11:[[top,right]],12:[[left,right]],13:[[bottom,right]],14:[[left,bottom]]})[code];
+       for(const [p,q] of segs)d+=`M${p[0].toFixed(2)},${p[1].toFixed(2)}L${q[0].toFixed(2)},${q[1].toFixed(2)}`;
+     }
+     if(d)lines.push({level,major:(level-20)%(step*5)===0,d});
+   }
+   return lines;
+ }
  function url(atlas,mode,bounds,width,height,display={}){
    const key=scene(atlas).key+'|'+JSON.stringify([mode,bounds,width,height,display]);if(images.has(key))return images.get(key);
    const result=pixels(atlas,mode,bounds,width,height,display),canvas=document.createElement('canvas');canvas.width=result.width;canvas.height=result.height;const ctx=canvas.getContext('2d'),im=ctx.createImageData(result.width,result.height);im.data.set(result.data);ctx.putImageData(im,0,0);const value=canvas.toDataURL('image/png');images.set(key,value);while(images.size>48)images.delete(images.keys().next().value);return value;
@@ -88,5 +118,5 @@
    while(stack.length){const [a,b]=stack.pop(),p=points[a],q=points[b],dx=q[0]-p[0],dy=q[1]-p[1],len=dx*dx+dy*dy;let best=-1,dist=limit;for(let i=a+1;i<b;i++){if(++work>2e6)throw Error('経路が複雑すぎます。頂点を減らすか、補正する半径を広げてください');const t=len?clamp(((points[i][0]-p[0])*dx+(points[i][1]-p[1])*dy)/len):0,d=(points[i][0]-p[0]-dx*t)**2+(points[i][1]-p[1]-dy*t)**2;if(d>dist){dist=d;best=i;}}if(best>=0){keep.add(best);stack.push([a,best],[best,b]);}}
    return [...keep].sort((a,b)=>a-b).map(i=>points[i].slice());
  }
- return Object.freeze({kinds,valid,scene,pixels,url,stroke,fit,simplify});
+ return Object.freeze({kinds,valid,scene,pixels,url,contours,grid,stroke,fit,simplify});
 });

@@ -299,8 +299,8 @@
       <div class="gb-section-title">インポート先のシートテンプレート</div>
       <div class="gb-section-desc">${DEFINITIONS[key].description} 既存の列や値は上書きしません。</div>
       <div class="gb-field-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap;margin-top:8px;">
-        <select class="gb-select" data-import-sheet-template-select aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
-        <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply>現在の保存先にも適用</button>
+        <select class="gb-select" data-import-sheet-template-select data-e2e-id="import-sheet-template-select-${key}" aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
+        <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply data-e2e-id="import-sheet-template-apply-${key}">現在の保存先にも適用</button>
       </div>
       <div class="gb-section-desc" data-import-sheet-template-status role="status" aria-live="polite"></div>
     `;

@@ -108,6 +108,8 @@ function _rpCommentNavType(c, file) {
   if (/\.board\.md$/i.test(file)) return 'board';
   if (/\.(?:scriptnote|scenario)\.json$/i.test(file)) return 'scriptnote';
   if (/\.calendar\.json$/i.test(file)) return 'calendar';
+  if (kind === 'map_feature' || /\.mel-map$/i.test(file)) return 'map';
+  if (kind === 'form_field' || /\.mel-form$/i.test(file)) return 'form-app';
   return 'page';
 }
 
@@ -128,6 +130,10 @@ function _jumpToCommentTarget(c) {
     const label = file.split(/[\\/]/).pop() || file;
     const type = _rpCommentNavType(c, file);
     try { navOpen({ type, label, path: file }); } catch {}
+  }
+  if (c?.target_kind === 'map_feature' || c?.target_kind === 'form_field') {
+    _jumpToMapOrFormTarget(c.target_kind, file, ref);
+    return;
   }
   setTimeout(() => {
     let target = null;
@@ -159,6 +165,23 @@ function _jumpToCommentTarget(c) {
     if (!target) return;
     _flashRpCommentTarget(target);
   }, 350);
+}
+
+// マップの地点・図形、フォームの項目へ移動する。開いた直後は読込が終わっていないため、出るまで少し待つ。
+function _jumpToMapOrFormTarget(kind, file, ref, attempt = 0) {
+  const selector = kind === 'map_feature' ? '.gb-map-app' : '.gb-form-app';
+  const key = kind === 'map_feature' ? '_gbMapApp' : '_gbFormApp';
+  const app = [...document.querySelectorAll(selector)].map(el => el[key]).find(item => item?.path === file && item.el?.isConnected);
+  if (app?.revealAnnotationTarget?.(ref)) {
+    const target = kind === 'map_feature'
+      ? app.placeList?.querySelector?.(`[data-map-feature-id="${_rpEscSel(ref.featureId || '')}"]`)
+      : app.surface?.querySelector?.(`[data-form-field="${_rpEscSel(ref.field || '')}"]`);
+    if (target) _flashRpCommentTarget(target);
+    return true;
+  }
+  if (attempt < 20) setTimeout(() => _jumpToMapOrFormTarget(kind, file, ref, attempt + 1), 150);
+  else if (typeof showStatus === 'function') showStatus(kind === 'map_feature' ? '地点・図形が見つかりません（削除された可能性があります）' : 'フォームの項目が見つかりません（配置から外された可能性があります）', true);
+  return false;
 }
 
 // 新規コメント作成: selection / shortcut / context menu と同じcomposerへ集約する。

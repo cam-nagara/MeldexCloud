@@ -139,6 +139,146 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._markDirty();
   },
 
+  // === 列幅の数値指定（シートの「列幅を数値指定...」と同じダイアログ構成） ===
+
+  // シナリオの各表で共用する。onApply(width) が false を返した時は閉じずに残す。
+  _showScriptNoteColumnWidthModal({ targetLabel = '', current = 0, min = 30, max = Infinity, onApply, returnFocus } = {}) {
+    if (!globalThis.GBUI?.createModal) throw new Error('列幅指定を初期化できませんでした');
+    const existing = document.querySelector('[data-e2e-id="scriptnote-column-width-dialog"]');
+    if (existing) { existing.focus(); return existing.closest('.gb-modal-overlay')?._scriptNoteColumnWidthApi || null; }
+    const esc = value => MeldexEscape.html(String(value ?? ''));
+    const initial = Number.isFinite(Number(current)) && Number(current) > 0 ? Math.round(Number(current)) : '';
+    const content = document.createElement('div');
+    content.innerHTML = `
+    ${targetLabel ? `<div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${esc(targetLabel)}</div>` : ''}
+    <div class="field">
+      <label for="scriptnote-col-width-input">幅 (px)</label>
+      <input id="scriptnote-col-width-input" class="gb-input" type="number" min="${esc(min)}"${Number.isFinite(max) ? ` max="${esc(max)}"` : ''} step="1" value="${esc(initial)}" data-e2e-id="scriptnote-column-width-input" style="flex:1 1 0%;width:100%;min-width:0;box-sizing:border-box;">
+    </div>`;
+    const input = content.querySelector('#scriptnote-col-width-input');
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+    const applyButton = document.createElement('button');
+    applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.textContent = '適用';
+    applyButton.dataset.e2eId = 'scriptnote-column-width-apply';
+    const modalApi = globalThis.GBUI.createModal({
+      id: 'scriptnote-column-width', title: '列幅を指定', body: content, footer: [cancelButton, applyButton],
+      variant: 'standard', geometryKey: 'scriptnote-column-width', minWidth: '0', initialFocus: '#scriptnote-col-width-input',
+      returnFocus: returnFocus instanceof HTMLElement ? returnFocus
+        : (document.activeElement instanceof HTMLElement ? document.activeElement : undefined),
+      closeLabel: '列幅指定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    });
+    modalApi.overlay._scriptNoteColumnWidthApi = modalApi;
+    modalApi.overlay.dataset.e2eId = 'scriptnote-column-width-overlay';
+    modalApi.modal.dataset.e2eId = 'scriptnote-column-width-dialog';
+    modalApi.modal.style.width = 'min(420px, calc(100vw - 24px))';
+    modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    const apply = () => {
+      const raw = String(input?.value || '').trim();
+      const parsed = parseInt(raw, 10);
+      if (!raw || Number.isNaN(parsed)) {
+        if (typeof showStatus === 'function') showStatus('幅を入力してください', true);
+        input?.focus();
+        return;
+      }
+      const width = Math.min(max, Math.max(min, parsed));
+      if (typeof onApply === 'function' && onApply(width) === false) return;
+      modalApi.close('applied');
+    };
+    applyButton.addEventListener('click', apply);
+    input?.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      apply();
+    });
+    modalApi.open();
+    return modalApi;
+  },
+
+  // 本文の表: ドラッグ・キー操作と同じ手順で反映する（縦書きは _applyColSize が高さ側へ振り分ける）。
+  _showColumnWidthNumberDialog(colId, columnLabel = '', returnFocus = null) {
+    if (this._readOnly) return null;
+    const ownerDocument = this.doc;
+    return this._showScriptNoteColumnWidthModal({
+      targetLabel: columnLabel,
+      current: this._currentColSize(colId),
+      min: 30,
+      returnFocus,
+      onApply: (width) => {
+        if (this.doc !== ownerDocument || this._readOnly) return true;
+        this._pushUndo('列幅変更');
+        this._applyColSize(colId, width);
+        if (this.doc.editor?.wrapMode) this._render();
+        this._markDirty();
+        return true;
+      },
+    });
+  },
+
+  // === 列のアイコン ===
+  // 固定列（ページ・キャラ・テキスト等）は doc.editor.standardColumnSettings[列ID].icon、
+  // 追加した列は列定義の icon に保存する（追加フィールド。旧版は読み飛ばす）。
+
+  _getScriptNoteColumnIcon(colId) {
+    const id = String(colId || '');
+    const source = id.startsWith('_')
+      ? this.doc?.editor?.standardColumnSettings?.[id]
+      : this._getCustomColumns().find(column => column.id === id);
+    return typeof source?.icon === 'string' ? source.icon.trim() : '';
+  },
+
+  // spec='' で「アイコンなし」（既定）へ戻す。文書の取り消し履歴と保存に載せる。
+  _setScriptNoteColumnIcon(colId, spec) {
+    if (this._readOnly || !this.doc) return false;
+    const id = String(colId || '');
+    if (!id || id === '_handle') return false;
+    const raw = typeof MeldexViewTabs !== 'undefined' && MeldexViewTabs.normalizeIconSpec
+      ? MeldexViewTabs.normalizeIconSpec(spec)
+      : (typeof spec === 'string' ? spec.trim() : '');
+    const next = raw && raw.length <= 1024 ? raw : '';
+    const isStandard = id.startsWith('_');
+    const column = isStandard ? null : this._getCustomColumns().find(item => item.id === id);
+    if (!isStandard && !column) return false;
+    if (this._getScriptNoteColumnIcon(id) === next) return false;
+    this._pushUndo('列のアイコン変更');
+    if (!this.doc.editor) this.doc.editor = {};
+    let target = column;
+    if (isStandard) {
+      this.doc.editor.standardColumnSettings ||= {};
+      this.doc.editor.standardColumnSettings[id] ||= {};
+      target = this.doc.editor.standardColumnSettings[id];
+    }
+    if (next) target.icon = next;
+    else delete target.icon;
+    this._markDirty();
+    this._render();
+    return true;
+  },
+
+  // 列ヘッダーの見出しの前にアイコンを置く（読み上げは列名だけにする）。
+  _prependScriptNoteHeaderIcon(cell, spec) {
+    const value = typeof spec === 'string' ? spec.trim() : '';
+    if (!cell || !value || typeof GBIconAssets === 'undefined' || typeof GBIconAssets.render !== 'function') return null;
+    const icon = document.createElement('span');
+    icon.className = 'sn2-header-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.dataset.e2eId = `sn2-header-icon-${String(cell.dataset.colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    icon.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin-inline-end:4px;line-height:0;--gb-icon-size:12px;';
+    icon.innerHTML = GBIconAssets.render(value, 12);
+    cell.insertBefore(icon, cell.firstChild);
+    return icon;
+  },
+
+  // 列ヘッダーの列名（アイコンの絵文字を含めない）。
+  _scriptNoteHeaderCellLabel(cell) {
+    if (!cell) return '';
+    if (cell.dataset?.colLabel != null) return String(cell.dataset.colLabel).trim();
+    const clone = cell.cloneNode(true);
+    clone.querySelectorAll?.('.sn2-header-icon').forEach(el => el.remove());
+    return (clone.textContent || '').replace('…', '').trim();
+  },
+
   // === ヘッダーダブルクリックで列名編集 ===
 
   _startHeaderLabelEdit(cell, colId) {
@@ -147,7 +287,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const isStandard = colId.startsWith('_');
     const customCols = this._getCustomColumns();
     const colDef = isStandard ? null : customCols.find(c => c.id === colId);
-    const currentLabel = cell.textContent.replace('…', '').trim();
+    const currentLabel = this._scriptNoteHeaderCellLabel(cell);
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentLabel;
@@ -257,7 +397,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     popup.className = 'sn2-header-popup';
     popup.id = `sn2-header-popup-${String(colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     popup.setAttribute('role', 'menu');
-    popup.setAttribute('aria-label', `${(cell.textContent || '列').trim() || '列'}列メニュー`);
+    popup.setAttribute('aria-label', `${this._scriptNoteHeaderCellLabel(cell) || '列'}列メニュー`);
 
     const mkSep = () => { const el = document.createElement('div'); el.className = 'sn2-header-popup-sep'; return el; };
     const mkItem = (text, active, onClick) => {
@@ -384,6 +524,35 @@ Object.assign(ScriptNoteEditor.prototype, {
       closePopup();
       this._showColumnStylePopup(cell, colId);
     }));
+    const widthItem = mkItem('列幅を数値指定...', false, () => {
+      const columnLabel = this._scriptNoteHeaderCellLabel(cell);
+      closePopup();
+      this._showColumnWidthNumberDialog(colId, columnLabel, cell);
+    });
+    widthItem.dataset.e2eId = 'sn2-header-menu-column-width';
+    popup.appendChild(widthItem);
+    if (colId !== '_handle') {
+      const iconItem = mkItem('アイコンを変更…', false, () => {
+        closePopup();
+        if (typeof GBIconAssets === 'undefined' || typeof GBIconAssets.openPicker !== 'function') return;
+        // メニューのクリックが選択画面の「外側クリックで閉じる」へ届かないよう、処理後に開く。
+        setTimeout(() => GBIconAssets.openPicker({
+          anchorEl: cell.isConnected ? cell : null,
+          title: '列のアイコン',
+          current: this._getScriptNoteColumnIcon(colId),
+          allowReset: true,
+          resetLabel: '既定に戻す',
+          onSelect: spec => {
+            if (this.doc === ownerDocument) this._setScriptNoteColumnIcon(colId, spec || '');
+          },
+          onReset: () => {
+            if (this.doc === ownerDocument) this._setScriptNoteColumnIcon(colId, '');
+          },
+        }), 0);
+      });
+      iconItem.dataset.e2eId = 'sn2-header-menu-column-icon';
+      popup.appendChild(iconItem);
+    }
 
     popup.appendChild(mkSep());
 

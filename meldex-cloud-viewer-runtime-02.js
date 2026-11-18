@@ -7415,7 +7415,7 @@
 
   function _isTextLikePath(path) {
     const ext = _splitNameAndExt(_basename(path)).ext.toLowerCase();
-    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form'].includes(ext)
+    return TEXT_EXTS.has(ext) || ['.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.mel-form', '.mel-map'].includes(ext)
       || path.toLowerCase().endsWith('.scriptnote.json') || path.toLowerCase().endsWith('.timer.json');
   }
 
@@ -12751,6 +12751,7 @@ function _historyFileKind(path, content) {
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
   if (name.endsWith('.mel-form')) return 'form';
+  if (name.endsWith('.mel-map')) return 'map';
   if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
@@ -14395,112 +14396,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return items;
     }
 
-    function _pwaFileTransport() {
-      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
-    }
-
-    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
-      let meta = writeMeta?.meta || writeMeta || null;
-      if (!meta?.id && typeof provider?.getMetadata === 'function') {
-        meta = await provider.getMetadata(filePath).catch(() => meta);
-      }
-      if (!meta?.id) {
-        const stat = typeof provider?.statPath === 'function'
-          ? await provider.statPath(filePath).catch(() => null)
-          : null;
-        meta = stat?.meta || meta;
-      }
-      const token = String(etag || '');
-      const providerId = String(meta?.id || '');
-      const identity = window.MeldexDocumentIdentity;
-      let content = fileContent;
-      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
-        content = await provider.readText(filePath).catch(() => '');
-      }
-      const identityFormat = identity?.formatForPath?.(filePath, content);
-      const documentId = identityFormat
-        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
-        : '';
-      return {
-        etag: token,
-        transport_revision: { transport: _pwaFileTransport(), token },
-        ...(documentId ? {
-          document_id: documentId,
-          document_key: `document:${documentId}`,
-        } : {}),
-        ...(providerId ? {
-          provider_id: providerId,
-          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
-        } : {}),
-      };
-    }
-
-    function _throwPreconditionRequired(filePath, currentEtag) {
-      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
-      error.status = 428;
-      error.code = 'precondition_required';
-      error.meldexCode = 'precondition_required';
-      error.detail = {
-        code: 'precondition_required',
-        path: _normalizeFolderPath(filePath),
-        current_etag: String(currentEtag || ''),
-      };
-      throw error;
-    }
-
-    function _dropboxTransportRevisionToken(bodyValue) {
-      const expectedTransport = _pwaFileTransport();
-      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
-      let transport = '';
-      let token = '';
-      if (revision && typeof revision === 'object') {
-        transport = String(revision.transport || revision.kind || expectedTransport);
-        token = String(revision.token || revision.revision || revision.etag || '').trim();
-      } else {
-        const raw = String(revision || '').trim();
-        if (raw.startsWith('local-etag:')) transport = 'local-etag';
-        else if (raw.startsWith('browser-local:')) {
-          transport = 'browser-local';
-          token = raw.slice('browser-local:'.length);
-        }
-        else if (raw.startsWith('dropbox-rev:')) {
-          transport = 'dropbox-rev';
-          token = raw.slice('dropbox-rev:'.length);
-        } else {
-          transport = expectedTransport;
-          token = raw;
-        }
-      }
-      if (transport && transport !== expectedTransport) {
-        const error = new Error('異なる保存経路のrevisionは使用できません');
-        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
-        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
-        throw error;
-      }
-      return token;
-    }
-
-    async function _readFileSnapshot(provider, filePath, entry) {
-      if (typeof provider.readBytesSnapshot === 'function') {
-        const snapshot = await provider.readBytesSnapshot(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
-      }
-      if (typeof provider.readBytesFresh === 'function') {
-        const snapshot = await provider.readBytesFresh(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
-      }
-      const before = await _fileEtag(provider, filePath, entry);
-      const bytes = new TextEncoder().encode(await provider.readText(filePath));
-      const after = await _fileEtag(provider, filePath, entry);
-      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
-      return { bytes, etag: after };
-    }
-
-    function _savedNoteMetadata(filePath, content) {
-      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
-      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
-    }
-
     if (pathname === '/file' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -15345,6 +15240,291 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+    }
+/* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
+    function _pwaFileTransport() {
+      return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
+    }
+
+    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
+      let meta = writeMeta?.meta || writeMeta || null;
+      if (!meta?.id && typeof provider?.getMetadata === 'function') {
+        meta = await provider.getMetadata(filePath).catch(() => meta);
+      }
+      if (!meta?.id) {
+        const stat = typeof provider?.statPath === 'function'
+          ? await provider.statPath(filePath).catch(() => null)
+          : null;
+        meta = stat?.meta || meta;
+      }
+      const token = String(etag || '');
+      const providerId = String(meta?.id || '');
+      const identity = window.MeldexDocumentIdentity;
+      let content = fileContent;
+      if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
+        content = await provider.readText(filePath).catch(() => '');
+      }
+      const identityFormat = identity?.formatForPath?.(filePath, content);
+      const documentId = identityFormat
+        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        : '';
+      return {
+        etag: token,
+        transport_revision: { transport: _pwaFileTransport(), token },
+        ...(documentId ? {
+          document_id: documentId,
+          document_key: `document:${documentId}`,
+        } : {}),
+        ...(providerId ? {
+          provider_id: providerId,
+          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
+        } : {}),
+      };
+    }
+
+    function _throwPreconditionRequired(filePath, currentEtag) {
+      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
+      error.status = 428;
+      error.code = 'precondition_required';
+      error.meldexCode = 'precondition_required';
+      error.detail = {
+        code: 'precondition_required',
+        path: _normalizeFolderPath(filePath),
+        current_etag: String(currentEtag || ''),
+      };
+      throw error;
+    }
+
+    function _dropboxTransportRevisionToken(bodyValue) {
+      const expectedTransport = _pwaFileTransport();
+      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
+      let transport = '';
+      let token = '';
+      if (revision && typeof revision === 'object') {
+        transport = String(revision.transport || revision.kind || expectedTransport);
+        token = String(revision.token || revision.revision || revision.etag || '').trim();
+      } else {
+        const raw = String(revision || '').trim();
+        if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('browser-local:')) {
+          transport = 'browser-local';
+          token = raw.slice('browser-local:'.length);
+        }
+        else if (raw.startsWith('dropbox-rev:')) {
+          transport = 'dropbox-rev';
+          token = raw.slice('dropbox-rev:'.length);
+        } else {
+          transport = expectedTransport;
+          token = raw;
+        }
+      }
+      if (transport && transport !== expectedTransport) {
+        const error = new Error('異なる保存経路のrevisionは使用できません');
+        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
+        error.detail = { code: 'transport_mismatch', expected_transport: expectedTransport, actual_transport: transport };
+        throw error;
+      }
+      return token;
+    }
+
+    async function _readFileSnapshot(provider, filePath, entry) {
+      if (typeof provider.readBytesSnapshot === 'function') {
+        const snapshot = await provider.readBytesSnapshot(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      if (typeof provider.readBytesFresh === 'function') {
+        const snapshot = await provider.readBytesFresh(filePath);
+        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      }
+      const before = await _fileEtag(provider, filePath, entry);
+      const bytes = new TextEncoder().encode(await provider.readText(filePath));
+      const after = await _fileEtag(provider, filePath, entry);
+      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+      return { bytes, etag: after };
+    }
+
+    function _savedNoteMetadata(filePath, content) {
+      if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
+      return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
+    }
+/* Dropbox Cloud duplicate/save-as route orchestration continuation. */
+    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination) {
+      if (!operationId) throw Object.assign(new Error('operation_id は必須です'), { status: 400 });
+      const journal = window.MeldexCloudCopyOperationJournal;
+      if (!journal) throw Object.assign(new Error('Cloudファイル操作履歴を利用できません'), { status: 503 });
+      return journal.withFlight(provider, operationId, operation, payload, async identity => {
+        let record = await journal.load(provider, operationId, operation, payload, identity);
+        if (record?.state === 'completed') return record.result;
+        let destPath = String(record?.intent?.destination || '');
+        let destName = _basename(destPath);
+        if (!record) {
+          ({ destPath, destName } = await chooseDestination());
+          record = await journal.prepare(provider, operationId, operation, payload, {
+            source: payload.path, destination: destPath, kind: source.kind,
+            provider_id: '', provider_rev: '', manifest_digest: '', aftercare_completed: [],
+          }, identity);
+        }
+        if (!destPath) throw new Error('prepared Cloudファイル操作の保存先が不正です');
+        const proof = record.intent.publish_proof || null;
+        const stagingPrefix = `.${_basename(destPath)}.meldex-copy-`;
+        const stagingCandidates = proof ? (await _freshDirectEntries(provider, _dirname(destPath)))
+          .map(entry => _joinPath(_dirname(destPath), entry.name))
+          .filter(path => _basename(path).startsWith(stagingPrefix) && _basename(path).endsWith('.tmp')
+            && path === proof.staging_path) : [];
+        if (stagingCandidates.length > 1) {
+          throw Object.assign(new Error('prepared Cloud複製の一時候補が複数あるため自動再開できません'), { status: 409 });
+        }
+        const destinationExists = await _freshPathExists(provider, destPath);
+        if (destinationExists && stagingCandidates.length) {
+          throw Object.assign(new Error('prepared Cloud複製のfinalとstagingが同時に存在します'), { status: 409 });
+        }
+        if (!destinationExists && stagingCandidates.length === 1) {
+          const stagingPath = stagingCandidates[0];
+          const stagingProof = source.kind === 'directory'
+            ? await _cloudFolderIdentityProof(provider, stagingPath)
+            : await _providerObjectIdentity(provider, stagingPath, null).then(value => ({
+                provider_id: value.id, provider_rev: value.rev, manifest_digest: '',
+              }));
+          if (stagingPath !== proof.staging_path || stagingProof.provider_id !== proof.provider_id
+              || stagingProof.provider_rev !== proof.provider_rev
+              || stagingProof.manifest_digest !== proof.manifest_digest) {
+            throw Object.assign(new Error('prepared Cloud複製のstagingがpublish proofと一致しません'), { status: 409 });
+          }
+          await provider.movePathNoReplace(stagingPath, destPath);
+        }
+        let ownership = await _providerObjectIdentity(provider, destPath, null).catch(() => null);
+        const ownershipComplete = ownership?.id && (source.kind === 'directory' || ownership?.rev);
+        if (ownershipComplete && !record.intent.provider_id && proof) {
+          const freshProof = source.kind === 'directory'
+            ? await _cloudFolderIdentityProof(provider, destPath)
+            : { provider_id: ownership.id, provider_rev: ownership.rev, manifest_digest: '' };
+          if (freshProof.provider_id !== proof.provider_id
+              || freshProof.provider_rev !== proof.provider_rev
+              || freshProof.manifest_digest !== proof.manifest_digest) {
+            throw Object.assign(new Error('prepared Cloud複製先がpublish proofと一致しません'), { status: 409 });
+          }
+          record.intent = { ...record.intent, provider_id: ownership.id,
+            provider_rev: ownership.rev || '', manifest_digest: freshProof.manifest_digest || '' };
+          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+        } else if (!ownershipComplete) {
+          const orphan = record.intent.orphan_staging;
+          if (orphan?.path) {
+            const currentOrphan = await _providerObjectIdentity(provider, orphan.path, null)
+              .catch(() => null);
+            if (currentOrphan?.id) {
+              if (currentOrphan.id !== orphan.provider_id
+                  || (orphan.provider_rev && currentOrphan.rev !== orphan.provider_rev)) {
+                throw Object.assign(new Error('前回の孤立一時項目がforeign変更されています'), { status: 409 });
+              }
+              throw Object.assign(new Error('前回の孤立一時項目が保全されています'), {
+                status: 503, meldexCode: 'copy_staging_orphan_retained',
+              });
+            }
+            record.intent = { ...record.intent };
+            delete record.intent.orphan_staging;
+            await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+          }
+          let transaction;
+          try {
+            transaction = await _copyPathWithIdentityTransaction(
+              provider, payload.path, destPath, source.kind, {
+                persistPublishProof: async publishProof => {
+                  record.intent = { ...record.intent, publish_proof: publishProof };
+                  await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+                },
+              },
+            );
+          } catch (error) {
+            if (error?.meldexOrphanStaging) {
+              record.intent = { ...record.intent,
+                orphan_staging: error.meldexOrphanStaging };
+              await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+            }
+            throw error;
+          }
+          ownership = transaction.ownership;
+          if (!ownership?.id || (source.kind !== 'directory' && !ownership?.rev)) {
+            throw new Error('Cloud複製先のprovider identityを確認できません');
+          }
+          record.intent = {
+            ...record.intent, provider_id: ownership.id, provider_rev: ownership.rev,
+            manifest_digest: transaction.manifest_digest || '',
+          };
+          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+          record = await journal.load(provider, operationId, operation, payload);
+        } else if (ownership.id !== record.intent.provider_id
+            || (source.kind !== 'directory' && ownership.rev !== record.intent.provider_rev)) {
+          throw Object.assign(new Error('prepared Cloud複製先が後続更新と競合しています'), { status: 409 });
+        }
+        const folderCheckpoint = source.kind === 'directory'
+          ? () => _cloudFolderIdentityProof(provider, destPath) : null;
+        if (folderCheckpoint && record.intent.manifest_digest
+            && !record.intent.aftercare_in_progress) {
+          const current = await folderCheckpoint();
+          const expected = record.intent.aftercare_manifest_digest || record.intent.manifest_digest;
+          if (current.manifest_digest !== expected) {
+            throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
+          }
+        }
+        record = await journal.runAftercare(provider, operationId, operation, payload, record, [
+          { name: 'csv-sidecars', run: () => _relocateCsvSidecars(
+            provider, payload.path, destPath, source.kind === 'directory', true,
+          ) },
+          { name: 'path-mutation-hooks', run: () => _runPathMutationHooks({
+            action: 'copy', oldPath: payload.path, newPath: destPath,
+            isFolder: source.kind === 'directory', operationId,
+          }) },
+          { name: 'identity-claims', run: () => _claimPublishedCloudIdentities(
+            provider, destPath, source.kind,
+          ) },
+        ], folderCheckpoint);
+        const result = { ok: true, operation_id: operationId, new_path: destPath,
+          new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+          provider_id: ownership.id, provider_rev: ownership.rev,
+          manifest_digest: record.intent.manifest_digest || '' };
+        return journal.complete(provider, operationId, operation, payload, result);
+      });
+    }
+    if (pathname === '/outliner/duplicate' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      const source = await _resolveEntryHandle(provider, sourcePath);
+      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
+      const operationId = String(body?.operation_id || '').trim();
+      const payload = { path: sourcePath };
+      return runCloudIdentityCopyOperation(provider, 'duplicate', operationId, payload, source, async () => {
+        const sourceName = _basename(sourcePath); const sourceSplit = _splitNameAndExt(sourceName);
+        let destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${sourceSplit.ext}` : `${sourceName}_copy`;
+        let destPath = _joinPath(_dirname(sourcePath), destName);
+        for (let counter = 2; await _freshPathExists(provider, destPath); counter += 1) {
+          destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${counter}${sourceSplit.ext}` : `${sourceName}_copy${counter}`;
+          destPath = _joinPath(_dirname(sourcePath), destName);
+        }
+        await _directoryHandle(provider, _dirname(destPath), true);
+        return { destName, destPath };
+      });
+    }
+
+    if (pathname === '/outliner/save-as' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      const source = await _resolveEntryHandle(provider, sourcePath);
+      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
+      const sourceName = _basename(sourcePath); const sourceSplit = _splitNameAndExt(sourceName);
+      const newName = _validateItemName(String(body?.new_name || (source.kind === 'file' ? sourceSplit.stem : sourceName)).replace(/[\\/]/g, '').replace(/\.\./g, '').trim(), 'new_name');
+      const destFolder = _normalizeFolderPath(body?.dest_folder || _dirname(sourcePath));
+      const operationId = String(body?.operation_id || '').trim();
+      const payload = { path: sourcePath, new_name: newName, dest_folder: destFolder };
+      return runCloudIdentityCopyOperation(provider, 'save-as', operationId, payload, source, async () => {
+        let destName = source.kind === 'file' ? newName + sourceSplit.ext : newName;
+        let destPath = _joinPath(destFolder, destName);
+        for (let counter = 2; await _freshPathExists(provider, destPath); counter += 1) {
+          destName = source.kind === 'file' ? `${newName}_${counter}${sourceSplit.ext}` : `${newName}_${counter}`;
+          destPath = _joinPath(destFolder, destName);
+        }
+        await _directoryHandle(provider, destFolder, true);
+        return { destName, destPath };
+      });
     }
 /* gb-data-access-dropbox-fileops move-route continuation. */
     if (pathname === '/outliner/move' && method === 'POST') {
@@ -19183,7 +19363,10 @@ function lucide(name, size) {
     paths = window.LUCIDE_FULL[name];
   }
   paths = paths || '';
-  return `<svg data-icon="${name}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
+  // アイコン名は保存データ（ビュー設定等）から来ることがあるため、属性へは安全な文字だけを書く。
+  const safeName = String(name ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  size = String(size).replace(/[^0-9A-Za-z.%]/g, '') || 14;
+  return `<svg data-icon="${safeName}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;">${paths}</svg>`;
 }
 
 // メニュー選択状態アイコン
@@ -19236,6 +19419,62 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
+// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+const UI_TOOLBAR_APP_ICON_LABELS = {
+  database: 'シート',
+  page: 'ノート',
+  scriptnote: 'シナリオ',
+  board: 'ボード',
+  calendar: 'カレンダー',
+  'form-app': 'フォーム',
+  map: 'マップ',
+  csv: 'CSV',
+  folder: 'フォルダ',
+  media: 'ビューワー',
+  'quick-memo': 'クイックメモ',
+};
+const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
+const UI_TOOLBAR_APP_ICON_SIZE = 24;
+
+function toolbarAppIconName(type) {
+  return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
+}
+
+function toolbarAppIconHtml(type) {
+  const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+  const name = toolbarAppIconName(key);
+  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+}
+
+function toolbarAppIconElement(type) {
+  const template = document.createElement('template');
+  template.innerHTML = toolbarAppIconHtml(type);
+  return template.content.firstElementChild;
+}
+
+function hydrateToolbarAppIcons(root) {
+  const scope = root?.querySelectorAll ? root : document;
+  const nodes = [];
+  if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
+  scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
+  nodes.forEach(el => {
+    if (el.querySelector('svg')) return;
+    const key = el.getAttribute('data-app-icon') || '';
+    const name = toolbarAppIconName(key);
+    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
+    if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
+  });
+}
+if (typeof window !== 'undefined') {
+  window.toolbarAppIconHtml = toolbarAppIconHtml;
+  window.toolbarAppIconElement = toolbarAppIconElement;
+  window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
+}
+
 function fileTypeIcon(type, size) {
   const map = {
     image: 'image', video: 'video', audio: 'audio',
@@ -19247,6 +19486,7 @@ function fileTypeIcon(type, size) {
 
 function replaceIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
+  hydrateToolbarAppIcons(scope);
   scope.querySelectorAll('.ico').forEach(el => {
     const cls = el.className;
     let name = '';
@@ -19378,6 +19618,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-redo2')) name = 'redo2';
     // 単独アプリパリティ v0.6.200（シナリオ/ボードのエクスポートメニュー用アイコン）
     else if (cls.includes('ico-image')) name = 'image';
+    // クイックメモの作成メニュー「動画」(ico-video)が未登録で空アイコンになっていたため追加。
+    else if (cls.includes('ico-video')) name = 'video';
     else if (cls.includes('ico-fileCode')) name = 'fileCode';
     else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
@@ -22172,7 +22414,9 @@ document.addEventListener('DOMContentLoaded', () => {
  * delegated handlers, editor selection and application state remain intact. */
 (function () {
   'use strict';
-  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"])';
+  const hosts = '.gb-toolbar, header.sa-toolbar, .folder-toolbar, .gb-form-toolbar, .gb-form-app-toolbar, #se-toolbar, #sidebar-search-bar, .qm-toolbar-group, .floating-toolbar, .team-room-toolbar, .chat-cli-toolbar, .sn2-detail-toolbar, .gb-production-all-flat-toolbar, .gb-production-template-toolbar, [role="toolbar"]:not([aria-orientation="vertical"]):not([id^="cloud-mobile-"])';
+  // スマホ用の各バー（cloud-mobile-*bar）は1行を横スクロールさせる設計で、中身を1つの行要素に包んでいる。
+  // あふれ処理の対象にすると行要素ごと隠れて操作が消えるため対象外にする。
   const hiddenClass = 'gb-tbo-hidden';
   const registry = new Map();
   let active = null;
@@ -22316,7 +22560,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const items = Array.from(toolbar.children).filter(el => el !== more && !el.hidden && getComputedStyle(el).display !== 'none');
     entry.sources = new Map(items.map(el => [el, controls(el)]));
     const candidates = items.filter(el => entry.sources.get(el).length && !matches(el, entry.keep) &&
-      !el.matches('.qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title, #sidebar-search-input') &&
+      !el.matches('.tb-app-icon, .tb-file-icon, .qm-brand, .sa-title, .tb-title, .tb-file-title, .gb-toolbar-title, #sidebar-search-input') &&
       !el.querySelector('#titleInput, #title-input, .sa-title-input'));
     const fits = () => {
       const box = toolbar.getBoundingClientRect();
@@ -22335,7 +22579,9 @@ document.addEventListener('DOMContentLoaded', () => {
       more.hidden = false;
       items.filter(el => el.matches('.sep, .tb-spacer')).forEach(el => el.classList.add(hiddenClass));
       // Preserve configured priority operations; otherwise collapse from the right.
-      candidates.sort((a, b) => Number(matches(a, entry.priority)) - Number(matches(b, entry.priority)) || items.indexOf(b) - items.indexOf(a));
+      // data-toolbar-overflow-priority の付いた群れ（フォルダ表示の「追加」等）も最後まで残す。
+      const keepsLonger = el => matches(el, entry.priority) || el.matches('[data-toolbar-overflow-priority]');
+      candidates.sort((a, b) => Number(keepsLonger(a)) - Number(keepsLonger(b)) || items.indexOf(b) - items.indexOf(a));
       for (const el of candidates) {
         if (fits()) break;
         el.classList.add(hiddenClass);

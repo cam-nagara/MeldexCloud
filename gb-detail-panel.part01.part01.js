@@ -20,6 +20,7 @@ function _normalizeDetailTab(tab) {
     'calendar-production',
     'map-settings',
     'map-selection',
+    'form-field',
     'board-card',
     'board-line',
     'board-note',
@@ -53,6 +54,7 @@ function _resolveDetailTabForType(type, defaultTab) {
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
     calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
     map: ['map-settings', 'map-selection'],
+    'form-app': ['form-field'],
     csv: ['publish'],
     scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
   };
@@ -85,7 +87,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'form-field', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -161,6 +163,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('calendar-production', 'detail-tab-calendar detail-tab-calendar-production', '制作管理')}
       ${_detailTabButtonHtml('map-settings', 'detail-tab-map', '地図')}
       ${_detailTabButtonHtml('map-selection', 'detail-tab-map', '地点・図形')}
+      ${_detailTabButtonHtml('form-field', 'detail-tab-form', '項目')}
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
@@ -180,6 +183,7 @@ function _detailTabShellHtml() {
     <div id="detail-tab-calendar-production" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-map-settings" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-map-selection" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-form-field" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-line" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-board-card-style" class="gb-panel-body-scroll" hidden></div>

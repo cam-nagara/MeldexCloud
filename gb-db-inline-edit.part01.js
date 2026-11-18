@@ -61,6 +61,62 @@ function attachInlineBlurCommit(inp, commit, options = {}) {
 // レジストリに未登録のため、_dbPaneContextFromEvent()（DOM祖先探索 + レジストリ参照）は
 // 常に解決に失敗し、メイン画面側の別ペイン（またはnull）へ誤って解決され得る
 // （showColHeaderMenu() と同根。2026-07-15 フェーズD1で確認）。
+// 列名変更の旧名→新名をシートごとに覚える。列メニューは開いた時点の列名を持つため、
+// 列名変更の反映前に開いたメニューから「右に列を挿入」すると、基準列が見つからずに
+// 末尾へ追加されていた（列名変更の待ち時間中に続けて挿入すると再現）。
+const _dbColumnRenameAliases = new Map();
+
+function _dbRememberColumnRename(dbPath, oldName, newName) {
+  const key = String(dbPath || '');
+  if (!key || !oldName || !newName || oldName === newName) return () => {};
+  let aliases = _dbColumnRenameAliases.get(key);
+  if (!aliases) { aliases = new Map(); _dbColumnRenameAliases.set(key, aliases); }
+  aliases.set(oldName, newName);
+  // 新名を別の列が旧名として使い直す場合に循環しないよう、新名側の古い対応は消す。
+  if (aliases.get(newName) === oldName) aliases.delete(newName);
+  return function forget() {
+    if (aliases.get(oldName) === newName) aliases.delete(oldName);
+  };
+}
+
+// 列名変更の保存が終わるまで、同じシートの列挿入を待たせる。待たずに挿入すると、旧名を含む
+// 古い列定義で新しい列を書き込み、列の型の保存と列名変更がサーバーで競合した（409）。
+// 併せて、新しい列の仮の名前に変更中の旧名を使わない（insertPropertyInline）ことと、古い
+// 保存応答で手元の列定義を戻さない（GbDbSchemaMutation の世代確認）ことで、列定義が失われる
+// 不具合（2026-11-18 再現: 3回続けた挿入で列が1つだけ残った）を防ぐ。
+const _dbColumnRenameLocalGates = new Map();
+
+function _dbOpenColumnRenameGate(dbPath) {
+  const key = String(dbPath || '');
+  let release = () => {};
+  const promise = new Promise(resolve => { release = resolve; });
+  const gate = { promise, released: false };
+  _dbColumnRenameLocalGates.set(key, gate);
+  return () => {
+    if (gate.released) return;
+    gate.released = true;
+    if (_dbColumnRenameLocalGates.get(key) === gate) _dbColumnRenameLocalGates.delete(key);
+    release();
+  };
+}
+
+function _dbPendingColumnRenameGate(dbPath) {
+  const gate = _dbColumnRenameLocalGates.get(String(dbPath || ''));
+  return gate && !gate.released ? gate.promise : null;
+}
+
+function _dbResolveCurrentColumnName(dbPath, name, existingNames) {
+  const aliases = _dbColumnRenameAliases.get(String(dbPath || ''));
+  const existing = Array.isArray(existingNames) ? existingNames : null;
+  if (existing && existing.includes(name)) return name;
+  let current = name;
+  for (let hop = 0; aliases && hop < 16 && aliases.has(current); hop += 1) {
+    current = aliases.get(current);
+    if (existing && existing.includes(current)) return current;
+  }
+  return existing ? name : current;
+}
+
 function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   if (th.querySelector('.th-rename-input')) return;
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
@@ -124,6 +180,23 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
       restoreActiveCellByProp(oldName, ctx);
       return;
     }
+    // 保存の完了を待たずに、見出しへ新しい列名をすぐ出す（失敗・取り消し時は描き直しで戻る）。
+    inp.remove();
+    if (label) {
+      label.textContent = newName;
+      label.style.display = '';
+    }
+    th.classList.add('is-column-renaming');
+    th.setAttribute('aria-busy', 'true');
+    const forgetRename = _dbRememberColumnRename(targetDbPath, oldName, newName);
+    const releaseRenameGate = _dbOpenColumnRenameGate(targetDbPath);
+    // 別の列の列名を入力中なら、描き直しでその入力欄を消さない（その列の確定時に描き直す）。
+    const otherRenameActive = () => !!(ctx?.containerEl || document).querySelector?.('.th-rename-input');
+    const renderUnlessEditing = (activeProp) => {
+      if (otherRenameActive()) return;
+      renderPivot(ctx);
+      restoreActiveCellByProp(activeProp, ctx);
+    };
     try {
       if (typeof renameDbProperty === 'function') {
         if (window.MeldexTopicPlacementUI?.renameColumn) {
@@ -133,8 +206,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
             rollback: () => renameDbProperty(targetDbPath, newName, oldName, ctx),
           });
           if (!renamed) {
-            renderPivot(ctx);
-            restoreActiveCellByProp(oldName, ctx);
+            releaseRenameGate();
+            forgetRename();
+            if (label && label.isConnected) label.textContent = oldName;
+            th.classList.remove('is-column-renaming');
+            th.removeAttribute('aria-busy');
+            renderUnlessEditing(oldName);
             return;
           }
         } else {
@@ -142,21 +219,28 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
         }
       }
     } catch (err) {
+      releaseRenameGate();
       showStatus(
         err?.resultUnknown
           ? '列名変更の保存結果を確認できません。再読み込み後の表示を確認してください。'
           : '列名の変更に失敗: ' + (err?.message || err),
         true
       );
-      renderPivot(ctx);
       const currentProps = (ctx?.pivotData || state.pivotData)?.properties || [];
-      restoreActiveCellByProp(currentProps.includes(newName) ? newName : oldName, ctx);
+      const kept = currentProps.includes(newName) ? newName : oldName;
+      if (kept === oldName) forgetRename();
+      if (label && label.isConnected) label.textContent = kept;
+      th.classList.remove('is-column-renaming');
+      th.removeAttribute('aria-busy');
+      renderUnlessEditing(kept);
       return;
     }
+    releaseRenameGate();
+    th.classList.remove('is-column-renaming');
+    th.removeAttribute('aria-busy');
     const selected = _getSelectedColumns(targetDbPath).map(name => name === oldName ? newName : name);
     _setSelectedColumns(targetDbPath, selected, newName);
-    renderPivot(ctx);
-    restoreActiveCellByProp(newName, ctx);
+    renderUnlessEditing(newName);
   };
   inp.addEventListener('keydown', (e) => {
     if (_dbInlineIsComposing(e)) return;

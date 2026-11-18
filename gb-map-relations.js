@@ -87,6 +87,16 @@ const MeldexMapRelations = (() => {
         } catch (error) { app._message(error.message); }
       });
     }, { disabled: locked }));
+    if (app.store.doc.atlas?.surface && feature.points?.length) {
+      const wrap = document.createElement('label'); wrap.className = 'gb-map-field'; wrap.append('詳細地図の範囲');
+      const span = document.createElement('select'); span.className = 'gb-select'; span.setAttribute('aria-label', '詳細地図の範囲');
+      for (const [value, label] of detailSpans) span.add(new Option(label, value));
+      span.value = '16'; span.disabled = locked; wrap.append(span); root.appendChild(wrap);
+      const detail = app._button('詳細地図を作成', async () => {
+        try { await createDetailMap(app, feature, Number(span.value) || 16); } catch (error) { app._message(error.userMessage || error.message); }
+      }, { disabled: locked });
+      detail.dataset.e2eId = 'map-create-detail-map'; root.appendChild(detail);
+    }
     root.appendChild(app._button('子地図を新規作成', async () => {
       const canEdit = app._editGuard(feature.id), parentPath = app.path;
       const name = await cfPrompt('子地図の名前', (feature.label || '地点') + 'の詳細地図');
@@ -102,6 +112,65 @@ const MeldexMapRelations = (() => {
         await openChild(app, feature, { path, label: result.node.label });
       }
     }, { disabled: locked }));
+  }
+  // 詳細地図: 親地図（Azgaar方式）の地点の周りを切り出し、起伏・海岸線を引き継いだ子地図を作る。
+  // 国→地方、地方→山や島、のように縮尺を下げて同じ世界の続きを描ける。街路は子地図の「都市・集落の詳細図」で作る。
+  const detailSpans = Object.freeze([['8', '周囲の広い範囲（親の1/8）'], ['16', '周囲（親の1/16）'], ['32', '近く（親の1/32）'], ['64', 'ごく近く（親の1/64）']]);
+  function detailTerrain(parent, feature, divisor) {
+    const atlas = parent.atlas, field = globalThis.MeldexMapTerrainField;
+    if (!atlas?.surface || !field) throw new Error('詳細地図は、起伏のあるAzgaar方式の地図から作れます');
+    const [px, py] = feature.points[0];
+    const ax = px / parent.canvas.width * atlas.width, ay = py / parent.canvas.height * atlas.height;
+    const span = atlas.width / divisor, spanY = span * 0.6;
+    const x0 = Math.max(0, Math.min(atlas.width - span, ax - span / 2)), y0 = Math.max(0, Math.min(atlas.height - spanY, ay - spanY / 2));
+    const scene = field.scene(atlas), cols = 256, rows = 154, heights = new Array(cols * rows);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const h = scene.sample(x0 + (x + .5) / cols * span, y0 + (y + .5) / rows * spanY)[0];
+      heights[y * cols + x] = h < 20 ? Math.max(-1, Math.min(0, (h - 20) / 20)) : Math.max(0.001, Math.min(1, (h - 20) / 80));
+    }
+    return { box: [x0, y0, span, spanY], terrain: { cols, rows, heights } };
+  }
+  async function createDetailMap(app, feature, divisor) {
+    const parent = app.store.doc, canEdit = app._editGuard(feature.id), parentPath = app.path;
+    const { box, terrain } = detailTerrain(parent, feature, divisor);
+    const name = await cfPrompt('詳細地図の名前', (feature.label || '地点') + 'の詳細地図');
+    if (!name?.trim() || !canEdit() || app._selected !== feature.id) return;
+    const normalized = parentPath.replace(/\\/g, '/'), folder = normalized.slice(0, normalized.lastIndexOf('/') + 1);
+    const result = await apiPost('/outliner/add', { type: 'map', label: name.trim(), parent: folder });
+    const path = result.node?.path;
+    if (!path) throw new Error('詳細地図の作成結果を確認できません');
+    const loaded = await apiFetch('/file?path=' + encodeURIComponent(path)), child = D().parse(loaded.content);
+    child.coordinate_system = 'local'; child.basemap = 'blank';
+    child.canvas = { width: 2000, height: Math.round(2000 * box[3] / box[2]) };
+    child.terrain = terrain;
+    child.atlas = globalThis.MeldexMapAzgaar.fromLegacyTerrain(child);
+    child.terrain = null;
+    child.atlas.presentation = parent.atlas.presentation || 'biomes';
+    if (parent.map_style) child.map_style = D().clone(parent.map_style);
+    // 縮尺: 親の1地図単位の距離 × 切り出した幅（親の地図単位）÷ 子の横幅。
+    const parentUnits = box[2] / parent.atlas.width * parent.canvas.width;
+    if (parent.scale?.distance_per_unit) child.scale = { ...child.scale, distance_per_unit: parent.scale.distance_per_unit * parentUnits / child.canvas.width, unit: parent.scale.unit };
+    // 範囲内の地点（都市・地名）を引き継ぐ。
+    const layer = child.layers[0], toChild = ([x, y]) => [((x / parent.canvas.width * parent.atlas.width) - box[0]) / box[2] * child.canvas.width, ((y / parent.canvas.height * parent.atlas.height) - box[1]) / box[3] * child.canvas.height];
+    for (const source of parent.features) {
+      if (!['pin', 'label'].includes(source.kind) || false) continue;
+      const point = toChild(source.points[0]);
+      if (point[0] < 0 || point[1] < 0 || point[0] > child.canvas.width || point[1] > child.canvas.height) continue;
+      const copy = D().feature(source.kind, [point], layer.id, source.label);
+      copy.color = source.color; copy.icon = source.icon; copy.tags = [...(source.tags || [])]; copy.description = source.description || '';
+      if (source.stamp) copy.stamp = source.stamp;
+      if (source.marker_style) copy.marker_style = source.marker_style;
+      child.features.push(copy);
+    }
+    D().parse(JSON.stringify(child));
+    await apiPut('/file?path=' + encodeURIComponent(path), { content: JSON.stringify(child), if_match_etag: loaded.etag });
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'map-detail-created' });
+    if (!canEdit() || app._selected !== feature.id) { app._message('詳細地図を作成しました: ' + path); return; }
+    app._editFeature(next => {
+      if (!next.links.some(link => link.role === 'child-map' && key(link.path) === key(path))) next.links.push({ path, label: child.display_title || child.title || name.trim(), type: 'map', role: 'child-map' });
+    });
+    if (!await app.flush()) { app._message('詳細地図を作成しましたが親地図を保存できません: ' + path); return; }
+    await openChild(app, feature, { path, label: result.node.label });
   }
   function sources(app, root) {
     const heading = document.createElement('h3'); heading.textContent = 'シートの場所'; root.appendChild(heading);

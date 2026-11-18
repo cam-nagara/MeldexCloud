@@ -3258,7 +3258,8 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 /* タブの D&D 並び替えインジケータ (DOM 挿入は bar のレイアウトを変動させるため、
    target タブ自身の box-shadow inset で描く) */
 /* ドロップインジケータ: アクティブタブの背景に隠れないよう疑似要素で
-   絶対配置 + z-index で常に前面に描画。太さ 3px + 上下 2px はみ出しで視認性を確保。 */
+   絶対配置 + z-index で常に前面に描画。太さ・はみ出し・色は全アプリのビュータブ
+   （gb-view-tabs.css の .gb-view-tab-drop-*）と同じ共通トークン --ui-tab-drop-indicator-*。 */
 .gb-tab.gb-tab-drop-before,
 .gb-tab.gb-tab-drop-after {
   position: relative;
@@ -3267,16 +3268,16 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 .gb-tab.gb-tab-drop-after::after {
   content: '';
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 3px;
-  background: var(--accent, #4a90d9);
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  background: var(--ui-tab-drop-indicator-color);
   z-index: 10;
   pointer-events: none;
-  border-radius: 1px;
+  border-radius: var(--ui-tab-drop-indicator-radius);
 }
-.gb-tab.gb-tab-drop-before::before { left: -1px; }
-.gb-tab.gb-tab-drop-after::after { right: -1px; }
+.gb-tab.gb-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-tab.gb-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
 
 
 /* === 列（カラム）: 水平スプリットの子 or 単独ルート === */
@@ -6289,6 +6290,18 @@ mark.db-find-current-text {
   border-radius: 3px; outline: none; cursor: text;
 }
 .gb-subpanel-title-text.meldex-entity-detail-header-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* サブパネルのタブ化（ファイル／フォルダのタブをパネルのタブバーに並べる）。
+   見出しの名前はタブと重複するため出さない（トピックの詳細の名前欄は残す）。 */
+.gb-subpanel-titlebar .gb-subpanel-title-icon,
+.gb-subpanel-titlebar .gb-subpanel-title-text:not(.meldex-entity-detail-header-title) { display: none; }
+.gb-subpanel-tab-strip .gb-subpanel-tabs-empty {
+  align-self: center;
+  padding: 0 var(--ui-space-2, 8px);
+  color: var(--ui-fg-muted, var(--fg2));
+  font-size: var(--ui-font-12, 12px);
+  white-space: nowrap;
+}
 
 /* =========================================================================
    gb-quick-memo-panel.css — クイックメモのフロートパネル
@@ -10653,6 +10666,11 @@ td:hover .cell-add-btn { display: inline-flex; }
 #pivot-table td .cell-value > .cell-value-more,
 .pivot-table td .cell-value > .cell-value-more {
   right: 2px !important;
+  /* 値（16〜21px）の中央に22pxのボタンを置くと、セル上端からはみ出して上にずれて見えた
+     （全列タイプ共通）。値の1行目の上端に揃え、通常の行ではセルの上下中央、複数行の
+     セルや高い行でも同じ行の他の列と同じ高さに置く。 */
+  top: 0 !important;
+  transform: none !important;
   min-width: 22px;
   min-height: 22px;
   align-items: center;
@@ -10675,6 +10693,9 @@ td.active-cell .cell-value > .cell-value-more {
   body #pivot-table td .cell-value > .cell-value-more,
   body .pivot-table td .cell-value > .cell-value-more {
     right: 2px !important;
+    /* タッチ操作の44pxボタンは従来どおり値の上下中央に置く。 */
+    top: 50% !important;
+    transform: translateY(-50%) !important;
     display: inline-flex !important;
     min-width: 44px;
     min-height: 44px;
@@ -11982,6 +12003,9 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 6px;
   flex-shrink: 0; user-select: none;
 }
+.kanban-column.db-option-color-column {
+  background: color-mix(in srgb, var(--db-option-bg) 16%, var(--bg2));
+}
 .kanban-column-header.db-option-color-header {
   background: var(--db-option-bg);
   color: var(--db-option-fg);
@@ -12286,7 +12310,8 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .entry-prop-value-tail > .cell-value { flex: 0 1 auto; min-width: 0; }
 /* 列タイプ選択のカスタムドロップダウン（アイコン付き） */
 .pt-type-select-btn {
-  display: flex; align-items: center; gap: 6px; width: 100%;
+  /* 項目名と同じ行に並ぶ（設定欄の共通配置）。長い型名でも欄の外へはみ出さず省略表示する */
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
   padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: var(--ui-radius-sm, 4px); cursor: pointer;
   font-size: var(--ui-font-13, 13px); text-align: left; box-sizing: border-box;
@@ -13922,12 +13947,20 @@ input.gb-middle-ellipsis-input-active {
 /* 小型操作ボタン (×削除, +追加 等) */
 .pt-small-btn { font-size: var(--ui-font-11); padding: 1px var(--ui-space-3); cursor: pointer; }
 .pt-small-btn.muted { color: var(--ui-fg-muted); }
+/* AI自動生成のプロンプトへ差し込む列のボタン: 入力欄の下に値の列へ揃えて並べる（入力欄の横に置くと縦に潰れる） */
+.pt-ai-ref-row { margin-left: calc(128px + var(--ui-space-5, 12px)); }
+.pt-ai-ref-row .pt-small-btn { white-space: nowrap; }
+/* 列のメモ: 保存状態は入力欄の下に出す（横に置くと1文字ずつ縦に折り返していた） */
+.pt-column-memo-value { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pt-column-memo-value > textarea { width: 100%; box-sizing: border-box; }
 /* ヒント行 */
 .pt-hint { font-size: var(--ui-font-11); color: var(--ui-fg-muted); margin-top: 2px; }
 .pt-select-option-list {
   display: grid;
   /* 行ごとのチップ幅を一覧全体でそろえる（各行は subgrid で同じ列を使う） */
-  grid-template-columns: minmax(40px, max-content) minmax(56px, 1fr) 28px 28px;
+  /* 右パネル（約300px）で項目名の右に置いても、操作2つが一覧の外へはみ出さない最小幅にする。
+     チップは省略表示（ellipsis）、入力欄は残り幅を使う。 */
+  grid-template-columns: minmax(24px, max-content) minmax(32px, 1fr) 28px 28px;
   min-width: 0;
   gap: var(--ui-space-2);
   margin-bottom: var(--ui-space-2);
@@ -14463,9 +14496,47 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .gb-context-menu > div:hover { background: var(--bg4); }
 .gb-context-menu > div.danger { color: var(--red); }
 .gb-context-menu > div.danger:hover { background: color-mix(in srgb,var(--red) 15%,transparent); }
-.tree-node-row.drag-over-above { box-shadow: inset 0 2px 0 var(--outliner-accent); }
-.tree-node-row.drag-over-below { box-shadow: inset 0 -2px 0 var(--outliner-accent); }
-.tree-node-row.drag-over-inside { background: color-mix(in srgb, var(--outliner-item-selected-bg) 45%, transparent); }
+/* フォルダツリーのD&Dインジケーター（UI共通ルール §19）:
+   線=行と行の間への移動。行の上端/下端の境界に、字下げ位置から右端までの2px線を描く
+   （行の内側の影にすると行の強調や枠と誤読されるため、境界へはみ出す絶対配置の線にする）。
+   枠=フォルダ（シート）の中への移動。行全体をアクセント色の枠で囲む。 */
+.tree-node-row.drag-over-above,
+.tree-node-row.drag-over-below { box-shadow: none; }
+.tree-node-row.drag-over-above::after,
+.tree-node-row.drag-over-below::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--outliner-accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.tree-node-row.drag-over-above::after { top: -1px; }
+.tree-node-row.drag-over-below::after { bottom: -1px; }
+.tree-node-row.drag-over-above::before,
+.tree-node-row.drag-over-below::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 2px solid var(--outliner-accent);
+  border-radius: 50%;
+  background: var(--outliner-bg, var(--bg2));
+  pointer-events: none;
+  z-index: 3;
+}
+.tree-node-row.drag-over-above::before { top: -3px; }
+.tree-node-row.drag-over-below::before { bottom: -3px; }
+.tree-node-row.drag-over-inside {
+  background: color-mix(in srgb, var(--outliner-accent) 14%, transparent);
+  outline: 2px solid var(--outliner-accent);
+  outline-offset: -2px;
+}
 .tree-node-row.dragging { opacity: 0.4; }
 
 /* リッチテキスト */
@@ -20039,7 +20110,9 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .db-prop-settings .field > label,
 .pt-modal .field > label {
   margin: 0;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
   color: var(--ui-fg-muted);
   font-size: var(--ui-font-12);
 }
@@ -20211,6 +20284,84 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .db-chip-styled[data-chip-font-style] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { font-style: var(--db-chip-font-style); }
 .db-chip-styled[data-chip-decoration] :is(.relation-link, .pt-chip-style-sample, .common-tags-tag, .db-rollup-line, .db-cell-display-text) { text-decoration: var(--db-chip-decoration); }
 
+
+/* ルビ設定ポップアップ（ノート .note-ruby-popup / シナリオ .sn2-ruby-popup）の「シートに登録」段。
+   項目は共通の .gb-context-menu-item / .gb-context-menu-label / .gb-context-menu-sep を使う。 */
+.gb-ruby-sheet-register {
+  margin-top: var(--ui-space-2, 6px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2, 6px);
+  min-width: 0;
+}
+.gb-ruby-sheet-register-toggle {
+  align-self: flex-start;
+}
+.gb-ruby-sheet-register-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--ui-border-subtle, var(--ui-border-strong));
+  padding-top: var(--ui-space-2, 6px);
+}
+.gb-ruby-sheet-register-panel[hidden],
+.gb-ruby-sheet-register-result[hidden] {
+  display: none;
+}
+.gb-ruby-sheet-register-list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-width: 0;
+}
+.gb-ruby-sheet-register .gb-ruby-sheet-register-item {
+  min-width: 0;
+  gap: var(--ui-space-3, 8px);
+}
+.gb-ruby-sheet-register-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gb-ruby-sheet-register-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: right;
+}
+.gb-ruby-sheet-register .gb-context-menu-label.is-error,
+.gb-ruby-sheet-register-result.is-error {
+  color: var(--ui-danger);
+}
+.gb-ruby-sheet-register-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2, 6px);
+  font-size: var(--ui-font-12);
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--ui-fg-muted);
+}
+/* フォルダ選択・確認ダイアログを開いている間はポップアップを隠す（閉じずに戻ってくる） */
+.is-ruby-sheet-dialog-open {
+  visibility: hidden;
+}
+@media (max-width: 900px), (pointer: coarse) {
+  .gb-ruby-sheet-register-toggle {
+    min-height: var(--ui-h-touch, 44px);
+  }
+}
 
 /* gb-note-block-menu.css
    計画書: note-editor-regression-performance-conflict-plan-2026-08-01.md §4.3
@@ -21889,19 +22040,20 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 
 .gb-production-list-switch-btn.gb-production-tab-drop-before::before,
 .gb-production-list-switch-btn.gb-production-tab-drop-after::after {
+  /* メインパネルのタブ・他のビュータブと同じ縦線（共通トークン --ui-tab-drop-indicator-*） */
   content: "";
   position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 2px;
-  border-radius: var(--ui-radius-pill, 999px);
-  background: var(--cal-accent, var(--accent));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  border-radius: var(--ui-tab-drop-indicator-radius);
+  background: var(--ui-tab-drop-indicator-color);
+  z-index: 10;
   pointer-events: none;
 }
 
-.gb-production-list-switch-btn.gb-production-tab-drop-before::before { left: -3px; }
-.gb-production-list-switch-btn.gb-production-tab-drop-after::after { right: -3px; }
+.gb-production-list-switch-btn.gb-production-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-production-list-switch-btn.gb-production-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
 
 .gb-production-list-tab-more {
   display: inline-flex;
@@ -22878,6 +23030,16 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   --ui-toolbar-title-height: 30px;
   --ui-toolbar-title-font-size: var(--ui-font-16);
   --ui-toolbar-separator-height: 18px;
+  /* ツールバー左端のアプリアイコン（どのアプリかを見分ける目印。他のアイコン16pxより大きく出す） */
+  --ui-toolbar-app-icon-size: 24px;
+  --ui-toolbar-app-icon-box: 28px; /* 幅。高さはアイコンと同じ24pxで、帯の高さを押し広げない */
+  --ui-toolbar-app-icon-gap: var(--ui-space-2);
+  --ui-toolbar-app-icon-color: var(--ui-accent, var(--accent));
+  /* ファイル名直前のファイルアイコン（フォルダツリーと同じアイコン。クリックでアイコン選択） */
+  --ui-toolbar-file-icon-size: var(--ui-icon-md); /* 16px。ファイル名の文字16pxに合わせる */
+  --ui-toolbar-file-icon-box: var(--ui-toolbar-control-size); /* 22px正方。ツールバーのボタンと同じ当たり */
+  --ui-toolbar-file-icon-gap: var(--ui-space-1);
+  --ui-toolbar-file-icon-color: var(--ui-toolbar-fg);
 
   /* 部品の共通寸法（UI共通ルール 4.0／19。全画面がこの値を参照し、比較テストで固定する） */
   /* ダイアログ */
@@ -22903,6 +23065,12 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   --ui-view-tab-font-size: var(--ui-font-12);
   --ui-view-tab-row-padding: var(--ui-space-1) var(--ui-space-3);
   --ui-view-tab-row-border: var(--ui-border-width) solid var(--ui-border);
+  /* タブの並べ替え中のドロップ位置の縦線（メインパネルのタブ・全アプリのビュータブで共通） */
+  --ui-tab-drop-indicator-width: 3px;
+  --ui-tab-drop-indicator-color: var(--accent, #4a90d9);
+  --ui-tab-drop-indicator-overhang: -2px;
+  --ui-tab-drop-indicator-offset: -1px;
+  --ui-tab-drop-indicator-radius: 1px;
   /* ペイン上部のファイルタブ */
   --ui-pane-tab-height: 30px;
   /* パネル見出し（見出し・小見出しの2種類） */
@@ -23219,6 +23387,81 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   content: none;
   border: 0;
   box-shadow: none;
+}
+/* 主要アプリツールバー左端のアプリアイコン（UI共通ルール19）。操作を持たない目印で、
+   あふれメニューへ退避せず、狭い幅でも縮めない。 */
+.tb-app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--ui-toolbar-app-icon-box);
+  width: var(--ui-toolbar-app-icon-box);
+  min-width: var(--ui-toolbar-app-icon-box);
+  height: var(--ui-toolbar-app-icon-size);
+  margin: 0 var(--ui-toolbar-app-icon-gap) 0 0;
+  padding: 0;
+  color: var(--ui-toolbar-app-icon-color);
+  pointer-events: none;
+  user-select: none;
+  box-sizing: border-box;
+}
+/* 主要アプリツールバーは左右paddingが0なので、左端に余白を足して画面端へ貼り付かせない。 */
+.gb-toolbar.gb-toolbar-main > .tb-app-icon {
+  margin-left: var(--ui-toolbar-app-icon-gap);
+}
+.tb-app-icon > svg {
+  display: block;
+  width: var(--ui-toolbar-app-icon-size);
+  height: var(--ui-toolbar-app-icon-size);
+  vertical-align: 0 !important;
+  flex: 0 0 auto;
+}
+/* ファイル名直前のファイルアイコン（UI共通ルール19）。アプリアイコンとは別部品で、フォルダツリーと
+   同じアイコンを出す。変更できる時だけボタンになり、あふれメニューへ退避せず、狭い幅でも縮めない。 */
+.tb-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--ui-toolbar-file-icon-box);
+  width: var(--ui-toolbar-file-icon-box);
+  min-width: var(--ui-toolbar-file-icon-box);
+  height: var(--ui-toolbar-file-icon-box);
+  margin: 0 0 0 var(--ui-toolbar-file-icon-gap);
+  padding: 0;
+  border: var(--ui-border-width) solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-file-icon-color);
+  line-height: 1;
+  user-select: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.tb-file-icon svg,
+.tb-file-icon img {
+  display: block;
+  width: var(--ui-toolbar-file-icon-size);
+  height: var(--ui-toolbar-file-icon-size);
+  max-width: var(--ui-toolbar-file-icon-size);
+  max-height: var(--ui-toolbar-file-icon-size);
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+.tb-file-icon > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tb-file-icon[data-file-icon-editable="true"] {
+  cursor: pointer;
+}
+.tb-file-icon[data-file-icon-editable="true"]:hover {
+  background: var(--ui-hover-bg);
+  color: var(--ui-hover-fg);
+  border-color: var(--ui-border);
+}
+.tb-file-icon[data-file-icon-editable="true"]:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-accent);
+  outline-offset: 0;
 }
 .gb-toolbar-title {
   display: inline-flex;
@@ -25094,6 +25337,18 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-group-actions {
     width: 100%;
     min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
+  }
+  /* 設定の共通配置（gb-settings-fields.css, da53c2e4）は項目行を横1行・折り返しなしに
+     !important で固定し、入力欄を320px基準で縮める。スマホ幅のNotion同期では入力と
+     全幅ボタンが並んで入力欄が14px幅まで潰れるため、ID付きで縦積みを優先する。 */
+  #notion-sync-modal-body :is(.notion-sync-row, .notion-sync-token-row) {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  #notion-sync-modal-body :is(.notion-sync-row, .notion-sync-token-row) > :is(input, select, textarea, .notion-sync-label) {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
   }
   .notion-sync-section-summary,
   .notion-sync-help a {
@@ -27096,10 +27351,12 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 @media (max-width: 760px) {
   .settings-simple-theme-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
 }
-[data-settings-simple-theme] [data-simple-theme-item] { display: grid; grid-template-columns: minmax(0, 330px) 24px; justify-content: start; align-items: center; gap: var(--ui-space-3); }
+/* 項目名の列幅は設定共通の項目名幅（gb-settings-fields.css の128px、da53c2e4）に揃え、
+   項目名とスウォッチを離さない。 */
+[data-settings-simple-theme] [data-simple-theme-item] { display: grid; grid-template-columns: minmax(0, 128px) 24px; justify-content: start; align-items: center; gap: var(--ui-space-3); }
 [data-simple-theme-item] .cs-swatch { box-sizing: border-box; }
 @media (max-width: 640px), (pointer: coarse) {
-  [data-settings-simple-theme] [data-simple-theme-item] { grid-template-columns: minmax(0, 1fr) 44px; }
+  [data-settings-simple-theme] [data-simple-theme-item] { grid-template-columns: minmax(0, 128px) 44px; }
   [data-simple-theme-item] .cs-swatch { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
 }
 [data-settings-simple-theme] .cs-row-label { width: auto; min-width: 0; }
@@ -28609,7 +28866,9 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 .gb-tbo-row:disabled { opacity: .45; }
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
-  .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; min-height: var(--ui-h-touch, 44px); }
+  /* PCのツールバー用22px指定（.gb-toolbar-main …）より詳細度で勝たせ、スマホでは44pxの操作面にする。 */
+  .gb-toolbar-overflow-button,
+  .gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }
@@ -28650,9 +28909,13 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   min-width: 0;
   max-width: 128px;
   margin: 0 !important;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 項目名は省略せず128px幅の中で折り返す。省略すると末尾の「?」ヘルプまで隠れ、
+     説明を確認する手段がなくなる（共通ルール「項目名の折り返し」）。 */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
 }
 
 /* 行内の入力だけを縮める。readonly/disabled、min/max、イベントは変更しない。 */
@@ -28773,9 +29036,11 @@ input.gb-fmt-num { min-width: 64px; }
 :is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(span,label):first-child {
   flex:0 1 128px;
   min-width:0;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+  overflow-wrap:anywhere;
+  line-height:1.3;
 }
 :is(.rp-content,.gb-pane-role-right-sidebar,.sa-option-panel) :is(.gb-map-options .gb-map-field,.gb-form-settings .gb-form-layout-field) > :is(input:not([type="checkbox"]),select,textarea) {
   flex:1 1 120px;
@@ -29812,30 +30077,8 @@ input.gb-fmt-num { min-width: 64px; }
   box-sizing: border-box;
 }
 
-.db-view-switcher .view-tab.db-view-drop-before::before,
-.db-view-switcher .view-tab.db-view-drop-after::after {
-  content: "";
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 22%, transparent);
-  pointer-events: none;
-}
-
-.db-view-switcher .view-tab.db-view-drop-before::before {
-  left: -2px;
-}
-
-.db-view-switcher .view-tab.db-view-drop-after::after {
-  right: -2px;
-}
-
-.db-view-switcher .view-tab.drag-over-tab {
-  border-bottom-color: transparent;
-}
+/* 並べ替え中のドロップ位置の縦線は共通部品（gb-view-tabs.css の .gb-view-tab-drop-*）が描く。
+   メインパネルのタブと同じ共通トークン --ui-tab-drop-indicator-* を使う。 */
 
 .db-main-view-switcher .view-tab.active {
   background: var(--ui-inner-tab-active-bg);
@@ -31760,6 +32003,9 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   overflow-y: auto;
   padding: 2px 4px 8px 2px;
 }
+/* グリッドの各カードは列幅まで縮める（既定の min-width:auto だと、折り返さない名前やサムネイルが
+   列幅を押し広げ、スマホ幅でグリッドが横にあふれる）。 */
+.gb-tpl-grid > * { min-width: 0; }
 .gb-tpl-card {
   display: flex;
   flex-direction: column;
@@ -31932,7 +32178,9 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   .gb-tpl-preview-actions .gb-btn { min-height: var(--ui-h-touch, 44px); }
   .gb-tpl-card { min-height: 44px; }
   .gb-tpl-favorite { width: 44px; height: 44px; top: 0; right: 0; }
-  .gb-tpl-card-label { min-height: 44px; padding-right: 46px; }
+  /* スマホのカード幅では名前・バッジ・日付が1行に収まらないため、日付などは次の行へ送る。 */
+  .gb-tpl-card-label { min-height: 44px; padding-right: 46px; flex-wrap: wrap; row-gap: 2px; }
+  .gb-tpl-card-name { flex-basis: 100%; }
 }
 /* シートのサムネイル（列見出し付きの小さな表） */
 .gb-tpl-sheet {
@@ -37120,6 +37368,32 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .at-run-panel button {
 .gb-view-tab-menu-panel .gb-context-menu-item { display: flex; align-items: center; gap: 4px; width: 100%; }
 .gb-view-tab-check { display: inline-flex; width: 14px; height: 14px; flex: 0 0 14px; }
 
+/* ビューのアイコン（利用者が選んだ絵文字・画像も既定アイコンと同じ大きさにそろえる） */
+.gb-view-tab-label .gb-view-tab-custom-icon { --gb-icon-size: 14px; flex-shrink: 0; }
+
+/* タブの並べ替え中のドロップ位置（共通部品 MeldexViewTabs.bindReorder が付ける）。
+   メインパネルのタブ（.gb-tab-drop-before / -after）と同じ縦線を、同じ共通トークンで描く。
+   シート・ボードのビュータブ（.view-tab）にも同じクラスを付ける。 */
+.gb-view-tab-drop-before,
+.gb-view-tab-drop-after {
+  position: relative;
+}
+.gb-view-tab-drop-before::before,
+.gb-view-tab-drop-after::after {
+  content: '';
+  position: absolute;
+  top: var(--ui-tab-drop-indicator-overhang);
+  bottom: var(--ui-tab-drop-indicator-overhang);
+  width: var(--ui-tab-drop-indicator-width);
+  background: var(--ui-tab-drop-indicator-color);
+  border-radius: var(--ui-tab-drop-indicator-radius);
+  z-index: 10;
+  pointer-events: none;
+}
+.gb-view-tab-drop-before::before { left: var(--ui-tab-drop-indicator-offset); }
+.gb-view-tab-drop-after::after { right: var(--ui-tab-drop-indicator-offset); }
+.gb-view-tab-dragging { opacity: 0.5; }
+
 .gb-view-tabs-select { display: none; min-width: 128px; max-width: 100%; }
 
 @media (pointer: coarse), (max-width: 640px) {
@@ -37833,6 +38107,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
 .gb-map-drop-marker>b{width:28px;height:40px;line-height:0;flex:none}.gb-map-drop-marker>b>svg{display:block;overflow:visible;filter:drop-shadow(0 1px 1px #0004)}.gb-map-drop-marker>span{align-self:flex-start;line-height:20px;margin-top:4px}.gb-map-drop-marker.selected{outline:0;background:transparent}.gb-map-drop-marker.selected .gb-map-drop-shape{stroke:#d87923;stroke-width:2.5}
 
+/* 同梱素材（vendor/map-assets）: 地点の記号・羊皮紙の質感・地名の書体 */
+@font-face{font-family:'Meldex Map Fell';src:url("vendor/map-assets/fonts/IMFellEnglish-Regular.ttf") format('truetype');font-display:swap}
+@font-face{font-family:'Meldex Map Fell';font-style:italic;src:url("vendor/map-assets/fonts/IMFellEnglish-Italic.ttf") format('truetype');font-display:swap}
+@font-face{font-family:'Meldex Map Medieval';src:url("vendor/map-assets/fonts/MedievalSharp-Regular.ttf") format('truetype');font-display:swap}
+.gb-map-pin b.gb-map-stamp-host{display:inline-flex;width:36px;height:36px;align-items:center;justify-content:center}
+.gb-map-stamp{width:36px;height:36px;object-fit:contain;pointer-events:none;filter:contrast(1.4) drop-shadow(0 0 1.5px rgba(255,255,255,.95))}
+[data-map-theme="parchment"]::after{content:'';position:absolute;inset:0;z-index:350;pointer-events:none;background:url("vendor/map-assets/textures/parchmentBasic.png") center/1024px repeat;mix-blend-mode:multiply;opacity:.45}
+[data-map-label-font="fell"] .gb-map-pin span{font-family:'Meldex Map Fell','Yu Mincho','Hiragino Mincho ProN','Noto Serif JP',serif}
+[data-map-label-font="medieval"] .gb-map-pin span{font-family:'Meldex Map Medieval','Yu Mincho','Hiragino Mincho ProN','Noto Serif JP',serif}
+
 .gb-map-app>.gb-toolbar{flex-shrink:0;min-height:32px;box-sizing:border-box}
 .gb-map-app>.gb-toolbar-map.gb-toolbar-main{min-height:var(--ui-toolbar-main-height)}
 .gb-toolbar-map .gb-map-save-status{flex:0 0 auto;min-width:0;max-width:160px;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -37895,3 +38179,11 @@ body[data-mobile-ui-local="1"][data-cloud-mobile-editing-ui="1"] #main-views .gb
 @container form-app-surface (max-width:700px) {
   .gb-form-app .gb-form-editor { grid-template-columns:minmax(0,1fr); }
 }
+
+/* オプションパネル「項目」タブ（選択中のフォーム項目） */
+#detail-tab-form-field { padding: var(--ui-space-3, 12px); display: flex; flex-direction: column; gap: var(--ui-space-2, 8px); }
+#detail-tab-form-field h3 { margin: 0; font-size: var(--ui-font-13, 13px); }
+#detail-tab-form-field p { margin: 0; color: var(--ui-fg-muted, var(--fg2)); font-size: 12px; }
+.gb-form-field-inspector { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+.gb-form-field-inspector dt { color: var(--ui-fg-muted, var(--fg2)); }
+.gb-form-field-inspector dd { margin: 0; overflow-wrap: anywhere; }

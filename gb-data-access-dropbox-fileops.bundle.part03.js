@@ -413,6 +413,7 @@ function _historyFileKind(path, content) {
   if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
   if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
   if (name.endsWith('.mel-form')) return 'form';
+  if (name.endsWith('.mel-map')) return 'map';
   if (name.endsWith('.mel-sheet')) return 'sheet';
   if (name.endsWith('.md')) {
     if (text.includes('type: settings-entry')) return 'settings-entry';
@@ -897,4 +898,3 @@ function _fileVersionInfoFromName(name) {
     label: match[5] || '',
     created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
   };
-}

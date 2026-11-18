@@ -49,8 +49,9 @@ const MeldexExportImage = (() => {
   const NATIVE_MAX_CANVAS_AREA = 120 * 1000 * 1000;
 
   function _escapeStyleForXhtml(cssText) {
-    // XHTML の <style> 本文では & と < をエスケープする（CDATA を使わず確実に通す）。
-    return String(cssText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    // XHTML の <style> 本文は XML として解釈されるため、共通の XML エスケープを通す
+    // （CDATA を使わず確実に通す。実体参照は XML 解析で元の文字に戻る）。
+    return MeldexEscape.xml(cssText || '');
   }
 
   // 描画フレームを n 回待つ。ウィンドウが非表示・裏に回っていると描画フレームが進まず

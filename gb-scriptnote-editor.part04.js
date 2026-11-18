@@ -899,6 +899,19 @@
     optionRow.append(autoButton, addRuleLabel);
     popup.append(title, mainRow, optionRow);
     const rr = range.getBoundingClientRect();
+    // 「シートに登録」: 選択中の文字列とルビを、ふりがな列のあるシートへ登録する（ノートと共通の部品）
+    const sheetRegister = window.MeldexRubySheetRegister;
+    if (typeof sheetRegister?.attach === 'function') {
+      sheetRegister.attach(popup, {
+        getText: () => text,
+        getRuby: () => input.value,
+        rubyInput: input,
+        getPath: () => this._path || '',
+        reposition: () => { if (popup.isConnected) positionPopup(popup, rr); },
+        close: () => closeRubyPopup(),
+      });
+    }
+    const isSheetDialogOpen = () => !!sheetRegister?.isBusy?.(popup);
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:240px;';
     positionPopup(popup, rr);
     input.focus();
@@ -958,8 +971,13 @@
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }
     });
-    closeHandler = (ev) => { if (!popup.contains(ev.target)) closeRubyPopup(); };
+    closeHandler = (ev) => {
+      // シート登録のダイアログ（フォルダ選択・確認）を操作中は閉じない
+      if (isSheetDialogOpen()) return;
+      if (!popup.contains(ev.target)) closeRubyPopup();
+    };
     keyHandler = (ev) => {
+      if (isSheetDialogOpen()) return;
       // Tab / Shift+Tab はポップアップ内の項目切り替え（選択時書式ポップアップと同じ挙動）
       if (ev.key === 'Tab') {
         ev.preventDefault();

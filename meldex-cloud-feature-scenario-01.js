@@ -1445,9 +1445,12 @@ class ScriptNoteEditor {
       { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
       { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
     ];
+    // 列のアイコン（列メニューの「アイコンを変更」で選ぶ）。固定列は standardColumnSettings、追加列は列定義に持つ。
+    const stdHeaderSettings = this.doc.editor?.standardColumnSettings || {};
+    allStdCols.forEach(col => { col.icon = typeof stdHeaderSettings[col.id]?.icon === 'string' ? stdHeaderSettings[col.id].icon : ''; });
     const allColumns = [
       ...allStdCols,
-      ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80 })),
+      ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80, icon: typeof c.icon === 'string' ? c.icon : '' })),
     ];
     const columnsById = new Map(allColumns.map(column => [column.id, column]));
     const cols = this._getVisibleColumnIds().map(id => columnsById.get(id)).filter(Boolean);
@@ -1479,8 +1482,10 @@ class ScriptNoteEditor {
         cell.className = 'sn2-header-cell' + (isTextFlex ? ' sn2-header-flex' : '');
         cell.textContent = col.label;
         cell.dataset.colId = col.id;
+        cell.dataset.colLabel = col.label;
         cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}${e2eSuffix}`;
         if (viewMode === 'vertical' && col.id !== '_handle') this._wrapTcy(cell);
+        if (col.id !== '_handle') this._prependScriptNoteHeaderIcon?.(cell, col.icon);
         if (col.width) cell.style.width = viewMode === 'vertical' ? '' : `var(--sn2-col-${col.id}, ${col.width}px)`;
         // ヘッダーセルのD&D並べ替え（_handle以外）
         if (col.id !== '_handle') {
@@ -5016,6 +5021,19 @@ class ScriptNoteEditor {
     optionRow.append(autoButton, addRuleLabel);
     popup.append(title, mainRow, optionRow);
     const rr = range.getBoundingClientRect();
+    // 「シートに登録」: 選択中の文字列とルビを、ふりがな列のあるシートへ登録する（ノートと共通の部品）
+    const sheetRegister = window.MeldexRubySheetRegister;
+    if (typeof sheetRegister?.attach === 'function') {
+      sheetRegister.attach(popup, {
+        getText: () => text,
+        getRuby: () => input.value,
+        rubyInput: input,
+        getPath: () => this._path || '',
+        reposition: () => { if (popup.isConnected) positionPopup(popup, rr); },
+        close: () => closeRubyPopup(),
+      });
+    }
+    const isSheetDialogOpen = () => !!sheetRegister?.isBusy?.(popup);
     popup.style.cssText += 'position:fixed;z-index:10000;min-width:240px;';
     positionPopup(popup, rr);
     input.focus();
@@ -5075,8 +5093,13 @@ class ScriptNoteEditor {
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }
     });
-    closeHandler = (ev) => { if (!popup.contains(ev.target)) closeRubyPopup(); };
+    closeHandler = (ev) => {
+      // シート登録のダイアログ（フォルダ選択・確認）を操作中は閉じない
+      if (isSheetDialogOpen()) return;
+      if (!popup.contains(ev.target)) closeRubyPopup();
+    };
     keyHandler = (ev) => {
+      if (isSheetDialogOpen()) return;
       // Tab / Shift+Tab はポップアップ内の項目切り替え（選択時書式ポップアップと同じ挙動）
       if (ev.key === 'Tab') {
         ev.preventDefault();
@@ -8471,13 +8494,23 @@ function _sn2NormalizeViewFilter(filter) {
   return { visible, hidden, visibleStatuses, hiddenStatuses };
 }
 
+// 利用者が選んだビューのアイコン（GBIconAssets の指定）。未設定・不正値は '' = 既定アイコン。
+function _sn2NormalizeViewIcon(value) {
+  if (typeof value !== 'string') return '';
+  const spec = value.trim();
+  return spec && spec.length <= 1024 ? spec : '';
+}
+
 function _sn2NormalizeView(view, index) {
   const source = view && typeof view === 'object' ? view : {};
+  const icon = _sn2NormalizeViewIcon(source.icon);
   return {
     id: String(source.id || (index === 0 ? SN2_VIEW_ALL_ID : _sn2NewViewId())),
     name: String(source.name || '').trim() || (index === 0 ? 'すべて' : `ビュー${index + 1}`),
     filter: _sn2NormalizeViewFilter(source.filter),
     editUnit: source.editUnit === 'page' ? 'page' : 'row',
+    // 追加フィールド（旧版は読み飛ばす）。未設定の時は書かない。
+    ...(icon ? { icon } : {}),
   };
 }
 
@@ -8674,6 +8707,21 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
   },
 
+  // ビューのアイコンを変える（spec='' で既定に戻す）。文書の取り消し履歴と保存に載せる。
+  _setScenarioViewIcon(viewId, spec) {
+    const view = this._ensureScenarioViews().find(item => item.id === viewId);
+    if (!view) return false;
+    const next = _sn2NormalizeViewIcon(typeof MeldexViewTabs !== 'undefined' && MeldexViewTabs.normalizeIconSpec
+      ? MeldexViewTabs.normalizeIconSpec(spec) : spec);
+    if ((view.icon || '') === next) return false;
+    return this._mutateScenarioViews('ビューのアイコン変更', views => {
+      const target = views.find(item => item.id === viewId);
+      if (!target) return;
+      if (next) target.icon = next;
+      else delete target.icon;
+    }) !== false;
+  },
+
   // タイプ・キャラの改名に合わせて、各ビューの絞り込み条件の名前も付け替える。
   _renameScenarioViewRoles(renamed) {
     if (!(renamed instanceof Map) || !renamed.size || !Array.isArray(this.doc?.views)) return;
@@ -8704,6 +8752,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           id: view.id,
           name: view.name,
           icon: view.editUnit === 'page' ? 'bookOpen' : (view.filter ? 'funnel' : 'table'),
+          customIcon: view.icon || '',
         })),
         getActiveId: () => this._activeScenarioView()?.id,
         onActivate: id => this._activateScenarioView(id),
@@ -8711,6 +8760,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         onDuplicate: id => this._duplicateScenarioView(id),
         onMove: (id, index) => this._moveScenarioView(id, index),
         onDelete: id => this._deleteScenarioView(id),
+        onChangeIcon: (id, spec) => this._setScenarioViewIcon(id, spec),
         viewMenuItems: view => {
           const current = this._ensureScenarioViews().find(item => item.id === view.id);
           return [
@@ -11307,7 +11357,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     resizer.setAttribute('role', 'separator');
     resizer.setAttribute('aria-orientation', 'vertical');
     resizer.setAttribute('aria-label', `${label || '列'}の幅を調整`);
-    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す';
+    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す／右クリックで数値指定';
     const colFor = () => table.querySelector(`:scope > colgroup > col[data-role-col-key="${MeldexEscape.cssIdent(key)}"]`);
     const clamp = width => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(width)));
     // 見出しのクリック（書式の一括設定）へ伝わらないようにする。
@@ -11347,6 +11397,52 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     if (!colFor()) return;
     header.appendChild(resizer);
+    // 見出し（境界線を含む）の右クリック・メニューキーで「列幅を数値指定...」を出す。
+    // 見出しメニューを持たない列にも数値指定の入口を用意するため、共通の右クリックメニューを使う。
+    const suffix = String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-');
+    header.addEventListener('contextmenu', event => {
+      if (!window.MeldexContextMenuUI?.openAt) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = header.getBoundingClientRect();
+      const fromPointer = event.clientX > 0 || event.clientY > 0;
+      window.MeldexContextMenuUI.openAt({
+        ...(fromPointer ? { x: event.clientX, y: event.clientY } : { anchorRect: rect }),
+        ariaLabel: `${label || '列'}列メニュー`,
+        e2eId: `scriptnote-${kind}-column-menu-${suffix}`,
+        restoreFocus: header.tabIndex >= 0 ? header : null,
+        items: [{
+          label: '列幅を数値指定...',
+          icon: 'ruler',
+          e2eId: `scriptnote-${kind}-column-width-${suffix}`,
+          action: () => this._showRoleManagementColumnWidthDialog(header, table, kind, key, label),
+        }],
+      });
+    });
+  },
+
+  // タイプ表・キャラ表の列幅を数値で指定する。保存先はドラッグと同じ列幅記憶。
+  _showRoleManagementColumnWidthDialog(header, table, kind, key, label = '') {
+    const MIN_WIDTH = 28;
+    const MAX_WIDTH = 640;
+    const stored = Number(this._roleManagementColumnWidthStore()[`${kind}:${key}`]);
+    const current = Number.isFinite(stored) && stored > 0
+      ? stored
+      : Math.round(header?.getBoundingClientRect?.().width || 0);
+    return this._showScriptNoteColumnWidthModal({
+      targetLabel: label,
+      current,
+      min: MIN_WIDTH,
+      max: MAX_WIDTH,
+      returnFocus: header?.tabIndex >= 0 ? header : null,
+      onApply: (width) => {
+        this._saveRoleManagementColumnWidth(kind, key, width);
+        // ダイアログ表示中に表が描き直されても、表示中の同種の表すべてへ反映する。
+        const tables = new Set([table, ...document.querySelectorAll(`table[data-role-management-kind="${MeldexEscape.cssIdent(kind)}"]`)]);
+        tables.forEach(target => { if (target?.isConnected) this._applyRoleManagementColumnWidths(target, kind); });
+        return true;
+      },
+    });
   },
 
   _showTypeManagementSettingsMenu(anchor, type, panelContainer) {
@@ -11926,18 +12022,20 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _showCharacterNameStylePopup(anchor, character, adapter, panelContainer) {
     if (typeof openFormatPopup !== 'function') return;
-    character.roleStyle = character.roleStyle && typeof character.roleStyle === 'object'
-      ? character.roleStyle : {};
-    const style = character.roleStyle;
+    // 開いただけでは文書を書き換えない（空の書式を作るのは実際に変更した時だけ）。
+    const currentStyle = () => (character.roleStyle && typeof character.roleStyle === 'object' ? character.roleStyle : null);
+    const ensureStyle = () => currentStyle() || (character.roleStyle = {});
+    const initial = currentStyle() || {};
     openFormatPopup(anchor, {
       values: {
-        bgColor: style.bgColor || '',
-        textColor: style.textColor || character.nameColor || '',
+        bgColor: initial.bgColor || '',
+        textColor: initial.textColor || character.nameColor || '',
       },
       fields: ['bgColor', 'textColor'],
       className: 'gb-fmt-popup--character-name-style',
       onChange: (prop, value) => {
         this._pushUndo('キャラ名書式変更');
+        const style = ensureStyle();
         if (value === '' || value == null) delete style[prop];
         else style[prop] = value;
         if (prop === 'textColor') character.nameColor = value || '';
@@ -11948,8 +12046,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       },
       onReset: () => {
         this._pushUndo('キャラ名書式リセット');
-        delete style.bgColor;
-        delete style.textColor;
+        const style = currentStyle();
+        if (style) {
+          delete style.bgColor;
+          delete style.textColor;
+        }
         character.nameColor = '';
         adapter.touch();
         this._refreshRowStyles();
@@ -16763,6 +16864,146 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._markDirty();
   },
 
+  // === 列幅の数値指定（シートの「列幅を数値指定...」と同じダイアログ構成） ===
+
+  // シナリオの各表で共用する。onApply(width) が false を返した時は閉じずに残す。
+  _showScriptNoteColumnWidthModal({ targetLabel = '', current = 0, min = 30, max = Infinity, onApply, returnFocus } = {}) {
+    if (!globalThis.GBUI?.createModal) throw new Error('列幅指定を初期化できませんでした');
+    const existing = document.querySelector('[data-e2e-id="scriptnote-column-width-dialog"]');
+    if (existing) { existing.focus(); return existing.closest('.gb-modal-overlay')?._scriptNoteColumnWidthApi || null; }
+    const esc = value => MeldexEscape.html(String(value ?? ''));
+    const initial = Number.isFinite(Number(current)) && Number(current) > 0 ? Math.round(Number(current)) : '';
+    const content = document.createElement('div');
+    content.innerHTML = `
+    ${targetLabel ? `<div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${esc(targetLabel)}</div>` : ''}
+    <div class="field">
+      <label for="scriptnote-col-width-input">幅 (px)</label>
+      <input id="scriptnote-col-width-input" class="gb-input" type="number" min="${esc(min)}"${Number.isFinite(max) ? ` max="${esc(max)}"` : ''} step="1" value="${esc(initial)}" data-e2e-id="scriptnote-column-width-input" style="flex:1 1 0%;width:100%;min-width:0;box-sizing:border-box;">
+    </div>`;
+    const input = content.querySelector('#scriptnote-col-width-input');
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+    const applyButton = document.createElement('button');
+    applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.textContent = '適用';
+    applyButton.dataset.e2eId = 'scriptnote-column-width-apply';
+    const modalApi = globalThis.GBUI.createModal({
+      id: 'scriptnote-column-width', title: '列幅を指定', body: content, footer: [cancelButton, applyButton],
+      variant: 'standard', geometryKey: 'scriptnote-column-width', minWidth: '0', initialFocus: '#scriptnote-col-width-input',
+      returnFocus: returnFocus instanceof HTMLElement ? returnFocus
+        : (document.activeElement instanceof HTMLElement ? document.activeElement : undefined),
+      closeLabel: '列幅指定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    });
+    modalApi.overlay._scriptNoteColumnWidthApi = modalApi;
+    modalApi.overlay.dataset.e2eId = 'scriptnote-column-width-overlay';
+    modalApi.modal.dataset.e2eId = 'scriptnote-column-width-dialog';
+    modalApi.modal.style.width = 'min(420px, calc(100vw - 24px))';
+    modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    const apply = () => {
+      const raw = String(input?.value || '').trim();
+      const parsed = parseInt(raw, 10);
+      if (!raw || Number.isNaN(parsed)) {
+        if (typeof showStatus === 'function') showStatus('幅を入力してください', true);
+        input?.focus();
+        return;
+      }
+      const width = Math.min(max, Math.max(min, parsed));
+      if (typeof onApply === 'function' && onApply(width) === false) return;
+      modalApi.close('applied');
+    };
+    applyButton.addEventListener('click', apply);
+    input?.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      apply();
+    });
+    modalApi.open();
+    return modalApi;
+  },
+
+  // 本文の表: ドラッグ・キー操作と同じ手順で反映する（縦書きは _applyColSize が高さ側へ振り分ける）。
+  _showColumnWidthNumberDialog(colId, columnLabel = '', returnFocus = null) {
+    if (this._readOnly) return null;
+    const ownerDocument = this.doc;
+    return this._showScriptNoteColumnWidthModal({
+      targetLabel: columnLabel,
+      current: this._currentColSize(colId),
+      min: 30,
+      returnFocus,
+      onApply: (width) => {
+        if (this.doc !== ownerDocument || this._readOnly) return true;
+        this._pushUndo('列幅変更');
+        this._applyColSize(colId, width);
+        if (this.doc.editor?.wrapMode) this._render();
+        this._markDirty();
+        return true;
+      },
+    });
+  },
+
+  // === 列のアイコン ===
+  // 固定列（ページ・キャラ・テキスト等）は doc.editor.standardColumnSettings[列ID].icon、
+  // 追加した列は列定義の icon に保存する（追加フィールド。旧版は読み飛ばす）。
+
+  _getScriptNoteColumnIcon(colId) {
+    const id = String(colId || '');
+    const source = id.startsWith('_')
+      ? this.doc?.editor?.standardColumnSettings?.[id]
+      : this._getCustomColumns().find(column => column.id === id);
+    return typeof source?.icon === 'string' ? source.icon.trim() : '';
+  },
+
+  // spec='' で「アイコンなし」（既定）へ戻す。文書の取り消し履歴と保存に載せる。
+  _setScriptNoteColumnIcon(colId, spec) {
+    if (this._readOnly || !this.doc) return false;
+    const id = String(colId || '');
+    if (!id || id === '_handle') return false;
+    const raw = typeof MeldexViewTabs !== 'undefined' && MeldexViewTabs.normalizeIconSpec
+      ? MeldexViewTabs.normalizeIconSpec(spec)
+      : (typeof spec === 'string' ? spec.trim() : '');
+    const next = raw && raw.length <= 1024 ? raw : '';
+    const isStandard = id.startsWith('_');
+    const column = isStandard ? null : this._getCustomColumns().find(item => item.id === id);
+    if (!isStandard && !column) return false;
+    if (this._getScriptNoteColumnIcon(id) === next) return false;
+    this._pushUndo('列のアイコン変更');
+    if (!this.doc.editor) this.doc.editor = {};
+    let target = column;
+    if (isStandard) {
+      this.doc.editor.standardColumnSettings ||= {};
+      this.doc.editor.standardColumnSettings[id] ||= {};
+      target = this.doc.editor.standardColumnSettings[id];
+    }
+    if (next) target.icon = next;
+    else delete target.icon;
+    this._markDirty();
+    this._render();
+    return true;
+  },
+
+  // 列ヘッダーの見出しの前にアイコンを置く（読み上げは列名だけにする）。
+  _prependScriptNoteHeaderIcon(cell, spec) {
+    const value = typeof spec === 'string' ? spec.trim() : '';
+    if (!cell || !value || typeof GBIconAssets === 'undefined' || typeof GBIconAssets.render !== 'function') return null;
+    const icon = document.createElement('span');
+    icon.className = 'sn2-header-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.dataset.e2eId = `sn2-header-icon-${String(cell.dataset.colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    icon.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin-inline-end:4px;line-height:0;--gb-icon-size:12px;';
+    icon.innerHTML = GBIconAssets.render(value, 12);
+    cell.insertBefore(icon, cell.firstChild);
+    return icon;
+  },
+
+  // 列ヘッダーの列名（アイコンの絵文字を含めない）。
+  _scriptNoteHeaderCellLabel(cell) {
+    if (!cell) return '';
+    if (cell.dataset?.colLabel != null) return String(cell.dataset.colLabel).trim();
+    const clone = cell.cloneNode(true);
+    clone.querySelectorAll?.('.sn2-header-icon').forEach(el => el.remove());
+    return (clone.textContent || '').replace('…', '').trim();
+  },
+
   // === ヘッダーダブルクリックで列名編集 ===
 
   _startHeaderLabelEdit(cell, colId) {
@@ -16771,7 +17012,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const isStandard = colId.startsWith('_');
     const customCols = this._getCustomColumns();
     const colDef = isStandard ? null : customCols.find(c => c.id === colId);
-    const currentLabel = cell.textContent.replace('…', '').trim();
+    const currentLabel = this._scriptNoteHeaderCellLabel(cell);
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentLabel;
@@ -16881,7 +17122,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     popup.className = 'sn2-header-popup';
     popup.id = `sn2-header-popup-${String(colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     popup.setAttribute('role', 'menu');
-    popup.setAttribute('aria-label', `${(cell.textContent || '列').trim() || '列'}列メニュー`);
+    popup.setAttribute('aria-label', `${this._scriptNoteHeaderCellLabel(cell) || '列'}列メニュー`);
 
     const mkSep = () => { const el = document.createElement('div'); el.className = 'sn2-header-popup-sep'; return el; };
     const mkItem = (text, active, onClick) => {
@@ -17008,6 +17249,35 @@ Object.assign(ScriptNoteEditor.prototype, {
       closePopup();
       this._showColumnStylePopup(cell, colId);
     }));
+    const widthItem = mkItem('列幅を数値指定...', false, () => {
+      const columnLabel = this._scriptNoteHeaderCellLabel(cell);
+      closePopup();
+      this._showColumnWidthNumberDialog(colId, columnLabel, cell);
+    });
+    widthItem.dataset.e2eId = 'sn2-header-menu-column-width';
+    popup.appendChild(widthItem);
+    if (colId !== '_handle') {
+      const iconItem = mkItem('アイコンを変更…', false, () => {
+        closePopup();
+        if (typeof GBIconAssets === 'undefined' || typeof GBIconAssets.openPicker !== 'function') return;
+        // メニューのクリックが選択画面の「外側クリックで閉じる」へ届かないよう、処理後に開く。
+        setTimeout(() => GBIconAssets.openPicker({
+          anchorEl: cell.isConnected ? cell : null,
+          title: '列のアイコン',
+          current: this._getScriptNoteColumnIcon(colId),
+          allowReset: true,
+          resetLabel: '既定に戻す',
+          onSelect: spec => {
+            if (this.doc === ownerDocument) this._setScriptNoteColumnIcon(colId, spec || '');
+          },
+          onReset: () => {
+            if (this.doc === ownerDocument) this._setScriptNoteColumnIcon(colId, '');
+          },
+        }), 0);
+      });
+      iconItem.dataset.e2eId = 'sn2-header-menu-column-icon';
+      popup.appendChild(iconItem);
+    }
 
     popup.appendChild(mkSep());
 

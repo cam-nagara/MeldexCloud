@@ -175,11 +175,11 @@ const MeldexSheetLocation = (() => {
     const wrap = document.createElement('span'); wrap.className = 'db-location-controls';
     let loc = null; try { loc = D().parse(val.value, val.link); } catch (_) {}
     const edit = button(loc ? loc.label || loc.point.join(', ') : '場所を設定: ' + String(val.value || ''), () => editCell(edit, entityPath, propName, val, options));
-    edit.classList.add('value-text', 'db-location-value'); wrap.appendChild(edit);
+    edit.classList.add('value-text', 'db-location-value'); edit.dataset.e2eId = `db-location-edit-${entityPath}-${propName}`; wrap.appendChild(edit);
     if (loc) {
       const map = button(val.link?.path ? 'マップで開く' : 'Googleマップで開く', async event => {
         event.stopPropagation(); try { await open(val.value, val.link); } catch (error) { showStatus(error.message, true); }
-      }); map.classList.add('db-location-open'); wrap.appendChild(map);
+      }); map.classList.add('db-location-open'); map.dataset.e2eId = `db-location-open-${entityPath}-${propName}`; wrap.appendChild(map);
     }
     return wrap;
   }

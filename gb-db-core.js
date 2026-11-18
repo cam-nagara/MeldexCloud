@@ -795,6 +795,16 @@ async function _apiPutValue(valObj, updates) {
     if (saved?.revision != null) valObj.entry_revision = Number(saved.revision);
     return saved;
   }
+  // 保存先（候補値ファイル・トピックのパス）を持たない値は、更新先を特定できない。
+  // 以前は「直前に開いていたトピック」へ黙って書き込もうとし、別の行への書き込みとして
+  // 409で拒否されていた。別の行を書き換えないよう、ここで止めて呼出元へ伝える。
+  if (valObj && !valObj.file && valObj.candidate_index == null
+      && !valObj.entry_path && !valObj.entity_path && !valObj.folder_path
+      && (valObj._topicValueMissing || valObj._topicDbPath)) {
+    const error = new Error('保存先のトピックを特定できないため、値を保存しませんでした。シートを再読み込みしてからやり直してください');
+    error.code = 'value_target_unknown';
+    throw error;
+  }
   const queuedEntityPath = _resolveEntityPathFromValObj(valObj);
   const mutationDbPath = _dbPathFromEntityPath(queuedEntityPath) || state.currentDbPath || '';
   return _dbQueueEntryMutation(queuedEntityPath, mutationDbPath, async (latestEntityPath) => {

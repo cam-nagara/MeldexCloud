@@ -98,6 +98,10 @@ const MeldexDnD = (() => {
 
   function _internalDropSurface(element, kind) {
     if (!element?.closest) return null;
+    // フォルダツリーの行は、ツリー自身が「間＝一本線／フォルダ内＝枠」を出す（UI共通ルール19
+    // フォルダツリー）。ここで行全体を囲む共通の枠を重ねると、間へのドロップでも行を囲む枠に
+    // しか見えなかったため、ツリー内の項目移動では共通の枠を出さない。
+    if (kind === 'node' && element.closest('.tree-node')) return null;
     if (kind === 'node') return _dropIndicatorSurface(element);
     if (kind === 'text') {
       return element.closest('[contenteditable="true"],textarea[data-meldex-editable],input[data-meldex-editable],#chat-rich-input,#team-input');

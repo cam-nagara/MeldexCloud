@@ -1,7 +1,7 @@
 /* Terrain and visibility controls use Meldex's existing options and modal shell. */
 (function(root){
  'use strict';const D=()=>root.MeldexMapDocument,F=()=>root.MeldexMapTerrainField,V=()=>root.MeldexMapDisplay;
- const brushes=[['plain','平野'],['mountain','山地'],['hills','丘陵'],['desert','砂漠'],['wasteland','荒野'],['snow','雪原'],['forest','森林'],['land','陸地を追加'],['water','海・湖']];
+ const brushes=[['land','陸地を追加'],['water','海・湖'],['plain','平野'],['mountain','山地'],['hills','丘陵'],['desert','砂漠'],['wasteland','荒野'],['snow','雪原'],['forest','森林']];
  const routes=[['major','主要道路'],['road','道路・小径'],['railway','鉄道・線路'],['shipping','航路'],['river','川・水路'],['other','その他']];
  function input(parent,label,value,attrs,change){const wrap=document.createElement('label');wrap.className='gb-map-field';const text=document.createElement('span');text.textContent=label;const el=document.createElement('input');el.className='gb-input gb-num-input';el.required=true;Object.assign(el,attrs);el.setAttribute('aria-label',label);el.value=value;el.onchange=()=>{if(el.reportValidity())change(el.value);};wrap.append(text,el);parent.append(wrap);return el;}
  function select(parent,label,values,value,change,disabled=false){const wrap=document.createElement('label');wrap.className='gb-map-field';wrap.append(label);const el=document.createElement('select');el.className='gb-select';el.setAttribute('aria-label',label);el.disabled=disabled;for(const [id,text]of values)el.add(new Option(text,id));el.value=value;el.onchange=()=>change(el.value);wrap.append(el);parent.append(wrap);return el;}
@@ -13,19 +13,25 @@
    display(parent,app);
    select(parent,'描画する経路の種類',routes,app.view?.routeKind||'major',value=>{app.view.routeKind=value;},app.editingDisabled);
    parent.append(app._button('川をフリーハンドで描く',()=>app._setTool('river'),{disabled:app.editingDisabled}));
+   const labelStyle=app.store.doc.map_style||{};
+   select(parent,'地名の書体',[['standard','標準'],['fell','古地図風（IM FELL）'],['medieval','中世風（MedievalSharp）']],labelStyle.label_font||'standard',value=>{if(app.update(d=>{d.map_style={...(d.map_style||{}),label_font:value};},true,'マップ: 地名の書体を変更')){app._buildSettingsRefresh?.();app._render();}},app.editingDisabled);
    if(!app.store.doc.atlas?.surface)return;
-   select(parent,'地形ブラシ',brushes,app.view?.terrainKind||'plain',value=>{app.view.terrainKind=value;app._setTool('land');},app.editingDisabled||app.store.doc.atlas.locked);
+   const style=app.store.doc.map_style||{},setStyle=(patch,label)=>{if(app.update(d=>{d.map_style={...(d.map_style||{}),...patch};},true,label)){app._buildSettingsRefresh?.();app._render();}};
+   select(parent,'地図のスタイル',root.MeldexMapAzgaar.styleIds.map(id=>[id,root.MeldexMapAzgaar.styles[id].label]),style.theme||'standard',value=>setStyle({theme:value},'マップ: スタイルを変更'),app.editingDisabled);
+   const contour=document.createElement('label');contour.className='gb-check';const cc=document.createElement('input');cc.type='checkbox';cc.setAttribute('aria-label','等高線を表示');cc.checked=!!style.contours;cc.disabled=app.editingDisabled;cc.onchange=()=>setStyle({contours:cc.checked},'マップ: 等高線の表示を変更');contour.append(cc,document.createTextNode(' 等高線を表示'));parent.append(contour);
+   select(parent,'等高線の間隔',[['5','細かい'],['10','標準'],['20','粗い']],String(style.contour_interval||10),value=>setStyle({contour_interval:Number(value)},'マップ: 等高線の間隔を変更'),app.editingDisabled||!style.contours);
+   select(parent,'地形ブラシ',brushes,app.view?.terrainKind||'land',value=>{app.view.terrainKind=value;app._setTool('land');},app.editingDisabled||app.store.doc.atlas.locked);
    input(parent,'地形ブラシの強さ',app.view?.terrainStrength||.7,{type:'number',min:.05,max:1,step:.05,disabled:app.editingDisabled},v=>{app.view.terrainStrength=Number(v);});
    const lock=document.createElement('label');lock.className='gb-check';const c=document.createElement('input');c.type='checkbox';c.setAttribute('aria-label','地形をロック');c.checked=!!app.store.doc.atlas.locked;c.disabled=app.editingDisabled;c.onchange=()=>{app.update(d=>{d.atlas.locked=c.checked;});app._buildSettingsRefresh();app._render();};lock.append(c,document.createTextNode(' 地形をロック'));parent.append(lock);
    parent.append(app._button('周囲の地形を合わせる',()=>showFit(app),{disabled:app.editingDisabled||app.store.doc.atlas.locked}));
  }
  function routeFields(parent,app,feature,locked){const kind=feature.cartography?.role==='road'?(feature.cartography.rank==='major'?'major':'road'):feature.cartography?.role||'other';select(parent,'経路の種類',routes,routes.some(r=>r[0]===kind)?kind:'other',value=>app._editFeature(f=>{f.cartography={...f.cartography,role:value==='major'?'road':value==='other'?'':value,rank:value==='major'?'major':'minor'};delete f.cartography.geometry;}),locked);}
- function converted(doc,editor){const result=D().clone(doc);result.atlas.editor=editor;result.schema_version=2;result.background=null;D().parse(JSON.stringify(result));return result;}
+ function converted(doc,editor){const result=D().clone(doc);result.atlas.editor=editor;const upgrade=result.schema_version!==2;result.schema_version=2;result.background=null;if(upgrade)D().parse(JSON.stringify(result));return result;}
  async function paint(app,action){
-   const source=app.store.doc,store=app.store,path=app.path,guard=app._editGuard(),signature=JSON.stringify(source);if(!guard()||!source.atlas?.surface||source.atlas.locked||app._terrainPending)return;
+   const source=app.store.doc,store=app.store,path=app.path,guard=app._editGuard(),upgrading=source.schema_version!==2,signature=upgrading?JSON.stringify(source):'';if(!guard()||!source.atlas?.surface||source.atlas.locked||app._terrainPending)return;
    const points=action.points.map(p=>[p[0]/source.canvas.width*source.atlas.width,p[1]/source.canvas.height*source.atlas.height]),radius=Math.min(Math.max(source.atlas.width,source.atlas.height)/2,action.radius/source.canvas.width*source.atlas.width);
    const candidate=converted(source,F().stroke(source.atlas,action.kind,points,radius,action.strength));
-   const valid=()=>guard()&&app.store===store&&app.path===path&&store.doc===source&&JSON.stringify(source)===signature&&!source.atlas.locked&&app._active!==false;
+   const valid=()=>guard()&&app.store===store&&app.path===path&&store.doc===source&&(!upgrading||JSON.stringify(source)===signature)&&!source.atlas.locked&&app._active!==false;
    if(source.schema_version!==2){app._terrainPending=true;try{if(!await cfConfirm('地形を直接編集できる新形式へ変換します。旧版のMeldexでは開けなくなります。PNGや閲覧パッケージで共有できます。変換と描画は「元に戻す」で取り消せます。続けますか？'))return;if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid()||access.readOnly){app._message(access.reason||'この地図は編集できません');return;}}finally{app._terrainPending=false;}}
    if(valid()&&app.update(d=>Object.assign(d,candidate))){app._buildSettingsRefresh();app._render();}
  }

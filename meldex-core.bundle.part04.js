@@ -1,3 +1,65 @@
+    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
+    const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
+    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
+    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
+    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    const savedEl = shapeTypes.has(type)
+      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
+      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
+    savedEl.dataset.annClientId = annClientId;
+    if (_saveBoardAnnotation({
+      target_path: _ann.targetPath,
+      type,
+      data: strokeData,
+      color: _ann.color,
+      opacity: _ann.opacity,
+      user: _annotationUser(),
+    }, (res) => {
+      if (res?.id) savedEl.dataset.annId = res.id;
+    }, () => { savedEl.remove(); })) {
+      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
+      return;
+    }
+    // 親に保存依頼
+    _postToParent({
+      type: 'ann-save-stroke',
+      annType: type,
+      data: strokeData,
+      color: _ann.color, opacity: _ann.opacity, targetPath: _ann.targetPath,
+      annClientId,
+    });
+    // 確定描画
+    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
+  });
+
+  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const points = _anchoredWorldPoints(type, data);
+    if (type === 'stroke' || type === 'marker') {
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none');
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+    } else {
+      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
+      el.setAttribute('fill', color);
+      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
+      el.setAttribute('stroke-opacity', String(normalizedOpacity));
+      if (preview) el.setAttribute('stroke-dasharray', '4,4');
+      else el.removeAttribute('stroke-dasharray');
+    }
+    return el;
+  }
+
+  const _anchoredAnnotationEntries = new Set();
+  let _anchoredRefreshHandle = 0;
   const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
   let _anchoredMutationObserver = null;
 
@@ -836,65 +898,3 @@ const STANDALONE_MARKUP_TOOLBAR_CSS = `
   cursor: pointer;
 }
 @media (max-width: 640px) {
-  .sa-markup-toolbar {
-    left: 8px;
-    right: 8px;
-    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    transform: none;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    max-width: calc(100vw - 16px);
-    padding: 6px;
-  }
-  .sa-markup-toolbar .sa-tb-btn,
-  .sa-markup-toolbar .sa-markup-color-btn,
-  .sa-markup-toolbar .sa-markup-close-btn {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
-  }
-  .sa-markup-toolbar .sa-tb-btn svg {
-    width: 20px;
-    height: 20px;
-  }
-  .sa-markup-toolbar .sa-markup-close-btn svg {
-    width: 18px;
-    height: 18px;
-  }
-  .sa-markup-palette {
-    width: min(260px, calc(100vw - 16px));
-    gap: 6px;
-    padding: 8px;
-  }
-  .sa-markup-color-dot {
-    width: 44px;
-    min-width: 44px;
-    height: 44px;
-    min-height: 44px;
-  }
-}`;
-
-function _ensureStandaloneMarkupToolbarStyles() {
-  if (document.getElementById('meldex-standalone-markup-toolbar-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'meldex-standalone-markup-toolbar-styles';
-  style.textContent = STANDALONE_MARKUP_TOOLBAR_CSS;
-  document.head.appendChild(style);
-}
-
-function createMarkupToolbar(markup, parentEl) {
-  _ensureStandaloneMarkupToolbarStyles();
-  let tb = parentEl.querySelector('.sa-markup-toolbar');
-  if (tb) return tb;
-  tb = document.createElement('div');
-  tb.className = 'sa-toolbar sa-markup-toolbar';
-  tb.dataset.markupToolbar = '1';
-  tb.setAttribute('role', 'toolbar');
-  tb.setAttribute('aria-label', 'アノテートツールバー');
-  let palette = null;
-  let closePaletteTimer = null;
-  let paletteOutsideHandler = null;
-  let paletteKeyHandler = null;
-  const closePalette = () => {

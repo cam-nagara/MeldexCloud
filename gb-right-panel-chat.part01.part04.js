@@ -10,7 +10,8 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   }
   const input = document.getElementById('chat-input');
   const attachments = Array.isArray(_chatState.pendingAttachments) ? _chatState.pendingAttachments.slice() : [];
-  const text = String(input?.value || '').trim();
+  const skillSend = window.GBChatSkillPicker?.prepareSend?.(String(input?.value || '').trim()) || null;
+  const text = skillSend ? skillSend.text : String(input?.value || '').trim();
   if (!text && attachments.length === 0) return false;
   if (attachments.some(att => att?.uploading || att?.uploadError || !String(att?.path || '').trim())) {
     if (typeof showStatus === 'function') showStatus('添付ファイルのアップロード完了後に送信してください', true);
@@ -43,6 +44,10 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   const scope = _chatCurrentQueueScope();
   const queuedDraft = _chatBuildQueuedDraft(text, attachments, scope);
   const message = queuedDraft.message;
+  if (skillSend) {
+    message.skills = skillSend.skills.slice();
+    window.GBChatSkillPicker?.commitSend?.();
+  }
   const timestamp = message.timestamp;
   _chatState.queuedScope = scope;
   const insertion = Number.isInteger(queuedDraft.index)
@@ -296,7 +301,9 @@ async function chatSend(options = {}) {
   }
   let _pendingAtts = usingDeferredMessages ? [] : (_chatState.pendingAttachments || []);
   if (!usingDeferredMessages && !input) return false;
-  const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : input.value.trim();
+  // ＋メニューで選んだスキル（または「/スキル名」）を、目印付きの本文と skills にする。
+  const skillSend = usingDeferredMessages ? null : (window.GBChatSkillPicker?.prepareSend?.(input.value.trim()) || null);
+  const text = usingDeferredMessages ? _chatQueuedMessagesText(deferredMessages).trim() : (skillSend ? skillSend.text : input.value.trim());
   if (!usingDeferredMessages && !text && _pendingAtts.length === 0) {
     if (_chatQueuedMessages().length) return _chatSendQueuedMessagesAfterStream();
     return;
@@ -467,6 +474,10 @@ async function chatSend(options = {}) {
     }
     const userTimestamp = _chatLocalTimestamp();
     const userMessage = { role: 'user', content: _userContent, timestamp: userTimestamp };
+    if (skillSend) {
+      userMessage.skills = skillSend.skills.slice();
+      window.GBChatSkillPicker?.commitSend?.();
+    }
     _ensureChatMessageId(userMessage);
     chatAddMessage('user', _userContent, { messageIndex: _chatState.messages.length, msg_id: userMessage.msg_id, timestamp: userTimestamp });
     _chatState.messages.push(userMessage);
@@ -481,6 +492,10 @@ async function chatSend(options = {}) {
     || (_chatProviderKey(streamProvider) === _chatProviderKey(_chatState.provider)
       ? _chatState.model
       : (localStorage.getItem('chat-model:' + _chatProviderKey(streamProvider)) || _chatDefaultModel(streamProvider)));
+  // 送信時点の生成設定を固定し、返信の発言者名へ使った思考の深さを残す。
+  const streamGeneration = options.generationSettings || chatGenerationSettings(streamProvider, streamModel);
+  const streamReasoningLevel = _chatReasoningRecordLevel(streamProvider, streamModel, streamGeneration);
+  const streamReasoningRecord = streamReasoningLevel ? { reasoning_level: streamReasoningLevel } : {};
   const streamSessionId = Object.prototype.hasOwnProperty.call(options || {}, 'sessionId') ? String(options.sessionId || '') : (_chatState.sessionId || '');
   const streamSessionTitle = Object.prototype.hasOwnProperty.call(options || {}, 'sessionTitle') ? String(options.sessionTitle || '') : (_chatState.sessionTitle || '');
   const streamTargetPath = typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath(options) : (Object.prototype.hasOwnProperty.call(options || {}, 'targetPath') ? String(options.targetPath || '') : (_chatState.targetPath || ''));
@@ -520,7 +535,7 @@ async function chatSend(options = {}) {
   spinnerWrapper.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:85%;align-self:flex-start;';
   const spinnerHeader = document.createElement('div');
   spinnerHeader.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;color:var(--fg2);padding:0 4px;';
-  const modelName = getProviderLabel(streamProvider, streamModel);
+  const modelName = getProviderLabel(streamProvider, streamModel, streamReasoningLevel);
   spinnerHeader.innerHTML = getProviderIconHtml(streamProvider, 16) + '<span>' + esc(modelName) + '</span>';
   spinnerWrapper.appendChild(spinnerHeader);
   const spinnerDiv = document.createElement('div');
@@ -546,6 +561,7 @@ async function chatSend(options = {}) {
       msg_id: assistantMessageId,
       provider: streamProvider,
       model: streamModel,
+      ...streamReasoningRecord,
       timestamp: assistantTimestamp,
     };
   };

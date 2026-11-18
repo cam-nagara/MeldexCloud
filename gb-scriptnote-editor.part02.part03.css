@@ -491,6 +491,23 @@
   width: 100%;
   min-width: 0;
 }
+/* ダイアログの項目は共通ルールで「項目名と値を同じ行」に並ぶ（gb-settings-fields.css）。
+   スマホ幅で2列に並べると1項目が約140pxになり、値が枠の外へはみ出すため1列にする。 */
+@media (max-width: 640px), (pointer: coarse) {
+  .sn2-column-modal-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* 項目名の右に並ぶ値は、残りの幅に収める（上の width: 100% のままだと項目名の分だけはみ出す）。
+   数値は共通ルールと同じ96pxまで。 */
+.sn2-column-modal .sn2-column-modal-fields > .field > :is(input, select, textarea) {
+  flex: 1 1 0;
+  width: auto;
+}
+.sn2-column-modal .sn2-column-modal-fields > .field > input[type="number"] {
+  flex: 0 1 96px;
+  width: 96px;
+}
 
 @media (max-width: 640px), (pointer: coarse) {
   #se-toolbar {
