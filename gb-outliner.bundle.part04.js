@@ -1,3 +1,6 @@
+            const reusable = disposeOrReuse(n);
+            childrenDiv.appendChild(reusable || createTreeNodeFromBrowse(data, rootPath));
+          });
           if (toggle.dataset.expanded !== 'true') toggle.click();
           setSortSetting(item.path, 'manual', 'asc');
           saveManualOrderFromDOM(childrenDiv, item.path);
@@ -895,6 +898,3 @@ async function _outlinerUnregisterSourceFolder(nodeData) {
 
 async function _outlinerCopyLink(nodeData) {
   const linkPath = nodeData?.path;
-  if (!linkPath) return false;
-  const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
-  if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {

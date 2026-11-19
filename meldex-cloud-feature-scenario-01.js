@@ -2091,7 +2091,7 @@ class ScriptNoteEditor {
       el.appendChild(cell);
     };
 
-    // シートと同じ順序の行コントロール（＋、ドラッグハンドル、チェックボックス）
+    // 行コントロール（ドラッグハンドル、チェックボックス）。行の追加はハンドルの行メニューから行う。
     if (visCols._handle !== false) {
       const rowId = row.id;
       const handle = document.createElement('div');
@@ -2109,7 +2109,7 @@ class ScriptNoteEditor {
       };
       if (globalThis.MeldexRowHandleMenu?.bind) {
         globalThis.MeldexRowHandleMenu.bind(handle, {
-          ignoreSelector: '.sn2-row-add-btn, .sn2-row-check',
+          ignoreSelector: '.sn2-row-check',
           getRow: () => handle.closest('.sn2-row'),
           getPrefer: () => (this.doc.editor?.viewMode === 'vertical' ? 'left' : 'below'),
           isEnabled: () => !this._suppressRowCheckClick,
@@ -2120,7 +2120,7 @@ class ScriptNoteEditor {
         });
       } else {
         handle.addEventListener('click', (ev) => {
-          if (ev.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
+          if (ev.target.closest?.('.sn2-row-check')) return;
           if (this._suppressRowCheckClick) {
             ev.preventDefault();
             ev.stopPropagation();
@@ -2129,28 +2129,6 @@ class ScriptNoteEditor {
           toggleSelectionFromHandle(ev);
         });
       }
-      const addRowBtn = document.createElement('span');
-      addRowBtn.className = 'sn2-row-add-btn';
-      addRowBtn.title = 'クリックで下に行を追加 / Alt+クリックで上に追加';
-      addRowBtn.tabIndex = 0;
-      addRowBtn.setAttribute('role', 'button');
-      addRowBtn.setAttribute('aria-label', `${idx + 1}行目の前後に行を追加`);
-      addRowBtn.dataset.e2eId = `sn-row-${rowId}-add`;
-      addRowBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 12) : '+';
-      const triggerAddRow = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this._insertEmptyRowRelative(rowId, ev.altKey ? 'above' : 'below', '_text');
-      };
-      addRowBtn.addEventListener('click', triggerAddRow);
-      addRowBtn.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') triggerAddRow(ev);
-      });
-      addRowBtn.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-      });
-      handle.appendChild(addRowBtn);
       const gripText = document.createElement('span');
       gripText.className = 'sn2-row-grip';
       gripText.textContent = '⠿';
@@ -3918,8 +3896,8 @@ class ScriptNoteEditor {
       if (e.button !== 0) return;
       const handle = e.target.closest?.('.sn2-handle');
       if (!handle) return;
-      // 追加ボタンとチェックボックスはドラッグ対象外
-      if (e.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
+      // チェックボックスはドラッグ対象外
+      if (e.target.closest?.('.sn2-row-check')) return;
       const row = handle.closest('.sn2-row');
       if (!row) return;
       pdragPending = true;
@@ -4249,7 +4227,6 @@ class ScriptNoteEditor {
       if (!Number.isInteger(currentIndex) || currentIndex < rowIndex) return;
       const ordinal = currentIndex + 1;
       const model = this.doc.rows[currentIndex];
-      rowEl.querySelector('.sn2-row-add-btn')?.setAttribute('aria-label', `${ordinal}行目の前後に行を追加`);
       rowEl.querySelector('.sn2-row-check')?.setAttribute('aria-label', `行を選択: ${ordinal}`);
       rowEl.querySelector('.sn2-text')?.setAttribute('aria-label', `本文、${ordinal}行、タイプ${model?.role || '未設定'}`);
       rowEl.querySelectorAll('.sn2-custom-cell').forEach(cell => {
@@ -6241,63 +6218,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (this._rowSelection) this._rowSelection.clear();
     if (this._gridCellSelection) this._gridCellSelection.clear();
     if (this._textCellSelection) this._textCellSelection.clear();
-    if (this._rowBulkBar?.isConnected) this._rowBulkBar.remove();
-    this._rowBulkBar = null;
     return false;
-  },
-
-  _startRowBulkBarGuard() {
-    if (this._rowBulkBarGuardTimer) return;
-    this._rowBulkBarGuardTimer = setInterval(() => {
-      if (!this._rowBulkBar?.isConnected || !this._rowSelection?.size) {
-        this._stopRowBulkBarGuard();
-        return;
-      }
-      if (!this._isRowSelectionOwnerActive()) this._clearRowSelection();
-    }, 250);
-  },
-
-  _stopRowBulkBarGuard() {
-    if (!this._rowBulkBarGuardTimer) return;
-    clearInterval(this._rowBulkBarGuardTimer);
-    this._rowBulkBarGuardTimer = null;
-  },
-
-  _clampRowBulkBarToViewport(bar) {
-    if (!bar?.isConnected) return;
-    const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-    const margin = 8 / z;
-    const vw = window.innerWidth / z;
-    const vh = window.innerHeight / z;
-    const parentRect = bar.offsetParent?.getBoundingClientRect?.() || { left: 0, top: 0 };
-    const rect = bar.getBoundingClientRect();
-    const box = {
-      left: rect.left / z,
-      top: rect.top / z,
-      width: rect.width / z,
-      height: rect.height / z,
-    };
-    const maxHeight = Math.max(120 / z, vh - margin * 2);
-    if (box.height > maxHeight) {
-      bar.style.maxHeight = `${maxHeight}px`;
-      bar.style.overflowY = 'auto';
-    }
-    const nextRect = bar.getBoundingClientRect();
-    const next = {
-      left: nextRect.left / z,
-      top: nextRect.top / z,
-      width: nextRect.width / z,
-      height: nextRect.height / z,
-    };
-    const clampedLeft = Math.max(margin, Math.min(next.left, vw - next.width - margin));
-    const clampedTop = Math.max(margin, Math.min(next.top, vh - next.height - margin));
-    if (Math.abs(clampedLeft - next.left) > 0.5 || Math.abs(clampedTop - next.top) > 0.5) {
-      bar.style.left = `${clampedLeft - (parentRect.left / z)}px`;
-      bar.style.top = `${clampedTop - (parentRect.top / z)}px`;
-      bar.style.right = '';
-      bar.style.bottom = 'auto';
-      bar.style.transform = 'none';
-    }
   },
 
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
@@ -6357,25 +6278,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._updateRowSelectionUI();
   },
 
-  _bulkDuplicateRows() {
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    this._pushUndo('一括複製');
-    const newRows = [];
-    this.doc.rows.forEach((row) => {
-      newRows.push(row);
-      if (selectedIds.has(row.id)) {
-        const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
-        newRows.push({ ...JSON.parse(JSON.stringify(row)), id: nextId });
-      }
-    });
-    this.doc.rows = newRows;
-    this._clearRowSelection();
-    this._render();
-    this._markDirty();
-  },
-
   _updateRowSelectionUI() {
     this._sanitizeRowSelection();
     const editor = this.host?.querySelector('.sn2-editor');
@@ -6387,181 +6289,173 @@ Object.assign(ScriptNoteEditor.prototype, {
       const checkbox = el.querySelector('.sn2-row-check');
       if (checkbox) checkbox.checked = selected;
     });
-    this._updateRowBulkBar();
   },
 
-  _updateRowBulkBar() {
-    let bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
-    const count = this._rowSelection?.size || 0;
-    if (count >= 1 && !this._isRowSelectionOwnerActive()) {
-      if (bar) bar.remove();
-      this._rowBulkBar = null;
-      this._stopRowBulkBarGuard();
-      return;
-    }
-    if (count < 1) {
-      if (bar) bar.remove();
-      this._rowBulkBar = null;
-      this._stopRowBulkBarGuard();
-      return;
-    }
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.className = 'sn2-row-bulk-bar gb-selection-float-bar';
-      bar.setAttribute('role', 'toolbar');
-      bar.setAttribute('aria-label', 'シナリオ行の一括操作');
-      (this.host || document.body).appendChild(bar);
-      this._rowBulkBar = bar;
-    }
-    if (window.GBSelectionFloatMenu) {
-      window.GBSelectionFloatMenu.bindDrag(bar, { host: this.host || document.body });
-      window.GBSelectionFloatMenu.resetPosition(bar, { host: this.host || document.body, anchor: this.host, zIndex: '1000' });
-    } else {
-      const hostRect = this.host?.getBoundingClientRect();
-      const zoom = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-      const left = hostRect ? (hostRect.left / zoom) : 0;
-      const top = hostRect ? (hostRect.top / zoom) : 0;
-      const offset = 8 / zoom;
-      bar.style.cssText = `position:fixed;top:${top + offset}px;left:${left + offset}px;z-index:1000;background:var(--ui-popup-bg, var(--bg3));border:1px solid var(--border);border-left:3px solid var(--accent, #4a90d9);border-radius:6px;padding:6px 12px;display:flex;align-items:center;gap:6px;font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);width:fit-content;`;
-    }
-    bar.innerHTML = '';
-    if (window.GBSelectionFloatMenu) {
-      bar.appendChild(window.GBSelectionFloatMenu.createDragHandle());
-    }
-    const label = document.createElement('span');
-    label.className = 'gb-selection-float-count';
-    label.textContent = `${count}行選択中`;
-    bar.appendChild(label);
-    const mkBtn = (id, text, title, onClick, options = {}) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = text;
-      button.title = title;
-      button.dataset.e2eId = id;
-      button.setAttribute('aria-label', title);
-      button.className = 'gb-selection-float-button' + (options.danger ? ' danger' : '');
-      button.addEventListener('click', () => {
-        if (!this._guardRowBulkAction()) return;
-        window.GBSelectionFloatMenu?.pulseButton?.(button);
-        onClick();
-      });
-      return button;
-    };
-    bar.appendChild(mkBtn('sn-row-bulk-role', 'タイプ変更', '選択行のタイプを一括変更', () => this._bulkChangeRole()));
-    bar.appendChild(mkBtn('sn-row-bulk-duplicate', '複製', '選択行を複製', () => this._bulkDuplicateRows()));
-    bar.appendChild(mkBtn('sn-row-bulk-delete', '削除', '選択行を一括削除', () => this._bulkDeleteRows(), { danger: true }));
-    bar.appendChild(mkBtn('sn-row-bulk-invert', '選択反転', '選択状態を反転', () => this._invertRowSelection()));
-    bar.appendChild(mkBtn('sn-row-bulk-clear', '選択解除', '選択を解除', () => this._clearRowSelection()));
-    this._clampRowBulkBarToViewport(bar);
-    this._startRowBulkBarGuard();
+  // ---------------------------------------------------------------------------
+  // 行メニュー（ハンドル）からの一括実行。対象は MeldexRowHandleMenu.resolveTargets で決める。
+  // 押した行が選択中で選択が2行以上なら選択中のすべての行、選択外ならその1行だけ（選択は変えない）。
+  // どの一括操作も取り消し履歴は1回分だけ積む。
+  // ---------------------------------------------------------------------------
+
+  _rowHandleOrderedIds() {
+    return (this.doc?.rows || []).filter(row => this._isRowSelectionTarget(row)).map(row => row.id);
   },
 
-  _bulkChangeRole() {
-    const ownerDocument = this.doc;
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
-      .filter((choice) => choice && choice.kind !== 'none')
-      .map((choice) => String(choice.name || choice.label || ''))
-      .filter(Boolean);
-    if (!roles.length) return;
-    const popup = document.createElement('div');
-    popup.className = 'sn2-header-popup sn2-bulk-role-popup';
-    popup.setAttribute('role', 'menu');
-    popup.setAttribute('aria-label', '選択行のタイプを一括変更');
-    popup.style.cssText = 'position:fixed;z-index:10100;max-height:300px;overflow-y:auto;';
-    const bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
-    const trigger = bar?.querySelector?.('[data-e2e-id="sn-row-bulk-role"]') || null;
-    const close = (options = {}) => {
-      popup.remove();
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeydown, true);
-      if (options.restoreFocus) trigger?.focus?.();
+  _rowHandleTargets(rowId) {
+    const ordered = this._rowHandleOrderedIds();
+    const selected = this._getVisibleSelectedIds();
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.resolveTargets) return shared.resolveTargets(rowId, ordered, selected);
+    return { batch: false, ids: [rowId], runs: [[rowId]], count: 1, rowId };
+  },
+
+  // 引数なしの時は、選択中の行すべてを対象にする。
+  _rowBulkTargets(targets = null) {
+    if (targets?.ids?.length) return targets;
+    const ordered = this._rowHandleOrderedIds();
+    const selected = this._getVisibleSelectedIds();
+    const ids = ordered.filter(id => selected.has(id));
+    if (!ids.length) return null;
+    const shared = globalThis.MeldexRowHandleMenu;
+    const runs = shared?.runsOf ? shared.runsOf(ordered, new Set(ids)) : ids.map(id => [id]);
+    return { batch: ids.length > 1, ids, runs, count: ids.length, rowId: ids[0] };
+  },
+
+  _rowBulkInsertPlans(targets, position) {
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.planInsertions) return shared.planInsertions(targets, position);
+    const where = position === 'above' ? 'above' : 'below';
+    return (targets?.runs || []).map(run => ({
+      ids: run.slice(), anchorId: where === 'above' ? run[0] : run[run.length - 1], position: where, count: run.length,
+    })).reverse();
+  },
+
+  _newScenarioRowId() {
+    return globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+  },
+
+  // 空の行を作る（行の追加と同じ既定値。絞り込み中はそのタイプ・ステータスを引き継ぐ）。
+  _createScenarioEmptyRow(baseRow) {
+    let newRole = '';
+    if (this._filterRoles && this._filterRoles.size === 1) newRole = [...this._filterRoles][0];
+    let newStatus = baseRow?.status || '';
+    if (this._filterStatuses && this._filterStatuses.size === 1) newStatus = [...this._filterStatuses][0];
+    const newRow = {
+      id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      character: '',
+      characterRef: { kind: 'none', id: '__none__' },
+      type: newRole,
+      role: newRole,
+      status: newStatus,
+      text: '',
+      columns: {},
     };
-    const onPointerDown = (ev) => {
-      if (!popup.contains(ev.target)) close({ restoreFocus: true });
-    };
-    const onKeydown = (ev) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      close({ restoreFocus: true });
-    };
-    roles.forEach((name, index) => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'sn2-header-popup-item';
-      item.setAttribute('role', 'menuitem');
-      item.dataset.e2eId = `sn-row-bulk-role-option-${index + 1}`;
-      item.dataset.sn2BulkRoleOption = name;
-      item.textContent = name;
-      item.addEventListener('click', () => {
-        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) { close(); return; }
-        close();
-        this._pushUndo('一括タイプ変更');
-        this.doc.rows.forEach((row) => {
-          if (!selectedIds.has(row.id)) return;
-          if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
-            globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
-          } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
-            globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
-          } else {
-            row.role = name;
-          }
-        });
-        this._render();
-        this._markDirty();
-        this._clearRowSelection();
-      });
-      popup.appendChild(item);
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, newRow, newRole);
+      globalThis.GBScriptNoteRoleModel.assignRowCharacter?.(this.doc, newRow, '');
+    } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, newRole);
+    }
+    return newRow;
+  },
+
+  _finishRowBulkEdit() {
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    this._updateRowSelectionUI();
+  },
+
+  // 連続して選択された行のまとまりごとに、まとまりの行数ぶんの空行を上／下へ入れる。
+  _bulkInsertEmptyRows(targets, position = 'below') {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    const plans = this._rowBulkInsertPlans(resolved, position);
+    const total = plans.reduce((sum, plan) => sum + plan.count, 0);
+    if (!total) return false;
+    this._pushUndo(`${total}行を追加`);
+    plans.forEach(plan => {
+      const idx = this.doc.rows.findIndex(row => row.id === plan.anchorId);
+      if (idx < 0) return;
+      const base = this.doc.rows[idx];
+      const created = Array.from({ length: plan.count }, () => this._createScenarioEmptyRow(base));
+      this.doc.rows.splice(plan.position === 'above' ? idx : idx + 1, 0, ...created);
     });
-    document.body.appendChild(popup);
-    if (bar && typeof positionPopup === 'function') positionPopup(popup, bar.getBoundingClientRect());
-    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
-    requestAnimationFrame(() => popup.querySelector('.sn2-header-popup-item')?.focus());
-    setTimeout(() => {
-      document.addEventListener('pointerdown', onPointerDown, true);
-      document.addEventListener('keydown', onKeydown, true);
-    }, 0);
+    this._finishRowBulkEdit();
+    return true;
   },
 
-  _bulkDeleteRows() {
-    const ownerDocument = this.doc;
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    if (this._scenarioViewEditUnit?.() === 'page') {
-      this._deleteScenarioPagesForRows([...selectedIds], '_text');
-      this._clearRowSelection();
-      return;
-    }
-    if ((this.doc?.rows?.length || 0) - selectedIds.size < 1) {
-      const keepRow = this.doc.rows.find((row) => selectedIds.has(row.id));
-      if (keepRow) selectedIds.delete(keepRow.id);
-      if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
-    }
-    if (!selectedIds.size) {
-      this._clearRowSelection();
-      return;
-    }
-    if (typeof showConfirmDialog === 'function') {
-      showConfirmDialog(`${selectedIds.size}行を削除しますか？`, () => {
-        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) return;
-        if (!this.doc.rows.some(row => !selectedIds.has(row.id))) {
-          if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
-          return;
-        }
-        this._pushUndo('一括行削除');
-        const removeIndex = this.doc.rows.findIndex(row => selectedIds.has(row.id));
-        this.doc.rows = this.doc.rows.filter((row) => !selectedIds.has(row.id));
-        this._clearRowSelection();
-        this._render();
-        this._markDirty();
-        // 削除した位置の次の行をアクティブにし、キーボード操作を続けられるようにする。
-        if (removeIndex >= 0) this._activateCellNearAfterClose?.(removeIndex, '_text');
-      });
-    }
+  // まとまりごとに、まとまり全体の複製をまとまりの直後へ入れる。選択は変えない。
+  _bulkDuplicateRows(targets = null) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    this._pushUndo(resolved.count > 1 ? `${resolved.count}行を複製` : '行複製');
+    const byId = new Map(this.doc.rows.map(row => [row.id, row]));
+    this._rowBulkInsertPlans(resolved, 'below').forEach(plan => {
+      const idx = this.doc.rows.findIndex(row => row.id === plan.anchorId);
+      if (idx < 0) return;
+      const copies = plan.ids
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .map(row => ({ ...JSON.parse(JSON.stringify(row)), id: this._newScenarioRowId() }));
+      this.doc.rows.splice(idx + 1, 0, ...copies);
+    });
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  // 対象をまとめて1つ上（-1）／下（1）へ動かした表示順。端に当たる時は null。
+  _bulkMoveRowOrder(targets, dir) {
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return null;
+    const shared = globalThis.MeldexRowHandleMenu;
+    return shared?.moveOrder ? shared.moveOrder(this._rowHandleOrderedIds(), resolved.ids, dir) : null;
+  },
+
+  // 非表示（絞り込みで隠れた）行の位置はそのままにし、表示中の行の並びだけを入れ替える。
+  _bulkMoveRows(targets, dir) {
+    if (!this._guardRowBulkAction()) return false;
+    const next = this._bulkMoveRowOrder(targets, dir);
+    if (!next) return false;
+    const byId = new Map(this.doc.rows.map(row => [row.id, row]));
+    const visible = new Set(next);
+    let cursor = 0;
+    this._pushUndo('行移動（複数）');
+    this.doc.rows = this.doc.rows.map(row => (visible.has(row.id) ? byId.get(next[cursor++]) : row));
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  _bulkSetRowRole(targets, name) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    const ids = new Set(resolved.ids);
+    this._pushUndo(resolved.count > 1 ? '一括タイプ変更' : 'タイプ変更');
+    this.doc.rows.forEach(row => {
+      if (!ids.has(row.id)) return;
+      if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+        globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
+      } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+        globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
+      } else {
+        row.role = name;
+      }
+    });
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  // 対象の行をまとめて削除する（取り消し1回で戻る。全行が対象の時は最初の1行を残す）。
+  // ページ単位の編集では、対象の行を含むページを削除する。
+  _bulkDeleteRows(targets = null) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    if (typeof this._deleteRowsKeepingActiveCell !== 'function') return false;
+    return this._deleteRowsKeepingActiveCell(resolved.ids, '_text');
   },
 
   _setRowSelectionState(rowId, idx, selected) {
@@ -7015,46 +6909,63 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   // ハンドルクリックの行メニュー（MeldexRowHandleMenu）の項目。
   // 操作はすべて既存の行操作と同じ取り消し履歴に積む。
+  // 押した行が選択中（2行以上）の時は、一括実行できる項目だけを出し、選択中のすべての行へ適用する。
   _rowHandleMenuItems(rowId) {
     const idx = this.doc?.rows?.findIndex(row => row.id === rowId) ?? -1;
     if (idx < 0) return [];
     const readOnly = !!this._readOnly;
+    const targets = this._rowHandleTargets(rowId);
+    const batch = !!targets.batch;
     const selected = !!this._rowSelection?.has(rowId);
     const neighbor = dir => this._rowHandleNeighborIndex(idx, dir) >= 0;
+    const canMove = dir => (batch ? !!this._bulkMoveRowOrder(targets, dir) : neighbor(dir));
     const row = this.doc.rows[idx];
+    // 一括時だけ対象行を集める（行数×選択数の比較を避けるため集合で判定する）。
+    const targetIdSet = batch ? new Set(targets.ids) : null;
+    const targetRows = batch ? this.doc.rows.filter(item => targetIdSet.has(item.id)) : [];
     const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
       .filter(choice => choice && choice.kind !== 'none')
       .map(choice => String(choice.name || choice.label || ''))
       .filter(Boolean);
     // ビューの「追加・削除はページ単位」の時は、行の追加・削除がページ単位になる。
+    // ページの追加は、複数行がどのページに属するかで意味が変わるため一括にしない。
     const pageUnit = this._scenarioViewEditUnit?.() === 'page';
     const items = [
       { icon: 'arrowUp', label: pageUnit ? '上にページを追加' : '上に行を追加', e2eId: 'sn-row-menu-add-above', disabled: readOnly,
-        action: () => this._insertEmptyRowRelative(rowId, 'above', '_text') },
+        batch: !pageUnit, batchLabel: count => `上に${count}行を追加`,
+        action: () => (batch ? this._bulkInsertEmptyRows(targets, 'above') : this._insertEmptyRowRelative(rowId, 'above', '_text')) },
       { icon: 'arrowDown', label: pageUnit ? '下にページを追加' : '下に行を追加', e2eId: 'sn-row-menu-add-below', disabled: readOnly,
-        action: () => this._insertEmptyRowRelative(rowId, 'below', '_text') },
+        batch: !pageUnit, batchLabel: count => `下に${count}行を追加`,
+        action: () => (batch ? this._bulkInsertEmptyRows(targets, 'below') : this._insertEmptyRowRelative(rowId, 'below', '_text')) },
       { icon: 'copy', label: '複製', e2eId: 'sn-row-menu-duplicate', disabled: readOnly,
-        action: () => this._duplicateRowById(rowId) },
+        batch: true, batchLabel: count => `${count}行を複製`,
+        action: () => (batch ? this._bulkDuplicateRows(targets) : this._duplicateRowById(rowId)) },
       { type: 'separator' },
-      { icon: 'chevronUp', label: '上へ移動', e2eId: 'sn-row-menu-move-up', disabled: readOnly || !neighbor(-1),
-        action: () => this._moveRowById(rowId, -1) },
-      { icon: 'chevronDown', label: '下へ移動', e2eId: 'sn-row-menu-move-down', disabled: readOnly || !neighbor(1),
-        action: () => this._moveRowById(rowId, 1) },
+      { icon: 'chevronUp', label: '上へ移動', e2eId: 'sn-row-menu-move-up', disabled: readOnly || !canMove(-1),
+        batch: true, batchLabel: count => `${count}行を上へ移動`,
+        action: () => (batch ? this._bulkMoveRows(targets, -1) : this._moveRowById(rowId, -1)) },
+      { icon: 'chevronDown', label: '下へ移動', e2eId: 'sn-row-menu-move-down', disabled: readOnly || !canMove(1),
+        batch: true, batchLabel: count => `${count}行を下へ移動`,
+        action: () => (batch ? this._bulkMoveRows(targets, 1) : this._moveRowById(rowId, 1)) },
     ];
     if (roles.length && !readOnly) {
       items.push({
         icon: 'tag', label: 'タイプ変更', e2eId: 'sn-row-menu-role',
+        batch: true, batchLabel: count => `${count}行のタイプを変更`,
         items: roles.map((name, index) => ({
           label: name,
           e2eId: `sn-row-menu-role-${index + 1}`,
-          disabled: String(row.role || '') === name,
-          action: () => this._setRowRoleById(rowId, name),
+          batch: true,
+          disabled: batch
+            ? targetRows.every(item => String(item.role || '') === name)
+            : String(row.role || '') === name,
+          action: () => (batch ? this._bulkSetRowRole(targets, name) : this._setRowRoleById(rowId, name)),
         })),
       });
     }
     if (typeof this._scenarioPageHasBreaks === 'function' && this._scenarioPageHasBreaks()) {
       items.push({
-        icon: 'bookOpen', label: 'ページ', e2eId: 'sn-row-menu-page',
+        icon: 'bookOpen', label: 'ページ', e2eId: 'sn-row-menu-page', batch: true,
         items: [
           { label: '上にページを追加', e2eId: 'sn-row-menu-page-add-above', disabled: readOnly,
             action: () => this._insertScenarioPageRelative(rowId, 'above', '_text') },
@@ -7067,7 +6978,9 @@ Object.assign(ScriptNoteEditor.prototype, {
           { label: 'ページを下へ移動', e2eId: 'sn-row-menu-page-move-down', disabled: readOnly,
             action: () => this._moveScenarioPage(rowId, 1) },
           { label: 'ページを削除', e2eId: 'sn-row-menu-page-delete', danger: true, disabled: readOnly,
-            action: () => this._deleteScenarioPagesForRows([rowId], this._activeCellColId || '_text') },
+            // ページ単位の編集では下の「削除」が同じ操作になるため、一括時は重ねて出さない。
+            batch: !pageUnit, batchLabel: '選択行のページを削除',
+            action: () => this._deleteScenarioPagesForRows(batch ? targets.ids.slice() : [rowId], this._activeCellColId || '_text') },
         ],
       });
     }
@@ -7078,12 +6991,19 @@ Object.assign(ScriptNoteEditor.prototype, {
           const currentIdx = this.doc.rows.findIndex(item => item.id === rowId);
           if (currentIdx >= 0) this._toggleRowSelection(rowId, currentIdx, false, true);
         } },
+      { icon: 'squareMinus', label: '選択を解除', e2eId: 'sn-row-menu-clear-selection', batchOnly: true,
+        action: () => this._clearRowSelection() },
+      { icon: 'arrowLeftRight', label: '選択を反転', e2eId: 'sn-row-menu-invert-selection', batchOnly: true,
+        action: () => this._invertRowSelection() },
       { type: 'separator' },
       { icon: 'trash2', label: pageUnit ? 'ページを削除' : '削除', danger: true, e2eId: 'sn-row-menu-delete',
-        disabled: readOnly || this.doc.rows.length <= 1,
-        action: () => this._deleteRowById(rowId) },
+        disabled: readOnly || (!batch && this.doc.rows.length <= 1),
+        batch: true, batchLabel: count => (pageUnit ? '選択行のページを削除' : `${count}行を削除`),
+        action: () => (batch ? this._bulkDeleteRows(targets) : this._deleteRowById(rowId)) },
     );
-    return items;
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.buildItems) return shared.buildItems(items, targets, { unit: '行', labelE2eId: 'sn-row-menu-batch-label' });
+    return items.filter(item => !item.batchOnly);
   },
 
   _rowHandleNeighborIndex(idx, dir) {
@@ -10719,6 +10639,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       root.querySelectorAll('.sn2-role-manage-check:not(:disabled)').forEach(checkbox => { checkbox.checked = false; });
     });
     container.appendChild(root);
+    // 表示領域の幅が決まってから列幅を収める（描画前の幅0では縮められないため）。
+    root.querySelectorAll('table[data-role-management-kind]').forEach(table => {
+      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind);
+    });
   },
 
   _buildRoleManagementSeparator(typeSection, characterSection) {
@@ -10729,7 +10653,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     separator.tabIndex = 0;
     separator.setAttribute('role', 'separator');
     separator.setAttribute('aria-orientation', 'horizontal');
-    separator.setAttribute('aria-label', 'タイプとキャラの表示割合を調整');
+    separator.setAttribute('aria-label', 'タイプ表の最大の高さを調整');
     separator.setAttribute('aria-valuemin', '20');
     separator.setAttribute('aria-valuemax', '80');
     const storedValue = localStorage.getItem(storageKey);
@@ -10737,8 +10661,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     let percent = Number.isFinite(stored) ? Math.max(20, Math.min(80, stored)) : 40;
     const apply = (next, persist = true) => {
       percent = Math.max(20, Math.min(80, Math.round(next)));
-      typeSection.style.flex = `0 1 ${percent}%`;
-      characterSection.style.flex = `0 1 ${100 - percent}%`;
+      // 表は行数に合わせた高さで描き、ボタン群とキャラ表をその直下へ続ける。
+      // セパレーターはタイプ表の高さの上限（パネル高さに対する割合）を決め、超える分はタイプ表内でスクロールする。
+      typeSection.style.maxHeight = `${percent}%`;
       separator.setAttribute('aria-valuenow', String(percent));
       if (persist) localStorage.setItem(storageKey, String(percent));
     };
@@ -11153,6 +11078,70 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
   },
 
+  // チェックボックスを押したまま上下の行へなぞると、なぞった行をまとめて同じ状態（選択／解除）にする。
+  // 押した行のチェックの反対の状態を、通過したすべての行へ適用する（シートの行選択と同じ操作）。
+  _beginRoleManagementDragSelect(kind, startRow, startCheck, downEvent) {
+    const section = startRow.closest('section');
+    if (!section) return;
+    const selection = kind === 'type' ? this._detailTypeSelection : this._detailCharacterSelection;
+    const anchorKey = kind === 'type' ? '_detailTypeSelectionAnchor' : '_detailCharacterSelectionAnchor';
+    const checked = !startCheck.checked;
+    const startX = downEvent.clientX;
+    const startY = downEvent.clientY;
+    const autoScroll = globalThis.MeldexDragAutoScroll;
+    let dragging = false;
+    let lastRow = startRow;
+    const applyRow = row => {
+      const id = row?.dataset?.roleId;
+      const checkbox = row?.querySelector('.sn2-role-manage-check');
+      if (!id || !checkbox || checkbox.disabled) return;
+      if (checked) selection.add(id);
+      else selection.delete(id);
+      row.classList.toggle('selected', checked);
+      checkbox.checked = checked;
+    };
+    const move = event => {
+      if (!dragging) {
+        if (Math.abs(event.clientY - startY) < 4 && Math.abs(event.clientX - startX) < 4) return;
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sn2-role-manage-row');
+        if (!target || target === startRow) return;
+        dragging = true;
+        section.classList.add('is-drag-selecting');
+        autoScroll?.beginPointerSession?.(startX, startY);
+        applyRow(startRow);
+      }
+      autoScroll?.updatePointer?.(event.clientX, event.clientY);
+      event.preventDefault();
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sn2-role-manage-row');
+      if (!target || target.closest('section') !== section) return;
+      // 速く動かして途中の行を飛ばしても、前回の位置から今回の位置までの行をすべて同じ状態にする。
+      const rows = [...section.querySelectorAll('.sn2-role-manage-row')];
+      const from = rows.indexOf(lastRow);
+      const to = rows.indexOf(target);
+      if (from >= 0 && to >= 0) {
+        for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) applyRow(rows[index]);
+      } else {
+        applyRow(target);
+      }
+      lastRow = target;
+    };
+    const end = () => {
+      document.removeEventListener('pointermove', move, true);
+      document.removeEventListener('pointerup', end, true);
+      document.removeEventListener('pointercancel', end, true);
+      if (!dragging) return;
+      autoScroll?.endPointerSession?.();
+      section.classList.remove('is-drag-selecting');
+      this[anchorKey] = startRow.dataset.roleId || this[anchorKey];
+      // 押したチェックボックス上で離した時だけ click が届く。届いた click は反転させない。
+      startCheck.dataset.roleDragSelectSuppress = '1';
+      setTimeout(() => { delete startCheck.dataset.roleDragSelectSuppress; }, 0);
+    };
+    document.addEventListener('pointermove', move, true);
+    document.addEventListener('pointerup', end, true);
+    document.addEventListener('pointercancel', end, true);
+  },
+
   _buildRoleManagementSection(kind, adapter, panelContainer) {
     const isType = kind === 'type';
     const items = isType ? adapter.types : adapter.characters;
@@ -11211,7 +11200,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       addColumn('control', 36);
       addColumn('name', 0);
       addColumn('linked-type', 88);
-      addColumn('sheet-link', 56);
+      addColumn('sheet-link', 112);
     }
     table.appendChild(colgroup);
     this._applyRoleManagementColumnWidths(table, kind);
@@ -11266,9 +11255,20 @@ Object.assign(ScriptNoteEditor.prototype, {
         // 本文・区切り・追加列の見出しも操作できる部品なので、列IDで安定した識別子を付ける。
         th.dataset.e2eId = `scriptnote-${kind}-format-header-${String(heading.column.id).replace(/^_/, '').replace(/[^a-z0-9_-]/gi, '-')}`;
       }
-      // 右端の境界線をドラッグして列幅を変える（最終列は表の右端なので付けない）。
-      if (columnIndex < headings.length - 1) this._bindRoleManagementColumnResize(th, table, kind, heading.key, heading.label);
       headingRow.appendChild(th);
+    });
+    // 見出しの境界線をドラッグして列幅を変える。表は常に表示領域の幅へ収め、余りは可変列
+    // （タイプ表はテキスト、キャラ表はキャラ名）が受け持つ。可変列より左の境界線は左側の列、
+    // 可変列より右の境界線は右側の列の幅を変える（最終列も幅を変えられ、右端は常に揃う）。
+    const flexIndex = headings.findIndex(heading => !Number(colgroup.querySelector(`col[data-role-col-key="${MeldexEscape.cssIdent(heading.key)}"]`)?.dataset.roleColDefault));
+    [...headingRow.children].forEach((th, columnIndex) => {
+      const heading = headings[columnIndex];
+      const next = headings[columnIndex + 1];
+      const resize = !next ? null
+        : (flexIndex >= 0 && columnIndex >= flexIndex)
+          ? { key: next.key, label: next.label, sign: -1 }
+          : { key: heading.key, label: heading.label, sign: 1 };
+      this._bindRoleManagementColumnResize(th, table, kind, heading.key, heading.label, resize, columnIndex === flexIndex);
     });
     thead.appendChild(headingRow);
     table.appendChild(thead);
@@ -11297,6 +11297,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._bindRoleManagementGridNavigation(table);
     scroll.appendChild(table);
     section.appendChild(scroll);
+    this._observeRoleManagementTableWidth(scroll, table, kind);
     section.appendChild(this._buildRoleManagementToolbar(kind, adapter, panelContainer));
     return section;
   },
@@ -11317,88 +11318,137 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   // 列幅（既定値＋利用者がドラッグで変えた値）を colgroup と表の幅へ反映する。
-  // 可変列（既定値なし）が残っている間は表を100%幅にして残りをその列へ渡し、
-  // 可変列まで幅を指定した時は各列の合計幅で表を描く（はみ出す分は横スクロール）。
-  _applyRoleManagementColumnWidths(table, kind, overrides = null) {
+  // 可変列（既定値なし）は記憶した幅を使わず、常に残りの幅を受け持つ。表は表示領域の幅（100%）で描き、
+  // 右端を表示領域の端へ揃える。表示領域が固定列の合計より狭い時は、直前に幅を変えた列以外の固定列を
+  // 比率を保って縮めて収める（記憶する幅は変えない）。それでも収まらない時だけ横スクロールになる。
+  _applyRoleManagementColumnWidths(table, kind, overrides = null, pinnedKey = null) {
+    const FLEX_MIN_WIDTH = 48;
+    const MIN_WIDTH = 28;
     const saved = this._roleManagementColumnWidthStore();
     const cols = [...table.querySelectorAll(':scope > colgroup > col[data-role-col-key]')];
-    let fixedSum = 0;
+    const pinned = pinnedKey || table.dataset.rolePinnedKey || '';
     let hasFlexible = false;
+    const fixed = [];
     cols.forEach(col => {
       const key = col.dataset.roleColKey;
-      const override = overrides && Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : undefined;
-      const stored = Number(override !== undefined ? override : saved[`${kind}:${key}`]);
       const fallback = Number(col.dataset.roleColDefault) || 0;
-      const width = Number.isFinite(stored) && stored > 0 ? stored : fallback;
-      if (width > 0) {
-        col.style.width = `${width}px`;
-        fixedSum += width;
-      } else {
+      if (!fallback) {
         col.style.width = '';
         hasFlexible = true;
+        return;
       }
+      const override = overrides && Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : undefined;
+      const stored = Number(override !== undefined ? override : saved[`${kind}:${key}`]);
+      fixed.push({ col, key, width: Number.isFinite(stored) && stored > 0 ? stored : fallback });
     });
-    if (hasFlexible) {
-      table.style.width = '100%';
-      table.style.minWidth = `${fixedSum + 80}px`;
-    } else {
-      table.style.width = `${fixedSum}px`;
-      table.style.minWidth = `${fixedSum}px`;
+    const reserve = hasFlexible ? FLEX_MIN_WIDTH : 0;
+    const available = Math.floor(table.parentElement?.clientWidth || 0);
+    let excess = available > 0 ? fixed.reduce((sum, entry) => sum + entry.width, 0) + reserve - available : 0;
+    if (excess > 0) {
+      const shrinkable = fixed.filter(entry => entry.key !== 'control' && entry.key !== pinned);
+      // 縮められる余地（最小幅を超える分）に比例して配分する。最小幅に達した列は外して繰り返す。
+      for (let pass = 0; pass < 4 && excess > 0.5; pass += 1) {
+        const room = shrinkable.reduce((sum, entry) => sum + Math.max(0, entry.width - MIN_WIDTH), 0);
+        if (room <= 0) break;
+        const ratio = Math.min(1, excess / room);
+        shrinkable.forEach(entry => {
+          const cut = Math.max(0, entry.width - MIN_WIDTH) * ratio;
+          entry.width -= cut;
+          excess -= cut;
+        });
+      }
     }
+    let fixedSum = 0;
+    fixed.forEach(entry => {
+      const width = Math.max(MIN_WIDTH, Math.floor(entry.width));
+      entry.col.style.width = `${width}px`;
+      fixedSum += width;
+    });
+    table.style.width = '100%';
+    table.style.minWidth = `${fixedSum + reserve}px`;
   },
 
-  _bindRoleManagementColumnResize(header, table, kind, key, label = '') {
-    const MIN_WIDTH = 28;
-    const MAX_WIDTH = 640;
-    const resizer = document.createElement('span');
-    resizer.className = 'sn2-role-column-resizer';
-    resizer.dataset.e2eId = `scriptnote-${kind}-column-resizer-${String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-')}`;
-    resizer.tabIndex = -1;
-    resizer.setAttribute('role', 'separator');
-    resizer.setAttribute('aria-orientation', 'vertical');
-    resizer.setAttribute('aria-label', `${label || '列'}の幅を調整`);
-    resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す／右クリックで数値指定';
-    const colFor = () => table.querySelector(`:scope > colgroup > col[data-role-col-key="${MeldexEscape.cssIdent(key)}"]`);
-    const clamp = width => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(width)));
-    // 見出しのクリック（書式の一括設定）へ伝わらないようにする。
-    resizer.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
-    resizer.addEventListener('dblclick', event => {
-      event.preventDefault();
-      event.stopPropagation();
-      this._saveRoleManagementColumnWidth(kind, key, null);
+  // 表示領域（パネル幅）が変わったら列幅を収め直す。
+  _observeRoleManagementTableWidth(scroll, table, kind) {
+    if (typeof ResizeObserver !== 'function') return;
+    let lastWidth = -1;
+    const observer = new ResizeObserver(() => {
+      if (!table.isConnected) { observer.disconnect(); return; }
+      const width = scroll.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
       this._applyRoleManagementColumnWidths(table, kind);
     });
-    resizer.addEventListener('pointerdown', event => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      try { resizer.setPointerCapture?.(event.pointerId); } catch (_) { /* 合成イベントでは捕捉できない */ }
-      const startX = event.clientX;
-      const startWidth = Math.round(header.getBoundingClientRect().width);
-      let width = startWidth;
-      resizer.classList.add('is-resizing');
-      const move = pointerEvent => {
-        width = clamp(startWidth + pointerEvent.clientX - startX);
-        this._applyRoleManagementColumnWidths(table, kind, { [key]: width });
-      };
-      const finish = commit => {
-        resizer.classList.remove('is-resizing');
-        resizer.removeEventListener('pointermove', move);
-        resizer.removeEventListener('pointerup', end);
-        resizer.removeEventListener('pointercancel', cancel);
-        if (commit && width !== startWidth) this._saveRoleManagementColumnWidth(kind, key, width);
+    observer.observe(scroll);
+  },
+
+  // header: 境界線を置く見出し。resize: { key, label, sign } 境界線のドラッグで幅を変える列
+  // （sign=-1 は境界線の右側の列で、左へ動かすと広がる）。null なら境界線を置かない。
+  _bindRoleManagementColumnResize(header, table, kind, key, label = '', resize = { key, label, sign: 1 }, flexible = false) {
+    const MIN_WIDTH = 28;
+    const MAX_WIDTH = 640;
+    const colFor = targetKey => table.querySelector(`:scope > colgroup > col[data-role-col-key="${MeldexEscape.cssIdent(targetKey)}"]`);
+    const headerFor = targetKey => [...(header.parentElement?.children || [])]
+      .find(th => th.classList.contains(`sn2-role-manage-col--${String(targetKey).replace(/[^a-z0-9_-]/gi, '-')}`)) || header;
+    const clamp = width => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(width)));
+    const targetCol = resize ? colFor(resize.key) : null;
+    if (resize && targetCol && Number(targetCol.dataset.roleColDefault)) {
+      const targetKey = resize.key;
+      const sign = resize.sign < 0 ? -1 : 1;
+      const resizer = document.createElement('span');
+      resizer.className = 'sn2-role-column-resizer';
+      resizer.dataset.e2eId = `scriptnote-${kind}-column-resizer-${String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-')}`;
+      resizer.dataset.roleResizeKey = targetKey;
+      resizer.tabIndex = -1;
+      resizer.setAttribute('role', 'separator');
+      resizer.setAttribute('aria-orientation', 'vertical');
+      resizer.setAttribute('aria-label', `${resize.label || '列'}の幅を調整`);
+      resizer.title = 'ドラッグで列幅を変更／ダブルクリックで元の幅に戻す／右クリックで数値指定';
+      // 見出しのクリック（書式の一括設定）へ伝わらないようにする。
+      resizer.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
+      resizer.addEventListener('dblclick', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        this._saveRoleManagementColumnWidth(kind, targetKey, null);
+        if (table.dataset.rolePinnedKey === targetKey) delete table.dataset.rolePinnedKey;
         this._applyRoleManagementColumnWidths(table, kind);
-      };
-      const end = () => finish(true);
-      const cancel = () => finish(false);
-      resizer.addEventListener('pointermove', move);
-      resizer.addEventListener('pointerup', end);
-      resizer.addEventListener('pointercancel', cancel);
-    });
-    if (!colFor()) return;
-    header.appendChild(resizer);
-    // 見出し（境界線を含む）の右クリック・メニューキーで「列幅を数値指定...」を出す。
+      });
+      resizer.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        try { resizer.setPointerCapture?.(event.pointerId); } catch (_) { /* 合成イベントでは捕捉できない */ }
+        const startX = event.clientX;
+        const startWidth = Math.round(headerFor(targetKey).getBoundingClientRect().width);
+        let width = startWidth;
+        resizer.classList.add('is-resizing');
+        const move = pointerEvent => {
+          width = clamp(startWidth + sign * (pointerEvent.clientX - startX));
+          this._applyRoleManagementColumnWidths(table, kind, { [targetKey]: width }, targetKey);
+        };
+        const finish = commit => {
+          resizer.classList.remove('is-resizing');
+          resizer.removeEventListener('pointermove', move);
+          resizer.removeEventListener('pointerup', end);
+          resizer.removeEventListener('pointercancel', cancel);
+          if (commit && width !== startWidth) {
+            this._saveRoleManagementColumnWidth(kind, targetKey, width);
+            // 幅を変えた列は指定どおりの幅で残し、収まらない分は他の列が縮んで受け持つ。
+            table.dataset.rolePinnedKey = targetKey;
+          }
+          this._applyRoleManagementColumnWidths(table, kind);
+        };
+        const end = () => finish(true);
+        const cancel = () => finish(false);
+        resizer.addEventListener('pointermove', move);
+        resizer.addEventListener('pointerup', end);
+        resizer.addEventListener('pointercancel', cancel);
+      });
+      header.appendChild(resizer);
+    }
+    // 見出しの右クリック・メニューキーで「列幅を数値指定...」を出す（可変列は残り幅を受け持つので出さない）。
     // 見出しメニューを持たない列にも数値指定の入口を用意するため、共通の右クリックメニューを使う。
+    if (flexible || !colFor(key)) return;
     const suffix = String(key).replace(/^preview-_?/, '').replace(/[^a-z0-9_-]/gi, '-');
     header.addEventListener('contextmenu', event => {
       if (!window.MeldexContextMenuUI?.openAt) return;
@@ -11439,7 +11489,11 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._saveRoleManagementColumnWidth(kind, key, width);
         // ダイアログ表示中に表が描き直されても、表示中の同種の表すべてへ反映する。
         const tables = new Set([table, ...document.querySelectorAll(`table[data-role-management-kind="${MeldexEscape.cssIdent(kind)}"]`)]);
-        tables.forEach(target => { if (target?.isConnected) this._applyRoleManagementColumnWidths(target, kind); });
+        tables.forEach(target => {
+          if (!target?.isConnected) return;
+          target.dataset.rolePinnedKey = key;
+          this._applyRoleManagementColumnWidths(target, kind);
+        });
         return true;
       },
     });
@@ -11473,7 +11527,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       };
       check.addEventListener('click', event => {
         event.stopPropagation();
+        // ドラッグで複数選択した直後の click は、ドラッグ側で状態を確定済みなので反転させない。
+        if (check.dataset.roleDragSelectSuppress === '1') {
+          delete check.dataset.roleDragSelectSuppress;
+          event.preventDefault();
+          return;
+        }
         applySelection(event.shiftKey);
+      });
+      check.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return;
+        this._beginRoleManagementDragSelect(kind, row, check, event);
       });
       check.addEventListener('keydown', event => {
         if (event.key !== ' ' || !event.shiftKey) return;
@@ -12225,6 +12289,8 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   // タイプ表／キャラ表のハンドルクリックで開く行メニュー。
+  // 押した行が選択中（2行以上）の時は、一括実行できる項目だけを出し、選択中のすべての行へ適用する
+  // （押した行が選択外ならその1行だけ。選択は変えない）。どの一括操作も取り消し1回で戻る。
   _roleManagementRowMenuItems(kind, item, adapter, panelContainer, stableSuffix) {
     const isType = kind === 'type';
     const list = isType ? adapter.types : adapter.characters;
@@ -12234,12 +12300,34 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
     const selected = !!selection?.has(item.id);
     const label = isType ? 'タイプ' : 'キャラ';
+    const shared = globalThis.MeldexRowHandleMenu;
+    const orderedIds = list.map(candidate => candidate.id);
+    const targets = shared?.resolveTargets
+      ? shared.resolveTargets(item.id, orderedIds, selection || [])
+      : { batch: false, ids: [item.id], runs: [[item.id]], count: 1, rowId: item.id };
+    const batch = !!targets.batch;
+    const targetItems = targets.ids.map(id => list.find(candidate => candidate.id === id)).filter(Boolean);
     const rerender = () => {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
     };
+    // 表示中の並び（nextOrder）になるよう、元の配列での順序を組み直す。
+    const applyOrder = nextOrder => {
+      for (let i = 1; i < nextOrder.length; i += 1) {
+        adapter.move(kind, nextOrder[i], { afterId: nextOrder[i - 1] });
+      }
+    };
+    const moveOrder = delta => (shared?.moveOrder ? shared.moveOrder(orderedIds, targets.ids, delta) : null);
     const move = delta => {
+      // 動かせない時は取り消し履歴を積まない（空の履歴を残さない）。
+      const nextOrder = batch ? moveOrder(delta) : null;
+      if (batch && !nextOrder) return;
       this._pushUndo(isType ? 'タイプ並び替え' : 'キャラ並び替え');
+      if (batch) {
+        applyOrder(nextOrder);
+        rerender();
+        return;
+      }
       if (adapter.move(kind, item.id, delta)) {
         rerender();
         requestAnimationFrame(() => {
@@ -12247,21 +12335,82 @@ Object.assign(ScriptNoteEditor.prototype, {
         });
       }
     };
+    const createBlank = () => (isType ? adapter.addType() : adapter.addCharacter());
+    // 行の上／下へ新しいタイプ・キャラを追加する（＋追加ボタンと同じ既定値で作り、位置だけ変える）。
+    const insert = after => {
+      this._pushUndo(isType ? 'タイプ追加' : 'キャラ追加');
+      if (batch) {
+        // 連続して選択された行のまとまりごとに、まとまりの件数ぶんを上／下へ入れる。選択は変えない。
+        const plans = shared?.planInsertions ? shared.planInsertions(targets, after ? 'below' : 'above') : [];
+        plans.forEach(plan => {
+          let previousId = plan.anchorId;
+          for (let i = 0; i < plan.count; i += 1) {
+            const created = createBlank();
+            if (!created?.id) continue;
+            if (after) {
+              adapter.move(kind, created.id, { afterId: previousId });
+              previousId = created.id;
+            } else {
+              adapter.move(kind, created.id, { beforeId: plan.anchorId });
+            }
+          }
+        });
+        rerender();
+        return;
+      }
+      const created = createBlank();
+      if (!created?.id) return;
+      adapter.move(kind, created.id, after ? { afterId: item.id } : { beforeId: item.id });
+      selection?.clear?.();
+      selection?.add?.(created.id);
+      rerender();
+      requestAnimationFrame(() => {
+        const row = panelContainer.querySelector(`.sn2-role-manage-section--${isType ? 'types' : 'characters'} .sn2-role-manage-row[data-role-id="${MeldexEscape.cssIdent(created.id)}"]`);
+        row?.scrollIntoView?.({ block: 'nearest' });
+      });
+    };
+    const duplicate = () => {
+      this._pushUndo(isType ? 'タイプ複製' : 'キャラ複製');
+      if (batch) {
+        // まとまりごとに、まとまり全体の複製をまとまりの直後へ入れる。選択は変えない。
+        const plans = shared?.planInsertions ? shared.planInsertions(targets, 'below') : [];
+        plans.forEach(plan => {
+          let previousId = plan.anchorId;
+          plan.ids.forEach(id => {
+            const source = list.find(candidate => candidate.id === id);
+            const created = source ? adapter.clone(kind, source) : null;
+            if (!created?.id) return;
+            adapter.move(kind, created.id, { afterId: previousId });
+            previousId = created.id;
+          });
+        });
+        rerender();
+        return;
+      }
+      const created = adapter.clone(kind, item);
+      selection?.clear?.();
+      if (created?.id) selection?.add?.(created.id);
+      rerender();
+    };
     const items = [
-      { icon: 'chevronUp', label: '上へ移動', e2eId: `scriptnote-${kind}-row-menu-move-up`,
-        disabled: readOnly || index === 0, action: () => move(-1) },
-      { icon: 'chevronDown', label: '下へ移動', e2eId: `scriptnote-${kind}-row-menu-move-down`,
-        disabled: readOnly || index >= list.length - 1, action: () => move(1) },
+      { icon: 'plus', label: `上に${label}を追加`, e2eId: `scriptnote-${kind}-row-menu-insert-above`, disabled: readOnly,
+        batch: true, batchLabel: count => `上に${count}行を追加`,
+        action: () => insert(false) },
+      { icon: 'plus', label: `下に${label}を追加`, e2eId: `scriptnote-${kind}-row-menu-insert-below`, disabled: readOnly,
+        batch: true, batchLabel: count => `下に${count}行を追加`,
+        action: () => insert(true) },
       { icon: 'copy', label: '複製', e2eId: `scriptnote-${kind}-row-menu-duplicate`, disabled: readOnly,
-        action: () => {
-          this._pushUndo(isType ? 'タイプ複製' : 'キャラ複製');
-          const created = adapter.clone(kind, item);
-          selection?.clear?.();
-          if (created?.id) selection?.add?.(created.id);
-          rerender();
-        } },
+        batch: true, batchLabel: count => `${count}行を複製`, action: duplicate },
+      { type: 'separator' },
+      { icon: 'chevronUp', label: '上へ移動', e2eId: `scriptnote-${kind}-row-menu-move-up`,
+        disabled: readOnly || (batch ? !moveOrder(-1) : index === 0),
+        batch: true, batchLabel: count => `${count}行を上へ移動`, action: () => move(-1) },
+      { icon: 'chevronDown', label: '下へ移動', e2eId: `scriptnote-${kind}-row-menu-move-down`,
+        disabled: readOnly || (batch ? !moveOrder(1) : index >= list.length - 1),
+        batch: true, batchLabel: count => `${count}行を下へ移動`, action: () => move(1) },
     ];
     if (!isType) {
+      // シート連携は1件ずつ選ぶ操作なので、一括時は出さない。
       const linked = !!String(item?.sheetLink?.path || '').trim();
       items.push(
         { type: 'separator' },
@@ -12281,11 +12430,28 @@ Object.assign(ScriptNoteEditor.prototype, {
           else selection?.add?.(item.id);
           this.renderDetailPanel(panelContainer);
         } },
+      { icon: 'squareMinus', label: '選択を解除', e2eId: `scriptnote-${kind}-row-menu-clear-selection`, batchOnly: true,
+        action: () => {
+          selection?.clear?.();
+          this.renderDetailPanel(panelContainer);
+        } },
+      { icon: 'arrowLeftRight', label: '選択を反転', e2eId: `scriptnote-${kind}-row-menu-invert-selection`, batchOnly: true,
+        action: () => {
+          orderedIds.forEach(id => {
+            if (selection.has(id)) selection.delete(id);
+            else selection.add(id);
+          });
+          this.renderDetailPanel(panelContainer);
+        } },
       { type: 'separator' },
       { icon: 'trash2', label: '削除', danger: true, e2eId: `scriptnote-${kind}-row-menu-delete`, disabled: readOnly,
-        action: () => this._deleteManagedRoles(kind, [item], adapter, panelContainer) },
+        batch: true, batchLabel: count => `${count}行を削除`,
+        action: () => this._deleteManagedRoles(kind, batch ? targetItems : [item], adapter, panelContainer) },
     );
-    return items;
+    if (shared?.buildItems) {
+      return shared.buildItems(items, targets, { unit: '行', labelE2eId: `scriptnote-${kind}-row-menu-batch-label` });
+    }
+    return items.filter(entry => !entry.batchOnly);
   },
 
   // キャラの「シート」列の連携先を設定・解除する（取り消し履歴つき）。

@@ -38,6 +38,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     return;
   }
   const inlineEditorSession = {};
+  // 編集開始時点の選択の通し番号。これより後に選ばれたセルは利用者が移った先として扱う。
+  const editorStartActiveSeq = typeof dbActiveCellSeq === 'number' ? dbActiveCellSeq : 0;
   td._dbInlineEditorSession = inlineEditorSession;
   const ownsInlineEditor = () => td.isConnected !== false
     && td._dbInlineEditorSession === inlineEditorSession;
@@ -55,7 +57,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   const pos = _cellPos(td);
   const isRelationType = type === 'relation' || type === 'multi-relation';
   const restoreActiveCellNow = () => {
-    if (ownsInlineEditor() && typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
+    if (!ownsInlineEditor() || typeof setActiveCell !== 'function' || !td?.isConnected) return;
+    // 保存の完了を待つ間に利用者が別のセルへ移っていたら、選択とフォーカスを奪わない。
+    // 奪うと移動先の入力欄が blur で途中確定され、続く入力が別のセルへ流れる。
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
+    if (current && current !== td && current.isConnected
+        && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq) return;
+    setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
     if (!ownsInlineEditor()) return;
@@ -1374,6 +1382,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       _enableDropdownKeyNav(dd, '.dd-nav-item');
       search.focus();
+      if (typeof _dbAdoptTypedSeed === 'function') _dbAdoptTypedSeed(td, search);
       setTimeout(() => {
         closer = (e) => {
           if (!dd.contains(e.target)) {

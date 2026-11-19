@@ -102,6 +102,16 @@
   function _appendItem(menu, item) {
     if (!item || item.type === 'separator') { _appendSeparator(menu); return; }
     if (item.type === 'slider') { _appendSlider(menu, item); return; }
+    if (item.type === 'label') {
+      // 操作できない見出し（一括実行の「3行を選択中」など）。フォーカス移動の対象にしない。
+      const heading = document.createElement('div');
+      heading.className = 'gb-context-menu-label';
+      heading.setAttribute('role', 'presentation');
+      if (item.e2eId) heading.dataset.e2eId = String(item.e2eId);
+      heading.textContent = String(item.label || '');
+      menu.appendChild(heading);
+      return;
+    }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;

@@ -337,7 +337,7 @@
     const appKey = String(app || '').replace(/[^A-Za-z0-9_-]/g, '');
     const config = TOOLBAR_APPS[appKey] || TOOLBAR_APPS.page;
     scheduleToolbarSync();
-    return '<span class="tb-file-icon" data-file-icon-app="' + appKey + '" role="img" aria-label="' + TOOLBAR_LABEL + '">'
+    return '<span class="tb-file-icon" data-e2e-id="toolbar-file-icon-' + appKey + '" data-file-icon-app="' + appKey + '" role="img" aria-label="' + TOOLBAR_LABEL + '">'
       + toolbarMarkup({path: '', type: config.type}) + '</span>';
   }
   function watchTitle(el) {
@@ -422,8 +422,22 @@
     fallback.innerHTML = typeof lucide === 'function' ? lucide(name, Number(img.width) || 18) : '';
     img.replaceWith(fallback);
   }, true);
+  // フォルダツリー以外（選択ダイアログ・検索結果など）でファイルを並べる時のアイコン。
+  // 独自の種別→アイコン表を持つと、シートなどがフォルダツリーと違う絵になる（2026-11-19）。
+  // フォルダツリーと同じ判定（拡張子による種別の解決・作品フォルダ・ファイル別アイコン）を使う。
+  function itemIconName(type, path) {
+    if (typeof _outlinerIconName === 'function') return _outlinerIconName(type, path, false);
+    return (typeof uiTypeIconName === 'function' && uiTypeIconName(type || 'page')) || (type === 'folder' ? 'folder' : 'page');
+  }
+  function itemIconHtml(item, size) {
+    const value = item && typeof item === 'object' ? item : {};
+    const px = size || 18;
+    if (typeof _outlinerIconMarkup === 'function') return _outlinerIconMarkup(value, px);
+    const fallback = typeof lucide === 'function' ? lucide(itemIconName(value.type, value.path), px) : '';
+    return value.path ? render(value, px, fallback) : fallback;
+  }
   global.MeldexFileIcons = {canEdit, remember, render, openPicker, tabIcon, readFields, writeFields, preserve, matchesScope,
-    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync};
+    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
   const extensions = global.__MeldexPwaDataAccessExtensions;
   if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body}) => {
     const internals = global.__MeldexPwaDataAccessInternals;

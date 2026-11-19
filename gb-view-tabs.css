@@ -94,7 +94,7 @@
 }
 
 .gb-view-tab:hover .gb-view-tab-more,
-.gb-view-tab:focus-within .gb-view-tab-more,
+.gb-view-tab:has(:focus-visible) .gb-view-tab-more,
 .gb-view-tab-menu[open] > .gb-view-tab-more { opacity: 1; }
 
 .gb-view-tabs-add { flex: 0 0 auto; }

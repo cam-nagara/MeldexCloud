@@ -421,7 +421,7 @@
       || result?.response?.migration?.viewDocument || null;
   }
 
-  function publish(result, reason) {
+  function publish(result, reason, structural = true) {
     const records = recordsFrom(result);
     const legacyNodeTopicIds = {};
     records.forEach((record) => {
@@ -435,6 +435,7 @@
       mode: result.mode,
       readOnly: result.mode === 'preview' || result?.archive?.readOnly === true,
       reason: reason || 'open',
+      structural: structural !== false,
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
       checkpoint: result?.archive?.checkpoint || null,
@@ -466,7 +467,7 @@
         || openVersion !== Number(owner?._openSeq || 0)) {
       return { ok: false, status: 'superseded', target };
     }
-    if (result.ok) result.detail = publish(result, options?.reason);
+    if (result.ok) result.detail = publish(result, options?.reason, options?.structural !== false);
     else if (result.status === 'fallback' && typeof global.dispatchEvent === 'function'
       && typeof global.CustomEvent === 'function') {
       global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
@@ -497,12 +498,14 @@
     if (previous) clearTimeout(previous.timer);
     const owner = options?.owner;
     const delay = Number.isFinite(options?.debounceMs) ? Math.max(0, options.debounceMs) : DEFAULT_DEBOUNCE_MS;
+    // まとめた保存のどれか1つでも名前・構造を変えたら、通知は構造変更として扱う。
+    const structural = options?.structural !== false || previous?.structural === true;
     const timer = setTimeout(() => {
       saveTimers.delete(key);
       if (!ownerActive(owner, dbPath)) return;
-      void migrateOpenedSheet(dbPath, { ...options, reason: 'save', refreshRoots: false });
+      void migrateOpenedSheet(dbPath, { ...options, structural, reason: 'save', refreshRoots: false });
     }, delay);
-    saveTimers.set(key, { timer, owner });
+    saveTimers.set(key, { timer, owner, structural });
     return timer;
   }
 
@@ -98868,7 +98871,10 @@ async function resetLayoutToDefault() {
     if (depth > 0) {
       const icon = document.createElement('span');
       icon.className = 'gb-folder-picker-icon';
-      icon.innerHTML = _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
+      const shared = window.MeldexFileIcons?.itemIconHtml;
+      icon.innerHTML = typeof shared === 'function'
+        ? shared({ ...(folder && typeof folder === 'object' ? folder : {}), path, type: isFile ? folder.type : (folder?.type || 'folder') }, 18)
+        : _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
       row.appendChild(icon);
     }
 
@@ -111973,7 +111979,8 @@ function setupEditableDropHandler(el) {
           }
         } else {
           // その他: リンク+Lucideアイコンとして挿入
-          const icon = type === 'database' ? 'database' : type === 'entity' ? 'fileSpreadsheet' : type === 'scenario' ? 'fileText' : type === 'board' ? 'layout' : 'file';
+          const icon = window.MeldexFileIcons?.itemIconName?.(type, path)
+            || (type === 'database' ? 'database' : type === 'entity' ? 'fileSpreadsheet' : type === 'scenario' ? 'fileText' : type === 'board' ? 'layout' : 'file');
           document.execCommand('insertHTML', false,
             `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `);
         }
@@ -157463,6 +157470,9 @@ async function _apiPutValue(valObj, updates) {
       res = await apiPut(url, body);
     }
     _dbApplyAutoTaskRenameResult(res);
+    // 値だけの保存はフォルダツリーの構造を変えない。名前が変わった時だけツリーを読み直させる。
+    const structuralSave = !!res?.auto_renamed_entry
+      || (!!res?.new_path && _dbNormalizePath(res.new_path) !== _dbNormalizePath(targetPath));
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;
     if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
@@ -157509,6 +157519,7 @@ async function _apiPutValue(valObj, updates) {
     }
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+      structural: structuralSave,
     });
     return res;
   }, valObj);
@@ -157560,6 +157571,8 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     const res = await apiPost('/value', body);
     _dbApplyAutoTaskRenameResult(res);
     const savedEntityPath = res?.new_path || writeEntityPath;
+    const structuralSave = !!res?.auto_renamed_entry
+      || _dbNormalizePath(savedEntityPath) !== _dbNormalizePath(writeEntityPath);
     if (res?.revision != null) _dbPropagateEntryRevision(savedEntityPath, res.revision);
     const dbPath = _dbPathFromEntityPath(savedEntityPath) || state.currentDbPath || '';
     _markDbAutoVersionDirty(dbPath);
@@ -157586,6 +157599,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     } catch {}
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+      structural: structuralSave,
     });
     return res;
   }, entryRef);
@@ -159021,7 +159035,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       'titleProp', 'colorProp', 'descriptionProp', 'locationProp', 'urlProp',
       'calendarIdProp', 'timeProp', 'rowProp', 'xProperty', 'yProperty',
       'colorProperty', 'parentProp', 'orderProp', 'labelProp', 'typeProp',
-      'collapsedProp',
+      'collapsedProp', 'rubyBaseProp',
     ]);
     const arrayKeys = new Set([
       'copyProps', 'colOrder', 'pinnedCols', 'hiddenCols', 'fields',
@@ -160494,8 +160508,19 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
     || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(e?.target || null));
-  // 上部にリネーム入力欄: エントリ名変更
-  _addMenuRenameInput(menu, entityName, (newName) => {
+  // 表の行ハンドル・「…」から開いた時だけ一括判定を行う（UI共通ルール §6「行の選択と一括実行」）。
+  // 押した行が選択中で選択が2行以上なら、選択中のすべての行が対象。選択外なら押した1行だけ（選択は変えない）。
+  // 右クリック（カード・ギャラリー・ツリー等）からは従来どおり単独のメニュー。
+  const rowMenu = window.MeldexRowHandleMenu;
+  const targets = (menuOptions?.anchorRect || menuOptions?.rowBatch) && ctx && sourceRow && typeof rowMenu?.resolveTargets === 'function'
+    ? _dbRowHandleMenuTargets(ctx, sourceRow, entityName)
+    : { batch: false, ids: [entityName], runs: [[entityName]], count: 1, rowId: entityName };
+  const batch = !!targets.batch;
+  // 押した行が選択中なら、1行だけの選択でも「一括編集」「選択を解除」を出す（旧一括操作バーと同じく1件から使える）。
+  const rowSelected = batch || (!!(menuOptions?.anchorRect || menuOptions?.rowBatch) && !!ctx
+    && (typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])]).includes(entityName));
+  // 上部にリネーム入力欄: エントリ名変更（一括時は出さない）
+  if (!batch) _addMenuRenameInput(menu, entityName, (newName) => {
     window.GbDbEntryIdentity.rename({
       dbPath: targetDbPath,
       oldName: entityName,
@@ -160521,9 +160546,23 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
   const items = [
     ...(ctx && !productionSchemaLocked && typeof _handleInsertRowRelative === 'function' ? [
       { icon: 'arrowUp', label: '上にトピックを追加', e2eId: 'db-entry-row-add-above',
-        action: () => _handleInsertRowRelative(ctx, entityName, 'above') },
+        batch: true, batchLabel: count => `上に${count}件のトピックを追加`,
+        action: () => (batch ? _dbInsertRowsForTargets(ctx, targets, 'above') : _handleInsertRowRelative(ctx, entityName, 'above')) },
       { icon: 'arrowDown', label: '下にトピックを追加', e2eId: 'db-entry-row-add-below',
-        action: () => _handleInsertRowRelative(ctx, entityName, 'below') },
+        batch: true, batchLabel: count => `下に${count}件のトピックを追加`,
+        action: () => (batch ? _dbInsertRowsForTargets(ctx, targets, 'below') : _handleInsertRowRelative(ctx, entityName, 'below')) },
+    ] : []),
+    ...(ctx && rowSelected && typeof _showBulkEditModal === 'function' ? [
+      { icon: 'pencil', label: '一括編集...', e2eId: 'db-entry-row-bulk-edit', batch: true,
+        // 対象は旧一括操作バーと同じく選択した順（逆リレーションの値の並びが選択順で決まるため）。
+        action: () => _showBulkEditModal((() => {
+          const picked = typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])];
+          const inTargets = new Set(targets.ids);
+          const ordered = picked.filter(name => inTargets.has(name));
+          return ordered.length === targets.ids.length ? ordered : targets.ids.slice();
+        })(), ctx, {
+          returnFocus: e?.target?.closest?.('.row-drag-handle') || sourceRow?.querySelector?.('.row-drag-handle') || null,
+        }) },
     ] : []),
     ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'トピック名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
@@ -160575,7 +160614,16 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       ...window.MeldexTopicPlacementUI.menuItems(topicPlacementSource),
     ] : []),
     { type: 'sep' },
-    { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true, action: async () => {
+    ...(ctx && rowSelected && typeof _clearPaneRowSelection === 'function' ? [
+      { icon: 'x', label: '選択を解除', e2eId: 'db-entry-row-clear-selection', batch: true,
+        action: () => _clearPaneRowSelection(ctx) },
+      { type: 'sep' },
+    ] : []),
+    { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true,
+      e2eId: 'db-entry-row-delete',
+      batch: typeof _bulkDeleteEntities === 'function', batchLabel: count => `${count}件のトピックを削除`,
+      action: async () => {
+      if (batch) return _bulkDeleteEntities(targets.ids.slice(), ctx);
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
@@ -160617,8 +160665,21 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       }
     }},
   ];
-  items.forEach(item => {
-    if (item.type === 'sep') { const s = document.createElement('div'); s.className = 'gb-context-menu-sep'; menu.appendChild(s); return; }
+  // 一括時は一括実行できる項目だけにし、先頭へ「N件を選択中」の見出しを置く。単独時は一括専用の項目を外す。
+  const menuItems = typeof rowMenu?.buildItems === 'function'
+    ? rowMenu.buildItems(items, targets, { unit: '件', labelE2eId: 'db-row-handle-menu-batch-label' })
+    : items.filter(item => !item.batchOnly);
+  menuItems.forEach(item => {
+    if (item.type === 'sep' || item.type === 'separator') { const s = document.createElement('div'); s.className = 'gb-context-menu-sep'; menu.appendChild(s); return; }
+    if (item.type === 'label') {
+      const labelEl = document.createElement('div');
+      labelEl.className = 'gb-context-menu-label';
+      labelEl.setAttribute('role', 'presentation');
+      if (item.e2eId) labelEl.dataset.e2eId = item.e2eId;
+      labelEl.textContent = item.label;
+      menu.appendChild(labelEl);
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
     if (item.e2eId) el.dataset.e2eId = item.e2eId;
@@ -160631,6 +160692,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
     el.addEventListener('click', () => { closeColHeaderMenu(); return _dbRunMenuItemAction(item.action); });
     menu.appendChild(el);
   });
+  if (batch) menu.dataset.rowBatchCount = String(targets.count);
   // positionPopup() でマウス位置基準の配置 + ビューポートクランプを一括処理
   // (既知バグ #3「手動 zoom 計算残存」の修正)
   document.body.appendChild(menu);
@@ -160643,6 +160705,38 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
     const first = menu.querySelector('.gb-context-menu-item');
     if (first) { first.tabIndex = -1; first.focus({ preventScroll: true }); }
   }
+}
+
+// 行ハンドルメニューの対象（表示順は表の tbody の行順、選択は ctx._selectedEntities）。
+function _dbRowHandleMenuTargets(ctx, sourceRow, entityName) {
+  // 表示順は描画中の行ではなく、表の全行の並びから取る。仮想スクロール（大きなシート）や
+  // 折りたたんだグループでは描画外の選択行があり、tbody だけだと一括の対象から漏れるため。
+  const table = sourceRow?.closest?.('table');
+  const fullOrder = (Array.isArray(table?._dbVirtualRows?.entityNames) && table._dbVirtualRows.entityNames)
+    || (Array.isArray(ctx?._lastEntityNames) && ctx._lastEntityNames.length ? ctx._lastEntityNames : null);
+  const tbody = sourceRow?.closest?.('tbody')
+    || (typeof _paneEl === 'function' ? _paneEl(ctx, '#' + (ctx?.tableId || 'pivot-table'))?.querySelector?.('tbody') : null);
+  const orderedIds = fullOrder
+    ? fullOrder.filter(Boolean)
+    : tbody
+      ? [...tbody.querySelectorAll('tr[data-entity-name]')]
+        .filter(row => !row.classList.contains('new-entity-row') && !row.classList.contains('group-header-row'))
+        .map(row => row.dataset.entityName)
+        .filter(Boolean)
+      : [entityName];
+  const selected = typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])];
+  return window.MeldexRowHandleMenu.resolveTargets(entityName, orderedIds, selected);
+}
+
+// 連続して選択された行のまとまりごとに、まとまりの行数ぶんの新規行をまとまりの上／下へ入れる。
+// 例: ①②③4⑤6⑦8 で「下に追加」→ ①②③ 新 新 新 4 ⑤ 新 6 ⑦ 新 8。
+// 挿入計画は下のまとまりから順。各まとまりの仮の行を先に全部表示してから保存の完了を待つ。
+async function _dbInsertRowsForTargets(ctx, targets, position) {
+  const plans = window.MeldexRowHandleMenu?.planInsertions?.(targets, position) || [];
+  if (!plans.length) return;
+  // 並べ替え・描画・取り消し履歴を1回にまとめる（まとまりの数だけ表全体を描き直さない）。
+  if (typeof _handleInsertRowsAtPlans === 'function') return _handleInsertRowsAtPlans(ctx, plans);
+  for (const plan of plans) await _handleInsertRowRelative(ctx, plan.anchorId, plan.position, plan.count);
 }
 
 function _hasDependencyPairProps(pts) {
@@ -162866,22 +162960,9 @@ async function _deleteColumn(dbPath, propName, ctx) {
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  let viewConfigPersisted = true;
-  if (typeof _persistDbViewConfigToBackend === 'function') {
-    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
-  }
-  if (viewConfigPersisted === false) {
-    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
-    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
-    return false;
-  }
-  saveDbViewConfig(dbPath, c, { skipBackend: true });
-
-  // state.dbMetadata にも反映
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
-    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
-  }
+  // 保存の完了を待たずに列を画面から消す。保存に失敗したら削除前へ戻す。
+  _ptApplyColumnDeleteLocally(dbPath, propName, c, renderCtx);
+  if (!await _ptPersistColumnDeleteViewConfig(dbPath, propName, c, { oldCfg, oldMetadata, renderCtx })) return false;
 
   // バックエンドに保存（列タイプの保存が確定してから取り消し履歴を積む）
   const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
@@ -162917,12 +162998,6 @@ async function _deleteColumn(dbPath, propName, ctx) {
     );
   }
 
-  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
-    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
-    _renderCurrentDbView(renderCtx, dbPath);
-  } else {
-    selectDatabase(dbPath, renderCtx);
-  }
   if (layoutError) {
     showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${layoutError?.message || layoutError}`, true);
   } else {
@@ -162936,6 +163011,48 @@ async function _deleteColumn(dbPath, propName, ctx) {
     cascade_container: true,
   }).catch(() => {});
   return true;
+}
+
+function _ptRenderAfterColumnDelete(renderCtx, dbPath) {
+  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
+    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
+    _renderCurrentDbView(renderCtx, dbPath);
+  } else if (typeof selectDatabase === 'function') {
+    selectDatabase(dbPath, renderCtx);
+  }
+}
+
+// 削除後の表示設定と列タイプを画面側へ先に反映し、すぐ描き直す。
+function _ptApplyColumnDeleteLocally(dbPath, propName, cfg, renderCtx) {
+  saveDbViewConfig(dbPath, cfg, { skipBackend: true, skipHistory: true });
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
+    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
+  }
+  _ptRenderAfterColumnDelete(renderCtx, dbPath);
+}
+
+// 表示設定を保存する。失敗したら画面の列と列タイプを削除前へ戻し、理由を表示して false を返す。
+async function _ptPersistColumnDeleteViewConfig(dbPath, propName, cfg, snapshot) {
+  const { oldCfg, oldMetadata, renderCtx } = snapshot || {};
+  let persisted = true;
+  if (typeof _persistDbViewConfigToBackend === 'function') {
+    try {
+      persisted = await _persistDbViewConfigToBackend(dbPath, cfg, { immediate: true });
+    } catch (error) {
+      console.warn('[Meldex] 列削除の表示設定を保存できませんでした', error);
+      persisted = false;
+    }
+  }
+  if (persisted !== false) return true;
+  saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata && oldMetadata) {
+    state.dbMetadata.property_types = oldMetadata.property_types;
+    state.dbMetadata.property_layout = oldMetadata.property_layout;
+  }
+  _ptRenderAfterColumnDelete(renderCtx, dbPath);
+  showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
+  return false;
 }
 
 // 列削除前の画面上の列タイプ・配置を控える（保存失敗時にそのまま戻す）。
@@ -163015,30 +163132,12 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  let viewConfigPersisted = true;
-  if (typeof _persistDbViewConfigToBackend === 'function') {
-    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
-  }
-  if (viewConfigPersisted === false) {
-    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
-    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
-    return false;
-  }
-  saveDbViewConfig(dbPath, c, { skipBackend: true });
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
-    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
-  }
+  _ptApplyColumnDeleteLocally(dbPath, propName, c, renderCtx);
+  if (!await _ptPersistColumnDeleteViewConfig(dbPath, propName, c, { oldCfg, oldMetadata, renderCtx })) return false;
   const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
   if (!commit.ok) return false;
   if (commit.layoutError) {
     showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${commit.layoutError?.message || commit.layoutError}`, true);
-  }
-  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
-    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
-    _renderCurrentDbView(renderCtx, dbPath);
-  } else {
-    selectDatabase(dbPath, renderCtx);
   }
   return true;
 }
@@ -163170,6 +163269,7 @@ function _deleteFormulaPropRefs(formula, propName) {
 function _deletePropertyTypeReferences(cfg, propName) {
   if (!cfg || typeof cfg !== 'object' || !propName) return;
   if (cfg.pairWith === propName) delete cfg.pairWith;
+  if (cfg.rubyBaseProp === propName) delete cfg.rubyBaseProp;
   if (cfg.cascadeFrom === propName) {
     delete cfg.cascadeFrom;
     delete cfg.cascadeKey;
@@ -163212,6 +163312,7 @@ function _renamePropertyTypeReferences(cfg, oldName, newName, propertyTypes) {
   if (cfg.pairWith === oldName) cfg.pairWith = newName;
   if (cfg.cascadeFrom === oldName) cfg.cascadeFrom = newName;
   if (cfg.relationProp === oldName) cfg.relationProp = newName;
+  if (cfg.rubyBaseProp === oldName) cfg.rubyBaseProp = newName;
   if (cfg.relationDb === '') {
     if (cfg.bidirectionalProp === oldName) cfg.bidirectionalProp = newName;
     if (cfg.cascadeKey === oldName) cfg.cascadeKey = newName;
@@ -163980,7 +164081,7 @@ function _openDbTreePicker(anchorBtn, dbs, input, dbPath) {
         sheetEl.className = 'db-picker-tree-row db-picker-tree-sheet' + (isCur ? ' is-current' : '');
         sheetEl.style.paddingLeft = (6 + (depth + 1) * 14) + 'px';
         sheetEl.innerHTML = `<span class="db-picker-tw-caret"></span>`
-          + `<span class="db-picker-tw-icon">${lucide('database', 13)}</span>`
+          + `<span class="db-picker-tw-icon">${window.MeldexFileIcons?.itemIconHtml?.({ type: 'database', path: d.path }, 13) ?? lucide('database', 13)}</span>`
           + `<span class="db-picker-tw-name">${esc(d.name)}</span>`;
         sheetEl.addEventListener('click', () => selectSheet(d));
         host.appendChild(sheetEl);
@@ -164294,7 +164395,7 @@ function _renderCalendarSyncEditor(cs) {
           <input id="pt-calsync-enabled" type="checkbox" ${enabled ? 'checked' : ''}>
           カレンダー連動を有効にする
         </label>
-        ${fieldHelp('オンにすると、この列に日時を設定したとき対象カレンダーシートへイベントが自動生成されます')}
+        ${fieldHelp('オンにすると、この列に日時を設定したとき対象カレンダーシートへイベントが自動生成されます', { e2eId: 'pt-calendar-autogen-help' })}
       </div>
     </div>
     <div id="pt-calsync-body" style="${enabled ? '' : 'display:none;'}padding-left:8px;border-left:2px solid var(--border);margin-top:6px;">
@@ -164515,6 +164616,18 @@ function onPropertyTypeChange(root) {
         keyInput.value = '';
       }
     });
+  } else if (type === 'furigana') {
+    // ふりがなを付ける相手。既定はトピック名。左隣の列（例: 姓 → 姓のふりがな）にも切り替えられる。
+    const left = _ptFuriganaLeftColumn(scope, statePropName);
+    const base = String(current.rubyBaseProp || '');
+    const choices = [{ value: '', label: 'トピック名' }];
+    if (left) choices.push({ value: left, label: `左隣の列（${left}）` });
+    if (base && base !== left) choices.push({ value: base, label: `列「${base}」` });
+    optDiv.innerHTML = `<div class="field"><label>ふりがなの対象 ${fieldHelp('この列の読みを、どの値のふりがなとして辞書（ノートの自動リンク・ルビ）に使うかを選びます。左隣の列を選ぶと、その列の値に読みが付きます')}</label>
+      <select id="pt-furigana-base" data-e2e-id="pt-furigana-base">
+        ${choices.map(choice => `<option value="${esc(choice.value)}"${choice.value === base ? ' selected' : ''}>${esc(choice.label)}</option>`).join('')}
+      </select>
+    </div>`;
   } else if (type === 'number') {
     optDiv.innerHTML = `<div class="field"><label>単位（任意）</label>
       <input id="pt-number-unit" type="text" value="${esc(current.unit||'')}" placeholder="例: ページ, cm, kg">
@@ -164870,6 +164983,9 @@ async function applyPropertyType(propName, root, options = {}) {
     const cascadeFrom = _ptGet('pt-cascade-from', scope)?.value || '';
     const cascadeKey = _ptGet('pt-cascade-key', scope)?.value || '';
     if (cascadeFrom) { config.cascadeFrom = cascadeFrom; config.cascadeKey = cascadeKey || cascadeFrom; }
+  } else if (type === 'furigana') {
+    const base = _ptGet('pt-furigana-base', scope)?.value || '';
+    if (base && base !== propName) config.rubyBaseProp = base;
   } else if (type === 'number') {
     const unitInput = _ptGet('pt-number-unit', scope);
     if (unitInput) config.unit = unitInput.value.trim();
@@ -166193,8 +166309,8 @@ function _ptViewContextHeaderHtml(info, active) {
     ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(info.dbPath || '') : 'トピック名')
     : prop;
   const chips = info.targets.length > 1
-    ? `<div class="pt-formula-tools pt-view-targets" role="group" aria-label="${esc(info.viewLabel)}の基準列">${info.targets.map(item =>
-        `<button type="button" class="pt-small-btn${item.prop === active?.prop ? '' : ' muted'}" data-pt-view-target="${esc(item.prop)}" aria-pressed="${item.prop === active?.prop ? 'true' : 'false'}">${esc(item.role)}: ${esc(label(item.prop))}</button>`
+    ? `<div class="pt-formula-tools pt-view-targets" role="group" aria-label="${esc(info.viewLabel)}の基準列">${info.targets.map((item, index) =>
+        `<button type="button" class="pt-small-btn${item.prop === active?.prop ? '' : ' muted'}" data-e2e-id="pt-view-target-${index}" data-pt-view-target="${esc(item.prop)}" aria-pressed="${item.prop === active?.prop ? 'true' : 'false'}">${esc(item.role)}: ${esc(label(item.prop))}</button>`
       ).join('')}</div>`
     : '';
   return `<div class="field pt-view-context" data-pt-view-context data-e2e-id="pt-view-context">
@@ -166333,9 +166449,10 @@ function _ptAiSectionHtml(dbPath, propName, ctx, type) {
   const refProps = (typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : (pivotData?.properties || [])).filter(prop => prop !== propName);
-  const refButtons = [...refProps, 'トピック名', '本文']
-    .map(prop => `<button type="button" class="pt-small-btn" data-pt-ai-ref="${esc(prop)}"${disabledAttr}>{${esc(prop)}}</button>`)
-    .join('');
+  // 列が多いと一覧のボタンが場所を取るため、参照できる列は1つのボタンからメニューで選ぶ（2026-11-19）
+  const refIcon = typeof lucide === 'function' ? lucide('braces', 14) : '';
+  const refButtons = `<button type="button" class="pt-small-btn" data-pt-ai-ref-menu="1" data-e2e-id="pt-ai-ref-menu"
+      aria-haspopup="menu" title="プロンプトへ列を挿入"${disabledAttr}>${refIcon} 列を挿入</button>`;
   const help = (text, id) => (typeof fieldHelp === 'function' ? fieldHelp(text, { e2eId: id }) : '');
   return `<div id="pt-ai-autofill" class="pt-ai-autofill" data-pt-independent="ai" data-e2e-id="pt-ai-autofill"${PT_AI_SUPPORTED_TYPES.includes(type) ? '' : ' hidden'}
       style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">
@@ -166593,13 +166710,36 @@ function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
     if (section.contains(event.relatedTarget)) return;
     commit();
   });
-  section.querySelectorAll('[data-pt-ai-ref]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const textarea = get('pt-ai-prompt');
-      if (!textarea || textarea.readOnly) return;
-      const text = '{' + (btn.dataset.ptAiRef || '') + '}';
-      if (typeof _ptInsertFormulaText === 'function') _ptInsertFormulaText(textarea, text);
-      else { textarea.value += text; textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+  const insertRef = (prop) => {
+    const textarea = get('pt-ai-prompt');
+    if (!textarea || textarea.readOnly) return;
+    const text = '{' + prop + '}';
+    if (typeof _ptInsertFormulaText === 'function') _ptInsertFormulaText(textarea, text);
+    else { textarea.value += text; textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+  };
+  section.querySelectorAll('[data-pt-ai-ref-menu]').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (btn.disabled) return;
+      const pivot = ctx?.pivotData || (typeof _ptPivotDataForDbPath === 'function' ? _ptPivotDataForDbPath(dbPath) : null);
+      // 値がまだ無い列も参照できるので、列の設定にある列も候補に含める
+      const types = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+      const all = [...new Set([...(pivot?.properties || []), ...Object.keys(types)])];
+      const props = (typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, all) : all)
+        .filter(prop => prop !== propName);
+      const items = [...props, 'トピック名', '本文'].map((prop, index) => ({
+        label: '{' + prop + '}',
+        e2eId: 'pt-ai-ref-option-' + index,
+        action: () => insertRef(prop),
+      }));
+      const menu = window.MeldexContextMenuUI?.openAt?.({
+        ariaLabel: 'プロンプトへ挿入する列',
+        e2eId: 'pt-ai-ref-list-menu',
+        anchorRect: btn.getBoundingClientRect(),
+        restoreFocus: get('pt-ai-prompt') || btn,
+        items,
+      });
+      if (menu) menu.classList.add('pt-ai-ref-list-menu');
     });
   });
   section.querySelectorAll('[data-pt-ai-run]').forEach(btn => {
@@ -166657,6 +166797,26 @@ window.MeldexSheetAiColumn = Object.freeze({
   normalizeConfig: _ptNormalizeAiAutofillConfig,
   viewSettingsTargets: _ptViewSettingsTargets,
 });
+// 列設定を開いているシートの表示順で、指定した列の左隣にある列（トピック名列なら空）。
+function _ptFuriganaLeftColumn(scope, propName) {
+  if (!propName) return '';
+  const { dbPath, pivotData, ctx } = _ptState(scope);
+  const opts = ctx ? { ctx } : undefined;
+  const colOrder = typeof getColOrder === 'function' ? (getColOrder(dbPath, opts) || []) : [];
+  const hidden = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, opts) || []) : [];
+  const types = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+  let order = [...new Set(colOrder)];
+  if (!order.includes('__entity__')) order.unshift('__entity__');
+  [...(pivotData?.properties || []), ...Object.keys(types)].forEach(prop => { if (!order.includes(prop)) order.push(prop); });
+  if (typeof filterDeletedDbProperties === 'function') {
+    const kept = new Set(filterDeletedDbProperties(dbPath, order.filter(prop => prop !== '__entity__')));
+    order = order.filter(prop => prop === '__entity__' || kept.has(prop));
+  }
+  order = order.filter(prop => prop === propName || !hidden.includes(prop));
+  const index = order.indexOf(propName);
+  const left = index > 0 ? order[index - 1] : '';
+  return left && left !== '__entity__' ? left : '';
+}
 ;
 
 ;
@@ -170513,6 +170673,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     return;
   }
   const inlineEditorSession = {};
+  // 編集開始時点の選択の通し番号。これより後に選ばれたセルは利用者が移った先として扱う。
+  const editorStartActiveSeq = typeof dbActiveCellSeq === 'number' ? dbActiveCellSeq : 0;
   td._dbInlineEditorSession = inlineEditorSession;
   const ownsInlineEditor = () => td.isConnected !== false
     && td._dbInlineEditorSession === inlineEditorSession;
@@ -170530,7 +170692,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   const pos = _cellPos(td);
   const isRelationType = type === 'relation' || type === 'multi-relation';
   const restoreActiveCellNow = () => {
-    if (ownsInlineEditor() && typeof setActiveCell === 'function' && td?.isConnected) setActiveCell(td, { scroll: false });
+    if (!ownsInlineEditor() || typeof setActiveCell !== 'function' || !td?.isConnected) return;
+    // 保存の完了を待つ間に利用者が別のセルへ移っていたら、選択とフォーカスを奪わない。
+    // 奪うと移動先の入力欄が blur で途中確定され、続く入力が別のセルへ流れる。
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
+    if (current && current !== td && current.isConnected
+        && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq) return;
+    setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
     if (!ownsInlineEditor()) return;
@@ -171849,6 +172017,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       _enableDropdownKeyNav(dd, '.dd-nav-item');
       search.focus();
+      if (typeof _dbAdoptTypedSeed === 'function') _dbAdoptTypedSeed(td, search);
       setTimeout(() => {
         closer = (e) => {
           if (!dd.contains(e.target)) {
@@ -172520,6 +172689,7 @@ function _clearDbCellSelection(table) {
     activeCell.tabIndex = -1;
   }
   activeCell = null;
+  _dbActiveCellIdentity = null;
   _hideDbCellBulkBar(table);
 }
 
@@ -172890,6 +173060,34 @@ function _dbCurrentVisualActiveCell() {
   return visual?.isConnected ? visual : null;
 }
 
+// 表全体の描き直しで選択中のセルの要素が入れ替わっても、同じ位置へ戻れるように
+// 行（トピック名）と列で覚えておく。
+let _dbActiveCellIdentity = null;
+
+function _dbCellIdentityOf(td, table) {
+  const tr = td?.closest?.('tr');
+  const entityName = tr?.dataset?.entityName || '';
+  if (!td || !entityName) return null;
+  const kind = td.classList?.contains('col-row-controls') ? 'row-controls'
+    : td.classList?.contains('col-entity') ? 'entity' : 'prop';
+  const propName = td.dataset?.propName || '';
+  if (kind === 'prop' && !propName) return null;
+  return { tableId: table?.id || '', entityName, propName, kind };
+}
+
+function _dbResolveActiveCellIdentity(table) {
+  const identity = _dbActiveCellIdentity;
+  if (!identity || !table?.isConnected) return null;
+  if (identity.tableId && table.id !== identity.tableId) return null;
+  const escape = (value) => (typeof MeldexEscape !== 'undefined' && MeldexEscape.cssIdent)
+    ? MeldexEscape.cssIdent(value) : String(value).replace(/["\\]/g, '\\$&');
+  const tr = table.querySelector(`tbody tr[data-entity-name="${escape(identity.entityName)}"]`);
+  if (!tr) return null;
+  if (identity.kind === 'row-controls') return tr.querySelector('td.col-row-controls');
+  if (identity.kind === 'entity') return tr.querySelector('td.col-entity');
+  return tr.querySelector(`td[data-prop-name="${escape(identity.propName)}"]`);
+}
+
 function setActiveCell(td, options = {}) {
   const table = td?.closest?.('table') || activeCell?.closest?.('table') || null;
   if (!options.preserveRange) {
@@ -172902,6 +173100,7 @@ function setActiveCell(td, options = {}) {
     if (cell !== td) _dbDeactivateActiveCell(cell);
   });
   activeCell = td;
+  _dbActiveCellIdentity = _dbCellIdentityOf(td, table);
   if (td) {
     _dbRestoreCellAddButtonsIfIdle(td);
     td.classList.add('active-cell');
@@ -173146,7 +173345,10 @@ function _dbKeyboardActiveCell(table, eventTarget = null) {
   if (visual && (!table || table.contains(visual))) return visual;
   const selected = table?.querySelector?.('tbody td.db-range-selected[data-prop-name]');
   if (selected) return selected;
-  return activeCell && table?.contains?.(activeCell) ? activeCell : null;
+  if (activeCell && table?.contains?.(activeCell)) return activeCell;
+  // 描き直しで選択中のセルが入れ替わった時は、先頭の行へ飛ばずに同じ位置のセルを使う。
+  if (!activeCell || !activeCell.isConnected) return _dbResolveActiveCellIdentity(table);
+  return null;
 }
 
 function _dbVisibleDataRows(table) {
@@ -173164,14 +173366,44 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   // 行先頭コントロール列（常に colIdx 0）は対象外。エントリ名列は位置に関わらずクラスで判定する
   // （フェーズ2でエントリ名列も並べ替え可能になり、colIdx が固定でなくなったため）。
   if (!cell || colIdx < DB_ROW_CONTROLS_COL_COUNT || cell.classList.contains('col-entity')) return false;
+  const keyCtx = typeof _dbContextForCell === 'function' ? _dbContextForCell(cell) : null;
+  const keyType = String(_dbCellPropertyType(cell, keyCtx)?.type || '').replace(/_/g, '-');
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
+    if (keyType === 'rollup' && typeof startRollupCellEdit === 'function') {
+      void startRollupCellEdit(cell);
+      return true;
+    }
     _dbStartCellInlineEditor(cell, { preferExistingValue: true });
     return true;
   }
+  // リレーション・ロールアップは、選んだセルで文字を打つとそのまま入力が始まる（日本語入力も受ける）。
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
+      && ['relation', 'multi-relation', 'rollup'].includes(keyType)) {
+    // 打った文字を一時入力欄へ通すため既定動作は止めない。キー処理は2か所から呼ばれるので二重に始めない。
+    if (e._dbTypedEditHandled) return true;
+    // 一時入力欄・検索欄の中で打っている文字は、セルの操作として扱わない
+    if (typeof _dbIsNativeEditingElement === 'function' && _dbIsNativeEditingElement(e.target)) return false;
+    e._dbTypedEditHandled = true;
+    if (keyType === 'rollup') {
+      if (typeof startRollupCellEdit !== 'function') return false;
+      const proxy = _dbBeginTypedProxy(cell);
+      if (!proxy) return false;
+      void startRollupCellEdit(cell, { input: proxy });
+      return true;
+    }
+    if (checkColumnEditable(keyCtx?.dbPath || state.currentDbPath, cell.dataset.propName, keyCtx)) return false;
+    const proxy = _dbBeginTypedProxy(cell);
+    if (!proxy) return false;
+    _dbStartCellInlineEditor(cell, { preferExistingValue: true });
+    // 候補一覧がすぐ開いた時は、検索欄へ引き継ぎ済み（打った文字はそのまま検索欄へ入る）。
+    // まだ開いていない時は、編集の開始で選択中のセルへ移ったフォーカスを一時入力欄へ戻す。
+    if (proxy.isConnected && proxy.dataset.adopted !== '1') proxy.focus({ preventScroll: true });
+    return true;
+  }
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const ctx = typeof _dbContextForCell === 'function' ? _dbContextForCell(cell) : null;
-    const type = String(_dbCellPropertyType(cell, ctx)?.type || '').replace(/_/g, '-');
+    const ctx = keyCtx;
+    const type = keyType;
     if (type === 'select' || type === 'multi-select') {
       e.preventDefault();
       _dbStartCellInlineEditor(cell, { preferExistingValue: true });
@@ -173179,6 +173411,54 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
     }
   }
   return false;
+}
+
+
+// 選んだセルで打ち始めた文字を受ける一時的な入力欄。キー操作の中で同期的にフォーカスを移すので、
+// 日本語入力の変換もここで始まる。リレーションの候補一覧が開いたら、その検索欄へ文字を引き継ぐ。
+function _dbBeginTypedProxy(td) {
+  const container = td?.querySelector?.('.cell-values');
+  if (!container) return null;
+  if (td._dbTypedProxy?.isConnected) return td._dbTypedProxy;
+  const proxy = document.createElement('input');
+  proxy.type = 'text';
+  proxy.className = 'db-typed-proxy';
+  proxy.dataset.e2eId = 'db-typed-proxy';
+  proxy.setAttribute('aria-label', '入力');
+  proxy.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  proxy.addEventListener('compositionstart', () => { proxy.dataset.composing = '1'; });
+  proxy.addEventListener('compositionend', () => { delete proxy.dataset.composing; });
+  proxy.addEventListener('keydown', (event) => {
+    if (proxy.dataset.adopted === '1') return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); proxy.remove(); td._dbTypedProxy = null; }
+  });
+  container.appendChild(proxy);
+  td._dbTypedProxy = proxy;
+  proxy.focus({ preventScroll: true });
+  // 一覧が開かなかった時（読み込み失敗など）に入力欄だけが残らないようにする。
+  setTimeout(() => {
+    if (proxy.isConnected && proxy.dataset.adopted !== '1' && !proxy.value && document.activeElement !== proxy) proxy.remove();
+  }, 4000);
+  return proxy;
+}
+
+function _dbAdoptTypedSeed(anchor, search) {
+  const td = anchor?.closest?.('td') || null;
+  const proxy = td?._dbTypedProxy;
+  if (!proxy || !search) return;
+  td._dbTypedProxy = null;
+  if (!proxy.isConnected) return;
+  proxy.dataset.adopted = '1';
+  const move = () => {
+    const text = proxy.value;
+    proxy.remove();
+    search.value = text;
+    search.focus();
+    try { search.setSelectionRange(text.length, text.length); } catch {}
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  if (proxy.dataset.composing === '1') proxy.addEventListener('compositionend', () => setTimeout(move, 0), { once: true });
+  else move();
 }
 function _dbCellClipboardValue(td, ctx) {
   const value = _dbCellPrimaryValue(td, ctx);
@@ -173879,6 +174159,7 @@ function _dbSetActiveHeader(th) {
   table?.querySelectorAll('thead th.active-cell').forEach(node => node.classList.remove('active-cell'));
   if (activeCell) _dbDeactivateActiveCell(activeCell);
   activeCell = null;
+  _dbActiveCellIdentity = null;
   rangeAnchorCell = null;
   th.classList.add('active-cell');
   th.focus({ preventScroll: true });
@@ -174920,10 +175201,15 @@ function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
   return true;
 }
 
+// 値のあるセルにも、カーソルを合わせると「＋」を出す（2026-11-19 ユーザー指定。以前は候補値0件の時だけ）。
+// 画像・チェックボックス・日付など、1セル1つの値を置き換える型は「…」メニューの操作に任せる。
+const _CELL_UI_ADD_WITH_VALUES_TYPES = new Set(['', 'text', 'furigana', 'number', 'url', 'relation', 'multi-relation', 'multi-select', 'multi-user', 'multi-link', 'common-tags']);
 function _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx) {
   const type = String(ptc?.type || '').replace(/_/g, '-');
-  return (type === 'multi-link' || !Array.isArray(rawValues) || rawValues.length === 0)
-    && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
+  const hasValues = Array.isArray(rawValues) && rawValues.length > 0;
+  if (!hasValues) return _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
+  return _CELL_UI_ADD_WITH_VALUES_TYPES.has(type)
+    && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, { hasExistingValue: true });
 }
 
 function _cellUiCanQuickRename(ptc) {
@@ -178617,6 +178903,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
   }
   _enableDropdownKeyNav(dd, '.dd-nav-item');
   search.focus();
+  if (typeof _dbAdoptTypedSeed === 'function') _dbAdoptTypedSeed(el, search);
 
   setTimeout(() => {
     closer = async (e) => {
@@ -188091,6 +188378,16 @@ async function openFormApp(path, label, options = {}) {
   function _appendItem(menu, item) {
     if (!item || item.type === 'separator') { _appendSeparator(menu); return; }
     if (item.type === 'slider') { _appendSlider(menu, item); return; }
+    if (item.type === 'label') {
+      // 操作できない見出し（一括実行の「3行を選択中」など）。フォーカス移動の対象にしない。
+      const heading = document.createElement('div');
+      heading.className = 'gb-context-menu-label';
+      heading.setAttribute('role', 'presentation');
+      if (item.e2eId) heading.dataset.e2eId = String(item.e2eId);
+      heading.textContent = String(item.label || '');
+      menu.appendChild(heading);
+      return;
+    }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
@@ -188356,7 +188653,133 @@ async function openFormApp(path, label, options = {}) {
     return handle;
   }
 
-  global.MeldexRowHandleMenu = Object.freeze({ bind, open, anchorRect, DRAG_THRESHOLD });
+  // ---------------------------------------------------------------------------
+  // 複数選択時の一括実行（2026-11-19決定。共通ルール §6「行の選択と一括実行」）
+  //
+  // ・押したハンドルの行が選択中で、選択が2行以上なら「一括」。選択中のすべての行が対象。
+  // ・押した行が選択外なら、その1行だけが対象（選択は変えない）。
+  // ・対象は表示順に並べ、連続する行を1つのまとまり（run）にする。
+  //   追加・複製はまとまりごとに、まとまりの行数ぶん、まとまりの上／下へ入れる。
+  // ---------------------------------------------------------------------------
+
+  /** orderedIds の並びで、idSet に含まれる連続区間を配列で返す。 */
+  function runsOf(orderedIds, idSet) {
+    const set = idSet instanceof Set ? idSet : new Set(idSet || []);
+    const runs = [];
+    let current = null;
+    let prevIndex = -2;
+    (orderedIds || []).forEach((id, index) => {
+      if (!set.has(id)) return;
+      if (current && index === prevIndex + 1) current.push(id);
+      else { current = [id]; runs.push(current); }
+      prevIndex = index;
+    });
+    return runs;
+  }
+
+  /**
+   * ハンドルメニューの対象を決める。
+   * @param {*} rowId 押したハンドルの行
+   * @param {Array} orderedIds 表示順の全行ID
+   * @param {Iterable} selectedIds 選択中の行ID
+   * @returns {{batch:boolean, ids:Array, runs:Array<Array>, count:number, rowId:*}}
+   */
+  function resolveTargets(rowId, orderedIds, selectedIds) {
+    const order = Array.isArray(orderedIds) ? orderedIds : [];
+    const selected = new Set(selectedIds || []);
+    const visibleSelected = order.filter(id => selected.has(id));
+    const batch = visibleSelected.length > 1 && selected.has(rowId);
+    const idSet = batch ? new Set(visibleSelected) : new Set([rowId]);
+    const ids = batch ? visibleSelected : [rowId];
+    return { batch, ids, runs: runsOf(order, idSet), count: ids.length, rowId };
+  }
+
+  /**
+   * 追加・複製の挿入計画。まとまりごとに { ids, anchorId, position, count } を返す。
+   * 下（後ろ）のまとまりから順に並べるので、位置（index）で挿入する表もそのまま順に適用できる。
+   */
+  function planInsertions(targets, position) {
+    const where = position === 'above' ? 'above' : 'below';
+    return (targets?.runs || []).map(run => ({
+      ids: run.slice(),
+      anchorId: where === 'above' ? run[0] : run[run.length - 1],
+      position: where,
+      count: run.length,
+    })).reverse();
+  }
+
+  /**
+   * 対象をまとめて1つ上（dir=-1）／下（dir=1）へ動かした並びを返す。端に当たって動かせない時は null。
+   */
+  function moveOrder(orderedIds, targetIds, dir) {
+    const order = (orderedIds || []).slice();
+    const set = new Set(targetIds || []);
+    if (!set.size) return null;
+    const step = dir < 0 ? -1 : 1;
+    const edge = step < 0 ? 0 : order.length - 1;
+    if (set.has(order[edge])) return null;
+    const indices = order.map((id, index) => (set.has(id) ? index : -1)).filter(index => index >= 0);
+    if (step > 0) indices.reverse();
+    indices.forEach(index => {
+      const other = index + step;
+      const tmp = order[other];
+      order[other] = order[index];
+      order[index] = tmp;
+    });
+    return order;
+  }
+
+  function _collapseSeparators(items) {
+    const out = [];
+    items.forEach(item => {
+      const isSep = !item || item.type === 'separator' || item.type === 'sep';
+      if (isSep && (!out.length || out[out.length - 1].__sep)) return;
+      out.push(isSep ? { type: 'separator', __sep: true } : item);
+    });
+    while (out.length && out[out.length - 1].__sep) out.pop();
+    return out.map(item => (item.__sep ? { type: 'separator' } : item));
+  }
+
+  /**
+   * 一括時は「一括実行できる項目（batch: true）」だけを残し、batchLabel があれば差し替える。
+   * 先頭に「N行を選択中」の見出しを置く。単独時は batchOnly の項目を外して、そのまま返す。
+   *   item.batch      true で一括時にも表示（action は呼び出し側が対象全体に対して実装する）
+   *   item.batchOnly  true で一括時だけ表示（選択の反転・解除など）
+   *   item.batchLabel 一括時の表示名（文字列、または count を受け取る関数）
+   */
+  function buildItems(items, targets, options = {}) {
+    const list = Array.isArray(items) ? items : [];
+    const batch = !!targets?.batch;
+    const count = targets?.count || 0;
+    const transform = entries => entries.map(item => {
+      if (!item || item.type === 'separator' || item.type === 'sep' || item.type === 'label') return item;
+      if (batch ? !item.batch && !item.batchOnly : item.batchOnly) return null;
+      const next = { ...item };
+      if (batch && item.batchLabel) {
+        next.label = typeof item.batchLabel === 'function' ? item.batchLabel(count) : item.batchLabel;
+      }
+      if (Array.isArray(item.items)) {
+        next.items = _collapseSeparators(transform(item.items).filter(Boolean));
+        if (!next.items.length) return null;
+      }
+      delete next.batch; delete next.batchOnly; delete next.batchLabel;
+      return next;
+    }).filter(Boolean);
+    const result = _collapseSeparators(transform(list));
+    if (batch && result.length) {
+      const unit = options.unit || '行';
+      result.unshift(
+        { type: 'label', label: `${count}${unit}を選択中`, e2eId: options.labelE2eId || 'row-handle-menu-batch-label' },
+        { type: 'separator' },
+      );
+    }
+    return result;
+  }
+
+  global.MeldexRowHandleMenu = Object.freeze({
+    bind, open, anchorRect, DRAG_THRESHOLD,
+    runsOf, resolveTargets, planInsertions, moveOrder, buildItems,
+  });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 ;
@@ -189032,14 +189455,22 @@ function _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, createdNames, options
   }
   const createdSet = new Set(createdNames);
   order = order.filter(name => !createdSet.has(name));
-  const refEntityName = opts.refEntityName || '';
-  const refIdx = refEntityName ? order.indexOf(refEntityName) : -1;
-  if (refIdx < 0 || opts.position === 'append') {
-    order.push(...createdNames);
-  } else {
-    const insertIdx = refIdx + (opts.position === 'below' ? 1 : 0);
-    order.splice(insertIdx, 0, ...createdNames);
-  }
+  // placements: 複数の基準行へまとめて入れる（行メニューの一括追加。1回の並べ替え・保存・描画で済ませる）。
+  const placements = Array.isArray(opts.placements) && opts.placements.length
+    ? opts.placements
+    : [{ names: createdNames, refEntityName: opts.refEntityName || '', position: opts.position }];
+  placements.forEach(placement => {
+    const names = (placement.names || []).filter(name => createdSet.has(name));
+    if (!names.length) return;
+    const refEntityName = placement.refEntityName || '';
+    const refIdx = refEntityName ? order.indexOf(refEntityName) : -1;
+    if (refIdx < 0 || placement.position === 'append') {
+      order.push(...names);
+    } else {
+      const insertIdx = refIdx + (placement.position === 'below' ? 1 : 0);
+      order.splice(insertIdx, 0, ...names);
+    }
+  });
   target.sortConfig = { key: 'manual', dir: 'asc' };
   target.manualOrder = order;
   saveDbViewConfig(dbPath, cfg);
@@ -189518,39 +189949,114 @@ function _toggleGroupCollapsed(ctx, groupKey) {
 
 // 既存エントリの above / below に新規行を挿入 (manualOrder を更新)
 async function _handleInsertRowRelative(ctx, refEntityName, position, count) {
+  return _handleInsertRowsAtPlans(ctx, [{ anchorId: refEntityName, position, count: Math.max(1, count || 1) }]);
+}
+
+// 行メニューの「上に／下に追加」。plans は基準行ごとの { anchorId, position, count }。
+// 仮の行をすべて作ってから並べ替え・描画を1回だけ行い、保存の完了後に1件の取り消し履歴を積む
+// （取り消し=追加したトピックをゴミ箱へ、やり直し=ゴミ箱から戻して同じ位置へ）。UI共通ルール §6。
+async function _handleInsertRowsAtPlans(ctx, plans) {
   const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
   if (!dbPath) return;
-  count = Math.max(1, count || 1);
+  const validPlans = (Array.isArray(plans) ? plans : []).filter(plan => plan && Math.max(0, plan.count || 0) > 0);
+  if (!validPlans.length) return;
+  const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const createdRecords = [];
-  for (let n = 0; n < count; n++) {
-    try {
-      createdRecords.push(_dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true }));
-    } catch (e) {
-      if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
+  const placements = [];
+  for (const plan of validPlans) {
+    const names = [];
+    for (let n = 0; n < plan.count; n++) {
+      try {
+        const record = _dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true });
+        createdRecords.push(record);
+        names.push(record.name);
+      } catch (e) {
+        if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
+      }
     }
+    if (names.length) placements.push({ names, refEntityName: plan.anchorId, position: plan.position });
   }
   const created = createdRecords.map(item => item.name);
   if (created.length === 0) return;
-  const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, created, { refEntityName, position }) || ctx;
-  const createdItems = [];
-  const failed = [];
-  for (const record of createdRecords) {
+  const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, created, { placements }) || ctx;
+  const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  const settledPromise = Promise.all(createdRecords.map(async record => {
     try {
       const saved = await record.promise;
       if (saved.name !== record.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, record.name, saved.name);
-      createdItems.push({ name: saved.name, path: saved.path, response: saved.response });
+      return { ok: true, item: { name: saved.name, path: saved.path, response: saved.response } };
     } catch (e) {
       // タイムアウト等でも作成済みのことがあるため、撤去前に確認する
       const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, record);
-      if (recovered) createdItems.push({ name: recovered.name, path: recovered.path, response: null });
-      else failed.push(record.name);
+      if (recovered) return { ok: true, item: { name: recovered.name, path: recovered.path, response: null } };
+      return { ok: false, name: record.name };
     }
-  }
+  }));
+  const createdItemsPromise = settledPromise.then(settled => settled.filter(result => result.ok).map(result => result.item));
+  // 取り消し履歴は表示に反映した直後に積む（保存の完了後に積むと、直後の Ctrl+Z が1つ前の操作を戻してしまう）。
+  // 取り消し・やり直しは保存の完了を待ってから実行する。
+  _dbPushInsertedEntitiesHistory(dbPath, renderCtx, createdItemsPromise, viewBefore, viewAfter, created.length);
+  const settled = await settledPromise;
+  const createdItems = settled.filter(result => result.ok).map(result => result.item);
+  const failed = settled.filter(result => !result.ok).map(result => result.name);
   if (failed.length) {
     _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, failed);
-    if (typeof showStatus === 'function') showStatus('一部のトピック作成に失敗しました', true);
+    if (typeof showStatus === 'function') showStatus(`${failed.length}件のトピック作成に失敗しました`, true);
   }
   _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx);
+}
+
+// 行メニューから追加したトピックの取り消し履歴（保存に成功した分だけを対象にする）。
+function _dbPushInsertedEntitiesHistory(dbPath, ctx, createdItemsPromise, viewBefore, viewAfter, plannedCount) {
+  if (typeof historyPush !== 'function' || !plannedCount || !window.GbDbEntryIdentity?.deleteEntries) return;
+  const scope = typeof _dbScopeForPath === 'function'
+    ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+  const entriesPromise = Promise.resolve(createdItemsPromise).then(items => (items || []).map(item => ({
+    name: item.name,
+    path: item.path,
+    entryId: String(item.response?.entry_id || item.response?.id || item.response?.entity_data?._id || ''),
+  })));
+  let trashRefs = [];
+  const restoreView = snapshot => {
+    if (!snapshot || typeof restoreLocalStorageSettings !== 'function') return;
+    restoreLocalStorageSettings(snapshot);
+    if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+      Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true })).catch(() => {});
+    }
+  };
+  const refresh = () => (typeof selectDatabase === 'function'
+    ? selectDatabase(dbPath, ctx, { silent: true, skipNavPush: true, skipRecent: true, skipSaveLastView: true })
+    : null);
+  historyPush(
+    plannedCount > 1 ? `トピック追加: ${plannedCount}件` : 'トピック追加',
+    async () => {
+      const entries = await entriesPromise;
+      if (!entries.length) return;
+      const result = await window.GbDbEntryIdentity.deleteEntries({
+        dbPath, ctx, entries, source: 'entry-insert-undo',
+      });
+      trashRefs = (result.trashRefs || []).filter(ref => ref?.trash_name);
+      restoreView(viewBefore);
+      await refresh();
+      if (result.failures?.length) throw result.failures[0].error || new Error('追加したトピックを取り消せませんでした');
+    },
+    async () => {
+      const failedRefs = [];
+      for (const ref of trashRefs) {
+        try {
+          await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
+        } catch {
+          failedRefs.push(ref);
+        }
+      }
+      trashRefs = failedRefs;
+      restoreView(viewAfter);
+      await refresh();
+      if (failedRefs.length) throw new Error(`${failedRefs.length}件のトピックを戻せませんでした`);
+    },
+    scope,
+  );
 }
 
 // リレーションリンク click → open / preview メニュー
@@ -189719,7 +190225,8 @@ async function _handleTbodyClick(e) {
   const moreBtn = target.closest('.entity-row-more-btn');
   if (moreBtn) {
     const entityName = moreBtn.closest('tr')?.dataset?.entityName;
-    if (entityName) showDbCardContextMenu(e, dbPath, entityName);
+    // 表の「…」は行ハンドルと同じく、選択中の行なら選択行すべてへの一括メニューになる（スマホでは唯一の行メニュー）。
+    if (entityName) showDbCardContextMenu(e, dbPath, entityName, undefined, { rowBatch: true });
     return;
   }
 
@@ -190016,7 +190523,7 @@ function _handleTbodyDragstart(e) {
   const target = e.target;
   const menuHandle = target.closest('.entity-row-more-btn');
   const mobileMenuHandle = menuHandle && window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
-  if (target.closest('.row-add-btn, .row-select-cb, button, input, select, textarea, [contenteditable="true"]')
+  if (target.closest('.row-select-cb, button, input, select, textarea, [contenteditable="true"]')
       || (menuHandle && !mobileMenuHandle)) {
     e.preventDefault();
     e.stopPropagation();
@@ -190648,6 +191155,7 @@ function _dbRenderAlignedRollupCell(record, slotCounts, ctx) {
     const count = slotCounts[groupIndex] || 1;
     for (let lineIndex = 0; lineIndex < count; lineIndex++) {
       const line = _dbRollupLineElement(group.values[lineIndex] || '', 'db-rollup-line');
+      line.dataset.groupIndex = String(groupIndex);
       if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
         line.dataset.relationStatus = group.relationStatus || '採用';
       }
@@ -190713,6 +191221,7 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
   addBtn.className = 'cell-add-btn';
+  addBtn.dataset.rollupAlignedAdd = '1';
   addBtn.dataset.e2eId = `${relationCell.dataset.e2eId || 'db-table-cell'}-add`;
   addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
   addBtn.title = '候補値を追加';
@@ -190730,6 +191239,16 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   cellValues.appendChild(addBtn);
 }
 
+function _dbRestoreUnalignedRelationCell(relationCell, cellValues) {
+  cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  cellValues.querySelectorAll('[data-rollup-aligned-add="1"]').forEach(button => button.remove());
+  cellValues.querySelectorAll('[data-rollup-aligned-hidden="1"]').forEach(child => {
+    child.hidden = false;
+    delete child.dataset.rollupAlignedHidden;
+  });
+  relationCell.classList.remove('db-rollup-aligned-relation');
+}
+
 function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCounts, ctx) {
   const firstRollup = [...rowRecord.rollups.values()][0];
   const relationCell = [...(firstRollup?.td?.closest('tr')?.querySelectorAll('td[data-prop-name]') || [])]
@@ -190739,6 +191258,13 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (!cellValues) return;
 
   cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  // 集計できる参照が1件もない時（未入力、参照先が見つからない等）は行合わせをせず、
+  // リレーション列の本来の値と入力の入口（＋・Enter）をそのまま見せる。
+  // 「—」で置き換えると値が見えず、選択も入力もできなくなる。
+  if (!groups.length) {
+    _dbRestoreUnalignedRelationCell(relationCell, cellValues);
+    return;
+  }
   _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx);
   [...cellValues.children].forEach(child => {
     if (child.classList?.contains('db-rollup-relation-lines')) return;
@@ -190746,6 +191272,7 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
       child.hidden = false;
       return;
     }
+    if (!child.hidden) child.dataset.rollupAlignedHidden = '1';
     child.hidden = true;
   });
   const aligned = document.createElement('div');
@@ -190754,9 +191281,7 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
     applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
   }
-  if (!groups.length) {
-    aligned.appendChild(_dbRollupLineElement('—', 'db-rollup-relation-line'));
-  } else {
+  {
     groups.forEach((group, groupIndex) => {
       const count = slotCounts[groupIndex] || 1;
       for (let lineIndex = 0; lineIndex < count; lineIndex++) {
@@ -190936,7 +191461,9 @@ function renderEntityCell(entityName, propName, ctx, options) {
   // 設定が未完了（リレーション列が未選択）のままここで値の表示へ落とすと、
   // 元のテキスト値がそのまま出てテキスト列と見分けが付かなくなるため、
   // 「まだ集計していない列」だと分かる表示にして値編集の見た目にはしない。
-  else if (ptc && ptc.type === 'rollup' && (!ptc.relationProp || typeof calcRollupValue !== 'function')) {
+  // 件数以外の集計で参照先の列が未選択の時も、値が出ないまま「—」にせず未設定と示す。
+  else if (ptc && ptc.type === 'rollup' && (!ptc.relationProp || typeof calcRollupValue !== 'function'
+      || (!ptc.targetProp && (ptc.aggregation || 'values') !== 'count'))) {
     const span = document.createElement('span');
     span.className = 'db-cell-display-text db-cell-unconfigured';
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
@@ -190951,6 +191478,15 @@ function renderEntityCell(entityName, propName, ctx, options) {
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     span.textContent = '...';
     container.appendChild(span);
+    // ダブルクリックで、その行の参照先トピックの値を直接編集する（参照先シートへ保存）
+    container.addEventListener('dblclick', (event) => {
+      if (typeof startRollupCellEdit !== 'function' || event.target.closest('.cell-inline-input')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const line = event.target.closest('.db-rollup-line');
+      const groupIndex = line ? Number(line.dataset.groupIndex) : NaN;
+      void startRollupCellEdit(td, Number.isInteger(groupIndex) ? { groupIndex } : {});
+    });
     colorValues = [];
     const renderToken = ctx?._renderToken || null;
     calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath, ctx?.filter).then(val => {
@@ -191127,9 +191663,9 @@ function renderEntityRow(entityName, ctx, options) {
     else if (mainStatus === 'ボツ') tr.className = 'row-status-rejected';
   }
 
-  // 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）。
+  // 行先頭コントロール列（ドラッグハンドル/選択チェックボックス）。
   // エントリ名列（col-entity）から独立した、常に先頭固定・並べ替え対象外の列。
-  // 中身（addRowBtn/dragHandle/cb）は既存のまま下方で生成し、controlsMain へ追加する。
+  // 中身（dragHandle/cb）は下方で生成し、controlsMain へ追加する。
   const tdControls = document.createElement('td');
   tdControls.className = 'col-row-controls';
   tdControls.tabIndex = -1;
@@ -191165,41 +191701,7 @@ function renderEntityRow(entityName, ctx, options) {
   const nameMain = document.createElement('div');
   nameMain.className = 'entity-name-cell-main';
 
-  // ＋ボタン (エントリ追加: クリック=下に追加 / Alt+クリック=上に追加)
-  const addRowBtn = document.createElement('span');
-  addRowBtn.className = 'row-add-btn';
-  addRowBtn.title = 'クリックで下にトピックを追加 / Alt+クリックで上に追加';
-  addRowBtn.draggable = false;
-  addRowBtn.tabIndex = 0;
-  addRowBtn.setAttribute('role', 'button');
-  addRowBtn.setAttribute('aria-label', 'トピックを追加');
-  addRowBtn.dataset.e2eId = 'db-row-add-' + String(entityName || '').replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '-').slice(0, 60);
-  addRowBtn.innerHTML = lucide('plus', 12);
-  const triggerAddRow = (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const position = e.altKey ? 'above' : 'below';
-    _handleInsertRowRelative(ctx, entityName, position);
-  };
-  addRowBtn.addEventListener('click', triggerAddRow);
-  addRowBtn.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    triggerAddRow(e);
-  });
-  // 行そのものが draggable のため、追加ボタンから行ドラッグを開始させない。
-  addRowBtn.addEventListener('pointerdown', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-  });
-  addRowBtn.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-  });
-  addRowBtn.addEventListener('dragstart', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  controlsMain.appendChild(addRowBtn);
+  // 行頭の＋ボタンは撤去した（2026-11-19）。トピックの追加はハンドルメニューの「上に／下にトピックを追加」で行う。
 
   // 行ドラッグハンドル
   const dragHandle = document.createElement('span');
@@ -191309,7 +191811,7 @@ function renderEntityRow(entityName, ctx, options) {
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName);
+    if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName, undefined, { rowBatch: true });
   });
   nameMain.appendChild(nameSpan);
   nameMain.appendChild(openBtn);
@@ -191893,6 +192395,10 @@ function renderPivot(ctx) {
   if (!ctx) return;
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
+  // 表ビューでは一括操作バーを出さない。ツリービューから切り替えた時に残ったバーを消す（UI共通ルール §6）。
+  if (!(typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(ctx, ctx.dbPath || state.currentDbPath))) {
+    document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${MeldexEscape.cssIdent(ctx.paneId || 'main')}"]`).forEach(bar => bar.remove());
+  }
 
   const dbPath = ctx.dbPath || state.currentDbPath;
   const filterMode = ctx.filter ?? state.filter ?? 'disabled';
@@ -194529,18 +195035,29 @@ document.addEventListener('keydown', event => {
   else _clearPaneRowSelection(ctx);
 });
 
+// 行の選択が変わった時の同期。表（行ハンドルメニュー移行済み）では一括操作バーを出さない。
+// 一括操作は選択中の行のハンドルメニューから行う（UI共通ルール §6「行の選択と一括実行」）。
+// 関数名は多数の呼び出し元のため残す。選択見出しの同期と、残っているバーの撤去だけを行う。
+// シートのツリービューは行ハンドルメニュー未移行（ルールの未移行台帳）のため、移行まで従来のバーを残す。
 function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
   _syncPaneRowSelectHeader(c);
-  const table = _dbRowSelectionSurface(c);
-  const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
-  if (selected.length === 0) {
+  const treeView = !!(c && typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(c, c.dbPath));
+  if (selected.length === 0 || !treeView) {
     if (bar) bar.remove();
     return;
   }
+  _updateDbTreeBulkEditBar(c, paneId, selected, bar);
+}
+
+function _updateDbTreeBulkEditBar(ctx, paneId, selected, existingBar) {
+  const c = ctx;
+  const table = _dbRowSelectionSurface(c);
+  const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
+  let bar = existingBar;
   if (!bar) {
     bar = document.createElement('div');
     bar.className = 'db-bulk-edit-bar gb-selection-float-bar';
@@ -194773,7 +195290,7 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   );
 }
 
-function _showBulkEditModal(entityNames, ctx) {
+function _showBulkEditModal(entityNames, ctx, options = {}) {
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
   const pivotData = (ctx && ctx.pivotData) || (state.currentDbPath === dbPath ? state.pivotData : null) || {};
@@ -194790,9 +195307,12 @@ function _showBulkEditModal(entityNames, ctx) {
     return;
   }
 
-  const returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-    ? document.activeElement
-    : null;
+  // 行ハンドルメニューから開いた時は、閉じたメニューの項目ではなく押したハンドルへフォーカスを戻す。
+  const returnFocus = options?.returnFocus instanceof HTMLElement && options.returnFocus.isConnected
+    ? options.returnFocus
+    : (document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement
+      : null);
   const body = document.createElement('div');
   body.innerHTML = `<div class="db-bulk-edit-selection-summary" style="margin:0 0 8px;color:var(--fg2);font-size:12px;line-height:20px;min-height:20px;max-height:80px;overflow-y:auto;flex:0 0 auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
     <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-prop">列</label>
@@ -209957,6 +210477,149 @@ function _rollupSetAggregationOptionsForType(propType, preferred, root) {
   });
   aggSel.dataset.current = aggSel.value || nextValue;
   aggSel.onchange = () => { aggSel.dataset.current = aggSel.value; };
+}
+
+/* --- ロールアップのセルへの直接入力（2026-11-19） --- */
+// 「値をそのまま表示」のロールアップは、参照先トピックの列の値をそのまま出しているので、
+// セルに入力した値を参照先シートのその列へ書き込む。参照先が複数ある時は、
+// ダブルクリックした行（行合わせの何番目か）か、1件だけの時に限って編集する。
+// 件数・合計などの集計結果は、参照先のどの値を変えればよいか決まらないため編集しない。
+function _rollupEditTarget(td, ctx, groupIndex) {
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  const propName = td?.dataset?.propName || '';
+  const entityName = td?.closest?.('tr')?.dataset?.entityName || '';
+  const propTypes = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+  const ptc = propTypes[propName];
+  if (!dbPath || !propName || !entityName || ptc?.type !== 'rollup') return { error: '' };
+  if (!ptc.relationProp || !ptc.targetProp) return { error: '列の設定でリレーション列と参照先の列を選ぶと、入力できます' };
+  if (_rollupEffectiveAggregation(ptc) !== 'values') {
+    return { error: '集計した値（件数・合計など）は直接入力できません。参照先のシートで値を変えてください' };
+  }
+  const entitiesMap = ((ctx && ctx.pivotData) || state.pivotData)?.entities || {};
+  const { refs, targetDbPath } = resolveRelationNames(entityName, entitiesMap, ptc.relationProp, propTypes, dbPath, ctx?.filter);
+  if (!targetDbPath) return { error: 'リレーション列の参照先シートが見つかりません' };
+  if (!refs.length) return { error: `先に「${ptc.relationProp}」で参照先を選ぶと、ここへ入力した値が参照先へ入ります` };
+  if (refs.length > 1 && !Number.isInteger(groupIndex)) {
+    return { error: '参照先が複数あります。編集する行をダブルクリックしてください' };
+  }
+  const ref = refs[Number.isInteger(groupIndex) ? groupIndex : 0];
+  if (!ref) return { error: '' };
+  return { dbPath, propName, entityName, ptc, targetDbPath, ref };
+}
+
+async function startRollupCellEdit(td, options = {}) {
+  // 打ち始めの一時入力欄を受け取った時は、編集を始められなければ片付ける
+  const proxy = options.input || null;
+  if (proxy) proxy.dataset.adopted = '1';
+  const started = await _startRollupCellEditInner(td, options);
+  if (!started && proxy?.isConnected) {
+    proxy.remove();
+    if (td._dbTypedProxy === proxy) td._dbTypedProxy = null;
+    if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false });
+  }
+  return started;
+}
+
+async function _startRollupCellEditInner(td, options = {}) {
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const target = _rollupEditTarget(td, ctx, options.groupIndex);
+  if (!target.targetDbPath) {
+    if (target.error && typeof showStatus === 'function') showStatus(target.error, true);
+    return false;
+  }
+  const { dbPath, ptc, targetDbPath, ref } = target;
+  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(targetDbPath, ptc.targetProp, null) : '';
+  if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg, true); return false; }
+  const container = td.querySelector('.cell-values');
+  if (!container || (container.querySelector('.cell-inline-input') && !options.input)) return false;
+  const targetData = await fetchRelatedDbData(targetDbPath);
+  const targetName = _rollupResolveEntityNames([ref.name], targetData)[0] || ref.name;
+  const targetEntity = targetData?.entities?.[targetName];
+  if (!targetEntity) {
+    if (typeof showStatus === 'function') showStatus(`参照先のトピック「${targetName}」が見つかりません`, true);
+    return false;
+  }
+  const raw = Array.isArray(targetEntity[ptc.targetProp]) ? targetEntity[ptc.targetProp] : [];
+  const adopted = typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(raw) : raw[0];
+  const oldValue = String(adopted?.value ?? '');
+  if (!td.isConnected) return false;
+  const input = options.input || document.createElement('input');
+  input.type = 'text';
+  input.className = 'cell-inline-input';
+  if (td._dbTypedProxy === input) td._dbTypedProxy = null;
+  input.dataset.e2eId = 'db-rollup-inline-input';
+  input.setAttribute('aria-label', `${targetName} の ${ptc.targetProp}（参照先シート）`);
+  if (!options.input) input.value = options.seed != null ? String(options.seed) : oldValue;
+  input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  if (input.parentNode !== container) container.appendChild(input);
+  input.focus();
+  if (options.seed == null && !options.input) input.select();
+  let done = false;
+  const pos = typeof _cellPos === 'function' ? _cellPos(td) : null;
+  let moveTo = null;
+  const finish = () => { done = true; input.remove(); if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false }); };
+  const refresh = async () => {
+    clearRollupCache(targetDbPath);
+    if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx || undefined, { silent: true, forceReload: true });
+  };
+  const commit = async () => {
+    if (done) return;
+    const value = input.value;
+    finish();
+    if (value === oldValue) {
+      if (moveTo && pos && typeof _restoreCellPos === 'function') _restoreCellPos(pos, moveTo);
+      return;
+    }
+    const entityPath = _entityPath(targetDbPath, targetName, targetData);
+    const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+    const label = `${ptc.targetProp}（${targetName}）: ${oldValue} → ${value}`;
+    try {
+      if (adopted) {
+        await _apiPutValue(adopted, { new_value: value });
+        adopted.value = value;
+        if (typeof historyPush === 'function') historyPush(label,
+          async () => { await _apiPutValue(adopted, { new_value: oldValue }); adopted.value = oldValue; await refresh(); },
+          async () => { await _apiPutValue(adopted, { new_value: value }); adopted.value = value; await refresh(); },
+          scope);
+      } else {
+        const result = await _apiPostValue(entityPath, ptc.targetProp, value, '採用', '');
+        let added = {
+          value, status: '採用', file: result?.path || result?.file || entityPath, property: ptc.targetProp,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length,
+        };
+        if (typeof historyPush === 'function') historyPush(label,
+          async () => { await _apiPutValue(added, { _delete: true }); await refresh(); },
+          async () => {
+            const redo = await _apiPostValue(entityPath, ptc.targetProp, value, '採用', '');
+            added = { ...added, file: redo?.path || redo?.file || added.file, candidate_id: redo?.candidate_id,
+              entry_id: redo?.entry_id, candidate_index: redo?.candidate_index ?? added.candidate_index };
+            await refresh();
+          },
+          scope);
+      }
+      if (typeof showStatus === 'function') showStatus(`参照先「${targetName}」の${ptc.targetProp}を保存しました`);
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus('参照先への保存に失敗しました: ' + (error?.message || error), true);
+    }
+    await refresh();
+    if (pos && typeof _restoreCellPos === 'function') _restoreCellPos(pos, moveTo);
+  };
+  input.addEventListener('keydown', (event) => {
+    if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(event)) return;
+    if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(event)) return;
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); commit(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); finish(); }
+    else if (event.key === 'Tab') {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.();
+      moveTo = event.shiftKey ? 'left' : 'right';
+      commit();
+    }
+  });
+  if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(input, commit);
+  else input.addEventListener('blur', commit);
+  return true;
 }
 
 ;
@@ -238876,8 +239539,6 @@ let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
 let _folderLayout = localStorage.getItem('folder-layout') || 'waterfall';
 let _folderVisibleItems = [];
-let _folderBulkPopupRaf = 0;
-let _folderBulkPopupTracking = false;
 // パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
 const _savedFolderThumbnailPx = parseInt(localStorage.getItem('folder-thumbnail-size-px') || '', 10);
 let _folderZoom = Number.isFinite(_savedFolderThumbnailPx)
@@ -241276,10 +241937,25 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   } else if (!blankTarget) {
     _folderSelected = item;
   }
+  // 複数選択中の項目でメニューを開いた時は、選んだ操作を選択中のすべての項目へ一括実行する。
+  // 1項目にしか効かない操作（開く、アイコン変更、バージョン、リンクをコピー等）は出さない
+  // （フォルダツリーの複数選択メニューと同じ基準）。旧「一括操作バー」の機能もここへ集約した。
+  const multiItems = !blankTarget && _folderSelectedItems.length > 1 ? _folderSelectedItems.slice() : null;
+  const isMulti = !!multiItems;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
+  menu.setAttribute('aria-label', blankTarget
+    ? 'フォルダパネルメニュー'
+    : isMulti ? `選択中の${multiItems.length}件のメニュー` : `${item.name || '項目'}のメニュー`);
+  if (isMulti) {
+    menu.dataset.folderMultiSelection = String(multiItems.length);
+    const heading = document.createElement('div');
+    heading.className = 'gb-context-menu-label';
+    heading.dataset.e2eId = 'folder-item-context-selection-count';
+    heading.textContent = `${multiItems.length}件を選択中`;
+    menu.appendChild(heading);
+  }
   const closeMenu = () => {
     _folderContextMenuOpenSeq += 1;
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
@@ -241373,8 +242049,8 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
   }
 
-  // --- 新規作成 ---
-  const createParent = _folderContextCreateParent(item);
+  // --- 新規作成 ---（作成先が押した1項目で決まり、選択中のすべてへ働く操作ではないため複数選択時は出さない）
+  const createParent = isMulti ? null : _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {
     const createSub = addSub('新規作成', 'plus');
     [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
@@ -241388,12 +242064,12 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
   }
 
-  if (!blankTarget && window.MeldexFileIcons?.canEdit(item) && !_folderMenuItemLocked(item)) {
+  if (!blankTarget && !isMulti && window.MeldexFileIcons?.canEdit(item) && !_folderMenuItemLocked(item)) {
     addItem('アイコンを変更', () => window.MeldexFileIcons.openPicker(item, itemEl || e?.target), null, 'smile');
     addSep();
   }
   // --- 開く ---
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     const openSub = addSub('開く', 'folderOpen');
     openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
     openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
@@ -241423,15 +242099,27 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
     addSep();
   }
-  if (!blankTarget && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
+  if (!blankTarget && !isMulti && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
     addItem('ファイル内のファイルを表示', () => showContainedFiles(item), null, 'files');
     addSep();
   }
-  if (_isPureRefFolderItem(item)) {
+  if (!isMulti && _isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
-  if (item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
-  if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
+  if (!isMulti && item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
+  if (isMulti) {
+    // 旧「一括操作バー」の画像向け操作。画像を含む時だけ出す。
+    const imgCount = multiItems.filter(i => i.type === 'image').length;
+    if (imgCount > 0) {
+      addItem(`スライドショー（${imgCount}枚）`, () => fvBulkSlideshow(), null, 'image');
+      if (document.body?.dataset?.cloudReadonly !== '1') {
+        addItem(`ボードに並べる（${imgCount}枚）`, () => fvBulkBoard(), null, 'presentation');
+      }
+    }
+    if (window.isAutoTagRuntimeAvailable?.() === true && multiItems.some(i => i?.path)) {
+      addItem(`自動タグ付け（${multiItems.length}件）`, () => fvBulkAutoTag(), null, 'tags');
+    }
+  } else if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
     }, null, 'tags');
@@ -241459,7 +242147,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.type === 'calendar' && item.path) {
+  if (!isMulti && item.type === 'calendar' && item.path) {
     const mainCalId = localStorage.getItem('main-calendar-id');
     const mainCalPath = localStorage.getItem('main-calendar-path');
     const nodeFid = typeof _pathToFileId === 'function' ? _pathToFileId(item.path) : '';
@@ -241481,7 +242169,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     });
   }
 
-  if ((item.type === 'folder' || item.type === 'database') && item.path) {
+  if (!isMulti && (item.type === 'folder' || item.type === 'database') && item.path) {
     addSep();
     addItem('バージョンを保存', () => {
       if (typeof saveFolderVersion === 'function') saveFolderVersion(item.path);
@@ -241494,7 +242182,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && !item.contained_reference) {
+  if (!isMulti && item.path && !item.contained_reference) {
     addSep();
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path);
     const canEditLock = typeof isFileLockOwner === 'function' && isFileLockOwner();
@@ -241511,20 +242199,8 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  // --- 複数選択 ---
-  if (_folderSelectedItems.length > 1) {
-    addSep();
-    const imgItems = _folderSelectedItems.filter(i => i.type === 'image');
-    if (imgItems.length > 0) {
-      addItem('スライドショー (' + imgItems.length + '枚)', () => {
-        openViewer('/viewer?files=' + encodeURIComponent(JSON.stringify(imgItems.map(i => i.path))));
-      }, null, 'image');
-      addItem('ボードに並べる (' + imgItems.length + '枚)', () => openImagesInCanvas(imgItems), null, 'presentation');
-    }
-  }
-
-  // --- ツール ---
-  if (item.type === 'folder' || _folderPath) {
+  // --- ツール（1つのフォルダ・現在のフォルダが対象のため単独選択時のみ） ---
+  if (!isMulti && (item.type === 'folder' || _folderPath)) {
     addSep();
     const toolSub = addSub('ツール');
     if (item.type === 'folder') {
@@ -241540,17 +242216,17 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
+  if (!isMulti && item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
     addSep();
     addItem('比較...', () => showCompareModal(item.path), null, 'columns');
   }
 
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     addSep();
     addItem('リンクをコピー', () => _folderCopyMeldexLink(item), null, 'link');
   }
 
-  if (!blankTarget && item.path && typeof getFavorites === 'function') {
+  if (!blankTarget && !isMulti && item.path && typeof getFavorites === 'function') {
     const isFav = getFavorites().some(f => f.path === item.path);
     addItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
       if (isFav && typeof removeFromFavorites === 'function') removeFromFavorites(item.path);
@@ -241558,7 +242234,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }, null, isFav ? 'starOff' : 'star');
   }
 
-  const exportItems = _folderExportItems(item);
+  const exportItems = isMulti ? [] : _folderExportItems(item);
   if (exportItems.length > 0) {
     const exportSub = addSub('エクスポート', typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload');
     exportItems.forEach(exportItem => {
@@ -241581,7 +242257,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     });
   }
 
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     const linkLabel = item.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addItem(linkLabel, () => {
       if (typeof showAddFolderLinkModal === 'function') showAddFolderLinkModal(item.path, null);
@@ -241591,6 +242267,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   if (!blankTarget && item.path && typeof getNodeColor === 'function' && typeof setNodeColor === 'function' && typeof openColorPalette === 'function') {
     addSep();
     const currentColor = getNodeColor(item.path);
+    const colorTargets = isMulti ? multiItems.filter(target => target?.path) : [item];
     const colorItem = document.createElement('div');
     colorItem.className = 'gb-context-menu-item';
     const swatch = document.createElement('button');
@@ -241599,18 +242276,19 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, currentColor || 'var(--fg)');
     colorItem.appendChild(swatch);
     const clbl = document.createElement('span');
-    clbl.textContent = '色設定';
+    clbl.textContent = isMulti ? `色設定（${colorTargets.length}件）` : '色設定';
     colorItem.appendChild(clbl);
     colorItem.addEventListener('click', () => {
       openColorPalette(swatch, currentColor, (color) => {
-        _folderApplyItemColor(item, color || null);
+        if (isMulti && typeof _folderApplyItemsColor === 'function') _folderApplyItemsColor(colorTargets, color || null);
+        else _folderApplyItemColor(item, color || null);
         closeMenu();
       });
     });
     menu.appendChild(colorItem);
   }
 
-  if (!blankTarget && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
+  if (!blankTarget && !isMulti && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
     const isWork = isWorkFolder(item.path);
     const wfSub = addSub('作品フォルダ', 'folderDot');
     wfSub.item((isWork ? '✓ ' : '') + '設定する', async () => {
@@ -241631,7 +242309,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if ((item.type === 'folder' || item.type === 'database') && item.path && typeof getSortForFolder === 'function') {
+  if (!isMulti && (item.type === 'folder' || item.type === 'database') && item.path && typeof getSortForFolder === 'function') {
     const sortSub = addSub('並び替え', 'arrowUpDown');
     const curSort = getSortForFolder(item.path);
     const sortSettingsKey = typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort';
@@ -241656,18 +242334,21 @@ async function showFolderItemContextMenu(e, item, options = {}) {
 
   // --- 管理 ---
   addSep();
-  addItem('パスをコピー', () => {
+  if (isMulti) {
+    addItem(`パスをコピー（${multiItems.length}件）`, () => fvBulkCopyPath(), null, 'clipboardList');
+    addItem('選択解除', () => fvBulkDeselect(), null, 'x');
+  } else addItem('パスをコピー', () => {
     const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
     const copyPath = window.GBPathUtils?.resolveForClipboard?.(item.path, base) ?? item.path;
     navigator.clipboard.writeText(copyPath);
     showStatus('パスをコピーしました');
   }, null, 'clipboardList');
   const lockedForEdit = _folderMenuItemLocked(item);
-  if (!blankTarget && !lockedForEdit) {
+  if (!blankTarget && !isMulti && !lockedForEdit) {
     addItem('リネーム', () => _folderStartRename(item), null, 'pencil');
   }
 
-  if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
+  if (!blankTarget && !isMulti && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
     addSep();
     if (isSplitActive()) {
       addItem('別の作業領域で開く', () => {
@@ -241681,7 +242362,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
   // OS項目は取得済みの時だけ表示前に組み込み、未取得なら表示後に下端へ追記する。
-  const shellPath = item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
+  const shellPath = !isMulti && item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
   const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
   if (shellReady) {
     await appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit, beforeDisplay: true });
@@ -242168,129 +242849,16 @@ function _normalizeFolderSelectionForVisibleItems() {
   return _folderSelectedItems.length;
 }
 
-function _folderBulkAnchorElement() {
-  // 一括操作バーはメイン画面専用UIのため、独立した描画先（サブパネル等）が
-  // 有効な間は _updateFolderBulkBar() 側で早期returnし、ここは呼ばれない。
-  const selectedEls = Array.from(document.querySelectorAll('#folder-grid .fv-item.selected'));
-  return selectedEls[selectedEls.length - 1]
-    || document.getElementById('folder-display-filter-btn')
-    || document.getElementById('folder-grid');
-}
-
-function _folderBulkAnchorRect() {
-  const anchor = _folderBulkAnchorElement();
-  return anchor?.getBoundingClientRect?.() || { left: 16, right: 16, top: 48, bottom: 48 };
-}
-
-function _positionFolderBulkPopup() {
-  const bar = document.getElementById('fv-bulk-bar');
-  if (!bar || !bar.classList.contains('visible')) return;
-  bar.style.maxHeight = '';
-  bar.style.overflowY = '';
-  const anchor = _folderBulkAnchorElement();
-  const host = window.GBSelectionFloatMenu?.hostFor?.(anchor) || document.getElementById('folder-view') || document.body;
-  if (window.GBSelectionFloatMenu) {
-    window.GBSelectionFloatMenu.bindDrag(bar, { host });
-    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor });
-  } else if (typeof positionPopup === 'function') {
-    positionPopup(bar, _folderBulkAnchorRect(), { prefer: 'below', gap: 6 });
-  }
-}
-
-function _ensureFolderBulkBarChrome(bar) {
-  if (!bar) return;
-  bar.classList.add('gb-selection-float-bar');
-  if (window.GBSelectionFloatMenu) {
-    const host = window.GBSelectionFloatMenu?.hostFor?.(bar) || document.getElementById('folder-view') || document.body;
-    if (!bar.querySelector('.gb-selection-float-drag')) {
-      bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle('ドラッグで移動', 'selection-float-drag-folder'), bar.firstChild);
-    }
-    window.GBSelectionFloatMenu.bindDrag(bar, { host });
-    bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
-      if (button.dataset.selectionFloatActionBound === '1' || button.closest('[data-ui-component]')) return;
-      button.dataset.selectionFloatActionBound = '1';
-      button.classList.add('gb-selection-float-button');
-      // bindDrag() が click をバブル段階で stopPropagation するため、data-action の
-      // ドキュメント委譲(gb-events.js)へ届かない。各ボタンに実アクションを直接結線して回避する。
-      button.addEventListener('click', (e) => {
-        window.GBSelectionFloatMenu.pulseButton(button);
-        if (button.disabled) return;
-        const m = String(button.dataset.action || '').match(/^([a-zA-Z_$][\w$]*)\s*\(/);
-        const fn = m ? window[m[1]] : null;
-        if (typeof fn === 'function') { e.preventDefault(); fn(); }
-      }, true);
-    });
-  }
-}
-
-function _scheduleFolderBulkPopupPosition() {
-  if (_folderBulkPopupRaf) return;
-  _folderBulkPopupRaf = requestAnimationFrame(() => {
-    _folderBulkPopupRaf = 0;
-    _positionFolderBulkPopup();
-  });
-}
-
-function _setFolderBulkPopupTracking(enabled) {
-  if (enabled && !_folderBulkPopupTracking) {
-    _folderBulkPopupTracking = true;
-    window.addEventListener('resize', _scheduleFolderBulkPopupPosition);
-    document.addEventListener('scroll', _scheduleFolderBulkPopupPosition, true);
-  } else if (!enabled && _folderBulkPopupTracking) {
-    _folderBulkPopupTracking = false;
-    window.removeEventListener('resize', _scheduleFolderBulkPopupPosition);
-    document.removeEventListener('scroll', _scheduleFolderBulkPopupPosition, true);
-    if (_folderBulkPopupRaf) {
-      cancelAnimationFrame(_folderBulkPopupRaf);
-      _folderBulkPopupRaf = 0;
-    }
-  }
-}
-
-// 一括操作ポップアップの表示/非表示更新
+// 一括操作の対象（_folderSelectedItems）の後処理。
+// 旧「一括操作バー」（#fv-bulk-bar）は撤去済み。複数選択時の一括操作は、選択中の項目の
+// 「…」メニュー／右クリックメニュー（showFolderItemContextMenu）から実行する。
+// 呼び出し元が多いため関数名は残し、選択の正規化と自動タグ付け対象の同期だけを行う。
 function _updateFolderBulkBar() {
-  // 一括操作バー（#fv-bulk-bar）はメイン画面専用UI。独立した描画先（サブパネル等）が
-  // 有効な間は、共有の_folderSelectedItemsがサブパネル側の選択を指していても
-  // メイン画面のバーを動かさない（ボードのリンクカード計画 Phase B-2 縮小スコープ）。
+  // 独立した描画先（サブパネル等）が有効な間は、共有の_folderSelectedItemsが
+  // サブパネル側の選択を指していても、メイン画面の自動タグ付け対象を動かさない。
   if (_folderIsIndependentSurface()) return;
   const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
   window.MeldexTagManagement?.setAutoTagTargets?.(selectedCount > 0 ? _folderSelectedItems : []);
-  const bar = document.getElementById('fv-bulk-bar');
-  if (!bar) return;
-  _ensureFolderBulkBarChrome(bar);
-  const autoTagButton = bar.querySelector('[data-action^="fvBulkAutoTag"]');
-  if (autoTagButton) autoTagButton.hidden = window.isAutoTagRuntimeAvailable?.() !== true;
-  if (selectedCount > 0) {
-    bar.classList.add('visible');
-    bar.hidden = false;
-    bar.setAttribute('aria-hidden', 'false');
-    const cnt = bar.querySelector('.fv-bulk-count');
-    if (cnt) cnt.textContent = selectedCount + ' 件選択中';
-    const readOnlyArchive = !!window._archiveBrowseContext;
-    const hasLockedItems = _folderSelectedItems.some(item => _folderMenuItemLocked(item));
-    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"]').forEach(button => {
-      button.disabled = readOnlyArchive;
-      button.title = readOnlyArchive ? 'ZIP内は読み取り専用です' : '';
-    });
-    const deleteButton = bar.querySelector('[data-action^="fvBulkDelete"]');
-    if (deleteButton) {
-      deleteButton.disabled = readOnlyArchive || hasLockedItems;
-      deleteButton.title = readOnlyArchive
-        ? 'ZIP内は読み取り専用です'
-        : hasLockedItems ? '読み取り専用の参照リンクは削除できません' : '';
-    }
-    _positionFolderBulkPopup();
-    _setFolderBulkPopupTracking(true);
-  } else {
-    bar.classList.remove('visible');
-    bar.hidden = true;
-    bar.setAttribute('aria-hidden', 'true');
-    bar.style.left = '';
-    bar.style.top = '';
-    bar.style.maxHeight = '';
-    bar.style.overflowY = '';
-    _setFolderBulkPopupTracking(false);
-  }
 }
 
 // 一括操作: スライドショー
@@ -244627,6 +245195,27 @@ function _folderApplyItemColor(item, color) {
   if (typeof loadOutliner === 'function') loadOutliner();
   if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
   showStatus(color ? '色を設定しました' : '色をリセットしました');
+}
+
+// 複数選択時の色設定。取り消しを1回で戻せるよう、履歴は1件にまとめる。
+function _folderApplyItemsColor(items, color) {
+  const targets = (items || []).filter(target => target?.path);
+  if (!targets.length || typeof setNodeColor !== 'function') return;
+  if (targets.length === 1) { _folderApplyItemColor(targets[0], color); return; }
+  const colorSettingsKey = typeof NODE_COLORS_KEY !== 'undefined' ? NODE_COLORS_KEY : 'outliner-node-colors';
+  const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory([colorSettingsKey]) : null;
+  targets.forEach(target => setNodeColor(target.path, color || null));
+  if (typeof pushOutlinerSettingsHistory === 'function') {
+    pushOutlinerSettingsHistory(
+      color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
+      before,
+      `${targets.length}件`,
+      [colorSettingsKey]
+    );
+  }
+  if (typeof loadOutliner === 'function') loadOutliner();
+  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+  showStatus(color ? `${targets.length}件の色を設定しました` : `${targets.length}件の色をリセットしました`);
 }
 
 function _folderExportItems(item) {
@@ -250153,6 +250742,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
     // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
     if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
+    // セルの値だけを保存した通知もトピック名やフォルダを変えない。連続入力のたびに
+    // ツリー全体を読み直していた（2026-11-19）。名前が変わる保存は structural のまま届く。
+    if (event.detail?.reason === 'save' && event.detail?.structural === false) return;
     // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
     // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
     // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
@@ -252201,6 +252793,16 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     _outlinerAppendMenuSeparator(menu);
   }
 
+  // 複数選択時は先頭に件数見出しを置く（フォルダパネルの複数選択メニューと同じ）。
+  if (isMulti) {
+    menu.dataset.folderMultiSelection = String(selectedCount);
+    const heading = document.createElement('div');
+    heading.className = 'gb-context-menu-label';
+    heading.dataset.e2eId = 'folder-tree-context-selection-count';
+    heading.textContent = `${selectedCount}件を選択中`;
+    menu.appendChild(heading);
+  }
+
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
     .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
@@ -252301,8 +252903,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- 新規作成サブメニュー ---
-  if (!(addParent && isItemLocked(addParent))) {
+  // --- 新規作成サブメニュー ---（作成先が押した1項目で決まるため、複数選択時は出さない）
+  if (!isMulti && !(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
     _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
@@ -252618,8 +253220,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- お気に入り ---
-  if (!isEntity && nodeData.path) {
+  // --- お気に入り（1項目だけが対象のため単独選択時のみ） ---
+  if (!isMulti && !isEntity && nodeData.path) {
     const isFav = getFavorites().some(f => f.path === nodeData.path);
     addMenuItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
       closeTreeContextMenu();
@@ -252689,8 +253291,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- 所属フォルダ（リンク登録） ---
-  if (!isEntity && nodeData.path) {
+  // --- 所属フォルダ（リンク登録。1項目だけが対象のため単独選択時のみ） ---
+  if (!isMulti && !isEntity && nodeData.path) {
     const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addMenuItem(linkLabel, () => {
       closeTreeContextMenu();
@@ -272616,11 +273218,6 @@ function showView(viewName, ctx) {
   if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
     hideBoardNoteTab();
   }
-  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
-  if (viewName !== 'folder') {
-    const fvBar = document.getElementById('fv-bulk-bar');
-    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
-  }
   if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
     clearBoardDetailTabs();
   }
@@ -279025,7 +279622,11 @@ async function _exportDictFile(options = {}) {
       });
   }
 
+  // フォルダツリーにも出る種別は、フォルダツリーと同じアイコンにする（独自表だとシート等がずれる）
+  const _TREE_FILE_TYPES = new Set(['page', 'scriptnote', 'board', 'database', 'calendar', 'csv', 'folder', 'entity', 'chat', 'form-app', 'map', 'html']);
   function _iconForFileType(type) {
+    const shared = window.MeldexFileIcons?.itemIconName;
+    if (_TREE_FILE_TYPES.has(type) && typeof shared === 'function') return shared(type, '');
     const map = {
       page: 'fileText',
       scriptnote: 'bookOpenText',
@@ -281530,6 +282131,18 @@ async function _runGlobalEditorSave() {
   return 'unchanged';
 }
 
+// Esc を押した瞬間にメニューが開いていたかを、どの keydown 処理より先（window の捕捉段階）で記録する。
+// 'db.escape' はこれを見て、メニューを閉じるための Esc で行の選択を解除しない。
+if (typeof window !== 'undefined' && !window.__meldexMenuEscapeProbe) {
+  window.__meldexMenuEscapeProbe = true;
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (document.querySelector('.gb-context-menu')) {
+      try { event.__meldexMenuOpenAtKeydown = true; } catch (_) { /* 凍結イベントでは記録しない */ }
+    }
+  }, true);
+}
+
 const _shortcutHandlers = {
 
   // ============ 全般 ============
@@ -281911,7 +282524,11 @@ const _shortcutHandlers = {
     if (!ctx || typeof _clearPaneRowSelection !== 'function') return false;
     return _clearPaneRowSelection(ctx);
   },
-  'db.escape': () => {
+  'db.escape': (e) => {
+    // メニュー（行ハンドルの一括メニュー等）を開いている間の Esc はメニューを閉じるだけにし、
+    // 行の選択は残す（選択を保ったまま別の一括操作を選び直せるように。UI共通ルール §6）。
+    // メニューは別の Esc 処理が先に閉じることがあるため、押した瞬間に開いていたかで判定する。
+    if (e?.__meldexMenuOpenAtKeydown || document.querySelector('.gb-context-menu')) return false;
     const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
     const selectedSet = ctx?._selectedEntities || state._selectedEntities;
     if (!selectedSet || !selectedSet.size) return false;

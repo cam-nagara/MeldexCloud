@@ -1,3 +1,6 @@
+  const btn = event?.currentTarget?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
+    || event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
+    || null;
   if (btn?.disabled) return;
   if (btn) {
     btn.disabled = true;
@@ -895,6 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
         } else {
           moved.forEach(n => {
             const data = n._nodeData;
-            const reusable = disposeOrReuse(n);
-            childrenDiv.appendChild(reusable || createTreeNodeFromBrowse(data, rootPath));
-          });

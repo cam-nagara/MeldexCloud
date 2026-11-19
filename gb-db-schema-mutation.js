@@ -182,7 +182,7 @@
       'titleProp', 'colorProp', 'descriptionProp', 'locationProp', 'urlProp',
       'calendarIdProp', 'timeProp', 'rowProp', 'xProperty', 'yProperty',
       'colorProperty', 'parentProp', 'orderProp', 'labelProp', 'typeProp',
-      'collapsedProp',
+      'collapsedProp', 'rubyBaseProp',
     ]);
     const arrayKeys = new Set([
       'copyProps', 'colOrder', 'pinnedCols', 'hiddenCols', 'fields',

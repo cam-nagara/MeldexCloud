@@ -724,8 +724,8 @@
       if (e.button !== 0) return;
       const handle = e.target.closest?.('.sn2-handle');
       if (!handle) return;
-      // 追加ボタンとチェックボックスはドラッグ対象外
-      if (e.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
+      // チェックボックスはドラッグ対象外
+      if (e.target.closest?.('.sn2-row-check')) return;
       const row = handle.closest('.sn2-row');
       if (!row) return;
       pdragPending = true;

@@ -1,3 +1,16 @@
+function _outlinerKeyboardSelectNode(nodeEl) {
+  const row = _outlinerKeyboardRow(nodeEl);
+  if (!nodeEl || !row) return false;
+  const focusSeq = ++_outlinerKeyboardFocusSeq;
+  window.GBOutlinerActivation?.selectNodeOnly(nodeEl, { focus: false });
+  _outlinerKeyboardRestoreFocus(row, focusSeq);
+  row.scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+// Enter／メニュー「開く」と同じ共通アクティベーション経路を使う
+function _outlinerKeyboardActivateNode(nodeEl) {
+  const row = _outlinerKeyboardRow(nodeEl);
   if (!nodeEl || !row) return false;
   const focusSeq = ++_outlinerKeyboardFocusSeq;
   try {

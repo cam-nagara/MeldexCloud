@@ -65,6 +65,18 @@
         keyInput.value = '';
       }
     });
+  } else if (type === 'furigana') {
+    // ふりがなを付ける相手。既定はトピック名。左隣の列（例: 姓 → 姓のふりがな）にも切り替えられる。
+    const left = _ptFuriganaLeftColumn(scope, statePropName);
+    const base = String(current.rubyBaseProp || '');
+    const choices = [{ value: '', label: 'トピック名' }];
+    if (left) choices.push({ value: left, label: `左隣の列（${left}）` });
+    if (base && base !== left) choices.push({ value: base, label: `列「${base}」` });
+    optDiv.innerHTML = `<div class="field"><label>ふりがなの対象 ${fieldHelp('この列の読みを、どの値のふりがなとして辞書（ノートの自動リンク・ルビ）に使うかを選びます。左隣の列を選ぶと、その列の値に読みが付きます')}</label>
+      <select id="pt-furigana-base" data-e2e-id="pt-furigana-base">
+        ${choices.map(choice => `<option value="${esc(choice.value)}"${choice.value === base ? ' selected' : ''}>${esc(choice.label)}</option>`).join('')}
+      </select>
+    </div>`;
   } else if (type === 'number') {
     optDiv.innerHTML = `<div class="field"><label>単位（任意）</label>
       <input id="pt-number-unit" type="text" value="${esc(current.unit||'')}" placeholder="例: ページ, cm, kg">

@@ -78,6 +78,27 @@ function _folderApplyItemColor(item, color) {
   showStatus(color ? '色を設定しました' : '色をリセットしました');
 }
 
+// 複数選択時の色設定。取り消しを1回で戻せるよう、履歴は1件にまとめる。
+function _folderApplyItemsColor(items, color) {
+  const targets = (items || []).filter(target => target?.path);
+  if (!targets.length || typeof setNodeColor !== 'function') return;
+  if (targets.length === 1) { _folderApplyItemColor(targets[0], color); return; }
+  const colorSettingsKey = typeof NODE_COLORS_KEY !== 'undefined' ? NODE_COLORS_KEY : 'outliner-node-colors';
+  const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory([colorSettingsKey]) : null;
+  targets.forEach(target => setNodeColor(target.path, color || null));
+  if (typeof pushOutlinerSettingsHistory === 'function') {
+    pushOutlinerSettingsHistory(
+      color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
+      before,
+      `${targets.length}件`,
+      [colorSettingsKey]
+    );
+  }
+  if (typeof loadOutliner === 'function') loadOutliner();
+  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+  showStatus(color ? `${targets.length}件の色を設定しました` : `${targets.length}件の色をリセットしました`);
+}
+
 function _folderExportItems(item) {
   const items = [];
   if (!item?.path) return items;

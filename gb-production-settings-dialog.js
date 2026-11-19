@@ -161,10 +161,16 @@
       let addingRow = false;
 
       embedHost.addEventListener('click', async event => {
-        const addButton = event.target.closest?.('.row-add-btn');
-        if (!addButton || addingRow || !selectedTemplate || !selectedChild) return;
+        // 行の追加は表の末尾の新規行で受ける（行頭の＋ボタンは撤去済み。UI共通ルール §6）。
+        // 選択中の作業テンプレートを付けた行を作るため、表の既定の追加処理より先に横取りする。
+        // 表の既定と同じく、新規行のトピック名セルだけを追加の入口にする。
+        const addButton = event.target.closest?.('tr.new-entity-row td.col-entity');
+        if (!addButton) return;
+        // 作成中の連打やテンプレート未選択の時も既定の追加処理へは流さない
+        // （流すと作業テンプレートの無い行ができ、絞り込みで見えない行になる）。
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (addingRow || !selectedTemplate || !selectedChild) return;
         if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
         addingRow = true;
         body.setAttribute('aria-busy', 'true');

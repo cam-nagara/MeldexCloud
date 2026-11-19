@@ -1509,23 +1509,6 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
     width: auto !important;
     min-width: 0;
   }
-  .fv-bulk-bar {
-    box-sizing: border-box !important;
-    max-width: calc(100vw - 8px) !important;
-    flex-wrap: wrap !important;
-    gap: 6px !important;
-  }
-  .fv-bulk-bar .fv-bulk-count {
-    min-height: 44px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-  }
-  .fv-bulk-bar button {
-    min-width: var(--ui-h-touch, 44px) !important;
-    min-height: var(--ui-h-touch, 44px) !important;
-    padding: 0 var(--ui-space-5, 12px) !important;
-    box-sizing: border-box !important;
-  }
   .gb-version-panel .gb-history-actions {
     gap: 6px !important;
     flex-wrap: wrap !important;

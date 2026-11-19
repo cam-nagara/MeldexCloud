@@ -1,8 +1,3 @@
-  let menuClosed = false;
-  let closeOnPointer = null;
-  let closeOnKey = null;
-  function closeMenu(restoreFocus = false) {
-    if (menuClosed) return;
     menuClosed = true;
     document.removeEventListener('pointerdown', closeOnPointer, true);
     document.removeEventListener('keydown', closeOnKey, true);

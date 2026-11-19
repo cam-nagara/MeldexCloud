@@ -58,7 +58,7 @@ function _handleTbodyDragstart(e) {
   const target = e.target;
   const menuHandle = target.closest('.entity-row-more-btn');
   const mobileMenuHandle = menuHandle && window.matchMedia?.('(pointer: coarse), (max-width: 640px)')?.matches;
-  if (target.closest('.row-add-btn, .row-select-cb, button, input, select, textarea, [contenteditable="true"]')
+  if (target.closest('.row-select-cb, button, input, select, textarea, [contenteditable="true"]')
       || (menuHandle && !mobileMenuHandle)) {
     e.preventDefault();
     e.stopPropagation();
@@ -690,6 +690,7 @@ function _dbRenderAlignedRollupCell(record, slotCounts, ctx) {
     const count = slotCounts[groupIndex] || 1;
     for (let lineIndex = 0; lineIndex < count; lineIndex++) {
       const line = _dbRollupLineElement(group.values[lineIndex] || '', 'db-rollup-line');
+      line.dataset.groupIndex = String(groupIndex);
       if (getStatusEnabled(ctx?.dbPath || state.currentDbPath || '')) {
         line.dataset.relationStatus = group.relationStatus || '採用';
       }
@@ -755,6 +756,7 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
   addBtn.className = 'cell-add-btn';
+  addBtn.dataset.rollupAlignedAdd = '1';
   addBtn.dataset.e2eId = `${relationCell.dataset.e2eId || 'db-table-cell'}-add`;
   addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
   addBtn.title = '候補値を追加';
@@ -772,6 +774,16 @@ function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationPro
   cellValues.appendChild(addBtn);
 }
 
+function _dbRestoreUnalignedRelationCell(relationCell, cellValues) {
+  cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  cellValues.querySelectorAll('[data-rollup-aligned-add="1"]').forEach(button => button.remove());
+  cellValues.querySelectorAll('[data-rollup-aligned-hidden="1"]').forEach(child => {
+    child.hidden = false;
+    delete child.dataset.rollupAlignedHidden;
+  });
+  relationCell.classList.remove('db-rollup-aligned-relation');
+}
+
 function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCounts, ctx) {
   const firstRollup = [...rowRecord.rollups.values()][0];
   const relationCell = [...(firstRollup?.td?.closest('tr')?.querySelectorAll('td[data-prop-name]') || [])]
@@ -781,6 +793,13 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (!cellValues) return;
 
   cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  // 集計できる参照が1件もない時（未入力、参照先が見つからない等）は行合わせをせず、
+  // リレーション列の本来の値と入力の入口（＋・Enter）をそのまま見せる。
+  // 「—」で置き換えると値が見えず、選択も入力もできなくなる。
+  if (!groups.length) {
+    _dbRestoreUnalignedRelationCell(relationCell, cellValues);
+    return;
+  }
   _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx);
   [...cellValues.children].forEach(child => {
     if (child.classList?.contains('db-rollup-relation-lines')) return;
@@ -788,6 +807,7 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
       child.hidden = false;
       return;
     }
+    if (!child.hidden) child.dataset.rollupAlignedHidden = '1';
     child.hidden = true;
   });
   const aligned = document.createElement('div');
@@ -796,9 +816,7 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
     applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
   }
-  if (!groups.length) {
-    aligned.appendChild(_dbRollupLineElement('—', 'db-rollup-relation-line'));
-  } else {
+  {
     groups.forEach((group, groupIndex) => {
       const count = slotCounts[groupIndex] || 1;
       for (let lineIndex = 0; lineIndex < count; lineIndex++) {
@@ -978,7 +996,9 @@ function renderEntityCell(entityName, propName, ctx, options) {
   // 設定が未完了（リレーション列が未選択）のままここで値の表示へ落とすと、
   // 元のテキスト値がそのまま出てテキスト列と見分けが付かなくなるため、
   // 「まだ集計していない列」だと分かる表示にして値編集の見た目にはしない。
-  else if (ptc && ptc.type === 'rollup' && (!ptc.relationProp || typeof calcRollupValue !== 'function')) {
+  // 件数以外の集計で参照先の列が未選択の時も、値が出ないまま「—」にせず未設定と示す。
+  else if (ptc && ptc.type === 'rollup' && (!ptc.relationProp || typeof calcRollupValue !== 'function'
+      || (!ptc.targetProp && (ptc.aggregation || 'values') !== 'count'))) {
     const span = document.createElement('span');
     span.className = 'db-cell-display-text db-cell-unconfigured';
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
@@ -993,6 +1013,15 @@ function renderEntityCell(entityName, propName, ctx, options) {
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     span.textContent = '...';
     container.appendChild(span);
+    // ダブルクリックで、その行の参照先トピックの値を直接編集する（参照先シートへ保存）
+    container.addEventListener('dblclick', (event) => {
+      if (typeof startRollupCellEdit !== 'function' || event.target.closest('.cell-inline-input')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const line = event.target.closest('.db-rollup-line');
+      const groupIndex = line ? Number(line.dataset.groupIndex) : NaN;
+      void startRollupCellEdit(td, Number.isInteger(groupIndex) ? { groupIndex } : {});
+    });
     colorValues = [];
     const renderToken = ctx?._renderToken || null;
     calcRollupValue(entityName, entitiesMap, ptc, propTypes, dbPath, ctx?.filter).then(val => {
@@ -1169,9 +1198,9 @@ function renderEntityRow(entityName, ctx, options) {
     else if (mainStatus === 'ボツ') tr.className = 'row-status-rejected';
   }
 
-  // 行先頭コントロール列（＋追加/ドラッグハンドル/選択チェックボックス）。
+  // 行先頭コントロール列（ドラッグハンドル/選択チェックボックス）。
   // エントリ名列（col-entity）から独立した、常に先頭固定・並べ替え対象外の列。
-  // 中身（addRowBtn/dragHandle/cb）は既存のまま下方で生成し、controlsMain へ追加する。
+  // 中身（dragHandle/cb）は下方で生成し、controlsMain へ追加する。
   const tdControls = document.createElement('td');
   tdControls.className = 'col-row-controls';
   tdControls.tabIndex = -1;
@@ -1207,41 +1236,7 @@ function renderEntityRow(entityName, ctx, options) {
   const nameMain = document.createElement('div');
   nameMain.className = 'entity-name-cell-main';
 
-  // ＋ボタン (エントリ追加: クリック=下に追加 / Alt+クリック=上に追加)
-  const addRowBtn = document.createElement('span');
-  addRowBtn.className = 'row-add-btn';
-  addRowBtn.title = 'クリックで下にトピックを追加 / Alt+クリックで上に追加';
-  addRowBtn.draggable = false;
-  addRowBtn.tabIndex = 0;
-  addRowBtn.setAttribute('role', 'button');
-  addRowBtn.setAttribute('aria-label', 'トピックを追加');
-  addRowBtn.dataset.e2eId = 'db-row-add-' + String(entityName || '').replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '-').slice(0, 60);
-  addRowBtn.innerHTML = lucide('plus', 12);
-  const triggerAddRow = (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const position = e.altKey ? 'above' : 'below';
-    _handleInsertRowRelative(ctx, entityName, position);
-  };
-  addRowBtn.addEventListener('click', triggerAddRow);
-  addRowBtn.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    triggerAddRow(e);
-  });
-  // 行そのものが draggable のため、追加ボタンから行ドラッグを開始させない。
-  addRowBtn.addEventListener('pointerdown', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-  });
-  addRowBtn.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-  });
-  addRowBtn.addEventListener('dragstart', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  controlsMain.appendChild(addRowBtn);
+  // 行頭の＋ボタンは撤去した（2026-11-19）。トピックの追加はハンドルメニューの「上に／下にトピックを追加」で行う。
 
   // 行ドラッグハンドル
   const dragHandle = document.createElement('span');
@@ -1351,7 +1346,7 @@ function renderEntityRow(entityName, ctx, options) {
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName);
+    if (typeof showDbCardContextMenu === 'function') showDbCardContextMenu(e, dbPath, entityName, undefined, { rowBatch: true });
   });
   nameMain.appendChild(nameSpan);
   nameMain.appendChild(openBtn);

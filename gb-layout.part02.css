@@ -116,7 +116,8 @@
   pointer-events: none;
 }
 .gb-tab:hover .gb-tab-more,
-.gb-tab:focus-within .gb-tab-more,
+.gb-tab:focus-visible .gb-tab-more,
+.gb-tab:has(:focus-visible) .gb-tab-more,
 .gb-tab[aria-expanded="true"] .gb-tab-more,
 .gb-tab-more[aria-expanded="true"] {
   opacity: 1;

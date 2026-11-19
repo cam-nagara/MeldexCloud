@@ -136,14 +136,22 @@ function _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, createdNames, options
   }
   const createdSet = new Set(createdNames);
   order = order.filter(name => !createdSet.has(name));
-  const refEntityName = opts.refEntityName || '';
-  const refIdx = refEntityName ? order.indexOf(refEntityName) : -1;
-  if (refIdx < 0 || opts.position === 'append') {
-    order.push(...createdNames);
-  } else {
-    const insertIdx = refIdx + (opts.position === 'below' ? 1 : 0);
-    order.splice(insertIdx, 0, ...createdNames);
-  }
+  // placements: 複数の基準行へまとめて入れる（行メニューの一括追加。1回の並べ替え・保存・描画で済ませる）。
+  const placements = Array.isArray(opts.placements) && opts.placements.length
+    ? opts.placements
+    : [{ names: createdNames, refEntityName: opts.refEntityName || '', position: opts.position }];
+  placements.forEach(placement => {
+    const names = (placement.names || []).filter(name => createdSet.has(name));
+    if (!names.length) return;
+    const refEntityName = placement.refEntityName || '';
+    const refIdx = refEntityName ? order.indexOf(refEntityName) : -1;
+    if (refIdx < 0 || placement.position === 'append') {
+      order.push(...names);
+    } else {
+      const insertIdx = refIdx + (placement.position === 'below' ? 1 : 0);
+      order.splice(insertIdx, 0, ...names);
+    }
+  });
   target.sortConfig = { key: 'manual', dir: 'asc' };
   target.manualOrder = order;
   saveDbViewConfig(dbPath, cfg);
@@ -622,39 +630,114 @@ function _toggleGroupCollapsed(ctx, groupKey) {
 
 // 既存エントリの above / below に新規行を挿入 (manualOrder を更新)
 async function _handleInsertRowRelative(ctx, refEntityName, position, count) {
+  return _handleInsertRowsAtPlans(ctx, [{ anchorId: refEntityName, position, count: Math.max(1, count || 1) }]);
+}
+
+// 行メニューの「上に／下に追加」。plans は基準行ごとの { anchorId, position, count }。
+// 仮の行をすべて作ってから並べ替え・描画を1回だけ行い、保存の完了後に1件の取り消し履歴を積む
+// （取り消し=追加したトピックをゴミ箱へ、やり直し=ゴミ箱から戻して同じ位置へ）。UI共通ルール §6。
+async function _handleInsertRowsAtPlans(ctx, plans) {
   const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
   if (!dbPath) return;
-  count = Math.max(1, count || 1);
+  const validPlans = (Array.isArray(plans) ? plans : []).filter(plan => plan && Math.max(0, plan.count || 0) > 0);
+  if (!validPlans.length) return;
+  const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const createdRecords = [];
-  for (let n = 0; n < count; n++) {
-    try {
-      createdRecords.push(_dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true }));
-    } catch (e) {
-      if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
+  const placements = [];
+  for (const plan of validPlans) {
+    const names = [];
+    for (let n = 0; n < plan.count; n++) {
+      try {
+        const record = _dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true });
+        createdRecords.push(record);
+        names.push(record.name);
+      } catch (e) {
+        if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
+      }
     }
+    if (names.length) placements.push({ names, refEntityName: plan.anchorId, position: plan.position });
   }
   const created = createdRecords.map(item => item.name);
   if (created.length === 0) return;
-  const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, created, { refEntityName, position }) || ctx;
-  const createdItems = [];
-  const failed = [];
-  for (const record of createdRecords) {
+  const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(ctx, dbPath, created, { placements }) || ctx;
+  const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  const settledPromise = Promise.all(createdRecords.map(async record => {
     try {
       const saved = await record.promise;
       if (saved.name !== record.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, record.name, saved.name);
-      createdItems.push({ name: saved.name, path: saved.path, response: saved.response });
+      return { ok: true, item: { name: saved.name, path: saved.path, response: saved.response } };
     } catch (e) {
       // タイムアウト等でも作成済みのことがあるため、撤去前に確認する
       const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, record);
-      if (recovered) createdItems.push({ name: recovered.name, path: recovered.path, response: null });
-      else failed.push(record.name);
+      if (recovered) return { ok: true, item: { name: recovered.name, path: recovered.path, response: null } };
+      return { ok: false, name: record.name };
     }
-  }
+  }));
+  const createdItemsPromise = settledPromise.then(settled => settled.filter(result => result.ok).map(result => result.item));
+  // 取り消し履歴は表示に反映した直後に積む（保存の完了後に積むと、直後の Ctrl+Z が1つ前の操作を戻してしまう）。
+  // 取り消し・やり直しは保存の完了を待ってから実行する。
+  _dbPushInsertedEntitiesHistory(dbPath, renderCtx, createdItemsPromise, viewBefore, viewAfter, created.length);
+  const settled = await settledPromise;
+  const createdItems = settled.filter(result => result.ok).map(result => result.item);
+  const failed = settled.filter(result => !result.ok).map(result => result.name);
   if (failed.length) {
     _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, failed);
-    if (typeof showStatus === 'function') showStatus('一部のトピック作成に失敗しました', true);
+    if (typeof showStatus === 'function') showStatus(`${failed.length}件のトピック作成に失敗しました`, true);
   }
   _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx);
+}
+
+// 行メニューから追加したトピックの取り消し履歴（保存に成功した分だけを対象にする）。
+function _dbPushInsertedEntitiesHistory(dbPath, ctx, createdItemsPromise, viewBefore, viewAfter, plannedCount) {
+  if (typeof historyPush !== 'function' || !plannedCount || !window.GbDbEntryIdentity?.deleteEntries) return;
+  const scope = typeof _dbScopeForPath === 'function'
+    ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+  const entriesPromise = Promise.resolve(createdItemsPromise).then(items => (items || []).map(item => ({
+    name: item.name,
+    path: item.path,
+    entryId: String(item.response?.entry_id || item.response?.id || item.response?.entity_data?._id || ''),
+  })));
+  let trashRefs = [];
+  const restoreView = snapshot => {
+    if (!snapshot || typeof restoreLocalStorageSettings !== 'function') return;
+    restoreLocalStorageSettings(snapshot);
+    if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+      Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true })).catch(() => {});
+    }
+  };
+  const refresh = () => (typeof selectDatabase === 'function'
+    ? selectDatabase(dbPath, ctx, { silent: true, skipNavPush: true, skipRecent: true, skipSaveLastView: true })
+    : null);
+  historyPush(
+    plannedCount > 1 ? `トピック追加: ${plannedCount}件` : 'トピック追加',
+    async () => {
+      const entries = await entriesPromise;
+      if (!entries.length) return;
+      const result = await window.GbDbEntryIdentity.deleteEntries({
+        dbPath, ctx, entries, source: 'entry-insert-undo',
+      });
+      trashRefs = (result.trashRefs || []).filter(ref => ref?.trash_name);
+      restoreView(viewBefore);
+      await refresh();
+      if (result.failures?.length) throw result.failures[0].error || new Error('追加したトピックを取り消せませんでした');
+    },
+    async () => {
+      const failedRefs = [];
+      for (const ref of trashRefs) {
+        try {
+          await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
+        } catch {
+          failedRefs.push(ref);
+        }
+      }
+      trashRefs = failedRefs;
+      restoreView(viewAfter);
+      await refresh();
+      if (failedRefs.length) throw new Error(`${failedRefs.length}件のトピックを戻せませんでした`);
+    },
+    scope,
+  );
 }
 
 // リレーションリンク click → open / preview メニュー
@@ -823,7 +906,8 @@ async function _handleTbodyClick(e) {
   const moreBtn = target.closest('.entity-row-more-btn');
   if (moreBtn) {
     const entityName = moreBtn.closest('tr')?.dataset?.entityName;
-    if (entityName) showDbCardContextMenu(e, dbPath, entityName);
+    // 表の「…」は行ハンドルと同じく、選択中の行なら選択行すべてへの一括メニューになる（スマホでは唯一の行メニュー）。
+    if (entityName) showDbCardContextMenu(e, dbPath, entityName, undefined, { rowBatch: true });
     return;
   }
 

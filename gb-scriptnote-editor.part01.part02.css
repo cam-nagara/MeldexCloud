@@ -150,21 +150,6 @@
   align-items: center;
   gap: 2px;
 }
-/* シートと同じ、最左の行追加ボタン（クリック=下、Alt+クリック=上）。 */
-.sn2-row-add-btn {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  opacity: 0;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg2);
-  border-radius: var(--ui-radius-xs, 3px);
-}
-.sn2-row-add-btn:hover,
-.sn2-row-add-btn:focus-visible { color: var(--ui-hover-fg); background: var(--bg3); opacity: 1; }
 .sn2-row-grip { flex: 0 0 auto; width: 12px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
 /* 行選択チェックボックス（ハンドルdiv内に配置） */
 .sn2-row-check {
@@ -178,12 +163,10 @@
 .sn2-drag-select-rect { pointer-events: none; }
 .sn2-row:hover .sn2-row-check,
 .sn2-row-check:checked { opacity: 1; }
-.sn2-row:hover .sn2-row-add-btn { opacity: 1; }
 .sn2-row:hover .sn2-handle { color: var(--fg2); }
 .sn2-handle:hover { color: var(--fg) !important; }
 @media (hover: none), (pointer: coarse) {
   .sn2-row-check { opacity: 1; }
-  .sn2-row-add-btn { opacity: 1; }
   .sn2-handle { color: var(--fg2); }
 }
 .sn2-row.sn2-dragging { opacity: 0.3; }

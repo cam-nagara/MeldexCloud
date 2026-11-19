@@ -490,6 +490,10 @@ function renderPivot(ctx) {
   if (!ctx) return;
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
+  // 表ビューでは一括操作バーを出さない。ツリービューから切り替えた時に残ったバーを消す（UI共通ルール §6）。
+  if (!(typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(ctx, ctx.dbPath || state.currentDbPath))) {
+    document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${MeldexEscape.cssIdent(ctx.paneId || 'main')}"]`).forEach(bar => bar.remove());
+  }
 
   const dbPath = ctx.dbPath || state.currentDbPath;
   const filterMode = ctx.filter ?? state.filter ?? 'disabled';

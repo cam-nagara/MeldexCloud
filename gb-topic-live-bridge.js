@@ -193,7 +193,7 @@
       || result?.response?.migration?.viewDocument || null;
   }
 
-  function publish(result, reason) {
+  function publish(result, reason, structural = true) {
     const records = recordsFrom(result);
     const legacyNodeTopicIds = {};
     records.forEach((record) => {
@@ -207,6 +207,7 @@
       mode: result.mode,
       readOnly: result.mode === 'preview' || result?.archive?.readOnly === true,
       reason: reason || 'open',
+      structural: structural !== false,
       topicRecords: records,
       viewDocument: viewDocumentFrom(result),
       checkpoint: result?.archive?.checkpoint || null,
@@ -238,7 +239,7 @@
         || openVersion !== Number(owner?._openSeq || 0)) {
       return { ok: false, status: 'superseded', target };
     }
-    if (result.ok) result.detail = publish(result, options?.reason);
+    if (result.ok) result.detail = publish(result, options?.reason, options?.structural !== false);
     else if (result.status === 'fallback' && typeof global.dispatchEvent === 'function'
       && typeof global.CustomEvent === 'function') {
       global.dispatchEvent(new global.CustomEvent('meldex:topic-migration-failed', {
@@ -269,12 +270,14 @@
     if (previous) clearTimeout(previous.timer);
     const owner = options?.owner;
     const delay = Number.isFinite(options?.debounceMs) ? Math.max(0, options.debounceMs) : DEFAULT_DEBOUNCE_MS;
+    // まとめた保存のどれか1つでも名前・構造を変えたら、通知は構造変更として扱う。
+    const structural = options?.structural !== false || previous?.structural === true;
     const timer = setTimeout(() => {
       saveTimers.delete(key);
       if (!ownerActive(owner, dbPath)) return;
-      void migrateOpenedSheet(dbPath, { ...options, reason: 'save', refreshRoots: false });
+      void migrateOpenedSheet(dbPath, { ...options, structural, reason: 'save', refreshRoots: false });
     }, delay);
-    saveTimers.set(key, { timer, owner });
+    saveTimers.set(key, { timer, owner, structural });
     return timer;
   }
 

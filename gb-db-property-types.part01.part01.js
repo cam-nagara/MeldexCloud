@@ -282,22 +282,9 @@ async function _deleteColumn(dbPath, propName, ctx) {
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  let viewConfigPersisted = true;
-  if (typeof _persistDbViewConfigToBackend === 'function') {
-    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
-  }
-  if (viewConfigPersisted === false) {
-    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
-    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
-    return false;
-  }
-  saveDbViewConfig(dbPath, c, { skipBackend: true });
-
-  // state.dbMetadata にも反映
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
-    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
-  }
+  // 保存の完了を待たずに列を画面から消す。保存に失敗したら削除前へ戻す。
+  _ptApplyColumnDeleteLocally(dbPath, propName, c, renderCtx);
+  if (!await _ptPersistColumnDeleteViewConfig(dbPath, propName, c, { oldCfg, oldMetadata, renderCtx })) return false;
 
   // バックエンドに保存（列タイプの保存が確定してから取り消し履歴を積む）
   const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
@@ -333,12 +320,6 @@ async function _deleteColumn(dbPath, propName, ctx) {
     );
   }
 
-  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
-    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
-    _renderCurrentDbView(renderCtx, dbPath);
-  } else {
-    selectDatabase(dbPath, renderCtx);
-  }
   if (layoutError) {
     showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${layoutError?.message || layoutError}`, true);
   } else {
@@ -352,6 +333,48 @@ async function _deleteColumn(dbPath, propName, ctx) {
     cascade_container: true,
   }).catch(() => {});
   return true;
+}
+
+function _ptRenderAfterColumnDelete(renderCtx, dbPath) {
+  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
+    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
+    _renderCurrentDbView(renderCtx, dbPath);
+  } else if (typeof selectDatabase === 'function') {
+    selectDatabase(dbPath, renderCtx);
+  }
+}
+
+// 削除後の表示設定と列タイプを画面側へ先に反映し、すぐ描き直す。
+function _ptApplyColumnDeleteLocally(dbPath, propName, cfg, renderCtx) {
+  saveDbViewConfig(dbPath, cfg, { skipBackend: true, skipHistory: true });
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
+    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
+  }
+  _ptRenderAfterColumnDelete(renderCtx, dbPath);
+}
+
+// 表示設定を保存する。失敗したら画面の列と列タイプを削除前へ戻し、理由を表示して false を返す。
+async function _ptPersistColumnDeleteViewConfig(dbPath, propName, cfg, snapshot) {
+  const { oldCfg, oldMetadata, renderCtx } = snapshot || {};
+  let persisted = true;
+  if (typeof _persistDbViewConfigToBackend === 'function') {
+    try {
+      persisted = await _persistDbViewConfigToBackend(dbPath, cfg, { immediate: true });
+    } catch (error) {
+      console.warn('[Meldex] 列削除の表示設定を保存できませんでした', error);
+      persisted = false;
+    }
+  }
+  if (persisted !== false) return true;
+  saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
+  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata && oldMetadata) {
+    state.dbMetadata.property_types = oldMetadata.property_types;
+    state.dbMetadata.property_layout = oldMetadata.property_layout;
+  }
+  _ptRenderAfterColumnDelete(renderCtx, dbPath);
+  showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
+  return false;
 }
 
 // 列削除前の画面上の列タイプ・配置を控える（保存失敗時にそのまま戻す）。
@@ -431,30 +454,12 @@ async function _deleteColumnNoConfirm(dbPath, propName, ctx) {
   if (c.propertyLayout && typeof removePropertyLayoutReferences === 'function') {
     c.propertyLayout = removePropertyLayoutReferences(c.propertyLayout, propName);
   }
-  let viewConfigPersisted = true;
-  if (typeof _persistDbViewConfigToBackend === 'function') {
-    viewConfigPersisted = await _persistDbViewConfigToBackend(dbPath, c, { immediate: true });
-  }
-  if (viewConfigPersisted === false) {
-    saveDbViewConfig(dbPath, oldCfg, { skipBackend: true, skipHistory: true });
-    showStatus(`列「${propName}」を削除できませんでした。保存先の空き容量や権限を確認してください`, true);
-    return false;
-  }
-  saveDbViewConfig(dbPath, c, { skipBackend: true });
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_types) _deletePropertyTypePropReferences(state.dbMetadata.property_types, propName);
-  if (_ptIsCurrentDbPath(dbPath) && state.dbMetadata?.property_layout && typeof removePropertyLayoutReferences === 'function') {
-    state.dbMetadata.property_layout = removePropertyLayoutReferences(state.dbMetadata.property_layout, propName);
-  }
+  _ptApplyColumnDeleteLocally(dbPath, propName, c, renderCtx);
+  if (!await _ptPersistColumnDeleteViewConfig(dbPath, propName, c, { oldCfg, oldMetadata, renderCtx })) return false;
   const commit = await _ptSaveColumnDeleteToBackend(dbPath, propName, { oldCfg, oldMetadata, oldPT, renderCtx });
   if (!commit.ok) return false;
   if (commit.layoutError) {
     showStatus(`列「${propName}」を削除しましたが、トピック詳細の配置設定を更新できませんでした: ${commit.layoutError?.message || commit.layoutError}`, true);
-  }
-  if (typeof _renderCurrentDbView === 'function' && (renderCtx?.pivotData || state.pivotData)) {
-    if (renderCtx && !renderCtx.pivotData && state.pivotData) renderCtx.pivotData = state.pivotData;
-    _renderCurrentDbView(renderCtx, dbPath);
-  } else {
-    selectDatabase(dbPath, renderCtx);
   }
   return true;
 }
@@ -586,6 +591,7 @@ function _deleteFormulaPropRefs(formula, propName) {
 function _deletePropertyTypeReferences(cfg, propName) {
   if (!cfg || typeof cfg !== 'object' || !propName) return;
   if (cfg.pairWith === propName) delete cfg.pairWith;
+  if (cfg.rubyBaseProp === propName) delete cfg.rubyBaseProp;
   if (cfg.cascadeFrom === propName) {
     delete cfg.cascadeFrom;
     delete cfg.cascadeKey;
@@ -628,6 +634,7 @@ function _renamePropertyTypeReferences(cfg, oldName, newName, propertyTypes) {
   if (cfg.pairWith === oldName) cfg.pairWith = newName;
   if (cfg.cascadeFrom === oldName) cfg.cascadeFrom = newName;
   if (cfg.relationProp === oldName) cfg.relationProp = newName;
+  if (cfg.rubyBaseProp === oldName) cfg.rubyBaseProp = newName;
   if (cfg.relationDb === '') {
     if (cfg.bidirectionalProp === oldName) cfg.bidirectionalProp = newName;
     if (cfg.cascadeKey === oldName) cfg.cascadeKey = newName;
@@ -1396,7 +1403,7 @@ function _openDbTreePicker(anchorBtn, dbs, input, dbPath) {
         sheetEl.className = 'db-picker-tree-row db-picker-tree-sheet' + (isCur ? ' is-current' : '');
         sheetEl.style.paddingLeft = (6 + (depth + 1) * 14) + 'px';
         sheetEl.innerHTML = `<span class="db-picker-tw-caret"></span>`
-          + `<span class="db-picker-tw-icon">${lucide('database', 13)}</span>`
+          + `<span class="db-picker-tw-icon">${window.MeldexFileIcons?.itemIconHtml?.({ type: 'database', path: d.path }, 13) ?? lucide('database', 13)}</span>`
           + `<span class="db-picker-tw-name">${esc(d.name)}</span>`;
         sheetEl.addEventListener('click', () => selectSheet(d));
         host.appendChild(sheetEl);
@@ -1710,7 +1717,7 @@ function _renderCalendarSyncEditor(cs) {
           <input id="pt-calsync-enabled" type="checkbox" ${enabled ? 'checked' : ''}>
           カレンダー連動を有効にする
         </label>
-        ${fieldHelp('オンにすると、この列に日時を設定したとき対象カレンダーシートへイベントが自動生成されます')}
+        ${fieldHelp('オンにすると、この列に日時を設定したとき対象カレンダーシートへイベントが自動生成されます', { e2eId: 'pt-calendar-autogen-help' })}
       </div>
     </div>
     <div id="pt-calsync-body" style="${enabled ? '' : 'display:none;'}padding-left:8px;border-left:2px solid var(--border);margin-top:6px;">

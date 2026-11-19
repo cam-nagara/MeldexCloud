@@ -33,63 +33,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (this._rowSelection) this._rowSelection.clear();
     if (this._gridCellSelection) this._gridCellSelection.clear();
     if (this._textCellSelection) this._textCellSelection.clear();
-    if (this._rowBulkBar?.isConnected) this._rowBulkBar.remove();
-    this._rowBulkBar = null;
     return false;
-  },
-
-  _startRowBulkBarGuard() {
-    if (this._rowBulkBarGuardTimer) return;
-    this._rowBulkBarGuardTimer = setInterval(() => {
-      if (!this._rowBulkBar?.isConnected || !this._rowSelection?.size) {
-        this._stopRowBulkBarGuard();
-        return;
-      }
-      if (!this._isRowSelectionOwnerActive()) this._clearRowSelection();
-    }, 250);
-  },
-
-  _stopRowBulkBarGuard() {
-    if (!this._rowBulkBarGuardTimer) return;
-    clearInterval(this._rowBulkBarGuardTimer);
-    this._rowBulkBarGuardTimer = null;
-  },
-
-  _clampRowBulkBarToViewport(bar) {
-    if (!bar?.isConnected) return;
-    const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-    const margin = 8 / z;
-    const vw = window.innerWidth / z;
-    const vh = window.innerHeight / z;
-    const parentRect = bar.offsetParent?.getBoundingClientRect?.() || { left: 0, top: 0 };
-    const rect = bar.getBoundingClientRect();
-    const box = {
-      left: rect.left / z,
-      top: rect.top / z,
-      width: rect.width / z,
-      height: rect.height / z,
-    };
-    const maxHeight = Math.max(120 / z, vh - margin * 2);
-    if (box.height > maxHeight) {
-      bar.style.maxHeight = `${maxHeight}px`;
-      bar.style.overflowY = 'auto';
-    }
-    const nextRect = bar.getBoundingClientRect();
-    const next = {
-      left: nextRect.left / z,
-      top: nextRect.top / z,
-      width: nextRect.width / z,
-      height: nextRect.height / z,
-    };
-    const clampedLeft = Math.max(margin, Math.min(next.left, vw - next.width - margin));
-    const clampedTop = Math.max(margin, Math.min(next.top, vh - next.height - margin));
-    if (Math.abs(clampedLeft - next.left) > 0.5 || Math.abs(clampedTop - next.top) > 0.5) {
-      bar.style.left = `${clampedLeft - (parentRect.left / z)}px`;
-      bar.style.top = `${clampedTop - (parentRect.top / z)}px`;
-      bar.style.right = '';
-      bar.style.bottom = 'auto';
-      bar.style.transform = 'none';
-    }
   },
 
   _toggleRowSelection(rowId, idx, shiftKey, ctrlKey) {
@@ -149,25 +93,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._updateRowSelectionUI();
   },
 
-  _bulkDuplicateRows() {
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    this._pushUndo('一括複製');
-    const newRows = [];
-    this.doc.rows.forEach((row) => {
-      newRows.push(row);
-      if (selectedIds.has(row.id)) {
-        const nextId = (globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)));
-        newRows.push({ ...JSON.parse(JSON.stringify(row)), id: nextId });
-      }
-    });
-    this.doc.rows = newRows;
-    this._clearRowSelection();
-    this._render();
-    this._markDirty();
-  },
-
   _updateRowSelectionUI() {
     this._sanitizeRowSelection();
     const editor = this.host?.querySelector('.sn2-editor');
@@ -179,181 +104,173 @@ Object.assign(ScriptNoteEditor.prototype, {
       const checkbox = el.querySelector('.sn2-row-check');
       if (checkbox) checkbox.checked = selected;
     });
-    this._updateRowBulkBar();
   },
 
-  _updateRowBulkBar() {
-    let bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
-    const count = this._rowSelection?.size || 0;
-    if (count >= 1 && !this._isRowSelectionOwnerActive()) {
-      if (bar) bar.remove();
-      this._rowBulkBar = null;
-      this._stopRowBulkBarGuard();
-      return;
-    }
-    if (count < 1) {
-      if (bar) bar.remove();
-      this._rowBulkBar = null;
-      this._stopRowBulkBarGuard();
-      return;
-    }
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.className = 'sn2-row-bulk-bar gb-selection-float-bar';
-      bar.setAttribute('role', 'toolbar');
-      bar.setAttribute('aria-label', 'シナリオ行の一括操作');
-      (this.host || document.body).appendChild(bar);
-      this._rowBulkBar = bar;
-    }
-    if (window.GBSelectionFloatMenu) {
-      window.GBSelectionFloatMenu.bindDrag(bar, { host: this.host || document.body });
-      window.GBSelectionFloatMenu.resetPosition(bar, { host: this.host || document.body, anchor: this.host, zIndex: '1000' });
-    } else {
-      const hostRect = this.host?.getBoundingClientRect();
-      const zoom = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
-      const left = hostRect ? (hostRect.left / zoom) : 0;
-      const top = hostRect ? (hostRect.top / zoom) : 0;
-      const offset = 8 / zoom;
-      bar.style.cssText = `position:fixed;top:${top + offset}px;left:${left + offset}px;z-index:1000;background:var(--ui-popup-bg, var(--bg3));border:1px solid var(--border);border-left:3px solid var(--accent, #4a90d9);border-radius:6px;padding:6px 12px;display:flex;align-items:center;gap:6px;font-size:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);width:fit-content;`;
-    }
-    bar.innerHTML = '';
-    if (window.GBSelectionFloatMenu) {
-      bar.appendChild(window.GBSelectionFloatMenu.createDragHandle());
-    }
-    const label = document.createElement('span');
-    label.className = 'gb-selection-float-count';
-    label.textContent = `${count}行選択中`;
-    bar.appendChild(label);
-    const mkBtn = (id, text, title, onClick, options = {}) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = text;
-      button.title = title;
-      button.dataset.e2eId = id;
-      button.setAttribute('aria-label', title);
-      button.className = 'gb-selection-float-button' + (options.danger ? ' danger' : '');
-      button.addEventListener('click', () => {
-        if (!this._guardRowBulkAction()) return;
-        window.GBSelectionFloatMenu?.pulseButton?.(button);
-        onClick();
-      });
-      return button;
-    };
-    bar.appendChild(mkBtn('sn-row-bulk-role', 'タイプ変更', '選択行のタイプを一括変更', () => this._bulkChangeRole()));
-    bar.appendChild(mkBtn('sn-row-bulk-duplicate', '複製', '選択行を複製', () => this._bulkDuplicateRows()));
-    bar.appendChild(mkBtn('sn-row-bulk-delete', '削除', '選択行を一括削除', () => this._bulkDeleteRows(), { danger: true }));
-    bar.appendChild(mkBtn('sn-row-bulk-invert', '選択反転', '選択状態を反転', () => this._invertRowSelection()));
-    bar.appendChild(mkBtn('sn-row-bulk-clear', '選択解除', '選択を解除', () => this._clearRowSelection()));
-    this._clampRowBulkBarToViewport(bar);
-    this._startRowBulkBarGuard();
+  // ---------------------------------------------------------------------------
+  // 行メニュー（ハンドル）からの一括実行。対象は MeldexRowHandleMenu.resolveTargets で決める。
+  // 押した行が選択中で選択が2行以上なら選択中のすべての行、選択外ならその1行だけ（選択は変えない）。
+  // どの一括操作も取り消し履歴は1回分だけ積む。
+  // ---------------------------------------------------------------------------
+
+  _rowHandleOrderedIds() {
+    return (this.doc?.rows || []).filter(row => this._isRowSelectionTarget(row)).map(row => row.id);
   },
 
-  _bulkChangeRole() {
-    const ownerDocument = this.doc;
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
-      .filter((choice) => choice && choice.kind !== 'none')
-      .map((choice) => String(choice.name || choice.label || ''))
-      .filter(Boolean);
-    if (!roles.length) return;
-    const popup = document.createElement('div');
-    popup.className = 'sn2-header-popup sn2-bulk-role-popup';
-    popup.setAttribute('role', 'menu');
-    popup.setAttribute('aria-label', '選択行のタイプを一括変更');
-    popup.style.cssText = 'position:fixed;z-index:10100;max-height:300px;overflow-y:auto;';
-    const bar = this._rowBulkBar && this._rowBulkBar.isConnected ? this._rowBulkBar : null;
-    const trigger = bar?.querySelector?.('[data-e2e-id="sn-row-bulk-role"]') || null;
-    const close = (options = {}) => {
-      popup.remove();
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeydown, true);
-      if (options.restoreFocus) trigger?.focus?.();
+  _rowHandleTargets(rowId) {
+    const ordered = this._rowHandleOrderedIds();
+    const selected = this._getVisibleSelectedIds();
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.resolveTargets) return shared.resolveTargets(rowId, ordered, selected);
+    return { batch: false, ids: [rowId], runs: [[rowId]], count: 1, rowId };
+  },
+
+  // 引数なしの時は、選択中の行すべてを対象にする。
+  _rowBulkTargets(targets = null) {
+    if (targets?.ids?.length) return targets;
+    const ordered = this._rowHandleOrderedIds();
+    const selected = this._getVisibleSelectedIds();
+    const ids = ordered.filter(id => selected.has(id));
+    if (!ids.length) return null;
+    const shared = globalThis.MeldexRowHandleMenu;
+    const runs = shared?.runsOf ? shared.runsOf(ordered, new Set(ids)) : ids.map(id => [id]);
+    return { batch: ids.length > 1, ids, runs, count: ids.length, rowId: ids[0] };
+  },
+
+  _rowBulkInsertPlans(targets, position) {
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.planInsertions) return shared.planInsertions(targets, position);
+    const where = position === 'above' ? 'above' : 'below';
+    return (targets?.runs || []).map(run => ({
+      ids: run.slice(), anchorId: where === 'above' ? run[0] : run[run.length - 1], position: where, count: run.length,
+    })).reverse();
+  },
+
+  _newScenarioRowId() {
+    return globalThis.crypto?.randomUUID?.() || ('sn-row-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+  },
+
+  // 空の行を作る（行の追加と同じ既定値。絞り込み中はそのタイプ・ステータスを引き継ぐ）。
+  _createScenarioEmptyRow(baseRow) {
+    let newRole = '';
+    if (this._filterRoles && this._filterRoles.size === 1) newRole = [...this._filterRoles][0];
+    let newStatus = baseRow?.status || '';
+    if (this._filterStatuses && this._filterStatuses.size === 1) newStatus = [...this._filterStatuses][0];
+    const newRow = {
+      id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      character: '',
+      characterRef: { kind: 'none', id: '__none__' },
+      type: newRole,
+      role: newRole,
+      status: newStatus,
+      text: '',
+      columns: {},
     };
-    const onPointerDown = (ev) => {
-      if (!popup.contains(ev.target)) close({ restoreFocus: true });
-    };
-    const onKeydown = (ev) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      close({ restoreFocus: true });
-    };
-    roles.forEach((name, index) => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'sn2-header-popup-item';
-      item.setAttribute('role', 'menuitem');
-      item.dataset.e2eId = `sn-row-bulk-role-option-${index + 1}`;
-      item.dataset.sn2BulkRoleOption = name;
-      item.textContent = name;
-      item.addEventListener('click', () => {
-        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) { close(); return; }
-        close();
-        this._pushUndo('一括タイプ変更');
-        this.doc.rows.forEach((row) => {
-          if (!selectedIds.has(row.id)) return;
-          if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
-            globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
-          } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
-            globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
-          } else {
-            row.role = name;
-          }
-        });
-        this._render();
-        this._markDirty();
-        this._clearRowSelection();
-      });
-      popup.appendChild(item);
+    if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+      globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, newRow, newRole);
+      globalThis.GBScriptNoteRoleModel.assignRowCharacter?.(this.doc, newRow, '');
+    } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, newRole);
+    }
+    return newRow;
+  },
+
+  _finishRowBulkEdit() {
+    this._calcCache = null;
+    this._render();
+    this._markDirty({ skipUndo: true });
+    this._updateRowSelectionUI();
+  },
+
+  // 連続して選択された行のまとまりごとに、まとまりの行数ぶんの空行を上／下へ入れる。
+  _bulkInsertEmptyRows(targets, position = 'below') {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    const plans = this._rowBulkInsertPlans(resolved, position);
+    const total = plans.reduce((sum, plan) => sum + plan.count, 0);
+    if (!total) return false;
+    this._pushUndo(`${total}行を追加`);
+    plans.forEach(plan => {
+      const idx = this.doc.rows.findIndex(row => row.id === plan.anchorId);
+      if (idx < 0) return;
+      const base = this.doc.rows[idx];
+      const created = Array.from({ length: plan.count }, () => this._createScenarioEmptyRow(base));
+      this.doc.rows.splice(plan.position === 'above' ? idx : idx + 1, 0, ...created);
     });
-    document.body.appendChild(popup);
-    if (bar && typeof positionPopup === 'function') positionPopup(popup, bar.getBoundingClientRect());
-    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
-    requestAnimationFrame(() => popup.querySelector('.sn2-header-popup-item')?.focus());
-    setTimeout(() => {
-      document.addEventListener('pointerdown', onPointerDown, true);
-      document.addEventListener('keydown', onKeydown, true);
-    }, 0);
+    this._finishRowBulkEdit();
+    return true;
   },
 
-  _bulkDeleteRows() {
-    const ownerDocument = this.doc;
-    if (!this._guardRowBulkAction()) return;
-    const selectedIds = this._getVisibleSelectedIds();
-    if (!selectedIds.size) return;
-    if (this._scenarioViewEditUnit?.() === 'page') {
-      this._deleteScenarioPagesForRows([...selectedIds], '_text');
-      this._clearRowSelection();
-      return;
-    }
-    if ((this.doc?.rows?.length || 0) - selectedIds.size < 1) {
-      const keepRow = this.doc.rows.find((row) => selectedIds.has(row.id));
-      if (keepRow) selectedIds.delete(keepRow.id);
-      if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
-    }
-    if (!selectedIds.size) {
-      this._clearRowSelection();
-      return;
-    }
-    if (typeof showConfirmDialog === 'function') {
-      showConfirmDialog(`${selectedIds.size}行を削除しますか？`, () => {
-        if (this.doc !== ownerDocument || !this._guardRowBulkAction()) return;
-        if (!this.doc.rows.some(row => !selectedIds.has(row.id))) {
-          if (typeof showStatus === 'function') showStatus('最後の1行は削除できません', true);
-          return;
-        }
-        this._pushUndo('一括行削除');
-        const removeIndex = this.doc.rows.findIndex(row => selectedIds.has(row.id));
-        this.doc.rows = this.doc.rows.filter((row) => !selectedIds.has(row.id));
-        this._clearRowSelection();
-        this._render();
-        this._markDirty();
-        // 削除した位置の次の行をアクティブにし、キーボード操作を続けられるようにする。
-        if (removeIndex >= 0) this._activateCellNearAfterClose?.(removeIndex, '_text');
-      });
-    }
+  // まとまりごとに、まとまり全体の複製をまとまりの直後へ入れる。選択は変えない。
+  _bulkDuplicateRows(targets = null) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    this._pushUndo(resolved.count > 1 ? `${resolved.count}行を複製` : '行複製');
+    const byId = new Map(this.doc.rows.map(row => [row.id, row]));
+    this._rowBulkInsertPlans(resolved, 'below').forEach(plan => {
+      const idx = this.doc.rows.findIndex(row => row.id === plan.anchorId);
+      if (idx < 0) return;
+      const copies = plan.ids
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .map(row => ({ ...JSON.parse(JSON.stringify(row)), id: this._newScenarioRowId() }));
+      this.doc.rows.splice(idx + 1, 0, ...copies);
+    });
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  // 対象をまとめて1つ上（-1）／下（1）へ動かした表示順。端に当たる時は null。
+  _bulkMoveRowOrder(targets, dir) {
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return null;
+    const shared = globalThis.MeldexRowHandleMenu;
+    return shared?.moveOrder ? shared.moveOrder(this._rowHandleOrderedIds(), resolved.ids, dir) : null;
+  },
+
+  // 非表示（絞り込みで隠れた）行の位置はそのままにし、表示中の行の並びだけを入れ替える。
+  _bulkMoveRows(targets, dir) {
+    if (!this._guardRowBulkAction()) return false;
+    const next = this._bulkMoveRowOrder(targets, dir);
+    if (!next) return false;
+    const byId = new Map(this.doc.rows.map(row => [row.id, row]));
+    const visible = new Set(next);
+    let cursor = 0;
+    this._pushUndo('行移動（複数）');
+    this.doc.rows = this.doc.rows.map(row => (visible.has(row.id) ? byId.get(next[cursor++]) : row));
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  _bulkSetRowRole(targets, name) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    const ids = new Set(resolved.ids);
+    this._pushUndo(resolved.count > 1 ? '一括タイプ変更' : 'タイプ変更');
+    this.doc.rows.forEach(row => {
+      if (!ids.has(row.id)) return;
+      if (globalThis.GBScriptNoteRoleModel?.assignRowType) {
+        globalThis.GBScriptNoteRoleModel.assignRowType(this.doc, row, name);
+      } else if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+        globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
+      } else {
+        row.role = name;
+      }
+    });
+    this._finishRowBulkEdit();
+    return true;
+  },
+
+  // 対象の行をまとめて削除する（取り消し1回で戻る。全行が対象の時は最初の1行を残す）。
+  // ページ単位の編集では、対象の行を含むページを削除する。
+  _bulkDeleteRows(targets = null) {
+    if (!this._guardRowBulkAction()) return false;
+    const resolved = this._rowBulkTargets(targets);
+    if (!resolved) return false;
+    if (typeof this._deleteRowsKeepingActiveCell !== 'function') return false;
+    return this._deleteRowsKeepingActiveCell(resolved.ids, '_text');
   },
 
   _setRowSelectionState(rowId, idx, selected) {
@@ -807,46 +724,63 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   // ハンドルクリックの行メニュー（MeldexRowHandleMenu）の項目。
   // 操作はすべて既存の行操作と同じ取り消し履歴に積む。
+  // 押した行が選択中（2行以上）の時は、一括実行できる項目だけを出し、選択中のすべての行へ適用する。
   _rowHandleMenuItems(rowId) {
     const idx = this.doc?.rows?.findIndex(row => row.id === rowId) ?? -1;
     if (idx < 0) return [];
     const readOnly = !!this._readOnly;
+    const targets = this._rowHandleTargets(rowId);
+    const batch = !!targets.batch;
     const selected = !!this._rowSelection?.has(rowId);
     const neighbor = dir => this._rowHandleNeighborIndex(idx, dir) >= 0;
+    const canMove = dir => (batch ? !!this._bulkMoveRowOrder(targets, dir) : neighbor(dir));
     const row = this.doc.rows[idx];
+    // 一括時だけ対象行を集める（行数×選択数の比較を避けるため集合で判定する）。
+    const targetIdSet = batch ? new Set(targets.ids) : null;
+    const targetRows = batch ? this.doc.rows.filter(item => targetIdSet.has(item.id)) : [];
     const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
       .filter(choice => choice && choice.kind !== 'none')
       .map(choice => String(choice.name || choice.label || ''))
       .filter(Boolean);
     // ビューの「追加・削除はページ単位」の時は、行の追加・削除がページ単位になる。
+    // ページの追加は、複数行がどのページに属するかで意味が変わるため一括にしない。
     const pageUnit = this._scenarioViewEditUnit?.() === 'page';
     const items = [
       { icon: 'arrowUp', label: pageUnit ? '上にページを追加' : '上に行を追加', e2eId: 'sn-row-menu-add-above', disabled: readOnly,
-        action: () => this._insertEmptyRowRelative(rowId, 'above', '_text') },
+        batch: !pageUnit, batchLabel: count => `上に${count}行を追加`,
+        action: () => (batch ? this._bulkInsertEmptyRows(targets, 'above') : this._insertEmptyRowRelative(rowId, 'above', '_text')) },
       { icon: 'arrowDown', label: pageUnit ? '下にページを追加' : '下に行を追加', e2eId: 'sn-row-menu-add-below', disabled: readOnly,
-        action: () => this._insertEmptyRowRelative(rowId, 'below', '_text') },
+        batch: !pageUnit, batchLabel: count => `下に${count}行を追加`,
+        action: () => (batch ? this._bulkInsertEmptyRows(targets, 'below') : this._insertEmptyRowRelative(rowId, 'below', '_text')) },
       { icon: 'copy', label: '複製', e2eId: 'sn-row-menu-duplicate', disabled: readOnly,
-        action: () => this._duplicateRowById(rowId) },
+        batch: true, batchLabel: count => `${count}行を複製`,
+        action: () => (batch ? this._bulkDuplicateRows(targets) : this._duplicateRowById(rowId)) },
       { type: 'separator' },
-      { icon: 'chevronUp', label: '上へ移動', e2eId: 'sn-row-menu-move-up', disabled: readOnly || !neighbor(-1),
-        action: () => this._moveRowById(rowId, -1) },
-      { icon: 'chevronDown', label: '下へ移動', e2eId: 'sn-row-menu-move-down', disabled: readOnly || !neighbor(1),
-        action: () => this._moveRowById(rowId, 1) },
+      { icon: 'chevronUp', label: '上へ移動', e2eId: 'sn-row-menu-move-up', disabled: readOnly || !canMove(-1),
+        batch: true, batchLabel: count => `${count}行を上へ移動`,
+        action: () => (batch ? this._bulkMoveRows(targets, -1) : this._moveRowById(rowId, -1)) },
+      { icon: 'chevronDown', label: '下へ移動', e2eId: 'sn-row-menu-move-down', disabled: readOnly || !canMove(1),
+        batch: true, batchLabel: count => `${count}行を下へ移動`,
+        action: () => (batch ? this._bulkMoveRows(targets, 1) : this._moveRowById(rowId, 1)) },
     ];
     if (roles.length && !readOnly) {
       items.push({
         icon: 'tag', label: 'タイプ変更', e2eId: 'sn-row-menu-role',
+        batch: true, batchLabel: count => `${count}行のタイプを変更`,
         items: roles.map((name, index) => ({
           label: name,
           e2eId: `sn-row-menu-role-${index + 1}`,
-          disabled: String(row.role || '') === name,
-          action: () => this._setRowRoleById(rowId, name),
+          batch: true,
+          disabled: batch
+            ? targetRows.every(item => String(item.role || '') === name)
+            : String(row.role || '') === name,
+          action: () => (batch ? this._bulkSetRowRole(targets, name) : this._setRowRoleById(rowId, name)),
         })),
       });
     }
     if (typeof this._scenarioPageHasBreaks === 'function' && this._scenarioPageHasBreaks()) {
       items.push({
-        icon: 'bookOpen', label: 'ページ', e2eId: 'sn-row-menu-page',
+        icon: 'bookOpen', label: 'ページ', e2eId: 'sn-row-menu-page', batch: true,
         items: [
           { label: '上にページを追加', e2eId: 'sn-row-menu-page-add-above', disabled: readOnly,
             action: () => this._insertScenarioPageRelative(rowId, 'above', '_text') },
@@ -859,7 +793,9 @@ Object.assign(ScriptNoteEditor.prototype, {
           { label: 'ページを下へ移動', e2eId: 'sn-row-menu-page-move-down', disabled: readOnly,
             action: () => this._moveScenarioPage(rowId, 1) },
           { label: 'ページを削除', e2eId: 'sn-row-menu-page-delete', danger: true, disabled: readOnly,
-            action: () => this._deleteScenarioPagesForRows([rowId], this._activeCellColId || '_text') },
+            // ページ単位の編集では下の「削除」が同じ操作になるため、一括時は重ねて出さない。
+            batch: !pageUnit, batchLabel: '選択行のページを削除',
+            action: () => this._deleteScenarioPagesForRows(batch ? targets.ids.slice() : [rowId], this._activeCellColId || '_text') },
         ],
       });
     }
@@ -870,12 +806,19 @@ Object.assign(ScriptNoteEditor.prototype, {
           const currentIdx = this.doc.rows.findIndex(item => item.id === rowId);
           if (currentIdx >= 0) this._toggleRowSelection(rowId, currentIdx, false, true);
         } },
+      { icon: 'squareMinus', label: '選択を解除', e2eId: 'sn-row-menu-clear-selection', batchOnly: true,
+        action: () => this._clearRowSelection() },
+      { icon: 'arrowLeftRight', label: '選択を反転', e2eId: 'sn-row-menu-invert-selection', batchOnly: true,
+        action: () => this._invertRowSelection() },
       { type: 'separator' },
       { icon: 'trash2', label: pageUnit ? 'ページを削除' : '削除', danger: true, e2eId: 'sn-row-menu-delete',
-        disabled: readOnly || this.doc.rows.length <= 1,
-        action: () => this._deleteRowById(rowId) },
+        disabled: readOnly || (!batch && this.doc.rows.length <= 1),
+        batch: true, batchLabel: count => (pageUnit ? '選択行のページを削除' : `${count}行を削除`),
+        action: () => (batch ? this._bulkDeleteRows(targets) : this._deleteRowById(rowId)) },
     );
-    return items;
+    const shared = globalThis.MeldexRowHandleMenu;
+    if (shared?.buildItems) return shared.buildItems(items, targets, { unit: '行', labelE2eId: 'sn-row-menu-batch-label' });
+    return items.filter(item => !item.batchOnly);
   },
 
   _rowHandleNeighborIndex(idx, dir) {

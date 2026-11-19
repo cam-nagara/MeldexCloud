@@ -144,7 +144,7 @@
       el.appendChild(cell);
     };
 
-    // シートと同じ順序の行コントロール（＋、ドラッグハンドル、チェックボックス）
+    // 行コントロール（ドラッグハンドル、チェックボックス）。行の追加はハンドルの行メニューから行う。
     if (visCols._handle !== false) {
       const rowId = row.id;
       const handle = document.createElement('div');
@@ -162,7 +162,7 @@
       };
       if (globalThis.MeldexRowHandleMenu?.bind) {
         globalThis.MeldexRowHandleMenu.bind(handle, {
-          ignoreSelector: '.sn2-row-add-btn, .sn2-row-check',
+          ignoreSelector: '.sn2-row-check',
           getRow: () => handle.closest('.sn2-row'),
           getPrefer: () => (this.doc.editor?.viewMode === 'vertical' ? 'left' : 'below'),
           isEnabled: () => !this._suppressRowCheckClick,
@@ -173,7 +173,7 @@
         });
       } else {
         handle.addEventListener('click', (ev) => {
-          if (ev.target.closest?.('.sn2-row-add-btn, .sn2-row-check')) return;
+          if (ev.target.closest?.('.sn2-row-check')) return;
           if (this._suppressRowCheckClick) {
             ev.preventDefault();
             ev.stopPropagation();
@@ -182,28 +182,6 @@
           toggleSelectionFromHandle(ev);
         });
       }
-      const addRowBtn = document.createElement('span');
-      addRowBtn.className = 'sn2-row-add-btn';
-      addRowBtn.title = 'クリックで下に行を追加 / Alt+クリックで上に追加';
-      addRowBtn.tabIndex = 0;
-      addRowBtn.setAttribute('role', 'button');
-      addRowBtn.setAttribute('aria-label', `${idx + 1}行目の前後に行を追加`);
-      addRowBtn.dataset.e2eId = `sn-row-${rowId}-add`;
-      addRowBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 12) : '+';
-      const triggerAddRow = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this._insertEmptyRowRelative(rowId, ev.altKey ? 'above' : 'below', '_text');
-      };
-      addRowBtn.addEventListener('click', triggerAddRow);
-      addRowBtn.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') triggerAddRow(ev);
-      });
-      addRowBtn.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-      });
-      handle.appendChild(addRowBtn);
       const gripText = document.createElement('span');
       gripText.className = 'sn2-row-grip';
       gripText.textContent = '⠿';

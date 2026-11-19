@@ -1,3 +1,16 @@
+    }
+  }
+
+  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
+  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
+  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
+  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
+  if (shellReady) {
+    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
+  }
+  if (openSeq !== _outlinerContextMenuOpenSeq) return;
+  _outlinerPlaceContextMenu(menu);
+  if (shellPath && !shellReady) {
     appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
   }
 }
@@ -885,16 +898,3 @@ function _outlinerKeyboardRestoreFocus(row, focusSeq) {
 // ↑/↓/Home/Endなどの選択移動専用。開く処理は行わない（§2.4・§5 Phase1）。
 // 実際の選択・フォーカス・オプションパネル対象更新は gb-outliner-activation.js の
 // selectNodeOnly() へ委譲し、マウスクリックと同じ一経路にする。
-function _outlinerKeyboardSelectNode(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);
-  if (!nodeEl || !row) return false;
-  const focusSeq = ++_outlinerKeyboardFocusSeq;
-  window.GBOutlinerActivation?.selectNodeOnly(nodeEl, { focus: false });
-  _outlinerKeyboardRestoreFocus(row, focusSeq);
-  row.scrollIntoView({ block: 'nearest' });
-  return true;
-}
-
-// Enter／メニュー「開く」と同じ共通アクティベーション経路を使う
-function _outlinerKeyboardActivateNode(nodeEl) {
-  const row = _outlinerKeyboardRow(nodeEl);

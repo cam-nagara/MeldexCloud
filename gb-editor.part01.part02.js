@@ -111,7 +111,8 @@
           }
         } else {
           // その他: リンク+Lucideアイコンとして挿入
-          const icon = type === 'database' ? 'database' : type === 'entity' ? 'fileSpreadsheet' : type === 'scenario' ? 'fileText' : type === 'board' ? 'layout' : 'file';
+          const icon = window.MeldexFileIcons?.itemIconName?.(type, path)
+            || (type === 'database' ? 'database' : type === 'entity' ? 'fileSpreadsheet' : type === 'scenario' ? 'fileText' : type === 'board' ? 'layout' : 'file');
           document.execCommand('insertHTML', false,
             `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `);
         }

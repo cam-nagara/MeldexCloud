@@ -180,8 +180,19 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
     || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(e?.target || null));
-  // 上部にリネーム入力欄: エントリ名変更
-  _addMenuRenameInput(menu, entityName, (newName) => {
+  // 表の行ハンドル・「…」から開いた時だけ一括判定を行う（UI共通ルール §6「行の選択と一括実行」）。
+  // 押した行が選択中で選択が2行以上なら、選択中のすべての行が対象。選択外なら押した1行だけ（選択は変えない）。
+  // 右クリック（カード・ギャラリー・ツリー等）からは従来どおり単独のメニュー。
+  const rowMenu = window.MeldexRowHandleMenu;
+  const targets = (menuOptions?.anchorRect || menuOptions?.rowBatch) && ctx && sourceRow && typeof rowMenu?.resolveTargets === 'function'
+    ? _dbRowHandleMenuTargets(ctx, sourceRow, entityName)
+    : { batch: false, ids: [entityName], runs: [[entityName]], count: 1, rowId: entityName };
+  const batch = !!targets.batch;
+  // 押した行が選択中なら、1行だけの選択でも「一括編集」「選択を解除」を出す（旧一括操作バーと同じく1件から使える）。
+  const rowSelected = batch || (!!(menuOptions?.anchorRect || menuOptions?.rowBatch) && !!ctx
+    && (typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])]).includes(entityName));
+  // 上部にリネーム入力欄: エントリ名変更（一括時は出さない）
+  if (!batch) _addMenuRenameInput(menu, entityName, (newName) => {
     window.GbDbEntryIdentity.rename({
       dbPath: targetDbPath,
       oldName: entityName,
@@ -207,9 +218,23 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
   const items = [
     ...(ctx && !productionSchemaLocked && typeof _handleInsertRowRelative === 'function' ? [
       { icon: 'arrowUp', label: '上にトピックを追加', e2eId: 'db-entry-row-add-above',
-        action: () => _handleInsertRowRelative(ctx, entityName, 'above') },
+        batch: true, batchLabel: count => `上に${count}件のトピックを追加`,
+        action: () => (batch ? _dbInsertRowsForTargets(ctx, targets, 'above') : _handleInsertRowRelative(ctx, entityName, 'above')) },
       { icon: 'arrowDown', label: '下にトピックを追加', e2eId: 'db-entry-row-add-below',
-        action: () => _handleInsertRowRelative(ctx, entityName, 'below') },
+        batch: true, batchLabel: count => `下に${count}件のトピックを追加`,
+        action: () => (batch ? _dbInsertRowsForTargets(ctx, targets, 'below') : _handleInsertRowRelative(ctx, entityName, 'below')) },
+    ] : []),
+    ...(ctx && rowSelected && typeof _showBulkEditModal === 'function' ? [
+      { icon: 'pencil', label: '一括編集...', e2eId: 'db-entry-row-bulk-edit', batch: true,
+        // 対象は旧一括操作バーと同じく選択した順（逆リレーションの値の並びが選択順で決まるため）。
+        action: () => _showBulkEditModal((() => {
+          const picked = typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])];
+          const inTargets = new Set(targets.ids);
+          const ordered = picked.filter(name => inTargets.has(name));
+          return ordered.length === targets.ids.length ? ordered : targets.ids.slice();
+        })(), ctx, {
+          returnFocus: e?.target?.closest?.('.row-drag-handle') || sourceRow?.querySelector?.('.row-drag-handle') || null,
+        }) },
     ] : []),
     ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'トピック名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
@@ -261,7 +286,16 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       ...window.MeldexTopicPlacementUI.menuItems(topicPlacementSource),
     ] : []),
     { type: 'sep' },
-    { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true, action: async () => {
+    ...(ctx && rowSelected && typeof _clearPaneRowSelection === 'function' ? [
+      { icon: 'x', label: '選択を解除', e2eId: 'db-entry-row-clear-selection', batch: true,
+        action: () => _clearPaneRowSelection(ctx) },
+      { type: 'sep' },
+    ] : []),
+    { icon: 'trash2', label: topicPlacementSource ? '元のシート行を削除' : 'トピックを削除', danger: true,
+      e2eId: 'db-entry-row-delete',
+      batch: typeof _bulkDeleteEntities === 'function', batchLabel: count => `${count}件のトピックを削除`,
+      action: async () => {
+      if (batch) return _bulkDeleteEntities(targets.ids.slice(), ctx);
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
@@ -303,8 +337,21 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       }
     }},
   ];
-  items.forEach(item => {
-    if (item.type === 'sep') { const s = document.createElement('div'); s.className = 'gb-context-menu-sep'; menu.appendChild(s); return; }
+  // 一括時は一括実行できる項目だけにし、先頭へ「N件を選択中」の見出しを置く。単独時は一括専用の項目を外す。
+  const menuItems = typeof rowMenu?.buildItems === 'function'
+    ? rowMenu.buildItems(items, targets, { unit: '件', labelE2eId: 'db-row-handle-menu-batch-label' })
+    : items.filter(item => !item.batchOnly);
+  menuItems.forEach(item => {
+    if (item.type === 'sep' || item.type === 'separator') { const s = document.createElement('div'); s.className = 'gb-context-menu-sep'; menu.appendChild(s); return; }
+    if (item.type === 'label') {
+      const labelEl = document.createElement('div');
+      labelEl.className = 'gb-context-menu-label';
+      labelEl.setAttribute('role', 'presentation');
+      if (item.e2eId) labelEl.dataset.e2eId = item.e2eId;
+      labelEl.textContent = item.label;
+      menu.appendChild(labelEl);
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
     if (item.e2eId) el.dataset.e2eId = item.e2eId;
@@ -317,6 +364,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
     el.addEventListener('click', () => { closeColHeaderMenu(); return _dbRunMenuItemAction(item.action); });
     menu.appendChild(el);
   });
+  if (batch) menu.dataset.rowBatchCount = String(targets.count);
   // positionPopup() でマウス位置基準の配置 + ビューポートクランプを一括処理
   // (既知バグ #3「手動 zoom 計算残存」の修正)
   document.body.appendChild(menu);
@@ -329,6 +377,38 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
     const first = menu.querySelector('.gb-context-menu-item');
     if (first) { first.tabIndex = -1; first.focus({ preventScroll: true }); }
   }
+}
+
+// 行ハンドルメニューの対象（表示順は表の tbody の行順、選択は ctx._selectedEntities）。
+function _dbRowHandleMenuTargets(ctx, sourceRow, entityName) {
+  // 表示順は描画中の行ではなく、表の全行の並びから取る。仮想スクロール（大きなシート）や
+  // 折りたたんだグループでは描画外の選択行があり、tbody だけだと一括の対象から漏れるため。
+  const table = sourceRow?.closest?.('table');
+  const fullOrder = (Array.isArray(table?._dbVirtualRows?.entityNames) && table._dbVirtualRows.entityNames)
+    || (Array.isArray(ctx?._lastEntityNames) && ctx._lastEntityNames.length ? ctx._lastEntityNames : null);
+  const tbody = sourceRow?.closest?.('tbody')
+    || (typeof _paneEl === 'function' ? _paneEl(ctx, '#' + (ctx?.tableId || 'pivot-table'))?.querySelector?.('tbody') : null);
+  const orderedIds = fullOrder
+    ? fullOrder.filter(Boolean)
+    : tbody
+      ? [...tbody.querySelectorAll('tr[data-entity-name]')]
+        .filter(row => !row.classList.contains('new-entity-row') && !row.classList.contains('group-header-row'))
+        .map(row => row.dataset.entityName)
+        .filter(Boolean)
+      : [entityName];
+  const selected = typeof _getSelectedEntities === 'function' ? _getSelectedEntities(ctx) : [...(ctx?._selectedEntities || [])];
+  return window.MeldexRowHandleMenu.resolveTargets(entityName, orderedIds, selected);
+}
+
+// 連続して選択された行のまとまりごとに、まとまりの行数ぶんの新規行をまとまりの上／下へ入れる。
+// 例: ①②③4⑤6⑦8 で「下に追加」→ ①②③ 新 新 新 4 ⑤ 新 6 ⑦ 新 8。
+// 挿入計画は下のまとまりから順。各まとまりの仮の行を先に全部表示してから保存の完了を待つ。
+async function _dbInsertRowsForTargets(ctx, targets, position) {
+  const plans = window.MeldexRowHandleMenu?.planInsertions?.(targets, position) || [];
+  if (!plans.length) return;
+  // 並べ替え・描画・取り消し履歴を1回にまとめる（まとまりの数だけ表全体を描き直さない）。
+  if (typeof _handleInsertRowsAtPlans === 'function') return _handleInsertRowsAtPlans(ctx, plans);
+  for (const plan of plans) await _handleInsertRowRelative(ctx, plan.anchorId, plan.position, plan.count);
 }
 
 function _hasDependencyPairProps(pts) {

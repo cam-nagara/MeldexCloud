@@ -660,6 +660,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
   }
   _enableDropdownKeyNav(dd, '.dd-nav-item');
   search.focus();
+  if (typeof _dbAdoptTypedSeed === 'function') _dbAdoptTypedSeed(el, search);
 
   setTimeout(() => {
     closer = async (e) => {

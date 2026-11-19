@@ -537,6 +537,7 @@ function _clearDbCellSelection(table) {
     activeCell.tabIndex = -1;
   }
   activeCell = null;
+  _dbActiveCellIdentity = null;
   _hideDbCellBulkBar(table);
 }
 
@@ -907,6 +908,34 @@ function _dbCurrentVisualActiveCell() {
   return visual?.isConnected ? visual : null;
 }
 
+// 表全体の描き直しで選択中のセルの要素が入れ替わっても、同じ位置へ戻れるように
+// 行（トピック名）と列で覚えておく。
+let _dbActiveCellIdentity = null;
+
+function _dbCellIdentityOf(td, table) {
+  const tr = td?.closest?.('tr');
+  const entityName = tr?.dataset?.entityName || '';
+  if (!td || !entityName) return null;
+  const kind = td.classList?.contains('col-row-controls') ? 'row-controls'
+    : td.classList?.contains('col-entity') ? 'entity' : 'prop';
+  const propName = td.dataset?.propName || '';
+  if (kind === 'prop' && !propName) return null;
+  return { tableId: table?.id || '', entityName, propName, kind };
+}
+
+function _dbResolveActiveCellIdentity(table) {
+  const identity = _dbActiveCellIdentity;
+  if (!identity || !table?.isConnected) return null;
+  if (identity.tableId && table.id !== identity.tableId) return null;
+  const escape = (value) => (typeof MeldexEscape !== 'undefined' && MeldexEscape.cssIdent)
+    ? MeldexEscape.cssIdent(value) : String(value).replace(/["\\]/g, '\\$&');
+  const tr = table.querySelector(`tbody tr[data-entity-name="${escape(identity.entityName)}"]`);
+  if (!tr) return null;
+  if (identity.kind === 'row-controls') return tr.querySelector('td.col-row-controls');
+  if (identity.kind === 'entity') return tr.querySelector('td.col-entity');
+  return tr.querySelector(`td[data-prop-name="${escape(identity.propName)}"]`);
+}
+
 function setActiveCell(td, options = {}) {
   const table = td?.closest?.('table') || activeCell?.closest?.('table') || null;
   if (!options.preserveRange) {
@@ -919,6 +948,7 @@ function setActiveCell(td, options = {}) {
     if (cell !== td) _dbDeactivateActiveCell(cell);
   });
   activeCell = td;
+  _dbActiveCellIdentity = _dbCellIdentityOf(td, table);
   if (td) {
     _dbRestoreCellAddButtonsIfIdle(td);
     td.classList.add('active-cell');
@@ -1163,7 +1193,10 @@ function _dbKeyboardActiveCell(table, eventTarget = null) {
   if (visual && (!table || table.contains(visual))) return visual;
   const selected = table?.querySelector?.('tbody td.db-range-selected[data-prop-name]');
   if (selected) return selected;
-  return activeCell && table?.contains?.(activeCell) ? activeCell : null;
+  if (activeCell && table?.contains?.(activeCell)) return activeCell;
+  // 描き直しで選択中のセルが入れ替わった時は、先頭の行へ飛ばずに同じ位置のセルを使う。
+  if (!activeCell || !activeCell.isConnected) return _dbResolveActiveCellIdentity(table);
+  return null;
 }
 
 function _dbVisibleDataRows(table) {
@@ -1181,14 +1214,44 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   // 行先頭コントロール列（常に colIdx 0）は対象外。エントリ名列は位置に関わらずクラスで判定する
   // （フェーズ2でエントリ名列も並べ替え可能になり、colIdx が固定でなくなったため）。
   if (!cell || colIdx < DB_ROW_CONTROLS_COL_COUNT || cell.classList.contains('col-entity')) return false;
+  const keyCtx = typeof _dbContextForCell === 'function' ? _dbContextForCell(cell) : null;
+  const keyType = String(_dbCellPropertyType(cell, keyCtx)?.type || '').replace(/_/g, '-');
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
+    if (keyType === 'rollup' && typeof startRollupCellEdit === 'function') {
+      void startRollupCellEdit(cell);
+      return true;
+    }
     _dbStartCellInlineEditor(cell, { preferExistingValue: true });
     return true;
   }
+  // リレーション・ロールアップは、選んだセルで文字を打つとそのまま入力が始まる（日本語入力も受ける）。
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
+      && ['relation', 'multi-relation', 'rollup'].includes(keyType)) {
+    // 打った文字を一時入力欄へ通すため既定動作は止めない。キー処理は2か所から呼ばれるので二重に始めない。
+    if (e._dbTypedEditHandled) return true;
+    // 一時入力欄・検索欄の中で打っている文字は、セルの操作として扱わない
+    if (typeof _dbIsNativeEditingElement === 'function' && _dbIsNativeEditingElement(e.target)) return false;
+    e._dbTypedEditHandled = true;
+    if (keyType === 'rollup') {
+      if (typeof startRollupCellEdit !== 'function') return false;
+      const proxy = _dbBeginTypedProxy(cell);
+      if (!proxy) return false;
+      void startRollupCellEdit(cell, { input: proxy });
+      return true;
+    }
+    if (checkColumnEditable(keyCtx?.dbPath || state.currentDbPath, cell.dataset.propName, keyCtx)) return false;
+    const proxy = _dbBeginTypedProxy(cell);
+    if (!proxy) return false;
+    _dbStartCellInlineEditor(cell, { preferExistingValue: true });
+    // 候補一覧がすぐ開いた時は、検索欄へ引き継ぎ済み（打った文字はそのまま検索欄へ入る）。
+    // まだ開いていない時は、編集の開始で選択中のセルへ移ったフォーカスを一時入力欄へ戻す。
+    if (proxy.isConnected && proxy.dataset.adopted !== '1') proxy.focus({ preventScroll: true });
+    return true;
+  }
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const ctx = typeof _dbContextForCell === 'function' ? _dbContextForCell(cell) : null;
-    const type = String(_dbCellPropertyType(cell, ctx)?.type || '').replace(/_/g, '-');
+    const ctx = keyCtx;
+    const type = keyType;
     if (type === 'select' || type === 'multi-select') {
       e.preventDefault();
       _dbStartCellInlineEditor(cell, { preferExistingValue: true });
@@ -1196,4 +1259,52 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
     }
   }
   return false;
+}
+
+
+// 選んだセルで打ち始めた文字を受ける一時的な入力欄。キー操作の中で同期的にフォーカスを移すので、
+// 日本語入力の変換もここで始まる。リレーションの候補一覧が開いたら、その検索欄へ文字を引き継ぐ。
+function _dbBeginTypedProxy(td) {
+  const container = td?.querySelector?.('.cell-values');
+  if (!container) return null;
+  if (td._dbTypedProxy?.isConnected) return td._dbTypedProxy;
+  const proxy = document.createElement('input');
+  proxy.type = 'text';
+  proxy.className = 'db-typed-proxy';
+  proxy.dataset.e2eId = 'db-typed-proxy';
+  proxy.setAttribute('aria-label', '入力');
+  proxy.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  proxy.addEventListener('compositionstart', () => { proxy.dataset.composing = '1'; });
+  proxy.addEventListener('compositionend', () => { delete proxy.dataset.composing; });
+  proxy.addEventListener('keydown', (event) => {
+    if (proxy.dataset.adopted === '1') return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); proxy.remove(); td._dbTypedProxy = null; }
+  });
+  container.appendChild(proxy);
+  td._dbTypedProxy = proxy;
+  proxy.focus({ preventScroll: true });
+  // 一覧が開かなかった時（読み込み失敗など）に入力欄だけが残らないようにする。
+  setTimeout(() => {
+    if (proxy.isConnected && proxy.dataset.adopted !== '1' && !proxy.value && document.activeElement !== proxy) proxy.remove();
+  }, 4000);
+  return proxy;
+}
+
+function _dbAdoptTypedSeed(anchor, search) {
+  const td = anchor?.closest?.('td') || null;
+  const proxy = td?._dbTypedProxy;
+  if (!proxy || !search) return;
+  td._dbTypedProxy = null;
+  if (!proxy.isConnected) return;
+  proxy.dataset.adopted = '1';
+  const move = () => {
+    const text = proxy.value;
+    proxy.remove();
+    search.value = text;
+    search.focus();
+    try { search.setSelectionRange(text.length, text.length); } catch {}
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  if (proxy.dataset.composing === '1') proxy.addEventListener('compositionend', () => setTimeout(move, 0), { once: true });
+  else move();
 }

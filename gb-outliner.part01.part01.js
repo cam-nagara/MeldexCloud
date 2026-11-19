@@ -1707,6 +1707,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
     // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
     if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
+    // セルの値だけを保存した通知もトピック名やフォルダを変えない。連続入力のたびに
+    // ツリー全体を読み直していた（2026-11-19）。名前が変わる保存は structural のまま届く。
+    if (event.detail?.reason === 'save' && event.detail?.structural === false) return;
     // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
     // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
     // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。

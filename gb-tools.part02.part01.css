@@ -696,7 +696,9 @@ input.gb-middle-ellipsis-input-active {
 .pt-small-btn.muted { color: var(--ui-fg-muted); }
 /* AI自動生成のプロンプトへ差し込む列のボタン: 入力欄の下に値の列へ揃えて並べる（入力欄の横に置くと縦に潰れる） */
 .pt-ai-ref-row { margin-left: calc(128px + var(--ui-space-5, 12px)); }
-.pt-ai-ref-row .pt-small-btn { white-space: nowrap; }
+.pt-ai-ref-row .pt-small-btn { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+/* 列が多いシートでも画面に収まるよう、挿入する列のメニューは高さを抑えてスクロールさせる */
+.gb-context-menu.pt-ai-ref-list-menu { max-height: min(60vh, 420px); overflow-y: auto; }
 /* 列のメモ: 保存状態は入力欄の下に出す（横に置くと1文字ずつ縦に折り返していた） */
 .pt-column-memo-value { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pt-column-memo-value > textarea { width: 100%; box-sizing: border-box; }

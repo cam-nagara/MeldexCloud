@@ -270,6 +270,9 @@ async function applyPropertyType(propName, root, options = {}) {
     const cascadeFrom = _ptGet('pt-cascade-from', scope)?.value || '';
     const cascadeKey = _ptGet('pt-cascade-key', scope)?.value || '';
     if (cascadeFrom) { config.cascadeFrom = cascadeFrom; config.cascadeKey = cascadeKey || cascadeFrom; }
+  } else if (type === 'furigana') {
+    const base = _ptGet('pt-furigana-base', scope)?.value || '';
+    if (base && base !== propName) config.rubyBaseProp = base;
   } else if (type === 'number') {
     const unitInput = _ptGet('pt-number-unit', scope);
     if (unitInput) config.unit = unitInput.value.trim();

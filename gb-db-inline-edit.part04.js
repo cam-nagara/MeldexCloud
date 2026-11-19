@@ -697,6 +697,7 @@ function _dbSetActiveHeader(th) {
   table?.querySelectorAll('thead th.active-cell').forEach(node => node.classList.remove('active-cell'));
   if (activeCell) _dbDeactivateActiveCell(activeCell);
   activeCell = null;
+  _dbActiveCellIdentity = null;
   rangeAnchorCell = null;
   th.classList.add('active-cell');
   th.focus({ preventScroll: true });

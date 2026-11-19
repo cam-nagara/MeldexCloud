@@ -835,6 +835,9 @@ async function _apiPutValue(valObj, updates) {
       res = await apiPut(url, body);
     }
     _dbApplyAutoTaskRenameResult(res);
+    // 値だけの保存はフォルダツリーの構造を変えない。名前が変わった時だけツリーを読み直させる。
+    const structuralSave = !!res?.auto_renamed_entry
+      || (!!res?.new_path && _dbNormalizePath(res.new_path) !== _dbNormalizePath(targetPath));
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;
     if (res?.candidate_index != null) valObj.candidate_index = res.candidate_index;
@@ -881,6 +884,7 @@ async function _apiPutValue(valObj, updates) {
     }
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+      structural: structuralSave,
     });
     return res;
   }, valObj);
@@ -932,6 +936,8 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     const res = await apiPost('/value', body);
     _dbApplyAutoTaskRenameResult(res);
     const savedEntityPath = res?.new_path || writeEntityPath;
+    const structuralSave = !!res?.auto_renamed_entry
+      || _dbNormalizePath(savedEntityPath) !== _dbNormalizePath(writeEntityPath);
     if (res?.revision != null) _dbPropagateEntryRevision(savedEntityPath, res.revision);
     const dbPath = _dbPathFromEntityPath(savedEntityPath) || state.currentDbPath || '';
     _markDbAutoVersionDirty(dbPath);
@@ -958,6 +964,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     } catch {}
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+      structural: structuralSave,
     });
     return res;
   }, entryRef);

@@ -1320,10 +1320,25 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   } else if (!blankTarget) {
     _folderSelected = item;
   }
+  // 複数選択中の項目でメニューを開いた時は、選んだ操作を選択中のすべての項目へ一括実行する。
+  // 1項目にしか効かない操作（開く、アイコン変更、バージョン、リンクをコピー等）は出さない
+  // （フォルダツリーの複数選択メニューと同じ基準）。旧「一括操作バー」の機能もここへ集約した。
+  const multiItems = !blankTarget && _folderSelectedItems.length > 1 ? _folderSelectedItems.slice() : null;
+  const isMulti = !!multiItems;
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
+  menu.setAttribute('aria-label', blankTarget
+    ? 'フォルダパネルメニュー'
+    : isMulti ? `選択中の${multiItems.length}件のメニュー` : `${item.name || '項目'}のメニュー`);
+  if (isMulti) {
+    menu.dataset.folderMultiSelection = String(multiItems.length);
+    const heading = document.createElement('div');
+    heading.className = 'gb-context-menu-label';
+    heading.dataset.e2eId = 'folder-item-context-selection-count';
+    heading.textContent = `${multiItems.length}件を選択中`;
+    menu.appendChild(heading);
+  }
   const closeMenu = () => {
     _folderContextMenuOpenSeq += 1;
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
@@ -1417,8 +1432,8 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
   }
 
-  // --- 新規作成 ---
-  const createParent = _folderContextCreateParent(item);
+  // --- 新規作成 ---（作成先が押した1項目で決まり、選択中のすべてへ働く操作ではないため複数選択時は出さない）
+  const createParent = isMulti ? null : _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {
     const createSub = addSub('新規作成', 'plus');
     [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
@@ -1432,12 +1447,12 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     addSep();
   }
 
-  if (!blankTarget && window.MeldexFileIcons?.canEdit(item) && !_folderMenuItemLocked(item)) {
+  if (!blankTarget && !isMulti && window.MeldexFileIcons?.canEdit(item) && !_folderMenuItemLocked(item)) {
     addItem('アイコンを変更', () => window.MeldexFileIcons.openPicker(item, itemEl || e?.target), null, 'smile');
     addSep();
   }
   // --- 開く ---
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     const openSub = addSub('開く', 'folderOpen');
     openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
     openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
@@ -1467,15 +1482,27 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
     addSep();
   }
-  if (!blankTarget && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
+  if (!blankTarget && !isMulti && typeof canShowContainedFiles === 'function' && canShowContainedFiles(item)) {
     addItem('ファイル内のファイルを表示', () => showContainedFiles(item), null, 'files');
     addSep();
   }
-  if (_isPureRefFolderItem(item)) {
+  if (!isMulti && _isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
-  if (item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
-  if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
+  if (!isMulti && item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
+  if (isMulti) {
+    // 旧「一括操作バー」の画像向け操作。画像を含む時だけ出す。
+    const imgCount = multiItems.filter(i => i.type === 'image').length;
+    if (imgCount > 0) {
+      addItem(`スライドショー（${imgCount}枚）`, () => fvBulkSlideshow(), null, 'image');
+      if (document.body?.dataset?.cloudReadonly !== '1') {
+        addItem(`ボードに並べる（${imgCount}枚）`, () => fvBulkBoard(), null, 'presentation');
+      }
+    }
+    if (window.isAutoTagRuntimeAvailable?.() === true && multiItems.some(i => i?.path)) {
+      addItem(`自動タグ付け（${multiItems.length}件）`, () => fvBulkAutoTag(), null, 'tags');
+    }
+  } else if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
     }, null, 'tags');
@@ -1503,7 +1530,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.type === 'calendar' && item.path) {
+  if (!isMulti && item.type === 'calendar' && item.path) {
     const mainCalId = localStorage.getItem('main-calendar-id');
     const mainCalPath = localStorage.getItem('main-calendar-path');
     const nodeFid = typeof _pathToFileId === 'function' ? _pathToFileId(item.path) : '';
@@ -1525,7 +1552,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     });
   }
 
-  if ((item.type === 'folder' || item.type === 'database') && item.path) {
+  if (!isMulti && (item.type === 'folder' || item.type === 'database') && item.path) {
     addSep();
     addItem('バージョンを保存', () => {
       if (typeof saveFolderVersion === 'function') saveFolderVersion(item.path);
@@ -1538,7 +1565,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && !item.contained_reference) {
+  if (!isMulti && item.path && !item.contained_reference) {
     addSep();
     const systemLocked = typeof isSystemLockedItem === 'function' && isSystemLockedItem(item.path);
     const canEditLock = typeof isFileLockOwner === 'function' && isFileLockOwner();
@@ -1555,20 +1582,8 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  // --- 複数選択 ---
-  if (_folderSelectedItems.length > 1) {
-    addSep();
-    const imgItems = _folderSelectedItems.filter(i => i.type === 'image');
-    if (imgItems.length > 0) {
-      addItem('スライドショー (' + imgItems.length + '枚)', () => {
-        openViewer('/viewer?files=' + encodeURIComponent(JSON.stringify(imgItems.map(i => i.path))));
-      }, null, 'image');
-      addItem('ボードに並べる (' + imgItems.length + '枚)', () => openImagesInCanvas(imgItems), null, 'presentation');
-    }
-  }
-
-  // --- ツール ---
-  if (item.type === 'folder' || _folderPath) {
+  // --- ツール（1つのフォルダ・現在のフォルダが対象のため単独選択時のみ） ---
+  if (!isMulti && (item.type === 'folder' || _folderPath)) {
     addSep();
     const toolSub = addSub('ツール');
     if (item.type === 'folder') {
@@ -1584,17 +1599,17 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
+  if (!isMulti && item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
     addSep();
     addItem('比較...', () => showCompareModal(item.path), null, 'columns');
   }
 
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     addSep();
     addItem('リンクをコピー', () => _folderCopyMeldexLink(item), null, 'link');
   }
 
-  if (!blankTarget && item.path && typeof getFavorites === 'function') {
+  if (!blankTarget && !isMulti && item.path && typeof getFavorites === 'function') {
     const isFav = getFavorites().some(f => f.path === item.path);
     addItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
       if (isFav && typeof removeFromFavorites === 'function') removeFromFavorites(item.path);

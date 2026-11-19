@@ -275,8 +275,8 @@ function _ptViewContextHeaderHtml(info, active) {
     ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(info.dbPath || '') : 'トピック名')
     : prop;
   const chips = info.targets.length > 1
-    ? `<div class="pt-formula-tools pt-view-targets" role="group" aria-label="${esc(info.viewLabel)}の基準列">${info.targets.map(item =>
-        `<button type="button" class="pt-small-btn${item.prop === active?.prop ? '' : ' muted'}" data-pt-view-target="${esc(item.prop)}" aria-pressed="${item.prop === active?.prop ? 'true' : 'false'}">${esc(item.role)}: ${esc(label(item.prop))}</button>`
+    ? `<div class="pt-formula-tools pt-view-targets" role="group" aria-label="${esc(info.viewLabel)}の基準列">${info.targets.map((item, index) =>
+        `<button type="button" class="pt-small-btn${item.prop === active?.prop ? '' : ' muted'}" data-e2e-id="pt-view-target-${index}" data-pt-view-target="${esc(item.prop)}" aria-pressed="${item.prop === active?.prop ? 'true' : 'false'}">${esc(item.role)}: ${esc(label(item.prop))}</button>`
       ).join('')}</div>`
     : '';
   return `<div class="field pt-view-context" data-pt-view-context data-e2e-id="pt-view-context">
@@ -415,9 +415,10 @@ function _ptAiSectionHtml(dbPath, propName, ctx, type) {
   const refProps = (typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : (pivotData?.properties || [])).filter(prop => prop !== propName);
-  const refButtons = [...refProps, 'トピック名', '本文']
-    .map(prop => `<button type="button" class="pt-small-btn" data-pt-ai-ref="${esc(prop)}"${disabledAttr}>{${esc(prop)}}</button>`)
-    .join('');
+  // 列が多いと一覧のボタンが場所を取るため、参照できる列は1つのボタンからメニューで選ぶ（2026-11-19）
+  const refIcon = typeof lucide === 'function' ? lucide('braces', 14) : '';
+  const refButtons = `<button type="button" class="pt-small-btn" data-pt-ai-ref-menu="1" data-e2e-id="pt-ai-ref-menu"
+      aria-haspopup="menu" title="プロンプトへ列を挿入"${disabledAttr}>${refIcon} 列を挿入</button>`;
   const help = (text, id) => (typeof fieldHelp === 'function' ? fieldHelp(text, { e2eId: id }) : '');
   return `<div id="pt-ai-autofill" class="pt-ai-autofill" data-pt-independent="ai" data-e2e-id="pt-ai-autofill"${PT_AI_SUPPORTED_TYPES.includes(type) ? '' : ' hidden'}
       style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">
@@ -675,13 +676,36 @@ function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
     if (section.contains(event.relatedTarget)) return;
     commit();
   });
-  section.querySelectorAll('[data-pt-ai-ref]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const textarea = get('pt-ai-prompt');
-      if (!textarea || textarea.readOnly) return;
-      const text = '{' + (btn.dataset.ptAiRef || '') + '}';
-      if (typeof _ptInsertFormulaText === 'function') _ptInsertFormulaText(textarea, text);
-      else { textarea.value += text; textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+  const insertRef = (prop) => {
+    const textarea = get('pt-ai-prompt');
+    if (!textarea || textarea.readOnly) return;
+    const text = '{' + prop + '}';
+    if (typeof _ptInsertFormulaText === 'function') _ptInsertFormulaText(textarea, text);
+    else { textarea.value += text; textarea.dispatchEvent(new Event('input', { bubbles: true })); }
+  };
+  section.querySelectorAll('[data-pt-ai-ref-menu]').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (btn.disabled) return;
+      const pivot = ctx?.pivotData || (typeof _ptPivotDataForDbPath === 'function' ? _ptPivotDataForDbPath(dbPath) : null);
+      // 値がまだ無い列も参照できるので、列の設定にある列も候補に含める
+      const types = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+      const all = [...new Set([...(pivot?.properties || []), ...Object.keys(types)])];
+      const props = (typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, all) : all)
+        .filter(prop => prop !== propName);
+      const items = [...props, 'トピック名', '本文'].map((prop, index) => ({
+        label: '{' + prop + '}',
+        e2eId: 'pt-ai-ref-option-' + index,
+        action: () => insertRef(prop),
+      }));
+      const menu = window.MeldexContextMenuUI?.openAt?.({
+        ariaLabel: 'プロンプトへ挿入する列',
+        e2eId: 'pt-ai-ref-list-menu',
+        anchorRect: btn.getBoundingClientRect(),
+        restoreFocus: get('pt-ai-prompt') || btn,
+        items,
+      });
+      if (menu) menu.classList.add('pt-ai-ref-list-menu');
     });
   });
   section.querySelectorAll('[data-pt-ai-run]').forEach(btn => {
@@ -739,3 +763,23 @@ window.MeldexSheetAiColumn = Object.freeze({
   normalizeConfig: _ptNormalizeAiAutofillConfig,
   viewSettingsTargets: _ptViewSettingsTargets,
 });
+// 列設定を開いているシートの表示順で、指定した列の左隣にある列（トピック名列なら空）。
+function _ptFuriganaLeftColumn(scope, propName) {
+  if (!propName) return '';
+  const { dbPath, pivotData, ctx } = _ptState(scope);
+  const opts = ctx ? { ctx } : undefined;
+  const colOrder = typeof getColOrder === 'function' ? (getColOrder(dbPath, opts) || []) : [];
+  const hidden = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, opts) || []) : [];
+  const types = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+  let order = [...new Set(colOrder)];
+  if (!order.includes('__entity__')) order.unshift('__entity__');
+  [...(pivotData?.properties || []), ...Object.keys(types)].forEach(prop => { if (!order.includes(prop)) order.push(prop); });
+  if (typeof filterDeletedDbProperties === 'function') {
+    const kept = new Set(filterDeletedDbProperties(dbPath, order.filter(prop => prop !== '__entity__')));
+    order = order.filter(prop => prop === '__entity__' || kept.has(prop));
+  }
+  order = order.filter(prop => prop === propName || !hidden.includes(prop));
+  const index = order.indexOf(propName);
+  const left = index > 0 ? order[index - 1] : '';
+  return left && left !== '__entity__' ? left : '';
+}

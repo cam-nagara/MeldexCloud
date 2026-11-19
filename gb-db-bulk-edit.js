@@ -171,18 +171,29 @@ document.addEventListener('keydown', event => {
   else _clearPaneRowSelection(ctx);
 });
 
+// 行の選択が変わった時の同期。表（行ハンドルメニュー移行済み）では一括操作バーを出さない。
+// 一括操作は選択中の行のハンドルメニューから行う（UI共通ルール §6「行の選択と一括実行」）。
+// 関数名は多数の呼び出し元のため残す。選択見出しの同期と、残っているバーの撤去だけを行う。
+// シートのツリービューは行ハンドルメニュー未移行（ルールの未移行台帳）のため、移行まで従来のバーを残す。
 function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
   _syncPaneRowSelectHeader(c);
-  const table = _dbRowSelectionSurface(c);
-  const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
-  if (selected.length === 0) {
+  const treeView = !!(c && typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(c, c.dbPath));
+  if (selected.length === 0 || !treeView) {
     if (bar) bar.remove();
     return;
   }
+  _updateDbTreeBulkEditBar(c, paneId, selected, bar);
+}
+
+function _updateDbTreeBulkEditBar(ctx, paneId, selected, existingBar) {
+  const c = ctx;
+  const table = _dbRowSelectionSurface(c);
+  const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
+  let bar = existingBar;
   if (!bar) {
     bar = document.createElement('div');
     bar.className = 'db-bulk-edit-bar gb-selection-float-bar';
@@ -415,7 +426,7 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   );
 }
 
-function _showBulkEditModal(entityNames, ctx) {
+function _showBulkEditModal(entityNames, ctx, options = {}) {
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
   const pivotData = (ctx && ctx.pivotData) || (state.currentDbPath === dbPath ? state.pivotData : null) || {};
@@ -432,9 +443,12 @@ function _showBulkEditModal(entityNames, ctx) {
     return;
   }
 
-  const returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-    ? document.activeElement
-    : null;
+  // 行ハンドルメニューから開いた時は、閉じたメニューの項目ではなく押したハンドルへフォーカスを戻す。
+  const returnFocus = options?.returnFocus instanceof HTMLElement && options.returnFocus.isConnected
+    ? options.returnFocus
+    : (document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement
+      : null);
   const body = document.createElement('div');
   body.innerHTML = `<div class="db-bulk-edit-selection-summary" style="margin:0 0 8px;color:var(--fg2);font-size:12px;line-height:20px;min-height:20px;max-height:80px;overflow-y:auto;flex:0 0 auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
     <div class="field gb-field-select-row"><label class="gb-label" for="bulk-edit-prop">列</label>

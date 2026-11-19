@@ -2,7 +2,7 @@
     }, null, isFav ? 'starOff' : 'star');
   }
 
-  const exportItems = _folderExportItems(item);
+  const exportItems = isMulti ? [] : _folderExportItems(item);
   if (exportItems.length > 0) {
     const exportSub = addSub('エクスポート', typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload');
     exportItems.forEach(exportItem => {
@@ -25,7 +25,7 @@
     });
   }
 
-  if (!blankTarget && item.path) {
+  if (!blankTarget && !isMulti && item.path) {
     const linkLabel = item.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addItem(linkLabel, () => {
       if (typeof showAddFolderLinkModal === 'function') showAddFolderLinkModal(item.path, null);
@@ -35,6 +35,7 @@
   if (!blankTarget && item.path && typeof getNodeColor === 'function' && typeof setNodeColor === 'function' && typeof openColorPalette === 'function') {
     addSep();
     const currentColor = getNodeColor(item.path);
+    const colorTargets = isMulti ? multiItems.filter(target => target?.path) : [item];
     const colorItem = document.createElement('div');
     colorItem.className = 'gb-context-menu-item';
     const swatch = document.createElement('button');
@@ -43,18 +44,19 @@
     if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, currentColor || 'var(--fg)');
     colorItem.appendChild(swatch);
     const clbl = document.createElement('span');
-    clbl.textContent = '色設定';
+    clbl.textContent = isMulti ? `色設定（${colorTargets.length}件）` : '色設定';
     colorItem.appendChild(clbl);
     colorItem.addEventListener('click', () => {
       openColorPalette(swatch, currentColor, (color) => {
-        _folderApplyItemColor(item, color || null);
+        if (isMulti && typeof _folderApplyItemsColor === 'function') _folderApplyItemsColor(colorTargets, color || null);
+        else _folderApplyItemColor(item, color || null);
         closeMenu();
       });
     });
     menu.appendChild(colorItem);
   }
 
-  if (!blankTarget && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
+  if (!blankTarget && !isMulti && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
     const isWork = isWorkFolder(item.path);
     const wfSub = addSub('作品フォルダ', 'folderDot');
     wfSub.item((isWork ? '✓ ' : '') + '設定する', async () => {
@@ -75,7 +77,7 @@
     }
   }
 
-  if ((item.type === 'folder' || item.type === 'database') && item.path && typeof getSortForFolder === 'function') {
+  if (!isMulti && (item.type === 'folder' || item.type === 'database') && item.path && typeof getSortForFolder === 'function') {
     const sortSub = addSub('並び替え', 'arrowUpDown');
     const curSort = getSortForFolder(item.path);
     const sortSettingsKey = typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort';
@@ -100,18 +102,21 @@
 
   // --- 管理 ---
   addSep();
-  addItem('パスをコピー', () => {
+  if (isMulti) {
+    addItem(`パスをコピー（${multiItems.length}件）`, () => fvBulkCopyPath(), null, 'clipboardList');
+    addItem('選択解除', () => fvBulkDeselect(), null, 'x');
+  } else addItem('パスをコピー', () => {
     const base = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
     const copyPath = window.GBPathUtils?.resolveForClipboard?.(item.path, base) ?? item.path;
     navigator.clipboard.writeText(copyPath);
     showStatus('パスをコピーしました');
   }, null, 'clipboardList');
   const lockedForEdit = _folderMenuItemLocked(item);
-  if (!blankTarget && !lockedForEdit) {
+  if (!blankTarget && !isMulti && !lockedForEdit) {
     addItem('リネーム', () => _folderStartRename(item), null, 'pencil');
   }
 
-  if (!blankTarget && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
+  if (!blankTarget && !isMulti && item.type === 'database' && item.path && typeof isSplitActive === 'function' && _isFolderFreeLayoutUiEnabled()) {
     addSep();
     if (isSplitActive()) {
       addItem('別の作業領域で開く', () => {
@@ -125,7 +130,7 @@
   }
   const menuAnchorRect = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
   // OS項目は取得済みの時だけ表示前に組み込み、未取得なら表示後に下端へ追記する。
-  const shellPath = item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
+  const shellPath = !isMulti && item.path && typeof appendShellVerbsToMenu === 'function' ? item.path : '';
   const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
   if (shellReady) {
     await appendShellVerbsToMenu(menu, shellPath, { editingLocked: lockedForEdit, beforeDisplay: true });
@@ -612,129 +617,16 @@ function _normalizeFolderSelectionForVisibleItems() {
   return _folderSelectedItems.length;
 }
 
-function _folderBulkAnchorElement() {
-  // 一括操作バーはメイン画面専用UIのため、独立した描画先（サブパネル等）が
-  // 有効な間は _updateFolderBulkBar() 側で早期returnし、ここは呼ばれない。
-  const selectedEls = Array.from(document.querySelectorAll('#folder-grid .fv-item.selected'));
-  return selectedEls[selectedEls.length - 1]
-    || document.getElementById('folder-display-filter-btn')
-    || document.getElementById('folder-grid');
-}
-
-function _folderBulkAnchorRect() {
-  const anchor = _folderBulkAnchorElement();
-  return anchor?.getBoundingClientRect?.() || { left: 16, right: 16, top: 48, bottom: 48 };
-}
-
-function _positionFolderBulkPopup() {
-  const bar = document.getElementById('fv-bulk-bar');
-  if (!bar || !bar.classList.contains('visible')) return;
-  bar.style.maxHeight = '';
-  bar.style.overflowY = '';
-  const anchor = _folderBulkAnchorElement();
-  const host = window.GBSelectionFloatMenu?.hostFor?.(anchor) || document.getElementById('folder-view') || document.body;
-  if (window.GBSelectionFloatMenu) {
-    window.GBSelectionFloatMenu.bindDrag(bar, { host });
-    window.GBSelectionFloatMenu.resetPosition(bar, { host, anchor });
-  } else if (typeof positionPopup === 'function') {
-    positionPopup(bar, _folderBulkAnchorRect(), { prefer: 'below', gap: 6 });
-  }
-}
-
-function _ensureFolderBulkBarChrome(bar) {
-  if (!bar) return;
-  bar.classList.add('gb-selection-float-bar');
-  if (window.GBSelectionFloatMenu) {
-    const host = window.GBSelectionFloatMenu?.hostFor?.(bar) || document.getElementById('folder-view') || document.body;
-    if (!bar.querySelector('.gb-selection-float-drag')) {
-      bar.insertBefore(window.GBSelectionFloatMenu.createDragHandle('ドラッグで移動', 'selection-float-drag-folder'), bar.firstChild);
-    }
-    window.GBSelectionFloatMenu.bindDrag(bar, { host });
-    bar.querySelectorAll('button:not(.gb-selection-float-drag)').forEach(button => {
-      if (button.dataset.selectionFloatActionBound === '1' || button.closest('[data-ui-component]')) return;
-      button.dataset.selectionFloatActionBound = '1';
-      button.classList.add('gb-selection-float-button');
-      // bindDrag() が click をバブル段階で stopPropagation するため、data-action の
-      // ドキュメント委譲(gb-events.js)へ届かない。各ボタンに実アクションを直接結線して回避する。
-      button.addEventListener('click', (e) => {
-        window.GBSelectionFloatMenu.pulseButton(button);
-        if (button.disabled) return;
-        const m = String(button.dataset.action || '').match(/^([a-zA-Z_$][\w$]*)\s*\(/);
-        const fn = m ? window[m[1]] : null;
-        if (typeof fn === 'function') { e.preventDefault(); fn(); }
-      }, true);
-    });
-  }
-}
-
-function _scheduleFolderBulkPopupPosition() {
-  if (_folderBulkPopupRaf) return;
-  _folderBulkPopupRaf = requestAnimationFrame(() => {
-    _folderBulkPopupRaf = 0;
-    _positionFolderBulkPopup();
-  });
-}
-
-function _setFolderBulkPopupTracking(enabled) {
-  if (enabled && !_folderBulkPopupTracking) {
-    _folderBulkPopupTracking = true;
-    window.addEventListener('resize', _scheduleFolderBulkPopupPosition);
-    document.addEventListener('scroll', _scheduleFolderBulkPopupPosition, true);
-  } else if (!enabled && _folderBulkPopupTracking) {
-    _folderBulkPopupTracking = false;
-    window.removeEventListener('resize', _scheduleFolderBulkPopupPosition);
-    document.removeEventListener('scroll', _scheduleFolderBulkPopupPosition, true);
-    if (_folderBulkPopupRaf) {
-      cancelAnimationFrame(_folderBulkPopupRaf);
-      _folderBulkPopupRaf = 0;
-    }
-  }
-}
-
-// 一括操作ポップアップの表示/非表示更新
+// 一括操作の対象（_folderSelectedItems）の後処理。
+// 旧「一括操作バー」（#fv-bulk-bar）は撤去済み。複数選択時の一括操作は、選択中の項目の
+// 「…」メニュー／右クリックメニュー（showFolderItemContextMenu）から実行する。
+// 呼び出し元が多いため関数名は残し、選択の正規化と自動タグ付け対象の同期だけを行う。
 function _updateFolderBulkBar() {
-  // 一括操作バー（#fv-bulk-bar）はメイン画面専用UI。独立した描画先（サブパネル等）が
-  // 有効な間は、共有の_folderSelectedItemsがサブパネル側の選択を指していても
-  // メイン画面のバーを動かさない（ボードのリンクカード計画 Phase B-2 縮小スコープ）。
+  // 独立した描画先（サブパネル等）が有効な間は、共有の_folderSelectedItemsが
+  // サブパネル側の選択を指していても、メイン画面の自動タグ付け対象を動かさない。
   if (_folderIsIndependentSurface()) return;
   const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
   window.MeldexTagManagement?.setAutoTagTargets?.(selectedCount > 0 ? _folderSelectedItems : []);
-  const bar = document.getElementById('fv-bulk-bar');
-  if (!bar) return;
-  _ensureFolderBulkBarChrome(bar);
-  const autoTagButton = bar.querySelector('[data-action^="fvBulkAutoTag"]');
-  if (autoTagButton) autoTagButton.hidden = window.isAutoTagRuntimeAvailable?.() !== true;
-  if (selectedCount > 0) {
-    bar.classList.add('visible');
-    bar.hidden = false;
-    bar.setAttribute('aria-hidden', 'false');
-    const cnt = bar.querySelector('.fv-bulk-count');
-    if (cnt) cnt.textContent = selectedCount + ' 件選択中';
-    const readOnlyArchive = !!window._archiveBrowseContext;
-    const hasLockedItems = _folderSelectedItems.some(item => _folderMenuItemLocked(item));
-    bar.querySelectorAll('[data-action^="fvBulkAutoTag"],[data-action^="fvBulkCompress"]').forEach(button => {
-      button.disabled = readOnlyArchive;
-      button.title = readOnlyArchive ? 'ZIP内は読み取り専用です' : '';
-    });
-    const deleteButton = bar.querySelector('[data-action^="fvBulkDelete"]');
-    if (deleteButton) {
-      deleteButton.disabled = readOnlyArchive || hasLockedItems;
-      deleteButton.title = readOnlyArchive
-        ? 'ZIP内は読み取り専用です'
-        : hasLockedItems ? '読み取り専用の参照リンクは削除できません' : '';
-    }
-    _positionFolderBulkPopup();
-    _setFolderBulkPopupTracking(true);
-  } else {
-    bar.classList.remove('visible');
-    bar.hidden = true;
-    bar.setAttribute('aria-hidden', 'true');
-    bar.style.left = '';
-    bar.style.top = '';
-    bar.style.maxHeight = '';
-    bar.style.overflowY = '';
-    _setFolderBulkPopupTracking(false);
-  }
 }
 
 // 一括操作: スライドショー

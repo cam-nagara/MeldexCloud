@@ -420,7 +420,11 @@
       });
   }
 
+  // フォルダツリーにも出る種別は、フォルダツリーと同じアイコンにする（独自表だとシート等がずれる）
+  const _TREE_FILE_TYPES = new Set(['page', 'scriptnote', 'board', 'database', 'calendar', 'csv', 'folder', 'entity', 'chat', 'form-app', 'map', 'html']);
   function _iconForFileType(type) {
+    const shared = window.MeldexFileIcons?.itemIconName;
+    if (_TREE_FILE_TYPES.has(type) && typeof shared === 'function') return shared(type, '');
     const map = {
       page: 'fileText',
       scriptnote: 'bookOpenText',

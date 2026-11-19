@@ -239,7 +239,10 @@
     if (depth > 0) {
       const icon = document.createElement('span');
       icon.className = 'gb-folder-picker-icon';
-      icon.innerHTML = _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
+      const shared = window.MeldexFileIcons?.itemIconHtml;
+      icon.innerHTML = typeof shared === 'function'
+        ? shared({ ...(folder && typeof folder === 'object' ? folder : {}), path, type: isFile ? folder.type : (folder?.type || 'folder') }, 18)
+        : _icon(isFile ? _fileIconForType(folder.type) : 'folder', 18);
       row.appendChild(icon);
     }
 

@@ -545,3 +545,146 @@ function _rollupSetAggregationOptionsForType(propType, preferred, root) {
   aggSel.dataset.current = aggSel.value || nextValue;
   aggSel.onchange = () => { aggSel.dataset.current = aggSel.value; };
 }
+
+/* --- ロールアップのセルへの直接入力（2026-11-19） --- */
+// 「値をそのまま表示」のロールアップは、参照先トピックの列の値をそのまま出しているので、
+// セルに入力した値を参照先シートのその列へ書き込む。参照先が複数ある時は、
+// ダブルクリックした行（行合わせの何番目か）か、1件だけの時に限って編集する。
+// 件数・合計などの集計結果は、参照先のどの値を変えればよいか決まらないため編集しない。
+function _rollupEditTarget(td, ctx, groupIndex) {
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  const propName = td?.dataset?.propName || '';
+  const entityName = td?.closest?.('tr')?.dataset?.entityName || '';
+  const propTypes = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+  const ptc = propTypes[propName];
+  if (!dbPath || !propName || !entityName || ptc?.type !== 'rollup') return { error: '' };
+  if (!ptc.relationProp || !ptc.targetProp) return { error: '列の設定でリレーション列と参照先の列を選ぶと、入力できます' };
+  if (_rollupEffectiveAggregation(ptc) !== 'values') {
+    return { error: '集計した値（件数・合計など）は直接入力できません。参照先のシートで値を変えてください' };
+  }
+  const entitiesMap = ((ctx && ctx.pivotData) || state.pivotData)?.entities || {};
+  const { refs, targetDbPath } = resolveRelationNames(entityName, entitiesMap, ptc.relationProp, propTypes, dbPath, ctx?.filter);
+  if (!targetDbPath) return { error: 'リレーション列の参照先シートが見つかりません' };
+  if (!refs.length) return { error: `先に「${ptc.relationProp}」で参照先を選ぶと、ここへ入力した値が参照先へ入ります` };
+  if (refs.length > 1 && !Number.isInteger(groupIndex)) {
+    return { error: '参照先が複数あります。編集する行をダブルクリックしてください' };
+  }
+  const ref = refs[Number.isInteger(groupIndex) ? groupIndex : 0];
+  if (!ref) return { error: '' };
+  return { dbPath, propName, entityName, ptc, targetDbPath, ref };
+}
+
+async function startRollupCellEdit(td, options = {}) {
+  // 打ち始めの一時入力欄を受け取った時は、編集を始められなければ片付ける
+  const proxy = options.input || null;
+  if (proxy) proxy.dataset.adopted = '1';
+  const started = await _startRollupCellEditInner(td, options);
+  if (!started && proxy?.isConnected) {
+    proxy.remove();
+    if (td._dbTypedProxy === proxy) td._dbTypedProxy = null;
+    if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false });
+  }
+  return started;
+}
+
+async function _startRollupCellEditInner(td, options = {}) {
+  const ctx = typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
+    : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  const target = _rollupEditTarget(td, ctx, options.groupIndex);
+  if (!target.targetDbPath) {
+    if (target.error && typeof showStatus === 'function') showStatus(target.error, true);
+    return false;
+  }
+  const { dbPath, ptc, targetDbPath, ref } = target;
+  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(targetDbPath, ptc.targetProp, null) : '';
+  if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg, true); return false; }
+  const container = td.querySelector('.cell-values');
+  if (!container || (container.querySelector('.cell-inline-input') && !options.input)) return false;
+  const targetData = await fetchRelatedDbData(targetDbPath);
+  const targetName = _rollupResolveEntityNames([ref.name], targetData)[0] || ref.name;
+  const targetEntity = targetData?.entities?.[targetName];
+  if (!targetEntity) {
+    if (typeof showStatus === 'function') showStatus(`参照先のトピック「${targetName}」が見つかりません`, true);
+    return false;
+  }
+  const raw = Array.isArray(targetEntity[ptc.targetProp]) ? targetEntity[ptc.targetProp] : [];
+  const adopted = typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(raw) : raw[0];
+  const oldValue = String(adopted?.value ?? '');
+  if (!td.isConnected) return false;
+  const input = options.input || document.createElement('input');
+  input.type = 'text';
+  input.className = 'cell-inline-input';
+  if (td._dbTypedProxy === input) td._dbTypedProxy = null;
+  input.dataset.e2eId = 'db-rollup-inline-input';
+  input.setAttribute('aria-label', `${targetName} の ${ptc.targetProp}（参照先シート）`);
+  if (!options.input) input.value = options.seed != null ? String(options.seed) : oldValue;
+  input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  if (input.parentNode !== container) container.appendChild(input);
+  input.focus();
+  if (options.seed == null && !options.input) input.select();
+  let done = false;
+  const pos = typeof _cellPos === 'function' ? _cellPos(td) : null;
+  let moveTo = null;
+  const finish = () => { done = true; input.remove(); if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false }); };
+  const refresh = async () => {
+    clearRollupCache(targetDbPath);
+    if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx || undefined, { silent: true, forceReload: true });
+  };
+  const commit = async () => {
+    if (done) return;
+    const value = input.value;
+    finish();
+    if (value === oldValue) {
+      if (moveTo && pos && typeof _restoreCellPos === 'function') _restoreCellPos(pos, moveTo);
+      return;
+    }
+    const entityPath = _entityPath(targetDbPath, targetName, targetData);
+    const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+    const label = `${ptc.targetProp}（${targetName}）: ${oldValue} → ${value}`;
+    try {
+      if (adopted) {
+        await _apiPutValue(adopted, { new_value: value });
+        adopted.value = value;
+        if (typeof historyPush === 'function') historyPush(label,
+          async () => { await _apiPutValue(adopted, { new_value: oldValue }); adopted.value = oldValue; await refresh(); },
+          async () => { await _apiPutValue(adopted, { new_value: value }); adopted.value = value; await refresh(); },
+          scope);
+      } else {
+        const result = await _apiPostValue(entityPath, ptc.targetProp, value, '採用', '');
+        let added = {
+          value, status: '採用', file: result?.path || result?.file || entityPath, property: ptc.targetProp,
+          candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length,
+        };
+        if (typeof historyPush === 'function') historyPush(label,
+          async () => { await _apiPutValue(added, { _delete: true }); await refresh(); },
+          async () => {
+            const redo = await _apiPostValue(entityPath, ptc.targetProp, value, '採用', '');
+            added = { ...added, file: redo?.path || redo?.file || added.file, candidate_id: redo?.candidate_id,
+              entry_id: redo?.entry_id, candidate_index: redo?.candidate_index ?? added.candidate_index };
+            await refresh();
+          },
+          scope);
+      }
+      if (typeof showStatus === 'function') showStatus(`参照先「${targetName}」の${ptc.targetProp}を保存しました`);
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus('参照先への保存に失敗しました: ' + (error?.message || error), true);
+    }
+    await refresh();
+    if (pos && typeof _restoreCellPos === 'function') _restoreCellPos(pos, moveTo);
+  };
+  input.addEventListener('keydown', (event) => {
+    if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(event)) return;
+    if (typeof _dbInlineConsumeImeBoundaryKey === 'function' && _dbInlineConsumeImeBoundaryKey(event)) return;
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); commit(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); finish(); }
+    else if (event.key === 'Tab') {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.();
+      moveTo = event.shiftKey ? 'left' : 'right';
+      commit();
+    }
+  });
+  if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(input, commit);
+  else input.addEventListener('blur', commit);
+  return true;
+}

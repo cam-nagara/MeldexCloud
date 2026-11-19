@@ -127,7 +127,6 @@
       if (!Number.isInteger(currentIndex) || currentIndex < rowIndex) return;
       const ordinal = currentIndex + 1;
       const model = this.doc.rows[currentIndex];
-      rowEl.querySelector('.sn2-row-add-btn')?.setAttribute('aria-label', `${ordinal}行目の前後に行を追加`);
       rowEl.querySelector('.sn2-row-check')?.setAttribute('aria-label', `行を選択: ${ordinal}`);
       rowEl.querySelector('.sn2-text')?.setAttribute('aria-label', `本文、${ordinal}行、タイプ${model?.role || '未設定'}`);
       rowEl.querySelectorAll('.sn2-custom-cell').forEach(cell => {

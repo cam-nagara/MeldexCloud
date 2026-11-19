@@ -71,7 +71,6 @@
     line-height: 1.36;
   }
 
-  .row-add-btn,
   .row-drag-handle,
   .row-select-cb {
     opacity: 1;
@@ -100,8 +99,6 @@
     padding-left: 1px;
     padding-right: 1px;
   }
-  #pivot-table .col-row-controls .row-add-btn,
-  .pivot-table .col-row-controls .row-add-btn,
   #pivot-table .col-row-controls .row-drag-handle,
   .pivot-table .col-row-controls .row-drag-handle { display: none; }
   .row-select-all-cb {

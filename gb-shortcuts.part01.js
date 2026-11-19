@@ -797,6 +797,18 @@ async function _runGlobalEditorSave() {
   return 'unchanged';
 }
 
+// Esc を押した瞬間にメニューが開いていたかを、どの keydown 処理より先（window の捕捉段階）で記録する。
+// 'db.escape' はこれを見て、メニューを閉じるための Esc で行の選択を解除しない。
+if (typeof window !== 'undefined' && !window.__meldexMenuEscapeProbe) {
+  window.__meldexMenuEscapeProbe = true;
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (document.querySelector('.gb-context-menu')) {
+      try { event.__meldexMenuOpenAtKeydown = true; } catch (_) { /* 凍結イベントでは記録しない */ }
+    }
+  }, true);
+}
+
 const _shortcutHandlers = {
 
   // ============ 全般 ============
@@ -1178,7 +1190,11 @@ const _shortcutHandlers = {
     if (!ctx || typeof _clearPaneRowSelection !== 'function') return false;
     return _clearPaneRowSelection(ctx);
   },
-  'db.escape': () => {
+  'db.escape': (e) => {
+    // メニュー（行ハンドルの一括メニュー等）を開いている間の Esc はメニューを閉じるだけにし、
+    // 行の選択は残す（選択を保ったまま別の一括操作を選び直せるように。UI共通ルール §6）。
+    // メニューは別の Esc 処理が先に閉じることがあるため、押した瞬間に開いていたかで判定する。
+    if (e?.__meldexMenuOpenAtKeydown || document.querySelector('.gb-context-menu')) return false;
     const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
     const selectedSet = ctx?._selectedEntities || state._selectedEntities;
     if (!selectedSet || !selectedSet.size) return false;

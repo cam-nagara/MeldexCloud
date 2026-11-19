@@ -893,8 +893,8 @@ function showView(viewName, ctx) {
   if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
     hideBoardNoteTab();
   }
-  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
-  if (viewName !== 'folder') {
-    const fvBar = document.getElementById('fv-bulk-bar');
-    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
+    clearBoardDetailTabs();
   }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);

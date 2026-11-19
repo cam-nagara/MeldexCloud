@@ -408,6 +408,11 @@ th.col-drop-right::after { right: -2px; }
 #pivot-table td.db-range-selected .cell-add-btn,
 .pivot-table td.db-range-selected .cell-add-btn,
 td:hover .cell-add-btn { display: inline-flex; }
+/* 値のあるセルの「＋」は、値の行の右端に出る「…」の左隣に並べる（セルの余白に関わらず重ならない） */
+#pivot-table td .cell-values:has(> .cell-value),
+.pivot-table td .cell-values:has(> .cell-value) { position: relative; }
+#pivot-table td .cell-values:has(> .cell-value) > .cell-add-btn,
+.pivot-table td .cell-values:has(> .cell-value) > .cell-add-btn { top: 0; bottom: auto; right: 26px; }
 .cell-add-btn:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
 .cell-add-btn:focus-visible { outline: 2px solid var(--a11y-focus-ring, var(--ui-accent)); outline-offset: 1px; }
 #pivot-table td .cell-value,
@@ -476,17 +481,9 @@ td.active-cell .cell-value > .cell-value-more {
 .pm-schedule-cell-hours { margin-left: 4px; color: var(--fg2); font-size: 12px; }
 #pivot-table td.pm-schedule-cell-warning, .pivot-table td.pm-schedule-cell-warning { background: color-mix(in srgb, var(--orange, #d9822b) 16%, var(--bg2)); }
 .pm-schedule-cell-warning-icon { margin-left: 4px; color: var(--orange, #d9822b); cursor: help; }
-/* 行追加ボタン (col-entity 内、最左) */
-.row-add-btn {
-  position: static; flex: 0 0 auto; transform: none; margin-right: 2px;
-  width: 14px; height: 14px; opacity: 0; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--fg2); border-radius: var(--ui-radius-xs, 3px); z-index: 3;
-}
-.row-add-btn:hover { color: var(--ui-hover-fg); background: var(--bg3); }
-#pivot-table tr:hover .row-add-btn, .pivot-table tr:hover .row-add-btn { opacity: 1; }
+/* 行頭の＋（行追加ボタン）は撤去済み（2026-11-19）。追加は行ハンドルのメニューで行う。 */
 
-/* 行ドラッグハンドル (col-entity 内、+ ボタンの右、チェックボックスの左) */
+/* 行ドラッグハンドル (行頭コントロール列内、チェックボックスの左) */
 .row-drag-handle {
   position: static; flex: 0 0 auto; transform: none; margin-right: 2px;
   width: 12px; height: 14px; opacity: 0; cursor: grab;
@@ -985,19 +982,6 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   border-radius: 999px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
-/* 一括操作ポップアップ */
-.fv-bulk-bar {
-  display:none; position:fixed; z-index:10040; align-items:center; gap:8px; padding:6px 8px;
-  background:var(--bg2); border:1px solid var(--border); border-radius:6px; flex-shrink:0;
-  box-shadow:0 8px 24px rgba(0,0,0,0.35);
-}
-.fv-bulk-bar.visible { display:flex; }
-.fv-bulk-bar button {
-  padding:var(--ui-space-1, 2px) var(--ui-space-4, 8px); font-size:var(--ui-font-12, 12px); border:1px solid var(--border); border-radius:var(--ui-radius-sm, 4px);
-  background:var(--bg3); color:var(--fg); cursor:pointer;
-}
-.fv-bulk-bar button:hover { background:var(--accent); color:var(--ui-accent-fg, var(--ui-fg-strong)); }
-.fv-bulk-bar .fv-bulk-count { font-size:12px; color:var(--fv-meta-fg, var(--fg2)); margin-right:4px; }
 .gb-selection-float-bar {
   display: flex;
   align-items: center;
@@ -1053,8 +1037,7 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 .gb-selection-float-count,
 .db-cell-bulk-count,
 .db-bulk-edit-count,
-.gb-cal-event-bulk-count,
-.fv-bulk-count {
+.gb-cal-event-bulk-count {
   color: var(--accent);
   font-weight: 700;
   font-size: 12px;
@@ -1127,8 +1110,7 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   .gb-selection-float-count,
   .db-cell-bulk-count,
   .db-bulk-edit-count,
-  .gb-cal-event-bulk-count,
-  .fv-bulk-count {
+  .gb-cal-event-bulk-count {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
@@ -1307,15 +1289,16 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 
 /* フォルダ パネル共通 */
 .fv-side-panel { padding: 12px; background: var(--fv-panel-bg, var(--content-bg, transparent)); }
-.fv-side-panel .fp-img { max-width: 100%; border-radius: 4px; margin-bottom: 8px; }
-.fv-side-panel .fp-image-host { display: block; width: fit-content; min-width: 32px; min-height: 32px; max-width: 100%; margin-bottom: 8px; }
-.fv-side-panel .fp-image-host > .fp-img { display: block; margin-bottom: 0; }
-.fv-side-panel .fp-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; word-break: break-all; }
-.fv-side-panel .fp-meta { font-size: 12px; color: var(--fg2); }
-.fv-side-panel .fp-meta-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--border); }
-.fv-side-panel .fp-actions { margin-top: 12px; display: flex; gap: 4px; flex-wrap: wrap; }
-.fv-side-panel .fp-actions button { font-size: var(--ui-font-12, 12px); padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--ui-radius-xs, 3px); cursor: pointer; }
-.fv-side-panel .fp-actions button:hover { background: var(--bg4); }
+.fv-side-panel .fp-img, #rp-detail .fp-img { max-width: 100%; border-radius: 4px; margin-bottom: 8px; }
+.fv-side-panel .fp-image-host, #rp-detail .fp-image-host { display: block; width: fit-content; min-width: 32px; min-height: 32px; max-width: 100%; margin-bottom: 8px; }
+.fv-side-panel .fp-image-host > .fp-img, #rp-detail .fp-image-host > .fp-img { display: block; margin-bottom: 0; }
+.fv-side-panel .fp-title, #rp-detail .fp-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; word-break: break-all; }
+.fv-side-panel .fp-meta, #rp-detail .fp-meta { font-size: 12px; color: var(--fg2); }
+.fv-side-panel .fp-meta-row, #rp-detail .fp-meta-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--border); }
+/* フォルダの項目情報は、フォルダパネルの横パネルと右のオプションパネル（#rp-detail）のどちらにも出る */
+.fp-actions { margin-top: 12px; display: flex; gap: 4px; flex-wrap: wrap; }
+.fp-actions button { font-size: var(--ui-font-12, 12px); padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px); background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--ui-radius-xs, 3px); cursor: pointer; }
+.fp-actions button:hover { background: var(--bg4); }
 /* リサイズハンドル */
 .fv-resize-v { width: 4px; cursor: col-resize; flex-shrink: 0; background: transparent; }
 .fv-resize-h { height: 4px; cursor: row-resize; flex-shrink: 0; background: transparent; }

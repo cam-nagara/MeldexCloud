@@ -32261,17 +32261,33 @@
     };
   }
 
-  async function _cloudLinkDictFuriganaKeys(provider, dbPath) {
+  // ふりがな列の対象。rubyBaseProp があれば、その列の値の読み（無ければトピック名の読み）。
+  function _cloudRubyBaseOf(name, spec) {
+    const base = String(spec?.rubyBaseProp || '').trim();
+    return base && base !== name ? base : '';
+  }
+
+  async function _cloudLinkDictFuriganaSpec(provider, dbPath) {
     try {
       const note = await _folderFrontmatter(provider, dbPath);
       const propertyTypes = note?.frontmatter?.property_types;
-      if (!propertyTypes || typeof propertyTypes !== 'object' || Array.isArray(propertyTypes)) return [];
-      return Object.entries(propertyTypes)
-        .filter(([, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana')
-        .map(([name]) => name);
+      if (!propertyTypes || typeof propertyTypes !== 'object' || Array.isArray(propertyTypes)) return { keys: [], pairs: [] };
+      const furigana = Object.entries(propertyTypes)
+        .filter(([, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana');
+      return {
+        keys: furigana.filter(([name, spec]) => !_cloudRubyBaseOf(name, spec)).map(([name]) => name),
+        pairs: furigana.filter(([name, spec]) => _cloudRubyBaseOf(name, spec))
+          .map(([name, spec]) => [name, _cloudRubyBaseOf(name, spec)]),
+      };
     } catch {
-      return [];
+      return { keys: [], pairs: [] };
     }
+  }
+
+  function _cloudAdoptedValue(props, key) {
+    const values = (Array.isArray(props?.[key]) ? props[key] : []).filter(item => String(item?.value || '').trim());
+    const adopted = values.find(item => ['採用', '掲載済み'].includes(String(item?.status || '').trim())) || values[0];
+    return adopted ? String(adopted.value).trim() : '';
   }
 
   function _cloudLinkDictReadings(props, rubyKeys) {
@@ -32339,11 +32355,24 @@
     dbs.push(...await _findDatabaseFolders(provider, work, 6));
     const entries = [];
     const byText = new Map();
+    const baseEntries = [];
     for (const db of dbs) {
       if (db.kind && db.kind !== 'settings-db') continue;
-      const furiganaKeys = await _cloudLinkDictFuriganaKeys(provider, db.path);
-      const rubyKeys = [...new Set([...furiganaKeys, 'ふりがな', 'ルビ', 'フリガナ', 'ruby'])];
+      const furigana = await _cloudLinkDictFuriganaSpec(provider, db.path);
+      const based = new Set(furigana.pairs.map(([name]) => name));
+      const rubyKeys = [...new Set([...furigana.keys, 'ふりがな', 'ルビ', 'フリガナ', 'ruby'])].filter(name => !based.has(name));
       const rows = await _cloudLinkDictRows(provider, db.path).catch(() => []);
+      rows.forEach(row => {
+        furigana.pairs.forEach(([furiganaProp, baseProp]) => {
+          const text = _cloudAdoptedValue(row.properties, baseProp);
+          const readings = _cloudLinkDictReadings(row.properties, [furiganaProp]);
+          if (text.length < 2 || !readings.length) return;
+          baseEntries.push({
+            text, type: 'entity', path: row.path || _joinPath(db.path, _sheetStoreFileName(row.name)),
+            entity: String(row.name || '').trim(), ruby: '', readings,
+          });
+        });
+      });
       rows.forEach(row => {
         const text = String(row.name || '').trim();
         if (text.length < 2) return;
@@ -32366,6 +32395,15 @@
         entries.push(entry);
       });
     }
+    // 列の値に付く読みは、同じ文字列のトピック名より後に加える（デスクトップ版と同じ）
+    baseEntries.forEach(item => {
+      const current = byText.get(item.text);
+      if (current) { _cloudLinkDictMergeReadings(current, item.readings); return; }
+      const entry = { ...item, readings: [] };
+      _cloudLinkDictMergeReadings(entry, item.readings);
+      byText.set(item.text, entry);
+      entries.push(entry);
+    });
     entries.sort((a, b) => b.text.length - a.text.length);
     return { entries };
   }
@@ -32401,10 +32439,11 @@
       const note = await _folderFrontmatter(provider, dbPath);
       const types = note?.frontmatter?.property_types;
       if (!types || typeof types !== 'object' || Array.isArray(types)) return [];
+      const based = new Set(Object.entries(types).filter(([name, spec]) => _cloudRubyBaseOf(name, spec)).map(([name]) => name));
       const furigana = Object.entries(types)
-        .filter(([, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana')
+        .filter(([name, spec]) => spec && typeof spec === 'object' && spec.type === 'furigana' && !based.has(name))
         .map(([name]) => name);
-      const legacy = Object.keys(types).filter(name => _CLOUD_RUBY_SHEET_LEGACY.includes(name) && !furigana.includes(name));
+      const legacy = Object.keys(types).filter(name => _CLOUD_RUBY_SHEET_LEGACY.includes(name) && !furigana.includes(name) && !based.has(name));
       return furigana.concat(legacy);
     } catch {
       return [];
@@ -47886,8 +47925,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     '#folder-toolbar-delete',
     '#folder-toolbar-undo',
     '#folder-toolbar-redo',
-    '#folder-view [data-action^="fvBulkBoard"]',
-    '#folder-view [data-action^="fvBulkDelete"]',
     '#sidebar .sidebar-section-btn[data-action*="_showHomeAddMenu"]',
     '#sidebar .sidebar-section-btn[data-action*="addOutlinerRootFromSettings"]',
     '#sidebar .sidebar-section-btn[data-action*="_openSourceFolderSettings"]',
@@ -58782,7 +58819,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const appKey = String(app || '').replace(/[^A-Za-z0-9_-]/g, '');
     const config = TOOLBAR_APPS[appKey] || TOOLBAR_APPS.page;
     scheduleToolbarSync();
-    return '<span class="tb-file-icon" data-file-icon-app="' + appKey + '" role="img" aria-label="' + TOOLBAR_LABEL + '">'
+    return '<span class="tb-file-icon" data-e2e-id="toolbar-file-icon-' + appKey + '" data-file-icon-app="' + appKey + '" role="img" aria-label="' + TOOLBAR_LABEL + '">'
       + toolbarMarkup({path: '', type: config.type}) + '</span>';
   }
   function watchTitle(el) {
@@ -58867,8 +58904,22 @@ document.addEventListener('DOMContentLoaded', () => {
     fallback.innerHTML = typeof lucide === 'function' ? lucide(name, Number(img.width) || 18) : '';
     img.replaceWith(fallback);
   }, true);
+  // フォルダツリー以外（選択ダイアログ・検索結果など）でファイルを並べる時のアイコン。
+  // 独自の種別→アイコン表を持つと、シートなどがフォルダツリーと違う絵になる（2026-11-19）。
+  // フォルダツリーと同じ判定（拡張子による種別の解決・作品フォルダ・ファイル別アイコン）を使う。
+  function itemIconName(type, path) {
+    if (typeof _outlinerIconName === 'function') return _outlinerIconName(type, path, false);
+    return (typeof uiTypeIconName === 'function' && uiTypeIconName(type || 'page')) || (type === 'folder' ? 'folder' : 'page');
+  }
+  function itemIconHtml(item, size) {
+    const value = item && typeof item === 'object' ? item : {};
+    const px = size || 18;
+    if (typeof _outlinerIconMarkup === 'function') return _outlinerIconMarkup(value, px);
+    const fallback = typeof lucide === 'function' ? lucide(itemIconName(value.type, value.path), px) : '';
+    return value.path ? render(value, px, fallback) : fallback;
+  }
   global.MeldexFileIcons = {canEdit, remember, render, openPicker, tabIcon, readFields, writeFields, preserve, matchesScope,
-    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync};
+    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
   const extensions = global.__MeldexPwaDataAccessExtensions;
   if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body}) => {
     const internals = global.__MeldexPwaDataAccessInternals;

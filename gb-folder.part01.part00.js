@@ -118,8 +118,6 @@ let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
 let _folderLayout = localStorage.getItem('folder-layout') || 'waterfall';
 let _folderVisibleItems = [];
-let _folderBulkPopupRaf = 0;
-let _folderBulkPopupTracking = false;
 // パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
 const _savedFolderThumbnailPx = parseInt(localStorage.getItem('folder-thumbnail-size-px') || '', 10);
 let _folderZoom = Number.isFinite(_savedFolderThumbnailPx)

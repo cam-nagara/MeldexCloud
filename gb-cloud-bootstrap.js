@@ -516,8 +516,6 @@
     '#folder-toolbar-delete',
     '#folder-toolbar-undo',
     '#folder-toolbar-redo',
-    '#folder-view [data-action^="fvBulkBoard"]',
-    '#folder-view [data-action^="fvBulkDelete"]',
     '#sidebar .sidebar-section-btn[data-action*="_showHomeAddMenu"]',
     '#sidebar .sidebar-section-btn[data-action*="addOutlinerRootFromSettings"]',
     '#sidebar .sidebar-section-btn[data-action*="_openSourceFolderSettings"]',

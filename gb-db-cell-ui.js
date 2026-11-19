@@ -155,10 +155,15 @@ function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
   return true;
 }
 
+// 値のあるセルにも、カーソルを合わせると「＋」を出す（2026-11-19 ユーザー指定。以前は候補値0件の時だけ）。
+// 画像・チェックボックス・日付など、1セル1つの値を置き換える型は「…」メニューの操作に任せる。
+const _CELL_UI_ADD_WITH_VALUES_TYPES = new Set(['', 'text', 'furigana', 'number', 'url', 'relation', 'multi-relation', 'multi-select', 'multi-user', 'multi-link', 'common-tags']);
 function _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx) {
   const type = String(ptc?.type || '').replace(/_/g, '-');
-  return (type === 'multi-link' || !Array.isArray(rawValues) || rawValues.length === 0)
-    && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
+  const hasValues = Array.isArray(rawValues) && rawValues.length > 0;
+  if (!hasValues) return _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
+  return _CELL_UI_ADD_WITH_VALUES_TYPES.has(type)
+    && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, { hasExistingValue: true });
 }
 
 function _cellUiCanQuickRename(ptc) {

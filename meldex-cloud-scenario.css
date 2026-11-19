@@ -751,21 +751,6 @@
   align-items: center;
   gap: 2px;
 }
-/* シートと同じ、最左の行追加ボタン（クリック=下、Alt+クリック=上）。 */
-.sn2-row-add-btn {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  opacity: 0;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg2);
-  border-radius: var(--ui-radius-xs, 3px);
-}
-.sn2-row-add-btn:hover,
-.sn2-row-add-btn:focus-visible { color: var(--ui-hover-fg); background: var(--bg3); opacity: 1; }
 .sn2-row-grip { flex: 0 0 auto; width: 12px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
 /* 行選択チェックボックス（ハンドルdiv内に配置） */
 .sn2-row-check {
@@ -779,12 +764,10 @@
 .sn2-drag-select-rect { pointer-events: none; }
 .sn2-row:hover .sn2-row-check,
 .sn2-row-check:checked { opacity: 1; }
-.sn2-row:hover .sn2-row-add-btn { opacity: 1; }
 .sn2-row:hover .sn2-handle { color: var(--fg2); }
 .sn2-handle:hover { color: var(--fg) !important; }
 @media (hover: none), (pointer: coarse) {
   .sn2-row-check { opacity: 1; }
-  .sn2-row-add-btn { opacity: 1; }
   .sn2-handle { color: var(--fg2); }
 }
 .sn2-row.sn2-dragging { opacity: 0.3; }
@@ -3388,9 +3371,10 @@
 }
 .sn2-role-manage-section {
   display: flex;
-  flex: 1 1 0;
+  /* 行数に合わせた高さ。表の直下にボタン群が続き、行の追加・削除で下の要素の位置も変わる。 */
+  flex: 0 1 auto;
   min-width: 0;
-  min-height: 150px;
+  min-height: 0;
   flex-direction: column;
   overflow: hidden;
   border: 0;
@@ -3437,7 +3421,7 @@
   font-weight: var(--ui-weight-normal);
 }
 .sn2-role-manage-scroll {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -3539,10 +3523,15 @@
   opacity: 0;
   transition: opacity 0.12s;
 }
+/* チェックボックスとハンドルは、行にカーソルを重ねている間（キーボード操作中・行メニュー表示中を含む）だけ出す。
+   選択中の行は背景色で示す。ホバーできないタッチ端末では常に出す。 */
 .sn2-role-manage-row:hover .sn2-role-manage-check,
-.sn2-role-manage-row.selected .sn2-role-manage-check,
-.sn2-role-manage-check:focus-visible,
-.sn2-role-manage-check:disabled { opacity: 1; }
+.sn2-role-manage-row:focus-within .sn2-role-manage-check,
+.sn2-role-manage-row.gb-row-handle-menu-open .sn2-role-manage-check,
+.sn2-role-manage-section.is-drag-selecting .sn2-role-manage-row.selected .sn2-role-manage-check,
+.sn2-role-manage-check:focus-visible { opacity: 1; }
+.sn2-role-manage-section.is-drag-selecting { user-select: none; -webkit-user-select: none; }
+.sn2-role-manage-section.is-drag-selecting .sn2-role-manage-row { cursor: default; }
 .sn2-role-manage-grip {
   display: inline-grid;
   flex: 0 0 15px;
@@ -3556,7 +3545,14 @@
   color: var(--ui-fg-muted);
   cursor: grab;
   touch-action: none;
+  opacity: 0;
+  transition: opacity 0.12s;
 }
+.sn2-role-manage-row:hover .sn2-role-manage-grip,
+.sn2-role-manage-row:focus-within .sn2-role-manage-grip,
+.sn2-role-manage-row.gb-row-handle-menu-open .sn2-role-manage-grip,
+.sn2-role-manage-row.sn2-dragging .sn2-role-manage-grip,
+.sn2-role-manage-grip:focus-visible { opacity: 1; }
 .sn2-role-manage-grip:hover,
 .sn2-role-manage-grip:focus-visible { background: var(--ui-bg-control); color: var(--ui-fg-default); }
 .sn2-role-manage-grip:active { cursor: grabbing; }
@@ -3634,10 +3630,16 @@
 .sn2-role-manage-cell--name:focus-within .sn2-role-style-trigger,
 .sn2-role-style-trigger:focus-visible { display: block; }
 .sn2-role-manage-grip--disabled {
-  opacity: 0.35;
+  opacity: 0;
   cursor: default;
   pointer-events: none;
 }
+.sn2-role-manage-row:hover .sn2-role-manage-grip--disabled { opacity: 0.35; }
+/* 「（なし）」行の無効なチェックボックス・ハンドルは、共通の無効表示が不透明度を固定するため表示有無で隠す。 */
+.sn2-role-manage-check:disabled,
+.sn2-role-manage-grip--disabled { visibility: hidden; }
+.sn2-role-manage-row:hover .sn2-role-manage-check:disabled,
+.sn2-role-manage-row:hover .sn2-role-manage-grip--disabled { visibility: visible; }
 .sn2-role-manage-row--none {
   background: color-mix(in srgb, var(--ui-bg-surface) 40%, transparent);
 }
@@ -3849,8 +3851,13 @@
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .sn2-role-manage-section {
-    min-height: 150px;
+    min-height: 0;
   }
+  /* タッチ端末はホバーできないので、チェックボックスとハンドルを常に出す。 */
+  .sn2-role-manage-check,
+  .sn2-role-manage-grip { opacity: 1; }
+  .sn2-role-manage-check:disabled,
+  .sn2-role-manage-grip--disabled { visibility: visible; }
   .sn2-role-manage-header {
     min-height: 44px;
     padding: 4px 10px;

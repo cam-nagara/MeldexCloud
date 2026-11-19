@@ -1,8 +1,3 @@
-  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
-    clearBoardDetailTabs();
-  }
-  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
-  const isDbView = isDbViewName(viewName);
   const _setDisplay = (id, value) => {
     const el = document.getElementById(id);
     if (el) el.style.display = value;
@@ -898,3 +893,8 @@ function _appShouldHandleStandaloneCalendarDrop() {
         );
       }
     } catch {}
+  });
+}
+
+// main-viewsへのD&Dドロップ
+// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）

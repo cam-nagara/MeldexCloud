@@ -250,7 +250,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=7d0acc5a48dfab99"></script><script src="gb-cloud-runtime-config.js?v=668fd1f26c0b47df"></script><script src="meldex-cloud-runtime-04.js?v=0157869510382351"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=5c155e54a0acdc47"></script><script src="gb-cloud-runtime-config.js?v=664b2f6c40413787"></script><script src="meldex-cloud-runtime-04.js?v=14cc21886f78b3b6"></script>
 
 
 
@@ -330,7 +330,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
-<link rel="stylesheet" href="meldex-cloud-core.css?v=909757a83c167478">
+<link rel="stylesheet" href="meldex-cloud-core.css?v=930ef36e084574fa">
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:var(--bg,#1e1e1e);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -454,7 +454,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <span class="tb-app-icon" data-app-icon="database" role="img" aria-label="シート"></span>
     <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'database')"><span class="ico ico-menu"></span></button>
     <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('database', event)"><span class="ico ico-folderTree"></span></button>
-    <span class="tb-file-icon" data-file-icon-app="database" role="img" aria-label="ファイルアイコン"></span>
+    <span class="tb-file-icon" data-e2e-id="toolbar-file-icon-database" data-file-icon-app="database" role="img" aria-label="ファイルアイコン"></span>
     <span id="toolbar-category" class="tb-title tb-file-title"></span>
     <div class="tb-spacer"></div>
     <div class="db-toolbar-actions-right"></div>
@@ -563,7 +563,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <span class="tb-app-icon" data-app-icon="page" role="img" aria-label="ノート"></span>
         <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'page')"><span class="ico ico-menu"></span></button>
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
-        <span class="tb-file-icon" data-file-icon-app="page" role="img" aria-label="ファイルアイコン"></span>
+        <span class="tb-file-icon" data-e2e-id="toolbar-file-icon-page" data-file-icon-app="page" role="img" aria-label="ファイルアイコン"></span>
         <div id="page-title" class="tb-file-title tb-file-title--input" contenteditable="true"></div>
         <div class="sep"></div>
         <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-listCollapse"></span></button>
@@ -623,7 +623,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <span class="tb-app-icon" data-app-icon="csv" role="img" aria-label="CSV"></span>
         <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" aria-expanded="false" data-action="showToolMenu(event,'csv')"><span class="ico ico-menu"></span></button>
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('csv', event)"><span class="ico ico-folderTree"></span></button>
-        <span class="tb-file-icon" data-file-icon-app="csv" role="img" aria-label="ファイルアイコン"></span>
+        <span class="tb-file-icon" data-e2e-id="toolbar-file-icon-csv" data-file-icon-app="csv" role="img" aria-label="ファイルアイコン"></span>
         <span id="csv-title" class="tb-title tb-file-title"></span>
         <button type="button" class="tb-icon-btn" id="csv-undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-action="meldexUndo()" data-undo-button><span class="ico ico-undo2"></span></button>
         <button type="button" class="tb-icon-btn" id="csv-redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-action="meldexRedo()" data-redo-button><span class="ico ico-redo2"></span></button>
@@ -651,7 +651,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <button id="folder-toolbar-undo" class="tb-icon-btn" type="button" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-e2e-id="folder-toolbar-undo" data-undo-button></button>
           <button id="folder-toolbar-redo" class="tb-icon-btn" type="button" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-e2e-id="folder-toolbar-redo" data-redo-button></button>
         </div>
-        <span class="tb-file-icon" data-file-icon-app="folder" role="img" aria-label="ファイルアイコン"></span>
+        <span class="tb-file-icon" data-e2e-id="toolbar-file-icon-folder" data-file-icon-app="folder" role="img" aria-label="ファイルアイコン"></span>
         <span id="folder-title" style="font-size:16px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
         <span id="folder-item-count" style="font-size:12px;color:var(--fg2);"></span>
         <button id="folder-btn-slideshow" type="button" title="スライドショー" aria-label="スライドショー" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="openFolderSlideshow()"><span class="ico ico-play"></span></button>
@@ -669,16 +669,6 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       </div>
       <div id="fv-panel-top" class="fv-side-panel" style="display:none;"></div>
       <div id="fv-resize-top" class="fv-resize-h" style="display:none;"></div>
-      <div id="fv-bulk-bar" class="fv-bulk-bar" role="menu" aria-hidden="true" hidden>
-        <span class="fv-bulk-count"></span>
-        <button type="button" aria-label="スライドショー" data-action="fvBulkSlideshow()">スライドショー</button>
-        <button type="button" aria-label="ボードに並べる" data-action="fvBulkBoard()">ボードに並べる</button>
-        <button type="button" aria-label="自動タグ付け" data-action="fvBulkAutoTag()" data-e2e-id="folder-bulk-auto-tag" hidden>自動タグ付け</button>
-        <button type="button" aria-label="圧縮" data-action="fvBulkCompress()">圧縮</button>
-        <button type="button" aria-label="削除" data-action="fvBulkDelete()">削除</button>
-        <button type="button" aria-label="パスをコピー" data-action="fvBulkCopyPath()">パスをコピー</button>
-        <button type="button" aria-label="選択解除" data-action="fvBulkDeselect()">選択解除</button>
-      </div>
       <div style="display:flex;flex:1;overflow:hidden;">
         <div id="fv-panel-left" class="fv-side-panel" style="display:none;"></div>
         <div id="fv-resize-left" class="fv-resize-v" style="display:none;"></div>
@@ -906,7 +896,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-05.js?v=c2c443c370e21246"></script>
+<script src="meldex-cloud-runtime-05.js?v=14151c71a5b24ae8"></script>
 
 
 
@@ -1034,7 +1024,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-06.js?v=e5efe8e14c019c7e"></script>
+<script src="meldex-cloud-runtime-06.js?v=b489511fc77abac9"></script>
 
 
 

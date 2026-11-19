@@ -1,3 +1,6 @@
+  if (!linkPath) return false;
+  const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
+  if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {
     showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
     return false;
   }
@@ -218,6 +221,16 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     _outlinerAppendMenuSeparator(menu);
   }
 
+  // 複数選択時は先頭に件数見出しを置く（フォルダパネルの複数選択メニューと同じ）。
+  if (isMulti) {
+    menu.dataset.folderMultiSelection = String(selectedCount);
+    const heading = document.createElement('div');
+    heading.className = 'gb-context-menu-label';
+    heading.dataset.e2eId = 'folder-tree-context-selection-count';
+    heading.textContent = `${selectedCount}件を選択中`;
+    menu.appendChild(heading);
+  }
+
   const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
     .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
@@ -318,8 +331,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- 新規作成サブメニュー ---
-  if (!(addParent && isItemLocked(addParent))) {
+  // --- 新規作成サブメニュー ---（作成先が押した1項目で決まるため、複数選択時は出さない）
+  if (!isMulti && !(addParent && isItemLocked(addParent))) {
     const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
     _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
     _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
@@ -635,8 +648,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- お気に入り ---
-  if (!isEntity && nodeData.path) {
+  // --- お気に入り（1項目だけが対象のため単独選択時のみ） ---
+  if (!isMulti && !isEntity && nodeData.path) {
     const isFav = getFavorites().some(f => f.path === nodeData.path);
     addMenuItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
       closeTreeContextMenu();
@@ -706,8 +719,8 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }
   }
 
-  // --- 所属フォルダ（リンク登録） ---
-  if (!isEntity && nodeData.path) {
+  // --- 所属フォルダ（リンク登録。1項目だけが対象のため単独選択時のみ） ---
+  if (!isMulti && !isEntity && nodeData.path) {
     const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addMenuItem(linkLabel, () => {
       closeTreeContextMenu();
@@ -885,16 +898,3 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       addMenuItem('別の作業領域で開く', () => { closeTreeContextMenu(); openDbInOtherPane(nodeData.path); }, null, 'columns');
     } else {
       addMenuItem('スプリットで開く', () => { closeTreeContextMenu(); openInNewSplit(nodeData.path); }, null, 'columns');
-    }
-  }
-
-  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
-  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
-  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
-  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
-  if (shellReady) {
-    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
-  }
-  if (openSeq !== _outlinerContextMenuOpenSeq) return;
-  _outlinerPlaceContextMenu(menu);
-  if (shellPath && !shellReady) {

@@ -155,5 +155,131 @@
     return handle;
   }
 
-  global.MeldexRowHandleMenu = Object.freeze({ bind, open, anchorRect, DRAG_THRESHOLD });
+  // ---------------------------------------------------------------------------
+  // 複数選択時の一括実行（2026-11-19決定。共通ルール §6「行の選択と一括実行」）
+  //
+  // ・押したハンドルの行が選択中で、選択が2行以上なら「一括」。選択中のすべての行が対象。
+  // ・押した行が選択外なら、その1行だけが対象（選択は変えない）。
+  // ・対象は表示順に並べ、連続する行を1つのまとまり（run）にする。
+  //   追加・複製はまとまりごとに、まとまりの行数ぶん、まとまりの上／下へ入れる。
+  // ---------------------------------------------------------------------------
+
+  /** orderedIds の並びで、idSet に含まれる連続区間を配列で返す。 */
+  function runsOf(orderedIds, idSet) {
+    const set = idSet instanceof Set ? idSet : new Set(idSet || []);
+    const runs = [];
+    let current = null;
+    let prevIndex = -2;
+    (orderedIds || []).forEach((id, index) => {
+      if (!set.has(id)) return;
+      if (current && index === prevIndex + 1) current.push(id);
+      else { current = [id]; runs.push(current); }
+      prevIndex = index;
+    });
+    return runs;
+  }
+
+  /**
+   * ハンドルメニューの対象を決める。
+   * @param {*} rowId 押したハンドルの行
+   * @param {Array} orderedIds 表示順の全行ID
+   * @param {Iterable} selectedIds 選択中の行ID
+   * @returns {{batch:boolean, ids:Array, runs:Array<Array>, count:number, rowId:*}}
+   */
+  function resolveTargets(rowId, orderedIds, selectedIds) {
+    const order = Array.isArray(orderedIds) ? orderedIds : [];
+    const selected = new Set(selectedIds || []);
+    const visibleSelected = order.filter(id => selected.has(id));
+    const batch = visibleSelected.length > 1 && selected.has(rowId);
+    const idSet = batch ? new Set(visibleSelected) : new Set([rowId]);
+    const ids = batch ? visibleSelected : [rowId];
+    return { batch, ids, runs: runsOf(order, idSet), count: ids.length, rowId };
+  }
+
+  /**
+   * 追加・複製の挿入計画。まとまりごとに { ids, anchorId, position, count } を返す。
+   * 下（後ろ）のまとまりから順に並べるので、位置（index）で挿入する表もそのまま順に適用できる。
+   */
+  function planInsertions(targets, position) {
+    const where = position === 'above' ? 'above' : 'below';
+    return (targets?.runs || []).map(run => ({
+      ids: run.slice(),
+      anchorId: where === 'above' ? run[0] : run[run.length - 1],
+      position: where,
+      count: run.length,
+    })).reverse();
+  }
+
+  /**
+   * 対象をまとめて1つ上（dir=-1）／下（dir=1）へ動かした並びを返す。端に当たって動かせない時は null。
+   */
+  function moveOrder(orderedIds, targetIds, dir) {
+    const order = (orderedIds || []).slice();
+    const set = new Set(targetIds || []);
+    if (!set.size) return null;
+    const step = dir < 0 ? -1 : 1;
+    const edge = step < 0 ? 0 : order.length - 1;
+    if (set.has(order[edge])) return null;
+    const indices = order.map((id, index) => (set.has(id) ? index : -1)).filter(index => index >= 0);
+    if (step > 0) indices.reverse();
+    indices.forEach(index => {
+      const other = index + step;
+      const tmp = order[other];
+      order[other] = order[index];
+      order[index] = tmp;
+    });
+    return order;
+  }
+
+  function _collapseSeparators(items) {
+    const out = [];
+    items.forEach(item => {
+      const isSep = !item || item.type === 'separator' || item.type === 'sep';
+      if (isSep && (!out.length || out[out.length - 1].__sep)) return;
+      out.push(isSep ? { type: 'separator', __sep: true } : item);
+    });
+    while (out.length && out[out.length - 1].__sep) out.pop();
+    return out.map(item => (item.__sep ? { type: 'separator' } : item));
+  }
+
+  /**
+   * 一括時は「一括実行できる項目（batch: true）」だけを残し、batchLabel があれば差し替える。
+   * 先頭に「N行を選択中」の見出しを置く。単独時は batchOnly の項目を外して、そのまま返す。
+   *   item.batch      true で一括時にも表示（action は呼び出し側が対象全体に対して実装する）
+   *   item.batchOnly  true で一括時だけ表示（選択の反転・解除など）
+   *   item.batchLabel 一括時の表示名（文字列、または count を受け取る関数）
+   */
+  function buildItems(items, targets, options = {}) {
+    const list = Array.isArray(items) ? items : [];
+    const batch = !!targets?.batch;
+    const count = targets?.count || 0;
+    const transform = entries => entries.map(item => {
+      if (!item || item.type === 'separator' || item.type === 'sep' || item.type === 'label') return item;
+      if (batch ? !item.batch && !item.batchOnly : item.batchOnly) return null;
+      const next = { ...item };
+      if (batch && item.batchLabel) {
+        next.label = typeof item.batchLabel === 'function' ? item.batchLabel(count) : item.batchLabel;
+      }
+      if (Array.isArray(item.items)) {
+        next.items = _collapseSeparators(transform(item.items).filter(Boolean));
+        if (!next.items.length) return null;
+      }
+      delete next.batch; delete next.batchOnly; delete next.batchLabel;
+      return next;
+    }).filter(Boolean);
+    const result = _collapseSeparators(transform(list));
+    if (batch && result.length) {
+      const unit = options.unit || '行';
+      result.unshift(
+        { type: 'label', label: `${count}${unit}を選択中`, e2eId: options.labelE2eId || 'row-handle-menu-batch-label' },
+        { type: 'separator' },
+      );
+    }
+    return result;
+  }
+
+  global.MeldexRowHandleMenu = Object.freeze({
+    bind, open, anchorRect, DRAG_THRESHOLD,
+    runsOf, resolveTargets, planInsertions, moveOrder, buildItems,
+  });
 })(typeof window !== 'undefined' ? window : globalThis);
