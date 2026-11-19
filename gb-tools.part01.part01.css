@@ -408,11 +408,14 @@ th.col-drop-right::after { right: -2px; }
 #pivot-table td.db-range-selected .cell-add-btn,
 .pivot-table td.db-range-selected .cell-add-btn,
 td:hover .cell-add-btn { display: inline-flex; }
-/* 値のあるセルの「＋」は、値の行の右端に出る「…」の左隣に並べる（セルの余白に関わらず重ならない） */
-#pivot-table td .cell-values:has(> .cell-value),
-.pivot-table td .cell-values:has(> .cell-value) { position: relative; }
-#pivot-table td .cell-values:has(> .cell-value) > .cell-add-btn,
-.pivot-table td .cell-values:has(> .cell-value) > .cell-add-btn { top: 0; bottom: auto; right: 26px; }
+/* シートの表のセルには「＋」を置かない（2026-11-19）。.cell-add-btn はトピック詳細パネルのプロパティ一覧で使う。 */
+/* Alt+↑↓で選んだ候補値（Enter=編集、Delete=削除、メニューキー=「…」メニュー） */
+#pivot-table td .cell-value.db-candidate-focused,
+.pivot-table td .cell-value.db-candidate-focused {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+  border-radius: var(--ui-radius-xs, 3px);
+}
 .cell-add-btn:hover { color: var(--ui-hover-fg); background: var(--ui-hover-bg); }
 .cell-add-btn:focus-visible { outline: 2px solid var(--a11y-focus-ring, var(--ui-accent)); outline-offset: 1px; }
 #pivot-table td .cell-value,

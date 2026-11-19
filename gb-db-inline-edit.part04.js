@@ -688,6 +688,11 @@ document.addEventListener('keydown', (e) => {
     startEntityInlineRename(keyCell, nameSpan, oldName, dbPath);
     return;
   }
+  // 候補値の選択中の Enter・F2 は、先頭の候補値ではなく選んだ候補値の編集にする（Alt+Enter・Alt+↑↓もここで受ける）。
+  if (typeof _dbHandleCandidateKey === 'function' && _dbHandleCandidateKey(e, table, keyCell)) {
+    e.stopPropagation();
+    return;
+  }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
 
@@ -827,6 +832,139 @@ function _dbMoveRowsByKeyboard(table, keyCell, direction) {
 // テーブルキーボードナビゲーション
 // セル単位のキー操作。Enter/F2 は分割パネル中でもアクティブセルの型別エディタを直接開く。
 // Ctrl+Enter / Ctrl+Shift+Enter などのコマンド系は gb-shortcuts.js に委譲する。
+// ---------------------------------------------------------------------------
+// セルの候補値をキーボードで操作する（2026-11-19。セルの「＋」ボタンの撤去に合わせて追加）
+//   Alt+Enter          候補値を追加
+//   Alt+↓ / Alt+↑      セル内の候補値を1つずつ選ぶ（端で反対側へ戻る）
+//   Enter / F2         選んだ候補値を編集
+//   Delete / Backspace 選んだ候補値を削除（「…」メニューの「候補値を削除」と同じ処理）
+//   メニューキー / Shift+F10  選んだ候補値の「…」メニューを開く
+//   Esc・矢印・Tab     候補値の選択をやめる（矢印・Tab は通常のセル移動を続ける）
+// ---------------------------------------------------------------------------
+const DB_CANDIDATE_EDIT_TARGETS = '.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url';
+
+function _dbCellCandidateRows(td) {
+  return Array.from(td?.querySelectorAll?.('.cell-values > .cell-value') || [])
+    .filter(row => !row.hidden && !row.closest('[hidden]'));
+}
+
+function _dbClearCandidateFocus(table) {
+  const current = table?._dbCandidateFocus;
+  current?.row?.classList?.remove('db-candidate-focused');
+  current?.row?.removeAttribute?.('aria-current');
+  if (table) table._dbCandidateFocus = null;
+}
+
+function _dbFocusedCandidateRow(table, td) {
+  const current = table?._dbCandidateFocus;
+  if (!current || current.cell !== td || !current.row?.isConnected || !td.contains(current.row)) {
+    if (current) _dbClearCandidateFocus(table);
+    return null;
+  }
+  return current.row;
+}
+
+// メニューキー／Shift+F10 はブラウザが続けて contextmenu を出すため、候補値のメニューを開いた直後の1回は打ち消す
+// （行の右クリックメニューまで重ねて開かない）。
+let _dbCandidateMenuOpenedAt = 0;
+document.addEventListener('contextmenu', event => {
+  if (!_dbCandidateMenuOpenedAt || Date.now() - _dbCandidateMenuOpenedAt > 800) return;
+  _dbCandidateMenuOpenedAt = 0;
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
+function _dbOpenCandidateMenu(row) {
+  const more = row?.querySelector?.(':scope > .cell-value-more');
+  if (!more) return false;
+  more.style.display = '';
+  const rect = more.getBoundingClientRect();
+  more.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, view: window,
+    clientX: rect.left + rect.width / 2, clientY: rect.bottom,
+  }));
+  return true;
+}
+
+function _dbRunCandidateMenuAction(row, action) {
+  if (!_dbOpenCandidateMenu(row)) return false;
+  const menus = Array.from(document.querySelectorAll('.gb-context-menu'));
+  const item = menus[menus.length - 1]?.querySelector?.(`[data-value-menu-action="${action}"]`);
+  if (!item || item.getAttribute('aria-disabled') === 'true') {
+    menus[menus.length - 1]?.remove();
+    return false;
+  }
+  item.click();
+  return true;
+}
+
+function _dbHandleCandidateKey(e, table, td) {
+  if (!table || !td || td.classList.contains('col-entity') || td.classList.contains('col-row-controls')) {
+    if (table?._dbCandidateFocus) _dbClearCandidateFocus(table);
+    return false;
+  }
+  if (e.ctrlKey || e.metaKey) return false;
+  const key = e.key;
+  // Alt+Enter: 候補値を追加（空のセルでも値のあるセルでも、新しい候補値の入力を始める）
+  if (e.altKey && !e.shiftKey && key === 'Enter') {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    if (typeof _dbStartCellInlineEditor === 'function') _dbStartCellInlineEditor(td);
+    return true;
+  }
+  // Alt+↓ / Alt+↑: セル内の候補値を選ぶ
+  if (e.altKey && !e.shiftKey && (key === 'ArrowDown' || key === 'ArrowUp')) {
+    const rows = _dbCellCandidateRows(td);
+    if (!rows.length) return false;
+    e.preventDefault();
+    const focused = _dbFocusedCandidateRow(table, td);
+    const index = focused ? rows.indexOf(focused) : -1;
+    const step = key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = index < 0 ? (step > 0 ? 0 : rows.length - 1) : (index + step + rows.length) % rows.length;
+    _dbClearCandidateFocus(table);
+    const row = rows[nextIndex];
+    row.classList.add('db-candidate-focused');
+    row.setAttribute('aria-current', 'true');
+    row.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    table._dbCandidateFocus = { cell: td, row };
+    if (typeof showStatus === 'function') showStatus(`候補値 ${nextIndex + 1} / ${rows.length}（Enter 編集・Delete 削除・メニューキー メニュー）`);
+    return true;
+  }
+  const focused = _dbFocusedCandidateRow(table, td);
+  if (!focused) return false;
+  if ((key === 'Enter' || key === 'F2') && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    const target = focused.querySelector(DB_CANDIDATE_EDIT_TARGETS);
+    if (target) target.click();
+    else _dbOpenCandidateMenu(focused);
+    return true;
+  }
+  if ((key === 'Delete' || key === 'Backspace') && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    if (!_dbRunCandidateMenuAction(focused, 'delete') && typeof showStatus === 'function') {
+      showStatus('この候補値は削除できません', true);
+    }
+    return true;
+  }
+  if (key === 'ContextMenu' || (key === 'F10' && e.shiftKey && !e.altKey)) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    _dbCandidateMenuOpenedAt = Date.now();
+    _dbOpenCandidateMenu(focused);
+    return true;
+  }
+  if (key === 'Escape') {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    return true;
+  }
+  // それ以外のキー（矢印・Tab・文字入力など）は候補値の選択をやめ、通常の処理へ渡す。
+  _dbClearCandidateFocus(table);
+  return false;
+}
+
 document.addEventListener('keydown', (e) => {
   const setNavDebug = (extra) => {
     try {
@@ -927,6 +1065,8 @@ document.addEventListener('keydown', (e) => {
     delete table._dbKeyboardRowAnchor;
   }
 
+  // 候補値の選択中は Enter・F2 を選んだ候補値の編集に使うため、セル編集の開始より先に判定する。
+  if (_dbHandleCandidateKey(e, table, keyCell)) return;
   if (_dbHandleCellEditorKey(e, colIdx, keyCell)) return;
 
   if (e.key === 'Escape' && _dbSelectedDataCells(table, true).length > 1) {

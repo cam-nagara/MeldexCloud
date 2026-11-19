@@ -740,40 +740,6 @@ function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
   return Boolean(sourceStatusDot);
 }
 
-// ロールアップの行合わせで個々の候補チップ(＋その場の「候補値を追加」導線)が
-// hidden になる際、単独の「＋」(.cell-add-btn) 自体は「元データの候補値が0件の
-// 時だけ出す」設計（2026-08-10 _cellUiShouldShowStandaloneAdd 導入）のため、
-// 既に候補のあるリレーションセルには最初から作られていない。行合わせ表示は
-// チップ側の追加導線を隠す代わりとして単独＋の再利用を前提にしていたため、
-// 無ければここで作る（2026-08-13 行合わせ後に＋ボタンが消える不具合の修正）。
-function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx) {
-  if (cellValues.querySelector('.cell-add-btn')) return;
-  const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
-  const ptc = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[relationProp] : null;
-  if (typeof _cellUiCanAddCandidate !== 'function' || !_cellUiCanAddCandidate(dbPath, relationProp, ptc, ctx)) return;
-  const entityName = relationCell.closest('tr')?.dataset?.entityName || '';
-  if (!entityName || typeof startCellInlineAdd !== 'function') return;
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'cell-add-btn';
-  addBtn.dataset.rollupAlignedAdd = '1';
-  addBtn.dataset.e2eId = `${relationCell.dataset.e2eId || 'db-table-cell'}-add`;
-  addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
-  addBtn.title = '候補値を追加';
-  addBtn.setAttribute('aria-label', addBtn.title);
-  addBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  addBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : `${dbPath}/${entityName}.md`;
-    startCellInlineAdd(relationCell, entityPath, entityName, relationProp);
-  });
-  cellValues.appendChild(addBtn);
-}
-
 function _dbRestoreUnalignedRelationCell(relationCell, cellValues) {
   cellValues.querySelector('.db-rollup-relation-lines')?.remove();
   cellValues.querySelectorAll('[data-rollup-aligned-add="1"]').forEach(button => button.remove());
@@ -800,13 +766,8 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
     _dbRestoreUnalignedRelationCell(relationCell, cellValues);
     return;
   }
-  _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx);
   [...cellValues.children].forEach(child => {
     if (child.classList?.contains('db-rollup-relation-lines')) return;
-    if (child.classList?.contains('cell-add-btn')) {
-      child.hidden = false;
-      return;
-    }
     if (!child.hidden) child.dataset.rollupAlignedHidden = '1';
     child.hidden = true;
   });
@@ -1139,27 +1100,8 @@ function renderEntityCell(entityName, propName, ctx, options) {
       );
     });
 
-    // 単独の「＋」は、フィルター後の表示件数ではなく元データの候補値が0件の時だけ出す。
-    if (typeof _cellUiShouldShowStandaloneAdd === 'function'
-        && _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx)) {
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.className = 'cell-add-btn';
-      addBtn.dataset.e2eId = `${td.dataset.e2eId || 'db-table-cell'}-add`;
-      addBtn.innerHTML = lucide('plus', 14);
-      addBtn.title = ptc && ptc.type === 'select' ? '値を選択' : '候補値を追加';
-      addBtn.setAttribute('aria-label', addBtn.title);
-      addBtn.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      addBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
-      });
-      container.appendChild(addBtn);
-    }
+    // セルの「＋」は置かない（2026-11-19）。候補値の追加は、空のセルのクリック・Enter、Alt+Enter、
+    // 値の「…」メニューの「候補値を追加」で行う（UI共通ルール §6）。
   }
 
   if (typeof window !== 'undefined') window.MeldexComputedColumns?.decorateCell?.(td, container, dbPath, propName, entityData, ctx);

@@ -136,6 +136,9 @@ const GB_SHORTCUTS = {
   'db.edit':              { key: 'f2',           label: 'セル / トピック名を編集',   scope: 'database' },
   'db.newEntry':          { key: 'ctrl+enter',   label: '新規トピック追加',           scope: 'database' },
   'db.newProp':           { key: 'ctrl+shift+enter', label: '新規列追加',    scope: 'database' },
+  'db.addCandidate':      { key: 'alt+enter',    label: '候補値を追加',              scope: 'database' },
+  'db.candidateNext':     { key: 'alt+arrowdown', label: 'セル内の次の候補値を選ぶ',  scope: 'database' },
+  'db.candidatePrev':     { key: 'alt+arrowup',  label: 'セル内の前の候補値を選ぶ',   scope: 'database' },
   'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索と置換',   scope: 'database' },
   'db.replace':           { key: 'ctrl+h',       label: '現在のシートで置換',         scope: 'database' },
   'db.advancedFilter':    { key: 'ctrl+shift+f', label: '複数条件フィルタ',           scope: 'database' },
@@ -1171,6 +1174,10 @@ const _shortcutHandlers = {
     _showBulkEditModal(selected, ctx);
   },
   'db.copy': () => { return false; },
+  // 候補値の追加・選択はシートの表のキー処理（gb-db-inline-edit.part04.js の _dbHandleCandidateKey）が行う。
+  'db.addCandidate': () => { return false; },
+  'db.candidateNext': () => { return false; },
+  'db.candidatePrev': () => { return false; },
   'db.paste': () => { return false; },
   'db.selectAllRows': () => {
     const cell = typeof _dbActiveCellForRowShortcut === 'function' ? _dbActiveCellForRowShortcut() : null;

@@ -167305,27 +167305,7 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   values.forEach(cellVal => {
     container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
   });
-  // 単独の「＋」は元データ0件だけ。フィルターで候補値が見えなくなっても生成しない。
-  if (typeof _cellUiShouldShowStandaloneAdd === 'function'
-      && _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx)) {
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'cell-add-btn';
-    addBtn.dataset.e2eId = `${td.dataset.e2eId || 'db-pivot-cell'}-add`;
-    addBtn.innerHTML = lucide('plus', 14);
-    addBtn.title = ptc?.type === 'select' ? '値を選択' : '候補値を追加';
-    addBtn.setAttribute('aria-label', addBtn.title);
-    addBtn.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    addBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      startCellInlineAdd(td, entityPath, entityName, propName);
-    });
-    container.appendChild(addBtn);
-  }
+  // セルの「＋」は置かない（2026-11-19。候補値の追加はクリック・Enter・Alt+Enter・値の「…」メニュー）。
   const cellValues = values.map(v => v.value).join(', ');
   const cc = getCellColor(cellValues, propName, dbPath, ctx);
   if (cc) {
@@ -174150,6 +174130,11 @@ document.addEventListener('keydown', (e) => {
     startEntityInlineRename(keyCell, nameSpan, oldName, dbPath);
     return;
   }
+  // 候補値の選択中の Enter・F2 は、先頭の候補値ではなく選んだ候補値の編集にする（Alt+Enter・Alt+↑↓もここで受ける）。
+  if (typeof _dbHandleCandidateKey === 'function' && _dbHandleCandidateKey(e, table, keyCell)) {
+    e.stopPropagation();
+    return;
+  }
   _dbHandleCellEditorKey(e, colIdx, keyCell);
 }, true);
 
@@ -174289,6 +174274,139 @@ function _dbMoveRowsByKeyboard(table, keyCell, direction) {
 // テーブルキーボードナビゲーション
 // セル単位のキー操作。Enter/F2 は分割パネル中でもアクティブセルの型別エディタを直接開く。
 // Ctrl+Enter / Ctrl+Shift+Enter などのコマンド系は gb-shortcuts.js に委譲する。
+// ---------------------------------------------------------------------------
+// セルの候補値をキーボードで操作する（2026-11-19。セルの「＋」ボタンの撤去に合わせて追加）
+//   Alt+Enter          候補値を追加
+//   Alt+↓ / Alt+↑      セル内の候補値を1つずつ選ぶ（端で反対側へ戻る）
+//   Enter / F2         選んだ候補値を編集
+//   Delete / Backspace 選んだ候補値を削除（「…」メニューの「候補値を削除」と同じ処理）
+//   メニューキー / Shift+F10  選んだ候補値の「…」メニューを開く
+//   Esc・矢印・Tab     候補値の選択をやめる（矢印・Tab は通常のセル移動を続ける）
+// ---------------------------------------------------------------------------
+const DB_CANDIDATE_EDIT_TARGETS = '.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url';
+
+function _dbCellCandidateRows(td) {
+  return Array.from(td?.querySelectorAll?.('.cell-values > .cell-value') || [])
+    .filter(row => !row.hidden && !row.closest('[hidden]'));
+}
+
+function _dbClearCandidateFocus(table) {
+  const current = table?._dbCandidateFocus;
+  current?.row?.classList?.remove('db-candidate-focused');
+  current?.row?.removeAttribute?.('aria-current');
+  if (table) table._dbCandidateFocus = null;
+}
+
+function _dbFocusedCandidateRow(table, td) {
+  const current = table?._dbCandidateFocus;
+  if (!current || current.cell !== td || !current.row?.isConnected || !td.contains(current.row)) {
+    if (current) _dbClearCandidateFocus(table);
+    return null;
+  }
+  return current.row;
+}
+
+// メニューキー／Shift+F10 はブラウザが続けて contextmenu を出すため、候補値のメニューを開いた直後の1回は打ち消す
+// （行の右クリックメニューまで重ねて開かない）。
+let _dbCandidateMenuOpenedAt = 0;
+document.addEventListener('contextmenu', event => {
+  if (!_dbCandidateMenuOpenedAt || Date.now() - _dbCandidateMenuOpenedAt > 800) return;
+  _dbCandidateMenuOpenedAt = 0;
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
+function _dbOpenCandidateMenu(row) {
+  const more = row?.querySelector?.(':scope > .cell-value-more');
+  if (!more) return false;
+  more.style.display = '';
+  const rect = more.getBoundingClientRect();
+  more.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, view: window,
+    clientX: rect.left + rect.width / 2, clientY: rect.bottom,
+  }));
+  return true;
+}
+
+function _dbRunCandidateMenuAction(row, action) {
+  if (!_dbOpenCandidateMenu(row)) return false;
+  const menus = Array.from(document.querySelectorAll('.gb-context-menu'));
+  const item = menus[menus.length - 1]?.querySelector?.(`[data-value-menu-action="${action}"]`);
+  if (!item || item.getAttribute('aria-disabled') === 'true') {
+    menus[menus.length - 1]?.remove();
+    return false;
+  }
+  item.click();
+  return true;
+}
+
+function _dbHandleCandidateKey(e, table, td) {
+  if (!table || !td || td.classList.contains('col-entity') || td.classList.contains('col-row-controls')) {
+    if (table?._dbCandidateFocus) _dbClearCandidateFocus(table);
+    return false;
+  }
+  if (e.ctrlKey || e.metaKey) return false;
+  const key = e.key;
+  // Alt+Enter: 候補値を追加（空のセルでも値のあるセルでも、新しい候補値の入力を始める）
+  if (e.altKey && !e.shiftKey && key === 'Enter') {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    if (typeof _dbStartCellInlineEditor === 'function') _dbStartCellInlineEditor(td);
+    return true;
+  }
+  // Alt+↓ / Alt+↑: セル内の候補値を選ぶ
+  if (e.altKey && !e.shiftKey && (key === 'ArrowDown' || key === 'ArrowUp')) {
+    const rows = _dbCellCandidateRows(td);
+    if (!rows.length) return false;
+    e.preventDefault();
+    const focused = _dbFocusedCandidateRow(table, td);
+    const index = focused ? rows.indexOf(focused) : -1;
+    const step = key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = index < 0 ? (step > 0 ? 0 : rows.length - 1) : (index + step + rows.length) % rows.length;
+    _dbClearCandidateFocus(table);
+    const row = rows[nextIndex];
+    row.classList.add('db-candidate-focused');
+    row.setAttribute('aria-current', 'true');
+    row.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    table._dbCandidateFocus = { cell: td, row };
+    if (typeof showStatus === 'function') showStatus(`候補値 ${nextIndex + 1} / ${rows.length}（Enter 編集・Delete 削除・メニューキー メニュー）`);
+    return true;
+  }
+  const focused = _dbFocusedCandidateRow(table, td);
+  if (!focused) return false;
+  if ((key === 'Enter' || key === 'F2') && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    const target = focused.querySelector(DB_CANDIDATE_EDIT_TARGETS);
+    if (target) target.click();
+    else _dbOpenCandidateMenu(focused);
+    return true;
+  }
+  if ((key === 'Delete' || key === 'Backspace') && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    if (!_dbRunCandidateMenuAction(focused, 'delete') && typeof showStatus === 'function') {
+      showStatus('この候補値は削除できません', true);
+    }
+    return true;
+  }
+  if (key === 'ContextMenu' || (key === 'F10' && e.shiftKey && !e.altKey)) {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    _dbCandidateMenuOpenedAt = Date.now();
+    _dbOpenCandidateMenu(focused);
+    return true;
+  }
+  if (key === 'Escape') {
+    e.preventDefault();
+    _dbClearCandidateFocus(table);
+    return true;
+  }
+  // それ以外のキー（矢印・Tab・文字入力など）は候補値の選択をやめ、通常の処理へ渡す。
+  _dbClearCandidateFocus(table);
+  return false;
+}
+
 document.addEventListener('keydown', (e) => {
   const setNavDebug = (extra) => {
     try {
@@ -174389,6 +174507,8 @@ document.addEventListener('keydown', (e) => {
     delete table._dbKeyboardRowAnchor;
   }
 
+  // 候補値の選択中は Enter・F2 を選んだ候補値の編集に使うため、セル編集の開始より先に判定する。
+  if (_dbHandleCandidateKey(e, table, keyCell)) return;
   if (_dbHandleCellEditorKey(e, colIdx, keyCell)) return;
 
   if (e.key === 'Escape' && _dbSelectedDataCells(table, true).length > 1) {
@@ -175692,6 +175812,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   const addCandidate = document.createElement('div');
   addCandidate.className = 'gb-context-menu-item';
   addCandidate.innerHTML = lucide('plus', 14) + ' 候補値を追加';
+  addCandidate.dataset.valueMenuAction = 'add';
   const canAddCandidate = _cellUiCanAddCandidate(currentDbPath, propName, _ptc, currentCtx, { hasExistingValue: true });
   if (!canAddCandidate) {
     addCandidate.classList.add('disabled');
@@ -175942,6 +176063,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   delItem.className = 'gb-context-menu-item';
   delItem.style.color = 'var(--red)';
   delItem.innerHTML = lucide('trash2', 14) + ' 候補値を削除';
+  delItem.dataset.valueMenuAction = 'delete';
   delItem.addEventListener('click', async () => {
     menu.remove();
     if (lockMsg) { showStatus(lockMsg, true); return; }
@@ -190306,6 +190428,8 @@ async function _handleTbodyClick(e) {
     if (isCellSelectionModifier && typeof selectDbCellFromPointer === 'function') {
       selectDbCellFromPointer(td, e);
     } else if (opensInlineDropdown) {
+      e.preventDefault();
+      e.stopPropagation();
       startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
     } else {
       setActiveCell(td);
@@ -190318,12 +190442,19 @@ async function _handleTbodyClick(e) {
   const rawValues = entityData?.[propName] || [];
   const values = filterValues(rawValues, undefined, ctx?.filter);
 
+  // 入力を始めるクリックは、ここで伝わりを止める（候補画面を開いた同じクリックが外側クリックの
+  // 「閉じる」処理へ届き、開いた直後に閉じてしまうため。選択肢の列のセル側の処理と同じ扱い）。
+  const startInlineAddFromClick = () => {
+    e.preventDefault();
+    e.stopPropagation();
+    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+  };
   if (isCellSelectionModifier && typeof selectDbCellFromPointer === 'function') {
     selectDbCellFromPointer(td, e);
   } else if (opensInlineDropdown) {
-    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+    startInlineAddFromClick();
   } else if (values.length === 0 && !(ptc && (ptc.type === 'formula' || ptc.type === 'rollup' || ptc.type === 'button' || ptc.type === 'multi-source-relation' || ptc.type === 'chat'))) {
-    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+    startInlineAddFromClick();
   } else {
     setActiveCell(td);
   }
@@ -191205,40 +191336,6 @@ function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
   return Boolean(sourceStatusDot);
 }
 
-// ロールアップの行合わせで個々の候補チップ(＋その場の「候補値を追加」導線)が
-// hidden になる際、単独の「＋」(.cell-add-btn) 自体は「元データの候補値が0件の
-// 時だけ出す」設計（2026-08-10 _cellUiShouldShowStandaloneAdd 導入）のため、
-// 既に候補のあるリレーションセルには最初から作られていない。行合わせ表示は
-// チップ側の追加導線を隠す代わりとして単独＋の再利用を前提にしていたため、
-// 無ければここで作る（2026-08-13 行合わせ後に＋ボタンが消える不具合の修正）。
-function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx) {
-  if (cellValues.querySelector('.cell-add-btn')) return;
-  const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
-  const ptc = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[relationProp] : null;
-  if (typeof _cellUiCanAddCandidate !== 'function' || !_cellUiCanAddCandidate(dbPath, relationProp, ptc, ctx)) return;
-  const entityName = relationCell.closest('tr')?.dataset?.entityName || '';
-  if (!entityName || typeof startCellInlineAdd !== 'function') return;
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'cell-add-btn';
-  addBtn.dataset.rollupAlignedAdd = '1';
-  addBtn.dataset.e2eId = `${relationCell.dataset.e2eId || 'db-table-cell'}-add`;
-  addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
-  addBtn.title = '候補値を追加';
-  addBtn.setAttribute('aria-label', addBtn.title);
-  addBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  addBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, ctx?.pivotData) : `${dbPath}/${entityName}.md`;
-    startCellInlineAdd(relationCell, entityPath, entityName, relationProp);
-  });
-  cellValues.appendChild(addBtn);
-}
-
 function _dbRestoreUnalignedRelationCell(relationCell, cellValues) {
   cellValues.querySelector('.db-rollup-relation-lines')?.remove();
   cellValues.querySelectorAll('[data-rollup-aligned-add="1"]').forEach(button => button.remove());
@@ -191265,13 +191362,8 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
     _dbRestoreUnalignedRelationCell(relationCell, cellValues);
     return;
   }
-  _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx);
   [...cellValues.children].forEach(child => {
     if (child.classList?.contains('db-rollup-relation-lines')) return;
-    if (child.classList?.contains('cell-add-btn')) {
-      child.hidden = false;
-      return;
-    }
     if (!child.hidden) child.dataset.rollupAlignedHidden = '1';
     child.hidden = true;
   });
@@ -191604,27 +191696,8 @@ function renderEntityCell(entityName, propName, ctx, options) {
       );
     });
 
-    // 単独の「＋」は、フィルター後の表示件数ではなく元データの候補値が0件の時だけ出す。
-    if (typeof _cellUiShouldShowStandaloneAdd === 'function'
-        && _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx)) {
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.className = 'cell-add-btn';
-      addBtn.dataset.e2eId = `${td.dataset.e2eId || 'db-table-cell'}-add`;
-      addBtn.innerHTML = lucide('plus', 14);
-      addBtn.title = ptc && ptc.type === 'select' ? '値を選択' : '候補値を追加';
-      addBtn.setAttribute('aria-label', addBtn.title);
-      addBtn.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      addBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
-      });
-      container.appendChild(addBtn);
-    }
+    // セルの「＋」は置かない（2026-11-19）。候補値の追加は、空のセルのクリック・Enter、Alt+Enter、
+    // 値の「…」メニューの「候補値を追加」で行う（UI共通ルール §6）。
   }
 
   if (typeof window !== 'undefined') window.MeldexComputedColumns?.decorateCell?.(td, container, dbPath, propName, entityData, ctx);
@@ -281470,6 +281543,9 @@ const GB_SHORTCUTS = {
   'db.edit':              { key: 'f2',           label: 'セル / トピック名を編集',   scope: 'database' },
   'db.newEntry':          { key: 'ctrl+enter',   label: '新規トピック追加',           scope: 'database' },
   'db.newProp':           { key: 'ctrl+shift+enter', label: '新規列追加',    scope: 'database' },
+  'db.addCandidate':      { key: 'alt+enter',    label: '候補値を追加',              scope: 'database' },
+  'db.candidateNext':     { key: 'alt+arrowdown', label: 'セル内の次の候補値を選ぶ',  scope: 'database' },
+  'db.candidatePrev':     { key: 'alt+arrowup',  label: 'セル内の前の候補値を選ぶ',   scope: 'database' },
   'db.search':            { key: 'ctrl+f',       label: '現在のシートを検索と置換',   scope: 'database' },
   'db.replace':           { key: 'ctrl+h',       label: '現在のシートで置換',         scope: 'database' },
   'db.advancedFilter':    { key: 'ctrl+shift+f', label: '複数条件フィルタ',           scope: 'database' },
@@ -282505,6 +282581,10 @@ const _shortcutHandlers = {
     _showBulkEditModal(selected, ctx);
   },
   'db.copy': () => { return false; },
+  // 候補値の追加・選択はシートの表のキー処理（gb-db-inline-edit.part04.js の _dbHandleCandidateKey）が行う。
+  'db.addCandidate': () => { return false; },
+  'db.candidateNext': () => { return false; },
+  'db.candidatePrev': () => { return false; },
   'db.paste': () => { return false; },
   'db.selectAllRows': () => {
     const cell = typeof _dbActiveCellForRowShortcut === 'function' ? _dbActiveCellForRowShortcut() : null;

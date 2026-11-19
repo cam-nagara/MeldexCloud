@@ -646,6 +646,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   const addCandidate = document.createElement('div');
   addCandidate.className = 'gb-context-menu-item';
   addCandidate.innerHTML = lucide('plus', 14) + ' 候補値を追加';
+  addCandidate.dataset.valueMenuAction = 'add';
   const canAddCandidate = _cellUiCanAddCandidate(currentDbPath, propName, _ptc, currentCtx, { hasExistingValue: true });
   if (!canAddCandidate) {
     addCandidate.classList.add('disabled');
@@ -896,6 +897,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   delItem.className = 'gb-context-menu-item';
   delItem.style.color = 'var(--red)';
   delItem.innerHTML = lucide('trash2', 14) + ' 候補値を削除';
+  delItem.dataset.valueMenuAction = 'delete';
   delItem.addEventListener('click', async () => {
     menu.remove();
     if (lockMsg) { showStatus(lockMsg, true); return; }

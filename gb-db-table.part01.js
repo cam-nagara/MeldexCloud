@@ -987,6 +987,8 @@ async function _handleTbodyClick(e) {
     if (isCellSelectionModifier && typeof selectDbCellFromPointer === 'function') {
       selectDbCellFromPointer(td, e);
     } else if (opensInlineDropdown) {
+      e.preventDefault();
+      e.stopPropagation();
       startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
     } else {
       setActiveCell(td);
@@ -999,12 +1001,19 @@ async function _handleTbodyClick(e) {
   const rawValues = entityData?.[propName] || [];
   const values = filterValues(rawValues, undefined, ctx?.filter);
 
+  // 入力を始めるクリックは、ここで伝わりを止める（候補画面を開いた同じクリックが外側クリックの
+  // 「閉じる」処理へ届き、開いた直後に閉じてしまうため。選択肢の列のセル側の処理と同じ扱い）。
+  const startInlineAddFromClick = () => {
+    e.preventDefault();
+    e.stopPropagation();
+    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+  };
   if (isCellSelectionModifier && typeof selectDbCellFromPointer === 'function') {
     selectDbCellFromPointer(td, e);
   } else if (opensInlineDropdown) {
-    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+    startInlineAddFromClick();
   } else if (values.length === 0 && !(ptc && (ptc.type === 'formula' || ptc.type === 'rollup' || ptc.type === 'button' || ptc.type === 'multi-source-relation' || ptc.type === 'chat'))) {
-    startCellInlineAdd(td, _entityPath(dbPath, entityName), entityName, propName);
+    startInlineAddFromClick();
   } else {
     setActiveCell(td);
   }
