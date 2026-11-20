@@ -673,6 +673,7 @@ function _showBulkEditModal(entityNames, ctx, options = {}) {
     let ok = 0;
     let fail = 0;
     const failNames = [];
+    const rollbackFailNames = [];
     const beforeSnapshots = [];
     const afterSnapshots = [];
     for (const name of entityNames) {
@@ -737,31 +738,54 @@ function _showBulkEditModal(entityNames, ctx, options = {}) {
         ok++;
       } catch (mutationError) {
         failNames.push(name);
+        let rollbackOk = true;
         try {
           if (bidirectionalOp?.undo) await bidirectionalOp.undo();
         } catch (rollbackError) {
-          console.error('一括編集の双方向リレーション復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集の双方向リレーション復旧に失敗:', rollbackError, mutationError);
         }
         try {
           if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
             await _restoreCascadeDependentValues(ep || _entityPath(dbPath, name), cascadeClears, { dbPath, ctx });
           }
         } catch (rollbackError) {
-          console.error('一括編集のカスケード値復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集のカスケード値復旧に失敗:', rollbackError, mutationError);
         }
         try {
           if (beforeSnapshot) await _bulkReplaceEntityPropValues(ep || _entityPath(dbPath, name), prop, beforeSnapshot.values);
           else if (createdRef?.file) await _apiPutValue(createdRef, { _delete: true });
         } catch (rollbackError) {
-          console.error('一括編集のセル値復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集のセル値復旧に失敗:', rollbackError, mutationError);
         }
+        // 元の値へ戻せなかった行は、結果の表示で名前を出して確認を促す（黙って不整合を残さない）
+        if (!rollbackOk) rollbackFailNames.push(name);
         fail++;
       }
     }
+    // 成功した行だけを取り消しの履歴へ積み、失敗した行は元の値へ戻してある（部分成功）。
+    // 失敗した行だけを選択したまま残し、もう一度「一括編集」で失敗分だけを再試行できるようにする。
     _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx);
-    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件: ' + failNames.join(', ') : ''}`, fail > 0);
+    const rollbackNote = rollbackFailNames.length
+      ? `。元の値へ戻せなかった行があります: ${rollbackFailNames.join(', ')}（値を確認してください）`
+      : '';
+    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件: ' + failNames.join(', ') + '（失敗した行を選択しています）' : ''}${rollbackNote}`, fail > 0);
     await selectDatabase(dbPath, ctx);
-    _restoreSelectionByEntityNames(ctx, entityNames);
+    if (fail > 0) {
+      const c = ctx || _currentPaneState();
+      if (c?._selectedEntities) c._selectedEntities.clear();
+      const tblSel = '#' + ((c && c.tableId) || 'pivot-table');
+      const paneRoot = _paneEl(c, tblSel) || (!c ? document : null);
+      paneRoot?.querySelectorAll?.('.row-select-cb').forEach(cb => {
+        cb.checked = false;
+        cb.closest('tr')?.classList.remove('row-selected');
+      });
+      _restoreSelectionByEntityNames(ctx, failNames);
+    } else {
+      _restoreSelectionByEntityNames(ctx, entityNames);
+    }
     _updateBulkEditBar(ctx);
   });
 }

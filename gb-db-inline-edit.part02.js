@@ -48,10 +48,18 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     addBtn.style.display = 'none';
     addBtn.dataset.editingHidden = '1';
   }
+  // 編集を始めた後に、利用者が別のセルを選んだか（クリック・確定時の移動など）。
+  const userMovedToOtherCell = () => {
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
+    return !!(current && current !== td && current.isConnected
+      && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq);
+  };
   const cancel = () => {
     if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    // 空のまま別のセルをクリックして入力をやめた時（blur）は、選んだ先の選択を奪わない。
+    if (userMovedToOtherCell()) return;
     setActiveCell(td);
   };
   const pos = _cellPos(td);
@@ -60,9 +68,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (!ownsInlineEditor() || typeof setActiveCell !== 'function' || !td?.isConnected) return;
     // 保存の完了を待つ間に利用者が別のセルへ移っていたら、選択とフォーカスを奪わない。
     // 奪うと移動先の入力欄が blur で途中確定され、続く入力が別のセルへ流れる。
-    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
-    if (current && current !== td && current.isConnected
-        && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq) return;
+    if (userMovedToOtherCell()) return;
     setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
@@ -243,6 +249,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     let backendCommitted = false;
     let resolvePendingCreate, rejectPendingCreate;
     const writeStatus = isPickerReplacementType || !getStatusEnabled(dbPath) ? '採用' : '案';
+    const historyScope = typeof _dbScopeForPath === 'function'
+      ? _dbScopeForPath(dbPath)
+      : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+    // 取り消しの順番は保存の完了順ではなく確定の順にする。確定時に履歴の枠だけ先に取る。
+    const historySlot = typeof historyReserve === 'function'
+      ? historyReserve('値追加: ' + propName + '=' + value, historyScope) : null;
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -263,6 +275,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         refreshCellDisplayNow([], value);
         _restoreCellPos(pos, moveTo);
         restoredOptimistic = true;
+      }
+      // 表の末尾で追加した直後の行は、作成の保存が終わるまで保存先にファイルが無い。
+      // 先に値を送ると失敗して入力が失われるため、作成の完了を待ち、確定した保存先へ書く。
+      if (typeof _dbResolveEntityPathForOpen === 'function') {
+        entityPath = (await _dbResolveEntityPathForOpen(dbPath, entityName, entityPath)) || entityPath;
       }
       const preparedRemoteState = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional
         && typeof _prepareBidirectionalRemoteState === 'function')
@@ -303,9 +320,6 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       backendCommitted = true;
       applyValueToSelectedPeerCells(value, { status: writeStatus });
-      const historyScope = typeof _dbScopeForPath === 'function'
-        ? _dbScopeForPath(dbPath)
-        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
       if (filePath) {
         const candIdx = result?.candidate_index;
         const undoFn = (candIdx != null)
@@ -343,9 +357,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             }
             await selectDatabase(dbPath, ctx, { silent: true });
           };
-        historyPush('値追加: ' + propName + '=' + value,
-          undoFn,
-          async () => {
+        const redoFn = async () => {
             await _apiPostValue(entityPath, propName, value, writeStatus, '');
             if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
               await _applyBidirectionalRelationSync({
@@ -361,10 +373,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               await _redoCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
             }
             await selectDatabase(dbPath, ctx, { silent: true });
-          },
-          historyScope
-        );
+          };
+        if (historySlot) historySlot.fill(undoFn, redoFn);
+        else historyPush('値追加: ' + propName + '=' + value, undoFn, redoFn, historyScope);
       }
+      historySlot?.cancel();
       if (isRelationType
           && typeof _upsertLocalPivotValue === 'function'
           && typeof _finalizeRelationCellUpdate === 'function') {
@@ -453,6 +466,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       cancel();
       return false;
     } finally {
+      // 保存に失敗した・履歴に残す対象が無かった場合は、先に取った枠を取り除く。
+      historySlot?.cancel();
       if (optimisticValue) delete optimisticValue._pendingCreate;
     }
   };
@@ -473,6 +488,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if ((existing.value || '') === value) { cancel(); return; }
     const oldValue = existing.value || '';
     const pendingCreate = existing._pendingCreate;
+    const historySlot = _dbReserveValueHistory(propName + ': ' + oldValue + ' → ' + value, existing, dbPath);
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -489,15 +505,22 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       const refreshed = refreshCellDisplayNow([], value);
       _restoreCellPos(pos, moveTo);
       await _apiPutValue(existing, { new_value: value });
-      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+      const pushUndo = () => {
+        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+      };
+      if (historySlot) historySlot.capture(pushUndo);
+      else pushUndo();
+      historySlot?.cancel();
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
     } catch (e) {
+      historySlot?.cancel();
       if (pendingCreate) {
         try { await pendingCreate; }
-        catch {
+        catch (createError) {
           removeLocalCellValue(existing);
           refreshCellDisplayNow([], '');
+          if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (createError?.message || createError || e?.message || e), true);
           cancel();
           return;
         }
@@ -513,6 +536,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       } else {
         existing.value = oldValue;
       }
+      if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       refreshCellDisplayNow([], oldValue);
       cancel();
     }
@@ -547,6 +571,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (oldValue === nextValue) { cancel(); return; }
     const pendingCreate = existing._pendingCreate;
     const saveRef = { ...existing, property: existing.property || propName };
+    const historySlot = nextValue
+      ? _dbReserveValueHistory(propName + ': ' + oldValue + ' → ' + nextValue, existing, dbPath)
+      : _dbReserveValueHistory('値削除: ' + propName + '=' + oldValue, null, dbPath);
     try {
       closeInlineEditorShell();
       if (nextValue) {
@@ -571,10 +598,14 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (nextValue) {
         await _apiPutValue(saveRef, { new_value: nextValue });
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, existing);
-        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
+        const pushUndo = () => {
+          if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
+        };
+        if (historySlot) historySlot.capture(pushUndo);
+        else pushUndo();
       } else {
         await _apiPutValue(saveRef, { _delete: true });
-        if (typeof historyPush === 'function') {
+        const pushDeleteHistory = () => {
           const savedStatus = existing.status || '採用';
           const savedNote = existing.note || '';
           let currentRef = { ...saveRef, value: oldValue, status: savedStatus, note: savedNote };
@@ -600,8 +631,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             },
             _dbScope(dbPath)
           );
+        };
+        if (typeof historyPush === 'function') {
+          if (historySlot) historySlot.capture(pushDeleteHistory);
+          else pushDeleteHistory();
         }
       }
+      historySlot?.cancel();
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(nextValue, {
         status: existing.status || '採用',
@@ -609,6 +645,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         allowEmptyClear: true,
       });
     } catch (e) {
+      historySlot?.cancel();
       if (pendingCreate) {
         try { await pendingCreate; }
         catch {

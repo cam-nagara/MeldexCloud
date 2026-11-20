@@ -357,7 +357,67 @@ function _historyIsBusy() {
   return _historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy);
 }
 
+// 確定（操作）の順で取り消せるよう、保存の完了を待たずに履歴の枠だけ先に取る予約。
+// 保存完了時に fill()／capture() で中身を入れ、保存失敗時は cancel() で枠を取り除く。
+// 中身が入るまで、その枠の取り消し・やり直しは順番待ちのまま保存完了を待つ。
+let _historyCaptureReservation = null;
+
+function historyReserve(label, scope, detail) {
+  const entry = historyPush(label, null, null, scope, detail);
+  let settle = null;
+  entry._historyPending = new Promise(resolve => { settle = resolve; });
+  let finished = false;
+  const finish = () => {
+    finished = true;
+    delete entry._historyPending;
+    settle();
+    renderHistoryList();
+    renderHistoryPanel();
+  };
+  const reservation = {
+    entry,
+    get finished() { return finished; },
+    fill(undoFn, redoFn, nextLabel, nextDetail) {
+      if (finished) return entry;
+      entry.undo = undoFn;
+      entry.redo = redoFn;
+      if (nextLabel) entry.label = nextLabel;
+      if (nextDetail) entry.detail = nextDetail;
+      finish();
+      return entry;
+    },
+    // 中で呼ばれる最初の historyPush をこの枠へ入れる（既存の履歴登録関数をそのまま使うため）。
+    capture(fn) {
+      if (finished) return fn();
+      const previous = _historyCaptureReservation;
+      _historyCaptureReservation = reservation;
+      try { return fn(); }
+      finally {
+        _historyCaptureReservation = previous;
+        if (!finished) reservation.cancel();
+      }
+    },
+    cancel() {
+      if (finished) return;
+      const stacks = [_getStack(entry.scope), _historyGlobal];
+      stacks.forEach(stack => {
+        ['undo', 'redo'].forEach(kind => {
+          const index = stack[kind].indexOf(entry);
+          if (index >= 0) stack[kind].splice(index, 1);
+        });
+      });
+      finish();
+    },
+  };
+  return reservation;
+}
+
 function historyPush(label, undoFn, redoFn, scope, detail) {
+  const reservation = _historyCaptureReservation;
+  if (reservation && !reservation.finished && (reservation.entry.scope || '') === (scope || '')) {
+    _historyCaptureReservation = null;
+    return reservation.fill(undoFn, redoFn, label, detail);
+  }
   const s = _getStack(scope);
   const entry = { id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' };
   s.undo.push(entry);
@@ -383,13 +443,32 @@ async function historyRedo(scope) {
   return _historyNavigate('redo', targetScope, _allowGlobalHistoryFallback(scope, arguments.length));
 }
 
-async function _historyNavigate(direction, targetScope, allowFallback) {
-  if (_historyIsBusy()) return false;
+// 取り消し・やり直しの実行中に押された取り消し・やり直しは捨てずに順番待ちにし、
+// 前の1件が終わってから1件ずつ実行する（保存待ち中の連打で1手分が消えていた）。
+const _historyNavigationQueue = [];
+
+function _historyNavigate(direction, targetScope, allowFallback) {
+  // カレンダー表示モードの独自履歴の実行中は、共通履歴側に順番待ちを流す担当がいないため従来どおり見送る。
+  if (!_historyBusy && _historyIsBusy()) return Promise.resolve(false);
+  return new Promise(resolve => {
+    _historyNavigationQueue.push({ direction, targetScope, allowFallback, resolve });
+    if (!_historyBusy) _historyRunNavigationQueue();
+  });
+}
+
+async function _historyRunNavigationQueue() {
+  if (_historyBusy) return;
   _historyBusy = true;
   try {
     renderHistoryList();
     renderHistoryPanel();
-    return await _historyReplayEntry(direction, targetScope, allowFallback);
+    while (_historyNavigationQueue.length) {
+      const request = _historyNavigationQueue.shift();
+      let result = false;
+      try { result = await _historyReplayEntry(request.direction, request.targetScope, request.allowFallback); }
+      catch { result = false; }
+      request.resolve(result);
+    }
   } finally {
     _historyBusy = false;
     renderHistoryList();
@@ -413,6 +492,9 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
       const preparation = _findHistorySnapshotProvider(actualScope)?.prepare?.(actualScope);
       if ((preparation?.then ? await preparation : preparation) === false) return false;
     }
+    if (_historyHasPendingTop(direction, actualScope, allowFallback)) {
+      await _historyWaitForPendingTop(direction, actualScope, allowFallback);
+    }
     if (s[direction].length === 0 && actualScope && allowFallback && _historyGlobal[direction].length) {
       actualScope = '';
       s = _historyGlobal;
@@ -434,7 +516,7 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
       if (snapshot == null) throw new Error('復元対象の現在の状態を取得できません');
       inverse = () => provider.restore(snapshot, actualScope);
     }
-    const outcome = await entry[direction]();
+    const outcome = await _historyRunReplayStep(() => entry[direction]());
     if (outcome === false) throw new Error('復元が完了しませんでした');
     const index = source.indexOf(entry);
     // 待機中の新しい編集・再読込で分岐した場合は、古いRedoを復活させない。
@@ -450,6 +532,37 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
   } catch (error) {
     showStatus((direction === 'undo' ? 'Undo失敗: ' : 'Redo失敗: ') + (error?.message || error), true);
     return false;
+  }
+}
+
+function _historyPendingTop(direction, targetScope, allowFallback) {
+  let stack = _getStack(targetScope)[direction];
+  if (!stack.length && targetScope && allowFallback) stack = _historyGlobal[direction];
+  const top = stack[stack.length - 1];
+  return top?._historyPending ? top : null;
+}
+
+function _historyHasPendingTop(direction, targetScope, allowFallback) {
+  return !!_historyPendingTop(direction, targetScope, allowFallback);
+}
+
+// 取り消し・やり直しの対象（スタックの先頭）が予約中なら、中身が入るか取り除かれるまで待つ。
+async function _historyWaitForPendingTop(direction, targetScope, allowFallback) {
+  for (let guard = 0; guard < 1000; guard += 1) {
+    const top = _historyPendingTop(direction, targetScope, allowFallback);
+    if (!top) return;
+    await top._historyPending;
+  }
+}
+
+// 取り消し・やり直しの中で動く処理（列の削除・復元に伴う表示設定の保存など）が設定の履歴を
+// 別に積み、やり直しの記録を消さないよう、その間だけ設定の履歴を止める（既存の抑止の仕組みを使う）。
+async function _historyRunReplayStep(fn) {
+  const hasWindow = typeof window !== 'undefined';
+  if (hasWindow) window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+  try { return await fn(); }
+  finally {
+    if (hasWindow) window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
   }
 }
 
@@ -632,6 +745,9 @@ async function historyPanelJump(steps, scope, entryId) {
       if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象の文書が開かれていないため元に戻せません', true); return false; }
     }
     if (!await _historyPrepareNavigation(targetScope)) return false;
+    // 予約中（保存待ち）の枠は中身が入るか取り除かれるまで待ってから戻す範囲を決める。
+    const pendingEntries = initialStack.undo.map(entry => entry._historyPending).filter(Boolean);
+    if (pendingEntries.length) await Promise.all(pendingEntries);
     const index = initialStack.undo.indexOf(selected);
     if (index < 0) return false;
     const planned = initialStack.undo.slice(index).reverse();
@@ -648,6 +764,8 @@ async function historyPanelJump(steps, scope, entryId) {
     _historyBusy = false;
     renderHistoryList();
     renderHistoryPanel();
+    // 一括の取り消し中に押された取り消し・やり直しを、終わった後に順番に流す。
+    if (_historyNavigationQueue.length) _historyRunNavigationQueue();
   }
 }
 
@@ -1060,12 +1178,17 @@ async function meldexRedo() {
 
 // 共通履歴のみを対象にした有効/無効判定。scope省略時は historyUndo/historyRedo と
 // 同じ規則（アクティブスコープ→空ならグローバルへフォールバック）で判定する。
+// 予約中（保存待ち）の枠も、保存完了を待って戻せるので「戻せる」と扱う。
+function _historyEntryCanReplay(entry, direction) {
+  return !!entry && (typeof entry[direction] === 'function' || !!entry._historyPending);
+}
+
 function historyCanUndo(scope) {
   if (_historyIsBusy()) return false;
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
-  if (s.undo.length > 0) return typeof s.undo[s.undo.length - 1].undo === 'function';
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return typeof _historyGlobal.undo[_historyGlobal.undo.length - 1]?.undo === 'function';
+  if (s.undo.length > 0) return _historyEntryCanReplay(s.undo[s.undo.length - 1], 'undo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.undo[_historyGlobal.undo.length - 1], 'undo');
   return false;
 }
 
@@ -1073,8 +1196,8 @@ function historyCanRedo(scope) {
   if (_historyIsBusy()) return false;
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
-  if (s.redo.length > 0) return typeof s.redo[s.redo.length - 1].redo === 'function';
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return typeof _historyGlobal.redo[_historyGlobal.redo.length - 1]?.redo === 'function';
+  if (s.redo.length > 0) return _historyEntryCanReplay(s.redo[s.redo.length - 1], 'redo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.redo[_historyGlobal.redo.length - 1], 'redo');
   return false;
 }
 

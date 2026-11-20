@@ -1241,7 +1241,12 @@ async function triggerNewEntity(table, dataRows, focusCol) {
     const visibleOrder = (Array.isArray(dataRows) ? dataRows : [])
       .map(row => row?.dataset?.entityName || '')
       .filter(Boolean);
+    const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(_db) : null;
     const created = _dbCreateEntityOptimistic(ctx, _db, { baseName: '無題', position: 'append', baselineOrder: visibleOrder });
+    const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(_db) : null;
+    const historyItems = typeof _dbTrackCreatedEntityForHistory === 'function'
+      ? _dbTrackCreatedEntityForHistory(_db, created.renderCtx || ctx, created, viewBefore, viewAfter)
+      : { resolve() {} };
     const immediateRow = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(created.renderCtx || ctx, created.name) : null;
     if (immediateRow) focusCreatedRow(immediateRow, created.name, true);
     else _waitForEntityRow(created.renderCtx || ctx, created.name, (newRow) => focusCreatedRow(newRow, created.name));
@@ -1250,6 +1255,7 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       if (saved.name !== created.name && typeof _dbRenameOptimisticEntityLocally === 'function') {
         _dbRenameOptimisticEntityLocally(created.renderCtx || ctx, _db, created.name, saved.name);
       }
+      historyItems.resolve([{ name: saved.name, path: saved.path, response: saved.response }]);
       if (typeof _dbScheduleEntityCreatePostSync === 'function') {
         _dbScheduleEntityCreatePostSync(_db, [{ name: saved.name, path: saved.path, response: saved.response }], created.renderCtx || ctx);
       }
@@ -1258,6 +1264,7 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       const recovered = typeof _dbRecoverEntityCreateAfterError === 'function'
         ? await _dbRecoverEntityCreateAfterError(created.renderCtx || ctx, _db, created)
         : null;
+      historyItems.resolve(recovered ? [{ name: recovered.name, path: recovered.path, response: null }] : []);
       if (recovered) {
         if (typeof showStatus === 'function') showStatus('トピックを追加しました');
       } else {
@@ -1334,7 +1341,8 @@ function triggerNewProperty(ctxOrDbPath) {
   while (order.includes(name)) { idx++; name = base + idx; }
   order.push(name);
   setColOrder(dbPath, order, { skipHistory: true, ctx });
-  setPropertyType(dbPath, name, { type: 'text' });
+  const typeSave = setPropertyType(dbPath, name, { type: 'text' });
+  if (typeof _dbPushColumnAddHistory === 'function') _dbPushColumnAddHistory(dbPath, name, { type: 'text' }, order, ctx, typeSave);
   renderPivot(ctx);
   setTimeout(() => {
     const _ctx2 = ctx || _currentPaneState();

@@ -171,36 +171,67 @@ class FormAppComponent extends ToolComponent {
     clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => this.store.save(), 250);
     if (options.history !== false && typeof historyPush === 'function') {
-      const owner = this.store;
+      let owner = this.store;
+      let app = this;
+      const ownerPath = this.path;
+      const scope = this._historyScope();
       const after = MeldexFormDocument.clone(this.store.doc);
-      const restore = async snapshot => {
-        if (!this.el || this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
-        if (!await this._leave() || this.store !== owner) throw new Error('フォームの入力を確認してから取り消してください');
+      const restore = async (snapshot, expected) => {
+        // 同じフォームを再読込した後や、タブを開き直した後（別の表示の部品になる）も、
+        // 定義が操作の直後のままなら取り消せる。開き直すたびに履歴が効かなくなると、取り消しが失敗する。
+        if (!app.el || app.store !== owner) {
+          const live = FormAppComponent._liveForHistory(scope, ownerPath, expected);
+          if (live) { app = live; owner = live.store; }
+        }
+        if (!app.el || app.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+        if (!await app._leave() || app.store !== owner) throw new Error('フォームの入力を確認してから取り消してください');
         const restored = MeldexFormDocument.clone(snapshot);
         restored.title = owner.doc.title;
         if (owner.doc.display_title != null) restored.display_title = owner.doc.display_title;
         if (owner.doc.meldex) restored.meldex = MeldexFormDocument.clone(owner.doc.meldex);
-        for (const [from, to] of this._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
-        const previousPath = this.ctx.dbPath;
-        if (!this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
+        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        const previousPath = app.ctx?.dbPath;
+        if (!app._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
           throw new Error('フォームを変更できません');
-        this._mode = restored.formConfig?.mode;
+        app._mode = restored.formConfig?.mode;
         if (previousPath !== restored.sheet.path) {
-          this._pendingSheetSwitch = true;
-          clearTimeout(this._saveTimer);
-          const saved = await this._saveDefinitionAndSheet();
-          if (this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+          app._pendingSheetSwitch = true;
+          clearTimeout(app._saveTimer);
+          const saved = await app._saveDefinitionAndSheet();
+          if (app.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
           if (!saved) {
-            this._blockSheetSwitch(restored.sheet.path); this._render();
-            throw new Error(this.sheetError);
+            app._blockSheetSwitch(restored.sheet.path); app._render();
+            throw new Error(app.sheetError);
           }
           return;
         }
-        if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
+        if (app._designRender && previousPath === restored.sheet.path) app._designRender(); else app._render();
       };
-      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), this._historyScope(), this.state.label || 'フォーム');
+      historyPush('フォーム: 定義を編集', () => restore(before, after), () => restore(after, before), scope, this.state.label || 'フォーム');
     }
     return true;
+  }
+  // 履歴を積んだ時の表示の部品が再読込・開き直しで変わった時に、同じフォームを表示中の部品を探す。
+  // 同じ履歴の範囲・同じファイルで、未保存・保存中の変更が無く、定義（題名・管理情報を除く）が
+  // 期待どおり（取り消しなら操作の直後、やり直しなら取り消しの直後）の時だけ引き継ぐ。
+  static _liveForHistory(scope, ownerPath, expected) {
+    if (!scope || !ownerPath || !expected) return null;
+    const norm = value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const comparable = doc => {
+      const copy = MeldexFormDocument.clone(doc || {});
+      delete copy.title; delete copy.display_title; delete copy.meldex;
+      return JSON.stringify(copy);
+    };
+    const want = comparable(expected);
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return null;
+    for (const el of document.querySelectorAll('.gb-form-app')) {
+      const app = el._gbFormApp;
+      const store = app?.store;
+      if (!app?.el || !store || app.definitionReadOnly || store.dirty || store.pending) continue;
+      if (norm(app.path) !== norm(ownerPath) || app._historyScope() !== scope) continue;
+      if (comparable(store.doc) === want) return app;
+    }
+    return null;
   }
   async _loadSheet() {
     this.sheetError = '';
@@ -448,12 +479,12 @@ class FormAppComponent extends ToolComponent {
     const columns = Object.entries(getPropertyTypes(this.ctx.dbPath, this.ctx)).map(([name, column]) => ({ ...column, name, id: column.property_id || '' }));
     // Keep stable column identities even when the source uses an automatic layout.
     layout.cells.filter(cell => cell.type === 'field').forEach(cell => { cell.columnId = columns.find(column => column.name === cell.prop)?.id || cell.columnId || ''; });
-    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.value = store.doc.title || layout.name || 'フォーム';
+    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.dataset.e2eId = 'form-register-template-name'; name.value = store.doc.title || layout.name || 'フォーム';
     const body = document.createElement('div');
     body.appendChild(GBUI.createField({ label: 'テンプレート名', input: name }));
     const hint = document.createElement('p'); hint.textContent = '配置・書式・入力設定を登録します。他のフォームの「テンプレートを適用」から選べます。入力済みの値や参照先シートは含みません。'; body.appendChild(hint);
     const status = document.createElement('p'); status.setAttribute('role', 'status'); body.appendChild(status);
-    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録';
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録'; save.dataset.e2eId = 'form-register-template-save';
     let busy = false;
     const modal = GBUI.createModal({ id: 'form-register-template', title: 'テンプレートに登録', body, footer: [save], initialFocus: name,
       onBeforeClose: () => !busy });

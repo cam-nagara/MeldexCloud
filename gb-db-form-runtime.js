@@ -304,7 +304,7 @@
       session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
     }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック'); select.dataset.e2eId = 'form-record-select';
     const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
     const pivot = ctx?.pivotData || globalThis.state?.pivotData || { entities: {} };
     for (const name of Object.keys(pivot.entities || {})) {
@@ -320,13 +320,13 @@
       if (!await confirmLeave(panel)) { select.value = session.path; return; }
       session.path = path; select.value = path; await renderRecord();
     };
-    const button = (label, fn) => { const result = document.createElement('button'); result.type = 'button'; result.className = 'gb-btn'; result.textContent = label; result.addEventListener('click', fn); nav.appendChild(result); return result; };
-    const previous = button('前のトピック', () => change(select.options[Math.max(1, select.selectedIndex - 1)]?.value || ''));
+    const button = (label, fn, e2eId) => { const result = document.createElement('button'); result.type = 'button'; result.className = 'gb-btn'; result.textContent = label; result.dataset.e2eId = e2eId; result.addEventListener('click', fn); nav.appendChild(result); return result; };
+    const previous = button('前のトピック', () => change(select.options[Math.max(1, select.selectedIndex - 1)]?.value || ''), 'form-record-previous');
     nav.appendChild(select);
-    const next = button('次のトピック', () => change(select.options[Math.min(select.options.length - 1, select.selectedIndex + 1)]?.value || ''));
-    button('新規入力', () => change(''));
+    const next = button('次のトピック', () => change(select.options[Math.min(select.options.length - 1, select.selectedIndex + 1)]?.value || ''), 'form-record-next');
+    button('新規入力', () => change(''), 'form-record-new');
     const continuous = document.createElement('label');
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = session.continuous;
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = session.continuous; checkbox.dataset.e2eId = 'form-record-continuous';
     continuous.append(checkbox, document.createTextNode('続けて新規入力')); nav.appendChild(continuous);
     checkbox.addEventListener('change', () => { session.continuous = checkbox.checked; });
     select.addEventListener('change', () => change(select.value));

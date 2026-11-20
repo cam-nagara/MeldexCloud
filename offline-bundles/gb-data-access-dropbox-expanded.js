@@ -2510,6 +2510,12 @@
 
   // Desktop と同じくホームフォルダを最優先にし、その後で登録済みソースフォルダを探す。
   // Dropbox provider の相対パス "" は Cloud のホームフォルダ（vault root）を表す。
+  // ホーム（vault）内の標準クイックメモの候補。デスクトップ版のホームは vault/MeldexHome
+  // （meldex_home_folder_sharing の HOME_FOLDER_DIR_NAME）なので、本体のシートはまず
+  // MeldexHome/クイックメモ にある。vault 直下の クイックメモ は旧構成・テンプレート由来で、
+  // 登録印が無いまま残っていることがある（2026-11-20、スマホから送信できなかった真因）。
+  const _QUICK_MEMO_HOME_FOLDERS = ['MeldexHome/クイックメモ', 'クイックメモ'];
+
   async function _quickMemoRoots(provider) {
     const registry = window.MeldexSourceFolderRegistry;
     const roots = typeof registry.loadOutlinerRoots === 'function' ? await registry.loadOutlinerRoots()
@@ -2528,8 +2534,8 @@
       // 仮想ソースパスは登録済みsource rootとの一致が必要。空rootで全Dropboxへ
       // 書ける扱いにせず、ホームの標準クイックメモ配下だけを許可する。ホーム外へ
       // 移動した保存先は、従来どおり登録済みsource rootとの一致を必須にする。
-      const homeMemo = 'クイックメモ';
-      return target === homeMemo || target.startsWith(homeMemo + '/');
+      // デスクトップ版のホームは vault/MeldexHome なので、その標準クイックメモも許可する。
+      return _QUICK_MEMO_HOME_FOLDERS.some(homeMemo => target === homeMemo || target.startsWith(homeMemo + '/'));
     }
     return (allowRoot && target === base) || target.startsWith(base + '/');
   }
@@ -2584,6 +2590,15 @@
   async function _preferredQuickMemoTarget(provider, roots) {
     const found = [];
     for (const root of roots) {
+      if (root.home) {
+        // デスクトップ版と同じ契約: ホームの標準クイックメモ（MeldexHome/クイックメモ を優先）が
+        // 本体の保存先なら、ソースフォルダを全走査せずに採用する。
+        for (const homeMemo of _QUICK_MEMO_HOME_FOLDERS) {
+          const homeTarget = await _validateQuickMemoTarget(provider, roots, { quick_memo_folder: homeMemo });
+          if (homeTarget) return homeTarget;
+        }
+        continue;
+      }
       // 通常構成は登録ルート直下の「クイックメモ」。ここが正本なら、
       // 大量の兄弟フォルダーを列挙せずに保存先を確定できる。
       const child = await _validateQuickMemoTarget(provider, roots, {

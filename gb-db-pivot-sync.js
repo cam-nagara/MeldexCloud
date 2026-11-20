@@ -105,8 +105,11 @@ async function _getRelationMap(relationDbPath) {
     } catch (e) {
       // 参照先シート自体が存在しない（404相当）ときだけ欠落として記録する。
       // デスクトップ版は status=404、クラウド版は「シートが見つかりません」メッセージ。
+      // 保存先の外（存在しない別ドライブ等）を指す参照は 403「許可されていないパス」になり、これも読めない参照先として記録する。
       // 500/ネットワーク等の一時エラーでは記録しない（誤検出を避け次回再試行させる）。
-      if (e && (e.status === 404 || /見つかりません|not found/i.test(String(e.message || '')))) {
+      const message = String(e?.message || '');
+      if (e && (e.status === 404 || /見つかりません|not found/i.test(message)
+        || (e.status === 403 && /許可されていないパス/.test(message)))) {
         _relationMissingCache[relationDbPath] = { missing: true, timestamp: now };
       }
       return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };

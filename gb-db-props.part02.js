@@ -79,6 +79,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   cancelBtn.type = 'button';
   cancelBtn.textContent = 'キャンセル';
   cancelBtn.setAttribute('aria-label', 'トピック名の自動生成をキャンセル');
+  cancelBtn.dataset.e2eId = 'db-entry-name-autogen-cancel';
   const runBtn = document.createElement('button');
   runBtn.type = 'button';
   runBtn.className = 'primary';
@@ -102,6 +103,17 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   modalApi.modal.style.maxWidth = '520px';
   modalApi.footer.classList.add('btn-row');
   const list = overlay.querySelector('.gb-entry-name-autogen-list');
+  // 列ごとのチェックは列名から作る安定IDを付ける（全部同じIDだと部品を区別できない）。
+  const usedPropSuffixes = new Set();
+  const propE2eSuffix = (prop) => {
+    const token = typeof _dbE2eToken === 'function'
+      ? _dbE2eToken(prop)
+      : (String(prop || '').trim().replace(/[^\p{L}\p{N}_-]+/gu, '-') || 'item');
+    let suffix = token;
+    for (let n = 2; usedPropSuffixes.has(suffix); n += 1) suffix = token + '-' + n;
+    usedPropSuffixes.add(suffix);
+    return suffix;
+  };
   props.forEach(prop => {
     const label = document.createElement('label');
     label.className = 'gbm-check-row';
@@ -113,7 +125,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
     cb.type = 'checkbox';
     cb.value = prop;
     cb.checked = defaults.has(prop);
-    cb.dataset.e2eId = 'db-entry-name-autogen-prop';
+    cb.dataset.e2eId = `db-entry-name-autogen-prop-${propE2eSuffix(prop)}`;
     const span = document.createElement('span');
     span.textContent = prop;
     label.appendChild(cb);
@@ -322,8 +334,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
           : '';
         if (result.failures.length) {
           const error = result.failures[0]?.error;
+          // 失敗の原因も添える（M-014 不具合29。原因の無い失敗表示では、利用者が対処を決められない）。
+          const reason = error?.userMessage || error?.message || '';
           showStatus(
-            error?.resultUnknown ? '削除結果を確認できませんでした。行を元に戻しました' : '削除に失敗したため、行を元に戻しました',
+            (error?.resultUnknown ? '削除結果を確認できませんでした。行を元に戻しました' : '削除に失敗したため、行を元に戻しました')
+              + (reason ? '（原因: ' + reason + '）' : ''),
             true
           );
         } else {
@@ -687,6 +702,16 @@ async function _addEntityBelow(dbPath, afterEntity) {
   } catch (err) { showStatus('トピック追加失敗: ' + (err?.message || err), true); }
 }
 
+// 取り消し・やり直しの中で列を削除・復元すると、表示設定（列レイアウト等）の保存が別の履歴を積み、
+// やり直しの記録が消える。この間だけ表示設定の履歴を止める（既存の抑止の仕組みを使う）。
+async function _dbPropsWithoutNestedViewHistory(fn) {
+  window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+  try { return await fn(); }
+  finally {
+    window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
+  }
+}
+
 // 依存関係ペアプロパティを一括作成
 function _addDependencyPairProps(dbPath, ctx) {
   const pts = getPropertyTypes(dbPath);
@@ -695,14 +720,46 @@ function _addDependencyPairProps(dbPath, ctx) {
     showStatus('依存関係の列は既に存在します');
     return;
   }
-  setPropertyType(dbPath, '先行', {
-    type: 'multi-relation', relationDb: '', pairWith: '後続', dependencyDirection: 'target-to-entry'
-  });
-  setPropertyType(dbPath, '後続', {
-    type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target'
-  });
-  showStatus('依存関係の列を追加しました（先行 / 後続）');
-  _refreshDbColumnMenuView(ctx, dbPath);
+  const pairs = [
+    ['先行', { type: 'multi-relation', relationDb: '', pairWith: '後続', dependencyDirection: 'target-to-entry' }],
+    ['後続', { type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target' }],
+  ];
+  const addPairs = async () => {
+    // 2列は順に保存する（同時に送ると列タイプの保存が互いを上書きし得る）。
+    for (const [name, config] of pairs) {
+      if (await Promise.resolve(setPropertyType(dbPath, name, JSON.parse(JSON.stringify(config)), ctx)) === false) return false;
+    }
+    return true;
+  };
+  return (async () => {
+    if (!await addPairs()) {
+      showStatus('依存関係の列を追加できませんでした。列の保護設定や編集権限を確認してください', true);
+      _refreshDbColumnMenuView(ctx, dbPath);
+      return false;
+    }
+    if (typeof historyPush === 'function' && typeof _deleteColumnNoConfirm === 'function') {
+      const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
+        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
+      historyPush('依存関係の列の追加',
+        () => _dbPropsWithoutNestedViewHistory(async () => {
+          for (const [name] of pairs.slice().reverse()) {
+            if (await _deleteColumnNoConfirm(dbPath, name, ctx) === false) throw new Error(`列「${name}」を取り消せませんでした`);
+          }
+        }),
+        () => _dbPropsWithoutNestedViewHistory(async () => {
+          if (!await addPairs()) throw new Error('依存関係の列を戻せませんでした');
+          // 列タイプの保存で外れた削除の印を、表示設定の保存先にも反映する。
+          if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+            await Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true }));
+          }
+          _refreshDbColumnMenuView(ctx, dbPath);
+        }),
+        scope);
+    }
+    showStatus('依存関係の列を追加しました（先行 / 後続）');
+    _refreshDbColumnMenuView(ctx, dbPath);
+    return true;
+  })();
 }
 
 // 依存エントリを作成
@@ -1055,9 +1112,32 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   const result = await _copyColumnValuesForDuplicate(dbPath, pivotData, propName, newName);
   if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
   else if (typeof renderPivot === 'function') renderPivot(ctx);
+  _dbPushColumnDuplicateHistory('列の複製: ' + newName, dbPath, ctx, newName, pt);
   const suffix = result.failed ? `（${result.failed}件失敗）` : '';
   if (typeof showStatus === 'function') showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件${suffix}`, !!result.failed);
   return true;
+}
+
+// 列を作る操作（列の複製など）を取り消し・やり直しできるようにする。取り消しは作った列の削除（列の削除と同じく、
+// コピーした値はトピックに残り表示されなくなる）、やり直しは作った直後の列タイプと表示設定を戻す（残っている値がそのまま出る）。
+// 列の保存が確定してから呼ぶ。
+function _dbPushColumnDuplicateHistory(label, dbPath, ctx, newName, pt) {
+  if (typeof historyPush !== 'function' || typeof _deleteColumnNoConfirm !== 'function') return;
+  const cfgAfter = typeof getDbViewConfig === 'function' ? JSON.parse(JSON.stringify(getDbViewConfig(dbPath) || {})) : null;
+  const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
+  historyPush(label,
+    () => _dbPropsWithoutNestedViewHistory(async () => {
+      if (await _deleteColumnNoConfirm(dbPath, newName, ctx) === false) throw new Error(`列「${newName}」を取り消せませんでした`);
+    }),
+    () => _dbPropsWithoutNestedViewHistory(async () => {
+      if (cfgAfter && typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, JSON.parse(JSON.stringify(cfgAfter)), { skipHistory: true });
+      const saved = await Promise.resolve(setPropertyType(dbPath, newName, JSON.parse(JSON.stringify(pt)), ctx));
+      if (saved === false) throw new Error(`列「${newName}」を戻せませんでした`);
+      if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(dbPath);
+      if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
+    }),
+    scope);
 }
 
 async function _deleteColumnFromDisplayOrderModal(root, propName, item) {

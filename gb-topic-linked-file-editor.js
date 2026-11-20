@@ -227,7 +227,9 @@
     return {
       ready,
       get failed() { return root.dataset.loadFailed === '1'; },
-      flush: async () => { await ready; try { return await flushEditor() !== false; } catch (error) {
+      // 読み込みに失敗したリンク先は編集できない（保存する内容が無い）。保存の確認で止めると、
+      // 「再試行」や別のリンク先への切替が、失敗したリンク先の保存待ちで止まる。
+      flush: async () => { await ready; if (root.dataset.loadFailed === '1') return true; try { return await flushEditor() !== false; } catch (error) {
         if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
         return false;
       } },
@@ -235,7 +237,7 @@
       deactivate: () => instance?.deactivate?.(),
       dispose: async () => {
         await ready;
-        try { if (await flushEditor() === false) return false; }
+        try { if (root.dataset.loadFailed !== '1' && await flushEditor() === false) return false; }
         catch (error) {
           if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
           return false;

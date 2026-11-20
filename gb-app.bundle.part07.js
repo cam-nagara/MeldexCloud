@@ -1,3 +1,14 @@
+  ];
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu mobile-tool-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'ツールメニュー');
+  menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
+  let menuClosed = false;
+  let closeOnPointer = null;
+  let closeOnKey = null;
+  function closeMenu(restoreFocus = false) {
+    if (menuClosed) return;
     menuClosed = true;
     document.removeEventListener('pointerdown', closeOnPointer, true);
     document.removeEventListener('keydown', closeOnKey, true);

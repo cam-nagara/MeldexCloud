@@ -1385,7 +1385,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         },
       };
     }
-    const wrap = document.createElement('div'); wrap.style.position = 'relative';
+    const wrap = document.createElement('div'); wrap.className = 'gb-context-menu-submenu'; wrap.style.position = 'relative';
     const trigger = document.createElement('div'); trigger.className = 'gb-context-menu-item';
     trigger.innerHTML = (icon && typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' : '') + esc(label) + submenuArrow();
     const panel = document.createElement('div'); panel.className = 'gb-context-menu';

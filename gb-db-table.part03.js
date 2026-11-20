@@ -1143,6 +1143,7 @@ function renderPivot(ctx) {
       scheduleNextChunk(() => _renderChunk(endIdx));
     } else {
       ctx._renderInProgress = false;
+      _dbRestoreActiveCellAfterRender(ctx);
       // Phase 2e-ii-b: 全チャンク完了後にセルコメントバッジを描画
       _refreshSheetBadges(ctx);
       if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
@@ -1164,6 +1165,7 @@ function renderPivot(ctx) {
     _renderChunk(0);
   } else {
     ctx._renderInProgress = false;
+    _dbRestoreActiveCellAfterRender(ctx);
     _refreshSheetBadges(ctx);
     if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
     if (typeof _logPerfEvent === 'function') {
@@ -1177,6 +1179,24 @@ function renderPivot(ctx) {
       });
     }
   }
+}
+
+// 表全体の描き直し（再読込・外部変更の反映）で選択中のセルの要素が入れ替わった時、
+// 同じ行・列のセルへ選択の印を戻す。利用者が表の外の入力欄などへ移っている時は奪わない。
+function _dbRestoreActiveCellAfterRender(ctx) {
+  try {
+    if (typeof activeCell === 'undefined' || !activeCell || activeCell.isConnected) return;
+    if (typeof _dbResolveActiveCellIdentity !== 'function' || typeof setActiveCell !== 'function') return;
+    const tableId = (ctx && ctx.tableId) || 'pivot-table';
+    const tbl = _paneEl(ctx, '#' + tableId) || (!ctx ? document.getElementById(tableId) : null);
+    if (!tbl?.isConnected) return;
+    if (document.querySelector('td.active-cell')) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !tbl.contains(focused)) return;
+    const cell = _dbResolveActiveCellIdentity(tbl);
+    if (!cell?.isConnected) return;
+    setActiveCell(cell, { scroll: false, preserveSeq: Number(activeCell.dataset?.dbActiveSeq || 0) });
+  } catch {}
 }
 
 function _refreshSheetBadges(ctx) {

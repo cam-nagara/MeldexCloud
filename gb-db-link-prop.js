@@ -309,7 +309,7 @@ function createDbLinkValueElement(val, entityPath, propName, thumbSize, propType
 async function _dbLinkCommitValue(args) {
   const {
     entityPath, propName, dbPath, ctx, existing, newPath, newLink, td,
-    closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl,
+    closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl, historySteps,
   } = args || {};
   const anchor = anchorEl || td || null;
   const oldValue = existing?.value || '';
@@ -388,33 +388,42 @@ async function _dbLinkCommitValue(args) {
       optimisticValue.property = propName;
     }
     if (!refreshedLocally && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
-    if (filePath && typeof historyPush === 'function') {
+    if (filePath && (Array.isArray(historySteps) || typeof historyPush === 'function')) {
       let currentRef = {
         file: filePath,
         entry_path: entityPath,
         property: result?.property || propName,
         candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
-      const dbScope = typeof _dbScopeForPath === 'function'
-        ? _dbScopeForPath(dbPath)
-        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
-      historyPush('リンク設定: ' + propName + '=' + newPath,
-        async () => {
-          await _apiPutValue(currentRef, { _delete: true });
-          if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
-        },
-        async () => {
-          const redo = await _apiPostValue(entityPath, propName, newPath, '採用', '', '', { link: normalizedLink });
-          currentRef = {
-            file: redo?.path || redo?.file || currentRef.file,
-            entry_path: entityPath,
-            property: redo?.property || propName,
-            candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
-          };
-          if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
-        },
-        dbScope
-      );
+      const undoStep = async () => { await _apiPutValue(currentRef, { _delete: true }); };
+      const redoStep = async () => {
+        const redo = await _apiPostValue(entityPath, propName, newPath, '採用', '', '', { link: normalizedLink });
+        currentRef = {
+          file: redo?.path || redo?.file || currentRef.file,
+          entry_path: entityPath,
+          property: redo?.property || propName,
+          candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
+        };
+      };
+      if (Array.isArray(historySteps)) {
+        // 複数リンクの一括追加は、呼出元が1回の操作として履歴へ積む（1回の取り消しで全部戻す）。
+        historySteps.push({ label: newPath, undo: undoStep, redo: redoStep });
+      } else {
+        const dbScope = typeof _dbScopeForPath === 'function'
+          ? _dbScopeForPath(dbPath)
+          : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+        historyPush('リンク設定: ' + propName + '=' + newPath,
+          async () => {
+            await undoStep();
+            if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+          },
+          async () => {
+            await redoStep();
+            if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+          },
+          dbScope
+        );
+      }
     }
     if (typeof showStatus === 'function') showStatus('リンクを設定しました');
     return true;
@@ -766,6 +775,7 @@ async function startDbMultiLinkCellEdit(opts) {
     return true;
   });
   let added = 0;
+  const historySteps = [];
   for (let index = 0; index < pending.length; index += 1) {
     const descriptor = pending[index];
     const isLast = index === pending.length - 1;
@@ -775,9 +785,34 @@ async function startDbMultiLinkCellEdit(opts) {
       closeInlineEditorShell: isLast ? closeInlineEditorShell : null,
       refreshCellDisplayNow: isLast ? refreshCellDisplayNow : null,
       restoreCellPos: isLast ? restoreCellPos : null,
+      historySteps,
     });
     if (!saved) break;
     added += 1;
+  }
+  // 1回の保存で追加したリンクは、まとめて1件の履歴にする（途中で失敗した時は追加できた分だけ）。
+  if (historySteps.length && typeof historyPush === 'function') {
+    const scope = typeof _dbScopeForPath === 'function'
+      ? _dbScopeForPath(dbPath)
+      : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+    const refresh = async () => {
+      if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+    };
+    const label = historySteps.length === 1
+      ? 'リンク設定: ' + propName + '=' + historySteps[0].label
+      : 'リンク設定: ' + propName + '（' + historySteps.length + '件）';
+    historyPush(label,
+      async () => {
+        try {
+          for (const step of [...historySteps].reverse()) await step.undo();
+        } finally { await refresh(); }
+      },
+      async () => {
+        try {
+          for (const step of historySteps) await step.redo();
+        } finally { await refresh(); }
+      },
+      scope);
   }
   if (!added && typeof showStatus === 'function') showStatus('追加できる新しいリンクはありません', true);
 }

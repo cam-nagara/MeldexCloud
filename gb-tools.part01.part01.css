@@ -305,9 +305,15 @@ th.col-drop-right::after { right: -2px; }
   white-space: pre-wrap;
 }
 .db-rollup-line {
-  /* .relation-link のカード枠（padding+border）と行高を揃えるための透明パディング（content-box基準で揃える） */
-  padding: 1px 8px;
-  border: 1px solid transparent;
+  /* .relation-link のカード枠（padding+border）と行高を揃えるための透明パディング（content-box基準で揃える）。
+     テーマパネルの「候補値」を設定した時は、リレーションと同じ札の見た目になる。 */
+  padding: 1px var(--db-option-chip-padding-x, 8px);
+  border: var(--db-option-chip-border-width, 1px) solid var(--db-option-chip-border-color, transparent);
+  border-radius: var(--db-option-chip-radius, 0);
+  background: var(--db-option-chip-bg, transparent);
+  color: var(--db-option-chip-fg, inherit);
+  font-size: var(--db-option-chip-font-size, inherit);
+  font-weight: var(--db-option-chip-bold, inherit);
 }
 .db-rollup-relation-line {
   display: flex;
@@ -428,11 +434,14 @@ td:hover .cell-add-btn { display: inline-flex; }
   right: 2px !important;
   /* 値（16〜21px）の中央に22pxのボタンを置くと、セル上端からはみ出して上にずれて見えた
      （全列タイプ共通）。値の1行目の上端に揃え、通常の行ではセルの上下中央、複数行の
-     セルや高い行でも同じ行の他の列と同じ高さに置く。 */
+     セルや高い行でも同じ行の他の列と同じ高さに置く。
+     高さは22pxを上限に値の行の高さへ合わせる。22px固定だと短い1行の値（16〜21px）で
+     下へはみ出して中央からずれ、候補値が並ぶセルでは隣の行の「…」と重なった。 */
   top: 0 !important;
   transform: none !important;
   min-width: 22px;
-  min-height: 22px;
+  min-height: 0;
+  height: min(22px, 100%);
   align-items: center;
   justify-content: center;
   background: var(--bg2) !important;
@@ -444,6 +453,37 @@ td:hover .cell-add-btn { display: inline-flex; }
 .pivot-table td .cell-value:focus-within > .cell-value-more,
 td.active-cell .cell-value > .cell-value-more {
   display: inline-flex !important;
+}
+/* チェックボックスの行は右端の余白をなくす。最小の列幅（60px）でも、チェックボックス（18px）と
+   「…」（22px）が値の行の幅（40px）に重ならずに並ぶ。 */
+#pivot-table td .cell-value:has(> .cell-checkbox) > .cell-value-more,
+.pivot-table td .cell-value:has(> .cell-checkbox) > .cell-value-more {
+  right: 0 !important;
+}
+/* シートのセルの「…」の位置（UI共通ルール §19、2026-11-20 ユーザー判断）。
+   既定は値の1行目の上下中央（上の規則）。画像・場所のセルはセルの右上に置く。
+   チャットのセルは「…」の幅と右の余白の分だけ右側を常に空け、「チャットを追加」と重ねない。 */
+#pivot-table,
+.pivot-table {
+  --sheet-cell-more-size: var(--ui-h-xs, 22px);
+  --sheet-cell-more-inset: 2px;
+  --sheet-cell-more-reserve: calc(var(--sheet-cell-more-size) + var(--sheet-cell-more-inset));
+}
+#pivot-table td .cell-value[data-more-place="corner"] > .cell-value-more,
+.pivot-table td .cell-value[data-more-place="corner"] > .cell-value-more {
+  top: 0 !important;
+  right: var(--sheet-cell-more-inset) !important;
+  transform: none !important;
+  height: var(--sheet-cell-more-size);
+}
+#pivot-table td .cell-value[data-more-place="reserve"],
+.pivot-table td .cell-value[data-more-place="reserve"] {
+  padding-right: var(--sheet-cell-more-reserve) !important;
+}
+/* 編集中は同じセルの「…」を隠す（入力欄の右端に重なるため）。選択中・ホバー中に出す指定より後に置く。 */
+#pivot-table td:has(.value-input, .value-rich-editor, .cell-inline-input, .cell-inline-select, .cell-date-editor, .db-typed-proxy) .cell-value > .cell-value-more,
+.pivot-table td:has(.value-input, .value-rich-editor, .cell-inline-input, .cell-inline-select, .cell-date-editor, .db-typed-proxy) .cell-value > .cell-value-more {
+  display: none !important;
 }
 @media (pointer: coarse), (max-width: 640px) {
   body #pivot-table td .cell-value,
@@ -459,6 +499,19 @@ td.active-cell .cell-value > .cell-value-more {
     display: inline-flex !important;
     min-width: 44px;
     min-height: 44px;
+  }
+  body #pivot-table,
+  body .pivot-table {
+    --sheet-cell-more-size: var(--ui-h-touch, 44px);
+  }
+  body #pivot-table td .cell-value[data-more-place="corner"] > .cell-value-more,
+  body .pivot-table td .cell-value[data-more-place="corner"] > .cell-value-more {
+    top: 0 !important;
+    transform: none !important;
+  }
+  body #pivot-table td .cell-value[data-more-place="reserve"],
+  body .pivot-table td .cell-value[data-more-place="reserve"] {
+    padding-right: var(--sheet-cell-more-reserve) !important;
   }
   .cell-add-btn {
     display: inline-flex;
@@ -638,10 +691,15 @@ td.active-cell .cell-value > .cell-value-more {
 
 /* マルチセレクトタグ */
 .multi-select-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+/* 候補値の札（セレクト・マルチセレクト・リレーション・ロールアップ・タグ）は、テーマパネルの「候補値」
+   （--db-option-chip-*）で見た目を変えられる。未設定時は従来の見た目（UI共通ルール §14「シートの候補値の表示」）。
+   選択肢ごとの色（インライン指定）・タグの色・列ごとの表示設定はこれより優先する。 */
 .multi-select-tag {
   display: inline-flex; align-items: center; gap: 3px;
-  padding: 1px 8px; border-radius: 10px; font-size: 12px;
-  background: var(--ui-hover-bg); color: var(--ui-hover-fg); white-space: nowrap;
+  padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 10px);
+  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
+  background: var(--db-option-chip-bg, var(--ui-hover-bg)); color: var(--db-option-chip-fg, var(--ui-hover-fg)); white-space: nowrap;
+  box-shadow: inset 0 0 0 var(--db-option-chip-border-width, 0px) var(--db-option-chip-border-color, transparent);
 }
 .multi-select-tag .tag-remove {
   cursor: pointer; font-size: 10px; opacity: 0.5; margin-left: 2px;
@@ -649,8 +707,18 @@ td.active-cell .cell-value > .cell-value-more {
 .multi-select-tag .tag-remove:hover { opacity: 1; color: var(--red); }
 .common-tags-cell .common-tags-tag.gb-tag-chip {
   padding: 0;
-  background: var(--ui-bg-control, var(--bg3));
-  color: var(--gb-tag-color, var(--fg));
+  border-width: var(--db-option-chip-border-width, 1px);
+  border-color: var(--db-option-chip-border-color, var(--ui-border-strong, var(--border)));
+  border-radius: var(--db-option-chip-radius, 999px);
+  box-shadow: none;
+  font-size: var(--db-option-chip-font-size, 10px);
+  font-weight: var(--db-option-chip-bold, 600);
+  background: var(--db-option-chip-bg, var(--ui-bg-control, var(--bg3)));
+  color: var(--gb-tag-color, var(--db-option-chip-fg, var(--fg)));
+}
+.common-tags-cell .common-tags-tag.gb-tag-chip .gb-tag-chip__label {
+  padding-left: var(--db-option-chip-padding-x, 6px);
+  padding-right: var(--db-option-chip-padding-x, 6px);
 }
 
 /* ユーザープロパティ */
@@ -1647,18 +1715,22 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .cell-formula { font-variant-numeric: tabular-nums; color: var(--fg); }
 .cell-formula-error { color: var(--red); font-size: 11px; }
 .cell-select-val {
-  display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
-  background: var(--ui-hover-bg); color: var(--ui-hover-fg); white-space: nowrap;
+  display: inline-block; padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 10px);
+  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
+  background: var(--db-option-chip-bg, var(--ui-hover-bg)); color: var(--db-option-chip-fg, var(--ui-hover-fg)); white-space: nowrap;
+  box-shadow: inset 0 0 0 var(--db-option-chip-border-width, 0px) var(--db-option-chip-border-color, transparent);
 }
 
 /* リレーションリンク（カード表示） */
 .relation-link {
   display: inline-flex; align-items: center;
-  padding: 1px 8px; border-radius: 4px;
-  background: var(--bg3); border: 1px solid var(--border);
-  color: var(--fg); text-decoration: none;
+  padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 4px);
+  background: var(--db-option-chip-bg, var(--bg3));
+  border: var(--db-option-chip-border-width, 1px) solid var(--db-option-chip-border-color, var(--border));
+  color: var(--db-option-chip-fg, var(--fg)); text-decoration: none;
   cursor: pointer;
-  font-size: 12px; white-space: nowrap; max-width: 100%;
+  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
+  white-space: nowrap; max-width: 100%;
 }
 .relation-link:hover { background: var(--bg4); border-color: var(--accent); }
 .relation-links { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; width: 100%; }

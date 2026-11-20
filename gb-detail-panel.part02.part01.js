@@ -163,6 +163,8 @@ function _fsResolveSections(ctx, spec) {
           { label: 'セル',         fields: pick(['--db-cell-fg', '--db-cell-bg', '--db-cell-bold', '--db-cell-italic', '--db-cell-font']) },
           { label: 'アクティブセル枠', fields: pick(['--db-active-color', '--db-active-width']) },
           { label: 'テーブル罫線', fields: pick(['--db-grid-border', '--db-show-grid']) },
+          { label: '候補値', fields: pick(['--db-option-chip-fg', '--db-option-chip-bg', '--db-option-chip-bold', '--db-option-chip-font-size',
+            '--db-option-chip-radius', '--db-option-chip-padding-x', '--db-option-chip-border-color', '--db-option-chip-border-width']) },
         ],
       },
     ];
@@ -822,6 +824,8 @@ function _fsBindThemeColorSetEditor(root, ctx) {
 // テーマ（配色・フォント・太字/斜体）ではなく、ファイルごとの配置・寸法・動作の設定か。
 function _fsIsThemeIndependentField(field) {
   if (!field || !field.key) return false;
+  // 寸法でも見た目のデザインとしてテーマが持つ項目（シートの候補値の角丸・余白・文字サイズ・枠線の太さ）。
+  if (field.themeManaged) return false;
   if (['color', 'select', 'boardBgColorReset'].includes(field.type)) return false;
   if (field.type === 'toggle' && ['bold', 'italic'].includes(field.on)) return false;
   return true;

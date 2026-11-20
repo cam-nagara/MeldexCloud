@@ -683,6 +683,21 @@ async function waitForPendingDbValueMutations(dbPath) {
   return false;
 }
 
+// セルの値変更は、保存の完了順ではなく確定の順で取り消せるよう、確定時に共通履歴の枠を先に取る。
+// 枠の履歴スコープは、保存後に履歴を登録する _dbUndoValue と同じ求め方にそろえる。
+function _dbReserveValueHistory(label, valueRef, dbPathFallback) {
+  if (typeof historyReserve !== 'function') return null;
+  let dbPath = '';
+  try {
+    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, {});
+  } catch {}
+  dbPath = dbPath || dbPathFallback || '';
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath)
+    : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : '');
+  if (!scope) return null;
+  return historyReserve(label, scope);
+}
+
 function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const normalizedEntityPath = _dbNormalizePath(entityPath);
   let cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));

@@ -448,6 +448,28 @@ async function _dbFindReplaceAll() {
   });
 
   let count = 0;
+  // 全置換は1回の操作なので、置換した値をまとめて1件の履歴にする（1回の取り消しで全部戻す）。
+  const appliedValues = [];
+  const historyDbPath = _dbFindState.dbPath;
+  const historyCtx = _dbFindState.ctx;
+  const pushReplaceHistory = () => {
+    if (!appliedValues.length || typeof historyPush !== 'function') return;
+    const items = appliedValues.slice();
+    const scope = typeof _dbScope === 'function' ? _dbScope(historyDbPath) : undefined;
+    const reload = async () => {
+      if (historyDbPath && typeof selectDatabase === 'function') await selectDatabase(historyDbPath, historyCtx, { silent: true });
+    };
+    historyPush('シート全置換: ' + items.length + '件',
+      async () => {
+        for (const item of items.slice().reverse()) await _apiPutValue(item.match.valObj, { new_value: item.oldValue });
+        await reload();
+      },
+      async () => {
+        for (const item of items) await _apiPutValue(item.match.valObj, { new_value: item.nextValue });
+        await reload();
+      },
+      scope);
+  };
   try {
     const pivotData = _dbFindData(_dbFindState.ctx, _dbFindState.dbPath);
     const entityNames = new Set(Object.keys(pivotData?.entities || {}));
@@ -463,14 +485,11 @@ async function _dbFindReplaceAll() {
     for (const item of valueTasks.values()) {
       if (item.oldValue === item.nextValue) continue;
       await _apiPutValue(item.match.valObj, { new_value: item.nextValue, __source: 'sheet-find-replace-all' });
-      if (typeof _dbUndoValue === 'function') {
-        _dbUndoValue('シート全置換: ' + item.match.propName, item.match.valObj, item.oldValue, item.nextValue, undefined, undefined, {
-          dbPath: _dbFindState.dbPath,
-          ctx: _dbFindState.ctx,
-        });
-      }
+      appliedValues.push(item);
       count++;
     }
+    pushReplaceHistory();
+    appliedValues.length = 0;
     for (const [oldName, newName] of entityTasks.entries()) {
       if (oldName === newName) continue;
       await _dbFindRenameEntity({ kind: 'entity', entityName: oldName, text: oldName }, newName);
@@ -479,6 +498,8 @@ async function _dbFindReplaceAll() {
     await _dbFindRefreshAfterChange(0);
     if (typeof showStatus === 'function') showStatus(count + '件置換しました');
   } catch (e) {
+    // 途中で失敗した時も、保存できた分は取り消せるように履歴へ残す。
+    pushReplaceHistory();
     if (typeof showStatus === 'function') showStatus(e?.message || '全置換に失敗しました', true);
   }
 }

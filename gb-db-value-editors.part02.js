@@ -291,6 +291,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     ? _cellUiValueToString(val.value)
     : (val.value == null ? '' : String(val.value));
   if (type === 'image' && typeof createImagePropertyValueElement === 'function') {
+    // 画像・場所のセルの「…」はセルの右上に置く（ユーザー判断 2026-11-20。UI共通ルール §19「シートのセルの「…」の位置」）
+    row.dataset.morePlace = 'corner';
     row.appendChild(createImagePropertyValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options));
     return row;
   }
@@ -301,7 +303,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     cb.className = 'cell-checkbox';
     cb.setAttribute('role', 'checkbox');
     cb.setAttribute('aria-label', `${propName}を切り替え`);
-    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^A-Za-z0-9_-]+/g, '-');
+    // 日本語の行名・列名を記号へ潰すと、別の行のチェックが同じ識別子になる。文字は残す。
+    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^\p{L}\p{N}_-]+/gu, '-');
     let checked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
     let saving = false;
     const renderCheckbox = () => {
@@ -498,6 +501,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           val.value = nv;
           try {
             await _apiPutValue(val, { new_value: nv });
+            // 保存できたら、同じ値で残っていた未保存の記録を消す（数値の入力欄と同じ。M-014 不具合45）。
+            window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+              candidateIndex: val.candidate_index, value: nv });
             _dbUndoValue(propName + ': ' + oldDate + ' → ' + nv, val, oldDate, nv);
             // Step 3: 部分更新化 (ソート対象列等のフォールバックは _tryRefreshPivotCellLocal 内で判定)
             if (ownsEditor()) _refreshAfterCellEdit(span, entityPath, propName);
@@ -531,6 +537,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    row.dataset.morePlace = 'corner';
     row.appendChild(MeldexSheetLocation.valueElement(val, entityPath, propName, { ...options, dbPath, ctx: valueCtx }));
     return row;
   }
@@ -831,9 +838,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
 
   // チャット型
   if (type === 'chat') {
+    // チャットのセルは「…」の分だけ右側を常に空け、「チャットを追加」と重ねない（ユーザー判断 2026-11-20）
+    row.dataset.morePlace = 'reserve';
     const container = document.createElement('div');
     container.className = 'chat-prop-cell';
-    container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;align-items:center;';
+    container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;align-items:center;flex:1 1 0;min-width:0;';
     const chatPaths = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
 
     if (chatPaths.length === 0) {
@@ -843,8 +852,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       addBtn.className = 'db-chat-add-btn';
       addBtn.dataset.e2eId = _typedCellControlE2eId('chat-add', entityPath, propName);
       addBtn.setAttribute('aria-label', 'チャットを追加');
-      addBtn.innerHTML = lucide('plus', 12) + ' チャット';
-      addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
+      addBtn.innerHTML = lucide('plus', 12) + '<span class="db-chat-add-label" style="min-width:0;overflow:hidden;text-overflow:ellipsis;">チャット</span>';
+      addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;flex:0 1 auto;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
       addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);

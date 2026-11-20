@@ -655,6 +655,8 @@
     let resizeHistoryBefore = null;
     let resizeStartRatio = null;
     let boundaryResizeSession = null;
+    // 境界線の操作の前のサイドバーの幅（操作で変わったものを利用者が調節した幅として記録する）。
+    let fixedDockWidthsBefore = null;
     const _setChildPxSizes = (firstSize, secondSize) => {
       const secondEl = _getSecondEl();
       if (!secondEl) return;
@@ -709,9 +711,11 @@
       if (!bounds.canResize) return;
       const nextRatio = Math.max(bounds.min, Math.min(bounds.max, (node.ratio || 0.5) + delta));
       if (Math.abs(nextRatio - node.ratio) < 0.0001) return;
+      const dockWidthsBefore = typeof _snapshotFixedDockWidths === 'function' ? _snapshotFixedDockWidths() : null;
       node.ratio = nextRatio;
       _setChildRatioSizes(node.ratio);
       _syncHandleA11y();
+      if (typeof _commitFixedDockUserWidths === 'function') _commitFixedDockUserWidths(dockWidthsBefore);
       saveLayout();
       pushLayoutHistory('レイアウト: キーボードリサイズ', before, captureLayoutSnapshot(), node.id || '');
       if (typeof showStatus === 'function') showStatus('パネルサイズを変更しました');
@@ -781,6 +785,8 @@
       } else {
         _setChildRatioSizes(node.ratio);
       }
+      if (typeof _commitFixedDockUserWidths === 'function') _commitFixedDockUserWidths(fixedDockWidthsBefore);
+      fixedDockWidthsBefore = null;
       saveLayout();
       if (resizeHistoryBefore && Math.abs((resizeStartRatio ?? node.ratio) - node.ratio) > 0.0001) {
         pushLayoutHistory('レイアウト: リサイズ', resizeHistoryBefore, captureLayoutSnapshot(), node.id || '');
@@ -801,6 +807,7 @@
       if (!secondEl || node.children?.[0]?.collapsed || node.children?.[1]?.collapsed) return;
       resizeHistoryBefore = captureLayoutSnapshot();
       resizeStartRatio = node.ratio;
+      fixedDockWidthsBefore = typeof _snapshotFixedDockWidths === 'function' ? _snapshotFixedDockWidths() : null;
       boundaryResizeSession = _createBoundaryResizeSession(e, node);
       if (!boundaryResizeSession) {
         const zoom = _splitZoom();

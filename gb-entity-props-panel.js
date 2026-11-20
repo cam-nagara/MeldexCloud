@@ -46,6 +46,17 @@ function _entityPropsViewState(dbPath, entityPath) {
   };
 }
 
+// 取り消し/やり直しで表示設定が巻き戻った後の画面の更新（開いている列一覧の再描画は呼び出し元が渡す）
+function _entityPropsHistoryRestore(dbPath, onRestore) {
+  // シートの表示全体は読み直さない（トピックの画面の表示中に読み直すと、シートの画面へ切り替わってしまう）。
+  // 列一覧の開閉・列幅は列一覧だけが使う設定なので、開いている列一覧だけを描き直す。
+  return (...args) => {
+    if (typeof onRestore === 'function') {
+      try { onRestore(...args); } catch (error) { console.warn('[entity-props] restore refresh failed', error); }
+    }
+  };
+}
+
 function _setEntityPropsCollapsed(dbPath, entityPath, collapsed, options = {}) {
   const next = !!collapsed;
   if (dbPath && typeof getDbViewConfig === 'function' && typeof saveDbViewConfig === 'function') {
@@ -55,6 +66,10 @@ function _setEntityPropsCollapsed(dbPath, entityPath, collapsed, options = {}) {
       historyLabel: '列一覧: 開閉',
       historyDetail: next ? '折りたたみ' : '展開',
       skipHistory: options.skipHistory === true,
+      onRestore: _entityPropsHistoryRestore(dbPath, options.onRestore),
+      // トピックの画面（フルページタブ）の履歴は共通スコープ('')。シートの 'db:' スコープへ積むと
+      // トピックの画面から Ctrl+Z が届かない。共通へ積めばシートタブからも（共通へのフォールバックで）戻せる
+      historyScope: '',
     });
     return;
   }
@@ -71,6 +86,8 @@ function _setEntityPropsColWidth(dbPath, entityPath, widthPx, options = {}) {
       historyLabel: '列一覧: 列幅',
       historyDetail: next + 'px',
       skipHistory: options.skipHistory === true,
+      onRestore: _entityPropsHistoryRestore(dbPath, options.onRestore),
+      historyScope: '',
     });
     return next;
   }
@@ -124,7 +141,11 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
       grid.__entityPropsReadonlyCollapsed = !viewState.collapsed;
     } else {
       const cur = _entityPropsViewState(dbPath, entityPath);
-      _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed);
+      _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed, {
+        onRestore: () => {
+          if (grid?.isConnected && typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);
+        },
+      });
     }
     if (typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);
     grid.querySelector?.('[data-e2e-id="entity-props-toggle"]')?.focus?.({ preventScroll: true });
@@ -209,7 +230,14 @@ function _showEntityPropsColWidthPopup(anchorBtn, grid, dbPath, entityPath) {
   const commit = () => {
     const clamped = preview(input.value);
     input.value = String(clamped);
-    _setEntityPropsColWidth(dbPath, entityPath, clamped);
+    _setEntityPropsColWidth(dbPath, entityPath, clamped, {
+      onRestore: () => {
+        if (!grid?.isConnected) return;
+        const restored = _entityPropsViewState(dbPath, entityPath).colWidth;
+        grid.style.setProperty('--entity-prop-col-width', restored + 'px');
+        if (input.isConnected) input.value = String(restored);
+      },
+    });
     return clamped;
   };
   input.addEventListener('input', () => { preview(input.value); });

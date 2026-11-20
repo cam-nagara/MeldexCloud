@@ -52,12 +52,23 @@ async function _gbAppPutValueConfirmed(path, body, options) {
       ...(options || {}), body: JSON.stringify(payload), silentError: true });
     const uncertain = _gbAppPendingValueWrites.get(key);
     if (uncertain) {
-      const result = await send(uncertain);
+      // 結果の分からなかった前回の保存を、同じ操作IDで送り直す。サーバーは反映済みの操作IDには記録した結果を返すので、
+      // 4xx（版の食い違い等）で断られた時は「前回の保存は反映されていない」と確定する。その記録を捨てて今回の保存へ進む。
+      // 捨てないと、その行の以後の保存・取り消し・やり直しが古い版の送り直しで断られ続ける（M-014 不具合33・36）。
+      // 5xx・通信断の時は、まだ結果が分からないので従来どおり止める。
+      let result = null;
+      try { result = await send(uncertain); }
+      catch (error) {
+        const stillUnknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+          || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+        if (stillUnknown) throw error;
+        result = null;
+      }
       _gbAppPendingValueWrites.delete(key);
       const canonical = value => Array.isArray(value) ? value.map(canonical)
         : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
       const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
-      if (withoutId(body) === withoutId(uncertain)) return result;
+      if (result && withoutId(body) === withoutId(uncertain)) return result;
       // Only an ordinary candidate patch may follow its own confirmed patch.
       // Whole-body edits and structural changes retain their original baseline.
       const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
@@ -887,14 +898,3 @@ function showView(viewName, ctx) {
   }
   // ビュー切替前にボードの未保存を即時保存
   if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
-    if (typeof bdSave === 'function') bdSave();
-  }
-  // ボードから離れたらノートタブを非表示
-  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
-    hideBoardNoteTab();
-  }
-  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
-    clearBoardDetailTabs();
-  }
-  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
-  const isDbView = isDbViewName(viewName);

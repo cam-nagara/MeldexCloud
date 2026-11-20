@@ -153,7 +153,9 @@
     // Render after the caller has finished replacing the committed cell DOM.
     queueMicrotask(() => {
       td.querySelectorAll('.db-cell-unsaved').forEach(element => element.remove());
+      let draftIndex = -1;
       for (const draft of drafts(entryPath, property)) {
+        draftIndex += 1;
         const panel = document.createElement('div');
         panel.className = 'db-cell-unsaved';
         panel.setAttribute('role', 'status');
@@ -164,10 +166,15 @@
         input.readOnly = true;
         input.value = draft.value;
         input.setAttribute('aria-label', property + 'の未保存の入力');
+        // 目印はセルと失敗の記録ごとに分ける（同じ名前だと、失敗したセルが2つあると部品の検査で重複になる。M-014 不具合45）。
+        const idPart = [String(entryPath || '').split('/').pop().replace(/\.md$/, ''), property, draft.candidateIndex ?? 'new', draftIndex]
+          .map(part => String(part).replace(/[^\p{L}\p{N}_-]+/gu, '-')).join('-');
+        input.dataset.e2eId = `db-cell-unsaved-input-${idPart}`;
         input.style.cssText = 'width:100%;box-sizing:border-box;color:inherit;background:var(--bg);';
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = '再保存';
+        button.dataset.e2eId = `db-cell-unsaved-resave-${idPart}`;
         button.addEventListener('click', async event => {
           event.stopPropagation();
           if (button.disabled) return;

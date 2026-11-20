@@ -777,6 +777,29 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
     applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
   }
+  // 元の値の行（「…」＝候補値の追加・削除の入口を持つ）は隠れるので、行合わせの行にも「…」を置き、
+  // 押すと元の値の行の「…」のメニューを開く。並びの見た目を変えないよう、行は縦並びのまま包む。
+  const valueRow = document.createElement('div');
+  valueRow.className = 'cell-value db-rollup-aligned-value-row';
+  valueRow.style.cssText = 'display:flex;flex-direction:column;align-items:stretch;gap:1px;width:100%;';
+  const originalMore = [...cellValues.querySelectorAll(':scope > .cell-value > .cell-value-more')][0] || null;
+  let proxyMore = null;
+  if (originalMore) {
+    proxyMore = originalMore.cloneNode(true);
+    proxyMore.dataset.e2eId = (originalMore.dataset.e2eId || 'db-value-more') + '-aligned';
+    proxyMore.dataset.rollupAlignedProxy = '1';
+    proxyMore.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = [...cellValues.querySelectorAll(':scope > .cell-value > .cell-value-more')][0];
+      target?.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, view: window,
+        clientX: event.clientX, clientY: event.clientY,
+      }));
+    });
+    valueRow.addEventListener('mouseenter', () => { proxyMore.style.display = ''; });
+    valueRow.addEventListener('mouseleave', () => { proxyMore.style.display = 'none'; });
+  }
   {
     groups.forEach((group, groupIndex) => {
       const count = slotCounts[groupIndex] || 1;
@@ -819,10 +842,15 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
             );
           }
         });
-        aligned.appendChild(line);
+        valueRow.appendChild(line);
       }
     });
   }
+  if (proxyMore) {
+    proxyMore.style.display = 'none';
+    valueRow.appendChild(proxyMore);
+  }
+  aligned.appendChild(valueRow);
   cellValues.appendChild(aligned);
   relationCell.classList.add('db-rollup-aligned-relation');
 }

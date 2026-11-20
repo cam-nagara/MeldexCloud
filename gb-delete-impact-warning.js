@@ -79,10 +79,17 @@
     try {
       const result = await apiPost('/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
       if (result && result.ok) return { impact: result, failed: false };
-      return { impact: null, failed: true };
-    } catch (_) {
-      return { impact: null, failed: true };
+      return { impact: null, failed: true, reason: String(result?.error || result?.message || '') };
+    } catch (error) {
+      return { impact: null, failed: true, reason: String(error?.userMessage || error?.message || error || '') };
     }
+  }
+
+  // 参照の確認に失敗して削除を中止した時の表示。原因（通信・保存先のエラー）を必ず添える。
+  function _impactFailureMessage(reason, fallback) {
+    const base = fallback || '参照の確認に失敗したため、削除を中止しました';
+    const detail = String(reason || '').trim();
+    return detail ? `${base}（原因: ${detail}）` : `${base}。`;
   }
 
   // targets: パス文字列の配列、または {path, kind, assetId} オブジェクトの配列。
@@ -243,10 +250,10 @@
     if (!items.length) {
       return cfConfirm(message, opts);
     }
-    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
+    const { impact, failed, reason } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
     if (failed || !impact || (operation === 'permanent' && impact.complete === false)) {
       if (typeof cfAlert === 'function') {
-        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、完全削除を中止しました。');
+        await cfAlert(failed || !impact ? _impactFailureMessage(reason) : '参照の確認が不完全なため、完全削除を中止しました。');
       }
       return false;
     }
@@ -268,9 +275,11 @@
     const items = _toDeleteImpactItems(targets);
     const opts = Object.assign({}, options || {});
     if (!items.length) return { confirmed: true, operation: 'trash' };
-    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
+    const { impact, failed, reason } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
     if (failed || !impact) {
-      if (typeof cfAlert === 'function') await cfAlert('参照の確認ができなかったため、削除を中止しました。');
+      const message = _impactFailureMessage(reason);
+      if (typeof cfAlert === 'function') await cfAlert(message);
+      else if (typeof showStatus === 'function') showStatus(message, true);
       return false;
     }
     return {

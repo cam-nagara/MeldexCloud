@@ -13899,12 +13899,126 @@ const GBLayout = (() => {
   }
 
   // 開いた直後の幅を、覚えていた幅（無ければ既定幅）にして使える範囲へ収める。
+  // 利用者が調節した幅（userWidth）を持つものは、その幅を上限に、今の画面幅での比率の幅へ戻す。
   function _applyExpandedFixedDockWidth(dock) {
     if (!dock || dock.collapsed || !_isFixedDockRole(dock.meldexRole) || _isMobileLayout()) return;
     const allocation = _allocatedWidths();
+    const userTarget = _fixedDockUserTargetPx(dock, allocation.available);
+    if (userTarget > 0) {
+      _setFixedDockPx(dock, userTarget, allocation);
+      return;
+    }
     const { min, max } = _fixedDockLimits(dock, allocation.available);
     const wanted = Number(dock._expandedPx) > 0 ? Number(dock._expandedPx) : (_FIXED_DOCK_DEFAULT_PX[dock.meldexRole] || 260);
     _setFixedDockPx(dock, Math.max(min, Math.min(max, wanted)), allocation);
+  }
+
+  // ==== 利用者が調節したフォルダツリー・右サイドバーの幅（2026-11-20 ユーザー指示） ====
+  // 境界線のドラッグ・キーボードで調節した幅を上限（px）として、その時の画面幅に対する比率と一緒に
+  // 配置データ（userWidth）へ保存する。ウィンドウが狭くなる時は比率どおりに狭くし、広くなる時は
+  // 調節した幅より広くしない（増えた幅はメインパネル側へ回る）。メインパネル・サブパネルの幅は対象外。
+  const _USER_WIDTH_DOCK_ROLES = ['left-sidebar', 'right-sidebar'];
+
+  function _fixedDockUserWidth(dock) {
+    const value = dock?.userWidth;
+    const px = Number(value?.px);
+    const fraction = Number(value?.fraction);
+    return (px > 0 && fraction > 0 && fraction < 1) ? { px, fraction } : null;
+  }
+
+  // 今の画面幅での幅: 比率の幅と、調節した幅の小さい方。
+  function _fixedDockUserTargetPx(dock, available) {
+    const userWidth = _USER_WIDTH_DOCK_ROLES.includes(dock?.meldexRole) ? _fixedDockUserWidth(dock) : null;
+    if (!userWidth) return 0;
+    return Math.max(_RAIL_PX * 2, Math.min(userWidth.px, userWidth.fraction * available));
+  }
+
+  function _userWidthDocks(includeCollapsed) {
+    return _USER_WIDTH_DOCK_ROLES
+      .map(role => _findFixedRailPanelset(_root, role))
+      .filter(dock => dock && (includeCollapsed || !dock.collapsed));
+  }
+
+  function _recordFixedDockUserWidth(dock, px, available) {
+    if (!dock || !(px > _RAIL_PX * 2) || !(available > 0)) return false;
+    dock.userWidth = { px: Math.round(px), fraction: Math.round((px / available) * 100000) / 100000 };
+    return true;
+  }
+
+  // 描画済みの幅（拡大率を除いた px）。
+  function _renderedFixedDockPx(dock) {
+    const el = _layoutEl?.querySelector?.(`[data-panelset-id="${dock.id}"]`);
+    const width = el?.getBoundingClientRect?.().width;
+    if (!(width > 0)) return 0;
+    const zoom = (typeof _getZoom === 'function' ? Number(_getZoom()) : 1) || 1;
+    return width / zoom;
+  }
+
+  // 境界線の操作の前後で、幅が変わったサイドバーを「利用者が調節した」として記録する。
+  function _snapshotFixedDockWidths() {
+    const out = new Map();
+    if (_isMobileLayout() || _maximizedPaneId) return out;
+    _userWidthDocks(false).forEach(dock => out.set(dock.id, _renderedFixedDockPx(dock)));
+    return out;
+  }
+
+  function _commitFixedDockUserWidths(before) {
+    if (!(before instanceof Map) || !before.size || _isMobileLayout() || _maximizedPaneId) return false;
+    const available = Math.max(1, _layoutEl?.clientWidth || window.innerWidth || 1);
+    let changed = false;
+    _userWidthDocks(false).forEach(dock => {
+      if (!before.has(dock.id)) return;
+      const now = _renderedFixedDockPx(dock);
+      if (Math.abs(now - Number(before.get(dock.id) || 0)) < 1) return;
+      changed = _recordFixedDockUserWidth(dock, now, available) || changed;
+    });
+    return changed;
+  }
+
+  // 調節した幅を持たない（以前の版で保存した）配置は、今の幅を調節した幅として扱う。
+  function _adoptCurrentFixedDockWidths(allocation) {
+    _userWidthDocks(false).forEach(dock => {
+      if (_fixedDockUserWidth(dock)) return;
+      _recordFixedDockUserWidth(dock, Number(allocation.widths.get(dock.id) || 0), allocation.available);
+    });
+  }
+
+  // 調節した幅と比率から、今の画面幅での幅へ合わせる（分割の比率だけを書き換える）。
+  function _applyFixedDockUserWidths() {
+    let changed = false;
+    for (const dock of _userWidthDocks(false)) {
+      const allocation = _allocatedWidths();
+      const target = _fixedDockUserTargetPx(dock, allocation.available);
+      const current = Number(allocation.widths.get(dock.id) || 0);
+      if (!(target > 0) || Math.abs(target - current) < 0.5) continue;
+      changed = _setFixedDockPx(dock, target, allocation) || changed;
+    }
+    return changed;
+  }
+
+  // ウィンドウの大きさが変わった時: 配置を作り直さず、変わった分割の幅だけをその場で書き直す。
+  function _syncFixedDockWidthsForViewport() {
+    if (!_layoutEl || !_root || _isMobileLayout() || _maximizedPaneId || !_hasFixedRailRoles(_root)) return false;
+    const splits = [];
+    const collect = (n) => {
+      if (!n) return;
+      if (n.type === 'split') {
+        if (!n.collapsed) splits.push(n);
+        (n.children || []).forEach(collect);
+      } else if (n.type === 'panelset') {
+        (n.groups || []).forEach(group => collect(group?.root));
+      }
+    };
+    collect(_root);
+    const before = new Map(splits.map(split => [split.id, split.ratio]));
+    _ensureReadableMainPane();
+    let touched = false;
+    splits.forEach(split => {
+      if (before.get(split.id) === split.ratio) return;
+      const el = _layoutEl.querySelector(`.gb-split[data-split-id="${split.id}"]`);
+      if (el && _applySplitChildStylesInPlace(split, el)) touched = true;
+    });
+    return touched;
   }
 
   // 描画済みの分割の子要素の幅を、renderSplit と同じ規則で書き直す（DOMは作り直さない）。
@@ -14040,6 +14154,9 @@ const GBLayout = (() => {
       // 最低幅をわずかに下回るだけの幅（丸めやチャット開閉の調整分）は直さない。
       if (width > 0 && width < min * 0.75 && grow > 1) _setFixedDockPx(dock, width + grow, allocation);
     }
+    // 利用者が調節した幅を上限に、今の画面幅での幅へ合わせる（狭い時は下の処理で本文の幅を確保する）。
+    _adoptCurrentFixedDockWidths(_allocatedWidths());
+    _applyFixedDockUserWidths();
     const ordered = docks.filter(dock => dock.id !== _lastExpandedDockId)
       .concat(docks.filter(dock => dock.id === _lastExpandedDockId));
     for (const dock of ordered) {
@@ -15566,6 +15683,8 @@ const GBLayout = (() => {
     let resizeHistoryBefore = null;
     let resizeStartRatio = null;
     let boundaryResizeSession = null;
+    // 境界線の操作の前のサイドバーの幅（操作で変わったものを利用者が調節した幅として記録する）。
+    let fixedDockWidthsBefore = null;
     const _setChildPxSizes = (firstSize, secondSize) => {
       const secondEl = _getSecondEl();
       if (!secondEl) return;
@@ -15620,9 +15739,11 @@ const GBLayout = (() => {
       if (!bounds.canResize) return;
       const nextRatio = Math.max(bounds.min, Math.min(bounds.max, (node.ratio || 0.5) + delta));
       if (Math.abs(nextRatio - node.ratio) < 0.0001) return;
+      const dockWidthsBefore = typeof _snapshotFixedDockWidths === 'function' ? _snapshotFixedDockWidths() : null;
       node.ratio = nextRatio;
       _setChildRatioSizes(node.ratio);
       _syncHandleA11y();
+      if (typeof _commitFixedDockUserWidths === 'function') _commitFixedDockUserWidths(dockWidthsBefore);
       saveLayout();
       pushLayoutHistory('レイアウト: キーボードリサイズ', before, captureLayoutSnapshot(), node.id || '');
       if (typeof showStatus === 'function') showStatus('パネルサイズを変更しました');
@@ -15692,6 +15813,8 @@ const GBLayout = (() => {
       } else {
         _setChildRatioSizes(node.ratio);
       }
+      if (typeof _commitFixedDockUserWidths === 'function') _commitFixedDockUserWidths(fixedDockWidthsBefore);
+      fixedDockWidthsBefore = null;
       saveLayout();
       if (resizeHistoryBefore && Math.abs((resizeStartRatio ?? node.ratio) - node.ratio) > 0.0001) {
         pushLayoutHistory('レイアウト: リサイズ', resizeHistoryBefore, captureLayoutSnapshot(), node.id || '');
@@ -15712,6 +15835,7 @@ const GBLayout = (() => {
       if (!secondEl || node.children?.[0]?.collapsed || node.children?.[1]?.collapsed) return;
       resizeHistoryBefore = captureLayoutSnapshot();
       resizeStartRatio = node.ratio;
+      fixedDockWidthsBefore = typeof _snapshotFixedDockWidths === 'function' ? _snapshotFixedDockWidths() : null;
       boundaryResizeSession = _createBoundaryResizeSession(e, node);
       if (!boundaryResizeSession) {
         const zoom = _splitZoom();
@@ -16736,6 +16860,9 @@ const GBLayout = (() => {
       if (now !== _wasMobileLayout) {
         _wasMobileLayout = now;
         _renderPreservingActivePane();
+      } else {
+        // フォルダツリー・右サイドバーは、利用者が調節した幅を上限に比率で伸縮する（その場で反映）。
+        _syncFixedDockWidthsForViewport();
       }
       _notifyLayoutViewportResize();
     };
@@ -76195,7 +76322,67 @@ function _historyIsBusy() {
   return _historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy);
 }
 
+// 確定（操作）の順で取り消せるよう、保存の完了を待たずに履歴の枠だけ先に取る予約。
+// 保存完了時に fill()／capture() で中身を入れ、保存失敗時は cancel() で枠を取り除く。
+// 中身が入るまで、その枠の取り消し・やり直しは順番待ちのまま保存完了を待つ。
+let _historyCaptureReservation = null;
+
+function historyReserve(label, scope, detail) {
+  const entry = historyPush(label, null, null, scope, detail);
+  let settle = null;
+  entry._historyPending = new Promise(resolve => { settle = resolve; });
+  let finished = false;
+  const finish = () => {
+    finished = true;
+    delete entry._historyPending;
+    settle();
+    renderHistoryList();
+    renderHistoryPanel();
+  };
+  const reservation = {
+    entry,
+    get finished() { return finished; },
+    fill(undoFn, redoFn, nextLabel, nextDetail) {
+      if (finished) return entry;
+      entry.undo = undoFn;
+      entry.redo = redoFn;
+      if (nextLabel) entry.label = nextLabel;
+      if (nextDetail) entry.detail = nextDetail;
+      finish();
+      return entry;
+    },
+    // 中で呼ばれる最初の historyPush をこの枠へ入れる（既存の履歴登録関数をそのまま使うため）。
+    capture(fn) {
+      if (finished) return fn();
+      const previous = _historyCaptureReservation;
+      _historyCaptureReservation = reservation;
+      try { return fn(); }
+      finally {
+        _historyCaptureReservation = previous;
+        if (!finished) reservation.cancel();
+      }
+    },
+    cancel() {
+      if (finished) return;
+      const stacks = [_getStack(entry.scope), _historyGlobal];
+      stacks.forEach(stack => {
+        ['undo', 'redo'].forEach(kind => {
+          const index = stack[kind].indexOf(entry);
+          if (index >= 0) stack[kind].splice(index, 1);
+        });
+      });
+      finish();
+    },
+  };
+  return reservation;
+}
+
 function historyPush(label, undoFn, redoFn, scope, detail) {
+  const reservation = _historyCaptureReservation;
+  if (reservation && !reservation.finished && (reservation.entry.scope || '') === (scope || '')) {
+    _historyCaptureReservation = null;
+    return reservation.fill(undoFn, redoFn, label, detail);
+  }
   const s = _getStack(scope);
   const entry = { id: ++_historyEntrySequence, label, detail: detail || '', undo: undoFn, redo: redoFn, time: Date.now(), scope: scope || '' };
   s.undo.push(entry);
@@ -76221,13 +76408,32 @@ async function historyRedo(scope) {
   return _historyNavigate('redo', targetScope, _allowGlobalHistoryFallback(scope, arguments.length));
 }
 
-async function _historyNavigate(direction, targetScope, allowFallback) {
-  if (_historyIsBusy()) return false;
+// 取り消し・やり直しの実行中に押された取り消し・やり直しは捨てずに順番待ちにし、
+// 前の1件が終わってから1件ずつ実行する（保存待ち中の連打で1手分が消えていた）。
+const _historyNavigationQueue = [];
+
+function _historyNavigate(direction, targetScope, allowFallback) {
+  // カレンダー表示モードの独自履歴の実行中は、共通履歴側に順番待ちを流す担当がいないため従来どおり見送る。
+  if (!_historyBusy && _historyIsBusy()) return Promise.resolve(false);
+  return new Promise(resolve => {
+    _historyNavigationQueue.push({ direction, targetScope, allowFallback, resolve });
+    if (!_historyBusy) _historyRunNavigationQueue();
+  });
+}
+
+async function _historyRunNavigationQueue() {
+  if (_historyBusy) return;
   _historyBusy = true;
   try {
     renderHistoryList();
     renderHistoryPanel();
-    return await _historyReplayEntry(direction, targetScope, allowFallback);
+    while (_historyNavigationQueue.length) {
+      const request = _historyNavigationQueue.shift();
+      let result = false;
+      try { result = await _historyReplayEntry(request.direction, request.targetScope, request.allowFallback); }
+      catch { result = false; }
+      request.resolve(result);
+    }
   } finally {
     _historyBusy = false;
     renderHistoryList();
@@ -76251,6 +76457,9 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
       const preparation = _findHistorySnapshotProvider(actualScope)?.prepare?.(actualScope);
       if ((preparation?.then ? await preparation : preparation) === false) return false;
     }
+    if (_historyHasPendingTop(direction, actualScope, allowFallback)) {
+      await _historyWaitForPendingTop(direction, actualScope, allowFallback);
+    }
     if (s[direction].length === 0 && actualScope && allowFallback && _historyGlobal[direction].length) {
       actualScope = '';
       s = _historyGlobal;
@@ -76272,7 +76481,7 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
       if (snapshot == null) throw new Error('復元対象の現在の状態を取得できません');
       inverse = () => provider.restore(snapshot, actualScope);
     }
-    const outcome = await entry[direction]();
+    const outcome = await _historyRunReplayStep(() => entry[direction]());
     if (outcome === false) throw new Error('復元が完了しませんでした');
     const index = source.indexOf(entry);
     // 待機中の新しい編集・再読込で分岐した場合は、古いRedoを復活させない。
@@ -76288,6 +76497,37 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
   } catch (error) {
     showStatus((direction === 'undo' ? 'Undo失敗: ' : 'Redo失敗: ') + (error?.message || error), true);
     return false;
+  }
+}
+
+function _historyPendingTop(direction, targetScope, allowFallback) {
+  let stack = _getStack(targetScope)[direction];
+  if (!stack.length && targetScope && allowFallback) stack = _historyGlobal[direction];
+  const top = stack[stack.length - 1];
+  return top?._historyPending ? top : null;
+}
+
+function _historyHasPendingTop(direction, targetScope, allowFallback) {
+  return !!_historyPendingTop(direction, targetScope, allowFallback);
+}
+
+// 取り消し・やり直しの対象（スタックの先頭）が予約中なら、中身が入るか取り除かれるまで待つ。
+async function _historyWaitForPendingTop(direction, targetScope, allowFallback) {
+  for (let guard = 0; guard < 1000; guard += 1) {
+    const top = _historyPendingTop(direction, targetScope, allowFallback);
+    if (!top) return;
+    await top._historyPending;
+  }
+}
+
+// 取り消し・やり直しの中で動く処理（列の削除・復元に伴う表示設定の保存など）が設定の履歴を
+// 別に積み、やり直しの記録を消さないよう、その間だけ設定の履歴を止める（既存の抑止の仕組みを使う）。
+async function _historyRunReplayStep(fn) {
+  const hasWindow = typeof window !== 'undefined';
+  if (hasWindow) window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+  try { return await fn(); }
+  finally {
+    if (hasWindow) window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
   }
 }
 
@@ -76470,6 +76710,9 @@ async function historyPanelJump(steps, scope, entryId) {
       if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象の文書が開かれていないため元に戻せません', true); return false; }
     }
     if (!await _historyPrepareNavigation(targetScope)) return false;
+    // 予約中（保存待ち）の枠は中身が入るか取り除かれるまで待ってから戻す範囲を決める。
+    const pendingEntries = initialStack.undo.map(entry => entry._historyPending).filter(Boolean);
+    if (pendingEntries.length) await Promise.all(pendingEntries);
     const index = initialStack.undo.indexOf(selected);
     if (index < 0) return false;
     const planned = initialStack.undo.slice(index).reverse();
@@ -76486,6 +76729,8 @@ async function historyPanelJump(steps, scope, entryId) {
     _historyBusy = false;
     renderHistoryList();
     renderHistoryPanel();
+    // 一括の取り消し中に押された取り消し・やり直しを、終わった後に順番に流す。
+    if (_historyNavigationQueue.length) _historyRunNavigationQueue();
   }
 }
 
@@ -76898,12 +77143,17 @@ async function meldexRedo() {
 
 // 共通履歴のみを対象にした有効/無効判定。scope省略時は historyUndo/historyRedo と
 // 同じ規則（アクティブスコープ→空ならグローバルへフォールバック）で判定する。
+// 予約中（保存待ち）の枠も、保存完了を待って戻せるので「戻せる」と扱う。
+function _historyEntryCanReplay(entry, direction) {
+  return !!entry && (typeof entry[direction] === 'function' || !!entry._historyPending);
+}
+
 function historyCanUndo(scope) {
   if (_historyIsBusy()) return false;
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
-  if (s.undo.length > 0) return typeof s.undo[s.undo.length - 1].undo === 'function';
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return typeof _historyGlobal.undo[_historyGlobal.undo.length - 1]?.undo === 'function';
+  if (s.undo.length > 0) return _historyEntryCanReplay(s.undo[s.undo.length - 1], 'undo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.undo[_historyGlobal.undo.length - 1], 'undo');
   return false;
 }
 
@@ -76911,8 +77161,8 @@ function historyCanRedo(scope) {
   if (_historyIsBusy()) return false;
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
-  if (s.redo.length > 0) return typeof s.redo[s.redo.length - 1].redo === 'function';
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return typeof _historyGlobal.redo[_historyGlobal.redo.length - 1]?.redo === 'function';
+  if (s.redo.length > 0) return _historyEntryCanReplay(s.redo[s.redo.length - 1], 'redo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.redo[_historyGlobal.redo.length - 1], 'redo');
   return false;
 }
 
@@ -87513,6 +87763,13 @@ const UI_STYLE_SECTIONS = {
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },
     { label: 'テーブル罫線', line:'--db-grid-border', toggle:'--db-show-grid', toggleOn:'1px', toggleOff:'0px', text:'━━' },
+    // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。テーマパネルの「候補値」と同じ項目。
+    { label: '候補値', fg:'--db-option-chip-fg', bg:'--db-option-chip-bg', bgType:'rgba', bold:'--db-option-chip-bold', fontSize:'--db-option-chip-font-size',
+      line:'--db-option-chip-border-color', width:'--db-option-chip-border-width', text:'候補値',
+      popupNumbers:[
+        { label:'角丸', key:'--db-option-chip-radius', min:0, max:20, step:1, unit:'px', fallback:10 },
+        { label:'左右の余白', key:'--db-option-chip-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 },
+      ] },
     { label: '採用ステータス', bg:'--db-status-adopted-color', text:'採用ステータス色' },
     { label: 'ソースバッジ 1', bg:'--db-msr-badge-1-bg', text:'1' },
     { label: 'ソースバッジ 2', bg:'--db-msr-badge-2-bg', text:'2' },
@@ -104735,8 +104992,11 @@ async function resetLayoutToDefault() {
       _tagsCatalogLastResolved.clear();
       return;
     }
-    const key = sourceCacheKey(sourceFolder);
-    _tagsCatalogCache.delete(key);
+    // 同じ辞書を、保存先を省略した呼び出し（既定）と保存先を明示した呼び出し（シートの共通タグ列など）が
+    // 別のキーで持つ。どのキーが同じ辞書かは画面側で判定できないので、変更の時は全キーの取得結果を捨てる
+    // （1キーだけ捨てると、タグの名前を変えても別キーで描画するシートのセルが古い名前のまま残る）。
+    void sourceFolder;
+    _tagsCatalogCache.clear();
   }
   function notifyTagsCatalogChanged(reason, result, sourceFolder) {
     try {
@@ -104755,10 +105015,12 @@ async function resetLayoutToDefault() {
   }
   function publishTagsCatalogMutation(reason, result, sourceFolder) {
     const key = sourceCacheKey(sourceFolder);
+    // 別のキーで持っている同じ辞書の取得結果も捨てる（invalidateTagsCatalogCache の説明を参照）
+    _tagsCatalogCache.clear();
     if (Array.isArray(result?.tags) && Array.isArray(result?.groups)) {
       _tagsCatalogLastResolved.set(key, result);
       _tagsCatalogCache.set(key, { at: Date.now(), promise: Promise.resolve(result) });
-    } else _tagsCatalogCache.delete(key);
+    }
     notifyTagsCatalogChanged(reason, result, sourceFolder);
     return result;
   }
@@ -118510,6 +118772,17 @@ function _entityPropsViewState(dbPath, entityPath) {
   };
 }
 
+// 取り消し/やり直しで表示設定が巻き戻った後の画面の更新（開いている列一覧の再描画は呼び出し元が渡す）
+function _entityPropsHistoryRestore(dbPath, onRestore) {
+  // シートの表示全体は読み直さない（トピックの画面の表示中に読み直すと、シートの画面へ切り替わってしまう）。
+  // 列一覧の開閉・列幅は列一覧だけが使う設定なので、開いている列一覧だけを描き直す。
+  return (...args) => {
+    if (typeof onRestore === 'function') {
+      try { onRestore(...args); } catch (error) { console.warn('[entity-props] restore refresh failed', error); }
+    }
+  };
+}
+
 function _setEntityPropsCollapsed(dbPath, entityPath, collapsed, options = {}) {
   const next = !!collapsed;
   if (dbPath && typeof getDbViewConfig === 'function' && typeof saveDbViewConfig === 'function') {
@@ -118519,6 +118792,10 @@ function _setEntityPropsCollapsed(dbPath, entityPath, collapsed, options = {}) {
       historyLabel: '列一覧: 開閉',
       historyDetail: next ? '折りたたみ' : '展開',
       skipHistory: options.skipHistory === true,
+      onRestore: _entityPropsHistoryRestore(dbPath, options.onRestore),
+      // トピックの画面（フルページタブ）の履歴は共通スコープ('')。シートの 'db:' スコープへ積むと
+      // トピックの画面から Ctrl+Z が届かない。共通へ積めばシートタブからも（共通へのフォールバックで）戻せる
+      historyScope: '',
     });
     return;
   }
@@ -118535,6 +118812,8 @@ function _setEntityPropsColWidth(dbPath, entityPath, widthPx, options = {}) {
       historyLabel: '列一覧: 列幅',
       historyDetail: next + 'px',
       skipHistory: options.skipHistory === true,
+      onRestore: _entityPropsHistoryRestore(dbPath, options.onRestore),
+      historyScope: '',
     });
     return next;
   }
@@ -118588,7 +118867,11 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
       grid.__entityPropsReadonlyCollapsed = !viewState.collapsed;
     } else {
       const cur = _entityPropsViewState(dbPath, entityPath);
-      _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed);
+      _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed, {
+        onRestore: () => {
+          if (grid?.isConnected && typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);
+        },
+      });
     }
     if (typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);
     grid.querySelector?.('[data-e2e-id="entity-props-toggle"]')?.focus?.({ preventScroll: true });
@@ -118673,7 +118956,14 @@ function _showEntityPropsColWidthPopup(anchorBtn, grid, dbPath, entityPath) {
   const commit = () => {
     const clamped = preview(input.value);
     input.value = String(clamped);
-    _setEntityPropsColWidth(dbPath, entityPath, clamped);
+    _setEntityPropsColWidth(dbPath, entityPath, clamped, {
+      onRestore: () => {
+        if (!grid?.isConnected) return;
+        const restored = _entityPropsViewState(dbPath, entityPath).colWidth;
+        grid.style.setProperty('--entity-prop-col-width', restored + 'px');
+        if (input.isConnected) input.value = String(restored);
+      },
+    });
     return clamped;
   };
   input.addEventListener('input', () => { preview(input.value); });
@@ -130394,6 +130684,16 @@ const _FS_FIELDS = {
       // 罫線
       { key: '--db-grid-border', label: '罫線 色',   type: 'color' },
       { key: '--db-show-grid',   label: '罫線 表示', type: 'toggle', on: '1px', off: '0px' },
+      // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。2026-11-20 追加。
+      // 選択肢ごとの色・タグの色・列ごとの表示設定は、ここより優先する。
+      { key: '--db-option-chip-fg',           label: '候補値 色',         type: 'color' },
+      { key: '--db-option-chip-bg',           label: '候補値 背景',       type: 'color', bgType: 'rgba' },
+      { key: '--db-option-chip-bold',         label: '候補値 太字',       type: 'toggle', on: 'bold', off: 'normal' },
+      { key: '--db-option-chip-font-size',    label: '候補値 文字サイズ', type: 'rangeNumber', unit: 'px', min: 9, max: 24, step: 1, fallback: '12px', themeManaged: true },
+      { key: '--db-option-chip-radius',       label: '候補値 角丸',       type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '10px', themeManaged: true },
+      { key: '--db-option-chip-padding-x',    label: '候補値 左右の余白', type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '8px', themeManaged: true },
+      { key: '--db-option-chip-border-color', label: '候補値 枠線 色',    type: 'color' },
+      { key: '--db-option-chip-border-width', label: '候補値 枠線 太さ',  type: 'pxtext', themeManaged: true },
     ],
     editOps: [
       { key: '--db-selection-fg',    label: '選択文字', type: 'color' },
@@ -131460,6 +131760,8 @@ function _fsResolveSections(ctx, spec) {
           { label: 'セル',         fields: pick(['--db-cell-fg', '--db-cell-bg', '--db-cell-bold', '--db-cell-italic', '--db-cell-font']) },
           { label: 'アクティブセル枠', fields: pick(['--db-active-color', '--db-active-width']) },
           { label: 'テーブル罫線', fields: pick(['--db-grid-border', '--db-show-grid']) },
+          { label: '候補値', fields: pick(['--db-option-chip-fg', '--db-option-chip-bg', '--db-option-chip-bold', '--db-option-chip-font-size',
+            '--db-option-chip-radius', '--db-option-chip-padding-x', '--db-option-chip-border-color', '--db-option-chip-border-width']) },
         ],
       },
     ];
@@ -132119,6 +132421,8 @@ function _fsBindThemeColorSetEditor(root, ctx) {
 // テーマ（配色・フォント・太字/斜体）ではなく、ファイルごとの配置・寸法・動作の設定か。
 function _fsIsThemeIndependentField(field) {
   if (!field || !field.key) return false;
+  // 寸法でも見た目のデザインとしてテーマが持つ項目（シートの候補値の角丸・余白・文字サイズ・枠線の太さ）。
+  if (field.themeManaged) return false;
   if (['color', 'select', 'boardBgColorReset'].includes(field.type)) return false;
   if (field.type === 'toggle' && ['bold', 'italic'].includes(field.on)) return false;
   return true;
@@ -157318,6 +157622,21 @@ async function waitForPendingDbValueMutations(dbPath) {
   return false;
 }
 
+// セルの値変更は、保存の完了順ではなく確定の順で取り消せるよう、確定時に共通履歴の枠を先に取る。
+// 枠の履歴スコープは、保存後に履歴を登録する _dbUndoValue と同じ求め方にそろえる。
+function _dbReserveValueHistory(label, valueRef, dbPathFallback) {
+  if (typeof historyReserve !== 'function') return null;
+  let dbPath = '';
+  try {
+    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, {});
+  } catch {}
+  dbPath = dbPath || dbPathFallback || '';
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath)
+    : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : '');
+  if (!scope) return null;
+  return historyReserve(label, scope);
+}
+
 function _dbLatestEntryRevision(entityPath, fallbackValue) {
   const normalizedEntityPath = _dbNormalizePath(entityPath);
   let cached = Number(_dbEntryRevisionCache.get(normalizedEntityPath));
@@ -159877,6 +160196,7 @@ function _renderColMenuItems(container, itemList) {
     }
     if (item.type === 'submenu') {
       const wrapper = document.createElement('div');
+      wrapper.className = 'gb-context-menu-submenu';
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
       if (item.e2eId) el.dataset.e2eId = item.e2eId;
@@ -160407,6 +160727,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   cancelBtn.type = 'button';
   cancelBtn.textContent = 'キャンセル';
   cancelBtn.setAttribute('aria-label', 'トピック名の自動生成をキャンセル');
+  cancelBtn.dataset.e2eId = 'db-entry-name-autogen-cancel';
   const runBtn = document.createElement('button');
   runBtn.type = 'button';
   runBtn.className = 'primary';
@@ -160430,6 +160751,17 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   modalApi.modal.style.maxWidth = '520px';
   modalApi.footer.classList.add('btn-row');
   const list = overlay.querySelector('.gb-entry-name-autogen-list');
+  // 列ごとのチェックは列名から作る安定IDを付ける（全部同じIDだと部品を区別できない）。
+  const usedPropSuffixes = new Set();
+  const propE2eSuffix = (prop) => {
+    const token = typeof _dbE2eToken === 'function'
+      ? _dbE2eToken(prop)
+      : (String(prop || '').trim().replace(/[^\p{L}\p{N}_-]+/gu, '-') || 'item');
+    let suffix = token;
+    for (let n = 2; usedPropSuffixes.has(suffix); n += 1) suffix = token + '-' + n;
+    usedPropSuffixes.add(suffix);
+    return suffix;
+  };
   props.forEach(prop => {
     const label = document.createElement('label');
     label.className = 'gbm-check-row';
@@ -160441,7 +160773,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
     cb.type = 'checkbox';
     cb.value = prop;
     cb.checked = defaults.has(prop);
-    cb.dataset.e2eId = 'db-entry-name-autogen-prop';
+    cb.dataset.e2eId = `db-entry-name-autogen-prop-${propE2eSuffix(prop)}`;
     const span = document.createElement('span');
     span.textContent = prop;
     label.appendChild(cb);
@@ -160650,8 +160982,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
           : '';
         if (result.failures.length) {
           const error = result.failures[0]?.error;
+          // 失敗の原因も添える（M-014 不具合29。原因の無い失敗表示では、利用者が対処を決められない）。
+          const reason = error?.userMessage || error?.message || '';
           showStatus(
-            error?.resultUnknown ? '削除結果を確認できませんでした。行を元に戻しました' : '削除に失敗したため、行を元に戻しました',
+            (error?.resultUnknown ? '削除結果を確認できませんでした。行を元に戻しました' : '削除に失敗したため、行を元に戻しました')
+              + (reason ? '（原因: ' + reason + '）' : ''),
             true
           );
         } else {
@@ -161015,6 +161350,16 @@ async function _addEntityBelow(dbPath, afterEntity) {
   } catch (err) { showStatus('トピック追加失敗: ' + (err?.message || err), true); }
 }
 
+// 取り消し・やり直しの中で列を削除・復元すると、表示設定（列レイアウト等）の保存が別の履歴を積み、
+// やり直しの記録が消える。この間だけ表示設定の履歴を止める（既存の抑止の仕組みを使う）。
+async function _dbPropsWithoutNestedViewHistory(fn) {
+  window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+  try { return await fn(); }
+  finally {
+    window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
+  }
+}
+
 // 依存関係ペアプロパティを一括作成
 function _addDependencyPairProps(dbPath, ctx) {
   const pts = getPropertyTypes(dbPath);
@@ -161023,14 +161368,46 @@ function _addDependencyPairProps(dbPath, ctx) {
     showStatus('依存関係の列は既に存在します');
     return;
   }
-  setPropertyType(dbPath, '先行', {
-    type: 'multi-relation', relationDb: '', pairWith: '後続', dependencyDirection: 'target-to-entry'
-  });
-  setPropertyType(dbPath, '後続', {
-    type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target'
-  });
-  showStatus('依存関係の列を追加しました（先行 / 後続）');
-  _refreshDbColumnMenuView(ctx, dbPath);
+  const pairs = [
+    ['先行', { type: 'multi-relation', relationDb: '', pairWith: '後続', dependencyDirection: 'target-to-entry' }],
+    ['後続', { type: 'multi-relation', relationDb: '', pairWith: '先行', dependencyDirection: 'entry-to-target' }],
+  ];
+  const addPairs = async () => {
+    // 2列は順に保存する（同時に送ると列タイプの保存が互いを上書きし得る）。
+    for (const [name, config] of pairs) {
+      if (await Promise.resolve(setPropertyType(dbPath, name, JSON.parse(JSON.stringify(config)), ctx)) === false) return false;
+    }
+    return true;
+  };
+  return (async () => {
+    if (!await addPairs()) {
+      showStatus('依存関係の列を追加できませんでした。列の保護設定や編集権限を確認してください', true);
+      _refreshDbColumnMenuView(ctx, dbPath);
+      return false;
+    }
+    if (typeof historyPush === 'function' && typeof _deleteColumnNoConfirm === 'function') {
+      const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
+        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
+      historyPush('依存関係の列の追加',
+        () => _dbPropsWithoutNestedViewHistory(async () => {
+          for (const [name] of pairs.slice().reverse()) {
+            if (await _deleteColumnNoConfirm(dbPath, name, ctx) === false) throw new Error(`列「${name}」を取り消せませんでした`);
+          }
+        }),
+        () => _dbPropsWithoutNestedViewHistory(async () => {
+          if (!await addPairs()) throw new Error('依存関係の列を戻せませんでした');
+          // 列タイプの保存で外れた削除の印を、表示設定の保存先にも反映する。
+          if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+            await Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true }));
+          }
+          _refreshDbColumnMenuView(ctx, dbPath);
+        }),
+        scope);
+    }
+    showStatus('依存関係の列を追加しました（先行 / 後続）');
+    _refreshDbColumnMenuView(ctx, dbPath);
+    return true;
+  })();
 }
 
 // 依存エントリを作成
@@ -161383,9 +161760,32 @@ async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
   const result = await _copyColumnValuesForDuplicate(dbPath, pivotData, propName, newName);
   if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
   else if (typeof renderPivot === 'function') renderPivot(ctx);
+  _dbPushColumnDuplicateHistory('列の複製: ' + newName, dbPath, ctx, newName, pt);
   const suffix = result.failed ? `（${result.failed}件失敗）` : '';
   if (typeof showStatus === 'function') showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件${suffix}`, !!result.failed);
   return true;
+}
+
+// 列を作る操作（列の複製など）を取り消し・やり直しできるようにする。取り消しは作った列の削除（列の削除と同じく、
+// コピーした値はトピックに残り表示されなくなる）、やり直しは作った直後の列タイプと表示設定を戻す（残っている値がそのまま出る）。
+// 列の保存が確定してから呼ぶ。
+function _dbPushColumnDuplicateHistory(label, dbPath, ctx, newName, pt) {
+  if (typeof historyPush !== 'function' || typeof _deleteColumnNoConfirm !== 'function') return;
+  const cfgAfter = typeof getDbViewConfig === 'function' ? JSON.parse(JSON.stringify(getDbViewConfig(dbPath) || {})) : null;
+  const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
+  historyPush(label,
+    () => _dbPropsWithoutNestedViewHistory(async () => {
+      if (await _deleteColumnNoConfirm(dbPath, newName, ctx) === false) throw new Error(`列「${newName}」を取り消せませんでした`);
+    }),
+    () => _dbPropsWithoutNestedViewHistory(async () => {
+      if (cfgAfter && typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, JSON.parse(JSON.stringify(cfgAfter)), { skipHistory: true });
+      const saved = await Promise.resolve(setPropertyType(dbPath, newName, JSON.parse(JSON.stringify(pt)), ctx));
+      if (saved === false) throw new Error(`列「${newName}」を戻せませんでした`);
+      if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(dbPath);
+      if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
+    }),
+    scope);
 }
 
 async function _deleteColumnFromDisplayOrderModal(root, propName, item) {
@@ -166930,8 +167330,11 @@ async function _getRelationMap(relationDbPath) {
     } catch (e) {
       // 参照先シート自体が存在しない（404相当）ときだけ欠落として記録する。
       // デスクトップ版は status=404、クラウド版は「シートが見つかりません」メッセージ。
+      // 保存先の外（存在しない別ドライブ等）を指す参照は 403「許可されていないパス」になり、これも読めない参照先として記録する。
       // 500/ネットワーク等の一時エラーでは記録しない（誤検出を避け次回再試行させる）。
-      if (e && (e.status === 404 || /見つかりません|not found/i.test(String(e.message || '')))) {
+      const message = String(e?.message || '');
+      if (e && (e.status === 404 || /見つかりません|not found/i.test(message)
+        || (e.status === 403 && /許可されていないパス/.test(message)))) {
         _relationMissingCache[relationDbPath] = { missing: true, timestamp: now };
       }
       return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
@@ -169318,7 +169721,7 @@ function createDbLinkValueElement(val, entityPath, propName, thumbSize, propType
 async function _dbLinkCommitValue(args) {
   const {
     entityPath, propName, dbPath, ctx, existing, newPath, newLink, td,
-    closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl,
+    closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl, historySteps,
   } = args || {};
   const anchor = anchorEl || td || null;
   const oldValue = existing?.value || '';
@@ -169397,33 +169800,42 @@ async function _dbLinkCommitValue(args) {
       optimisticValue.property = propName;
     }
     if (!refreshedLocally && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
-    if (filePath && typeof historyPush === 'function') {
+    if (filePath && (Array.isArray(historySteps) || typeof historyPush === 'function')) {
       let currentRef = {
         file: filePath,
         entry_path: entityPath,
         property: result?.property || propName,
         candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,
       };
-      const dbScope = typeof _dbScopeForPath === 'function'
-        ? _dbScopeForPath(dbPath)
-        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
-      historyPush('リンク設定: ' + propName + '=' + newPath,
-        async () => {
-          await _apiPutValue(currentRef, { _delete: true });
-          if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
-        },
-        async () => {
-          const redo = await _apiPostValue(entityPath, propName, newPath, '採用', '', '', { link: normalizedLink });
-          currentRef = {
-            file: redo?.path || redo?.file || currentRef.file,
-            entry_path: entityPath,
-            property: redo?.property || propName,
-            candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
-          };
-          if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
-        },
-        dbScope
-      );
+      const undoStep = async () => { await _apiPutValue(currentRef, { _delete: true }); };
+      const redoStep = async () => {
+        const redo = await _apiPostValue(entityPath, propName, newPath, '採用', '', '', { link: normalizedLink });
+        currentRef = {
+          file: redo?.path || redo?.file || currentRef.file,
+          entry_path: entityPath,
+          property: redo?.property || propName,
+          candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
+        };
+      };
+      if (Array.isArray(historySteps)) {
+        // 複数リンクの一括追加は、呼出元が1回の操作として履歴へ積む（1回の取り消しで全部戻す）。
+        historySteps.push({ label: newPath, undo: undoStep, redo: redoStep });
+      } else {
+        const dbScope = typeof _dbScopeForPath === 'function'
+          ? _dbScopeForPath(dbPath)
+          : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+        historyPush('リンク設定: ' + propName + '=' + newPath,
+          async () => {
+            await undoStep();
+            if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+          },
+          async () => {
+            await redoStep();
+            if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+          },
+          dbScope
+        );
+      }
     }
     if (typeof showStatus === 'function') showStatus('リンクを設定しました');
     return true;
@@ -169775,6 +170187,7 @@ async function startDbMultiLinkCellEdit(opts) {
     return true;
   });
   let added = 0;
+  const historySteps = [];
   for (let index = 0; index < pending.length; index += 1) {
     const descriptor = pending[index];
     const isLast = index === pending.length - 1;
@@ -169784,9 +170197,34 @@ async function startDbMultiLinkCellEdit(opts) {
       closeInlineEditorShell: isLast ? closeInlineEditorShell : null,
       refreshCellDisplayNow: isLast ? refreshCellDisplayNow : null,
       restoreCellPos: isLast ? restoreCellPos : null,
+      historySteps,
     });
     if (!saved) break;
     added += 1;
+  }
+  // 1回の保存で追加したリンクは、まとめて1件の履歴にする（途中で失敗した時は追加できた分だけ）。
+  if (historySteps.length && typeof historyPush === 'function') {
+    const scope = typeof _dbScopeForPath === 'function'
+      ? _dbScopeForPath(dbPath)
+      : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+    const refresh = async () => {
+      if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true });
+    };
+    const label = historySteps.length === 1
+      ? 'リンク設定: ' + propName + '=' + historySteps[0].label
+      : 'リンク設定: ' + propName + '（' + historySteps.length + '件）';
+    historyPush(label,
+      async () => {
+        try {
+          for (const step of [...historySteps].reverse()) await step.undo();
+        } finally { await refresh(); }
+      },
+      async () => {
+        try {
+          for (const step of historySteps) await step.redo();
+        } finally { await refresh(); }
+      },
+      scope);
   }
   if (!added && typeof showStatus === 'function') showStatus('追加できる新しいリンクはありません', true);
 }
@@ -170663,10 +171101,18 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     addBtn.style.display = 'none';
     addBtn.dataset.editingHidden = '1';
   }
+  // 編集を始めた後に、利用者が別のセルを選んだか（クリック・確定時の移動など）。
+  const userMovedToOtherCell = () => {
+    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
+    return !!(current && current !== td && current.isConnected
+      && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq);
+  };
   const cancel = () => {
     if (!ownsInlineEditor()) return;
     container.querySelectorAll('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-toggle,.cell-date-editor').forEach(el => el.remove());
     if (addBtn) { addBtn.style.display = ''; delete addBtn.dataset.editingHidden; }
+    // 空のまま別のセルをクリックして入力をやめた時（blur）は、選んだ先の選択を奪わない。
+    if (userMovedToOtherCell()) return;
     setActiveCell(td);
   };
   const pos = _cellPos(td);
@@ -170675,9 +171121,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (!ownsInlineEditor() || typeof setActiveCell !== 'function' || !td?.isConnected) return;
     // 保存の完了を待つ間に利用者が別のセルへ移っていたら、選択とフォーカスを奪わない。
     // 奪うと移動先の入力欄が blur で途中確定され、続く入力が別のセルへ流れる。
-    const current = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : activeCell;
-    if (current && current !== td && current.isConnected
-        && Number(current.dataset?.dbActiveSeq || 0) > editorStartActiveSeq) return;
+    if (userMovedToOtherCell()) return;
     setActiveCell(td, { scroll: false });
   };
   const closeInlineEditorShell = () => {
@@ -170858,6 +171302,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     let backendCommitted = false;
     let resolvePendingCreate, rejectPendingCreate;
     const writeStatus = isPickerReplacementType || !getStatusEnabled(dbPath) ? '採用' : '案';
+    const historyScope = typeof _dbScopeForPath === 'function'
+      ? _dbScopeForPath(dbPath)
+      : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+    // 取り消しの順番は保存の完了順ではなく確定の順にする。確定時に履歴の枠だけ先に取る。
+    const historySlot = typeof historyReserve === 'function'
+      ? historyReserve('値追加: ' + propName + '=' + value, historyScope) : null;
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -170878,6 +171328,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         refreshCellDisplayNow([], value);
         _restoreCellPos(pos, moveTo);
         restoredOptimistic = true;
+      }
+      // 表の末尾で追加した直後の行は、作成の保存が終わるまで保存先にファイルが無い。
+      // 先に値を送ると失敗して入力が失われるため、作成の完了を待ち、確定した保存先へ書く。
+      if (typeof _dbResolveEntityPathForOpen === 'function') {
+        entityPath = (await _dbResolveEntityPathForOpen(dbPath, entityName, entityPath)) || entityPath;
       }
       const preparedRemoteState = ((type === 'relation' || type === 'multi-relation') && ptc?.bidirectional
         && typeof _prepareBidirectionalRemoteState === 'function')
@@ -170918,9 +171373,6 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       }
       backendCommitted = true;
       applyValueToSelectedPeerCells(value, { status: writeStatus });
-      const historyScope = typeof _dbScopeForPath === 'function'
-        ? _dbScopeForPath(dbPath)
-        : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
       if (filePath) {
         const candIdx = result?.candidate_index;
         const undoFn = (candIdx != null)
@@ -170958,9 +171410,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             }
             await selectDatabase(dbPath, ctx, { silent: true });
           };
-        historyPush('値追加: ' + propName + '=' + value,
-          undoFn,
-          async () => {
+        const redoFn = async () => {
             await _apiPostValue(entityPath, propName, value, writeStatus, '');
             if (bidirectionalCtx && typeof _applyBidirectionalRelationSync === 'function') {
               await _applyBidirectionalRelationSync({
@@ -170976,10 +171426,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
               await _redoCascadeDependentValues(entityPath, cascadeClears, { dbPath, ctx });
             }
             await selectDatabase(dbPath, ctx, { silent: true });
-          },
-          historyScope
-        );
+          };
+        if (historySlot) historySlot.fill(undoFn, redoFn);
+        else historyPush('値追加: ' + propName + '=' + value, undoFn, redoFn, historyScope);
       }
+      historySlot?.cancel();
       if (isRelationType
           && typeof _upsertLocalPivotValue === 'function'
           && typeof _finalizeRelationCellUpdate === 'function') {
@@ -171068,6 +171519,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       cancel();
       return false;
     } finally {
+      // 保存に失敗した・履歴に残す対象が無かった場合は、先に取った枠を取り除く。
+      historySlot?.cancel();
       if (optimisticValue) delete optimisticValue._pendingCreate;
     }
   };
@@ -171088,6 +171541,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if ((existing.value || '') === value) { cancel(); return; }
     const oldValue = existing.value || '';
     const pendingCreate = existing._pendingCreate;
+    const historySlot = _dbReserveValueHistory(propName + ': ' + oldValue + ' → ' + value, existing, dbPath);
     try {
       closeInlineEditorShell();
       if (typeof _upsertLocalPivotValue === 'function') {
@@ -171104,15 +171558,22 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       const refreshed = refreshCellDisplayNow([], value);
       _restoreCellPos(pos, moveTo);
       await _apiPutValue(existing, { new_value: value });
-      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+      const pushUndo = () => {
+        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + value, existing, oldValue, value);
+      };
+      if (historySlot) historySlot.capture(pushUndo);
+      else pushUndo();
+      historySlot?.cancel();
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(value, { status: existing.status || '採用', note: existing.note || '' });
     } catch (e) {
+      historySlot?.cancel();
       if (pendingCreate) {
         try { await pendingCreate; }
-        catch {
+        catch (createError) {
           removeLocalCellValue(existing);
           refreshCellDisplayNow([], '');
+          if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (createError?.message || createError || e?.message || e), true);
           cancel();
           return;
         }
@@ -171128,6 +171589,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       } else {
         existing.value = oldValue;
       }
+      if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       refreshCellDisplayNow([], oldValue);
       cancel();
     }
@@ -171162,6 +171624,9 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (oldValue === nextValue) { cancel(); return; }
     const pendingCreate = existing._pendingCreate;
     const saveRef = { ...existing, property: existing.property || propName };
+    const historySlot = nextValue
+      ? _dbReserveValueHistory(propName + ': ' + oldValue + ' → ' + nextValue, existing, dbPath)
+      : _dbReserveValueHistory('値削除: ' + propName + '=' + oldValue, null, dbPath);
     try {
       closeInlineEditorShell();
       if (nextValue) {
@@ -171186,10 +171651,14 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
       if (nextValue) {
         await _apiPutValue(saveRef, { new_value: nextValue });
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, existing);
-        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
+        const pushUndo = () => {
+          if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, existing, oldValue, nextValue);
+        };
+        if (historySlot) historySlot.capture(pushUndo);
+        else pushUndo();
       } else {
         await _apiPutValue(saveRef, { _delete: true });
-        if (typeof historyPush === 'function') {
+        const pushDeleteHistory = () => {
           const savedStatus = existing.status || '採用';
           const savedNote = existing.note || '';
           let currentRef = { ...saveRef, value: oldValue, status: savedStatus, note: savedNote };
@@ -171215,8 +171684,13 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
             },
             _dbScope(dbPath)
           );
+        };
+        if (typeof historyPush === 'function') {
+          if (historySlot) historySlot.capture(pushDeleteHistory);
+          else pushDeleteHistory();
         }
       }
+      historySlot?.cancel();
       if (!refreshed) await selectDatabase(dbPath, ctx, { silent: true });
       applyValueToSelectedPeerCells(nextValue, {
         status: existing.status || '採用',
@@ -171224,6 +171698,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         allowEmptyClear: true,
       });
     } catch (e) {
+      historySlot?.cancel();
       if (pendingCreate) {
         try { await pendingCreate; }
         catch {
@@ -172131,6 +172606,50 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   }
 }
 
+// 列の追加（見出しの＋・左／右に挿入・Ctrl+Shift+Enter）の取り消し履歴。
+// 操作の直後に積む（保存の完了後に積むと、続けて始めた列名変更より後ろに入り、取り消しの順が逆になる）。
+// 取り消し=確認なしで列を削除、やり直し=同じ位置・同じ列タイプで列を戻す。保存に失敗した追加は何もしない。
+function _dbPushColumnAddHistory(dbPath, propName, typeConfig, orderAfter, ctx, savePromise) {
+  if (typeof historyPush !== 'function' || !dbPath || !propName || savePromise === false) return;
+  const scope = typeof _dbScopeForPath === 'function'
+    ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+  const config = JSON.parse(JSON.stringify(typeConfig || { type: 'text' }));
+  const order = Array.isArray(orderAfter) ? [...orderAfter] : null;
+  const saved = Promise.resolve(savePromise).then(result => result !== false, () => false);
+  // 取り消し・やり直しの中の列の削除・復元は、表示設定（列レイアウト）の保存で別の履歴を積む。
+  // 積むとやり直しの記録が消えるため、この間だけ表示設定の履歴を止める。
+  const withoutNestedViewHistory = async (fn) => {
+    window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+    try { return await fn(); }
+    finally {
+      window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
+    }
+  };
+  historyPush('列追加: ' + propName,
+    () => withoutNestedViewHistory(async () => {
+      if (!await saved) return;
+      const ok = typeof _deleteColumnNoConfirm === 'function'
+        ? await _deleteColumnNoConfirm(dbPath, propName, ctx)
+        : false;
+      if (ok === false) throw new Error('追加した列「' + propName + '」を取り消せませんでした');
+    }),
+    () => withoutNestedViewHistory(async () => {
+      if (!await saved) return;
+      // 列タイプを先に戻す（削除の印もここで外れる）。その後に列順を保存し、削除の印の無い表示設定を保存先へ送る。
+      const restored = await Promise.resolve(setPropertyType(dbPath, propName, JSON.parse(JSON.stringify(config)), ctx));
+      if (restored === false) throw new Error('列「' + propName + '」を戻せませんでした');
+      if (order && typeof setColOrder === 'function') setColOrder(dbPath, order, { skipHistory: true, ctx });
+      if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+        await Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true }));
+      }
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+      else if (typeof renderPivot === 'function') renderPivot(ctx);
+        }),
+    scope
+  );
+}
+
 // 列をインラインで挿入（ダイアログなし）
 // typeConfig を渡すとその列タイプで作成する（未指定なら従来どおりテキスト列）
 function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
@@ -172150,7 +172669,13 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const fallbackOrder = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
-  const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
+  const order = [...(getColOrder(dbPath, { ctx }) || fallbackOrder)];
+  // 表は列順に無い列（値がまだ無い列・列定義だけの列）も末尾に出す（renderPivot と同じ）。
+  // 列順だけで位置を探すと、その列を基準にした挿入が「列が見つかりません」で止まる。
+  const shownProps = [...(pivotData?.properties || []),
+    ...Object.keys((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {})];
+  (typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, shownProps) : shownProps)
+    .forEach(p => { if (p && p !== '__entity__' && !order.includes(p)) order.push(p); });
   // 新しい列の初期名は typeConfig.initialName があればそれを優先する。
   // 無ければ選んだ列タイプ名にする（型未指定はテキスト）。
   const _hasTypeConfig = !!(typeConfig && typeof typeConfig === 'object');
@@ -172188,7 +172713,8 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   // typeConfig.initialName は列名決定のみに使うヒントであり、列タイプ設定として保存しない。
   const typeConfigToSave = _hasTypeConfig ? { ...typeConfig } : { type: 'text' };
   delete typeConfigToSave.initialName;
-  setPropertyType(dbPath, name, typeConfigToSave, ctx);
+  const typeSave = setPropertyType(dbPath, name, typeConfigToSave, ctx);
+  _dbPushColumnAddHistory(dbPath, name, typeConfigToSave, order, ctx, typeSave);
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
   else renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
@@ -172409,6 +172935,7 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
     const sel = document.createElement('button');
     sel.type = 'button';
     sel.className = 'count-type-select';
+    if (typeof _dbE2eId === 'function') sel.dataset.e2eId = _dbE2eId(ctx, 'footer-count-type', propName);
     sel.setAttribute('aria-haspopup', 'listbox');
     sel.setAttribute('aria-expanded', 'false');
     sel.setAttribute('aria-label', `集計タイプ / ${propName}`);
@@ -173075,6 +173602,12 @@ function setActiveCell(td, options = {}) {
     rangeAnchorCell = null;
   }
   const previous = activeCell;
+  // 既に選択中のセルをもう一度選び直すだけ（編集欄を閉じた後・保存の完了後の戻し）は新しい選択ではない。
+  // 番号を進めると、確定時の移動（Tab・Enter）の待ちが「利用者が別のセルを選んだ」と見なして止まり、
+  // 選択が確定したセルに残る（保存が速いと、移動より先に保存の完了の戻しが来る）。
+  // 編集の開始などは、同じセルでも新しい選択として番号を進める（options.newSelection）。
+  const reselectedSeq = (!options.newSelection && previous === td && td?.isConnected && td.classList?.contains('active-cell'))
+    ? Number(td.dataset?.dbActiveSeq || 0) : 0;
   if (previous) _dbDeactivateActiveCell(previous);
   document.querySelectorAll('td.active-cell').forEach(cell => {
     if (cell !== td) _dbDeactivateActiveCell(cell);
@@ -173084,7 +173617,10 @@ function setActiveCell(td, options = {}) {
   if (td) {
     _dbRestoreCellAddButtonsIfIdle(td);
     td.classList.add('active-cell');
-    td.dataset.dbActiveSeq = String(++dbActiveCellSeq);
+    // 描き直しで入れ替わった同じセルへ選択を戻す時は、元の選択の通し番号を引き継ぐ。
+    // 新しい番号にすると、保存の完了待ちの移動（Tab・Enter）が「利用者が別のセルを選んだ」と見なして止まる。
+    const preservedSeq = Number(options.preserveSeq || reselectedSeq || 0);
+    td.dataset.dbActiveSeq = String(preservedSeq > 0 ? preservedSeq : ++dbActiveCellSeq);
     td.tabIndex = 0;
     td.focus?.({ preventScroll: true });
     try {
@@ -173173,11 +173709,18 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
   return _dbOpenExistingCellValueEditor(td, ctx);
 }
 
+function _dbCellEditBlockedMessage(td, ctx) {
+  const propName = td?.dataset?.propName || '';
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  if (!propName || !dbPath || typeof checkColumnEditable !== 'function') return '';
+  try { return checkColumnEditable(dbPath, propName, ctx) || ''; } catch { return ''; }
+}
+
 function _dbStartCellInlineEditor(td, options = {}) {
   if (!td || td.classList?.contains('col-entity')) return false;
   // 編集開始を新しいフォーカス所有権として記録する。直前の非同期保存が遅れて
   // 同じセルを復元しても、この編集や続くTab移動を上書きしないようにする。
-  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false });
+  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false, newSelection: true });
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
     : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
@@ -173186,6 +173729,9 @@ function _dbStartCellInlineEditor(td, options = {}) {
   const propName = td.dataset?.propName || '';
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
   if (!entityName || !propName || !dbPath || typeof startCellInlineAdd !== 'function') return false;
+  // 既存の値の編集欄（リレーションの候補一覧など）は列の編集制限を確かめないので、ここで止める。
+  const blocked = _dbCellEditBlockedMessage(td, ctx);
+  if (blocked) { if (typeof showStatus === 'function') showStatus(blocked); return true; }
   const ptc = _dbCellPropertyType(td, ctx);
   const hasValue = _dbCellHasAnyValue(td, ctx);
   if (options.preferExistingValue && hasValue && _dbOpenExistingCellValueEditorFromData(td, ctx)) return true;
@@ -173209,6 +173755,18 @@ function _dbIsInternalRangePasteShortcut(e) {
   return (e.ctrlKey || e.metaKey) && !e.altKey && String(e.key || '').toLowerCase() === 'v'
     && _dbHasInternalCellClipboard()
     && Array.isArray(dbCellClipboard.cells) && dbCellClipboard.cells.length > 1;
+}
+
+// 空のセルをクリックすると入力欄が開く（v0.7.509）。何も打っていない入力欄での Ctrl+V は、
+// セルを選んで貼り付けたのと同じに扱い、コピーしたセル（値・ステータス）をそのまま貼り付ける。
+// 文字を打ち始めた後の Ctrl+V は、これまでどおり入力欄への文字の貼り付けにする。
+function _dbIsPristineCellEditorPasteShortcut(e) {
+  if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && String(e.key || '').toLowerCase() === 'v')) return false;
+  if (!_dbHasInternalCellClipboard()) return false;
+  const el = document.activeElement;
+  if (!el?.classList?.contains('cell-inline-input')) return false;
+  if (!('value' in el) || String(el.value || '') !== '') return false;
+  return !!el.closest?.('td[data-prop-name]');
 }
 
 function _dbActiveNativeEditingCell() {
@@ -173255,6 +173813,7 @@ function _dbShouldBypassNativeEditorForSheetShortcut(e) {
   const editingCell = _dbActiveNativeEditingCell();
   if (!editingCell) return false;
   if (_dbIsInternalRangePasteShortcut(e)) return true;
+  if (_dbIsPristineCellEditorPasteShortcut(e)) return true;
   const key = String(e.key || '').toLowerCase();
   const isCopy = (e.ctrlKey || e.metaKey) && !e.altKey && key === 'c';
   const isDelete = (e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -173350,6 +173909,9 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   const keyType = String(_dbCellPropertyType(cell, keyCtx)?.type || '').replace(/_/g, '-');
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
+    // 編集制限でロックした列は、リレーション・ロールアップでも候補の一覧や入力欄を開かない。
+    const blocked = _dbCellEditBlockedMessage(cell, keyCtx);
+    if (blocked) { if (typeof showStatus === 'function') showStatus(blocked); return true; }
     if (keyType === 'rollup' && typeof startRollupCellEdit === 'function') {
       void startRollupCellEdit(cell);
       return true;
@@ -173366,7 +173928,7 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
     if (typeof _dbIsNativeEditingElement === 'function' && _dbIsNativeEditingElement(e.target)) return false;
     e._dbTypedEditHandled = true;
     if (keyType === 'rollup') {
-      if (typeof startRollupCellEdit !== 'function') return false;
+      if (typeof startRollupCellEdit !== 'function' || _dbCellEditBlockedMessage(cell, keyCtx)) return false;
       const proxy = _dbBeginTypedProxy(cell);
       if (!proxy) return false;
       void startRollupCellEdit(cell, { input: proxy });
@@ -174683,7 +175245,12 @@ async function triggerNewEntity(table, dataRows, focusCol) {
     const visibleOrder = (Array.isArray(dataRows) ? dataRows : [])
       .map(row => row?.dataset?.entityName || '')
       .filter(Boolean);
+    const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(_db) : null;
     const created = _dbCreateEntityOptimistic(ctx, _db, { baseName: '無題', position: 'append', baselineOrder: visibleOrder });
+    const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(_db) : null;
+    const historyItems = typeof _dbTrackCreatedEntityForHistory === 'function'
+      ? _dbTrackCreatedEntityForHistory(_db, created.renderCtx || ctx, created, viewBefore, viewAfter)
+      : { resolve() {} };
     const immediateRow = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(created.renderCtx || ctx, created.name) : null;
     if (immediateRow) focusCreatedRow(immediateRow, created.name, true);
     else _waitForEntityRow(created.renderCtx || ctx, created.name, (newRow) => focusCreatedRow(newRow, created.name));
@@ -174692,6 +175259,7 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       if (saved.name !== created.name && typeof _dbRenameOptimisticEntityLocally === 'function') {
         _dbRenameOptimisticEntityLocally(created.renderCtx || ctx, _db, created.name, saved.name);
       }
+      historyItems.resolve([{ name: saved.name, path: saved.path, response: saved.response }]);
       if (typeof _dbScheduleEntityCreatePostSync === 'function') {
         _dbScheduleEntityCreatePostSync(_db, [{ name: saved.name, path: saved.path, response: saved.response }], created.renderCtx || ctx);
       }
@@ -174700,6 +175268,7 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       const recovered = typeof _dbRecoverEntityCreateAfterError === 'function'
         ? await _dbRecoverEntityCreateAfterError(created.renderCtx || ctx, _db, created)
         : null;
+      historyItems.resolve(recovered ? [{ name: recovered.name, path: recovered.path, response: null }] : []);
       if (recovered) {
         if (typeof showStatus === 'function') showStatus('トピックを追加しました');
       } else {
@@ -174776,7 +175345,8 @@ function triggerNewProperty(ctxOrDbPath) {
   while (order.includes(name)) { idx++; name = base + idx; }
   order.push(name);
   setColOrder(dbPath, order, { skipHistory: true, ctx });
-  setPropertyType(dbPath, name, { type: 'text' });
+  const typeSave = setPropertyType(dbPath, name, { type: 'text' });
+  if (typeof _dbPushColumnAddHistory === 'function') _dbPushColumnAddHistory(dbPath, name, { type: 'text' }, order, ctx, typeSave);
   renderPivot(ctx);
   setTimeout(() => {
     const _ctx2 = ctx || _currentPaneState();
@@ -175109,7 +175679,9 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     // Render after the caller has finished replacing the committed cell DOM.
     queueMicrotask(() => {
       td.querySelectorAll('.db-cell-unsaved').forEach(element => element.remove());
+      let draftIndex = -1;
       for (const draft of drafts(entryPath, property)) {
+        draftIndex += 1;
         const panel = document.createElement('div');
         panel.className = 'db-cell-unsaved';
         panel.setAttribute('role', 'status');
@@ -175120,10 +175692,15 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
         input.readOnly = true;
         input.value = draft.value;
         input.setAttribute('aria-label', property + 'の未保存の入力');
+        // 目印はセルと失敗の記録ごとに分ける（同じ名前だと、失敗したセルが2つあると部品の検査で重複になる。M-014 不具合45）。
+        const idPart = [String(entryPath || '').split('/').pop().replace(/\.md$/, ''), property, draft.candidateIndex ?? 'new', draftIndex]
+          .map(part => String(part).replace(/[^\p{L}\p{N}_-]+/gu, '-')).join('-');
+        input.dataset.e2eId = `db-cell-unsaved-input-${idPart}`;
         input.style.cssText = 'width:100%;box-sizing:border-box;color:inherit;background:var(--bg);';
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = '再保存';
+        button.dataset.e2eId = `db-cell-unsaved-resave-${idPart}`;
         button.addEventListener('click', async event => {
           event.stopPropagation();
           if (button.disabled) return;
@@ -175911,6 +176488,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
     if (ids.length > 0) {
       ids.forEach(idOrName => {
         const wrapper = document.createElement('div');
+        wrapper.className = 'gb-context-menu-submenu';
         const relItem = document.createElement('div');
         relItem.className = 'gb-context-menu-item';
         const labelSpan = document.createElement('span');
@@ -176354,13 +176932,34 @@ function startInlineEdit(span, val, entityPath, propName) {
   let composing = false;
   let pendingBlurFinish = false;
   const isFormatSurface = (target) => !!target?.closest?.('.gb-fmt-popup, .gb-palette-popup');
+  // 別のセルのクリック・フォーカス移動での確定は、少し遅らせて（フォーカスが落ち着いてから）行う。
+  // その間に次のセルの入力が確定しても取り消しの順番が逆転しないよう、確定の予定が立った時点で
+  // 履歴の枠を取っておく（確定しなかった・変更が無かった時は取り除く）。
+  let earlyHistorySlot = null;
+  const reserveEarlyHistorySlot = () => {
+    if (done || canceled || earlyHistorySlot || typeof _dbReserveValueHistory !== 'function') return;
+    // 変更の無い確定で枠を取ると、やり直しの記録まで消えてしまうため、変更がある時だけ取る。
+    const nvNow = _dbRichTextFromEditable(input).trim();
+    const richNow = _dbRichSanitizeHtml(input.innerHTML);
+    const nextRichNow = _dbRichHtmlHasFormatting(richNow) ? richNow : '';
+    if (nvNow ? (nvNow === old && nextRichNow === oldRichHtml) : !old) return;
+    earlyHistorySlot = _dbReserveValueHistory(propName + ': ' + old, val, dbPath);
+  };
+  const releaseEarlyHistorySlot = () => {
+    const slot = earlyHistorySlot;
+    earlyHistorySlot = null;
+    slot?.cancel();
+  };
 
   const finish = async (moveTo = null) => {
-    if (done) return;
-    if (!canceled && _cellUiRuntimeReadOnly(input)) return;
+    if (done) { releaseEarlyHistorySlot(); return; }
+    if (!canceled && _cellUiRuntimeReadOnly(input)) { releaseEarlyHistorySlot(); return; }
     done = true;
+    const earlySlot = earlyHistorySlot;
+    earlyHistorySlot = null;
     document.removeEventListener('pointerdown', outsidePointerDown, true);
     if (canceled) {
+      earlySlot?.cancel();
       restoreOldDisplay();
       restoreEditedCellSelection();
       return;
@@ -176372,6 +176971,8 @@ function startInlineEdit(span, val, entityPath, propName) {
     if (!nv && old) {
       // 入力要素を即座に消して見た目をクリア
       span.textContent = '';
+      const deleteSlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
+        ? _dbReserveValueHistory('値削除: ' + propName + '=' + old, val, dbPath) : null);
       try {
         await _apiPutValue(val, { _delete: true });
         showStatus('削除しました');
@@ -176382,7 +176983,7 @@ function startInlineEdit(span, val, entityPath, propName) {
         const savedNote = val.note || '';
         const savedRichHtml = oldRichHtml;
         let currentVal = { ...val };
-        if (typeof historyPush === 'function') {
+        const pushDeleteHistory = () => {
           historyPush('値削除: ' + propName + '=' + old,
             async () => {
               const result = await _apiPostValue(entityPath, propName, old, savedStatus, savedNote, savedRichHtml);
@@ -176406,7 +177007,12 @@ function startInlineEdit(span, val, entityPath, propName) {
             },
             _dbScope(dbPath)
           );
+        };
+        if (typeof historyPush === 'function') {
+          if (deleteSlot) deleteSlot.capture(pushDeleteHistory);
+          else pushDeleteHistory();
         }
+        deleteSlot?.cancel();
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
         if (ownsEditor()) {
@@ -176415,6 +177021,7 @@ function startInlineEdit(span, val, entityPath, propName) {
         }
         restoreEditedCellSelection(true, moveTo);
       } catch (e) {
+        deleteSlot?.cancel();
         if (ownsEditor()) span.textContent = old;
         window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
@@ -176431,12 +177038,24 @@ function startInlineEdit(span, val, entityPath, propName) {
       val.value = nv;
       if (nextRichHtml) val.rich_html = nextRichHtml;
       else delete val.rich_html;
+      // 取り消しの順番は保存の完了順ではなく確定の順にする。確定時に履歴の枠だけ先に取る。
+      const historySlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
+        ? _dbReserveValueHistory(propName + ': ' + old + ' → ' + nv, val, dbPath) : null);
+      // 描画後に送る保存も、送るまでの間から保存待ちとして数える（再読込・取り消しが追い越さないように）。
+      let releaseScheduled = null;
+      const scheduled = new Promise(resolve => { releaseScheduled = resolve; });
+      if (typeof _dbTrackValueMutation === 'function') _dbTrackValueMutation(dbPath || '', scheduled);
       _cellUiScheduleAfterPaint(async () => {
         try {
           await _apiPutValue(saveRef, { new_value: nv, new_rich_html: nextRichHtml });
+          releaseScheduled();
           if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
           else if (saveRef.file) val.file = saveRef.file;
-          _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
+          const pushUndo = () => {
+            _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
+          };
+          if (historySlot) historySlot.capture(pushUndo);
+          else pushUndo();
           showStatus('保存しました', false, { passiveSave: true });
           window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
             candidateIndex: val.candidate_index, value: nv });
@@ -176446,6 +177065,8 @@ function startInlineEdit(span, val, entityPath, propName) {
           }
           restoreEditedCellSelection(true, moveTo);
         } catch (e) {
+          releaseScheduled();
+          historySlot?.cancel();
           window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
             candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
           if (val.value === nv) {
@@ -176458,6 +177079,8 @@ function startInlineEdit(span, val, entityPath, propName) {
           await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
         }
       });
+    } else {
+      earlySlot?.cancel();
     }
   };
 
@@ -176476,10 +177099,11 @@ function startInlineEdit(span, val, entityPath, propName) {
       pendingBlurFinish = true;
       return;
     }
+    reserveEarlyHistorySlot();
     setTimeout(() => {
       if (done) return;
       const active = document.activeElement;
-      if (active === input || input.contains(active) || isFormatSurface(active)) return;
+      if (active === input || input.contains(active) || isFormatSurface(active)) { releaseEarlyHistorySlot(); return; }
       finish();
     }, 0);
   };
@@ -176490,6 +177114,7 @@ function startInlineEdit(span, val, entityPath, propName) {
       pendingBlurFinish = true;
       return;
     }
+    reserveEarlyHistorySlot();
     setTimeout(finish, 0);
   };
   document.addEventListener('pointerdown', outsidePointerDown, true);
@@ -177265,6 +177890,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     ? _cellUiValueToString(val.value)
     : (val.value == null ? '' : String(val.value));
   if (type === 'image' && typeof createImagePropertyValueElement === 'function') {
+    // 画像・場所のセルの「…」はセルの右上に置く（ユーザー判断 2026-11-20。UI共通ルール §19「シートのセルの「…」の位置」）
+    row.dataset.morePlace = 'corner';
     row.appendChild(createImagePropertyValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options));
     return row;
   }
@@ -177275,7 +177902,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     cb.className = 'cell-checkbox';
     cb.setAttribute('role', 'checkbox');
     cb.setAttribute('aria-label', `${propName}を切り替え`);
-    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^A-Za-z0-9_-]+/g, '-');
+    // 日本語の行名・列名を記号へ潰すと、別の行のチェックが同じ識別子になる。文字は残す。
+    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^\p{L}\p{N}_-]+/gu, '-');
     let checked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
     let saving = false;
     const renderCheckbox = () => {
@@ -177472,6 +178100,9 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           val.value = nv;
           try {
             await _apiPutValue(val, { new_value: nv });
+            // 保存できたら、同じ値で残っていた未保存の記録を消す（数値の入力欄と同じ。M-014 不具合45）。
+            window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+              candidateIndex: val.candidate_index, value: nv });
             _dbUndoValue(propName + ': ' + oldDate + ' → ' + nv, val, oldDate, nv);
             // Step 3: 部分更新化 (ソート対象列等のフォールバックは _tryRefreshPivotCellLocal 内で判定)
             if (ownsEditor()) _refreshAfterCellEdit(span, entityPath, propName);
@@ -177505,6 +178136,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
+    row.dataset.morePlace = 'corner';
     row.appendChild(MeldexSheetLocation.valueElement(val, entityPath, propName, { ...options, dbPath, ctx: valueCtx }));
     return row;
   }
@@ -177805,9 +178437,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
 
   // チャット型
   if (type === 'chat') {
+    // チャットのセルは「…」の分だけ右側を常に空け、「チャットを追加」と重ねない（ユーザー判断 2026-11-20）
+    row.dataset.morePlace = 'reserve';
     const container = document.createElement('div');
     container.className = 'chat-prop-cell';
-    container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;align-items:center;';
+    container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;align-items:center;flex:1 1 0;min-width:0;';
     const chatPaths = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
 
     if (chatPaths.length === 0) {
@@ -177817,8 +178451,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       addBtn.className = 'db-chat-add-btn';
       addBtn.dataset.e2eId = _typedCellControlE2eId('chat-add', entityPath, propName);
       addBtn.setAttribute('aria-label', 'チャットを追加');
-      addBtn.innerHTML = lucide('plus', 12) + ' チャット';
-      addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
+      addBtn.innerHTML = lucide('plus', 12) + '<span class="db-chat-add-label" style="min-width:0;overflow:hidden;text-overflow:ellipsis;">チャット</span>';
+      addBtn.style.cssText = 'display:inline-flex;align-items:center;gap:2px;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;flex:0 1 auto;padding:2px 8px;font-size:11px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;';
       addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
@@ -179162,6 +179796,9 @@ function _showAutoFillStatusInput(dbPath, propName, ptc, currentValue) {
     <div class="field"><label for="_autoFillStatusInput">対象ステータス</label><input id="_autoFillStatusInput" class="gb-input" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み" style="width:100%;min-width:0;box-sizing:border-box;"></div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.dataset.e2eId = 'db-auto-fill-status-cancel';
+  const helpEl = body.querySelector('.gb-section-desc > *');
+  if (helpEl) helpEl.dataset.e2eId = 'db-auto-fill-status-help';
   const applyButton = document.createElement('button');
   applyButton.type = 'button'; applyButton.id = '_autoFillStatusOk'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary'; applyButton.textContent = '設定';
   let busy = false;
@@ -181166,7 +181803,7 @@ if (typeof window !== 'undefined') {
       session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
     }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
-    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック');
+    const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '入力・閲覧するトピック'); select.dataset.e2eId = 'form-record-select';
     const fresh = document.createElement('option'); fresh.value = ''; fresh.textContent = '新規入力'; select.appendChild(fresh);
     const pivot = ctx?.pivotData || globalThis.state?.pivotData || { entities: {} };
     for (const name of Object.keys(pivot.entities || {})) {
@@ -181182,13 +181819,13 @@ if (typeof window !== 'undefined') {
       if (!await confirmLeave(panel)) { select.value = session.path; return; }
       session.path = path; select.value = path; await renderRecord();
     };
-    const button = (label, fn) => { const result = document.createElement('button'); result.type = 'button'; result.className = 'gb-btn'; result.textContent = label; result.addEventListener('click', fn); nav.appendChild(result); return result; };
-    const previous = button('前のトピック', () => change(select.options[Math.max(1, select.selectedIndex - 1)]?.value || ''));
+    const button = (label, fn, e2eId) => { const result = document.createElement('button'); result.type = 'button'; result.className = 'gb-btn'; result.textContent = label; result.dataset.e2eId = e2eId; result.addEventListener('click', fn); nav.appendChild(result); return result; };
+    const previous = button('前のトピック', () => change(select.options[Math.max(1, select.selectedIndex - 1)]?.value || ''), 'form-record-previous');
     nav.appendChild(select);
-    const next = button('次のトピック', () => change(select.options[Math.min(select.options.length - 1, select.selectedIndex + 1)]?.value || ''));
-    button('新規入力', () => change(''));
+    const next = button('次のトピック', () => change(select.options[Math.min(select.options.length - 1, select.selectedIndex + 1)]?.value || ''), 'form-record-next');
+    button('新規入力', () => change(''), 'form-record-new');
     const continuous = document.createElement('label');
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = session.continuous;
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = session.continuous; checkbox.dataset.e2eId = 'form-record-continuous';
     continuous.append(checkbox, document.createTextNode('続けて新規入力')); nav.appendChild(continuous);
     checkbox.addEventListener('change', () => { session.continuous = checkbox.checked; });
     select.addEventListener('change', () => change(select.value));
@@ -187259,36 +187896,67 @@ class FormAppComponent extends ToolComponent {
     clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => this.store.save(), 250);
     if (options.history !== false && typeof historyPush === 'function') {
-      const owner = this.store;
+      let owner = this.store;
+      let app = this;
+      const ownerPath = this.path;
+      const scope = this._historyScope();
       const after = MeldexFormDocument.clone(this.store.doc);
-      const restore = async snapshot => {
-        if (!this.el || this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
-        if (!await this._leave() || this.store !== owner) throw new Error('フォームの入力を確認してから取り消してください');
+      const restore = async (snapshot, expected) => {
+        // 同じフォームを再読込した後や、タブを開き直した後（別の表示の部品になる）も、
+        // 定義が操作の直後のままなら取り消せる。開き直すたびに履歴が効かなくなると、取り消しが失敗する。
+        if (!app.el || app.store !== owner) {
+          const live = FormAppComponent._liveForHistory(scope, ownerPath, expected);
+          if (live) { app = live; owner = live.store; }
+        }
+        if (!app.el || app.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+        if (!await app._leave() || app.store !== owner) throw new Error('フォームの入力を確認してから取り消してください');
         const restored = MeldexFormDocument.clone(snapshot);
         restored.title = owner.doc.title;
         if (owner.doc.display_title != null) restored.display_title = owner.doc.display_title;
         if (owner.doc.meldex) restored.meldex = MeldexFormDocument.clone(owner.doc.meldex);
-        for (const [from, to] of this._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
-        const previousPath = this.ctx.dbPath;
-        if (!this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
+        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        const previousPath = app.ctx?.dbPath;
+        if (!app._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
           throw new Error('フォームを変更できません');
-        this._mode = restored.formConfig?.mode;
+        app._mode = restored.formConfig?.mode;
         if (previousPath !== restored.sheet.path) {
-          this._pendingSheetSwitch = true;
-          clearTimeout(this._saveTimer);
-          const saved = await this._saveDefinitionAndSheet();
-          if (this.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
+          app._pendingSheetSwitch = true;
+          clearTimeout(app._saveTimer);
+          const saved = await app._saveDefinitionAndSheet();
+          if (app.store !== owner) throw new Error('フォームを開き直したため、この操作は取り消せません');
           if (!saved) {
-            this._blockSheetSwitch(restored.sheet.path); this._render();
-            throw new Error(this.sheetError);
+            app._blockSheetSwitch(restored.sheet.path); app._render();
+            throw new Error(app.sheetError);
           }
           return;
         }
-        if (this._designRender && previousPath === restored.sheet.path) this._designRender(); else this._render();
+        if (app._designRender && previousPath === restored.sheet.path) app._designRender(); else app._render();
       };
-      historyPush('フォーム: 定義を編集', () => restore(before), () => restore(after), this._historyScope(), this.state.label || 'フォーム');
+      historyPush('フォーム: 定義を編集', () => restore(before, after), () => restore(after, before), scope, this.state.label || 'フォーム');
     }
     return true;
+  }
+  // 履歴を積んだ時の表示の部品が再読込・開き直しで変わった時に、同じフォームを表示中の部品を探す。
+  // 同じ履歴の範囲・同じファイルで、未保存・保存中の変更が無く、定義（題名・管理情報を除く）が
+  // 期待どおり（取り消しなら操作の直後、やり直しなら取り消しの直後）の時だけ引き継ぐ。
+  static _liveForHistory(scope, ownerPath, expected) {
+    if (!scope || !ownerPath || !expected) return null;
+    const norm = value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const comparable = doc => {
+      const copy = MeldexFormDocument.clone(doc || {});
+      delete copy.title; delete copy.display_title; delete copy.meldex;
+      return JSON.stringify(copy);
+    };
+    const want = comparable(expected);
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return null;
+    for (const el of document.querySelectorAll('.gb-form-app')) {
+      const app = el._gbFormApp;
+      const store = app?.store;
+      if (!app?.el || !store || app.definitionReadOnly || store.dirty || store.pending) continue;
+      if (norm(app.path) !== norm(ownerPath) || app._historyScope() !== scope) continue;
+      if (comparable(store.doc) === want) return app;
+    }
+    return null;
   }
   async _loadSheet() {
     this.sheetError = '';
@@ -187536,12 +188204,12 @@ class FormAppComponent extends ToolComponent {
     const columns = Object.entries(getPropertyTypes(this.ctx.dbPath, this.ctx)).map(([name, column]) => ({ ...column, name, id: column.property_id || '' }));
     // Keep stable column identities even when the source uses an automatic layout.
     layout.cells.filter(cell => cell.type === 'field').forEach(cell => { cell.columnId = columns.find(column => column.name === cell.prop)?.id || cell.columnId || ''; });
-    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.value = store.doc.title || layout.name || 'フォーム';
+    const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名'); name.dataset.e2eId = 'form-register-template-name'; name.value = store.doc.title || layout.name || 'フォーム';
     const body = document.createElement('div');
     body.appendChild(GBUI.createField({ label: 'テンプレート名', input: name }));
     const hint = document.createElement('p'); hint.textContent = '配置・書式・入力設定を登録します。他のフォームの「テンプレートを適用」から選べます。入力済みの値や参照先シートは含みません。'; body.appendChild(hint);
     const status = document.createElement('p'); status.setAttribute('role', 'status'); body.appendChild(status);
-    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録';
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'gb-btn gb-btn-primary'; save.textContent = '登録'; save.dataset.e2eId = 'form-register-template-save';
     let busy = false;
     const modal = GBUI.createModal({ id: 'form-register-template', title: 'テンプレートに登録', body, footer: [save], initialFocus: name,
       onBeforeClose: () => !busy });
@@ -189470,6 +190138,7 @@ function _dbRenderEntityCreateContext(renderCtx, dbPath) {
   const selectedCell = table?.querySelector?.('td.active-cell');
   const selectedName = selectedCell?.closest?.('tr')?.dataset?.entityName;
   const selectedProp = selectedCell?.dataset?.propName || '';
+  const selectedSeq = Number(selectedCell?.dataset?.dbActiveSeq || 0);
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
   else if (typeof renderPivot === 'function') renderPivot(renderCtx);
   if (!selectedName || typeof setActiveCell !== 'function') return;
@@ -189484,7 +190153,7 @@ function _dbRenderEntityCreateContext(renderCtx, dbPath) {
     const cell = selectedProp
       ? row.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(selectedProp)}"]`)
       : row.querySelector('td.col-entity');
-    if (cell) setActiveCell(cell, { scroll: false });
+    if (cell) setActiveCell(cell, { scroll: false, preserveSeq: selectedSeq });
   };
   const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(renderCtx, selectedName) : null;
   if (row) restore(row);
@@ -190018,8 +190687,12 @@ async function _handleNewEntryClick(ctx) {
     const scroller = row?.closest?.('#pivot-view, .pivot-view');
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   };
+  const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const created = _dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true });
   const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(created.renderCtx || ctx, dbPath, [created.name], { position: 'append' }) || created.renderCtx;
+  const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  // 行メニューの追加と同じく、表示へ反映した直後に取り消し履歴を積む（取り消しは保存の完了を待つ）。
+  const historyItems = _dbTrackCreatedEntityForHistory(dbPath, renderCtx, created, viewBefore, viewAfter);
   keepBottom();
   requestAnimationFrame(() => { keepBottom(); setTimeout(keepBottom, 120); setTimeout(keepBottom, 360); setTimeout(keepBottom, 900); });
   _dbKeepNewEntryRowVisible(renderCtx);
@@ -190029,10 +190702,12 @@ async function _handleNewEntryClick(ctx) {
     if (savedEntity && saved.path) savedEntity._entry_path = saved.path;
     // サーバーが仮名と異なる名前を付けた場合は、並び順・manualOrder を実際の名前へ揃える
     if (saved.name !== created.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, created.name, saved.name);
+    historyItems.resolve([{ name: saved.name, path: saved.path, response: saved.response }]);
     _dbScheduleEntityCreatePostSync(dbPath, [{ name: saved.name, path: saved.path, response: saved.response }], renderCtx);
   } catch (e) {
     // タイムアウト等でも実際は作成済みのことがある。撤去前に必ず確認する
     const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, created);
+    historyItems.resolve(recovered ? [{ name: recovered.name, path: recovered.path, response: null }] : []);
     if (recovered) {
       if (typeof showStatus === 'function') showStatus('トピックを追加しました');
     } else {
@@ -190126,6 +190801,15 @@ async function _handleInsertRowsAtPlans(ctx, plans) {
     if (typeof showStatus === 'function') showStatus(`${failed.length}件のトピック作成に失敗しました`, true);
   }
   _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx);
+}
+
+// 1件のトピック追加（表の末尾の追加欄・Ctrl+Enter）の取り消し履歴を積み、保存の結果を渡す口を返す。
+// resolve([...]) に保存できたトピック（無ければ空配列）を渡す。
+function _dbTrackCreatedEntityForHistory(dbPath, renderCtx, created, viewBefore, viewAfter) {
+  let resolveItems = () => {};
+  const itemsPromise = new Promise(resolve => { resolveItems = resolve; });
+  if (created?.name) _dbPushInsertedEntitiesHistory(dbPath, renderCtx, itemsPromise, viewBefore, viewAfter, 1);
+  return { resolve: items => resolveItems(Array.isArray(items) ? items : []) };
 }
 
 // 行メニューから追加したトピックの取り消し履歴（保存に成功した分だけを対象にする）。
@@ -191373,6 +192057,29 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (typeof applyDbColumnChipStyle === 'function' && typeof getPropertyTypes === 'function') {
     applyDbColumnChipStyle(aligned, (getPropertyTypes(ctx?.dbPath || state.currentDbPath || '', ctx) || {})[relationProp]);
   }
+  // 元の値の行（「…」＝候補値の追加・削除の入口を持つ）は隠れるので、行合わせの行にも「…」を置き、
+  // 押すと元の値の行の「…」のメニューを開く。並びの見た目を変えないよう、行は縦並びのまま包む。
+  const valueRow = document.createElement('div');
+  valueRow.className = 'cell-value db-rollup-aligned-value-row';
+  valueRow.style.cssText = 'display:flex;flex-direction:column;align-items:stretch;gap:1px;width:100%;';
+  const originalMore = [...cellValues.querySelectorAll(':scope > .cell-value > .cell-value-more')][0] || null;
+  let proxyMore = null;
+  if (originalMore) {
+    proxyMore = originalMore.cloneNode(true);
+    proxyMore.dataset.e2eId = (originalMore.dataset.e2eId || 'db-value-more') + '-aligned';
+    proxyMore.dataset.rollupAlignedProxy = '1';
+    proxyMore.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = [...cellValues.querySelectorAll(':scope > .cell-value > .cell-value-more')][0];
+      target?.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, view: window,
+        clientX: event.clientX, clientY: event.clientY,
+      }));
+    });
+    valueRow.addEventListener('mouseenter', () => { proxyMore.style.display = ''; });
+    valueRow.addEventListener('mouseleave', () => { proxyMore.style.display = 'none'; });
+  }
   {
     groups.forEach((group, groupIndex) => {
       const count = slotCounts[groupIndex] || 1;
@@ -191415,10 +192122,15 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
             );
           }
         });
-        aligned.appendChild(line);
+        valueRow.appendChild(line);
       }
     });
   }
+  if (proxyMore) {
+    proxyMore.style.display = 'none';
+    valueRow.appendChild(proxyMore);
+  }
+  aligned.appendChild(valueRow);
   cellValues.appendChild(aligned);
   relationCell.classList.add('db-rollup-aligned-relation');
 }
@@ -193121,6 +193833,7 @@ function renderPivot(ctx) {
       scheduleNextChunk(() => _renderChunk(endIdx));
     } else {
       ctx._renderInProgress = false;
+      _dbRestoreActiveCellAfterRender(ctx);
       // Phase 2e-ii-b: 全チャンク完了後にセルコメントバッジを描画
       _refreshSheetBadges(ctx);
       if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
@@ -193142,6 +193855,7 @@ function renderPivot(ctx) {
     _renderChunk(0);
   } else {
     ctx._renderInProgress = false;
+    _dbRestoreActiveCellAfterRender(ctx);
     _refreshSheetBadges(ctx);
     if (typeof _appendBacklinkSummaryColumns === 'function') _appendBacklinkSummaryColumns(ctx);
     if (typeof _logPerfEvent === 'function') {
@@ -193155,6 +193869,24 @@ function renderPivot(ctx) {
       });
     }
   }
+}
+
+// 表全体の描き直し（再読込・外部変更の反映）で選択中のセルの要素が入れ替わった時、
+// 同じ行・列のセルへ選択の印を戻す。利用者が表の外の入力欄などへ移っている時は奪わない。
+function _dbRestoreActiveCellAfterRender(ctx) {
+  try {
+    if (typeof activeCell === 'undefined' || !activeCell || activeCell.isConnected) return;
+    if (typeof _dbResolveActiveCellIdentity !== 'function' || typeof setActiveCell !== 'function') return;
+    const tableId = (ctx && ctx.tableId) || 'pivot-table';
+    const tbl = _paneEl(ctx, '#' + tableId) || (!ctx ? document.getElementById(tableId) : null);
+    if (!tbl?.isConnected) return;
+    if (document.querySelector('td.active-cell')) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !tbl.contains(focused)) return;
+    const cell = _dbResolveActiveCellIdentity(tbl);
+    if (!cell?.isConnected) return;
+    setActiveCell(cell, { scroll: false, preserveSeq: Number(activeCell.dataset?.dbActiveSeq || 0) });
+  } catch {}
 }
 
 function _refreshSheetBadges(ctx) {
@@ -195610,6 +196342,7 @@ function _showBulkEditModal(entityNames, ctx, options = {}) {
     let ok = 0;
     let fail = 0;
     const failNames = [];
+    const rollbackFailNames = [];
     const beforeSnapshots = [];
     const afterSnapshots = [];
     for (const name of entityNames) {
@@ -195674,31 +196407,54 @@ function _showBulkEditModal(entityNames, ctx, options = {}) {
         ok++;
       } catch (mutationError) {
         failNames.push(name);
+        let rollbackOk = true;
         try {
           if (bidirectionalOp?.undo) await bidirectionalOp.undo();
         } catch (rollbackError) {
-          console.error('一括編集の双方向リレーション復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集の双方向リレーション復旧に失敗:', rollbackError, mutationError);
         }
         try {
           if (cascadeClears.length && typeof _restoreCascadeDependentValues === 'function') {
             await _restoreCascadeDependentValues(ep || _entityPath(dbPath, name), cascadeClears, { dbPath, ctx });
           }
         } catch (rollbackError) {
-          console.error('一括編集のカスケード値復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集のカスケード値復旧に失敗:', rollbackError, mutationError);
         }
         try {
           if (beforeSnapshot) await _bulkReplaceEntityPropValues(ep || _entityPath(dbPath, name), prop, beforeSnapshot.values);
           else if (createdRef?.file) await _apiPutValue(createdRef, { _delete: true });
         } catch (rollbackError) {
-          console.error('一括編集のセル値復旧に失敗:', rollbackError, mutationError);
+          rollbackOk = false;
+          console.warn('一括編集のセル値復旧に失敗:', rollbackError, mutationError);
         }
+        // 元の値へ戻せなかった行は、結果の表示で名前を出して確認を促す（黙って不整合を残さない）
+        if (!rollbackOk) rollbackFailNames.push(name);
         fail++;
       }
     }
+    // 成功した行だけを取り消しの履歴へ積み、失敗した行は元の値へ戻してある（部分成功）。
+    // 失敗した行だけを選択したまま残し、もう一度「一括編集」で失敗分だけを再試行できるようにする。
     _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx);
-    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件: ' + failNames.join(', ') : ''}`, fail > 0);
+    const rollbackNote = rollbackFailNames.length
+      ? `。元の値へ戻せなかった行があります: ${rollbackFailNames.join(', ')}（値を確認してください）`
+      : '';
+    showStatus(`一括編集完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件: ' + failNames.join(', ') + '（失敗した行を選択しています）' : ''}${rollbackNote}`, fail > 0);
     await selectDatabase(dbPath, ctx);
-    _restoreSelectionByEntityNames(ctx, entityNames);
+    if (fail > 0) {
+      const c = ctx || _currentPaneState();
+      if (c?._selectedEntities) c._selectedEntities.clear();
+      const tblSel = '#' + ((c && c.tableId) || 'pivot-table');
+      const paneRoot = _paneEl(c, tblSel) || (!c ? document : null);
+      paneRoot?.querySelectorAll?.('.row-select-cb').forEach(cb => {
+        cb.checked = false;
+        cb.closest('tr')?.classList.remove('row-selected');
+      });
+      _restoreSelectionByEntityNames(ctx, failNames);
+    } else {
+      _restoreSelectionByEntityNames(ctx, entityNames);
+    }
     _updateBulkEditBar(ctx);
   });
 }
@@ -202004,6 +202760,7 @@ function _renderDbViewTabMenuItems(container, itemList) {
     }
     if (item.type === 'submenu') {
       const wrapper = document.createElement('div');
+      wrapper.className = 'gb-context-menu-submenu';
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
       el.tabIndex = 0;
@@ -203373,6 +204130,11 @@ function renderKanban(ctx) {
     }
   }
 
+  function _cleanupHistoryScope(dbPath) {
+    if (typeof _dbScope === 'function') return _dbScope(dbPath) || '';
+    return dbPath ? 'db:' + String(dbPath).replace(/\\/g, '/') : '';
+  }
+
   async function _deleteSelected() {
     const current = cleanupState;
     if (!current || !current.selected.size || current.busyDepth) return;
@@ -203398,6 +204160,9 @@ function renderKanban(ctx) {
         label: `添付ファイル${targets.length}件を削除`,
         detail: usedCount ? `使用中 ${usedCount}件を含む` : targets.map(item => item.path).join(', '),
         refreshSuccessfulRedo: true,
+        // 整理の画面はシートから開く。シートの履歴の範囲へ積むと、整理の画面を開いたままでも、
+        // 閉じてシートへ戻ってからでも Ctrl+Z で戻せる（共通の範囲へ積むと、シートの履歴が先に戻る）
+        scope: _cleanupHistoryScope(current.path),
         refresh: async phase => {
           if ((phase === 'undo' || phase === 'redo') && cleanupState === current && current.modalApi?.isOpen?.()) {
             await _reload({ keepStatus: true, preserveSelection: false });
@@ -213094,6 +213859,28 @@ async function _dbFindReplaceAll() {
   });
 
   let count = 0;
+  // 全置換は1回の操作なので、置換した値をまとめて1件の履歴にする（1回の取り消しで全部戻す）。
+  const appliedValues = [];
+  const historyDbPath = _dbFindState.dbPath;
+  const historyCtx = _dbFindState.ctx;
+  const pushReplaceHistory = () => {
+    if (!appliedValues.length || typeof historyPush !== 'function') return;
+    const items = appliedValues.slice();
+    const scope = typeof _dbScope === 'function' ? _dbScope(historyDbPath) : undefined;
+    const reload = async () => {
+      if (historyDbPath && typeof selectDatabase === 'function') await selectDatabase(historyDbPath, historyCtx, { silent: true });
+    };
+    historyPush('シート全置換: ' + items.length + '件',
+      async () => {
+        for (const item of items.slice().reverse()) await _apiPutValue(item.match.valObj, { new_value: item.oldValue });
+        await reload();
+      },
+      async () => {
+        for (const item of items) await _apiPutValue(item.match.valObj, { new_value: item.nextValue });
+        await reload();
+      },
+      scope);
+  };
   try {
     const pivotData = _dbFindData(_dbFindState.ctx, _dbFindState.dbPath);
     const entityNames = new Set(Object.keys(pivotData?.entities || {}));
@@ -213109,14 +213896,11 @@ async function _dbFindReplaceAll() {
     for (const item of valueTasks.values()) {
       if (item.oldValue === item.nextValue) continue;
       await _apiPutValue(item.match.valObj, { new_value: item.nextValue, __source: 'sheet-find-replace-all' });
-      if (typeof _dbUndoValue === 'function') {
-        _dbUndoValue('シート全置換: ' + item.match.propName, item.match.valObj, item.oldValue, item.nextValue, undefined, undefined, {
-          dbPath: _dbFindState.dbPath,
-          ctx: _dbFindState.ctx,
-        });
-      }
+      appliedValues.push(item);
       count++;
     }
+    pushReplaceHistory();
+    appliedValues.length = 0;
     for (const [oldName, newName] of entityTasks.entries()) {
       if (oldName === newName) continue;
       await _dbFindRenameEntity({ kind: 'entity', entityName: oldName, text: oldName }, newName);
@@ -213125,6 +213909,8 @@ async function _dbFindReplaceAll() {
     await _dbFindRefreshAfterChange(0);
     if (typeof showStatus === 'function') showStatus(count + '件置換しました');
   } catch (e) {
+    // 途中で失敗した時も、保存できた分は取り消せるように履歴へ残す。
+    pushReplaceHistory();
     if (typeof showStatus === 'function') showStatus(e?.message || '全置換に失敗しました', true);
   }
 }
@@ -219567,10 +220353,17 @@ function _showSyncModal(dbPath) {
     try {
       const result = await apiPost('/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
       if (result && result.ok) return { impact: result, failed: false };
-      return { impact: null, failed: true };
-    } catch (_) {
-      return { impact: null, failed: true };
+      return { impact: null, failed: true, reason: String(result?.error || result?.message || '') };
+    } catch (error) {
+      return { impact: null, failed: true, reason: String(error?.userMessage || error?.message || error || '') };
     }
+  }
+
+  // 参照の確認に失敗して削除を中止した時の表示。原因（通信・保存先のエラー）を必ず添える。
+  function _impactFailureMessage(reason, fallback) {
+    const base = fallback || '参照の確認に失敗したため、削除を中止しました';
+    const detail = String(reason || '').trim();
+    return detail ? `${base}（原因: ${detail}）` : `${base}。`;
   }
 
   // targets: パス文字列の配列、または {path, kind, assetId} オブジェクトの配列。
@@ -219731,10 +220524,10 @@ function _showSyncModal(dbPath) {
     if (!items.length) {
       return cfConfirm(message, opts);
     }
-    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
+    const { impact, failed, reason } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
     if (failed || !impact || (operation === 'permanent' && impact.complete === false)) {
       if (typeof cfAlert === 'function') {
-        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、完全削除を中止しました。');
+        await cfAlert(failed || !impact ? _impactFailureMessage(reason) : '参照の確認が不完全なため、完全削除を中止しました。');
       }
       return false;
     }
@@ -219756,9 +220549,11 @@ function _showSyncModal(dbPath) {
     const items = _toDeleteImpactItems(targets);
     const opts = Object.assign({}, options || {});
     if (!items.length) return { confirmed: true, operation: 'trash' };
-    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
+    const { impact, failed, reason } = await _fetchDeleteImpactWithStatus(items, 'trash', opts.signal || null);
     if (failed || !impact) {
-      if (typeof cfAlert === 'function') await cfAlert('参照の確認ができなかったため、削除を中止しました。');
+      const message = _impactFailureMessage(reason);
+      if (typeof cfAlert === 'function') await cfAlert(message);
+      else if (typeof showStatus === 'function') showStatus(message, true);
       return false;
     }
     return {
@@ -229240,7 +230035,12 @@ async function openFileChat(targetPath) {
     try {
       const historyContext = await window.GBChatStorageContext.resolveForHistory();
       const llmBrowsePath = historyContext.sourceFolder.replace(/[\\/]+$/, '') + '/_chat/llm';
-      const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc');
+      // まだチャットを一度も作っていない保存先には _chat/llm が無い（404）。それは「チャットが無い」なので黙って作成の案内へ進む
+      const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc', { silentError: true })
+        .catch(error => {
+          if (Number(error?.status) === 404) return [];
+          throw error;
+        });
       if (!restoreStillCurrent()) return false;
       for (const item of (items || [])) {
         try {
@@ -229276,7 +230076,9 @@ async function openFileChat(targetPath) {
           }
         } catch { continue; }
       }
-    } catch (e) { /* 検索失敗 */ }
+    } catch (e) {
+      if (typeof showStatus === 'function') showStatus('チャットの履歴を確認できませんでした: ' + (e?.userMessage || e?.message || e), true);
+    }
   }
 
   if (!restored) {
@@ -242075,7 +242877,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
         },
       };
     }
-    const wrap = document.createElement('div'); wrap.style.position = 'relative';
+    const wrap = document.createElement('div'); wrap.className = 'gb-context-menu-submenu'; wrap.style.position = 'relative';
     const trigger = document.createElement('div'); trigger.className = 'gb-context-menu-item';
     trigger.innerHTML = (icon && typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' : '') + esc(label) + submenuArrow();
     const panel = document.createElement('div'); panel.className = 'gb-context-menu';
@@ -272450,12 +273252,23 @@ async function _gbAppPutValueConfirmed(path, body, options) {
       ...(options || {}), body: JSON.stringify(payload), silentError: true });
     const uncertain = _gbAppPendingValueWrites.get(key);
     if (uncertain) {
-      const result = await send(uncertain);
+      // 結果の分からなかった前回の保存を、同じ操作IDで送り直す。サーバーは反映済みの操作IDには記録した結果を返すので、
+      // 4xx（版の食い違い等）で断られた時は「前回の保存は反映されていない」と確定する。その記録を捨てて今回の保存へ進む。
+      // 捨てないと、その行の以後の保存・取り消し・やり直しが古い版の送り直しで断られ続ける（M-014 不具合33・36）。
+      // 5xx・通信断の時は、まだ結果が分からないので従来どおり止める。
+      let result = null;
+      try { result = await send(uncertain); }
+      catch (error) {
+        const stillUnknown = error?.isTimeout || error?.name === 'AbortError' || Number(error?.status) >= 500
+          || (error?.name === 'TypeError' && /fetch|network|load/i.test(error.message || ''));
+        if (stillUnknown) throw error;
+        result = null;
+      }
       _gbAppPendingValueWrites.delete(key);
       const canonical = value => Array.isArray(value) ? value.map(canonical)
         : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
       const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
-      if (withoutId(body) === withoutId(uncertain)) return result;
+      if (result && withoutId(body) === withoutId(uncertain)) return result;
       // Only an ordinary candidate patch may follow its own confirmed patch.
       // Whole-body edits and structural changes retain their original baseline.
       const baseKey = ['baseRevision', 'base_revision', 'entryRevision', 'revision'].find(k => body[k] != null);
@@ -277472,7 +278285,7 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
     if (item.submenu) {
       // サブメニュートリガー
       const wrap = document.createElement('div');
-      wrap.className = 'tool-menu-submenu-wrap';
+      wrap.className = 'gb-context-menu-submenu tool-menu-submenu-wrap';
       const trigger = document.createElement('button');
       trigger.type = 'button';
       trigger.className = 'gb-context-menu-item ab-dropdown-item tool-menu-submenu-trigger';

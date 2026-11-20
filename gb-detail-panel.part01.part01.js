@@ -736,6 +736,16 @@ const _FS_FIELDS = {
       // 罫線
       { key: '--db-grid-border', label: '罫線 色',   type: 'color' },
       { key: '--db-show-grid',   label: '罫線 表示', type: 'toggle', on: '1px', off: '0px' },
+      // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。2026-11-20 追加。
+      // 選択肢ごとの色・タグの色・列ごとの表示設定は、ここより優先する。
+      { key: '--db-option-chip-fg',           label: '候補値 色',         type: 'color' },
+      { key: '--db-option-chip-bg',           label: '候補値 背景',       type: 'color', bgType: 'rgba' },
+      { key: '--db-option-chip-bold',         label: '候補値 太字',       type: 'toggle', on: 'bold', off: 'normal' },
+      { key: '--db-option-chip-font-size',    label: '候補値 文字サイズ', type: 'rangeNumber', unit: 'px', min: 9, max: 24, step: 1, fallback: '12px', themeManaged: true },
+      { key: '--db-option-chip-radius',       label: '候補値 角丸',       type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '10px', themeManaged: true },
+      { key: '--db-option-chip-padding-x',    label: '候補値 左右の余白', type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '8px', themeManaged: true },
+      { key: '--db-option-chip-border-color', label: '候補値 枠線 色',    type: 'color' },
+      { key: '--db-option-chip-border-width', label: '候補値 枠線 太さ',  type: 'pxtext', themeManaged: true },
     ],
     editOps: [
       { key: '--db-selection-fg',    label: '選択文字', type: 'color' },

@@ -140,6 +140,7 @@ function _renderColMenuItems(container, itemList) {
     }
     if (item.type === 'submenu') {
       const wrapper = document.createElement('div');
+      wrapper.className = 'gb-context-menu-submenu';
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
       if (item.e2eId) el.dataset.e2eId = item.e2eId;

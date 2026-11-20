@@ -1,3 +1,14 @@
+    if (typeof bdSave === 'function') bdSave();
+  }
+  // ボードから離れたらノートタブを非表示
+  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
+    hideBoardNoteTab();
+  }
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
+    clearBoardDetailTabs();
+  }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);
   const _setDisplay = (id, value) => {
     const el = document.getElementById(id);
     if (el) el.style.display = value;
@@ -887,14 +898,3 @@ function _appShouldHandleStandaloneCalendarDrop() {
       const endH = new Date(now.getTime() + 3600000);
       const endVal = _appLocalDateTimeInputValue(endH);
       if (typeof _showCalEventInDetailPanel === 'function') {
-        _showCalEventInDetailPanel(
-          { title: name, description: '[[' + name + ']](' + path + ')' },
-          [], startVal, endVal, false
-        );
-      }
-    } catch {}
-  });
-}
-
-// main-viewsへのD&Dドロップ
-// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）

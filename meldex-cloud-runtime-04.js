@@ -28322,6 +28322,12 @@
 
   // Desktop と同じくホームフォルダを最優先にし、その後で登録済みソースフォルダを探す。
   // Dropbox provider の相対パス "" は Cloud のホームフォルダ（vault root）を表す。
+  // ホーム（vault）内の標準クイックメモの候補。デスクトップ版のホームは vault/MeldexHome
+  // （meldex_home_folder_sharing の HOME_FOLDER_DIR_NAME）なので、本体のシートはまず
+  // MeldexHome/クイックメモ にある。vault 直下の クイックメモ は旧構成・テンプレート由来で、
+  // 登録印が無いまま残っていることがある（2026-11-20、スマホから送信できなかった真因）。
+  const _QUICK_MEMO_HOME_FOLDERS = ['MeldexHome/クイックメモ', 'クイックメモ'];
+
   async function _quickMemoRoots(provider) {
     const registry = window.MeldexSourceFolderRegistry;
     const roots = typeof registry.loadOutlinerRoots === 'function' ? await registry.loadOutlinerRoots()
@@ -28340,8 +28346,8 @@
       // 仮想ソースパスは登録済みsource rootとの一致が必要。空rootで全Dropboxへ
       // 書ける扱いにせず、ホームの標準クイックメモ配下だけを許可する。ホーム外へ
       // 移動した保存先は、従来どおり登録済みsource rootとの一致を必須にする。
-      const homeMemo = 'クイックメモ';
-      return target === homeMemo || target.startsWith(homeMemo + '/');
+      // デスクトップ版のホームは vault/MeldexHome なので、その標準クイックメモも許可する。
+      return _QUICK_MEMO_HOME_FOLDERS.some(homeMemo => target === homeMemo || target.startsWith(homeMemo + '/'));
     }
     return (allowRoot && target === base) || target.startsWith(base + '/');
   }
@@ -28396,6 +28402,15 @@
   async function _preferredQuickMemoTarget(provider, roots) {
     const found = [];
     for (const root of roots) {
+      if (root.home) {
+        // デスクトップ版と同じ契約: ホームの標準クイックメモ（MeldexHome/クイックメモ を優先）が
+        // 本体の保存先なら、ソースフォルダを全走査せずに採用する。
+        for (const homeMemo of _QUICK_MEMO_HOME_FOLDERS) {
+          const homeTarget = await _validateQuickMemoTarget(provider, roots, { quick_memo_folder: homeMemo });
+          if (homeTarget) return homeTarget;
+        }
+        continue;
+      }
       // 通常構成は登録ルート直下の「クイックメモ」。ここが正本なら、
       // 大量の兄弟フォルダーを列挙せずに保存先を確定できる。
       const child = await _validateQuickMemoTarget(provider, roots, {
@@ -43734,7 +43749,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return {
       ready,
       get failed() { return root.dataset.loadFailed === '1'; },
-      flush: async () => { await ready; try { return await flushEditor() !== false; } catch (error) {
+      // 読み込みに失敗したリンク先は編集できない（保存する内容が無い）。保存の確認で止めると、
+      // 「再試行」や別のリンク先への切替が、失敗したリンク先の保存待ちで止まる。
+      flush: async () => { await ready; if (root.dataset.loadFailed === '1') return true; try { return await flushEditor() !== false; } catch (error) {
         if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
         return false;
       } },
@@ -43742,7 +43759,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       deactivate: () => instance?.deactivate?.(),
       dispose: async () => {
         await ready;
-        try { if (await flushEditor() === false) return false; }
+        try { if (root.dataset.loadFailed !== '1' && await flushEditor() === false) return false; }
         catch (error) {
           if (typeof showStatus === 'function') showStatus('リンク先の保存に失敗しました: ' + (error.userMessage || error.message || error), true);
           return false;
@@ -72621,7 +72638,12 @@ ${reason.message}`
 
   const STYLE_ID = 'meldex-column-manager-style';
   const DRAG_THRESHOLD_PX = 4;
+  const SIZE_STORAGE_KEY = 'meldex-column-manager-size';
+  const MIN_WIDTH = 220;
+  const MIN_HEIGHT = 160;
+  const RESIZE_DIRS = ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'];
   let current = null;
+  let rememberedSize = null;
 
   function icon(name, size) {
     return typeof global.lucide === 'function' ? global.lucide(name, size || 14) : '';
@@ -72632,8 +72654,22 @@ ${reason.message}`
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-.meldex-column-manager{position:fixed;z-index:10000;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;}
-.meldex-column-manager > *{flex-shrink:0;}
+/* 外枠は角丸で中身を切り抜き、スクロールは内側の本文だけで行う。外枠ごとスクロールさせると、
+   スクロールバーが右上・右下の角丸の上に描かれて枠線が途切れる（2026-11-20 報告）。 */
+.meldex-column-manager{position:fixed;z-index:10000;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:hidden;padding:0;display:flex;flex-direction:column;}
+.meldex-column-manager.is-resized{min-width:0;max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);}
+.meldex-column-manager-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;}
+.meldex-column-manager-body > *{flex-shrink:0;}
+.meldex-column-manager > .meldex-dropdown-close-row{flex-shrink:0;margin-top:0;padding:var(--ui-space-2, 4px) var(--ui-space-3, 6px);}
+.meldex-column-manager-resize{position:absolute;z-index:2;touch-action:none;}
+.meldex-column-manager-resize[data-dir="n"]{top:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="s"]{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="e"]{top:8px;bottom:8px;right:0;width:5px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="w"]{top:8px;bottom:8px;left:0;width:5px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="ne"]{top:0;right:0;width:10px;height:10px;cursor:nesw-resize;}
+.meldex-column-manager-resize[data-dir="nw"]{top:0;left:0;width:10px;height:10px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="se"]{bottom:0;right:0;width:10px;height:10px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="sw"]{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize;}
 .meldex-column-manager-head{display:flex;align-items:center;gap:6px;padding:2px 4px 4px;font-weight:600;font-size:12px;}
 .meldex-column-manager-head .meldex-column-manager-title{flex:1;min-width:0;}
 .meldex-column-manager-head button{font-size:11px;padding:1px 6px;}
@@ -72658,6 +72694,94 @@ ${reason.message}`
 .meldex-column-manager-extra{display:flex;flex-direction:column;gap:2px;padding-bottom:4px;border-bottom:1px solid var(--border);margin-bottom:2px;}
 `;
     document.head.appendChild(style);
+  }
+
+  function zoom() {
+    const z = typeof global._getZoom === 'function' ? Number(global._getZoom()) : 1;
+    return Number.isFinite(z) && z > 0 ? z : 1;
+  }
+
+  // 利用者が変えた大きさを覚え、次に開いた時も同じ大きさで出す（ブラウザ保存が使えない時は今回の起動中だけ）。
+  function readRememberedSize() {
+    if (rememberedSize) return rememberedSize;
+    try {
+      const raw = JSON.parse(global.localStorage?.getItem(SIZE_STORAGE_KEY) || 'null');
+      if (raw && Number(raw.w) >= MIN_WIDTH && Number(raw.h) >= MIN_HEIGHT) rememberedSize = { w: Number(raw.w), h: Number(raw.h) };
+    } catch (_) { /* 保存が使えない環境 */ }
+    return rememberedSize;
+  }
+
+  function rememberSize(size) {
+    rememberedSize = { w: Math.round(size.w), h: Math.round(size.h) };
+    try { global.localStorage?.setItem(SIZE_STORAGE_KEY, JSON.stringify(rememberedSize)); } catch (_) { /* 保存が使えない環境 */ }
+  }
+
+  function viewportLimits() {
+    const z = zoom();
+    return { z, maxW: (global.innerWidth || 1200) / z - 8, maxH: (global.innerHeight || 800) / z - 8 };
+  }
+
+  function applySize(root, size) {
+    if (!size) return;
+    const { maxW, maxH } = viewportLimits();
+    root.classList.add('is-resized');
+    root.style.width = Math.max(MIN_WIDTH, Math.min(maxW, size.w)) + 'px';
+    root.style.height = Math.max(MIN_HEIGHT, Math.min(maxH, size.h)) + 'px';
+  }
+
+  // 辺と四隅でサイズを変える（UI共通ルール §7 のダイアログと同じ8方向）。
+  function attachResizeHandles(root) {
+    RESIZE_DIRS.forEach(dir => {
+      const handle = document.createElement('div');
+      handle.className = 'meldex-column-manager-resize';
+      handle.dataset.dir = dir;
+      handle.dataset.e2eId = 'column-manager-resize-' + dir;
+      handle.setAttribute('aria-hidden', 'true');
+      handle.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const { z, maxW, maxH } = viewportLimits();
+        const rect = root.getBoundingClientRect();
+        const start = { x: event.clientX, y: event.clientY, w: rect.width / z, h: rect.height / z, left: rect.left / z, top: rect.top / z };
+        root.classList.add('is-resized');
+        root.style.width = start.w + 'px';
+        root.style.height = start.h + 'px';
+        try { handle.setPointerCapture?.(event.pointerId); } catch (_) { /* noop */ }
+        const move = (ev) => {
+          const dx = (ev.clientX - start.x) / z;
+          const dy = (ev.clientY - start.y) / z;
+          let { w, h, left, top } = start;
+          // 画面の端（4px）より外へは広げない。
+          if (dir.includes('e')) w = Math.max(MIN_WIDTH, Math.min(maxW + 4 - start.left, start.w + dx));
+          if (dir.includes('s')) h = Math.max(MIN_HEIGHT, Math.min(maxH + 4 - start.top, start.h + dy));
+          if (dir.includes('w')) {
+            w = Math.max(MIN_WIDTH, Math.min(start.left + start.w - 4, start.w - dx));
+            left = start.left + start.w - w;
+          }
+          if (dir.includes('n')) {
+            h = Math.max(MIN_HEIGHT, Math.min(start.top + start.h - 4, start.h - dy));
+            top = start.top + start.h - h;
+          }
+          root.style.width = w + 'px';
+          root.style.height = h + 'px';
+          root.style.left = left + 'px';
+          root.style.top = top + 'px';
+        };
+        const end = () => {
+          document.removeEventListener('pointermove', move, true);
+          document.removeEventListener('pointerup', end, true);
+          document.removeEventListener('pointercancel', end, true);
+          const r = root.getBoundingClientRect();
+          const zz = zoom();
+          rememberSize({ w: r.width / zz, h: r.height / zz });
+        };
+        document.addEventListener('pointermove', move, true);
+        document.addEventListener('pointerup', end, true);
+        document.addEventListener('pointercancel', end, true);
+      });
+      root.appendChild(handle);
+    });
   }
 
   function close() {
@@ -72694,6 +72818,10 @@ ${reason.message}`
       paint: null, drag: null,
     };
     current = state;
+    // 中身はスクロールする本文へ入れる（外枠はスクロールさせない）。
+    const body = document.createElement('div');
+    body.className = 'meldex-column-manager-body';
+    root.appendChild(body);
 
     const head = document.createElement('div');
     head.className = 'meldex-column-manager-head';
@@ -72709,13 +72837,13 @@ ${reason.message}`
     hideAll.textContent = 'すべて非表示';
     hideAll.dataset.e2eId = 'column-manager-hide-all';
     head.append(titleEl, showAll, hideAll);
-    root.appendChild(head);
+    body.appendChild(head);
 
     if (typeof options.renderExtra === 'function') {
       const extra = document.createElement('div');
       extra.className = 'meldex-column-manager-extra';
       options.renderExtra(extra);
-      if (extra.childNodes.length) root.appendChild(extra);
+      if (extra.childNodes.length) body.appendChild(extra);
     }
 
     const visibleHead = document.createElement('div');
@@ -72728,7 +72856,7 @@ ${reason.message}`
     const hiddenList = document.createElement('div');
     hiddenList.className = 'meldex-column-manager-list';
     hiddenList.dataset.section = 'hidden';
-    root.append(visibleHead, visibleList, hiddenHead, hiddenList);
+    body.append(visibleHead, visibleList, hiddenHead, hiddenList);
 
     const readItems = () => {
       const raw = typeof options.getItems === 'function' ? options.getItems() : [];
@@ -72850,7 +72978,7 @@ ${reason.message}`
     }
 
     function render() {
-      const scrollTop = root.scrollTop;
+      const scrollTop = body.scrollTop;
       const focusedId = document.activeElement?.closest?.('.meldex-column-manager-row')?.dataset.id || null;
       const visibleItems = state.items.filter(item => item.visible);
       const hiddenItems = state.items.filter(item => !item.visible);
@@ -72860,7 +72988,7 @@ ${reason.message}`
       hiddenList.replaceChildren(...hiddenItems.map(buildRow));
       if (!visibleItems.length) visibleList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると表示します</div>';
       if (!hiddenItems.length) hiddenList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると非表示にします</div>';
-      root.scrollTop = scrollTop;
+      body.scrollTop = scrollTop;
       if (focusedId) rowOf(focusedId)?.focus({ preventScroll: true });
     }
 
@@ -73118,6 +73246,8 @@ ${reason.message}`
         close,
       });
     }
+    attachResizeHandles(root);
+    applySize(root, readRememberedSize());
     position(root, anchor);
     return {
       root,

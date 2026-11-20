@@ -66,7 +66,7 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
     if (item.submenu) {
       // サブメニュートリガー
       const wrap = document.createElement('div');
-      wrap.className = 'tool-menu-submenu-wrap';
+      wrap.className = 'gb-context-menu-submenu tool-menu-submenu-wrap';
       const trigger = document.createElement('button');
       trigger.type = 'button';
       trigger.className = 'gb-context-menu-item ab-dropdown-item tool-menu-submenu-trigger';

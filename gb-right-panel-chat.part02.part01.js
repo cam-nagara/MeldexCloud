@@ -494,7 +494,12 @@ async function openFileChat(targetPath) {
     try {
       const historyContext = await window.GBChatStorageContext.resolveForHistory();
       const llmBrowsePath = historyContext.sourceFolder.replace(/[\\/]+$/, '') + '/_chat/llm';
-      const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc');
+      // まだチャットを一度も作っていない保存先には _chat/llm が無い（404）。それは「チャットが無い」なので黙って作成の案内へ進む
+      const items = await apiFetch('/browse?path=' + encodeURIComponent(llmBrowsePath) + '&sort=modified&order=desc', { silentError: true })
+        .catch(error => {
+          if (Number(error?.status) === 404) return [];
+          throw error;
+        });
       if (!restoreStillCurrent()) return false;
       for (const item of (items || [])) {
         try {
@@ -530,7 +535,9 @@ async function openFileChat(targetPath) {
           }
         } catch { continue; }
       }
-    } catch (e) { /* 検索失敗 */ }
+    } catch (e) {
+      if (typeof showStatus === 'function') showStatus('チャットの履歴を確認できませんでした: ' + (e?.userMessage || e?.message || e), true);
+    }
   }
 
   if (!restored) {

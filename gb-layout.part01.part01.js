@@ -1039,12 +1039,126 @@ const GBLayout = (() => {
   }
 
   // 開いた直後の幅を、覚えていた幅（無ければ既定幅）にして使える範囲へ収める。
+  // 利用者が調節した幅（userWidth）を持つものは、その幅を上限に、今の画面幅での比率の幅へ戻す。
   function _applyExpandedFixedDockWidth(dock) {
     if (!dock || dock.collapsed || !_isFixedDockRole(dock.meldexRole) || _isMobileLayout()) return;
     const allocation = _allocatedWidths();
+    const userTarget = _fixedDockUserTargetPx(dock, allocation.available);
+    if (userTarget > 0) {
+      _setFixedDockPx(dock, userTarget, allocation);
+      return;
+    }
     const { min, max } = _fixedDockLimits(dock, allocation.available);
     const wanted = Number(dock._expandedPx) > 0 ? Number(dock._expandedPx) : (_FIXED_DOCK_DEFAULT_PX[dock.meldexRole] || 260);
     _setFixedDockPx(dock, Math.max(min, Math.min(max, wanted)), allocation);
+  }
+
+  // ==== 利用者が調節したフォルダツリー・右サイドバーの幅（2026-11-20 ユーザー指示） ====
+  // 境界線のドラッグ・キーボードで調節した幅を上限（px）として、その時の画面幅に対する比率と一緒に
+  // 配置データ（userWidth）へ保存する。ウィンドウが狭くなる時は比率どおりに狭くし、広くなる時は
+  // 調節した幅より広くしない（増えた幅はメインパネル側へ回る）。メインパネル・サブパネルの幅は対象外。
+  const _USER_WIDTH_DOCK_ROLES = ['left-sidebar', 'right-sidebar'];
+
+  function _fixedDockUserWidth(dock) {
+    const value = dock?.userWidth;
+    const px = Number(value?.px);
+    const fraction = Number(value?.fraction);
+    return (px > 0 && fraction > 0 && fraction < 1) ? { px, fraction } : null;
+  }
+
+  // 今の画面幅での幅: 比率の幅と、調節した幅の小さい方。
+  function _fixedDockUserTargetPx(dock, available) {
+    const userWidth = _USER_WIDTH_DOCK_ROLES.includes(dock?.meldexRole) ? _fixedDockUserWidth(dock) : null;
+    if (!userWidth) return 0;
+    return Math.max(_RAIL_PX * 2, Math.min(userWidth.px, userWidth.fraction * available));
+  }
+
+  function _userWidthDocks(includeCollapsed) {
+    return _USER_WIDTH_DOCK_ROLES
+      .map(role => _findFixedRailPanelset(_root, role))
+      .filter(dock => dock && (includeCollapsed || !dock.collapsed));
+  }
+
+  function _recordFixedDockUserWidth(dock, px, available) {
+    if (!dock || !(px > _RAIL_PX * 2) || !(available > 0)) return false;
+    dock.userWidth = { px: Math.round(px), fraction: Math.round((px / available) * 100000) / 100000 };
+    return true;
+  }
+
+  // 描画済みの幅（拡大率を除いた px）。
+  function _renderedFixedDockPx(dock) {
+    const el = _layoutEl?.querySelector?.(`[data-panelset-id="${dock.id}"]`);
+    const width = el?.getBoundingClientRect?.().width;
+    if (!(width > 0)) return 0;
+    const zoom = (typeof _getZoom === 'function' ? Number(_getZoom()) : 1) || 1;
+    return width / zoom;
+  }
+
+  // 境界線の操作の前後で、幅が変わったサイドバーを「利用者が調節した」として記録する。
+  function _snapshotFixedDockWidths() {
+    const out = new Map();
+    if (_isMobileLayout() || _maximizedPaneId) return out;
+    _userWidthDocks(false).forEach(dock => out.set(dock.id, _renderedFixedDockPx(dock)));
+    return out;
+  }
+
+  function _commitFixedDockUserWidths(before) {
+    if (!(before instanceof Map) || !before.size || _isMobileLayout() || _maximizedPaneId) return false;
+    const available = Math.max(1, _layoutEl?.clientWidth || window.innerWidth || 1);
+    let changed = false;
+    _userWidthDocks(false).forEach(dock => {
+      if (!before.has(dock.id)) return;
+      const now = _renderedFixedDockPx(dock);
+      if (Math.abs(now - Number(before.get(dock.id) || 0)) < 1) return;
+      changed = _recordFixedDockUserWidth(dock, now, available) || changed;
+    });
+    return changed;
+  }
+
+  // 調節した幅を持たない（以前の版で保存した）配置は、今の幅を調節した幅として扱う。
+  function _adoptCurrentFixedDockWidths(allocation) {
+    _userWidthDocks(false).forEach(dock => {
+      if (_fixedDockUserWidth(dock)) return;
+      _recordFixedDockUserWidth(dock, Number(allocation.widths.get(dock.id) || 0), allocation.available);
+    });
+  }
+
+  // 調節した幅と比率から、今の画面幅での幅へ合わせる（分割の比率だけを書き換える）。
+  function _applyFixedDockUserWidths() {
+    let changed = false;
+    for (const dock of _userWidthDocks(false)) {
+      const allocation = _allocatedWidths();
+      const target = _fixedDockUserTargetPx(dock, allocation.available);
+      const current = Number(allocation.widths.get(dock.id) || 0);
+      if (!(target > 0) || Math.abs(target - current) < 0.5) continue;
+      changed = _setFixedDockPx(dock, target, allocation) || changed;
+    }
+    return changed;
+  }
+
+  // ウィンドウの大きさが変わった時: 配置を作り直さず、変わった分割の幅だけをその場で書き直す。
+  function _syncFixedDockWidthsForViewport() {
+    if (!_layoutEl || !_root || _isMobileLayout() || _maximizedPaneId || !_hasFixedRailRoles(_root)) return false;
+    const splits = [];
+    const collect = (n) => {
+      if (!n) return;
+      if (n.type === 'split') {
+        if (!n.collapsed) splits.push(n);
+        (n.children || []).forEach(collect);
+      } else if (n.type === 'panelset') {
+        (n.groups || []).forEach(group => collect(group?.root));
+      }
+    };
+    collect(_root);
+    const before = new Map(splits.map(split => [split.id, split.ratio]));
+    _ensureReadableMainPane();
+    let touched = false;
+    splits.forEach(split => {
+      if (before.get(split.id) === split.ratio) return;
+      const el = _layoutEl.querySelector(`.gb-split[data-split-id="${split.id}"]`);
+      if (el && _applySplitChildStylesInPlace(split, el)) touched = true;
+    });
+    return touched;
   }
 
   // 描画済みの分割の子要素の幅を、renderSplit と同じ規則で書き直す（DOMは作り直さない）。
@@ -1180,6 +1294,9 @@ const GBLayout = (() => {
       // 最低幅をわずかに下回るだけの幅（丸めやチャット開閉の調整分）は直さない。
       if (width > 0 && width < min * 0.75 && grow > 1) _setFixedDockPx(dock, width + grow, allocation);
     }
+    // 利用者が調節した幅を上限に、今の画面幅での幅へ合わせる（狭い時は下の処理で本文の幅を確保する）。
+    _adoptCurrentFixedDockWidths(_allocatedWidths());
+    _applyFixedDockUserWidths();
     const ordered = docks.filter(dock => dock.id !== _lastExpandedDockId)
       .concat(docks.filter(dock => dock.id === _lastExpandedDockId));
     for (const dock of ordered) {

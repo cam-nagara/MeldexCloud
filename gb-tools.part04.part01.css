@@ -89,13 +89,21 @@ button.gb-context-menu-item {
   background: var(--ui-border-strong);
   margin: 3px var(--ui-space-4);
 }
+/* サブメニューを持つ項目の包み要素（項目＋サブメニュー）。包み要素は余白も背景も持たない。
+   余白を持たせると、サブメニューを持つ項目だけ文字の開始位置が右へずれる（UI共通ルール §6
+   「メニュー項目の左寄せ」、2026-11-20）。クラスの付け忘れや旧い組み立て（クラスなしの div で
+   項目を包む）も、項目を直接持つ包み要素として同じ扱いにする。 */
 .gb-context-menu > .gb-context-menu-submenu,
-.gb-context-menu-submenu {
+.gb-context-menu-submenu,
+.gb-context-menu > div:has(> .gb-context-menu-item),
+.gb-context-menu > div:has(> .ab-dropdown-item) {
   padding: 0;
   cursor: default;
 }
 .gb-context-menu > .gb-context-menu-submenu:hover,
-.gb-context-menu-submenu:hover {
+.gb-context-menu-submenu:hover,
+.gb-context-menu > div:has(> .gb-context-menu-item):hover,
+.gb-context-menu > div:has(> .ab-dropdown-item):hover {
   background: transparent;
 }
 .gb-context-menu-item .menu-icon {

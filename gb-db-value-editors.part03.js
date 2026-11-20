@@ -797,6 +797,9 @@ function _showAutoFillStatusInput(dbPath, propName, ptc, currentValue) {
     <div class="field"><label for="_autoFillStatusInput">対象ステータス</label><input id="_autoFillStatusInput" class="gb-input" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み" style="width:100%;min-width:0;box-sizing:border-box;"></div>`;
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.dataset.e2eId = 'db-auto-fill-status-cancel';
+  const helpEl = body.querySelector('.gb-section-desc > *');
+  if (helpEl) helpEl.dataset.e2eId = 'db-auto-fill-status-help';
   const applyButton = document.createElement('button');
   applyButton.type = 'button'; applyButton.id = '_autoFillStatusOk'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary'; applyButton.textContent = '設定';
   let busy = false;

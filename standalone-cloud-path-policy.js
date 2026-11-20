@@ -194,11 +194,31 @@
       return found.path;
     }
 
+    // クイックメモの本体シートは、登録済みソースフォルダではなくホーム（vault）の標準位置にある。
+    // デスクトップ版のホームは vault/MeldexHome。ここを登録外として拒否していたため、
+    // スマホのクイックメモが一度も本体へ送信できなかった（2026-11-20）。許可するのは
+    // クイックメモアプリの一覧・保存の2つの入口と、標準のクイックメモフォルダ配下の .md だけ。
+    // シートであることの確認と編集ロックは、データ層（クイックメモの保存処理）が別に行う。
+    const QUICK_MEMO_HOME_FOLDERS = ['MeldexHome/クイックメモ', 'クイックメモ'];
+    function quickMemoHomePath(endpoint, queryPath) {
+      if (options.getAppSpec()?.id !== 'quick-memo') return '';
+      if (endpoint !== '/quick-memo/files' && endpoint !== '/quick-memo/file') return '';
+      const folder = QUICK_MEMO_HOME_FOLDERS.find((base) => queryPath === base || queryPath.startsWith(base + '/'));
+      if (!folder) return '';
+      const relative = queryPath.slice(folder.length + 1);
+      if (endpoint === '/quick-memo/files') return relative ? '' : queryPath;
+      if (!relative || relative.includes('/') || relative.startsWith('.') || relative.startsWith('_')
+        || !/\.md$/i.test(relative)) return '';
+      return queryPath;
+    }
+
     function authorizeRequest(request) {
       const endpoint = String(request?.endpoint || '');
       const method = String(request?.method || 'GET').toUpperCase();
       const body = request?.body && typeof request.body === 'object' ? request.body : {};
       const queryPath = normalizePath(request?.queryPath || '');
+      const homeQuickMemo = quickMemoHomePath(endpoint, queryPath);
+      if (homeQuickMemo) return homeQuickMemo;
       if (endpoint === '/browse' && method === 'GET') return assertFolder(queryPath, 'フォルダを表示');
       if (endpoint === '/search' && method === 'GET') return assertFolder(queryPath, 'フォルダを検索');
       if (endpoint === '/quick-memo/files' && method === 'GET') return assertFolder(queryPath, 'メモ一覧を表示');

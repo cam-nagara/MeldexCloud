@@ -252,8 +252,11 @@
       _tagsCatalogLastResolved.clear();
       return;
     }
-    const key = sourceCacheKey(sourceFolder);
-    _tagsCatalogCache.delete(key);
+    // 同じ辞書を、保存先を省略した呼び出し（既定）と保存先を明示した呼び出し（シートの共通タグ列など）が
+    // 別のキーで持つ。どのキーが同じ辞書かは画面側で判定できないので、変更の時は全キーの取得結果を捨てる
+    // （1キーだけ捨てると、タグの名前を変えても別キーで描画するシートのセルが古い名前のまま残る）。
+    void sourceFolder;
+    _tagsCatalogCache.clear();
   }
   function notifyTagsCatalogChanged(reason, result, sourceFolder) {
     try {
@@ -272,10 +275,12 @@
   }
   function publishTagsCatalogMutation(reason, result, sourceFolder) {
     const key = sourceCacheKey(sourceFolder);
+    // 別のキーで持っている同じ辞書の取得結果も捨てる（invalidateTagsCatalogCache の説明を参照）
+    _tagsCatalogCache.clear();
     if (Array.isArray(result?.tags) && Array.isArray(result?.groups)) {
       _tagsCatalogLastResolved.set(key, result);
       _tagsCatalogCache.set(key, { at: Date.now(), promise: Promise.resolve(result) });
-    } else _tagsCatalogCache.delete(key);
+    }
     notifyTagsCatalogChanged(reason, result, sourceFolder);
     return result;
   }

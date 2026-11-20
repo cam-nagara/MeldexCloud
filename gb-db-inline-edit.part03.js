@@ -1,4 +1,48 @@
 
+// 列の追加（見出しの＋・左／右に挿入・Ctrl+Shift+Enter）の取り消し履歴。
+// 操作の直後に積む（保存の完了後に積むと、続けて始めた列名変更より後ろに入り、取り消しの順が逆になる）。
+// 取り消し=確認なしで列を削除、やり直し=同じ位置・同じ列タイプで列を戻す。保存に失敗した追加は何もしない。
+function _dbPushColumnAddHistory(dbPath, propName, typeConfig, orderAfter, ctx, savePromise) {
+  if (typeof historyPush !== 'function' || !dbPath || !propName || savePromise === false) return;
+  const scope = typeof _dbScopeForPath === 'function'
+    ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : 'db:' + String(dbPath || '').replace(/\\/g, '/'));
+  const config = JSON.parse(JSON.stringify(typeConfig || { type: 'text' }));
+  const order = Array.isArray(orderAfter) ? [...orderAfter] : null;
+  const saved = Promise.resolve(savePromise).then(result => result !== false, () => false);
+  // 取り消し・やり直しの中の列の削除・復元は、表示設定（列レイアウト）の保存で別の履歴を積む。
+  // 積むとやり直しの記録が消えるため、この間だけ表示設定の履歴を止める。
+  const withoutNestedViewHistory = async (fn) => {
+    window.__meldexSuppressLocalStorageSettingsHistory = Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) + 1;
+    try { return await fn(); }
+    finally {
+      window.__meldexSuppressLocalStorageSettingsHistory = Math.max(0, Number(window.__meldexSuppressLocalStorageSettingsHistory || 0) - 1);
+    }
+  };
+  historyPush('列追加: ' + propName,
+    () => withoutNestedViewHistory(async () => {
+      if (!await saved) return;
+      const ok = typeof _deleteColumnNoConfirm === 'function'
+        ? await _deleteColumnNoConfirm(dbPath, propName, ctx)
+        : false;
+      if (ok === false) throw new Error('追加した列「' + propName + '」を取り消せませんでした');
+    }),
+    () => withoutNestedViewHistory(async () => {
+      if (!await saved) return;
+      // 列タイプを先に戻す（削除の印もここで外れる）。その後に列順を保存し、削除の印の無い表示設定を保存先へ送る。
+      const restored = await Promise.resolve(setPropertyType(dbPath, propName, JSON.parse(JSON.stringify(config)), ctx));
+      if (restored === false) throw new Error('列「' + propName + '」を戻せませんでした');
+      if (order && typeof setColOrder === 'function') setColOrder(dbPath, order, { skipHistory: true, ctx });
+      if (typeof _persistDbViewConfigToBackend === 'function' && typeof getDbViewConfig === 'function') {
+        await Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true }));
+      }
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+      else if (typeof renderPivot === 'function') renderPivot(ctx);
+        }),
+    scope
+  );
+}
+
 // 列をインラインで挿入（ダイアログなし）
 // typeConfig を渡すとその列タイプで作成する（未指定なら従来どおりテキスト列）
 function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
@@ -18,7 +62,13 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const fallbackOrder = typeof filterDeletedDbProperties === 'function'
     ? filterDeletedDbProperties(dbPath, pivotData?.properties || [])
     : [...(pivotData?.properties || [])];
-  const order = getColOrder(dbPath, { ctx }) || fallbackOrder;
+  const order = [...(getColOrder(dbPath, { ctx }) || fallbackOrder)];
+  // 表は列順に無い列（値がまだ無い列・列定義だけの列）も末尾に出す（renderPivot と同じ）。
+  // 列順だけで位置を探すと、その列を基準にした挿入が「列が見つかりません」で止まる。
+  const shownProps = [...(pivotData?.properties || []),
+    ...Object.keys((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null) || {})];
+  (typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, shownProps) : shownProps)
+    .forEach(p => { if (p && p !== '__entity__' && !order.includes(p)) order.push(p); });
   // 新しい列の初期名は typeConfig.initialName があればそれを優先する。
   // 無ければ選んだ列タイプ名にする（型未指定はテキスト）。
   const _hasTypeConfig = !!(typeConfig && typeof typeConfig === 'object');
@@ -56,7 +106,8 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   // typeConfig.initialName は列名決定のみに使うヒントであり、列タイプ設定として保存しない。
   const typeConfigToSave = _hasTypeConfig ? { ...typeConfig } : { type: 'text' };
   delete typeConfigToSave.initialName;
-  setPropertyType(dbPath, name, typeConfigToSave, ctx);
+  const typeSave = setPropertyType(dbPath, name, typeConfigToSave, ctx);
+  _dbPushColumnAddHistory(dbPath, name, typeConfigToSave, order, ctx, typeSave);
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
   else renderPivot(ctx);
   // 挿入後にヘッダーをインラインリネームモードに
@@ -277,6 +328,7 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
     const sel = document.createElement('button');
     sel.type = 'button';
     sel.className = 'count-type-select';
+    if (typeof _dbE2eId === 'function') sel.dataset.e2eId = _dbE2eId(ctx, 'footer-count-type', propName);
     sel.setAttribute('aria-haspopup', 'listbox');
     sel.setAttribute('aria-expanded', 'false');
     sel.setAttribute('aria-label', `集計タイプ / ${propName}`);
@@ -943,6 +995,12 @@ function setActiveCell(td, options = {}) {
     rangeAnchorCell = null;
   }
   const previous = activeCell;
+  // 既に選択中のセルをもう一度選び直すだけ（編集欄を閉じた後・保存の完了後の戻し）は新しい選択ではない。
+  // 番号を進めると、確定時の移動（Tab・Enter）の待ちが「利用者が別のセルを選んだ」と見なして止まり、
+  // 選択が確定したセルに残る（保存が速いと、移動より先に保存の完了の戻しが来る）。
+  // 編集の開始などは、同じセルでも新しい選択として番号を進める（options.newSelection）。
+  const reselectedSeq = (!options.newSelection && previous === td && td?.isConnected && td.classList?.contains('active-cell'))
+    ? Number(td.dataset?.dbActiveSeq || 0) : 0;
   if (previous) _dbDeactivateActiveCell(previous);
   document.querySelectorAll('td.active-cell').forEach(cell => {
     if (cell !== td) _dbDeactivateActiveCell(cell);
@@ -952,7 +1010,10 @@ function setActiveCell(td, options = {}) {
   if (td) {
     _dbRestoreCellAddButtonsIfIdle(td);
     td.classList.add('active-cell');
-    td.dataset.dbActiveSeq = String(++dbActiveCellSeq);
+    // 描き直しで入れ替わった同じセルへ選択を戻す時は、元の選択の通し番号を引き継ぐ。
+    // 新しい番号にすると、保存の完了待ちの移動（Tab・Enter）が「利用者が別のセルを選んだ」と見なして止まる。
+    const preservedSeq = Number(options.preserveSeq || reselectedSeq || 0);
+    td.dataset.dbActiveSeq = String(preservedSeq > 0 ? preservedSeq : ++dbActiveCellSeq);
     td.tabIndex = 0;
     td.focus?.({ preventScroll: true });
     try {
@@ -1041,11 +1102,18 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
   return _dbOpenExistingCellValueEditor(td, ctx);
 }
 
+function _dbCellEditBlockedMessage(td, ctx) {
+  const propName = td?.dataset?.propName || '';
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  if (!propName || !dbPath || typeof checkColumnEditable !== 'function') return '';
+  try { return checkColumnEditable(dbPath, propName, ctx) || ''; } catch { return ''; }
+}
+
 function _dbStartCellInlineEditor(td, options = {}) {
   if (!td || td.classList?.contains('col-entity')) return false;
   // 編集開始を新しいフォーカス所有権として記録する。直前の非同期保存が遅れて
   // 同じセルを復元しても、この編集や続くTab移動を上書きしないようにする。
-  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false });
+  if (typeof setActiveCell === 'function') setActiveCell(td, { scroll: false, newSelection: true });
   const ctx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(td, { dbPath: state.currentDbPath })
     : (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
@@ -1054,6 +1122,9 @@ function _dbStartCellInlineEditor(td, options = {}) {
   const propName = td.dataset?.propName || '';
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
   if (!entityName || !propName || !dbPath || typeof startCellInlineAdd !== 'function') return false;
+  // 既存の値の編集欄（リレーションの候補一覧など）は列の編集制限を確かめないので、ここで止める。
+  const blocked = _dbCellEditBlockedMessage(td, ctx);
+  if (blocked) { if (typeof showStatus === 'function') showStatus(blocked); return true; }
   const ptc = _dbCellPropertyType(td, ctx);
   const hasValue = _dbCellHasAnyValue(td, ctx);
   if (options.preferExistingValue && hasValue && _dbOpenExistingCellValueEditorFromData(td, ctx)) return true;
@@ -1077,6 +1148,18 @@ function _dbIsInternalRangePasteShortcut(e) {
   return (e.ctrlKey || e.metaKey) && !e.altKey && String(e.key || '').toLowerCase() === 'v'
     && _dbHasInternalCellClipboard()
     && Array.isArray(dbCellClipboard.cells) && dbCellClipboard.cells.length > 1;
+}
+
+// 空のセルをクリックすると入力欄が開く（v0.7.509）。何も打っていない入力欄での Ctrl+V は、
+// セルを選んで貼り付けたのと同じに扱い、コピーしたセル（値・ステータス）をそのまま貼り付ける。
+// 文字を打ち始めた後の Ctrl+V は、これまでどおり入力欄への文字の貼り付けにする。
+function _dbIsPristineCellEditorPasteShortcut(e) {
+  if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && String(e.key || '').toLowerCase() === 'v')) return false;
+  if (!_dbHasInternalCellClipboard()) return false;
+  const el = document.activeElement;
+  if (!el?.classList?.contains('cell-inline-input')) return false;
+  if (!('value' in el) || String(el.value || '') !== '') return false;
+  return !!el.closest?.('td[data-prop-name]');
 }
 
 function _dbActiveNativeEditingCell() {
@@ -1123,6 +1206,7 @@ function _dbShouldBypassNativeEditorForSheetShortcut(e) {
   const editingCell = _dbActiveNativeEditingCell();
   if (!editingCell) return false;
   if (_dbIsInternalRangePasteShortcut(e)) return true;
+  if (_dbIsPristineCellEditorPasteShortcut(e)) return true;
   const key = String(e.key || '').toLowerCase();
   const isCopy = (e.ctrlKey || e.metaKey) && !e.altKey && key === 'c';
   const isDelete = (e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -1218,6 +1302,9 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
   const keyType = String(_dbCellPropertyType(cell, keyCtx)?.type || '').replace(/_/g, '-');
   if ((e.key === 'Enter' || e.key === 'F2') && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
+    // 編集制限でロックした列は、リレーション・ロールアップでも候補の一覧や入力欄を開かない。
+    const blocked = _dbCellEditBlockedMessage(cell, keyCtx);
+    if (blocked) { if (typeof showStatus === 'function') showStatus(blocked); return true; }
     if (keyType === 'rollup' && typeof startRollupCellEdit === 'function') {
       void startRollupCellEdit(cell);
       return true;
@@ -1234,7 +1321,7 @@ function _dbHandleCellEditorKey(e, colIdx, targetCell) {
     if (typeof _dbIsNativeEditingElement === 'function' && _dbIsNativeEditingElement(e.target)) return false;
     e._dbTypedEditHandled = true;
     if (keyType === 'rollup') {
-      if (typeof startRollupCellEdit !== 'function') return false;
+      if (typeof startRollupCellEdit !== 'function' || _dbCellEditBlockedMessage(cell, keyCtx)) return false;
       const proxy = _dbBeginTypedProxy(cell);
       if (!proxy) return false;
       void startRollupCellEdit(cell, { input: proxy });

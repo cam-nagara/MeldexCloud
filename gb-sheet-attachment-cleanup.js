@@ -168,6 +168,11 @@
     }
   }
 
+  function _cleanupHistoryScope(dbPath) {
+    if (typeof _dbScope === 'function') return _dbScope(dbPath) || '';
+    return dbPath ? 'db:' + String(dbPath).replace(/\\/g, '/') : '';
+  }
+
   async function _deleteSelected() {
     const current = cleanupState;
     if (!current || !current.selected.size || current.busyDepth) return;
@@ -193,6 +198,9 @@
         label: `添付ファイル${targets.length}件を削除`,
         detail: usedCount ? `使用中 ${usedCount}件を含む` : targets.map(item => item.path).join(', '),
         refreshSuccessfulRedo: true,
+        // 整理の画面はシートから開く。シートの履歴の範囲へ積むと、整理の画面を開いたままでも、
+        // 閉じてシートへ戻ってからでも Ctrl+Z で戻せる（共通の範囲へ積むと、シートの履歴が先に戻る）
+        scope: _cleanupHistoryScope(current.path),
         refresh: async phase => {
           if ((phase === 'undo' || phase === 'redo') && cleanupState === current && current.modalApi?.isOpen?.()) {
             await _reload({ keepStatus: true, preserveSelection: false });

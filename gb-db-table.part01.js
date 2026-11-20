@@ -29,6 +29,7 @@ function _dbRenderEntityCreateContext(renderCtx, dbPath) {
   const selectedCell = table?.querySelector?.('td.active-cell');
   const selectedName = selectedCell?.closest?.('tr')?.dataset?.entityName;
   const selectedProp = selectedCell?.dataset?.propName || '';
+  const selectedSeq = Number(selectedCell?.dataset?.dbActiveSeq || 0);
   if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(renderCtx, dbPath);
   else if (typeof renderPivot === 'function') renderPivot(renderCtx);
   if (!selectedName || typeof setActiveCell !== 'function') return;
@@ -43,7 +44,7 @@ function _dbRenderEntityCreateContext(renderCtx, dbPath) {
     const cell = selectedProp
       ? row.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(selectedProp)}"]`)
       : row.querySelector('td.col-entity');
-    if (cell) setActiveCell(cell, { scroll: false });
+    if (cell) setActiveCell(cell, { scroll: false, preserveSeq: selectedSeq });
   };
   const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(renderCtx, selectedName) : null;
   if (row) restore(row);
@@ -577,8 +578,12 @@ async function _handleNewEntryClick(ctx) {
     const scroller = row?.closest?.('#pivot-view, .pivot-view');
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   };
+  const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const created = _dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true });
   const renderCtx = _dbPlaceCreatedEntitiesInManualOrder(created.renderCtx || ctx, dbPath, [created.name], { position: 'append' }) || created.renderCtx;
+  const viewAfter = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  // 行メニューの追加と同じく、表示へ反映した直後に取り消し履歴を積む（取り消しは保存の完了を待つ）。
+  const historyItems = _dbTrackCreatedEntityForHistory(dbPath, renderCtx, created, viewBefore, viewAfter);
   keepBottom();
   requestAnimationFrame(() => { keepBottom(); setTimeout(keepBottom, 120); setTimeout(keepBottom, 360); setTimeout(keepBottom, 900); });
   _dbKeepNewEntryRowVisible(renderCtx);
@@ -588,10 +593,12 @@ async function _handleNewEntryClick(ctx) {
     if (savedEntity && saved.path) savedEntity._entry_path = saved.path;
     // サーバーが仮名と異なる名前を付けた場合は、並び順・manualOrder を実際の名前へ揃える
     if (saved.name !== created.name) _dbRenameOptimisticEntityLocally(renderCtx, dbPath, created.name, saved.name);
+    historyItems.resolve([{ name: saved.name, path: saved.path, response: saved.response }]);
     _dbScheduleEntityCreatePostSync(dbPath, [{ name: saved.name, path: saved.path, response: saved.response }], renderCtx);
   } catch (e) {
     // タイムアウト等でも実際は作成済みのことがある。撤去前に必ず確認する
     const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, created);
+    historyItems.resolve(recovered ? [{ name: recovered.name, path: recovered.path, response: null }] : []);
     if (recovered) {
       if (typeof showStatus === 'function') showStatus('トピックを追加しました');
     } else {
@@ -685,6 +692,15 @@ async function _handleInsertRowsAtPlans(ctx, plans) {
     if (typeof showStatus === 'function') showStatus(`${failed.length}件のトピック作成に失敗しました`, true);
   }
   _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx);
+}
+
+// 1件のトピック追加（表の末尾の追加欄・Ctrl+Enter）の取り消し履歴を積み、保存の結果を渡す口を返す。
+// resolve([...]) に保存できたトピック（無ければ空配列）を渡す。
+function _dbTrackCreatedEntityForHistory(dbPath, renderCtx, created, viewBefore, viewAfter) {
+  let resolveItems = () => {};
+  const itemsPromise = new Promise(resolve => { resolveItems = resolve; });
+  if (created?.name) _dbPushInsertedEntitiesHistory(dbPath, renderCtx, itemsPromise, viewBefore, viewAfter, 1);
+  return { resolve: items => resolveItems(Array.isArray(items) ? items : []) };
 }
 
 // 行メニューから追加したトピックの取り消し履歴（保存に成功した分だけを対象にする）。

@@ -146,6 +146,13 @@ const UI_STYLE_SECTIONS = {
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },
     { label: 'テーブル罫線', line:'--db-grid-border', toggle:'--db-show-grid', toggleOn:'1px', toggleOff:'0px', text:'━━' },
+    // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。テーマパネルの「候補値」と同じ項目。
+    { label: '候補値', fg:'--db-option-chip-fg', bg:'--db-option-chip-bg', bgType:'rgba', bold:'--db-option-chip-bold', fontSize:'--db-option-chip-font-size',
+      line:'--db-option-chip-border-color', width:'--db-option-chip-border-width', text:'候補値',
+      popupNumbers:[
+        { label:'角丸', key:'--db-option-chip-radius', min:0, max:20, step:1, unit:'px', fallback:10 },
+        { label:'左右の余白', key:'--db-option-chip-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 },
+      ] },
     { label: '採用ステータス', bg:'--db-status-adopted-color', text:'採用ステータス色' },
     { label: 'ソースバッジ 1', bg:'--db-msr-badge-1-bg', text:'1' },
     { label: 'ソースバッジ 2', bg:'--db-msr-badge-2-bg', text:'2' },

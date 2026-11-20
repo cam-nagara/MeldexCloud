@@ -1,3 +1,14 @@
+        _showCalEventInDetailPanel(
+          { title: name, description: '[[' + name + ']](' + path + ')' },
+          [], startVal, endVal, false
+        );
+      }
+    } catch {}
+  });
+}
+
+// main-viewsへのD&Dドロップ
+// 通常ドロップ: 各ビュー固有のハンドラに委ねる（ノート→リンク挿入、キャンバス→ノード追加）
 // Ctrl+ドロップ: ファイルをそのパネルで開く
 {
   const mv = document.getElementById('main-views');
@@ -887,14 +898,3 @@ function showMobileToolMenu(e) {
     null,
     { label: 'アノテートツール', action: () => toggleAnnotationToolbar() },
     { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
-  ];
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu mobile-tool-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'ツールメニュー');
-  menu.style.cssText = 'position:fixed;z-index:999;max-height:80vh;overflow-y:auto;';
-  let menuClosed = false;
-  let closeOnPointer = null;
-  let closeOnKey = null;
-  function closeMenu(restoreFocus = false) {
-    if (menuClosed) return;

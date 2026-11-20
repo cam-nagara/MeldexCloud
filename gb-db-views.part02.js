@@ -60,6 +60,7 @@ function _renderDbViewTabMenuItems(container, itemList) {
     }
     if (item.type === 'submenu') {
       const wrapper = document.createElement('div');
+      wrapper.className = 'gb-context-menu-submenu';
       const el = document.createElement('div');
       el.className = 'gb-context-menu-item';
       el.tabIndex = 0;

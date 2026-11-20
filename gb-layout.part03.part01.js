@@ -668,6 +668,9 @@
       if (now !== _wasMobileLayout) {
         _wasMobileLayout = now;
         _renderPreservingActivePane();
+      } else {
+        // フォルダツリー・右サイドバーは、利用者が調節した幅を上限に比率で伸縮する（その場で反映）。
+        _syncFixedDockWidthsForViewport();
       }
       _notifyLayoutViewportResize();
     };
