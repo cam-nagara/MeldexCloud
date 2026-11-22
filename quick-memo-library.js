@@ -213,6 +213,16 @@
       }
       button.append(title, preview, meta);
       button.addEventListener('click', () => openItem(item, button));
+      if (item.pending && options.onPendingInfo) {
+        const card = document.createElement('div');
+        card.className = 'qm-list-card';
+        const info = document.createElement('button');
+        info.type = 'button'; info.className = 'qm-list-info qm-icon'; info.textContent = 'ⓘ';
+        info.setAttribute('aria-label', '送信待ちの詳細');
+        info.addEventListener('click', () => options.onPendingInfo(item));
+        card.append(button, info);
+        return card;
+      }
       return button;
     }
 

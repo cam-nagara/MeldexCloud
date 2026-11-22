@@ -91,17 +91,18 @@
       let saved = null;
       let busy = false;
       const body = document.createElement('div'); body.className = 'note-template-dialog';
-      const name = document.createElement('input'); name.className = 'gb-input'; name.setAttribute('aria-label', 'テンプレート名');
-      const category = document.createElement('input'); category.className = 'gb-input'; category.setAttribute('aria-label', '分類');
-      const content = document.createElement('textarea'); content.className = 'gb-input'; content.rows = 12;
+      const name = document.createElement('input'); name.className = 'gb-input'; name.dataset.e2eId = 'note-template-editor-name'; name.setAttribute('aria-label', 'テンプレート名');
+      const category = document.createElement('input'); category.className = 'gb-input'; category.dataset.e2eId = 'note-template-editor-category'; category.setAttribute('aria-label', '分類');
+      const content = document.createElement('textarea'); content.className = 'gb-input'; content.dataset.e2eId = 'note-template-editor-content'; content.rows = 12;
       content.style.cssText = 'width:100%;height:240px;min-height:160px;box-sizing:border-box;resize:vertical'; content.setAttribute('aria-label', 'テンプレート本文（Markdown）');
-      const status = document.createElement('p'); status.setAttribute('role', 'status');
+      const status = document.createElement('p'); status.dataset.e2eId = 'note-template-editor-status'; status.setAttribute('role', 'status');
       const location = document.createElement('p'); location.textContent = '保存先: ' + (library.remote ? '個人設定' : 'この端末');
       name.value = initial?.name || ''; category.value = initial?.categoryLabel || initial?.category || 'カスタム'; content.value = initial?.content || '';
       body.append(location, GBUI.createField({ label: 'テンプレート名', input: name }),
         GBUI.createField({ label: '分類', input: category }),
         GBUI.createField({ label: 'テンプレート本文（Markdown）', input: content }), status);
       const cancel = button('キャンセル', () => modal.close('cancel'));
+      cancel.dataset.e2eId = 'note-template-editor-cancel';
       const save = button('テンプレートを保存', async () => {
         if (busy) return; busy = true; save.disabled = true; status.textContent = '';
         try {
@@ -120,6 +121,7 @@
         finally { busy = false; save.disabled = false; }
         if (saved) modal.close('saved');
       });
+      save.dataset.e2eId = 'note-template-editor-save';
       save.classList.add('gb-btn-primary');
       const modal = GBUI.createModal({ id: 'note-template-editor', title: options.title || 'テンプレートの編集', body, footer: [cancel, save],
         variant: 'standard', geometryKey: 'note-template-editor', initialFocus: name, onBeforeClose: () => !busy, onClose: () => resolve(saved) });
@@ -230,5 +232,8 @@
     }
     showStatus(template ? '新規トピックのノートテンプレートを設定しました' : 'ノートテンプレートの設定を解除しました');
   }
-  window.MeldexNoteTemplates = Object.freeze({ show, load, validate });
+  function showFromToolbar() {
+    return show().catch(error => { showStatus(error.userMessage || error.message || 'テンプレートを開けませんでした', true); return null; });
+  }
+  window.MeldexNoteTemplates = Object.freeze({ show, showFromToolbar, load, validate });
 })();

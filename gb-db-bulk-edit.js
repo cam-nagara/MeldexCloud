@@ -73,30 +73,18 @@ function _syncPaneRowSelectHeader(ctx) {
   const selectedVisibleCount = selected
     ? visibleNames.reduce((count, name) => count + (selected.has(name) ? 1 : 0), 0)
     : 0;
-  const allSelected = visibleNames.length > 0 && selectedVisibleCount === visibleNames.length;
-  const mixed = selectedVisibleCount > 0 && !allSelected;
-  checkbox.checked = allSelected;
-  checkbox.indeterminate = mixed;
-  checkbox.setAttribute('aria-checked', mixed ? 'mixed' : (allSelected ? 'true' : 'false'));
-  checkbox.setAttribute('aria-label', allSelected
-      ? '表示中のすべてのトピックを選択解除'
-      : '表示中のすべてのトピックを選択');
-  checkbox.title = checkbox.getAttribute('aria-label');
+  // 表の全選択チェックボックスは共通部品（MeldexRowHandleMenu。シナリオのタイプ表・キャラ表と同じ）。
+  MeldexRowHandleMenu.syncSelectAllCheckbox(checkbox, {
+    total: visibleNames.length, selected: selectedVisibleCount, unit: 'トピック',
+  });
 }
 
 function _createPaneRowSelectHeaderCheckbox(ctx) {
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.className = 'row-select-all-cb';
-  checkbox.dataset.e2eId = _dbE2eId(ctx, 'row-select-all', 'header');
-  checkbox.addEventListener('click', event => {
-    event.stopPropagation();
-    _setPaneAllRowsSelected(ctx, checkbox.checked);
+  return MeldexRowHandleMenu.createSelectAllCheckbox({
+    e2eId: _dbE2eId(ctx, 'row-select-all', 'header'),
+    unit: 'トピック',
+    onToggle: shouldSelect => _setPaneAllRowsSelected(ctx, shouldSelect),
   });
-  checkbox.setAttribute('aria-checked', 'false');
-  checkbox.setAttribute('aria-label', '表示中のすべてのトピックを選択');
-  checkbox.title = checkbox.getAttribute('aria-label');
-  return checkbox;
 }
 
 function _selectAllPaneRows(ctx) {
@@ -430,8 +418,11 @@ function _showBulkEditModal(entityNames, ctx, options = {}) {
   const dbPath = (ctx && ctx.dbPath) || state.currentDbPath;
   if (!dbPath) return;
   const pivotData = (ctx && ctx.pivotData) || (state.currentDbPath === dbPath ? state.pivotData : null) || {};
-  const props = pivotData.properties || [];
   const propTypes = getPropertyTypes(dbPath) || {};
+  // pivotData.properties は値のある列だけを持つ。表の見出しと同じく、まだ値の無い列（列タイプだけ設定した列）も
+  // 一括編集の対象に含める（含めないと、作ったばかりのリレーション列・ユーザー列などへ一括で値を入れられなかった）。
+  const allProps = [...new Set([...(pivotData.properties || []), ...Object.keys(propTypes)])];
+  const props = typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, allProps) : allProps;
   const statusOn = getStatusEnabled(dbPath);
   const editableProps = props.filter(p => {
     const t = propTypes[p]?.type;
@@ -875,3 +866,86 @@ async function _bulkDeleteEntities(entityNames, ctx) {
   showStatus(calendarWarning ? `${summary}。${calendarWarning}` : summary, fail > 0 || !!calendarWarning);
   _updateBulkEditBar(ctx);
 }
+
+// ============================================================
+// AI（チャットのツール）がシートを書き換えた知らせ（2026-11-22 利用者役の探索）
+// 開いているシートは読み直して変更を映し、取り消し・やり直しの履歴へ積む。
+// 取り消しは画面の値の保存と同じ経路（_bulkReplaceEntityPropValues）で変更前の値へ戻すので、
+// 書き込み権限・編集ロックの確認もそこで通る。
+// ============================================================
+function _llmSheetSamePath(a, b) {
+  const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const x = norm(a), y = norm(b);
+  return !!x && !!y && (x === y || x.endsWith('/' + y) || y.endsWith('/' + x));
+}
+
+function _llmSheetOpenContexts(sheetPath) {
+  const out = [];
+  try {
+    const panes = typeof getAllPanes === 'function' ? Object.values(getAllPanes() || {}) : [];
+    panes.forEach(ctx => { if (ctx?.dbPath && _llmSheetSamePath(ctx.dbPath, sheetPath) && !out.includes(ctx)) out.push(ctx); });
+  } catch (_) { /* パネルが無い */ }
+  return out;
+}
+
+async function _llmSheetRefreshOpen(dbPath) {
+  for (const ctx of _llmSheetOpenContexts(dbPath)) {
+    try {
+      await selectDatabase(ctx.dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true, skipSaveLastView: true });
+    } catch (error) {
+      console.warn('[Meldex] AIの変更をシートへ映せませんでした', error);
+    }
+  }
+}
+
+function _llmSheetChangedProps(before, after) {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  return [...keys].filter(key => JSON.stringify((before || {})[key] || []) !== JSON.stringify((after || {})[key] || []));
+}
+
+async function meldexApplyLlmSheetChange(change) {
+  if (!change || change.type !== 'meldex_sheet_changed') return false;
+  const ctx = _llmSheetOpenContexts(change.sheet_path)[0] || null;
+  const dbPath = ctx?.dbPath || change.sheet_path;
+  if (!dbPath || !change.file_name) return false;
+  const entityPath = String(dbPath).replace(/\\/g, '/').replace(/\/+$/, '') + '/' + change.file_name;
+  const entity = change.entity || change.file_name.replace(/\.md$/i, '');
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + dbPath);
+  const op = String(change.operation || '');
+  if (typeof historyPush === 'function') {
+    if ((op === 'value_set' || op === 'entry_update') && change.before_properties && change.after_properties) {
+      const props = _llmSheetChangedProps(change.before_properties, change.after_properties);
+      const apply = (side) => async () => {
+        for (const prop of props) await _bulkReplaceEntityPropValues(entityPath, prop, (side || {})[prop] || []);
+        await _llmSheetRefreshOpen(dbPath);
+      };
+      if (props.length) {
+        historyPush(`AIの変更: ${entity}（${props.join('、')}）`,
+          apply(change.before_properties), apply(change.after_properties), scope);
+      }
+    } else if (op === 'entry_create' && window.GbDbEntryIdentity?.deleteEntries) {
+      let trashRefs = [];
+      historyPush(`AIのトピック追加: ${entity}`,
+        async () => {
+          const result = await window.GbDbEntryIdentity.deleteEntries({
+            dbPath, ctx, entries: [{ name: entity, path: entityPath }], source: 'llm-undo',
+            confirmation: { confirmed: true, operation: 'trash' },
+          });
+          trashRefs = Array.isArray(result?.trashRefs) ? result.trashRefs : [];
+          if (!trashRefs.length) throw new Error(`「${entity}」を取り消せませんでした`);
+          await _llmSheetRefreshOpen(dbPath);
+        },
+        async () => {
+          for (const ref of trashRefs) {
+            await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
+          }
+          trashRefs = [];
+          await _llmSheetRefreshOpen(dbPath);
+        },
+        scope);
+    }
+  }
+  await _llmSheetRefreshOpen(dbPath);
+  return true;
+}
+window.meldexApplyLlmSheetChange = meldexApplyLlmSheetChange;

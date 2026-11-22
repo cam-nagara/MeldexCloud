@@ -1170,6 +1170,14 @@
     button.setAttribute('aria-expanded', String(open));
     button.setAttribute('aria-controls', 'rp-chat');
     dockBar.appendChild(button);
+    const annotate = _railButton('gb-dock-icon gb-dock-rail-annotate', 'pencil', 'アノテートツール', () => toggleAnnotationToolbar());
+    annotate.dataset.tabType = 'annotate-tool';
+    annotate.dataset.e2eId = 'fixed-right-rail-annotate';
+    annotate.setAttribute('aria-controls', 'ann-toolbar');
+    annotate.classList.toggle('active', typeof ann !== 'undefined' && ann.active);
+    annotate.setAttribute('aria-expanded', String(typeof ann !== 'undefined' && ann.active));
+    annotate.setAttribute('aria-pressed', String(typeof ann !== 'undefined' && ann.active));
+    dockBar.appendChild(annotate);
   }
 
   function renderDock(panelsetNode, depth) {
@@ -1372,6 +1380,16 @@
               // 展開時は親splitの保存幅と折りたたみDOMも復元する必要がある。
               // collapsedだけを書き換えると本体がレール幅のままになる。
               _setPanelsetCollapsed(panelsetNode, false, { skipActivePaneCallback: true });
+              if (!body.isConnected) {
+                // 開く時に全体描画が走ると（退避した中身はその場で開けないため）、この本体は画面から外れ、
+                // 新しい本体へ選んだタブが描かれている。ここで外れた本体へもう一度描くと、本物の中身
+                // （オプションパネル等）が外れた本体へ移され、右サイドバーが空になる（M-014 ボード網羅テストで発見）。
+                if (typeof GBPaneBridge?.refreshPaneAfterTabSwitch === 'function') {
+                  GBPaneBridge.refreshPaneAfterTabSwitch(pane.id, { previousActivePane: null });
+                }
+                if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+                return;
+              }
             } else {
               panelsetNode.collapsed = false;
               delete panelsetNode._userCollapsed;
@@ -1503,8 +1521,8 @@
       }
     });
     if (fixedSide === 'right') {
-      _appendRightRailChat(dockBar);
       _appendRightRailQuickMemo(dockBar);
+      _appendRightRailChat(dockBar);
     }
     if (fixedSide && typeof window.GBRailContract?.decorate === 'function') {
       window.GBRailContract.decorate(dockBar, fixedSide);

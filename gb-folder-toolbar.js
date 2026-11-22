@@ -70,6 +70,27 @@
     if (!current) return null;
     const currentKey = _folderToolbarNormalizePath(current);
     const tops = _folderToolbarTopFolderPaths();
+    // フォルダパネルの中で開いたフォルダ（ダブルクリック・Enter）は保存先の相対パスで持つ。最上位は絶対パスなので、
+    // 相対パスのままでは「最上位の中」と判定できず、上のフォルダへが押せなかった（2026-11-22 M-014 フォルダパネル網羅テスト）。
+    // 相対パスはツリーの同じフォルダの行（末尾が一致）を探し、その親の行を上のフォルダにする。
+    if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(String(current))) {
+      const want = currentKey.toLowerCase();
+      const node = Array.from(document.querySelectorAll('#outliner-tree .tree-node[data-path]')).find(candidate => {
+        const key = _folderToolbarNormalizePath(candidate.dataset.path || '').toLowerCase();
+        return key === want || key.endsWith('/' + want);
+      });
+      if (node) {
+        if (node._nodeData?._isRoot || node.querySelector(':scope > .tree-root-row')) return null;
+        const parent = node.parentElement?.closest?.('.tree-node');
+        const parentPath = parent?._nodeData?.path || parent?.dataset?.path || '';
+        if (parentPath) return { path: parentPath, name: parent?._nodeData?.name || parentPath.split(/[\\/]/).pop() || parentPath };
+      }
+      const cutRel = currentKey.lastIndexOf('/');
+      if (cutRel > 0) {
+        const path = currentKey.slice(0, cutRel);
+        return { path, name: path.split('/').pop() || path };
+      }
+    }
     if (tops.some(top => _folderToolbarNormalizePath(top).toLowerCase() === currentKey.toLowerCase())) return null;
     const inside = tops.some(top => {
       const topKey = _folderToolbarNormalizePath(top);
@@ -233,6 +254,33 @@
     if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   }
 
+  // ツリーの指定したフォルダの子だけを差分で反映する。差分にできない時（仮想化・未読込以外の失敗）は全体を読み直す。
+  async function _folderToolbarSyncTree(folders, fallback) {
+    // ツリーの行は絶対パス、パネルの項目は相対パスで持つことがあるので、末尾の一致でツリーの行のパスへ直す
+    // （ツリーに出ていないフォルダは直す必要が無い）。
+    const toTreePath = path => {
+      const want = _folderToolbarNormalizePath(path).toLowerCase();
+      if (!want) return '';
+      const node = Array.from(document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')).find(candidate => {
+        const key = _folderToolbarNormalizePath(candidate._nodeData?.path || candidate.dataset?.path || '').toLowerCase();
+        return key === want || key.endsWith('/' + want);
+      });
+      return node ? (node._nodeData?.path || node.dataset.path) : '';
+    };
+    const list = Array.from(new Set((folders || []).map(toTreePath).filter(Boolean)));
+    if (!list.length) return true;
+    if (typeof _outlinerSyncFolderChildren === 'function') {
+      let ok = true;
+      for (const path of list) {
+        try { if (!(await _outlinerSyncFolderChildren(path))) ok = false; } catch { ok = false; }
+      }
+      if (ok) return true;
+    }
+    if (typeof fallback === 'function') return fallback();
+    if (typeof refreshOutliner === 'function') return refreshOutliner({ force: true, reason: 'folder-toolbar' });
+    return false;
+  }
+
   async function _folderToolbarRefresh(preservePaths = [], options = {}) {
     const folderPath = _folderToolbarCurrentPath();
     const refreshTrees = () => {
@@ -242,6 +290,23 @@
       if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
       return Promise.allSettled(refreshJobs);
     };
+    // 変わったフォルダが分かっている時は、ツリーはそのフォルダの子だけを差分で反映し、パネルの読み直しと並行して行う
+    // （全体の読み直しを待つと、パネルで作ったものがツリーに出るまで 0.3秒を超えていた: 2026-11-22 M-014）。
+    if (Array.isArray(options.treeFolders) && options.treeFolders.length) {
+      const treeSync = _folderToolbarSyncTree(options.treeFolders, refreshTrees);
+      const folderOk = options.refreshFolder === false || !folderPath || typeof openFolder !== 'function'
+        ? true
+        : (await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
+          skipShowView: true, skipSaveLastView: true, skipNavPush: true, skipHighlight: true, skipGlobalUi: true,
+          ...(options.isCurrent ? { isLegacyLoadCurrent: options.isCurrent } : {}),
+        })) !== false;
+      if (options.refreshFolder !== false && folderOk && preservePaths.length && typeof renderFolderGrid === 'function' && !(options.isCurrent && !options.isCurrent())) {
+        renderFolderGrid({ preserveSelectedPaths: preservePaths });
+      }
+      await treeSync;
+      _folderToolbarScheduleUpdate();
+      return folderOk;
+    }
     // Creation is already durable. Display its folder contents immediately;
     // refreshing other roots must not hold the new item behind a full scan.
     const treeResults = !options.backgroundTrees ? await refreshTrees() : [];
@@ -299,13 +364,35 @@
         showStatus('編集ロック中のフォルダには作成できません', true);
         return;
       }
+      // 作成を取り消せるようにする（右クリックの新規作成と同じ。2026-11-21 ユーザー決定）。枠は確定の時点で取る。
+      // 作成の記録は共通の履歴に積む（フォルダツリーの新規作成と同じ。開いている画面の履歴に紛れ込ませない）
+      const historyScope = '';
+      const reservation = typeof historyReserve === 'function' ? historyReserve('新規作成: 無題', historyScope) : null;
       try {
         const res = await apiPost('/outliner/add', { type, label: '無題', parent });
         const node = res?.node || {};
         const name = node.name || node.label || '無題';
-        await _folderToolbarRefresh(node.path ? [node.path] : [], { backgroundTrees: true });
+        // フォームは入力先のシートも一緒に作る。取り消しで両方をゴミ箱へ移す（フォルダツリーの新規作成と同じ）。
+        const companions = Array.isArray(node.companion_paths) ? node.companion_paths.filter(Boolean) : [];
+        const pushHistory = () => {
+          if (!node.path) return null;
+          if (companions.length && typeof _pushCreatedOutlinerItemsHistory === 'function') {
+            return _pushCreatedOutlinerItemsHistory([
+              { path: node.path, type: node.type || type, kind: (node.type || type) === 'folder' ? 'folder' : 'file' },
+              ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
+            ], '新規作成: ' + name, historyScope);
+          }
+          return typeof pushCreatedOutlinerItemHistory === 'function'
+            ? pushCreatedOutlinerItemHistory({ path: node.path, type: node.type || type }, '新規作成: ' + name, {
+              scope: historyScope, refresh: () => _folderToolbarRefresh([], { backgroundTrees: true }),
+            })
+            : null;
+        };
+        if (reservation) reservation.capture(pushHistory); else pushHistory();
+        await _folderToolbarRefresh(node.path ? [node.path] : [], { treeFolders: [parent] });
         showStatus((node.type === 'folder' ? 'フォルダ' : 'ファイル') + 'を作成しました: ' + name);
       } catch (e) {
+        reservation?.cancel();
         showStatus('作成に失敗しました: ' + (e?.message || e || ''), true);
       }
     });
@@ -441,6 +528,26 @@
       } catch (error) { showStatus(error.message || '貼り付けに失敗しました', true); return; }
     }
     if (!clip?.items?.length) { showStatus('コピーしたファイルがありません'); return; }
+    // 貼り付け先の確認は、貼り付けの共通処理（gb-folder-link-actions.js）へ渡す前にここで行う。共通処理からは
+    // このファイルの内側の確認（ロック・自分の中）が見えず、フォルダを自分の中へ貼り付けると保存先のエラーが
+    // そのまま出ていた（2026-11-22 M-014 フォルダパネル網羅テスト）。
+    if (_folderToolbarIsLockedPath(destFolder)) {
+      showStatus('編集ロック中のフォルダには貼り付けできません', true);
+      return;
+    }
+    // 片方が保存先の相対パス・もう片方が絶対パスのことがある（ツリーから開いたフォルダ）。末尾の一致でも同じフォルダとみなす。
+    const sameOrInside = (dest, base) => {
+      const d = _folderToolbarNormalizePath(dest).toLowerCase();
+      const b = _folderToolbarNormalizePath(base).toLowerCase();
+      if (!d || !b) return false;
+      if (d === b || d.startsWith(b + '/')) return true;
+      return d.endsWith('/' + b) || d.includes('/' + b + '/') || b.endsWith('/' + d);
+    };
+    const intoSelf = clip.items.filter(item => item?.type === 'folder' && item.path && sameOrInside(destFolder, item.path));
+    if (intoSelf.length) {
+      showStatus(`フォルダをそのフォルダ自身の中へは貼り付けできません（${intoSelf[0].name || intoSelf[0].path}）`, true);
+      return;
+    }
     if (typeof executeFolderPasteWithChoice === 'function') {
       await executeFolderPasteWithChoice(clip, destFolder, {
         ...options,
@@ -451,7 +558,10 @@
             _folderToolbarClipboard = failedItems.length ? { mode: 'cut', items: failedItems } : null;
           }
         },
-        refresh: typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh,
+        // 貼り付けたフォルダの中身を先に描き、ツリーの読み直しは後で行う（全体の読み直しを待つと 1〜2 秒かかっていた）
+        refresh: typeof options.refresh === 'function' ? options.refresh : (paths => _folderToolbarRefresh(paths || [], {
+          treeFolders: [destFolder, ...(clip.mode === 'cut' ? clip.items.map(item => _folderToolbarParentPath(item.path)) : [])],
+        })),
       });
       return;
     }
@@ -491,7 +601,7 @@
             conflict_policy: 'error',
           });
           try {
-            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { preserveMountedViews: true, label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
           try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
           catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
@@ -869,6 +979,20 @@
     const path = _folderToolbarCurrentPath();
     const scroller = typeof _folderGridEl === 'function' ? _folderGridEl() : null;
     const visible = !!path && !!scroller?.getClientRects().length;
+    const changedPaths = Array.isArray(options.changedPaths) ? options.changedPaths.filter(p => typeof p === 'string' && p) : null;
+    const changedFolders = Array.isArray(options.changedFolders) ? options.changedFolders.filter(p => typeof p === 'string' && p) : [];
+    if (changedPaths?.length || changedFolders.length) {
+      const parents = [...new Set([...(changedPaths || []).map(_folderToolbarParentPath),
+        ...changedFolders, ...changedFolders.map(_folderToolbarParentPath)])];
+      const sameFolder = parents.some(parent => {
+        const current = _folderToolbarNormalizePath(path), changed = _folderToolbarNormalizePath(parent);
+        return current === changed || current.endsWith('/' + changed) || changed.endsWith('/' + current);
+      });
+      return _folderToolbarRefresh(_folderToolbarSelectionItems().map(item => item.path), {
+        treeFolders: parents, refreshFolder: visible && sameFolder,
+        preserveScroll: true, isCurrent: options.isCurrent,
+      });
+    }
     return _folderToolbarRefresh(_folderToolbarSelectionItems().map(item => item.path), {
       preserveScroll: true,
       refreshFolder: visible,
@@ -879,6 +1003,7 @@
   };
   global.showFolderToolbarAddMenu = showFolderToolbarAddMenu;
   global.folderToolbarGoUp = folderToolbarGoUp;
+  global.folderToolbarSyncTree = _folderToolbarSyncTree;
   global.folderToolbarCopySelection = folderToolbarCopySelection;
   global.folderToolbarCutSelection = folderToolbarCutSelection;
   global.folderToolbarPasteSelection = folderToolbarPasteSelection;

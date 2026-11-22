@@ -147,6 +147,7 @@ Meldex バックエンドと同梱サイドカーは、以下の必須/主要依
 | openpyxl | MIT | Excel 読み書き |
 | python-docx | MIT | Word 読み書き |
 | Pillow | MIT-CMU | 画像処理 |
+| zstandard | BSD 3-Clause（同梱のZstandardはBSD 3-Clauseを選択） | 圧縮BLENDの埋め込みサムネイル読込。https://github.com/indygreg/python-zstandard |
 | python-multipart | Apache License 2.0 | ファイルアップロード/フォーム処理 |
 | watchdog | Apache License 2.0 | OSファイル監視（重複検出・アセット追従） |
 | anyio | MIT | ASGI 非同期処理の推移依存 |

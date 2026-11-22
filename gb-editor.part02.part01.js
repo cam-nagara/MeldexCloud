@@ -35,7 +35,7 @@ function updateNoteToc(editor) {
   toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
     const activate = () => {
       const index = Number(item.dataset.noteTocIndex);
-      const target = headings[index];
+      const target = pc.querySelectorAll('h1, h2, h3, h4, h5, h6')[index];
       target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
     item._meldexActivateNoteToc = activate;
@@ -626,7 +626,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
   const generation = record?.generation ?? null;
   const target = _entityFreeTextTarget(entityPath);
   const localMd = hostEl && typeof htmlToMd === 'function'
-    ? htmlToMd(hostEl.innerHTML)
+    ? (window.MeldexNoteSaveAdapter?.serialize?.(hostEl) ?? htmlToMd(hostEl.innerHTML))
     : String(record?.localMd || '');
   window.MeldexConflictPendingBanner?.hide?.(documentKey);
   const keepLocal = typeof cfConfirm === 'function'
@@ -685,7 +685,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     const latestMd = String(latest?.page_content || '');
     hostEl.innerHTML = latestMd.trim() && typeof mdToHtml === 'function'
       ? (typeof applyAutoLinks === 'function'
-          ? applyAutoLinks(mdToHtml(latestMd, { basePath: entityPath }), entityPath)
+          ? applyAutoLinks(mdToHtml(latestMd, { basePath: entityPath }), entityPath, { displayPath: _entityFreeTextDisplayPath(entityPath) })
           : mdToHtml(latestMd))
       : '';
     window.MeldexImageLoading?.trackAll?.(hostEl);
@@ -693,6 +693,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
     hostEl.dataset.lastSavedRevision = (latest?.revision != null) ? String(latest.revision) : '';
     hostEl.dataset.lastSavedEtag = latest?.freetext_etag || '';
     hostEl.dataset.lastSavedTransportRevision = '';
+    window.MeldexNoteSaveAdapter?.rememberLoadedBaseline?.(hostEl, latestMd);
     const resolved = coordinator?.resolveConflict?.(documentKey, generation);
     if (coordinator && !resolved) {
       throw new Error('トピック本文の競合状態が更新されたため、再読込結果を確定できません');
@@ -958,7 +959,8 @@ function renderEntityPage(data) {
   _bindEntityFreeTextParticipant(ft, entityPath);
   // Markdown→HTML変換してからauto-link適用 (rawContent は冒頭で取得済み)
   if (hasNote) {
-    const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
+    window.MeldexNoteDisplaySettings?.applyRubyPresentation?.(ft, window.MeldexNoteDisplaySettings.rubyPresentationFromFrontmatter(''));
+    const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath, { displayPath: _entityFreeTextDisplayPath(entityPath) });
     ft.innerHTML = ftHtml;
     window.MeldexImageLoading?.trackAll?.(ft);
   } else {
@@ -1001,7 +1003,7 @@ function renderEntityPage(data) {
       const saved = await _saveEntityFreeText(this, ep, md, { reason: 'entity-freetext-blur' });
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
-      this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);
+      this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep, { displayPath: _entityFreeTextDisplayPath(ep) });
       window.MeldexImageLoading?.trackAll?.(this);
     } catch (e) { showStatus('自由記述の保存に失敗しました', true); }
   };
@@ -1061,7 +1063,9 @@ function _customUndoPush(stack, editable, snapshot = null) {
   selections.length = stack.length; // no-op操作が既存の配列からpopされた場合も揃える。
   const html = snapshot ? snapshot.html : editable.innerHTML;
   stack.push(html);
-  selections.push({ html, selection: snapshot ? snapshot.selection : _customUndoSelection(editable) });
+  selections.push({ html, selection: snapshot ? snapshot.selection : _customUndoSelection(editable),
+    frontmatter: snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'frontmatter') ? snapshot.frontmatter : editable.dataset.frontmatter,
+    embeds: html.includes('meldex-note-embed') ? globalThis.MeldexNoteEmbedBlock?.captureUndo?.(editable, html) : undefined });
   if (stack.length > _CUSTOM_UNDO_MAX) { stack.shift(); selections.shift(); }
   _customUndoSelections.set(stack, selections);
 }
@@ -1070,11 +1074,13 @@ function _customUndoPop(stack) {
   const entry = selections?.[stack.length - 1];
   const html = stack.pop();
   if (selections) selections.length = stack.length;
-  return { html, selection: entry?.html === html ? entry.selection : null };
+  return { html, selection: entry?.html === html ? entry.selection : null,
+    frontmatter: entry?.html === html ? entry.frontmatter : undefined,
+    embeds: entry?.html === html ? entry.embeds : undefined };
 }
-function _pushCustomUndo(editable) {
+function _pushCustomUndo(editable, snapshot = null) {
   _ensureCustomUndoDocument(editable);
-  _customUndoPush(editable._customUndoStack, editable);
+  _customUndoPush(editable._customUndoStack, editable, snapshot);
   editable._customRedoStack.length = 0;
   editable._lastCustomOp = true;
   editable._customUndoInputPending = true;
@@ -1083,7 +1089,9 @@ function _customUndoHost(node) {
   const el = node?.nodeType === 1 ? node : node?.parentElement;
   const host = el?.closest?.('#page-content, #entity-freetext, #dp-editable, .meldex-entity-detail-editor')
     || el?.closest?.('[contenteditable="true"]');
-  if (!host?.isContentEditable || el?.closest?.('[contenteditable]')?.getAttribute('contenteditable') === 'false') return null;
+  if (!host?.isContentEditable) return null;
+  const ownControl = el?.closest?.('input.note-checklist-check, [data-embed-action], .embed-media');
+  if (!ownControl && el?.closest?.('[contenteditable]')?.getAttribute('contenteditable') === 'false') return null;
   if (host.matches(window.MeldexNoteBlockTypes?.EDITABLE_SELECTOR || ':not(*)')
       && !window.MeldexNoteBlockTypes.isEditableWritable(host)) return null;
   return host;
@@ -1153,6 +1161,12 @@ function _applyCustomUndo(editable, redo) {
   _customUndoPush(redo ? editable._customUndoStack : editable._customRedoStack, editable);
   const snapshot = _customUndoPop(source);
   editable.innerHTML = snapshot.html;
+  globalThis.MeldexNoteEmbedBlock?.restoreUndo?.(editable, snapshot.embeds);
+  if (snapshot.frontmatter !== undefined && editable.dataset.frontmatter !== snapshot.frontmatter) {
+    editable.dataset.frontmatter = snapshot.frontmatter;
+    editable._noteEditSerializeCache = null;
+    window.MeldexNoteDisplaySettings?.applyToHost?.(editable, editable.dataset.path, snapshot.frontmatter);
+  }
   editable._lastCustomOp = redo || editable._customUndoStack.length > 0;
   editable._customUndoInputPending = false;
   _restoreCustomUndoSelection(editable, snapshot.selection);
@@ -1248,11 +1262,17 @@ function rtRestoreSelection() {
 }
 
 function _rtEnsureEditableSelection() {
-  rtRestoreSelection();
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return null;
-  const range = sel.getRangeAt(0);
-  const editable = _rtSelectionEditable(range);
+  let sel = window.getSelection();
+  let range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+  let editable = _rtSelectionEditable(range);
+  // 本文にカーソルを置き直したキー操作では、以前のツールバー用の範囲へ戻さない。
+  // 色の入力欄などへフォーカスを移した場合だけ、退避した選択を復元する。
+  if (!editable || !(editable === document.activeElement || editable.contains(document.activeElement))) {
+    rtRestoreSelection();
+    sel = window.getSelection();
+    range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+    editable = _rtSelectionEditable(range);
+  }
   if (!editable) return null;
   rtTarget = editable;
   rtSavedSelection = range.cloneRange();
@@ -1639,7 +1659,7 @@ function _insertCalloutBlock(editable, iconName, type, color, insertRange, item)
   const imageAttrs = item?.type === 'image'
     ? ` data-icon-label="${esc(item.label || '登録画像')}" data-icon-keywords="${esc(item.keywords || '画像 写真 カスタム')}"` : '';
   const blockStyle = color ? `--callout-linked-color:${color};` : '';
-  const html = `<div class="callout-block${cls}" data-callout-color-linked="true" style="${esc(blockStyle)}" contenteditable="false"><span class="callout-icon" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
+  const html = `<div class="callout-block${cls}" data-callout-color-linked="true" style="${esc(blockStyle)}" contenteditable="false"><span class="callout-icon" data-e2e-id="note-callout-icon:${crypto.randomUUID()}" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(spec)}"${imageAttrs}${color ? ' data-color="' + esc(color) + '"' : ''} title="アイコンをクリックして変更"${colorStyle}>${iconHtml}</span><div class="callout-body" data-e2e-id="note-callout-body:${crypto.randomUUID()}" contenteditable="true">ここにテキストを入力...</div></div><p><br></p>`;
   document.execCommand('insertHTML', false, html);
   setTimeout(() => {
     const blocks = editable.querySelectorAll('.callout-block');
@@ -1956,6 +1976,11 @@ async function loadLinkDict() {
       linkDict = data.entries || [];
     } catch (e) { linkDict = []; }
   }
+}
+
+// シートのトピックの自由記述は、シートの自動リンクの切り替えに従う（シートのツールバーで切り替える）。
+function _entityFreeTextDisplayPath(entityPath) {
+  return typeof _cellUiAutoLinkScopePath === 'function' ? _cellUiAutoLinkScopePath(entityPath) : entityPath;
 }
 
 function applyAutoLinks(html, filePath, options = {}) {

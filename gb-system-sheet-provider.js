@@ -116,6 +116,7 @@
   }
 
   function openSystemSheet(providerId, scopeId, options = {}) {
+    if (providerId === 'chat-history' && window.MeldexChatManagementSheet) return window.MeldexChatManagementSheet.open();
     const provider = getSystemSheetProvider(providerId);
     if (!provider) throw new Error(`システムシート供給元が見つかりません: ${providerId}`);
     const detail = {
@@ -222,6 +223,10 @@
 
     activate() {
       super.activate();
+      if (this.state?.providerId === 'chat-history' && window.MeldexChatManagementSheet) {
+        window.MeldexChatManagementSheet.open();
+        return;
+      }
       if (!this._loadedKey || this._loadedKey !== this._currentKey()) this._load();
     }
 

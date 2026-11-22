@@ -5,7 +5,9 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   renderDetailPanel(container) {
     if (!container || !this.doc) return;
-    return this._renderSeparatedRoleManagement(container);
+    const result = this._renderSeparatedRoleManagement(container);
+    this._sn2EnsureStableControlIds?.(container, 'scriptnote-role-manage');
+    return result;
   },
 
   _renderLegacyDetailPanel(container) {
@@ -1479,7 +1481,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       this._showCellStylePopup(anchorEl, chara, colId, panelContainer, options);
     };
-    openFormatPopup(anchorEl, {
+    const cellStylePopup = openFormatPopup(anchorEl, {
       values,
       fields,
       verticalWriting: this.doc.editor?.viewMode === 'vertical',
@@ -1508,4 +1510,5 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._refreshRoleManagementPreviews?.(panelContainer);
       },
     });
+    this._sn2EnsureStableControlIds?.(cellStylePopup, `scriptnote-cell-style-${colId}`);
   },

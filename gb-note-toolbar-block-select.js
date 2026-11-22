@@ -50,7 +50,7 @@
     return {
       id: 'title',
       label: 'タイトル',
-      icon: 'heading',
+      icon: 'type',
       sampleTag: 'h1',
       sampleClass: 'note-title',
     };

@@ -127,6 +127,7 @@ const UI_STYLE_SECTIONS = {
     { label: '目次', fg:'--page-toc-item-fg', bg:'--page-toc-item-bg', text:'目次項目' },
     { label: '引用ブロック', fg:'--page-quote-fg', bold:'--page-quote-bold', italic:'--page-quote-italic', bg:'--page-quote-bg', text:'引用テキスト', bgType:'rgba' },
     { label: '引用線', line:'--page-quote-border', text:'━━' },
+    { label: 'ルビ', type: 'rubyPresentationDefaults', scope: 'note', text: 'ルビ' },
   ],
   'シナリオ': [
     { label: '基本テキスト', fg:'--sn2-base-text-color', bold:'--sn2-base-text-bold', italic:'--sn2-base-text-italic', fontSize:'--sn2-base-text-font-size', font:'--sn2-base-text-font-family', text:'基本テキスト' },
@@ -146,13 +147,12 @@ const UI_STYLE_SECTIONS = {
     { label: '選択', fg:'--db-selection-fg', bg:'--db-selection-color', text:'選択セル' },
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },
     { label: 'テーブル罫線', line:'--db-grid-border', toggle:'--db-show-grid', toggleOn:'1px', toggleOff:'0px', text:'━━' },
-    // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。テーマパネルの「候補値」と同じ項目。
-    { label: '候補値', fg:'--db-option-chip-fg', bg:'--db-option-chip-bg', bgType:'rgba', bold:'--db-option-chip-bold', fontSize:'--db-option-chip-font-size',
-      line:'--db-option-chip-border-color', width:'--db-option-chip-border-width', text:'候補値',
-      popupNumbers:[
-        { label:'角丸', key:'--db-option-chip-radius', min:0, max:20, step:1, unit:'px', fallback:10 },
-        { label:'左右の余白', key:'--db-option-chip-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 },
-      ] },
+    // 候補値（列タイプごと）。テーマパネルと同じ項目を、見本のクリックで開く書式設定ポップアップで編集する。
+    { label: 'セレクト', fg:'--db-option-select-fg', bg:'--db-option-select-bg', bgType:'rgba', bold:'--db-option-select-bold', fontSize:'--db-option-select-font-size', line:'--db-option-select-border-color', width:'--db-option-select-border-width', text:'セレクト', popupNumbers:[{ label:'角丸', key:'--db-option-select-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-select-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'マルチセレクト', fg:'--db-option-multi-fg', bg:'--db-option-multi-bg', bgType:'rgba', bold:'--db-option-multi-bold', fontSize:'--db-option-multi-font-size', line:'--db-option-multi-border-color', width:'--db-option-multi-border-width', text:'マルチセレクト', popupNumbers:[{ label:'角丸', key:'--db-option-multi-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-multi-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'リレーション', fg:'--db-option-relation-fg', bg:'--db-option-relation-bg', bgType:'rgba', bold:'--db-option-relation-bold', fontSize:'--db-option-relation-font-size', line:'--db-option-relation-border-color', width:'--db-option-relation-border-width', text:'リレーション', popupNumbers:[{ label:'角丸', key:'--db-option-relation-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-relation-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'ロールアップ', fg:'--db-option-rollup-fg', bg:'--db-option-rollup-bg', bgType:'rgba', bold:'--db-option-rollup-bold', fontSize:'--db-option-rollup-font-size', line:'--db-option-rollup-border-color', width:'--db-option-rollup-border-width', text:'ロールアップ', popupNumbers:[{ label:'角丸', key:'--db-option-rollup-radius', min:0, max:20, step:1, unit:'px', fallback:0 }, { label:'左右の余白', key:'--db-option-rollup-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'タグ', fg:'--db-option-tag-fg', bg:'--db-option-tag-bg', bgType:'rgba', bold:'--db-option-tag-bold', fontSize:'--db-option-tag-font-size', line:'--db-option-tag-border-color', width:'--db-option-tag-border-width', text:'タグ', popupNumbers:[{ label:'角丸', key:'--db-option-tag-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-tag-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
     { label: '採用ステータス', bg:'--db-status-adopted-color', text:'採用ステータス色' },
     { label: 'ソースバッジ 1', bg:'--db-msr-badge-1-bg', text:'1' },
     { label: 'ソースバッジ 2', bg:'--db-msr-badge-2-bg', text:'2' },
@@ -883,7 +883,7 @@ function _settingsThemeWidthControl(widthKey, label) {
 // 行レンダリング（全タブ共通）
 function renderStyleRow(d) {
   if (d?.type === 'rubyPresentationDefaults' && typeof MeldexRubySettingsUI !== 'undefined') {
-    return MeldexRubySettingsUI.globalSettingsHtml();
+    return MeldexRubySettingsUI.globalSettingsHtml({ scope: d.scope });
   }
   const fgVal = d.fg ? getCssVar(d.fg) : '';
   const bgVal = d.bg ? getCssVar(d.bg) : '';

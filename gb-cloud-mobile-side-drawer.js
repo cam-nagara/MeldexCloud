@@ -44,7 +44,7 @@
   function _isDismissBlockedTarget(target) {
     // エントリレイアウトのセル移動・リサイズは pointer capture を使うため、
     // ドロワーのスワイプ終了と競合させない。空き領域からのスワイプ終了は維持する。
-    return !!target?.closest?.('button, a, input, select, textarea, iframe, video, [contenteditable="true"], [role="button"], [role="menu"], .el-cell, .el-edit-toolbar, .el-tabs');
+    return !!target?.closest?.('button, a, input, select, textarea, iframe, video, [contenteditable="true"], [role="button"], [role="menu"], .el-cell, .el-edit-toolbar, .el-tabs, [data-annotation-surface], .ann-note, .viewer-ann-scene-svg, #ann-overlay');
   }
 
   function _setDismissDrag(drawer, offsetX) {

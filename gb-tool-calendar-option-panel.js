@@ -50,6 +50,7 @@
     if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
     if (typeof renderFileStyleTab === 'function') renderFileStyleTab('calendar');
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(true);
+    if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
     document.querySelectorAll('.detail-tab-calendar[data-detail-tab="calendar-today"]').forEach(t => { t.textContent = 'カレンダー'; });
   }
 
@@ -150,6 +151,8 @@
     return swatch?.dataset?.color || fallback || '';
   }
 
+  const TIME_FORMAT_KEY = 'meldex-production-time-format';
+
   function _calSettingsHistoryKeys(keys) {
     const list = Array.isArray(keys) ? keys : [keys];
     return [...new Set(list.filter(Boolean))];
@@ -181,6 +184,9 @@
       component._applySidebarMode?.();
       component._renderMiniCal?.();
       component._render?.();
+      // 取り消し・やり直しの後、開いているスケジュール設定の選択欄も保存値へ合わせる（古い値のまま残さない）。
+      if (component._calendarSettingsBody?.isConnected) component._renderCalendarSettingsPanel?.(component._calendarSettingsBody);
+      if (changed.has(TIME_FORMAT_KEY) && component._surface === 'productionTasks') component._renderProductionTaskView?.();
     });
   }
 
@@ -438,9 +444,12 @@
     });
     body.querySelector('[data-cal-settings-time-format]')?.addEventListener('change', e => {
       const val = e.currentTarget.value;
+      // 週の開始曜日と同じく取り消しの履歴へ積む（積まないと、次の Ctrl+Z が前の別の設定変更を戻してしまう）。
+      const before = _calCaptureSettingsHistory([TIME_FORMAT_KEY]);
       if (window.MeldexProductionTimeFormatter?.setPreference) {
         window.MeldexProductionTimeFormatter.setPreference(val);
       }
+      _calPushSettingsHistory('スケジュール: 時間の表記変更', before, [TIME_FORMAT_KEY], val);
       this._render?.();
       if (this._surface === 'productionTasks' && typeof this._renderProductionTaskView === 'function') {
         this._renderProductionTaskView();
@@ -472,6 +481,19 @@
     }
     component._showCalendarSettingsPanel();
   };
+
+  // 何も選んでいない時の「カレンダー」タブは空白にせず、何をすれば表示されるかを示す（制作管理タブと同じ）。
+  document.addEventListener('meldex:detail-tab-switched', (event) => {
+    if (event.detail?.tab !== 'calendar-today') return;
+    const detailEl = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
+    const tabBody = detailEl?.querySelector?.('#detail-tab-calendar-today');
+    if (!tabBody || String(tabBody.textContent || '').trim()) return;
+    const body = _calBuildOptionBody(tabBody, 'スケジュール');
+    const empty = document.createElement('p');
+    empty.className = 'gb-section-desc cal-option-empty';
+    empty.textContent = '予定やToDoを選ぶと、ここで詳細を編集できます';
+    body.appendChild(empty);
+  });
 
   document.addEventListener('meldex:detail-tab-switched', (event) => {
     if (event.detail?.tab !== 'calendar-settings') return;

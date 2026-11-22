@@ -504,6 +504,7 @@
 
   function _renderItems(pane, items) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
+    window.GBOutlinerThumbnails?.detachWithin?.(list);
     list.replaceChildren();
     list.dataset.layout = _layout;
     list.dataset.state = items.length ? 'ready' : 'empty';
@@ -528,7 +529,14 @@
   function _fillItemVisual(el, item) {
     if (!el) return;
     const type = String(item?.type || '').toLowerCase();
-    const canThumb = (type === 'image' || type === 'video') && item?.path && _layout !== 'list';
+    if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
+      const icon = document.createElement('span');
+      icon.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      el.replaceChildren(icon);
+      window.GBOutlinerThumbnails.attachToElement(el, item, icon, 256);
+      return;
+    }
+    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _layout !== 'list';
     if (!canThumb) {
       const fallback = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
       el.innerHTML = window.MeldexFileIcons?.render(item, _layout === 'list' ? 20 : 28, fallback) ?? fallback;

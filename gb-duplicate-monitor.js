@@ -523,16 +523,48 @@
     }
   }
 
+  // 裏で終わった重複チェックは、画面をふさぐダイアログを勝手に出さず、状態の行（共通の一時メッセージ）で知らせる。
+  // 以前はダイアログが勝手に開いて焦点を奪い、Ctrl+Z などの操作をふさいでいた（2026-11-21 報告）。知らせを押すと
+  // 結果を開く。確認済みの印（ack）は、これまでどおり結果を閉じた時に付ける。
+  let pendingAlertNotice = null;
+
+  function noticeText(groupCount) {
+    return `重複ファイルが見つかりました（${groupCount}組）。ここを押すと確認できます`;
+  }
+
+  function bindNoticeClick() {
+    const el = document.getElementById('sb-msg');
+    if (!el || el.dataset.dupNoticeBound === '1') return;
+    el.dataset.dupNoticeBound = '1';
+    el.addEventListener('click', () => {
+      if (!pendingAlertNotice || activeAlertModal) return;
+      if (!String(el.textContent || '').includes('重複ファイル')) return;
+      openAlertResults();
+    });
+  }
+
   function drainAlertQueue() {
     if (!alertsReady || !isLocalDuplicateMode() || activeAlertModal || !alertQueue.length || hasBlockingModal()) return;
     const alerts = alertQueue.splice(0);
+    const merged = pendingAlertNotice ? [...pendingAlertNotice.alerts, ...alerts] : alerts;
     const payload = {
-      groups: consolidateGroups(alerts.flatMap(alert => normalizeGroups(alert))),
+      groups: consolidateGroups(merged.flatMap(alert => normalizeGroups(alert))),
     };
     if (!payload.groups.length) {
       alerts.forEach(alert => queuedAlertIds.delete(alert._alertKey));
       return;
     }
+    pendingAlertNotice = { alerts: merged, payload, returnFocus: document.activeElement };
+    bindNoticeClick();
+    if (typeof window.showStatus === 'function') window.showStatus(noticeText(payload.groups.length));
+  }
+
+  function openAlertResults() {
+    const notice = pendingAlertNotice;
+    if (!notice) return;
+    pendingAlertNotice = null;
+    const { alerts, payload } = notice;
+    try { if (notice.returnFocus?.isConnected) notice.returnFocus.focus({ preventScroll: true }); } catch (_) { /* noop */ }
     const overlay = createOverlay({
       titleId: 'duplicate-alert-title',
       e2eId: 'duplicate-alert-modal',
@@ -922,6 +954,7 @@
 
   window.MeldexDuplicateMonitor = {
     openManualScan,
+    openPendingAlerts: openAlertResults,
     pollNow: pollAlerts,
     renderSettings,
     renderFolderTargetControls,
@@ -931,6 +964,7 @@
       normalizeGroups,
       enqueueAlerts,
       drainAlertQueue,
+      openAlertResults,
       stop: stopMonitorForTests,
       isPolling: () => Boolean(alertPollTimer),
     },

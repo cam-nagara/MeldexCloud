@@ -1,3 +1,10 @@
+  const force = !!(payload.force_overwrite || payload.forceOverwrite);
+  const createOnly = !!(payload.create_only || payload.createOnly);
+  let revision = payload.transport_revision || payload.transportRevision
+    || payload.if_match_transport_revision || payload.if_match_etag || payload.ifMatchEtag || '';
+
+  if (revision && coordinator?.revisionTokenForWrite) {
+    payload.if_match_etag = coordinator.revisionTokenForWrite(revision);
     return payload;
   }
   if (revision || force || createOnly) return payload;
@@ -65,6 +72,13 @@ async function _gbAppPutValueConfirmed(path, body, options) {
         result = null;
       }
       _gbAppPendingValueWrites.delete(key);
+      if (result) {
+        // 失敗と表示した保存が、この送り直しで入った。黙って入れずに知らせ、表示を読み直させる（2026-11-21 ユーザー決定）。
+        try {
+          window.dispatchEvent(new CustomEvent('meldex:value-write-replayed', { detail: { path: key, body: uncertain, result } }));
+        } catch {}
+        if (typeof showStatus === 'function') showStatus('前に失敗した保存を反映しました');
+      }
       const canonical = value => Array.isArray(value) ? value.map(canonical)
         : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
       const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
@@ -99,8 +113,13 @@ async function _gbAppPutValueConfirmed(path, body, options) {
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
   if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
-    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    const notify = phase => { if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, phase, guardedBody); };
+    notify('pending');
+    let result;
+    try { result = await _gbAppPutValueConfirmed(path, guardedBody, options); }
+    catch (error) { setTimeout(() => notify('failed'), 0); throw error; }
     _scheduleLinkDictionaryRefreshForMutation(path);
+    notify('saved');
     return result;
   }
   const requestOptions = {
@@ -119,6 +138,7 @@ async function apiPut(path, body, options = {}) {
     result = await pending;
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
+  window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   return result;
 }
 
@@ -131,6 +151,17 @@ function _scheduleLinkDictionaryRefreshForMutation(path) {
   if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
     MeldexAutoLink.scheduleReload(3000);
   }
+}
+
+// 同じトピックを表示している別の面（サブパネルのトピックなど）へ、値の保存を知らせる（2026-11-21）。
+// pending=保存の前（表の手元の値は反映済み）・saved=保存の後・failed=保存の失敗（表は元に戻る）。
+function _gbAppNotifyEntityValuesChanged(path, phase, body) {
+  try {
+    if (String(path || '').split('?')[0].replace(/^\/api/, '') !== '/value') return;
+    const entityPath = new URLSearchParams(String(path).split('?')[1] || '').get('path')
+      || (body && typeof body === 'object' ? (body.entry_path || body.folder_path || '') : '');
+    if (entityPath) window.dispatchEvent(new CustomEvent('meldex:entity-values-changed', { detail: { path: entityPath, phase } }));
+  } catch {}
 }
 
 async function apiPost(path, body, options = {}) {
@@ -151,14 +182,23 @@ async function apiPost(path, body, options = {}) {
       || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
     body = prepared.body; stableCopyKey = prepared.key;
   }
-  const result = await apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
+  if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'pending', body);
+  let result;
+  try {
+    result = await apiFetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      ...(options || {}),
+    });
+  } catch (error) {
+    if (typeof _gbAppNotifyEntityValuesChanged === 'function') setTimeout(() => _gbAppNotifyEntityValuesChanged(path, 'failed', body), 0);
+    throw error;
+  }
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   _scheduleLinkDictionaryRefreshForMutation(path);
+  if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'saved', body);
   return result;
 }
 
@@ -539,6 +579,11 @@ function _readLastViewFromStorage() {
 async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
   // Explicit links keep their target; Desktop keeps its saved workspace.
   if (_isDesktopStartupLaunch() || isUrlOpen || onboardingShown || !homeRes?.exists || !homeRes.path) return false;
+  // ホームから始めるのは Cloud（この端末内・Dropbox の保存先）だけ。本体のサーバーを普通のブラウザで
+  // 開いた時は、デスクトップ版と同じく前回のタブを復元する（ここでホームを開くと、復元中のシートのタブが
+  // 「ホームフォルダ」に置き換わり、タブ名と本文が食い違ったまま表が描かれなかった。2026-11-22 探索）。
+  const runtime = typeof window !== 'undefined' ? window.MeldexRuntimeAdapter : null;
+  if (!runtime?.isBrowserDataMode?.()) return false;
   const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
   await openFolder(label, homeRes.path, {
     fromExplorer: true,
@@ -853,48 +898,3 @@ async function init() {
         _refreshDbViewConfigAfterHistory(state.currentDbPath);
       }
     });
-    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
-      initGlobalFilterBar();
-      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
-        if (openedCloudStartupHome) highlightOutlinerNode(homeRes.path);
-        else _highlightLastOutlinerNodeAfterStartup();
-        showStatus('準備完了');
-      });
-    });
-  } catch (e) {
-    showStatus('ソースフォルダ情報の取得に失敗しました', true);
-  }
-  _hideStartupSplash();
-}
-/* ==============================
-   表示切替
-   ============================== */
-function showView(viewName, ctx) {
-  if (!ctx?.embedded && typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
-  const resolvedViewName = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewName) ? 'timeline' : viewName;
-  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(name);
-  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
-  if (ctx && ctx.containerEl) {
-    const isDbView = isDbViewName(viewName);
-    const c = ctx.containerEl;
-    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view');
-    if (hasPaneViewSurfaces) {
-      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
-      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
-      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
-      _sv('#tree-view, .tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
-      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
-      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
-      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
-      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
-      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
-      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
-      ctx.viewMode = viewName;
-      if (typeof _dbTreeSetOptionTabVisible === 'function') {
-        _dbTreeSetOptionTabVisible(resolvedViewName === 'tree', ctx);
-      }
-      return;
-    }
-  }
-  // ビュー切替前にボードの未保存を即時保存
-  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {

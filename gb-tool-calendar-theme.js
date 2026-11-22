@@ -445,6 +445,16 @@
       };
     }
 
+    // スケジュールの配色の変更を、スケジュールの取り消しの履歴（設定と同じ範囲）へ積む。
+    // 共通側はスケジュールの範囲を知らず空の範囲になり、スケジュールでの Ctrl+Z で戻せなかった。
+    if (typeof _fsStyleHistoryScope === 'function') {
+      const original = _fsStyleHistoryScope;
+      _fsStyleHistoryScope = function(ctx) {
+        if (ctx === CALENDAR_CTX) return window.MeldexCalendarOptions?.CALENDAR_SETTINGS_SCOPE || 'calendar:settings';
+        return original(ctx);
+      };
+    }
+
     if (typeof _fsResolveSections === 'function') {
       const original = _fsResolveSections;
       _fsResolveSections = function(ctx, spec) {
@@ -551,6 +561,7 @@
       if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
       if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(true);
       if (typeof showPublishDetailTab === 'function') showPublishDetailTab(true);
+      if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
       _calRenderFileStyleTab();
       if (typeof switchDetailTab === 'function') {
         const active = detailEl.querySelector('.detail-tab.gb-inner-tab-active')?.dataset?.detailTab || '';

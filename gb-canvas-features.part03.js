@@ -434,6 +434,8 @@ function bdContextMenu(e, nodeId) {
         const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 160);
     [['このトピックを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
           const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
+            // 起点の切り替えも保存される変更なので、ほかのメニュー操作と同じく取り消せるようにする。
+            bdPushUndo();
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
             if (val && typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(nd.id);
@@ -737,7 +739,7 @@ function bdContextMenu(e, nodeId) {
     if (nodeGroups.length) {
       nodeGroups.forEach(g => {
         item('グループ「'+esc(g.name)+'」を選択', () => { g.nodeIds.forEach(id=>bd.selected.add(id)); document.querySelectorAll('.bd-node').forEach(el=>el.classList.toggle('bd-selected',bd.selected.has(el.id.replace('bdn-','')))); if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles(); });
-        item('グループ「'+esc(g.name)+'」を解除', () => { bd.groups=bd.groups.filter(gg=>gg.id!==g.id); if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-remove'); else bdRender(); bdDirty(); showStatus('グループ解除'); });
+        item('グループ「'+esc(g.name)+'」を解除', () => { bdPushUndo(); bd.groups=bd.groups.filter(gg=>gg.id!==g.id); if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-remove'); else bdRender(); bdDirty(); showStatus('グループ解除'); });
       });
     }
     sep();
@@ -1036,7 +1038,7 @@ function bdManageStatuses() {
       let nodeStatusesBefore = null;
       let undoCapturedBefore = undoCaptured;
       try {
-        if (typeof cfConfirm === 'function' && !(await cfConfirm(`ステータス「${label}」を削除しますか？`))) return;
+        // 削除は取り消し（Ctrl+Z）で定義とトピックの値の両方が戻るので、確認を出さない（app/AGENTS.md）。
         mutationCheckpoint = _bdDialogCaptureMutationCheckpoint();
         statusesBefore = bd.statuses.slice();
         nodeStatusesBefore = (bd.nodes || []).map(node => ({

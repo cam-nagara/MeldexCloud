@@ -560,6 +560,13 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
 .qm-list-item-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .qm-list-tag { padding: 1px 6px; border: 1px solid var(--qm-border); border-radius: 8px; background: var(--qm-panel-2); font-size: 11px; }
 .qm-list-state { margin-left: auto; color: var(--qm-accent); }
+.qm-delivery-info { overflow-wrap: anywhere; }
+.qm-delivery-dialog .gb-btn, .qm-delivery-dialog .gb-modal-close { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
+.qm-list-card { position: relative; }
+.qm-list-card > .qm-list-item { width: 100%; padding-right: 52px; }
+.qm-list-info { position: absolute; right: 4px; bottom: 4px; min-width: 44px; min-height: 44px; }
+#memoAppVersion { color: var(--fg2); font-size: 10px; }
+#memoDeliveryInfo { min-width: 44px; min-height: 44px; }
 .qm-list-empty { text-align: center; padding: 40px 20px; color: var(--qm-muted); }
 .qm-list-more { flex: 0 0 auto; align-self: center; }
 .qm-toast-error { color: var(--qm-danger); }
@@ -684,7 +691,7 @@ body:has(#editorView[style*="display: none"]) .qm-save-wrap { display: none; }
     border-left: 0;
     border-radius: 0;
   }
-  .qm-header { min-height: 46px; padding: max(2px, var(--qm-safe-top)) 4px 2px; }
+  .qm-header, .qm-header.gb-toolbar-main { min-height: 46px; padding: max(2px, var(--qm-safe-top)) 4px 2px; }
   .qm-brand strong { font-size: 13px; }
   .qm-header-actions { gap: 4px; }
   .qm-primary { width: auto !important; padding-right: 7px; padding-left: 7px; }

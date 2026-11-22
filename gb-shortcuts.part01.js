@@ -302,16 +302,33 @@ function _resolveShortcutScope(e) {
     (target && rightPanel.contains(target))
   ));
 
+  // スケジュール（独自の部品で描くタブ）は、全体の state.view が別の表示（プロパティ等の部品タブ）のまま残っていても、
+  // アクティブなタブがスケジュール、またはキーの対象がスケジュールの中ならスケジュールのショートカットを使う
+  // （M-014 スケジュール網羅で発見: 予定を開いた後に state.view が 'information' のまま残り、d/w/m/N/T/←/→/Enter/Delete が全部効かなかった）。
+  const scopeView = _scheduleOwnsShortcutTarget(target) ? 'calendar' : state.view;
+
   if (inRightPanel && isEditing) return ['global'];
   if (inRightPanel) return ['global', _viewToScope(state.view)];
 
   if (isEditing) {
-    const scope = _viewToScope(state.view);
+    const scope = _viewToScope(scopeView);
     if (scope === 'scenario' && editEl?.closest?.('.gb-se-root')) return ['global', 'scenario'];
     return ['global'];
   }
 
-  return ['global', _viewToScope(state.view)];
+  return ['global', _viewToScope(scopeView)];
+}
+
+function _scheduleOwnsShortcutTarget(target) {
+  if (target?.closest?.('.gb-cal-root')) return true;
+  if (target && target !== document.body && target !== document.documentElement) return false;
+  try {
+    const paneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : '';
+    const activeTab = paneId && typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab(paneId) : null;
+    return activeTab?.type === 'calendar';
+  } catch {
+    return false;
+  }
 }
 
 

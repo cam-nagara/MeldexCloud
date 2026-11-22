@@ -604,6 +604,18 @@ function _handleTbodyDblclick(e) {
     }
     return;
   }
+  // 文字・数値のセルの余白（値の文字の外）のダブルクリック → Enter・F2 と同じく編集を始める
+  // （マニュアル「ダブルクリック: テキストセルを直接編集」。値の文字の上は1回目のクリックで編集が始まっている）。
+  const dataTd = target.closest('td[data-prop-name]');
+  if (!dataTd || dataTd.closest('tr.new-entity-row, tr.group-header-row')) return;
+  if (target.closest('input, textarea, button, a, img, [contenteditable="true"], .relation-link, .cell-checkbox, .status-dot, .cell-value-more')) return;
+  if (dataTd.querySelector('.cell-inline-input, .cell-number-input, .value-rich-editor[contenteditable="true"], .cell-date-editor')) return;
+  const ptcType = String((getPropertyTypes(ctx.dbPath, ctx) || {})[dataTd.dataset.propName]?.type || 'text').replace(/_/g, '-');
+  if (!['text', 'number', 'furigana', 'url'].includes(ptcType)) return;
+  if (typeof _dbStartCellInlineEditor === 'function') {
+    e.stopPropagation();
+    _dbStartCellInlineEditor(dataTd, { preferExistingValue: true });
+  }
 }
 
 // tbody に全イベント委譲を 1 回だけ登録 (click / dblclick / change / contextmenu / drag / pointer)

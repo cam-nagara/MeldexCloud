@@ -616,7 +616,8 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gb-icon-picker-cell';
-        btn.dataset.e2eId = 'icon-picker-cell';
+        // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
+        btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
         btn.title = _itemTooltip(item);
         btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');

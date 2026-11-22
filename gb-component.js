@@ -26,7 +26,8 @@ class ToolComponent {
   /** containerにDOM要素を追加 */
   mount(container) {
     if (!this.el) this.create();
-    container.appendChild(this.el);
+    if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(container, this.el);
+    else container.appendChild(this.el);
     this._mounted = true;
   }
 

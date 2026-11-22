@@ -149,7 +149,8 @@
         if (!result?.ok) { failed += 1; continue; }
         insertRange = _insertUploadedFileAtRange(el, insertRange, dropFiles[index], result);
       }
-      showStatus(failed ? `${dropFiles.length - failed}件を挿入し、${failed}件は失敗しました` : `${dropFiles.length}件のファイルを挿入しました`, failed === dropFiles.length);
+      const failureReason = failed ? _noteUserFacingReason(uploaded.find(result => !result?.ok)?.error, 'ファイルを保存できませんでした') : '';
+      showStatus(failed ? `${dropFiles.length - failed}件を挿入し、${failed}件は失敗しました: ${failureReason}` : `${dropFiles.length}件のファイルを挿入しました`, failed > 0);
       return;
     }
 

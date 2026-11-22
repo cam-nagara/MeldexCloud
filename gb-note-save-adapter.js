@@ -83,13 +83,29 @@
   // 「未変更」判定: 直列化結果が自ホストの保存済みbaselineと完全一致するか。
   // 計画書§5工程1-4「現在revisionが保存済みbaselineと同じなら、blur時にMarkdown
   // 再変換、PUT、etag更新、履歴追加を一切行わない」の判定に使う。
+  const _loadedBaselines = new WeakMap();
+  function rememberLoadedBaseline(hostEl, source = hostEl.dataset.lastSavedMd || '') {
+    _loadedBaselines.delete(hostEl);
+    hostEl._noteEditSerializeCache = null;
+    _loadedBaselines.set(hostEl, { source, serialized: serialize(hostEl),
+      path: hostEl.dataset.path, loadSeq: hostEl._openPageLoadSeq });
+  }
+
+  function preserveLoadedMarkdown(hostEl, serialized) {
+    const loaded = _loadedBaselines.get(hostEl);
+    return loaded && loaded.path === hostEl.dataset.path && loaded.loadSeq === hostEl._openPageLoadSeq
+      && loaded.serialized === serialized ? loaded.source : serialized;
+  }
+
   function isUnchanged(hostEl, md) {
     const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
     const coordinator = _coordinator();
     const key = hostEl?.dataset?.documentKey || documentKeyForPath(hostEl?.dataset?.path || '');
     // A -> B (saving) -> A is a new edit: the outstanding B may still reach disk.
     // An unchanged sibling must not submit its old copy over another host's edit.
-    return md === prevSaved && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
+    const loaded = _loadedBaselines.get(hostEl);
+    const matchesLoaded = loaded?.source === prevSaved && md === loaded.serialized;
+    return (md === prevSaved || matchesLoaded) && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
       && !_uncertainSaves.get(hostEl)?.has(hostEl?.dataset?.path || '');
   }
 
@@ -382,12 +398,12 @@
   function renderSavedMarkdownIntoCleanHost(host, path, md) {
     if (typeof window.mdToHtml !== 'function') return false;
     const raw = String(md || '');
-    const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
-    const frontmatter = fmMatch ? fmMatch[1] : '';
+    const frontmatter = typeof window._noteFrontmatterPrefix === 'function' ? window._noteFrontmatterPrefix(raw) : '';
     const bodyMd = frontmatter ? raw.slice(frontmatter.length) : raw;
     const scrollTop = Number(host.scrollTop) || 0;
     const scrollLeft = Number(host.scrollLeft) || 0;
     let html = window.mdToHtml(bodyMd, { basePath: path });
+    window.MeldexNoteDisplaySettings?.applyToHost?.(host, path, frontmatter);
     if (typeof window.applyAutoLinks === 'function') html = window.applyAutoLinks(html, path);
     host.dataset.frontmatter = frontmatter;
     window.MeldexNoteEmbedBlock?.disposeWithin?.(host);
@@ -403,6 +419,7 @@
     if (typeof window._maybeRefreshNoteTocAfterEdit === 'function') window._maybeRefreshNoteTocAfterEdit(host);
     host.scrollTop = scrollTop;
     host.scrollLeft = scrollLeft;
+    rememberLoadedBaseline(host, raw);
     return true;
   }
 
@@ -555,10 +572,12 @@
       }
     };
     sendFn.confirmsWrites = true;
-    return coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
+    const savePromise = coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
       reason: options.reason || 'save',
       focusTarget: options.focusTarget || null,
-    }).then((res) => {
+    });
+    window.MeldexDiagnostics?.watchSheetTask?.('note.save', path, savePromise, { label: 'ノートの保存' });
+    return savePromise.then((res) => {
       // 工程2-A項目4: conflict-pending中はコーディネーターがネットワーク送信
       // 自体をスキップして返す（res.conflictPending）。実際にサーバーへ何も
       // 送っていないため、baseline同期（他ホストへの追従）を一切行わない
@@ -589,6 +608,15 @@
       }
       if (res) coordinator.bindDocumentIdentity?.(path, res);
       return res;
+    }).catch(error => {
+      if (Number(error?.status || error?.httpStatus || 0) !== 409) {
+        window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+          op: 'note.save', endpoint: '/file', method: 'PUT',
+          status: Number(error?.status || error?.httpStatus || 0) || 0,
+          errorType: String(error?.name || 'Error').slice(0, 60), sheet: path,
+        });
+      }
+      throw error;
     });
   }
 
@@ -597,6 +625,8 @@
     bindHostIdentity,
     serialize,
     isUnchanged,
+    rememberLoadedBaseline,
+    preserveLoadedMarkdown,
     registerHost,
     performSave,
     renderSavedMarkdownIntoCleanHost,

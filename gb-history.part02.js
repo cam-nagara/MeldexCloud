@@ -111,6 +111,94 @@ function _getStack(scope) {
   return _historyStacks[scope];
 }
 
+/* ==============================
+   ファイルを消す取り消し・やり直しの守り（2026-11-22 利用者役の探索: データを失う危険）
+   「新規作成」の取り消し（作ったファイルをゴミ箱へ）と「削除」のやり直しは、別のファイルを消す。
+   シートなどを開いて Ctrl+Z を押した時に、その画面と関係ない別のファイルを確認なしで消さないよう、
+   - 作ったファイルをその後に開いたら、作成の記録は操作を始めた画面の履歴から外し、共通（フォルダツリー）の履歴へ移す。
+   - 画面の履歴が空で共通の履歴へ落ちる時、そのファイルを消す記録は、開いている画面自身のファイルの時だけ実行する。
+   フォルダツリー・ヒストリーパネルからは従来どおり取り消せる。
+   ============================== */
+function historyMarkFileEffects(entry, effects) {
+  if (!entry || !effects) return entry;
+  const clean = (list) => (Array.isArray(list) ? list : []).map(p => String(p || '')).filter(Boolean);
+  entry.fileEffects = { undoDeletes: clean(effects.undoDeletes), redoDeletes: clean(effects.redoDeletes) };
+  return entry;
+}
+
+function _historyNormalizeFilePath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+// 履歴のスコープ（'db:<パス>' 'note:<パス>' など）が指すファイル。ファイルを持たないスコープは ''。
+function _historyScopeFilePath(scope) {
+  const text = String(scope || '');
+  const at = text.indexOf(':');
+  if (at <= 0) return '';
+  if (/^(calendar|schedule|outliner|form|settings):/.test(text)) return '';
+  return _historyNormalizeFilePath(text.slice(at + 1));
+}
+
+function _historySameFile(a, b) {
+  const x = _historyNormalizeFilePath(a), y = _historyNormalizeFilePath(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const strip = (p) => {
+    // シートのフォルダノート（<フォルダ>/<フォルダ名>.md）はフォルダと同じものとして扱う。
+    const m = p.match(/^(.*\/)?([^/]+)\/\2\.md$/);
+    return m ? (m[1] || '') + m[2] : p;
+  };
+  const sx = strip(x), sy = strip(y);
+  if (sx === sy) return true;
+  // 保存先の基準の違い（絶対パスと相対パス）を吸収する。
+  return sx.endsWith('/' + sy) || sy.endsWith('/' + sx);
+}
+
+function _historyEntryDeletesOtherFile(entry, direction, scope) {
+  const paths = entry?.fileEffects?.[direction === 'undo' ? 'undoDeletes' : 'redoDeletes'] || [];
+  if (!paths.length) return false;
+  const own = _historyScopeFilePath(scope);
+  return paths.some(path => !own || !_historySameFile(path, own));
+}
+
+// 共通の履歴へ落ちてよいか（ファイルを持つ画面から、別のファイルを消す記録へは落ちない）。
+function _historyGlobalFallbackAllowed(direction, scope) {
+  const top = _historyGlobal[direction][_historyGlobal[direction].length - 1];
+  if (!top) return false;
+  // 同じ画面から共通の履歴へ落ちて取り消した記録は、同じ画面からやり直せる（取り消しとやり直しの対称）。
+  // ノートを開いたままフォルダツリーで削除→Ctrl+Z で戻した後、Ctrl+Y が「やり直す操作がありません」になっていた
+  // （2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面から落ちる時は従来どおり止める。
+  if (scope && top._historyFallbackScope === scope) return true;
+  return !_historyEntryDeletesOtherFile(top, direction, scope);
+}
+
+// 作ったファイルを開いたら、作成の記録を他の画面の履歴から共通の履歴へ移す。
+function _historyDetachFileEntriesForOpenedScope(scope) {
+  const own = _historyScopeFilePath(scope);
+  if (!own) return;
+  let moved = false;
+  Object.entries(_historyStacks).forEach(([otherScope, stack]) => {
+    if (!stack || otherScope === scope) return;
+    ['undo', 'redo'].forEach(kind => {
+      const keep = [];
+      stack[kind].forEach(entry => {
+        const paths = [...(entry?.fileEffects?.undoDeletes || []), ...(entry?.fileEffects?.redoDeletes || [])];
+        if (!entry?._historyPending && paths.some(path => _historySameFile(path, own))) {
+          entry.scope = '';
+          _historyGlobal[kind].push(entry);
+          moved = true;
+        } else {
+          keep.push(entry);
+        }
+      });
+      stack[kind] = keep;
+    });
+  });
+  if (moved) {
+    ['undo', 'redo'].forEach(kind => _historyGlobal[kind].sort((a, b) => (a?.id || 0) - (b?.id || 0)));
+  }
+}
+
 function _resolveHistoryScopeArg(scope, argCount) {
   if (argCount <= 0) return _historyActiveScope;
   if (scope && typeof Event !== 'undefined' && scope instanceof Event) return _historyActiveScope;
@@ -129,6 +217,7 @@ function _allowGlobalHistoryFallback(scope, argCount) {
 // アクティブスコープを設定（DBやツール切り替え時に呼ぶ）
 function historySetScope(scope) {
   _historyActiveScope = scope || '';
+  _historyDetachFileEntriesForOpenedScope(_historyActiveScope);
   renderHistoryList();
   renderHistoryPanel();
 }
@@ -138,9 +227,24 @@ function _historyScopeDisplayName(scope) {
     const host = globalThis.GBEditorHost?.get();
     return host?.kind === 'form-app' && host.historyScope?.() === scope ? (host.label || 'フォーム') : 'フォーム';
   }
-  const raw = scope ? scope.split(':').slice(1).join(':') : '';
-  // パスの場合はファイル名のみ表示
-  return raw.includes('/') ? raw.split('/').pop() : raw;
+  if (!scope) return '共通操作';
+  const text = String(scope);
+  const at = text.indexOf(':');
+  const kind = at > 0 ? text.slice(0, at) : '';
+  let raw = at > 0 ? text.slice(at + 1) : text;
+  // シートなどは内部の識別番号で記録される。利用者には対象の名前だけを見せる（識別番号・保存先の絶対パスは出さない）。
+  if (raw && !/[\\/]/.test(raw) && typeof _fileIdToPath === 'function') {
+    try { raw = _fileIdToPath(raw) || raw; } catch {}
+  }
+  if (/[\\/]/.test(raw)) {
+    const name = raw.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || '';
+    return name.replace(/\.md$/i, '') || raw;
+  }
+  if (/^[0-9a-f]{8,}$/i.test(raw) || !raw) {
+    const kindNames = { db: 'シート', page: 'ノート', note: 'ノート', scriptnote: 'シナリオ', board: 'ボード', csv: 'CSV', map: 'マップ' };
+    return kindNames[kind] || '対象';
+  }
+  return raw;
 }
 
 function _historyDisplayParts(entry) {
@@ -495,7 +599,8 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
     if (_historyHasPendingTop(direction, actualScope, allowFallback)) {
       await _historyWaitForPendingTop(direction, actualScope, allowFallback);
     }
-    if (s[direction].length === 0 && actualScope && allowFallback && _historyGlobal[direction].length) {
+    if (s[direction].length === 0 && actualScope && allowFallback && _historyGlobal[direction].length
+        && _historyGlobalFallbackAllowed(direction, actualScope)) {
       actualScope = '';
       s = _historyGlobal;
     }
@@ -524,6 +629,8 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
     if (index >= 0) source.splice(index, 1);
     if (unchanged) {
       entry[opposite] = inverse;
+      // 画面のスコープから共通の履歴へ落ちて実行した時は、その画面を覚えておく（逆向きを同じ画面から許すため）。
+      entry._historyFallbackScope = (actualScope === '' && targetScope) ? targetScope : '';
       s[opposite].push(entry);
       while (s[opposite].length > getHistoryMax()) s[opposite].shift();
     }
@@ -537,7 +644,7 @@ async function _historyReplayEntry(direction, targetScope, allowFallback, prepar
 
 function _historyPendingTop(direction, targetScope, allowFallback) {
   let stack = _getStack(targetScope)[direction];
-  if (!stack.length && targetScope && allowFallback) stack = _historyGlobal[direction];
+  if (!stack.length && targetScope && allowFallback && _historyGlobalFallbackAllowed(direction, targetScope)) stack = _historyGlobal[direction];
   const top = stack[stack.length - 1];
   return top?._historyPending ? top : null;
 }
@@ -566,6 +673,122 @@ async function _historyRunReplayStep(fn) {
   }
 }
 
+// === ヒストリー（右サイドバー）の一覧 ===
+// 表示範囲: 'current' = 開いている対象の操作（＋その画面から Ctrl+Z / Ctrl+Y で続けて届く共通操作）／'all' = 起動中の全対象
+let _historyPanelFilter = 'current';
+
+const HISTORY_PANEL_HELP = '起動中に行った操作だけを記録します。Meldexを閉じたりページを再読み込みしたりすると消えます。保存点からの復元は「バージョン管理」を使います。';
+
+// 対象の画面から Ctrl+Z（undo）／Ctrl+Y（redo）で続けて届く共通の履歴（次に実行されるものから順）。
+// 実際の取り消し・やり直しと同じ判定（別のファイルを消す記録の手前で止まる）を使い、見た目と動きを一致させる。
+function _historyReachableGlobal(direction, scope) {
+  const reached = [];
+  if (!scope) return reached;
+  const stack = _historyGlobal[direction];
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const entry = stack[i];
+    if (_historyEntryDeletesOtherFile(entry, direction, scope)) break;
+    reached.push(entry);
+    if (typeof entry[direction] !== 'function' && !entry._historyPending) break;
+  }
+  return reached;
+}
+
+function _historyPanelModel(filter = _historyPanelFilter) {
+  const scope = _historyActiveScope;
+  const undo = [];
+  const redo = [];
+  if (filter === 'all') {
+    const seen = new Set();
+    const stacks = [['', _historyGlobal], ...Object.entries(_historyStacks)];
+    stacks.forEach(([stackScope, stack]) => {
+      if (!stack) return;
+      [['undo', undo], ['redo', redo]].forEach(([kind, rows]) => {
+        stack[kind].forEach((entry, index) => {
+          if (seen.has(entry)) return;
+          seen.add(entry);
+          rows.push({ entry, scope: stackScope, shared: false, steps: stack[kind].length - index });
+        });
+      });
+    });
+    undo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+    redo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+    return { undo, redo };
+  }
+  const own = _getStack(scope);
+  const ownUndo = own.undo.map((entry, index) => ({ entry, scope, shared: false, steps: own.undo.length - index }));
+  const ownRedo = own.redo.map((entry) => ({ entry, scope, shared: false }));
+  ownUndo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+  ownRedo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+  // 共通の履歴は、対象の操作をすべて戻した後（undo）／すべてやり直した後（redo）に届く。
+  const sharedUndo = _historyReachableGlobal('undo', scope).map(entry => ({ entry, scope: '', shared: true }));
+  const sharedRedo = _historyReachableGlobal('redo', scope).map(entry => ({ entry, scope: '', shared: true }));
+  sharedUndo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+  sharedRedo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
+  // 「現在」に近い側ほど先に実行される。やり直し側は下（現在の直上）が先、元に戻す側は上（現在の直下）が先。
+  return { undo: [...ownUndo, ...sharedUndo], redo: [...sharedRedo, ...ownRedo] };
+}
+
+function _historyRowTime(entry) {
+  return new Date(entry.time).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function _historyRowTag(row, filter) {
+  if (row.shared) return '<span class="gb-hp-scope-tag">共通</span> ';
+  if (filter !== 'all') return '';
+  return `<span class="gb-hp-scope-tag">${esc(_historyScopeDisplayName(row.scope))}</span> `;
+}
+
+function _historyPanelHtml(filterId) {
+  const filter = _historyPanelFilter === 'all' ? 'all' : 'current';
+  const busy = _historyIsBusy();
+  const model = _historyPanelModel(filter);
+  const scopeLabel = _historyScopeDisplayName(_historyActiveScope);
+  let html = `<div class="gb-hp-toolbar">
+    <select id="${esc(filterId)}" aria-label="履歴の表示範囲" class="gb-select gb-select-sm gb-hp-filter"
+      data-onchange="this.value==='all'?(_historyPanelFilter='all'):(_historyPanelFilter='current');renderHistoryList();renderHistoryPanel()">
+      <option value="current"${filter === 'current' ? ' selected' : ''}>現在: ${esc(scopeLabel)}</option>
+      <option value="all"${filter === 'all' ? ' selected' : ''}>すべて</option>
+    </select>
+    <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-action="confirmHistoryPanelClear()"${busy ? ' disabled' : ''}>クリア</button>
+  </div>`;
+  if (!model.undo.length && !model.redo.length) {
+    const help = typeof fieldHelp === 'function' ? ' ' + fieldHelp(HISTORY_PANEL_HELP, { size: 12 }) : '';
+    return html + `<div class="gb-hp-empty">操作履歴がありません${help}</div>`;
+  }
+  // やり直し側（「現在」より上）。一覧からは実行しない（Ctrl+Y / 進む を使う）。
+  model.redo.forEach(row => {
+    const parts = _historyDisplayParts(row.entry);
+    html += `<div class="gb-hp-entry gb-hp-entry-redo">`
+      + `${_hpScopeIcon(row.scope)}${_historyRowTag(row, filter)}<span class="gb-hp-label">${esc(parts.title)}</span>`
+      + `<span class="gb-hp-time">${_historyRowTime(row.entry)}</span>`
+      + (parts.detail ? `<span class="gb-hp-detail">${esc(parts.detail)}</span>` : '')
+      + `</div>`;
+  });
+  html += `<div class="gb-hp-current">${typeof lucide === 'function' ? lucide('play', 12) : ''} 現在</div>`;
+  // 元に戻す側。行を押す（Enter / Space でも可）と、その操作までまとめて戻す。
+  model.undo.forEach(row => {
+    const entry = row.entry;
+    const parts = _historyDisplayParts(entry);
+    const clickable = typeof entry.undo === 'function' || !!entry._historyPending;
+    const cls = clickable ? 'gb-hp-entry gb-hp-entry-undo gb-hp-entry-clickable' : 'gb-hp-entry gb-hp-entry-undo gb-hp-entry-disabled';
+    let action = '';
+    if (clickable) {
+      action = (filter === 'current' && row.shared)
+        ? _historyActionAttrs('historyPanelJumpThroughShared', [entry.id])
+        : _historyActionAttrs('historyPanelJump', [row.steps, row.scope || '', entry.id]);
+    }
+    const tag = clickable ? 'button' : 'div';
+    const title = clickable ? ` title="${esc('ここまで元に戻す: ' + parts.title)}"` : '';
+    html += `<${tag} class="${cls}" data-e2e-id="history-panel-entry:${esc(row.scope || 'shared')}:${esc(String(entry.id))}"${clickable ? ' type="button"' : ''}${title} ${action}${clickable && busy ? ' disabled' : ''}>`
+      + `${_hpScopeIcon(row.scope)}${_historyRowTag(row, filter)}<span class="gb-hp-label">${esc(parts.title)}</span>`
+      + `<span class="gb-hp-time">${_historyRowTime(entry)}</span>`
+      + (parts.detail ? `<span class="gb-hp-detail">${esc(parts.detail)}</span>` : '')
+      + `</${tag}>`;
+  });
+  return html;
+}
+
 function renderHistoryList() {
   // ボタンの有効/無効更新は履歴パネルDOM（#rp-history-list）の有無に関わらず必ず行う。
   // 単独起動アプリ（履歴パネルを持たない）でもツールバーのボタン状態を追随させるため、
@@ -573,146 +796,15 @@ function renderHistoryList() {
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
   const el = document.getElementById('rp-history-list');
   if (!el) return;
-
-  const allUndo = [];
-  const allRedo = [];
-  const seenUndo = new Set();
-  const seenRedo = new Set();
-  const collect = (stack, target, seen) => {
-    if (!stack) return;
-    stack.forEach(entry => {
-      if (seen.has(entry)) return;
-      seen.add(entry);
-      target.push(entry);
-    });
-  };
-
-  const activeStack = _historyActiveScope ? _getStack(_historyActiveScope) : null;
-  if (activeStack) {
-    collect(activeStack.undo, allUndo, seenUndo);
-    collect(activeStack.redo, allRedo, seenRedo);
-  }
-  collect(_historyGlobal.undo, allUndo, seenUndo);
-  collect(_historyGlobal.redo, allRedo, seenRedo);
-  Object.entries(_historyStacks).forEach(([scope, stack]) => {
-    if (scope === _historyActiveScope) return;
-    collect(stack.undo, allUndo, seenUndo);
-    collect(stack.redo, allRedo, seenRedo);
-  });
-
-  allUndo.sort(_historyNewestFirst);
-  allRedo.sort(_historyNewestFirst);
-
-  const formatScopeTag = (scope) => {
-    if (!scope) return '';
-    const label = scope.includes(':') ? scope.split(':').slice(1).join(':') : scope;
-    return `<span class="gb-hp-scope-tag">${esc(label)}</span> `;
-  };
-
-  let html = '';
-  allRedo.forEach(e => {
-    const parts = _historyDisplayParts(e);
-    html += `<div class="gb-hp-entry gb-hp-entry-redo">↪ ${formatScopeTag(e.scope)}${esc(parts.title)}`
-      + (parts.detail ? `<div class="gb-hp-detail">${esc(parts.detail)}</div>` : '')
-      + `</div>`;
-  });
-  html += `<div class="gb-hp-current">${lucide('play', 10)} 現在</div>`;
-  allUndo.forEach(e => {
-    const time = new Date(e.time).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const parts = _historyDisplayParts(e);
-    html += `<div class="gb-hp-entry gb-hp-entry-undo">`
-      + `${formatScopeTag(e.scope)}<span class="gb-hp-title">${esc(parts.title)}</span>`
-      + `<span class="gb-hp-time">${time}</span>`
-      + (parts.detail ? `<div class="gb-hp-detail">${esc(parts.detail)}</div>` : '')
-      + `</div>`;
-  });
-  if (allUndo.length === 0 && allRedo.length === 0) {
-    html = `<div class="gb-hp-empty">操作履歴がありません<div class="gb-hp-empty-hint">このヒストリーは現在の起動中のみ保持されます。シートの永続ログは「編集履歴」を使ってください。</div></div>`;
-  }
+  const html = _historyPanelHtml('rp-history-filter');
   el.innerHTML = html;
 }
-// === 操作履歴パネル（詳細パネルのタブ） ===
-let _historyPanelFilter = 'current'; // 'current' | 'all'
 
+// 旧・詳細パネルのタブ（#detail-tab-op-history）。現在の画面には無く、同じ一覧を描く。
 function renderHistoryPanel() {
   const el = document.getElementById('detail-tab-op-history');
   if (!el) return;
-
-  // 全スコープの全エントリを収集
-  const allEntries = [];
-  const collectFrom = (stack, type) => {
-    stack.forEach((e, i) => allEntries.push({ ...e, _type: type, _idx: i, _stack: stack }));
-  };
-
-  if (_historyPanelFilter === 'current') {
-    const s = _getStack(_historyActiveScope);
-    collectFrom(s.undo, 'undo');
-    collectFrom(s.redo, 'redo');
-  } else {
-    // 全スコープ
-    collectFrom(_historyGlobal.undo, 'undo');
-    collectFrom(_historyGlobal.redo, 'redo');
-    for (const [, s] of Object.entries(_historyStacks)) {
-      collectFrom(s.undo, 'undo');
-      collectFrom(s.redo, 'redo');
-    }
-  }
-
-  // 時系列ソート（新しい順）
-  allEntries.sort(_historyNewestFirst);
-
-  // undo/redoの境界を特定（最新のundoエントリが「現在位置」）
-  const undoEntries = allEntries.filter(e => e._type === 'undo');
-  const redoEntries = allEntries.filter(e => e._type === 'redo');
-
-  // フィルタUI
-  const scopeLabel = _historyActiveScope ? _historyScopeDisplayName(_historyActiveScope) : '共通操作';
-  let html = `<div class="gb-hp-toolbar">
-    <select id="hp-filter" aria-label="履歴の表示範囲" class="gb-select gb-select-sm" style="flex:1;"
-      data-onchange="this.value==='all'?(_historyPanelFilter='all'):(_historyPanelFilter='current');renderHistoryPanel()">
-      <option value="current"${_historyPanelFilter==='current'?' selected':''}>現在: ${esc(scopeLabel)}</option>
-      <option value="all"${_historyPanelFilter==='all'?' selected':''}>すべて</option>
-    </select>
-    <button class="gb-btn gb-btn-xs gb-btn-quiet" data-action="confirmHistoryPanelClear()"${_historyIsBusy() ? ' disabled' : ''}>クリア</button>
-  </div>`;
-
-  // redo（将来に戻す操作）
-  redoEntries.forEach(e => {
-    const time = new Date(e.time).toLocaleTimeString('ja-JP', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-    const icon = _hpScopeIcon(e.scope);
-    const parts = _historyDisplayParts(e);
-    const scopeTag = (_historyPanelFilter === 'all' && e.scope) ? `<span class="gb-hp-scope-tag">${esc(_historyScopeDisplayName(e.scope))}</span> ` : '';
-    html += `<div class="gb-hp-entry gb-hp-entry-redo">
-      ${icon}${scopeTag}<span class="gb-hp-label">${esc(parts.title)}</span>
-      <span class="gb-hp-time">${time}</span>
-      ${parts.detail ? `<span class="gb-hp-detail">${esc(parts.detail)}</span>` : ''}
-    </div>`;
-  });
-
-  // 現在位置マーカー
-  html += `<div class="gb-hp-current">${lucide('play', 12)} 現在</div>`;
-
-  // undo（過去の操作）
-  undoEntries.forEach((e, i) => {
-    const time = new Date(e.time).toLocaleTimeString('ja-JP', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-    const icon = _hpScopeIcon(e.scope);
-    const clickable = typeof e.undo === 'function';
-    const parts = _historyDisplayParts(e);
-    const scopeTag = (_historyPanelFilter === 'all' && e.scope) ? `<span class="gb-hp-scope-tag">${esc(_historyScopeDisplayName(e.scope))}</span> ` : '';
-    const cls = clickable ? 'gb-hp-entry gb-hp-entry-undo gb-hp-entry-clickable' : 'gb-hp-entry gb-hp-entry-undo gb-hp-entry-disabled';
-    const steps = e._stack.length - e._idx;
-    const action = clickable ? _historyActionAttrs('historyPanelJump', [steps, e.scope || '', e.id]) : '';
-    const tag = clickable ? 'button' : 'div';
-    html += `<${tag} class="${cls}" ${clickable ? 'type="button"' : ''} ${action}${clickable && _historyIsBusy() ? ' disabled' : ''}>
-      ${icon}${scopeTag}<span class="gb-hp-label">${esc(parts.title)}</span>
-      <span class="gb-hp-time">${time}</span>
-      ${parts.detail ? `<span class="gb-hp-detail">${esc(parts.detail)}</span>` : ''}
-    </${tag}>`;
-  });
-
-  if (undoEntries.length === 0 && redoEntries.length === 0) {
-    html += `<div class="gb-hp-empty">操作履歴がありません<div class="gb-hp-empty-hint">このヒストリーは現在の起動中のみ保持されます。シートの永続ログは「編集履歴」を使ってください。</div></div>`;
-  }
+  const html = _historyPanelHtml('hp-filter');
   el.innerHTML = html;
 }
 
@@ -765,6 +857,53 @@ async function historyPanelJump(steps, scope, entryId) {
     renderHistoryList();
     renderHistoryPanel();
     // 一括の取り消し中に押された取り消し・やり直しを、終わった後に順番に流す。
+    if (_historyNavigationQueue.length) _historyRunNavigationQueue();
+  }
+}
+
+// 「現在」表示の「共通」行を押した時: 開いている対象の操作をすべて戻してから、共通の操作をその行まで戻す。
+// Ctrl+Z を続けて押した時と同じ順番・同じ判定で戻す。
+async function historyPanelJumpThroughShared(entryId) {
+  if (_historyIsBusy()) return false;
+  const scope = _historyActiveScope;
+  if (!scope) return false;
+  const ownStack = _getStack(scope);
+  const selected = _historyGlobal.undo.find(entry => entry.id === entryId);
+  if (!selected || !_historyReachableGlobal('undo', scope).includes(selected)) return false;
+  _historyBusy = true;
+  try {
+    renderHistoryList();
+    renderHistoryPanel();
+    const total = ownStack.undo.length + (_historyGlobal.undo.length - _historyGlobal.undo.indexOf(selected));
+    if (total >= 3) {
+      const ok = await cfConfirm(total + '件の操作を元に戻しますか？');
+      if (!ok) return false;
+    }
+    if (!await _historyPrepareNavigation(scope)) return false;
+    const pendingEntries = [...ownStack.undo, ..._historyGlobal.undo].map(entry => entry._historyPending).filter(Boolean);
+    if (pendingEntries.length) await Promise.all(pendingEntries);
+    const ownPlanned = ownStack.undo.slice().reverse();
+    for (const entry of ownPlanned) {
+      // 待っている間に新しい操作が入ったら、その操作まで勝手に巻き戻さない。
+      if (ownStack.undo[ownStack.undo.length - 1] !== entry) return false;
+      if (!await _historyReplayEntry('undo', scope, false, true)) return false;
+    }
+    const index = _historyGlobal.undo.indexOf(selected);
+    if (index < 0 || ownStack.undo.length) return false;
+    const sharedPlanned = _historyGlobal.undo.slice(index).reverse();
+    for (const entry of sharedPlanned) {
+      if (_historyGlobal.undo[_historyGlobal.undo.length - 1] !== entry) return false;
+      if (!_historyGlobalFallbackAllowed('undo', scope)) return false;
+      if (!await _historyReplayEntry('undo', '', false, true)) return false;
+    }
+    return true;
+  } catch (error) {
+    showStatus('Undo失敗: ' + (error?.message || error), true);
+    return false;
+  } finally {
+    _historyBusy = false;
+    renderHistoryList();
+    renderHistoryPanel();
     if (_historyNavigationQueue.length) _historyRunNavigationQueue();
   }
 }
@@ -1144,34 +1283,52 @@ function _meldexScheduleRedo() {
   }
 }
 
+// 開いているファイルの名前の変更・移動の後は、タブの履歴スコープ（page:<新しいパス> 等）が変わるのに、
+// _historyActiveScope が古いパスのまま残ることがある（タブの切替が無いので追随の合流点を通らない）。
+// その古いスコープのタブはもう無いので「開かれていない」と断っていた（2026-11-22 M-014 フォルダツリー網羅テスト:
+// ツリーでクリックして開いたノートを F2 で改名→Ctrl+Z が効かない）。対象のタブが見つからず、いまのアクティブタブが
+// 別のスコープを持つ時は、アクティブタブのスコープへ合わせる（改名・移動の履歴は共通履歴にあり、そこへ戻れる）。
+function _meldexResyncStaleHistoryScope(scope) {
+  if (!scope || !_meldexHasPaneLayout()) return scope;
+  if (!/^(db|board|csv|scriptnote|schedule|page|map):/.test(scope)) return scope;
+  if (globalThis.GBEditorHost?.get()) return scope;
+  if (_meldexFindTabForHistoryScope(scope)) return scope;
+  const live = _meldexResolveActiveTabHistoryScope();
+  if (live === null || live === scope) return scope;
+  if (typeof historySetScope === 'function') historySetScope(live);
+  return live;
+}
+
 async function meldexUndo() {
+  if (globalThis.GBAnnotationSurfaces?.isOpen()) return globalThis.GBAnnotationSurfaces.undo();
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdUndo === 'function') return bdUndo(); return false; }
   if (ctx === 'embedded-sheet') { if (typeof historyUndo === 'function') return historyUndo(_meldexProductionEmbedHistoryScope()); return false; }
   if (ctx === 'schedule') return _meldexScheduleUndo();
   if (ctx === 'calendar') { if (typeof _calUndo === 'function') return _calUndo(); return false; }
   if (typeof historyUndo !== 'function') return;
-  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
+  const scope = _meldexResyncStaleHistoryScope(globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope);
   // 通常は _historyActiveScope が既にアクティブタブへ追随済み（Step2）のため
   // ここでの切替は基本的に発生しない。念のための保険（例: スコープ同期漏れ）。
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
     const prep = await _meldexPrepareHistoryScopeTarget(scope);
-    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないため元に戻せません', true); return; }
+    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のファイルが開かれていないため元に戻せません', true); return; }
   }
   return _historyNavigate('undo', scope, true);
 }
 
 async function meldexRedo() {
+  if (globalThis.GBAnnotationSurfaces?.isOpen()) return globalThis.GBAnnotationSurfaces.redo();
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdRedo === 'function') return bdRedo(); return false; }
   if (ctx === 'embedded-sheet') { if (typeof historyRedo === 'function') return historyRedo(_meldexProductionEmbedHistoryScope()); return false; }
   if (ctx === 'schedule') return _meldexScheduleRedo();
   if (ctx === 'calendar') { if (typeof _calRedo === 'function') return _calRedo(); return false; }
   if (typeof historyRedo !== 'function') return;
-  const scope = globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope;
+  const scope = _meldexResyncStaleHistoryScope(globalThis.GBEditorHost?.get()?.historyScope?.() ?? _historyActiveScope);
   if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
     const prep = await _meldexPrepareHistoryScopeTarget(scope);
-    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のシートが開かれていないためやり直せません', true); return; }
+    if (!prep.ok) { if (typeof showStatus === 'function') showStatus('対象のファイルが開かれていないためやり直せません', true); return; }
   }
   return _historyNavigate('redo', scope, true);
 }
@@ -1188,7 +1345,7 @@ function historyCanUndo(scope) {
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
   if (s.undo.length > 0) return _historyEntryCanReplay(s.undo[s.undo.length - 1], 'undo');
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.undo[_historyGlobal.undo.length - 1], 'undo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length) && _historyGlobalFallbackAllowed('undo', targetScope)) return _historyEntryCanReplay(_historyGlobal.undo[_historyGlobal.undo.length - 1], 'undo');
   return false;
 }
 
@@ -1197,7 +1354,7 @@ function historyCanRedo(scope) {
   const targetScope = _resolveHistoryScopeArg(scope, arguments.length);
   const s = _getStack(targetScope);
   if (s.redo.length > 0) return _historyEntryCanReplay(s.redo[s.redo.length - 1], 'redo');
-  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length)) return _historyEntryCanReplay(_historyGlobal.redo[_historyGlobal.redo.length - 1], 'redo');
+  if (targetScope && _allowGlobalHistoryFallback(scope, arguments.length) && _historyGlobalFallbackAllowed('redo', targetScope)) return _historyEntryCanReplay(_historyGlobal.redo[_historyGlobal.redo.length - 1], 'redo');
   return false;
 }
 
@@ -1208,6 +1365,7 @@ function historyCanRedo(scope) {
 // length を直接参照する暫定分岐が残る。
 function meldexCanUndo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
+  if (globalThis.GBAnnotationSurfaces?.isOpen()) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanUndo(_bdHistoryScope()) : (typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanUndo(_meldexProductionEmbedHistoryScope());
@@ -1218,6 +1376,7 @@ function meldexCanUndo() {
 
 function meldexCanRedo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
+  if (globalThis.GBAnnotationSurfaces?.isOpen()) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanRedo(_bdHistoryScope()) : (typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanRedo(_meldexProductionEmbedHistoryScope());
@@ -1250,6 +1409,7 @@ function _meldexScheduleCanRedo() {
 // 目印は data-undo-button / data-redo-button。ノート・自由記述欄（ブラウザ標準undo）は
 // 判定手段が無いため対象外＝常時有効のまま（この属性を付けない）。
 function _meldexHistoryButtonCan(button, direction, fallback) {
+  if (globalThis.GBAnnotationSurfaces?.isOpen()) return fallback;
   const owner = globalThis.GBEditorHost?.ownerOf?.(button);
   const paneId = button.closest?.('.gb-pane')?.dataset.paneId;
   if (!owner && (!paneId || (typeof GBLayout !== 'undefined' && paneId === GBLayout.activePane && !globalThis.GBEditorHost?.get()))) return fallback;

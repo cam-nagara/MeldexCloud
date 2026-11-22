@@ -167,7 +167,7 @@
       if (event.key === 'Enter' && input.tagName !== 'TEXTAREA') { event.preventDefault(); commit(); }
     });
     const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '保存';
-    retry.disabled = input.disabled; retry.setAttribute('aria-label', prop + 'を保存'); retry.addEventListener('click', commit);
+    retry.disabled = input.disabled; retry.setAttribute('aria-label', prop + 'を保存'); retry.dataset.e2eId = 'form-field-save-' + prop; retry.addEventListener('click', commit);
     row.appendChild(retry); body.appendChild(row);
     if (candidates.length > 1) {
       const more = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '候補一覧（' + candidates.length + '件）'; more.appendChild(summary);

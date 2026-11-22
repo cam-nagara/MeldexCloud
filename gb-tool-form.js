@@ -548,10 +548,10 @@ class FormAppComponent extends ToolComponent {
       button.className = 'tb-text-btn';
       return button;
     };
-    const menu = iconButton('メニュー', 'menu', event => showToolMenu(event, 'form-app', this));
-    if (typeof toolbarAppIconElement === 'function') bar.appendChild(toolbarAppIconElement('form-app'));
-    menu.classList.add('tool-menu-btn'); menu.setAttribute('aria-haspopup', 'menu'); bar.appendChild(menu);
-    bar.appendChild(iconButton('フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('form-app', event)));
+    // 左端のアプリアイコンがメインメニューボタン（UI共通ルール19）。☰と「フォルダツリーで表示」は置かない。
+    if (typeof toolbarAppIconElement === 'function') {
+      bar.appendChild(toolbarAppIconElement('form-app', { onClick: event => showToolMenu(event, 'form-app', this) }));
+    }
     this.titleElement = document.createElement('span');
     this.titleElement.className = 'tb-title tb-file-title';
     this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';

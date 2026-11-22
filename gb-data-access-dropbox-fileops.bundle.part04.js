@@ -1,3 +1,31 @@
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
+    }
+  }
+  await walk(folderPath);
+  return size;
+}
+
+function _fileVersionName(path, options) {
+  const split = _splitNameAndExt(_basename(path));
+  const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
+  const prefix = options?.auto ? 'auto_' : '';
+  return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
+}
+
+function _fileVersionInfoFromName(name) {
+  const stem = _splitNameAndExt(name).stem;
+  const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
+  if (!match) return { auto: false, label: '', created: '' };
+  const date = match[2];
+  const time = match[3];
+  return {
+    auto: !!match[1],
+    label: match[5] || '',
+    created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
+  };
 }
 
 function _versionLabelFromName(path, name) {
@@ -870,31 +898,3 @@ window.MeldexFileVersionProviderOps = Object.freeze({
           await provider.uploadBytesConditional(originalPath, originalSnapshot.bytes, appliedRevision);
         } catch (rollbackError) {
           const failed = new Error('競合解消の補償復旧に失敗しました。両世代のbackupを保持しています');
-          failed.status = 500;
-          failed.code = 'conflict_resolution_compensation_failed';
-          failed.backups = backups;
-          throw failed;
-        }
-        throw error;
-      }
-      return { ok: true, action, original_path: originalPath, backups, ...retired };
-    }
-
-    if (pathname === '/home-folder' && method === 'PUT') {
-      const provider = await _requirePwaProvider('read');
-      const targetPath = _normalizeFolderPath(body?.path || '');
-      if (!targetPath) throw new Error('path は必須です');
-      const entry = await _resolveEntryHandle(provider, targetPath);
-      if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
-      _safeWriteJson(PWA_HOME_KEY, {
-        path: targetPath,
-        name: _basename(targetPath),
-        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
-        exists: true,
-        locked_folders: [],
-        locked_paths: [],
-      });
-      return { ok: true, path: targetPath };
-    }
-
-    if (pathname === '/add-outliner-root' && method === 'POST') {

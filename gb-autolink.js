@@ -5,15 +5,25 @@
  * ノート、台本、DB、ボード、詳細パネルで同じマッチング結果を保証する。
  */
 const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
+  // コメント表示は従来どおりアプリ全体で1つの値。
+  // 自動リンク・自動ルビはファイルごとの値で、各アプリが自分のファイルに保存する（2026-11-21）。
+  // 旧版（v0.7.528以前）がここに保存していた全体共通の autoLinks は、自分の値を一度も
+  // 保存していないファイルの初期値としてだけ読む（この端末で今まで見えていた表示を変えないため）。
   const STORAGE_KEY = 'meldex.displayLayers.v1';
-  const DEFAULTS = { autoLinks: false, comments: false };
+  const DEFAULTS = { comments: false };
+  const FILE_LAYERS = ['autoLinks', 'autoRuby'];
+  const LABELS = { autoLinks: '自動リンク', autoRuby: '自動ルビ', comments: 'コメント表示' };
+  const ICONS = { autoLinks: 'externalLink', autoRuby: 'furigana', comments: 'messageSquare' };
   let _state = null;
+  const _scopes = new Map();
+  const _resolvers = [];
+  const _apps = new Map();
 
   function _read() {
     if (_state) return _state;
     try {
       const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-      _state = { ...DEFAULTS, ...raw };
+      _state = { ...DEFAULTS, ...(raw && typeof raw === 'object' ? raw : {}) };
     } catch {
       _state = { ...DEFAULTS };
     }
@@ -27,11 +37,100 @@ const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
     try { window.dispatchEvent(new CustomEvent('meldex-display-layers-change', { detail: { ..._state } })); } catch {}
   }
 
-  function isEnabled(layer) {
-    const state = _read();
-    if (layer === 'autoLinks') return !!state.autoLinks;
-    if (layer === 'comments') return !!state.comments;
-    return false;
+  // 同じファイルを絶対パスと保存先からの相対パスの両方で呼ぶ面があるので、保存先の分を取り除いて比べる。
+  function normalizePath(path) {
+    let key = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    let vault = '';
+    try { vault = (typeof state !== 'undefined' && state?.vaultPath) ? String(state.vaultPath) : ''; } catch {}
+    vault = vault.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (vault && key.startsWith(vault + '/')) key = key.slice(vault.length + 1);
+    return key.replace(/^\/+/, '');
+  }
+
+  // 旧版の全体共通の値（自分の値を保存していないファイルの初期値）。
+  function legacyAutoLinks() {
+    return _read().autoLinks === true;
+  }
+
+  // 旧版は自動リンクにルビも付けていたので、旧版で自動リンクを見ていた端末では自動ルビもオンで始める。
+  function defaultFileState(options = {}) {
+    const legacy = legacyAutoLinks();
+    return {
+      autoLinks: legacy,
+      autoRuby: options.supportsAutoRuby === false ? false : (legacy || options.autoRubyDefault === true),
+    };
+  }
+
+  function _bool(value) {
+    if (value === true || value === false) return value;
+    if (value === 1 || value === '1' || value === 'true' || value === 'on') return true;
+    if (value === 0 || value === '0' || value === 'false' || value === 'off') return false;
+    return undefined;
+  }
+
+  // 保存値（欠けた項目は初期値）からファイルの状態を作る。
+  function normalizeFileState(raw, options = {}) {
+    const base = defaultFileState(options);
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const autoLinks = _bool(source.autoLinks);
+    const autoRuby = _bool(source.autoRuby);
+    return {
+      autoLinks: autoLinks === undefined ? base.autoLinks : autoLinks,
+      autoRuby: options.supportsAutoRuby === false ? false : (autoRuby === undefined ? base.autoRuby : autoRuby),
+    };
+  }
+
+  function hasStoredState(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return _bool(source.autoLinks) !== undefined || _bool(source.autoRuby) !== undefined;
+  }
+
+  // アプリが開いたファイルの状態を登録する。表示（自動リンク・自動ルビの適用）はこの値を見る。
+  function setFileState(path, fileState, options = {}) {
+    const key = normalizePath(path);
+    if (!key) return null;
+    const next = normalizeFileState(fileState, options);
+    const prev = _scopes.get(key)?.state;
+    _scopes.set(key, { state: next, supportsAutoRuby: options.supportsAutoRuby !== false });
+    if (!prev || prev.autoLinks !== next.autoLinks || prev.autoRuby !== next.autoRuby) refreshControls();
+    return { ...next };
+  }
+
+  function clearFileState(path) {
+    _scopes.delete(normalizePath(path));
+  }
+
+  function registerResolver(fn) {
+    if (typeof fn === 'function' && !_resolvers.includes(fn)) _resolvers.push(fn);
+  }
+
+  function stateFor(path) {
+    const key = normalizePath(path);
+    if (key) {
+      const entry = _scopes.get(key);
+      if (entry) return { ...entry.state };
+      for (const resolve of _resolvers) {
+        try {
+          const resolved = resolve(path, key);
+          if (resolved && typeof resolved === 'object') return { autoLinks: !!resolved.autoLinks, autoRuby: !!resolved.autoRuby };
+        } catch {}
+      }
+    }
+    // 登録の無いファイル（ノートを出す面の一部）は、自分の値を保存していないノートと同じ初期値。
+    return defaultFileState();
+  }
+
+  function isEnabled(layer, path) {
+    if (layer === 'comments') return !!_read().comments;
+    if (!FILE_LAYERS.includes(layer)) return false;
+    if (arguments.length < 2) {
+      // ファイルを指定しない問い合わせ（辞書の更新後に今のファイルを描き直すか等）は、
+      // どれか1つでもオンのファイルがあるか、または初期値がオンかで答える。
+      if (defaultFileState()[layer]) return true;
+      for (const entry of _scopes.values()) if (entry.state[layer]) return true;
+      return false;
+    }
+    return !!stateFor(path)[layer];
   }
 
   function _reloadCurrentView() {
@@ -48,8 +147,10 @@ const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
     } catch {}
   }
 
+  // 全体共通の層（コメント表示）。自動リンクを指定した場合は、旧版の全体の値
+  // （自分の値を保存していないファイルの初期値）を書き換える。
   function setLayer(layer, enabled, options = {}) {
-    if (!Object.prototype.hasOwnProperty.call(DEFAULTS, layer)) return;
+    if (layer !== 'comments' && layer !== 'autoLinks') return;
     const next = { ..._read(), [layer]: !!enabled };
     _write(next);
     if (!options.silent) _reloadCurrentView();
@@ -59,16 +160,101 @@ const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
     setLayer(layer, !isEnabled(layer));
   }
 
+  // ── ツールバーの切り替えボタン ──
+  // adapter: { pathForButton(btn) -> ファイルのパス,
+  //            write(path, nextState, btn, previousState) -> Promise<boolean>（ファイルへの保存と描き直し）,
+  //            supportsAutoRuby: boolean }
+  function registerApp(app, adapter) {
+    if (!app || !adapter) return;
+    _apps.set(String(app), adapter);
+    refreshControls();
+  }
+
+  function _buttonPath(btn) {
+    const adapter = _apps.get(btn?.dataset?.displayLayerApp || '');
+    if (!adapter || typeof adapter.pathForButton !== 'function') return '';
+    try { return String(adapter.pathForButton(btn) || ''); } catch { return ''; }
+  }
+
+  function buttonHtml(layer, app) {
+    const label = LABELS[layer] || layer;
+    const e2e = `${app}-display-${layer === 'autoLinks' ? 'autolinks' : layer === 'autoRuby' ? 'autoruby' : layer}`;
+    return `<button type="button" class="tb-icon-btn gb-display-layer-btn" data-display-layer="${layer}" data-display-layer-app="${app}"`
+      + ` data-e2e-id="${e2e}" aria-pressed="false" title="${label}: オフ" aria-label="${label}"`
+      + ` data-action="MeldexDisplayLayers.toggleFromButton(this)"><span class="ico ico-${ICONS[layer]}"></span></button>`;
+  }
+
+  // 右領域（.tb-spacer の直後）の先頭に置く「自動リンク → 自動ルビ → 区切り」。
+  function toolbarButtonsHtml(app, options = {}) {
+    return buttonHtml('autoLinks', app)
+      + (options.autoRuby ? buttonHtml('autoRuby', app) : '')
+      + '<div class="sep gb-display-layer-sep"></div>';
+  }
+
+  function _applyButtonState(btn, layer, enabled, available) {
+    const label = LABELS[layer] || layer;
+    btn.classList.toggle('active', !!enabled);
+    btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    const title = `${label}: ${enabled ? 'オン' : 'オフ'}`;
+    if (btn.hasAttribute('data-gb-native-title')) btn.setAttribute('data-gb-native-title', title);
+    else btn.title = title;
+    if (available === false) btn.setAttribute('aria-disabled', 'true');
+    else btn.removeAttribute('aria-disabled');
+  }
+
   function refreshControls() {
-    const state = _read();
+    const globalState = _read();
     document.querySelectorAll('[data-display-layer]').forEach(btn => {
       const layer = btn.dataset.displayLayer;
-      const enabled = !!state[layer];
-      btn.classList.toggle('active', enabled);
-      btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      const label = layer === 'autoLinks' ? '自動リンク' : 'コメント表示';
-      btn.title = `${label}: ${enabled ? 'オン' : 'オフ'}`;
+      if (layer === 'comments') {
+        _applyButtonState(btn, layer, !!globalState.comments);
+        return;
+      }
+      if (!FILE_LAYERS.includes(layer)) return;
+      const path = _buttonPath(btn);
+      _applyButtonState(btn, layer, path ? !!stateFor(path)[layer] : false, !!path);
     });
+  }
+
+  async function toggleFromButton(btn) {
+    const layer = btn?.dataset?.displayLayer;
+    if (layer === 'comments') { toggleLayer('comments'); return true; }
+    if (!FILE_LAYERS.includes(layer)) return false;
+    const app = btn.dataset.displayLayerApp || '';
+    const path = _buttonPath(btn);
+    if (!_apps.get(app) || !path) {
+      if (typeof showStatus === 'function') showStatus('ファイルを開くと切り替えられます', true);
+      return false;
+    }
+    return setForFile(app, path, { [layer]: !stateFor(path)[layer] }, btn);
+  }
+
+  // ファイルの状態を変えて保存する（保存に失敗したら元に戻す）。
+  async function setForFile(app, path, patch, btn) {
+    const adapter = _apps.get(String(app || ''));
+    if (!adapter || !path) return false;
+    const options = { supportsAutoRuby: adapter.supportsAutoRuby !== false };
+    const previous = stateFor(path);
+    const next = normalizeFileState({ ...previous, ...(patch || {}) }, options);
+    if (next.autoLinks === previous.autoLinks && next.autoRuby === previous.autoRuby) return true;
+    setFileState(path, next, options);
+    let ok = false;
+    try {
+      ok = await adapter.write(path, next, btn, previous);
+    } catch (error) {
+      console.warn('[Meldex] 自動リンク・自動ルビの切り替えを保存できませんでした', error);
+      ok = false;
+    }
+    if (ok === false) {
+      setFileState(path, previous, options);
+      refreshControls();
+      return false;
+    }
+    refreshControls();
+    try {
+      window.dispatchEvent(new CustomEvent('meldex-display-layers-change', { detail: { app, path, state: { ...next } } }));
+    } catch {}
+    return true;
   }
 
   function scheduleIdle(fn, timeout = 800) {
@@ -81,7 +267,30 @@ const MeldexDisplayLayers = window.MeldexDisplayLayers || (() => {
   document.addEventListener('DOMContentLoaded', refreshControls);
   setTimeout(refreshControls, 0);
 
-  return { getState: () => ({ ..._read() }), isEnabled, setLayer, toggleLayer, refreshControls, scheduleIdle };
+  return {
+    STORAGE_KEY,
+    FILE_LAYERS,
+    getState: () => ({ ..._read() }),
+    isEnabled,
+    setLayer,
+    toggleLayer,
+    refreshControls,
+    scheduleIdle,
+    normalizePath,
+    legacyAutoLinks,
+    defaultFileState,
+    normalizeFileState,
+    hasStoredState,
+    setFileState,
+    clearFileState,
+    registerResolver,
+    stateFor,
+    registerApp,
+    buttonHtml,
+    toolbarButtonsHtml,
+    toggleFromButton,
+    setForFile,
+  };
 })();
 window.MeldexDisplayLayers = MeldexDisplayLayers;
 
@@ -123,7 +332,7 @@ const MeldexAutoLink = (() => {
         detail: { scope, revision: _dictRevision },
       }));
     } catch {}
-    if (!MeldexDisplayLayers.isEnabled('autoLinks')) return;
+    if (!MeldexDisplayLayers.isEnabled('autoLinks') && !MeldexDisplayLayers.isEnabled('autoRuby')) return;
     MeldexDisplayLayers.scheduleIdle(() => {
       try {
         if (typeof reloadCurrentOpenFile === 'function') reloadCurrentOpenFile();
@@ -224,17 +433,53 @@ const MeldexAutoLink = (() => {
   }
 
   // ── 共通: span 要素を生成 ──
+  // 自動リンクのリンクにはルビを付けない。自動ルビもオンの時だけ、辞書のルビを
+  // リンクの上に付ける（ルビはリンクと同じ色になる）。
   function _createLinkSpan(entry, options = {}) {
     const span = document.createElement('span');
     span.className = 'auto-link';
     span.dataset.path = entry.path || '';
     span.dataset.autoLink = 'true';
-    if (entry.ruby && !options.suppressRuby) {
+    if (options.autoRuby && entry.ruby && !options.suppressRuby) {
       span.dataset.ruby = entry.ruby;
       span.style.position = 'relative';
     }
     span.textContent = entry.text;
     return span;
+  }
+
+  // 自動リンクがオフで自動ルビだけがオンの時の、リンクなしのルビ。本文の色・装飾は変えない。
+  function _createRubySpan(entry) {
+    const span = document.createElement('span');
+    span.className = 'auto-ruby';
+    span.dataset.autoRuby = 'dict';
+    span.dataset.ruby = entry.ruby;
+    span.textContent = entry.text;
+    return span;
+  }
+
+  // 描く時の状態。呼び出し側が state を渡せばそれを、無ければ表示中のファイル
+  // （displayPath。省略時は filePath）の状態を使う。force は旧呼び出し（自動リンクを強制）の互換。
+  function _effectiveState(filePath, options = {}) {
+    if (options.state && typeof options.state === 'object') {
+      return { autoLinks: !!options.state.autoLinks, autoRuby: !!options.state.autoRuby };
+    }
+    const target = options.displayPath || filePath;
+    const st = typeof MeldexDisplayLayers.stateFor === 'function'
+      ? MeldexDisplayLayers.stateFor(target)
+      : { autoLinks: !!MeldexDisplayLayers.isEnabled?.('autoLinks', target), autoRuby: !!MeldexDisplayLayers.isEnabled?.('autoRuby', target) };
+    return options.force ? { ...st, autoLinks: true } : st;
+  }
+
+  // 辞書が付けた表示（リンク・リンクなしのルビ）を外す。シナリオの自動ルビルールの表示は残す。
+  function strip(el) {
+    if (!el?.querySelectorAll) return;
+    const nodes = el.querySelectorAll('[data-auto-link], [data-auto-ruby="dict"]');
+    if (!nodes.length) return;
+    nodes.forEach(span => {
+      span.replaceWith(document.createTextNode(span.textContent));
+    });
+    el.normalize();
   }
 
   function _normalizePathForScope(path) {
@@ -266,7 +511,8 @@ const MeldexAutoLink = (() => {
 
   // ── HTML文字列版（ノート、ボード、詳細パネル用） ──
   function applyToHtml(html, filePath, options = {}) {
-    if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return html;
+    const st = _effectiveState(filePath, options);
+    if (!st.autoLinks && !st.autoRuby) return html;
     _ensureActiveWorkFolderScope(filePath);
     if (!html || _linkDict.length === 0) return html;
 
@@ -274,27 +520,27 @@ const MeldexAutoLink = (() => {
 
     const div = document.createElement('div');
     div.innerHTML = html;
-    _applyToDomInternal(div);
+    _applyToDomInternal(div, st);
     return div.innerHTML;
   }
 
-  // ── DOM直接操作版（台本用） ──
+  // ── DOM直接操作版（シナリオ・シート・CSV・ノートの再適用用） ──
+  // 既存の辞書由来の表示を外してから、ファイルの状態どおりに付け直す（オフなら外すだけ）。
   function applyToDom(el, filePath, options = {}) {
-    if (!options.force && !MeldexDisplayLayers.isEnabled('autoLinks')) return;
+    if (!el) return;
+    const st = _effectiveState(filePath, options);
+    strip(el);
+    if (!st.autoLinks && !st.autoRuby) return;
     _ensureActiveWorkFolderScope(filePath);
-    if (!el || _linkDict.length === 0) return;
+    if (_linkDict.length === 0) return;
     if (!_isInWorkFolderScope(filePath)) return;
-    // 既存の自動リンクを除去（再適用時の二重表示を防止）
-    el.querySelectorAll('[data-auto-link]').forEach(span => {
-      span.replaceWith(document.createTextNode(span.textContent));
-    });
-    el.normalize();
-    _applyToDomInternal(el);
+    _applyToDomInternal(el, st);
   }
 
-  // ── 内部: DOM要素内のテキストノードにリンクを適用 ──
-  function _applyToDomInternal(el) {
-    const sorted = _sortedDict();
+  // ── 内部: DOM要素内のテキストノードにリンク・ルビを適用 ──
+  function _applyToDomInternal(el, st) {
+    // 自動リンクがオフの時は、ルビのある語だけが対象（ルビの無い語は本文のまま）。
+    const sorted = _sortedDict().filter(entry => st.autoLinks || (st.autoRuby && entry.ruby));
     if (sorted.length === 0) return;
     const textNodes = _collectTextNodes(el);
     for (const tNode of textNodes) {
@@ -316,7 +562,13 @@ const MeldexAutoLink = (() => {
         matched = true;
         if (earliest.pos > lastIdx) frag.appendChild(document.createTextNode(content.slice(lastIdx, earliest.pos)));
         const suppressRuby = !!tNode.parentElement?.closest?.('[data-ruby], ruby');
-        frag.appendChild(_createLinkSpan(earliest.entry, { suppressRuby }));
+        if (st.autoLinks) {
+          frag.appendChild(_createLinkSpan(earliest.entry, { suppressRuby, autoRuby: st.autoRuby }));
+        } else if (!suppressRuby) {
+          frag.appendChild(_createRubySpan(earliest.entry));
+        } else {
+          frag.appendChild(document.createTextNode(earliest.entry.text));
+        }
         lastIdx = earliest.pos + earliest.entry.text.length;
       }
       if (matched) {
@@ -330,7 +582,7 @@ const MeldexAutoLink = (() => {
   function stripFromHtml(html) {
     const div = document.createElement('div');
     div.innerHTML = html;
-    div.querySelectorAll('.auto-link').forEach(el => {
+    div.querySelectorAll('.auto-link, [data-auto-ruby="dict"]').forEach(el => {
       el.replaceWith(...el.childNodes);
     });
     let cleaned = div.innerHTML;
@@ -356,6 +608,7 @@ const MeldexAutoLink = (() => {
     setDict,
     applyToHtml,
     applyToDom,
+    strip,
     stripFromHtml,
     scheduleReload,
   };

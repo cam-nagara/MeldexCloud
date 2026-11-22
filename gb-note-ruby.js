@@ -84,7 +84,9 @@
     var text = range.toString();
     if (!text) return false;
     var reading = String(ruby || '').trim();
-    var check = canRoundTrip(text, reading);
+    var span = selectedRubySpan(range, editable);
+    if (!reading && !span) return false;
+    var check = reading ? canRoundTrip(text, reading) : { ok: true };
     if (!check.ok) {
       if (typeof global.showStatus === 'function') global.showStatus(check.reason, true);
       return false;
@@ -97,10 +99,9 @@
     sel.addRange(range);
     if (typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
 
-    var span = selectedRubySpan(range, editable);
-
     if (span) {
-      span.dataset.ruby = reading;
+      if (reading) span.dataset.ruby = reading;
+      else { span.removeAttribute('data-ruby'); span.style.removeProperty('position'); }
     } else {
       span = document.createElement('span');
       span.dataset.ruby = reading;
@@ -126,6 +127,8 @@
     }
 
     editable.dispatchEvent(new Event('input', { bubbles: true }));
+    // ルビの表示設定（小書き仮名・配置）をこのルビにも当てる
+    global.MeldexNoteDisplaySettings?.refreshRubyNodes?.(editable);
     restoreScroll(scroll);
     if (typeof global.showStatus === 'function') global.showStatus('ルビを設定しました');
     return true;
@@ -232,7 +235,6 @@
     var apply = function () {
       var ruby = input.value.trim();
       closePopup();
-      if (!ruby) return;
       applyToSelection(range, editable, ruby);
     };
     applyButton.addEventListener('click', apply);

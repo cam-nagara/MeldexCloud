@@ -436,8 +436,8 @@
   .gb-toolbar-cal button { font-size: var(--ui-font-11); padding: 3px var(--ui-space-3); }
   .gb-cal-title { min-width: auto; }
   .gb-cal-day { min-height: 50px; padding: 2px; }
-  .gb-cal-day-num { font-size: 10px; }
-  .gb-cal-day-event { font-size: 9px; }
+  .gb-cal-day-num { font-size: var(--ui-font-11); }
+  .gb-cal-day-event { font-size: var(--ui-font-11); }
   .gb-cal-task-board { flex-direction: column; }
   .gb-cal-task-column { min-width: auto; width: 100%; }
   .gb-cal-modal { min-width: auto !important; width: 95vw !important; max-width: 95vw !important; }

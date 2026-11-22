@@ -239,9 +239,9 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
   const markNodeOverride = () => {
     if (typeof bd === 'undefined' || !Array.isArray(bd.nodes) || !bd.nodes.includes(style)) return;
     if (field === 'width') style._userW = true;
-    else if (field === 'bgColor') style._userBgColor = true;
-    else if (field === 'fontSize') style._userFontSize = true;
-    else if (field === 'fontBold') style._userFontBold = true;
+    // 階層別スタイルの起点の下のトピックに付けた個別の書式は、どの項目でも階層別スタイルより優先する
+    // （以前は背景色・文字の大きさ・太字だけで、形状や枠線は開き直すと階層別スタイルの値へ戻っていた。M-014）。
+    else if (/^[a-z][A-Za-z]*$/.test(String(field || ''))) style['_user' + field.charAt(0).toUpperCase() + field.slice(1)] = true;
   };
   const alphaKey = { bgColor: 'bgOpacity', borderColor: 'borderOpacity', color: 'colorOpacity' }[field];
   if (alphaKey) style[alphaKey] = 1;
@@ -521,7 +521,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${name}」として保存しました`);
   return next;
 }
 
@@ -536,7 +536,7 @@ function _bdSaveCurrentBoardStyle(kind) {
   // 全ボード共通のグローバルデフォルトにも保存 (他のボードを開いたときも反映される)
   _bdSaveGlobalStyleDefault(kind, style);
   bdDirty();
-  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+  showStatus(`${kind === 'card' ? 'トピックスタイル' : 'ラインスタイル'}「${style.name}」をデフォルトとして保存しました`);
 }
 
 // ノード個別のカードスタイルをカスタム化する。
@@ -691,7 +691,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`トピックスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`トピックスタイル「${name}」として保存しました`);
   return next;
 }
 
@@ -718,7 +718,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
   _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  showStatus(`ラインスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
+  showStatus(`ラインスタイル「${name}」として保存しました`);
   return next;
 }
 
@@ -756,7 +756,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
     ? `トピックスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
-    : `トピックスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
+    : `トピックスタイル「${style.name}」は既に保存済みです`);
 }
 
 const _BD_LINE_OVERRIDE_KEYS = [
@@ -788,7 +788,7 @@ function _bdSaveCurrentConnectionLineStyle(conn) {
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
     ? `ラインスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のラインにも反映)`
-    : `ラインスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
+    : `ラインスタイル「${style.name}」は既に保存済みです`);
 }
 
 /**

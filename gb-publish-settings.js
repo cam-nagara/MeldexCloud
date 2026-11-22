@@ -1,7 +1,14 @@
 /* 公開 HTML 設定 */
 
 function getCurrentPublishContext() {
-  if (state.currentDbPath && (state?.view === 'pivot' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(getCurrentViewMode(state.currentDbPath)))) {
+  // サブパネル・トピック内のエディタが操作対象なら、その対象を公開する（メインパネルと同じ操作で公開できる）。
+  const hostContext = _publishContextFromEditorHost();
+  if (hostContext) return hostContext;
+  // シートは「今シートを表示している時」だけ公開対象にする。以前は、一度ギャラリー等のビューで開いた
+  // シートがあると、ノートを表示していてもシートを公開対象と判定し、ノートの公開が
+  // 「表示中の対象と公開種別が一致しません」で止まっていた。
+  const sheetViews = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'];
+  if (state.currentDbPath && sheetViews.includes(state?.view)) {
     return { kind: 'database', label: state.currentDbPath.split('/').pop() || 'シート', path: state.currentDbPath };
   }
   if (state?.view === 'entity' && state.currentEntityPath) {
@@ -38,6 +45,24 @@ function getCurrentPublishContext() {
     return { kind: 'scriptnote', label: tab.label || stem || 'シナリオ', path: tab.path };
   }
   return { kind: '', label: '未選択', path: '' };
+}
+
+function _publishContextFromEditorHost() {
+  const host = window.GBEditorHost?.get?.();
+  if (!host || host.surface === 'main' || !host.path) return null;
+  const path = String(host.path);
+  const name = path.split('/').pop() || '';
+  if (host.kind === 'scriptnote') {
+    return { kind: 'scriptnote', label: host.label || name.replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '') || 'シナリオ', path };
+  }
+  if (host.kind === 'page') return { kind: 'page', label: host.label || name.replace(/\.md$/, '') || 'ノート', path };
+  if (host.kind === 'database') return { kind: 'database', label: host.label || name || 'シート', path };
+  if (host.kind === 'csv') return { kind: 'csv', label: host.label || name || 'CSV', path };
+  if (host.kind === 'board') {
+    return { kind: 'board', label: host.label || name.replace(/\.[^.]+$/, '') || 'ボード', path,
+      paneId: String(host.editorId || ''), tabId: '', viewId: String((typeof bd !== 'undefined' && bd?.activeBoardViewId) || '') };
+  }
+  return null;
 }
 
 function _publishContextError(message, options) {
@@ -95,6 +120,10 @@ function _publishBoardCanvasSnapshot() {
   const canvas = document.getElementById('bd-canvas');
   if (!canvas || typeof canvas.cloneNode !== 'function') return null;
   const clone = canvas.cloneNode(true);
+  // 画面の見た目（計算済みスタイル）を、構造を変える前に固定する
+  const frozenCss = (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.freezeComputedStyles === 'function')
+    ? MeldexExportHtml.freezeComputedStyles(canvas, clone)
+    : null;
   // 公開対象は保存されたボード文書だけ。選択、フォーカス、ドラッグ中の
   // クロームは利用者の一時UI状態なので、スナップショット固定前に除去する。
   clone.querySelectorAll(
@@ -105,7 +134,8 @@ function _publishBoardCanvasSnapshot() {
     else node.remove();
   });
   clone.querySelectorAll('[aria-selected="true"]').forEach(node => node.removeAttribute('aria-selected'));
-  return clone.outerHTML;
+  const backdropColor = typeof MeldexExportHtml?.backdropColor === 'function' ? MeldexExportHtml.backdropColor(canvas) : '';
+  return { html: clone.outerHTML, frozen: frozenCss !== null, frozenCss: frozenCss || '', backdropColor };
 }
 
 // ボードの公開正本は「保存済みのアクティブボード＋表示中の保存ビュー」の
@@ -134,7 +164,8 @@ async function preparePublishContextSnapshot(snapshot) {
     return _publishContextError('ボードの保存競合が未解決のため公開を停止しました');
   }
   const bounds = (typeof _bdExportImageBounds === 'function') ? _bdExportImageBounds() : null;
-  const canvasHtml = _publishBoardCanvasSnapshot();
+  const canvasSnapshot = _publishBoardCanvasSnapshot();
+  const canvasHtml = canvasSnapshot?.html || '';
   if (!bounds || !canvasHtml) {
     return _publishContextError('公開できるボード内容がありません');
   }
@@ -147,6 +178,9 @@ async function preparePublishContextSnapshot(snapshot) {
     activeBoardViewId: String(bd.activeBoardViewId || snapshot.viewId || ''),
     document: bdToMd(),
     canvasHtml,
+    frozen: !!canvasSnapshot?.frozen,
+    frozenCss: canvasSnapshot?.frozenCss || '',
+    backdropColor: canvasSnapshot?.backdropColor || '',
     bounds: Object.freeze({
       x0: Number(bounds.x0) || 0,
       y0: Number(bounds.y0) || 0,
@@ -293,19 +327,31 @@ function _publishEntityNameSourceForContext(ctx, prev) {
   }
 }
 
+// 共有のしかたは基本のUIに長く書かず、ツールチップへまとめる
+function _publishShareHelpText() {
+  return '公開HTMLは、Meldexの保存先（Dropbox同期フォルダ）の中に保存されます。'
+    + '未公開のファイルは、元のファイルと同じフォルダに「元の名前.html」で保存します。'
+    + '共有するには、DropboxでこのHTMLファイルの共有リンクを作成して相手に送ってください。'
+    + '相手はリンクからブラウザで、Meldexと同じ見た目のまま閲覧できます。'
+    + '内容を変えたら「公開を更新」で同じファイルを書き直します（共有リンクはそのまま使えます）。';
+}
+
 function renderPublishSettingsPanel(contextSnapshot) {
   // Passive sidebar refresh can run between selection and view activation.
   // It must not report a failed publication when no action was requested.
   const ctx = contextSnapshot || createPublishContextSnapshot(undefined, { silentError: true });
   if (!ctx) return '';
   const cfg = getPublishConfigForContext(ctx);
+  const defaultPath = (typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.defaultPublishHtmlPath === 'function')
+    ? MeldexExportHtml.defaultPublishHtmlPath(ctx)
+    : '';
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
   const isDb = ctx.kind === 'database';
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
-    <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます') : ''}</div>
+    <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます', { e2eId: 'publish-single-panel-help' }) : ''}</div>
     <div class="gb-section-desc">対象: ${esc(ctx.label)}${ctx.path ? ' / ' + esc(ctx.path) : ''}</div>
-    <label class="gb-field-row"><span class="gb-label">HTML保存先</span><input id="publish-html-path" data-e2e-id="publish-html-path" class="gb-input" value="${esc(cfg.html_path || '')}" readonly></label>
+    <label class="gb-field-row"><span class="gb-label">HTML保存先 ${fieldHelp(_publishShareHelpText(), { e2eId: 'publish-share-help' })}</span><input id="publish-html-path" data-e2e-id="publish-html-path" class="gb-input" value="${esc(cfg.html_path || '')}" placeholder="${esc(defaultPath)}" readonly><button type="button" class="gb-btn gb-btn-sm" id="publish-pick-folder-btn" data-e2e-id="publish-pick-folder">フォルダを選択</button></label>
     <div class="gb-field-row">
       <button type="button" class="gb-btn gb-btn-sm" id="publish-save-as-btn" data-e2e-id="publish-change-path">公開先を変更</button>
     </div>
@@ -332,7 +378,7 @@ function bindPublishSettingsPanel(root, options) {
   if (!ctx || !isPublishContextSnapshotCurrent(ctx, true)) return;
   const token = panel.querySelector('#publish-form-token');
   panel.querySelector('#publish-token-btn')?.addEventListener('click', () => { if (token) token.value = _publishToken(); });
-  const runPublishAction = async (button, changePath) => {
+  const runPublishAction = async (button, changePath, pickFolder) => {
     if (button?.disabled) return;
     opts.onBusyChange?.(true);
     try {
@@ -344,17 +390,23 @@ function bindPublishSettingsPanel(root, options) {
           ? await preparePublishContextSnapshot(ctx)
           : ctx;
         if (!publishSnapshot) return;
+        let targetPath = '';
+        if (pickFolder) {
+          // フォルダツリーで選んだフォルダへ保存する（ファイル名は記録済みの名前か既定の名前）
+          targetPath = await MeldexExportHtml.pickPublishTargetPath(ctx, getPublishConfigForContext(ctx));
+          if (!targetPath || !isPublishContextSnapshotCurrent(ctx, true)) return;
+        }
         await MeldexExportHtml.publishCurrentView(ctx.kind, {
           changePath: !!changePath,
+          targetPath,
           contextSnapshot: publishSnapshot,
         });
       }
-      if (changePath) {
-        if (!isPublishContextSnapshotCurrent(ctx, true)) return;
-        const cfg = getPublishConfigForContext(ctx);
-        const pathInput = panel.querySelector('#publish-html-path');
-        if (pathInput) pathInput.value = cfg.html_path || '';
-      }
+      // 公開後は、記録した保存先を表示し直す
+      if (!isPublishContextSnapshotCurrent(ctx, true)) return;
+      const cfg = getPublishConfigForContext(ctx);
+      const pathInput = panel.querySelector('#publish-html-path');
+      if (pathInput) pathInput.value = cfg.html_path || '';
     } catch (error) {
       if (typeof showStatus === 'function') showStatus('公開設定を保存できませんでした: ' + (error?.message || error), true);
     } finally {
@@ -363,6 +415,11 @@ function bindPublishSettingsPanel(root, options) {
   };
   const changePathButton = panel.querySelector('#publish-save-as-btn');
   const updateButton = panel.querySelector('#publish-update-btn');
+  const pickFolderButton = panel.querySelector('#publish-pick-folder-btn');
+  pickFolderButton?.addEventListener('click', event => {
+    event.preventDefault();
+    runPublishAction(pickFolderButton, true, true);
+  });
   changePathButton?.addEventListener('click', () => runPublishAction(changePathButton, true));
   updateButton?.addEventListener('click', () => runPublishAction(updateButton, false));
 }

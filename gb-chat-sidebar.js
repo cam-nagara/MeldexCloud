@@ -124,14 +124,20 @@
   function open() {
     const dock = currentDock();
     if (!dock) return false;
+    const pane = GBLayout.getAllPanes(dock).find(item => item.tabs?.some(tab => tab.type === 'chat'));
+    const chatTab = pane?.tabs?.find(tab => tab.type === 'chat');
+    if (!chatTab) return false;
     if (window.innerWidth <= 768) {
-      const pane = GBLayout.getAllPanes(dock).find(item => item.tabs?.some(tab => tab.type === 'chat'));
-      if (!pane) return false;
+      pane.activeTabIndex = pane.tabs.indexOf(chatTab);
       if (GBLayout.activePane !== pane.id) returnPaneId = GBLayout.activePane;
       GBLayout.revealPane(pane.id, { activate: true, userIntent: true, deferRender: true, preserveCollapsed: true });
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
-    } else GBLayout.setNodeCollapsed(dock.id, false);
+    } else {
+      GBLayout.setNodeCollapsed(dock.id, false);
+      // バージョンなど別のタブがこの列に開かれていても、入口は必ずチャット本文へ戻す。
+      GBTabs.activateTab(pane.id, chatTab.id, { preserveActivePane: true });
+    }
     window.MeldexCloudMobileEditBar?.refresh?.();
     return true;
   }

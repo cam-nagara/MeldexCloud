@@ -402,7 +402,9 @@ function _dbTreeValueRef(dbPath, entityName, propName, value, rawIndex, data) {
   };
 }
 
-async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, label) {
+// collect を渡すと、取り消しの履歴をここでは積まず collect へ溜める（1つの操作で複数の値を書く時に、
+// 取り消し1回で全部戻せるよう呼び出し側が _dbTreePushUndoGroup でまとめて積む）。
+async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, label, collect = null) {
   if (!propName) return;
   if (ctx?.dbPath && ctx.dbPath !== dbPath) throw new Error('表示中のシートが変わりました。対象のシートを開き直してください');
   const data = ctx?.pivotData || state.pivotData;
@@ -418,7 +420,8 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
     const rawIndex = Math.max(0, raw.indexOf(adopted));
     const ref = _dbTreeValueRef(dbPath, entityName, propName, adopted, rawIndex, data);
     await _apiPutValue(ref, { new_value: nextValue, __source: 'sheet-tree-view' });
-    if (typeof _dbUndoValue === 'function') {
+    if (collect) collect.push({ ref, oldValue, newValue: nextValue });
+    else if (typeof _dbUndoValue === 'function') {
       _dbUndoValue(label, ref, oldValue, nextValue, undefined, undefined, { dbPath, ctx });
     }
     adopted.value = nextValue;
@@ -427,10 +430,33 @@ async function _dbTreeSetValue(dbPath, ctx, entityName, propName, nextValue, lab
     const result = await _apiPostValue(entityPath, propName, nextValue, '採用', '', '', { __source: 'sheet-tree-view' });
     const added = { value: nextValue, status: '採用', file: entityPath, property: propName, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length };
     entityData[propName] = [...raw, added];
-    if (typeof _dbUndoValue === 'function') {
+    if (collect) collect.push({ ref: added, oldValue: '', newValue: nextValue, created: { entityPath, propName } });
+    else if (typeof _dbUndoValue === 'function') {
       _dbUndoValue(label, added, '', nextValue, undefined, undefined, { dbPath, ctx });
     }
   }
+}
+
+// ツリーの1つの操作（親の変更と並び順、前後の入れ替え）で書いた値を、取り消し1回で戻せる1件の履歴にする。
+// 途中で失敗した時も、書けた分だけをまとめて積む（書けた分を取り消しで戻せるようにする）。
+function _dbTreePushUndoGroup(dbPath, ctx, label, steps) {
+  if (!steps.length || typeof historyPush !== 'function') return;
+  const list = steps.slice();
+  const refresh = async () => { if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true }); };
+  // 新しく作った値は、取り消しで空の値を残さず候補ごと消し、やり直しで作り直す（カンバンの移動と同じ扱い）。
+  const undoStep = step => (step.created
+    ? _apiPutValue(step.ref, { _delete: true })
+    : _apiPutValue(step.ref, { new_value: step.oldValue }));
+  const redoStep = async step => {
+    if (!step.created) return _apiPutValue(step.ref, { new_value: step.newValue });
+    const result = await _apiPostValue(step.created.entityPath, step.created.propName, step.newValue, '採用', '', '', { __source: 'sheet-tree-view' });
+    step.ref = { ...step.ref, candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? step.ref.candidate_index };
+    return result;
+  };
+  historyPush(label,
+    async () => { for (const step of [...list].reverse()) await undoStep(step); await refresh(); },
+    async () => { for (const step of list) await redoStep(step); await refresh(); },
+    typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
 }
 
 async function _dbTreeRefreshAfterEdit(dbPath, ctx) {
@@ -490,10 +516,15 @@ async function _dbTreeMoveNode(dbPath, ctx, model, config, node, target, mode) {
     else nextOrder = 0;
   }
   const parentValue = parent?.entityName || '';
+  const steps = [];
   try {
-    await _dbTreeSetValue(dbPath, ctx, node.entityName, config.parentProp, parentValue, 'ツリー: 親を変更');
-    if (config.orderProp) {
-      await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, nextOrder, 'ツリー: 並び順を変更');
+    try {
+      await _dbTreeSetValue(dbPath, ctx, node.entityName, config.parentProp, parentValue, 'ツリー: 親を変更', steps);
+      if (config.orderProp) {
+        await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, nextOrder, 'ツリー: 並び順を変更', steps);
+      }
+    } finally {
+      _dbTreePushUndoGroup(dbPath, ctx, 'ツリー: 階層を変更', steps);
     }
     await _dbTreeRefreshAfterEdit(dbPath, ctx);
     showStatus('階層を変更しました');
@@ -511,15 +542,20 @@ async function _dbTreeSwapSibling(dbPath, ctx, config, node, direction) {
   const index = siblings.indexOf(node);
   const other = siblings[index + direction];
   if (!other || !config.orderProp) return;
+  const steps = [];
   try {
     const first = node.order;
     const second = other.order;
-    if (first === second) {
-      const nextOrder = direction < 0 ? second - 1 : second + 1;
-      await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, nextOrder, 'ツリー: 並び順を変更');
-    } else {
-      await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, second, 'ツリー: 並び順を変更');
-      await _dbTreeSetValue(dbPath, ctx, other.entityName, config.orderProp, first, 'ツリー: 並び順を変更');
+    try {
+      if (first === second) {
+        const nextOrder = direction < 0 ? second - 1 : second + 1;
+        await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, nextOrder, 'ツリー: 並び順を変更', steps);
+      } else {
+        await _dbTreeSetValue(dbPath, ctx, node.entityName, config.orderProp, second, 'ツリー: 並び順を変更', steps);
+        await _dbTreeSetValue(dbPath, ctx, other.entityName, config.orderProp, first, 'ツリー: 並び順を変更', steps);
+      }
+    } finally {
+      _dbTreePushUndoGroup(dbPath, ctx, 'ツリー: 並び順を変更', steps);
     }
     await _dbTreeRefreshAfterEdit(dbPath, ctx);
   } catch (error) {

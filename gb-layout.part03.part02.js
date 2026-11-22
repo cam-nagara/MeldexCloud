@@ -279,6 +279,10 @@
     setPaneLocked,
     togglePaneLocked,
     updatePaneNavButtons: _updatePaneNavButtons,
+    // サブパネルのタブ行が、メインパネルと同じタブ部品・同じ「…」メニューを使うための入口。
+    createPaneTabElement: _createPaneTabElement,
+    showTabMenu: _showTabContextMenu,
+    openTabInNewWindow: _openTabInNewWindow,
     maximizePane,
     restoreMaximizedPane,
     isMaximized,

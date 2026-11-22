@@ -386,6 +386,8 @@ function bdStopSlideshow() {
 
 // --- Numbering ---
 function bdToggleNumbering() {
+  // 番号付けはファイルへ保存される設定なので、ほかの編集と同じく取り消せるようにする。
+  bdPushUndo('番号付けの切り替え');
   bd._numbering = !bd._numbering;
   const nodeIds = (bd.nodes || []).map(node => node?.id).filter(Boolean);
   if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(nodeIds, 'toggle-numbering');
@@ -999,6 +1001,8 @@ function _bdEnhanceContextMenu(menu, label) {
   return menu;
 }
 
+// メニュー項目の安定した識別子は、表示名から選択の印・空白を除いたもの（画面の部品の検査と自動テストが、
+// 名前の順番に頼らず項目を指せるようにする。シート・シナリオのメニューの data-e2e-id と同じ役割）。
 function _bdContextMenuItem(parent, label, fn, opts) {
   const options = opts || {};
   const item = document.createElement('div');
@@ -1013,6 +1017,7 @@ function _bdContextMenuItem(parent, label, fn, opts) {
   if (options.danger) item.classList.add('danger');
   if (options.html === false) item.textContent = String(label || '');
   else item.innerHTML = label;
+  item.dataset.e2eId = 'board-menu-item:' + String(item.textContent || '').replace(/[\s　]+/g, ' ').replace(/[●○◉◯✓✔]/g, '').trim();
   const activate = ev => {
     ev?.preventDefault?.();
     ev?.stopPropagation?.();
@@ -1052,6 +1057,7 @@ function _bdCreateContextSubmenu(menu, label, minWidth) {
   const trigger = document.createElement('div');
   trigger.className = 'gb-context-menu-item has-submenu';
   trigger.innerHTML = esc(label);
+  trigger.dataset.e2eId = 'board-menu-item:' + String(label || '').replace(/[\s　]+/g, ' ').replace(/[●○◉◯✓✔]/g, '').trim();
   trigger.tabIndex = 0;
   trigger.setAttribute('role', 'menuitem');
   trigger.setAttribute('aria-haspopup', 'menu');

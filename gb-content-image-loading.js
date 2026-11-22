@@ -156,7 +156,8 @@
         img.classList.add('meldex-image-load-error');
         const name = state.originalAlt || '画像';
         img.setAttribute('aria-label', name + 'を読み込めません。クリックまたはEnterで再読み込みできます');
-        img.setAttribute('alt', name + 'を読み込めません（再読み込み）');
+        // alt はノート本文へ保存する原文。失敗の案内は表示用の属性だけへ置く。
+        if (!img.getAttribute('data-e2e-id')) img.setAttribute('data-e2e-id', 'content-image-retry');
         img.setAttribute('title', 'クリックまたはEnterで再読み込み');
         img.tabIndex = img.tabIndex >= 0 ? img.tabIndex : 0;
         if (host) {

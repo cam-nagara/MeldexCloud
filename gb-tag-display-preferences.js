@@ -97,7 +97,11 @@
 
   function folderTagDisplayLimit() {
     try {
-      const cfg = JSON.parse(localStorage.getItem('folder-display-config') || '{}');
+      // フォルダごとの表示設定（v0.7.564）でタグの表示数もフォルダへ保存されるので、開いているフォルダの設定を読む
+      // （全体の値だけを読んでいたため、表示数を変えてもカードのタグの数が変わらなかった: 2026-11-22 M-014）。
+      const cfg = typeof getFolderDisplayConfig === 'function'
+        ? getFolderDisplayConfig()
+        : JSON.parse(localStorage.getItem('folder-display-config') || '{}');
       return normalizeLimit(cfg?.tagDisplayLimit, legacyLimit());
     } catch (_) {
       return legacyLimit();

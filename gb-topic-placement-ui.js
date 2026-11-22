@@ -414,10 +414,21 @@
     return global.apiFetch(`/topic-views/${encodeURIComponent(documentId)}`, { silentError: true });
   }
 
+  // フォルダの選択の結果（絶対パス）を、アプリの中で使うパス（保存先の中の相対パス）へ直す。
+  // 選択の表示用のパス（「保存先の名前/…」）を移動先のパスにすると、移動先のボードの再描画（パスで照合）と、
+  // 取り消しの時の移動先の確認（/topic-migrations/open）が食い違っていた（M-014 第3段階 links で発見）。
+  function appPathForSelection(selection) {
+    const path = normalizePath(selection?.path || selection?.legacyPath);
+    const appState = typeof state !== 'undefined' ? state : global.state;
+    const vault = normalizePath(appState?.vaultPath || '');
+    if (vault && path.toLowerCase().startsWith(vault.toLowerCase() + '/')) return path.slice(vault.length + 1);
+    return path;
+  }
+
   async function registeredTarget(selection, preferredViewId) {
     const resourceType = selection?.type === 'board' ? 'board' : 'sheet';
-    const path = normalizePath(selection?.path || selection?.legacyPath);
-    const cached = viewsByPath.get(path);
+    const path = appPathForSelection(selection);
+    const cached = viewsByPath.get(path) || viewsByPath.get(normalizePath(selection?.path || selection?.legacyPath));
     if (cached?.document && global.MeldexTopicViewPicker?.blockFromDocument) {
       const snapshot = await fetchView(cached.document.documentId);
       if (snapshot?.readOnly) throw new Error('選択した移動先は読み取り専用です');
@@ -443,7 +454,7 @@
       surface: resourceType,
       revision: checkpointId(snapshot.checkpoint),
       document: snapshot.viewDocument,
-      path: block.legacyPath || selection.path || '',
+      path: path || block.legacyPath || selection.path || '',
       label: selection.name || block.fallback?.title || '移動先',
     };
   }
@@ -612,11 +623,12 @@
     if (refreshed.unavailable) {
       // 共通保管庫へ移行できないシートでは、共通化の対象（他の場所の同じ列）が存在しない。
       // 以前はここで列名変更そのものを拒否していたため、移行できないシートでは列名を一切
-      // 変えられなかった。旧シート（正本）の列名だけを変更し、理由を通知する。
+      // 変えられなかった。旧シート（正本）の列名だけを変更する。
+      // 利用者向けには結果だけを出す（省略した理由は内部の判定なので記録にだけ残す。2026-11-22 利用者役の探索で
+      // 「共通化の確認は省略: unregistered」と内部の用語がステータスバーに出ていた）。
       await options.rename();
-      if (typeof global.showStatus === 'function') {
-        global.showStatus(`列名を変更しました（共通化の確認は省略: ${refreshed.message}）`);
-      }
+      try { global.console?.info?.('[Meldex] 列名変更: 共通保管庫の確認を省略', refreshed.message); } catch (_) { /* 記録できない環境 */ }
+      if (typeof global.showStatus === 'function') global.showStatus('列名を変更しました');
       return true;
     }
     const view = refreshed.view;
@@ -643,23 +655,10 @@
       }
     }
     if (!current) throw new Error('変更する列の型と安定IDを確認できません');
-    const params = new URLSearchParams({
-      name: options.newName,
-      column_type: current.columnType,
-      document_id: view.document.documentId,
-    });
-    const response = await global.apiFetch(`/topic-property-families/candidates?${params}`, { silentError: true });
-    const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
-    let familyId = current.propertyFamilyId;
-    if (candidates.length) {
-      const decision = await bindingDialog({
-        displayName: options.newName, columnType: current.columnType,
-      }, candidates);
-      if (decision.decision === 'cancel') return false;
-      if (decision.decision === 'commonize') {
-        familyId = candidates.find(item => (item.propertyFamilyId || item.columnId) === decision.candidateId)?.propertyFamilyId;
-      }
-    }
+    // 列名の変更では、ほかのシートの同名・同タイプの列との共通化を確認しない（2026-11-20 ユーザー判断）。
+    // トピックの共有が無い無関係なシートまで候補になり、よくある列名では改名のたびに確認が出ていた。
+    // 列は別の列のまま保ち、共通化はトピックを別のシートへ移す・置く時（移動先の同名列）だけ尋ねる。
+    const familyId = current.propertyFamilyId;
     const expectedSheetViews = renamedSheetViews(
       view.document, options.oldName, options.newName, familyId, current,
     );
@@ -1086,7 +1085,12 @@
       source = { ...source, record, placement, document: current.document,
         revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
     }
-    if (source.placement?.surface === 'sheet' && source.record?.legacyPath
+    // 元のフォルダ形式のシートの行を確かめるのは、そのトピックが生まれたシート（originDocumentId）で操作する時だけ。
+    // リンク複製で別のシートに置いたトピックは、そのシートのフォルダに元の行が無いので「元のトピックが変更されています」で
+    // 止まり、取り消し（この場所から外す）もできなかった（M-014 第3段階 links で発見）。
+    const originHere = !source.record?.originDocumentId
+      || String(source.record.originDocumentId) === String(source.placement?.documentId || source.document?.documentId || '');
+    if (source.placement?.surface === 'sheet' && source.record?.legacyPath && originHere
         && !source.record.createdByPlacementMutationId && global.GbTopicLiveBridge?.flushOpenedSheet) {
       const previousView = viewsByPath.get(normalizePath(source.path));
       if (await global.waitForPendingDbValueMutations?.(source.path) === false) {

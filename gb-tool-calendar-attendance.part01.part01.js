@@ -213,6 +213,17 @@
   }
 
   function _calAttCanManageAttendance() {
+    // スケジュールが判定した管理者（/auth/me の役割。出退勤状況のメンバー行・実績の修正と同じ判定）も含める。
+    // 以前はチームの役割だけを見ていたため、実績を修正できる管理者が勤怠CSVを出せなかった（M-014 で発見）。
+    try {
+      let admin = false;
+      if (typeof forEachComponent === 'function') {
+        forEachComponent(component => {
+          if (!admin && component instanceof CalendarComponent && component._calCurrentRole && component._calUserIsAdmin?.()) admin = true;
+        });
+      }
+      if (admin) return true;
+    } catch {}
     let role = '';
     try { if (typeof getMyRoleForPath === 'function') role = String(getMyRoleForPath('') || '').toLowerCase(); } catch {}
     try {
@@ -255,8 +266,13 @@
     if (this._calendarThemeHandler) return;
     const handler = () => {
       if (!this.el || !this.el.isConnected) return;
-      this._renderCalendarList();
-      if (typeof this._render === 'function') this._render();
+      // テーマだけが変わった時は、一覧・予定・選択を作り直さず色を更新する。
+      for (const row of this.el.querySelectorAll('.gb-cal-calendar-row[data-calendar-id]')) {
+        const index = (this._calendars || []).findIndex(cal => String(cal.id) === row.dataset.calendarId);
+        const cal = this._calendars?.[index], dot = row.querySelector('.gb-cal-calendar-dot');
+        if (cal && dot) dot.style.background = cal.color || _calAttPaletteColorAt(Math.max(0, index));
+      }
+      window.applyCalendarPanelStyle?.();
     };
     this._calendarThemeHandler = handler;
     window.addEventListener('meldex-theme-color-set-change', handler);
@@ -268,6 +284,15 @@
     window.removeEventListener('meldex-theme-color-set-change', this._calendarThemeHandler);
     window.removeEventListener('meldex-theme-change', this._calendarThemeHandler);
     this._calendarThemeHandler = null;
+  };
+
+  // ツールバーの「再読み込み」で打刻の状態と出退勤状況も読み直す。勤務状態を読めずに全ボタンを
+  // 無効にした後（「再試行してください」と出した後）、ここで読み直せないと開き直すまで打刻できない。
+  const baseAttendanceReload = CalendarComponent.prototype.reload;
+  CalendarComponent.prototype.reload = async function(...args) {
+    const result = await baseAttendanceReload.apply(this, args);
+    await this._updateClockStatus?.();
+    return result;
   };
 
   const baseAttendanceDestroy = CalendarComponent.prototype.destroy;
@@ -367,6 +392,8 @@
         user,
         source: 'local',
         folder: DEFAULT_CALENDAR_FOLDER,
+        // 利用者ごとに決まったIDで作る（別のPCで同期が届く前に開いても、同期で1件にまとまる）
+        default_calendar: true,
       });
       const created = await apiFetch(url);
       if (!Array.isArray(created)) throw new Error('カレンダー一覧を確認できませんでした');
@@ -451,7 +478,7 @@
     this._renderCalendarList();
     this._render();
     try {
-      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: visible ? 1 : 0 });
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { visible: visible ? 1 : 0 }));
       return true;
     } catch (error) {
       apply(wasVisible);
@@ -556,13 +583,13 @@
       const members = workspaceState.members || workspaceState.workspace?.members || [];
       const currentMember = Array.isArray(members)
         ? members.find(member => String(member?.name || member?.user || '') === this._getUser()) : null;
-      await apiPost('/cal/time', {
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('clock', apiPost('/cal/time', {
         type,
         user: this._getUser(),
         timestamp: this._localDateTimeStr(new Date()),
         workspace_id: workspaceId,
         member_id: String(currentMember?.id || currentMember?.member_id || ''),
-      });
+      }));
       const labels = { clock_in: '出勤しました', clock_out: '退勤しました', break_start: '離席しました', break_end: '復帰しました' };
       this._showStatus(labels[type] || type);
       await Promise.all([this._updateClockStatus(), this._loadEvents(), this._loadCalendars()]);
@@ -635,6 +662,13 @@
     this._wrapCalendarSidebarSection('calendars', 'カレンダー', 'calendarDays', calendarPanel);
     this._compactLegacySidebarHeader(taskPanel);
     this._compactLegacySidebarHeader(calendarPanel);
+    // 「＋」はカレンダーの種類のメニューを開く。メニューを開くボタンと示さないと、押した時のクリックが
+    // 共通の「外側のクリックで閉じる」（gb-dropdown-dismiss.js）に届き、開いたメニューがすぐ閉じる（M-014 で発見）。
+    const createButton = this._sidebarEl.querySelector('[data-cal-action="createCalendar"]');
+    if (createButton) {
+      createButton.setAttribute('aria-haspopup', 'menu');
+      createButton.setAttribute('aria-expanded', 'false');
+    }
   };
 
   CalendarComponent.prototype._compactLegacySidebarHeader = function(node) {
@@ -794,6 +828,7 @@
           item.classList.add('is-editable');
           item.style.minHeight = '44px';
           item.dataset.calAttendanceEditUser = row.member.name;
+          item.dataset.e2eId = 'calendar-attendance-user-' + _calAttStableSlug(row.member.name);
           item.setAttribute('aria-label', `${row.member.name}の${correctionDay}の実績を修正`);
           item.addEventListener('click', () => this._showAttendanceCorrectionModal?.({
             id: `attendance:${row.member.name}:${correctionDay}`,
@@ -819,6 +854,7 @@
         header.type = 'button';
         header.className = 'gb-cal-attendance-folder-header';
         header.dataset.calAttendanceFolder = folderKey || group.label || 'default';
+        header.dataset.e2eId = 'calendar-attendance-folder-' + _calAttStableSlug(folderKey || group.label || 'default');
         header.setAttribute('aria-label', `${group.label}の出退勤状況を開閉`);
         header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
         header.innerHTML = `<span class="gb-cal-folder-caret">${_calAttIcon('chevronDown', 12)}</span><span class="gb-cal-folder-name">${_calAttEsc(group.label)}</span><span class="gb-cal-folder-count">${group.rows.length}</span>`;
@@ -985,6 +1021,7 @@
     colorSwatch.className = 'gb-color-swatch gb-color-swatch--field';
     colorSwatch.title = 'カレンダーの色';
     colorSwatch.setAttribute('aria-label', 'カレンダーの色');
+    colorSwatch.dataset.e2eId = 'calendar-color-' + calendarE2eKey;
     const currentColor = cal.color || _calAttPaletteColorAt(0);
     if (typeof setColorSwatchValue === 'function') setColorSwatchValue(colorSwatch, currentColor);
     else { colorSwatch.dataset.color = currentColor; colorSwatch.style.background = currentColor; }
@@ -1063,6 +1100,7 @@
     roleSelect.disabled = !this._calUserIsAdmin();
     roleSelect.title = roleSelect.disabled ? '管理者のみ変更できます' : '編集権限';
     roleSelect.setAttribute('aria-label', '編集権限');
+    roleSelect.dataset.e2eId = 'calendar-role-' + calendarE2eKey;
     roleSelect.addEventListener('change', () => this._setCalendarRole(cal, roleSelect.value, { control: roleSelect }));
     roleRow.append(roleLabel, roleSelect);
     menu.appendChild(roleRow);
@@ -1076,6 +1114,7 @@
     deleteBtn.disabled = !canDelete;
     deleteBtn.title = canDelete ? 'このカレンダーを削除' : '削除権限がありません';
     deleteBtn.setAttribute('aria-label', deleteBtn.title);
+    deleteBtn.dataset.e2eId = 'calendar-delete-' + calendarE2eKey;
     deleteBtn.innerHTML = `<span>${_calAttIcon('trash2', 14)}</span><span>このカレンダーを削除</span>`;
     deleteBtn.addEventListener('click', (e) => {
       e.preventDefault();

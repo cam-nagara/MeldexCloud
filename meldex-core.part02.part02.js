@@ -24,6 +24,8 @@
     }
   });
 
+  svg.addEventListener('pointercancel', () => { _ann.drawing = false; _ann.path = []; _ann.pressures = []; layer.querySelector('.ann-preview')?.remove(); });
+
   svg.addEventListener('pointerup', (e) => {
     if (!_ann.drawing) return;
     _ann.drawing = false;
@@ -277,7 +279,7 @@
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -363,19 +365,34 @@
   }
 
   // 親からのpostMessageで同期
-  window.addEventListener('message', (ev) => {
-    if (!_isTrustedParentMessageEvent(ev)) return;
+  const onParentMessage = (ev) => {
+    if (options.localSurface || !_isTrustedParentMessageEvent(ev)) return;
     const msg = ev.data;
     _handleMessage(msg);
-  });
+  };
+  if (!options.localSurface) window.addEventListener('message', onParentMessage);
 
   const bridge = {
+    options,
+    hasPendingWrites: () => pendingWrites.size > 0,
+    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
     svg,
     layer,
     notesLayer,
     ann: _ann,
     handleMessage: _handleMessage,
     updateSize: _updateSize,
+    dispose() {
+      _resizeObs.disconnect();
+      options.scrollContainer?.removeEventListener('scroll', syncSurfaceScroll);
+      _anchoredResizeObserver.disconnect();
+      _anchoredMutationObserver?.disconnect();
+      if (_anchoredRefreshHandle) cancelAnimationFrame(_anchoredRefreshHandle);
+      window.removeEventListener('message', onParentMessage);
+      svg.remove(); notesLayer.remove();
+      delete wrapper._annBridge;
+      if (host !== wrapper) delete host._annBridge;
+    },
     refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
   };
   const e2eBridgeEnabled = (() => {

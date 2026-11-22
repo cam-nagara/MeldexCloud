@@ -149,7 +149,7 @@
     const path = String(target.contextPath || target.path || '');
     return {
       kind: target.kind || 'file',
-      label: _basename(path) || path,
+      label: String(target.label || _basename(path) || path),
       title: path,
       count: 1,
       path,

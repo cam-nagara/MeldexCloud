@@ -97,6 +97,7 @@ function _bdSnapshot() {
     activeLineStyle: bd.activeLineStyle,
     stylePresetSeedVersion: bd._stylePresetSeedVersion || 0,
     themeId: bd.themeId || '',
+    displayLayers: bd.displayLayers ? { ...bd.displayLayers } : null,
     statuses: bd.statuses,
     displayFilters: bd.displayFilters,
     globalStyleDefaults: typeof bdCaptureGlobalStyleDefaults === 'function' ? bdCaptureGlobalStyleDefaults() : null,
@@ -111,6 +112,38 @@ function _bdSnapshot() {
     autoAlign: bd.autoAlign !== false,
   });
 }
+// このボードの自動リンクの状態（boardUi.autoLinks）を表示へ登録する。トピックの描画はこの値を見る。
+function bdSyncDisplayLayers(path) {
+  const target = path || bd?.path || '';
+  if (!(typeof globalThis.MeldexDisplayLayers?.registerApp === 'function') || !target) return;
+  _bdRegisterDisplayLayers();
+  MeldexDisplayLayers.setFileState(target, bd.displayLayers, { supportsAutoRuby: false });
+  MeldexDisplayLayers.refreshControls();
+}
+
+function _bdRegisterDisplayLayers() {
+  if (_bdRegisterDisplayLayers.done || !(typeof globalThis.MeldexDisplayLayers?.registerApp === 'function')) return;
+  _bdRegisterDisplayLayers.done = true;
+  MeldexDisplayLayers.registerApp('board', {
+    supportsAutoRuby: false,
+    pathForButton() { return (typeof bd !== 'undefined' && bd?.path) ? bd.path : ''; },
+    async write(path, next) {
+      if (typeof bd === 'undefined' || bd.path !== path) return false;
+      if (typeof isItemLocked === 'function' && isItemLocked(path)) {
+        if (typeof showStatus === 'function') showStatus('編集ロック中のため変更できません', true);
+        return false;
+      }
+      bdPushUndo('自動リンクの切り替え');
+      bd.displayLayers = { autoLinks: !!next.autoLinks };
+      bdSyncDisplayLayers(path);
+      if (typeof bdRunFullRender === 'function') bdRunFullRender('display-layers');
+      else if (typeof bdRender === 'function') bdRender();
+      if (typeof bdDirty === 'function') bdDirty();
+      return true;
+    },
+  });
+}
+
 function bdPushUndo(label) {
   const _bdUndoPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdPushUndo') : 0;
   if (typeof bdClearUndoCoalesce === 'function') bdClearUndoCoalesce();
@@ -160,6 +193,10 @@ function _bdApplySnapshot(s) {
   bd.activeLineStyle = s.activeLineStyle || bd.activeLineStyle;
   bd._stylePresetSeedVersion = s.stylePresetSeedVersion || 0;
   bd.themeId = s.themeId || '';
+  if (s.displayLayers !== undefined) {
+    bd.displayLayers = s.displayLayers ? { ...s.displayLayers } : null;
+    bdSyncDisplayLayers();
+  }
   if (s.statuses !== undefined) bd.statuses = s.statuses;
   if (s.displayFilters !== undefined) bd.displayFilters = s.displayFilters || {};
   if (s.globalStyleDefaults !== undefined && typeof bdRestoreGlobalStyleDefaults === 'function') {
@@ -323,6 +360,7 @@ async function bdOpenBoard(label, path, opts) {
   bd.connecting = null;
   bd.tool = 'select';
   bd.displayFilters = {};
+  bd.displayLayers = null;
   bd._stylePresetSeedVersion = 0;
   bd.themeId = '';
   bd._showShadow = false;
@@ -453,6 +491,8 @@ async function bdOpenBoard(label, path, opts) {
     bd.activeLineStyle = parsed.boardUi?.activeLineStyle || '';
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
+    bd.displayLayers = parsed.boardUi?.displayLayers ? { ...parsed.boardUi.displayLayers } : null;
+    bdSyncDisplayLayers(nextPath);
     bd.displayFilters = parsed.boardUi?.displayFilters || {};
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;

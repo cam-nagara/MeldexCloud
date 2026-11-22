@@ -337,6 +337,7 @@ function _hasLocalDbViewConfigCache(dbPath) {
   });
 }
 function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
+  if (window.MeldexChatManagementSheet?.isPath?.(dbPath)) return Promise.resolve(true);
   if (!dbPath || typeof MeldexSheetViewConfigEnvironment?.put !== 'function') return Promise.resolve(false);
   const payload = _sanitizeDbViewConfigForBackend(cfg);
   const key = String(dbPath || '');
@@ -679,18 +680,31 @@ async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
   const key = getDbViewConfigStorageKey(dbPath);
   const previous = localStorage.getItem(key);
   const before = options.skipHistory === true ? null : captureDbViewConfigHistory(dbPath);
+  // 取り消しの記録は操作した時点で枠を取る（保存の完了後に記録すると、保存が終わる前の Ctrl+Z が直前の別の操作を
+  // 取り消してしまう。exe など保存が遅い環境で再現、2026-11-21）。保存に失敗した時・変化が無い時は枠を取り除く。
+  const historyScope = options.historyScope !== undefined ? options.historyScope : _dbViewConfigHistoryScope(dbPath);
+  const reservation = (options.historyLabel && options.skipHistory !== true && typeof historyReserve === 'function')
+    ? historyReserve(options.historyLabel, historyScope, options.historyDetail || '') : null;
   localStorage.setItem(key, JSON.stringify(cfg || {}));
-  const saved = await _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: true, ctx: options.ctx });
+  let saved = false;
+  try {
+    saved = await _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: true, ctx: options.ctx });
+  } catch (error) {
+    reservation?.cancel();
+    throw error;
+  }
   if (!saved) {
+    reservation?.cancel();
     if (previous == null) localStorage.removeItem(key);
     else localStorage.setItem(key, previous);
     return false;
   }
   if (options.historyLabel && options.skipHistory !== true) {
-    pushDbViewConfigHistory(
+    const push = () => pushDbViewConfigHistory(
       dbPath, options.historyLabel, before, captureDbViewConfigHistory(dbPath),
       options.historyDetail || '', options.onRestore, options.historyScope
     );
+    if (reservation) reservation.capture(push); else push();
   }
   if (typeof _ptScheduleViewTargetRefresh === 'function') _ptScheduleViewTargetRefresh(dbPath);
   return true;
@@ -991,3 +1005,41 @@ const STATUS_MAP = {
   'ボツ':     { cls: 'st-rejected',  color: '#969696' },
 };
 const STATUS_LIST = ['案', '採用', 'ボツ', '掲載済み'];
+
+// ── ツールバーの自動リンクの切り替え（シートごと。表示設定 view_config.displayLayers に保存） ──
+// 表示設定は旧版でも丸ごと保存し直すだけなので、知らない項目（displayLayers）は消えない。
+function _registerSheetDisplayLayers() {
+  if (_registerSheetDisplayLayers.done || !(typeof globalThis.MeldexDisplayLayers?.registerApp === 'function')) return;
+  _registerSheetDisplayLayers.done = true;
+  const refresh = (dbPath) => {
+    MeldexDisplayLayers.setFileState(dbPath, getDbViewConfig(dbPath)?.displayLayers, { supportsAutoRuby: false });
+    MeldexDisplayLayers.refreshControls();
+    _refreshDbViewConfigAfterHistory(dbPath);
+  };
+  MeldexDisplayLayers.registerApp('database', {
+    supportsAutoRuby: false,
+    pathForButton(btn) {
+      // サブパネル・トピック内のシートのツールバーのボタンは、その面のシートを指す（メインパネルのシートではなく）。
+      const surfaceCtx = btn?.closest?.('[data-editor-host]')?._dbPaneContext;
+      if (surfaceCtx?.dbPath && !surfaceCtx.destroyed) return surfaceCtx.dbPath;
+      return (typeof state !== 'undefined' && state?.currentDbPath) ? state.currentDbPath : '';
+    },
+    async write(dbPath, next) {
+      if (MeldexSheetViewConfigEnvironment?.isWriteBlocked?.(dbPath) === true) {
+        if (typeof showStatus === 'function') showStatus('このシートは表示設定を保存できません', true);
+        return false;
+      }
+      const cfg = { ...(getDbViewConfig(dbPath) || {}), displayLayers: { autoLinks: !!next.autoLinks } };
+      const saved = await saveDbViewConfigImmediate(dbPath, cfg, {
+        historyLabel: '自動リンクの切り替え',
+        onRestore: () => refresh(dbPath),
+      });
+      if (!saved) {
+        if (typeof showStatus === 'function') showStatus('シートの表示設定を保存できませんでした', true);
+        return false;
+      }
+      _refreshDbViewConfigAfterHistory(dbPath);
+      return true;
+    },
+  });
+}

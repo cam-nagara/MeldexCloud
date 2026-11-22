@@ -52,7 +52,7 @@ function _showTableToolbar(tableEl, editable) {
     { label: '行削除', action: async () => {
       const cell = _getCurrentCell();
       if (!cell) return;
-      if (!(await confirmNoteTableDelete('この行を削除しますか？'))) return;
+      if (!(await confirmNoteTableDelete('この行を削除しますか？', editable))) return;
       pushTableUndo();
       cell.parentElement.remove();
       dispatchTableInput();
@@ -60,7 +60,7 @@ function _showTableToolbar(tableEl, editable) {
     { label: '列削除', action: async () => {
       const cell = _getCurrentCell();
       if (!cell) return;
-      if (!(await confirmNoteTableDelete('この列を削除しますか？'))) return;
+      if (!(await confirmNoteTableDelete('この列を削除しますか？', editable))) return;
       pushTableUndo();
       const ci = [...cell.parentElement.children].indexOf(cell);
       tableEl.querySelectorAll('tr').forEach(r => { if (r.children[ci]) r.children[ci].remove(); });

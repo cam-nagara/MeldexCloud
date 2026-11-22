@@ -151,14 +151,22 @@ Object.assign(ScriptNoteEditor.prototype, {
     presetSel.title = '行セットプリセットを選択';
     presetSel.setAttribute('aria-label', '行セットプリセットを選択');
     this._refreshRowsetPresetOptions(presetSel);
+    // 選んだプリセットはパネルを作り直しても選択欄に残す。作り直しで「（プリセット選択）」へ
+    // 戻ると、続けて押した「削除」が対象なしで何もしなかった（M-014 S16）。
+    if (this._rowsetSelectedPreset && [...presetSel.options].some(o => o.value === this._rowsetSelectedPreset)) {
+      presetSel.value = this._rowsetSelectedPreset;
+    }
     presetSel.addEventListener('change', () => {
       const val = presetSel.value;
+      this._rowsetSelectedPreset = val || '';
       if (!val) return;
       const presets = this._readRowsetPresets();
       const preset = presets[val];
       if (preset) {
+        const hadFocus = document.activeElement === presetSel;
         this._rowsetRows = JSON.parse(JSON.stringify(preset));
         this.renderRowsetPanel(container);
+        if (hadFocus) container.querySelector('.sn2-rowset-preset-select')?.focus();
       }
     });
     presetRow.appendChild(presetSel);
@@ -199,10 +207,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       cancelBtn.type = 'button';
       cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
       cancelBtn.textContent = 'キャンセル';
+      cancelBtn.dataset.e2eId = 'scriptnote-rowset-save-cancel';
       const okBtn = document.createElement('button');
       okBtn.type = 'button';
       okBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
       okBtn.textContent = '保存';
+      okBtn.dataset.e2eId = 'scriptnote-rowset-save-confirm';
       let busy = false;
       const modalApi = window.GBUI.createModal({
         id: 'scriptnote-rowset-save', title: '行セットプリセット保存', body, footer: [cancelBtn, okBtn],
@@ -235,7 +245,9 @@ Object.assign(ScriptNoteEditor.prototype, {
           });
           let refreshWarning = false;
           try {
+            this._rowsetSelectedPreset = name;
             this._refreshRowsetPresetOptions(presetSel);
+            presetSel.value = name;
           } catch (error) {
             console.warn('行セットプリセット保存後の一覧更新に失敗しました:', error);
             refreshWarning = true;
@@ -284,6 +296,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           label: 'シナリオ: 行セットプリセット削除',
           detail: val,
         });
+        if (this._rowsetSelectedPreset === val) this._rowsetSelectedPreset = '';
         this._refreshRowsetPresetOptions(presetSel);
         if (typeof showStatus === 'function') showStatus(`プリセット「${val}」を削除しました`);
       } catch (error) {

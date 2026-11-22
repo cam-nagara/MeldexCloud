@@ -1299,7 +1299,13 @@
     }
     const layoutRoot = document.getElementById('gb-layout-root');
     if (layoutRoot && typeof MutationObserver !== 'undefined') {
-      const observer = new MutationObserver(_queueLeftChromeSync);
+      const observer = new MutationObserver(records => {
+        // ファイルの行やカードの追加では、サイドバーの配置は変わらない。
+        // 大量表示の各描画片で寸法を読むと、そのたびに画面全体の配置計算が走る。
+        const layoutNodes = '#sidebar, .gb-dock-bar, .gb-split, .gb-column, .gb-pane';
+        if (records.some(record => [...record.addedNodes, ...record.removedNodes].some(node =>
+          node.nodeType === 1 && (node.matches(layoutNodes) || node.querySelector(layoutNodes))))) _queueLeftChromeSync();
+      });
       observer.observe(layoutRoot, { childList: true, subtree: true });
     }
     document.addEventListener('visibilitychange', _syncLeftChromePollingForVisibility);

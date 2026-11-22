@@ -119,14 +119,16 @@
 .gb-tpl-thumb > svg { width: 100%; height: 100%; display: block; }
 .gb-tpl-thumb-fallback { color: var(--fg2); font-size: 12px; padding: 8px; text-align: center; }
 .gb-tpl-card-label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 32px 0 2px; }
+/* 長いテンプレート名は切らずに折り返して全部見せる（2026-11-21 見た目の検査で「…」で切れていたのを検出）。 */
 .gb-tpl-card-name {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.35;
 }
 .gb-tpl-card-badge {
   flex: 0 0 auto;

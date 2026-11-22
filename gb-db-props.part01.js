@@ -26,6 +26,13 @@ const PROP_TYPE_ICON = {
   chat: 'messagesSquare',
 };
 
+// 列見出しの列タイプのアイコン（列ごとのアイコン設定 → 列タイプの既定）。列見出しと列管理で同じものを出す。
+function _dbColumnTypeIconHtml(ptc, dbPath, size) {
+  const px = size || 14;
+  if (ptc?.icon && window.GBIconAssets?.render) return GBIconAssets.render(ptc.icon, px, { contextPath: dbPath });
+  return lucide(PROP_TYPE_ICON[ptc?.type] || PROP_TYPE_ICON.text, px);
+}
+
 /* pivot 同期・relation キャッシュ helper は gb-db-pivot-sync.js が単一実装。 */
 
 /* ==============================
@@ -382,13 +389,15 @@ function _makeInsertColumnTypeChildren(refProp, direction, ctxOrDbPath) {
 // 型変更・削除・リネーム）が埋め込みシート自身を正しく対象にする。
 function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, menuOptions = {}) {
   closeColHeaderMenu();
+  // 列見出しのツールチップを閉じる（メニューを開いた後も表のセルの上に残り、文字に重なっていた。2026-11-22）。
+  try { window.GBTooltip?.hide?.({ suppressUntilLeave: true }); } catch (_) { /* ツールチップが無い画面 */ }
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: dbPathOverride || state.currentDbPath })
     : null);
   closeAllDropdowns(ctx || e?.target || e?.currentTarget);
   const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
-  const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
-    && isProductionManagementSheetPath(dbPath);
+  const productionSchemaLocked = window.MeldexChatManagementSheet?.isPath?.(dbPath) || (typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath));
   const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, ctx);
   const pinnedRange = _dbPinnedRangeForMenu(ctx, dbPath, e?.target || e?.currentTarget);
@@ -402,12 +411,26 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
     _addMenuRenameInput(menu, propName, async (newName) => {
       if (typeof renameDbProperty === 'function') {
         if (window.MeldexTopicPlacementUI?.renameColumn) {
-          const renamed = await window.MeldexTopicPlacementUI.renameColumn({
-            dbPath, oldName: propName, newName, ctx, viewId: ctx?.currentViewId,
-            rename: () => renameDbProperty(dbPath, propName, newName, ctx),
-            rollback: () => renameDbProperty(dbPath, newName, propName, ctx),
-          });
-          if (!renamed) return;
+          // オプションパネルの列設定タブの列名欄も確定の時点で新しい名前にする（保存失敗・中止で戻す）。
+          const syncPanels = (from, to, phase) => {
+            if (typeof _ptSyncColumnRenameToPanels === 'function') _ptSyncColumnRenameToPanels(dbPath, from, to, phase);
+          };
+          syncPanels(propName, newName, 'preview');
+          let renamed;
+          try {
+            renamed = await window.MeldexTopicPlacementUI.renameColumn({
+              dbPath, oldName: propName, newName, ctx, viewId: ctx?.currentViewId,
+              rename: () => renameDbProperty(dbPath, propName, newName, ctx),
+              rollback: () => renameDbProperty(dbPath, newName, propName, ctx),
+            });
+          } catch (error) {
+            syncPanels(newName, propName, 'reverted');
+            throw error;
+          }
+          if (!renamed) {
+            syncPanels(newName, propName, 'reverted');
+            return;
+          }
         } else {
           await renameDbProperty(dbPath, propName, newName, ctx);
         }
@@ -447,14 +470,25 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
             if (!ok) return;
           }
           let opts = undefined;
+          // リレーション⇔文字などの変更では、識別番号と名前を置き換える（取り消し・やり直し可能）。
+          let valuePlan = { writes: [] };
+          try {
+            if (typeof _ptPlanTypeChangeValues === 'function') {
+              valuePlan = await _ptPlanTypeChangeValues(dbPath, propName, currentPtc, { ...currentPtc, type: ti.type }, ctx);
+            }
+          } catch (error) {
+            showStatus('列の値の変換を準備できませんでした: ' + (error?.message || error), true);
+            return;
+          }
           if (ti.type === 'select' || ti.type === 'multi-select') {
             const existingValues = new Set();
             const pivotData = ctx?.pivotData || state.pivotData;
-            if (pivotData?.entities) {
-              Object.values(pivotData.entities).forEach(ent => {
-                (ent[propName] || []).forEach(v => existingValues.add(v.value));
-              });
-            }
+            const planned = typeof _ptPlannedValues === 'function'
+              ? _ptPlannedValues(valuePlan, pivotData, propName) : [];
+            planned.forEach(value => {
+              if (ti.type === 'multi-select') String(value ?? '').split(/[,、]/).map(v => v.trim()).filter(Boolean).forEach(v => existingValues.add(v));
+              else if (value != null && String(value) !== '') existingValues.add(value);
+            });
             opts = [...existingValues];
           }
           const cfg = { type: ti.type };
@@ -464,12 +498,22 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
           const beforeCfg = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || {}));
           const saved = await setPropertyType(dbPath, propName, cfg, ctx);
           if (saved === false) return;
+          let valueMigration = null;
+          try {
+            if (typeof _ptApplyTypeChangeValuePlan === 'function') valueMigration = await _ptApplyTypeChangeValuePlan(valuePlan);
+          } catch (error) {
+            // 値の置き換えに失敗したら列タイプも元へ戻す（値は置き換え済みの分を戻してある）。
+            try { await setPropertyType(dbPath, propName, beforeCfg, ctx); } catch {}
+            _refreshDbColumnMenuView(ctx, dbPath);
+            showStatus('列の値を変換できなかったため、列タイプを元に戻しました: ' + (error?.message || error), true);
+            return;
+          }
           if (currentType === 'image' && ti.type !== 'image') {
             apiPost('/media/rebuild-refs', {}).catch(() => {});
           }
           _refreshDbColumnMenuView(ctx, dbPath);
           // Undo/Redo: クイック型切替も履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
-          if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, cfg, ctx);
+          if (typeof _ptPushTypeChangeHistory === 'function') _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, cfg, ctx, valueMigration);
         }
       }))
     },
@@ -482,6 +526,10 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
         ? [{ type: 'submenu', label: '← 左に列を挿入', children: _makeInsertColumnTypeChildren(propName, 'left', ctx || dbPath) }]
         : []),
       { type: 'submenu', label: '→ 右に列を挿入', children: _makeInsertColumnTypeChildren(propName, 'right', ctx || dbPath) },
+      // 列の複製（2026-11-21）。列管理の行メニュー・列の表示と順序と同じ処理・同じ取り消し。
+      ...(!productionSchemaLocked && typeof duplicateDbColumn === 'function'
+        ? [{ label: lucide('copy', 14) + ' 列を複製', e2eId: 'db-column-duplicate', action: () => duplicateDbColumn(dbPath, propName, ctx) }]
+        : []),
       { type: 'sep' },
     ] : []),
     {

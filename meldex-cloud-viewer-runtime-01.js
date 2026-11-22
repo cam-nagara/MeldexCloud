@@ -24,12 +24,12 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'b832d5992113', parts: { 'meldex-core.bundle.part01.js': '6821061bd632', 'meldex-core.bundle.part02.js': '9c3566c11a1e', 'meldex-core.bundle.part03.js': '6fafd652d585', 'meldex-core.bundle.part04.js': '4c5360b7ad5d', 'meldex-core.bundle.part05.js': '862997c219a3' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '3bc61518b044', parts: { 'gb-app.bundle.part01.js': 'eff796b060e9', 'gb-app.bundle.part02.js': '7b689550fb39', 'gb-app.bundle.part03.js': 'ce1d54c370c9', 'gb-app.bundle.part04.js': '525b0e7f259b', 'gb-app.bundle.part05.js': '748b92fcc240', 'gb-app.bundle.part06.js': 'e5a967084d6b', 'gb-app.bundle.part07.js': '26d1be7fe0e5' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '801b680c041e', parts: { 'gb-theme-manager.bundle.part01.js': '3fa736f4a2e4', 'gb-theme-manager.bundle.part02.js': 'cdaecba11e60', 'gb-theme-manager.bundle.part03.js': 'b7a2aac62dc6', 'gb-theme-manager.bundle.part04.js': '1ebdd509a16b' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '261484409e7e', parts: { 'gb-outliner.bundle.part01.js': '7110a3e220e0', 'gb-outliner.bundle.part02.js': 'b83418ef2ebb', 'gb-outliner.bundle.part03.js': 'e12250a2499f', 'gb-outliner.bundle.part04.js': '9f0acadac3e4', 'gb-outliner.bundle.part05.js': 'c5f8e70606fa', 'gb-outliner.bundle.part06.js': 'c5780b0b3f48', 'gb-outliner.bundle.part07.js': 'f4d3e9bf117b' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '2477fedfc412', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '74f546cfd9cc', 'gb-data-access-dropbox-fileops.bundle.part02.js': '1b9a372c58d1', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'cd26fb2e39be', 'gb-data-access-dropbox-fileops.bundle.part04.js': '81b7748ba610', 'gb-data-access-dropbox-fileops.bundle.part05.js': '956daa6ffafe', 'gb-data-access-dropbox-fileops.bundle.part06.js': '2f4bbbc4ca8b', 'gb-data-access-dropbox-fileops.bundle.part07.js': 'f77fe59d055c' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '67ff6a2221fc', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '6b518945011a', 'gb-cloud-mobile-editbar.bundle.part02.js': 'ec47e6f9c87b' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '9681678e5bcc', parts: { 'meldex-core.bundle.part01.js': '1b4053b356f8', 'meldex-core.bundle.part02.js': '67cc224eaea9', 'meldex-core.bundle.part03.js': '8637dc224ac3', 'meldex-core.bundle.part04.js': '29c7ff6290b6', 'meldex-core.bundle.part05.js': 'bef916f2c087' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '0f5e10e8bec3', parts: { 'gb-app.bundle.part01.js': 'eff796b060e9', 'gb-app.bundle.part02.js': 'c12645bd2e20', 'gb-app.bundle.part03.js': '17f9c9aa6811', 'gb-app.bundle.part04.js': '46fcc115f3e7', 'gb-app.bundle.part05.js': 'bf80f93c0d0e', 'gb-app.bundle.part06.js': '78aa925695b0', 'gb-app.bundle.part07.js': '218c93a5b2a6' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'a13a77c29ed5', parts: { 'gb-theme-manager.bundle.part01.js': '4f7bb919a532', 'gb-theme-manager.bundle.part02.js': 'cdaecba11e60', 'gb-theme-manager.bundle.part03.js': '9f719b04cd2a', 'gb-theme-manager.bundle.part04.js': '54f90477f6bf' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '965142ef7d9c', parts: { 'gb-outliner.bundle.part01.js': 'c92e0fd040fc', 'gb-outliner.bundle.part02.js': '17e7c3ad7eb8', 'gb-outliner.bundle.part03.js': '6eb9f70904b7', 'gb-outliner.bundle.part04.js': 'ef7b53d16e4f', 'gb-outliner.bundle.part05.js': '0228bff3baee', 'gb-outliner.bundle.part06.js': '0bb848d772ff', 'gb-outliner.bundle.part07.js': '351ac99915f0', 'gb-outliner.bundle.part08.js': 'ad0b5f1b8aaa' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '7d96b105074b', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '74f546cfd9cc', 'gb-data-access-dropbox-fileops.bundle.part02.js': '36391dfbae0d', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'db1f79392a4c', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'b2bc98affde3', 'gb-data-access-dropbox-fileops.bundle.part05.js': '8e19d7cd9e00', 'gb-data-access-dropbox-fileops.bundle.part06.js': '7e6a53d18712', 'gb-data-access-dropbox-fileops.bundle.part07.js': 'c69354e82de8' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '2ed7f82105fa', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '9e691e2fb7fa', 'gb-cloud-mobile-editbar.bundle.part02.js': '39a6774e4a8c' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -417,7 +417,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 2;
+  const THEME_UI_DEFAULTS_VERSION = 4;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -2556,7 +2556,7 @@
   function scheduleBoardRender() {
     const board = getBoardState();
     if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    const render = global.bdRefreshThemeStyles;
     if (typeof render !== 'function') return;
     const token = ++_boardRenderToken;
     const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
@@ -3305,8 +3305,15 @@
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const resolved = resolveSavedThemeUiApplications(themeDef, stored);
+          const encoded = JSON.parse(_encodeThemeUiApplications(resolved));
+          // Keep the exact pre-repair value for recovery, even if an old
+          // explicit choice happens to equal the entire former shipped preset.
+          if (JSON.stringify(normalizeThemeUiApplications(stored)) !== JSON.stringify(resolved)) {
+            encoded._previousDefaults = stored;
+          } else if (stored?._previousDefaults) encoded._previousDefaults = stored._previousDefaults;
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
+            JSON.stringify(encoded));
           wroteApplications = true;
         }
       }
@@ -3339,7 +3346,17 @@
     const previous = clone(applications);
     previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
     const legacyDefaults = [previous];
-    if (stored._defaultsVersion == null) {
+    // Shipped defaults also used white selected text and an unshaded rail.
+    // v3 stamped that snapshot unchanged, so a version number alone cannot
+    // prove it was repaired. Match the complete former preset, never individual
+    // auto-color fields (which may be genuine user choices).
+    const whiteTextDefaults = clone(previous);
+    whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
+    legacyDefaults.push(whiteTextDefaults);
+    // v1/v2 could stamp the original sequential defaults without upgrading them.
+    // Treat that exact snapshot like the unversioned original; a current save
+    // (including an intentional auto-color choice) is still returned above.
+    if (stored._defaultsVersion == null || [1, 2].includes(stored._defaultsVersion)) {
       const oldTreeDefaults = clone(previous);
       oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
       const treeOnlyDefaults = clone(applications);

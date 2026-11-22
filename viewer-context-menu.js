@@ -20,6 +20,7 @@
   function items() {
     const scene = Scene();
     return [
+      ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
       { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
       { label: '1枚戻る', icon: 'arrowLeft', shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
@@ -77,6 +78,27 @@
 
   function openMenuAt(clientX, clientY) {
     window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
+  }
+
+  // ツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。右クリックと同じメニューを
+  // ボタンの直下に開き、閉じたらボタンへフォーカスを戻す。開いている間にもう一度押すと閉じる。
+  const mainMenuButton = document.getElementById('btn-viewer-main-menu');
+  if (mainMenuButton) {
+    let closedByButtonPress = false;
+    mainMenuButton.addEventListener('pointerdown', () => {
+      closedByButtonPress = !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
+    });
+    mainMenuButton.addEventListener('click', event => {
+      event.stopPropagation();
+      if (closedByButtonPress) { closedByButtonPress = false; return; }
+      if (!window.MeldexContextMenuUI?.openAt) return;
+      mainMenuButton.setAttribute('aria-expanded', 'true');
+      window.MeldexContextMenuUI.openAt({
+        anchorRect: mainMenuButton.getBoundingClientRect(), ariaLabel: 'ビューワーメニュー', items: items(),
+        restoreFocus: mainMenuButton,
+        onClose: () => mainMenuButton.setAttribute('aria-expanded', 'false'),
+      });
+    });
   }
 
   const display = document.getElementById('display');

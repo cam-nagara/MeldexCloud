@@ -145,6 +145,16 @@
     const pending = saveDraft(draft, ctx, identity);
     retries.set(id, pending);
     try { return await pending; }
+    catch (error) {
+      // 再保存でも回復しなかった処理を自己記録へ残す（gb-log-export.js）。
+      try {
+        window.MeldexDiagnostics?.recordSheetIncident?.('retry-failed', {
+          op: 'cell-resave', sheet: draft.dbPath,
+          status: error?.status || 0, errorType: error?.status ? 'HTTP ' + error.status : String(error?.name || 'Error'),
+        });
+      } catch {}
+      throw error;
+    }
     finally { if (retries.get(id) === pending) retries.delete(id); }
   }
   function render(td, entryPath, property, ctx) {
@@ -190,7 +200,55 @@
       }
     });
   }
-  window.MeldexSheetCellRecovery = { keep, clear, drafts, render, retry };
+  // 開いている入力欄（確定前）を覚えておき、画面を閉じる・再読み込みする時に未保存の入力として端末へ退避する
+  // （M-014 追加4、2026-11-20。以前は確定前の入力が跡形もなく消えていた）。退避は保存しないので二重保存にならない。
+  // 次に開いた時はセルに「未保存の入力」と「再保存」が出る（再保存は保存済みの値と同じなら足さない）。
+  const openEditors = new Set();
+  function watchEditor(info) {
+    if (!info || !info.element || typeof info.read !== 'function') return () => {};
+    const record = { ...info };
+    openEditors.add(record);
+    return () => openEditors.delete(record);
+  }
+  function stashOpenEditors() {
+    for (const record of [...openEditors]) {
+      if (!record.element.isConnected) { openEditors.delete(record); continue; }
+      let value = '';
+      try { value = String(record.read() ?? ''); } catch { continue; }
+      if (!value.trim() || value === String(record.before ?? '')) continue;
+      keep({ dbPath: record.dbPath, entryPath: record.entryPath, property: record.property,
+        candidateIndex: record.candidateIndex ?? null, before: record.before ?? '', value, status: record.status || '採用' });
+      openEditors.delete(record);
+    }
+  }
+  window.addEventListener('pagehide', stashOpenEditors);
+  window.addEventListener('beforeunload', stashOpenEditors);
+  // 失敗と表示した保存が後から送り直されて入った時（gb-app の値の保存）は、そのセルの「未保存の入力」を消して表示を読み直す。
+  window.addEventListener('meldex:value-write-replayed', event => {
+    try {
+      const query = String(event.detail?.path || '').split('?')[1] || '';
+      const entryPath = new URLSearchParams(query).get('path') || '';
+      const body = event.detail?.body || {};
+      const property = String(body.property || body.new_property || '');
+      if (!entryPath) return;
+      const norm = value => String(value || '').replace(/\\/g, '/');
+      for (const draft of drafts(entryPath, property)) {
+        if (norm(draft.entryPath) === norm(entryPath) && (!property || draft.property === property)) clear(draft);
+      }
+      const dbPath = norm(entryPath).split('/').slice(0, -1).join('/');
+      // 表示を読み直すのは、そのシートを表で開いているパネルだけ。開いていない時（フォームのファイルから保存した時など）に
+      // シートを開くと、画面がシートへ切り替わってフォームが閉じ、未保存の確認が出て止まった（2026-11-21、exe の受け入れ検査）。
+      // 読み直しは、送り直しを含む今の保存が終わってから行う（保存の途中の画面を描き直さない）。
+      setTimeout(() => {
+        const contexts = typeof _dbPaneContextsForPath === 'function' ? (_dbPaneContextsForPath(dbPath) || []) : [];
+        if (typeof selectDatabase !== 'function') return;
+        contexts.filter(ctx => ctx && norm(ctx.dbPath) === dbPath).forEach(ctx => {
+          Promise.resolve(selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true, skipSaveLastView: true })).catch(() => {});
+        });
+      }, 0);
+    } catch {}
+  });
+  window.MeldexSheetCellRecovery = { keep, clear, drafts, render, retry, watchEditor, stashOpenEditors };
   window.addEventListener('storage', event => {
     if (!event.key?.startsWith(PREFIX)) return;
     try {

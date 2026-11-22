@@ -137,10 +137,12 @@
     return MeldexEscape.html(value);
   }
 
-  function globalSettingsHtml() {
-    const values = MODEL().getGlobalDefaults();
+  // options.scope: 'scriptnote'（既定）または 'note'。全体の既定値はアプリごとに別に持つ。
+  function globalSettingsHtml(options = {}) {
+    const scope = options.scope === 'note' ? 'note' : 'scriptnote';
+    const values = MODEL().getGlobalDefaults(scope);
     const fields = FIELD_DEFS.map(def => {
-      const attrs = `data-ruby-presentation-global-field="${esc(def.key)}" data-onchange="_meldexRubyPresentationGlobalChanged(this)" aria-label="${esc(def.label)}" title="${esc(def.label)}"`;
+      const attrs = `data-ruby-presentation-global-field="${esc(def.key)}" data-ruby-presentation-scope="${scope}" data-onchange="_meldexRubyPresentationGlobalChanged(this)" aria-label="${esc(def.label)}" title="${esc(def.label)}"`;
       let control;
       if (def.type === 'select') {
         const options = def.options.map(([value, label]) => `<option value="${esc(value)}"${values[def.key] === value ? ' selected' : ''}>${esc(label)}</option>`).join('');
@@ -150,19 +152,23 @@
       }
       return `<label class="cs-row-group cs-row-group--number sn2-ruby-presentation-global-field"><span class="cs-row-group-label">${esc(def.label)}</span>${control}${def.unit ? `<span class="cs-number-unit">${esc(def.unit)}</span>` : ''}</label>`;
     }).join('');
-    return `<div class="cs-row cs-row--ruby-presentation"><span class="cs-row-label">ルビ表示</span><div class="sn2-ruby-presentation-global" data-e2e-id="settings-ruby-presentation-defaults">${fields}</div></div>`;
+    const e2eAttr = scope === 'note'
+      ? 'data-e2e-id="settings-note-ruby-presentation-defaults"'
+      : 'data-e2e-id="settings-ruby-presentation-defaults"';
+    return `<div class="cs-row cs-row--ruby-presentation"><span class="cs-row-label">ルビ表示</span><div class="sn2-ruby-presentation-global" data-ruby-presentation-scope="${scope}" ${e2eAttr}>${fields}</div></div>`;
   }
 
   function globalChanged(control) {
     const key = control?.dataset?.rubyPresentationGlobalField;
     const def = FIELD_DEFS.find(item => item.key === key);
     if (!def) return;
+    const scope = control?.dataset?.rubyPresentationScope === 'note' ? 'note' : 'scriptnote';
     const value = controlValue(control, def);
     if (value === null) {
-      control.value = String(MODEL().getGlobalDefaults()[key]);
+      control.value = String(MODEL().getGlobalDefaults(scope)[key]);
       return;
     }
-    const next = MODEL().setGlobalDefaults({ [key]: value });
+    const next = MODEL().setGlobalDefaults({ [key]: value }, scope);
     control.value = String(next[key]);
   }
 

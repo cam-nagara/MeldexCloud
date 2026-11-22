@@ -3,6 +3,7 @@
 <head>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data: https://www.youtube-nocookie.com https://player.vimeo.com https://embed.nicovideo.jp https://geo.dailymotion.com https://www.tiktok.com https://platform.twitter.com https://www.instagram.com https://embed.bsky.app https://www.threads.com https://open.spotify.com https://w.soundcloud.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob: https:; form-action 'self' https://script.google.com">
   <base href="../../">
+  <meta name="meldex-app-version" content="0.7.588">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
@@ -33,10 +34,9 @@
 </head>
 <body data-standalone-profile-readonly="true" data-standalone-tags-button="hidden">
   <main class="qm-shell" id="editorView">
-    <header class="qm-header sa-toolbar">
-      <span class="tb-app-icon" data-app-icon="quick-memo" role="img" aria-label="クイックメモ"></span>
+    <header class="qm-header sa-toolbar gb-toolbar gb-toolbar-main">
       <div class="qm-menu-wrap">
-        <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false" aria-controls="quickMemoMenu"><span class="ico ico-menu"></span></button>
+        <button id="menuBtn" class="tb-app-icon tb-main-menu-btn" data-app-icon="quick-memo" data-gb-tooltip-key="toolbar.mainMenu" type="button" title="メインメニュー" aria-label="クイックメモのメインメニュー" aria-haspopup="dialog" aria-expanded="false" aria-controls="quickMemoMenu"></button>
         <div id="quickMemoMenu" class="qm-menu" role="dialog" aria-label="クイックメモの操作" hidden>
           <button id="saveBtn" type="button"><span class="ico ico-save"></span>端末へ保存</button>
           <button id="menuListBtn" type="button"><span class="ico ico-history"></span>過去のメモ</button>
@@ -231,6 +231,8 @@
     });
   </script>
   <script src="offline-bundles/gb-color-palette.js"></script>
+  <script src="gb-ui.js"></script>
+  <script src="gb-log-export.js"></script>
   <script src="quick-memo.js"></script>
   <script src="gb-webclip-inbox.js"></script>
 </body>

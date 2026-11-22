@@ -380,13 +380,15 @@
     },
   });
   var _tracked = new Map(); // row(.tree-node-row) -> record
+  var _visibleThumbKeys = new Map();
   var _io = null;
 
   function _observer() {
     if (_io) return _io;
     if (typeof IntersectionObserver !== 'function') return null;
     _io = new IntersectionObserver(_onIntersect, {
-      root: document.getElementById('tree-scroll-container') || null,
+      // Viewport root also respects clipping by each tree/panel scroll container.
+      root: null,
       rootMargin: '200px 0px',
       threshold: 0.01,
     });
@@ -398,21 +400,39 @@
       var row = entry.target;
       var rec = _tracked.get(row);
       if (!rec) return;
+      if (!row.isConnected) { detachRow(row); return; }
       if (entry.isIntersecting) {
         _startForRow(row, rec);
       } else if (rec.wantThumb) {
         // 折りたたみ・スクロールアウトで「未開始」の取得だけをキャンセルする。
         // 既に開始済み（実行中）のものはそのまま進行させ、結果はキャッシュへ反映される。
-        _thumbQueue.cancel(_thumbKey(rec.item && rec.item.path, rec.size));
+        _leaveRow(rec);
       }
     });
   }
 
   function _startForRow(row, rec) {
+    if (rec.wantThumb && !rec.visible) {
+      rec.visible = true;
+      var key = _thumbKey(rec.item && rec.item.path, rec.size);
+      _visibleThumbKeys.set(key, (_visibleThumbKeys.get(key) || 0) + 1);
+    }
     if (rec.started) return;
     rec.started = true;
     if (rec.wantIcon) _resolveFormatIcon(row, rec);
     if (rec.wantThumb) _resolveThumbnail(row, rec);
+  }
+
+  function _leaveRow(rec) {
+    if (!rec.wantThumb || !rec.visible) return;
+    rec.visible = false;
+    var key = _thumbKey(rec.item && rec.item.path, rec.size);
+    var count = (_visibleThumbKeys.get(key) || 1) - 1;
+    if (count > 0) _visibleThumbKeys.set(key, count);
+    else {
+      _visibleThumbKeys.delete(key);
+      _thumbQueue.cancel(key);
+    }
   }
 
   function _resolveFormatIcon(row, rec) {
@@ -462,7 +482,7 @@
 
   function _resolveThumbnail(row, rec) {
     var path = rec.item && rec.item.path;
-    if (!path || !_hasNativeApiBackend()) {
+    if (!path || !canLoadThumbnail(rec.item)) {
       if (rec.imageLoading) rec.imageLoading.dispose();
       return;
     }
@@ -473,7 +493,14 @@
       return;
     }
     _thumbQueue
-      .request(key, function () { return _probeImageUrl(_treeThumbnailUrl(path, size)); })
+      .request(key, function () {
+        if (_hasNativeApiBackend()) return _probeImageUrl(_treeThumbnailUrl(path, size)).then(function (url) {
+          // Keep browser-readable images, including SVG without an OS provider.
+          return url || (rec.item.type === 'image' ? _probeImageUrl('/api/file-raw?path=' + encodeURIComponent(path)) : null);
+        });
+        return window.MeldexPwaFileUrl.ensureDisplayUrl('/api/thumbnail?path=' + encodeURIComponent(path) + '&size=' + size)
+          .then(function (info) { return info && info.url ? _probeImageUrl(info.url) : null; });
+      })
       .then(
         function (url) {
           if (!url) {
@@ -494,6 +521,22 @@
   }
 
   function _promoteRowToThumbnail(row, rec, url) {
+    if (rec.card) {
+      var cardImage = document.createElement('img');
+      cardImage.alt = '';
+      cardImage.draggable = false;
+      cardImage.decoding = 'async';
+      cardImage.dataset.contentThumbnail = '1';
+      cardImage.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;';
+      cardImage.src = url;
+      rec.iconEl.style.display = 'none';
+      row.appendChild(cardImage);
+      cardImage.addEventListener('error', function () {
+        cardImage.remove();
+        rec.iconEl.style.display = '';
+      }, { once: true });
+      return;
+    }
     var img = rec.thumbImg;
     if (!img) return;
     img.addEventListener('load', function () { img.classList.add('is-loaded'); }, { once: true });
@@ -516,7 +559,7 @@
   function attachToRow(row, item, iconEl) {
     if (!row || !item || !iconEl) return;
     var wantIcon = isFormatIconCandidate(item) && _hasNativeApiBackend();
-    var wantThumb = isEnabled() && isThumbnailEligible(item) && _hasNativeApiBackend();
+    var wantThumb = isEnabled() && canLoadThumbnail(item);
     if (!wantIcon && !wantThumb) return;
 
     var rec = {
@@ -558,6 +601,41 @@
     else _startForRow(row, rec); // IntersectionObserver未対応環境: 即時取得にフォールバック
   }
 
+  function canLoadThumbnail(item) {
+    if (!isThumbnailEligible(item) || item.archive_path || item.external_reference) return false;
+    return _hasNativeApiBackend() || (item.type === 'image' && !!window.MeldexPwaFileUrl?.ensureDisplayUrl);
+  }
+
+  // Shared lazy queue and negative cache for every file-card/list surface.
+  // Keep its existing file/custom icon until a content thumbnail actually succeeds.
+  function attachToElement(host, item, iconEl, size) {
+    if (!host || !iconEl || !canLoadThumbnail(item) || item.display_icon) return false;
+    detachRow(host);
+    host.dataset.contentThumbnailPath = item.path;
+    var rec = { item: item, iconEl: iconEl, wantThumb: true, wantIcon: false,
+      size: Math.max(16, Math.min(256, Number(size) || 256)), card: true, started: false };
+    _tracked.set(host, rec);
+    var observer = _observer();
+    if (observer) observer.observe(host);
+    else _startForRow(host, rec);
+    return true;
+  }
+
+  function detachWithin(container) {
+    _tracked.forEach(function (rec, host) {
+      if (!host.isConnected || container.contains(host)) detachRow(host);
+    });
+  }
+
+  function attachToIcon(iconEl, item, size) {
+    if (!iconEl || !canLoadThumbnail(item) || item.display_icon) return false;
+    var fallback = document.createElement('span');
+    while (iconEl.firstChild) fallback.appendChild(iconEl.firstChild);
+    iconEl.appendChild(fallback);
+    iconEl.style.cssText += ';display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:' + (size || 24) + 'px;height:' + (size || 24) + 'px;';
+    return attachToElement(iconEl, item, fallback, 64);
+  }
+
   // gb-outliner-virtual-render.js の _unmountRow / 非仮想化フォルダの再読込前などから
   // 呼ばれる。未開始のキュー要求をキャンセルし、監視を止めてメモリリークを防ぐ。
   function detachRow(row) {
@@ -566,7 +644,7 @@
     if (!rec) return;
     _tracked.delete(row);
     if (_io) { try { _io.unobserve(row); } catch (e) {} }
-    if (rec.wantThumb) _thumbQueue.cancel(_thumbKey(rec.item && rec.item.path, rec.size));
+    _leaveRow(rec);
     if (rec.imageLoading) rec.imageLoading.dispose();
   }
 
@@ -578,9 +656,10 @@
   // パスがTTL経過まで再取得されない（フィルタ側にのみ実装済みの再取得契機を
   // 負キャッシュ側が無効化してしまうバグ）。
   function resetAll() {
-    if (_io) { try { _io.disconnect(); } catch (e) {} }
-    _tracked = new Map();
-    _thumbQueue.cancelAllPending();
+    // Tree refresh/settings must not unobserve cards in other, still-open panels.
+    _tracked.forEach(function (rec, row) {
+      if (!rec.card || !row.isConnected) detachRow(row);
+    });
     _negativeCache.clearAll();
   }
 
@@ -595,6 +674,10 @@
     isThumbnailEligible: isThumbnailEligible,
     isFormatIconCandidate: isFormatIconCandidate,
     attachFormatIcon: attachFormatIcon,
+    canLoadThumbnail: canLoadThumbnail,
+    attachToElement: attachToElement,
+    attachToIcon: attachToIcon,
+    detachWithin: detachWithin,
     NO_THUMBNAIL_EXTENSIONS: NO_THUMBNAIL_EXTENSIONS,
     NON_THUMBNAIL_TYPES: NON_THUMBNAIL_TYPES,
     createRequestQueue: createRequestQueue,

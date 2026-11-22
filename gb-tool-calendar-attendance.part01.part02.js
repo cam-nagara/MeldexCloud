@@ -112,7 +112,7 @@
       return false;
     }
     try {
-      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { color: next });
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { color: next }));
     } catch (error) {
       _calAttRestoreSwatch(options.swatch, previousColor);
       const detail = String(error?.userMessage || error?.message || '').trim();
@@ -141,7 +141,7 @@
     }
     const folder = String(value || '').trim() || _calAttFolderFallbackForSource(cal?.source);
     try {
-      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { folder });
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { folder }));
       cal.folder = folder;
       this._renderCalendarList();
       this._showStatus('フォルダを更新しました');
@@ -161,7 +161,7 @@
       return false;
     }
     try {
-      await apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { edit_role: role });
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPut('/cal/calendars/' + encodeURIComponent(cal.id) + '?_user=' + encodeURIComponent(this._getUser()), { edit_role: role }));
     } catch (error) {
       restore();
       const detail = String(error?.userMessage || error?.message || '').trim();
@@ -195,14 +195,20 @@
       let paletteIdx = (this._calendars || []).length;
       for (const membership of memberships.values()) {
         const { name, workspaceId, memberId, folder } = membership;
-        const exists = (this._calendars || []).some(cal => cal.source === 'shift'
+        const matches = cal => cal?.source === 'shift'
           && ((memberId && String(cal.member_id || '') === memberId)
             || (!memberId && cal.user === name))
           && (workspaceId
             ? String(cal.workspace_id || '') === workspaceId
-            : !String(cal.workspace_id || '')));
-        if (exists) continue;
-        await apiPost('/cal/calendars', {
+            : !String(cal.workspace_id || ''));
+        if ((this._calendars || []).some(matches)) continue;
+        // 他のメンバー名義のカレンダーは自分の一覧に出ないことがある（認証を使わないローカル構成では
+        // 一覧が自分の分だけ）。そのメンバーの一覧でも確かめ、作成済みなら作らない（押すたびに重複していた。M-014 で発見）。
+        if (name !== this._getUser()) {
+          const theirs = await apiFetch('/cal/calendars?user=' + encodeURIComponent(name), { silentError: true }).catch(() => null);
+          if (Array.isArray(theirs) && theirs.some(matches)) continue;
+        }
+        await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPost('/cal/calendars', {
           name: `シフト: ${name}`,
           color: _calAttPaletteColorAt(paletteIdx++),
           user: name,
@@ -211,7 +217,7 @@
           folder: folder || SHIFT_CALENDAR_FOLDER,
           workspace_id: workspaceId,
           member_id: memberId,
-        });
+        }));
         created++;
       }
       await this._loadCalendars();

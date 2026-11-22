@@ -42,6 +42,10 @@
   /* 全テーマプリセットで、ポップアップの外周はアクセントカラーを既定値にする。 */
   --ui-popup-border: var(--ui-accent);
   --ui-accent: var(--accent);
+  /* アクティブ・選択の強調の枠（UI共通ルール §10「状態変化で寸法と位置を変えない」）。
+     枠は要素の内側の影で描き、境界線の太さ・余白・大きさを変えない。 */
+  --ui-active-frame-width: 2px;
+  --ui-active-frame-color: var(--ui-accent);
   --ui-accent-fg: var(--ui-fg-strong);
   --ui-button-fg: var(--ui-fg-default);
   --ui-button-bg: var(--ui-bg-control);
@@ -594,14 +598,30 @@
   flex-wrap: nowrap;
   overflow: visible;
 }
+/* 主要ツールバーと単独版の見出し内を同じ部品寸法で組む。スマホの44px指定は維持する。 */
+@media (min-width: 641px) and (pointer: fine) {
+  .gb-toolbar.gb-toolbar-main :is(.sa-icon-btn, .qm-icon, .tb-icon-btn):not(.tb-main-menu-btn) {
+    width: var(--ui-toolbar-control-size);
+    min-width: var(--ui-toolbar-control-size);
+    height: var(--ui-toolbar-control-size);
+    min-height: var(--ui-toolbar-control-size);
+    padding: 0;
+  }
+  .gb-toolbar.gb-toolbar-main .sa-title {
+    height: var(--ui-toolbar-title-height);
+    min-height: var(--ui-toolbar-title-height);
+    box-sizing: border-box;
+    line-height: var(--ui-toolbar-title-height);
+  }
+}
 .gb-toolbar.gb-toolbar-main::before,
 .gb-toolbar.gb-toolbar-main::after {
   content: none;
   border: 0;
   box-shadow: none;
 }
-/* 主要アプリツールバー左端のアプリアイコン（UI共通ルール19）。操作を持たない目印で、
-   あふれメニューへ退避せず、狭い幅でも縮めない。 */
+/* 主要アプリツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。
+   押すとそのアプリのメインメニューを開く。あふれメニューへ退避せず、狭い幅でも縮めない。 */
 .tb-app-icon {
   display: inline-flex;
   align-items: center;
@@ -627,6 +647,69 @@
   height: var(--ui-toolbar-app-icon-size);
   vertical-align: 0 !important;
   flex: 0 0 auto;
+}
+/* メインメニューボタンとしてのアプリアイコン。寸法はアプリアイコンと同じ（28×24）で、
+   ホバー・メニューを開いている間・フォーカスは背景・境界線・輪郭の色だけを変え、寸法と位置は変えない。
+   既定のツールバー内ボタンの見た目（.gb-toolbar button）や旧☰の見た目（.tool-menu-btn）には従わない。 */
+.tb-app-icon.tb-main-menu-btn,
+.gb-toolbar .tb-app-icon.tb-main-menu-btn {
+  height: var(--ui-toolbar-app-icon-size);
+  min-height: var(--ui-toolbar-app-icon-size);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-app-icon-color);
+  font: inherit;
+  line-height: 0;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.tb-app-icon.tb-main-menu-btn:hover,
+.gb-toolbar .tb-app-icon.tb-main-menu-btn:hover {
+  background: var(--ui-hover-bg);
+  border-color: var(--ui-border);
+  color: var(--ui-toolbar-app-icon-color);
+}
+.tb-app-icon.tb-main-menu-btn[aria-expanded="true"],
+.gb-toolbar .tb-app-icon.tb-main-menu-btn[aria-expanded="true"] {
+  background: var(--ui-control-active-bg, var(--ui-bg-control-active));
+  border-color: var(--ui-accent);
+  color: var(--ui-toolbar-app-icon-color);
+}
+/* メニューの印（右下の小さな下向きの矢印）。ボタンの寸法を変えないよう重ねて置く。 */
+.tb-app-icon.tb-main-menu-btn { position: relative; }
+.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  line-height: 0;
+  color: var(--ui-toolbar-app-icon-color);
+  pointer-events: none;
+}
+.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret > svg {
+  display: block;
+  width: 10px !important;
+  height: 10px !important;
+  margin: 0 !important;
+}
+.tb-app-icon.tb-main-menu-btn:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-accent);
+  outline-offset: 0;
+}
+/* 単独アプリ・クイックメモのツールバーは、タッチ操作とスマホ幅で他のボタンと同じ44pxの押せる大きさにする。
+   本体の主要アプリツールバー（帯39px）は押し広げない。 */
+@media (pointer: coarse), (max-width: 560px) {
+  .sa-toolbar .tb-app-icon.tb-main-menu-btn,
+  :root:not([data-toolbar-density="desktop"]) .gb-toolbar-viewer .tb-app-icon.tb-main-menu-btn,
+  .qm-header .tb-app-icon.tb-main-menu-btn {
+    flex-basis: var(--ui-h-touch);
+    width: var(--ui-h-touch);
+    min-width: var(--ui-h-touch);
+    height: var(--ui-h-touch);
+  }
 }
 /* ファイル名直前のファイルアイコン（UI共通ルール19）。アプリアイコンとは別部品で、フォルダツリーと
    同じアイコンを出す。変更できる時だけボタンになり、あふれメニューへ退避せず、狭い幅でも縮めない。 */
@@ -691,7 +774,7 @@
 
 /* ツールバー内子要素のデフォルトスタイル (Phase 4-c: legacy 互換)
    v0.5.131: ツールバー統一の .tb-* クラスは独自スタイルを持つため除外 */
-.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn),
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon):not(.sa-icon-btn):not(.sa-text-btn):not(.qm-icon):not(.gb-toolbar-overflow-button),
 .gb-toolbar select:not(.tb-select),
 .gb-toolbar label {
   font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
@@ -699,8 +782,8 @@
   border: var(--ui-border-width) solid var(--ui-border); padding: 3px var(--ui-space-4);
   border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
 }
-.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .gb-toolbar input[type="color"] {
   width: 24px; height: var(--ui-h-xs); padding: 0;
   border: var(--ui-border-width) solid var(--ui-border); cursor: pointer; border-radius: var(--ui-radius-xs);
@@ -932,7 +1015,7 @@
   gap: var(--ui-space-3);
   padding: var(--ui-space-2) var(--ui-space-4);
 }
-.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn) {
+.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) {
   padding: var(--ui-space-2) 10px;
   font-size: var(--ui-font-12);
 }
@@ -941,7 +1024,7 @@
   gap: var(--ui-space-3);
   padding: var(--ui-space-2) var(--ui-space-4);
 }
-.gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
+.gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) {
   font-size: var(--ui-font-12);
   height: var(--ui-h-md, 32px);
   min-height: var(--ui-h-md, 32px);

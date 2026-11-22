@@ -32,6 +32,90 @@ function _sn2ExpandDefaultFileStyle(parsed) {
   Object.assign(parsed.editor, JSON.parse(JSON.stringify(style)));
 }
 
+// サーバーから読んだシナリオの本文を解釈する。BOM（UTF-8 の先頭印）を除き、シナリオの拡張子
+// （.mel-scenario / .scriptnote.json）で fileType の無い現行形（rows の配列を持つ）は、ほかの
+// 読込（AI の文脈読込・一覧の判定）と同じくシナリオとして扱う（S5。保存時に fileType が付く）。
+function _sn2ParseScenarioContent(content, path = '') {
+  const text = String(content || '{}').replace(/^\uFEFF/, '');
+  const parsed = JSON.parse(text || '{}');
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    && !Object.prototype.hasOwnProperty.call(parsed, 'fileType')
+    && Array.isArray(parsed.rows)
+    && /\.(?:mel-scenario|scriptnote\.json)$/i.test(String(path || ''))
+    && typeof SCRIPTNOTE_FILE_TYPE === 'string') {
+    parsed.fileType = SCRIPTNOTE_FILE_TYPE;
+  }
+  return parsed;
+}
+
+// フォルダツリーの行は絶対パスを持つことがあり、エディタのパス（ワークスペース相対）と一致しない。
+// 同じファイルを指すツリーの行のパスを返す（完全一致、または末尾が「/相対パス」で一意な時だけ）。
+function _sn2TreePathsForFile(path) {
+  const norm = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const wanted = norm(path).toLowerCase();
+  if (!wanted) return [];
+  const found = new Set();
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach((node) => {
+    const raw = node._nodeData?.path;
+    if (!raw) return;
+    const key = norm(raw).toLowerCase();
+    if (key === wanted || key.endsWith('/' + wanted)) found.add(raw);
+  });
+  const paths = Array.from(found);
+  const exact = paths.filter(p => norm(p).toLowerCase() === wanted);
+  if (exact.length) return exact;
+  const distinct = new Set(paths.map(p => norm(p).toLowerCase()));
+  return distinct.size === 1 ? paths : [];
+}
+
+// 改名・移動（oldPath → newPath）に合わせて、開いているファイルのパス current を付け替える。
+// 相対パス（ワークスペース相対）と絶対パスの表記違いも、フォルダの区切りで末尾が一致すれば同じとみなす。
+// 戻り値: { path: 新しいパス（current と同じ表記の種類）, exact: ファイル自体の改名か } または null
+function _sn2MapRenamedFilePath(current, oldPath, newPath) {
+  const norm = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const cur = norm(current);
+  const from = norm(oldPath);
+  const to = norm(newPath);
+  if (!cur || !from || !to) return null;
+  const lower = value => value.toLowerCase();
+  const isAbs = value => /^(?:[a-z]:\/|\/)/i.test(value);
+  // 同じ表記どうし
+  if (lower(cur) === lower(from)) return { path: to, exact: true };
+  if (lower(cur).startsWith(lower(from) + '/')) return { path: to + cur.slice(from.length), exact: false };
+  // current が相対・oldPath が絶対: oldPath の末尾が current の先頭部分（フォルダの区切り）と一致する
+  if (!isAbs(cur) && isAbs(from)) {
+    const cuts = [];
+    for (let i = 0; i < cur.length; i++) if (cur[i] === '/') cuts.push(i);
+    cuts.push(cur.length);
+    for (const cut of cuts) {
+      const head = cur.slice(0, cut);
+      if (!lower(from).endsWith('/' + lower(head))) continue;
+      const base = from.slice(0, from.length - head.length);
+      if (!lower(to).startsWith(lower(base))) continue;
+      return { path: to.slice(base.length) + cur.slice(cut), exact: cut === cur.length };
+    }
+    return null;
+  }
+  // current が絶対・oldPath が相対: current のフォルダの区切りで oldPath と末尾が一致する
+  if (isAbs(cur) && !isAbs(from) && !isAbs(to)) {
+    // 一致する位置が1つだけの時に限る（同じ名前のフォルダが途中にあると取り違えるため）
+    const lc = lower(cur);
+    const needle = '/' + lower(from);
+    const hits = [];
+    let at = lc.indexOf(needle);
+    while (at >= 0) {
+      const end = at + needle.length;
+      if (end === lc.length || lc[end] === '/') hits.push(at);
+      at = lc.indexOf(needle, at + 1);
+    }
+    if (hits.length === 1) {
+      const end = hits[0] + needle.length;
+      return { path: cur.slice(0, hits[0] + 1) + to + cur.slice(end), exact: end === lc.length };
+    }
+  }
+  return null;
+}
+
 const SN2_TEMPLATE_STORAGE_KEY = 'sn2-templates';
 const SN2_TEMPLATE_ORDER_STORAGE_KEY = 'sn2-templates-order';
 const SN2_FILTER_PRESETS_STORAGE_KEY = 'sn2-filter-presets';
@@ -184,6 +268,36 @@ function _snToolUniquePresetName(base, names) {
   return name;
 }
 
+// ツールバーの自動リンク・自動ルビの切り替え（シナリオのファイルの editor.autoLinks / editor.autoRuby に保存）。
+// gb-autolink.js はこのファイルより後に読まれるので、最初のシナリオを開く時に登録する。
+let _snDisplayLayersRegistered = false;
+function _snRegisterDisplayLayers() {
+  if (_snDisplayLayersRegistered || !(typeof globalThis.MeldexDisplayLayers?.registerApp === 'function')) return;
+  _snDisplayLayersRegistered = true;
+  MeldexDisplayLayers.registerApp('scriptnote', {
+    supportsAutoRuby: true,
+    pathForButton(btn) {
+      const comp = btn?.closest?.('.gb-scriptnote-root')?._scriptNoteComponent;
+      return comp?._editor?._path || comp?._editor?.doc?.source?.path || '';
+    },
+    async write(path, next, btn) {
+      const comp = btn?.closest?.('.gb-scriptnote-root')?._scriptNoteComponent;
+      const editor = comp?._editor;
+      if (!editor?.doc) return false;
+      if (editor._readOnly) {
+        if (typeof showStatus === 'function') showStatus('編集ロック中のため変更できません', true);
+        return false;
+      }
+      const prev = editor.doc.editor || {};
+      const label = prev.autoLinks !== next.autoLinks ? '自動リンクの切り替え' : '自動ルビの切り替え';
+      editor._pushUndo?.(label);
+      editor.doc.editor = { ...prev, autoLinks: !!next.autoLinks, autoRuby: !!next.autoRuby };
+      editor._render?.();
+      return editor._markDirty?.({ skipUndo: true }) !== false;
+    },
+  });
+}
+
 class ScriptNoteComponent extends ToolComponent {
   constructor(paneId, tabId) {
     super(paneId, tabId);
@@ -203,7 +317,9 @@ class ScriptNoteComponent extends ToolComponent {
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-se-root gb-scriptnote-root';
+    _snRegisterDisplayLayers();
     this.el.innerHTML = ScriptNoteComponent._buildHTML();
+    this.el._scriptNoteComponent = this;
     // SEP WebSocket の参照カウントを増やす（最初のコンポーネントで接続開始）
     if (typeof _sn2SepAcquire === 'function') _sn2SepAcquire();
     return this.el;
@@ -213,8 +329,6 @@ class ScriptNoteComponent extends ToolComponent {
     return `
 <div id="se-toolbar" class="gb-toolbar gb-toolbar-main">
   ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('scriptnote') : ''}
-  <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" data-action="showToolMenu(event,'scriptnote')"><span class="ico ico-menu"></span></button>
-  <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('scriptnote', event)"><span class="ico ico-folderTree"></span></button>
   ${window.MeldexFileIcons?.toolbarIconHtml?.('scriptnote') ?? ''}
   <input id="title-input" class="title-input tb-file-title tb-file-title--input" placeholder="シナリオタイトル" aria-label="シナリオタイトル" value="">
   <button type="button" class="tb-text-btn sn2-template-button" data-sn-action="templatePicker" title="テンプレート" aria-label="テンプレート" aria-haspopup="dialog"><span class="ico ico-layoutTemplate"></span><span class="sn2-template-button-label">マンガシナリオ</span></button>
@@ -236,6 +350,7 @@ class ScriptNoteComponent extends ToolComponent {
   <div class="sep"></div>
   <button type="button" class="tb-text-btn" data-sn-action="addColumn" title="列を追加"><span class="ico ico-plus"></span>列</button>
   <div class="tb-spacer"></div>
+  ${typeof globalThis.MeldexDisplayLayers?.registerApp === 'function' ? MeldexDisplayLayers.toolbarButtonsHtml('scriptnote', { autoRuby: true }) : ''}
   <button type="button" class="tb-icon-btn" data-sn-action="filter" id="btn-filter" title="タイプ/採用状況でフィルタ" aria-label="タイプ/採用状況でフィルタ"><span class="ico ico-funnel"></span></button>
   <div class="sep"></div>
   <button type="button" class="tb-icon-btn" data-sn-action="reload" title="ファイルを再読み込み" aria-label="ファイルを再読み込み"><span class="ico ico-refreshCw"></span></button>
@@ -245,6 +360,66 @@ class ScriptNoteComponent extends ToolComponent {
 <div class="sn2-main" style="display:flex;flex:1;overflow:hidden;min-height:0;">
   <div id="scenario-note-surface" style="display:flex;flex:1;overflow:hidden;"></div>
 </div>`;
+  }
+
+  // フォルダツリー等での改名・移動の追従（renameAppPathReferences が全コンポーネントへ呼ぶ）。
+  // パスごとのエディタの登録（_sn2Editors）は1パスに1エディタで、同じシナリオを2つのパネルで
+  // 開いた時の2つ目や、相対パスで開いたエディタ（ツリーは絶対パス）は追従から漏れていた（S3）。
+  // 登録の付け替えで追従されないエディタだけを、ここで新しいパスへ移す。
+  onPathRename(oldPath, newPath, options = {}) {
+    const editor = this._editor;
+    if (!editor?.doc) return;
+    const current = editor._path || '';
+    if (!current) return;
+    const registry = typeof _sn2Editors !== 'undefined' ? _sn2Editors : null;
+    const mapRenamed = typeof _mapRenamedPath === 'function' ? _mapRenamedPath : null;
+    // 登録の付け替えで追従されるエディタは、二重に動かさない
+    if (registry && mapRenamed && Object.keys(registry).some(key => registry[key] === editor
+      && mapRenamed(key, oldPath, newPath) !== key)) return;
+    const renamed = _sn2MapRenamedFilePath(current, oldPath, newPath);
+    if (!renamed || renamed.path === current) return;
+    const mapped = renamed.path;
+    // ファイル自体の改名か（親フォルダの改名・移動ならタイトルは変えない）
+    const renamedFile = renamed.exact;
+    if (registry) {
+      if (registry[current] === editor) delete registry[current];
+      if (!registry[mapped]?.doc) registry[mapped] = editor;
+      editor._sn2RegisteredPath = registry[mapped] === editor ? mapped : '';
+    }
+    editor._path = mapped;
+    if (this.state?.scenarioPath === current || !this.state?.scenarioPath) this.state.scenarioPath = mapped;
+    const label = Object.prototype.hasOwnProperty.call(options || {}, 'label') ? options.label : null;
+    if (renamedFile && label != null) {
+      if (editor.doc.title !== label) editor.doc.title = label;
+      this.state.label = label;
+      const titleInput = this.el?.querySelector?.('#title-input');
+      // value の代入は change を起こさない（改名をもう一度送らない）
+      if (titleInput && titleInput.value !== label) titleInput.value = label;
+      if (options.etag) {
+        editor._lastSavedEtag = options.etag;
+        if (editor._lastSavedTransportRevision) editor._lastSavedTransportRevision = options.transport_revision || options.etag;
+      }
+    }
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    try {
+      if (coordinator?.registerParticipant) coordinator.registerParticipant(coordinator.documentKeyForPath(mapped), editor);
+    } catch (_) {}
+    // 自分のタブの保存先と名前も合わせる
+    const paneInfo = (typeof GBLayout !== 'undefined') ? GBLayout.findNode?.(GBLayout.root, this.paneId) : null;
+    const ownTab = paneInfo?.node?.tabs?.find?.(tab => tab.id === this.tabId) || null;
+    if (ownTab) {
+      if (ownTab.path === current) ownTab.path = mapped;
+      if (ownTab.state && typeof ownTab.state === 'object' && ownTab.state.scenarioPath === current) ownTab.state.scenarioPath = mapped;
+      if (renamedFile && label != null) {
+        ownTab.label = label;
+        if (ownTab.state && typeof ownTab.state === 'object') ownTab.state.label = label;
+      }
+      try {
+        GBLayout.refreshPaneTabs?.(this.paneId);
+        GBLayout.saveLayout?.();
+      } catch (_) {}
+    }
+    try { window.MeldexFileLockBadge?.apply?.(this.el?.querySelector?.('#title-input'), mapped); } catch (_) {}
   }
 
   activate() {
@@ -471,6 +646,7 @@ class ScriptNoteComponent extends ToolComponent {
     }
     if (typeof showDbTabs === 'function') showDbTabs(false);
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
+    if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
     if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
     if (typeof renderFileStyleTab === 'function') renderFileStyleTab('scriptnote');
     // シナリオ用タブを追加
@@ -621,11 +797,16 @@ class ScriptNoteComponent extends ToolComponent {
       `<option value="${esc(opt.value)}">${esc(opt.textContent || opt.label || opt.value)}</option>`
     )).join('');
     const content = document.createElement('div');
-    content.innerHTML = `<label class="sn2-preset-field" for="${selectId}"><span class="sn2-preset-label">${esc(label)}</span><select id="${selectId}" class="gb-select sn2-toolbar-modal-select">${options}</select></label>`;
+    content.innerHTML = `<label class="sn2-preset-field" for="${selectId}"><span class="sn2-preset-label">${esc(label)}</span><select id="${selectId}" class="gb-select sn2-toolbar-modal-select" data-e2e-id="scriptnote-toolbar-select-input">${options}</select></label>`;
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
     const okButton = document.createElement('button');
     okButton.type = 'button'; okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; okButton.textContent = okText;
+    // 安定ID と名前（S31）
+    cancelButton.dataset.e2eId = 'scriptnote-toolbar-select-cancel';
+    cancelButton.setAttribute('aria-label', `${title}をキャンセル`);
+    okButton.dataset.e2eId = 'scriptnote-toolbar-select-apply';
+    okButton.setAttribute('aria-label', `${title}: ${okText}`);
     const modalApi = window.GBUI.createModal({
       id: 'scriptnote-toolbar-select', title, body: [...content.childNodes], footer: [cancelButton, okButton],
       variant: 'standard', geometryKey: 'scriptnote-toolbar-select', minWidth: '0', initialFocus: '.sn2-toolbar-modal-select',
@@ -815,10 +996,17 @@ class ScriptNoteComponent extends ToolComponent {
         titleInput.blur();
       }
     });
-    if (titleInput) titleInput.addEventListener('change', async () => {
+    const handleTitleChange = async () => {
       const editor = this._editor;
       if (editor?.doc) {
         const previousTitle = editor.doc.title || '';
+        // 直前の変更でタイトルもファイル名も確定済みなら何もしない（同じ入力の change が重なった時に、
+        // 改名済みの旧パスへ2回目の改名を送って「見つかりません」になっていた。S8）
+        if (titleInput.value === previousTitle) {
+          const storageNameFn = window.GBPathUtils?.displayTitle?.storageName;
+          const stemNow = String(editor._path || '').split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+          if (!previousTitle.trim() || typeof storageNameFn !== 'function' || storageNameFn(previousTitle.trim()) === stemNow) return;
+        }
         editor._pushUndo('タイトル変更');
         editor.doc.title = titleInput.value;
         editor._markDirty();
@@ -826,10 +1014,15 @@ class ScriptNoteComponent extends ToolComponent {
         const newTitle = titleInput.value.trim();
         const oldPath = editor._path;
         if (newTitle && oldPath) {
+          // ツリーの行は絶対パスを持つことがあるため、同じファイルを指す行のパスも名前の変更の対象にする（S8）
+          const treeAliases = _sn2TreePathsForFile(oldPath).filter(p => p !== oldPath);
+          const showTreeLabel = (label) => {
+            if (typeof applyOptimisticRenameLabel !== 'function') return;
+            applyOptimisticRenameLabel(oldPath, label, 'scriptnote');
+            treeAliases.forEach(p => applyOptimisticRenameLabel(p, label, 'scriptnote'));
+          };
           // 通信を待たずに、フォルダツリーとタブの名前を先に変える（失敗したら戻す）
-          if (newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
-            applyOptimisticRenameLabel(oldPath, newTitle, 'scriptnote');
-          }
+          if (newTitle !== previousTitle) showTreeLabel(newTitle);
           try {
             // 1) 表示中の文書は自動保存と同じ列でタイトルを確定する（並走すると409になる）。
             let res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote', title_only: true }, { scriptnoteEditor: editor });
@@ -842,9 +1035,7 @@ class ScriptNoteComponent extends ToolComponent {
               // 1段目（タイトル保存）の後で表示中のシナリオが切り替わった。別の保存と競合し得るため
               // ファイル名は変えず、先に変えたツリー・タブの名前を実際のファイル名へ戻して知らせる。
               if (needsFileRename) {
-                if (editor._path === oldPath && newTitle !== previousTitle && typeof applyOptimisticRenameLabel === 'function') {
-                  applyOptimisticRenameLabel(oldPath, currentStem, 'scriptnote');
-                }
+                if (editor._path === oldPath && newTitle !== previousTitle) showTreeLabel(currentStem);
                 if (typeof showStatus === 'function') {
                   showStatus('タイトルは保存しましたが、表示中のシナリオが切り替わったためファイル名は変更していません。もう一度タイトルを確定すると変更できます', true);
                 }
@@ -879,12 +1070,22 @@ class ScriptNoteComponent extends ToolComponent {
               }));
               if (!switchedAfterFileRename) window.MeldexFileLockBadge?.apply?.(titleInput, res.new_path);
               if (typeof renameAppPathReferences === 'function') {
-                renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, etag:res.etag, titleOnly:res.title_only, type: 'scriptnote' });
+                // 開いている画面は作り直さない（パネル全体の描き直しで、改名の直後にクリックした本文の
+                // フォーカスが外れていた。S26。フォルダツリーの改名と同じ扱い）
+                renameAppPathReferences(oldPath, res.new_path, { label: newTitle, fileId: res.file_id, etag:res.etag, titleOnly:res.title_only, type: 'scriptnote', preserveMountedViews: true });
               }
               // タブ名を更新
               if (!switchedAfterFileRename && typeof GBTabs !== 'undefined' && this.tabId) GBTabs.setTabLabel?.(this.tabId, newTitle);
               // フォルダツリーのノード名を更新
-              if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
+              if (typeof _renameTreeNode === 'function') {
+                // 絶対パスの行は、同じフォルダの新しいファイル名（拡張子つき）へ付け替える
+                const newBase = String(res.new_path).split(/[\\/]/).pop();
+                treeAliases.forEach((aliasPath) => {
+                  const cut = Math.max(aliasPath.lastIndexOf('/'), aliasPath.lastIndexOf('\\'));
+                  _renameTreeNode(aliasPath, (cut >= 0 ? aliasPath.slice(0, cut + 1) : '') + newBase, newTitle, res.file_id);
+                });
+                if (!treeAliases.length) _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
+              }
             }
           } catch (e) {
             // タイトル＝ファイル名（v0.7.495）を優先し、ファイル名を変えられなかった時はタイトルも
@@ -893,15 +1094,20 @@ class ScriptNoteComponent extends ToolComponent {
             if (newTitle !== previousTitle && editor._path === oldPath && editor.doc?.title === titleInput.value) {
               editor.doc.title = previousTitle;
               titleInput.value = previousTitle;
-              if (typeof applyOptimisticRenameLabel === 'function') {
-                const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
-                applyOptimisticRenameLabel(oldPath, previousTitle || fileStem, 'scriptnote');
-              }
+              const fileStem = String(oldPath).split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
+              showTreeLabel(previousTitle || fileStem);
             }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
           }
         }
       }
+    };
+    // タイトルの確定（change）は1件ずつ順に処理する。並走すると、先の改名の結果を待たずに
+    // 後の処理が旧パスで改名・保存を始めてしまう（S8）
+    if (titleInput) titleInput.addEventListener('change', () => {
+      const run = () => handleTitleChange().catch(() => {});
+      this._titleChangeChain = (this._titleChangeChain || Promise.resolve()).then(run, run);
+      return this._titleChangeChain;
     });
     // フィルタプリセットのドロップダウン
     const filterPresetSel = this.el.querySelector('#sn-filter-preset');
@@ -960,11 +1166,16 @@ class ScriptNoteComponent extends ToolComponent {
     const owner = returnFocus || document.activeElement;
     const inputId = `sn2-preset-name-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-input`;
     const content = document.createElement('div');
-    content.innerHTML = `<div class="sn2-preset-status" role="status" aria-live="polite"></div><label class="sn2-preset-field" for="${inputId}"><span class="sn2-preset-label">${esc(label)}</span><input id="${inputId}" type="text" class="gb-input sn2-preset-name" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label>`;
+    content.innerHTML = `<div class="sn2-preset-status" role="status" aria-live="polite"></div><label class="sn2-preset-field" for="${inputId}"><span class="sn2-preset-label">${esc(label)}</span><input id="${inputId}" type="text" class="gb-input sn2-preset-name" data-e2e-id="scriptnote-name-input" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label>`;
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
     const okButton = document.createElement('button');
     okButton.type = 'button'; okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; okButton.textContent = okText;
+    // 安定ID と名前（S31）
+    cancelButton.dataset.e2eId = 'scriptnote-name-cancel';
+    cancelButton.setAttribute('aria-label', `${title}をキャンセル`);
+    okButton.dataset.e2eId = 'scriptnote-name-submit';
+    okButton.setAttribute('aria-label', `${title}: ${okText}`);
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: 'scriptnote-name', title, body: [...content.childNodes], footer: [cancelButton, okButton],
@@ -1450,7 +1661,7 @@ class ScriptNoteComponent extends ToolComponent {
         await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...', { loading });
         if (isStaleLoad()) return false;
       }
-      let parsed = JSON.parse(content);
+      let parsed = _sn2ParseScenarioContent(content, nextPath);
       let etag = data.etag || '';
       let identity = data;
       let restoredDraft = false;

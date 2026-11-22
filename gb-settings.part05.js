@@ -163,7 +163,7 @@ function renderSettingsThemeAccentEditor() {
     <span class="settings-theme-accent-control">
       <select id="settings-theme-accent-mode" class="gb-select" data-e2e-id="settings-theme-accent-mode" data-onchange="settingsThemeAccentModeChanged(this)">
         <option value="os"${state.mode === 'os' ? ' selected' : ''}>OSアクセント</option>
-        <option value="default"${state.mode === 'default' ? ' selected' : ''}>既定のアクセント</option>
+        <option value="default"${state.mode === 'default' ? ' selected' : ''}>既定の色</option>
         <option value="custom"${state.mode === 'custom' ? ' selected' : ''}>指定カラー</option>
       </select>
       <button type="button" class="gb-color-swatch settings-theme-accent-swatch" data-e2e-id="settings-theme-accent-swatch" data-settings-theme-accent-swatch style="background:${esc(state.color)}" title="共通カラーパレットから選択" data-action="settingsThemeChooseAccentColor(this)"></button>

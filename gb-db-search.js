@@ -306,14 +306,14 @@ function openDbFindReplace(mode = 'find') {
   const bar = document.createElement('div');
   bar.className = 'db-find-bar';
   bar.innerHTML = `
-    <textarea data-db-find-query rows="1" placeholder="検索..."></textarea>
+    <textarea data-db-find-query data-e2e-id="db-find-query" rows="1" placeholder="検索..."></textarea>
     <span data-db-find-count class="db-find-count">0/0</span>
-    <button type="button" data-db-find-prev title="前へ">↑</button>
-    <button type="button" data-db-find-next title="次へ">↓</button>
-    <textarea data-db-find-replace rows="1" placeholder="置換..."></textarea>
-    <button type="button" data-db-find-replace-one title="置換">置換</button>
-    <button type="button" data-db-find-replace-all title="全置換">全置換</button>
-    <button type="button" data-db-find-close title="検索を閉じる">×</button>
+    <button type="button" data-db-find-prev data-e2e-id="db-find-prev" title="前へ">↑</button>
+    <button type="button" data-db-find-next data-e2e-id="db-find-next" title="次へ">↓</button>
+    <textarea data-db-find-replace data-e2e-id="db-find-replace" rows="1" placeholder="置換..."></textarea>
+    <button type="button" data-db-find-replace-one data-e2e-id="db-find-replace-one" title="置換">置換</button>
+    <button type="button" data-db-find-replace-all data-e2e-id="db-find-replace-all" title="全置換">全置換</button>
+    <button type="button" data-db-find-close data-e2e-id="db-find-close" title="検索を閉じる">×</button>
   `;
   document.body.appendChild(bar);
   _dbFindState = { bar, ctx, dbPath, query: '', matches: [], index: -1 };
@@ -362,8 +362,14 @@ function openDbFindReplace(mode = 'find') {
   return true;
 }
 
-async function _dbFindRefreshAfterChange(preferredIndex = 0) {
-  const { dbPath, ctx, query } = _dbFindState;
+// target は置換を始めた時のシートとパネル。置換の保存中に検索バーを閉じると _dbFindState が空に戻るので、
+// 今の状態ではなく始めた時の対象で読み直す（空のシートを開いてシートが消えていた、exe、2026-11-21）。
+async function _dbFindRefreshAfterChange(preferredIndex = 0, target = null) {
+  const startedState = target?.state || _dbFindState;
+  const dbPath = target?.dbPath ?? _dbFindState.dbPath;
+  const ctx = target?.ctx ?? _dbFindState.ctx;
+  const query = target?.query ?? _dbFindState.query;
+  if (!dbPath) return;
   if (typeof selectDatabase === 'function') {
     await selectDatabase(dbPath, ctx, {
       silent: true,
@@ -374,14 +380,16 @@ async function _dbFindRefreshAfterChange(preferredIndex = 0) {
   } else if (typeof renderPivot === 'function') {
     renderPivot(ctx);
   }
+  // 検索バーが閉じられた・別のシートで開き直された後は、一致の一覧を書き換えない
+  if (_dbFindState !== startedState || _dbFindState.dbPath !== dbPath) return;
   _dbFindState.matches = _dbFindCollectMatches(query, ctx, dbPath);
   _dbFindState.index = _dbFindState.matches.length ? Math.min(Math.max(0, preferredIndex), _dbFindState.matches.length - 1) : -1;
   _dbFindShowCurrent();
 }
 
-async function _dbFindRenameEntity(match, nextName) {
-  const dbPath = _dbFindState.dbPath;
-  const ctx = _dbFindState.ctx;
+async function _dbFindRenameEntity(match, nextName, target = null) {
+  const dbPath = target?.dbPath ?? _dbFindState.dbPath;
+  const ctx = target?.ctx ?? _dbFindState.ctx;
   const pivotData = _dbFindData(ctx, dbPath);
   const cleanName = String(nextName || '').trim();
   if (!cleanName) throw new Error('トピック名を空にはできません');
@@ -405,10 +413,11 @@ async function _dbFindReplaceCurrent() {
   const match = _dbFindState.matches[_dbFindState.index];
   if (!match) return;
   const replacement = String(_dbFindState.bar?.querySelector?.('[data-db-find-replace]')?.value || '');
+  const refreshTarget = { state: _dbFindState, dbPath: _dbFindState.dbPath, ctx: _dbFindState.ctx, query: _dbFindState.query };
   const nextText = match.text.slice(0, match.start) + replacement + match.text.slice(match.end);
   try {
     if (match.kind === 'entity') {
-      await _dbFindRenameEntity(match, nextText);
+      await _dbFindRenameEntity(match, nextText, refreshTarget);
     } else {
       const oldValue = String(match.valObj.value ?? '');
       await _apiPutValue(match.valObj, { new_value: nextText, __source: 'sheet-find-replace' });
@@ -419,7 +428,7 @@ async function _dbFindReplaceCurrent() {
         });
       }
     }
-    await _dbFindRefreshAfterChange(_dbFindState.index);
+    await _dbFindRefreshAfterChange(_dbFindState.index, refreshTarget);
   } catch (e) {
     if (typeof showStatus === 'function') showStatus(e?.message || '置換に失敗しました', true);
   }
@@ -432,6 +441,7 @@ async function _dbFindReplaceAll() {
   if (query !== _dbFindState.query || !_dbFindState.matches.length) _dbFindRun(1);
   const replacement = String(_dbFindState.bar?.querySelector?.('[data-db-find-replace]')?.value || '');
   const matches = _dbFindCollectMatches(query, _dbFindState.ctx, _dbFindState.dbPath);
+  const refreshTarget = { state: _dbFindState, dbPath: _dbFindState.dbPath, ctx: _dbFindState.ctx, query: _dbFindState.query };
   const valueTasks = new Map();
   const entityTasks = new Map();
 
@@ -492,10 +502,10 @@ async function _dbFindReplaceAll() {
     appliedValues.length = 0;
     for (const [oldName, newName] of entityTasks.entries()) {
       if (oldName === newName) continue;
-      await _dbFindRenameEntity({ kind: 'entity', entityName: oldName, text: oldName }, newName);
+      await _dbFindRenameEntity({ kind: 'entity', entityName: oldName, text: oldName }, newName, refreshTarget);
       count++;
     }
-    await _dbFindRefreshAfterChange(0);
+    await _dbFindRefreshAfterChange(0, refreshTarget);
     if (typeof showStatus === 'function') showStatus(count + '件置換しました');
   } catch (e) {
     // 途中で失敗した時も、保存できた分は取り消せるように履歴へ残す。

@@ -149,32 +149,70 @@
     return '処理しています';
   }
 
-  // 翻訳待ちは保存済みポスト全体の残件で、今回の取り込み失敗ではない。
+  // 取り込み結果を「確認が必要」か「中立の情報」かに分ける（2026-11-22）。
+  // 翻訳待ち（原文は保存済み）・画像の再取得待ち・X側で消えた画像は失敗ではないので赤く出さない。
+  // Xの取り込みはサーバーが利用者の直せる確認だけを attention で返す（閉じた内容は返さない）。
+  function _importNotices(result) {
+    const notices = [];
+    const pending = Number(result.translation_pending_existing || 0) + Number(result.translation_pending_replies || 0);
+    if (pending > 0) notices.push('翻訳待ち' + pending + '件（原文は保存済み）');
+    const media = Number(result.media_failed || 0);
+    const icons = Number(result.author_icon_failed || 0);
+    if (media > 0 || icons > 0) {
+      notices.push([media > 0 ? '画像' + media + '件' : '', icons > 0 ? 'アイコン' + icons + '件' : ''].filter(Boolean).join('・')
+        + 'は次回以降に自動で取り直します');
+    }
+    if (Number(result.media_gone || 0) > 0) notices.push('X側で削除済みの画像' + Number(result.media_gone) + '件は取得できません');
+    if (result.folder_error && !result.attention) notices.push('フォルダの所属は次回に取り直します');
+    if (Number(result.reply_unavailable) > 0 || Number(result.reference_unavailable) > 0) {
+      notices.push('削除済み・非公開の返信や参照ポストは取得できませんでした');
+    }
+    return notices;
+  }
+
   function describeImportResult(result) {
     result = result || {};
+    const notices = _importNotices(result);
+    const samples = result.failure_samples || result.failures;
+    const details = Array.isArray(samples) ? [...samples] : [];
+    if (Object.prototype.hasOwnProperty.call(result, 'attention')) {
+      const attention = result.attention && typeof result.attention === 'object' ? result.attention : null;
+      const summary = attention
+        ? String(attention.message || '確認が必要です')
+        : [result.summary || '取り込みが終了しました', notices.join('。')].filter(Boolean).join('。');
+      return {
+        partial: !!attention, summary, details, notices,
+        attentionKey: attention ? String(attention.key || '') : '',
+        attentionAction: attention ? String(attention.action || '') : '',
+        attentionTarget: attention ? String(attention.target_key || '') : '',
+        retryLabel: attention ? String(attention.action_label || '再試行') : '',
+      };
+    }
     const labels = {
       failed: '保存失敗', errors: 'エラー', failed_assets: '添付取得失敗', conflicts: '競合',
       blocked: '処理不可', unsupported: '未対応', unprocessed: '未処理',
-      media_failed: '画像取得失敗', author_icon_failed: 'アイコン取得失敗',
-      reply_unavailable: '返信取得不可', reference_unavailable: '参照ポスト取得不可',
     };
     const issues = Object.entries(labels).filter(([key]) => Number(result[key]) > 0)
       .map(([key, label]) => label + Number(result[key]) + '件');
-    const samples = result.failure_samples || result.failures;
-    const details = Array.isArray(samples) ? [...samples] : [];
-    if (result.folder_error) {
-      issues.push('フォルダ取得失敗');
-      details.push({ stage: 'フォルダ', message: String(result.folder_error) });
-    }
     (Array.isArray(result.warnings) ? result.warnings : []).forEach(message => {
       issues.push(String(message));
     });
-    const pending = Number(result.translation_pending_existing || 0) + Number(result.translation_pending_replies || 0);
-    const pendingText = pending > 0 ? '翻訳待ち' + pending + '件（原文は保存済み）。設定の「保存済みポストの翻訳を続ける」で再開できます。' : '';
-    const summary = [result.summary || '取り込みが終了しました', issues.join(' / '), pendingText].filter(Boolean).join('。');
-    if (Number(result.media_failed) > 0 || Number(result.author_icon_failed) > 0) details.push({ message: '設定で前回保存の内訳と保存先を確認してください。取得できなかった画像・アイコンは、X上の元ポストでも確認できます。' });
-    if (Number(result.reply_unavailable) > 0 || Number(result.reference_unavailable) > 0) details.push({ message: '削除済み・非公開や通信失敗などにより、返信や参照ポストを取得できませんでした。保存済みの原文は残ります。返信の追加取得は設定から実行でき、X APIの料金が発生します。' });
-    return { partial: issues.length > 0, summary, details };
+    const summary = [result.summary || '取り込みが終了しました', issues.join(' / '), notices.join('。')].filter(Boolean).join('。');
+    return { partial: issues.length > 0, summary, details, notices, attentionKey: '', attentionAction: '', attentionTarget: '', retryLabel: '' };
+  }
+
+  // 確認の操作ボタン（1つだけ）を、押せば直る処理へつなぐ。
+  function importAttentionValues(values, settingsPanel) {
+    const out = Object.assign({}, values);
+    if (values.attentionAction === 'retry' && values.attentionTarget) {
+      out.retry = async (handle) => {
+        await apiPost('/import-schedules/' + encodeURIComponent(values.attentionTarget) + '/run', {});
+        handle?.dispose(); // 取り直しは新しい進捗として出る。
+      };
+    } else if (values.attentionAction === 'relogin' && settingsPanel && typeof showSettingsModal === 'function') {
+      out.retry = () => showSettingsModal({ panel: settingsPanel });
+    }
+    return out;
   }
 
   // 通信/ジョブ処理は従来実装を保ち、表示だけを共通操作状態へ接続する。
@@ -248,7 +286,7 @@
         operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
       } else {
         const outcome = describeImportResult(result);
-        if (outcome.partial) operation?.partial(outcome);
+        if (outcome.partial) operation?.partial(importAttentionValues(outcome, settingsPanel));
         else operation?.succeed({ ...outcome, summary: opts.successMessage || outcome.summary });
       }
       return result;
@@ -295,6 +333,7 @@
   }
 
   window.describeImportResult = describeImportResult;
+  window.importAttentionValues = importAttentionValues;
   window.runBackgroundJob = runBackgroundJob;
   window.formatJobProgress = formatJobProgress;
   window.formatJobEta = formatJobEta;

@@ -203,6 +203,7 @@
       if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
       if (typeof showFileStyleTab === 'function') showFileStyleTab(false);
       if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
+      if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
       if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();
       if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
       if (typeof switchDetailTab === 'function') switchDetailTab(null);

@@ -43,7 +43,13 @@
     }
     return '---\n' + raw + '\n---\n' + (match ? text.slice(match[0].length) : text || '');
   }
+  // 通常の保存の入口（Cloud版の /file 保存）で通す。フォルダの表示設定（folder_display）も同じく守る。
   function preserve(newText, oldText, path) {
+    const kept = preserveIcon(newText, oldText, path);
+    const folderDisplay = global.MeldexFolderDisplaySettings?.preserve;
+    return typeof folderDisplay === 'function' ? folderDisplay(kept, oldText, path) : kept;
+  }
+  function preserveIcon(newText, oldText, path) {
     if (!String(oldText || '').trim()) return newText;
     if (!/^display_icon(?:_source)?:|"display_icon(?:_source)?"\s*:/m.test(oldText)) return newText;
     const old = readFields(oldText, path), incoming = readFields(newText, path);
@@ -187,6 +193,15 @@
     refreshTabs();
     global.dispatchEvent(new CustomEvent('meldex:file-icon-changed', {detail: {path, icon: spec}}));
   }
+  // 取り消し・やり直し用: 今の版を読み直してからアイコンを書き換える（失敗は例外にして履歴に任せる）。
+  async function replaceIcon(path, spec) {
+    const current = await apiFetch('/file-icon?path=' + encodeURIComponent(path), {silentError: true});
+    const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path, icon: spec || '', if_match_etag: current?.etag || ''}), silentError: true});
+    adoptRevision(path, current?.etag || '', result?.etag || '');
+    await refresh(path, result?.icon || '');
+    return true;
+  }
   async function openPicker(item, anchorEl) {
     if (!canEdit(item) || !global.GBIconAssets) return;
     const path = item.path, activeScope = scope();
@@ -202,14 +217,24 @@
       }
       const save = async spec => {
         if (!isCurrent()) return;
+        // アイコンの変更を取り消せるようにする（以前は記録が無く Ctrl+Z で戻せなかった: 2026-11-22 M-014 網羅テスト）。
+        // 枠は選んだ時点で取り、共通の履歴（ファイルの操作と同じ）へ積む。保存に失敗したら枠を外す。
+        const previousIcon = loaded.icon || '';
+        const reservation = typeof global.historyReserve === 'function' ? global.historyReserve('アイコンを変更', '') : null;
         try {
           const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
-          if (!isCurrent()) return;
+          if (!isCurrent()) { reservation?.cancel(); return; }
           item.display_icon = result.icon || '';
           adoptRevision(path, loaded.etag, result.etag);
+          const nextIcon = result.icon || '';
+          const pushHistory = () => typeof global.historyPush === 'function'
+            ? global.historyPush('アイコンを変更', () => replaceIcon(path, previousIcon), () => replaceIcon(path, nextIcon), '', path)
+            : null;
+          if (reservation) reservation.capture(pushHistory); else pushHistory();
           await refresh(path, result.icon);
         } catch (error) {
+          reservation?.cancel();
           showStatus('アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
         }
       };
@@ -437,7 +462,7 @@
     return value.path ? render(value, px, fallback) : fallback;
   }
   global.MeldexFileIcons = {canEdit, remember, render, openPicker, tabIcon, readFields, writeFields, preserve, matchesScope,
-    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
+    scope, adoptRevision, toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
   const extensions = global.__MeldexPwaDataAccessExtensions;
   if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body}) => {
     const internals = global.__MeldexPwaDataAccessInternals;

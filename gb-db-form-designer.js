@@ -90,6 +90,8 @@
     const owner = ctx?.containerEl || root;
     const surface = owner.closest?.('.gb-pane')?.dataset.paneId || owner.id || root.parentElement?.id || 'form';
     const identity = action => ['db-form-binding', surface, dbPath, cfg.id || 'default', action].map(encodeURIComponent).join(':');
+    // シートのフォームビューでの配置の変更は、フォームの設定（共通レイアウトの選択）と同じシートの履歴の範囲に積む。
+    const sheetHistoryScope = () => (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : undefined);
     const row = document.createElement('div'); row.className = 'gb-form-binding';
     const label = document.createElement('label'); label.textContent = '共通レイアウト';
     const select = document.createElement('select'); select.className = 'gb-select'; select.setAttribute('aria-label', '共通レイアウト');
@@ -126,7 +128,7 @@
           canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) }, formConfig: clone(cfg),
           cells: fields.map((prop, index) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + index * 140, w: 940, h: 120 })),
         }));
-      }, { ctx });
+      }, { ctx, historyScope: sheetHistoryScope() });
       bind(id, true);
     }, identity('create')));
     if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
@@ -143,7 +145,7 @@
         _elRenderLayoutBody(editor, data, '', { propTypes, ctx, layoutDraft: { layout, session, persist(mutator) {
           return _elMutateState(dbPath, 'フォーム: 配置編集', '', state => {
             const target = state.layouts.find(item => item.id === layout.id); return target ? mutator(target) : false;
-          }, { ctx, onRestore: () => { if (editor.isConnected) render(); } });
+          }, { ctx, historyScope: sheetHistoryScope(), onRestore: () => { if (editor.isConnected) render(); } });
         } } }, dbPath, layout.id, render);
       }; render();
     }, identity('edit')));

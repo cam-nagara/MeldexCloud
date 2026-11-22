@@ -252,7 +252,7 @@ async function applyPropertyType(propName, root, options = {}) {
   } else if (type === 'relation' || type === 'multi-relation') {
     const dbInput = _ptGet('pt-relation-db', scope);
     if (dbInput) {
-      const inputPath = dbInput.value.trim();
+      const inputPath = typeof _dbRelationDbInputValue === 'function' ? _dbRelationDbInputValue(dbInput) : dbInput.value.trim();
       config.relationDb = typeof _dbCanonicalizeRelationDbPathForSave === 'function'
         ? _dbCanonicalizeRelationDbPathForSave(dbPath, inputPath)
         : inputPath;
@@ -422,6 +422,18 @@ async function applyPropertyType(propName, root, options = {}) {
   if (typeof _ptPreserveIndependentColumnFields === 'function') {
     _ptPreserveIndependentColumnFields(config, (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx)?.[propName] : null) || prev);
   }
+  // リレーション⇔文字などの変更では、識別番号と名前を置き換える（保存の成功後に書き込む）。
+  let typeValuePlan = { writes: [] };
+  if (typeof _ptPlanTypeChangeValues === 'function') {
+    try {
+      typeValuePlan = await _ptPlanTypeChangeValues(dbPath, propName, prev, config, ctx);
+    } catch (e) {
+      try { await optionMigration?.rollback?.(); } catch {}
+      await _ptRollbackOperations(relationConfigRollbackOps);
+      showStatus('列の値の変換を準備できませんでした: ' + (e?.message || e), true);
+      return null;
+    }
+  }
   // Undo/Redo 用に変更前の型設定を控える（setPropertyType が書き換える前に取る）
   const beforeCfg = JSON.parse(JSON.stringify(prev));
   // 分割ペインの初回表示直後は state のグローバル参照がまだ対象ペインへ追従していない場合がある。
@@ -466,11 +478,16 @@ async function applyPropertyType(propName, root, options = {}) {
       .then(() => _preloadRelationMapsForDb(dbPath, pivotData, ctx))
       .then(() => ({ ok: true }), error => ({ ok: false, error }))
     : null;
+  let typeValueMigration = null;
   try {
     const saved = await savePromise;
     if (saved === false) throw new Error('保護されている列のため変更できません');
+    if (typeof _ptApplyTypeChangeValuePlan === 'function') typeValueMigration = await _ptApplyTypeChangeValuePlan(typeValuePlan);
     _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
   } catch (e) {
+    try { await typeValueMigration?.rollback?.(); } catch (rollbackError) {
+      console.error('列タイプ変更の値の復元に失敗:', rollbackError);
+    }
     try { await optionMigration?.rollback?.(); } catch (rollbackError) {
       console.error('候補値のロールバックに失敗:', rollbackError);
     }
@@ -533,7 +550,7 @@ async function applyPropertyType(propName, root, options = {}) {
   // 保存が確定してから履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
   try {
     await _ptReloadOtherDbContexts(dbPath, ctx);
-    _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
+    _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx, typeValueMigration);
   } catch (error) {
     console.warn('列設定保存後の履歴または別画面更新に失敗:', error);
     refreshWarning = true;
@@ -696,6 +713,46 @@ function showDbPropertySettingsForColumn(dbPath, propName, opts) {
 
   if (shouldSwitch && typeof switchDetailTab === 'function') switchDetailTab('db-property-settings');
   renderDbPropertySettingsPanel(dbPath, effectiveProp, container, ctx);
+}
+
+// 列名の変更を、開いているオプションパネルの列設定タブと列管理へすぐ映す（2026-11-21 ユーザー報告:
+// 列見出しで列名を変えても、列設定タブは旧名のまま、別の操作で描き直されるまで追従しなかった）。
+//   'preview'  入力を確定した時点（保存前・列定義はまだ旧名）。列名欄の文字だけを新しい名前にする
+//   'applied'  手元の列定義を新しい名前へ付け替えた後。選択中の列も付け替え、新しい名前で描き直す
+//   'reverted' 保存に失敗・中止して元へ戻した時（fromName=新しい名前, toName=元の名前）。元の名前で描き直す
+// 列設定タブの中で入力中の時は描き直さない（列設定タブ自身の列名変更はタブ側で描き直す）。
+function _ptSyncColumnRenameToPanels(dbPath, fromName, toName, phase) {
+  if (!dbPath || !fromName || !toName || fromName === toName) return;
+  const norm = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const sameDb = value => norm(value) === norm(dbPath);
+  if (phase !== 'preview') {
+    if (typeof state !== 'undefined' && state.selectedColumn && sameDb(state.selectedColumn.dbPath)
+        && state.selectedColumn.propName === fromName) {
+      state.selectedColumn = { dbPath: state.selectedColumn.dbPath, propName: toName };
+    }
+    if (typeof _getSelectedColumns === 'function' && typeof _setSelectedColumns === 'function') {
+      const selected = _getSelectedColumns(dbPath) || [];
+      if (selected.includes(fromName)) _setSelectedColumns(dbPath, selected.map(name => (name === fromName ? toName : name)), toName);
+    }
+  }
+  document.querySelectorAll('#detail-tab-db-property-settings').forEach(container => {
+    const root = container.querySelector('[data-pt-root]');
+    if (!root || !sameDb(root._ptDbPath)) return;
+    const shows = root._ptPropName === fromName || (phase === 'reverted' && root._ptPreviewName === fromName);
+    if (!shows || container.contains(document.activeElement)) return;
+    if (phase === 'preview') {
+      const nameInput = root.querySelector('#pt-prop-name');
+      if (nameInput) nameInput.value = toName;
+      root._ptPreviewName = toName;
+      return;
+    }
+    try { renderDbPropertySettingsPanel(dbPath, toName, container, root._ptCtx || null); } catch (error) {
+      console.warn('[Meldex] 列設定タブを列名の変更に合わせて描き直せませんでした', error);
+    }
+  });
+  if (phase !== 'preview') {
+    try { window.MeldexColumnManager?.refresh?.(); } catch (_) { /* 列管理が開いていない */ }
+  }
 }
 
 function renderDbPropertySettingsPanel(dbPath, propName, container, ctxOverride) {

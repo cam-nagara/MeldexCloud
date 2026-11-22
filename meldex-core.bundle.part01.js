@@ -579,11 +579,44 @@ if (typeof window !== 'undefined') {
 // 親メニューの overflow/スクロールや zoom 環境でも見切れない
 // panelEl は最初は hidden（display:none）で、class '.gb-context-menu' を付けておくこと
 // （closeTreeContextMenu 等の一括削除対象になる）
-function attachHoverSubmenu(triggerEl, panelEl) {
+const _hoverSubmenuOwners = new WeakMap();
+const _hoverSubmenuGroups = new WeakMap();
+function attachHoverSubmenu(triggerEl, panelEl, options = {}) {
   let hideTimer = null;
-  const clearHide = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
-  const show = () => {
+  let origin = null;
+  let pendingSwitch = null;
+  triggerEl.setAttribute('aria-haspopup', 'menu');
+  triggerEl.setAttribute('aria-expanded', 'false');
+  if (!triggerEl.hasAttribute('tabindex')) triggerEl.tabIndex = 0;
+  panelEl.setAttribute('role', 'menu');
+  const clearHide = (cancelSwitch = true) => {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (cancelSwitch) pendingSwitch = null;
+    document.removeEventListener('mousemove', travel);
+  };
+  const travel = event => {
+    if (!panelEl.isConnected || !triggerEl.isConnected) { clearHide(); return; }
+    if (!origin) return;
+    const rect = panelEl.getBoundingClientRect();
+    const edge = rect.left >= origin.x ? rect.left : rect.right;
+    const fraction = (event.clientX - origin.x) / (edge - origin.x);
+    const top = origin.y + (rect.top - 6 - origin.y) * fraction;
+    const bottom = origin.y + (rect.bottom + 6 - origin.y) * fraction;
+    if (fraction >= 0 && fraction <= 1 && event.clientY >= top && event.clientY <= bottom) hide();
+  };
+  const show = event => {
+    const host = triggerEl.closest('.gb-context-menu, .ab-dropdown');
+    const previous = host && _hoverSubmenuGroups.get(host);
+    if (event?.type === 'mouseenter' && previous && previous !== owner && previous.visible()) {
+      previous.switchTo(() => show());
+      return;
+    }
+    if (previous && previous !== owner) previous.close();
+    if (host) _hoverSubmenuGroups.set(host, owner);
     clearHide();
+    keepAncestors();
+    if (Number.isFinite(event?.clientX)) origin = { x: event.clientX, y: event.clientY };
+    triggerEl.setAttribute('aria-expanded', 'true');
     if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
     panelEl.style.position = 'fixed';
     panelEl.style.zIndex = '10002';
@@ -591,27 +624,68 @@ function attachHoverSubmenu(triggerEl, panelEl) {
     panelEl.style.maxWidth = ''; panelEl.style.maxHeight = '';
     panelEl.style.overflowX = ''; panelEl.style.overflowY = '';
     panelEl.style.display = 'block';
+    panelEl.hidden = false;
     const rect = triggerEl.getBoundingClientRect();
     const z = _getZoom();
     panelEl.style.left = (rect.right / z) + 'px';
     panelEl.style.top = (rect.top / z - 4) + 'px';
-    clampPopupToViewport(panelEl);
     // 右端で見切れる場合は trigger の左側に反転
     const pr = panelEl.getBoundingClientRect();
     const vw = window.innerWidth / z;
     if (pr.right / z > vw - 4) {
       panelEl.style.left = Math.max(4, (rect.left / z) - (pr.width / z)) + 'px';
-      clampPopupToViewport(panelEl);
     }
+    clampPopupToViewport(panelEl);
+    options.onShow?.();
   };
   const hide = () => {
-    clearHide();
-    hideTimer = setTimeout(() => { panelEl.style.display = 'none'; }, 200);
+    clearHide(false);
+    hideTimer = setTimeout(() => {
+      const next = pendingSwitch;
+      hideNow();
+      next?.();
+    }, 200);
+    document.addEventListener('mousemove', travel);
   };
+  const keepAncestors = () => {
+    const owner = _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'));
+    owner?.keep();
+  };
+  const hideNow = () => {
+    _hoverSubmenuGroups.get(panelEl)?.close();
+    clearHide(); panelEl.style.display = 'none';
+    triggerEl.setAttribute('aria-expanded', 'false');
+    options.onHide?.();
+  };
+  const leaveAncestors = () => _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'))?.leave();
+  const owner = {
+    keep: () => { clearHide(); keepAncestors(); },
+    leave: () => { hide(); leaveAncestors(); },
+    visible: () => panelEl.isConnected && panelEl.style.display !== 'none',
+    close: hideNow,
+    switchTo: next => { pendingSwitch = next; hide(); },
+  };
+  _hoverSubmenuOwners.set(panelEl, owner);
   triggerEl.addEventListener('mouseenter', show);
   triggerEl.addEventListener('mouseleave', hide);
-  panelEl.addEventListener('mouseenter', clearHide);
-  panelEl.addEventListener('mouseleave', hide);
+  triggerEl.addEventListener('mousemove', event => { origin = { x: event.clientX, y: event.clientY }; });
+  panelEl.addEventListener('mouseenter', () => { clearHide(); keepAncestors(); });
+  panelEl.addEventListener('mouseleave', () => { hide(); leaveAncestors(); });
+  // 呼出元ごとの実装差に関わらず同じ左右キーで往復できる。
+  triggerEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowRight') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    show();
+    const first = panelEl.querySelector('.gb-context-menu-item:not(.disabled):not(:disabled), .ab-dropdown-item:not(.disabled)');
+    if (first) { if (!first.hasAttribute('tabindex')) first.tabIndex = 0; first.focus({ preventScroll: true }); }
+  }, true);
+  panelEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowLeft') return;
+    // ポータル化された更に深い子のキーはその子自身が受け持つ。
+    event.preventDefault(); event.stopImmediatePropagation();
+    hideNow();
+    triggerEl.focus({ preventScroll: true });
+  }, true);
 }
 
 // 全てのポップアップ要素にclampPopupToViewportを自動適用する安全網
@@ -819,82 +893,8 @@ function _showMobileStatusToast(text, isError) {
   }, isError ? 5000 : 3500);
 }
 
-function showStatus(msg, isError, options) {
-  const el = document.getElementById('sb-msg');
-  const text = String(msg || '');
-  if (!el) {
-    console.log((isError ? 'ERROR: ' : '') + text);
-    if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
-    return;
-  }
-  el.textContent = text;
-  el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
-  if (text) {
-    el.dataset.statusKind = isError ? 'error' : 'success';
-    el.setAttribute('aria-label', (isError ? 'エラー: ' : '状態: ') + text);
-  } else {
-    delete el.dataset.statusKind;
-    el.removeAttribute('aria-label');
-  }
-  _showMobileStatusToast(text, !!isError);
-  if (isError) {
-    setTimeout(() => {
-      if (el.textContent === text) {
-        el.textContent = '';
-        delete el.dataset.statusKind;
-        el.removeAttribute('aria-label');
-      }
-    }, 5000);
-  } else if (_isSaveSuccessStatusMessage(text, isError, options)) {
-    _queueSaveDialog(text);
-  }
-}
-window.showStatus = showStatus;
-
-function getCssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
-
-function rgbToHex(rgb) {
-  if (!rgb || rgb.startsWith('#')) return rgb || '#000000';
-  const m = rgb.match(/(\d+)/g);
-  if (!m || m.length < 3) return '#000000';
-  return '#' + m.slice(0,3).map(n => parseInt(n).toString(16).padStart(2,'0')).join('');
-}
-
-// ============================================================
-// 定数
-// ============================================================
-const FILE_TYPE_LABELS = {
-  folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
-  entity: 'ページ', chat: 'チャット',
-  image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
-  psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
-  'form-app': 'フォーム', archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
-};
-
-const NATIVE_TYPES = new Set(['form-app','page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
-
-const PALETTE_COLORS = [
-  '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
-  '#cf9b9b','#cfc39b','#b4cf9b','#9bcfaa','#9bcccf','#9ba4cf','#b89bcf','#cf9bbd',
-  '#9e4f4f','#9e8c4f','#759e4f','#4f9e65','#4f9a9e','#4f5e9e','#7c4f9e','#9e4f84',
-  '#4f2828','#4f4628','#3b4f28','#284f33','#284d4f','#282f4f','#3e284f','#4f2842',
-];
-
-const PALETTE_BG_COLORS = [
-  '#544040','#544940','#545040','#445440','#40544c','#404c54','#434054','#504054',
-  '#493232','#493d32','#494632','#394932','#32493f','#323d49','#393249','#463249',
-  '#3d2c2c','#3d342c','#3d3a2c','#313d2c','#2c3d35','#2c343d','#312c3d','#3a2c3d',
-];
-
-// ============================================================
-// Lucide Icons (ISC License)
-// ============================================================
-const LUCIDE = {
-  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-  moreHorizontal: '<circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/><circle cx="5" cy="12" r="1" fill="currentColor"/>',
-  moreVertical: '<circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/>',
-  folderPen: '<path d="M8.4 10.6a2 2 0 0 1 3 3L6 19l-4 1 1-4Z"/><path d="M2 11.5V5a2 2 0 0 1 2-2h3.9a2 2 0 0 0 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9.5"/>',
-  folderTree: '<path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/>',
-  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
-  page: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
-  db: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
+// ── 進捗は処理パネル（共通の進捗表示 MeldexOperationProgress）に出し、ステータスバーには出さない ──
+// （2026-11-21 ユーザー指示・UI共通ルール §10）。「〜中...」「〜しています…」のような進行中の知らせは
+// 処理パネルの1件として出し、次の結果・エラーの知らせ（ステータスバーに出す）でその1件を終える。
+const _STATUS_PROGRESS_ELLIPSIS_RE = /(?:\.{3}|…|・・・)\s*$/;
+const _STATUS_PROGRESS_IDLE_MS = 120000;

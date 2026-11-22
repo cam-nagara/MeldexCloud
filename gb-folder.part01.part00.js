@@ -11,6 +11,7 @@ const FOLDER_PANEL_RENDER_CHUNK_SIZE = 80;
 const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 let _folderPath = '';
 let _folderItems = [];
+const _folderPendingMovePaths = new Set();
 let _folderBrowseIncomplete = null;
 let _folderUnifiedSearchPaths = new Set();
 let _folderUnifiedSearchSeq = 0;
@@ -77,17 +78,31 @@ async function _folderRunMenuAction(fn, label) {
 // 複数項目の複製。部分失敗も成功件数・失敗件数・最初の原因を表示する。
 async function _folderDuplicateItems(items, refresh) {
   const result = { ok: 0, failed: 0, error: null };
+  // 複製を取り消せるようにする（作ったものをゴミ箱へ移す。フォルダツリーの複製と同じ。2026-11-22 M-014 フォルダパネル網羅テスト）
+  const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
   for (const target of items || []) {
     try {
-      await apiPost('/outliner/duplicate', { path: target.path });
+      const res = await apiPost('/outliner/duplicate', { path: target.path });
       result.ok += 1;
+      if (res?.new_path && typeof pushCreatedOutlinerItemHistory === 'function') {
+        pushCreatedOutlinerItemHistory({ path: res.new_path, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file' },
+          '複製: ' + (res.new_name || String(res.new_path).split('/').pop()), {
+            scope: historyScope,
+            refresh: typeof refresh === 'function' ? () => refresh() : undefined,
+          });
+      }
     } catch (error) {
       result.failed += 1;
       if (!result.error) result.error = error;
     }
   }
   if (result.ok > 0 && typeof refresh === 'function') {
+    // ツリーも複製したフォルダの子だけを差分で反映する（以前はツリーに出るのが次の読み直しまで遅れていた）
+    const treeSync = typeof folderToolbarSyncTree === 'function'
+      ? folderToolbarSyncTree((items || []).map(target => _folderDirectParentKey(target.path))).catch(() => null)
+      : null;
     try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+    await treeSync;
   }
   const reason = result.failed ? _folderFailureReason(result.error) : '';
   const suffix = reason ? `：${reason}` : '';
@@ -618,10 +633,7 @@ async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
     showStatus('リンク登録できる項目がありません', true);
     return 0;
   }
-  if (items.length > 1) {
-    showStatus('複数選択のリンク登録は安全な一括保存を利用できないため、全件を変更しませんでした', true);
-    return 0;
-  }
+  // 複数選択のリンクも一括登録でまとめて作る（一括登録の API は複数件を1回で扱い、取り消しも1つ）。
   let result;
   try {
     result = typeof addFolderLinksBatchWithHistory === 'function'
@@ -867,12 +879,22 @@ async function _folderImportOsDrop(event, targetItem) {
   const result = { ok: 0, failed: 0, failures: [], savedGroups: [] };
   const progressToken = progress?.beginOperation?.('ファイルを取り込み中', total || null, { delayMs: 0, kind: 'external-file-intake' });
   const boundProgress = { updateOperation: count => progress?.updateOperation?.(count, null, progressToken) };
+  const reservation = typeof historyReserve === 'function' ? historyReserve('フォルダ: ファイル取り込み', '') : null;
   try {
     await _folderImportOsFiles(nodes.filter(node => node.kind === 'file'), targetItem.path, result, boundProgress);
     for (const node of nodes.filter(item => item.kind === 'folder')) {
       await _folderImportOsNode(node, targetItem.path, result, boundProgress);
     }
   } finally {
+    const created = result.savedGroups.flatMap(group => group.saved.map((saved, index) => _folderDroppedFileFallbackItem(saved, group.files[index])))
+      .filter(item => item.path).map(item => ({ ...item, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const normalize = path => String(path).replace(/\\/g, '/').replace(/\/+$/, '');
+    const topLevel = created.filter(item => !created.some(parent => parent !== item && parent.kind === 'folder' && normalize(item.path).startsWith(normalize(parent.path) + '/')));
+    if (topLevel.length) {
+      const register = () => _pushCreatedOutlinerItemsHistory(topLevel, 'フォルダ: ファイル取り込み', '');
+      if (reservation) reservation.capture(register); else register();
+    }
+    reservation?.cancel();
     progress?.finishOperation?.(progressToken, { failed: result.failed, summary: `${result.ok}件保存・${result.failed}件失敗`, details: result.failures });
   }
   result.savedGroups.forEach(group => _folderApplySavedDropResults(group.parentPath, group.saved, group.files));
@@ -903,10 +925,8 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     showStatus('移動できる項目がありません', true);
     return 0;
   }
-  if (items.length > 1) {
-    showStatus('複数選択の移動は安全な一括保存を利用できないため、全件を変更しませんでした', true);
-    return 0;
-  }
+  // 複数選択もまとめて移動する（1件ずつ移動し、成功した分を1つの取り消しにまとめる。フォルダツリーへのドロップと同じ）。
+  // 以前は複数選択を全部断っていた（2026-11-22 M-014 フォルダパネル網羅テスト。マニュアルは「まとめて挿入できます」）。
   // シートへのドロップ: Altキー押下時、またはエントリ以外のファイル/ボード/画像等は
   // シート全ファイル取込（MeldexSheetEntryAttachments）へルーティングしてエントリ化する。
   if (targetItem?.type === 'database') {
@@ -933,12 +953,24 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   }
   const progress = window.MeldexImportProgress;
   const progressToken = progress?.beginOperation?.('ファイルを移動中', items.length, { delayMs: 0, kind: 'file-move' });
+  const pendingPaths = items.filter(source => source.sourceSurface !== 'sheet-image' && _folderIsDirectChildOfCurrent(source.path))
+    .map(source => _folderMembershipKey(source.path));
+  const pendingSelection = _folderSelectedItems.map(item => item.path);
   let ok = 0;
   const failures = [];
   const movedItems = [];
+  // 取り消しの枠はドロップの時点で取る（画面の読み直しの後に記録していたので、その間の Ctrl+Z が
+  // 前の操作を取り消していた。フォルダツリーの削除・改名と同じ型: 2026-11-22 M-014 フォルダパネル網羅テスト）。
+  const moveReservation = typeof historyReserve === 'function'
+    ? historyReserve(`フォルダパネル: ${items.length} 件を移動`, '', `→ ${targetPath}`)
+    : null;
+  try {
+  pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
+  if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
   try {
     for (const source of items) {
       try {
+        if (typeof _outlinerAwaitPendingRename === 'function') await _outlinerAwaitPendingRename(source);
         const oldPath = source.path;
         const copySource = source.sourceSurface === 'sheet-image';
         const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
@@ -960,9 +992,13 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
           type: source.type,
           fileId: res?.file_id || source.file_id,
         });
+        if (!copySource) {
+          _folderPendingMovePaths.delete(_folderMembershipKey(oldPath));
+          _folderApplyCommittedMoves(movedItems.slice(-1));
+        }
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
           try { renameAppPathReferences(oldPath, res.new_path, {
-            label: res.new_name || source.name,
+            preserveMountedViews: true, label: res.new_name || source.name,
             fileId: res.file_id,
             type: source.type || 'file',
           }); } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
@@ -972,6 +1008,8 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
           catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
         }
       } catch (error) {
+        _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
+        renderFolderGrid({ preserveSelectedPaths: pendingSelection });
         failures.push({ name: source.name || source.path, error });
       }
       progress?.updateOperation?.(ok + failures.length, null, progressToken);
@@ -979,11 +1017,13 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } finally {
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
   }
-  if (typeof refreshOutliner === 'function') {
-    await refreshOutliner({ force: true, reason: 'folder-panel-drop-move' });
-  } else if (typeof loadOutliner === 'function') {
-    await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
-  }
+  if (movedItems.length) _folderApplyCommittedMoves(movedItems);
+  // パネルを先に描き直し、ツリーは移動元と移動先のフォルダだけを差分で反映する（並行）。全体の読み直しを待つと
+  // 移動の反映が 0.4秒前後かかっていた（2026-11-22 M-014 フォルダパネル網羅テスト）。差分にできなければ全体を読み直す。
+  const treeFolders = [targetPath, ...movedItems.map(moved => _folderDirectParentKey(moved.oldPath))];
+  const treeSync = typeof folderToolbarSyncTree === 'function'
+    ? folderToolbarSyncTree(treeFolders)
+    : (typeof refreshOutliner === 'function' ? refreshOutliner({ force: true, reason: 'folder-panel-drop-move' }) : null);
   if (_folderPath && typeof openFolder === 'function') {
     const label = document.getElementById('folder-title')?.textContent || _folderPath;
     await openFolder(label, _folderPath, {
@@ -995,6 +1035,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
       skipGlobalUi: true,
     });
   }
+  try { await treeSync; } catch (error) { console.warn('[folder move] ツリーの反映に失敗しました', error); }
   if (failures.length) {
     const first = failures[0];
     const reason = String(first.error?.userMessage || first.error?.message || '');
@@ -1002,7 +1043,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   } else {
     showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
-  window.MeldexFileMoveHistory?.register?.(movedItems, {
+  const registerMoves = () => window.MeldexFileMoveHistory?.register?.(movedItems, {
     label: `フォルダパネル: ${movedItems.length} 件を移動`,
     detail: `→ ${targetPath}`,
     refresh: async () => {
@@ -1014,7 +1055,14 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
       }
     },
   });
+  if (moveReservation) moveReservation.capture(registerMoves); else registerMoves();
   return ok;
+  } finally {
+    const hadPending = pendingPaths.some(path => _folderPendingMovePaths.has(path));
+    pendingPaths.forEach(path => _folderPendingMovePaths.delete(path));
+    if (hadPending) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+    moveReservation?.cancel();
+  }
 }
 
 function _folderDirectParentKey(path) {
@@ -1023,18 +1071,56 @@ function _folderDirectParentKey(path) {
   return slash >= 0 ? normalized.slice(0, slash) : '';
 }
 
+// 保存済みの移動の結果を先に表示へ反映する。一覧の再取得を待たず、失敗した項目は残す。
+function _folderApplyCommittedMoves(moves) {
+  if (!_folderPath || !Array.isArray(moves) || !moves.length) return;
+  const key = value => _normalizeFolderPathForCompare(value).toLowerCase();
+  const matches = (a, b) => a === b || (!!a && !!b && (a.endsWith('/' + b) || b.endsWith('/' + a)));
+  let changed = false;
+  const selected = _folderSelectedItems.map(item => item.path);
+  for (const move of moves) {
+    const oldKey = key(move.oldPath), newKey = key(move.newPath);
+    const index = _folderItems.findIndex(item => matches(key(item.path), oldKey) || matches(key(item.path), newKey));
+    if (index < 0) {
+      if (move.item && _folderIsDirectChildOfCurrent(move.newPath)) {
+        _folderItems.push({ ...move.item, path: move.newPath, name: move.name || move.item.name });
+        changed = true;
+      }
+      continue;
+    }
+    const original = _folderItems[index];
+    if (_folderIsDirectChildOfCurrent(move.newPath)) {
+      _folderItems[index] = { ...original, path: move.newPath, name: move.name || original.name };
+    } else _folderItems.splice(index, 1);
+    changed = true;
+  }
+  if (changed) renderFolderGrid({ preserveSelectedPaths: selected });
+}
+
+// 開いているフォルダの直下の項目か。フォルダはツリーから開くと絶対パス、項目は保存先の相対パスで持つことがあるので、
+// 片方が相対パスの時は末尾の一致で同じフォルダとみなす（以前は一致せず、ツリーから開いたフォルダでは
+// マニュアルの並べ替えのドラッグが何もしなかった: 2026-11-22 M-014 フォルダパネル網羅テスト）。
+function _folderIsDirectChildOfCurrent(path) {
+  const parent = _folderDirectParentKey(path).toLowerCase();
+  const current = _normalizeFolderPathForCompare(_folderPath || '').toLowerCase();
+  if (parent === current) return true;
+  if (!parent || !current) return false;
+  return current.endsWith('/' + parent) || parent.endsWith('/' + current);
+}
+
 function _folderManualDropIntent(event, targetElement, targetItem) {
   if (!event || !targetElement || !targetItem?.path || event.altKey) return null;
   if (typeof getSortForFolder !== 'function' || getSortForFolder(_folderPath || '').sort !== 'manual') return null;
-  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
   const sources = _folderDragPayloadItemsFromEvent(event).filter(source => (
-    _folderDirectParentKey(source.path) === currentKey && source.path !== targetItem.path
+    _folderIsDirectChildOfCurrent(source.path) && source.path !== targetItem.path
   ));
-  if (!sources.length || _folderDirectParentKey(targetItem.path) !== currentKey) return null;
+  if (!sources.length || !_folderIsDirectChildOfCurrent(targetItem.path)) return null;
   const rect = targetElement.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
   let position;
-  if (_folderLayout === 'list') {
+  // フォルダ・シートは表示形式によらず横幅いっぱいの行で描く（.fv-folder-list-item）。行の形のものは上下で前後を決める
+  // （横の位置で決めると、行の左寄りに落としただけで「中へ移動」ではなく並べ替えになっていた）。
+  if (_folderLayout === 'list' || targetElement.classList?.contains('fv-folder-list-item')) {
     const ratio = (event.clientY - rect.top) / rect.height;
     if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
     position = ratio < 0.5 ? 'before' : 'after';
@@ -1054,8 +1140,7 @@ function _folderClearManualDropIndicators() {
 
 function _folderApplyManualDrop(intent, targetItem) {
   if (!intent || !targetItem?.name) return false;
-  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
-  const directItems = (_folderItems || []).filter(item => _folderDirectParentKey(item?.path) === currentKey);
+  const directItems = (_folderItems || []).filter(item => _folderIsDirectChildOfCurrent(item?.path));
   const ordered = typeof _sortItemsByManualOrder === 'function'
     ? _sortItemsByManualOrder([...directItems], _folderPath || '')
     : [...directItems];

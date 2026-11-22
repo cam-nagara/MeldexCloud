@@ -4,6 +4,28 @@
 
   if (window.MeldexCloudBatchRename) return;
 
+  const localOperations = new Map();
+  const usesLocalBackend = options => !options?.provider && window.MeldexRuntimeAdapter?.getMode?.() === 'legacy';
+  async function callLocalBatchTool(name, args) {
+    const response = await apiPost('/mcp/tool-call', { tool: 'meldex_' + name, arguments: args }, { silentError: true });
+    const result = response?.result;
+    if (!response?.ok || !result || result.ok === false || result.error) {
+      throw new CloudBatchRenameError(result?.error || '一括変更を保存できませんでした', result?.code);
+    }
+    return result;
+  }
+  async function reflectLocalBatch(entries) {
+    for (const entry of entries) {
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(entry.source, entry.destination, {
+        preserveMountedViews: true, label: basename(entry.destination), type: 'image',
+      });
+    }
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-batch-rename' });
+    if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+      await openFolder(basename(_folderPath), _folderPath, { silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
+    }
+  }
+
   const IMAGE_EXTENSIONS = new Set([
     '.avif', '.bmp', '.gif', '.heic', '.heif', '.ico', '.jfif', '.jpeg',
     '.jpg', '.jxl', '.png', '.svg', '.tif', '.tiff', '.webp',
@@ -134,6 +156,14 @@
   }
 
   async function plan(options = {}) {
+    if (usesLocalBackend(options)) {
+      const args = { path: options.folder || options.path || '', transform: 'remove_leading_datetime', recursive: !!options.recursive,
+        extensions: options.extensions, conflict_policy: options.conflictPolicy || options.conflict_policy || 'fail' };
+      const result = await callLocalBatchTool('batch_rename', { ...args, dry_run: true });
+      return { entries: (result.changes || []).map(row => ({ source: row.old_path, destination: row.new_path })),
+        conflicts: result.conflicts || [], skipped_unchanged_count: result.skipped_already_normalized || 0,
+        target_folder: result.target_path, _localArgs: args, _localPlanId: result.plan_id };
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new CloudBatchRenameError('Cloud保存先がありません', 'provider_unavailable');
     if (!await provider.ensureWorkspacePermission?.('readwrite')) throw new CloudBatchRenameError('保存先を編集できません', 'permission_denied');
@@ -323,6 +353,12 @@
   }
 
   async function applyPlan(batchPlan, options = {}) {
+    if (batchPlan?._localArgs) {
+      const result = await callLocalBatchTool('batch_rename', { ...batchPlan._localArgs, dry_run: false, plan_id: batchPlan._localPlanId });
+      localOperations.set(result.operation_id, { folder: normalizePath(batchPlan.target_folder), entries: batchPlan.entries, state: 'applied' });
+      await reflectLocalBatch(batchPlan.entries);
+      return { ...result, changed_count: result.renamed_count || 0, state: 'applied' };
+    }
     const provider = options.provider || batchPlan?._provider || window.MeldexStorageAdapter?.getProvider?.();
     if (!batchPlan || !Array.isArray(batchPlan.entries)) throw new CloudBatchRenameError('一括改名計画が不正です', 'invalid_plan');
     if (batchPlan.conflicts?.length) throw new CloudBatchRenameError('同名になるファイルがあります', 'destination_conflicts', batchPlan.conflicts);
@@ -372,6 +408,16 @@
   }
 
   async function replay(operationId, direction, options = {}) {
+    if (usesLocalBackend(options)) {
+      const result = await callLocalBatchTool('batch_rename_' + direction, { operation_id: operationId });
+      const local = localOperations.get(operationId);
+      if (local) {
+        local.state = direction === 'undo' ? 'undone' : 'applied';
+        await reflectLocalBatch(direction === 'undo'
+          ? local.entries.map(row => ({ source: row.destination, destination: row.source })) : local.entries);
+      }
+      return { ...result, state: direction === 'undo' ? 'undone' : 'applied' };
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     const journal = await loadJournal(provider, operationId);
     const expected = direction === 'undo' ? 'applied' : 'undone';
@@ -448,6 +494,10 @@
   }
 
   async function recentOperation(folder, options = {}) {
+    if (usesLocalBackend(options)) {
+      const found = [...localOperations].reverse().find(([, value]) => value.folder === normalizePath(folder));
+      return found ? { documentId: found[0], payload: { state: found[1].state } } : null;
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     const { adapter, kind } = await resolveJournalAdapter(provider);
     if (typeof adapter.listDocuments !== 'function') return null;

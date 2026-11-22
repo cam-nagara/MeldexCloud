@@ -703,6 +703,7 @@ function bdParseMd(raw) {
       if (/userFontBold:\s*true/.test(props)) t._userFontBold = true;
       if (/userW:\s*true/.test(props)) t._userW = true;
       if (/userCardStyle:\s*true/.test(props)) t._userCardStyle = true;
+      props.replace(/\buser([A-Z]\w*):\s*true/g, (_, name) => { t['_user' + name] = true; return _; });
       if (/collapsed:\s*true/.test(props)) t.collapsed = true;
       if (/minimized:\s*true/.test(props)) t.minimized = true;
       if (!transforms[id]) transforms[id] = {};
@@ -740,6 +741,11 @@ function bdParseMd(raw) {
           t._userCardStyle = !!t.userCardStyle;
           delete t.userCardStyle;
         }
+        Object.keys(t).forEach(key => {
+          if (!/^user[A-Z]\w*$/.test(key)) return;
+          t['_' + key] = !!t[key];
+          delete t[key];
+        });
         if (!transforms[id]) transforms[id] = {};
         Object.assign(transforms[id], t);
       });
@@ -850,6 +856,7 @@ function bdParseMd(raw) {
       const thm = boardUiBlock[1].match(/themeId:\s*([^\n]+)/);
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
+      const alk = boardUiBlock[1].match(/autoLinks:\s*(true|false)/);
       // 閉じ括弧が欠けた値も「壊れている」と検知できるよう、行の残り全体を取る。
       const dfm = boardUiBlock[1].match(/displayFilters:[ \t]*([^\n]*)/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
@@ -859,6 +866,8 @@ function bdParseMd(raw) {
       if (thm) boardUi.themeId = thm[1].trim();
       if (ssm) boardUi.showShadow = ssm[1] === 'true';
       if (trm) boardUi.textRotateOnLine = trm[1] === 'true';
+      // ツールバーの自動リンクの切り替え（ボードごと）
+      if (alk) boardUi.displayLayers = { autoLinks: alk[1] === 'true' };
       if (dfm && dfm[1].trim()) {
         const parsedFilters = _bdParseJsonOrFlowObject(dfm[1]);
         if (parsedFilters) boardUi.displayFilters = parsedFilters;

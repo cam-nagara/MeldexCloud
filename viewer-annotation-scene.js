@@ -552,7 +552,7 @@
     });
   }
   // 表示中のすべてのシーンのアノテートを消す（本体の annClear() 相当）。
-  async function clearAll() {
+  async function clearAll(options = {}) {
     const strokes = [];
     _scenes.forEach(scene => {
       scene.strokesG.querySelectorAll('path, polygon, rect, ellipse').forEach(el => {
@@ -561,7 +561,7 @@
     });
     const noteCount = _scenes.reduce((sum, scene) => sum + (scene.notes?.length || 0), 0);
     if (!strokes.length && !noteCount) return false;
-    if (!window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
+    if (!options.confirmed && !window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
     for (const el of strokes) {
       try {
         const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;

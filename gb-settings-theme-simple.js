@@ -85,7 +85,7 @@ function renderSettingsSimpleThemeEditor() {
     <div class="gb-section-title">一括設定</div>
     <div class="gb-section-desc">変更した色・装飾だけを対応するUIへ一括適用します。適用後もプレビューから個別に編集できます。</div>
     <div class="settings-simple-theme-grid">
-    ${SETTINGS_SIMPLE_THEME_FIELDS.map(field => `<div class="gb-field-row" data-simple-theme-item="${field.id}">
+    ${SETTINGS_SIMPLE_THEME_FIELDS.map(field => `<div class="settings-simple-theme-item" data-simple-theme-item="${field.id}">
       <span class="cs-row-label">${esc(field.label)}</span>
       <button type="button" class="cs-swatch" data-e2e-id="settings-simple-theme-color-${field.id}" data-simple-theme-color="${field.id}" aria-label="${esc(field.label)}を設定" title="${esc(field.label)}" style="background:${colors[field.id]}"></button>
     </div>`).join('')}

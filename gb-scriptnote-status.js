@@ -143,10 +143,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._markDirty({ skipUndo: true });
     };
 
+    let itemIndex = 0;
     const mkItem = (label, statusValue, color = '') => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'sn2-header-popup-item';
+      // 安定ID（M-014 S31）: 並び順で項目ごとに別の値にする（先頭は「未設定」）。
+      btn.dataset.e2eId = `scriptnote-status-choice-${itemIndex++}`;
       btn.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;text-align:left;';
       if ((row.status || '') === statusValue) btn.classList.add('active');
       const dot = document.createElement('span');
@@ -180,6 +183,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     positionPopup(popup, anchorBtn.getBoundingClientRect());
     escapeHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      // ポップアップが閉じる処理を通らずに外された時は、残った Escape 処理が次の Escape を横取りしないよう後始末だけする（M-014 S20/S21）。
+      if (!popup.isConnected) { closePopup(false); return; }
       ev.preventDefault();
       ev.stopPropagation();
       closePopup(true);

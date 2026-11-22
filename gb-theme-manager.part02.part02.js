@@ -25,7 +25,17 @@
     const previous = clone(applications);
     previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
     const legacyDefaults = [previous];
-    if (stored._defaultsVersion == null) {
+    // Shipped defaults also used white selected text and an unshaded rail.
+    // v3 stamped that snapshot unchanged, so a version number alone cannot
+    // prove it was repaired. Match the complete former preset, never individual
+    // auto-color fields (which may be genuine user choices).
+    const whiteTextDefaults = clone(previous);
+    whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
+    legacyDefaults.push(whiteTextDefaults);
+    // v1/v2 could stamp the original sequential defaults without upgrading them.
+    // Treat that exact snapshot like the unversioned original; a current save
+    // (including an intentional auto-color choice) is still returned above.
+    if (stored._defaultsVersion == null || [1, 2].includes(stored._defaultsVersion)) {
       const oldTreeDefaults = clone(previous);
       oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
       const treeOnlyDefaults = clone(applications);

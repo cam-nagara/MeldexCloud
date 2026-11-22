@@ -574,6 +574,9 @@
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'row-select-cb gb-production-all-flat-select';
+    // 行の部品にも安定IDを付ける（タスクのファイル名で区別。画面テストと操作の記録が行を特定できるように）
+    const rowKey = path.split('/').pop().replace(/\.md$/i, '').replace(/[^\p{L}\p{N}_-]+/gu, '-');
+    checkbox.dataset.e2eId = 'gb-production-all-flat-row-select-' + rowKey;
     checkbox.checked = instance._selectedPaths.has(path);
     checkbox.setAttribute('aria-label', (row?.name || 'タスク') + 'を選択');
     checkbox.addEventListener('change', () => {
@@ -604,6 +607,7 @@
           const jump = document.createElement('button');
           jump.type = 'button';
           jump.className = 'gb-production-all-flat-work-jump';
+          jump.dataset.e2eId = 'gb-production-all-flat-work-jump-' + rowKey;
           jump.title = '作品タブで開く';
           jump.setAttribute('aria-label', `「${sheet.work_title || sheet.sheet_name}」のタブで開く`);
           jump.appendChild(_icon('arrowUpRight', 12));

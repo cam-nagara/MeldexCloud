@@ -112,6 +112,8 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
           path: item.path,
           kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
           ...(item.assetId ? { assetId: item.assetId } : {}),
+          ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
+            expected_entry_name: item.name || undefined } : {}),
         })),
         ...confirmationPayload,
       });
@@ -153,6 +155,8 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
         path: item.path,
         kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
         ...(item.assetId ? { assetId: item.assetId } : {}),
+        ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
+          expected_entry_name: item.name || undefined } : {}),
         ...confirmationPayload,
       });
       results.push({ status: 'fulfilled', value });
@@ -200,9 +204,16 @@ function _removeOutlinerNodesForPaths(paths) {
 }
 
 function _removeFolderItemsForPaths(paths) {
-  const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
+  const canonical = value => {
+    const path = _normalizeOutlinerPathForCompare(value);
+    const absolute = input => /^(?:[a-z]:\/|\/)/i.test(input);
+    const base = _normalizeOutlinerPathForCompare(typeof state !== 'undefined' ? state.vaultPath : '');
+    const resolved = path && !absolute(path) && base && absolute(base) ? base + '/' + path : path;
+    return /^[a-z]:\//i.test(resolved) ? resolved.toLowerCase() : resolved;
+  };
+  const deletedPaths = (paths || []).map(canonical).filter(Boolean);
   if (!deletedPaths.length) return;
-  const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(path, dp));
+  const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(canonical(path), dp));
 
   document.querySelectorAll('#folder-grid .fv-item').forEach(itemEl => {
     const path = itemEl?.dataset?.path || '';
@@ -298,6 +309,48 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshS
   await Promise.allSettled(jobs);
 }
 
+// ファイル・フォルダ・シートを作る操作（新規作成・別名で保存・複製）を取り消せるようにする（2026-11-21 ユーザー決定）。
+// 取り消しは作ったものをゴミ箱へ移し、やり直しはゴミ箱から戻す（通常の削除と同じ参照の確認を通す）。
+function pushCreatedOutlinerItemHistory(item, label, options = {}) {
+  if (typeof historyPush !== 'function' || !item?.path) return null;
+  const current = { ...item };
+  let trashRef = null;
+  // 種類の決め方は通常の削除（_deleteOutlinerTargetsSequentially）と同じ（シートは file として扱う）
+  const kind = current.kind === 'folder' || current.type === 'folder' ? 'folder' : 'file';
+  const refresh = async (phase) => {
+    if (typeof options.refresh === 'function') { await options.refresh(phase, current); return; }
+    await _runOutlinerDeleteHistoryRefresh(null, 'undo', {});
+  };
+  const entry = historyPush(label,
+    async () => {
+      const warning = typeof MeldexDeleteImpactWarning !== 'undefined' ? MeldexDeleteImpactWarning : null;
+      const confirmation = warning?.authorizeReversibleDelete
+        ? await warning.authorizeReversibleDelete([{ path: current.path, kind }])
+        : { confirmed: true, operation: 'trash' };
+      if (!confirmation) throw new Error('参照の確認ができなかったため取り消しを中止しました');
+      const [result] = await _deleteOutlinerTargetsSequentially([{ ...current, kind }], { confirmation });
+      if (result?.status !== 'fulfilled') throw new Error(String(result?.reason?.message || result?.reason || '作ったものをゴミ箱へ移せませんでした'));
+      trashRef = _outlinerTrashRefFromResponse(result.value);
+      if (!trashRef) throw new Error('作ったものをゴミ箱へ移せませんでした');
+      if (typeof options.onUndo === 'function') { try { await options.onUndo(current); } catch {} }
+      await refresh('undo');
+    },
+    async () => {
+      if (!trashRef) throw new Error('ゴミ箱の項目が見つかりません');
+      const restored = await apiPost('/outliner/restore', {
+        trash_name: trashRef.trash_name,
+        ...(trashRef.trash_root ? { trash_root: trashRef.trash_root } : {}),
+      });
+      current.path = restored?.restored_to || restored?.restored_path || current.path;
+      trashRef = null;
+      await refresh('redo');
+    },
+    options.scope ?? (typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : ''));
+  // 取り消すと作ったファイルを消す。別の画面からの Ctrl+Z で消さないための印（共通履歴の守りが使う）。
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: [current.path] });
+  return entry;
+}
+
 async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
   if (requestedTargets.some(item => item.linked)) {
@@ -310,6 +363,13 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   }
 
   const targetPaths = targets.map(item => item.path).filter(Boolean);
+  // 履歴の枠は操作の時点で取る（画面からは先に消えるので、保存の完了を待たずに Ctrl+Z を押すと、
+  // 削除ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト。v0.7.529 のシートと同じ型）。
+  // 枠は取り消し・やり直しの側で中身が入るまで待たれる。削除できなかった時は枠を外す。
+  const historyReservation = typeof historyReserve === 'function'
+    ? historyReserve(options.label || (targets.length + ' 件を削除'), options.scope || '', options.detail || targetPaths.join(', '))
+    : null;
+  try {
   _markOutlinerDeletePending(targetPaths);
   if (typeof options.onOptimisticDelete === 'function') {
     try { options.onOptimisticDelete(targets); } catch {}
@@ -364,7 +424,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   if (succeeded.length && typeof historyPush === 'function') {
     const label = options.label || (succeeded.length + ' 件を削除');
     const detail = options.detail || succeeded.map(item => item.path).join(', ');
-    historyPush(
+    const pushDeleteEntry = () => historyPush(
       label,
       async () => {
         const { restored, failures: restoreFailures } = await _restoreOutlinerDeleteRecords(deleteRecords);
@@ -434,9 +494,18 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
       options.scope || '',
       detail
     );
+    const deleteEntry = historyReservation ? historyReservation.capture(pushDeleteEntry) : pushDeleteEntry();
+    // やり直すと同じファイルをもう一度消す（共通履歴の守りが使う）。
+    if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(deleteEntry, { redoDeletes: succeeded.map(item => item.path) });
+  } else {
+    historyReservation?.cancel();
   }
 
   return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
+  } catch (error) {
+    historyReservation?.cancel();
+    throw error;
+  }
 }
 
 const MAIN_CALENDAR_SETTINGS_KEYS = ['main-calendar-path', 'main-calendar-id'];
@@ -603,18 +672,178 @@ async function _outlinerRunMenuAction(action, event, label) {
 }
 
 // 複数項目の複製。部分失敗も件数と最初の原因を返し、表示で握り潰さない。
+// フォルダパネルが同じフォルダを開いていれば、そのフォルダを読み直す（ツリーでの作成・改名・削除・複製・移動を
+// フォルダパネルにもすぐ出す。以前は次の読み直しまで出ず、改名・削除は出ないままだった: 2026-11-22 M-014 横断の検査）。
+function _outlinerFolderPanelShows(folderPaths) {
+  if (typeof state === 'undefined' || state.view !== 'folder' || typeof _folderPath === 'undefined' || !_folderPath) return false;
+  const current = String(_folderPath).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return (folderPaths || []).some(path => {
+    const p = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return !!p && (p === current || current.endsWith('/' + p) || p.endsWith('/' + current));
+  });
+}
+
+async function _outlinerRefreshFolderPanelFor(folderPaths) {
+  if (!_outlinerFolderPanelShows(folderPaths) || typeof _folderRefreshCurrentFolder !== 'function') return;
+  try { await _folderRefreshCurrentFolder(); } catch (error) { console.warn('[outliner] フォルダパネルの更新に失敗しました', error); }
+}
+
+// 1つのフォルダの子だけを保存先の一覧に合わせる（複製・貼り付けの後の差分反映）。
+// 以前は複製・貼り付けのたびにツリー全体を読み直し、反映まで1.3〜2.5秒かかっていた（app/AGENTS.md の0.3秒の目安を
+// 大きく超える。2026-11-22 M-014 フォルダツリー網羅テスト）。開いていない（未読込の）フォルダは何もしない
+// （開いた時に読む）。仮想化した大きなフォルダ・読めなかった時は false を返し、呼び出し側が全体を読み直す。
+async function _outlinerSyncFolderChildren(folderPath) {
+  // ホームフォルダの直下はホームの節に並ぶ（フォルダの行が無い）ので、ホームの節を読み直す
+  if (typeof _homeFolderPath !== 'undefined' && _homeFolderPath && String(folderPath) === String(_homeFolderPath)) {
+    if (typeof renderHomeFolderTree === 'function') await renderHomeFolderTree({ force: true, reason: 'outliner-sync' });
+    return true;
+  }
+  const parentNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(folderPath) : null;
+  if (!parentNode) return true;
+  const container = parentNode.querySelector(':scope > .tree-children');
+  if (!container || container.dataset.loaded !== 'true') return true;
+  if (container.dataset.virtual === 'true') return false;
+  const sortCfg = getSortForFolder(folderPath);
+  const items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
+    detail: !['manual', 'name'].includes(sortCfg.sort),
+  });
+  if (!Array.isArray(items) || !container.isConnected) return false;
+  const ordered = sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, folderPath)
+    : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
+  const existing = new Map();
+  container.querySelectorAll(':scope > .tree-node').forEach(node => {
+    const path = node._nodeData?.path;
+    if (path && !node.classList.contains('tree-node-pending-create')) existing.set(path, node);
+  });
+  const keep = new Set();
+  let previous = null;
+  for (const item of ordered) {
+    if (!item?.path) continue;
+    let node = existing.get(item.path);
+    if (!node) node = createTreeNodeFromBrowse(item);
+    keep.add(node);
+    const next = previous ? previous.nextSibling : container.firstChild;
+    if (node !== next) container.insertBefore(node, next);
+    previous = node;
+  }
+  existing.forEach(node => {
+    if (keep.has(node)) return;
+    if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(node);
+    node.remove();
+  });
+  return true;
+}
+
+// 複数のフォルダを差分で反映し、どれかが差分で反映できなければツリー全体を読み直す。
+async function _outlinerSyncFoldersOrReload(folderPaths) {
+  const unique = Array.from(new Set((folderPaths || []).map(path => String(path || '')).filter(Boolean)));
+  let ok = unique.length > 0;
+  for (const path of unique) {
+    try { if (!(await _outlinerSyncFolderChildren(path))) ok = false; }
+    catch (error) { console.warn('[outliner] 差分の反映に失敗しました', error); ok = false; }
+  }
+  if (!ok && typeof loadOutliner === 'function') await loadOutliner();
+  await _outlinerRefreshFolderPanelFor(unique);
+  return ok;
+}
+
+function _outlinerParentPath(path) {
+  const value = String(path || '').replace(/[\\/]+$/, '');
+  const cut = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  return cut >= 0 ? value.slice(0, cut) : '';
+}
+
+// 保存済みの移動を差分で反映する。失敗した項目の行は動かさず、残りの一覧は後で照合する。
+function _outlinerApplyCommittedMove(oldPath, newPath, name, fileId) {
+  if (!newPath || oldPath === newPath || typeof _findTreeNodeByPath !== 'function') return;
+  const node = _findTreeNodeByPath(oldPath);
+  if (!node) return;
+  const parent = _findTreeNodeByPath(_outlinerParentPath(newPath));
+  const children = parent?.querySelector(':scope > .tree-children');
+  if (node.parentElement?.dataset.virtual === 'true') return;
+  if (children?.dataset.loaded === 'true' && children.dataset.virtual !== 'true') {
+    if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, name, fileId);
+    children.appendChild(node);
+  } else {
+    if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(node);
+    node.remove();
+  }
+}
+
 async function _outlinerDuplicateItems(items) {
-  const result = { ok: 0, failed: 0, error: null };
+  const result = { ok: 0, failed: 0, error: null, created: [] };
+  // 複製を取り消せるようにする（作ったものをゴミ箱へ移す。2026-11-21 ユーザー決定の「作る操作は取り消せる」。
+  // ツール・メニューの複製は記録していたが、フォルダツリー・フォルダパネルの右クリックの複製は記録していなかった:
+  // 2026-11-22 M-014 フォルダツリー網羅テスト）。複数を一度に複製した時は1回の取り消しで全部を戻す。
+  const historyScope = '';
+  const createdItems = [];
   for (const target of items || []) {
     try {
-      await apiPost('/outliner/duplicate', { path: target.path });
+      const res = await apiPost('/outliner/duplicate', { path: target.path });
       result.ok += 1;
+      const createdPath = res?.new_path || '';
+      if (createdPath) {
+        result.created.push(createdPath);
+        createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
+          name: res?.new_name || createdPath.split('/').pop() || createdPath });
+      }
     } catch (error) {
       result.failed += 1;
       if (!result.error) result.error = error;
     }
   }
+  if (createdItems.length === 1 && typeof pushCreatedOutlinerItemHistory === 'function') {
+    pushCreatedOutlinerItemHistory(createdItems[0], '複製: ' + createdItems[0].name, { scope: historyScope });
+  } else if (createdItems.length > 1) {
+    _pushCreatedOutlinerItemsHistory(createdItems, `複製: ${createdItems.length} 件`, historyScope);
+  }
   return result;
+}
+
+// 複数の作ったものを1つの取り消しの記録にする（取り消し=全部をゴミ箱へ、やり直し=ゴミ箱から全部戻す）。
+function _pushCreatedOutlinerItemsHistory(createdItems, label, scope) {
+  if (typeof historyPush !== 'function' || !createdItems.length) return null;
+  const records = createdItems.map(item => ({ ...item, trashRef: null }));
+  const refresh = async () => {
+    await _outlinerSyncFoldersOrReload(records.map(record => _outlinerParentPath(record.path)));
+    if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+      await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
+    }
+  };
+  const entry = historyPush(label,
+    async () => {
+      const targets = records.map(record => ({ path: record.path, kind: record.kind }));
+      const warning = typeof MeldexDeleteImpactWarning !== 'undefined' ? MeldexDeleteImpactWarning : null;
+      const confirmation = warning?.authorizeReversibleDelete ? await warning.authorizeReversibleDelete(targets) : { confirmed: true, operation: 'trash' };
+      if (!confirmation) throw new Error('参照の確認ができなかったため取り消しを中止しました');
+      const results = await _deleteOutlinerTargetsSequentially(targets, { confirmation });
+      const failures = [];
+      results.forEach((outcome, index) => {
+        const ref = outcome?.status === 'fulfilled' ? _outlinerTrashRefFromResponse(outcome.value) : null;
+        if (ref) records[index].trashRef = ref; else failures.push(records[index]);
+      });
+      await refresh();
+      if (failures.length) throw new Error(`${failures.length} 件をゴミ箱へ移せませんでした`);
+    },
+    async () => {
+      const failures = [];
+      for (const record of records) {
+        if (!record.trashRef) continue;
+        try {
+          const restored = await apiPost('/outliner/restore', {
+            trash_name: record.trashRef.trash_name,
+            ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
+          });
+          record.path = restored?.restored_to || restored?.restored_path || record.path;
+          record.trashRef = null;
+        } catch (error) { failures.push(error); }
+      }
+      await refresh();
+      if (failures.length) throw new Error(`${failures.length} 件をゴミ箱から戻せませんでした`);
+    },
+    scope);
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path) });
+  return entry;
 }
 
 function _outlinerReportBatchResult(result, verbDone, failMessage) {
@@ -631,8 +860,10 @@ function _outlinerReportBatchResult(result, verbDone, failMessage) {
 
 async function _outlinerRunDuplicate(items) {
   const result = await _outlinerDuplicateItems(items);
-  if (result.ok > 0 && typeof loadOutliner === 'function') {
-    try { await loadOutliner(); } catch (error) { console.error('[outliner duplicate] 表示の更新に失敗', error); }
+  if (result.ok > 0) {
+    // 複製は元と同じフォルダにできる。そのフォルダだけを差分で反映する（全体の読み直しをしない）。
+    try { await _outlinerSyncFoldersOrReload((items || []).map(item => _outlinerParentPath(item.path))); }
+    catch (error) { console.error('[outliner duplicate] 表示の更新に失敗', error); }
   }
   _outlinerReportBatchResult(result, '複製しました', '複製に失敗しました');
   return result;
@@ -640,6 +871,7 @@ async function _outlinerRunDuplicate(items) {
 
 // ソースフォルダの表示名変更。失敗は原因つきで表示し、成功表示は保存と再読込の後だけ。
 async function _outlinerRenameSourceFolder(nodeData) {
+  let reservation = null;
   try {
     const roots = await apiFetch('/outliner-roots');
     const baseRoots = _cloneOutlinerRootsForBase(roots);
@@ -650,19 +882,27 @@ async function _outlinerRenameSourceFolder(nodeData) {
     }
     const newName = await cfPrompt('表示名を入力:', root.name);
     if (!newName) return false;
+    reservation = typeof historyReserve === 'function' ? historyReserve('設定: ソースフォルダ表示名', '') : null;
+    const before = await captureOutlinerRootsSettingsSnapshot();
     root.name = newName;
     await _putOutlinerRootsWithBase(roots, baseRoots);
+    const after = { ...before, roots };
+    const register = () => pushOutlinerRootsSettingsHistory('設定: ソースフォルダ表示名', before, after, newName, '');
+    if (reservation) reservation.capture(register); else register();
     await loadOutliner();
     showStatus('名前を変更しました');
     return true;
   } catch (error) {
-    console.error('[outliner source folder] 名前の変更に失敗', error);
+    console.warn('[outliner source folder] 名前の変更に失敗（画面に原因を表示済み）', error);
     _outlinerReportFailure('名前を変更できませんでした', error);
     return false;
+  } finally {
+    reservation?.cancel();
   }
 }
 
 async function _outlinerUnregisterSourceFolder(nodeData) {
+  let reservation = null;
   try {
     // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
     // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
@@ -674,14 +914,21 @@ async function _outlinerUnregisterSourceFolder(nodeData) {
       showStatus('登録を解除できませんでした：ソースフォルダの登録が見つかりません', true);
       return false;
     }
+    reservation = typeof historyReserve === 'function' ? historyReserve('設定: ソースフォルダ登録解除', '') : null;
+    const before = await captureOutlinerRootsSettingsSnapshot();
     await _putOutlinerRootsWithBase(newRoots, baseRoots);
+    const after = { ...before, roots: newRoots };
+    const register = () => pushOutlinerRootsSettingsHistory('設定: ソースフォルダ登録解除', before, after, nodeData.name, '');
+    if (reservation) reservation.capture(register); else register();
     await loadOutliner();
     showStatus('ソースフォルダの登録を解除しました');
     return true;
   } catch (error) {
-    console.error('[outliner source folder] 登録解除に失敗', error);
+    console.warn('[outliner source folder] 登録解除に失敗（画面に原因を表示済み）', error);
     _outlinerReportFailure('ソースフォルダの登録を解除できませんでした', error);
     return false;
+  } finally {
+    reservation?.cancel();
   }
 }
 
@@ -886,6 +1133,112 @@ function _outlinerLocalCopyPath(nodeEl, nodeData) {
   return _outlinerNativeClipboardPath(path);
 }
 
+// フォルダツリーの右クリックからのコピー・切り取りの元（貼り付けの後に差分で反映するフォルダを決める）
+let _outlinerClipboardOrigin = null;
+
+// フォルダツリーの右クリックの貼り付けの後の反映。貼り付け先（と切り取りの元）のフォルダだけを差分で反映し、
+// 全体の読み直しをしない（2026-11-22 M-014: 以前は2〜2.5秒）。フォルダパネルで開いているフォルダも読み直す。
+// コピー・切り取りの元がツリー以外（フォルダパネル等）で分からない時は、差分の反映の後にツリー全体を裏で読み直す。
+// 取り消し・やり直し（引数なし）の時は従来どおりツリー全体を読み直す。
+async function _outlinerRefreshAfterTreePaste(destFolder, pastedPaths) {
+  const panelRefresh = async () => {
+    if (typeof _folderRefreshCurrentFolder === 'function' && typeof state !== 'undefined' && state.view === 'folder') {
+      try { await _folderRefreshCurrentFolder(); } catch (error) { console.warn('[outliner paste] フォルダパネルの更新に失敗', error); }
+    }
+  };
+  if (!Array.isArray(pastedPaths)) {
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'outliner-paste-history' });
+    await panelRefresh();
+    return;
+  }
+  const origin = _outlinerClipboardOrigin;
+  const folders = [destFolder];
+  if (origin?.mode === 'cut') origin.paths.forEach(path => folders.push(_outlinerParentPath(path)));
+  await _outlinerSyncFoldersOrReload(folders);
+  // 次の貼り付けでは、その間にフォルダパネル等でコピー・切り取りされたかもしれないので、元が分からない扱いにする
+  _outlinerClipboardOrigin = null;
+  await panelRefresh();
+  if (!origin && typeof refreshOutliner === 'function') {
+    setTimeout(() => { refreshOutliner({ force: true, reason: 'outliner-paste-unknown-origin' }).catch?.(() => {}); }, 0);
+  }
+}
+
+// フォルダツリーの選択中の項目を削除する（右クリックの削除・Delete キーの共通の入口）。
+// 途中の失敗は原因つきで表示する（以前は右クリックの削除ボタンが例外を受け止めず、失敗が画面に出なかった:
+// 2026-11-22 M-014 フォルダツリー網羅テスト）。削除済みと対象なしが混ざった時も表示を読み直す。
+async function deleteOutlinerTreeSelection() {
+  try {
+      const targets = treeSelection.getNodeData().filter(item => {
+        if (item.type === 'entity' || item._isRoot) return false;
+        return item.path && !isItemLocked(item.path);
+      });
+      if (!targets.length) {
+        showStatus('削除できる項目がありません', true);
+        return;
+      }
+      // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+      // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
+      // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
+      // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
+      const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+        ? await handleDisplayedFolderLinkDelete(targets, '', {
+          refresh: async () => {
+            if (typeof loadOutliner === 'function') await loadOutliner();
+            if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+            if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+          },
+        })
+        : { handled: false, result: null };
+      if (linkedDelete.handled) {
+        if (linkedDelete.result) treeSelection.clear();
+        return;
+      }
+      const names = targets.map(item => item.name).join('、');
+      const impactTargets = targets.map(item => ({
+        path: item.path,
+        kind: item.type === 'folder' ? 'folder' : 'file',
+        ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+      }));
+      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
+        : { confirmed: true, operation: 'trash' };
+      if (!confirmed) return;
+      treeSelection.clear();
+      const result = await deleteOutlinerItemsWithHistory(targets, {
+        confirmation: confirmed,
+        label: targets.length + ' 件を削除',
+        detail: names,
+        onItemDeleted: (item) => {
+          _removeOutlinerNodesForPaths([item.path]);
+        },
+        refresh: async () => {
+          if (typeof loadOutliner === 'function') await loadOutliner();
+          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+        },
+      });
+      _removeOutlinerNodesForPaths(result.deletedPaths);
+      _outlinerRefreshFolderPanelFor((result.deletedPaths || []).map(path => _outlinerParentPath(path)));
+      if (result.failedCount) {
+        const reason = result.failed?.[0]?.error;
+        const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+        showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
+        loadOutliner();
+      } else if (result.succeeded.length) {
+        showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
+        // 先に画面から消した中に「見つからなかった」項目が混ざっていたら、実際の状態へ読み直す
+        if (result.skipped.length) loadOutliner();
+      } else if (result.skipped.length) {
+        showStatus('削除対象が見つからなかったため、表示を更新しました', true);
+        loadOutliner();
+      }
+  
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner] 削除に失敗', error);
+    _outlinerReportFailure('削除に失敗しました', error);
+  }
+}
+
 async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   closeTreeContextMenu();
   const openSeq = ++_outlinerContextMenuOpenSeq;
@@ -926,76 +1279,16 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
   const deleteContextItems = async () => {
     closeTreeContextMenu();
-    const targets = treeSelection.getNodeData().filter(item => {
-      if (item.type === 'entity' || item._isRoot) return false;
-      return item.path && !isItemLocked(item.path);
-    });
-    if (!targets.length) {
-      showStatus('削除できる項目がありません', true);
-      return;
-    }
-    // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
-    // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
-    // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
-    // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
-    const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
-      ? await handleDisplayedFolderLinkDelete(targets, '', {
-        refresh: async () => {
-          if (typeof loadOutliner === 'function') await loadOutliner();
-          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-        },
-      })
-      : { handled: false, result: null };
-    if (linkedDelete.handled) {
-      if (linkedDelete.result) treeSelection.clear();
-      return;
-    }
-    const names = targets.map(item => item.name).join('、');
-    const impactTargets = targets.map(item => ({
-      path: item.path,
-      kind: item.type === 'folder' ? 'folder' : 'file',
-      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-    }));
-    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
-      : { confirmed: true, operation: 'trash' };
-    if (!confirmed) return;
-    treeSelection.clear();
-    const result = await deleteOutlinerItemsWithHistory(targets, {
-      confirmation: confirmed,
-      label: targets.length + ' 件を削除',
-      detail: names,
-      onItemDeleted: (item) => {
-        _removeOutlinerNodesForPaths([item.path]);
-      },
-      refresh: async () => {
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-      },
-    });
-    _removeOutlinerNodesForPaths(result.deletedPaths);
-    if (result.failedCount) {
-      const reason = result.failed?.[0]?.error;
-      const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
-      loadOutliner();
-    } else if (result.succeeded.length) {
-      showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
-    } else if (result.skipped.length) {
-      showStatus('削除対象が見つからなかったため、表示を更新しました', true);
-      loadOutliner();
-    }
+    await deleteOutlinerTreeSelection();
   };
 
   if (typeof appendFolderOperationButtons === 'function') {
     appendFolderOperationButtons(menu, {
       e2ePrefix: 'folder-tree-context',
       closeMenu: closeTreeContextMenu,
-      onCopy: () => folderToolbarCopyItems(contextOperationItems),
-      onCut: () => folderToolbarCutItems(contextOperationItems),
-      onPaste: () => folderToolbarPasteToFolder(addParent),
+      onCopy: () => { _outlinerClipboardOrigin = { mode: 'copy', paths: contextOperationItems.map(item => item.path) }; folderToolbarCopyItems(contextOperationItems); },
+      onCut: () => { _outlinerClipboardOrigin = { mode: 'cut', paths: editableContextItems.map(item => item.path) }; folderToolbarCutItems(contextOperationItems); },
+      onPaste: () => folderToolbarPasteToFolder(addParent, { refresh: pasted => _outlinerRefreshAfterTreePaste(addParent, pasted) }),
       onDuplicate: () => _outlinerRunDuplicate(editableContextItems),
       onDelete: deleteContextItems,
       copyDisabled: contextOperationItems.length === 0,
@@ -1413,7 +1706,7 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addMenuItem(linkLabel, () => {
       closeTreeContextMenu();
-      showAddFolderLinkModal(nodeData.path, null);
+      showAddFolderLinkModal(nodeData.path, null, { historyScope: '' });
     }, null, 'link2');
   }
 

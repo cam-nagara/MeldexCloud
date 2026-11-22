@@ -209,6 +209,8 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._detailCharacterSelectionAnchor = null;
       root.querySelectorAll('.sn2-role-manage-row.selected').forEach(row => row.classList.remove('selected'));
       root.querySelectorAll('.sn2-role-manage-check:not(:disabled)').forEach(checkbox => { checkbox.checked = false; });
+      this._syncRoleManagementSelectAll('type', typeSection);
+      this._syncRoleManagementSelectAll('character', characterSection);
     });
     container.appendChild(root);
     // 表示領域の幅が決まってから列幅を収める（描画前の幅0では縮められないため）。
@@ -648,6 +650,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const checkbox = row.querySelector('input[type="checkbox"]');
       if (checkbox && !checkbox.disabled) checkbox.checked = selected;
     });
+    this._syncRoleManagementSelectAll(kind, section);
   },
 
   // チェックボックスを押したまま上下の行へなぞると、なぞった行をまとめて同じ状態（選択／解除）にする。
@@ -671,6 +674,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       else selection.delete(id);
       row.classList.toggle('selected', checked);
       checkbox.checked = checked;
+      this._syncRoleManagementSelectAll(kind, section);
     };
     const move = event => {
       if (!dragging) {
@@ -736,6 +740,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     count.textContent = isType ? `${items.length}件` : `${items.length}件・未設定${unset}件`;
     title.appendChild(count);
     header.appendChild(title);
+    if (!isType) {
+      // 表全体への入口は、表のタイトル行の右端に置く（フッターは置かない。UI共通ルール §6）。
+      const importButton = this._roleManagementButton('シート読込', 'シートからキャラを読み込む', () => {
+        this._showDbImportModal(panelContainer);
+      }, 'scriptnote-character-import-db');
+      importButton.classList.add('sn2-role-manage-header-action');
+      importButton.disabled = !!this._readOnly;
+      header.appendChild(importButton);
+    }
     section.appendChild(header);
     const scroll = document.createElement('div');
     scroll.className = 'sn2-role-manage-scroll';
@@ -796,7 +809,12 @@ Object.assign(ScriptNoteEditor.prototype, {
           key: 'name',
           column: { id: '_character', label: 'キャラ名' },
         },
-        { label: '初期タイプ', tooltip: 'タイプ未設定行で、このキャラを選んだ時に補うタイプです', key: 'linked-type' },
+        {
+          label: '初期タイプ',
+          tooltip: 'タイプ未設定行で、このキャラを選んだ時に補うタイプです。見出しで選択中キャラ（未選択なら全キャラ）を一括変更します',
+          key: 'linked-type',
+          bulkType: true,
+        },
         { label: 'シート', tooltip: '「シート読込」で追加したキャラの元トピック。クリックでサブパネルに表示します', key: 'sheet-link' },
       ];
     const headingRow = document.createElement('tr');
@@ -819,6 +837,35 @@ Object.assign(ScriptNoteEditor.prototype, {
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault();
           openBulkFormat();
+        });
+      }
+      if (heading.key === 'control') {
+        // 表の左上（見出しの左端かつチェックボックス＆ハンドル列の上端）の全選択。シートの表と同じ共通部品。
+        const selectAll = globalThis.MeldexRowHandleMenu?.createSelectAllCheckbox?.({
+          e2eId: `scriptnote-${kind}-select-all`,
+          unit: isType ? 'タイプ' : 'キャラ',
+          onToggle: shouldSelect => this._setRoleManagementAllSelected(kind, section, shouldSelect),
+        });
+        if (selectAll) {
+          th.textContent = '';
+          th.classList.add('sn2-role-manage-col--select-all');
+          th.appendChild(selectAll);
+        }
+      }
+      if (heading.bulkType) {
+        th.classList.add('sn2-role-manage-format-header');
+        th.tabIndex = 0;
+        th.setAttribute('role', 'button');
+        th.setAttribute('aria-haspopup', 'menu');
+        th.setAttribute('aria-expanded', 'false');
+        th.setAttribute('aria-label', '初期タイプを一括変更');
+        th.dataset.e2eId = 'scriptnote-character-bulk-type';
+        const openBulkType = () => this._showCharacterBulkTypeMenu(th, panelContainer);
+        th.addEventListener('click', openBulkType);
+        th.addEventListener('keydown', event => {
+          if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'ArrowDown') return;
+          event.preventDefault();
+          openBulkType();
         });
       }
       if (isType && heading.column?.id === '_role') th.dataset.e2eId = 'scriptnote-type-format-header';
@@ -865,13 +912,152 @@ Object.assign(ScriptNoteEditor.prototype, {
     } else {
       tbody.appendChild(this._buildScenarioNoneCharacterManagementRow(adapter, panelContainer));
     }
+    tbody.appendChild(this._buildRoleManagementNewRow(kind, adapter, panelContainer, headings.length, items.length + 1));
     table.appendChild(tbody);
     this._bindRoleManagementGridNavigation(table);
     scroll.appendChild(table);
     section.appendChild(scroll);
     this._observeRoleManagementTableWidth(scroll, table, kind);
-    section.appendChild(this._buildRoleManagementToolbar(kind, adapter, panelContainer));
+    // 表の下のボタン列（フッター）は置かない（2026-11-21）。全選択＝左上のチェックボックス、追加＝末尾の「＋ 新規」行、
+    // 複製・削除＝行のハンドルメニュー（選択中の行では一括）、初期タイプの一括変更＝「初期タイプ」の見出し、
+    // シートからの読み込み＝タイトル行の右端。
+    this._syncRoleManagementSelectAll(kind, section);
     return section;
+  },
+
+  // 表の末尾の「＋ 新規」行。シートの表の「新規」行と同じく、押すと表の末尾へ1行足す（取り消し履歴つき）。
+  _buildRoleManagementNewRow(kind, adapter, panelContainer, columnCount, gridRowIndex) {
+    const isType = kind === 'type';
+    const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
+    const row = document.createElement('tr');
+    row.className = 'sn2-role-manage-new-row';
+    row.dataset.e2eId = `scriptnote-${kind}-new-row`;
+    const spacer = document.createElement('td');
+    spacer.className = 'sn2-role-manage-cell--control';
+    spacer.setAttribute('aria-hidden', 'true');
+    const cell = document.createElement('td');
+    cell.className = 'sn2-role-manage-new-cell';
+    cell.colSpan = Math.max(1, columnCount - 1);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sn2-role-manage-new-btn';
+    button.dataset.e2eId = `scriptnote-${kind}-add`;
+    button.title = isType ? '表の末尾へタイプを追加' : '表の末尾へキャラを追加';
+    button.setAttribute('aria-label', button.title);
+    button.disabled = !!this._readOnly;
+    const icon = document.createElement('span');
+    icon.className = 'sn2-role-manage-new-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '＋';
+    const label = document.createElement('span');
+    label.textContent = '新規';
+    button.append(icon, label);
+    button.addEventListener('click', () => {
+      if (this._readOnly) return;
+      this._pushUndo(isType ? 'タイプ追加' : 'キャラ追加');
+      const created = isType ? adapter.addType() : adapter.addCharacter();
+      selection.clear();
+      if (created?.id) selection.add(created.id);
+      adapter.touch();
+      this.renderDetailPanel(panelContainer);
+      requestAnimationFrame(() => {
+        const sectionClass = isType ? 'types' : 'characters';
+        const live = panelContainer?.querySelector?.(`.sn2-role-manage-section--${sectionClass}`);
+        live?.querySelector?.(`.sn2-role-manage-row[data-role-id="${MeldexEscape.cssIdent(created?.id || '')}"]`)
+          ?.scrollIntoView?.({ block: 'nearest' });
+        live?.querySelector?.(`[data-e2e-id="scriptnote-${kind}-add"]`)?.scrollIntoView?.({ block: 'nearest' });
+      });
+    });
+    cell.appendChild(button);
+    row.append(spacer, cell);
+    button.dataset.roleGridControl = 'true';
+    button.dataset.roleGridRow = String(gridRowIndex);
+    button.dataset.roleGridColumn = '0';
+    return row;
+  },
+
+  // 全選択チェックボックス: 表示中のすべての行を選択／選択解除する。描き直さずに行の表示だけを合わせる。
+  _setRoleManagementAllSelected(kind, section, shouldSelect) {
+    const adapter = this._roleManagementAdapter();
+    const isType = kind === 'type';
+    const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
+    const items = isType ? adapter.types : adapter.characters;
+    const anchorKey = isType ? '_detailTypeSelectionAnchor' : '_detailCharacterSelectionAnchor';
+    selection.clear();
+    if (shouldSelect) items.forEach(item => selection.add(item.id));
+    this[anchorKey] = null;
+    section?.querySelectorAll('.sn2-role-manage-row[data-role-id]').forEach(row => {
+      const selected = selection.has(row.dataset.roleId);
+      row.classList.toggle('selected', selected);
+      const checkbox = row.querySelector('input.sn2-role-manage-check');
+      if (checkbox && !checkbox.disabled) checkbox.checked = selected;
+    });
+    this._syncRoleManagementSelectAll(kind, section);
+  },
+
+  // 全選択チェックボックスの表示（全選択・一部選択の中間表示・未選択）を、表の選択へ合わせる。
+  _syncRoleManagementSelectAll(kind, section) {
+    const checkbox = section?.querySelector?.('thead input.row-select-all-cb');
+    if (!checkbox) return;
+    const rows = [...section.querySelectorAll('tbody .sn2-role-manage-row[data-role-id]')]
+      .filter(row => !row.querySelector('input.sn2-role-manage-check')?.disabled);
+    const selection = kind === 'type' ? this._detailTypeSelection : this._detailCharacterSelection;
+    const selected = rows.reduce((count, row) => count + (selection.has(row.dataset.roleId) ? 1 : 0), 0);
+    globalThis.MeldexRowHandleMenu?.syncSelectAllCheckbox?.(checkbox, {
+      total: rows.length, selected, unit: kind === 'type' ? 'タイプ' : 'キャラ',
+    });
+  },
+
+  // キャラ表「初期タイプ」見出し: 選択中のキャラ（未選択なら全キャラ）の初期タイプをまとめて変える。
+  // メニューは共通の MeldexContextMenuUI。1回の取り消しで全体が戻る。
+  _showCharacterBulkTypeMenu(anchorEl, panelContainer) {
+    const menuUI = globalThis.MeldexContextMenuUI;
+    if (!menuUI?.openAt) return;
+    const adapter = this._roleManagementAdapter();
+    const selectedIds = this._detailCharacterSelection || new Set();
+    const selected = adapter.characters.filter(character => selectedIds.has(character.id));
+    const targets = selected.length ? selected : adapter.characters.slice();
+    const readOnly = !!this._readOnly || !targets.length;
+    const values = targets.map(character => character.typeId || '');
+    const shared = values.length && values.every(value => value === values[0]) ? values[0] : null;
+    const apply = typeId => {
+      if (readOnly) return;
+      const next = typeId || null;
+      const changing = targets.filter(character => (character.typeId || null) !== next);
+      if (!changing.length) return;
+      this._pushUndo('キャラ初期タイプ一括変更');
+      changing.forEach(character => adapter.setCharacterType(character, next));
+      adapter.touch();
+      this.renderDetailPanel(panelContainer);
+    };
+    const option = (value, label) => ({
+      label,
+      icon: shared === value ? 'check' : undefined,
+      e2eId: `scriptnote-character-bulk-type-option-${value || 'none'}`,
+      disabled: readOnly,
+      action: () => apply(value),
+    });
+    const items = [
+      {
+        type: 'label',
+        label: selected.length ? `選択中の${targets.length}件に設定` : `全${targets.length}件に設定`,
+        e2eId: 'scriptnote-character-bulk-type-target',
+      },
+      { type: 'separator' },
+      option('', '（未設定）'),
+      ...adapter.types.map(type => option(type.id, type.name || '名称未設定')),
+    ];
+    anchorEl.setAttribute('aria-expanded', 'true');
+    menuUI.openAt({
+      anchorRect: anchorEl.getBoundingClientRect(),
+      ariaLabel: '初期タイプの一括変更',
+      e2eId: 'scriptnote-character-bulk-type-menu',
+      restoreFocus: anchorEl,
+      items,
+      onClose: () => {
+        if (anchorEl.isConnected) anchorEl.setAttribute('aria-expanded', 'false');
+      },
+    });
   },
 
   _roleManagementColumnWidthStore() {
@@ -2018,7 +2204,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       { type: 'separator' },
       { icon: 'trash2', label: '削除', danger: true, e2eId: `scriptnote-${kind}-row-menu-delete`, disabled: readOnly,
         batch: true, batchLabel: count => `${count}行を削除`,
-        action: () => this._deleteManagedRoles(kind, batch ? targetItems : [item], adapter, panelContainer) },
+        // 置換削除のダイアログを閉じた時は、メニューを開いた行のハンドルへフォーカスを戻す。
+        action: () => this._deleteManagedRoles(kind, batch ? targetItems : [item], adapter, panelContainer, null, {
+          focusOwner: panelContainer?.querySelector?.(`[data-e2e-id="scriptnote-${kind}-drag-${MeldexEscape.cssIdent(stableSuffix)}"]`),
+        }) },
     );
     if (shared?.buildItems) {
       return shared.buildItems(items, targets, { unit: '行', labelE2eId: `scriptnote-${kind}-row-menu-batch-label` });
@@ -2046,7 +2235,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     return true;
   },
 
-  _deleteManagedRoles(kind, selected, adapter, panelContainer, onDeleted = null) {
+  _deleteManagedRoles(kind, selected, adapter, panelContainer, onDeleted = null, options = {}) {
     if (!selected.length) return;
     const isType = kind === 'type';
     const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
@@ -2134,16 +2323,19 @@ Object.assign(ScriptNoteEditor.prototype, {
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-secondary';
     cancel.textContent = 'キャンセル';
+    cancel.dataset.e2eId = `scriptnote-${kind}-delete-cancel`;
     const confirm = document.createElement('button');
     confirm.type = 'button';
     confirm.className = 'gb-btn gb-btn-danger';
     confirm.textContent = '置換して削除';
     confirm.dataset.e2eId = `scriptnote-${kind}-delete-confirm`;
-    const owner = document.activeElement;
+    // 行のハンドルメニューから開いた時は、メニューを開いた行のハンドル（focusOwner）へ戻す。
+    const owner = options.focusOwner?.isConnected ? options.focusOwner : document.activeElement;
     let busy = false;
-    const returnFocus = () => owner?.isConnected
+    // 開いた操作（行のハンドル）が削除で消えた時は、その表（スクロール領域）へ戻す。
+    const returnFocus = () => owner?.isConnected && owner !== document.body
       ? owner
-      : panelContainer?.querySelector(`[data-e2e-id="scriptnote-${kind}-delete"]`);
+      : panelContainer?.querySelector(`[data-e2e-id="scriptnote-${kind}-list"]`);
     const restoreParentFocus = reason => {
       if (reason === 'submitted') return;
       setTimeout(() => {
@@ -2172,6 +2364,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     modal.overlay.dataset.e2eId = `scriptnote-${kind}-delete-overlay`;
     modal.modal.dataset.e2eId = `scriptnote-${kind}-delete-dialog`;
+    if (!select.dataset.e2eId) select.dataset.e2eId = `scriptnote-${kind}-delete-replacement`;
+    this._sn2EnsureStableControlIds?.(modal.modal, `scriptnote-${kind}-delete-dialog`);
     globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modal.modal);
     const setBusy = next => {
       busy = next;
@@ -2187,73 +2381,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       finish({ kind: replacementKind, id: replacementId }, modal.close, setBusy);
     });
     modal.open();
-  },
-
-  _buildRoleManagementToolbar(kind, adapter, panelContainer) {
-    const isType = kind === 'type';
-    const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
-    const items = isType ? adapter.types : adapter.characters;
-    const toolbar = document.createElement('div');
-    toolbar.className = 'sn2-detail-toolbar sn2-role-manage-toolbar';
-    const rerender = () => {
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    };
-    toolbar.appendChild(this._roleManagementButton('＋追加', isType ? '新規タイプを追加' : '新規キャラを追加', () => {
-      this._pushUndo(isType ? 'タイプ追加' : 'キャラ追加');
-      const created = isType ? adapter.addType() : adapter.addCharacter();
-      selection.clear();
-      selection.add(created.id);
-      rerender();
-    }, `scriptnote-${kind}-add`));
-    toolbar.appendChild(this._roleManagementButton('複製', '選択中を複製', () => {
-      const selected = items.filter(item => selection.has(item.id));
-      if (!selected.length) return;
-      this._pushUndo(isType ? 'タイプ複製' : 'キャラ複製');
-      selection.clear();
-      selected.forEach(item => selection.add(adapter.clone(kind, item).id));
-      rerender();
-    }, `scriptnote-${kind}-duplicate`));
-    toolbar.appendChild(this._roleManagementButton('削除', '選択中を削除', () => {
-      const selected = items.filter(item => selection.has(item.id));
-      this._deleteManagedRoles(kind, selected, adapter, panelContainer);
-    }, `scriptnote-${kind}-delete`));
-    toolbar.appendChild(this._roleManagementButton('全選択', `すべての${isType ? 'タイプ' : 'キャラ'}を選択`, () => {
-      items.forEach(item => selection.add(item.id));
-      this.renderDetailPanel(panelContainer);
-    }, `scriptnote-${kind}-select-all`));
-    if (!isType) {
-      const spacer = document.createElement('span');
-      spacer.className = 'sn2-detail-toolbar-spacer';
-      toolbar.appendChild(spacer);
-      const bulk = document.createElement('select');
-      bulk.className = 'sn2-role-bulk-type';
-      bulk.dataset.e2eId = 'scriptnote-character-bulk-type-select';
-      bulk.title = '選択したキャラへ一括設定する初期タイプ';
-      bulk.setAttribute('aria-label', '一括設定する初期タイプ');
-      const none = document.createElement('option');
-      none.value = '';
-      none.textContent = '初期タイプ: 未設定';
-      bulk.appendChild(none);
-      adapter.types.forEach(type => {
-        const option = document.createElement('option');
-        option.value = type.id;
-        option.textContent = `初期タイプ: ${type.name}`;
-        bulk.appendChild(option);
-      });
-      toolbar.appendChild(bulk);
-      toolbar.appendChild(this._roleManagementButton('一括設定', '選択したキャラの初期タイプをまとめて変更', () => {
-        const selected = adapter.characters.filter(character => selection.has(character.id));
-        if (!selected.length) return;
-        this._pushUndo('キャラ初期タイプ一括変更');
-        selected.forEach(character => adapter.setCharacterType(character, bulk.value || null));
-        rerender();
-      }, 'scriptnote-character-bulk-type'));
-      toolbar.appendChild(this._roleManagementButton('シート読込', 'シートからキャラを読み込む', () => {
-        this._showDbImportModal(panelContainer);
-      }, 'scriptnote-character-import-db'));
-    }
-    return toolbar;
   },
 
 });

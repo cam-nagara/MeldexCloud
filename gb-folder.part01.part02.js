@@ -28,7 +28,7 @@
   if (!blankTarget && !isMulti && item.path) {
     const linkLabel = item.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
     addItem(linkLabel, () => {
-      if (typeof showAddFolderLinkModal === 'function') showAddFolderLinkModal(item.path, null);
+      if (typeof showAddFolderLinkModal === 'function') showAddFolderLinkModal(item.path, null, { historyScope: '' });
     }, null, 'link2');
   }
 
@@ -38,9 +38,14 @@
     const colorTargets = isMulti ? multiItems.filter(target => target?.path) : [item];
     const colorItem = document.createElement('div');
     colorItem.className = 'gb-context-menu-item';
+    // 色の行と色の見本ボタンに安定した識別子と名前を付ける（画面の部品の検査で欠けていた: 2026-11-22 M-014）
+    colorItem.setAttribute('role', 'menuitem');
+    colorItem.dataset.e2eId = isMulti ? 'folder-item-context-color-multi' : 'folder-item-context-color';
     const swatch = document.createElement('button');
     swatch.type = 'button';
     swatch.className = 'gb-color-swatch gb-color-swatch--inline';
+    swatch.dataset.e2eId = isMulti ? 'folder-item-context-color-swatch-multi' : 'folder-item-context-color-swatch';
+    swatch.setAttribute('aria-label', isMulti ? `色設定（${colorTargets.length}件）` : '色設定');
     if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, currentColor || 'var(--fg)');
     colorItem.appendChild(swatch);
     const clbl = document.createElement('span');
@@ -162,13 +167,13 @@ const FOLDER_LIST_SORT_STORAGE_KEY = 'folder-list-sort';
 const FOLDER_LIST_COLUMNS_STORAGE_KEY = 'folder-list-columns';
 const FOLDER_LIST_COLUMN_WIDTHS_STORAGE_KEY = 'folder-list-column-widths';
 const FOLDER_LIST_SORT_COLUMNS = [
-  { key: 'name', label: '名前', width: 'minmax(220px, 2fr)', minWidth: 160, defaultOrder: 'asc' },
-  { key: 'type', label: '種類', width: 'minmax(150px, 190px)', minWidth: 96, defaultOrder: 'asc' },
-  { key: 'created', label: '作成日時', width: 'minmax(132px, 150px)', minWidth: 112, defaultOrder: 'desc' },
-  { key: 'modified', label: '更新日時', width: 'minmax(132px, 150px)', minWidth: 112, defaultOrder: 'desc' },
-  { key: 'createdBy', label: '作成者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
-  { key: 'modifiedBy', label: '更新者', width: 'minmax(96px, 128px)', minWidth: 80, defaultOrder: 'asc' },
-  { key: 'size', label: 'ファイルサイズ', width: 'minmax(94px, 112px)', minWidth: 88, defaultOrder: 'desc' },
+  { key: 'name', label: '名前', width: 'minmax(160px, 2fr)', minWidth: 160, defaultOrder: 'asc' },
+  { key: 'type', label: '種類', width: 'minmax(56px, 190px)', minWidth: 96, defaultOrder: 'asc' },
+  { key: 'created', label: '作成日時', width: 'minmax(56px, 150px)', minWidth: 112, defaultOrder: 'desc' },
+  { key: 'modified', label: '更新日時', width: 'minmax(56px, 150px)', minWidth: 112, defaultOrder: 'desc' },
+  { key: 'createdBy', label: '作成者', width: 'minmax(56px, 128px)', minWidth: 80, defaultOrder: 'asc' },
+  { key: 'modifiedBy', label: '更新者', width: 'minmax(56px, 128px)', minWidth: 80, defaultOrder: 'asc' },
+  { key: 'size', label: 'ファイルサイズ', width: 'minmax(56px, 112px)', minWidth: 88, defaultOrder: 'desc' },
 ];
 const FOLDER_LIST_COLLATOR = new Intl.Collator('ja', { numeric: true, sensitivity: 'base', ignorePunctuation: true });
 let _folderListSuppressClickUntil = 0;
@@ -530,7 +535,9 @@ async function _findAvailableFolderBoardPath(dir, baseBoardName) {
     const boardName = i === 0 ? baseName : baseName + '_' + i;
     const boardPath = _folderBoardPathForName(dir, boardName);
     try {
-      await apiFetch('/file?path=' + encodeURIComponent(boardPath));
+      // 空いている名前を探すための確認。見つからない（404）のが期待どおりなので画面にエラーを出さない
+      // （以前は画像からボードを作るたびに「項目が見つかりません」と出ていた: 2026-11-22 M-014 フォルダパネル網羅テスト）。
+      await apiFetch('/file?path=' + encodeURIComponent(boardPath), { silentError: true });
     } catch (e) {
       if (e?.status === 404) return { boardName, boardPath };
       throw e;
@@ -542,20 +549,25 @@ async function _findAvailableFolderBoardPath(dir, baseBoardName) {
 // 画像をキャンバスで開く（リンクのみ保存）
 async function openImageInCanvas(item) {
   const dir = _folderPath || (item.path.includes('/') ? item.path.substring(0, item.path.lastIndexOf('/')) : '');
+  const reservation = typeof historyReserve === 'function' ? historyReserve('フォルダ: 画像からボード作成', '') : null;
   try {
     const itemName = item?.name || item?.path?.split(/[\\/]/).pop() || 'image';
     const { boardName, boardPath } = await _findAvailableFolderBoardPath(dir, itemName.replace(/\.[^.]+$/, '') + '_canvas');
     const imgUrl = _folderItemRawUrl(item);
     const content = '---\ntype: board\npositions:\n  n0: {x: 100, y: 100}\nsizes:\n  n0: {w: 400, h: 0}\n---\n# [img]' + imgUrl + '\n';
     await apiPut('/file?path=' + encodeURIComponent(boardPath), { content, create_only: true });
+    const register = () => pushCreatedOutlinerItemHistory({ path: boardPath, kind: 'file' }, 'フォルダ: 画像からボード作成', { scope: '' });
+    if (reservation) reservation.capture(register); else register();
     openBoard(boardName, boardPath, { fromExplorer: true });
     showStatus('ボードを作成しました');
   } catch (e) { showStatus(e?.message || 'ボード作成に失敗', true); }
+  finally { reservation?.cancel(); }
 }
 
 // 複数画像をキャンバスに並べて開く
 async function openImagesInCanvas(items) {
   const dir = _folderPath || '';
+  const reservation = typeof historyReserve === 'function' ? historyReserve('フォルダ: 画像からボード作成', '') : null;
   try {
     const { boardName, boardPath } = await _findAvailableFolderBoardPath(dir, 'images_canvas_' + new Date().toISOString().substring(0,10));
 
@@ -575,9 +587,12 @@ async function openImagesInCanvas(items) {
     });
 
     await apiPut('/file?path=' + encodeURIComponent(boardPath), { content: fm, create_only: true });
+    const register = () => pushCreatedOutlinerItemHistory({ path: boardPath, kind: 'file' }, 'フォルダ: 画像からボード作成', { scope: '' });
+    if (reservation) reservation.capture(register); else register();
     openBoard(boardName, boardPath, { fromExplorer: true });
     showStatus(items.length + '枚の画像をボードに配置しました');
   } catch (e) { showStatus(e?.message || 'ボード作成に失敗', true); }
+  finally { reservation?.cancel(); }
 }
 
 // チェックボックスの状態を選択状態と同期
@@ -747,6 +762,9 @@ document.addEventListener('keydown', function(e) {
   if (state.view !== 'folder') return;
   if (_folderKeyboardEventFromTextEditor(e)) return;
   if (_folderKeyboardEventFromOutliner(e)) return;
+  // Alt+←（パネル履歴を戻る）などの修飾キーつきは選択の移動に使わない。以前は Alt+← で選択が動くだけで
+  // 前のフォルダへ戻れなかった（2026-11-22 M-014 フォルダパネル網羅テスト）。
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
 
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
@@ -864,8 +882,11 @@ document.getElementById('folder-grid').addEventListener('wheel', function(e) {
   if (!e.ctrlKey) return;
   e.preventDefault();
   _folderZoom = Math.max(48 / 120, Math.min(1000 / 120, _folderZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
-  localStorage.setItem('folder-zoom', _folderZoom);
-  localStorage.setItem('folder-thumbnail-size-px', String(Math.round(120 * _folderZoom)));
+  // サムネイルサイズも開いているフォルダの表示設定として保存する。
+  if (!window.MeldexFolderDisplaySettings?.update?.({ thumbnailPx: Math.round(120 * _folderZoom) })) {
+    localStorage.setItem('folder-zoom', _folderZoom);
+    localStorage.setItem('folder-thumbnail-size-px', String(Math.round(120 * _folderZoom)));
+  }
   applyFolderZoom();
 }, {passive: false});
 

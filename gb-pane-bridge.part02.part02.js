@@ -552,12 +552,57 @@
       return false;
     }
 
+    // サブパネルの＋: メインパネルと同じ項目で新しいファイルを作り、サブパネルのタブで開く。
+    // フォルダはメインパネルの空のフォルダタブに当たるものとして、ホームフォルダを開く。
+    async function _createPanelFileInSubpanel(toolType) {
+      if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return null;
+      if (toolType === 'folder') {
+        const home = await _panelHomeFolderPath();
+        if (!home) {
+          if (typeof showStatus === 'function') showStatus('ホームフォルダが見つからないため開けません', true);
+          return null;
+        }
+        return GBSubPanel.open({ type: 'folder', path: home, label: home.split(/[\\/]/).pop() || 'フォルダ', state: {} });
+      }
+      if (toolType === 'map' && (typeof MeldexMapDocument === 'undefined' || !MeldexMapDocument.isAvailable())) {
+        showStatus('マップ初期版はデスクトップ版本体で開いてください。', true); return null;
+      }
+      if (!_isPanelFileCreateType(toolType)) {
+        if (typeof showStatus === 'function') showStatus('サブパネルでは開けない種類です', true);
+        return null;
+      }
+      try {
+        const parent = await _panelHomeFolderPath();
+        if (!parent) {
+          if (typeof showStatus === 'function') showStatus('ホームフォルダが見つからないため作成できません', true);
+          return null;
+        }
+        const res = await apiPost('/outliner/add', { type: toolType, label: '無題', parent });
+        const node = res?.node || {};
+        const path = node.path || '';
+        if (!path) throw new Error('created node path is empty');
+        const name = node.name || node.label || '無題';
+        const openType = _PANEL_FILE_OPEN_TYPES[toolType] || toolType;
+        const opened = await GBSubPanel.open({ type: openType, path, label: name, state: _panelFileTabState(toolType, name, path) });
+        _schedulePanelCreatedFileListRefresh(path);
+        try { if (typeof addRecent === 'function') addRecent(name, path, toolType); }
+        catch (err) { console.warn('作成したファイルの履歴を保存できませんでした', err); }
+        if (typeof showStatus === 'function') showStatus('作成しました: ' + name);
+        return opened;
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus(err.userMessage || '作成に失敗しました', true);
+        return null;
+      }
+    }
+
     window.addPanelMenuTool = function(toolType, options) {
       // ＋ボタン／パネルメニューから呼ばれた時は、メニューを開いたペインへ追加する。
       // paneId 未指定の既存呼び出しだけ、現在アクティブなペインを使う。
       const paneId = options?.paneId || GBLayout.activePane;
       if (!paneId) return null;
-      if (!GBLayout.findNode?.(GBLayout.root, paneId)) return null;
+      const paneNode = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
+      if (!paneNode) return null;
+      if (paneNode.meldexRole === 'subpanel-workspace') return _createPanelFileInSubpanel(toolType);
       if (!_guardMainPanelTabType(paneId, toolType)) return null;
       if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);

@@ -205,7 +205,10 @@
     _syncTocSeparator(v);
     if (typeof global.syncNoteTocLayout === 'function') global.syncNoteTocLayout();
     if (persist) {
-      try { localStorage.setItem(STORAGE_KEY, v ? '1' : ''); } catch (_) { /* 保存不可環境 */ }
+      try { localStorage.setItem(STORAGE_KEY, v ? '1' : ''); }
+      catch (_) {
+        if (typeof global.showStatus === 'function') global.showStatus('縦書きの表示設定を保存できませんでした。この端末の保存容量と保存権限を確認してください。今回の表示だけ切り替えています', true);
+      }
     }
     try {
       document.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { vertical: v } }));

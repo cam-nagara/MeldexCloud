@@ -620,13 +620,31 @@ async function _startRollupCellEditInner(td, options = {}) {
   input.setAttribute('aria-label', `${targetName} の ${ptc.targetProp}（参照先シート）`);
   if (!options.input) input.value = options.seed != null ? String(options.seed) : oldValue;
   input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
+  // 編集中は表示中の値と入れ替え、同じ高さに収める（値の下へ入力欄を足すと行が伸び、下の行がずれた。
+  // UI共通ルール §10、2026-11-20 状態の総当たり検査で検出）。
+  const shownValues = Array.from(container.children).filter(el => el !== input && el.getClientRects?.().length);
+  const shownHeight = shownValues.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
+  shownValues.forEach(el => { el.dataset.dbRollupEditHidden = el.style.display || '-'; el.style.display = 'none'; });
+  if (shownHeight > 0) {
+    input.style.height = shownHeight + 'px';
+    input.style.minHeight = '0';
+  }
   if (input.parentNode !== container) container.appendChild(input);
   input.focus();
   if (options.seed == null && !options.input) input.select();
   let done = false;
   const pos = typeof _cellPos === 'function' ? _cellPos(td) : null;
   let moveTo = null;
-  const finish = () => { done = true; input.remove(); if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false }); };
+  const finish = () => {
+    done = true;
+    input.remove();
+    shownValues.forEach(el => {
+      const before = el.dataset.dbRollupEditHidden;
+      delete el.dataset.dbRollupEditHidden;
+      el.style.display = before === '-' ? '' : before;
+    });
+    if (typeof setActiveCell === 'function' && td.isConnected) setActiveCell(td, { scroll: false });
+  };
   const refresh = async () => {
     clearRollupCache(targetDbPath);
     if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx || undefined, { silent: true, forceReload: true });

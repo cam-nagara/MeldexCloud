@@ -43,3 +43,45 @@
   font-size: 12px;
   text-align: center;
 }
+
+/* 階層別スタイルタブの行（プリセット行・階層一覧の行）を右レールの既定幅に収める（2026-11-22）。
+   ピッカーは中身の幅（プレビュー 200px/120px＋名前）より縮めず、横のボタンが枠の外や画面外へはみ出していた。
+   ピッカーを縮められるようにし、プレビューも最小幅まで縮める。横のボタンは縮めない。 */
+.bd-depth-in-panel .bd-detail-style-row {
+  flex-wrap: wrap;
+}
+/* 幅が足りない時は、ピッカーを1行まるごと使い、横のボタンは次の行へ送る（ピッカーの中の名前を切らない・折り返さない）。 */
+.bd-depth-in-panel .bd-detail-style-row > .bd-style-panel-picker {
+  flex: 1 1 100%;
+  width: auto;
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-detail-style-row > .bd-detail-style-action {
+  flex: 0 0 auto;
+}
+.bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker .bd-style-picker-preview {
+  flex: 0 1 200px;
+  min-width: 64px;
+}
+.bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker.bd-depth-preset-picker .bd-style-picker-preview {
+  flex: 0 1 120px;
+  min-width: 48px;
+}
+/* 書式設定ボタンは行の幅いっぱいに置き、名前を1行のまま全部見せる（狭い時に「トピックの書式設定」が折り返す・切れていた） */
+.bd-depth-in-panel .bd-style-format-open {
+  width: 100%;
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-style-format-open > span:last-child {
+  white-space: nowrap;
+}
+/* 区切りの列（1fr = minmax(auto,1fr)）が中身の最小幅で広がり、枠より数px はみ出していた。列を 0 まで縮められるようにする。 */
+.bd-depth-in-panel .bd-detail-section {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-detail-style-row {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}

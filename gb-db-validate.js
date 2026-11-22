@@ -4,28 +4,91 @@
    ============================== */
 
 /* --- ルール永続化 --- */
+// 検証ルールはシートの設定（validation_rules）へ保存する。別の端末・Cloud版にも届き、取り消せる（2026-11-21 ユーザー決定）。
+// 以前の版はブラウザ内（localStorage validationRules:*）にだけ保存していた。シートの設定に無い時だけ読み、次の保存で移す。
 
-function getValidationRules(dbPath) {
-  const fid = _pathToFileId(dbPath);
-  if (fid) {
-    try {
-      const v = localStorage.getItem('validationRules:' + fid);
-      if (v) {
-        const parsed = JSON.parse(v);
-        return Array.isArray(parsed) ? parsed : [];
-      }
-    } catch {}
-  }
-  try {
-    const parsed = JSON.parse(localStorage.getItem('validationRules:' + dbPath));
-    return Array.isArray(parsed) ? parsed : [];
-  }
-  catch { return []; }
+function _validationRulesClone(rules) {
+  return Array.isArray(rules) ? JSON.parse(JSON.stringify(rules)) : [];
 }
 
-function setValidationRules(dbPath, rules) {
-  const fid = _pathToFileId(dbPath);
-  localStorage.setItem('validationRules:' + (fid || dbPath), JSON.stringify(rules));
+function _validationMetadataContexts(dbPath) {
+  const contexts = [];
+  const add = (ctx) => { if (ctx && !contexts.includes(ctx)) contexts.push(ctx); };
+  if (typeof _dbPaneContextsForPath === 'function') (_dbPaneContextsForPath(dbPath) || []).forEach(add);
+  if (typeof _ptContextForDbPath === 'function') add(_ptContextForDbPath(dbPath));
+  return contexts.filter(ctx => ctx?.dbMetadata);
+}
+
+function _validationRulesFromMetadata(dbPath) {
+  for (const ctx of _validationMetadataContexts(dbPath)) {
+    if (Array.isArray(ctx.dbMetadata.validation_rules)) return ctx.dbMetadata.validation_rules;
+  }
+  if (typeof state !== 'undefined' && state.currentDbPath === dbPath && Array.isArray(state.dbMetadata?.validation_rules)) {
+    return state.dbMetadata.validation_rules;
+  }
+  return null;
+}
+
+function _legacyValidationRuleKeys(dbPath) {
+  const fid = typeof _pathToFileId === 'function' ? _pathToFileId(dbPath) : '';
+  return ['validationRules:' + (fid || dbPath), 'validationRules:' + dbPath].filter((key, index, list) => list.indexOf(key) === index);
+}
+
+function _legacyValidationRules(dbPath) {
+  for (const key of _legacyValidationRuleKeys(dbPath)) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch {}
+  }
+  return [];
+}
+
+function getValidationRules(dbPath) {
+  const stored = _validationRulesFromMetadata(dbPath);
+  if (stored && stored.length) return _validationRulesClone(stored);
+  return _validationRulesClone(_legacyValidationRules(dbPath));
+}
+
+function _applyValidationRulesLocally(dbPath, rules) {
+  const next = _validationRulesClone(rules);
+  _validationMetadataContexts(dbPath).forEach(ctx => { ctx.dbMetadata.validation_rules = _validationRulesClone(next); });
+  if (typeof state !== 'undefined' && state.currentDbPath === dbPath && state.dbMetadata) state.dbMetadata.validation_rules = _validationRulesClone(next);
+}
+
+// 保存に成功した時だけ true。失敗した時は手元の表示を元に戻して知らせる。
+async function setValidationRules(dbPath, rules, options = {}) {
+  const before = getValidationRules(dbPath);
+  const next = _validationRulesClone(rules);
+  _applyValidationRulesLocally(dbPath, next);
+  try {
+    const ctx = _validationMetadataContexts(dbPath)[0] || null;
+    if (globalThis.GbDbSchemaMutation?.saveMetadata) {
+      await globalThis.GbDbSchemaMutation.saveMetadata(dbPath, { validation_rules: next }, ctx);
+    } else {
+      await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { validation_rules: next });
+    }
+  } catch (error) {
+    _applyValidationRulesLocally(dbPath, before);
+    if (typeof showStatus === 'function') showStatus('検証ルールを保存できませんでした: ' + (error?.message || error), true);
+    return false;
+  }
+  // 移し終えたので、以前の版のブラウザ内の保存は消す
+  _legacyValidationRuleKeys(dbPath).forEach(key => { try { localStorage.removeItem(key); } catch {} });
+  if (!options.skipHistory && typeof historyPush === 'function') {
+    const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+    const restore = async (target) => {
+      const ok = await setValidationRules(dbPath, target, { skipHistory: true });
+      if (!ok) throw new Error('検証ルールを戻せませんでした');
+      const open = document.querySelector('[data-e2e-id="validation-rules-dialog"]');
+      if (open && typeof showValidationRulesModal === 'function') {
+        open.closest('.modal-overlay')?.remove();
+        showValidationRulesModal(dbPath);
+      }
+    };
+    historyPush(options.historyLabel || '検証ルールの変更', () => restore(before), () => restore(next), scope);
+  }
+  return true;
 }
 
 /* --- バリデーション実行 --- */
@@ -432,9 +495,12 @@ function showValidationRulesModal(dbPath, dialogFlow) {
       cb.dataset.e2eId = 'validation-rule-' + (rule.id || i) + '-enabled';
       cb.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を有効化');
       cb.checked = rule.enabled !== false;
-      cb.addEventListener('change', () => {
+      cb.addEventListener('change', async () => {
         rules[i].enabled = cb.checked;
-        setValidationRules(dbPath, rules);
+        if (!await setValidationRules(dbPath, rules, { historyLabel: '検証ルールの有効・無効: ' + (rule.label || rule.type) })) {
+          rules[i].enabled = !cb.checked;
+          cb.checked = !cb.checked;
+        }
       });
       item.appendChild(cb);
 
@@ -472,12 +538,10 @@ function showValidationRulesModal(dbPath, dialogFlow) {
       delBtn.setAttribute('aria-label', (rule.label || rule.type || 'ルール') + 'を削除');
       delBtn.style.cssText = 'font-size:11px;padding:1px 6px;';
       delBtn.addEventListener('click', async () => {
-        const ok = typeof cfConfirm === 'function'
-          ? await cfConfirm('この検証ルールを削除しますか？', { danger: true, okLabel: '削除' })
-          : (typeof confirm === 'function' ? confirm('この検証ルールを削除しますか？') : true);
-        if (!ok) return;
+        // 確認は出さない。検証ルールの削除は取り消せる（v0.7.535 から。app/AGENTS.md、2026-11-21 予期しないダイアログの検査）。
+        const next = rules.filter((_, index) => index !== i);
+        if (!await setValidationRules(dbPath, next, { historyLabel: '検証ルールの削除: ' + (rule.label || rule.type) })) return;
         rules.splice(i, 1);
-        setValidationRules(dbPath, rules);
         _validationOpenAfterClose(modalApi, 'delete-rule', () => showValidationRulesModal(dbPath, flow));
       });
       item.appendChild(delBtn);
@@ -617,7 +681,7 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
   saveBtn.textContent = '保存';
   saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   saveBtn.dataset.e2eId = 'validation-editor-save';
-  saveBtn.addEventListener('click', () => {
+  saveBtn.addEventListener('click', async () => {
     rule.label = nameInput.value.trim();
     rule.type = typeSel.value;
     rule.config = _collectRuleConfig(rule.type);
@@ -629,7 +693,11 @@ function showValidationRuleEditor(dbPath, existingRule, dialogFlow) {
     const rules = getValidationRules(dbPath);
     const idx = rules.findIndex(r => r.id === rule.id);
     if (idx >= 0) rules[idx] = rule; else rules.push(rule);
-    setValidationRules(dbPath, rules);
+    if (saveBtn.disabled) return;
+    saveBtn.disabled = true;
+    const ok = await setValidationRules(dbPath, rules, { historyLabel: (idx >= 0 ? '検証ルールの編集: ' : '検証ルールの追加: ') + (rule.label || rule.type) });
+    saveBtn.disabled = false;
+    if (!ok) return;
     _validationOpenAfterClose(modalApi, 'save', () => showValidationRulesModal(dbPath, flow));
     showStatus('ルールを保存しました');
   });

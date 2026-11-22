@@ -103,10 +103,31 @@ async function openFolder(label, path, opts) {
   // 単一のグローバル変数のまま）。直前の対象が今回とは別フォルダの場合、
   // _folderRenderContainerOverride を書き換える前に通知を出すことで、直前の
   // 描画先（メイン or 以前のサブパネル）へ正しく届く。
-  if (_folderPath && _folderPath !== path) {
+  // 通知は描画先が入れ替わる時（メイン⇔サブパネル）だけ出す。同じ描画先での普通のフォルダ移動で
+  // 「別の画面で開かれたため」と出していた（2026-11-22 M-014 フォルダパネル網羅テスト）。
+  const nextRenderOverride = openOpts.containerEl || null;
+  const switchingFolder = _folderPath !== path;
+  if (_folderPath && switchingFolder && nextRenderOverride !== (_folderRenderContainerOverride || null)) {
     _folderShowTakeoverNotice(displayLabel);
   }
-  _folderRenderContainerOverride = openOpts.containerEl || null;
+  _folderRenderContainerOverride = nextRenderOverride;
+  // 別のフォルダへ切り替える時は、読み込みが終わるまで前のフォルダの中身（空なら「このフォルダは空です」）を
+  // 残さず「読み込み中...」にする。大きなフォルダ（数千件）では読み込みに数秒かかり、その間「空です」と
+  // 前のフォルダの表示が出ていた（2026-11-22 M-014 フォルダの横断の検査: 三千件のフォルダ）。
+  if (switchingFolder && !Array.isArray(openOpts.items)) {
+    const loadingGrid = _folderGridEl();
+    if (loadingGrid) {
+      loadingGrid.innerHTML = '';
+      const loadingState = document.createElement('div');
+      loadingState.className = 'fv-loading-state';
+      loadingState.style.cssText = 'padding:24px;color:var(--fg2);';
+      loadingState.setAttribute('role', 'status');
+      loadingState.textContent = '読み込み中...';
+      loadingGrid.appendChild(loadingState);
+    }
+    _folderItems = [];
+    _folderVisibleItems = [];
+  }
   let hadError = false;
   try {
     if (showOpenLoading) { loading = showLoading('フォルダを読み込み中...', { key: 'folder:' + path }); loadingShown = true; }
@@ -138,6 +159,8 @@ async function openFolder(label, path, opts) {
     // 明示的な「フォルダツリーで表示」は gb-current-reveal.js が担当する。
     if (openOpts.revealInTree) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
+    // 表示形式・表示設定はフォルダごと（gb-folder-display-settings.js）。一覧の取得と並行して読み、描画の前に反映する。
+    const folderDisplayReady = window.MeldexFolderDisplaySettings?.activate?.(path, { isCurrent: () => !isStaleFolderLoad() });
     let fetchedItems = Array.isArray(openOpts.items)
       ? openOpts.items.slice()
       : (typeof _folderFetchBrowseItems === 'function'
@@ -147,6 +170,7 @@ async function openFolder(label, path, opts) {
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
     }
+    if (folderDisplayReady) await folderDisplayReady;
     if (isStaleFolderLoad()) return;
     _folderItems = fetchedItems;
     _folderBrowseIncomplete = browseIncomplete;
@@ -161,7 +185,16 @@ async function openFolder(label, path, opts) {
       ...(Array.isArray(openOpts.selectedPaths) ? openOpts.selectedPaths : []),
       openOpts.selectedPath,
     ].filter(Boolean);
-    renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
+    await renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
+    if (isStaleFolderLoad()) return;
+    // 直接フォルダを開いた経路も、実際に描画済みの対象を記録する。
+    // 他の面の開閉でpane-bridgeが未描画と誤認し、一覧を作り直さないため。
+    const liveFolderView = _folderGridEl()?.closest('#folder-view');
+    if (liveFolderView && !openOpts.containerEl) {
+      liveFolderView.dataset.path = path;
+      liveFolderView.dataset.gbLegacyView = 'folder';
+      liveFolderView.dataset.gbLegacyPath = path;
+    }
     const searchConfig = getFolderDisplayConfig();
     if (searchConfig.filterText || _folderSearchRowHasTagCondition()) {
       _refreshFolderUnifiedSearch(searchConfig.filterText || '');
@@ -245,11 +278,14 @@ function renderFolderInitialPrompt() {
 
 function setFolderLayout(mode) {
   _folderLayout = mode;
-  localStorage.setItem('folder-layout', mode);
+  // 表示形式は開いているフォルダに保存する。フォルダを開いていない時だけ全体の初期値を変える。
+  if (!window.MeldexFolderDisplaySettings?.update?.({ layout: mode })) localStorage.setItem('folder-layout', mode);
   const select = document.getElementById('folder-layout-select');
   if (select) select.value = mode;
   window.MeldexCloudMobileExplorer?.syncLayoutFromFolder?.(mode);
-  renderFolderGrid();
+  // 表示形式を変えても選択は残す（以前は描き直しで選択が消えていた: 2026-11-22 M-014 フォルダパネル網羅テスト）
+  const keepSelected = (Array.isArray(_folderSelectedItems) ? _folderSelectedItems : []).map(item => item?.path).filter(Boolean);
+  renderFolderGrid(keepSelected.length ? { preserveSelectedPaths: keepSelected } : undefined);
 }
 
 function toggleFolderPreview() {
@@ -330,13 +366,16 @@ function applyWaterfallLayout() {
   const warning = grid.querySelector('.fv-browse-warning');
   const colHeights = new Array(cols).fill(warning ? warning.offsetHeight + gap : 0);
 
-  items.forEach(el => {
+  // 書き込みと読み取りを分ける（幅をすべて書く→高さをまとめて読む→位置を書く）。以前はカードごとに位置を書いた直後に
+  // 高さを読み、カードの数だけ配置の計算をやり直していた（三千件で約9秒: 2026-11-22 M-014 フォルダパネル網羅テスト）。
+  items.forEach(el => _setStyleIfChanged(el, 'width', colW + 'px'));
+  const heights = items.map(el => el.offsetHeight);
+  items.forEach((el, index) => {
     const minH = Math.min(...colHeights);
     const colIdx = colHeights.indexOf(minH);
     _setStyleIfChanged(el, 'left', (colIdx * (colW + gap)) + 'px');
     _setStyleIfChanged(el, 'top', minH + 'px');
-    _setStyleIfChanged(el, 'width', colW + 'px');
-    colHeights[colIdx] = minH + el.offsetHeight + gap;
+    colHeights[colIdx] = minH + heights[index] + gap;
   });
   // 内部の高さスペーサーでスクロール可能にする（grid自体のheightは変えない）
   let spacer = grid.querySelector('.wf-spacer');
@@ -599,6 +638,7 @@ function renderFolderGrid(opts) {
   if (!container) return;
   _folderUpdateStatusCounts(_folderItems);
   const renderSeq = ++_folderRenderSeq;
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   container.innerHTML = '';
   if (resetScrollTop) container.scrollTop = 0;
   const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
@@ -644,7 +684,8 @@ function renderFolderGrid(opts) {
   const tagLoadPromise = (showTags || activeTagFilter)
     ? _folderEnsureTags(_folderItems, { rerender: activeTagFilter })
     : null;
-  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems());
+  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems())
+    .filter(item => !_folderPendingMovePaths.has(_folderMembershipKey(item.path)));
   _folderVisibleItems = filteredItems;
   _updateFolderDisplayFilterButton(dcfg);
   if (!_folderIsIndependentSurface()) {
@@ -725,8 +766,13 @@ function renderFolderGrid(opts) {
   }
 
   let nextRenderIndex = 0;
+  // 先頭のカードをすぐ表示し、残りは画面から外した場所で組み立てて最後に一度だけ置く。
+  // 各80件を画面へ置くたびに周辺の寸法計算と描画が走り、三千件で数秒かかっていた。
+  const stagedCards = filteredItems.length > FOLDER_PANEL_RENDER_CHUNK_SIZE ? document.createDocumentFragment() : null;
+  let resolveRender;
+  const rendered = new Promise(resolve => { resolveRender = resolve; });
   const finishFolderGridRender = () => {
-    if (renderSeq !== _folderRenderSeq) return;
+    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
     _syncFolderCheckboxes();
     _updateFolderBulkBar();
     if (preserveSelectedPaths.size > 0 && _folderSelected) {
@@ -752,10 +798,12 @@ function renderFolderGrid(opts) {
       window.MeldexEmbeddedMetadata?.refreshFolderTags?.(container);
       if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
     });
+    resolveRender(true);
   };
   const renderFolderGridChunk = () => {
-    if (renderSeq !== _folderRenderSeq) return;
+    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
     const fragment = document.createDocumentFragment();
+    const firstChunk = nextRenderIndex === 0;
     const endIndex = Math.min(filteredItems.length, nextRenderIndex + _folderPanelRenderChunkSize(filteredItems.length));
     for (; nextRenderIndex < endIndex; nextRenderIndex++) {
       const item = filteredItems[nextRenderIndex];
@@ -835,7 +883,6 @@ function renderFolderGrid(opts) {
         thumb.style.gridRow = '1';
       }
       const THUMB_TYPES = new Set(['image','video']);
-      const SHELL_THUMB_TYPES = new Set(['3d','psd','clip','document']);
       const appendIconThumb = () => {
         const icon = document.createElement('span');
         icon.className = 'fv-icon';
@@ -845,7 +892,10 @@ function renderFolderGrid(opts) {
         thumb.appendChild(icon);
         if (!item.display_icon) window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
       };
-      if (THUMB_TYPES.has(item.type)) {
+      if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
+        appendIconThumb();
+        window.GBOutlinerThumbnails.attachToElement(thumb, item, thumb.firstElementChild, 256);
+      } else if (THUMB_TYPES.has(item.type) && !item.display_icon) {
         const img = document.createElement('img');
         const generatedThumbnail = item.type === 'video';
         const cloudThumbnail = item.type === 'image' && window.MeldexRuntimeAdapter?.isDropboxMode?.()
@@ -876,9 +926,6 @@ function renderFolderGrid(opts) {
         thumb.appendChild(img);
         if (cloudThumbnail) loadCloudImage(_folderItemThumbnailUrl(item));
         window.MeldexImageLoading?.track?.(img, { host: thumb, errorMode: 'silent' });
-      } else if (SHELL_THUMB_TYPES.has(item.type)) {
-        // Windows シェルサムネイルは起動直後の大量生成で固まるため、フォルダカードでは安定したアイコンを使う。
-        appendIconThumb();
       } else {
         appendIconThumb();
       }
@@ -1142,14 +1189,18 @@ function renderFolderGrid(opts) {
     }
     fragment.appendChild(el);
     }
-    container.appendChild(fragment);
+    (stagedCards && !firstChunk ? stagedCards : container).appendChild(fragment);
+    if (firstChunk && _folderLayout === 'waterfall') _scheduleWaterfallLayout();
     if (nextRenderIndex < filteredItems.length) {
-      _folderScheduleRenderFrame(renderFolderGridChunk);
+      if (stagedCards) setTimeout(renderFolderGridChunk, 0);
+      else _folderScheduleRenderFrame(renderFolderGridChunk);
       return;
     }
+    if (stagedCards) container.appendChild(stagedCards);
     finishFolderGridRender();
   };
   renderFolderGridChunk();
+  return rendered;
 }
 
 function _folderMenuItemLocked(item) {
@@ -1257,6 +1308,7 @@ function _folderStartRename(item, card) {
 
 // DOMを作り直さず、選択・スクロール・プレビューを保って改名結果を反映する。
 function _folderApplyRename(oldPath, newPath, newName, fileId) {
+  if (_folderPendingMovePaths.delete(_folderMembershipKey(oldPath))) _folderPendingMovePaths.add(_folderMembershipKey(newPath));
   const seen = new Set();
   const update = item => {
     if (!item?.path || seen.has(item)) return;

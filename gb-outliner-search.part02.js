@@ -113,7 +113,8 @@ const PANEL_MENU_SECTIONS = [{
     { label: 'ボード', icon: 'presentation', type: 'board', open: (paneId) => _openPanelMenuItem('board', paneId) },
     { label: 'フォーム', icon: 'clipboardList', type: 'form-app', open: (paneId) => _openPanelMenuItem('form-app', paneId) },
     { label: 'マップ', icon: 'map', type: 'map', open: (paneId) => _openPanelMenuItem('map', paneId) },
-    { label: 'スケジュール', icon: 'calendar', type: 'calendar', open: (paneId) => _openPanelMenuItem('calendar', paneId) },
+    // スケジュールは開くファイルを持たない補助ツールのため、ファイル／フォルダのタブだけを持つサブパネルには出さない。
+    { label: 'スケジュール', icon: 'calendar', type: 'calendar', subpanel: false, open: (paneId) => _openPanelMenuItem('calendar', paneId) },
   ],
 }];
 
@@ -134,6 +135,8 @@ function showPanelMenu(e, options) {
   menu.className = 'ab-dropdown ab-panel-menu';
   menu.style.cssText = 'position:fixed;z-index:999;min-width:240px;';
   const targetPaneId = options?.paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : '');
+  const targetIsSubpanel = typeof GBLayout !== 'undefined'
+    && GBLayout.findNode?.(GBLayout.root, targetPaneId)?.node?.meldexRole === 'subpanel-workspace';
 
   const closeMenu = () => {
     _removeAppBarDropdowns();
@@ -152,6 +155,7 @@ function showPanelMenu(e, options) {
       menu.appendChild(title);
     }
     section.items.forEach((item) => {
+      if (targetIsSubpanel && item.subpanel === false) return;
       const row = document.createElement('div');
       row.className = 'ab-dropdown-item';
       row.innerHTML = lucide(item.icon, 16) + ' ' + item.label;
@@ -514,12 +518,13 @@ function doTreeNameSearch() {
   const seq = ++_treeUnifiedSearchSeq;
   _treeUnifiedSearchPaths = new Set();
   applyTreeNameSearch();
-  const scopes = MeldexUnifiedSearch.active();
   // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
   // 検索結果が返ってから追加で反映する。
   MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), null, q);
-  // タグ条件だけでも検索を通す（文字列は空でよい。2-F）。
-  if ((q && scopes.some(scope => scope !== 'name')) || hasTagCondition) {
+  // タグ条件だけでも検索を通す（文字列は空でよい。2-F）。名前だけの検索も保存先に問い合わせ、まだ開いていない
+  // フォルダの中の一致まで見つける（以前は画面に出ている行だけを探し、閉じたフォルダの中は見つからなかった:
+  // 2026-11-22 M-014 フォルダツリー網羅テスト）。
+  if (q || hasTagCondition) {
     clearTimeout(_treeUnifiedSearchTimer);
     _treeUnifiedSearchTimer = setTimeout(() => {
       _treeUnifiedSearchTimer = 0;
@@ -527,6 +532,7 @@ function doTreeNameSearch() {
         if (seq !== _treeUnifiedSearchSeq) return;
         _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
         applyTreeNameSearch();
+        _treeExpandToUnifiedResults(seq);
         MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), data, q);
       }).catch(() => {});
     }, 240);
@@ -584,6 +590,55 @@ function isFolderTreeSearchContext() {
   catch (_) { return false; }
 }
 
+// 保存先の一致（相対パス）と、ツリーの行のパス（ソースフォルダの絶対パスから始まることがある）を末尾で突き合わせる。
+function _treeUnifiedPathMatches(path) {
+  if (!_treeUnifiedSearchPaths.size) return false;
+  const p = String(path || '').replace(/\\/g, '/').toLowerCase();
+  if (!p) return false;
+  if (_treeUnifiedSearchPaths.has(p)) return true;
+  for (const r of _treeUnifiedSearchPaths) {
+    if (r && p.endsWith('/' + r)) return true;
+  }
+  return false;
+}
+
+// 保存先で見つかった一致へ向けて、まだ開いていない祖先のフォルダを開き、読み込みを待って絞り込みをかけ直す。
+function _treeExpandToUnifiedResults(seq, pass = 0) {
+  if (seq !== _treeUnifiedSearchSeq || !_treeUnifiedSearchPaths.size || pass > 12) return;
+  const results = Array.from(_treeUnifiedSearchPaths);
+  let opened = false;
+  let loading = false;
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
+    const d = node._nodeData;
+    if (!d || !(d.type === 'folder' || d.type === 'database' || d._isRoot)) return;
+    const p = String(d.path || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    if (!p) return;
+    const isAncestor = results.some(r => {
+      if (r.startsWith(p + '/')) return true;
+      // ツリーの絶対パスの末尾が、一致の相対パスの先頭の階層と重なるか
+      const parts = r.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        const prefix = parts.slice(0, i).join('/');
+        if (p === prefix || p.endsWith('/' + prefix)) return true;
+      }
+      return false;
+    });
+    if (!isAncestor) return;
+    const toggle = node.querySelector(':scope > .tree-node-row .tree-toggle');
+    const childrenDiv = node.querySelector(':scope > .tree-children');
+    if (toggle && toggle.dataset.expanded !== 'true') { toggle.click(); opened = true; return; }
+    // 開いたが子の読み込みがまだ終わっていない（終わったら絞り込みをかけ直す）
+    if (childrenDiv && childrenDiv.dataset.loaded !== 'true') loading = true;
+  });
+  if (opened || loading) {
+    setTimeout(() => {
+      if (seq !== _treeUnifiedSearchSeq) return;
+      applyTreeNameSearch();
+      _treeExpandToUnifiedResults(seq, pass + 1);
+    }, 250);
+  }
+}
+
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
   const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
@@ -610,7 +665,7 @@ function applyTreeNameSearch() {
       return;
     }
     const nameMatch = !!(q && includeName && d.name && d.name.toLowerCase().includes(q));
-    const pathMatch = _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
+    const pathMatch = _treeUnifiedPathMatches(d.path);
     // フォルダ/ルートは名前マッチのみ
     if (d.type === 'folder' || d._isRoot || d.type === 'database' || d.type === 'form-app') {
       node._searchMatch = nameMatch || pathMatch;
@@ -965,6 +1020,7 @@ async function doVaultSearch() {
 function renderSearchResults(data, query, caseSensitive, useRegex) {
   const results = data.results || [];
   const container = document.getElementById('sp-results');
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   if (results.length === 0) {
     renderEmptyState(container, 'search', '見つかりませんでした', '別のキーワードで検索してください');
     document.getElementById('sp-status').textContent = '0件';
@@ -987,6 +1043,14 @@ function renderSearchResults(data, query, caseSensitive, useRegex) {
     }
   });
   container.innerHTML = html;
+  container.querySelectorAll('.sp-file').forEach((header, index) => {
+    const file = results[index];
+    const icon = document.createElement('span');
+    icon.innerHTML = typeof _outlinerIconMarkup === 'function' ? _outlinerIconMarkup(file, 18) : '';
+    icon.style.marginRight = '6px';
+    header.prepend(icon);
+    window.GBOutlinerThumbnails?.attachToIcon?.(icon, file, 24);
+  });
   _bindVaultSearchResultClicks(container);
   document.getElementById('sp-status').textContent = `${data.total}件（${results.length}ファイル）`;
 }

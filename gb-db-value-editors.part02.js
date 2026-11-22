@@ -1115,6 +1115,8 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
         val.value = nv;
       } else {
         const created = await _apiPostValue(entityPath, propName, nv, '採用', '');
+        // 空のセルへの最初の選択も、値の書き換えと同じく取り消せるようにする
+        if (typeof _dbUndoCreatedValue === 'function') _dbUndoCreatedValue(propName, entityPath, propName, nv, created, { dbPath, ctx });
         if (val && created) {
           val.file = created.path || created.file || val.file;
           val.property = created.property || propName;
@@ -1335,11 +1337,15 @@ async function _createEntityChat(entityPath, val, propName, dbPath) {
   currentPaths.push(chatPath);
   const newValue = currentPaths.join(', ');
   try {
+    // セルへのチャットの紐付けは値の変更と同じく取り消せる（作ったチャット自体は残す）
     if (val?.file) {
+      const oldValue = val.value || '';
       await _apiPutValue(val, { new_value: newValue });
+      if (typeof _dbUndoValue === 'function') _dbUndoValue('チャットを追加: ' + propName, val, oldValue, newValue, undefined, undefined, { dbPath: sourceDbPath, ctx: sourceCtx, entityPath });
       val.value = newValue;
     } else {
-      await _apiPostValue(entityPath, propName, newValue, '採用', '');
+      const created = await _apiPostValue(entityPath, propName, newValue, '採用', '');
+      if (typeof _dbUndoCreatedValue === 'function') _dbUndoCreatedValue('チャットを追加: ' + propName, entityPath, propName, newValue, created, { dbPath: sourceDbPath, ctx: sourceCtx });
     }
   } catch (e) {
     showStatus('チャットは作成されましたが、トピックへの紐付け保存に失敗: ' + (e?.message || e), true);

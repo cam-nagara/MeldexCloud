@@ -19,6 +19,122 @@
     _calUserListFromValue,
   } = window.MeldexCalendarOptions;
 
+  // ---- 保存を押す前の入力の退避（シートの「未保存の入力」と同じ扱い。v0.7.523 のセルと揃える） ----
+  // 予定のオプションで入力して「保存」を押す前に、再読み込み・画面を閉じると入力が知らせなく消えていた。
+  // 画面を離れる時（pagehide / beforeunload）に、変えた入力を予定ごとに端末へ退避し、同じ予定のオプションを
+  // 開いた時に入力欄へ戻して「未保存の入力があります」と出す。保存・削除・破棄で消す。
+  const DRAFT_KEY = 'meldex:cal-event-draft:v1';
+  const DRAFT_FIELDS = [
+    ['title', '[data-cal-event-title]'], ['start', '[data-cal-event-start]'], ['end', '[data-cal-event-end]'],
+    ['location', '[data-cal-event-location]'], ['url', '[data-cal-event-url]'], ['description', '[data-cal-event-desc]'],
+  ];
+  const _calDraftStore = () => {
+    try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}') || {}; } catch { return {}; }
+  };
+  const _calDraftWrite = (store) => {
+    try {
+      if (Object.keys(store).length) localStorage.setItem(DRAFT_KEY, JSON.stringify(store));
+      else localStorage.removeItem(DRAFT_KEY);
+      return true;
+    } catch { return false; }
+  };
+  const _calDraftKey = (component, id) => `${component?._getUser?.() || ''}|${id}`;
+  function _calEventDraftClear(component, id) {
+    if (!id) return;
+    const store = _calDraftStore();
+    if (store[_calDraftKey(component, id)]) { delete store[_calDraftKey(component, id)]; _calDraftWrite(store); }
+  }
+  function _calEventDraftStashOpenBodies() {
+    const store = _calDraftStore();
+    document.querySelectorAll('[data-cal-event-title]').forEach(titleInput => {
+      const owner = titleInput._calEventDraftOwner;
+      if (!owner || !owner.dirty || !owner.eventId) return;
+      const values = {};
+      DRAFT_FIELDS.forEach(([name, selector]) => {
+        const el = owner.body.querySelector(selector);
+        if (el) values[name] = el.value;
+      });
+      store[_calDraftKey(owner.component, owner.eventId)] = { values, savedAt: new Date().toISOString() };
+    });
+    return _calDraftWrite(store);
+  }
+  if (!window.__meldexCalEventDraftBound && typeof window.addEventListener === 'function') {
+    window.__meldexCalEventDraftBound = true;
+    window.addEventListener('pagehide', () => _calEventDraftStashOpenBodies());
+    window.addEventListener('beforeunload', () => _calEventDraftStashOpenBodies());
+  }
+  CalendarComponent.prototype._bindEventOptionDraft = function(body, ev) {
+    if (!ev?.id) return;
+    const titleInput = body.querySelector('[data-cal-event-title]');
+    if (!titleInput) return;
+    const owner = { component: this, eventId: ev.id, body, dirty: false };
+    titleInput._calEventDraftOwner = owner;
+    body._calEventDraftOwner = owner;
+    DRAFT_FIELDS.forEach(([, selector]) => {
+      body.querySelector(selector)?.addEventListener('input', () => { owner.dirty = true; });
+    });
+    const draft = _calDraftStore()[_calDraftKey(this, ev.id)];
+    if (!draft?.values) return;
+    DRAFT_FIELDS.forEach(([name, selector]) => {
+      const el = body.querySelector(selector);
+      if (el && typeof draft.values[name] === 'string' && el.value !== draft.values[name]) el.value = draft.values[name];
+    });
+    owner.dirty = true;
+    const notice = document.createElement('div');
+    notice.className = 'cal-option-draft-notice';
+    notice.setAttribute('role', 'status');
+    notice.dataset.e2eId = 'calendar-event-draft-notice';
+    const text = document.createElement('span');
+    text.textContent = '未保存の入力があります。「保存」で反映します';
+    const discard = document.createElement('button');
+    discard.type = 'button';
+    discard.dataset.e2eId = 'calendar-event-draft-discard';
+    discard.textContent = '入力を破棄';
+    discard.addEventListener('click', () => {
+      _calEventDraftClear(this, ev.id);
+      const current = (this._events || []).find(item => item.id === ev.id);
+      if (current) this._showEventOptionsPanel(current);
+    });
+    notice.append(text, discard);
+    body.insertBefore(notice, body.firstChild);
+    this._showStatus('未保存の入力があります（「保存」で反映します）');
+  };
+
+  // 取り消しの履歴の枠を操作した時点で取る（保存の完了後に積むと、保存中の Ctrl+Z が1つ前の別の操作を取り消す）。
+  // 保存が成功したら commit()、失敗・無変化なら cancel()（失敗した操作の偽の履歴を残さない）。
+  // 共通履歴が無い環境では、従来どおり commit() の時点で自己完結スタックへ積む。
+  // options.undo / options.redo を渡すと、写し全体の復元ではなくその操作だけを戻す・やり直す（予定の作成など）。
+  CalendarComponent.prototype._reserveUndo = function(label, options = {}) {
+    const snapshot = this._captureUndoSnapshot();
+    // ほかの予定の作成が保存中（未確定）の時点の写しでも、その予定を「写しに無い」扱いにしない。
+    // 未確定の印を外して写しに残す（外さないと復元で保存済みになったその予定まで消していた）。
+    snapshot.events = (snapshot.events || []).map(ev => {
+      if (!ev || !(ev._optimistic || ev._saveState)) return ev;
+      const { _optimistic, _saveState, ...rest } = ev;
+      return rest;
+    });
+    const canReserve = typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory() && typeof historyReserve === 'function';
+    const reservation = canReserve ? historyReserve(label, _schedHistoryScope(this)) : null;
+    let settled = false;
+    return {
+      snapshot,
+      commit: () => {
+        if (settled) return;
+        settled = true;
+        if (reservation && typeof options.undo === 'function') reservation.fill(options.undo, typeof options.redo === 'function' ? options.redo : null, label);
+        else if (reservation) reservation.fill(() => this._restoreSnapshot(snapshot), null, label);
+        else this._pushUndo(label, snapshot);
+        this._notifyParentHistory?.();
+      },
+      cancel: () => {
+        if (settled) return;
+        settled = true;
+        reservation?.cancel();
+        this._notifyParentHistory?.();
+      },
+    };
+  };
+
   CalendarComponent.prototype._createEventQuick = async function(defaultStart, defaultEnd, defaultAllDay) {
     const now = new Date();
     const fallbackStart = defaultStart ? new Date(defaultStart) : now;
@@ -43,21 +159,53 @@
     const id = window.MeldexCalendarSaveQueue?.newEventId?.() || ('cal-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
     payload.id = id;
     const optimisticEvent = { id, ...payload, _optimistic: true, _saveState: 'saving' };
-    this._pushUndo('イベント作成');
+    // 履歴の枠は操作の時点で取り、保存が確定した時だけ中身を入れる（失敗・未保存の作成の偽の履歴を残さない）。
+    // 作成の取り消しは「この予定だけを消す」、やり直しは「この予定だけを作り直す」（写し全体の復元にしない。
+    // 続けて作った別の予定が保存中の時点の写しを戻すと、その予定まで消えていた）。
+    let lastContent = null;
+    const undo = this._reserveUndo('イベント作成', {
+      undo: async () => {
+        // やり直しで消す直前の内容（作成後の編集を含む）へ戻せるよう、手元の最新の値を取っておく。
+        const latest = (this._events || []).find(e => e.id === id && !e._recurrence_instance);
+        if (latest) {
+          const { created, modified, uid, ical_uid, recurrence_id, original_start, _optimistic, _saveState, ...data } = latest;
+          lastContent = data;
+        }
+        await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
+        this._eventSelection?.().delete(id);
+        await this._loadEvents();
+        this._render();
+      },
+      redo: async () => {
+        await apiPost('/cal/events', { ...payload, ...(lastContent || {}), user: this._getUser(), id });
+        await this._loadEvents();
+        this._render();
+      },
+    });
     this._events = [...(this._events || []), optimisticEvent];
     this._setSelectedEvents([id], id);
     this._render();
+    // 保存を待たずにオプションを開き、すぐ題名を入力できるようにする（操作から0.3秒以内）。
+    // 保存中に押した「保存」「削除」は、作成の保存が終わるまで待ってから送る（_saveEventOptions / _deleteEventFromOptions）。
+    this._showEventOptionsPanel(optimisticEvent, defaultStart, defaultEnd, defaultAllDay);
     // POSTがタイムアウトしても即座に楽観イベントを破棄しない。保存キュー側で
     // 確認・再試行まで行い、それでも失敗したら「未保存」として画面に保持する。
     const savedId = window.MeldexCalendarSaveQueue
       ? await window.MeldexCalendarSaveQueue.createWithConfirm(this, id, payload)
       : await this._createEventQuickFallback(id, payload);
-    if (!savedId) return '';
+    const local = savedId ? (this._events || []).find(e => e.id === savedId) : null;
+    // 未保存（裏で再試行中）の予定は保存が確定していないので履歴に残さない。
+    if (savedId && !window.MeldexCalendarSaveQueue?.isPendingEvent?.(local)) undo.commit();
+    else undo.cancel();
+    if (!savedId) {
+      // 作成を取りやめた予定のオプションが開いたままなら、その旨に差し替える（消えた予定へ保存させない）。
+      const openTitle = Array.from(document.querySelectorAll('[data-cal-event-title]')).find(el => el._calEventDraftOwner?.eventId === id);
+      const openBody = openTitle?._calEventDraftOwner?.body;
+      if (openBody) openBody.innerHTML = '<div class="cal-option-empty">イベントを追加できませんでした</div>';
+      return '';
+    }
     await this._loadEvents();
     this._render();
-    const created = this._events.find(e => e.id === savedId) || { id: savedId, ...payload };
-    this._setSelectedEvents([savedId], savedId);
-    this._showEventOptionsPanel(created, defaultStart, defaultEnd, defaultAllDay);
     return savedId;
   };
 
@@ -223,6 +371,7 @@
         CommentBadges.openPanelForFileComments(calendarId);
       }
     });
+    this._bindEventOptionDraft(body, ev);
     setTimeout(() => body.querySelector('[data-cal-event-title]')?.focus(), 0);
   };
 
@@ -239,8 +388,13 @@
       this._showStatus('保存中です。少し待ってからもう一度お試しください');
       return;
     }
-    // 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）
-    const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
+    // 作成の保存がまだ終わっていない予定は、作成の保存（保存キューの順番）が済んでから更新する。
+    if (window.MeldexCalendarSaveQueue?.isPendingEvent?.(evRef) && typeof window.MeldexCalendarSaveQueue.enqueue === 'function') {
+      this._savingEventIds.add(editId);
+      try { await window.MeldexCalendarSaveQueue.enqueue(() => null); } finally { this._savingEventIds.delete(editId); }
+    }
+    // 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽履歴は残さない）
+    const undo = this._reserveUndo('イベント編集');
     const creator = body.querySelector('[data-cal-event-creator]')?.value || this._getUser();
     const allDay = body.querySelector('[data-cal-event-allday]')?.checked;
     const startInput = body.querySelector('[data-cal-event-start]');
@@ -286,12 +440,21 @@
       this.el.dataset.eventSaveMessage = '';
     }
     try {
-      await apiPut('/cal/events/' + editId, data);
-      this._pushUndo('イベント編集', undoSnapshot);
+      // 同じ予定への移動・伸縮の保存と順番を守る（予定ごとに直列）。30秒終わらない保存は自己記録へ残す。
+      if (typeof window._calSerialEventPut === 'function') {
+        await window._calSerialEventPut(editId, data, 'event-save');
+      } else {
+        const savePromise = apiPut('/cal/events/' + editId, data);
+        await (window.MeldexDiagnostics?.watchScheduleTask?.('event-save', savePromise) ?? savePromise);
+      }
+      undo.commit();
       if (this.el) this.el.dataset.eventSaveState = 'saved';
+      _calEventDraftClear(this, editId);
+      if (body._calEventDraftOwner) body._calEventDraftOwner.dirty = false;
       this._showStatus('イベントを保存しました');
       this._loadEvents?.().then(() => this._render()).catch(() => {});
     } catch (error) {
+      undo.cancel();
       const failureDetail = String(error?.userMessage || error?.message || '').trim();
       if (this.el) {
         this.el.dataset.eventSaveState = 'error';
@@ -329,6 +492,10 @@
         : 'このシフトを削除しますか？';
       if (!await cfConfirm(confirmText)) return;
     }
+    // 作成の保存がまだ終わっていない予定は、作成の保存（保存キューの順番）が済んでから消す。
+    if (!isShift && window.MeldexCalendarSaveQueue?.isPendingEvent?.(evRef) && typeof window.MeldexCalendarSaveQueue.enqueue === 'function') {
+      await window.MeldexCalendarSaveQueue.enqueue(() => null);
+    }
     if (isShift && this._shiftMutationStateUnknown) {
       this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
       return;
@@ -342,11 +509,8 @@
     const beforeSelected = this._eventSelection ? [...this._eventSelection()] : [];
     const beforeLast = this._lastSelectedEventId || '';
     const undoable = !isShift && this._eventIsUndoable?.(evRef);
-    const undoSnapshot = undoable ? {
-      events: this._snapshotEventsForUndo(),
-      tasks: this._snapshotTasksForUndo(),
-      eventWindow: this._snapshotEventWindowForUndo(),
-    } : null;
+    // 取り消しの履歴の枠は操作の時点で取り、削除が成功した時だけ中身を入れる。
+    const undo = undoable ? this._reserveUndo('イベント削除') : null;
     if (isShift && shiftId && typeof this._removeShiftOptimistic === 'function') {
       this._removeShiftOptimistic(shiftId);
     } else {
@@ -362,10 +526,14 @@
     try {
       const result = isShift
         ? await apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })
-        : await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
+        : await (() => {
+          const deletePromise = apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
+          return window.MeldexDiagnostics?.watchScheduleTask?.('event-delete', deletePromise) ?? deletePromise;
+        })();
       if (result && result.ok === false) throw new Error(result.message || '削除に失敗');
       acknowledged = true;
-      if (undoSnapshot) this._pushUndo('イベント削除', undoSnapshot);
+      _calEventDraftClear(this, id);
+      undo?.commit();
       apiPost('/annotations/orphan-by-target', {
         target_kind: 'calendar_event',
         target_file: evRef?.calendar_id || '_calendar',
@@ -379,6 +547,7 @@
       }
       this._showStatus('削除しました');
     } catch (error) {
+      if (!acknowledged) undo?.cancel();
       if (isShift && acknowledged) {
         console.error('削除済みシフトの再読込に失敗しました', error);
         this._showStatus('シフトは削除されましたが、再読み込みに失敗しました', true);

@@ -3,6 +3,8 @@
   'use strict';
 
   const STORAGE_KEY = 'meldex-scriptnote-ruby-presentation-defaults-v2';
+  // ノートのルビの全体の既定値（設定ダイアログのテーマの「ノート」欄）。シナリオとは別に持つ。
+  const NOTE_STORAGE_KEY = 'meldex-note-ruby-presentation-defaults-v1';
   const VERSION = 2;
   const DEFAULTS = Object.freeze({
     version: VERSION,
@@ -15,6 +17,12 @@
     smallKana: 'keep',
     fontPreset: 'inherit',
     defaultStyle: 'group',
+  });
+  // ノートの初期値は、今までのノートのルビの見た目（親文字の半分・間隔なし・字間なし・本文と同じ行間）。
+  const NOTE_DEFAULTS = Object.freeze({
+    ...DEFAULTS,
+    letterSpacingEm: 0,
+    lineHeight: 1.6,
   });
   const LIMITS = Object.freeze({
     sizePercent: Object.freeze({ min: 5, max: 200 }),
@@ -100,22 +108,26 @@
     return result;
   }
 
-  function readStoredDefaults() {
+  function _scopeKey(scope) { return scope === 'note' ? NOTE_STORAGE_KEY : STORAGE_KEY; }
+  function _scopeDefaults(scope) { return scope === 'note' ? NOTE_DEFAULTS : DEFAULTS; }
+
+  function readStoredDefaults(scope) {
+    const base = _scopeDefaults(scope);
     try {
-      if (!global.localStorage) return { ...DEFAULTS };
-      const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
-      const normalized = normalize(parsed);
+      if (!global.localStorage) return { ...base };
+      const parsed = JSON.parse(global.localStorage.getItem(_scopeKey(scope)) || '{}');
+      const normalized = normalize(parsed, base);
       delete normalized.compatibility;
       return normalized;
     } catch (_) {
-      return { ...DEFAULTS };
+      return { ...base };
     }
   }
 
-  function writeStoredDefaults(value) {
-    const normalized = normalize(value);
+  function writeStoredDefaults(value, scope) {
+    const normalized = normalize(value, _scopeDefaults(scope));
     delete normalized.compatibility;
-    try { global.localStorage?.setItem(STORAGE_KEY, JSON.stringify(normalized)); } catch (_) {}
+    try { global.localStorage?.setItem(_scopeKey(scope), JSON.stringify(normalized)); } catch (_) {}
     return normalized;
   }
 
@@ -457,6 +469,78 @@
     };
   }
 
+  // ルビの親文字を測って、JIS系の配置（グループ・モノ・熟語の配り方と隣のルビとの衝突の解決）を
+  // CSS変数（prefix + -inline-start / -layout-extent / -size-override / -effective-letter-spacing /
+  // -gap-px / -base-edge）へ書く。シナリオとノートで同じ計算を使う（2026-11-21）。
+  // options: presentation, isVertical, zoom, prefix, cellOf(span) -> 行を分ける単位, beforeResolve(rows, spanToInfo)
+  function layoutRubySpans(spans, options = {}) {
+    const list = Array.from(spans || []);
+    const rows = new Map();
+    const spanToInfo = new Map();
+    if (!list.length) return { rows, spanToInfo };
+    const presentation = options.presentation;
+    const isVertical = !!options.isVertical;
+    const z = Number(options.zoom) || 1;
+    const prefix = options.prefix || '--sn2-ruby';
+    const cellOf = typeof options.cellOf === 'function' ? options.cellOf : () => null;
+    const cells = new Map();
+    // 書き込み（余白の解除）→全ルビの測定→書き込み（位置の変数）を分けてまとめる。
+    // ルビごとに書いて測ると、ルビの数だけ画面全体の再レイアウトが走る。
+    list.forEach(span => {
+      span.style.marginLeft = '';
+      span.style.marginTop = '';
+    });
+    const computed = typeof global.getComputedStyle === 'function' ? global.getComputedStyle.bind(global) : null;
+    const measured = list.map(span => ({
+      span,
+      rect: span.getBoundingClientRect(),
+      fontSize: (computed && parseFloat(computed(span).fontSize)) || 16,
+    }));
+    const baseEdges = [];
+    measured.forEach(({ span, rect, fontSize }, index) => {
+      const parentStart = (isVertical ? rect.top : rect.left) / z;
+      const parentEnd = (isVertical ? rect.bottom : rect.right) / z;
+      const rubyText = span.dataset.rubyRendered || span.dataset.ruby;
+      const baseEm = fontSize;
+      const info = createRubyLayoutInfo({
+        parentStart,
+        parentEnd,
+        baseEm,
+        rubyText,
+        presentation,
+        style: span.dataset.rubyStyle,
+      });
+      info.span = span;
+      info.groupId = span.dataset.rubyGroupId || `span-${index}`;
+      const crossStart = (isVertical ? rect.left : rect.top) / z;
+      const cell = cellOf(span);
+      if (!cells.has(cell)) cells.set(cell, cells.size);
+      const lineKey = `${cells.get(cell)}:${Math.round(crossStart * 2) / 2}`;
+      info._lineKey = lineKey;
+      if (!rows.has(lineKey)) rows.set(lineKey, []);
+      rows.get(lineKey).push(info);
+      spanToInfo.set(span, info);
+      const crossSize = (isVertical ? rect.width : rect.height) / z;
+      baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
+    });
+    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
+    if (typeof options.beforeResolve === 'function') options.beforeResolve(rows, spanToInfo);
+    rows.forEach(infos => {
+      resolveRubyOverlaps(infos).forEach(info => {
+        if (!info.span) return;
+        const layout = finalizeRubyLayout(info);
+        if (!layout) return;
+        const style = info.span.style;
+        style.setProperty(prefix + '-inline-start', layout.inlineStartPx + 'px');
+        style.setProperty(prefix + '-layout-extent', layout.extentPx + 'px');
+        style.setProperty(prefix + '-size-override', layout.fontSizePx + 'px');
+        style.setProperty(prefix + '-effective-letter-spacing', layout.letterSpacingPx + 'px');
+        style.setProperty(prefix + '-gap-px', layout.gapPx + 'px');
+      });
+    });
+    return { rows, spanToInfo };
+  }
+
   function fullsizeKana(text) {
     return Array.from(String(text || ''), char => SMALL_KANA[char] || char).join('');
   }
@@ -502,10 +586,12 @@
     return presentation;
   }
 
-  function setGlobalDefaults(patch) {
-    const next = writeStoredDefaults({ ...readStoredDefaults(), ...plain(patch) });
+  function setGlobalDefaults(patch, scope) {
+    const next = writeStoredDefaults({ ...readStoredDefaults(scope), ...plain(patch) }, scope);
     try {
-      global.dispatchEvent?.(new CustomEvent('meldex:ruby-presentation-defaults-change', { detail: clone(next) }));
+      global.dispatchEvent?.(new CustomEvent('meldex:ruby-presentation-defaults-change', {
+        detail: { ...clone(next), scope: scope === 'note' ? 'note' : 'scriptnote' },
+      }));
     } catch (_) {}
     return next;
   }
@@ -513,7 +599,9 @@
   global.MeldexRubyPresentation = Object.freeze({
     VERSION,
     STORAGE_KEY,
+    NOTE_STORAGE_KEY,
     DEFAULTS,
+    NOTE_DEFAULTS,
     LIMITS,
     FONT_PRESETS,
     LEGACY_TRANSFER_METRICS,
@@ -534,5 +622,6 @@
     createRubyLayoutInfo,
     resolveRubyOverlaps,
     finalizeRubyLayout,
+    layoutRubySpans,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

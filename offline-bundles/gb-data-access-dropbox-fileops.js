@@ -915,7 +915,7 @@
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
     await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
-    for (const step of steps) {
+    for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
       if (inProgress && inProgress.name !== step.name) throw new Error('Cloud aftercareの実行中stepが一致しません');
@@ -955,11 +955,13 @@
           before_manifest_digest: String(intent.aftercare_in_progress?.before_manifest_digest || ''),
           after_manifest_digest: String(after?.manifest_digest || ''),
         } };
-      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
       completed.add(step.name);
       intent.aftercare_completed = [...completed];
       if (checkpoint) intent.aftercare_manifest_digest = after.manifest_digest;
-      delete intent.aftercare_in_progress;
+      const next = steps.slice(stepIndex + 1).find(candidate => !completed.has(candidate.name));
+      if (next) intent.aftercare_in_progress = { name: next.name,
+        before_manifest_digest: String(after?.manifest_digest || '') };
+      else delete intent.aftercare_in_progress;
       await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
     }
     return { ...record, intent };
@@ -1729,6 +1731,32 @@ async function _writeAnnotationRecord(provider, record) {
   await adapter.save(kind, docId, record);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+}
+
+// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
+// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
+async function _restoreAnnotationRecord(provider, body) {
+  const id = _safeId(body.id, 'annotation id');
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
+  const matches = await _findAnnotationRecordsById(provider, id);
+  const match = matches[0];
+  const current = match?.stored || null;
+  const existing = current?.payload || null;
+  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
+  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
+  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
+  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
+  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
+  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
+  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
+  delete record.tombstone; delete record.deleted; delete record.deleted_at;
+  if (record.state === 'deleted') delete record.state;
+  if (record.status === 'tombstoned') delete record.status;
+  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return { ok: true, id };
 }
 
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
@@ -4245,18 +4273,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
-      const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
-      if (body?.created) {
-        record.created = body.created;
-        record.created_at = body.created_at || body.created;
-      }
-      if (body?.modified) {
-        record.modified = body.modified;
-        record.modified_at = body.modified_at || body.modified;
-      }
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id };
+      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
     }
     if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -4466,8 +4483,16 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const parent = _normalizeFolderPath(body?.parent || '');
+      let parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
+      if (type === 'form-app') {
+        const home = await window.MeldexDataAccess.requestJson('/home-folder', { method: 'GET' });
+        const personal = _normalizeFolderPath(home?.path || '');
+        if (!personal || home.exists === false || personal.split('/').some(part => part === '..' || part === '.'))
+          throw new Error('個人のホームを設定してください');
+        if (parent.split('/').some(part => part === '..' || part === '.')
+          || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
+      }
       const titleHelper = window.GBPathUtils?.displayTitle;
       const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;

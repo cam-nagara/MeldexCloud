@@ -1,3 +1,239 @@
+      else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
+    } catch (error) { _saReportSaveFailure(error); }
+    finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
+  });
+
+  function _isStandaloneNoteAnnotation(item, data) {
+    if (!item || data?.deleted) return false;
+    const type = String(item.type || '');
+    const shape = String(item.shape || data?.shape || '');
+    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
+    if (type === 'comment') {
+      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
+    }
+    return type === 'note' || type === 'sticky';
+  }
+
+  function _renderNote(annId, data, color) {
+    const note = document.createElement('div');
+    note.className = 'sa-note'; note.dataset.annId = annId;
+    _saFitNoteData(data);
+    note.style.cssText = `position:absolute;box-sizing:border-box;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
+    const textarea = document.createElement('textarea');
+    textarea.value = data.text || '';
+    textarea.style.cssText = 'box-sizing:border-box;width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
+    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
+    _applyStandaloneNoteSize(note, textarea, data);
+    textarea.onblur = async () => {
+      const previousData = { ...data };
+      const previousStyle = {
+        width: note.style.width,
+        minHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
+      Object.assign(data, _saNotePayload(data, textarea, note));
+      try {
+        await _saUpdateAnnotation(annId, { data: { ...data } });
+      } catch (error) {
+        Object.keys(data).forEach(key => { delete data[key]; });
+        Object.assign(data, previousData);
+        note.style.width = previousStyle.width;
+        note.style.minHeight = previousStyle.minHeight;
+        textarea.style.height = previousStyle.textareaHeight;
+        textarea.value = previousData.text || '';
+        _saReportSaveFailure(error);
+      }
+    };
+    note.appendChild(textarea);
+    let dx = 0, dy = 0;
+    note.addEventListener('pointerdown', (e) => {
+      if (_ann.active && _ann.tool === 'eraser') {
+        e.preventDefault();
+        e.stopPropagation();
+        _saDeleteNoteElement(note);
+        return;
+      }
+      if (e.target === textarea) return; e.preventDefault();
+      const rect = note.getBoundingClientRect();
+      dx = e.clientX - rect.left; dy = e.clientY - rect.top;
+      const previous = {
+        x: data.x || 0,
+        y: data.y || 0,
+        text: data.text || '',
+        width: data.width,
+        height: data.height,
+        left: note.style.left,
+        top: note.style.top,
+        noteWidth: note.style.width,
+        noteMinHeight: note.style.minHeight,
+        textareaHeight: textarea.style.height,
+      };
+      const onMove = (e2) => {
+        const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
+        const fitted = _saClampNotePosition(pt.x, pt.y, note.offsetWidth, note.offsetHeight);
+        note.style.left = fitted.x + 'px';
+        note.style.top = fitted.y + 'px';
+      };
+      const onUp = async () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        Object.assign(data, _saNotePayload(data, textarea, note), {
+          x: parseFloat(note.style.left) || 0,
+          y: parseFloat(note.style.top) || 0,
+        });
+        try {
+          await _saUpdateAnnotation(annId, { data: { ...data } });
+        } catch (error) {
+          data.x = previous.x;
+          data.y = previous.y;
+          data.text = previous.text;
+          data.width = previous.width;
+          data.height = previous.height;
+          note.style.left = previous.left;
+          note.style.top = previous.top;
+          note.style.width = previous.noteWidth;
+          note.style.minHeight = previous.noteMinHeight;
+          textarea.style.height = previous.textareaHeight;
+          textarea.value = previous.text;
+          _saReportSaveFailure(error);
+        }
+      };
+      document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
+    });
+    container.appendChild(note);
+  }
+
+  async function loadAnnotations(targetPath) {
+    const requestSeq = ++_loadAnnotationsSeq;
+    const requestedTarget = String(targetPath || '');
+    layer.innerHTML = ''; container.querySelectorAll('.sa-note').forEach(n => n.remove());
+    if (!requestedTarget) return;
+    try {
+      const items = await apiFetch('/annotations?target=' + encodeURIComponent(requestedTarget));
+      const activeTarget = typeof getTargetPath === 'function' ? String(getTargetPath() || '') : requestedTarget;
+      if (requestSeq !== _loadAnnotationsSeq || activeTarget !== requestedTarget) return;
+      items.forEach(item => {
+        const data = _saParseAnnotationData(item);
+        if (!data) return;
+        if (_isStandaloneNoteAnnotation(item, data)) _renderNote(item.id, data, item.color);
+        else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') return;
+        else if (item.type === 'rect' && data?.width != null && data?.height != null) _renderRect(data, item.color, item.opacity, item.id);
+        else if (data.points) _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id);
+      });
+      _syncStandaloneNoteInteractivity();
+    } catch (error) {
+      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, 'アノテートを読み込めませんでした');
+    }
+  }
+
+  function toggle(active) {
+    if (active === undefined) active = !_ann.active;
+    _ann.active = active;
+    svg.style.pointerEvents = active ? 'auto' : 'none';
+    svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
+    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
+    hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
+    _syncStandaloneNoteInteractivity();
+  }
+  function setTool(tool) { _ann.tool = tool; if (_ann.active) svg.style.cursor = tool === 'eraser' ? 'not-allowed' : tool === 'sticky' ? 'cell' : 'crosshair'; }
+  function setColor(c) { _ann.color = c; }
+  function setOpacity(o) {
+    const opacity = _saNormalizeOpacity(o, 1);
+    _ann.opacity = opacity;
+    svg.style.opacity = opacity;
+    container.querySelectorAll('.sa-note').forEach(n => { n.style.opacity = opacity; });
+  }
+  function destroy() { svg.remove(); container.querySelectorAll('.sa-note').forEach(n => n.remove()); }
+
+  return { svg, layer, ann: _ann, toggle, loadAnnotations, setTool, setColor, setOpacity, destroy };
+}
+
+const STANDALONE_MARKUP_TOOLBAR_CSS = `
+.sa-markup-toolbar {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--ui-popup-bg, var(--bg2, #252525));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.sa-markup-toolbar .sa-tb-btn,
+.sa-markup-toolbar .sa-markup-color-btn,
+.sa-markup-toolbar .sa-markup-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg, #d4d4d4);
+  cursor: pointer;
+}
+.sa-markup-toolbar .sa-tb-btn:hover,
+.sa-markup-toolbar .sa-markup-color-btn:hover,
+.sa-markup-toolbar .sa-markup-close-btn:hover {
+  background: var(--bg3, #2d2d2d);
+  border-color: var(--accent, #569cd6);
+}
+.sa-markup-toolbar .sa-tb-btn.active,
+.sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
+  background: var(--accent, #569cd6);
+  border-color: var(--accent, #569cd6);
+  color: var(--ui-accent-fg, var(--ui-selection-fg));
+}
+.sa-markup-toolbar .sa-tb-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.sa-markup-toolbar .sa-markup-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.sa-markup-color-swatch {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border, #333);
+  border-radius: 999px;
+  pointer-events: none;
+}
+.sa-markup-palette {
+  position: fixed;
+  z-index: 56;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 188px;
+  padding: 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--ui-popup-bg, var(--bg2, #252525));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.sa-markup-color-dot {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  cursor: pointer;
+}
+@media (max-width: 640px) {
   .sa-markup-toolbar {
     left: 8px;
     right: 8px;

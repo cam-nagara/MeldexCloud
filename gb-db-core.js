@@ -331,6 +331,7 @@ function _dbStatusFilterMode(dbPath, filterMode) {
 // 計画書§5.1・§5.2参照）。
 function getSchemaProtectionLevel(dbPath, propName) {
   const targetPath = dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '';
+  if (window.MeldexChatManagementSheet?.isPath?.(targetPath)) return 'all';
   if (isProductionManagementSheetPath(targetPath)) return 'all';
   if (typeof window === 'undefined') return null;
   if (window.MeldexUserRegistry?.isRegistryPathSync?.(targetPath)) {
@@ -356,6 +357,7 @@ function _dbDeleteCalendarSyncWarningMessage(responses) {
 // 制作管理の表示設定はローカルで変更できる一方、Cloud の閲覧専用・容量制限中、
 // または埋め込み先ファイルの編集ロック中はバックエンドへ書き込まない。
 function isProductionManagementWriteBlocked(dbPath, ctx) {
+  if (window.MeldexChatManagementSheet?.isPath?.(dbPath)) return true;
   if (!isProductionManagementSheetPath(dbPath)) return false;
   const availability = typeof window !== 'undefined'
     ? window.MeldexProductionUiAvailability?.current?.()
@@ -481,12 +483,59 @@ function _entityPath(dbPath, entityName, pivotData) {
   return _dbIsNewFormat(dbPath, pivotData) ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 
+// 保存先から読み込んだ時の各セルの中身（値と状態）。セルの保存に添えて送り、行の版が古くても
+// そのセル自体が誰にも変えられていなければ保存させる（別の画面・AIが同じ行の別のセルを書き換えた時に、
+// 利用者の入力が「他の端末で更新されています」で拒否されて消えていた。2026-11-21）。
+function _dbCellSnapshot(values) {
+  return (Array.isArray(values) ? values : [])
+    .filter(value => value && typeof value === 'object' && !value._pendingCreate)
+    .map(value => ({ value: value.value == null ? '' : String(value.value), status: String(value.status || '採用') }));
+}
+
+function _dbRecordLoadedCellBases(entityData) {
+  if (!entityData || typeof entityData !== 'object') return;
+  const bases = {};
+  Object.entries(entityData).forEach(([prop, values]) => {
+    if (!prop.startsWith('_') && Array.isArray(values)) bases[prop] = _dbCellSnapshot(values);
+  });
+  Object.defineProperty(entityData, '_dbLoadedCellBases', { value: bases, writable: true, configurable: true, enumerable: false });
+}
+
+function _dbEntityDataForPath(entityPath) {
+  const normalized = _dbNormalizePath(entityPath || '');
+  const dbPath = _dbPathFromEntityPath(normalized);
+  if (!dbPath) return null;
+  const pivot = (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath)?.pivotData : null)
+    || (typeof state !== 'undefined' && _dbNormalizePath(state.currentDbPath || '') === dbPath ? state.pivotData : null);
+  if (!pivot?.entities) return null;
+  const name = _dbPivotEntityNameForPath(normalized, pivot);
+  return (name && pivot.entities[name]) || null;
+}
+
+// セルの保存に添える「読み込んだ時のセルの中身」。分からない時は null（従来どおり行の版だけで判定）。
+function _dbCellBaseForSave(entityPath, propName) {
+  if (!propName) return null;
+  const entityData = _dbEntityDataForPath(entityPath);
+  const bases = entityData?._dbLoadedCellBases;
+  if (!bases) return null;
+  return Object.prototype.hasOwnProperty.call(bases, propName) ? bases[propName].map(item => ({ ...item })) : [];
+}
+
+// 保存が成功した後、そのセルの「読み込んだ時の中身」を保存先の今の中身へ進める。
+function _dbUpdateCellBaseAfterSave(entityPath, propName, candidates) {
+  if (!propName) return;
+  const entityData = _dbEntityDataForPath(entityPath);
+  if (!entityData?._dbLoadedCellBases) return;
+  entityData._dbLoadedCellBases[propName] = _dbCellSnapshot(Array.isArray(candidates) ? candidates : entityData[propName]);
+}
+
 function _stampPivotValueEntityPaths(dbPath, pivotData) {
   if (!dbPath || !pivotData?.entities) return pivotData;
   Object.entries(pivotData.entities).forEach(([entityName, entityData]) => {
     const entryPath = _dbNormalizePath(_entityPath(dbPath, entityName, pivotData));
     const entryId = String(entityData?._id || entityData?.entry_id || '').trim();
     if (!entryPath || !entityData || typeof entityData !== 'object') return;
+    if (!entityData._dbLoadedCellBases) _dbRecordLoadedCellBases(entityData);
     Object.values(entityData).forEach(values => {
       if (!Array.isArray(values)) return;
       values.forEach(value => {
@@ -659,6 +708,8 @@ const _dbEntryRevisionIdentityCache = new Map();
 
 function _dbTrackValueMutation(dbPath, promise) {
   const tracked = Promise.resolve(promise);
+  // 30秒以上終わらない保存を自己記録へ残し、状態表示で知らせる（gb-log-export.js の watchSheetTask）。
+  try { window.MeldexDiagnostics?.watchSheetTask?.('value-save', dbPath, tracked); } catch {}
   _dbPendingValueMutations.set(tracked, _dbNormalizePath(dbPath || ''));
   tracked.finally(() => { _dbPendingValueMutations.delete(tracked); }).catch(() => {});
   return tracked;
@@ -837,6 +888,11 @@ async function _apiPutValue(valObj, updates) {
       if (valObj.candidate_id) body.candidate_id = valObj.candidate_id;
     }
     if (valObj.entry_id) body.expected_entry_id = valObj.entry_id;
+    const cellProperty = body.property || valObj.property || '';
+    if (!Array.isArray(body.cell_base) && cellProperty && !body.new_property && typeof _dbCellBaseForSave === 'function') {
+      const cellBase = _dbCellBaseForSave(writeEntityPath || valObj.entry_path || valObj.file, cellProperty);
+      if (cellBase) body.cell_base = cellBase;
+    }
     const targetPath = (valObj.candidate_index != null || !valObj.file || writeEntityPath?.endsWith('.md'))
       ? (writeEntityPath || valObj.file)
       : (valObj.file || writeEntityPath);
@@ -864,6 +920,22 @@ async function _apiPutValue(valObj, updates) {
     const replacement = Array.isArray(res?.candidates) ? res.candidates : null;
     const nextValue = replacement ? (replacement.find(v => ['採用', '掲載済み'].includes(v.status)) || replacement[0])?.value || ''
       : updates._delete ? '' : (updates.new_value != null ? updates.new_value : valObj.value);
+    try {
+      const savedProp = res?.property || cellProperty;
+      if (savedProp && !updates.new_property) {
+        if (replacement) {
+          _dbUpdateCellBaseAfterSave(entityPath, savedProp, replacement);
+        } else {
+          const live = _dbEntityDataForPath(entityPath)?.[savedProp];
+          const snapshot = (Array.isArray(live) ? live : []).filter(item => !(updates._delete && item === valObj))
+            .map(item => item === valObj ? { ...item, value: nextValue, status: updates.new_status || item.status } : item);
+          if (!Array.isArray(live) || !live.includes(valObj)) {
+            if (!updates._delete) snapshot.push({ value: nextValue, status: updates.new_status || valObj.status || '採用' });
+          }
+          _dbUpdateCellBaseAfterSave(entityPath, savedProp, snapshot);
+        }
+      }
+    } catch (_) { /* 次の保存で行の版だけの判定に戻るだけ */ }
     _markDbAutoVersionDirty(dbPath);
     try {
       if (typeof clearRollupCache === 'function' && dbPath) clearRollupCache(dbPath);
@@ -948,7 +1020,17 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(revision => Number.isInteger(revision) && revision >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
+    const cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(writeEntityPath, propName) : null;
+    if (cellBase) body.cell_base = cellBase;
     const res = await apiPost('/value', body);
+    if (cellBase) {
+      try {
+        // 追加は保存先のセルの末尾へ1件足す。画面の一覧は追加中の印が付いたままのことがあるので使わず、
+        // 「送る前の中身＋追加した値」をそのまま記録する（記録がずれると次の取り消しが拒否されていた）。
+        const snapshot = [...cellBase, { value: value == null ? '' : String(value), status: status || '採用' }];
+        _dbUpdateCellBaseAfterSave(res?.new_path || writeEntityPath, propName, snapshot);
+      } catch (_) {}
+    }
     _dbApplyAutoTaskRenameResult(res);
     const savedEntityPath = res?.new_path || writeEntityPath;
     const structuralSave = !!res?.auto_renamed_entry
@@ -1081,6 +1163,7 @@ function _dbRegisterPendingEntityCreate(dbPath, entityName, createPromise) {
       throw error;
     });
   _dbPendingEntityCreates.set(key, { promise: tracked, result: null, settled: false });
+  try { window.MeldexDiagnostics?.watchSheetTask?.('topic-create', dbPath, tracked); } catch {}
   return tracked;
 }
 
@@ -1350,10 +1433,18 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null)
       || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
     let created = null;
+    let historyItems = null;
     try {
       if (typeof _dbCreateEntityOptimistic === 'function') {
+        const viewBefore = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
         created = _dbCreateEntityOptimistic(renderCtx, dbPath, { baseName: options.baseName || '無題' });
+        // 表の「新規トピック」行と同じく、追加の取り消し履歴を積む（取り消しは保存の完了を待つ）
+        historyItems = typeof _dbTrackCreatedEntityForHistory === 'function'
+          ? _dbTrackCreatedEntityForHistory(dbPath, created.renderCtx || renderCtx, created, viewBefore,
+            typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null)
+          : null;
         const saved = await created.promise;
+        historyItems?.resolve([{ name: saved.name, path: saved.path, response: saved.response }]);
         if (saved.name !== created.name && typeof _dbRenameOptimisticEntityLocally === 'function') {
           _dbRenameOptimisticEntityLocally(created.renderCtx || renderCtx, dbPath, created.name, saved.name);
         }
@@ -1370,6 +1461,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
       const recovered = created && typeof _dbRecoverEntityCreateAfterError === 'function'
         ? await _dbRecoverEntityCreateAfterError(created.renderCtx || renderCtx, dbPath, created)
         : null;
+      historyItems?.resolve(recovered ? [{ name: recovered.name, path: recovered.path, response: null }] : []);
       if (recovered) {
         if (typeof showStatus === 'function') showStatus('トピックを追加しました');
       } else {

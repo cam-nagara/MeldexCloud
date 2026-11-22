@@ -3,6 +3,7 @@
   'use strict';
 
   let activeProposal = null;
+  let activeSignature = 'null';
   let installed = false;
   let refreshQueued = false;
 
@@ -232,7 +233,12 @@
   }
 
   function setActive(proposal) {
-    activeProposal = proposal?.id ? proposal : null;
+    const next = proposal?.id ? proposal : null;
+    const signature = JSON.stringify(next);
+    // チャットを開いた際の「案なし」や同じ通知で、スケジュールを描き直さない。
+    if (signature === activeSignature) return activeProposal;
+    activeSignature = signature;
+    activeProposal = next;
     scheduleRefresh();
     return activeProposal;
   }

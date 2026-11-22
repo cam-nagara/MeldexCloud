@@ -72,7 +72,11 @@ function syncDbCellDisplayToolbar(dbPath, ctx = null) {
   const active = cfg.overflow === 'wrap';
   const iconName = active ? 'wrapText' : 'scissors';
   btn.classList.toggle('active', active);
-  btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '';
+  // 絵が変わる時だけ描き直す（毎回描き直すと、押している最中のボタンの中身が差し替わってクリックが届かない）。
+  if (btn.dataset.cellWrapIcon !== iconName || !btn.firstElementChild) {
+    btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '';
+    btn.dataset.cellWrapIcon = iconName;
+  }
   const activeCtx = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   const hasColumnOverrides = _dbHasColumnCellDisplayOverrides(dbPath, activeCtx);
   const baseTitle = active ? `セル表示: 折り返し (${cfg.lines}行まで・画像${imgCount}枚まで)` : `セル表示: 切り詰め (画像${imgCount}枚まで)`;
@@ -482,6 +486,33 @@ function _dbComputeAutoFitColumnWidths(params) {
     widths[propName] = _dbTextAutoWidthPxFromChars(_dbAutoWidthCharsForTexts(texts, propName));
   });
   return widths;
+}
+
+// 列の境界のダブルクリックで、その1列だけ自動調整する（2026-11-21 ユーザー決定）。
+// 幅の決め方は「列幅自動調整」と同じ。ほかの列の幅は変えない。取り消せる。
+function autoFitSheetColumn(ctx, dbPath, propName) {
+  ctx = ctx || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  dbPath = dbPath || ctx?.dbPath || state.currentDbPath;
+  const data = ctx?.pivotData || state.pivotData;
+  if (!dbPath || !propName || !data?.entities) return false;
+  const propTypes = getPropertyTypes(dbPath, ctx);
+  const advFilters = getAdvancedFilters(dbPath, { ctx });
+  const entityNames = Object.keys(data.entities || {});
+  const computed = _dbComputeAutoFitColumnWidths({
+    propTypes, visibleProps: propName === '__entity__' ? [] : [propName], entityNames, advFilters, data, dbPath, ctx,
+  });
+  const width = computed[propName];
+  if (!Number.isFinite(width)) return false;
+  const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  _saveCurrentDbViewField(dbPath, '', propName, { ctx, skipHistory: true }, (v) => {
+    v.colWidths = { ...(v.colWidths || {}), [propName]: width };
+  });
+  if (before && typeof pushDbViewConfigHistory === 'function') {
+    const label = propName === '__entity__' ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名') : propName;
+    pushDbViewConfigHistory(dbPath, 'シート表示: 列幅自動調整', before, captureDbViewConfigHistory(dbPath), label);
+  }
+  renderPivot(ctx);
+  return true;
 }
 
 function autoFitCurrentSheetColumns(event, ctxOverride, dbPathOverride) {

@@ -18,7 +18,9 @@
 .gb-select:hover { background: var(--bg4); }
 .gb-select:focus { border-color: var(--accent); }
 .folder-layout-trigger { display:inline-flex; align-items:center; justify-content:space-between; gap:var(--ui-space-4); min-width:0; flex-shrink:0; }
-.folder-layout-trigger .folder-layout-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 表示形式を切り替えても幅が変わらないよう、いちばん長い名前（9文字）の幅を確保する。幅が変わると、ツールバーの
+   あふれの判定が追いつくまでの間、右端のボタン（検索と置換）がはみ出していた（UI共通ルール §10・2026-11-22 M-014） */
+.folder-layout-trigger .folder-layout-label { display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:0 0 9em; width:9em; text-align:left; }
 .folder-layout-trigger svg { flex-shrink:0; }
 #folder-toolbar #folder-layout-select.gb-folder-layout-native { display:none !important; }
 .folder-toolbar-menu-check { display:inline-flex; margin-left:auto; }

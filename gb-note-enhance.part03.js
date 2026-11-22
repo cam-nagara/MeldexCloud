@@ -50,7 +50,8 @@ function _noteTableDispatchInput(editable, beforeHtml) {
   editable.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function _noteTableConfirm(message) {
+function _noteTableConfirm(message, editable) {
+  if (editable?.isContentEditable && typeof _pushCustomUndo === 'function') return Promise.resolve(true);
   if (typeof cfConfirm === 'function') return cfConfirm(message);
   return typeof window.confirm === 'function' ? window.confirm(message) : false;
 }

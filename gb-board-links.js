@@ -314,6 +314,11 @@ async function _bdFireSelectAutoSubpanel(seq, nodeId) {
     ? MeldexBoardInfoPanel.resolveTarget(node)
     : null;
   if (!resolved || resolved.kind !== 'file' || !resolved.path) return; // リンクを持たないカード
+  // ボードは画面に1つの状態（bd）を共有する。リンク先のボードを選択だけでサブパネルへ自動表示すると、
+  // 操作中のボードがリンク先のボードに入れ替わり、以後の編集・保存がリンク先へ向かっていた（M-014 link で発見）。
+  // ボードのリンク先は、利用者が「開く」を選んだ時だけ開く。
+  const linkedType = String(resolved.type || node.linkType || '').toLowerCase();
+  if (linkedType === 'board' || /\.(?:mel-board|board\.md|board\.json|canvas\.json)$/i.test(String(resolved.path))) return;
   if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return;
   const current = typeof GBSubPanel.getCurrentTarget === 'function' ? GBSubPanel.getCurrentTarget() : null;
   if (current && current.path === resolved.path) return; // 同じカードの再選択では再読み込みしない
@@ -820,7 +825,9 @@ async function openLinkedPathInRightPane(path, label, options) {
   // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
   // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
   // sourcePaneId を明示的なヒントとして優先し、無ければフォーカス位置で判定する。
-  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.guardRightSidebarTool === 'function') {
+  // サブパネルへのドロップは、サブパネル自身を開く先に選んだ明示操作なので、
+  // 「サブパネル内からは使えない」制限（フォーカス位置で判定）の対象にしない。
+  if (!opts.fromDrop && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.guardRightSidebarTool === 'function') {
     const source = opts.sourceEl || (opts.sourcePaneId || undefined);
     if (!GBPaneBridge.guardRightSidebarTool('subpanel', source)) return false;
   }
@@ -843,7 +850,7 @@ async function openLinkedPathInRightPane(path, label, options) {
       path: targetPath,
       label: entry.label || label || '',
       state: { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) },
-    }, { reveal: opts.reveal !== false });
+    }, { reveal: opts.reveal !== false, ...(Number.isInteger(opts.subpanelIndex) ? { index: opts.subpanelIndex } : {}) });
   }
   if (typeof navOpen === 'function') {
     navOpen(entry);
@@ -989,6 +996,7 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
       note.style.cssText = 'margin-top:10px;padding-top:10px;border-top:1px solid var(--border);';
       if (typeof mdToHtml === 'function') {
         const html = mdToHtml(body, { basePath: entityPath });
+        window.MeldexNoteDisplaySettings?.applyToHost?.(note, entityPath, raw.slice(0, raw.length - body.length));
         note.innerHTML = typeof applyAutoLinks === 'function' ? applyAutoLinks(html, entityPath) : html;
       } else {
         note.textContent = body;

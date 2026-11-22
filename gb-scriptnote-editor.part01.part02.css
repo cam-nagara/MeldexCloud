@@ -344,9 +344,14 @@
   opacity: 0.2;
 }
 /* ルビ表示 */
-/* gb-tools.css のグローバル [data-ruby]::before を無効化（::after で独自表示するため） */
+/* gb-tools.css のグローバル [data-ruby]::before を無効化（::after で独自表示するため）。
+   ノートの規則には詳細度の高いもの（小書き仮名を並字にする設定の
+   [data-ruby-small-kana="fullsize"] [data-ruby][data-ruby-rendered]::before）があり、
+   通常の指定では負けてルビが二重に描かれていたため、!important で必ず消す。 */
 .sn2-text span[data-ruby]::before,
-.sn2-custom-text span[data-ruby]::before { content: none; }
+.sn2-custom-text span[data-ruby]::before,
+.sn2-text .auto-link[data-ruby]::before,
+.sn2-custom-text .auto-link[data-ruby]::before { content: none !important; }
 .sn2-text span[data-ruby],
 .sn2-custom-text span[data-ruby] {
   position: relative;

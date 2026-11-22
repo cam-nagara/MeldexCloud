@@ -11,6 +11,19 @@
   'use strict';
 
   const Scene = window.MeldexViewerScene;
+  // 狭いデスクトップのサブパネルをスマホと取り違えない。実際のスマホとタッチ表示は44pxを保つ。
+  function syncToolbarDensity() {
+    let desktopHost = false;
+    try {
+      desktopHost = window.parent !== window && window.parent.innerWidth > 640
+        && !window.parent.matchMedia('(pointer: coarse)').matches;
+    } catch (_) { /* 別オリジンの埋め込みは、その画面自身の幅で判断する。 */ }
+    if (desktopHost) document.documentElement.dataset.toolbarDensity = 'desktop';
+    else delete document.documentElement.dataset.toolbarDensity;
+  }
+  syncToolbarDensity();
+  window.addEventListener('resize', syncToolbarDensity);
+
   const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
 
   // flipHorizontal2 / flipVertical2 / rotateCw は共通アイコン置換表（meldex-core.part01.js の
@@ -145,6 +158,7 @@
     }
     // 逆再生は Shift+R と区別する（従来どおり Shift 付きでは動かさない）
     if ((e.key === 'r' || e.key === 'R') && e.shiftKey) return;
+    if ((e.ctrlKey || e.metaKey) && ['c', 'f'].includes(e.key.toLowerCase())) return;
     const id = window.MeldexShortcutRegistry?.matchEvent(e, ['viewer']) || '';
     const entry = VIEWER_ACTIONS[id];
     if (entry) {
@@ -177,7 +191,7 @@
 
   // 画像のダブルクリックは、フィット方式を維持したままズームとパンをリセットする。
   document.getElementById('display').addEventListener('dblclick', e => {
-    if (e.target.closest('.nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
+    if (e.target.closest('.viewer-text-layer, .nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
     e.preventDefault();
     Scene.resetZoom();
   });
@@ -205,7 +219,7 @@
         rotate: Scene.getRotateDeg(),
       };
     };
-    const isUi = target => !!target?.closest?.('.nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea');
+    const isUi = target => !!target?.closest?.('.viewer-text-layer, .nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea');
 
     display.addEventListener('pointerdown', e => {
       if (e.pointerType !== 'touch' || isUi(e.target) || window.MeldexViewerAnnotations?.isActive?.()) return;
@@ -3118,7 +3132,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
   }
   // 表示中のすべてのシーンのアノテートを消す（本体の annClear() 相当）。
-  async function clearAll() {
+  async function clearAll(options = {}) {
     const strokes = [];
     _scenes.forEach(scene => {
       scene.strokesG.querySelectorAll('path, polygon, rect, ellipse').forEach(el => {
@@ -3127,7 +3141,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
     const noteCount = _scenes.reduce((sum, scene) => sum + (scene.notes?.length || 0), 0);
     if (!strokes.length && !noteCount) return false;
-    if (!window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
+    if (!options.confirmed && !window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
     for (const el of strokes) {
       try {
         const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
@@ -3778,6 +3792,24 @@ async function _applyImportedCustomColors(rawColors, mode) {
   'use strict';
 
   let _toolbar = null;
+  let _sharedToolbar = false;
+  function _usesParentToolbar() {
+    try { return window.parent !== window && !!window.parent.GBAnnotationSurfaces?.enabled(); } catch { return false; }
+  }
+  // Embedded annotations use the owning shell's API boundary, including its
+  // active edit lock. Other viewer requests and standalone windows stay local.
+  function _installSharedAnnotationApi() {
+    for (const name of ['apiFetch', 'apiPost', 'apiPut', 'apiDelete']) {
+      const original = window[name];
+      if (typeof original !== 'function') continue;
+      window[name] = function(path, ...args) {
+        if (_usesParentToolbar() && /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''))
+            && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
+        return original.call(this, path, ...args);
+      };
+    }
+  }
+  _installSharedAnnotationApi();
   // Cloud Viewer classification is installed before this controller loads.
   // Seed the gate synchronously so ?markup=1 and parent messages cannot open the
   // toolbar during the short interval before DOMContentLoaded applies it again.
@@ -3805,7 +3837,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _currentTargetPath() {
     const scene = Scene();
     if (!scene) return '';
-    return scene.isPdf() ? (scene.getPdfPath() || '') : (scene.getSingleFile() || scene.getItems()?.[scene.getIndex()]?.path || '');
+    return scene.isPdf() ? (scene.getPdfPath() || '') : (SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '');
   }
   function _currentPageIndex() {
     const scene = Scene();
@@ -3854,6 +3886,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
   };
+
+  document.addEventListener('pointerdown', () => { if (_usesParentToolbar()) _postToParent({ type: 'viewer-ann-pointer-target', targetPath: _currentTargetPath() }); }, true);
 
   function _notifyParentStateChanged() {
     const a = SceneEngine()?.ann?.() || {};
@@ -3920,12 +3954,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
       return false;
     }
     if (willActivate === !!SceneEngine().ann().active) {
-      _toolbar?.setVisible(willActivate, anchor);
+      _toolbar?.setVisible(willActivate && !_sharedToolbar, anchor);
       _syncToolbarButton(willActivate);
       return willActivate;
     }
     SceneEngine().setState(willActivate);
-    _toolbar?.setVisible(willActivate, anchor);
+    _toolbar?.setVisible(willActivate && !_sharedToolbar, anchor);
     _syncToolbar();
     _syncToolbarButton(willActivate);
     if (willActivate) SceneEngine().rebuild();
@@ -3934,6 +3968,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function toggle(force) {
+    if (_usesParentToolbar()) { _postToParent({ type: 'viewer-ann-open-menu', targetPath: _currentTargetPath() }); return true; }
     ensureToolbar();
     const next = typeof force === 'boolean' ? force : !SceneEngine().ann().active;
     return setState(next);
@@ -4042,6 +4077,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!_isTrustedParentMessage(ev)) return;
     const msg = ev.data;
     if (!msg || msg.type !== 'viewer-ann-set-state') return;
+    _sharedToolbar = !!msg.sharedToolbar;
     _lastSnapshot = msg;
     if (!_snapshotMatchesCurrentTarget(msg)) return;
     _applySnapshot(msg);
@@ -4384,6 +4420,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function items() {
     const scene = Scene();
     return [
+      ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
       { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
       { label: '1枚戻る', icon: 'arrowLeft', shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
@@ -4441,6 +4478,27 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function openMenuAt(clientX, clientY) {
     window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
+  }
+
+  // ツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。右クリックと同じメニューを
+  // ボタンの直下に開き、閉じたらボタンへフォーカスを戻す。開いている間にもう一度押すと閉じる。
+  const mainMenuButton = document.getElementById('btn-viewer-main-menu');
+  if (mainMenuButton) {
+    let closedByButtonPress = false;
+    mainMenuButton.addEventListener('pointerdown', () => {
+      closedByButtonPress = !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
+    });
+    mainMenuButton.addEventListener('click', event => {
+      event.stopPropagation();
+      if (closedByButtonPress) { closedByButtonPress = false; return; }
+      if (!window.MeldexContextMenuUI?.openAt) return;
+      mainMenuButton.setAttribute('aria-expanded', 'true');
+      window.MeldexContextMenuUI.openAt({
+        anchorRect: mainMenuButton.getBoundingClientRect(), ariaLabel: 'ビューワーメニュー', items: items(),
+        restoreFocus: mainMenuButton,
+        onClose: () => mainMenuButton.setAttribute('aria-expanded', 'false'),
+      });
+    });
   }
 
   const display = document.getElementById('display');

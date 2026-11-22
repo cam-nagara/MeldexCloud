@@ -14,6 +14,10 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _showRoleMenu(roleBtn, opts) {
     this._closeRoleMenu();
+    // メニューを開いたキー操作（Tab 等）の keydown は、このあと document まで伝わる。開いたばかりの
+    // メニューのキー処理が同じイベントで動くと、Tab で自由入力欄ではなく先頭の候補へ移ってしまう
+    // （M-014 S25）。開いた時点で配送中のキーイベントを覚えておき、メニューのキー処理では無視する。
+    const openingKeyEvent = (typeof KeyboardEvent !== 'undefined' && window.event instanceof KeyboardEvent) ? window.event : null;
     // タイプメニューの操作中は、直前の文字選択から遅延表示される
     // 書式ポップアップが Escape を先取りしないよう抑止する。
     window.GBTextSelectionFormat?.suppressFor?.(1200);
@@ -94,10 +98,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (noneIndex >= 0) roleChoices.splice(noneIndex, 0, retainedChoice);
       else roleChoices.push(retainedChoice);
     }
+    let choiceIndex = 0;
     roleChoices.filter((choice) => choice?.kind === menuKind).forEach((choice) => {
       const choiceName = String(choice.name || choice.label || '');
       if (!choiceName) return;
       const btn = document.createElement('button');
+      // 安定ID: メニューの種類と並び順で項目ごとに別の値にする（名前は表示名）。
+      btn.dataset.e2eId = `scriptnote-${menuKind}-menu-item-${choiceIndex++}`;
       const isCurrent = currentResolved
         ? currentResolved.kind === choice.kind && currentResolved.id === choice.id
         : choiceName === currentRole;
@@ -116,6 +123,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const noneButton = document.createElement('button');
     noneButton.className = 'sn2-role-item' + (!currentRole ? ' active' : '');
     noneButton.type = 'button';
+    noneButton.dataset.e2eId = `scriptnote-${menuKind}-menu-none`;
     noneButton.setAttribute('role', 'menuitem');
     noneButton.textContent = '（なし）';
     noneButton.addEventListener('click', () => select(''));
@@ -131,6 +139,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'sn2-role-input';
+    input.dataset.e2eId = 'scriptnote-character-menu-input';
     input.placeholder = 'キャラ名を入力';
     input.setAttribute('aria-label', 'キャラ名を入力');
     input.title = '';
@@ -142,6 +151,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const linkButton = document.createElement('button');
     linkButton.className = 'sn2-role-link';
     linkButton.type = 'button';
+    linkButton.dataset.e2eId = `scriptnote-${menuKind}-menu-link`;
     linkButton.setAttribute('role', 'menuitem');
     linkButton.textContent = 'リンクを設定';
     linkButton.addEventListener('click', () => {
@@ -166,8 +176,22 @@ Object.assign(ScriptNoteEditor.prototype, {
       flatBtns[i].focus();
       flatBtns[i].scrollIntoView({ block: 'nearest' });
     };
+    // メニューの要素が _closeRoleMenu を通らずに外された（別の処理がポップアップを一括で消した等）時は、
+    // 残ったキー処理が次の Escape を横取りして、アクティブなセルを残したまま別の行の本文へフォーカスを
+    // 戻してしまう（M-014 S21）。外れたメニューのキー処理は何もせずに後始末する。
+    const releaseIfDetached = () => {
+      if (this._roleMenu === menu && menu.isConnected) return false;
+      if (this._roleMenu === menu) this._closeRoleMenu();
+      else {
+        document.removeEventListener('keydown', menuKeyHandler);
+        window.removeEventListener('keydown', escapeKeyHandler, true);
+      }
+      return true;
+    };
     const menuKeyHandler = (e) => {
       if (!this._roleMenu) return;
+      if (releaseIfDetached()) return;
+      if (openingKeyEvent && e === openingKeyEvent) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         this._closeRoleMenu();
@@ -220,6 +244,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._roleMenuKeyHandler = menuKeyHandler;
     const escapeKeyHandler = (e) => {
       if (!this._roleMenu || e.key !== 'Escape') return;
+      if (releaseIfDetached()) return;
       e.preventDefault();
       e.stopPropagation();
       this._closeRoleMenu();

@@ -46,6 +46,7 @@ function createPaneContext(paneId) {
 
 /** ペインコンテキストを破棄 (D-5: 一括編集バーの clean up を含む) */
 function destroyPaneContext(paneId) {
+  _panes?.[paneId]?._historyReadOnlyCleanup?.();
   // 当該ペインに紐付いた選択フロートメニューを除去
   document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${paneId}"], .db-cell-bulk-bar[data-pane-id="${paneId}"], [data-selection-float-pane-id="${paneId}"]`).forEach(bar => bar.remove());
   // Step 2: チャンク分割レンダリング中なら中断トークンを無効化

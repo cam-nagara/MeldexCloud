@@ -227,6 +227,10 @@ function _outlinerFindRenamedItem(items, oldDisplayName, newName, originalPath) 
 
 function _resolveOutlinerCreateInsertTarget(parentPath, options) {
   const expandUnloaded = options?.expandUnloaded !== false;
+  if (options?.preferHome && parentPath === _homeFolderPath) {
+    const home = document.getElementById('body-home');
+    if (home) return { container: home, deferTreeInsert: false };
+  }
   let container;
   let deferTreeInsert = false;
   if (parentPath) {
@@ -417,7 +421,7 @@ async function addItemAt(parentPath, type, options = {}) {
   const label = '無題';
   // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
   const anchorNode = options.anchorNode;
-  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false });
+  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false, preferHome: options.preferHome });
   const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
   const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
   let pendingNode = null;
@@ -462,9 +466,29 @@ async function addItemAt(parentPath, type, options = {}) {
         : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order)));
       siblingNames = ordered.map(item => item.path).filter(Boolean);
     }
+    // 取り消しの記録は、操作を始めた画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは作ったものをゴミ箱へ移す）。
+    // フォルダツリー・フォルダパネル・コマンドパレットからの新規作成は、操作を始めた画面が「共通」の画面なので
+    // 共通の履歴へ積む。以前は、たまたま開いていたエディタ（前に作ったシナリオ等）の履歴に積んでいたため、
+    // 作ったファイルが新しいタブで開いた後は Ctrl+Z が届かず、元のエディタからの Ctrl+Z が別のファイルを
+    // ゴミ箱へ移していた（2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面からの共通履歴への落ち込みは
+    // 履歴の守り（作ったファイル以外を消す記録へは落ちない）が止める。
+    const createHistoryScope = '';
     const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
+    const companions = Array.isArray(res.node.companion_paths) ? res.node.companion_paths.filter(Boolean) : [];
+    if (res.node.path && companions.length && typeof _pushCreatedOutlinerItemsHistory === 'function') {
+      // フォームは入力先のシートも一緒に作る。取り消しで両方をゴミ箱へ移す（以前はフォームだけが消え、
+      // シートが残っていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
+      _pushCreatedOutlinerItemsHistory([
+        { path: res.node.path, type: res.node.type || type, kind: 'file' },
+        ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
+      ], '新規作成: ' + (res.node.name || label), createHistoryScope);
+    } else if (res.node.path && typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: res.node.path, type: res.node.type || type }, '新規作成: ' + (res.node.name || label), {
+        scope: createHistoryScope,
+      });
+    }
     await saveCreateOrder(res.node);
     if (needsReload) {
       // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
@@ -475,12 +499,12 @@ async function addItemAt(parentPath, type, options = {}) {
     }
 
     let insertTarget = target.deferTreeInsert
-      ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true })
+      ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true, preferHome: options.preferHome })
       : target;
     // API待機中にワークスペースセクション等が再描画され、挿入先コンテナが
     // DOMから切断されていた場合は挿入先を再解決する
     if (!insertTarget.deferTreeInsert && !insertTarget.container?.isConnected) {
-      insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+      insertTarget = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true, preferHome: options.preferHome });
     }
     const nd = res.node;
     const name = nd.name || nd.label || label;
@@ -500,8 +524,21 @@ async function addItemAt(parentPath, type, options = {}) {
 
     // 選択状態にする
     if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
+    // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
+    const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
+    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
     _openOutlinerCreatedNode(nd, name);
+    // フォルダパネルが同じフォルダを開いていれば、作ったものをすぐ出す
+    if (typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([parentPath]);
+    // 一緒に作ったもの（フォームのシート）も、作った場所のフォルダを差分で反映して出す。
+    // ホームフォルダの直下は、ホームの節の読み込みと重なると作ったものが消えることがあった（節の一覧を
+    // 作成の前の内容で描き直す: 2026-11-22 M-014）ので、作成の後にホームの節を読み直す。
+    const createdInHome = typeof _homeFolderPath !== 'undefined' && _homeFolderPath && parentPath === _homeFolderPath;
+    if ((companions.length || createdInHome) && typeof _outlinerSyncFoldersOrReload === 'function') {
+      await _outlinerSyncFoldersOrReload([parentPath]);
+    }
   } catch (e) {
     if (e && e.isTimeout) {
       await _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, saveCreateOrder);
@@ -516,13 +553,24 @@ async function addItemAt(parentPath, type, options = {}) {
 async function addSheetEntryAt(sheetPath) {
   const path = String(sheetPath || '').trim();
   if (!path) return;
+  const reservation = typeof historyReserve === 'function' ? historyReserve('トピック追加', '') : null;
   try {
-    await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    const result = await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    const entryPath = result?.path || result?.entry_path;
+    if (entryPath && typeof pushCreatedOutlinerItemHistory === 'function') {
+      const register = () => pushCreatedOutlinerItemHistory({
+        path: entryPath, type: 'entity', name: result.name || '無題',
+        entry_id: result.entry_id || result.id || '',
+      }, 'トピック追加', { scope: '' });
+      if (reservation) reservation.capture(register); else register();
+    }
     showStatus('トピックを追加しました');
     if (typeof loadOutliner === 'function') await loadOutliner();
     if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
   } catch (e) {
     showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
+  } finally {
+    reservation?.cancel();
   }
 }
 

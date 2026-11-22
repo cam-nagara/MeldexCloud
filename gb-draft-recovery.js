@@ -8,6 +8,8 @@
   const MAX_BYTES = 1024 * 1024;
   const RESERVATION_PREFIX = 'meldex-draft-reservation-v1:';
   const timers = new Map();
+  const queuedContents = new Map();
+  const generations = new Map();
   // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
   // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
   const sessionDraftKeys = new Set();
@@ -109,7 +111,7 @@
         let value;
         try { value = fn(store); } catch (error) { reject(error); return; }
         tx.oncomplete = () => resolve(value);
-        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction failed'));
       });
     } finally {
       db.close();
@@ -152,8 +154,11 @@
     if (_isPathLocked(safePath)) return { ok: false, skipped: true };
     const scope = _draftScope();
     const key = _draftStorageKey(safePath);
+    const generation = generations.get(key) || 0;
+    generations.set(key, generation);
     const savedAt = new Date().toISOString();
     return _store('readwrite', (store) => {
+      if ((generations.get(key) || 0) !== generation) return { ok: false, skipped: true };
       store.put({ path: key, filePath: safePath, scope, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
       _prune(store, scope).catch(() => {});
       return { ok: true, path: safePath, savedAt };
@@ -201,8 +206,10 @@
     const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
     if (!safePath || _isPathLocked(safePath)) return;
+    queuedContents.set(key, contentSource);
     timers.set(key, setTimeout(() => {
       timers.delete(key);
+      queuedContents.delete(key);
       let content;
       try {
         content = typeof contentSource === 'function' ? contentSource() : contentSource;
@@ -226,18 +233,22 @@
 
   async function clearAllDrafts() {
     const scope = _draftScope();
+    for (const key of generations.keys()) {
+      if (key.startsWith(scope + '\n')) generations.set(key, generations.get(key) + 1);
+    }
     for (const timer of timers.keys()) {
       if (String(timer).startsWith(scope + '\n')) {
         clearTimeout(timers.get(timer));
         timers.delete(timer);
+        queuedContents.delete(timer);
       }
     }
     await _store('readwrite', async (store) => {
       const all = await _request(store.getAll());
       all.filter(item => _isCurrentScopeDraft(item, scope)).forEach(item => store.delete(item.path));
-    }).catch(() => {});
+    });
     for (const item of _reservations().filter(item => _isCurrentScopeDraft(item, scope))) {
-      try { localStorage.removeItem(RESERVATION_PREFIX + item.path); } catch (_) {}
+      localStorage.removeItem(RESERVATION_PREFIX + item.path);
     }
   }
 
@@ -246,23 +257,46 @@
   // 一覧を出した時点とボタンを押した時点でキーの組み立て結果が変わることがあり、
   // その場で作り直すと別キーを消して無言で失敗する（破棄しても毎回再表示される
   // 原因になっていた）。
-  async function clearDraft(path, storageKey) {
+  async function clearDraft(path, storageKey, expectedContent) {
     const safePath = String(path || '').trim();
     if (!safePath) return;
-    const key = _draftTimerKey(safePath);
-    clearTimeout(timers.get(key));
-    timers.delete(key);
+    const matches = content => expectedContent === undefined || content === expectedContent;
     const targets = new Set([_draftStorageKey(safePath)]);
     const explicit = String(storageKey || '').trim();
     if (explicit) targets.add(explicit);
-    targets.forEach(target => { try { localStorage.removeItem(RESERVATION_PREFIX + target); } catch (_) {} });
-    await _store('readwrite', (store) => {
-      targets.forEach(target => store.delete(target));
-    }).catch(() => {});
+    targets.forEach(target => {
+      if (expectedContent === undefined) generations.set(target, (generations.get(target) || 0) + 1);
+      const pending = queuedContents.get(target);
+      let content;
+      try { content = typeof pending === 'function' ? pending() : pending; } catch (_) {}
+      if (matches(content)) { clearTimeout(timers.get(target)); timers.delete(target); queuedContents.delete(target); }
+    });
+    await _store('readwrite', async (store) => {
+      for (const target of targets) {
+        const item = await _request(store.get(target));
+        if (item && matches(item.content)) store.delete(target);
+      }
+    });
+    targets.forEach(target => {
+      const item = JSON.parse(localStorage.getItem(RESERVATION_PREFIX + target) || 'null');
+      if (item && matches(item.content)) localStorage.removeItem(RESERVATION_PREFIX + target);
+    });
   }
 
   async function markSynced(path, expectedContent) {
     const key = _draftStorageKey(path);
+    // 保存完了より遅い退避タイマーが、保存済み本文を下書きへ戻さない。
+    // 新しい入力の予約は下の内容照合で保持する。
+    if (expectedContent !== undefined && timers.has(key)) {
+      const pending = queuedContents.get(key);
+      let content;
+      try { content = typeof pending === 'function' ? pending() : pending; } catch (_) {}
+      if (content === expectedContent) {
+        clearTimeout(timers.get(key));
+        timers.delete(key);
+        queuedContents.delete(key);
+      }
+    }
     if (expectedContent === undefined) {
       // Older callers cannot identify which live-input reservation they saved.
       // Preserve it rather than clearing a newer edit in another surface.
@@ -296,10 +330,14 @@
     return String(path || '').split('/').pop() || String(path || '');
   }
 
+  function _draftLabel(item) {
+    return window.GBPathUtils?.displayTitle?.read?.(item.content, item.path) || _fileLabel(item.path);
+  }
+
   async function _overwriteDraft(item) {
-    if (typeof apiPut !== 'function') return;
+    if (typeof apiPut !== 'function') throw new Error('保存できませんでした');
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
-    await clearDraft(item.path, item.storageKey);
+    await clearDraft(item.path, item.storageKey, item.content);
     const format = window.MeldexDocumentIdentity?.formatForPath?.(item.path, item.content);
     if ((format === 'scenario' || /\.(?:mel-scenario|scriptnote\.json)$/i.test(item.path)) && typeof openScenarioInScriptNote === 'function') {
       await openScenarioInScriptNote(item.path, _fileLabel(item.path));
@@ -316,7 +354,7 @@
   async function _fileExists(path) {
     if (typeof apiFetch !== 'function') return false;
     try {
-      await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true });
+      await apiFetch('/file?path=' + encodeURIComponent(path) + '&metadata_only=1', { silentError: true });
       return true;
     } catch (error) {
       if (error?.status === 404) return false;
@@ -329,14 +367,28 @@
     const fallback = String(item.path || '').replace(/(\.[^/.]+)?$/, '_recovered$1');
     const nextPath = await cfPrompt('保存されていない編集内容を別名で保存', fallback);
     if (!nextPath) return false;
+    const canonical = value => {
+      let path = String(value || '').trim().replace(/\\/g, '/');
+      const cloud = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox';
+      if (!cloud && !/^(?:[a-z]:\/|\/)/i.test(path)) {
+        try { if (typeof state !== 'undefined' && state.vaultPath) path = state.vaultPath.replace(/\\/g, '/') + '/' + path; } catch (_) {}
+      }
+      const parts = [];
+      for (const part of path.split('/')) {
+        if (part === '.') continue;
+        if (part === '..' && parts.length) parts.pop();
+        else parts.push(part);
+      }
+      return parts.join('/').toLowerCase();
+    };
+    if (canonical(nextPath) === canonical(item.path)) {
+      if (typeof showStatus === 'function') showStatus('元ファイルとは別の名前を指定してください', true);
+      return false;
+    }
     const exists = await _fileExists(nextPath);
     if (exists) {
-      if (typeof cfConfirm !== 'function') {
-        if (typeof showStatus === 'function') showStatus('同名のファイルが既にあります', true);
-        return false;
-      }
-      const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
-      if (!ok) return false;
+      if (typeof showStatus === 'function') showStatus('同名のファイルが既にあります。別の名前を指定してください', true);
+      return false;
     }
     let content = item.content || '';
     if (String(nextPath) !== String(item.path)) {
@@ -351,9 +403,9 @@
     }
     await apiPut('/file?path=' + encodeURIComponent(nextPath), {
       content,
-      ...(exists ? { force_overwrite: true } : { create_only: true }),
+      create_only: true,
     });
-    await clearDraft(item.path, item.storageKey);
+    await clearDraft(item.path, item.storageKey, item.content);
     if (typeof showStatus === 'function') showStatus('保存されていない編集内容を別名保存しました');
     return true;
   }
@@ -364,6 +416,92 @@
     }
     if (typeof window.confirm === 'function') return window.confirm(message);
     return false;
+  }
+
+  // 読込も描画も明示操作時だけ。差分計算の入力を先に制限する。
+  async function _inspectDraft(item, host) {
+    if (host.dataset.loaded === '1' || host.dataset.loading === '1') return;
+    host.dataset.loading = '1';
+    host.textContent = '読み込み中...';
+    const limit = 16000;
+    const split = text => {
+      const raw = String(text || '');
+      const frontmatter = /\.md$/i.test(item.path) ? /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(raw)?.[0] || '' : '';
+      return {frontmatter, body: raw.slice(frontmatter.length)};
+    };
+    const clip = text => String(text || '').slice(0, limit).split('\n').slice(0, 200).join('\n');
+    try {
+      let disk = '', diskFrontmatter = '', missing = false, truncated = false;
+      try {
+        const result = await apiFetch('/file?path=' + encodeURIComponent(item.path) + '&preview_chars=' + limit, { silentError: true });
+        const source = split(result.content);
+        disk = source.body;
+        diskFrontmatter = String(result.frontmatter || source.frontmatter || '');
+        truncated = !!result.truncated;
+      } catch (error) {
+        if (error?.status !== 404) throw error;
+        missing = true;
+      }
+      const source = split(item.content);
+      const draft = clip(source.body), current = clip(disk);
+      truncated ||= draft !== source.body || current !== disk;
+      host.textContent = '';
+      const status = document.createElement('div');
+      status.className = 'gb-section-desc';
+      status.textContent = missing ? 'ファイルが見つかりません' : draft === current ? '表示範囲に差分はありません' : '変更箇所';
+      host.append(status);
+      if (source.frontmatter || diskFrontmatter) {
+        const metadata = document.createElement('div');
+        metadata.textContent = source.frontmatter === diskFrontmatter ? '本文を表示' : '設定にも変更があります';
+        metadata.title = '本文から保存設定を除いて比較しています。保存は設定を含む下書き全体を対象にします';
+        host.append(metadata);
+      }
+      const grid = document.createElement('div');
+      grid.className = 'draft-recovery-diff';
+      grid.setAttribute('role', 'table');
+      grid.setAttribute('aria-label', '未保存の内容と現在のファイル');
+      const render = (left, right) => {
+        grid.textContent = '';
+        for (const title of ['未保存の内容', '現在のファイル']) {
+          const label = document.createElement('strong'); label.textContent = title; grid.append(label);
+        }
+        const a = clip(left).split('\n'), b = missing ? [] : clip(right).split('\n');
+        const rows = typeof _computeDiff === 'function' ? _computeDiff(a, b)
+          : Array.from({length: Math.max(a.length, b.length)}, (_, i) => ({textA:a[i],textB:b[i],type:a[i]===b[i]?'equal':'change'}));
+        for (const row of rows) {
+          for (const text of [row.textA, row.textB]) {
+            const line = document.createElement('div');
+            line.className = row.type === 'equal' ? '' : 'draft-diff-changed';
+            line.textContent = text ?? '';
+            grid.append(line);
+          }
+        }
+      };
+      render(draft, current);
+      if (source.frontmatter || diskFrontmatter) {
+        const toggle = document.createElement('button');
+        toggle.className = 'gb-btn gb-btn-sm';toggle.type = 'button';toggle.textContent = '設定の差分';
+        toggle.setAttribute('aria-pressed', 'false');
+        toggle.title = '保存設定も先頭16,000文字・200行まで比較できます';
+        toggle.addEventListener('click', () => {
+          const settings = toggle.getAttribute('aria-pressed') !== 'true';
+          toggle.setAttribute('aria-pressed', String(settings));toggle.textContent = settings ? '本文の差分' : '設定の差分';
+          render(settings ? source.frontmatter : draft, settings ? diskFrontmatter : current);
+        });
+        host.append(toggle);
+      }
+      host.append(grid);
+      if (truncated || clip(source.frontmatter) !== source.frontmatter || clip(diskFrontmatter) !== diskFrontmatter) {
+        const label = document.createElement('div'); label.textContent = '先頭部分のみ表示';
+        label.title = '各本文の先頭16,000文字・200行まで表示します。保存は下書き全体を対象にします';
+        host.append(label);
+      }
+      host.dataset.loaded = '1';
+    } catch (error) {
+      host.textContent = '読み込めませんでした';
+      const retry = document.createElement('button');retry.className = 'gb-btn gb-btn-sm';retry.textContent = '再試行';
+      retry.addEventListener('click', () => _inspectDraft(item, host));host.append(retry);
+    } finally { delete host.dataset.loading; }
   }
 
   // 編集ロック中（マニュアル等のシステム保護を含む）のパスに残っているドラフトを消す。
@@ -399,7 +537,7 @@
     }
     const alive = new Set(remaining.map(item => String(item.path || '')));
     overlay.querySelectorAll('[data-draft-row]').forEach((row) => {
-      const label = row.querySelector('.draft-recovery-meta')?.getAttribute('title') || '';
+      const label = row.dataset.draftPath || '';
       if (label && !alive.has(label)) row.remove();
     });
     if (!overlay.querySelector('[data-draft-row]')) {
@@ -414,6 +552,7 @@
   }
 
   async function showRecoveryDialog(options = {}) {
+    if (options.startup && startupPromptSettled) return;
     const available = await _pruneLockedDrafts(await listDrafts());
     const drafts = options.startup
       // 旧同梱マニュアルは保存方式の初期化順序に関係なく自動案内から外す。
@@ -443,16 +582,20 @@
     if (activeRecoveryModal && !activeRecoveryModal.isOpen()) activeRecoveryModal.close('stale');
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const rows = drafts.map((item, index) => `
-      <div class="draft-recovery-row" data-draft-row data-draft-index="${index}">
+      <div class="draft-recovery-row" data-draft-row data-draft-index="${index}" data-draft-path="${esc(item.path)}">
         <div class="draft-recovery-info">
-          <div class="draft-recovery-name" title="${esc(_fileLabel(item.path))}">${esc(_fileLabel(item.path))}</div>
-          <div class="draft-recovery-meta" title="${esc(item.path)}">${esc(item.path)} / ${esc(item.savedAt || '')}</div>
+          <div class="draft-recovery-name" title="${esc(_draftLabel(item))}">${esc(_draftLabel(item))}</div>
+          <div class="draft-recovery-meta draft-recovery-location">${esc(item.path)}</div>
+          <time datetime="${esc(item.savedAt || '')}">${esc(new Date(item.savedAt).toLocaleString())}</time>
         </div>
         <div class="draft-recovery-actions">
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="inspect" data-draft-index="${index}" aria-expanded="false">内容を確認</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="reveal" data-draft-index="${index}" title="フォルダツリーで表示">場所を表示</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} の保存されていない変更を破棄">破棄</button>
         </div>
+        <div data-draft-preview hidden></div>
       </div>`).join('');
     const body = document.createElement('div');
     body.className = 'draft-recovery-content';
@@ -474,6 +617,7 @@
     closeButton.dataset.draftAction = 'close';
     closeButton.dataset.e2eId = 'draft-recovery-close';
     closeButton.textContent = '閉じる';
+    closeButton.title = '下書きを残して閉じます。設定から再び確認できます';
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: 'draft-recovery',
@@ -506,15 +650,18 @@
       if (!button || !overlay.contains(button)) return;
       const action = button.dataset.draftAction;
       if (!action) return;
+      if (busy) return;
       if (action === 'close') { modalApi.close('close-button'); return; }
       if (action === 'discard-all') {
-        if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
         busy = true;
         try {
+          if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
           await clearAllDrafts();
           busy = false;
           modalApi.close('discard-all');
           if (typeof showStatus === 'function') showStatus('保存されていない変更をすべて破棄しました');
+        } catch (error) {
+          if (typeof showStatus === 'function') showStatus(error?.message || '破棄できませんでした', true);
         } finally {
           busy = false;
         }
@@ -522,9 +669,23 @@
       }
       const item = drafts[Number(button.dataset.draftIndex)];
       if (!item) return;
+      if (action === 'inspect') {
+        const host = button.closest('[data-draft-row]').querySelector('[data-draft-preview]');
+        host.hidden = !host.hidden;
+        button.setAttribute('aria-expanded', String(!host.hidden));
+        if (!host.hidden) await _inspectDraft(item, host);
+        return;
+      }
+      if (action === 'reveal') {
+        await window.revealPathInFolderTree?.(item.path);
+        modalApi.close('reveal');
+        return;
+      }
       busy = true;
+      overlay.querySelectorAll('[data-draft-action]').forEach(b => { b.disabled = true; });
       try {
         if (action === 'overwrite') {
+          if (typeof cfConfirm !== 'function' || !await cfConfirm('現在のファイルを下書きで上書きしますか？', {danger:true,okLabel:'上書き保存',cancelLabel:'キャンセル'})) return;
           await _overwriteDraft(item);
           busy = false;
           modalApi.close('overwrite');
@@ -536,15 +697,18 @@
           }
         } else if (action === 'discard') {
           if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の保存されていない変更を破棄しますか？この操作は元に戻せません。`)) return;
-          await clearDraft(item.path, item.storageKey);
+          await clearDraft(item.path, item.storageKey, item.content);
           button.closest('[data-draft-row]')?.remove();
           if (!overlay.querySelector('[data-draft-row]')) {
             busy = false;
             modalApi.close('discard-last');
           }
         }
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '保存できませんでした', true);
       } finally {
         busy = false;
+        overlay.querySelectorAll('[data-draft-action]').forEach(b => { b.disabled = false; });
       }
     });
     modalApi.open();

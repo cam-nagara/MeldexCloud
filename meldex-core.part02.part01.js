@@ -61,7 +61,7 @@ function _coreAnnotationElementHit(el, x, y, tolerance = 10) {
  * 親からpostMessageでツール状態を受信し、描画結果を親に送信
  * 親側は ann-markup-sync / ann-markup-save で同期
  */
-function initIframeMarkup(scrollContainer) {
+function initIframeMarkup(scrollContainer, options = {}) {
   const _svgNS = 'http://www.w3.org/2000/svg';
   const _widthDefaults = { pen: 3, marker: 12, eraser: 14 };
   function _loadToolWidths() {
@@ -83,15 +83,17 @@ function initIframeMarkup(scrollContainer) {
     : null;
   const wrapper = boardWorld || host;
   const boardMode = !!boardWorld || wrapper?.id === 'bd-world' || wrapper?.dataset?.bdRole === 'world';
-  if (host._annBridge) return host._annBridge;
+  if (host._annBridge) { Object.assign(host._annBridge.options || {}, options); return host._annBridge; }
   if (wrapper._annBridge) {
+    Object.assign(wrapper._annBridge.options || {}, options);
     if (host !== wrapper) host._annBridge = wrapper._annBridge;
     return wrapper._annBridge;
   }
   wrapper.style.position = wrapper.style.position || 'relative';
   const svg = document.createElementNS(_svgNS, 'svg');
   svg.id = 'iframe-ann-overlay';
-  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;');
+  svg.style.touchAction = 'none';
+  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;touch-action:none;');
   const hitRect = document.createElementNS(_svgNS, 'rect');
   hitRect.setAttribute('width', '100%'); hitRect.setAttribute('height', '100%');
   hitRect.setAttribute('fill', 'transparent');
@@ -200,6 +202,22 @@ function initIframeMarkup(scrollContainer) {
     notesLayer.style.height = svg.style.height;
     notesLayer.querySelectorAll('.ann-note-embedded').forEach(note => _applyNotePosition(note, note._annData));
   }
+  function syncSurfaceScroll() {
+    if (!options.scrollContainer || boardMode) return;
+    const sc = options.scrollContainer;
+    const transform = `translate(${-sc.scrollLeft}px, ${-sc.scrollTop}px)`;
+    layer.style.transform = transform;
+    notesLayer.style.transform = transform;
+  }
+  options.scrollContainer?.addEventListener('scroll', syncSurfaceScroll, { passive: true });
+  svg.addEventListener('wheel', event => {
+    const sc = options.scrollContainer;
+    if (!sc || !_ann.active || event.ctrlKey) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? sc.clientHeight : 1;
+    sc.scrollLeft += event.deltaX * unit; sc.scrollTop += event.deltaY * unit;
+    event.preventDefault(); event.stopPropagation();
+  }, { passive: false });
+  syncSurfaceScroll();
   const _resizeObs = new ResizeObserver(_updateSize);
   _resizeObs.observe(wrapper);
   if (host !== wrapper) _resizeObs.observe(host);
@@ -240,7 +258,9 @@ function initIframeMarkup(scrollContainer) {
       return _boardClientToWorld(clientX, clientY);
     }
     const r = wrapper.getBoundingClientRect();
-    return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+    const sc = options.scrollContainer || wrapper;
+    const uiZoom = options.localSurface && typeof _annotationUiZoom === 'function' ? _annotationUiZoom() : 1;
+    return { x: (clientX - r.left) / uiZoom + sc.scrollLeft, y: (clientY - r.top) / uiZoom + sc.scrollTop };
   }
 
   function _elementTransformOrigin(el) {
@@ -444,50 +464,62 @@ function initIframeMarkup(scrollContainer) {
     catch { return 'anonymous'; }
   }
 
+  const pendingWrites = new Set();
   function _saveBoardAnnotation(payload, onSaved, onError) {
-    if (!boardMode || typeof apiPost !== 'function') return false;
-    apiPost('/annotations', payload).then((res) => {
+    if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = apiPost('/annotations', payload).then(async (res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
         const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
-        _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath, historyScope).catch(() => {});
       }
+      options.onMutation?.();
       onSaved?.(res);
     }).catch((error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
   function _updateBoardAnnotation(annId, payload, onSaved, onError) {
-    if (!boardMode || !annId || typeof apiPut !== 'function') return false;
-    const handleSaved = (res) => { onSaved?.(res); };
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiPut !== 'function') return false;
+    options.onMutation?.();
+    const handleSaved = (res) => { options.onMutation?.(); onSaved?.(res); };
     const handleError = (error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
       const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
-      Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
+      const saving = Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId, options.historyScope?.())).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     } else {
-      apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
+      const saving = apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     }
     return true;
   }
 
   function _deleteBoardAnnotation(annId, onDeleted, onError) {
-    if (!boardMode || !annId || typeof apiDelete !== 'function') return false;
-    (async () => {
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiDelete !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = (async () => {
       const before = typeof _fetchAnnotationHistoryRow === 'function'
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId, historyScope);
+      options.onMutation?.();
       onDeleted?.();
     })().catch((error) => {
       _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
@@ -831,7 +863,7 @@ function initIframeMarkup(scrollContainer) {
     const persist = () => {
       const next = _notePayload(data, editor, note);
       Object.assign(data, next);
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = next;
         return;
       }
@@ -882,7 +914,7 @@ function initIframeMarkup(scrollContainer) {
       const payload = _notePayload(data, editor, note);
       payload.deleted = true;
       payload.deletedAt = new Date().toISOString();
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = payload;
         note.remove();
         return;
@@ -908,7 +940,6 @@ function initIframeMarkup(scrollContainer) {
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
-      let closeTimer = 0;
       let tailOpen = false;
       let tailTrig = null;
       let tailPanel = null;
@@ -921,7 +952,6 @@ function initIframeMarkup(scrollContainer) {
         items[next].focus();
       };
       const closeMenu = (restoreFocus = false) => {
-        clearTimeout(closeTimer);
         document.removeEventListener('pointerdown', onGlobalPointerDown, true);
         document.removeEventListener('keydown', onGlobalKeyDown, true);
         tailTrig?.setAttribute('aria-expanded', 'false');
@@ -929,7 +959,6 @@ function initIframeMarkup(scrollContainer) {
         if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
       };
       const hideTailPanel = () => {
-        clearTimeout(closeTimer);
         tailOpen = false;
         tailTrig?.setAttribute('aria-expanded', 'false');
         if (tailPanel) {
@@ -938,7 +967,6 @@ function initIframeMarkup(scrollContainer) {
         }
       };
       const showTailPanel = () => {
-        clearTimeout(closeTimer);
         if (!tailPanel) return;
         if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
         tailOpen = true;
@@ -946,19 +974,15 @@ function initIframeMarkup(scrollContainer) {
         tailPanel.hidden = false;
         tailPanel.style.display = 'block';
         if (typeof window.positionPopup === 'function') {
-          window.positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+          const row = tailTrig.getBoundingClientRect();
+          const root = menu.getBoundingClientRect();
+          window.positionPopup(tailPanel, { left: root.left, right: root.right, top: row.top, bottom: row.bottom }, { prefer: 'right', gap: 2 });
         } else {
           const rect = tailTrig.getBoundingClientRect();
           tailPanel.style.left = rect.right + 2 + 'px';
           tailPanel.style.top = rect.top + 'px';
           if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(tailPanel);
         }
-      };
-      const scheduleTailClose = () => {
-        clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => {
-          if (!tailPanel?.matches(':hover') && !tailTrig?.matches(':hover') && !tailPanel?.contains(document.activeElement)) hideTailPanel();
-        }, 140);
       };
       function onGlobalPointerDown(e2) {
         const inAny = menu.contains(e2.target) || !!tailPanel?.contains(e2.target);
@@ -1061,7 +1085,7 @@ function initIframeMarkup(scrollContainer) {
           window.openColorPalette(note, item.color || '', (newColor) => {
             item.color = newColor || item.color;
             _applyNoteColor(note, item.color);
-            if (boardMode && String(item.id || '').startsWith('pending-note-')) return;
+            if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
             if (_updateBoardAnnotation(item.id, { color: item.color })) return;
             _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
           });
@@ -1089,8 +1113,7 @@ function initIframeMarkup(scrollContainer) {
         });
         tailPanel.appendChild(tailButton);
       });
-      tailTrig.addEventListener('mouseenter', showTailPanel);
-      tailTrig.addEventListener('mouseleave', scheduleTailClose);
+      attachHoverSubmenu(tailTrig, tailPanel, { onShow: showTailPanel, onHide: hideTailPanel });
       tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
       tailTrig.addEventListener('keydown', (e2) => {
         if (e2.key === 'ArrowRight' || e2.key === 'Enter' || e2.key === ' ') {
@@ -1099,8 +1122,6 @@ function initIframeMarkup(scrollContainer) {
           requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
         }
       });
-      tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
-      tailPanel.addEventListener('mouseleave', scheduleTailClose);
       tailPanel.addEventListener('keydown', (e2) => handleMenuKeydown(e2, tailPanel, () => {
         hideTailPanel();
         tailTrig.focus();
@@ -1162,6 +1183,7 @@ function initIframeMarkup(scrollContainer) {
   // ポインターイベント
   svg.addEventListener('pointerdown', (e) => {
     if (!_ann.active) return;
+    options.onPointer?.();
     if (boardMode && e.button !== 0) return;
     _updateSize();
     if (_ann.tool === 'sticky') {

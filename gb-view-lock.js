@@ -431,7 +431,9 @@
       range.deleteContents();
       const textNode = document.createTextNode(replay.data);
       range.insertNode(textNode);
-      range.setStartAfter(textNode);
+      // 通常の文字入力と同じくテキスト内へ置く。親要素の位置だと、
+      // inputを読む行頭の「/」などが入力済みの文字を検出できない。
+      range.setStart(textNode, textNode.length);
       range.collapse(true);
       const selection = window.getSelection();
       selection?.removeAllRanges();
@@ -516,8 +518,11 @@
             }
             if (e.type === 'change') {
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (e.type === 'click' && el.isConnected && typeof el.click === 'function') {
-              el.click();
+            } else if (e.type === 'click' && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {
+              // セルなど編集ホスト内の場所を押した場合、ホスト全体へのclickに
+              // 置き換えると最初のセル選択が失われる。接続中の元の対象へ戻す。
+              const target = t.isConnected && el.contains?.(t) && typeof t.click === 'function' ? t : el;
+              if (typeof target.click === 'function') target.click();
             } else if (inputReplay) {
               replayInput(el, inputReplay);
             } else if (replayPointer && !pointerEnded && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {

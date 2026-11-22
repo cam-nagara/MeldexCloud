@@ -21,6 +21,24 @@
   'use strict';
 
   let _toolbar = null;
+  let _sharedToolbar = false;
+  function _usesParentToolbar() {
+    try { return window.parent !== window && !!window.parent.GBAnnotationSurfaces?.enabled(); } catch { return false; }
+  }
+  // Embedded annotations use the owning shell's API boundary, including its
+  // active edit lock. Other viewer requests and standalone windows stay local.
+  function _installSharedAnnotationApi() {
+    for (const name of ['apiFetch', 'apiPost', 'apiPut', 'apiDelete']) {
+      const original = window[name];
+      if (typeof original !== 'function') continue;
+      window[name] = function(path, ...args) {
+        if (_usesParentToolbar() && /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''))
+            && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
+        return original.call(this, path, ...args);
+      };
+    }
+  }
+  _installSharedAnnotationApi();
   // Cloud Viewer classification is installed before this controller loads.
   // Seed the gate synchronously so ?markup=1 and parent messages cannot open the
   // toolbar during the short interval before DOMContentLoaded applies it again.
@@ -48,7 +66,7 @@
   function _currentTargetPath() {
     const scene = Scene();
     if (!scene) return '';
-    return scene.isPdf() ? (scene.getPdfPath() || '') : (scene.getSingleFile() || scene.getItems()?.[scene.getIndex()]?.path || '');
+    return scene.isPdf() ? (scene.getPdfPath() || '') : (SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '');
   }
   function _currentPageIndex() {
     const scene = Scene();
@@ -97,6 +115,8 @@
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
   };
+
+  document.addEventListener('pointerdown', () => { if (_usesParentToolbar()) _postToParent({ type: 'viewer-ann-pointer-target', targetPath: _currentTargetPath() }); }, true);
 
   function _notifyParentStateChanged() {
     const a = SceneEngine()?.ann?.() || {};
@@ -163,12 +183,12 @@
       return false;
     }
     if (willActivate === !!SceneEngine().ann().active) {
-      _toolbar?.setVisible(willActivate, anchor);
+      _toolbar?.setVisible(willActivate && !_sharedToolbar, anchor);
       _syncToolbarButton(willActivate);
       return willActivate;
     }
     SceneEngine().setState(willActivate);
-    _toolbar?.setVisible(willActivate, anchor);
+    _toolbar?.setVisible(willActivate && !_sharedToolbar, anchor);
     _syncToolbar();
     _syncToolbarButton(willActivate);
     if (willActivate) SceneEngine().rebuild();
@@ -177,6 +197,7 @@
   }
 
   function toggle(force) {
+    if (_usesParentToolbar()) { _postToParent({ type: 'viewer-ann-open-menu', targetPath: _currentTargetPath() }); return true; }
     ensureToolbar();
     const next = typeof force === 'boolean' ? force : !SceneEngine().ann().active;
     return setState(next);
@@ -285,6 +306,7 @@
     if (!_isTrustedParentMessage(ev)) return;
     const msg = ev.data;
     if (!msg || msg.type !== 'viewer-ann-set-state') return;
+    _sharedToolbar = !!msg.sharedToolbar;
     _lastSnapshot = msg;
     if (!_snapshotMatchesCurrentTarget(msg)) return;
     _applySnapshot(msg);

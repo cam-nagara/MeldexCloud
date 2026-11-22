@@ -1,3 +1,31 @@
+          failed.status = 500;
+          failed.code = 'conflict_resolution_compensation_failed';
+          failed.backups = backups;
+          throw failed;
+        }
+        throw error;
+      }
+      return { ok: true, action, original_path: originalPath, backups, ...retired };
+    }
+
+    if (pathname === '/home-folder' && method === 'PUT') {
+      const provider = await _requirePwaProvider('read');
+      const targetPath = _normalizeFolderPath(body?.path || '');
+      if (!targetPath) throw new Error('path は必須です');
+      const entry = await _resolveEntryHandle(provider, targetPath);
+      if (!entry || entry.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${targetPath}`);
+      _safeWriteJson(PWA_HOME_KEY, {
+        path: targetPath,
+        name: _basename(targetPath),
+        namespaceKind: body?.namespaceKind === 'team_root' ? 'team_root' : 'home',
+        exists: true,
+        locked_folders: [],
+        locked_paths: [],
+      });
+      return { ok: true, path: targetPath };
+    }
+
+    if (pathname === '/add-outliner-root' && method === 'POST') {
       const provider = await _requirePwaProvider('read');
       const rawPath = _normalizeFolderPath(body?.path || '');
       if (!rawPath) return { ok: false, needManualInput: true };
@@ -653,18 +681,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
-      const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
-      if (body?.created) {
-        record.created = body.created;
-        record.created_at = body.created_at || body.created;
-      }
-      if (body?.modified) {
-        record.modified = body.modified;
-        record.modified_at = body.modified_at || body.modified;
-      }
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id };
+      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
     }
     if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -874,27 +891,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const parent = _normalizeFolderPath(body?.parent || '');
+      let parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
-      const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
-      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
-      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
-      const shown = name => title !== null && title !== label ? title : name;
-      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
-      const createText = async (path, text) => {
-        if (typeof provider.uploadBytesConditional !== 'function') {
-          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
-        }
-        const identity = window.MeldexDocumentIdentity;
-        const format = identity?.formatForPath?.(path, text);
-        const content = format ? identity.ensureDocumentId(text, format).text : text;
-        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
-      };
-      const blockedCreate = {
-        database: ['シート', 'Phase 4'],
-        calendar: ['カレンダー', 'Phase 3'],
-      }[type];
-      if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
-      if (type === 'folder') {
-        const labelName = await _uniqueName(provider, parent, label, '');
+      if (type === 'form-app') {
+        const home = await window.MeldexDataAccess.requestJson('/home-folder', { method: 'GET' });
+        const personal = _normalizeFolderPath(home?.path || '');
+        if (!personal || home.exists === false || personal.split('/').some(part => part === '..' || part === '.'))
+          throw new Error('個人のホームを設定してください');

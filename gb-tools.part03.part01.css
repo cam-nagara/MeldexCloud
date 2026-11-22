@@ -903,6 +903,14 @@
     height: var(--ui-h-touch, 44px);
     padding: 0 var(--ui-space-3);
   }
+  /* メインメニューボタン（アプリアイコン）も他のボタンと同じ押せる大きさにする（UI共通ルール19） */
+  .gb-toolbar.gb-toolbar-board .tb-app-icon.tb-main-menu-btn {
+    flex-basis: var(--ui-h-touch, 44px);
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    touch-action: manipulation;
+  }
   .gb-toolbar-board .bd-style-picker-trigger {
     min-width: min(150px, 48vw);
     min-height: 44px;

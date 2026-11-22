@@ -158,6 +158,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const input = content.querySelector('#scriptnote-col-width-input');
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+    cancelButton.dataset.e2eId = 'scriptnote-column-width-cancel';
     const applyButton = document.createElement('button');
     applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.textContent = '適用';
     applyButton.dataset.e2eId = 'scriptnote-column-width-apply';
@@ -400,10 +401,14 @@ Object.assign(ScriptNoteEditor.prototype, {
     popup.setAttribute('aria-label', `${this._scriptNoteHeaderCellLabel(cell) || '列'}列メニュー`);
 
     const mkSep = () => { const el = document.createElement('div'); el.className = 'sn2-header-popup-sep'; return el; };
-    const mkItem = (text, active, onClick) => {
+    // 安定ID（M-014 S31）: 列見出しのメニューの項目は「sn2-header-menu-<鍵>」。鍵は項目の役割
+    // （子メニューは値）から決め、同じメニュー内で項目ごとに別の値にする。
+    const idKey = value => String(value || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+    const mkItem = (text, active, onClick, key = '') => {
       const btn = document.createElement('button');
       btn.className = 'sn2-header-popup-item' + (active ? ' active' : '');
       btn.type = 'button';
+      if (key) btn.dataset.e2eId = `sn2-header-menu-${idKey(key)}`;
       btn.textContent = text;
       btn.setAttribute('role', 'menuitem');
       btn.addEventListener('click', () => {
@@ -421,10 +426,12 @@ Object.assign(ScriptNoteEditor.prototype, {
         openSub = null;
       }
     };
-    const mkSubItem = (text, currentLabel, buildSub) => {
+    const mkSubItem = (text, currentLabel, buildSub, key = '') => {
       const btn = document.createElement('button');
       btn.className = 'sn2-header-popup-item sn2-header-popup-sub-trigger';
       btn.type = 'button';
+      if (key) btn.dataset.e2eId = `sn2-header-menu-${idKey(key)}`;
+      btn.setAttribute('aria-label', `${text}: ${currentLabel}`);
       btn.setAttribute('role', 'menuitem');
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
@@ -459,9 +466,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       ['left', 'center', 'right'].forEach((val) => {
         sub.appendChild(mkItem(alignLabels[val], effectiveSettings.align === val, () => {
           this._pushUndo('列配置変更'); settings.align = val; this._markDirty(); this._render(); closePopup();
-        }));
+        }, `align-${val}`));
       });
-    }));
+    }, 'align'));
 
     const valignLabels = isVerticalWriting
       ? { top: '右寄せ', middle: '中央', bottom: '左寄せ' }
@@ -470,9 +477,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       ['top', 'middle', 'bottom'].forEach((val) => {
         sub.appendChild(mkItem(valignLabels[val], effectiveSettings.valign === val, () => {
           this._pushUndo('列配置変更'); settings.valign = val; this._markDirty(); this._render(); closePopup();
-        }));
+        }, `valign-${val}`));
       });
-    }));
+    }, 'valign'));
 
     // テキスト折り返し（現在値+サブメニュー）
     const overflowLabels = { wrap: '折り返し', overflow: 'はみ出し', clip: '切り詰め' };
@@ -481,9 +488,9 @@ Object.assign(ScriptNoteEditor.prototype, {
         [['折り返し', 'wrap'], ['はみ出し', 'overflow'], ['切り詰め', 'clip']].forEach(([label, val]) => {
           sub.appendChild(mkItem(label, effectiveSettings.overflow === val, () => {
             this._pushUndo('列配置変更'); settings.overflow = val; this._markDirty(); this._render(); closePopup();
-          }));
+          }, `overflow-${val}`));
         });
-      }));
+      }, 'overflow'));
     }
 
     popup.appendChild(mkSep());
@@ -503,18 +510,18 @@ Object.assign(ScriptNoteEditor.prototype, {
           : customCols.find(column => column.id === item.id)?.visible !== false;
         const button = mkItem(`${isVisible ? '✓ ' : ''}${item.label}`, isVisible, () => {
           if (this._setScriptNoteColumnVisible(item.id, !isVisible)) closePopup();
-        });
+        }, `visible-${item.id}`);
         if (isVisible && this._getScriptNoteVisibleContentColumnIds().length <= 1) button.disabled = true;
         sub.appendChild(button);
       });
-    }));
+    }, 'visibility'));
     const hiddenItems = visibilityItems.filter(item => item.id.startsWith('_')
       ? this.doc.editor?.visibleStandardColumns?.[item.id] === false
       : customCols.find(column => column.id === item.id)?.visible === false);
     hiddenItems.forEach(item => {
       popup.appendChild(mkItem(`${item.label}列を表示`, false, () => {
         if (this._setScriptNoteColumnVisible(item.id, true)) closePopup();
-      }));
+      }, `show-${item.id}`));
     });
 
     popup.appendChild(mkSep());
@@ -523,7 +530,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     popup.appendChild(mkItem('列スタイル設定…', false, () => {
       closePopup();
       this._showColumnStylePopup(cell, colId);
-    }));
+    }, 'column-style'));
     const widthItem = mkItem('列幅を数値指定...', false, () => {
       const columnLabel = this._scriptNoteHeaderCellLabel(cell);
       closePopup();
@@ -557,26 +564,26 @@ Object.assign(ScriptNoteEditor.prototype, {
     popup.appendChild(mkSep());
 
     // 列操作
-    popup.appendChild(mkItem('列を追加（右に）', false, () => { closePopup(); this._addColumnAt(colId); }));
+    popup.appendChild(mkItem('列を追加（右に）', false, () => { closePopup(); this._addColumnAt(colId); }, 'add-column'));
     if (!isStandard) {
-      popup.appendChild(mkItem('列を複製', false, () => { closePopup(); this._duplicateColumn(colId); }));
+      popup.appendChild(mkItem('列を複製', false, () => { closePopup(); this._duplicateColumn(colId); }, 'duplicate-column'));
     }
     // 採用状況列は採用状況機能のオン／オフだけで制御し、列表示メニューと競合させない。
     if (colId !== '_handle' && colId !== '_status') {
-      popup.appendChild(mkItem('列を非表示', false, () => { closePopup(); this._setScriptNoteColumnVisible(colId, false); }));
+      popup.appendChild(mkItem('列を非表示', false, () => { closePopup(); this._setScriptNoteColumnVisible(colId, false); }, 'hide-column'));
     }
     if (!isStandard) {
-      popup.appendChild(mkItem('列を削除', false, () => { closePopup(); this._deleteColumn(colId); }));
+      popup.appendChild(mkItem('列を削除', false, () => { closePopup(); this._deleteColumn(colId); }, 'delete-column'));
     }
 
     // 列固有メニュー
     if (colDef?.type === 'select') {
       popup.appendChild(mkSep());
-      popup.appendChild(mkItem('選択肢を編集…', false, () => { closePopup(); this._editDropdownOptions(colId); }));
+      popup.appendChild(mkItem('選択肢を編集…', false, () => { closePopup(); this._editDropdownOptions(colId); }, 'edit-options'));
     }
     if (colDef?.type === 'number') {
       popup.appendChild(mkSep());
-      popup.appendChild(mkItem('単位を設定…', false, () => { closePopup(); this._showUnitPopup(cell, colId); }));
+      popup.appendChild(mkItem('単位を設定…', false, () => { closePopup(); this._showUnitPopup(cell, colId); }, 'unit'));
     }
 
     let closeHandler = null;
@@ -615,6 +622,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     escapeHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      // ポップアップが閉じる処理を通らずに外された時は、残った Escape 処理が次の Escape を横取りしないよう後始末だけする（M-014 S20/S21）。
+      if (!popup.isConnected) { closePopup(); return; }
       ev.preventDefault();
       ev.stopPropagation();
       closePopup({ restoreFocus: true });
@@ -686,6 +695,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-secondary';
     cancel.textContent = 'キャンセル';
+    cancel.dataset.e2eId = 'scriptnote-add-column-cancel';
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'gb-btn gb-btn-primary';
@@ -696,6 +706,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     const width = body.querySelector('[data-column-width]');
     const optionsWrap = body.querySelector('[data-column-options-wrap]');
     const options = body.querySelector('[data-column-options]');
+    // 安定ID と名前（M-014 S31）。
+    [[name, 'scriptnote-add-column-name', '列名'], [type, 'scriptnote-add-column-type', '種類'],
+      [width, 'scriptnote-add-column-width', '幅(px)'], [options, 'scriptnote-add-column-options', '選択肢（改行区切り）']].forEach(([el, id, label]) => {
+      if (!el) return;
+      el.dataset.e2eId = id;
+      el.setAttribute('aria-label', label);
+    });
     let busy = false;
     const parentHeader = () => {
       const columnId = afterColId || '_text';
@@ -1005,6 +1022,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     escapeHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      if (!popup.isConnected) { close(); return; }
       ev.preventDefault();
       ev.stopPropagation();
       close();

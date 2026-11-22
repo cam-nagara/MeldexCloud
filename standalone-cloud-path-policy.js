@@ -212,6 +212,15 @@
       return queryPath;
     }
 
+    function assertLockPath(path, request) {
+      const normalized = normalizePath(path);
+      const memo = quickMemoHomePath(request?.endpoint, normalizePath(request?.queryPath));
+      // Only the authorized memo and its parent sheet; never bypass the locks.
+      if (request?.endpoint === '/quick-memo/file' && memo
+          && (normalized === memo || normalized === dirname(memo))) return normalized;
+      return assertInside(normalized, { allowRoot: true, action: 'ファイル保護を確認' }).path;
+    }
+
     function authorizeRequest(request) {
       const endpoint = String(request?.endpoint || '');
       const method = String(request?.method || 'GET').toUpperCase();
@@ -301,7 +310,7 @@
     return Object.freeze({
       roots, protectedRoots, match, assertInside, allowsInside, assertFolder, assertTrashRoot, restoreDestination,
       assertFile, assertMutableSource,
-      authorizeRequest, initialFile, physicalPath,
+      authorizeRequest, assertLockPath, initialFile, physicalPath,
     });
   }
 

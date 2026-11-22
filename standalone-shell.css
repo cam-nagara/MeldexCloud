@@ -44,7 +44,8 @@ textarea {
 
 .sa-shell {
   display: grid;
-  grid-template-rows: 42px minmax(0, 1fr);
+  --sa-toolbar-height: var(--ui-toolbar-main-height, 39px);
+  grid-template-rows: var(--sa-toolbar-height) minmax(0, 1fr);
   flex: 1 1 auto;
   width: 100%;
   height: 100vh;
@@ -336,7 +337,8 @@ body.sa-resizing-option-panel * {
 
 @media (pointer: coarse) {
   .sa-shell {
-    grid-template-rows: 56px minmax(0, 1fr);
+    --sa-toolbar-height: 56px;
+    grid-template-rows: var(--sa-toolbar-height) minmax(0, 1fr);
   }
 
   .sa-icon-btn,
@@ -360,7 +362,8 @@ body.sa-resizing-option-panel * {
 
 @media (max-width: 560px) {
   .sa-shell {
-    grid-template-rows: 56px minmax(0, 1fr);
+    --sa-toolbar-height: 56px;
+    grid-template-rows: var(--sa-toolbar-height) minmax(0, 1fr);
   }
 
   .sa-icon-btn,

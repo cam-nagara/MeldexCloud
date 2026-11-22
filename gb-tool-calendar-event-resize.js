@@ -99,7 +99,8 @@
       // コミット前レビュー指摘 #5: 選択中の全件がproduction-task（undo対象外）の場合、
       // 元に戻せない偽のUndo記録を積まない。1件でも通常イベントが含まれていれば、
       // その分の復元のために従来どおり記録する。
-      if (items.some(item => this._eventIsUndoable(item.ev))) this._pushUndo('イベントリサイズ');
+      // 取り消しの履歴の枠は操作の時点で取り、1件以上の保存が成功した時だけ中身を入れる（失敗した操作の偽の履歴を残さない）。
+      const undo = items.some(item => this._eventIsUndoable(item.ev)) ? this._reserveUndo('イベントリサイズ') : null;
       const updates = items.map(item => {
         if (direction === 'bottom') {
           const nextEnd = new Date(item.end.getTime() + activeDeltaMs);
@@ -108,12 +109,17 @@
         const nextStart = new Date(item.start.getTime() + activeDeltaMs);
         return _calApplyEventTimePatch(this, item.ev, { start: this._localDateTimeStr(nextStart) });
       });
-      Promise.all(updates).then(() => this._loadEvents()).then(() => this._render()).catch(() => {
-        this._showStatus('イベントリサイズに失敗', true);
+      Promise.allSettled(updates).then(results => {
+        const failed = results.filter(result => result.status === 'rejected');
+        if (failed.length < results.length) undo?.commit();
+        else undo?.cancel();
+        if (!failed.length) return this._loadEvents().then(() => this._render());
+        const detail = String(failed[0].reason?.message || '').trim();
+        this._showStatus(detail ? ('イベントリサイズに失敗: ' + detail) : 'イベントリサイズに失敗', true);
         this._render();
         // 並列更新の部分成功でサーバーと表示が乖離しないよう再同期する
-        this._loadEvents?.().then(() => this._render()).catch(() => {});
-      });
+        return this._loadEvents?.().then(() => this._render());
+      }).catch(() => {});
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);

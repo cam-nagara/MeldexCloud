@@ -1,3 +1,31 @@
+    excludeDocumentIds: [resolver.INDEX_ID],
+  });
+  if (coverage.complete && coverage.revision === generation) return coverage;
+  const page = await scope.adapter.listDocumentHeaders(kind, { cursor: coverage.cursor, limit: 50 });
+  const rows = [];
+  for (const header of page.entries || []) {
+    if (header.documentId === resolver.INDEX_ID) continue;
+    const stored = await scope.adapter.load(kind, header.documentId);
+    if (!stored?.payload) continue;
+    if (_annotationDeleted(stored.payload)) { rows.push(stored.payload); continue; }
+    const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, header.documentId);
+    if (migrated.record?.payload) rows.push(migrated.record.payload);
+  }
+  let complete = page.complete === true;
+  if (complete) {
+    const readbackGeneration = await scope.adapter.documentCollectionGeneration(kind, {
+      excludeDocumentIds: [resolver.INDEX_ID],
+    });
+    complete = readbackGeneration === generation;
+  }
+  const next = { cursor: page.cursor || '', revision: generation, complete };
+  await resolver.indexCoverBatch(scope.adapter, kind, rows, next);
+  return next;
+}
+
+async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
+  // A normal first read can require several 50-record pages, followed by a
+  // second pass after legacy migration changes the collection generation.
   // Finish that work before reporting a startup failure. Bound the work and
   // stop on stalled coverage; storage/CAS errors still propagate unchanged.
   const seen = new Set();
@@ -870,31 +898,3 @@ async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
 
 async function _countFolderEntriesIncludingTrash(provider, folderPath) {
   let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
-}
-
-function _fileVersionName(path, options) {
-  const split = _splitNameAndExt(_basename(path));
-  const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-  const prefix = options?.auto ? 'auto_' : '';
-  return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
-}
-
-function _fileVersionInfoFromName(name) {
-  const stem = _splitNameAndExt(name).stem;
-  const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
-  if (!match) return { auto: false, label: '', created: '' };
-  const date = match[2];
-  const time = match[3];
-  return {
-    auto: !!match[1],
-    label: match[5] || '',
-    created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
-  };

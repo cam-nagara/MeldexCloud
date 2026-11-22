@@ -212,6 +212,32 @@ async function _writeAnnotationRecord(provider, record) {
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
 
+// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
+// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
+async function _restoreAnnotationRecord(provider, body) {
+  const id = _safeId(body.id, 'annotation id');
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
+  const matches = await _findAnnotationRecordsById(provider, id);
+  const match = matches[0];
+  const current = match?.stored || null;
+  const existing = current?.payload || null;
+  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
+  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
+  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
+  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
+  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
+  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
+  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
+  delete record.tombstone; delete record.deleted; delete record.deleted_at;
+  if (record.state === 'deleted') delete record.state;
+  if (record.status === 'tombstoned') delete record.status;
+  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return { ok: true, id };
+}
+
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
 // identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
 // 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない

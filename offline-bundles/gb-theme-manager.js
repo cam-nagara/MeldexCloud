@@ -18,7 +18,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 2;
+  const THEME_UI_DEFAULTS_VERSION = 4;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -2157,7 +2157,7 @@
   function scheduleBoardRender() {
     const board = getBoardState();
     if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    const render = global.bdRefreshThemeStyles;
     if (typeof render !== 'function') return;
     const token = ++_boardRenderToken;
     const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
@@ -2906,8 +2906,15 @@
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const resolved = resolveSavedThemeUiApplications(themeDef, stored);
+          const encoded = JSON.parse(_encodeThemeUiApplications(resolved));
+          // Keep the exact pre-repair value for recovery, even if an old
+          // explicit choice happens to equal the entire former shipped preset.
+          if (JSON.stringify(normalizeThemeUiApplications(stored)) !== JSON.stringify(resolved)) {
+            encoded._previousDefaults = stored;
+          } else if (stored?._previousDefaults) encoded._previousDefaults = stored._previousDefaults;
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
+            JSON.stringify(encoded));
           wroteApplications = true;
         }
       }
@@ -2940,7 +2947,17 @@
     const previous = clone(applications);
     previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
     const legacyDefaults = [previous];
-    if (stored._defaultsVersion == null) {
+    // Shipped defaults also used white selected text and an unshaded rail.
+    // v3 stamped that snapshot unchanged, so a version number alone cannot
+    // prove it was repaired. Match the complete former preset, never individual
+    // auto-color fields (which may be genuine user choices).
+    const whiteTextDefaults = clone(previous);
+    whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
+    legacyDefaults.push(whiteTextDefaults);
+    // v1/v2 could stamp the original sequential defaults without upgrading them.
+    // Treat that exact snapshot like the unversioned original; a current save
+    // (including an intentional auto-color choice) is still returned above.
+    if (stored._defaultsVersion == null || [1, 2].includes(stored._defaultsVersion)) {
       const oldTreeDefaults = clone(previous);
       oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
       const treeOnlyDefaults = clone(applications);

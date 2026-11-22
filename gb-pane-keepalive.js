@@ -1,30 +1,5 @@
-// gb-pane-keepalive.js — パネルレイアウトのペインDOM keep-aliveレジストリ
-// (ブレークポイント往復での非破壊リサイズ)。ビューワー残課題修正計画 2026-08-04
-// 「1. 非破壊リサイズとPDF」対応。
-//
-// 背景: GBLayout.render()（gb-layout.part03.part01.js）は呼び出されるたびに
-// `_layoutEl.innerHTML = ''` で全ペインDOMを破棄し、作り直す。既存の
-// `_renderPreservingActivePane()` はアクティブペインの contentEl だけを
-// 「render()実行前に取り外し、_postRenderが呼ばれる直前に新しい空のcontentElへ
-// 差し戻す」ことで、アクティブペインに限り再生成を回避している
-// （この関数自体は既存の決定的テストに固定されているため変更しない）。
-//
-// 本モジュールは、この「取り外し→差し戻し」パターンを全ペイン（非アクティブ含む）へ
-// 一般化する。GBLayout.render() 側から detachAll/reattachAll/pruneStale の3フックを
-// 呼んでもらう構成（render()側の変更は最小限の追記のみ）。
-//   - detachAll:  render()が_layoutEl.innerHTML=''で破棄する直前に呼ぶ。paneMapに
-//     載っている「今まさにDOM上にある」全ペインのcontentElを、プレースホルダ
-//     （コメントノード）へ差し替える形でその場から取り外す（別ホストへは移動しない。
-//     実体を移動する操作自体がiframeの再読み込みを招くため）。
-//     _renderPreservingActivePane()が既にアクティブペインを取り外し済みの場合、
-//     そのcontentElは既にparentNodeを持たないため自然にスキップされる（二重処理なし）。
-//   - reattachAll: render()が新しいペイン構造を組み終え、_postRenderを呼ぶ直前に呼ぶ。
-//     追跡中の各ペインについて、新しい生成先（空のcontentEl）が見つかれば実体を
-//     差し戻す。見つからない場合（今回のブレークポイント/表示状態でそのペインが
-//     描画対象外になった場合。モバイル時の非アクティブペイン等）だけ、退避ホストへ
-//     実体を移す（inert + aria-hidden）。これが本モジュールで唯一「実体を移動する」経路。
-//   - pruneStale: reattachAllの後に呼ぶ。タブ/ペインが実際に閉じられ、レイアウト
-//     ツリー上にpaneIdが存在しなくなった場合だけ、退避ホストに残った実体を破棄する。
+// gb-pane-keepalive.js — 全ペインを接続したまま退避し、内部文書を保持する。
+// iframeは取り外した時点で文書が破棄される。同じ要素の差し戻しだけでは保持にならない。
 (function () {
   'use strict';
 
@@ -55,8 +30,16 @@
     el.removeAttribute('aria-hidden');
   }
 
-  // render()の破棄より前に呼ぶ。paneMapに載っている全ペインのcontentElを、
-  // 現在の親から「プレースホルダへ差し替える」形で無破壊に取り外す。
+  // 接続中の同一文書間だけatomic moveを使う。未接続の初回マウントは通常挿入。
+  function move(parent, child, before = null) {
+    if (parent === child.parentNode && child.nextSibling === before) return child;
+    if (parent.moveBefore && parent.isConnected && child.isConnected
+        && parent.ownerDocument === child.ownerDocument) parent.moveBefore(child, before);
+    else parent.insertBefore(child, before);
+    return child;
+  }
+
+  // render()の破棄より前に、接続された退避ホストへ移す。
   function detachAll(paneMap) {
     for (const paneId in (paneMap || {})) {
       const info = paneMap[paneId];
@@ -66,9 +49,9 @@
       if (info?.surface === 'subpanel') continue;
       const contentEl = info && info.contentEl;
       if (!contentEl || !contentEl.parentNode) continue; // 既に他経路(active pane preserve)で取り外し済み等
-      const placeholder = document.createComment('gb-pane-keepalive:' + paneId);
-      contentEl.parentNode.replaceChild(placeholder, contentEl);
-      _registry.set(paneId, { contentEl, parked: false });
+      move(_ensureHost(), contentEl);
+      _markInert(contentEl);
+      _registry.set(paneId, { contentEl, parked: true });
     }
   }
 
@@ -78,7 +61,8 @@
       const freshInfo = paneMap && paneMap[paneId];
       const freshContentEl = freshInfo && freshInfo.contentEl;
       if (freshInfo && freshContentEl && freshContentEl !== entry.contentEl && freshContentEl.parentNode) {
-        freshContentEl.replaceWith(entry.contentEl);
+        move(freshContentEl.parentNode, entry.contentEl, freshContentEl);
+        freshContentEl.remove();
         freshInfo.contentEl = entry.contentEl;
         _clearInert(entry.contentEl);
         _registry.delete(paneId);
@@ -88,7 +72,7 @@
       if (!entry.parked) {
         const host = _ensureHost();
         _markInert(entry.contentEl);
-        host.appendChild(entry.contentEl);
+        move(host, entry.contentEl);
         entry.parked = true;
       }
     });
@@ -108,7 +92,7 @@
             Array.from(entry.contentEl.children).forEach((child) => {
               if (child.id && (child.id.startsWith('rp-') || child.id === 'sidebar' || child.id === 'gb-preview-pane' || child.id === 'gb-subpanel-root' || child.id.endsWith('-view') || child.id.endsWith('-view-container') || child.id.startsWith('ann-') || child.id.startsWith('btn-tb-'))) {
                 child.style.display = 'none';
-                storage.appendChild(child);
+                move(storage, child);
               }
             });
           }
@@ -128,6 +112,7 @@
   function isTracked(paneId) { return _registry.has(paneId); }
 
   window.GBPaneKeepAlive = {
+    move,
     detachAll,
     reattachAll,
     pruneStale,

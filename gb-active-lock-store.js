@@ -321,8 +321,28 @@
     return { entries, owners, record: owners.get(tokenHash) || null };
   }
 
+  // 同じ画面の中で、同じ保持者の記録ファイルへの書き込みを1本ずつにする。コピー・貼り付けや複数の保存が
+  // 同時にロックを取ると、同じファイルへ並行して書いて Dropbox で競合し、再試行の上限（5回）を超えて
+  // 「ほかの変更とぶつかりました」で操作が失敗していた（2026-11-22 M-014 フォルダ網羅テスト、Cloud版）。
+  // 別の端末との競合は、これまでどおり版の確認と再試行で扱う。
+  const _ownerWriteQueues = new Map();
   async function _mutateOwnerStore(provider, scope, updater, tokenHash) {
     if (!/^[0-9a-f]{64}$/.test(tokenHash)) throw new Error('編集リースの保持者を確認できません');
+    const previous = _ownerWriteQueues.get(tokenHash) || Promise.resolve();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const tail = previous.then(() => gate, () => gate);
+    _ownerWriteQueues.set(tokenHash, tail);
+    await previous.catch(() => {});
+    try {
+      return await _mutateOwnerStoreNow(provider, scope, updater, tokenHash);
+    } finally {
+      release();
+      if (_ownerWriteQueues.get(tokenHash) === tail) _ownerWriteQueues.delete(tokenHash);
+    }
+  }
+
+  async function _mutateOwnerStoreNow(provider, scope, updater, tokenHash) {
     const contract = window.MeldexSystemStorage;
     for (let attempt = 0; attempt < 5; attempt++) {
       const [state, legacy] = await Promise.all([_readOwnerRecords(scope, tokenHash), _readLegacyEntries(provider, scope)]);

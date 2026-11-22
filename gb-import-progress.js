@@ -209,6 +209,8 @@
   }
 
   async function _pollDurableSchedules(volatileJobIds) {
+    // 取り込みの予定はデスクトップ版の機能。Cloud版には経路が無く、6秒ごとに失敗を繰り返していた（2026-11-21）。
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return;
     const now = Date.now();
     if (now - lastDurablePollAt < 5000) return;
     lastDurablePollAt = now;
@@ -274,7 +276,7 @@
       entry.handle = entry.handle || _syncJob(job);
       const values = window.describeImportResult(result);
       if (result.ok === false) entry.handle.fail({ ...values, error: result.error || result.message || '取り込みに失敗しました' });
-      else if (values.partial) entry.handle.partial(values);
+      else if (values.partial) entry.handle.partial(window.importAttentionValues ? window.importAttentionValues(values, _settingsPanelForKind(job.kind)) : values);
       else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
     } else if (job?.status === 'cancelled' || job?.status === 'canceled') {

@@ -455,6 +455,10 @@
       provider: String(parsed.frontmatter.provider || ''),
       model: String(parsed.frontmatter.model || ''),
       messageCount: messages.length,
+      searchText: messages.map(message => _chatMessageText(message.content)).join('\n'),
+      hasAttachments: messages.some(message => Array.isArray(message.content) && message.content.some(part => part?.type && !['text','input_text','output_text'].includes(part.type))),
+      store: 'saved',
+      sourceFolder,
       modified: String(stats.modified || '') || (modifiedMs > 0 ? new Date(modifiedMs).toISOString() : ''),
       _modifiedMs: modifiedMs,
     };

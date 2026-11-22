@@ -211,6 +211,9 @@
         row.contentEditable = 'plaintext-only';
         row.setAttribute('role', 'textbox');
         row.setAttribute('aria-label', `${entry.rowIndex + 1}行目を紙面上で編集`);
+        // 同じ紙面に複数あるので行ごとに別の安定ID（M-014 S31）。折返しで同じ行が複数の紙面行に
+        // 分かれても重ならないよう、紙面の何ページ目・何行目かも入れる。
+        row.dataset.e2eId = `scriptnote-print-row-${pageNumber}-${content.childElementCount}`;
         row.spellcheck = true;
       }
       content.appendChild(row);
@@ -339,6 +342,12 @@
     const pageStart = numeric('開始ページ', '開始ページ', 0, 9999);
     const headerText = document.createElement('input'); headerText.className = 'gb-input sn-print-wide'; headerText.setAttribute('aria-label', 'ヘッダー'); headerText.placeholder = '空欄なら表示しません'; setting('ヘッダー', headerText);
     const footerText = document.createElement('input'); footerText.className = 'gb-input sn-print-wide'; footerText.setAttribute('aria-label', 'フッター'); footerText.placeholder = '空欄なら表示しません'; setting('フッター', footerText);
+    // 紙面の設定の部品に安定IDを付ける（M-014 S31）
+    Object.entries({
+      mode, range, paper, orientation, writing, 'paper-width': paperWidth, 'paper-height': paperHeight,
+      'chars-per-line': chars, 'lines-per-page': lines, 'margin-top': marginTop, 'margin-bottom': marginBottom,
+      'margin-inner': marginInner, 'margin-outer': marginOuter, 'page-start': pageStart, header: headerText, footer: footerText,
+    }).forEach(([key, control]) => { control.dataset.e2eId = `scriptnote-print-${key}`; });
     const preview = document.createElement('div'); preview.className = 'sn-print-preview';
     const saveStatus = document.createElement('p'); saveStatus.className = 'sn-print-save-status'; saveStatus.setAttribute('role', 'status');
     body.append(controls, saveStatus, preview);
@@ -435,6 +444,9 @@
     const redo = document.createElement('button'); redo.className = 'gb-btn'; redo.textContent = 'やり直す';
     const save = document.createElement('button'); save.className = 'gb-btn'; save.textContent = '保存';
     const action = document.createElement('button'); action.className = 'gb-btn gb-btn-primary'; action.textContent = '印刷…';
+    [[cancel, 'cancel'], [undo, 'undo'], [redo, 'redo'], [save, 'save'], [action, 'print']].forEach(([button, key]) => {
+      button.type = 'button'; button.dataset.e2eId = `scriptnote-print-${key}`;
+    });
     const modal = global.GBUI.createModal({ id: 'scriptnote-print-layout', title: '紙面WYSIWYG', body, footer: [cancel, undo, redo, save, action], variant: 'standard', extraClass: 'gb-scriptnote-print-modal' });
     cancel.addEventListener('click', () => modal.close('cancel'));
     undo.addEventListener('click', () => { editor.undo?.(); global.setTimeout(() => { syncSettingControls(); refresh(); }, 0); });

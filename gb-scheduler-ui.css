@@ -104,3 +104,6 @@
   .gb-scheduler-placement-card .gb-scheduler-placement-action { grid-column: 1; grid-row: auto; min-height: 44px; border-top: 1px solid var(--border); padding-top: 6px; }
   .gb-scheduler-e2e-visual-fixture { inset: 8px; grid-template-columns: 1fr; }
 }
+/* 制作管理タブの下段: 表示中の案の操作（名前・分岐・再計算・比較・採用・保管）。 */
+.gb-production-sidebar-proposals { flex: 0 0 auto; padding: 10px; border-top: 1px solid var(--cal-grid-line, var(--border)); box-sizing: border-box; min-width: 0; }
+.gb-scheduler-allocation-host { display: grid; gap: 8px; min-width: 0; }

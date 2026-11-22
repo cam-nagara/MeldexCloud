@@ -128,7 +128,17 @@ function _shellVerbEmptyFresh(cacheKey) {
   return false;
 }
 
+// Windows のエクスプローラーの操作は、デスクトップ版の本体だけが持つ。Cloud版（保存先がブラウザから直接の Dropbox）
+// では読みに行かない。読みに行くと、右クリックのたびに「操作を完了できませんでした」が出ていた
+// （2026-11-22 M-014 フォルダツリー網羅テスト、Cloud版の疑似Dropbox）。
+function _shellVerbsAvailable() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
+  if (window.MeldexRuntimeAdapter?.isPwaMode?.()) return false;
+  return !['dropbox', 'browser', 'server'].includes(document.body?.dataset?.cloudMode || '');
+}
+
 async function fetchShellVerbs(path) {
+  if (!_shellVerbsAvailable()) return [];
   const cacheKey = _shellVerbCacheKey(path);
   if (_shellVerbCache[cacheKey]) return _shellVerbCache[cacheKey];
   if (_shellVerbEmptyFresh(cacheKey)) return [];
@@ -136,7 +146,7 @@ async function fetchShellVerbs(path) {
   if (_shellVerbInflight.has(cacheKey)) return _shellVerbInflight.get(cacheKey);
   const request = (async () => {
     try {
-      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path));
+      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path), { silentError: true });
       if (Array.isArray(verbs) && verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
       else if (Array.isArray(verbs)) _shellVerbEmptyAt.set(cacheKey, Date.now());
       return Array.isArray(verbs) ? verbs : [];
@@ -152,12 +162,13 @@ async function fetchShellVerbs(path) {
 // OS項目の取得はPowerShell起動を伴い1秒前後かかる。メニュー本体は待たせず即表示し、
 // 取得済みの時だけ表示前に組み込む（未取得なら表示後にメニュー下端へ追記する）。
 function hasCachedShellVerbs(path) {
+  if (!_shellVerbsAvailable()) return true;
   const cacheKey = _shellVerbCacheKey(path);
   return !!_shellVerbCache[cacheKey] || _shellVerbEmptyFresh(cacheKey);
 }
 
 function prefetchShellVerbs(path) {
-  if (!path || hasCachedShellVerbs(path)) return;
+  if (!path || !_shellVerbsAvailable() || hasCachedShellVerbs(path)) return;
   fetchShellVerbs(path).catch(() => {});
 }
 
@@ -244,7 +255,7 @@ function isPinnedShellVerb(verb) {
 // --- メニューへの追加 ---
 
 async function appendShellVerbsToMenu(menu, path, options = {}) {
-  if (!path) return;
+  if (!path || !_shellVerbsAvailable()) return;
   const editingLocked = !!options.editingLocked;
   const beforeDisplay = options.beforeDisplay === true;
 

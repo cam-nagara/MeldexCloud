@@ -107,14 +107,25 @@
         });
       };
       const rebuildWrapColumns = (columnsToBuild) => {
-        while (editor.firstChild) editor.removeChild(editor.firstChild);
+        const groups = [...editor.querySelectorAll(':scope > .sn2-column-group')];
         columnsToBuild.forEach((colRows, groupIndex) => {
-          const group = document.createElement('div');
-          group.className = 'sn2-column-group';
-          // 折り返し時も各段の見出しで列境界をドラッグして幅を変えられるようにする。
-          group.appendChild(buildHeader(true, groupIndex === 0 ? '' : `wrap-${groupIndex + 1}`));
-          colRows.forEach(el => group.appendChild(el));
-          editor.appendChild(group);
+          let group = groups[groupIndex];
+          if (!group) {
+            group = document.createElement('div');
+            group.className = 'sn2-column-group';
+            group.appendChild(buildHeader(true, groupIndex === 0 ? '' : `wrap-${groupIndex + 1}`));
+            editor.appendChild(group);
+          }
+          colRows.forEach((el, index) => {
+            const before = group.children[index + 1] || null;
+            if (before === el) return;
+            if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(group, el, before);
+            else group.insertBefore(el, before);
+          });
+        });
+        [...editor.children].forEach(child => {
+          const index = groups.indexOf(child);
+          if (!child.classList.contains('sn2-column-group') || index >= columnsToBuild.length) child.remove();
         });
         setColVars(editor);
       };
@@ -262,6 +273,11 @@
       editor.style.removeProperty('align-items');
       editor.style.removeProperty('width');
       settleWrapPacking(true);
+      this._repackWrapForResize = () => {
+        const top = scroll.scrollTop, left = scroll.scrollLeft;
+        settleWrapPacking(true);
+        scroll.scrollTop = top; scroll.scrollLeft = left;
+      };
       this._bind();
       this._applyReadOnlyDom();
       this._adjustRubySpacing();

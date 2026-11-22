@@ -298,7 +298,22 @@
       requestOpts.body = JSON.stringify(requestOpts.body);
     }
     const response = await fetch(url.toString(), requestOpts);
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    if (!response.ok) {
+      // サーバーが返した理由（detail / error / message）を利用者に見せる。以前は「HTTP 500: Internal Server Error」だけで、
+      // 原因が分からなかった（M-014 スケジュール網羅: 自動割り当ての案の作成・名前の変更の失敗）。
+      let detail = '';
+      try {
+        const data = await response.clone().json();
+        const raw = data?.detail ?? data?.error ?? data?.message ?? '';
+        detail = typeof raw === 'string' ? raw : (raw?.message || raw?.msg || '');
+      } catch {}
+      const reading = String(requestOpts.method || 'GET').toUpperCase() === 'GET';
+      const head = reading ? '読み込めませんでした' : '保存できませんでした';
+      const err = new Error(detail ? `${head}: ${detail}` : `${head}（HTTP ${response.status}）`);
+      err.status = response.status;
+      err.userMessage = err.message;
+      throw err;
+    }
     return response.json();
   }
 
@@ -1316,7 +1331,7 @@
         || typeof provider?.walkEntriesFresh !== 'function') {
       throw Object.assign(new Error('bounded参照走査に対応していない保存先です'), { status: 503 });
     }
-    const files = []; const seen = new Set();
+    const files = []; const seen = new Set(); const freshSizes = new Map();
     for (const rootPath of await _workspaceScanRoots()) {
       const remaining = scanner.MAX_FILES - files.length;
       if (remaining <= 0) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
@@ -1324,13 +1339,15 @@
         if (entry.kind !== 'file') continue;
         const path = _normalizeFolderPath(entry.path);
         if (_isExcludedWorkspacePath(path)) continue;
+        if (typeof entry.size === 'number' && Number.isFinite(entry.size) && entry.size >= 0) freshSizes.set(path, entry.size);
         if (!seen.has(path)) { seen.add(path); files.push(path); }
       }
     }
     return scanner.query({
       items, listFiles: async () => files,
       readTextBounded: (path, remaining) => provider.readTextBounded(path, remaining),
-      statSize: async path => Number((await provider.statPathFresh(path))?.size),
+      // fresh走査で受け取った大きさを再利用する。本文は毎回上限つきで読み、実際の総バイト数も走査側で検査する。
+      statSize: async path => freshSizes.has(path) ? freshSizes.get(path) : Number((await provider.statPathFresh(path))?.size),
       isTextLike: scanner.isTextLikePath,
       displayName: path => _displayLabelForPath(path, ''),
     });

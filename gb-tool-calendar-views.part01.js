@@ -180,8 +180,28 @@ function _calIsManagedScheduleEvent(ev) {
   return _calIsProductionTaskEvent(ev) || _calIsRenderListEvent(ev);
 }
 
+// 同じ予定への保存（PUT /cal/events/<id>）を予定ごとに直列にする。前の保存の完了（成功・失敗とも）を待ってから
+// 次を送る（続けて伸縮・移動した時、遅れた前の保存が後から届いて新しい値を古い値で上書きしていた）。
+const _calEventPutChains = new Map();
+function _calSerialEventPut(eventId, body, op = 'event-save') {
+  const key = String(eventId || '');
+  const previous = _calEventPutChains.get(key) || Promise.resolve();
+  const run = previous.catch(() => {}).then(() => {
+    const promise = apiPut('/cal/events/' + key, body);
+    // 30秒終わらない保存を自己記録へ残し、状態表示に出す（止まった保存を利用者に見せる）。
+    return window.MeldexDiagnostics?.watchScheduleTask?.(op, promise) ?? promise;
+  });
+  _calEventPutChains.set(key, run);
+  const forget = () => { if (_calEventPutChains.get(key) === run) _calEventPutChains.delete(key); };
+  run.then(forget, forget);
+  return run;
+}
+window._calSerialEventPut = _calSerialEventPut;
+// 送信待ち（前の保存の完了待ち）を含めた、予定の保存の残り件数（保存の完了を待つ処理・テスト用）。
+window.MeldexCalendarEventSaves = Object.freeze({ pending: () => _calEventPutChains.size });
+
 async function _calApplyEventTimePatch(component, ev, patch) {
-  if (!_calIsManagedScheduleEvent(ev)) return apiPut('/cal/events/' + ev.id, patch);
+  if (!_calIsManagedScheduleEvent(ev)) return _calSerialEventPut(ev.id, patch, 'event-move');
   const start = patch?.start || ev?.start || '';
   const end = patch?.end || ev?.end || '';
   if (_calIsRenderListEvent(ev)) {
@@ -346,7 +366,7 @@ CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, i
   let html = `<div class="gb-cal-day${isToday?' gb-cal-today':''}${isOther?' gb-cal-other-month':''}" data-date="${dateStr}" data-cal-dow="${dow}">`;
   html += `<div class="gb-cal-day-num">${dayNum}</div>`;
   monthEvents.forEach(e => {
-    const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 14) : '';
+    const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 16) : '';
     const summaryClass = ['shift', 'attendance'].includes(String(e?.calendar_source || '')) ? ' gb-cal-month-summary-event' : '';
     html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml(e, 'month-' + dateStr)}${avatars}</div>`;
   });
@@ -406,7 +426,8 @@ CalendarComponent.prototype._moveSelectedEventGroup = async function(draggedEv, 
   const before = targets.map(t => this._snapshotEventLocal(t.id));
   // production-task予定はタスク側が正本で undo 対象外（_eventIsUndoable。コミット前レビュー
   // 指摘 #5 と同じ扱い）。グループ内に undo 可能なイベントが1件も無ければ偽の undo 記録を積まない。
-  if (targets.some(t => this._eventIsUndoable(t.ev))) this._pushUndo('イベント移動');
+  // 取り消しの履歴の枠は操作の時点で取り、1件以上の保存が成功した時だけ中身を入れる（失敗した操作の偽の履歴を残さない）。
+  const undo = targets.some(t => this._eventIsUndoable(t.ev)) ? this._reserveUndo('イベント移動') : null;
   targets.forEach(t => this._applyEventLocal(t.id, t.applyPatch));
   this._render();
 
@@ -420,6 +441,8 @@ CalendarComponent.prototype._moveSelectedEventGroup = async function(draggedEv, 
     failed += 1;
     this._restoreEventLocal(before[i]);
   });
+  if (failed < targets.length) undo?.commit();
+  else undo?.cancel();
 
   const notices = [];
   if (failed) notices.push(`${failed}件の移動に失敗`);
@@ -454,16 +477,20 @@ CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
   );
   if (grouped) return;
   const before = this._snapshotEventLocal(eventId);
+  let undo = null;
   try {
     // production-task予定はタスク側が正本で undo 対象外（コミット前レビュー指摘 #5 と同じ扱い）。
-    if (this._eventIsUndoable(ev)) this._pushUndo('イベント移動');
+    // 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽の履歴を残さない）。
+    undo = this._eventIsUndoable(ev) ? this._reserveUndo('イベント移動') : null;
     this._applyEventLocal(eventId, { start: newStart, end: newEnd || ev.end || '' });
     this._render();
     // production-task予定は汎用更新（自動生成予定として409拒否）ではなく、タスクへの書き戻しを経由する
     // （制作管理UX改善計画 2026-08-04 §6-4 の残作業: 月表示セルへのドロップ）。
     await _calApplyEventTimePatch(this, ev, { start: newStart, end: newEnd || undefined });
+    undo?.commit();
     await this._loadEvents(); this._render();
   } catch (error) {
+    undo?.cancel();
     this._restoreEventLocal(before);
     this._render();
     this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
@@ -502,7 +529,7 @@ CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
   cols.forEach(dateStr => {
     html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
     this._allDayEventsForDay(dateStr).forEach(ev => {
-      const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : '';
+      const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 16) : '';
       html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'all-day-' + dateStr)}${avatars}</div>`;
     });
     html += '</div>';
@@ -571,16 +598,17 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
       const grouped = await this._moveSelectedEventGroup(ev, patch, patch, other => _calDayShiftPatch(this, other, dayDelta));
       if (grouped) return;
       const before = this._snapshotEventLocal(id);
-      this._pushUndo('イベント移動');
+      const undo = this._reserveUndo('イベント移動');
       this._applyEventLocal(id, patch);
       this._render();
-      apiPut('/cal/events/' + id, patch)
-        .then(() => this._loadEvents())
+      _calSerialEventPut(id, patch, 'event-move')
+        .then(() => { undo.commit(); return this._loadEvents(); })
         .then(() => this._render())
-        .catch(() => {
+        .catch((error) => {
+          undo.cancel();
           this._restoreEventLocal(before);
           this._render();
-          this._showStatus('イベント移動に失敗', true);
+          this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
         });
     });
   });
@@ -628,13 +656,31 @@ CalendarComponent.prototype._layoutTimedEventSegments = function(segments) {
 
 CalendarComponent.prototype._renderTimedEventSegmentsForDay = function(rootEl, dateStr) {
   const segments = this._layoutTimedEventSegments(this._timedEventSegmentsForDay(dateStr));
+  const placed = [];
   segments.forEach(seg => {
     const cell = rootEl.querySelector(`.gb-cal-week-cell[data-date="${dateStr}"][data-hour="${Math.floor(seg.startH)}"]`);
     if (!cell) return;
     const card = this._createEventCard(seg.ev, seg.segStart, seg.startH, seg.endH, seg);
     cell.appendChild(card);
+    placed.push({ card, cell });
   });
+  _calFitTimedCardsToCells(placed);
 };
+
+// 列が狭い時、カードの右の余白（「…」の場所。スマホでは広い）が中身の最小の幅になってカードを押し広げ、
+// 日の列からはみ出していた。描いた後に一度だけ測り（読み取りをまとめてから書き込む）、はみ出す分だけ右の余白を縮める。
+function _calFitTimedCardsToCells(placed) {
+  const fixes = [];
+  placed.forEach(({ card, cell }) => {
+    const width = card.offsetWidth;
+    if (!width || !card.isConnected) return;
+    const cs = getComputedStyle(card);
+    const avail = cell.clientWidth - (parseFloat(cs.left) || 0) - (parseFloat(cs.right) || 0);
+    const over = width - avail;
+    if (over > 0.5) fixes.push([card, Math.max(0, (parseFloat(cs.paddingRight) || 0) - over)]);
+  });
+  fixes.forEach(([card, padding]) => { card.style.paddingRight = padding + 'px'; });
+}
 
 CalendarComponent.prototype._renderWeek = function() {
   const el = this._contentEl;
@@ -728,12 +774,22 @@ CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, end
   card.style.position = 'absolute';
   const lane = Math.max(0, layout?.overlapLane || 0);
   const count = Math.max(1, layout?.overlapCount || 1);
-  const offset = lane * 12;
-  const rightReserve = 18 + Math.max(0, count - lane - 1) * 12;
-  card.style.left = (2 + offset) + 'px';
-  card.style.right = rightReserve + 'px';
+  // 重なりのずらし幅は最大12px。列が狭い時は、カードが日の列からはみ出さないよう縮める
+  // （固定の12pxだと4件目が日の列より広くなり、隣の日へはみ出して重なっていた）。
+  // ただし各カードの左端が押せる幅（8px、列がさらに狭ければ列を件数で割った幅）は必ず残す
+  // （縮めすぎると、スマホの幅で下のカードが上のカードに完全に隠れて押せなかった）。
+  if (count > 1) {
+    const cascade = `min(12px, max(0px, calc((100% - 52px) / ${count - 1})))`;
+    const share = `calc((100% - 20px) / ${count})`;
+    const step = `max(${cascade}, min(8px, ${share}))`;
+    card.style.left = `calc(2px + ${lane} * ${step})`;
+    card.style.right = `calc(18px + ${count - lane - 1} * ${step})`;
+  } else {
+    card.style.left = '2px';
+    card.style.right = '18px';
+  }
   card.style.zIndex = String(2 + lane);
-  card.innerHTML = `${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'timed-' + (layout?.dateStr || '') + '-' + String(startH || 0))}${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : ''}`;
+  card.innerHTML = `${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'timed-' + (layout?.dateStr || '') + '-' + String(startH || 0))}${typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 16) : ''}`;
   card.title = ev.title + '\n' + (ev.start||'').substring(11,16) + '–' + (ev.end||'').substring(11,16);
   card.addEventListener('click', (e) => {
     const moreBtn = e.target.closest('[data-cal-event-more]');
@@ -780,7 +836,8 @@ CalendarComponent.prototype._handleResize = function(e, card, ev, evStart, start
     // コミット前レビュー指摘 #5: production-task予定はタスク側が正本で undo 対象外
     // （_eventIsUndoable。_calApplyEventTimePatch がタスクへ書き戻す）。undo記録を積んでも
     // 元に戻せないため、偽のUndo記録を残さない。
-    if (this._eventIsUndoable(ev)) this._pushUndo('イベントリサイズ');
+    const undo = this._eventIsUndoable(ev) ? this._reserveUndo('イベントリサイズ') : null;
+    const pushUndo = () => undo?.commit();
     const minDurationMs = 15 * 60000;
     const originalStart = new Date(ev.start || evStart);
     const originalEnd = ev.end ? new Date(ev.end) : new Date(originalStart.getTime() + 3600000);
@@ -789,15 +846,15 @@ CalendarComponent.prototype._handleResize = function(e, card, ev, evStart, start
       const ne = new Date(evStart); ne.setHours(Math.floor(newEndH), (newEndH % 1) * 60);
       if (ne <= originalStart) ne.setTime(originalStart.getTime() + minDurationMs);
       _calApplyEventTimePatch(this, ev, { end: this._localDateTimeStr(ne) })
-        .then(() => { this._loadEvents().then(() => this._render()); })
-        .catch((error) => { this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
+        .then(() => { pushUndo(); this._loadEvents().then(() => this._render()); })
+        .catch((error) => { undo?.cancel(); this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
     } else {
       const newStartH = snap15min(Math.floor(startH) + parseFloat(card.style.top) / 40);
       const ns = new Date(evStart); ns.setHours(Math.floor(newStartH), (newStartH % 1) * 60);
       if (ns >= originalEnd) ns.setTime(originalEnd.getTime() - minDurationMs);
       _calApplyEventTimePatch(this, ev, { start: this._localDateTimeStr(ns) })
-        .then(() => { this._loadEvents().then(() => this._render()); })
-        .catch((error) => { this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
+        .then(() => { pushUndo(); this._loadEvents().then(() => this._render()); })
+        .catch((error) => { undo?.cancel(); this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
     }
   };
   card.style.touchAction = 'none';
@@ -871,14 +928,16 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       const grouped = await self._moveSelectedEventGroup(ev, patch, patch, other => _calWeekShiftPatch(self, other, deltaMs));
       if (grouped) return;
       // コミット前レビュー指摘 #5: production-task予定は undo 対象外なので偽記録を積まない。
-      if (self._eventIsUndoable(ev)) self._pushUndo('イベント移動');
+      // 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽の履歴を残さない）。
+      const undo = self._eventIsUndoable(ev) ? self._reserveUndo('イベント移動') : null;
       const before = self._snapshotEventLocal(id);
       self._applyEventLocal(id, patch);
       self._render();
       _calApplyEventTimePatch(self, ev, patch)
-        .then(() => self._loadEvents())
+        .then(() => { undo?.commit(); return self._loadEvents(); })
         .then(() => self._render())
         .catch((error) => {
+          undo?.cancel();
           self._restoreEventLocal(before);
           self._render();
           self._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
@@ -957,6 +1016,10 @@ CalendarComponent.prototype._renderTaskBoard = function() {
 // === シフト表 ===
 CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
   const activeSeq = renderSeq || this._renderSeq;
+  // 読み込みの間も前の表示（週・月）が残ると、押しても切り替わらないように見える。すぐ読み込み中を出す（M-014 で発見）。
+  if (this._contentEl && !this._contentEl.querySelector('.gb-cal-shift-cell, .gb-cal-shift-add')) {
+    this._contentEl.innerHTML = '<div class="gb-cal-loading" data-e2e-id="calendar-shift-view-loading" role="status">読み込み中...</div>';
+  }
   await this._loadShifts();
   if (this._view !== 'shifts' || activeSeq !== this._renderSeq) return;
   const el = this._contentEl, y = this._date.getFullYear(), m = this._date.getMonth();
@@ -1091,7 +1154,7 @@ CalendarComponent.prototype._renderMiniCal = function() {
   const dim = new Date(y, m+1, 0).getDate();
   const todayStr = this._localDateStr(), selStr = this._localDateStr(this._date);
   const selectedDates = new Set(this._selectedMiniDateList());
-  let html = this._getDayNames().map(d => `<div style="font-size:10px;color:var(--cal-muted-fg, var(--fg2));padding:2px;">${d}</div>`).join('');
+  let html = this._getDayNames().map(d => `<div class="gb-cal-mini-dow">${d}</div>`).join('');
   for (let i = 0; i < firstDay; i++) html += '<div></div>';
   for (let d = 1; d <= dim; d++) {
     const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
@@ -1140,6 +1203,9 @@ CalendarComponent.prototype._renderProductionTodayTasks = async function(contain
     return start <= todayStr && todayStr <= (end || start);
   };
   try {
+    // 制作管理を始めていない保管場所では読まない（タスクリストを読むとサーバーが制作管理のシート一式を作ってしまう）。
+    if (typeof window.MeldexProductionApi.checkReady === 'function' && await window.MeldexProductionApi.checkReady({ force: true }) === false) return;
+    if (this._productionTodaySeq !== seq) return;
     const data = await window.MeldexProductionApi.list('タスクリスト', { limit: 1000 });
     if (this._productionTodaySeq !== seq) return;
     const rows = (data.rows || []).filter(row => {

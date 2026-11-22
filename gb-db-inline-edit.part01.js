@@ -117,6 +117,18 @@ function _dbResolveCurrentColumnName(dbPath, name, existingNames) {
   return existing ? name : current;
 }
 
+
+// 列名の変更で重なった同名の列が、今のビューでどう見えていないか: 'hidden'（非表示）/ 'deleted'（削除済み）/ ''（見えている）。
+function _dbColumnNameConflictKind(dbPath, name, ctx) {
+  try {
+    if (typeof isDbPropertyDeleted === 'function' && isDbPropertyDeleted(dbPath, name)) return 'deleted';
+    const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : null;
+    const idx = typeof _getCurrentDbViewIndexFromConfig === 'function' ? _getCurrentDbViewIndexFromConfig(cfg, { ctx }) : (cfg?.currentViewIdx || 0);
+    const view = (cfg?.savedViews || [])[idx] || cfg || {};
+    if ((view.hiddenCols || []).includes(name)) return 'hidden';
+  } catch (_) { /* 判定できない時は従来の文言 */ }
+  return '';
+}
 function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   if (th.querySelector('.th-rename-input')) return;
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
@@ -133,11 +145,11 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
   inp.style.cssText = [
     'position:absolute',
     'left:6px',
-    'right:28px',
+    'right:6px',
     'top:50%',
     'transform:translateY(-50%)',
     'width:auto',
-    'max-width:calc(100% - 34px)',
+    'max-width:calc(100% - 12px)',
     'height:22px',
     'line-height:18px',
     'box-sizing:border-box',
@@ -153,6 +165,12 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
     'z-index:4'
   ].join(';');
   th.insertBefore(inp, th.querySelector('.col-resize-handle'));
+  // 列名の入力中は見出しの幅いっぱいを使う（「所属 コピー 2」が「コピー2」までしか見えなかった）。
+  // 「…」ボタンは場所を残したまま見えなくする（寸法は変えない）。
+  const moreBtn = th.querySelector('.th-more-btn');
+  if (moreBtn) moreBtn.style.visibility = 'hidden';
+  const restoreMoreBtn = () => { if (moreBtn) moreBtn.style.visibility = ''; };
+  inp.addEventListener('blur', () => setTimeout(() => { if (!inp.isConnected) restoreMoreBtn(); }, 0));
   inp.focus();
   inp.select();
   let committed = false;
@@ -175,19 +193,38 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
       ...Object.keys(getPropertyTypes(targetDbPath, ctx) || {}),
     ];
     if (existingProps.some(name => name === newName && name !== oldName)) {
-      showStatus('同名の列が既にあります: ' + newName, true);
+      // 同じ名前の列が見えていない時（このビューで非表示・削除済み）は、そうと分かる短い文言にし、
+      // 非表示の列は列管理をその列名で絞り込んで開き、その場で表示できるようにする（2026-11-21 報告）。
+      const kind = _dbColumnNameConflictKind(targetDbPath, newName, ctx);
+      if (kind === 'hidden') showStatus(`非表示の列「${newName}」があります`, true);
+      else if (kind === 'deleted') showStatus(`削除済みの列「${newName}」と同じ名前です`, true);
+      else showStatus('同名の列が既にあります: ' + newName, true);
       renderPivot(ctx);
       restoreActiveCellByProp(oldName, ctx);
+      if (kind === 'hidden' && typeof openDbViewColumnManager === 'function') {
+        try {
+          const cfg = getDbViewConfig(targetDbPath);
+          const idx = typeof _getCurrentDbViewIndexFromConfig === 'function' ? _getCurrentDbViewIndexFromConfig(cfg, { ctx }) : (cfg.currentViewIdx || 0);
+          const anchor = (ctx?.containerEl || document).querySelector?.(`thead th[data-prop="${CSS.escape(oldName)}"]`) || null;
+          openDbViewColumnManager(idx, ctx, anchor, { initialQuery: newName });
+        } catch (_) { /* 文言だけで知らせる */ }
+      }
       return;
     }
     // 保存の完了を待たずに、見出しへ新しい列名をすぐ出す（失敗・取り消し時は描き直しで戻る）。
     inp.remove();
+    restoreMoreBtn();
     if (label) {
       label.textContent = newName;
       label.style.display = '';
     }
     th.classList.add('is-column-renaming');
     th.setAttribute('aria-busy', 'true');
+    // オプションパネルの列設定タブの列名欄も、確定の時点で新しい名前にする（保存失敗・中止で戻す）。
+    const syncPanels = (from, to, phase) => {
+      if (typeof _ptSyncColumnRenameToPanels === 'function') _ptSyncColumnRenameToPanels(targetDbPath, from, to, phase);
+    };
+    syncPanels(oldName, newName, 'preview');
     const forgetRename = _dbRememberColumnRename(targetDbPath, oldName, newName);
     const releaseRenameGate = _dbOpenColumnRenameGate(targetDbPath);
     // 別の列の列名を入力中なら、描き直しでその入力欄を消さない（その列の確定時に描き直す）。
@@ -208,6 +245,7 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
           if (!renamed) {
             releaseRenameGate();
             forgetRename();
+            syncPanels(newName, oldName, 'reverted');
             if (label && label.isConnected) label.textContent = oldName;
             th.classList.remove('is-column-renaming');
             th.removeAttribute('aria-busy');
@@ -228,7 +266,10 @@ function startHeaderInlineRename(th, oldName, dbPath, ctxOverride) {
       );
       const currentProps = (ctx?.pivotData || state.pivotData)?.properties || [];
       const kept = currentProps.includes(newName) ? newName : oldName;
-      if (kept === oldName) forgetRename();
+      if (kept === oldName) {
+        forgetRename();
+        syncPanels(newName, oldName, 'reverted');
+      }
       if (label && label.isConnected) label.textContent = kept;
       th.classList.remove('is-column-renaming');
       th.removeAttribute('aria-busy');
@@ -357,6 +398,57 @@ function _dbPersistEntityInlineRename(ctx, dbPath, oldName, newName, entity) {
   return typeof _dbTrackValueMutation === 'function' ? _dbTrackValueMutation(dbPath, saved) : saved;
 }
 
+// 名前の変更の取り消し履歴を、確定した時点で積む。取り消し・やり直しは保存の完了を待たずに画面の名前を
+// すぐ切り替え、保存（サーバーでの名前の付け替え）はその後に行う。再読込はしない（行が2段階で跳ねていた。
+// 2026-11-22 探索）。元の保存が失敗した時は、この履歴を取り除く（画面は確定処理の側で元の名前へ戻す）。
+function _dbPushEntityRenameHistoryNow(ctx, dbPath, oldName, newName, savePromise) {
+  if (typeof historyPush !== 'function') return null;
+  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+  const saved = Promise.resolve(savePromise).then(() => true, () => false);
+  const entitiesOf = () => (ctx && ctx.pivotData && ctx.pivotData.entities)
+    || (typeof state !== 'undefined' && state.currentDbPath === dbPath && state.pivotData ? state.pivotData.entities : null) || {};
+  const showLocally = (from, to) => {
+    const entities = entitiesOf();
+    if (!Object.prototype.hasOwnProperty.call(entities, from) || Object.prototype.hasOwnProperty.call(entities, to)) return;
+    _dbCommitEntityRenameLocalFirst(ctx, null, null, from, to, dbPath);
+  };
+  const run = async (from, to) => {
+    // 画面の名前を先に戻すと保存先（ファイル）を名前から引けなくなるので、トピックの記録を先に控える。
+    const entity = entitiesOf()[from] || entitiesOf()[to] || null;
+    showLocally(from, to);
+    if (!(await saved)) return;
+    // 元の保存の完了の反映で表示が新しい名前へ戻っていたら、描き直しの前（同じ流れの中）で直す。
+    showLocally(from, to);
+    try {
+      await window.GbDbEntryIdentity.rename({
+        dbPath, oldName: from, newName: to, ctx,
+        path: entity?._entry_path || '',
+        entryId: entity?._id || entity?.entry_id || '',
+      });
+    } catch (error) {
+      showLocally(to, from);
+      throw error;
+    }
+  };
+  const entry = historyPush('名前を変更: ' + oldName + ' → ' + newName,
+    () => run(newName, oldName),
+    () => run(oldName, newName),
+    scope);
+  saved.then(ok => {
+    if (ok || !entry) return;
+    const stacks = [];
+    if (typeof _getStack === 'function') stacks.push(_getStack(entry.scope));
+    if (typeof _historyGlobal !== 'undefined' && _historyGlobal) stacks.push(_historyGlobal);
+    stacks.forEach(stack => ['undo', 'redo'].forEach(kind => {
+      const index = stack?.[kind]?.indexOf?.(entry);
+      if (index >= 0) stack[kind].splice(index, 1);
+    }));
+    if (typeof renderHistoryList === 'function') renderHistoryList();
+    if (typeof renderHistoryPanel === 'function') renderHistoryPanel();
+  });
+  return entry;
+}
+
 function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
   if (td.querySelector('.entity-rename-input')) return;
   // 行インデックスを記憶
@@ -390,11 +482,20 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
   inp.focus();
   inp.select();
   let committed = false;
-  const commit = async () => {
+  const commit = async (commitOptions = {}) => {
     if (committed) return;
     committed = true;
     const newName = inp.value.trim();
     if (!newName || newName === oldName) {
+      if (commitOptions.fromBlur) {
+        // 別のセルを押して入力欄から離れた時は、その場で元の表示へ戻すだけにする。全体を描き直して
+        // 名前セルへ選択を戻すと、押したセルの選択・編集が消える（追加直後の名前の編集から離れた時など）。
+        inp.remove();
+        nameSpan.style.display = '';
+        if (moreBtn) moreBtn.style.display = '';
+        if (relDiv) relDiv.style.display = '';
+        return;
+      }
       renderPivot(_renCtx);
       restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
@@ -419,8 +520,10 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
         return;
       }
-      await _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
-      _dbUndoRename(dbPath, oldName, newName, _renCtx);
+      const saving = _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
+      // 取り消しの履歴は確定した時点で積む（保存の完了後に積むと、直後の Ctrl+Z が1つ前の操作を戻していた）。
+      _dbPushEntityRenameHistoryNow(_renCtx, dbPath, oldName, newName, saving);
+      await saving;
     } catch(e) {
       // 通信結果不明では、サーバー側だけ成功した変更を画面から消さない。
       if (!e?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -462,8 +565,9 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           });
         return;
       }
-      _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity).then(() => {
-        _dbUndoRename(dbPath, oldName, newName, _renCtx);
+      const saving = _dbPersistEntityInlineRename(_renCtx, dbPath, oldName, newName, projectedEntity);
+      _dbPushEntityRenameHistoryNow(_renCtx, dbPath, oldName, newName, saving);
+      saving.then(() => {
         setTimeout(doAfter, 50);
       }).catch((error) => {
         if (!error?.resultUnknown) _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
@@ -475,7 +579,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       });
     }
   });
-  attachInlineBlurCommit(inp, commit);
+  attachInlineBlurCommit(inp, () => commit({ fromBlur: true }));
 }
 
 // アクティブセル復元ヘルパー
@@ -494,8 +598,13 @@ function restoreActiveCellByProp(propName, ctxOverride) {
   }, 30);
 }
 
-function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
+function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride, _seqAtSchedule) {
+  // 予約した後に利用者が別のセルを選んだら戻さない（2026-11-22）。名前の入力を Esc で閉じてすぐ値のセルを選ぶと、
+  // 遅れて来た戻しが選択を名前の列へ奪い、続けて打った Tab が名前の列から動いていた。
+  const seqAtSchedule = _seqAtSchedule !== undefined ? _seqAtSchedule
+    : (typeof dbActiveCellSeq === 'number' ? dbActiveCellSeq : null);
   setTimeout(() => {
+    if (seqAtSchedule !== null && typeof dbActiveCellSeq === 'number' && dbActiveCellSeq !== seqAtSchedule) return;
     // 前の保存の完了で、既に始まっている次の入力からフォーカスを奪わない。
     if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(ctxOverride)) return;
     const table = _currentPivotTable(ctxOverride);
@@ -506,7 +615,7 @@ function restoreActiveCellByRow(rowIdx, colIdx, _attempt, ctxOverride) {
     const ctx = ctxOverride || ((typeof _currentPaneState === 'function') ? _currentPaneState() : null);
     const attempt = _attempt || 0;
     if (rowIdx >= dataRows.length && ctx && ctx._renderInProgress && attempt < 30) {
-      restoreActiveCellByRow(rowIdx, colIdx, attempt + 1, ctx);
+      restoreActiveCellByRow(rowIdx, colIdx, attempt + 1, ctx, seqAtSchedule);
       return;
     }
     const row = dataRows[Math.min(rowIdx, dataRows.length - 1)];

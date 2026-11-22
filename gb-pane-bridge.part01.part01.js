@@ -942,19 +942,10 @@ const GBPaneBridge = (() => {
         await _yieldStartupRestorePaint();
         if (!isCurrentLoadJob()) return;
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || (typeof bd !== 'undefined' && bd.path !== path))) await openBoard(label, path, scopedBridgeOpts);
-        // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
-        // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
-        // メインの folder-view とサブパネルの2つの面が同時に更新し得る単一のグローバル変数に
-        // なった。needsLiveReload（このコンテナ自身の直前の描画内容との突き合わせ、
-        // スケジュール時点＝競合が起きる前に確定済みで安全）が既に「変化なし」と判定している
-        // 場合、_folderPath !== path だけを理由に再読込を強制すると、他の面（サブパネル）が
-        // ちょうど _folderPath を書き換えた直後の一瞬に割り込んでしまい、非同期のopenFolder()が
-        // 「自分こそが正しい切替元」と誤認して相手の描画先（_folderRenderContainerOverride）へ
-        // 誤った「切り替わりました」通知を書き込み、相手の実表示を消してしまう（2026-08-19
-        // 実ブラウザE2Eで確認・固定: targeted-shell-micro-subpanel-folder-render）。
-        // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
-        // ケースは正しく再読込される。
-        else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
+        // 他の面が操作対象でも、このコンテナの内容が一致していれば再読込しない。
+        else if (viewName === 'folder' && typeof openFolder === 'function' && needsLiveReload) {
+          await openFolder(label, path, scopedBridgeOpts);
+        }
         // Embedded notes also bind the shared state. Returning to an already
         // rendered main note must not start a disk load that overwrites typing.
         else if (viewName === 'page' && typeof openPage === 'function' && needsLiveReload) await openPage(label, path, scopedBridgeOpts);
@@ -972,7 +963,7 @@ const GBPaneBridge = (() => {
         // _csvRenderContainerOverride、gb-csv-viewer.js）で単一のグローバル変数を2つの面が
         // 共有する。同じ競合を予防的に塞ぐ（needsLiveReload || prevView !== 'csv' で
         // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
-        else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
+        else if (viewName === 'csv' && typeof openCsvFile === 'function' && needsLiveReload) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
         // A linked editor also changes the shared view/path. Returning to this
         // already rendered sheet must preserve the first click and its input.
@@ -1071,7 +1062,8 @@ const GBPaneBridge = (() => {
       const el = document.getElementById(containerId);
       if (el && el.parentNode && el.parentNode.id !== 'legacy-views') {
         el.style.display = 'none';
-        storage.appendChild(el);
+        if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(storage, el);
+        else storage.appendChild(el);
       }
     }
     // ツールバーをストレージに退避
@@ -1083,7 +1075,8 @@ const GBPaneBridge = (() => {
     for (const id of FLOATING_UI_CONTAINERS) {
       const el = document.getElementById(id);
       if (el && el.parentNode && el.parentNode.id !== 'legacy-views') {
-        storage.appendChild(el);
+        if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(storage, el);
+        else storage.appendChild(el);
       }
     }
     document.querySelectorAll('.ann-note:not(.ann-note-embedded)').forEach(note => {
@@ -1106,7 +1099,8 @@ const GBPaneBridge = (() => {
         } catch (e) { console.warn('[PaneBridge] getState failed:', tabId, e); }
       }
       if (comp.el && comp.el.parentNode) {
-        comp.el.parentNode.removeChild(comp.el);
+        if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(storage, comp.el);
+        else comp.el.parentNode.removeChild(comp.el);
         comp._mounted = false;
       }
     });

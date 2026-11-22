@@ -1,4 +1,5 @@
 async function annClear() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.clear();
   if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return;
   const embedded = _usesEmbeddedAnnotationSurface(_getAnnotationViewName());
   const overlay = embedded ? null : document.getElementById('ann-overlay');

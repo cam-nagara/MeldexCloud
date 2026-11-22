@@ -79,6 +79,10 @@
       topicRef: clone(ref), placement: clone(placement), record,
       path: location.path, label: location.label, surface: location.surface,
       document: clone(loaded.viewDocument), revision: checkpointId(loaded.checkpoint),
+      // 取り消し・やり直しの操作元は、いま保存先から読んだ配置（保存済みの内容）。操作元のボードを開いていない時も
+      // 実行できるようにする（ドラッグの操作元と同じ扱い。開いている時は従来どおり保存を確定してから実行する）。
+      // 無いと、シートで Ctrl+Z を押しても「元のボードを表示してから操作してください」で戻らなかった。
+      _savedSnapshotVerified: true,
     };
   }
 

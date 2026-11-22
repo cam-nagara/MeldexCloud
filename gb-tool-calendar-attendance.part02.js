@@ -4,18 +4,27 @@
       ['local', '通常カレンダー作成', 'calendar'],
       ['shift', 'シフトカレンダー作成', 'users'],
       ['attendance', '実績カレンダー作成', 'clipboardCheck'],
+      // チーム全員分のシフトカレンダーの一括作成は 2026-05-01 の作成の流れの見直し（39e176c2）でこのメニューから外した。
+      // 戻すかは利用者の判断待ち（M-014 スケジュール網羅）。処理 _ensureTeamShiftCalendars は重複を作らない形で残している。
     ];
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', '新規カレンダー');
     items.forEach(([kind, label, icon]) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'gb-cal-create-menu-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.dataset.e2eId = 'calendar-create-' + kind;
       btn.innerHTML = `${_calAttIcon(icon, 14)}<span>${_calAttEsc(label)}</span>`;
       btn.addEventListener('click', () => {
         menu.remove();
+        anchor.setAttribute('aria-expanded', 'false');
         this._createCalendarByKind(kind);
       });
       menu.appendChild(btn);
     });
+    anchor.setAttribute('aria-haspopup', 'menu');
+    anchor.setAttribute('aria-expanded', 'true');
     document.body.appendChild(menu);
     if (typeof positionPopup === 'function') {
       positionPopup(menu, anchor.getBoundingClientRect());
@@ -46,7 +55,7 @@
         : '無題';
     const name = _calAttUniqueName(this, baseName);
     try {
-      const res = await apiPost('/cal/calendars', {
+      const res = await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('calendar-save', apiPost('/cal/calendars', {
         name,
         color: _calAttPaletteColorAt((this._calendars || []).length),
         user: this._getUser(),
@@ -54,7 +63,7 @@
         visible: 1,
         folder: _calAttFolderFallbackForSource(source),
         edit_role: 'owner',
-      });
+      }));
       await this._loadCalendars();
       if (res?.id) this._selectCalendar?.(res.id);
       this._showStatus(`${name}を作成しました`);
@@ -226,17 +235,26 @@
           if (busy || !timeInput.value) return;
           setBusy(true, '保存中...');
           try {
-            await apiPut('/cal/time/' + encodeURIComponent(entry.id), {
+            await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('attendance-fix', apiPut('/cal/time/' + encodeURIComponent(entry.id), {
               user, type: typeSelect.value, timestamp: timeInput.value, correction: true,
-            });
+            }));
             await reload();
             await refreshCalendar();
             if (panelStatus) panelStatus.textContent = '実績を更新しました。';
           } catch (error) {
+            const wantedType = typeSelect.value;
+            const wantedTime = timeInput.value;
             try {
-              await reload();
+              const latest = await reload();
               await refreshCalendar();
-              if (panelStatus) panelStatus.textContent = '保存応答を確認できなかったため、最新の実績を再読み込みしました。';
+              // 読み直した打刻が送った内容と同じなら、応答だけが途切れて保存はできていた。違えば保存できていない
+              // （以前はどちらでも「再読み込みしました」とだけ出し、保存できなかったことが分からなかった。M-014 で発見）。
+              const saved = (latest || []).find(item => String(item.id || '') === String(entry.id || ''));
+              const applied = !!saved && saved.type === wantedType && String(saved.timestamp || '').slice(0, 16) === wantedTime.slice(0, 16);
+              if (panelStatus) panelStatus.textContent = applied
+                ? '実績を更新しました（応答は途切れましたが保存されていました）。'
+                : '保存できませんでした: ' + (error?.userMessage || error?.message || error) + '。最新の実績を表示しています。';
+              if (!applied) component._showStatus?.('実績の修正を保存できませんでした', true);
             } catch {
               if (panelStatus) panelStatus.textContent = '保存できず、最新状態も確認できませんでした: ' + (error?.message || error);
             }
@@ -248,15 +266,19 @@
           if (busy || (typeof cfConfirm === 'function' && !await cfConfirm('この打刻を削除しますか？'))) return;
           setBusy(true, '削除中...');
           try {
-            await apiFetch('/cal/time/' + encodeURIComponent(entry.id), { method: 'DELETE' });
+            await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('attendance-fix', apiFetch('/cal/time/' + encodeURIComponent(entry.id), { method: 'DELETE' }));
             await reload();
             await refreshCalendar();
             if (panelStatus) panelStatus.textContent = '打刻を削除しました。';
           } catch (error) {
             try {
-              await reload();
+              const latest = await reload();
               await refreshCalendar();
-              if (panelStatus) panelStatus.textContent = '削除応答を確認できなかったため、最新の実績を再読み込みしました。';
+              const remains = (latest || []).some(item => String(item.id || '') === String(entry.id || ''));
+              if (panelStatus) panelStatus.textContent = remains
+                ? '削除できませんでした: ' + (error?.userMessage || error?.message || error) + '。最新の実績を表示しています。'
+                : '打刻を削除しました（応答は途切れましたが削除されていました）。';
+              if (remains) component._showStatus?.('打刻を削除できませんでした', true);
             } catch {
               if (panelStatus) panelStatus.textContent = '削除できず、最新状態も確認できませんでした: ' + (error?.message || error);
             }
@@ -269,6 +291,7 @@
         panelList.appendChild(row);
       });
       if (!scopedEntries.length) panelList.textContent = 'この勤務日の打刻はありません。';
+      return scopedEntries;
     };
     closeButton.addEventListener('click', () => modalApi.close('close'));
     panel.querySelectorAll('button').forEach(button => { button.style.minHeight = '44px'; });
@@ -278,7 +301,7 @@
       const requestId = pendingAddId;
       setBusy(true, '追加中...');
       try {
-        await apiPost('/cal/time', { id: requestId, operation_id: requestId, user, type: addType.value, timestamp: addTime.value, correction: true });
+        await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('attendance-fix', apiPost('/cal/time', { id: requestId, operation_id: requestId, user, type: addType.value, timestamp: addTime.value, correction: true }));
         await reload();
         await refreshCalendar();
         pendingAddId = '';
@@ -292,8 +315,9 @@
           if (applied) {
             pendingAddId = '';
             if (panelStatus) panelStatus.textContent = '打刻は追加済みでした。最新の実績を表示しています。';
-          } else if (panelStatus) {
-            panelStatus.textContent = '追加できませんでした: ' + (error?.message || error);
+          } else {
+            if (panelStatus) panelStatus.textContent = '追加できませんでした: ' + (error?.message || error);
+            component._showStatus?.('打刻を追加できませんでした', true);
           }
         } catch {
           if (panelStatus) panelStatus.textContent = '追加できず、最新状態も確認できませんでした: ' + (error?.message || error);
@@ -444,6 +468,9 @@
     });
     modalApi.open();
   };
+
+  // メインメニュー（gb-tool-menu）の「勤怠CSVとして保存...」を出すかの判定に使う（出退勤状況・実績の修正と同じ管理者の判定）。
+  window.MeldexCalendarAttendanceAccess = Object.freeze({ canManage: () => _calAttCanManageAttendance() });
 
   window.exportAttendanceCsvForCurrentUser = function() {
     if (!_calAttCanManageAttendance()) {

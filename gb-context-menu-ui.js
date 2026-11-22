@@ -7,6 +7,20 @@
   if (global.MeldexContextMenuUI) return;
   let active = null;
 
+  function _notifyLayout() {
+    // The owning shell's progress tray also avoids menus in embedded viewers.
+    let target = global;
+    try {
+      while (target) {
+        if (typeof target.dispatchEvent === 'function' && typeof target.Event === 'function') {
+          target.dispatchEvent(new target.Event('meldex-context-menu-layout'));
+        }
+        if (!target.parent || target.parent === target) break;
+        target = target.parent;
+      }
+    } catch (_) { /* A cross-origin parent owns its own overlay placement. */ }
+  }
+
   function _shortcutText(item) {
     if (item.shortcut) return String(item.shortcut);
     const registry = global.MeldexShortcutRegistry;
@@ -45,13 +59,16 @@
 
   function close() {
     if (!active) return;
+    clearTimeout(active.hoverTimer);
     active.submenu?.remove();
     active.menu.remove();
     document.removeEventListener('pointerdown', active.outside, true);
     document.removeEventListener('keydown', active.keydown, true);
+    document.removeEventListener('mousemove', active.mousemove);
     const restore = active.restoreFocus;
     const onClose = active.onClose;
     active = null;
+    _notifyLayout();
     restore?.focus?.({ preventScroll: true });
     try { onClose?.(); } catch (error) { console.warn('[MeldexContextMenuUI] onClose failed', error); }
   }
@@ -89,6 +106,9 @@
 
   function _openSubmenu(trigger, item) {
     if (!active) return;
+    clearTimeout(active.hoverTimer);
+    if (active.submenuTrigger === trigger && active.submenu?.isConnected) return;
+    active.hoverAction = null;
     active.submenu?.remove();
     active.submenuTrigger?.setAttribute('aria-expanded', 'false');
     const submenu = _buildMenu(item.items || [], item.label);
@@ -96,7 +116,31 @@
     _position(submenu, trigger.getBoundingClientRect(), 'right');
     trigger.setAttribute('aria-expanded', 'true');
     active.submenu = submenu;
+    _notifyLayout();
     active.submenuTrigger = trigger;
+    submenu.addEventListener('mouseenter', () => clearTimeout(active?.hoverTimer));
+  }
+
+  // 子の項目へ入ることは、親の別項目へ移ることではない。
+  // 親を斜めに横切る間は切替を保留し、子へ到着したら取り消す。
+  function _hoverItem(menu, action) {
+    if (!active || menu !== active.menu) return;
+    clearTimeout(active.hoverTimer);
+    if (!active.submenu) { action(); return; }
+    active.hoverAction = action;
+    active.hoverTimer = setTimeout(() => {
+      if (active?.menu === menu) { active.hoverAction = null; action(); }
+    }, 240);
+  }
+
+  function _closeSubmenu() {
+    if (!active) return;
+    clearTimeout(active.hoverTimer);
+    active.hoverAction = null;
+    active.submenu?.remove();
+    active.submenu = null;
+    active.submenuTrigger?.setAttribute('aria-expanded', 'false');
+    active.submenuTrigger = null;
   }
 
   function _appendItem(menu, item) {
@@ -141,7 +185,7 @@
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       const open = () => _openSubmenu(button, item);
-      button.addEventListener('mouseenter', open);
+      button.addEventListener('mouseenter', () => _hoverItem(menu, open));
       button.addEventListener('click', event => { event.stopPropagation(); open(); _focusEdge(active?.submenu, false); });
       button.addEventListener('keydown', event => {
         if (!['ArrowRight', 'Enter', ' '].includes(event.key)) return;
@@ -149,10 +193,7 @@
       });
     } else {
       button.addEventListener('mouseenter', () => {
-        if (!active?.submenu) return;
-        active.submenu.remove(); active.submenu = null;
-        active.submenuTrigger?.setAttribute('aria-expanded', 'false');
-        active.submenuTrigger = null;
+        _hoverItem(menu, _closeSubmenu);
       });
       button.addEventListener('click', () => { close(); item.action?.(); });
     }
@@ -187,10 +228,30 @@
       if (active?.menu.contains(event.target) || active?.submenu?.contains(event.target)) return;
       close();
     };
+    const mousemove = event => {
+      if (!active?.submenu) return;
+      if (active.submenuTrigger?.contains(event.target)) {
+        active.hoverOrigin = { x: event.clientX, y: event.clientY };
+      } else if (active.submenu.contains(event.target)) {
+        clearTimeout(active.hoverTimer);
+        active.hoverAction = null;
+      } else if (active.hoverAction && active.hoverOrigin) {
+        const origin = active.hoverOrigin;
+        const rect = active.submenu.getBoundingClientRect();
+        const edge = rect.left >= origin.x ? rect.left : rect.right;
+        const fraction = (event.clientX - origin.x) / (edge - origin.x);
+        // 三角形の中を子に向かって移動中は、隣の項目への切替を待つ。
+        const top = origin.y + (rect.top - 6 - origin.y) * fraction;
+        const bottom = origin.y + (rect.bottom + 6 - origin.y) * fraction;
+        if (fraction >= 0 && fraction <= 1 && event.clientY >= top && event.clientY <= bottom) {
+          _hoverItem(active.menu, active.hoverAction);
+        }
+      }
+    };
     const keydown = event => {
       if (!active) return;
       if (event.key === 'Escape') { event.preventDefault(); close(); return; }
-      const host = active.submenu || active.menu;
+      const host = active.submenu?.contains(document.activeElement) ? active.submenu : active.menu;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault(); _cycle(host, event.key === 'ArrowDown' ? 1 : -1);
       } else if (event.key === 'Home' || event.key === 'End') {
@@ -198,18 +259,20 @@
       } else if (event.key === 'ArrowLeft' && active.submenu) {
         event.preventDefault();
         const trigger = active.submenuTrigger;
-        active.submenu.remove(); active.submenu = null;
-        trigger.setAttribute('aria-expanded', 'false'); trigger.focus({ preventScroll: true });
+        _closeSubmenu();
+        trigger.focus({ preventScroll: true });
       }
     };
     active = {
-      menu, submenu: null, submenuTrigger: null, outside, keydown,
+      menu, submenu: null, submenuTrigger: null, outside, keydown, mousemove,
       restoreFocus: options?.restoreFocus || null,
       onClose: typeof options?.onClose === 'function' ? options.onClose : null,
     };
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keydown, true);
+    document.addEventListener('mousemove', mousemove);
     menu.focus({ preventScroll: true });
+    _notifyLayout();
     return menu;
   }
 

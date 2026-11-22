@@ -276,8 +276,9 @@
     if (!parentPath && state.childrenByParent && state.childrenByParent.has(folderPath)) parentPath = folderPath;
     var names = _siblingListFor(state, parentPath || null)
       .map(function (it) { return it && it.name; }).filter(Boolean);
-    setManualOrder(folderPath, names);
+    var saved = setManualOrder(folderPath, names);
     state.lastOrderParentPath = null;
+    return saved;
   }
 
   // ------------------------------------------------------------

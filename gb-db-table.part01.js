@@ -397,6 +397,36 @@ function _dbStartEntityInlineRenameWhenVisible(ctx, entityName, dbPath) {
   if (typeof _waitForEntityRow === 'function') _waitForEntityRow(ctx, entityName, start);
 }
 
+// ステータスバーが開いた時の「N 件のトピック」を出している間は、追加・削除・取り消しに合わせて件数を更新する
+// （ほかの結果の知らせは上書きしない。2026-11-22 探索で追加後も「0 件のトピック」のままだった）。
+function _dbRefreshTopicCountStatus(ctx, data) {
+  const el = document.getElementById('sb-msg');
+  const text = el?.textContent || '';
+  if (!/^\d+ 件のトピック$/.test(text) || typeof showStatus !== 'function') return;
+  const current = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+  if (current && ctx && current !== ctx && current.dbPath !== ctx.dbPath) return;
+  const count = Object.keys(data?.entities || {}).length;
+  const next = `${count} 件のトピック`;
+  if (next !== text) showStatus(next);
+}
+
+// 追加したトピックの名前セルを選び（強調はここ1か所）、名前の編集を始める。
+function _dbFocusCreatedEntityName(ctx, entityName, dbPath) {
+  const start = (tr) => {
+    const label = tr?.querySelector?.('.entity-name-label');
+    const td = label?.closest('td') || tr?.querySelector?.('td.col-entity');
+    if (!td) return;
+    if (typeof setActiveCell === 'function') setActiveCell(td, { newSelection: true });
+    if (label && typeof startEntityInlineRename === 'function') startEntityInlineRename(td, label, entityName, dbPath);
+  };
+  const row = _dbFindEntityRow(ctx, entityName);
+  if (row) {
+    start(row);
+    return;
+  }
+  if (typeof _waitForEntityRow === 'function') _waitForEntityRow(ctx, entityName, start);
+}
+
 function _dbKeepNewEntryRowVisible(ctx) {
   const findScrollableParent = (el) => {
     let cur = el?.parentElement || null;
@@ -587,6 +617,10 @@ async function _handleNewEntryClick(ctx) {
   keepBottom();
   requestAnimationFrame(() => { keepBottom(); setTimeout(keepBottom, 120); setTimeout(keepBottom, 360); setTimeout(keepBottom, 900); });
   _dbKeepNewEntryRowVisible(renderCtx);
+  // 選択と入力先を新しい行の名前へ移し、その場で名前の編集を始める（押した直後に打った文字・日本語の確定入力を
+  // 新しい名前に入れる）。前に選んでいたセルに選択を残すと、打った文字が消え、Enter で別のトピックの名前の編集が
+  // 始まっていた（2026-11-22 探索）。
+  _dbFocusCreatedEntityName(renderCtx, created.name, dbPath);
   try {
     const saved = await created.promise;
     const savedEntity = renderCtx?.pivotData?.entities?.[created.name];
@@ -756,55 +790,6 @@ function _dbPushInsertedEntitiesHistory(dbPath, ctx, createdItemsPromise, viewBe
   );
 }
 
-// リレーションリンク click → open / preview メニュー
-function _handleRelationLinkClick(link, ctx) {
-  const dbPath = ctx.dbPath;
-  const entityName = link.textContent || '';
-  if (!entityName) return;
-  const relDbPath = link.dataset.dbPath || dbPath;
-  const relPath = typeof _entityPath === 'function' ? _entityPath(relDbPath, entityName) : '';
-  const sourcePaneId = link.closest('.gb-pane')?.dataset?.paneId || '';
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
-  const items = [
-    // 互換テスト用: navigateToEntity(entityName, relDbPath)
-    { label: 'リンク先を開く', icon: 'externalLink', action: () => navigateToEntity(entityName, relDbPath, ctx) },
-    { label: 'サブパネルで開く', icon: 'panelRight', action: () => {
-      if (relPath && typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(relPath, entityName, { linkType: 'entity', sourcePaneId });
-      // 互換テスト用: navigateToEntity(entityName, relDbPath)
-      else navigateToEntity(entityName, relDbPath, ctx);
-    } },
-    { label: 'ビューワーでプレビュー', icon: 'tvMinimal', action: () => { if (typeof _updateLinkedPreview === 'function' && relPath) _updateLinkedPreview(relPath); } },
-  ];
-  if (relPath) {
-    items.push({ label: 'パスをコピー', icon: 'copy', action: async () => {
-      const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
-      const copied = await window.GBPathUtils?.copyToClipboard?.(relPath, basePath);
-      if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
-    } });
-  }
-  if (relPath && typeof window.revealPathInFolderTree === 'function') {
-    items.push({ label: 'フォルダツリーに表示', icon: 'folderTree', action: () => window.revealPathInFolderTree(relPath) });
-  }
-  items.forEach(it => {
-    const mi = document.createElement('div');
-    mi.className = 'gb-context-menu-item';
-    mi.innerHTML = lucide(it.icon, 14) + ' ' + it.label;
-    mi.addEventListener('click', () => { menu.remove(); return _dbRunMenuItemAction(it.action); });
-    menu.appendChild(mi);
-  });
-  const rect = link.getBoundingClientRect();
-  const _z = parseFloat(document.documentElement.style.zoom) || 1;
-  menu.style.left = (rect.left / _z) + 'px';
-  menu.style.top = (rect.bottom / _z + 2) + 'px';
-  document.body.appendChild(menu);
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  setTimeout(() => {
-    const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
-    document.addEventListener('pointerdown', closer);
-  }, 0);
-}
-
 // チェックボックス click (Shift+クリック範囲選択)
 // D-5: 選択状態は ctx._selectedEntities (Set) 経由で更新
 function _emitRowSelectCheckboxChange(cb) {
@@ -911,12 +896,9 @@ async function _handleTbodyClick(e) {
     return;
   }
 
-  // 3. リレーションリンク
-  const relLink = target.closest('.relation-link');
-  if (relLink) {
-    _handleRelationLinkClick(relLink, ctx);
-    return;
-  }
+  // 3. リレーションの値: 文書全体のリンクの処理が参照先をサブパネルで開く。セルの編集は始めない。
+  // （値を押した時の独自のメニューは画面から開けなかったので消した。同じ項目は値の右クリックのメニューにある。2026-11-21）
+  if (target.closest('.relation-link')) return;
 
   // 4. エントリ行の more (⋯) ボタン
   const moreBtn = target.closest('.entity-row-more-btn');
@@ -1053,6 +1035,15 @@ function _handleTbodyPointerdown(e) {
         setActiveCell(dataCell, { scroll: false });
       }
     }
+  }
+  // トピック名のセル（名前の文字を含む）を押した時も、そのセルを選んでキーボードを表へ移す。移さないと、直前に
+  // 左のツリーを触っていた時の F2 がツリーでシート名の変更を始めていた（2026-11-21 探索: シート名が変わり以後の入力が失敗）。
+  const entityCell = !dataCell ? target.closest('td.col-entity') : null;
+  if (entityCell && !e._dbCellPointerHandled && !entityCell.closest('tr.new-entity-row') && !entityCell.closest('tr.group-header-row')
+      && !target.closest('button, input, select, textarea, [contenteditable="true"], .entity-rename-input')
+      && !(e.shiftKey || e.ctrlKey || e.metaKey) && typeof setActiveCell === 'function') {
+    setActiveCell(entityCell, { scroll: false });
+    try { entityCell.focus({ preventScroll: true }); } catch (_) { /* noop */ }
   }
   const cb = e.target.closest('.row-select-cb');
   if (!cb) return;

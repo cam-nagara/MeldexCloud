@@ -780,7 +780,149 @@
   _installOperationCapture();
   _installStartupNoticeInteractionWatch();
 
+  // ---- シートで起きた問題の自己記録（M-014 追加3、2026-11-20） ----
+  // 保存の失敗・再試行で回復しなかった処理・想定外の例外・止まったままの処理・読み込みの失敗を、
+  // 本体の利用者データフォルダの meldex-sheet-incidents.jsonl へ残す（サーバー側 meldex_sheet_incidents.py）。
+  // 残すのは日時・種類・操作・シートのパス・要求の種類と結果の番号・エラーの種類だけ。本文・値・エラー文は送らない。
+  // Cloud版（保存先がブラウザから直接のDropbox）はローカルのサーバーが無いので、この端末のブラウザ内に直近200件を残す。
+  const SHEET_INCIDENT_ROUTES = /^\/(?:value|values|db-metadata|db-property|db-view|db-views|entity|entities|pivot|sheet-[\w-]+|topic-views|topics|db-[\w-]+)(?:\/|$)/;
+  // スケジュール（/cal/ の保存）も同じ記録へ残す。op は「schedule.」で始め、シートの行と見分ける（M-014 スケジュール網羅、2026-11-22）。
+  const SCHEDULE_INCIDENT_ROUTES = /^\/cal\/(?:events|tasks|calendars|shifts|time|schedule-templates|history)(?:\/|$)/;
+  // フォルダツリー・フォルダパネルのファイル操作（作成・改名・移動・削除・復元・複製・貼り付け・リンク・アイコン）の
+  // 失敗も同じ記録へ残す（2026-11-22 M-014 フォルダ網羅テスト: 改名の保存の失敗が記録0件だった）。
+  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|delete|delete-batch|restore|duplicate|save-as)|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display)(?:\/|$)/;
+  const SHEET_INCIDENT_LOCAL_KEY = 'meldex:sheet-incidents';
+  const _sheetIncidentRecent = new Map();
+  function _incidentRoute(path) {
+    return _safeEndpoint(String(path || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/api(?=\/)/, ''));
+  }
+  function _incidentSheetFrom(path, opts) {
+    try {
+      const url = new URL(String(path || ''), 'http://local');
+      const q = url.searchParams.get('path') || url.searchParams.get('db') || url.searchParams.get('dbPath');
+      // 値の保存はトピックのファイルを指す（…/トピック.md）。記録はシートの単位にする。
+      if (q) return /\.md$/i.test(q) ? q.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : q;
+    } catch {}
+    try {
+      const body = typeof opts?.body === 'string' ? JSON.parse(opts.body) : null;
+      if (body && typeof body === 'object') {
+        const direct = body.db_path || body.dbPath || body.parent_path || body.path || body.old_path || body.parent || '';
+        if (direct) return String(direct);
+        const entry = body.entry_path || body.entity_path || body.entryPath || '';
+        if (entry) return String(entry).split('/').slice(0, -1).join('/');
+      }
+    } catch {}
+    try { return (typeof state !== 'undefined' && state?.currentDbPath) || ''; } catch { return ''; }
+  }
+  function _incidentErrorType(error) {
+    if (!error) return '';
+    if (error.name === 'AbortError' || /timeout|タイムアウト/i.test(String(error.message || ''))) return 'timeout';
+    const status = error.status || error.httpStatus || 0;
+    if (status) return 'HTTP ' + status;
+    return String(error.name || 'Error').replace(/[^\w .:-]/g, '').slice(0, 60) || 'Error';
+  }
+  function _incidentSurface() {
+    try {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return window.matchMedia?.('(max-width: 767px)')?.matches ? 'mobile' : 'cloud';
+    } catch {}
+    return 'desktop';
+  }
+  function _incidentSheetPath(value) {
+    const text = String(value || '').replace(/\\/g, '/');
+    if (/^(?:[A-Za-z]:\/|\/\/|file:)/.test(text)) return text.split('/').filter(Boolean).slice(-2).join('/');
+    return text.slice(0, 300);
+  }
+  function recordSheetIncident(kind, detail = {}) {
+    try {
+      const entry = {
+        kind,
+        op: String(detail.op || '').replace(/[^\w.:/-]/g, '').slice(0, 80),
+        endpoint: detail.endpoint || '',
+        method: detail.method || '',
+        status: detail.status || 0,
+        errorType: detail.errorType || '',
+        sheet: _incidentSheetPath(detail.sheet || ''),
+        ms: detail.ms || 0,
+        source: detail.source || '',
+        surface: _incidentSurface(),
+        appVersion: String(window.MELDEX_VERSION || window.__MELDEX_VERSION__ || '').slice(0, 32),
+      };
+      // 同じ問題が続けて起きた時は10秒に1回だけ残す（記録が画面の操作を重くしないように）。
+      const fingerprint = [entry.kind, entry.op, entry.endpoint, entry.method, entry.status, entry.errorType, entry.sheet].join('|');
+      const now = Date.now();
+      if (now - (_sheetIncidentRecent.get(fingerprint) || 0) < 10000) return false;
+      _sheetIncidentRecent.set(fingerprint, now);
+      if (_sheetIncidentRecent.size > 200) _sheetIncidentRecent.delete(_sheetIncidentRecent.keys().next().value);
+      _push(operationLogs, { label: 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+        try {
+          const list = JSON.parse(localStorage.getItem(SHEET_INCIDENT_LOCAL_KEY) || '[]');
+          list.push({ time: _now(), ...entry });
+          localStorage.setItem(SHEET_INCIDENT_LOCAL_KEY, JSON.stringify(list.slice(-200)));
+        } catch {}
+        return true;
+      }
+      if (typeof apiFetch === 'function') {
+        apiFetch('/diagnostics/sheet-incident', {
+          method: 'POST', body: JSON.stringify(entry), headers: { 'Content-Type': 'application/json' }, silentError: true,
+        }).catch(() => {});
+      }
+      return true;
+    } catch { return false; }
+  }
+  // apiFetch の失敗処理から呼ばれる（保存は silentError でも記録する。読み込みは画面に出した失敗だけ）。
+  function noteRequestFailure(path, opts, error) {
+    const route = _incidentRoute(path);
+    if (!route || route.startsWith('/diagnostics') || route.startsWith('/debug-log')) return;
+    const schedule = SCHEDULE_INCIDENT_ROUTES.test(route);
+    if (!schedule && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
+    const method = String(opts?.method || 'GET').toUpperCase();
+    if (method === 'GET' && (opts?.silentError || error?.name === 'AbortError')) return;
+    // 予定などの ID はパスに入るので、記録の操作名からは外す（/cal/events/<id> → schedule.cal.events.put）。
+    const opRoute = schedule ? 'schedule.' + route.split('/').slice(1, 3).join('.') : route.replace(/^\//, '').replace(/\//g, '.');
+    recordSheetIncident(method === 'GET' ? 'load-failed' : 'save-failed', {
+      op: (opts?.diagnosticOp || (opRoute + '.' + method.toLowerCase())),
+      endpoint: route, method, status: error?.status || error?.httpStatus || 0,
+      errorType: _incidentErrorType(error), sheet: schedule ? '' : _incidentSheetFrom(path, opts),
+    });
+  }
+  // 保存などの処理が一定時間（既定30秒）終わらない時に1回だけ記録し、既存の状態表示で知らせる。
+  function watchSheetTask(op, sheet, promise, options = {}) {
+    const thresholdMs = Number(options.thresholdMs) || 30000;
+    const startedAt = Date.now();
+    let done = false;
+    Promise.resolve(promise).then(() => { done = true; }, () => { done = true; });
+    const timer = setTimeout(() => {
+      if (done) return;
+      recordSheetIncident('stalled', { op, sheet, ms: Date.now() - startedAt, errorType: 'stalled' });
+      const label = options.label || 'シートの保存';
+      try { if (typeof showStatus === 'function') showStatus(label + 'が終わっていません（' + Math.round((Date.now() - startedAt) / 1000) + '秒）', true); } catch {}
+    }, thresholdMs);
+    Promise.resolve(promise).finally(() => clearTimeout(timer)).catch(() => {});
+    return promise;
+  }
+  // スケジュールの保存（予定・ToDo・カレンダー・シフト・打刻）が一定時間終わらない時の記録と知らせ。
+  function watchScheduleTask(op, promise, options = {}) {
+    return watchSheetTask('schedule.' + String(op || 'save'), '', promise, { label: 'スケジュールの保存', ...options });
+  }
+  function _sheetSourceOfStack(stack) {
+    const match = String(stack || '').match(/(gb-(?:db|sheet|topic|database|tool-calendar|scheduler|calendar-item-history|cal-)[\w.-]*\.js)/);
+    return match ? match[1] : '';
+  }
+  function _noteSheetException(error) {
+    const source = _sheetSourceOfStack(error?.stack);
+    if (!source) return;
+    const schedule = /^gb-(?:tool-calendar|scheduler|calendar-item-history|cal-)/.test(source);
+    recordSheetIncident('exception', { op: schedule ? 'schedule.uncaught' : 'uncaught', errorType: _incidentErrorType(error), source, sheet: schedule ? '' : _incidentSheetFrom('', null) });
+  }
+  window.addEventListener('error', event => { try { _noteSheetException(event.error || { stack: event.filename, name: 'Error' }); } catch {} });
+  window.addEventListener('unhandledrejection', event => { try { _noteSheetException(event.reason); } catch {} });
+
   window.MeldexDiagnostics = {
+    recordSheetIncident,
+    noteRequestFailure,
+    watchSheetTask,
+    watchScheduleTask,
     rememberError,
     captureApiError,
     recordOperation,

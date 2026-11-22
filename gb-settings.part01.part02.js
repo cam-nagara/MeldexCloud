@@ -450,7 +450,7 @@ async function _addOutlinerRootManual() {
       setBusy(true);
       showMessage('ソースフォルダを追加しています…');
       try {
-        const res = await apiFetch('/add-outliner-root', { method: 'POST', body: JSON.stringify({ path: raw }) });
+        const res = await apiPost('/add-outliner-root', { path: raw });
         if (res.ok && res.path) {
           await _addOutlinerRootEntry(res.path, res.name);
           dialog.close('complete');
@@ -477,6 +477,9 @@ async function _addOutlinerRootManual() {
 async function _addOutlinerRootEntry(path, name, extra) {
   // 設定ダイアログの外から呼ばれた場合、サーバーから最新のルートを取得
   const inSettingsDialog = !!document.getElementById('modal-outliner-roots');
+  const reservation = !inSettingsDialog && typeof historyReserve === 'function'
+    ? historyReserve('設定: ソースフォルダ追加', '', name || path) : null;
+  try {
   const historyBefore = inSettingsDialog ? null : await captureOutlinerRootsSettingsSnapshot().catch(() => null);
   if (!inSettingsDialog) {
     try {
@@ -518,11 +521,15 @@ async function _addOutlinerRootEntry(path, name, extra) {
       try { await loadOutliner(); } catch {}
     }
     const historyAfter = await captureOutlinerRootsSettingsSnapshot().catch(() => null);
-    pushOutlinerRootsSettingsHistory('設定: ソースフォルダ追加', historyBefore, historyAfter, name || path);
+    const register = () => pushOutlinerRootsSettingsHistory('設定: ソースフォルダ追加', historyBefore, historyAfter, name || path, '');
+    if (reservation) reservation.capture(register); else register();
   }
   showStatus(_isDropboxBackedSourcePath(path, extra)
     ? 'フォルダを追加しました。Dropbox上のソースフォルダはオンラインアクセスと同期を許可してください。'
     : 'フォルダを追加しました');
+  } finally {
+    reservation?.cancel();
+  }
 }
 
 async function saveOutlinerRoots() {
@@ -660,7 +667,7 @@ async function _restoreOutlinerRootsSettingsSnapshot(snapshot) {
   }
 }
 
-function pushOutlinerRootsSettingsHistory(label, beforeSnapshot, afterSnapshot, detail) {
+function pushOutlinerRootsSettingsHistory(label, beforeSnapshot, afterSnapshot, detail, scope = 'settings:source-folders') {
   if (typeof historyPush !== 'function' || !beforeSnapshot || !afterSnapshot) return false;
   if (_sameOutlinerRootsSettingsSnapshot(beforeSnapshot, afterSnapshot)) return false;
   const before = _normalizeOutlinerRootsSettingsSnapshot(beforeSnapshot);
@@ -669,7 +676,7 @@ function pushOutlinerRootsSettingsHistory(label, beforeSnapshot, afterSnapshot, 
     label || '設定: ソースフォルダ変更',
     () => _restoreOutlinerRootsSettingsSnapshot(before),
     () => _restoreOutlinerRootsSettingsSnapshot(after),
-    'settings:source-folders',
+    scope,
     detail || ''
   );
   return true;

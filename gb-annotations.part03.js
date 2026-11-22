@@ -15,12 +15,13 @@ function _getActiveViewLockInfo() {
   };
   const kind = kindMap[viewName];
   if (!kind || !ViewLock.isSupported(kind)) return null;
-  const paneEl = document.querySelector('.gb-pane-active');
-  const paneId = paneEl?.id || paneEl?.dataset?.paneId || '';
+  const chosen = window.GBAnnotationSurfaces?.enabled() ? window.GBAnnotationSurfaces.target() : null;
+  const paneEl = chosen?.host || document.querySelector('.gb-pane-active');
+  const paneId = chosen?.id || paneEl?.id || paneEl?.dataset?.paneId || '';
   const vk = ViewLock.viewKey(target, paneId);
   if (!vk) return null;
   const getState = () => {
-    const sc = (typeof _getScrollContainerForView === 'function') ? _getScrollContainerForView(viewName) : null;
+    const sc = chosen?.host.querySelector('[data-editor-local-id=page-content],#page-content,.sn2-scroll,.pivot-view') || ((typeof _getScrollContainerForView === 'function') ? _getScrollContainerForView(viewName) : null);
     const out = { view: viewName };
     if (sc) { out.scrollX = sc.scrollLeft; out.scrollY = sc.scrollTop; }
     return out;
@@ -217,3 +218,225 @@ if (typeof _initTrayAnnotationHost === 'function') {
     _initTrayAnnotationHost();
   }
 }
+/* One menu, independent drawing and reload state for every visible surface. */
+window.GBAnnotationSurfaces = (() => {
+  const surfaces = new Map();
+  let selected = null, scheduled = false;
+  const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
+  const isOpen = () => enabled() && ann.active;
+  const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
+  function select(s) {
+    if (!s || !s.host.isConnected) return;
+    const changed = selected !== s;
+    selected = s;
+    ann.targetPath = s.path;
+    document.querySelectorAll('[data-annotation-selected]').forEach(el => el.removeAttribute('data-annotation-selected'));
+    if (isOpen()) s.host.dataset.annotationSelected = 'true';
+    if (changed && isOpen()) {
+      _refreshAnnFloatingViewLockButton({ force: true });
+      if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    }
+  }
+  function stateFor(s) {
+    return { type: 'ann-set-state', active: ann.active && !s.readOnly, tool: ann.tool,
+      color: ann.color, opacity: ann.opacity, widths: ann.widths, targetPath: s.path, visible: _overlayVisible };
+  }
+  function send(s) {
+    const msg = stateFor(s);
+    if (!s.iframe) s.bridge.handleMessage({ type: 'ann-set-opacity', opacity: ann.opacity });
+    if (s.iframe) {
+      s.iframe.contentWindow?.postMessage({ ...msg, type: 'viewer-ann-set-state', sharedToolbar: true }, location.origin);
+    } else {
+      s.bridge.handleMessage(msg);
+      s.bridge.handleMessage({ type: 'ann-set-visibility', visible: _overlayVisible });
+    }
+  }
+  async function reload(s) {
+    if (s.iframe) {
+      // 遷移中のsandbox文書は同一URLでもまだ不透明なoriginを持つ。load後の同期に任せる。
+      try { return s.iframe.contentWindow?.MeldexViewerAnnotations?.load?.(); }
+      catch (error) { if (error.name === 'SecurityError') return; throw error; }
+    }
+    if (s.bridge.hasPendingWrites?.()) return;
+    const seq = ++s.loadSeq, mutation = s.mutation;
+    try {
+      const items = await apiFetch(_annotationTargetFetchUrl(s.path));
+      if (seq !== s.loadSeq || mutation !== s.mutation || surfaces.get(s.id) !== s || s.bridge.ann.drawing || s.bridge.hasPendingWrites?.()) return;
+      // A pending save must never be overwritten by an older read.
+      if (s.bridge.layer.querySelector('[data-ann-client-id]:not([data-ann-id])')) return;
+      s.bridge.handleMessage({ type: 'ann-load', items });
+    } catch (error) { showStatus('アノテートを読み込めませんでした', true); }
+  }
+  function broadcast() {
+    for (const s of surfaces.values()) send(s);
+    document.querySelectorAll('.gb-dock-rail-annotate').forEach(btn => {
+      btn.classList.toggle('active', ann.active);
+      btn.setAttribute('aria-pressed', String(ann.active));
+      btn.setAttribute('aria-expanded', String(ann.active));
+    });
+    if (selected) select(selected);
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  }
+  function visible(host) {
+    if (!host?.isConnected) return false;
+    const rect = host.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1 && getComputedStyle(host).visibility !== 'hidden';
+  }
+  function dispose(s) {
+    if (s.iframe && s.onLoad) s.iframe.removeEventListener('load', s.onLoad);
+    s.bridge?.dispose?.();
+    s.host.removeAttribute('data-annotation-selected');
+  }
+  function candidates() {
+    const out = [];
+    for (const [id, info] of Object.entries(typeof GBLayout !== 'undefined' ? GBLayout.paneMap || {} : {})) {
+      const node = info.node || GBLayout.findNode?.(GBLayout.root, id)?.node;
+      const tab = node?.tabs?.[node.activeTabIndex];
+      if (tab && visible(info.contentEl) && _ANNOTATION_TARGET_VIEW_TYPES.has(tab.type)) {
+        out.push({ id, host: info.contentEl, tab });
+      }
+    }
+    const host = document.getElementById('gb-subpanel-content');
+    const tab = typeof GBSubPanel !== 'undefined' && GBSubPanel.isOpen() ? GBSubPanel.getCurrentTarget() : null;
+    if (visible(host) && tab && !out.some(s => s.host === host)) out.push({ id: 'gb-subpanel-inner-pane', host, tab });
+    return out;
+  }
+  function sync() {
+    if (!enabled()) return;
+    const live = new Set();
+    for (const { id, host, tab } of candidates()) {
+      const path = tab.path || tab.state?.pagePath || tab.state?.dbPath || tab.state?.scenarioPath || tab.state?.entityPath || tab.state?.boardPath || (tab.type === 'calendar' ? 'calendar:panel' : '');
+      if (!path || tab.type === 'map') continue;
+      const iframe = ['html', 'media'].includes(tab.type)
+        ? [...host.querySelectorAll('iframe')].find(frame => window._gbIsTrustedInternalViewerUrl?.(frame.getAttribute('src') || '')) : undefined;
+      if ((tab.type === 'html' || tab.type === 'media') && !iframe) continue;
+      live.add(id);
+      let s = surfaces.get(id);
+      if (s && (s.host !== host || s.sourcePath !== path || s.type !== tab.type || !s.iframe && !s.bridge.svg.isConnected || s.iframe !== iframe)) {
+        dispose(s); surfaces.delete(id); s = null;
+      }
+      if (!s) {
+        s = { id, host, path, sourcePath: path, tab, type: tab.type, iframe, loadSeq: 0, mutation: 0,
+          readOnly: tab.readOnly || tab.state?.readOnly || tab.state?.writeBlocked || tab.state?.access === 'viewer' || document.body.dataset.cloudReadonly === '1' || document.body.dataset.cloudQuotaBlocked === '1' };
+        if (!iframe) {
+          const canvas = tab.type === 'board' ? host.querySelector('[data-bd-role=canvas],#bd-canvas') : null;
+          s.bridge = initIframeMarkup(canvas || host, { localSurface: true,
+            scrollContainer: host.querySelector('[data-editor-local-id=page-content],#page-content,.sn2-scroll,#pivot-view,.gb-cal-content'), historyScope: () => scope(s),
+            onPointer: () => { select(s); s.mutation++; }, onMutation: () => { s.mutation++; } });
+          s.bridge.svg.removeAttribute('id'); s.bridge.layer.removeAttribute('id');
+          s.bridge.svg.dataset.annotationSurface = id;
+          s.bridge.svg.style.zIndex = '50'; s.bridge.notesLayer.style.zIndex = '51';
+          s.bridge.svg.style.overflow = 'hidden';
+        }
+        if (iframe) { s.onLoad = () => send(s); iframe.addEventListener('load', s.onLoad); }
+        surfaces.set(id, s);
+        send(s); void reload(s);
+      } else {
+        s.tab = tab;
+        const blocked = !!(tab.readOnly || tab.state?.readOnly || tab.state?.writeBlocked || tab.state?.access === 'viewer' || document.body.dataset.cloudReadonly === '1' || document.body.dataset.cloudQuotaBlocked === '1');
+        if (!!s.readOnly !== blocked) { s.readOnly = blocked; send(s); }
+      }
+    }
+    for (const [id, s] of surfaces) {
+      if (live.has(id)) continue;
+      dispose(s); surfaces.delete(id);
+    }
+    if (!selected || surfaces.get(selected.id) !== selected) select(surfaces.values().next().value);
+    if (selected && !surfaces.has(selected.id)) selected = null;
+    document.getElementById('btn-tb-annotation')?.setAttribute('hidden', '');
+    document.querySelectorAll('.annotation-fab-mirror').forEach(el => el.remove());
+    const legacy = document.getElementById('ann-overlay');
+    if (legacy) legacy.style.display = 'none';
+  }
+  function fromElement(el) {
+    const matches = [...surfaces.values()].filter(s => s.host.contains(el));
+    return matches.find(s => !matches.some(other => other !== s && s.host.contains(other.host)))
+      || [...surfaces.values()].find(s => s.host.closest('.gb-pane,.cloud-mobile-side-drawer')?.contains(el));
+  }
+  function toggle(source) {
+    sync();
+    if (ann.active) return close();
+    const target = fromElement(source || document.activeElement) || selected || surfaces.values().next().value;
+    if (!target || target.readOnly) { showStatus('この画面ではアノテートを編集できません', true); return false; }
+    ann.active = true;
+    select(target);
+    const toolbar = document.getElementById('ann-toolbar');
+    _positionFloatingToolbar(toolbar, document.querySelector('.gb-dock-rail-annotate'));
+    toolbar.classList.add('visible'); document.body.classList.add('ann-toolbar-active');
+    _refreshAnnFloatingViewLockButton({ force: true });
+    broadcast(); return true;
+  }
+  function close() {
+    ann.active = false;
+    document.getElementById('ann-toolbar')?.classList.remove('visible');
+    document.body.classList.remove('ann-toolbar-active');
+    document.querySelectorAll('[data-annotation-selected]').forEach(el => el.removeAttribute('data-annotation-selected'));
+    broadcast(); return true;
+  }
+  async function clear() {
+    const s = selected;
+    if (!s || s.readOnly) return false;
+    if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return false;
+    if (s.iframe) { return s.iframe.contentWindow.MeldexViewerAnnotationScene?.clearAll({ confirmed: true }); }
+    await s.bridge.flush();
+    let before;
+    try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
+    catch { showStatus('アノテートを読み込めませんでした', true); return false; }
+    const rows = before.filter(item => !['comment', 'note', 'sticky'].includes(item.type) || _isStandaloneAnnotationNoteItem(item, _parseAnnotationData(item)));
+    const results = await Promise.allSettled(rows.map(item => apiDelete('/annotations/' + encodeURIComponent(item.id))));
+    const deleted = rows.filter((_, i) => results[i].status === 'fulfilled');
+    _pushAnnotationBatchHistory('アノテート: 全削除', deleted, [], s.path, scope(s));
+    s.mutation++; await reload(s);
+    if (deleted.length !== rows.length) { showStatus('アノテートを一部削除できませんでした', true); return false; }
+    showStatus('アノテートを全削除しました');
+    return true;
+  }
+  const observe = () => {
+    new MutationObserver(() => {
+      if (scheduled || !enabled()) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; sync(); });
+    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-cloud-readonly', 'data-cloud-quota-blocked'] });
+    sync();
+  };
+  document.addEventListener('pointerdown', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
+  document.addEventListener('focusin', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
+  document.addEventListener('keydown', e => {
+    if (!enabled() || e.key.toLowerCase() !== 'a' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.target.closest?.('input,textarea,[contenteditable=true],[contenteditable=plaintext-only]')) return;
+    e.preventDefault(); toggle(e.target);
+  });
+  window.addEventListener('message', e => {
+    if (e.origin !== location.origin || !enabled()) return;
+    const s = [...surfaces.values()].find(item => item.iframe?.contentWindow === e.source);
+    if (!s) return;
+    if (e.data?.type === 'viewer-ann-open-menu') {
+      if (e.data.targetPath) s.path = String(e.data.targetPath);
+      select(s); if (!ann.active) toggle(s.host); else broadcast();
+    }
+    if (['viewer-ann-pointer-target', 'viewer-ann-state-changed'].includes(e.data?.type)) {
+      const pathChanged = e.data.targetPath && s.path !== String(e.data.targetPath);
+      if (e.data.targetPath) s.path = String(e.data.targetPath);
+      if (pathChanged) send(s);
+      if (e.data.type === 'viewer-ann-pointer-target' || selected === s) select(s);
+    }
+    if (e.data?.type === 'viewer-ann-save-result') {
+      const msg = e.data;
+      if (msg.ok && msg.history) {
+        const path = msg.targetPath || s.path;
+        _pushAnnotationHistory('アノテート: ビューワー', msg.history.before, msg.history.after, path, scope({ ...s, path }));
+      }
+      _handleViewerAnnotationSaveResult(msg, { recordHistory: false });
+    }
+  });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observe, { once: true }); else observe();
+  return { enabled, isOpen, sync, toggle, close, broadcast, clear,
+    reloadTarget(path) { return Promise.all([...surfaces.values()]
+      .filter(s => !path || _normalizeAnnotationTargetPath(s.path) === _normalizeAnnotationTargetPath(path)
+        || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path)).map(reload)); },
+    describe: () => [...surfaces.values()].map(s => ({ id: s.id, path: s.path, type: s.type, embedded: !!s.iframe, host: s.host.id })),
+    historyScope: () => selected ? scope(selected) : '',
+    target: () => selected,
+    undo: () => selected ? historyUndo(scope(selected)) : false,
+    redo: () => selected ? historyRedo(scope(selected)) : false,
+  };
+})();

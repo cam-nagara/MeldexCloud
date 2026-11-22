@@ -178,6 +178,8 @@
   // capture フェーズが先に処理するため同じ経路でそのまま機能する。
   function _onDocumentKeydown(e) {
     if (!isOpen()) return;
+    // 親項目の→は子へ入る操作。行種の確定として扱わない。
+    if (_state.submenuTrigger?.contains(e.target)) return;
     if (e.isComposing) return; // IME変換中は誤発火させない
     const key = e.key;
     if (key === 'ArrowDown' || (key === 'Tab' && !e.shiftKey)) {
@@ -194,8 +196,10 @@
     } else if (key === 'ArrowLeft' || key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
       const onClose = _state.onClose;
+      const trigger = _state.submenuTrigger;
       close();
       if (typeof onClose === 'function') onClose();
+      trigger?.focus({ preventScroll: true });
     }
   }
   document.addEventListener('keydown', _onDocumentKeydown, true);
@@ -228,6 +232,7 @@
       selectedIndex: 0,
       onSelect: opts.onSelect || null,
       onClose: opts.onClose || null,
+      submenuTrigger: opts.submenuTrigger || null,
       allowInsertItems: !!opts.allowInsertItems,
       insertMode: !!opts.insertMode,
       actions: opts.actions || [],

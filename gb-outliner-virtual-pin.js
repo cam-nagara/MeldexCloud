@@ -310,7 +310,7 @@
     var topNode = _topVisibleTreeNode(scroller, currentBarHeight);
     var chain = topNode ? _ancestorChain(topNode) : [];
     if (!chain.length) {
-      if (bar.style.display !== 'none') { bar.style.display = 'none'; bar.innerHTML = ''; }
+      if (bar.style.display !== 'none') { bar.style.display = 'none'; bar.innerHTML = ''; bar.style.marginBottom = ''; }
       _lastAncestorKey = '';
       return;
     }
@@ -320,6 +320,10 @@
     bar.innerHTML = '';
     chain.forEach(function (nodeEl) { bar.appendChild(_renderPinnedRow(nodeEl)); });
     bar.style.display = '';
+    // 固定行は行の上に重ねて出し、下の行を押し下げない（UI共通ルール §10）。押し下げていた時は、スクロールの直後に
+    // 固定行が出た瞬間にツリーの全行が1行分下へずれ、ドラッグ中のポインタの下の行が入れ替わって、フォルダの中への
+    // ドロップが隣の行への並べ替えになっていた（2026-11-22 M-014 フォルダツリー網羅テスト・実データ形状）。
+    bar.style.marginBottom = (-bar.offsetHeight) + 'px';
   }
 
   // ------------------------------------------------------------

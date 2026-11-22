@@ -136,6 +136,11 @@ function _readLastViewFromStorage() {
 async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
   // Explicit links keep their target; Desktop keeps its saved workspace.
   if (_isDesktopStartupLaunch() || isUrlOpen || onboardingShown || !homeRes?.exists || !homeRes.path) return false;
+  // ホームから始めるのは Cloud（この端末内・Dropbox の保存先）だけ。本体のサーバーを普通のブラウザで
+  // 開いた時は、デスクトップ版と同じく前回のタブを復元する（ここでホームを開くと、復元中のシートのタブが
+  // 「ホームフォルダ」に置き換わり、タブ名と本文が食い違ったまま表が描かれなかった。2026-11-22 探索）。
+  const runtime = typeof window !== 'undefined' ? window.MeldexRuntimeAdapter : null;
+  if (!runtime?.isBrowserDataMode?.()) return false;
   const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
   await openFolder(label, homeRes.path, {
     fromExplorer: true,

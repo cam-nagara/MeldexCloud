@@ -23,13 +23,42 @@ function _getEntryNameAutoPropertyColumns(dbPath, ctx) {
   const add = (name) => {
     const prop = String(name || '').trim();
     if (!prop || prop === '__entity__' || ordered.includes(prop)) return;
-    if (hiddenCols.includes(prop)) return;
     if (allProps.length && !allProps.includes(prop)) return;
     ordered.push(prop);
   };
   if (typeof getColOrder === 'function') (getColOrder(dbPath, { ctx }) || []).forEach(add);
   allProps.forEach(add);
-  return ordered;
+  // 非表示の列も候補に出す（2026-11-21 ユーザー決定）。表示中の列の後ろに並べる。
+  return [...ordered.filter(prop => !hiddenCols.includes(prop)), ...ordered.filter(prop => hiddenCols.includes(prop))];
+}
+
+function _isEntryNameAutoHiddenColumn(dbPath, ctx, prop) {
+  const hiddenCols = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, { ctx }) || []) : [];
+  return hiddenCols.includes(prop);
+}
+
+// トピック名の自動生成（一括）を1件の履歴にまとめて、1回の取り消しで全部の名前を戻す（2026-11-21 ユーザー決定）。
+function _pushEntryNameAutoHistory(dbPath, ctx, res) {
+  if (typeof historyPush !== 'function' || !window.GbDbEntryIdentity?.rename) return;
+  const renamed = (Array.isArray(res?.renamed_entries) ? res.renamed_entries : [])
+    .map(info => ({
+      oldName: String(info?.old_name || (typeof _dbEntityNameFromPath === 'function' ? _dbEntityNameFromPath(info?.old_path || '') : '') || ''),
+      newName: String(info?.new_name || (typeof _dbEntityNameFromPath === 'function' ? _dbEntityNameFromPath(info?.new_path || '') : '') || ''),
+      entryId: String(info?.entry_id || ''),
+    }))
+    .filter(item => item.oldName && item.newName && item.oldName !== item.newName);
+  if (!renamed.length) return;
+  const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath);
+  const apply = async (pairs) => {
+    for (const pair of pairs) {
+      await window.GbDbEntryIdentity.rename({ dbPath, oldName: pair.from, newName: pair.to, entryId: pair.entryId, ctx });
+    }
+    if (window.GbDbEntryIdentity.reload) await window.GbDbEntryIdentity.reload(ctx, dbPath);
+  };
+  historyPush('トピック名を自動生成: ' + renamed.length + '件',
+    () => apply(renamed.map(item => ({ from: item.newName, to: item.oldName, entryId: item.entryId }))),
+    () => apply(renamed.map(item => ({ from: item.oldName, to: item.newName, entryId: item.entryId }))),
+    scope);
 }
 
 function _getDefaultEntryNameAutoProperties(props) {
@@ -127,7 +156,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
     cb.checked = defaults.has(prop);
     cb.dataset.e2eId = `db-entry-name-autogen-prop-${propE2eSuffix(prop)}`;
     const span = document.createElement('span');
-    span.textContent = prop;
+    span.textContent = prop + (_isEntryNameAutoHiddenColumn(targetDbPath, ctx, prop) ? '（非表示の列）' : '');
     label.appendChild(cb);
     label.appendChild(span);
     list.appendChild(label);
@@ -148,6 +177,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
       if (entryPath) payload.entry_path = entryPath;
       const res = await apiPost('/entity/auto-name', payload);
       if (typeof applyDbAutoEntityRenameResponse === 'function') applyDbAutoEntityRenameResponse(res);
+      _pushEntryNameAutoHistory(targetDbPath, ctx, res);
       modalApi.close('generated');
       const count = Number(res?.renamed_count || 0);
       showStatus(count ? `トピック名を自動生成しました: ${count}件` : '生成できるトピック名がありませんでした');
@@ -558,14 +588,14 @@ function showGridBorderModal(ctxOrDbPath) {
   });
 }
 
-function showEntityColMenu(e, ctxOverride, dbPathOverride) {
+function showEntityColMenu(e, ctxOverride, dbPathOverride, menuOptions = {}) {
   closeColHeaderMenu();
   const ctx = ctxOverride || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || e?.currentTarget, { dbPath: dbPathOverride || state.currentDbPath })
     : null);
   const dbPath = dbPathOverride || ctx?.dbPath || state.currentDbPath;
-  const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function'
-    && isProductionManagementSheetPath(dbPath);
+  const productionSchemaLocked = window.MeldexChatManagementSheet?.isPath?.(dbPath) || (typeof isProductionManagementSheetPath === 'function'
+    && isProductionManagementSheetPath(dbPath));
   const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, ctx);
 
@@ -605,6 +635,15 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     { label: 'すべての条件フィルター...', action: () => showUnifiedFilterModal({ ctx }) },
     { label: lucide('settings', 14) + ' 列設定を開く', action: () => showDbPropertySettingsForColumn(dbPath, '__entity__', { switchTab: true, ctx, source: e?.target || e?.currentTarget }) },
     { type: 'sep' },
+    // 左/右に列を挿入（2026-11-21）。通常の列の見出しメニューと同じ処理・同じ取り消し（列タイプを選んで挿入）。
+    ...(!productionWriteBlocked && typeof _makeInsertColumnTypeChildren === 'function' ? [
+      // 階層表示で階層の列になっている時は、通常の列と同じく左側へは入れない。
+      ...(!menuOptions.protectLeftEdge
+        ? [{ type: 'submenu', label: '← 左に列を挿入', children: _makeInsertColumnTypeChildren('__entity__', 'left', ctx || dbPath) }]
+        : []),
+      { type: 'submenu', label: '→ 右に列を挿入', children: _makeInsertColumnTypeChildren('__entity__', 'right', ctx || dbPath) },
+      { type: 'sep' },
+    ] : []),
     ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' トピック名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
     } }, { type: 'sep' }] : []),
@@ -1070,74 +1109,291 @@ function _copyColumnViewConfig(dbPath, fromProp, toProp) {
   saveDbViewConfig(dbPath, c, { skipHistory: true });
 }
 
-async function _copyColumnValuesForDuplicate(dbPath, pivotData, fromProp, toProp) {
-  if (typeof _apiPostValue !== 'function') return { copied: 0, failed: 0 };
+// 写す値（空でない候補値）。表へすぐ出す時と保存する時で同じものを使う。
+function _dbDuplicateColumnValues(ent, fromProp) {
+  return (Array.isArray(ent?.[fromProp]) ? ent[fromProp] : [])
+    .filter(v => v?.value != null && String(v.value) !== '');
+}
+
+// 列の複製で写す値を、保存の完了を待たずに開いている表へ出す（2026-11-22 利用者役の探索: 開き直すまで空列のままだった）。
+// 戻り値は表へ出したトピック名の一覧。
+function _dbShowDuplicatedColumnValuesNow(pivotData, fromProp, toProp) {
+  const shown = [];
+  if (!pivotData?.entities) return shown;
+  if (Array.isArray(pivotData.properties) && !pivotData.properties.includes(toProp)) {
+    const at = pivotData.properties.indexOf(fromProp);
+    pivotData.properties.splice(at >= 0 ? at + 1 : pivotData.properties.length, 0, toProp);
+  }
+  for (const [entityName, ent] of Object.entries(pivotData.entities)) {
+    const vals = _dbDuplicateColumnValues(ent, fromProp);
+    if (!vals.length || !ent || typeof ent !== 'object') continue;
+    ent[toProp] = vals.map(v => {
+      const copy = JSON.parse(JSON.stringify(v));
+      // 元の値の保存先の記録は写さない（写した値の保存先は新しい列）。
+      ['file', 'entry_path', 'property', 'candidate_index', 'candidate_id', '_topicCandidateOriginal'].forEach(k => delete copy[k]);
+      copy.property = toProp;
+      return copy;
+    });
+    shown.push(entityName);
+  }
+  return shown;
+}
+
+// createdRefs（任意の配列）には、写した値の保存先（トピックのパスと候補の番号）を入れる。複製の取り消しで消すため。
+// skipEntities（任意の Set）のトピックには写さない。
+async function _copyColumnValuesForDuplicate(dbPath, pivotData, fromProp, toProp, createdRefs, skipEntities) {
+  if (typeof _apiPostValue !== 'function') return { copied: 0, failed: 0, failedEntities: [] };
   let copied = 0, failed = 0;
-  for (const [entityName, ent] of Object.entries(pivotData?.entities || {})) {
-    const vals = Array.isArray(ent?.[fromProp]) ? ent[fromProp] : [];
+  const failedEntities = [];
+  // トピックごとの保存は順番に（同じトピックへの続けての保存は版がずれるため）、トピック同士は並べて保存する。
+  const jobs = Object.entries(pivotData?.entities || {})
+    .filter(([entityName]) => !(skipEntities instanceof Set && skipEntities.has(entityName)))
+    .map(([entityName, ent]) => ({ entityName, vals: _dbDuplicateColumnValues(ent, fromProp) }))
+    .filter(job => job.vals.length);
+  const runJob = async ({ entityName, vals }) => {
     const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName, pivotData) : `${dbPath}/${entityName}.md`;
     for (const v of vals) {
-      if (v?.value == null || String(v.value) === '') continue;
       const extra = {};
       if (Array.isArray(v.relations)) extra.relations = v.relations;
       if (Array.isArray(v.published_in)) extra.published_in = v.published_in;
-      try { await _apiPostValue(entityPath, toProp, v.value, v.status || '採用', v.note || '', v.rich_html || '', extra); copied++; }
-      catch (e) { console.warn('列複製の値コピーに失敗:', e); failed++; }
+      try {
+        const res = await _apiPostValue(entityPath, toProp, v.value, v.status || '採用', v.note || '', v.rich_html || '', extra);
+        copied++;
+        if (Array.isArray(createdRefs)) {
+          createdRefs.push({
+            entityName,
+            path: res?.new_path || res?.path || entityPath,
+            candidate_index: res?.candidate_index,
+            candidate_id: res?.candidate_id || '',
+          });
+        }
+      }
+      catch (e) {
+        console.warn('列複製の値コピーに失敗:', e);
+        failed++;
+        if (!failedEntities.includes(entityName)) failedEntities.push(entityName);
+      }
     }
-  }
-  return { copied, failed };
+  };
+  let next = 0;
+  const workers = Array.from({ length: Math.min(4, jobs.length) }, async () => {
+    while (next < jobs.length) await runJob(jobs[next++]);
+  });
+  await Promise.all(workers);
+  return { copied, failed, failedEntities };
 }
 
-async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
-  const { dbPath, ctx, pivotData } = _dbColumnModalContext(root);
-  if (!dbPath || !propName) return;
-  const newName = _dbUniqueColumnName(propName + ' コピー', _dbColumnModalNames(root, dbPath, ctx));
+// 列の複製（2026-11-21 共通化）。列見出しの「…」メニュー・列管理の行メニュー・列の表示と順序のダイアログが
+// 同じ処理・同じ取り消しを使う。列タイプと表示設定（列幅・集計・条件付きカラー・編集制限）と値を写し、
+// 元の列のすぐ後ろへ入れる。作った列名を返す（保存できなかった時は false）。
+//   opts.existingNames  名前の重複を避ける列名の集合（未指定ならシートの全列名）
+//   opts.onCreated(name) 列ができた直後（並び順を呼び出し側で決める時。指定すると現在のビューの列順は変えない）
+async function duplicateDbColumn(dbPath, propName, ctx, opts = {}) {
+  if (!dbPath || !propName || propName === '__entity__') return false;
+  const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || ctx?.pivotData || state.pivotData;
+  const existing = opts.existingNames instanceof Set ? new Set(opts.existingNames) : new Set(_dbColumnDisplayOrderList(dbPath, ctx));
+  Object.keys(getPropertyTypes(dbPath, ctx) || {}).forEach(name => existing.add(name));
+  (pivotData?.properties || []).forEach(name => existing.add(name));
+  // 列名変更した旧名は新しい列名に使わない（名前で列を指す保存処理と重ならないように。列の挿入と同じ）。
+  if (typeof _dbColumnRenameAliases !== 'undefined') {
+    (_dbColumnRenameAliases.get(String(dbPath)) || new Map()).forEach((_v, oldName) => existing.add(oldName));
+  }
+  const newName = _dbUniqueColumnName(propName + ' コピー', existing);
   const pt = JSON.parse(JSON.stringify((getPropertyTypes(dbPath, ctx) || {})[propName] || { type: 'text' }));
+  // 列の安定IDは写さない（新しい列には新しいIDを振る）。2026-11-22 利用者役の探索: リレーション列の複製が
+  // 元の列と同じIDになり、改名・削除・同期で元の列と取り違える恐れがあった。
+  delete pt.property_id;
+  // 取り消しの枠は操作した時点で取る（値の写しが終わってから記録すると、その前に押した「元に戻す」が
+  // 黙って捨てられていた。2026-11-22）。早めに押された「元に戻す」は、枠が埋まるのを待ってから取り消す。
+  const historyScope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
+    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
+  const reservation = typeof historyReserve === 'function' && typeof historyPush === 'function'
+    ? historyReserve('列の複製: ' + newName, historyScope) : null;
+  try {
+    const created = await _dbDuplicateColumnNow(dbPath, propName, ctx, opts, { newName, pt, pivotData, reservation, historyScope });
+    if (!created) reservation?.cancel();
+    return created;
+  } catch (error) {
+    reservation?.cancel();
+    throw error;
+  }
+}
+
+async function _dbDuplicateColumnNow(dbPath, propName, ctx, opts, job) {
+  const { newName, pt, pivotData, reservation, historyScope } = job;
+  // 保存の往復を待たずに、新しい列を元の列の右へすぐ出す（列の挿入と同じ。2026-11-21 反応の速さの検査で
+  // 0.33〜0.7秒かかっていた）。保存に失敗したら列順を戻して描き直す。
+  const canPlace = typeof opts.onCreated !== 'function' && typeof getColOrder === 'function' && typeof setColOrder === 'function';
+  const previousOrder = canPlace ? [...(getColOrder(dbPath, { ctx }) || [])] : null;
+  let saving;
+  try {
+    saving = Promise.resolve(setPropertyType(dbPath, newName, pt, ctx));
+  } catch (error) {
+    saving = Promise.reject(error);
+  }
+  if (canPlace) {
+    const order = _dbColumnDisplayOrderList(dbPath, ctx).filter(name => name !== newName);
+    const at = order.indexOf(propName);
+    order.splice(at >= 0 ? at + 1 : order.length, 0, newName);
+    setColOrder(dbPath, order, { skipHistory: true, ctx });
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    else if (typeof renderPivot === 'function') renderPivot(ctx);
+  }
+  const undoPlacement = () => {
+    if (!canPlace) return;
+    setColOrder(dbPath, previousOrder.filter(name => name !== newName), { skipHistory: true, ctx });
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    else if (typeof renderPivot === 'function') renderPivot(ctx);
+  };
   let saved;
   try {
-    saved = await Promise.resolve(setPropertyType(dbPath, newName, pt, ctx));
+    saved = await saving;
   } catch (error) {
+    undoPlacement();
     console.warn('[Meldex] 列の複製に失敗しました', error);
     if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした: ${error?.message || error}`, true);
     return false;
   }
   if (saved === false) {
+    undoPlacement();
     // 保護された列などで保存できなかった。値のコピーや表示順の更新へ進まない。
     if (typeof showStatus === 'function') showStatus(`列「${propName}」を複製できませんでした。列の保護設定や編集権限を確認してください`, true);
     return false;
   }
   _copyColumnViewConfig(dbPath, propName, newName);
-  _addColumnDisplayOrderItem(root, newName, true, item);
-  _saveColumnDisplayOrderState(root);
-  const result = await _copyColumnValuesForDuplicate(dbPath, pivotData, propName, newName);
-  if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
-  else if (typeof renderPivot === 'function') renderPivot(ctx);
-  _dbPushColumnDuplicateHistory('列の複製: ' + newName, dbPath, ctx, newName, pt);
-  const suffix = result.failed ? `（${result.failed}件失敗）` : '';
-  if (typeof showStatus === 'function') showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件${suffix}`, !!result.failed);
-  return true;
+  if (typeof opts.onCreated === 'function') opts.onCreated(newName);
+  // 開いている列管理には、値の写しを待たずに新しい列を出す。
+  try { window.MeldexColumnManager?.refresh?.(); } catch (_) { /* 列管理が開いていない */ }
+  // 値は保存を待たずに表へ出す。保存できなかった分は表から外して知らせる。
+  // 列の保存中に表が読み直されていれば、今表示している方へ出す。
+  const livePivot = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || ctx?.pivotData || pivotData;
+  const shownEntities = _dbShowDuplicatedColumnValuesNow(livePivot, propName, newName);
+  const redraw = () => {
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    else if (typeof renderPivot === 'function') renderPivot(ctx);
+  };
+  if (shownEntities.length) redraw();
+  let result;
+  const createdRefs = [];
+  try {
+    result = await _copyColumnValuesForDuplicate(dbPath, pivotData, propName, newName, createdRefs);
+  } catch (error) {
+    result = { copied: 0, failed: shownEntities.length, failedEntities: shownEntities, error };
+  }
+  if (result.failed) {
+    (result.failedEntities || []).forEach(name => { if (livePivot?.entities?.[name]) delete livePivot.entities[name][newName]; });
+    redraw();
+  }
+  _dbRecordColumnDuplicateHistory('列の複製: ' + newName, dbPath, ctx, { newName, pt, propName, createdRefs, reservation, historyScope });
+  if (result.failed) {
+    if (typeof showStatus === 'function') {
+      showStatus(`列「${newName}」は作りましたが、値を${result.failed}件写せませんでした。保存先に接続できるか確認して、もう一度複製してください`, true);
+    }
+  } else if (typeof showStatus === 'function') {
+    showStatus(`列を複製しました: ${newName} / 値 ${result.copied}件`);
+  }
+  // 保存先の版（取り消しの基準）を取り直す。失敗しても表示中の値と知らせはそのまま。
+  try {
+    if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
+  } catch (error) {
+    console.warn('[Meldex] 列の複製後の読み直しに失敗しました', error);
+  }
+  return newName;
 }
 
-// 列を作る操作（列の複製など）を取り消し・やり直しできるようにする。取り消しは作った列の削除（列の削除と同じく、
-// コピーした値はトピックに残り表示されなくなる）、やり直しは作った直後の列タイプと表示設定を戻す（残っている値がそのまま出る）。
-// 列の保存が確定してから呼ぶ。
-function _dbPushColumnDuplicateHistory(label, dbPath, ctx, newName, pt) {
-  if (typeof historyPush !== 'function' || typeof _deleteColumnNoConfirm !== 'function') return;
+async function _duplicateColumnFromDisplayOrderModal(root, propName, item) {
+  const { dbPath, ctx } = _dbColumnModalContext(root);
+  if (!dbPath || !propName) return;
+  const created = await duplicateDbColumn(dbPath, propName, ctx, {
+    existingNames: _dbColumnModalNames(root, dbPath, ctx),
+    onCreated: (newName) => {
+      _addColumnDisplayOrderItem(root, newName, true, item);
+      _saveColumnDisplayOrderState(root);
+    },
+  });
+  return !!created;
+}
+
+// 写した値を消す（複製の取り消し）。消せなかったトピック名の Set を返す。
+async function _dbDeleteDuplicatedColumnValues(newName, createdRefs) {
+  const leftover = new Set();
+  if (typeof _apiPutValue !== 'function') {
+    (createdRefs || []).forEach(ref => leftover.add(ref.entityName));
+    return leftover;
+  }
+  // 同じトピックの値は後ろの番号から消す（前を消すと後ろの番号がずれるため）。トピック同士は並べて消す。
+  const byEntity = new Map();
+  (createdRefs || []).forEach(ref => {
+    if (!byEntity.has(ref.entityName)) byEntity.set(ref.entityName, []);
+    byEntity.get(ref.entityName).push(ref);
+  });
+  await Promise.all([...byEntity.entries()].map(async ([entityName, refs]) => {
+    refs.sort((a, b) => Number(b.candidate_index ?? -1) - Number(a.candidate_index ?? -1));
+    for (const ref of refs) {
+      if (ref.candidate_index == null) { leftover.add(entityName); continue; }
+      try {
+        await _apiPutValue({
+          file: ref.path, entry_path: ref.path, property: newName,
+          candidate_index: ref.candidate_index, candidate_id: ref.candidate_id || undefined,
+        }, { _delete: true });
+      } catch (error) {
+        console.warn('[Meldex] 列の複製の取り消しで値を消せませんでした', error);
+        leftover.add(entityName);
+      }
+    }
+  }));
+  return leftover;
+}
+
+// 列の複製を取り消し・やり直しできるようにする（枠は複製を始めた時点で取ってある）。
+// 取り消しは「複製しなかった」状態へ戻す: 写した値をトピックから消し、列を外し、列名と列の安定IDの対応も残さない
+// （2026-11-22 利用者役の探索: 取り消した列の値と名前が残り、次の複製が「コピー 2」になり、同じIDの列名が並んでいた）。
+// 写した値を消せなかった時だけ、削除した列として名前を残す（残った値が別の列として表に出ないように）。
+// やり直しは列タイプと表示設定を戻し、元の列の値を写し直す。
+function _dbRecordColumnDuplicateHistory(label, dbPath, ctx, job) {
+  const { newName, pt, propName, reservation, historyScope } = job;
+  if (typeof historyPush !== 'function' || typeof _deleteColumnNoConfirm !== 'function') { reservation?.cancel(); return; }
+  let createdRefs = job.createdRefs || [];
+  let leftover = new Set();
   const cfgAfter = typeof getDbViewConfig === 'function' ? JSON.parse(JSON.stringify(getDbViewConfig(dbPath) || {})) : null;
-  const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath)
-    : (typeof _dbScope === 'function' ? _dbScope(dbPath) : undefined);
-  historyPush(label,
-    () => _dbPropsWithoutNestedViewHistory(async () => {
-      if (await _deleteColumnNoConfirm(dbPath, newName, ctx) === false) throw new Error(`列「${newName}」を取り消せませんでした`);
-    }),
-    () => _dbPropsWithoutNestedViewHistory(async () => {
-      if (cfgAfter && typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, JSON.parse(JSON.stringify(cfgAfter)), { skipHistory: true });
-      const saved = await Promise.resolve(setPropertyType(dbPath, newName, JSON.parse(JSON.stringify(pt)), ctx));
-      if (saved === false) throw new Error(`列「${newName}」を戻せませんでした`);
-      if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(dbPath);
-      if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
-    }),
-    scope);
+  const livePivot = () => (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || ctx?.pivotData || state.pivotData;
+  const undo = () => _dbPropsWithoutNestedViewHistory(async () => {
+    leftover = await _dbDeleteDuplicatedColumnValues(newName, createdRefs);
+    if (typeof _ptForgetPropertyIdName === 'function') _ptForgetPropertyIdName(dbPath, newName, ctx);
+    const pivot = livePivot();
+    Object.entries(pivot?.entities || {}).forEach(([entityName, ent]) => {
+      if (ent && typeof ent === 'object' && !leftover.has(entityName)) delete ent[newName];
+    });
+    if (await _deleteColumnNoConfirm(dbPath, newName, ctx) === false) throw new Error(`列「${newName}」を取り消せませんでした`);
+    if (!leftover.size && typeof _unmarkDbPropertyDeletedInConfig === 'function') {
+      const cfg = getDbViewConfig(dbPath);
+      if (_unmarkDbPropertyDeletedInConfig(cfg, newName)) {
+        saveDbViewConfig(dbPath, cfg, { skipHistory: true, skipBackend: true });
+        if (typeof _persistDbViewConfigToBackend === 'function') await _persistDbViewConfigToBackend(dbPath, cfg, { immediate: true });
+      }
+      if (Array.isArray(pivot?.properties)) pivot.properties = pivot.properties.filter(name => name !== newName);
+    }
+    if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
+    if (leftover.size && typeof showStatus === 'function') {
+      showStatus(`列「${newName}」の複製を取り消しましたが、写した値を${leftover.size}件のトピックから消せませんでした`, true);
+    }
+  });
+  const redo = () => _dbPropsWithoutNestedViewHistory(async () => {
+    if (cfgAfter && typeof saveDbViewConfig === 'function') saveDbViewConfig(dbPath, JSON.parse(JSON.stringify(cfgAfter)), { skipHistory: true });
+    const saved = await Promise.resolve(setPropertyType(dbPath, newName, JSON.parse(JSON.stringify(pt)), ctx));
+    if (saved === false) throw new Error(`列「${newName}」を戻せませんでした`);
+    if (typeof flushPendingDbViewConfigBackendSave === 'function') await flushPendingDbViewConfigBackendSave(dbPath);
+    // 値は元の列から写し直す（消せずに残っているトピックには写さない）。
+    const refs = [];
+    const result = await _copyColumnValuesForDuplicate(dbPath, livePivot(), propName, newName, refs, leftover);
+    createdRefs = refs.concat((job.createdRefs || []).filter(ref => leftover.has(ref.entityName)));
+    if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
+    if (result.failed && typeof showStatus === 'function') {
+      showStatus(`列「${newName}」を戻しましたが、値を${result.failed}件写せませんでした`, true);
+    }
+  });
+  if (reservation) reservation.fill(undo, redo, label);
+  else historyPush(label, undo, redo, historyScope);
 }
 
 async function _deleteColumnFromDisplayOrderModal(root, propName, item) {

@@ -476,18 +476,7 @@
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
-      const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
-      if (body?.created) {
-        record.created = body.created;
-        record.created_at = body.created_at || body.created;
-      }
-      if (body?.modified) {
-        record.modified = body.modified;
-        record.modified_at = body.modified_at || body.modified;
-      }
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id };
+      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
     }
     if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -697,8 +686,16 @@
 
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const parent = _normalizeFolderPath(body?.parent || '');
+      let parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
+      if (type === 'form-app') {
+        const home = await window.MeldexDataAccess.requestJson('/home-folder', { method: 'GET' });
+        const personal = _normalizeFolderPath(home?.path || '');
+        if (!personal || home.exists === false || personal.split('/').some(part => part === '..' || part === '.'))
+          throw new Error('個人のホームを設定してください');
+        if (parent.split('/').some(part => part === '..' || part === '.')
+          || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
+      }
       const titleHelper = window.GBPathUtils?.displayTitle;
       const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;

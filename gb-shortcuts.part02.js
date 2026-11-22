@@ -172,36 +172,14 @@
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;
     if (typeof _folderSelectedItems === 'undefined' || _folderSelectedItems.length === 0) return;
-    const impactTargets = _folderSelectedItems.map(item => ({
-      path: item.path,
-      kind: item.type === 'folder' ? 'folder' : 'file',
-      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-    }));
-    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
-      : { confirmed: true, operation: 'trash' };
-    if (!confirmed) return;
-    const deletedItems = [..._folderSelectedItems];
-    const result = await deleteOutlinerItemsWithHistory(deletedItems, {
-      confirmation: confirmed,
-      label: deletedItems.length + ' 件を削除',
-      refresh: async () => {
-        if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-          await openFolder(_folderPath.split('/').pop(), _folderPath);
-        }
-      },
-    });
-    if (result.succeeded.length > 0) {
-      const deletedCount = result.deletedCount || result.succeeded.length;
-      if (typeof showStatus === 'function') showStatus(deletedCount + ' 件を削除しました（Undoで戻せます）' + (result.failedCount ? `（${result.failedCount}件失敗）` : ''), result.failedCount > 0);
-    } else if (typeof showStatus === 'function') {
-      showStatus('削除に失敗しました', true);
+    // ツールバーの削除と同じ処理を使う（リンクの項目は元のファイルを消さず所属を解除・編集ロック中は除外・
+    // 親と子が両方選ばれていたら親だけ）。以前は Delete キーだけ別の処理で、リンクの項目を選んで押すと
+    // 「実ファイルとして削除できません」と断るだけだった（2026-11-22 M-014 フォルダパネル網羅テスト）。
+    if (typeof folderToolbarDeleteSelection === 'function') {
+      await folderToolbarDeleteSelection();
+      return;
     }
-    _folderSelectedItems = [];
-    _folderSelected = null;
-    if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
-    if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
-    if (typeof _folderPath !== 'undefined' && _folderPath) openFolder(_folderPath.split('/').pop(), _folderPath);
+    if (typeof showStatus === 'function') showStatus('削除の処理を読み込めませんでした', true);
   },
 };
 
@@ -241,6 +219,10 @@ document.addEventListener('keydown', (e) => {
   const pressed = _normalizeKeyEvent(e);
   if (!pressed) return;
   if (pressed === 'ctrl+c' && _hasChatMessageTextSelection()) return;
+  // ツールバーのボタン（メインメニューボタン等）にフォーカスがある時の Enter / Space は、
+  // ボタン自身を押す操作としてブラウザへ任せる。アプリのショートカットとして横取りしない。
+  if ((e.key === 'Enter' || e.key === ' ') && !e.ctrlKey && !e.metaKey && !e.altKey
+      && e.target?.closest?.('button, [role="button"]')?.closest?.('.gb-toolbar, .folder-toolbar, [role="toolbar"], .sa-toolbar, .qm-header')) return;
 
   // モーダルダイアログが開いている場合はスキップ（ダイアログ自身が処理する）
   if (document.querySelector('.modal-overlay')) return;

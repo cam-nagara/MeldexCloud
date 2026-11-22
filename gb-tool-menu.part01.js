@@ -73,6 +73,8 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
       trigger.setAttribute('role', 'menuitem');
       trigger.setAttribute('aria-haspopup', 'menu');
       trigger.setAttribute('aria-expanded', 'false');
+      // 安定ID: メニューの中の位置（親の表示名/表示名）で決める（同じ画面に同じ項目は1つだけ）。
+      trigger.dataset.e2eId = 'tool-menu-item:' + _toolMenuItemPath(container, item.label);
       _toolMenuAppendIcon(trigger, item.icon);
       _toolMenuAppendLabel(trigger, item.label);
       const arrow = _toolMenuAppendShortcut(trigger, '');
@@ -81,6 +83,7 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
       sub.className = 'gb-context-menu ab-dropdown ab-sub-menu tool-menu-dropdown tool-menu-submenu';
       sub.setAttribute('role', 'menu');
       sub.setAttribute('aria-label', item.label || 'サブメニュー');
+      sub.dataset.toolMenuPath = _toolMenuItemPath(container, item.label);
       sub.style.cssText = 'display:none;min-width:200px;';
       _renderToolMenuItems(sub, item.submenu, true, rootDd);
       attachHoverSubmenu(trigger, sub);
@@ -99,6 +102,7 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
     el.type = 'button';
     el.className = 'gb-context-menu-item ab-dropdown-item';
     el.setAttribute('role', 'menuitem');
+    el.dataset.e2eId = 'tool-menu-item:' + _toolMenuItemPath(container, item.label);
     if (item.shortcut) {
       _toolMenuAppendLabel(el, item.label);
       _toolMenuAppendShortcut(el, item.shortcut);
@@ -120,6 +124,12 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
     });
     container.appendChild(el);
   });
+}
+
+// ツールメニューの項目の安定IDに使う、メニューの中の位置（例: エクスポート/印刷...）。
+function _toolMenuItemPath(container, label) {
+  const parent = container?.dataset?.toolMenuPath || '';
+  return (parent ? parent + '/' : '') + String(label || '').trim();
 }
 
 // ツールメニューを生成・表示する共通関数
@@ -204,6 +214,8 @@ function showToolMenu(e, toolType, component) {
   dd.querySelector('.gb-context-menu-item:not(:disabled)')?.focus?.();
 
   keyHandler = (ev) => {
+    // メニューが別の経路で取り除かれていたら、キー操作を横取りせずに後始末だけする。
+    if (!dd.isConnected) { closeAll(); return; }
     if (ev.key === 'Escape') {
       ev.preventDefault();
       ev.stopPropagation();
@@ -329,6 +341,9 @@ function getCurrentFileAssetId(path) {
 }
 
 function getActiveScriptNoteComponent() {
+  // サブパネル・トピック内のシナリオが操作対象なら、それを使う（_sn2GetActiveEditor と同じ判定）。
+  const host = window.GBEditorHost?.get?.();
+  if (host?.kind === 'scriptnote' && host.component?._editor?.doc) return host.component;
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined') ? GBTabs.getActiveTab(GBLayout.activePane) : null;
   if (activeTab?.type === 'scriptnote') {
     return typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null;
@@ -364,7 +379,8 @@ function getScriptNoteLabelFromPath(path = '', fallback = '') {
 
 async function _probeJsonFile(path) {
   try {
-    const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+    // 取込先がまだ無いことの確認なので、見つからない時にエラーを画面へ出さない（404 は下で「無い」として扱う）。
+    const data = await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true });
     try {
       return { exists: true, parsed: JSON.parse(data?.content || '{}'), parseError: null };
     } catch (error) {
@@ -386,7 +402,7 @@ async function _resolveScriptNoteTargetFromScenario(sourcePath, label = '') {
   if (typeof convertScenarioDocToScriptNoteDoc !== 'function') throw new Error('シナリオ形式への変換機能が見つかりません');
   const basePath = typeof suggestScriptNotePath === 'function'
     ? suggestScriptNotePath(sourcePath, parsed?.title || label || '')
-    : String(sourcePath || '').replace(/\.(json|csv|xlsx|xls)$/i, '') + '.scriptnote.json';
+    : String(sourcePath || '').replace(/(\.scenario)?\.(json|csv|xlsx|xls)$/i, '') + '.mel-scenario';
   let candidatePath = basePath;
   for (let i = 0; i < 20; i++) {
     const probe = await _probeJsonFile(candidatePath);
@@ -401,7 +417,8 @@ async function _resolveScriptNoteTargetFromScenario(sourcePath, label = '') {
     if (typeof isScriptNoteFileDoc === 'function' && isScriptNoteFileDoc(probe.parsed)) {
       return { path: candidatePath, label: getScriptNoteLabelFromPath(candidatePath, label), created: false };
     }
-    candidatePath = basePath.replace(/\.scriptnote\.json$/i, ` (${i + 2}).scriptnote.json`);
+    // 現行の .mel-scenario と旧拡張子の .scriptnote.json の両方で番号を付ける（同名の別ファイルがある時に同じ候補を試し続けない）。
+    candidatePath = basePath.replace(/(\.mel-scenario|\.scriptnote\.json)$/i, ` (${i + 2})$1`);
   }
   throw new Error('保存先のシナリオファイルを決められませんでした');
 }
@@ -482,6 +499,10 @@ function openScenarioInScriptNote(path, label = '', opts) {
     const loadIntoTab = (attempt = 0) => {
       const comp = getComponentInstance(tabId);
       if (!comp || typeof comp._loadScenario !== 'function') {
+        // 初期化を待つ間に、利用者が別のファイルを開いてこのタブが置き換わった・閉じられた時は、何もしない
+        // （置き換わったタブを待ち続けて「初期化に失敗しました」を出していた）。
+        const liveTab = GBLayout.findNode?.(GBLayout.root, paneId)?.node?.tabs?.find?.(item => item.id === tabId);
+        if (GBLayout.findNode && (!liveTab || liveTab.type !== 'scriptnote')) return;
         if (attempt < 40) setTimeout(() => loadIntoTab(attempt + 1), 50);
         else showStatus('シナリオタブの初期化に失敗しました', true);
         return;
@@ -751,13 +772,13 @@ async function _exportFile(type, format) {
 }
 
 // 現在のビューを閉じる
-function closeCurrentView() {
+function closeCurrentView(options) {
   const activePaneId = typeof GBLayout !== 'undefined' ? GBLayout.activePane : null;
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function')
     ? GBTabs.getActiveTab(activePaneId)
     : null;
   if (activePaneId && activeTab && typeof GBTabs !== 'undefined' && typeof GBTabs.closeTab === 'function') {
-    GBTabs.closeTab(activePaneId, activeTab.id);
+    GBTabs.closeTab(activePaneId, activeTab.id, options?.skipHistory ? { skipHistory: true } : undefined);
     return;
   }
   showView('welcome');
@@ -836,23 +857,6 @@ async function _createFolderViewItem(type) {
   }
 }
 
-async function _duplicateCurrentFile(toolType) {
-  const path = getCurrentFilePath();
-  if (!path) return;
-  try {
-    const res = await apiPost('/outliner/duplicate', { path });
-    await _refreshWorkspaceAfterFileMutation();
-    const duplicatedPath = res?.new_path || '';
-    const duplicatedName = _toolMenuDisplayName(duplicatedPath || path, toolType, res?.new_name || '');
-    if (duplicatedPath && typeof navOpen === 'function') {
-      navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath });
-    }
-    showStatus('ファイルを複製しました' + (duplicatedName ? ': ' + duplicatedName : ''));
-  } catch (e) {
-    showStatus('ファイルの複製に失敗しました: ' + (e?.message || e || ''), true);
-  }
-}
-
 async function _deleteCurrentFile(toolType) {
   const path = getCurrentFilePath();
   if (!path) return;
@@ -881,13 +885,95 @@ async function _deleteCurrentFile(toolType) {
       ? GBTabs.getActiveTab(activePaneId)
       : null;
     if (activePaneId && activeTab?.path === path && typeof GBTabs.closeTab === 'function') {
-      GBTabs.closeTab(activePaneId, activeTab.id);
+      // タブを閉じるのは削除の結果なので、取り消し履歴には積まない（積むと削除の直後の Ctrl+Z が
+      // 削除の取り消しではなく「タブを閉じる」の取り消しになり、削除したファイルのタブだけが戻っていた）。
+      GBTabs.closeTab(activePaneId, activeTab.id, { skipHistory: true });
     } else if (typeof closeCurrentView === 'function') {
-      closeCurrentView();
+      closeCurrentView({ skipHistory: true });
     }
     await _refreshWorkspaceAfterFileMutation();
     showStatus('ファイルを削除しました（Undoで戻せます）' + (name ? ': ' + name : ''));
   } catch (e) {
     showStatus('ファイルの削除に失敗しました: ' + (e?.message || e || ''), true);
+  }
+}
+
+// 辞書ファイル出力（IME辞書形式）。ステータスで出力対象を絞り込める。
+let _dictExportInProgress = false;
+async function _exportDictFile(options = {}) {
+  if (_dictExportInProgress) {
+    showStatus('辞書を準備しています。しばらくお待ちください');
+    return;
+  }
+  _dictExportInProgress = true;
+  try {
+    const fetchProgress = window.MeldexOperationProgress?.begin?.({
+      kind: 'dictionary-export',
+      label: '辞書データを準備しています',
+      mode: 'indeterminate',
+      showInTray: true,
+      priority: 35,
+    });
+    if (!fetchProgress) showStatus('辞書を準備中…');
+    const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
+    const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
+    let data;
+    try {
+      data = await apiFetch(url, { timeoutMs: 120000 });
+      fetchProgress?.succeed?.({ summary: '辞書データを準備しました' });
+    } catch (error) {
+      const message = `辞書データの取得に失敗しました: ${error?.message || '通信エラー'}`;
+      if (fetchProgress) fetchProgress.fail({ error: message });
+      else showStatus(message, true);
+      return;
+    }
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    const prepared = _prepareDictExport(entries, new Set());
+    if (prepared.statuses.length === 0) {
+      showStatus('ルビ付きトピックがありません', true);
+      return;
+    }
+    const STATUS_ORDER = ['採用', '掲載済み', '連載中', '確定', '案', '草稿', '保留', 'ボツ', '(未設定)'];
+    const present = prepared.statuses.sort((a, b) => {
+      const ia = STATUS_ORDER.indexOf(a), ib = STATUS_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    const allowed = await _showDictStatusDialog(present, prepared, options);
+    if (!allowed) {
+      showStatus('辞書出力をキャンセルしました');
+      return;
+    }
+    let output;
+    try {
+      output = _prepareDictExport(entries, allowed);
+    } catch (error) {
+      showStatus(`辞書データの生成に失敗しました: ${error?.message || 'データ形式エラー'}`, true);
+      return;
+    }
+    if (output.lines.length === 0) {
+      showStatus('選択したステータスの辞書項目がありません', true);
+      return;
+    }
+    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
+      showStatus('保存ダイアログを初期化できませんでした', true);
+      return;
+    }
+    const excluded = [];
+    if (output.withoutReading) excluded.push(`ルビなし${output.withoutReading}件`);
+    if (output.duplicateCount) excluded.push(`重複${output.duplicateCount}件`);
+    await MeldexExportSave.saveText(output.lines.join('\n'), {
+        filename: (work ? work.replace(/[\\/]/g, '_') + '_' : '') + 'dictionary.txt',
+        extension: '.txt',
+        dialogTitle: '辞書ファイルを書き出し',
+        filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
+        bom: true,
+        okMessage: `${output.lines.length}件の辞書項目を出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
+        cancelMessage: '辞書ファイルの保存をキャンセルしました',
+        errorMessage: '辞書ファイルの保存に失敗しました',
+    });
+  } catch (error) {
+    showStatus(`辞書ファイルの出力に失敗しました: ${error?.message || '不明なエラー'}`, true);
+  } finally {
+    _dictExportInProgress = false;
   }
 }

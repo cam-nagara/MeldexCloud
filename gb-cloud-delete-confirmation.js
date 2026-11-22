@@ -167,7 +167,13 @@
     if (typeof provider?.statPathFresh !== 'function') {
       throw _error('削除確認専用のfresh statを利用できません', 503);
     }
-    const metadata = await provider.statPathFresh(item.path);
+    let metadata = await provider.statPathFresh(item.path);
+    // Cloud 版のシートの行は、行ごとのファイルではなくシートの保管ファイルにだけあることがある（2026-11-22）。
+    // その行の状態（識別と更新時刻）で確かめる。無ければこれまでどおり止める。
+    if (!metadata && item.kind !== 'folder') {
+      const rowState = window.__MeldexPwaDataAccessInternals?._sheetStoreRowConfirmationMetadata;
+      if (typeof rowState === 'function') metadata = await rowState(provider, item.path);
+    }
     if (!metadata) throw _error(`削除対象の状態を確認できません: ${item.path}`, 409);
     const actualKind = metadata.kind === 'directory' ? 'folder' : 'file';
     if (actualKind !== item.kind) throw _error(`削除対象の種類が変更されました: ${item.path}`, 409);
@@ -271,6 +277,25 @@
     return { ...(aggregateImpact || {}), confirmations: [confirmation], confirmationToken: token, graphRevision };
   }
 
+  // デスクトップ版のサーバー（require_reference_delete_confirmation）と同じく、参照元が0件で確認が完全な
+  // ごみ箱移動は token なしで通す（2026-11-22）。追加したトピックの取り消し等、利用者に確認を出さない削除が
+  // Cloud 版だけ必ず失敗していた。対象の状態と参照の指紋は受領に残し、削除の直前の再確認で変化を止める。
+  async function _unreferencedTrashReceipt(provider, groups, options) {
+    const receiptGroups = [];
+    for (const group of groups) {
+      const getState = options?.getState || _defaultState;
+      const before = await _states(provider, group.localItems, getState);
+      const impactTargets = _impactItems(group.localItems, before);
+      const impact = await _latestImpact(provider, impactTargets, options?.queryImpact);
+      if (Number(impact?.sourceFileCount || 0) !== 0) return null;
+      const after = await _states(provider, group.localItems, getState);
+      if (_fingerprint(before) !== _fingerprint(after)) throw _error('確認中に削除対象が変更されました', 409, impact);
+      receiptGroups.push({ localTargets: group.localItems, states: _storedStates(after),
+        impactTargets, graphRevision: _impactFingerprint(impact) });
+    }
+    return receiptGroups.length ? { groups: receiptGroups } : null;
+  }
+
   async function consumeProviderDelete(options) {
     const provider = options?.provider;
     const operation = _operation(options?.operation);
@@ -279,9 +304,15 @@
     const supplied = Array.isArray(options?.confirmations) && options.confirmations.length
       ? options.confirmations
       : [{ token: options?.confirmationToken || options?.confirmation_token, graphRevision: options?.graphRevision || options?.graph_revision }];
+    const suppliedToken = supplied.length === 1
+      ? String(supplied[0]?.token || supplied[0]?.confirmationToken || '').trim() : '';
+    if (!suppliedToken && supplied.length <= 1 && operation === 'trash') {
+      const receipt = await _unreferencedTrashReceipt(provider, groups, options);
+      if (receipt) return { ok: true, receipt };
+    }
     if (supplied.length !== 1) throw _error('削除前の参照影響確認が必要です', 409);
     const confirmation = supplied[0];
-    const token = String(confirmation?.token || confirmation?.confirmationToken || '').trim();
+    const token = suppliedToken;
     if (!token) throw _error('削除前の参照影響確認が必要です', 409);
     const ledger = await _ledgerAdapter(provider, groups);
     const kind = window.MeldexSystemStorage.SystemStorageKind.REFERENCE_CONFIRMATIONS;

@@ -1,3 +1,48 @@
+    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
+      initGlobalFilterBar();
+      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
+        if (openedCloudStartupHome) highlightOutlinerNode(homeRes.path);
+        else _highlightLastOutlinerNodeAfterStartup();
+        showStatus('準備完了');
+      });
+    });
+  } catch (e) {
+    showStatus('ソースフォルダ情報の取得に失敗しました', true);
+  }
+  _hideStartupSplash();
+}
+/* ==============================
+   表示切替
+   ============================== */
+function showView(viewName, ctx) {
+  if (!ctx?.embedded && typeof _captureDbNavigationBeforeLeave === 'function') _captureDbNavigationBeforeLeave(ctx?.paneId);
+  const resolvedViewName = ['calendar', 'tasks', 'shifts', 'gantt'].includes(viewName) ? 'timeline' : viewName;
+  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form', 'calendar', 'tasks', 'shifts'].includes(name);
+  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
+  if (ctx && ctx.containerEl) {
+    const isDbView = isDbViewName(viewName);
+    const c = ctx.containerEl;
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view');
+    if (hasPaneViewSurfaces) {
+      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
+      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
+      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+      _sv('#tree-view, .tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
+      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+      ctx.viewMode = viewName;
+      if (typeof _dbTreeSetOptionTabVisible === 'function') {
+        _dbTreeSetOptionTabVisible(resolvedViewName === 'tree', ctx);
+      }
+      return;
+    }
+  }
+  // ビュー切替前にボードの未保存を即時保存
+  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
     if (typeof bdSave === 'function') bdSave();
   }
   // ボードから離れたらノートタブを非表示
@@ -853,48 +898,3 @@ async function handleXlsxImportToOutliner(e) {
     showStatus('xlsx取込に失敗しました: ' + err.message, true);
   }
 }
-
-// Phase C: ボードエンジンはgb-canvas-engine.js + gb-canvas-features.js + gb-canvas-interact.js に移行済み
-// bd オブジェクトは gb-canvas-engine.js で定義
-
-// グローバルdrop防止（未処理エリアへのドロップでブラウザがファイルを開くのを防ぐ）
-document.addEventListener('dragover', (e) => { e.preventDefault(); }, false);
-document.addEventListener('drop', (e) => {
-  // 個別ハンドラでpreventDefaultされていない場合のみ（フォールバック）
-  if (!e.defaultPrevented && typeof MeldexDnD !== 'undefined' && MeldexDnD.handleTextInputDrop(e)) return;
-  if (!e.defaultPrevented) e.preventDefault();
-}, false);
-
-/* === gb-app.part03.js === */
-// timeline-view(カレンダー)へのD&Dドロップ（ファイルから新規イベント作成）
-function _appLocalDateTimeInputValue(date) {
-  if (typeof formatLocalDateTime === 'function') return formatLocalDateTime(date);
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function _appShouldHandleStandaloneCalendarDrop() {
-  return state.view === 'timeline'
-    && !state.currentDbPath
-    && typeof _showCalEventInDetailPanel === 'function';
-}
-
-{
-  const tv = document.getElementById('timeline-view');
-  if (tv) tv.addEventListener('dragover', (e) => {
-    if (e.dataTransfer.types.includes('application/x-meldex-node') && _appShouldHandleStandaloneCalendarDrop()) e.preventDefault();
-  });
-  if (tv) tv.addEventListener('drop', (e) => {
-    if (!_appShouldHandleStandaloneCalendarDrop()) return;
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    if (!cfData) return;
-    e.preventDefault();
-    try {
-      const { name, path } = JSON.parse(cfData);
-      // 詳細パネルにイベント編集を表示（タイトルにファイル名、リンク付き）
-      const now = new Date();
-      const startVal = _appLocalDateTimeInputValue(now);
-      const endH = new Date(now.getTime() + 3600000);
-      const endVal = _appLocalDateTimeInputValue(endH);
-      if (typeof _showCalEventInDetailPanel === 'function') {

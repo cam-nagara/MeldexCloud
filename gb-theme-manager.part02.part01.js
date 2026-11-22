@@ -221,7 +221,7 @@
   function scheduleBoardRender() {
     const board = getBoardState();
     if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    const render = global.bdRefreshThemeStyles;
     if (typeof render !== 'function') return;
     const token = ++_boardRenderToken;
     const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
@@ -970,8 +970,15 @@
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const resolved = resolveSavedThemeUiApplications(themeDef, stored);
+          const encoded = JSON.parse(_encodeThemeUiApplications(resolved));
+          // Keep the exact pre-repair value for recovery, even if an old
+          // explicit choice happens to equal the entire former shipped preset.
+          if (JSON.stringify(normalizeThemeUiApplications(stored)) !== JSON.stringify(resolved)) {
+            encoded._previousDefaults = stored;
+          } else if (stored?._previousDefaults) encoded._previousDefaults = stored._previousDefaults;
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
+            JSON.stringify(encoded));
           wroteApplications = true;
         }
       }

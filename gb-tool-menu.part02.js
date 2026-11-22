@@ -1,6 +1,30 @@
+async function _duplicateCurrentFile(toolType) {
+  const path = getCurrentFilePath();
+  if (!path) return;
+  try {
+    // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは複製をゴミ箱へ移す）
+    const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
+    const res = await apiPost('/outliner/duplicate', { path });
+    await _refreshWorkspaceAfterFileMutation();
+    const duplicatedPath = res?.new_path || '';
+    const duplicatedName = _toolMenuDisplayName(duplicatedPath || path, toolType, res?.new_name || '');
+    if (duplicatedPath && typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: duplicatedPath, type: toolType || 'page' }, 'ファイルを複製: ' + (duplicatedName || duplicatedPath), {
+        scope: historyScope, refresh: () => _refreshWorkspaceAfterFileMutation(),
+      });
+    }
+    if (duplicatedPath && typeof navOpen === 'function') {
+      navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath });
+    }
+    showStatus('ファイルを複製しました' + (duplicatedName ? ': ' + duplicatedName : ''));
+  } catch (e) {
+    showStatus('ファイルの複製に失敗しました: ' + (e?.message || e || ''), true);
+  }
+}
+
 // ツール別メニュー項目
 function buildToolMenuItems(toolType, component) {
-  const registrationItems = _toolMenuFileRegistrationItems(toolType, component);
+  const registrationItems = [..._toolMenuRevealItems(toolType, component), ..._toolMenuFileRegistrationItems(toolType, component)];
   if (toolType === 'map' && component && window.MeldexMapChrome) {
     return [...MeldexMapChrome.menuItems(component), { separator: true }, ...registrationItems];
   }
@@ -275,6 +299,27 @@ function buildToolMenuItems(toolType, component) {
   ];
 }
 
+// 「フォルダツリーで表示」はツールバーに独立のボタンを置かず、メインメニューの項目にする（UI共通ルール19）。
+// フォルダツリーを持たない単独アプリ（共通の表示処理を読み込まない）では出さない。
+function _toolMenuRevealItems(toolType, component) {
+  if (typeof window.getCurrentFolderTreeRevealPath !== 'function' || typeof revealCurrentInFolderTree !== 'function') return [];
+  const target = _toolMenuFileTarget(toolType, component);
+  const hasTarget = !!target.path || (toolType === 'folder' && !!getCurrentFilePath());
+  return [{
+    label: 'フォルダツリーで表示', icon: 'folderTree', disabled: !hasTarget,
+    action: context => {
+      const trigger = context?.trigger || null;
+      // パネルのツールバーから開いた時は従来のボタンと同じ解決（フォルダパネルの選択中の項目を含む）。
+      // サブパネル等、パネルの外から開いた時はメニューを開いたファイル自身を表示する。
+      const inPane = !!trigger?.closest?.('.gb-pane[data-pane-id]');
+      if (toolType !== 'folder' && !inPane && target.path && typeof window.revealPathInFolderTree === 'function') {
+        return window.revealPathInFolderTree(target.path);
+      }
+      return revealCurrentInFolderTree(toolType, { type: 'menu', target: trigger });
+    },
+  }];
+}
+
 function _toolMenuFileRegistrationItems(toolType, component) {
   const target = _toolMenuFileTarget(toolType, component);
   const registered = !!target.path && typeof getFavorites === 'function' && typeof _favExists === 'function'
@@ -294,6 +339,9 @@ function _toolMenuFileRegistrationItems(toolType, component) {
 }
 
 function _toolMenuCanManageAttendance() {
+  // スケジュールの管理者判定（出退勤状況のメンバー行・実績の修正と同じ判定）を優先する。チームの役割だけを見ると、
+  // 管理者（所有者）にも「勤怠CSVとして保存...」が出なかった（M-014 スケジュール網羅で発見）。
+  try { if (window.MeldexCalendarAttendanceAccess?.canManage?.()) return true; } catch {}
   let role = '';
   try {
     if (typeof getMyRoleForPath === 'function') role = String(getMyRoleForPath('') || '').toLowerCase();
@@ -391,7 +439,11 @@ function _getActiveToolComponent(toolType) {
 function _openCalendarEventFromMenu() {
   const comp = _getActiveToolComponent('calendar');
   if (comp && typeof comp._openEventInPanel === 'function') {
-    comp._openEventInPanel(null);
+    // ショートカット N と同じく、表示中の日付に終日の予定を作る（今日に作ると、別の週・月を見ている時に
+    // 作った予定が画面に出ず、作ったことが分からない。M-014 スケジュールの網羅テストで発見）。
+    const date = comp._date instanceof Date && !Number.isNaN(comp._date.getTime()) ? comp._date : new Date();
+    const dateStr = typeof comp._localDateStr === 'function' ? comp._localDateStr(date) : date.toISOString().slice(0, 10);
+    comp._openEventInPanel(null, dateStr + 'T00:00', dateStr + 'T23:59', true);
     return;
   }
   if (typeof addCalendarEvent === 'function') {
@@ -587,6 +639,8 @@ async function _showSaveAsModal(srcPath, options = {}) {
     }
     setStatus('');
     setActionBusy(true);
+    // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは作ったコピーをゴミ箱へ移す）
+    const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
     try {
       const res = await apiPost('/outliner/save-as', {
         path: srcPath,
@@ -594,7 +648,15 @@ async function _showSaveAsModal(srcPath, options = {}) {
         dest_folder: selectedFolder,
       });
       modalApi.close('saved');
-      showStatus('「' + (res.new_name || newName) + '」に保存しました', false, { showSaveDialog: true });
+      // 成功は画面をふさがない短い通知で知らせる（UI共通ルールの状態表示。2026-11-21 予期しないダイアログの検査で検出）。
+      showStatus('「' + (res.new_name || newName) + '」に保存しました');
+      const createdPath = res?.new_path || res?.path || '';
+      if (createdPath && typeof pushCreatedOutlinerItemHistory === 'function') {
+        pushCreatedOutlinerItemHistory({ path: createdPath, type: options?.toolType || 'page' }, '別名で保存: ' + (res.new_name || newName), {
+          scope: historyScope,
+          refresh: async () => { if (typeof window.loadOutliner === 'function') await window.loadOutliner(); },
+        });
+      }
       if (typeof window.loadOutliner === 'function') window.loadOutliner();
     } catch (e) {
       const message = '保存に失敗: ' + (e.message || e);
@@ -888,84 +950,4 @@ function _showDictStatusDialog(statuses, summary, options = {}) {
   updateState();
   modalApi.open();
   });
-}
-
-// 辞書ファイル出力（IME辞書形式）。ステータスで出力対象を絞り込める。
-let _dictExportInProgress = false;
-async function _exportDictFile(options = {}) {
-  if (_dictExportInProgress) {
-    showStatus('辞書を準備しています。しばらくお待ちください');
-    return;
-  }
-  _dictExportInProgress = true;
-  try {
-    const fetchProgress = window.MeldexOperationProgress?.begin?.({
-      kind: 'dictionary-export',
-      label: '辞書データを準備しています',
-      mode: 'indeterminate',
-      showInTray: true,
-      priority: 35,
-    });
-    if (!fetchProgress) showStatus('辞書を準備中…');
-    const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
-    const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
-    let data;
-    try {
-      data = await apiFetch(url, { timeoutMs: 120000 });
-      fetchProgress?.succeed?.({ summary: '辞書データを準備しました' });
-    } catch (error) {
-      const message = `辞書データの取得に失敗しました: ${error?.message || '通信エラー'}`;
-      if (fetchProgress) fetchProgress.fail({ error: message });
-      else showStatus(message, true);
-      return;
-    }
-    const entries = Array.isArray(data?.entries) ? data.entries : [];
-    const prepared = _prepareDictExport(entries, new Set());
-    if (prepared.statuses.length === 0) {
-      showStatus('ルビ付きトピックがありません', true);
-      return;
-    }
-    const STATUS_ORDER = ['採用', '掲載済み', '連載中', '確定', '案', '草稿', '保留', 'ボツ', '(未設定)'];
-    const present = prepared.statuses.sort((a, b) => {
-      const ia = STATUS_ORDER.indexOf(a), ib = STATUS_ORDER.indexOf(b);
-      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-    });
-    const allowed = await _showDictStatusDialog(present, prepared, options);
-    if (!allowed) {
-      showStatus('辞書出力をキャンセルしました');
-      return;
-    }
-    let output;
-    try {
-      output = _prepareDictExport(entries, allowed);
-    } catch (error) {
-      showStatus(`辞書データの生成に失敗しました: ${error?.message || 'データ形式エラー'}`, true);
-      return;
-    }
-    if (output.lines.length === 0) {
-      showStatus('選択したステータスの辞書項目がありません', true);
-      return;
-    }
-    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveText !== 'function') {
-      showStatus('保存ダイアログを初期化できませんでした', true);
-      return;
-    }
-    const excluded = [];
-    if (output.withoutReading) excluded.push(`ルビなし${output.withoutReading}件`);
-    if (output.duplicateCount) excluded.push(`重複${output.duplicateCount}件`);
-    await MeldexExportSave.saveText(output.lines.join('\n'), {
-        filename: (work ? work.replace(/[\\/]/g, '_') + '_' : '') + 'dictionary.txt',
-        extension: '.txt',
-        dialogTitle: '辞書ファイルを書き出し',
-        filetypes: [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']],
-        bom: true,
-        okMessage: `${output.lines.length}件の辞書項目を出力しました${excluded.length ? `（${excluded.join('、')}を除外）` : ''}`,
-        cancelMessage: '辞書ファイルの保存をキャンセルしました',
-        errorMessage: '辞書ファイルの保存に失敗しました',
-    });
-  } catch (error) {
-    showStatus(`辞書ファイルの出力に失敗しました: ${error?.message || '不明なエラー'}`, true);
-  } finally {
-    _dictExportInProgress = false;
-  }
 }

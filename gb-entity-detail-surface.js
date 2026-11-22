@@ -89,7 +89,8 @@
   function applyReadOnly(root, readOnly, reason) {
     root.dataset.readOnly = readOnly ? '1' : '0';
     root.setAttribute('aria-readonly', readOnly ? 'true' : 'false');
-    root.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', readOnly ? 'false' : 'true'));
+    // トピック名のように書式なしの入力欄は、編集できる状態へ戻す時も書式なし（plaintext-only）のまま戻す。
+    root.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', readOnly ? 'false' : (el.dataset.editableMode || 'true')));
     root.querySelectorAll('input, textarea, select').forEach(el => {
       if ('readOnly' in el) el.readOnly = readOnly;
       if (el.tagName === 'SELECT') el.disabled = readOnly;
@@ -205,7 +206,8 @@
       clearTimeout(state.timer);
       state.timer = 0;
       const savingSeq = state.changeSeq;
-      const markdown = typeof htmlToMd === 'function' ? htmlToMd(state.editor.innerHTML) : state.editor.textContent;
+      const markdown = window.MeldexNoteSaveAdapter?.serialize?.(state.editor)
+        ?? (typeof htmlToMd === 'function' ? htmlToMd(state.editor.innerHTML) : state.editor.textContent);
       state.saving = Promise.resolve(_saveEntityFreeText(
         state.editor,
         state.path,
@@ -243,6 +245,7 @@
       if (!await flush().catch(() => false)) return false;
       if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
       state.disposed = true;
+      state.valuesCleanup?.();
       state.titleCleanup?.();
       if (options.parentHost) options.parentHost.replaceChildren();
       clearTimeout(state.timer);
@@ -283,6 +286,8 @@
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectTopicLayout: state.selectTopicLayout,
+          topicLayoutContext: state.topicLayoutContext,
+          historyScope: () => state.topicHistoryScope?.() || '',
           selectedId: typeof selectedId === 'string' ? selectedId : currentSection.dataset.selectedAttachment,
         });
         if (state.disposed || root.dataset.meldexEntityDetail !== id || refreshSeq !== state.attachmentRefreshSeq) {
@@ -328,6 +333,8 @@
       root.dataset.path = state.path;
       state.titleCleanup?.();
       state.titleCleanup = null;
+      state.valuesCleanup?.();
+      state.valuesCleanup = null;
       if (options.parentHost) options.parentHost.replaceChildren();
       root.replaceChildren();
       const loading = document.createElement('div');
@@ -367,6 +374,7 @@
       else title.classList.add('meldex-entity-detail-header-title');
       title.textContent = entityName(data, state.path);
       title.dataset.e2eId = 'entity-detail-title';
+      title.dataset.editableMode = 'plaintext-only';
       title.contentEditable = access.readOnly ? 'false' : 'plaintext-only';
       title.setAttribute('role', 'textbox');
       title.setAttribute('aria-label', 'トピック名');
@@ -537,16 +545,94 @@
       };
       state.selectTopicLayout = async (layoutId) => {
         if (await state.defaultForm?.showColumns?.() === false) return false;
+        state.currentTopicLayoutId = layoutId;
         if (typeof renderEntityPropsGridInto === 'function') {
           renderEntityPropsGridInto(grid, data, state.path, { ...entityGridOptions, topicLayoutId: layoutId });
         }
         return true;
+      };
+      // 統合タブの「＋」「…」からトピックレイアウトを操作する時の対象（表示中の列一覧の枠とシート）。
+      // 操作の後はタブの並びと表示中のレイアウトを描き直す。
+      state.topicHistoryScope = () => (state.surface === 'main' ? ''
+        : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(parent) : (typeof _dbScope === 'function' ? _dbScope(parent) : '')));
+      state.topicLayoutContext = () => {
+        grid._elHistoryScope = state.topicHistoryScope();
+        return {
+        grid, entityPath: state.path, dbPath: parent, pivotData: options.ctx?.pivotData || data,
+        options: entityGridOptions,
+        rerender: async () => {
+          if (state.disposed) return;
+          // 描き直しでトピックの画面が操作の対象に切り替わると、次の Ctrl+Y が別の履歴の範囲へ行く。元の対象へ戻す。
+          const previousHost = window.GBEditorHost?.get?.() || null;
+          const previousScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : null;
+          const layoutTabPrefix = '__layout__:';
+          const selected = state.currentTopicLayoutId && state.currentTopicLayoutId !== (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns')
+            ? layoutTabPrefix + state.currentTopicLayoutId : undefined;
+          await refreshAttachmentsOnly(selected);
+          const layouts = (typeof getDbViewConfig === 'function' ? getDbViewConfig(parent).entityLayouts : null) || [];
+          const keep = layouts.some(layout => layout.id === state.currentTopicLayoutId) ? state.currentTopicLayoutId : (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns');
+          if (typeof renderEntityPropsGridInto === 'function') {
+            renderEntityPropsGridInto(grid, data, state.path, { ...entityGridOptions, topicLayoutId: keep });
+          }
+          if (previousHost && window.GBEditorHost?.get?.() !== previousHost && typeof window.GBEditorHost?.activate === 'function') {
+            try { window.GBEditorHost.activate(previousHost); } catch {}
+          }
+          if (previousScope !== null && typeof historySetScope === 'function' && _historyActiveScope !== previousScope) {
+            historySetScope(previousScope);
+          }
+        },
+        };
       };
       if (typeof renderEntityPropsGridInto === 'function') {
         renderEntityPropsGridInto(grid, data, state.path, {
           ...entityGridOptions, topicLayoutId: window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns',
         });
       }
+      // 別の面（シートの表など）でこのトピックの値が保存されたら、列一覧を最新の値で描き直す
+      // （2026-11-21 反応の速さの検査で、サブパネルのトピックが古い値のままになるのを検出）。
+      // この画面の中で入力している間・既定のフォームの時は描き直さない（入力中の内容を消さないため）。
+      let valuesRefreshSeq = 0;
+      const editingHere = () => root.contains(document.activeElement) && document.activeElement !== document.body;
+      const redrawProps = () => {
+        if (typeof renderEntityPropsGridInto === 'function') {
+          renderEntityPropsGridInto(grid, data, state.path, {
+            ...entityGridOptions, topicLayoutId: state.currentTopicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns',
+          });
+        }
+      };
+      // シートの表が持っている値（保存の前に画面へ反映済みの値）を使えば、保存の往復を待たずに描き直せる。
+      const valuesFromOpenSheet = () => {
+        const contexts = typeof _dbPaneContextsForPath === 'function' && parent ? (_dbPaneContextsForPath(parent) || []) : [];
+        const name = String(state.path || '').split('/').pop().replace(/\.md$/i, '');
+        for (const ctx of contexts) {
+          const entity = ctx?.pivotData?.entities?.[name];
+          if (entity && typeof entity === 'object') return entity;
+        }
+        return null;
+      };
+      const onValuesChanged = async event => {
+        if (state.disposed || root.dataset.meldexEntityDetail !== id) return;
+        if (String(event.detail?.path || '') !== String(state.path || '')) return;
+        if (state.defaultForm || editingHere()) return;
+        const phase = event.detail?.phase || 'saved';
+        const local = valuesFromOpenSheet();
+        if (local) {
+          const props = { ...(data.properties || {}) };
+          Object.keys(props).concat(Object.keys(local)).forEach(prop => {
+            if (Array.isArray(local[prop])) props[prop] = local[prop];
+          });
+          data.properties = props;
+          redrawProps();
+        }
+        if (phase === 'pending') return;
+        const seq = ++valuesRefreshSeq;
+        const fresh = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true, skipBrowseCache: true }).catch(() => null);
+        if (!fresh || state.disposed || seq !== valuesRefreshSeq || root.dataset.meldexEntityDetail !== id || editingHere()) return;
+        Object.assign(data, { properties: fresh.properties, revision: fresh.revision ?? data.revision });
+        redrawProps();
+      };
+      window.addEventListener('meldex:entity-values-changed', onValuesChanged);
+      state.valuesCleanup = () => window.removeEventListener('meldex:entity-values-changed', onValuesChanged);
 
       state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
         ...entityGridOptions, beforeWrite: save, onRevision: revision => {
@@ -617,6 +703,8 @@
           onReload: refreshAttachmentsOnly,
           beforeMutation: flush,
           selectTopicLayout: state.selectTopicLayout,
+          topicLayoutContext: state.topicLayoutContext,
+          historyScope: () => state.topicHistoryScope?.() || '',
         });
       }
 
@@ -642,6 +730,7 @@
       if (state.surface === 'main') editor.id = 'entity-freetext';
       editor.setAttribute('contenteditable', access.readOnly ? 'false' : 'true');
       editor.dataset.entityPath = state.path;
+      editor.dataset.path = state.path;
       editor.dataset.lastSavedMd = raw;
       editor.dataset.lastSavedRevision = (data?.revision != null) ? String(data.revision) : '';
       editor.dataset.lastSavedEtag = data?.freetext_etag || '';
@@ -692,6 +781,8 @@
       if (state.surface !== 'main') stripIds(root, state.surface);
       applyReadOnly(root, access.readOnly, access.reason);
       delete root.dataset.loadFailed;
+      // 表示用の変換で失われる原文の体裁も、取り消しで元の表示へ戻った時に復元する。
+      window.MeldexNoteSaveAdapter?.rememberLoadedBaseline?.(editor, raw);
       if (typeof replaceIcons === 'function') replaceIcons();
       return true;
     }

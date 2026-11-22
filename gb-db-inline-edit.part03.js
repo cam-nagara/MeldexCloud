@@ -88,11 +88,13 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
   const currentRefProp = typeof _dbResolveCurrentColumnName === 'function'
     ? _dbResolveCurrentColumnName(dbPath, refProp, order)
     : refProp;
+  if (refProp === '__entity__' && !order.includes('__entity__')) {
+    // トピック名列は列順に含まれないことがある（その時は先頭に表示される）。
+    // 左にも入れられるよう、表示どおり先頭に置いてから位置を決める。
+    order.splice(0, 0, '__entity__');
+  }
   const refIdx = order.indexOf(currentRefProp);
-  if (refIdx < 0 && refProp === '__entity__') {
-    // トピック名列は列順に含まれないことがある（常に先頭）。その右＝先頭へ入れる。
-    order.splice(0, 0, name);
-  } else if (refIdx < 0 && refProp) {
+  if (refIdx < 0 && refProp) {
     // 基準列が見つからない時に黙って末尾へ入れない（以前は右端へ追加されていた）。
     if (typeof showStatus === 'function') showStatus('挿入する位置の列が見つかりません: ' + refProp, true);
     return;
@@ -584,10 +586,13 @@ function _hideDbCellBulkBar(table) {
 function _clearDbCellSelection(table) {
   _clearDbCellRangeSelection(table);
   rangeAnchorCell = null;
+  table?.querySelectorAll?.('thead th.active-cell').forEach(th => th.classList.remove('active-cell'));
   if (activeCell) {
     activeCell.classList.remove('active-cell');
     activeCell.tabIndex = -1;
   }
+  // 描き直しの戻しなどで残った枠も外す（強調は常に1か所）。
+  (table || document).querySelectorAll?.('td.active-cell').forEach(cell => _dbDeactivateActiveCell(cell));
   activeCell = null;
   _dbActiveCellIdentity = null;
   _hideDbCellBulkBar(table);
@@ -891,8 +896,47 @@ document.addEventListener('pointerdown', (event) => {
     selectDbCellFromPointer(td, event);
   } else {
     setActiveCell(td, { scroll: false });
+    // 押したまま別のセルへ動かすと範囲選択（ショートカット一覧「ドラッグ: セルの範囲選択」）
+    if (event.button === 0 && event.pointerType !== 'touch') {
+      _dbCellDragRange = { anchor: td, table: td.closest('table'), moved: false };
+    }
   }
 }, true);
+
+// セルのドラッグ範囲選択。押した位置のセルを起点に、押したまま入ったセルまでを選ぶ。
+// 値の行（.cell-value）は値のドラッグ（他画面へ）に使うため、ブラウザがドラッグを始めたら範囲選択はやめる。
+let _dbCellDragRange = null;
+document.addEventListener('pointermove', (event) => {
+  const drag = _dbCellDragRange;
+  if (!drag) return;
+  if (!(event.buttons & 1) || !drag.table?.isConnected || !drag.anchor?.isConnected) { _dbCellDragRange = null; return; }
+  const under = (typeof document.elementFromPoint === 'function' ? document.elementFromPoint(event.clientX, event.clientY) : null) || event.target;
+  const td = under?.closest?.('td[data-prop-name]');
+  if (!td || td.closest('table') !== drag.table || td.closest('tr.new-entity-row, tr.new-entity-spacer-row, tr.group-header-row')) return;
+  if (td === drag.anchor && !drag.moved) return;
+  if (td === drag.lastCell) return;
+  drag.lastCell = td;
+  if (!drag.moved) {
+    drag.moved = true;
+    _dbCloseTransientUiForCellRangeSelection();
+  }
+  rangeAnchorCell = drag.anchor;
+  setActiveCell(td, { preserveRange: true, scroll: false });
+  _markDbCellRange(drag.table, drag.anchor, td);
+  window.getSelection?.()?.removeAllRanges?.();
+}, true);
+for (const type of ['pointerup', 'pointercancel', 'dragstart']) {
+  document.addEventListener(type, () => {
+    const drag = _dbCellDragRange;
+    _dbCellDragRange = null;
+    // 範囲を選んだ直後の click で、離した位置のセルの入力が始まらないようにする
+    if (drag?.moved && type === 'pointerup') {
+      const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => document.removeEventListener('click', swallow, true), 0);
+    }
+  }, true);
+}
 
 try {
   window.__meldexSetActiveCell = setActiveCell;
@@ -1005,6 +1049,8 @@ function setActiveCell(td, options = {}) {
   document.querySelectorAll('td.active-cell').forEach(cell => {
     if (cell !== td) _dbDeactivateActiveCell(cell);
   });
+  // 列ヘッダーの強調も外す（強調は常に1か所。列ヘッダーから ↓ やクリックでセルへ移った時に残っていた。2026-11-20 報告）。
+  document.querySelectorAll('thead th.active-cell').forEach(th => th.classList.remove('active-cell'));
   activeCell = td;
   _dbActiveCellIdentity = _dbCellIdentityOf(td, table);
   if (td) {
@@ -1075,9 +1121,11 @@ function _dbCellHasAnyValue(td, ctx) {
 }
 
 function _dbOpenExistingCellValueEditor(td, ctx) {
-  const target = td?.querySelector?.('.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url');
+  const target = td?.querySelector?.('.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url,.msr-tags');
   if (!target) return false;
-  target.click();
+  // URLの値はリンクなので、クリックすると外部のページが開く。編集を始める合図を送る（gb-db-cell-ui.js）。
+  if (target.matches('.value-url')) target.dispatchEvent(new CustomEvent('meldex:edit-value', { bubbles: false }));
+  else target.click();
   return true;
 }
 

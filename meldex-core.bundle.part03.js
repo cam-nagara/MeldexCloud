@@ -1,3 +1,220 @@
+    const zoom = (typeof bd !== 'undefined') ? Math.max(0.1, bd.zoom || 1) : 1;
+    const panX = (typeof bd !== 'undefined') ? (Number(bd.panX) || 0) : 0;
+    const panY = (typeof bd !== 'undefined') ? (Number(bd.panY) || 0) : 0;
+    return { x: (lx - panX) / zoom, y: (ly - panY) / zoom };
+  }
+  function _updateSize() {
+    _surfaceBounds = _computeSurfaceBounds();
+    svg.style.left = _surfaceBounds.left + 'px';
+    svg.style.top = _surfaceBounds.top + 'px';
+    svg.style.width = _surfaceBounds.width + 'px';
+    svg.style.height = _surfaceBounds.height + 'px';
+    svg.setAttribute('viewBox', `${_surfaceBounds.left} ${_surfaceBounds.top} ${_surfaceBounds.width} ${_surfaceBounds.height}`);
+    hitRect.setAttribute('x', _surfaceBounds.left);
+    hitRect.setAttribute('y', _surfaceBounds.top);
+    hitRect.setAttribute('width', _surfaceBounds.width);
+    hitRect.setAttribute('height', _surfaceBounds.height);
+    notesLayer.style.left = _surfaceBounds.left + 'px';
+    notesLayer.style.top = _surfaceBounds.top + 'px';
+    notesLayer.style.width = svg.style.width;
+    notesLayer.style.height = svg.style.height;
+    notesLayer.querySelectorAll('.ann-note-embedded').forEach(note => _applyNotePosition(note, note._annData));
+  }
+  function syncSurfaceScroll() {
+    if (!options.scrollContainer || boardMode) return;
+    const sc = options.scrollContainer;
+    const transform = `translate(${-sc.scrollLeft}px, ${-sc.scrollTop}px)`;
+    layer.style.transform = transform;
+    notesLayer.style.transform = transform;
+  }
+  options.scrollContainer?.addEventListener('scroll', syncSurfaceScroll, { passive: true });
+  svg.addEventListener('wheel', event => {
+    const sc = options.scrollContainer;
+    if (!sc || !_ann.active || event.ctrlKey) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? sc.clientHeight : 1;
+    sc.scrollLeft += event.deltaX * unit; sc.scrollTop += event.deltaY * unit;
+    event.preventDefault(); event.stopPropagation();
+  }, { passive: false });
+  syncSurfaceScroll();
+  const _resizeObs = new ResizeObserver(_updateSize);
+  _resizeObs.observe(wrapper);
+  if (host !== wrapper) _resizeObs.observe(host);
+  _updateSize();
+
+  // 描画関数
+  function _pathD(pts) {
+    if (pts.length < 2) return '';
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0]} ${pts[i][1]}`;
+    return d;
+  }
+
+  function _rectData(pts) {
+    const a = pts?.[0] || [0, 0], b = pts?.[pts.length - 1] || a;
+    const x1 = Number(a[0]) || 0, y1 = Number(a[1]) || 0, x2 = Number(b[0]) || 0, y2 = Number(b[1]) || 0;
+    return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+  }
+
+  function _applyRectEl(el, data, color, opacity, preview) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    el.setAttribute('x', Number(data?.x) || 0);
+    el.setAttribute('y', Number(data?.y) || 0);
+    el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
+    el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+    el.setAttribute('fill', color);
+    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('stroke', color);
+    el.setAttribute('stroke-width', '1');
+    el.setAttribute('stroke-opacity', String(normalizedOpacity));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4');
+    else el.removeAttribute('stroke-dasharray');
+    return el;
+  }
+
+  function _toLocalCoords(clientX, clientY) {
+    if (boardMode) {
+      return _boardClientToWorld(clientX, clientY);
+    }
+    const r = wrapper.getBoundingClientRect();
+    const sc = options.scrollContainer || wrapper;
+    const uiZoom = options.localSurface && typeof _annotationUiZoom === 'function' ? _annotationUiZoom() : 1;
+    return { x: (clientX - r.left) / uiZoom + sc.scrollLeft, y: (clientY - r.top) / uiZoom + sc.scrollTop };
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return [x, y];
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return [x, y];
+  }
+
+  function _boardAnnotationNode(anchor) {
+    if (!boardMode || !anchor?.nodeId) return null;
+    const el = document.getElementById('bdn-' + anchor.nodeId);
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function _annotationAnchorAt(clientX, clientY, worldPoint) {
+    if (!boardMode) return null;
+    const hit = document.elementsFromPoint(clientX, clientY)
+      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
+    const nodeEl = hit?.closest?.('.bd-node');
+    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
+    if (!nodeEl || !nodeId) return null;
+    const width = Math.max(1, nodeEl.offsetWidth || 0);
+    const height = Math.max(1, nodeEl.offsetHeight || 0);
+    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
+    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
+    const imageEl = nodeEl.querySelector?.('.bd-img');
+    const imageRect = imageEl?.getBoundingClientRect?.();
+    const insideImage = !!imageRect
+      && clientX >= imageRect.left && clientX <= imageRect.right
+      && clientY >= imageRect.top && clientY <= imageRect.bottom;
+    return {
+      data: {
+        version: 1,
+        kind: 'board-node',
+        nodeId,
+        subject: insideImage ? 'image' : 'card',
+        baseWidth: width,
+        baseHeight: height,
+        geometrySpace: 'local',
+      },
+      nodeEl,
+    };
+  }
+
+  function _annotationPointToLocal(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const current = _boardWorldToElementLocal(nodeEl, point);
+    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
+    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
+    return [current[0] / scaleX, current[1] / scaleY];
+  }
+
+  function _annotationPointToWorld(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return _elementLocalToBoardWorld(nodeEl, [
+      (Number(point?.[0]) || 0) * scaleX,
+      (Number(point?.[1]) || 0) * scaleY,
+    ]);
+  }
+
+  function _annotationAnchorScale(anchor) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return 1;
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return Math.sqrt(Math.abs(scaleX * scaleY));
+  }
+
+  function _anchoredRectPoints(data) {
+    const x = Number(data?.x) || 0;
+    const y = Number(data?.y) || 0;
+    const width = Number(data?.width) || 0;
+    const height = Number(data?.height) || 0;
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+
+  function _anchoredWorldPoints(type, data) {
+    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
+    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
+  }
+
+  function _parentMessageTargetOrigin() {
+    try {
+      const origin = window.location?.origin || '';
+      return origin && origin !== 'null' ? origin : '*';
+    } catch {
       return '*';
     }
   }
@@ -65,50 +282,62 @@
     catch { return 'anonymous'; }
   }
 
+  const pendingWrites = new Set();
   function _saveBoardAnnotation(payload, onSaved, onError) {
-    if (!boardMode || typeof apiPost !== 'function') return false;
-    apiPost('/annotations', payload).then((res) => {
+    if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = apiPost('/annotations', payload).then(async (res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
         const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
-        _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath, historyScope).catch(() => {});
       }
+      options.onMutation?.();
       onSaved?.(res);
     }).catch((error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
   function _updateBoardAnnotation(annId, payload, onSaved, onError) {
-    if (!boardMode || !annId || typeof apiPut !== 'function') return false;
-    const handleSaved = (res) => { onSaved?.(res); };
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiPut !== 'function') return false;
+    options.onMutation?.();
+    const handleSaved = (res) => { options.onMutation?.(); onSaved?.(res); };
     const handleError = (error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
       const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
-      Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
+      const saving = Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId, options.historyScope?.())).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     } else {
-      apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
+      const saving = apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     }
     return true;
   }
 
   function _deleteBoardAnnotation(annId, onDeleted, onError) {
-    if (!boardMode || !annId || typeof apiDelete !== 'function') return false;
-    (async () => {
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiDelete !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = (async () => {
       const before = typeof _fetchAnnotationHistoryRow === 'function'
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId, historyScope);
+      options.onMutation?.();
       onDeleted?.();
     })().catch((error) => {
       _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
@@ -452,7 +681,7 @@
     const persist = () => {
       const next = _notePayload(data, editor, note);
       Object.assign(data, next);
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = next;
         return;
       }
@@ -503,7 +732,7 @@
       const payload = _notePayload(data, editor, note);
       payload.deleted = true;
       payload.deletedAt = new Date().toISOString();
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = payload;
         note.remove();
         return;
@@ -529,7 +758,6 @@
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
-      let closeTimer = 0;
       let tailOpen = false;
       let tailTrig = null;
       let tailPanel = null;
@@ -542,7 +770,6 @@
         items[next].focus();
       };
       const closeMenu = (restoreFocus = false) => {
-        clearTimeout(closeTimer);
         document.removeEventListener('pointerdown', onGlobalPointerDown, true);
         document.removeEventListener('keydown', onGlobalKeyDown, true);
         tailTrig?.setAttribute('aria-expanded', 'false');
@@ -550,7 +777,6 @@
         if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
       };
       const hideTailPanel = () => {
-        clearTimeout(closeTimer);
         tailOpen = false;
         tailTrig?.setAttribute('aria-expanded', 'false');
         if (tailPanel) {
@@ -559,7 +785,6 @@
         }
       };
       const showTailPanel = () => {
-        clearTimeout(closeTimer);
         if (!tailPanel) return;
         if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
         tailOpen = true;
@@ -567,19 +792,15 @@
         tailPanel.hidden = false;
         tailPanel.style.display = 'block';
         if (typeof window.positionPopup === 'function') {
-          window.positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+          const row = tailTrig.getBoundingClientRect();
+          const root = menu.getBoundingClientRect();
+          window.positionPopup(tailPanel, { left: root.left, right: root.right, top: row.top, bottom: row.bottom }, { prefer: 'right', gap: 2 });
         } else {
           const rect = tailTrig.getBoundingClientRect();
           tailPanel.style.left = rect.right + 2 + 'px';
           tailPanel.style.top = rect.top + 'px';
           if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(tailPanel);
         }
-      };
-      const scheduleTailClose = () => {
-        clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => {
-          if (!tailPanel?.matches(':hover') && !tailTrig?.matches(':hover') && !tailPanel?.contains(document.activeElement)) hideTailPanel();
-        }, 140);
       };
       function onGlobalPointerDown(e2) {
         const inAny = menu.contains(e2.target) || !!tailPanel?.contains(e2.target);
@@ -677,224 +898,3 @@
 
       const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
       colorItem.addEventListener('click', () => {
-        closeMenu(false);
-        if (typeof window.openColorPalette === 'function') {
-          window.openColorPalette(note, item.color || '', (newColor) => {
-            item.color = newColor || item.color;
-            _applyNoteColor(note, item.color);
-            if (boardMode && String(item.id || '').startsWith('pending-note-')) return;
-            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
-            _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
-          });
-        }
-      });
-      menu.appendChild(colorItem);
-
-      tailTrig = createMenuButton({ label: 'フキダシのしっぽ', icon: 'messageSquare', action: 'tail' });
-      tailTrig.classList.add('has-submenu');
-      tailTrig.setAttribute('aria-haspopup', 'menu');
-      tailTrig.setAttribute('aria-expanded', 'false');
-      tailPanel = document.createElement('div');
-      tailPanel.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-tail-menu annotation-note-tail-menu';
-      tailPanel.setAttribute('role', 'menu');
-      tailPanel.setAttribute('aria-label', 'フキダシのしっぽ');
-      tailPanel.hidden = true;
-      tailPanel.style.position = 'fixed';
-      tailPanel.style.zIndex = '211';
-      tailPanel.style.display = 'none';
-      [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
-        const tailButton = createMenuButton({ label, action: isRemove ? 'tail-remove' : 'tail-add', role: 'menuitemradio', checked: hasTail === isRemove });
-        tailButton.addEventListener('click', () => {
-          closeMenu(false);
-          applyTailOperation(isRemove);
-        });
-        tailPanel.appendChild(tailButton);
-      });
-      tailTrig.addEventListener('mouseenter', showTailPanel);
-      tailTrig.addEventListener('mouseleave', scheduleTailClose);
-      tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
-      tailTrig.addEventListener('keydown', (e2) => {
-        if (e2.key === 'ArrowRight' || e2.key === 'Enter' || e2.key === ' ') {
-          e2.preventDefault();
-          showTailPanel();
-          requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
-        }
-      });
-      tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
-      tailPanel.addEventListener('mouseleave', scheduleTailClose);
-      tailPanel.addEventListener('keydown', (e2) => handleMenuKeydown(e2, tailPanel, () => {
-        hideTailPanel();
-        tailTrig.focus();
-      }));
-      menu.appendChild(tailTrig);
-
-      const deleteItem = createMenuButton({ label: '削除', icon: 'trash2', action: 'delete', danger: true });
-      deleteItem.addEventListener('click', () => {
-        closeMenu(false);
-        _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-      });
-      menu.appendChild(deleteItem);
-      document.body.appendChild(menu);
-      if (restoreTarget && restoreTarget.classList?.contains('note-more-btn') && typeof window.positionPopup === 'function') {
-        window.positionPopup(menu, restoreTarget.getBoundingClientRect(), { prefer: 'below', gap: 2 });
-      } else if (typeof window.positionPopup === 'function') {
-        window.positionPopup(menu, { left: clientX, right: clientX, top: clientY, bottom: clientY }, { prefer: 'below', gap: 2 });
-      } else {
-        const z = (typeof window._getZoom === 'function') ? window._getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
-        menu.style.left = (clientX / z) + 'px';
-        menu.style.top = (clientY / z) + 'px';
-        if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
-      }
-      menu.addEventListener('keydown', (e2) => handleMenuKeydown(e2, menu));
-      setTimeout(() => {
-        document.addEventListener('pointerdown', onGlobalPointerDown, true);
-        document.addEventListener('keydown', onGlobalKeyDown, true);
-        requestAnimationFrame(() => menuItems(menu)[0]?.focus());
-      }, 0);
-    }
-
-    // ヘッダー右端の「…」ボタン: 右クリックと同じメニューを開く
-    const moreBtn = document.createElement('button');
-    moreBtn.type = 'button';
-    moreBtn.className = 'note-more-btn';
-    moreBtn.dataset.annMore = '1';
-    moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
-    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
-    moreBtn.title = 'メニュー';
-    moreBtn.innerHTML = lucide('moreHorizontal', 16);
-    _normalizeEmbeddedNoteIcon(moreBtn, 16);
-    moreBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-    moreBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _showEmbeddedNoteContextMenu(e);
-    });
-    actions.appendChild(moreBtn);
-
-    note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
-    if (typeof window.addLongPressHandler === 'function') {
-      window.addLongPressHandler(note, _showEmbeddedNoteContextMenu);
-    }
-
-    notesLayer.appendChild(note);
-    return note;
-  }
-
-  // ポインターイベント
-  svg.addEventListener('pointerdown', (e) => {
-    if (!_ann.active) return;
-    if (boardMode && e.button !== 0) return;
-    _updateSize();
-    if (_ann.tool === 'sticky') {
-      const pt = _toLocalCoords(e.clientX, e.clientY);
-      const annClientId = 'pending-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '', html: '', user: _annotationUser() };
-      let item = null;
-      let note = null;
-      if (_saveBoardAnnotation({
-        target_path: _ann.targetPath,
-        type: 'comment',
-        shape: 'sticky',
-        data: noteData,
-        color: _ann.color,
-        opacity: _ann.opacity,
-        user: _annotationUser(),
-      }, (res) => {
-        if (!item || !note) return;
-        item.id = res?.id || item.id;
-        note.dataset.annId = item.id || '';
-        if (item._pendingData && item.id) _updateBoardAnnotation(item.id, { data: item._pendingData });
-      }, () => { note?.remove(); })) {
-        item = {
-          id: annClientId,
-          type: 'comment',
-          shape: 'sticky',
-          color: _ann.color,
-          opacity: _ann.opacity,
-          user: _annotationUser(),
-          created: new Date().toISOString(),
-        };
-        note = _renderNote(item, noteData);
-        return;
-      }
-      _postToParent({ type: 'ann-create-note', x: pt.x, y: pt.y, color: _ann.color, targetPath: _ann.targetPath, annClientId });
-      return;
-    }
-    if (_ann.tool === 'eraser') {
-      const pt = _toLocalCoords(e.clientX, e.clientY);
-      const x = pt.x;
-      const y = pt.y;
-      // ヒットテスト
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
-      const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
-      for (const el of els) {
-        if (_markupElementHit(el, x, y, tolerance)) {
-          const annId = el.dataset.annId;
-          if (annId) {
-            if (_deleteBoardAnnotation(annId, () => el.remove())) return;
-            el.remove();
-            _postToParent({ type: 'ann-delete', annId });
-            return;
-          }
-          el.remove();
-          return;
-        }
-      }
-      return;
-    }
-    _ann.drawing = true;
-    const pt = _toLocalCoords(e.clientX, e.clientY);
-    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
-    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
-    _ann.path = [_ann.anchor
-      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
-      : [pt.x, pt.y]];
-    _ann.pressures = [e.pressure || 0.5];
-    try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if (!_ann.drawing) return;
-    const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path.push(_ann.anchor
-      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
-      : [pt.x, pt.y]);
-    _ann.pressures.push(e.pressure || 0.5);
-    let preview = layer.querySelector('.ann-preview');
-    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
-    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
-    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
-    if (!preview || preview.tagName.toLowerCase() !== previewTag) {
-      preview?.remove();
-      preview = document.createElementNS(_svgNS, previewTag);
-      preview.classList.add('ann-preview');
-      layer.appendChild(preview);
-    }
-    if (_ann.anchor) {
-      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
-      const previewData = previewType === 'rect'
-        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
-        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
-      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
-    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
-      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
-      data.lineWidth = _ann.widths?.pen;
-      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'lasso') {
-      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
-      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-dasharray', '4,4');
-    } else {
-      preview.setAttribute('d', _pathD(_ann.path));
-      preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
-      preview.setAttribute('stroke-width', _drawWidth(_ann.tool, _ann.pressures, _ann.widths?.[_ann.tool]));
-      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_normalizeMarkupOpacity(_ann.opacity, 1) * 0.5) : String(_normalizeMarkupOpacity(_ann.opacity, 1)));
-      preview.setAttribute('stroke-linecap', 'round'); preview.setAttribute('stroke-linejoin', 'round');
-    }
-  });
-
-  svg.addEventListener('pointerup', (e) => {
-    if (!_ann.drawing) return;
-    _ann.drawing = false;
-    layer.querySelector('.ann-preview')?.remove();
-    if (_ann.path.length < 2) return;

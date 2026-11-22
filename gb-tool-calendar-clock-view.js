@@ -710,17 +710,19 @@
   CalendarComponent.prototype._commitAnalogClockEventChange = function(eventId, patch, label) {
     const before = this._snapshotEventLocal?.(eventId);
     const sourceEvent = (this._events || []).find(item => item.id === eventId);
-    this._pushUndo?.(label);
+    // 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽の履歴を残さない）。
+    const undo = (sourceEvent && this._eventIsUndoable?.(sourceEvent) !== false) ? this._reserveUndo?.(label) : null;
     this._applyEventLocal?.(eventId, patch);
     this._setSelectedEvents?.([eventId], eventId);
     this._render();
     (typeof _calApplyEventTimePatch === 'function' && sourceEvent ? _calApplyEventTimePatch(this, sourceEvent, patch) : apiPut('/cal/events/' + eventId, patch))
-      .then(() => this._loadEvents())
+      .then(() => { undo?.commit(); return this._loadEvents(); })
       .then(() => this._render())
-      .catch(() => {
+      .catch((error) => {
+        undo?.cancel();
         if (before) this._restoreEventLocal?.(before);
         this._render();
-        this._showStatus?.(label + 'に失敗', true);
+        this._showStatus?.(label + 'に失敗' + (error?.message ? ': ' + error.message : ''), true);
       });
   };
 

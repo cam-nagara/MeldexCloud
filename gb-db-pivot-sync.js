@@ -22,6 +22,9 @@ function _isRelationTargetMissing(relationDbPath) {
   if (!relationDbPath) return false;
   const miss = _relationMissingCache[relationDbPath];
   if (!miss || !miss.missing) return false;
+  // 許可された場所の外（存在しない別ドライブ等）は、保存先の設定を変えるか再読み込みするまで読めないので、
+  // 時間がたっても確かめ直さない（取り消し・描き直しのたびに裏で読みに行かない）。
+  if (miss.forbidden) return true;
   if (typeof _dbCacheIsFresh === 'function') return _dbCacheIsFresh(miss, 'relation');
   return (Date.now() - (miss.timestamp || 0)) < 30000;
 }
@@ -99,7 +102,17 @@ async function _getRelationMap(relationDbPath) {
       // silentError: リンク切れ（参照先シート欠落）はベストエフォートで握り、
       // グローバルなエラートースト/赤ステータスを出さない。代わりに列見出しの
       // 警告アイコンで可視化する（本体シートの読み込みエラーは従来どおり表示される）。
-      const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath), { silentError: true });
+      // 参照先が読めない時（許可された場所の外・見つからない）は、失敗の応答ではなく
+      // relation_target_unavailable で返してもらう（コンソールの失敗・問題の自己記録を増やさない）。
+      const data = await apiFetch('/pivot?path=' + encodeURIComponent(relationDbPath), {
+        silentError: true,
+        headers: { 'X-Meldex-Relation-Probe': 'true' },
+      });
+      const unavailable = data && typeof data === 'object' ? data.relation_target_unavailable : '';
+      if (unavailable) {
+        _relationMissingCache[relationDbPath] = { missing: true, timestamp: now, forbidden: unavailable === 'forbidden' };
+        return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
+      }
       delete _relationMissingCache[relationDbPath];
       return _setRelationMapCache(relationDbPath, data) || _buildRelationMapEntry({});
     } catch (e) {
@@ -110,7 +123,7 @@ async function _getRelationMap(relationDbPath) {
       const message = String(e?.message || '');
       if (e && (e.status === 404 || /見つかりません|not found/i.test(message)
         || (e.status === 403 && /許可されていないパス/.test(message)))) {
-        _relationMissingCache[relationDbPath] = { missing: true, timestamp: now };
+        _relationMissingCache[relationDbPath] = { missing: true, timestamp: now, forbidden: e.status === 403 };
       }
       return { idToName: {}, nameToId: {}, entities: {}, new_format: false, timestamp: now };
     } finally {

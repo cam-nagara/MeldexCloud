@@ -201,6 +201,7 @@
   }
 
   function _currentWriteGuard(instance) {
+    if (instance.readOnly) return { blocked:true, locked:false, path:instance.ctx?.dbPath || '', reason:'読み取り専用' };
     const path = instance._guardPath || instance._currentPath || instance.ctx?.dbPath || '';
     const availability = _cloudWriteAvailability();
     const hasLockCache = typeof isItemLocked === 'function';
@@ -404,6 +405,14 @@
   }
 
   function _handleWriteGuardEvent(instance, event) {
+    if(instance.readOnly && event.target?.closest?.('.gb-toolbar, .db-pane-view-switcher, .db-view-tabs')) return;
+    const historyOpenGesture = event.type === 'click' && event.target?.closest?.('.entity-name-label, .entity-row-open-btn')
+      || event.type === 'keydown' && ['Enter',' '].includes(event.key) && event.target?.closest?.('td.col-entity');
+    if (instance.readOnly && historyOpenGesture) {
+      const name=event.target.closest('tr[data-entity-name]')?.dataset.entityName;
+      const path=instance.ctx?.pivotData?.entities?.[name]?._entry_path;
+      if (path) {event.preventDefault();event.stopImmediatePropagation();window.MeldexChatManagementSheet?.openRow(path);return;}
+    }
     const guard = _renderWriteGuard(instance);
     if (!guard.blocked || _writeGuardAllowsEvent(event)) return;
     event.preventDefault?.();
@@ -680,5 +689,13 @@
     return instance;
   }
 
-  window.MeldexProductionSheetEmbed = Object.freeze({ create });
+  function bindReadOnly(ctx) {
+    // A normal pane also hosts the application toolbar. Guard the Sheet data
+    // surface, preserving its ordinary display/filter/undo controls.
+    const containerEl=ctx.containerEl?.querySelector?.('.db-view-container, #db-view-container') || ctx.containerEl;
+    const instance = { readOnly:true, ctx, containerEl, _lastWriteGuardAnnouncement:0 };
+    _installWriteGuard(instance);
+    return () => _destroyWriteGuard(instance);
+  }
+  window.MeldexProductionSheetEmbed = Object.freeze({ create, bindReadOnly });
 })();

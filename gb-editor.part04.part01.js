@@ -311,6 +311,8 @@ function _editorMenuButton(label, enabled, onClick) {
   button.className = 'gb-context-menu-item';
   button.setAttribute('role', 'menuitem');
   button.textContent = label;
+  // 安定ID（画面の検査と自動操作が項目を表示名で特定する。ボードの board-menu-item と同じ形）
+  button.dataset.e2eId = 'note-menu-item:' + String(label || '').replace(/[.…]+$/, '');
   if (!enabled) {
     button.classList.add('disabled');
     button.disabled = true;
@@ -352,7 +354,13 @@ document.addEventListener('keydown', async (e) => {
   const isEditing = document.activeElement?.contentEditable === 'true' || document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
 
   // F2: フォルダツリーのインラインリネーム（フォルダビュー・ボード・エディタ中は除外）
-  if (e.key === 'F2' && !isEditing && state.view !== 'folder' && state.view !== 'board' && treeSelection.lastClicked) {
+  // 最後の操作がフォルダツリーにあった時だけ（Delete と同じ判定）。シートの表のセル等にキーボードがある時の F2 は
+  // その画面の操作にする。以前は表のトピック名を選んで F2 を押すと、ツリーで選ばれていたシート自体の名前の変更が
+  // 始まり、確定するとシート名が変わって以後の入力がすべて失敗していた（2026-11-21 探索）。
+  const f2Active = document.activeElement;
+  const f2InTree = !!(f2Active && (f2Active.id === 'outliner-tree' || f2Active.closest?.('#outliner-tree, #body-home, #body-workspaces') || f2Active.closest?.('.tree-node')))
+    || (!!window._lastPointerInTree && !(f2Active && f2Active !== document.body && f2Active.closest?.('table, .gb-pane-content, .pane-content')));
+  if (e.key === 'F2' && !isEditing && f2InTree && state.view !== 'folder' && state.view !== 'board' && treeSelection.lastClicked) {
     e.preventDefault();
     const nd = treeSelection.lastClicked._nodeData;
     const lbl = treeSelection.lastClicked.querySelector('.tree-label');
@@ -470,7 +478,8 @@ async function _noteContextPasteFromClipboard() {
   return true;
 }
 
-async function confirmNoteTableDelete(message) {
+async function confirmNoteTableDelete(message, editable) {
+  if (editable?.isContentEditable && typeof _pushCustomUndo === 'function') return true;
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
   if (typeof confirm === 'function') return !!confirm(message);
   return true;
@@ -560,7 +569,9 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { label: '貼り付け', enabled: true, action: () => restoreAndExec(() => _noteContextPasteFromClipboard()) },
     { type: 'sep' },
     { label: '元に戻す', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, false)) document.execCommand('undo'); } },
-    { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
+    // 「元に戻す」と同じく、ノートの取り消しの履歴（本文の写し）でやり直す。ブラウザのやり直しは
+    // この履歴を知らないので、Ctrl+Z やツールバーで戻した操作をやり直せなかった（2026-11-22 網羅テストで発見）。
+    { label: 'やり直し', enabled: true, action: () => { editable.focus(); if (!_applyCustomUndo(editable, true)) document.execCommand('redo'); } },
     { type: 'sep' },
     { label: 'すべて選択', enabled: true, action: () => { editable.focus(); document.execCommand('selectAll'); } },
     { type: 'sep' },
@@ -638,13 +649,13 @@ function _noteCtxMenuHandler(e, contextOverride) {
         dispatchTableInput();
       }},
       { label: '行を削除', enabled: true, action: async () => {
-        if (!(await confirmNoteTableDelete('この行を削除しますか？'))) return;
+        if (!(await confirmNoteTableDelete('この行を削除しますか？', editable))) return;
         pushTableUndo();
         _ctxCell.parentElement.remove();
         dispatchTableInput();
       }},
       { label: '列を削除', enabled: true, action: async () => {
-        if (!(await confirmNoteTableDelete('この列を削除しますか？'))) return;
+        if (!(await confirmNoteTableDelete('この列を削除しますか？', editable))) return;
         pushTableUndo();
         const colIndex = [..._ctxCell.parentElement.children].indexOf(_ctxCell);
         _ctxTable.querySelectorAll('tr').forEach(row => {

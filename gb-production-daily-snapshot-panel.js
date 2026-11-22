@@ -254,58 +254,34 @@
 
     showReadOnlySnapshotModal(snapshot, options = {}) {
       if (!snapshot) return;
-      const modal = document.createElement('div');
-      modal.className = 'gb-modal gb-production-snapshot-modal';
-      modal.dataset.e2eId = 'gb-production-snapshot-modal';
-      modal.style.position = 'fixed';
-      modal.style.top = '0';
-      modal.style.left = '0';
-      modal.style.width = '100vw';
-      modal.style.height = '100vh';
-      modal.style.background = 'rgba(0,0,0,0.5)';
-      modal.style.display = 'flex';
-      modal.style.alignItems = 'center';
-      modal.style.justifyContent = 'center';
-      modal.style.zIndex = '9999';
-
-      const content = document.createElement('div');
-      content.className = 'gb-modal-content';
-      content.style.background = 'var(--bg-main, #fff)';
-      content.style.borderRadius = '8px';
-      content.style.width = '90%';
-      content.style.maxWidth = '640px';
-      content.style.maxHeight = '80vh';
-      content.style.overflow = 'auto';
-      content.style.padding = '16px';
-
-      const header = document.createElement('div');
-      header.style.display = 'flex';
-      header.style.justifyContent = 'space-between';
-      header.style.alignItems = 'center';
-      header.style.borderBottom = '1px solid var(--border, #ccc)';
-      header.style.paddingBottom = '8px';
-      header.innerHTML = `
-        <div>
-          <strong style="font-size:16px;">制作日次記録（${esc(snapshot.target_date)}）</strong>
-          <span style="display:inline-block;margin-left:8px;font-size:11px;padding:2px 6px;background:var(--ui-bg-control,var(--bg3));color:var(--ui-fg-default,var(--fg));border-radius:4px;">読み取り専用</span>
-        </div>
-      `;
-
-      const closeBtn = document.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.className = 'gb-btn gb-btn-sm';
-      closeBtn.textContent = '✕';
-      closeBtn.addEventListener('click', () => modal.remove());
-      header.appendChild(closeBtn);
-      content.appendChild(header);
-
       const body = document.createElement('div');
-      body.style.marginTop = '12px';
-      this.renderDayView(body, snapshot, options);
-
-      content.appendChild(body);
-      modal.appendChild(content);
-      document.body.appendChild(modal);
+      body.className = 'gb-production-snapshot-body';
+      const badge = document.createElement('div');
+      badge.className = 'gb-production-snapshot-readonly';
+      badge.textContent = '読み取り専用';
+      badge.style.cssText = 'display:inline-block;margin-bottom:8px;font-size:11px;padding:2px 6px;background:var(--ui-bg-control,var(--bg3));color:var(--ui-fg-default,var(--fg));border-radius:4px;';
+      body.appendChild(badge);
+      const view = document.createElement('div');
+      this.renderDayView(view, snapshot, options);
+      body.appendChild(view);
+      // 共通のダイアログ（GBUI.createModal。UI共通ルール 4.0）で開く: 名前のある閉じるボタン・Esc・外側のクリックで閉じる、
+      // スマホの下から出るシート。以前は独自の重ね表示で、閉じるボタンが「✕」の文字だけ・Esc で閉じなかった（M-014 で発見）。
+      if (window.GBUI?.createModal) {
+        const api = window.GBUI.createModal({
+          id: 'gb-production-snapshot-modal',
+          title: `制作日次記録（${String(snapshot.target_date || '')}）`,
+          body,
+          closeLabel: '日次記録を閉じる',
+          closeOnEsc: true,
+          closeOnOverlay: true,
+          geometryKey: 'gb-production-snapshot-modal',
+        });
+        api.overlay.dataset.e2eId = 'gb-production-snapshot-modal';
+        api.open();
+        return api;
+      }
+      console.warn('[production] 共通のダイアログ（GBUI.createModal）が無いため、日次記録を開けません');
+      return null;
     }
 
     // ==== 読み取り専用の日次ビュー（予定枠と実績区間を重ねた過去カレンダー） ====

@@ -1,7 +1,141 @@
+// セルのコピーと貼り付け（v0.7.538）: 内部値と表示が違う列（リレーション・タグ）は、
+// コピーの文字（OSのクリップボード・TSV）を表示名にする。内部値は同じ種類の列へ貼る時だけ使い、
+// それ以外の列へは表示名を貼る。リレーション列へは表示名から相手のトピックへ戻す。
+const DB_CLIPBOARD_RELATION_TYPES = ['relation', 'multi-relation'];
+const DB_CLIPBOARD_DERIVED_TYPES = ['formula', 'rollup', 'button', 'multi-source-relation', 'chat'];
+
+function _dbClipboardColumnInfo(td, ctx) {
+  const dbPath = (ctx && ctx.dbPath) || state.currentDbPath || '';
+  const propName = td?.dataset?.propName || '';
+  const ptc = dbPath && propName && typeof getPropertyTypes === 'function'
+    ? (getPropertyTypes(dbPath, ctx) || {})[propName] || null : null;
+  const type = String(ptc?.type || 'text').replace(/_/g, '-');
+  const relationDb = DB_CLIPBOARD_RELATION_TYPES.includes(type) && typeof _dbResolveRelationDbPath === 'function'
+    ? _dbResolveRelationDbPath(dbPath, ptc) : '';
+  return { dbPath, propName, ptc, type, relationDb };
+}
+
+function _dbClipboardSplitTokens(raw) {
+  return String(raw ?? '').split(/[,、]/).map(token => token.trim()).filter(Boolean);
+}
+
+function _dbClipboardRelationText(raw, relationDb) {
+  const tokens = _dbClipboardSplitTokens(raw);
+  if (!tokens.length) return '';
+  return tokens.map(token => {
+    if (typeof _getRelationDisplayInfo !== 'function') return token;
+    return _getRelationDisplayInfo(token, relationDb).label || token;
+  }).join(', ');
+}
+
+function _dbClipboardTagSourceFolder(dbPath) {
+  try { return String(window.MeldexAutoTagSourceFolder?.(dbPath) || '').trim(); } catch { return ''; }
+}
+
+function _dbClipboardCommonTagsText(raw, dbPath) {
+  const tokens = _dbClipboardSplitTokens(raw);
+  if (!tokens.length) return '';
+  const cached = window.MeldexGlobalTags?.getCachedTagsSync?.(_dbClipboardTagSourceFolder(dbPath));
+  const byId = new Map((Array.isArray(cached?.tags) ? cached.tags : []).map(tag => [String(tag.id), String(tag.name || '')]));
+  return tokens.map(token => byId.get(token) || token).join(', ');
+}
+
+function _dbClipboardVisibleCellText(td) {
+  if (!td) return '';
+  const holder = td.cloneNode(true);
+  holder.querySelectorAll('button,[aria-hidden="true"],.cell-add-btn').forEach(el => el.remove());
+  const text = String(holder.textContent || '').replace(/\s+/g, ' ').trim();
+  return text === '—' ? '' : text;
+}
+
+// コピーの文字（表示名）を求める。
+function _dbCellClipboardText(td, ctx, valueRef, info = _dbClipboardColumnInfo(td, ctx)) {
+  const raw = valueRef && valueRef.value != null ? String(valueRef.value) : '';
+  if (DB_CLIPBOARD_DERIVED_TYPES.includes(info.type)) return _dbClipboardVisibleCellText(td);
+  if (DB_CLIPBOARD_RELATION_TYPES.includes(info.type)) return _dbClipboardRelationText(raw, info.relationDb);
+  if (info.type === 'common-tags') return _dbClipboardCommonTagsText(raw, info.dbPath);
+  return raw;
+}
+
+function _dbClipboardRelationNameIndex(relationDb) {
+  const map = typeof _getCachedRelationMap === 'function' ? _getCachedRelationMap(relationDb) : null;
+  if (!map) return null;
+  // 同じ名前のトピックが複数ある時は曖昧として変換しない（名前のまま残し、未解決として表示される）。
+  const counts = new Map();
+  Object.values(map.idToName || {}).forEach(name => counts.set(name, (counts.get(name) || 0) + 1));
+  return { map, counts };
+}
+
+// 表示名（またはID）をリレーション列の保存値へ戻す。見つからない・曖昧な名前はそのまま残す。
+function _dbClipboardRelationValueFromText(text, relationDb, multi) {
+  const index = _dbClipboardRelationNameIndex(relationDb);
+  const tokens = multi ? _dbClipboardSplitTokens(text) : [String(text ?? '').trim()].filter(Boolean);
+  return tokens.map(token => {
+    if (!index) return token;
+    if (Object.prototype.hasOwnProperty.call(index.map.idToName, token)) return token;
+    if ((index.counts.get(token) || 0) === 1 && Object.prototype.hasOwnProperty.call(index.map.nameToId, token)) {
+      return index.map.nameToId[token];
+    }
+    return token;
+  }).join(', ');
+}
+
+function _dbClipboardCommonTagsValueFromText(text, dbPath) {
+  const cached = window.MeldexGlobalTags?.getCachedTagsSync?.(_dbClipboardTagSourceFolder(dbPath));
+  const tags = Array.isArray(cached?.tags) ? cached.tags : [];
+  const ids = new Set(tags.map(tag => String(tag.id)));
+  return _dbClipboardSplitTokens(text).map(token => {
+    if (ids.has(token)) return token;
+    const matches = tags.filter(tag => String(tag.name || '').trim() === token);
+    return matches.length === 1 ? String(matches[0].id) : token;
+  }).join(', ');
+}
+
+// 貼り付け先の列に合わせた保存値を求める。
+function _dbClipboardValueForTarget(src, td, ctx) {
+  const info = _dbClipboardColumnInfo(td, ctx);
+  const text = src?.text != null ? String(src.text) : String(src?.value ?? '');
+  const raw = String(src?.value ?? '');
+  const sourceType = src?.sourceType || '';
+  const sameRelationTarget = DB_CLIPBOARD_RELATION_TYPES.includes(sourceType)
+    && DB_CLIPBOARD_RELATION_TYPES.includes(info.type) && (src.relationDb || '') === (info.relationDb || '');
+  if (sameRelationTarget) return info.type === 'relation' ? (_dbClipboardSplitTokens(raw)[0] || '') : raw;
+  if (sourceType === 'common-tags' && info.type === 'common-tags' && (src.dbPath || '') === (info.dbPath || '')) return raw;
+  if (sourceType && sourceType === info.type && !DB_CLIPBOARD_RELATION_TYPES.includes(info.type) && info.type !== 'common-tags') return raw;
+  if (DB_CLIPBOARD_RELATION_TYPES.includes(info.type)) {
+    return _dbClipboardRelationValueFromText(text, info.relationDb, info.type === 'multi-relation');
+  }
+  if (info.type === 'common-tags') return _dbClipboardCommonTagsValueFromText(text, info.dbPath);
+  return text;
+}
+
+// 貼り付け先のリレーション列・タグ列の名前の対応表を先に読み込む（貼り付けの変換を同期で行うため）。
+// 読み込む物が無い時（文字の列への貼り付け等）は null を返し、待ちを挟まない（保存の開始を遅らせない）。
+function _dbPreloadClipboardTargetMaps(targets, ctx) {
+  const relationDbs = new Set();
+  const tagFolders = new Set();
+  (targets || []).forEach(item => {
+    const info = _dbClipboardColumnInfo(item.target, ctx);
+    if (DB_CLIPBOARD_RELATION_TYPES.includes(info.type) && info.relationDb
+        && !(typeof _getCachedRelationMap === 'function' && _getCachedRelationMap(info.relationDb)
+          && typeof _dbCacheIsFresh === 'function' && _dbCacheIsFresh(_getCachedRelationMap(info.relationDb), 'relation'))) {
+      relationDbs.add(info.relationDb);
+    }
+    if (info.type === 'common-tags') {
+      const folder = _dbClipboardTagSourceFolder(info.dbPath);
+      if (!window.MeldexGlobalTags?.getCachedTagsSync?.(folder)) tagFolders.add(folder);
+    }
+  });
+  if (!relationDbs.size && !tagFolders.size) return null;
+  return Promise.all([
+    ...[...relationDbs].map(relationDb => (typeof _getRelationMap === 'function'
+      ? Promise.resolve(_getRelationMap(relationDb)).catch(() => null) : null)),
+    ...[...tagFolders].map(folder => Promise.resolve(window.MeldexGlobalTags?.loadTagsCached?.(folder)).catch(() => null)),
+  ]);
+}
+
 function _dbCellClipboardValue(td, ctx) {
-  const value = _dbCellPrimaryValue(td, ctx);
-  if (value && value.value != null) return String(value.value);
-  return '';
+  return _dbCellClipboardText(td, ctx, _dbCellPrimaryValue(td, ctx));
 }
 
 function _dbMakeClipboardFromCells(table, cells, ctx) {
@@ -11,11 +145,17 @@ function _dbMakeClipboardFromCells(table, cells, ctx) {
   const minCol = Math.min(...coords.map(item => item.coords.col));
   const payloadCells = coords.map(({ cell, coords }) => {
     const valueRef = _dbCellPrimaryValue(cell, ctx);
+    const info = _dbClipboardColumnInfo(cell, ctx);
+    const text = _dbCellClipboardText(cell, ctx, valueRef, info);
     return {
       rowOffset: coords.row - minRow,
       colOffset: coords.col - minCol,
       propName: cell.dataset.propName || '',
-      value: valueRef && valueRef.value != null ? String(valueRef.value) : _dbCellClipboardValue(cell, ctx),
+      value: valueRef && valueRef.value != null && !DB_CLIPBOARD_DERIVED_TYPES.includes(info.type) ? String(valueRef.value) : text,
+      text,
+      sourceType: info.type,
+      relationDb: info.relationDb,
+      dbPath: info.dbPath,
       status: valueRef?.status || '採用',
       note: valueRef?.note || '',
     };
@@ -23,7 +163,7 @@ function _dbMakeClipboardFromCells(table, cells, ctx) {
   const rowCount = Math.max(...payloadCells.map(cell => cell.rowOffset)) + 1;
   const colCount = Math.max(...payloadCells.map(cell => cell.colOffset)) + 1;
   const rows = Array.from({ length: rowCount }, () => Array.from({ length: colCount }, () => ''));
-  payloadCells.forEach(cell => { rows[cell.rowOffset][cell.colOffset] = cell.value; });
+  payloadCells.forEach(cell => { rows[cell.rowOffset][cell.colOffset] = String(cell.text ?? cell.value ?? '').replace(/[\t\r\n]+/g, ' '); });
   return { cells: payloadCells, rowCount, colCount, text: rows.map(row => row.join('\t')).join('\n') };
 }
 
@@ -204,8 +344,11 @@ async function _dbPersistAtomicCellCandidates(entityPath, propName, candidates, 
     return result;
   }));
   const operationId = globalThis.crypto?.randomUUID?.() || ('cell-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+  // 読み込んだ時のセルの中身を添える（同じ行の別のセルが別の画面・AIで変わっても、このセルが同じなら保存できる）。
+  const cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(entityPath, propName) : null;
   return _apiPutValue({ file: entityPath, entry_path: entityPath, entry_id: entryId, property: propName }, {
     property: propName, _replace_candidates: payload, operation_id: operationId, _candidate_snapshot: rawSnapshot,
+    ...(cellBase ? { cell_base: cellBase } : {}),
   });
 }
 
@@ -450,7 +593,7 @@ function _dbPasteTargetsFromClipboard(table, startCell, clipboard) {
   return clipboard.cells.map(src => {
     const target = _dbCellAt(table, start.row + src.rowOffset, start.col + src.colOffset);
     if (!target || !target.dataset?.propName) return null;
-    return { target, value: src.value, status: src.status, note: src.note };
+    return { target, value: src.value, status: src.status, note: src.note, source: src };
   }).filter(Boolean);
 }
 
@@ -510,6 +653,7 @@ async function _dbPasteClipboardCells(table, startCellOverride = null) {
       value: clipboard.cells[0].value,
       status: clipboard.cells[0].status,
       note: clipboard.cells[0].note,
+      source: clipboard.cells[0],
     }));
   } else {
     targets = _dbPasteTargetsFromClipboard(table, pasteStartCell, clipboard);
@@ -536,6 +680,9 @@ async function _dbPasteClipboardCells(table, startCellOverride = null) {
     if (typeof showStatus === 'function') showStatus('貼り付けできるセルがありません', true);
     return false;
   }
+  const preload = _dbPreloadClipboardTargetMaps(targets, ctx);
+  if (preload) await preload;
+  targets.forEach(item => { item.value = _dbClipboardValueForTarget(item.source || item, item.target, ctx); });
   const ops = [];
   for (const item of targets) {
     try {
@@ -606,7 +753,32 @@ async function _dbClearSelectedCells(table) {
   return cleared > 0;
 }
 
+// 表の外のボタン等（ツールバーのメインメニューボタンなど）にフォーカスがある時の Enter / Space は、
+// そのボタン自身の操作に任せる。選択中のセルの編集開始として横取りしない。
+function _dbKeyActivatesControlOutsideTable(e) {
+  if (e.key !== 'Enter' && e.key !== ' ') return false;
+  const target = e.target?.closest?.('button, [role="button"], a[href], [role="menuitem"], [role="tab"]');
+  return !!target && !target.closest('table');
+}
+
+// シートの外（チャットの発言・ノート等）で文字を選んでいる時の Ctrl+C / Ctrl+X は、その文字のコピーに任せる。
+// 以前は選択中のセルが残っているだけでシートが横取りし、セルの内部値（識別番号）をコピーしていた（v0.7.538）。
+function _dbForeignTextSelectionOwnsCopy(e) {
+  if (!((e.ctrlKey || e.metaKey) && !e.altKey)) return false;
+  const key = String(e.key || '').toLowerCase();
+  if (key !== 'c' && key !== 'x') return false;
+  const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+  if (!selection || !selection.rangeCount || selection.isCollapsed) return false;
+  if (!String(selection.toString() || '').trim()) return false;
+  const range = selection.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  const element = node?.nodeType === 1 ? node : node?.parentElement;
+  if (!element) return false;
+  return !element.closest?.('table td[data-prop-name], table td.col-entity, table td.col-row-controls');
+}
+
 document.addEventListener('keydown', (e) => {
+  if (_dbForeignTextSelectionOwnsCopy(e)) return;
   if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
     // IMEへ既定動作は渡したまま、シート内外のキー処理へ伝播させない。
     e.stopPropagation();
@@ -648,6 +820,7 @@ document.addEventListener('keydown', (e) => {
     }
   }
   if (e.defaultPrevented) return;
+  if (_dbKeyActivatesControlOutsideTable(e)) return;
   // 列ヘッダーは下段の専用ナビゲーションへ渡す。直前のセル選択が残っていても、
   // Enter を古いセルの編集開始として誤処理しない。
   if (e.target?.closest?.('thead th.db-keyboard-header')) return;
@@ -701,6 +874,8 @@ function _dbSetActiveHeader(th) {
   const table = th.closest('table');
   table?.querySelectorAll('thead th.active-cell').forEach(node => node.classList.remove('active-cell'));
   if (activeCell) _dbDeactivateActiveCell(activeCell);
+  // 描き直しの戻しなどで残ったセルの枠も外す（強調は常に1か所。2026-11-22 探索）。
+  document.querySelectorAll('td.active-cell').forEach(cell => _dbDeactivateActiveCell(cell));
   activeCell = null;
   _dbActiveCellIdentity = null;
   rangeAnchorCell = null;
@@ -841,7 +1016,7 @@ function _dbMoveRowsByKeyboard(table, keyCell, direction) {
 //   メニューキー / Shift+F10  選んだ候補値の「…」メニューを開く
 //   Esc・矢印・Tab     候補値の選択をやめる（矢印・Tab は通常のセル移動を続ける）
 // ---------------------------------------------------------------------------
-const DB_CANDIDATE_EDIT_TARGETS = '.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url';
+const DB_CANDIDATE_EDIT_TARGETS = '.cell-select-val,.relation-link,.multi-select-tags,.user-chip,.value-text,.value-url,.msr-tags';
 
 function _dbCellCandidateRows(td) {
   return Array.from(td?.querySelectorAll?.('.cell-values > .cell-value') || [])
@@ -936,7 +1111,9 @@ function _dbHandleCandidateKey(e, table, td) {
     e.preventDefault();
     _dbClearCandidateFocus(table);
     const target = focused.querySelector(DB_CANDIDATE_EDIT_TARGETS);
-    if (target) target.click();
+    // URLの値はリンクなのでクリックすると外部のページが開く。編集を始める合図を送る（gb-db-cell-ui.js）。
+    if (target?.matches?.('.value-url')) target.dispatchEvent(new CustomEvent('meldex:edit-value', { bubbles: false }));
+    else if (target) target.click();
     else _dbOpenCandidateMenu(focused);
     return true;
   }
@@ -977,6 +1154,11 @@ document.addEventListener('keydown', (e) => {
     } catch {}
   };
   if (e.defaultPrevented) return;
+  if (_dbKeyActivatesControlOutsideTable(e)) return;
+  if (_dbForeignTextSelectionOwnsCopy(e)) {
+    setNavDebug({ phase: 'before-table', reason: 'foreign-text-selection-copy' });
+    return;
+  }
   if (typeof _dbInlineIsComposing === 'function' && _dbInlineIsComposing(e)) {
     e.stopPropagation();
     e.stopImmediatePropagation?.();

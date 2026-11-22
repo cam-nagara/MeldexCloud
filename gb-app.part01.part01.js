@@ -1162,7 +1162,10 @@ function purgeAppPathReferences(paths) {
   }
   tabsToClose.forEach(({ paneId, tabId }) => {
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.closeTab === 'function') {
-      GBTabs.closeTab(paneId, tabId);
+      // 削除したファイルのタブを閉じるのは削除の後始末で、利用者のレイアウト操作ではない。履歴に「タブを閉じる」を積むと、
+      // 削除の記録の上に乗って Ctrl+Z が削除ではなくタブを開き直し「項目が見つかりません」になっていた
+      // （2026-11-22 M-014 フォルダツリー網羅テスト）。削除を取り消すと、ファイルは戻りタブは開き直さない。
+      GBTabs.closeTab(paneId, tabId, { skipHistory: true });
     }
   });
 

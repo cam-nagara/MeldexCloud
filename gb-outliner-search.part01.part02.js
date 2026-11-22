@@ -15,7 +15,63 @@ let _homeFolderPath = '';
 let _homeFolderRenderSeq = 0;
 let _homeFolderMetadataLoaded = false;
 let _homeFolderLoadPromise = null;
-const _HOME_FOLDER_BROWSE_RETRY_DELAYS = [250, 750];
+// 起動直後は保存先の確認や背景処理と重なって一覧の取得が一時的に失敗することがある（2026-11-21 報告:
+// 起動時にホームフォルダが「読み込みエラー」のまま）。以前は1秒で3回試して諦めていたため、間隔を広げて
+// 約8秒まで試し、それでも失敗した時は理由と「再試行」を出し、15秒後にもう一度だけ自動で試す。
+const _HOME_FOLDER_BROWSE_RETRY_DELAYS = [250, 750, 2000, 5000];
+const _HOME_FOLDER_AUTO_RETRY_MS = 15000;
+let _homeFolderAutoRetryTimer = null;
+
+function _homeFolderErrorReason(error) {
+  const detail = error?.detail && typeof error.detail === 'object' ? error.detail : null;
+  return String(error?.userMessage || detail?.message || (typeof error?.detail === 'string' ? error.detail : '') || error?.message || '').trim();
+}
+
+function _logHomeFolderFailure(stage, error) {
+  try {
+    console.warn('[home-folder] ' + stage + ' failed', {
+      status: error?.status ?? null,
+      code: error?.detail?.code || error?.code || '',
+      name: error?.name || '',
+      message: _homeFolderErrorReason(error),
+    });
+  } catch (_) { /* 記録の失敗で表示を止めない */ }
+}
+
+function _renderHomeFolderError(container, error) {
+  if (!container) return;
+  container.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'home-folder-load-error';
+  box.style.cssText = 'padding:4px 12px;font-size:11px;color:var(--fg2);display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;';
+  const label = document.createElement('span');
+  label.textContent = '読み込みエラー';
+  const reason = _homeFolderErrorReason(error);
+  if (reason) label.title = reason;
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'btn-link home-folder-load-retry';
+  retry.textContent = '再試行';
+  retry.dataset.e2eId = 'home-folder-load-retry';
+  retry.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    renderHomeFolderTree({ force: true, reason: 'home-folder-retry' });
+  });
+  box.append(label, retry);
+  container.appendChild(box);
+}
+
+function _scheduleHomeFolderAutoRetry() {
+  if (_homeFolderAutoRetryTimer) return;
+  _homeFolderAutoRetryTimer = setTimeout(() => {
+    _homeFolderAutoRetryTimer = null;
+    const container = document.getElementById('body-home');
+    if (!container || container.dataset.loaded === 'true' || !_homeFolderSectionExpanded()) return;
+    if (!container.querySelector('.home-folder-load-error')) return;
+    renderHomeFolderTree({ force: true, reason: 'home-folder-auto-retry', noAutoRetry: true });
+  }, _HOME_FOLDER_AUTO_RETRY_MS);
+}
 
 function _homeFolderRenderDelay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -28,6 +84,13 @@ function _isHomeFolderRenderCurrent(renderSeq, homePath) {
 function _homeFolderSectionExpanded() {
   const body = document.getElementById('body-home');
   return !!body && !body.classList.contains('collapsed');
+}
+
+async function _waitForHomeFolderTreeParts(timeoutMs = 15000) {
+  const ready = () => typeof createTreeNodeFromBrowse === 'function' && typeof _pathToFileId === 'function'
+    && typeof registerFileTypes === 'function';
+  const started = Date.now();
+  while (!ready() && Date.now() - started < timeoutMs) await _homeFolderRenderDelay(100);
 }
 
 async function _browseHomeFolderChildren(homePath, renderSeq) {
@@ -66,7 +129,13 @@ async function loadHomeFolder(options = {}) {
         await renderHomeFolderTree({ force: options.force === true, reason: options.reason || 'home-folder-load', skipMetadataLoad: true });
       }
       if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
-    } catch {}
+    } catch (error) {
+      _logHomeFolderFailure('home-folder metadata', error);
+      if (!_homeFolderMetadataLoaded && (options.render === true || _homeFolderSectionExpanded())) {
+        _renderHomeFolderError(document.getElementById('body-home'), error);
+        if (!options.noAutoRetry) _scheduleHomeFolderAutoRetry();
+      }
+    }
   })();
   try {
     return await _homeFolderLoadPromise;
@@ -88,12 +157,16 @@ async function renderHomeFolderTree(options = {}) {
     return { skipped: true, reason: 'collapsed' };
   }
   if (!homePath && !_homeFolderMetadataLoaded && opts.skipMetadataLoad !== true) {
-    await loadHomeFolder({ render: true, force: opts.force === true, reason: opts.reason || 'render-home-folder' });
+    await loadHomeFolder({ render: true, force: opts.force === true, reason: opts.reason || 'render-home-folder', noAutoRetry: opts.noAutoRetry === true });
     return { rendered: !!_homeFolderPath };
   }
   if (!homePath) return;
   container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込み中...</div>';
   try {
+    // 起動直後は、一覧がツリーの部品（後から読み込まれる本体のスクリプトの関数）より先に届くことがある。
+    // そのまま組み立てると「読み込みエラー」になっていたため、部品がそろうまで待つ（2026-11-21）。
+    await _waitForHomeFolderTreeParts();
+    if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
     if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
     const children = await _browseHomeFolderChildren(homePath, renderSeq);
     if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
@@ -111,11 +184,13 @@ async function renderHomeFolderTree(options = {}) {
     if (typeof applyGlobalFilter === 'function') applyGlobalFilter();
     if (typeof _scheduleFileLockRefreshForOutliner === 'function') _scheduleFileLockRefreshForOutliner();
     container.dataset.loaded = 'true';
-  } catch {
+  } catch (error) {
     if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return;
+    _logHomeFolderFailure('home-folder list', error);
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(container);
-    container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">読み込みエラー</div>';
+    _renderHomeFolderError(container, error);
     container.dataset.loaded = 'false';
+    if (!opts.noAutoRetry) _scheduleHomeFolderAutoRetry();
   }
 }
 

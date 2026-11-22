@@ -247,6 +247,8 @@
     if (!text || text.length < 4) return false;
     if (/^(?:https?:\/\/|file:\/\/|[a-z]:[\\/]|\\\\|\/(?!\/))/i.test(text)) return true;
     if (!/[\\/]/.test(text) || /\s[\\/]|[\\/]\s/.test(text)) return false;
+    // 日付（2026/11/22 00:42 や 11/22）はパスではない（チャットの日時が「2026/…22」と中略されていた）。
+    if (/^\d{1,4}\/\d{1,2}(?:\/\d{1,4})?(?:[\sT]\d{1,2}:\d{2}(?::\d{2})?)?$/.test(text)) return false;
     return text.split(/[\\/]+/).filter(Boolean).length >= 2;
   }
 

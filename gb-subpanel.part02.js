@@ -181,6 +181,11 @@
   function _renderTargetContent(entry) {
     if (!_contentEl) return;
     _contentEl.replaceChildren();
+    // シートのツールバーの操作が、この面のシートを対象にする（gb-db-core.js の _dbPaneContextFromEvent）。
+    if (!Object.getOwnPropertyDescriptor(_contentEl, '_dbPaneContext')) {
+      Object.defineProperty(_contentEl, '_dbPaneContext', { configurable: true,
+        get: () => (_current && DB_VIEW_TYPES.has(_current.type) ? (_sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null)) : null) });
+    }
     _updateHeader(entry);
     if (entry.availability?.checked && entry.availability.exists === false) {
       _renderErrorState(entry, 'ファイルが見つかりません');
@@ -285,6 +290,25 @@
     if (typeof replaceIcons === 'function') replaceIcons();
   }
 
+  // フォルダツリー等からドロップされたファイル／フォルダを開く。フォルダツリーのメニューの
+  // 「サブパネルで開く」と同じ開き方（openLinkedPathInRightSidebar）を通し、ドロップ独自の開き方を持たない。
+  // 独自の開き方を持っていた頃は、シナリオ等の開く対象の指定（scenarioPath等）が付かず、
+  // アプリに切り替わるだけでファイルが開かれなかった。
+  async function _openDroppedItem(item, options = {}) {
+    const path = String(item?.path || '').trim();
+    if (!path) return false;
+    const label = item.label || item.name || _basename(path);
+    if (typeof openLinkedPathInRightSidebar === 'function') {
+      return openLinkedPathInRightSidebar(path, label, {
+        linkType: item.type || item.toolType || '',
+        fromDrop: true,
+        subpanelIndex: Number.isInteger(options.index) ? options.index : undefined,
+      });
+    }
+    const target = (typeof MeldexDnD !== 'undefined' && await MeldexDnD.normalizeOpenTargetAsync?.(item)) || { type: item.type, path, label };
+    return open(target, options);
+  }
+
   // ---- 持続DOMの生成（初回のみ。gb-pane-bridge.part01.part01.js の
   //      _createLegacyStorage() から呼ばれる。以後は他の固定右レール項目と
   //      同じ仕組みで退避・移動される） ----
@@ -375,10 +399,7 @@
 
     root.append(titlebar, _contentEl);
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
-      MeldexDnD.installSurfaceDropTarget(root, async item => {
-        const target = await MeldexDnD.normalizeOpenTargetAsync?.(item) || item;
-        return open(target);
-      });
+      MeldexDnD.installSurfaceDropTarget(root, item => _openDroppedItem(item));
     }
     _root = root;
     _showEmptyState();
@@ -649,20 +670,45 @@
     _renderStrip(); _persistTabs();
   }
 
+  // タブの「…」と右クリックのメニュー。メインパネルのタブのメニューと同じ部品・同じ項目に、
+  // 「メインパネルで開く」を先頭に加える。
   function _showTabMenu(event, tab) {
-    event.preventDefault();
-    event.stopPropagation();
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
     const entry = tab.history[tab.index] || tab.entry;
-    window.MeldexContextMenuUI?.openAt({
-      x: event.clientX, y: event.clientY, ariaLabel: (entry.label || 'タブ') + 'のタブ操作', e2eId: 'subpanel-tab-menu',
-      items: [
-        { label: 'メインパネルで開く', icon: 'squareArrowOutUpLeft', action: async () => { if (await activateTab(tab.id)) await promoteToMainPane(); } },
-        { label: '閉じる', icon: 'x', action: () => closeTab(tab.id) },
-        { label: 'ほかのタブを閉じる', icon: 'xSquare', disabled: _tabs.length < 2, action: async () => {
-          for (const other of [..._tabs]) if (other.id !== tab.id && !await closeTab(other.id)) return;
-        } },
-      ],
-    });
+    const index = _tabs.indexOf(tab);
+    const menuTab = { id: tab.id, type: entry.type, path: entry.path, label: entry.label };
+    const adapter = {
+      index,
+      count: _tabs.length,
+      leadingItems: [{
+        label: 'メインパネルで開く', icon: 'squareArrowOutUpLeft',
+        disabled: !entry.path || entry.type === 'unsupported',
+        action: async () => { if (await activateTab(tab.id)) await promoteToMainPane(); },
+      }],
+      openInNewWindow: async () => {
+        // 保存を確定してから新しいウィンドウで開き、開けた時だけこのタブを閉じる（メインパネルと同じ）。
+        if (tab.id === _activeId && !(await _flushBeforeTransition(_current)).ok) {
+          if (typeof showStatus === 'function') showStatus('保存を確認できませんでした。もう一度お試しください', true);
+          return;
+        }
+        GBLayout.openTabInNewWindow?.(menuTab, () => { closeTab(tab.id); });
+      },
+      close: () => closeTab(tab.id),
+      closeSide: async side => {
+        const at = _tabs.indexOf(tab);
+        const targets = _tabs.filter((_, i) => (side === 'left' ? i < at : i > at));
+        for (const other of targets) if (!await closeTab(other.id)) return false;
+        return true;
+      },
+      closeOthers: async () => {
+        for (const other of [..._tabs]) if (other.id !== tab.id && !await closeTab(other.id)) return false;
+        return true;
+      },
+    };
+    if (typeof GBLayout !== 'undefined' && typeof GBLayout.showTabMenu === 'function') {
+      GBLayout.showTabMenu(event, _hostPane()?.id || '', menuTab, adapter);
+    }
   }
 
   function _clearStripMarkers(strip) {
@@ -699,14 +745,7 @@
     // メインパネルのタブを移す（メイン側の保存を確定して閉じてから、サブパネルで開く）
     let main = null;
     try { main = JSON.parse(event.dataTransfer.getData(MAIN_TAB_MIME) || 'null'); } catch { main = null; }
-    const mainPane = main?.paneId && typeof GBLayout !== 'undefined' ? GBLayout.findNode(GBLayout.root, main.paneId)?.node : null;
-    const mainTab = mainPane?.tabs?.find(tab => tab.id === main.tabId) || null;
-    if (mainTab?.path) {
-      const target = { type: mainTab.type, path: mainTab.path, label: mainTab.label, state: { ...(mainTab.state || {}) } };
-      if (await GBTabs.closeTab(main.paneId, mainTab.id) === false) return;
-      await open(target, { index });
-      return;
-    }
+    if (main?.paneId && main?.tabId && await moveMainTab(main.paneId, main.tabId, { index }) !== null) return;
     // フォルダツリー等からのファイル／フォルダ（1件ずつ）
     const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData?.(event, 'node') : null;
     let payload = resolved?.payload || null;
@@ -718,10 +757,27 @@
       if (typeof showStatus === 'function') showStatus('複数選択はタブ列へ一括追加できないため、全件を変更しませんでした', true);
       return;
     }
-    const item = items[0];
-    const normalized = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.normalizeOpenTargetAsync?.({ name: item.name, path: item.path, type: item.type }) : null;
-    const ok = await open(normalized || { type: item.type, path: item.path, label: item.name }, { index });
+    const ok = await _openDroppedItem(items[0], { index });
     if (resolved) (ok ? MeldexDnD.completeDrop?.(resolved) : MeldexDnD.failDrop?.(resolved));
+  }
+
+  // メインパネルのタブをサブパネルへ移す（タブのD&Dとタブのメニュー「サブパネルで開く」で共通）。
+  // メイン側の表示状態（スクロール位置など）を引き継ぎ、保存を確定してメインのタブを閉じてから開く。
+  // 対象のタブが無い時は null、閉じられなかった・開けなかった時は false を返す。
+  async function moveMainTab(paneId, tabId, options = {}) {
+    const mainPane = paneId && typeof GBLayout !== 'undefined' ? GBLayout.findNode(GBLayout.root, paneId)?.node : null;
+    const mainTab = mainPane?.tabs?.find(tab => tab.id === tabId) || null;
+    if (!mainTab?.path) return null;
+    let state = { ...(mainTab.state || {}) };
+    if (typeof getComponentInstance === 'function') {
+      try {
+        const live = getComponentInstance(mainTab.id)?.getState?.();
+        if (live && typeof live === 'object') state = { ...state, ...live };
+      } catch { /* 取得できない時は保存済みの状態を使う */ }
+    }
+    const target = { type: mainTab.type, path: mainTab.path, label: mainTab.label, state };
+    if (await GBTabs.closeTab(paneId, mainTab.id) === false) return false;
+    return open(target, { index: options.index });
   }
 
   function _installStripDrop(strip) {
@@ -749,45 +805,46 @@
     const strip = _stripEl;
     if (!strip) return;
     strip.querySelectorAll(':scope > .gb-tab, :scope > .gb-subpanel-tabs-empty').forEach(el => el.remove());
+    // ＋ボタン（メインパネルと同じ「新しいパネルを追加」）は常に最後のタブの次に置く。
+    const addButton = strip.querySelector(':scope > .gb-pane-add-tab');
+    const place = el => (addButton ? strip.insertBefore(el, addButton) : strip.appendChild(el));
     if (!_tabs.length) {
       const empty = document.createElement('span');
       empty.className = 'gb-subpanel-tabs-empty';
       empty.textContent = 'サブパネル';
-      strip.appendChild(empty);
+      place(empty);
       return;
     }
+    const hostId = _hostPane()?.id || 'subpanel';
     for (const tab of _tabs) {
       const entry = tab.history[tab.index] || tab.entry;
-      const el = document.createElement('div');
-      el.className = 'gb-tab' + (tab.id === _activeId ? ' active' : '');
+      const tabLike = { id: tab.id, type: entry.type, path: entry.path, label: entry.label || _toolLabel(entry.type), icon: _tabIcon(entry.type) };
+      const el = typeof GBLayout !== 'undefined' && typeof GBLayout.createPaneTabElement === 'function'
+        ? GBLayout.createPaneTabElement(tabLike, {
+          active: tab.id === _activeId,
+          e2eId: 'subpanel-tab-' + tab.id,
+          moreE2eId: 'subpanel-tab-' + tab.id + '-actions',
+          onMore: event => _showTabMenu(event, tab),
+        })
+        : Object.assign(document.createElement('div'), { className: 'gb-tab' + (tab.id === _activeId ? ' active' : ''), textContent: tabLike.label });
       el.dataset.subpanelTabId = tab.id;
-      el.dataset.tabTitle = entry.label || 'タブ';
-      el.dataset.e2eId = 'subpanel-tab-' + tab.id;
-      el.setAttribute('role', 'tab');
-      el.setAttribute('aria-selected', tab.id === _activeId ? 'true' : 'false');
+      el.dataset.subpanelHost = hostId;
       el.title = entry.path || entry.label || '';
       el.draggable = true;
-      const icon = document.createElement('span');
-      icon.className = 'gb-tab-icon';
-      if (typeof lucide === 'function') {
-        const fallback = lucide(_tabIcon(entry.type), 14);
-        icon.innerHTML = window.MeldexFileIcons?.tabIcon?.({ type: entry.type, path: entry.path, label: entry.label }, 14, fallback) ?? fallback;
-      }
-      const label = document.createElement('span');
-      label.className = 'gb-tab-label';
-      label.textContent = entry.label || _toolLabel(entry.type);
-      el.append(icon, label);
       el.addEventListener('click', () => { activateTab(tab.id); });
       el.addEventListener('auxclick', event => { if (event.button === 1) { event.preventDefault(); closeTab(tab.id); } });
       el.addEventListener('contextmenu', event => _showTabMenu(event, tab));
+      if (typeof addLongPressHandler === 'function') addLongPressHandler(el, event => _showTabMenu(event, tab));
       el.addEventListener('dragstart', event => {
+        if (event.target?.closest?.('.gb-tab-more')) { event.preventDefault(); return; }
         event.dataTransfer.setData(TAB_MIME, JSON.stringify({ id: tab.id }));
         if (typeof MeldexDnD !== 'undefined') MeldexDnD.writeNodePayload?.(event.dataTransfer, { name: entry.label, label: entry.label, path: entry.path, type: entry.type }, 'subpanel');
         event.dataTransfer.effectAllowed = 'copyMove';
+        if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(event, el, 0.35);
         el.classList.add('dragging');
       });
       el.addEventListener('dragend', () => el.classList.remove('dragging'));
-      strip.appendChild(el);
+      place(el);
     }
   }
 
@@ -917,6 +974,16 @@
     return !!_current;
   }
 
+  // トピック名の変更をタブ名へ反映する。
+  function _onEntryLabelChanged() {
+    _renderStrip();
+    _persistTabs();
+  }
+
+  function navState() {
+    return { canBack: _navIndex > 0, canForward: _navIndex >= 0 && _navIndex < _navHistory.length - 1 };
+  }
+
   function getCurrentTarget() {
     return _current ? { ..._current } : null;
   }
@@ -974,12 +1041,21 @@
     close: closeContent,
     navBack,
     navForward,
+    navState,
     promoteToMainPane,
+    moveMainTab,
     activateTab,
     closeTab,
     takeTab,
     // すべてのタブを閉じる（保存を確定できないタブがあればそこで止める）。
-    closeAll: async () => { for (const tab of [..._tabs].reverse()) if (!await closeTab(tab.id)) return false; return closeContent(); },
+    closeAll: async () => {
+      const drawer = window.MeldexCloudMobileSideDrawer;
+      const closeDrawer = _root?.classList.contains('cloud-mobile-side-drawer-panel-content') && drawer?.isOpen?.();
+      for (const tab of [..._tabs].reverse()) if (!await closeTab(tab.id)) return false;
+      // 最後のタブを閉じると_currentは空になる。外側のドロワーも閉じてメインへ戻す。
+      if (closeDrawer) return (await drawer.close()) !== false;
+      return closeContent();
+    },
     renderTabStrip,
     getTabs: () => _tabs.map(tab => ({ id: tab.id, active: tab.id === _activeId, ...(tab.history[tab.index] || tab.entry) })),
     TAB_MIME,

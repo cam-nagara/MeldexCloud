@@ -123,7 +123,7 @@ function _dbTreeOpenColumnMenu(event, propName, index, hierarchy, ctx, dbPath) {
     clientY: Number(event.clientY) || rect.bottom,
   };
   if (propName === '__entity__') {
-    showEntityColMenu(menuEvent, ctx, dbPath);
+    showEntityColMenu(menuEvent, ctx, dbPath, { protectLeftEdge: hierarchy });
     return;
   }
   showColHeaderMenu(menuEvent, propName, index, ctx, dbPath, {

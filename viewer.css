@@ -202,9 +202,9 @@ body:has(.viewer-loading-state:is([data-state="empty"], [data-state="error"]):no
   #controls:not(.gb-toolbar-overflow-host) #btn-bg, #controls:not(.gb-toolbar-overflow-host) #btn-hud { display: none; }
 }
 @media (max-width: 500px) {
-  #controls:not(.gb-toolbar-overflow-host) #btn-shift-back, #controls:not(.gb-toolbar-overflow-host) #btn-shift-fwd { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-shift-back, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-shift-fwd { display: none; }
   /* スマートフォン幅では前後のフォルダを右クリック（長押し）メニューと↑/↓キーに任せる */
-  #controls:not(.gb-toolbar-overflow-host) #btn-prev-folder, #controls:not(.gb-toolbar-overflow-host) #btn-next-folder { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-prev-folder, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-next-folder { display: none; }
 }
 /* pointer:coarse または 640px以下: ボード下端ツールバーと同じタッチ操作面。外寸53px
    （44pxの操作対象 + 上下4px(--ui-space-2)ずつの余白 + 上端1pxボーダー）・44px操作対象。
@@ -212,13 +212,13 @@ body:has(.viewer-loading-state:is([data-state="empty"], [data-state="error"]):no
    これらまで残すと右サイドバー切替ボタン等と合わせて横幅を超え、水平スクロールバーが
    発生して外寸53pxを維持できなくなるため。実ブラウザ検証2026-08-04で確認）。 */
 @media (max-width: 640px), (pointer: coarse) {
-  #controls:not(.gb-toolbar-overflow-host) #btn-flip-h, #controls:not(.gb-toolbar-overflow-host) #btn-flip-v, #controls:not(.gb-toolbar-overflow-host) #btn-rotate, #controls:not(.gb-toolbar-overflow-host) #btn-original { display: none; }
-  #controls.gb-toolbar-viewer { min-height: 53px; padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); gap: var(--ui-space-3, 6px); }
-  #controls .tb-icon-btn, #controls select { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
-  #controls #seek-bar { flex: 0 0 72px; min-width: 72px; height: var(--ui-h-touch, 44px) !important; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-flip-h, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-flip-v, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-rotate, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-original { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls.gb-toolbar-viewer { min-height: 53px; padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); gap: var(--ui-space-3, 6px); }
+  :root:not([data-toolbar-density="desktop"]) #controls .tb-icon-btn, :root:not([data-toolbar-density="desktop"]) #controls select { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
+  :root:not([data-toolbar-density="desktop"]) #controls #seek-bar { flex: 0 0 72px; min-width: 72px; height: var(--ui-h-touch, 44px) !important; }
   #counter { flex: 0 0 auto; }
-  #controls:not(.gb-toolbar-overflow-host) #sel-mode, #controls:not(.gb-toolbar-overflow-host) label, #controls:not(.gb-toolbar-overflow-host) .zoom-label, #controls:not(.gb-toolbar-overflow-host) .speed-label { display: none; }
-  #controls:not(.gb-toolbar-overflow-host) #btn-bg, #controls:not(.gb-toolbar-overflow-host) #btn-hud { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #sel-mode, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) label, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) .zoom-label, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) .speed-label { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-bg, :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-hud { display: none; }
   .nav-area { width: 44px; }
 }
 /* スマートフォン幅（500px以下）: 44px操作対象のままでは残りのボタン+シークバーが
@@ -226,8 +226,8 @@ body:has(.viewer-loading-state:is([data-state="empty"], [data-state="error"]):no
    （実ブラウザ検証2026-08-04で確認）。優先度の低いものをさらに間引く。 */
 @media (max-width: 500px) {
   #counter { display: none; }
-  #controls:not(.gb-toolbar-overflow-host) #btn-fit { display: none; }
-  #controls:not(.gb-toolbar-overflow-host) #btn-fullscreen { display: none; }
-  #controls.gb-toolbar-viewer { gap: var(--ui-space-2, 4px); }
-  #controls #seek-bar { flex: 0 0 50px; min-width: 50px; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-fit { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls:not(.gb-toolbar-overflow-host) #btn-fullscreen { display: none; }
+  :root:not([data-toolbar-density="desktop"]) #controls.gb-toolbar-viewer { gap: var(--ui-space-2, 4px); }
+  :root:not([data-toolbar-density="desktop"]) #controls #seek-bar { flex: 0 0 50px; min-width: 50px; }
 }

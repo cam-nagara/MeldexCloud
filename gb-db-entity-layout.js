@@ -150,7 +150,12 @@ function _elMutateState(dbPath, label, detail, mutator, options = {}) {
     // エントリ画面（フルページタブ）の履歴スコープは共通('')のため、シートの
     // 'db:'スコープに積むとエントリ画面から Ctrl+Z が届かない。共通スコープへ積めば
     // エントリ画面からもシートタブ（スコープ→共通のフォールバック）からも取り消せる
-    historyScope: '',
+    // シートのタブの中で編集する配置（シートのフォームビューの配置編集など）は、呼び出し側がシートの範囲を渡す。
+    // 共通の範囲に積むと、シートのタブで Ctrl+Z を押した時にシートの範囲の古い履歴（ビューの切替など）が先に戻り、
+    // その古い写しで配置の変更が消えていた（M-014 第3段階 links で発見）。
+    // 指定が無い時は、操作した時に開いている画面の範囲へ積む（トピックの画面を単独のタブで開いている時は共通、
+    // シートの横のサブパネル・ドロワーで開いている時はそのシート。そこで Ctrl+Z を押すと届く。2026-11-21）。
+    historyScope: typeof options.historyScope === 'string' ? options.historyScope : '',
   });
   return normalized;
 }
@@ -161,6 +166,9 @@ function _elRestoreOption(grid, rerender) {
     onRestore: () => {
       if (grid?.isConnected && typeof rerender === 'function') rerender();
     },
+    // トピックの画面がシートの横（サブパネル・ドロワー）で開いている時は、そのシートの履歴の範囲に積む
+    // （統合タブからの操作。シートで Ctrl+Z を押すと届く。2026-11-21）。単独のタブでは共通の範囲のまま。
+    ...(typeof grid?._elHistoryScope === 'string' ? { historyScope: grid._elHistoryScope } : {}),
   };
 }
 
@@ -286,11 +294,8 @@ async function _elDeleteLayout(grid, entityPath, dbPath, layoutId, rerender) {
   const state = _elGetState(dbPath);
   const layout = state?.layouts.find(l => l.id === layoutId);
   if (!layout) return;
-  // 削除は確認ダイアログ必須（プロジェクト共通ルール）。取り消し履歴からも復元できる。
-  const confirmed = typeof cfConfirm === 'function'
-    ? await cfConfirm('トピックレイアウト「' + layout.name + '」を削除しますか？')
-    : false;
-  if (!confirmed) return;
+  // 確認は出さない。削除は Ctrl+Z・やり直し・共通の履歴で戻せる（app/AGENTS.md「3経路で復元できる場合に限り確認を出さない」。
+  // 2026-11-21 予期しないダイアログの検査で検出）。
   if (!_elCanMutateGrid(grid)) return;
   _elMutateState(dbPath, 'トピックレイアウト: 削除', layout.name, (st) => {
     const idx = st.layouts.findIndex(l => l.id === layoutId);
@@ -1066,6 +1071,22 @@ if (typeof window !== 'undefined') {
   window.GBEntityLayout = {
     COLUMNS_TAB_ID: EL_COLUMNS_TAB_ID,
     buildTabBar: _elBuildTabBar,
+    // トピックの画面の統合タブ（gb-sheet-entry-attachments.js）から、トピックレイアウトを追加・編集・名前の変更・複製・削除・
+    // 書き出しする（2026-11-21 ユーザー決定。旧タブ行の「＋」「鉛筆」「…」「書き出し」を統合タブの「＋」と「…」へ移した）。
+    showAddLayoutMenu: (anchor, context) => _elShowAddLayoutMenu(anchor, context),
+    topicLayoutTabMenuItems: (anchor, context) => {
+      const { grid, entityPath, dbPath, layoutId, rerender } = context || {};
+      if (!grid || !dbPath || !layoutId || layoutId === EL_COLUMNS_TAB_ID) return [];
+      const session = _elSession(grid, entityPath);
+      return [
+        { key: 'edit', label: session.editMode ? 'レイアウト編集を終了' : 'レイアウトを編集', icon: session.editMode ? 'check' : 'pencil',
+          run: () => { session.editMode = !session.editMode; session.tab = layoutId; if (typeof rerender === 'function') rerender(); } },
+        { key: 'rename', label: '名前を変更', icon: 'pencil', run: () => _elRenameLayout(grid, entityPath, dbPath, layoutId, rerender) },
+        { key: 'duplicate', label: '複製', icon: 'copy', run: () => _elDuplicateLayout(grid, entityPath, dbPath, layoutId, rerender) },
+        { key: 'export', label: '書き出し…', icon: 'download', run: () => _elShowExportMenu(anchor, grid, { ...context, layoutId }) },
+        { key: 'delete', label: '削除', icon: 'trash', danger: true, run: () => _elDeleteLayout(grid, entityPath, dbPath, layoutId, rerender) },
+      ];
+    },
     renderLayoutBody: (grid, data, entityPath, options, dbPath, layoutId, rerender) => {
       if (typeof _elRenderLayoutBody === 'function') {
         _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, rerender);

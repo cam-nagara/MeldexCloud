@@ -3,6 +3,27 @@
  * フォルダツリー、検索、フィルタ、お気に入り、サイドバー
  */
 
+const _outlinerPendingRenames = new Map();
+const _outlinerPendingRenameKey = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+async function _outlinerAwaitPendingRename(item) {
+  for (let depth = 0; depth < 16; depth++) {
+    const key = _outlinerPendingRenameKey(item?.path);
+    let pending = _outlinerPendingRenames.get(key);
+    if (!pending) {
+      const matches = [..._outlinerPendingRenames].filter(([path]) => path.endsWith('/' + key) || key.endsWith('/' + path));
+      if (matches.length > 1) throw new Error('名前を変更中の項目を特定できません');
+      pending = matches[0]?.[1];
+    }
+    if (!pending) return item;
+    const result = await pending.promise;
+    if (!result.ok) throw new Error('名前の変更を保存できなかったため、移動を中止しました');
+    item.path = result.newPath;
+    item.name = result.newName || item.name;
+    if (result.fileId) item.file_id = result.fileId;
+  }
+  throw new Error('名前の変更の完了を確認できません');
+}
+
 // サイドバー全体でブラウザ標準の右クリックメニューを抑制（captureフェーズで確実に）
 document.addEventListener('contextmenu', (e) => {
   if (e.target?.closest?.('#sidebar')) e.preventDefault();
@@ -299,8 +320,33 @@ function _outlinerIconMarkup(item, size) {
   return window.MeldexFileIcons?.render(item, size || 18, fallback) ?? fallback;
 }
 
+// ツリーの名前の入力欄（その場の名前の変更）が開いているか
+function _outlinerInlineRenameActive() {
+  return !!document.querySelector('#outliner-tree .tree-label > input, #body-home .tree-label > input, #body-workspaces .tree-label > input');
+}
+
+// 名前の入力中は、ツリーの作り直しを入力が終わった後へ回す（作り直すと入力欄ごと消えて、入力中の名前が
+// 失われていた。取込の完了などの外部の変更の通知から直接呼ばれる経路で起きる: 2026-11-22 M-014 横断の検査）。
+// 呼び出し元は待たせない（入力が長く続いても、ほかの処理が止まらないように）。後回しにした読み直しは1回にまとめる。
+let _outlinerDeferredRefresh = null;
+function _outlinerDeferUntilInlineRenameEnds(kind, opts) {
+  const pending = _outlinerDeferredRefresh || (_outlinerDeferredRefresh = { kind, opts: { ...opts, ignoreInlineRename: true } });
+  if (kind === 'refresh') { pending.kind = 'refresh'; pending.opts = { ...opts, ignoreInlineRename: true }; }
+  if (!pending.timer) {
+    pending.timer = setInterval(() => {
+      if (_outlinerInlineRenameActive()) return;
+      clearInterval(pending.timer);
+      _outlinerDeferredRefresh = null;
+      const run = pending.kind === 'refresh' ? refreshOutliner : loadOutliner;
+      Promise.resolve().then(() => run(pending.opts)).catch(error => console.warn('[outliner] 後回しにした読み直しに失敗しました', error));
+    }, 150);
+  }
+  return { deferred: true };
+}
+
 async function loadOutliner(options) {
   const opts = options && typeof options === 'object' ? options : {};
+  if (!opts.ignoreInlineRename && _outlinerInlineRenameActive()) return _outlinerDeferUntilInlineRenameEnds('load', opts);
   const perfStartedAt = _outlinerNowMs();
   if (!opts.force && opts.coalesce && _outlinerLoadInFlight) {
     if (typeof _logPerfEvent === 'function') {
@@ -1004,7 +1050,7 @@ function _saveOutlinerDropPlacement(target, siblings, movedItems) {
   const index = target.anchorPath ? anchor + (target.position === 'below' ? 1 : 0) : rest.length;
   rest.splice(index, 0, ...movedItems);
   const key = target.path || '_root';
-  setManualOrder(key, rest.map(item => item.path));
+  if (setManualOrder(key, rest.map(item => item.path)) === false) throw new Error('並び順を保存できませんでした');
   setSortSetting(key, 'manual', 'asc');
 }
 
@@ -1031,6 +1077,9 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
   if (!targetItem || !Array.isArray(items) || items.length === 0) return 0;
   const placement = { position: 'inside', ...targetItem, path: targetPath };
+  const moveReservation = typeof historyReserve === 'function'
+    ? historyReserve(`フォルダツリー: ${items.length} 件を移動`, '') : null;
+  try {
   let siblings;
   try {
     siblings = await _outlinerDropSiblings(placement);
@@ -1044,9 +1093,15 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   let succeeded = 0;
   const failures = [];
   const movedItems = [];
+  const pendingPaths = typeof _folderPendingMovePaths !== 'undefined'
+    ? items.filter(source => source.sourceSurface !== 'sheet-image' && _folderIsDirectChildOfCurrent(source.path)).map(source => _folderMembershipKey(source.path)) : [];
+  const selectedPaths = typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems.map(item => item.path) : [];
+  pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
+  if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
   try {
     for (const source of items) {
       try {
+        await _outlinerAwaitPendingRename(source);
         const copySource = source.sourceSurface === 'sheet-image';
         if (source.linked || isItemLocked(source.path) || isItemLocked(targetPath)) {
           throw new Error('リンクファイルや編集ロック中の項目は移動できません');
@@ -1064,9 +1119,14 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
         });
         movedItems.push({ ...source, oldPath: copySource ? '' : source.path, path: res.new_path || source.path, name: res.new_name || source.name });
         succeeded += 1;
+        if (!copySource && typeof _folderApplyCommittedMoves === 'function') {
+          _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
+          _folderApplyCommittedMoves([{ oldPath: source.path, newPath: res.new_path || source.path, name: res.new_name || source.name, item: source }]);
+        }
         try {
           if (!copySource && res?.new_path && res.new_path !== source.path && typeof renameAppPathReferences === 'function') {
             renameAppPathReferences(source.path, res.new_path, {
+              preserveMountedViews: true,
               label: res.new_name || source.name,
               fileId: res.file_id,
               type: source.type || 'file',
@@ -1077,12 +1137,17 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
           console.warn('[Meldex] 移動後の表示を再読み込みします', error);
         }
       } catch (error) {
+        if (typeof _folderPendingMovePaths !== 'undefined') {
+          _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
+          if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+        }
         failures.push({ source, error });
       }
       processed += 1;
       progress?.updateOperation?.(processed, null, progressToken);
     }
   } finally {
+    pendingPaths.forEach(path => _folderPendingMovePaths.delete(path));
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
   let refreshError = null;
@@ -1110,7 +1175,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } else {
     showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
-  window.MeldexFileMoveHistory?.register?.(
+  const registerMove = () => window.MeldexFileMoveHistory?.register?.(
     movedItems.map(item => ({
       oldPath: item.oldPath,
       newPath: item.path,
@@ -1125,7 +1190,11 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
       refresh: () => refreshOutliner({ force: true, reason: 'outliner-move-history' }),
     },
   );
+  if (moveReservation) moveReservation.capture(registerMove); else registerMove();
   return succeeded;
+  } finally {
+    moveReservation?.cancel();
+  }
 }
 
 function _treeDragPayload(primaryItem, actualNodes) {
@@ -1184,7 +1253,7 @@ function setManualOrder(folderPath, names) {
     localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
     return true;
   } catch (error) {
-    if (typeof console !== 'undefined') console.error('[outliner] 手動並び順を保存できませんでした', error);
+    if (typeof console !== 'undefined') console.warn('[outliner] 手動並び順を保存できませんでした', error);
     return false;
   }
 }
@@ -1217,7 +1286,7 @@ function applyManualSort(container, folderPath) {
 }
 function saveManualOrderFromDOM(container, folderPath) {
   const names = [...container.querySelectorAll(':scope > .tree-node')].map(n => n._nodeData?.name).filter(Boolean);
-  setManualOrder(folderPath, names);
+  return setManualOrder(folderPath, names);
 }
 
 // 配列そのものを保存済み手動順で並べ替える（仮想化コンテナはDOM順ではなく配列順が正なので、
@@ -1343,8 +1412,12 @@ function _fileLockEntryFromEntries(entries, path) {
   const target = _normalizeLockedItemPath(path);
   return (entries || []).find(entry => {
     if (fid && entry?.file_id === fid) return true;
-    const base = _normalizeLockedItemPath(entry?.normalized_path || entry?.path || '');
-    return base && (target === base || target.startsWith(base + '/'));
+    // normalized_path はサーバーで解決した絶対パス、path は設定時の表示パス（ワークスペース相対）。
+    // 画面のパスは相対なので両方と照合する（file_id の無いファイルのロックが見つからなかった。S4）
+    return [entry?.normalized_path, entry?.path].some((raw) => {
+      const base = _normalizeLockedItemPath(raw || '');
+      return base && (target === base || target.startsWith(base + '/'));
+    });
   }) || null;
 }
 async function _migrateLegacyLocksToServerIfOwner() {
@@ -1457,7 +1530,9 @@ function pushOutlinerFileLockHistory(path, beforeSnapshot, afterSnapshot) {
     label,
     () => _restoreFileLockHistorySnapshot(path, beforeSnapshot),
     () => _restoreFileLockHistorySnapshot(path, afterSnapshot),
-    'outliner:file-lock',
+    // 共通の履歴に積む（フォルダツリーの移動・削除と同じ）。以前の専用の範囲はどの画面の Ctrl+Z からも届かず、
+    // 編集ロックを取り消せなかった（2026-11-22 M-014 フォルダツリー網羅テスト）。
+    '',
     path || ''
   );
   return true;
@@ -1679,6 +1754,9 @@ const OUTLINER_SETTINGS_HISTORY_KEYS = [
 ];
 
 function refreshOutlinerSettingsAfterHistory() {
+  if (typeof renderFolderGrid === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
+    renderFolderGrid({ preserveSelectedPaths: typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems.map(item => item.path) : [] });
+  }
   if (typeof refreshOutliner === 'function') {
     refreshOutliner();
     return;
@@ -1691,6 +1769,7 @@ function refreshOutlinerSettingsAfterHistory() {
 
 async function refreshOutliner(options) {
   const opts = options && typeof options === 'object' ? options : {};
+  if (!opts.ignoreInlineRename && _outlinerInlineRenameActive()) return [_outlinerDeferUntilInlineRenameEnds('refresh', opts)];
   const refreshJobs = [];
   if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(opts)));
   if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));

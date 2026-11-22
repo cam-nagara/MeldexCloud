@@ -42,14 +42,15 @@
     const parking = app._mapParking = document.createElement('div'); parking.hidden = true; app.el.appendChild(parking);
     parking.append(...toolbar.children);
     toolbar.className = 'gb-toolbar gb-toolbar-main gb-toolbar-map'; toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'マップの操作');
-    const menu = iconButton(app, 'マップメニュー', 'menu', event => showToolMenu(event, 'map', app), 'menu'); menu.classList.add('tool-menu-btn');
-    menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
-    const reveal = iconButton(app, 'フォルダツリーで表示', 'folderTree', event => revealCurrentInFolderTree('map', event), 'reveal');
+    // 左端のアプリアイコンがメインメニューボタン（UI共通ルール19）。☰と「フォルダツリーで表示」は置かない。
+    const appIcon = typeof toolbarAppIconElement === 'function'
+      ? toolbarAppIconElement('map', { onClick: event => showToolMenu(event, 'map', app) })
+      : document.createComment('app-icon');
+    if (appIcon.dataset) appIcon.dataset.mapAction = 'menu';
     const title = app._mapTitle = document.createElement('span'); title.className = 'tb-title tb-file-title'; title.textContent = app.state.label || 'マップ'; title.title = title.textContent;
     const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
     app.undoButton.dataset.gbTooltipKey = 'history.undo'; app.redoButton.dataset.gbTooltipKey = 'history.redo';
-    const appIcon = typeof toolbarAppIconElement === 'function' ? toolbarAppIconElement('map') : document.createComment('app-icon');
-    toolbar.append(appIcon, menu, reveal, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
+    toolbar.append(appIcon, title, sep(), convert(app.undoButton, '元に戻す', 'undo2'), convert(app.redoButton, 'やり直し', 'redo2'), sep());
     const fileIcon = window.MeldexFileIcons?.toolbarIconHtml?.('map');
     if (fileIcon) title.insertAdjacentHTML('beforebegin', fileIcon);
     const toolIcons = { select: 'mousePointer', pin: 'mapPin', route: 'spline', river:'pencil', region: 'pentagon', label: 'type', symbol: 'stamp', land: 'mountain', sea: 'waves', erase: 'eraser', measure: 'ruler' };

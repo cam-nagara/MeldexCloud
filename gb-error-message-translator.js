@@ -83,6 +83,29 @@
       action: info => info.nextAction || '対象ファイルをデスクトップ版で開き、同じメニューから操作を続けてください。',
     },
     {
+      // 400/405/422/428 は本体が理由の文言を返す。理由を出さないと「操作に失敗しました」だけになり、
+      // 何が足りないのか分からない（公開元の種類の登録漏れが原因不明のまま残った実例がある）。
+      test: info => info.status === 400 || info.status === 422,
+      title: '内容を受け付けられませんでした',
+      message: info => _detailText(info) || '送った内容がMeldex本体の確認を通りませんでした。',
+      action: '表示中の対象や入力内容を確認してから、もう一度試してください。',
+      showDetail: true,
+    },
+    {
+      test: info => info.status === 405,
+      title: 'この操作は利用できません',
+      message: info => _detailText(info) || 'Meldex本体がこの操作を受け付けませんでした。',
+      action: '画面を更新してもう一度試し、繰り返す場合はサポートに送信してください。',
+      showDetail: true,
+    },
+    {
+      test: info => info.status === 428,
+      title: '必要な情報が足りません',
+      message: info => _detailText(info) || '操作に必要な情報が足りませんでした。',
+      action: '対象を開き直してから、もう一度試してください。',
+      showDetail: true,
+    },
+    {
       test: info => info.status === 501
         || String(info.code || '') === 'cloud_route_unwired'
         || /not implemented|cloud_route_unwired/i.test(info.raw),
@@ -103,6 +126,11 @@
       action: '少し待って再試行し、繰り返す場合はサポートに送信してください。',
     },
   ];
+
+  // 「HTTP 400: 理由」から理由の部分だけを取り出す
+  function _detailText(info) {
+    return String(info?.raw || '').replace(/^\s*HTTP\s+\d{3}\s*:?\s*/i, '').trim();
+  }
 
   function _rawMessage(error) {
     if (error == null) return '';
@@ -144,17 +172,18 @@
     const selected = rule || fallback;
     return {
       title: selected.title,
-      message: selected.message,
+      message: typeof selected.message === 'function' ? selected.message(info) : selected.message,
       action: typeof selected.action === 'function' ? selected.action(info) : selected.action,
       technical: raw,
       status: info.status,
       matched: !!rule,
+      showDetail: !!selected.showDetail,
     };
   }
 
   function toStatusText(error, context) {
     const info = translate(error, context);
-    if (!info.matched && info.message) {
+    if ((!info.matched || info.showDetail) && info.message) {
       return `${info.title}: ${info.message} ${info.action}`;
     }
     return `${info.title}: ${info.action}`;

@@ -922,17 +922,19 @@ html[data-single-window="1"] #app-toolbar.visible {
 .tab-item .tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 .tab-label { overflow: hidden; text-overflow: ellipsis; }
 
-/* .tool-menu-btn: 各ツールバーの☰メニューボタン
+/* .tool-menu-btn: メニューを開くボタンの目印（showToolMenu の基準位置）。
+   主要アプリのツールバーでは左端のアプリアイコン（.tb-app-icon.tb-main-menu-btn）が持ち、その見た目は gb-ui 側。
+   ここはそれ以外（テスト用の仮ボタン等）の見た目。
    .gb-toolbar button (0,1,1) に勝つため .gb-toolbar 付きセレクタ (0,2,0) も併記
    v0.5.131: .tb-icon-btn と併用された場合は tb 系スタイル優先のため :not() で除外 */
-.tool-menu-btn:not(.tb-icon-btn),
-.gb-toolbar .tool-menu-btn:not(.tb-icon-btn) {
+.tool-menu-btn:not(.tb-icon-btn):not(.tb-app-icon),
+.gb-toolbar .tool-menu-btn:not(.tb-icon-btn):not(.tb-app-icon) {
   width: var(--ui-h-sm); height: var(--ui-h-sm); padding: 0; background: none; border: 1px solid transparent;
   border-radius: var(--ui-radius-sm); color: var(--ui-fg-default); font-size: var(--ui-font-16); cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
 }
-.tool-menu-btn:not(.tb-icon-btn):hover,
-.gb-toolbar .tool-menu-btn:not(.tb-icon-btn):hover { background: var(--ui-bg-control); border-color: var(--ui-border); }
+.tool-menu-btn:not(.tb-icon-btn):not(.tb-app-icon):hover,
+.gb-toolbar .tool-menu-btn:not(.tb-icon-btn):not(.tb-app-icon):hover { background: var(--ui-bg-control); border-color: var(--ui-border); }
 .modal-overlay.meldex-onboarding-overlay {
   z-index: 100040;
   background: var(--bg);
@@ -1068,15 +1070,15 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   text-decoration-line: none !important;
 }
 /* v0.5.131: ツールバー統一の .tb-* クラスが付いたボタンは個別スタイルを持つので除外 */
-#app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn),
+#app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon),
 #app-toolbar select:not(.tb-select),
 #app-toolbar label {
   font-size: var(--ui-font-13); color: var(--ui-toolbar-fg); background: var(--ui-bg-control);
   border: var(--ui-border-width) solid var(--ui-border); padding: 3px var(--ui-space-4);
   border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
 }
-#app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-#app-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
+#app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+#app-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 #app-toolbar .sep { width: var(--ui-border-width); height: var(--ui-toolbar-separator-height); background: var(--ui-border); margin: 0 var(--ui-space-1); }
 .toolbar-group { display: flex; align-items: center; gap: var(--ui-space-2); }
 
@@ -1328,6 +1330,26 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 }
 .chat-message-author {
   font-weight: 700;
+}
+/* 日時は名前・モデル表示より優先する。ボタンの場所はホバー前から確保する。 */
+.chat-message-row-llm .chat-message-header {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.chat-message-row-llm .chat-message-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+.chat-message-row-llm .chat-message-time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.chat-message-row-llm .chat-message-header > :not(.chat-message-author) {
+  flex-shrink: 0;
 }
 .chat-message-bubble .chat-markdown {
   white-space: normal;
@@ -2118,6 +2140,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   #html-toolbar input,
   #csv-toolbar .tb-icon-btn,
   #csv-toolbar .tb-text-btn,
+  #csv-toolbar .tb-app-icon.tb-main-menu-btn,
   #folder-toolbar .tb-icon-btn,
   #folder-toolbar button,
   #folder-toolbar select,
@@ -2423,7 +2446,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   .modal input[type="datetime-local"] {
     min-height: var(--ui-h-xl, 40px); font-size: var(--ui-font-16, 16px) !important;
   }
-  .modal button { min-height: var(--ui-h-touch, 44px); }
+  .modal button:not(:where([class*="swatch"])) { min-height: var(--ui-h-touch, 44px); }
   .modal .gb-folder-picker-row {
     min-height: 44px !important;
     padding-top: 0 !important;
@@ -3782,6 +3805,17 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
     min-height: 44px;
   }
 }
+/* The annotation target is an inset frame; it occupies no layout space. */
+[data-annotation-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+.annotation-fab[hidden] { display: none !important; }
 
 /* タイムラインビュー専用の上書き */
 
@@ -6275,10 +6309,11 @@ mark.db-find-current-text {
 }
 .gb-subpanel-title-text.meldex-entity-detail-header-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }
 
-/* サブパネルのタブ化（ファイル／フォルダのタブをパネルのタブバーに並べる）。
-   見出しの名前はタブと重複するため出さない（トピックの詳細の名前欄は残す）。 */
-.gb-subpanel-titlebar .gb-subpanel-title-icon,
-.gb-subpanel-titlebar .gb-subpanel-title-text:not(.meldex-entity-detail-header-title) { display: none; }
+/* サブパネルのヘッダーは、メインパネルと同じタブ行の1行だけ（2026-11-21 ユーザー指示）。
+   旧2行目（見出し・戻る/進む・メインパネルで開く・閉じる）はパソコンでは出さない。
+   タブ行が無いスマホのドロワーだけは、この見出しで戻る/進む・メインパネルで開く・閉じるを使う。 */
+.gb-subpanel > .gb-subpanel-titlebar { display: none; }
+.cloud-mobile-side-drawer .gb-subpanel > .gb-subpanel-titlebar { display: flex; }
 .gb-subpanel-tab-strip .gb-subpanel-tabs-empty {
   align-self: center;
   padding: 0 var(--ui-space-2, 8px);
@@ -7938,7 +7973,8 @@ html[data-single-window="1"] .left-chrome-floating {
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar {
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto 44px 44px;
+    /* 1列目はメインメニューボタン（アプリアイコン。UI共通ルール19で左端に置く） */
+    grid-template-columns: 44px minmax(0, 1fr) auto 44px 44px;
     grid-template-rows: auto auto auto;
     align-items: center;
     width: min(100%, 100vw);
@@ -7953,16 +7989,19 @@ html[data-single-window="1"] .left-chrome-floating {
     overflow: hidden !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar > button[title="フォルダツリーで表示"],
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-btn-slideshow,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar [data-e2e-id="folder-reload-current"],
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar button[title="検索と置換"],
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar button[title="オプションを開く"] {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar button[title="オプションを開く"],
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar > .folder-toolbar-sep,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar > .tb-spacer {
     display: none !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-title {
-    grid-column: 1;
+    width: 100%;
+    max-width: 100%;
+    grid-column: 2;
     grid-row: 1;
     min-width: 0;
     font-size: 18px !important;
@@ -7974,7 +8013,7 @@ html[data-single-window="1"] .left-chrome-floating {
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-item-count {
-    grid-column: 2;
+    grid-column: 3 / -1;
     grid-row: 1;
     font-size: var(--cloud-mobile-ui-meta-font-size) !important;
     line-height: 1.25 !important;
@@ -7982,8 +8021,13 @@ html[data-single-window="1"] .left-chrome-floating {
     white-space: nowrap;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-toolbar-add {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-toolbar-actions {
-    grid-column: 1 / -1;
+    grid-column: 2 / -1;
     grid-row: 2;
     display: flex;
     align-items: center;
@@ -8003,7 +8047,7 @@ html[data-single-window="1"] .left-chrome-floating {
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-select,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-layout-menu-btn {
-    grid-column: 1 / 3;
+    grid-column: 1 / 4;
     grid-row: 3;
     min-width: 0;
     width: 100% !important;
@@ -8037,11 +8081,11 @@ html[data-single-window="1"] .left-chrome-floating {
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-display-btn {
-    grid-column: 3;
+    grid-column: 4;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-filter-btn {
-    grid-column: 4;
+    grid-column: 5;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-display-btn .ico,
@@ -8084,20 +8128,22 @@ html[data-single-window="1"] .left-chrome-floating {
     outline: none;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tool-menu-btn {
-    grid-column: 3;
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tb-app-icon.tb-main-menu-btn {
+    grid-column: 1;
     grid-row: 1;
-    justify-self: end;
+    justify-self: start;
+    margin: 0 !important;
+    color: var(--ui-toolbar-app-icon-color) !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tool-menu-btn .ico {
-    display: inline-block !important;
-    width: 16px !important;
-    height: 16px !important;
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tb-app-icon.tb-main-menu-btn > svg {
+    display: block !important;
+    width: var(--ui-toolbar-app-icon-size) !important;
+    height: var(--ui-toolbar-app-icon-size) !important;
     margin: 0 !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tool-menu-btn::before {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar .tb-app-icon.tb-main-menu-btn::before {
     content: none;
   }
 
@@ -8184,9 +8230,8 @@ html[data-single-window="1"] .left-chrome-floating {
     font-size: 15px !important;
     line-height: 1.35;
     text-align: left !important;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-grid.list-layout .fv-meta,
@@ -8980,7 +9025,7 @@ html[data-single-window="1"] .left-chrome-floating {
     line-height: 1.25 !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet button {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet button:not(:where([class*="swatch"])) {
     max-width: 100%;
     min-height: var(--ui-h-touch, 44px);
     font-size: 15px;
@@ -9096,6 +9141,17 @@ html[data-single-window="1"] .left-chrome-floating {
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
+  }
+
+  /* テーマのアクセントカラー: 項目名が行幅いっぱいに伸びると、選択欄と色見本が「既」まで潰れる。
+     項目名は文字の幅だけにして、選択欄と色見本を残りの幅へ並べる。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.settings-modal .settings-theme-accent-row.gb-field-row > label.gb-label {
+    flex: 0 0 auto !important;
+    width: auto !important;
+  }
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.settings-modal .settings-theme-accent-control {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.settings-modal .gb-input,
@@ -10255,6 +10311,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 #pivot-table th, #pivot-table td, .pivot-table th, .pivot-table td {
   box-sizing: border-box;
+  /* 見えるところへスクロールした時、パネルの境界線や画面の端に強調の枠が重ならない余白 */
+  scroll-margin: var(--ui-active-frame-width) 8px;
 }
 #pivot-table th {
   background: var(--db-th-bg); color: var(--db-th-fg);
@@ -10374,12 +10432,12 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 /* アクティブセル */
 #pivot-table td.active-cell {
+  /* 強調は内側の影で描き、境界線の太さを変えない（変えると行の高さが変わり、下の行がずれる。2026-11-20 報告）。 */
   outline: none !important; z-index: 6; position: relative;
-  border: var(--db-active-width) solid var(--db-active-color) !important;
-  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
 }
 #pivot-table td.active-cell.col-entity {
-  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
 }
 /* 範囲選択セル（Shift+矢印/ドラッグ選択の範囲全体）。gb-accessibility.css と同一定義を、
    同ファイルを読み込まないシートホスト（標準版 sheet-standalone / クラウド / モバイル）でも
@@ -10459,21 +10517,24 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 .pivot-table td.col-entity .entity-name-cell-main { display: flex; align-items: center; align-content: center; width: 100%; min-height: 20px; position: relative; padding-right: 42px; box-sizing: border-box; }
 .pivot-table td.col-entity .entity-name-label { display: block; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; line-height: 1.4; word-break: break-word; }
+/* 列ヘッダー・行頭の強調も内側の影の枠。外側の輪郭線は固定の見出しの重なりや切り取りで辺が欠けた
+   （2026-11-20 報告: 右と上が欠ける・枠が描かれない）。 */
+#pivot-table :is(th.db-keyboard-header, td.col-row-controls).active-cell,
 .pivot-table :is(th.db-keyboard-header, td.col-row-controls).active-cell {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: none !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg)) !important;
 }
 .pivot-table td.col-entity:hover { color: var(--accent); }
 .pivot-table.entity-col-unpinned td.col-entity,
 .pivot-table.entity-col-unpinned th.col-entity-header,
 .pivot-table.entity-col-unpinned tfoot td.col-entity { position: static; }
 .pivot-table td.active-cell {
+  /* 強調は内側の影で描き、境界線の太さを変えない（変えると行の高さが変わり、下の行がずれる。2026-11-20 報告）。 */
   outline: none !important; z-index: 6; position: relative;
-  border: var(--db-active-width) solid var(--db-active-color) !important;
-  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
 }
 .pivot-table td.active-cell.col-entity {
-  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
 }
 /* 列リサイズハンドル */
 .col-resize-handle {
@@ -10517,6 +10578,9 @@ th.col-drop-right::after { right: -2px; }
 
 /* セル内の候補値 */
 .cell-values { display: flex; flex-direction: column; gap: 1px; min-width: 0; max-width: 100%; }
+/* 編集中は値の間の隙間をなくす。高さのない値の要素と入力欄の間の1pxで、編集を始めた時に行が伸びた
+   （UI共通ルール §10、2026-11-20 状態の総当たり検査で検出）。入力欄の高さはセルの内側の高さに合わせてある。 */
+.cell-values:has(> .cell-inline-input, > .cell-inline-select, > .cell-date-editor, > .value-input) { gap: 0; }
 .cell-value {
   display: flex; align-items: flex-start; gap: 4px; line-height: 1.4;
   position: relative; min-width: 0; max-width: 100%;
@@ -10538,14 +10602,14 @@ th.col-drop-right::after { right: -2px; }
 }
 .db-rollup-line {
   /* .relation-link のカード枠（padding+border）と行高を揃えるための透明パディング（content-box基準で揃える）。
-     テーマパネルの「候補値」を設定した時は、リレーションと同じ札の見た目になる。 */
-  padding: 1px var(--db-option-chip-padding-x, 8px);
-  border: var(--db-option-chip-border-width, 1px) solid var(--db-option-chip-border-color, transparent);
-  border-radius: var(--db-option-chip-radius, 0);
-  background: var(--db-option-chip-bg, transparent);
-  color: var(--db-option-chip-fg, inherit);
-  font-size: var(--db-option-chip-font-size, inherit);
-  font-weight: var(--db-option-chip-bold, inherit);
+     テーマパネルの「ロールアップ」を設定した時は、札の見た目になる。 */
+  padding: 1px var(--db-option-rollup-padding-x, var(--db-option-chip-padding-x, 8px));
+  border: var(--db-option-rollup-border-width, var(--db-option-chip-border-width, 1px)) solid var(--db-option-rollup-border-color, var(--db-option-chip-border-color, transparent));
+  border-radius: var(--db-option-rollup-radius, var(--db-option-chip-radius, 0));
+  background: var(--db-option-rollup-bg, var(--db-option-chip-bg, transparent));
+  color: var(--db-option-rollup-fg, var(--db-option-chip-fg, inherit));
+  font-size: var(--db-option-rollup-font-size, var(--db-option-chip-font-size, inherit));
+  font-weight: var(--db-option-rollup-bold, var(--db-option-chip-bold, inherit));
 }
 .db-rollup-relation-line {
   display: flex;
@@ -10671,9 +10735,11 @@ td:hover .cell-add-btn { display: inline-flex; }
      下へはみ出して中央からずれ、候補値が並ぶセルでは隣の行の「…」と重なった。 */
   top: 0 !important;
   transform: none !important;
-  min-width: 22px;
+  /* 大きさは共通の寸法 --sheet-cell-more-size（チャットのセルの右の空き --sheet-cell-more-reserve も同じ値から決まる）。 */
+  width: var(--sheet-cell-more-size, 22px);
+  min-width: var(--sheet-cell-more-size, 22px);
   min-height: 0;
-  height: min(22px, 100%);
+  height: min(var(--sheet-cell-more-size, 22px), 100%);
   align-items: center;
   justify-content: center;
   background: var(--bg2) !important;
@@ -10729,8 +10795,9 @@ td.active-cell .cell-value > .cell-value-more {
     top: 50% !important;
     transform: translateY(-50%) !important;
     display: inline-flex !important;
-    min-width: 44px;
-    min-height: 44px;
+    width: var(--sheet-cell-more-size, 44px);
+    min-width: var(--sheet-cell-more-size, 44px);
+    min-height: var(--sheet-cell-more-size, 44px);
   }
   body #pivot-table,
   body .pivot-table {
@@ -10923,15 +10990,15 @@ td.active-cell .cell-value > .cell-value-more {
 
 /* マルチセレクトタグ */
 .multi-select-tags { display: flex; flex-wrap: wrap; gap: 3px; }
-/* 候補値の札（セレクト・マルチセレクト・リレーション・ロールアップ・タグ）は、テーマパネルの「候補値」
-   （--db-option-chip-*）で見た目を変えられる。未設定時は従来の見た目（UI共通ルール §14「シートの候補値の表示」）。
-   選択肢ごとの色（インライン指定）・タグの色・列ごとの表示設定はこれより優先する。 */
+/* 候補値の札は、テーマパネルの列タイプごとの見本（--db-option-<種類>-*: select / multi / relation / rollup / tag）で
+   見た目を変えられる。未設定の項目は v0.7.515 の共通の設定（--db-option-chip-*）、それも無ければ従来の見た目
+   （UI共通ルール §19「シートの候補値の表示」）。選択肢ごとの色（インライン指定）・タグの色・列ごとの表示設定が優先する。 */
 .multi-select-tag {
   display: inline-flex; align-items: center; gap: 3px;
-  padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 10px);
-  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
-  background: var(--db-option-chip-bg, var(--ui-hover-bg)); color: var(--db-option-chip-fg, var(--ui-hover-fg)); white-space: nowrap;
-  box-shadow: inset 0 0 0 var(--db-option-chip-border-width, 0px) var(--db-option-chip-border-color, transparent);
+  padding: 1px var(--db-option-multi-padding-x, var(--db-option-chip-padding-x, 8px)); border-radius: var(--db-option-multi-radius, var(--db-option-chip-radius, 10px));
+  font-size: var(--db-option-multi-font-size, var(--db-option-chip-font-size, 12px)); font-weight: var(--db-option-multi-bold, var(--db-option-chip-bold, normal));
+  background: var(--db-option-multi-bg, var(--db-option-chip-bg, var(--ui-hover-bg))); color: var(--db-option-multi-fg, var(--db-option-chip-fg, var(--ui-hover-fg))); white-space: nowrap;
+  box-shadow: inset 0 0 0 var(--db-option-multi-border-width, var(--db-option-chip-border-width, 0px)) var(--db-option-multi-border-color, var(--db-option-chip-border-color, transparent));
 }
 .multi-select-tag .tag-remove {
   cursor: pointer; font-size: 10px; opacity: 0.5; margin-left: 2px;
@@ -10939,18 +11006,18 @@ td.active-cell .cell-value > .cell-value-more {
 .multi-select-tag .tag-remove:hover { opacity: 1; color: var(--red); }
 .common-tags-cell .common-tags-tag.gb-tag-chip {
   padding: 0;
-  border-width: var(--db-option-chip-border-width, 1px);
-  border-color: var(--db-option-chip-border-color, var(--ui-border-strong, var(--border)));
-  border-radius: var(--db-option-chip-radius, 999px);
+  border-width: var(--db-option-tag-border-width, var(--db-option-chip-border-width, 1px));
+  border-color: var(--db-option-tag-border-color, var(--db-option-chip-border-color, var(--ui-border-strong, var(--border))));
+  border-radius: var(--db-option-tag-radius, var(--db-option-chip-radius, 999px));
   box-shadow: none;
-  font-size: var(--db-option-chip-font-size, 10px);
-  font-weight: var(--db-option-chip-bold, 600);
-  background: var(--db-option-chip-bg, var(--ui-bg-control, var(--bg3)));
-  color: var(--gb-tag-color, var(--db-option-chip-fg, var(--fg)));
+  font-size: var(--db-option-tag-font-size, var(--db-option-chip-font-size, 10px));
+  font-weight: var(--db-option-tag-bold, var(--db-option-chip-bold, 600));
+  background: var(--db-option-tag-bg, var(--db-option-chip-bg, var(--ui-bg-control, var(--bg3))));
+  color: var(--gb-tag-color, var(--db-option-tag-fg, var(--db-option-chip-fg, var(--fg))));
 }
 .common-tags-cell .common-tags-tag.gb-tag-chip .gb-tag-chip__label {
-  padding-left: var(--db-option-chip-padding-x, 6px);
-  padding-right: var(--db-option-chip-padding-x, 6px);
+  padding-left: var(--db-option-tag-padding-x, var(--db-option-chip-padding-x, 6px));
+  padding-right: var(--db-option-tag-padding-x, var(--db-option-chip-padding-x, 6px));
 }
 
 /* ユーザープロパティ */
@@ -11479,7 +11546,8 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   object-fit: contain;
   display: block;
 }
-.grid-layout .fv-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 長い名前は省略せず折り返して全文を出す（2026-11-22）。ホバー・選択で寸法は変えない。 */
+.grid-layout .fv-name { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .grid-layout .fv-meta {
   display: flex;
   flex-wrap: wrap;
@@ -11493,7 +11561,7 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 }
 /* ウォーターフォール: グリッドと同じカード幅 */
 .waterfall-layout .fv-item { padding: 3px; text-align: center; }
-.waterfall-layout .fv-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.waterfall-layout .fv-name { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .waterfall-layout .fv-meta {
   display: flex;
   flex-wrap: wrap;
@@ -11506,7 +11574,7 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 /* 横並び: 高さ揃え */
 .hflow-layout .fv-item { padding: 3px; text-align: center; }
 .hflow-layout .fv-thumb { overflow: hidden; border-radius: 4px; background: var(--fv-panel-bg, var(--content-bg, var(--bg))); }
-.hflow-layout .fv-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.hflow-layout .fv-name { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; max-width: 140px; }
 .hflow-layout .fv-meta {
   display: flex;
   flex-wrap: wrap;
@@ -11528,8 +11596,8 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 .fv-list-header,
 .list-layout .fv-item {
   display: grid;
-  grid-template-columns: var(--fv-list-grid-columns, 36px minmax(220px, 2fr) minmax(150px, 190px) minmax(132px, 150px) minmax(132px, 150px) minmax(96px, 128px) minmax(96px, 128px) minmax(74px, 92px));
-  align-items: center; gap: 8px; min-width: 1040px; min-height: 48px; padding: 4px 12px; border-radius: 3px;
+  grid-template-columns: var(--fv-list-grid-columns, 36px minmax(160px, 2fr) minmax(56px, 190px) minmax(56px, 150px) minmax(56px, 150px) minmax(56px, 128px) minmax(56px, 128px) minmax(56px, 92px));
+  align-items: center; gap: 8px; min-width: 0; min-height: 48px; padding: 4px 12px 4px 30px; border-radius: 3px;
   box-sizing: border-box; line-height: 18px;
 }
 .fv-list-header {
@@ -11574,9 +11642,8 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 .fv-list-name-text {
   display: block;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .fv-list-extra-meta {
   display: flex;
@@ -11706,6 +11773,21 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 .gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item .fv-thumb {
   width: 32px;
   height: 32px;
+}
+/* リストの行・グリッドのフォルダ行は、チェックボックスを左の余白に縦中央で置き、アイコンと重ねない。
+   行は常にパネルの幅に収める（右へはみ出すと選択の強調の右の辺が見えなくなる）。
+   余白は状態によらず一定（ホバー・選択で寸法を変えない: UI共通ルール §10。2026-11-22 M-014 フォルダの横断の検査）。 */
+#folder-grid.grid-layout .fv-item.fv-folder-list-item,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item {
+  padding-left: 28px;
+}
+#folder-grid.list-layout .fv-item > .fv-check,
+.gb-subpanel-folder-root.list-layout .fv-item > .fv-check,
+#folder-grid.grid-layout .fv-item.fv-folder-list-item > .fv-check,
+.gb-subpanel-folder-root.grid-layout .fv-item.fv-folder-list-item > .fv-check {
+  top: 50%;
+  left: 7px;
+  transform: translateY(-50%);
 }
 .vl-lock-icon.vl-lock-icon-error {
   color: var(--error, #d65c5c);
@@ -11947,21 +12029,22 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .cell-formula { font-variant-numeric: tabular-nums; color: var(--fg); }
 .cell-formula-error { color: var(--red); font-size: 11px; }
 .cell-select-val {
-  display: inline-block; padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 10px);
-  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
-  background: var(--db-option-chip-bg, var(--ui-hover-bg)); color: var(--db-option-chip-fg, var(--ui-hover-fg)); white-space: nowrap;
-  box-shadow: inset 0 0 0 var(--db-option-chip-border-width, 0px) var(--db-option-chip-border-color, transparent);
+  display: inline-block;
+  padding: 1px var(--db-option-select-padding-x, var(--db-option-chip-padding-x, 8px)); border-radius: var(--db-option-select-radius, var(--db-option-chip-radius, 10px));
+  font-size: var(--db-option-select-font-size, var(--db-option-chip-font-size, 12px)); font-weight: var(--db-option-select-bold, var(--db-option-chip-bold, normal));
+  background: var(--db-option-select-bg, var(--db-option-chip-bg, var(--ui-hover-bg))); color: var(--db-option-select-fg, var(--db-option-chip-fg, var(--ui-hover-fg))); white-space: nowrap;
+  box-shadow: inset 0 0 0 var(--db-option-select-border-width, var(--db-option-chip-border-width, 0px)) var(--db-option-select-border-color, var(--db-option-chip-border-color, transparent));
 }
 
 /* リレーションリンク（カード表示） */
 .relation-link {
   display: inline-flex; align-items: center;
-  padding: 1px var(--db-option-chip-padding-x, 8px); border-radius: var(--db-option-chip-radius, 4px);
-  background: var(--db-option-chip-bg, var(--bg3));
-  border: var(--db-option-chip-border-width, 1px) solid var(--db-option-chip-border-color, var(--border));
-  color: var(--db-option-chip-fg, var(--fg)); text-decoration: none;
+  padding: 1px var(--db-option-relation-padding-x, var(--db-option-chip-padding-x, 8px)); border-radius: var(--db-option-relation-radius, var(--db-option-chip-radius, 4px));
+  background: var(--db-option-relation-bg, var(--db-option-chip-bg, var(--bg3)));
+  border: var(--db-option-relation-border-width, var(--db-option-chip-border-width, 1px)) solid var(--db-option-relation-border-color, var(--db-option-chip-border-color, var(--border)));
+  color: var(--db-option-relation-fg, var(--db-option-chip-fg, var(--fg))); text-decoration: none;
   cursor: pointer;
-  font-size: var(--db-option-chip-font-size, 12px); font-weight: var(--db-option-chip-bold, normal);
+  font-size: var(--db-option-relation-font-size, var(--db-option-chip-font-size, 12px)); font-weight: var(--db-option-relation-bold, var(--db-option-chip-bold, normal));
   white-space: nowrap; max-width: 100%;
 }
 .relation-link:hover { background: var(--bg4); border-color: var(--accent); }
@@ -13323,6 +13406,9 @@ body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .gb-input {
   background: var(--ui-button-bg); color: var(--ui-button-fg); cursor: pointer;
   font-size: var(--ui-button-font-size); font-weight: var(--ui-button-font-weight); font-family: var(--ui-button-font);
 }
+/* 色見本（クラス名に swatch を含むボタン）は共通ボタンの最小高さ・左右余白を受けない。受けると
+   幅24px・高さ32pxの縦長になる（v0.7.493〜）。詳細度は上の規則と同じに保ち、各色見本の寸法規則が勝つ。 */
+.modal button:where([class*="swatch"]:not([class*="swatches"])) { min-height: 0; padding: 0; }
 .modal button.primary { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .modal button:where(:not([data-style-preview-native="1"])):hover {
   color: var(--ui-button-hover-fg); background: var(--ui-button-hover-bg); border-color: var(--ui-button-hover-border);
@@ -14341,6 +14427,13 @@ button.pt-chip-style-sample--relation,
   padding-left: var(--ui-row-indent);
   position: relative;
 }
+/* 深い入れ子でも名前と操作領域を残す。最初の4段は通常の字下げを保つ。 */
+#outliner-tree .tree-children .tree-children .tree-children .tree-children .tree-children {
+  padding-left: min(var(--ui-row-indent), 4px);
+}
+#outliner-tree .tree-children .tree-children .tree-children .tree-children .tree-children::before {
+  left: 1px;
+}
 .tree-children.collapsed { display: none; }
 /* 階層を示す縦線（フォルダツリー改修Phase3 §2.3-2）:
    子項目のアイコン/サムネイルより左に表示専用で描画する。pointer-events:noneのため
@@ -15354,29 +15447,53 @@ body[data-mobile-ui-local="1"] .db-config-modal-body .dbcfg-check-row { min-heig
    リンクにもルビが付いている場合は .auto-link 側の下線設定がそのまま効く。 */
 [data-ruby] {
   position: relative;
+  /* 親文字の途中で行を分けない（ルビの配置を親文字の幅で測るため。シナリオと同じ） */
+  white-space: nowrap;
+  /* ノートのルビの表示設定（gb-note-display-settings.js がファイルの設定から変数を当てる） */
+  line-height: var(--note-ruby-line-height, inherit);
 }
+/* ルビの配置はシナリオと同じ計算（グループ・モノ・熟語の配り方と隣のルビとの衝突の解決。
+   MeldexRubyPresentation.layoutRubySpans）で、ルビごとに --note-ruby-* の変数へ書く。
+   計算前（描いた直後の一瞬など）は、親文字の中央に置く。 */
 [data-ruby]::before {
   content: attr(data-ruby);
   position: absolute;
-  bottom: 100%;
-  left: 0; right: 0;
-  text-align: center;
-  font-size: 0.5em;
+  /* 親文字の仮想ボディの端から、設定の間隔だけ離す */
+  bottom: calc(var(--note-ruby-base-edge, 100%) + var(--note-ruby-gap-px, var(--note-ruby-gap, 0em)));
+  left: var(--note-ruby-inline-start, 0px);
+  right: auto;
+  width: var(--note-ruby-layout-extent, 100%);
+  text-align: var(--note-ruby-text-align, center);
+  font-size: var(--note-ruby-size-override, var(--note-ruby-size, 0.5em));
+  font-family: var(--note-ruby-font-family, inherit);
+  letter-spacing: var(--note-ruby-effective-letter-spacing, var(--note-ruby-letter-spacing, 0em));
+  text-indent: 0;
   line-height: 1;
   font-weight: bold;
   color: var(--fg2);
   pointer-events: none;
   white-space: nowrap;
 }
-/* 縦書き時のルビ: 右側に配置 */
+/* 小書き仮名を直音にする設定では、変換済みの読み（data-ruby-rendered）を出す */
+[data-ruby-small-kana="fullsize"] [data-ruby][data-ruby-rendered]::before { content: attr(data-ruby-rendered); }
+/* 肩付き（計算前）: 親文字の先頭にそろえる */
+[data-ruby-align="start"] [data-ruby]::before { text-align: var(--note-ruby-text-align, start); }
+/* 縦書き時のルビ: 右側に配置（シナリオの縦書きと同じ置き方） */
 .vertical-writing [data-ruby]::before {
-  bottom: auto; left: auto;
-  right: 100%; top: 0;
+  bottom: auto;
+  right: auto;
+  width: auto;
+  left: calc(var(--note-ruby-base-edge, 100%) + var(--note-ruby-gap-px, var(--note-ruby-gap, 0em)));
+  top: var(--note-ruby-inline-start, 0px);
+  height: var(--note-ruby-layout-extent, max-content);
   writing-mode: vertical-rl;
+  text-orientation: upright;
   text-align: start;
-  margin-right: 2px;
   line-height: 1;
 }
+/* 自動リンクと自動ルビがどちらもオンの時、リンクに付いたルビはリンクと同じ色にする（2026-11-21）。
+   リンクなしの自動ルビ（.auto-ruby）は通常のルビと同じ見た目のまま、本文の色・装飾も変えない。 */
+.auto-link[data-ruby]::before { color: inherit; }
 /* 通常のrubyタグも対応（auto-link内等） */
 ruby rt { font-size: 0.5em; color: var(--fg2); }
 
@@ -15451,7 +15568,7 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-toolbar-cal .tb-text-btn.active,
 .gb-toolbar-cal .tb-text-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--cal-control-bg, var(--ui-bg-control-active)) 94%, #000); border-color: var(--cal-accent, var(--ui-accent)); color: var(--cal-control-active-fg, var(--cal-control-fg, var(--ui-fg-default))); }
 .gb-toolbar-cal .tb-select,
-.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--cal-control-bg, var(--ui-bg-control)); color: var(--cal-control-fg, var(--cal-toolbar-fg, var(--ui-toolbar-fg))); border-color: var(--cal-control-border, var(--ui-border)); }
+.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--cal-control-bg, var(--ui-bg-control)); color: var(--cal-control-fg, var(--cal-toolbar-fg, var(--ui-toolbar-fg))); border-color: var(--cal-control-border, var(--ui-border)); }
 /* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準に統一。中央揃えだけカレンダー固有として保持 */
 .gb-cal-title { font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); min-width: 0; text-align: center; color: var(--cal-toolbar-fg, var(--ui-toolbar-fg)); }
 @media (pointer: coarse), (max-width: 640px) {
@@ -15513,7 +15630,7 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-right-panel .btn-row button.danger { color: var(--red); border-color: var(--red); }
 /* 月カレンダー */
 .gb-cal-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: 28px repeat(6, minmax(0, 1fr)); gap: 1px; background: var(--cal-grid-line, var(--border)); flex: 1 1 auto; min-height: 0; height: 100%; overflow: hidden; }
-.gb-cal-month-header { background: var(--cal-header-bg, var(--bg3)); padding: 6px 4px; text-align: center; font-size: 11px; font-weight: bold; color: var(--cal-header-fg, var(--fg2)); }
+.gb-cal-month-header { background: var(--cal-header-bg, var(--bg3)); padding: 6px 4px; text-align: center; font-size: var(--ui-font-13); font-weight: bold; color: var(--cal-header-fg, var(--fg2)); }
 .gb-cal-month-header[data-cal-dow="6"] { color: var(--cal-saturday-fg, var(--blue)); }
 .gb-cal-month-header[data-cal-dow="0"] { color: var(--cal-sunday-fg, var(--red)); }
 .gb-cal-day { background: var(--cal-cell-bg, var(--bg)); min-height: 0; padding: 4px; cursor: pointer; position: relative; color: var(--cal-fg, var(--fg)); overflow: hidden; }
@@ -15522,9 +15639,9 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-day:hover { background: var(--cal-cell-hover-bg, var(--ui-hover-bg)); color: var(--cal-cell-hover-fg, var(--ui-hover-fg)); }
 .gb-cal-day.gb-cal-today { background: color-mix(in srgb, var(--cal-today-bg, var(--ui-selection-bg)) 24%, transparent); }
 .gb-cal-day.gb-cal-other-month { opacity: 0.4; }
-.gb-cal-day-num { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+.gb-cal-day-num { font-size: var(--ui-font-13); font-weight: bold; margin-bottom: 2px; }
 .gb-cal-day.gb-cal-today .gb-cal-day-num { color: var(--cal-today-fg, var(--accent)); }
-.gb-cal-day-event { font-size: 10px; padding: 1px 22px 1px 4px; border-radius: 3px; margin-bottom: 1px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; border: 1px solid var(--cal-event-border, rgba(0,0,0,0.25)); box-sizing: border-box; }
+.gb-cal-day-event { font-size: var(--ui-view-tab-font-size); padding: 1px 22px 1px 4px; border-radius: 3px; margin-bottom: 1px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; border: 1px solid var(--cal-event-border, rgba(0,0,0,0.25)); box-sizing: border-box; }
 /* 週表示 */
 .gb-cal-timed-view { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
 .gb-cal-week { display: grid; grid-template-columns: 60px repeat(7, minmax(0, 1fr)); min-width: 0; }
@@ -15532,16 +15649,17 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-week-header[data-cal-dow="6"] { color: var(--cal-saturday-fg, var(--blue)); }
 .gb-cal-week-header[data-cal-dow="0"] { color: var(--cal-sunday-fg, var(--red)); }
 .gb-cal-week-header[data-today="1"] { color: var(--cal-today-fg, var(--accent)); }
-.gb-cal-week-time { font-size: 10px; color: var(--cal-time-fg, var(--fg2)); text-align: right; padding: 2px 4px; border-bottom: 1px solid var(--cal-grid-line, var(--border)); height: 40px; box-sizing: border-box; }
+.gb-cal-week-time { font-size: var(--ui-font-11); color: var(--cal-time-fg, var(--fg2)); text-align: right; padding: 2px 4px; border-bottom: 1px solid var(--cal-grid-line, var(--border)); height: 40px; box-sizing: border-box; }
 .gb-cal-week-cell { border-left: 1px solid var(--cal-grid-line, var(--border)); border-bottom: 1px solid var(--cal-grid-line, var(--border)); min-height: 40px; height: 40px; box-sizing: border-box; position: relative; cursor: pointer; background: var(--cal-cell-bg, var(--bg)); }
 .gb-cal-week-cell:hover { background: var(--cal-cell-hover-bg, var(--bg2)); }
-.gb-cal-week-event { position: absolute; left: 2px; right: var(--cal-event-create-gap); background: var(--cal-event-bg, var(--accent)); color: var(--cal-event-fg, var(--ui-accent-fg, var(--ui-fg-strong))); border: 1px solid var(--cal-event-border, transparent); box-sizing: border-box; font-size: 10px; padding: 2px 26px 2px 4px; border-radius: 3px; overflow: hidden; cursor: pointer; z-index: 2; }
+.gb-cal-week-event { position: absolute; left: 2px; right: var(--cal-event-create-gap); background: var(--cal-event-bg, var(--accent)); color: var(--cal-event-fg, var(--ui-accent-fg, var(--ui-fg-strong))); border: 1px solid var(--cal-event-border, transparent); box-sizing: border-box; font-size: var(--ui-view-tab-font-size); padding: 2px 26px 2px 4px; border-radius: 3px; overflow: hidden; cursor: pointer; z-index: 2; }
 .gb-cal-production-task-event { border-color: color-mix(in srgb, var(--cal-event-fg, var(--ui-fg-strong)) 52%, transparent) !important; box-shadow: inset 3px 0 0 color-mix(in srgb, var(--cal-event-fg, var(--ui-fg-strong)) 74%, transparent); }
 .gb-cal-event-unsaved { border-style: dashed !important; border-width: 2px !important; }
 .gb-cal-event-unsaved::after { content: '未保存'; position: absolute; left: 2px; bottom: 1px; font-size: 8px; line-height: 1.3; padding: 0 3px; border-radius: 2px; background: color-mix(in srgb, var(--cal-control-bg, #222) 85%, transparent); color: var(--cal-event-fg, #fff); pointer-events: none; z-index: 4; }
-.gb-cal-event-source-icon { display: inline-flex; width: 12px; height: 12px; align-items: center; justify-content: center; margin-right: 3px; vertical-align: -2px; }
+.gb-cal-event-source-icon { display: inline-flex; width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); align-items: center; justify-content: center; margin-right: 3px; vertical-align: -3px; }
+.gb-cal-event-source-icon svg { width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); }
 .gb-cal-event-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gb-cal-event-source-icon + .gb-cal-event-title { display: inline-block; max-width: calc(100% - 16px); vertical-align: top; }
+.gb-cal-event-source-icon + .gb-cal-event-title { display: inline-block; max-width: calc(100% - var(--ui-row-icon-size) - 3px); vertical-align: top; }
 .gb-cal-event-avatars { position: absolute; right: 2px; bottom: 1px; display: inline-flex; align-items: center; pointer-events: none; }
 .gb-cal-event-avatar { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; margin-left: -4px; overflow: hidden; background: var(--cal-avatar-bg, var(--bg4)); color: var(--cal-muted-fg, var(--fg2)); border: 1px solid color-mix(in srgb, var(--cal-event-fg, #fff) 70%, transparent); box-sizing: border-box; font-weight: 700; font-size: 9px; line-height: 1; }
 .gb-cal-event-avatar:first-child { margin-left: 0; }
@@ -15567,6 +15685,9 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-now-line { position: absolute; left: -1px; right: var(--cal-event-create-gap); height: 2px; background: var(--cal-now-line-color, var(--red)); z-index: 20; pointer-events: none; box-shadow: 0 0 0 1px color-mix(in srgb, var(--cal-now-line-color, var(--red)) 18%, transparent); }
 .gb-cal-now-line::before { content: ''; position: absolute; left: -5px; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--cal-now-line-color, var(--red)); }
 .gb-cal-event-selected { outline: 2px solid var(--cal-accent, var(--accent)); outline-offset: 1px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--cal-accent, var(--accent)) 22%, transparent); }
+/* 重なった予定のうち選んだものを前に出す（強調の枠が隣の予定に隠れない。UI共通ルール §10「強調の枠は四辺とも見える」。
+   重なりの段の z-index はインラインで付くので !important で上書きする。位置・寸法は変えない） */
+.gb-cal-week-event.gb-cal-event-selected { z-index: 30 !important; }
 .gb-cal-event-bulk-bar { position:fixed; display:flex; align-items:center; justify-content:center; gap:8px; padding:8px 12px; background:var(--bg2); border:1px solid var(--accent); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.5); flex-wrap:wrap; z-index:10002; box-sizing:border-box; }
 .gb-cal-event-bulk-bar[hidden] { display:none !important; }
 .gb-cal-event-bulk-count { font-size:12px; color:var(--cal-muted-fg, var(--fg2)); margin-right:2px; }
@@ -15578,6 +15699,7 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 [data-event-id] > input.gb-cal-event-select-check { display: none; position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; min-width: 16px; min-height: 16px; margin: 0; z-index: 4; accent-color: var(--cal-accent, var(--accent)); }
 [data-event-id] > input.gb-cal-event-select-check { width: 16px; height: 16px; }
 [data-event-id] > .gb-cal-event-more { display: none; position: absolute; top: 1px; right: 1px; width: 18px; height: 18px; padding: 0; border: 1px solid color-mix(in srgb, var(--cal-event-fg, #fff) 35%, transparent); border-radius: 3px; background: color-mix(in srgb, var(--cal-control-bg, #222) 82%, transparent); color: var(--cal-event-fg, #fff); align-items: center; justify-content: center; cursor: pointer; z-index: 5; }
+[data-event-id] > .gb-cal-event-more svg { width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); }
 [data-event-id] > .gb-cal-event-more:hover { background: var(--cal-control-bg, var(--bg3)); color: var(--cal-event-fg, #fff); }
 .gb-cal-day-event:hover > .gb-cal-event-more,
 .gb-cal-day-event:focus-within > .gb-cal-event-more,
@@ -15588,6 +15710,11 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-has-event-selection input.gb-cal-event-select-check { display: inline-grid; }
 .gb-cal-day-event { position: relative; }
 .gb-cal-day-event input.gb-cal-event-select-check { top: 1px; right: 22px; }
+/* 月表示・終日の予定バーはビュータブと同じ「22pxの帯に12pxの文字」。アイコン・人のアイコン・チェックは帯の中で上下中央 */
+.gb-cal-day-event:not(.gb-cal-week-event) { height: var(--ui-view-tab-height); line-height: calc(var(--ui-view-tab-height) - 4px); }
+.gb-cal-day-event:not(.gb-cal-week-event) > .gb-cal-event-avatars { top: 50%; bottom: auto; transform: translateY(-50%); }
+.gb-cal-day-event:not(.gb-cal-week-event) > input.gb-cal-event-select-check { width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); min-width: var(--ui-row-icon-size); min-height: var(--ui-row-icon-size); top: calc((var(--ui-view-tab-height) - 2px - var(--ui-row-icon-size)) / 2); }
+.gb-cal-all-day-task svg { width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); vertical-align: -3px; }
 .gb-cal-event-card-menu { min-width: 140px; padding: 4px; }
 .gb-cal-event-card-menu > button { width: 100%; border: 0; background: transparent; color: var(--ui-fg-default, var(--fg)); text-align: left; }
 @media (hover: none), (pointer: coarse), (max-width: 640px) {
@@ -15663,10 +15790,10 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-clock-icon-btn:not(:disabled):hover { border-color: var(--cal-accent, var(--accent)); color: var(--cal-accent, var(--accent)); }
 .gb-cal-clock-icon-btn:disabled,
 .gb-cal-clock-icon-btn.is-disabled { opacity: 0.38; cursor: not-allowed; filter: grayscale(0.8); }
-.gb-cal-attendance-list { display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.gb-cal-attendance-list { display: flex; flex-direction: column; gap: 8px; font-size: var(--ui-row-font-size); }
 .gb-cal-attendance-folder { color: var(--cal-muted-fg, var(--fg2)); font-size: 11px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gb-cal-attendance-folder-group { margin-bottom: 4px; }
-.gb-cal-attendance-folder-header { width: 100%; border: 0; background: transparent; color: var(--cal-sidebar-fg, var(--fg)); display: flex; align-items: center; gap: 5px; padding: 3px 0; cursor: pointer; font-size: 12px; font-weight: 700; text-align: left; }
+.gb-cal-attendance-folder-header { width: 100%; border: 0; background: transparent; color: var(--cal-sidebar-fg, var(--fg)); display: flex; align-items: center; gap: 5px; min-height: var(--ui-row-height); padding: 0; cursor: pointer; font-size: var(--ui-row-font-size); font-weight: 700; text-align: left; }
 .gb-cal-attendance-folder-group.is-collapsed .gb-cal-folder-caret { transform: rotate(-90deg); }
 .gb-cal-attendance-folder-body { display: flex; flex-direction: column; padding-left: 4px; }
 .gb-cal-attendance-user { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 3px 0; }
@@ -15674,30 +15801,31 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-attendance-user.is-editable:hover { background: var(--hover, rgba(127,127,127,.12)); }
 .gb-cal-attendance-user.is-editable:focus-visible { outline: 2px solid var(--accent, #569cd6); outline-offset: 2px; }
 .gb-cal-attendance-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gb-cal-attendance-status { font-size: 12px; white-space: nowrap; }
+.gb-cal-attendance-status { font-size: var(--ui-font-12); white-space: nowrap; }
 .gb-cal-attendance-status.working { color: var(--green); }
 .gb-cal-attendance-status.away { color: var(--orange); }
 .gb-cal-attendance-status.off { color: var(--cal-muted-fg, var(--fg2)); }
 .gb-cal-attendance-time { color: var(--cal-muted-fg, var(--fg2)); font-size: 11px; width: 34px; text-align: right; }
-.gb-cal-attendance-empty { color: var(--cal-muted-fg, var(--fg2)); font-size: 12px; padding: 4px 0; }
+.gb-cal-attendance-empty { color: var(--cal-muted-fg, var(--fg2)); font-size: var(--ui-font-13); padding: 4px 0; }
 .gb-cal-attendance-avatar { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--cal-avatar-bg, var(--bg4)); color: var(--cal-muted-fg, var(--fg2)); font-size: 11px; font-weight: 700; }
 .gb-cal-list-tools { display: flex; margin-bottom: 8px; }
 .gb-cal-list-tool-btn { width: 100%; border: 1px solid var(--cal-control-border, var(--border)); border-radius: var(--ui-radius-md, 6px); background: var(--cal-control-bg, var(--bg3)); color: var(--cal-control-fg, var(--fg)); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); font-size: var(--ui-font-11, 11px); cursor: pointer; }
 .gb-cal-list-tool-btn:hover { border-color: var(--cal-accent, var(--accent)); color: var(--cal-accent, var(--accent)); }
 .gb-cal-calendar-folder { margin-bottom: 6px; }
-.gb-cal-calendar-folder-header { width: 100%; border: 0; background: transparent; color: var(--cal-sidebar-fg, var(--fg)); display: flex; align-items: center; gap: 5px; padding: 3px 0; cursor: pointer; font-size: 12px; font-weight: 700; text-align: left; }
+.gb-cal-calendar-folder-header { width: 100%; border: 0; background: transparent; color: var(--cal-sidebar-fg, var(--fg)); display: flex; align-items: center; gap: 5px; min-height: var(--ui-row-height); padding: 0; cursor: pointer; font-size: var(--ui-row-font-size); font-weight: 700; text-align: left; }
 .gb-cal-folder-caret { display: inline-flex; color: var(--cal-muted-fg, var(--fg2)); transition: transform 0.15s ease; }
 .gb-cal-calendar-folder.is-collapsed .gb-cal-folder-caret { transform: rotate(-90deg); }
 .gb-cal-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gb-cal-folder-count { color: var(--cal-muted-fg, var(--fg2)); font-size: 10px; font-weight: 400; }
+.gb-cal-folder-count { color: var(--cal-muted-fg, var(--fg2)); font-size: var(--ui-font-11); font-weight: 400; }
 .gb-cal-calendar-folder-body { display: flex; flex-direction: column; gap: 2px; }
-.gb-cal-calendar-row { display: grid; grid-template-columns: 16px 10px minmax(0, 1fr) 24px; align-items: center; gap: 6px; padding: 3px 0; }
+.gb-cal-calendar-row { display: grid; grid-template-columns: 16px 10px minmax(0, 1fr) 24px; align-items: center; gap: 6px; min-height: var(--ui-row-height); padding: 0; font-size: var(--ui-row-font-size); box-sizing: border-box; }
 .gb-cal-calendar-row.is-selected { background: var(--cal-cell-hover-bg, var(--bg4)); outline: 1px solid var(--cal-accent, var(--accent)); outline-offset: -1px; border-radius: 4px; }
 .gb-cal-calendar-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .gb-cal-calendar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gb-cal-calendar-icon-action svg { width: var(--ui-row-icon-size); height: var(--ui-row-icon-size); }
 .gb-cal-calendar-icon-action { width: 22px; height: 22px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--cal-muted-fg, var(--fg2)); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .gb-cal-calendar-icon-action:hover { border-color: var(--cal-control-border, var(--border)); color: var(--cal-accent, var(--accent)); background: var(--cal-control-bg, var(--bg3)); }
-.gb-cal-calendar-role { min-width: 0; width: 100%; padding: 2px 4px; border: 1px solid var(--cal-control-border, var(--border)); border-radius: 4px; background: var(--cal-input-bg, var(--bg)); color: var(--cal-input-fg, var(--fg)); font-size: 10px; }
+.gb-cal-calendar-role { min-width: 0; width: 100%; padding: 2px 4px; border: 1px solid var(--cal-control-border, var(--border)); border-radius: 4px; background: var(--cal-input-bg, var(--bg)); color: var(--cal-input-fg, var(--fg)); font-size: var(--ui-font-12); }
 .gb-cal-calendar-role:disabled { opacity: 0.45; cursor: not-allowed; }
 .gb-cal-calendar-menu { min-width: 240px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .gb-cal-calendar-menu-title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-fg-default); font-size: var(--ui-font-12); font-weight: var(--ui-weight-bold); padding-bottom: 6px; border-bottom: 1px solid var(--ui-border); }
@@ -15827,7 +15955,11 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-cal-att-csv-formats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* ミニカレンダー */
 .gb-cal-mini { margin-bottom: 12px; }
-.gb-cal-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; text-align: center; font-size: 11px; }
+.gb-cal-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; text-align: center; font-size: var(--ui-font-13); }
+.gb-cal-mini-title { font-size: var(--ui-font-13); font-weight: bold; }
+.gb-cal-mini-dow { font-size: var(--ui-font-11); color: var(--cal-muted-fg, var(--fg2)); padding: 2px; }
+.gb-cal-today-tasks, .gb-cal-list { font-size: var(--ui-row-font-size); }
+.gb-cal-today-task-item { min-height: var(--ui-row-height); box-sizing: border-box; }
 .gb-cal-mini-day { padding: 3px; cursor: pointer; border-radius: 3px; }
 .gb-cal-mini-day:hover { background: var(--cal-cell-hover-bg, var(--bg4)); }
 .gb-cal-mini-day.gb-cal-today { color: var(--cal-today-fg, var(--accent)); font-weight: bold; }
@@ -17590,6 +17722,14 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
     height: var(--ui-h-touch, 44px);
     padding: 0 var(--ui-space-3);
   }
+  /* メインメニューボタン（アプリアイコン）も他のボタンと同じ押せる大きさにする（UI共通ルール19） */
+  .gb-toolbar.gb-toolbar-board .tb-app-icon.tb-main-menu-btn {
+    flex-basis: var(--ui-h-touch, 44px);
+    width: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    touch-action: manipulation;
+  }
   .gb-toolbar-board .bd-style-picker-trigger {
     min-width: min(150px, 48vw);
     min-height: 44px;
@@ -18143,7 +18283,9 @@ blockquote .quote-cite a {
 .gb-select:hover { background: var(--bg4); }
 .gb-select:focus { border-color: var(--accent); }
 .folder-layout-trigger { display:inline-flex; align-items:center; justify-content:space-between; gap:var(--ui-space-4); min-width:0; flex-shrink:0; }
-.folder-layout-trigger .folder-layout-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 表示形式を切り替えても幅が変わらないよう、いちばん長い名前（9文字）の幅を確保する。幅が変わると、ツールバーの
+   あふれの判定が追いつくまでの間、右端のボタン（検索と置換）がはみ出していた（UI共通ルール §10・2026-11-22 M-014） */
+.folder-layout-trigger .folder-layout-label { display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:0 0 9em; width:9em; text-align:left; }
 .folder-layout-trigger svg { flex-shrink:0; }
 #folder-toolbar #folder-layout-select.gb-folder-layout-native { display:none !important; }
 .folder-toolbar-menu-check { display:inline-flex; margin-left:auto; }
@@ -20316,8 +20458,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-toolbar-cal button { font-size: var(--ui-font-11); padding: 3px var(--ui-space-3); }
   .gb-cal-title { min-width: auto; }
   .gb-cal-day { min-height: 50px; padding: 2px; }
-  .gb-cal-day-num { font-size: 10px; }
-  .gb-cal-day-event { font-size: 9px; }
+  .gb-cal-day-num { font-size: var(--ui-font-11); }
+  .gb-cal-day-event { font-size: var(--ui-font-11); }
   .gb-cal-task-board { flex-direction: column; }
   .gb-cal-task-column { min-width: auto; width: 100%; }
   .gb-cal-modal { min-width: auto !important; width: 95vw !important; max-width: 95vw !important; }
@@ -20638,6 +20780,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* 「本文」と「行の種類」の表示を切り替えても、隣の操作ボタンを動かさない。 */
+  inline-size: calc(5em + 16px + var(--ui-space-3) + var(--ui-space-4) + 2px);
   max-width: 140px;
 }
 .note-heading-toolbar-btn:hover {
@@ -22836,6 +22980,9 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   .gb-scheduler-placement-card .gb-scheduler-placement-action { grid-column: 1; grid-row: auto; min-height: 44px; border-top: 1px solid var(--border); padding-top: 6px; }
   .gb-scheduler-e2e-visual-fixture { inset: 8px; grid-template-columns: 1fr; }
 }
+/* 制作管理タブの下段: 表示中の案の操作（名前・分岐・再計算・比較・採用・保管）。 */
+.gb-production-sidebar-proposals { flex: 0 0 auto; padding: 10px; border-top: 1px solid var(--cal-grid-line, var(--border)); box-sizing: border-box; min-width: 0; }
+.gb-scheduler-allocation-host { display: grid; gap: 8px; min-width: 0; }
 
 /* gb-ui.css: split stylesheet loader */
 /* gb-ui.css — Meldex UI Design System (Phase 1+2)
@@ -22882,6 +23029,10 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   /* 全テーマプリセットで、ポップアップの外周はアクセントカラーを既定値にする。 */
   --ui-popup-border: var(--ui-accent);
   --ui-accent: var(--accent);
+  /* アクティブ・選択の強調の枠（UI共通ルール §10「状態変化で寸法と位置を変えない」）。
+     枠は要素の内側の影で描き、境界線の太さ・余白・大きさを変えない。 */
+  --ui-active-frame-width: 2px;
+  --ui-active-frame-color: var(--ui-accent);
   --ui-accent-fg: var(--ui-fg-strong);
   --ui-button-fg: var(--ui-fg-default);
   --ui-button-bg: var(--ui-bg-control);
@@ -23434,14 +23585,30 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   flex-wrap: nowrap;
   overflow: visible;
 }
+/* 主要ツールバーと単独版の見出し内を同じ部品寸法で組む。スマホの44px指定は維持する。 */
+@media (min-width: 641px) and (pointer: fine) {
+  .gb-toolbar.gb-toolbar-main :is(.sa-icon-btn, .qm-icon, .tb-icon-btn):not(.tb-main-menu-btn) {
+    width: var(--ui-toolbar-control-size);
+    min-width: var(--ui-toolbar-control-size);
+    height: var(--ui-toolbar-control-size);
+    min-height: var(--ui-toolbar-control-size);
+    padding: 0;
+  }
+  .gb-toolbar.gb-toolbar-main .sa-title {
+    height: var(--ui-toolbar-title-height);
+    min-height: var(--ui-toolbar-title-height);
+    box-sizing: border-box;
+    line-height: var(--ui-toolbar-title-height);
+  }
+}
 .gb-toolbar.gb-toolbar-main::before,
 .gb-toolbar.gb-toolbar-main::after {
   content: none;
   border: 0;
   box-shadow: none;
 }
-/* 主要アプリツールバー左端のアプリアイコン（UI共通ルール19）。操作を持たない目印で、
-   あふれメニューへ退避せず、狭い幅でも縮めない。 */
+/* 主要アプリツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。
+   押すとそのアプリのメインメニューを開く。あふれメニューへ退避せず、狭い幅でも縮めない。 */
 .tb-app-icon {
   display: inline-flex;
   align-items: center;
@@ -23467,6 +23634,69 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   height: var(--ui-toolbar-app-icon-size);
   vertical-align: 0 !important;
   flex: 0 0 auto;
+}
+/* メインメニューボタンとしてのアプリアイコン。寸法はアプリアイコンと同じ（28×24）で、
+   ホバー・メニューを開いている間・フォーカスは背景・境界線・輪郭の色だけを変え、寸法と位置は変えない。
+   既定のツールバー内ボタンの見た目（.gb-toolbar button）や旧☰の見た目（.tool-menu-btn）には従わない。 */
+.tb-app-icon.tb-main-menu-btn,
+.gb-toolbar .tb-app-icon.tb-main-menu-btn {
+  height: var(--ui-toolbar-app-icon-size);
+  min-height: var(--ui-toolbar-app-icon-size);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xs);
+  color: var(--ui-toolbar-app-icon-color);
+  font: inherit;
+  line-height: 0;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.tb-app-icon.tb-main-menu-btn:hover,
+.gb-toolbar .tb-app-icon.tb-main-menu-btn:hover {
+  background: var(--ui-hover-bg);
+  border-color: var(--ui-border);
+  color: var(--ui-toolbar-app-icon-color);
+}
+.tb-app-icon.tb-main-menu-btn[aria-expanded="true"],
+.gb-toolbar .tb-app-icon.tb-main-menu-btn[aria-expanded="true"] {
+  background: var(--ui-control-active-bg, var(--ui-bg-control-active));
+  border-color: var(--ui-accent);
+  color: var(--ui-toolbar-app-icon-color);
+}
+/* メニューの印（右下の小さな下向きの矢印）。ボタンの寸法を変えないよう重ねて置く。 */
+.tb-app-icon.tb-main-menu-btn { position: relative; }
+.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  line-height: 0;
+  color: var(--ui-toolbar-app-icon-color);
+  pointer-events: none;
+}
+.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret > svg {
+  display: block;
+  width: 10px !important;
+  height: 10px !important;
+  margin: 0 !important;
+}
+.tb-app-icon.tb-main-menu-btn:focus-visible {
+  outline: var(--ui-focus-width) solid var(--ui-accent);
+  outline-offset: 0;
+}
+/* 単独アプリ・クイックメモのツールバーは、タッチ操作とスマホ幅で他のボタンと同じ44pxの押せる大きさにする。
+   本体の主要アプリツールバー（帯39px）は押し広げない。 */
+@media (pointer: coarse), (max-width: 560px) {
+  .sa-toolbar .tb-app-icon.tb-main-menu-btn,
+  :root:not([data-toolbar-density="desktop"]) .gb-toolbar-viewer .tb-app-icon.tb-main-menu-btn,
+  .qm-header .tb-app-icon.tb-main-menu-btn {
+    flex-basis: var(--ui-h-touch);
+    width: var(--ui-h-touch);
+    min-width: var(--ui-h-touch);
+    height: var(--ui-h-touch);
+  }
 }
 /* ファイル名直前のファイルアイコン（UI共通ルール19）。アプリアイコンとは別部品で、フォルダツリーと
    同じアイコンを出す。変更できる時だけボタンになり、あふれメニューへ退避せず、狭い幅でも縮めない。 */
@@ -23531,7 +23761,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
 
 /* ツールバー内子要素のデフォルトスタイル (Phase 4-c: legacy 互換)
    v0.5.131: ツールバー統一の .tb-* クラスは独自スタイルを持つため除外 */
-.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn),
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon):not(.sa-icon-btn):not(.sa-text-btn):not(.qm-icon):not(.gb-toolbar-overflow-button),
 .gb-toolbar select:not(.tb-select),
 .gb-toolbar label {
   font-family: var(--ui-toolbar-font, var(--ui-font, inherit));
@@ -23539,8 +23769,8 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   border: var(--ui-border-width) solid var(--ui-border); padding: 3px var(--ui-space-4);
   border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
 }
-.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
+.gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .gb-toolbar input[type="color"] {
   width: 24px; height: var(--ui-h-xs); padding: 0;
   border: var(--ui-border-width) solid var(--ui-border); cursor: pointer; border-radius: var(--ui-radius-xs);
@@ -23772,7 +24002,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   gap: var(--ui-space-3);
   padding: var(--ui-space-2) var(--ui-space-4);
 }
-.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn) {
+.gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) {
   padding: var(--ui-space-2) 10px;
   font-size: var(--ui-font-12);
 }
@@ -23781,7 +24011,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   gap: var(--ui-space-3);
   padding: var(--ui-space-2) var(--ui-space-4);
 }
-.gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn) {
+.gb-toolbar-board button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) {
   font-size: var(--ui-font-12);
   height: var(--ui-h-md, 32px);
   min-height: var(--ui-h-md, 32px);
@@ -26407,10 +26637,12 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 }
 .settings-theme-controls > .cs-theme-palette-editor > .cs-theme-palette-sliders {
   grid-column: 2;
-  grid-row: 2 / span 2;
+  grid-row: 2;
 }
+/* アクセントカラーの行は色の表とスライダーの下に全幅で置く。色の表の列（285px）に押し込むと、
+   選択欄が「既…」まで潰れ、狭い幅ではスライダーに重なる。 */
 .settings-theme-controls > .settings-theme-accent-row {
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: 3;
 }
 .settings-theme-accent-row {
@@ -26419,8 +26651,9 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
   padding-left: var(--ui-space-3);
 }
 .settings-theme-accent-control { display: inline-flex; align-items: center; gap: var(--ui-space-2); min-width: 0; }
-.settings-theme-accent-row .gb-select { min-width: 150px; }
-.settings-theme-accent-swatch { flex: 0 0 24px; }
+.modal .settings-theme-accent-control > select.gb-select { flex: 0 0 auto; width: auto !important; min-width: max-content !important; }
+.settings-theme-accent-row > .gb-field-help { flex: 0 0 auto; }
+.settings-theme-accent-swatch { flex: 0 0 24px; width: 24px; height: 24px; }
 .settings-theme-details { display: grid; gap: var(--ui-space-3); min-width: 0; max-width: 100%; overflow-x: hidden; }
 .settings-theme-preview { min-height: 280px; display: flex; flex-direction: column; overflow: hidden; }
 .settings-theme-preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-3); flex-wrap: wrap; }
@@ -26737,6 +26970,13 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 .settings-theme-state-sample[data-theme-state="selected"][data-theme-state-section="sequence-color"].is-selected { background: var(--theme-state-source); }
 .settings-theme-state-sample[data-theme-state="selected"][data-theme-state-section="text"].is-selected { color: var(--theme-state-source); }
 .settings-theme-state-sample[data-theme-state="selected"][data-theme-state-section="ornaments"].is-selected { border-bottom-color: var(--theme-state-source); }
+/* 下から出るシート（狭い幅）ではダイアログ自体が狭いので、画面幅に関係なく1列にする。
+   2列のままだとスライダーの列が約220pxになり、色相範囲のつまみの幅がほとんど無くなる。 */
+.settings-modal.gb-mobile-dialog-sheet .settings-theme-controls { grid-template-columns: minmax(0, 1fr); }
+.settings-modal.gb-mobile-dialog-sheet .settings-theme-controls > .gb-section-title { grid-column: 1; grid-row: 1; }
+.settings-modal.gb-mobile-dialog-sheet .settings-theme-controls > .cs-theme-palette-editor > .cs-theme-palette-matrix { grid-column: 1; grid-row: 2; }
+.settings-modal.gb-mobile-dialog-sheet .settings-theme-controls > .settings-theme-accent-row { grid-column: 1; grid-row: 3; }
+.settings-modal.gb-mobile-dialog-sheet .settings-theme-controls > .cs-theme-palette-editor > .cs-theme-palette-sliders { grid-column: 1; grid-row: 4; }
 @media (max-width: 820px) {
   .settings-theme-controls { grid-template-columns: minmax(0, 1fr); }
   .settings-theme-controls > .gb-section-title { grid-column: 1; grid-row: 1; }
@@ -26760,6 +27000,8 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
     touch-action: manipulation;
   }
   .settings-theme-accent-row .gb-select { flex: 1 1 150px; min-height: var(--ui-h-touch, 44px); }
+  /* スマホでは行に余白が無いので選択欄を行の残り幅まで縮める（選択肢は端末の一覧で全文が出る） */
+  .modal .settings-theme-accent-control > select.gb-select { flex: 1 1 auto; width: auto !important; min-width: 0 !important; }
   .settings-theme-accent-swatch { width: 44px; height: 44px; flex-basis: 44px; }
   .settings-theme-preview { min-height: 360px; }
   .settings-theme-preview-shell { grid-template-columns: 44px minmax(0, 1fr) 44px; grid-template-rows: auto minmax(220px, 1fr); }
@@ -26814,7 +27056,8 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
   padding: 6px 0 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2);
 }
 .cs-theme-palette-slider-row {
-  display: grid; grid-template-columns: 64px minmax(0, 1fr) 56px; align-items: center; column-gap: 6px;
+  /* 数値欄は少桁用の64px（共通ルール）。56pxでは増減ボタンとの間隔の分だけ「320」が「32」で切れる */
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; align-items: center; column-gap: 6px;
 }
 .cs-theme-palette-slider-label {
   font-size: 11px; color: var(--fg2); text-align: right;
@@ -26843,7 +27086,7 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
   box-shadow: none;
 }
 .cs-theme-hue-range {
-  display: grid; grid-template-columns: 64px minmax(0, 1fr) 56px 56px; align-items: center; column-gap: 6px;
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px 64px; align-items: center; column-gap: 6px;
   min-width: 0; margin: 0; padding: 0; border: 0;
 }
 .cs-theme-hue-range > legend { float: left; width: 64px; padding: 0; }
@@ -27299,13 +27542,13 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
    未保存ドラフト復旧 (gb-draft-recovery.js)
    ============================================================ */
 .modal[data-e2e-id="draft-recovery-dialog"] {
-  width: min(560px, calc(100vw - 32px));
+  width: min(960px, calc(100vw - 32px));
 }
 .gb-modal[data-e2e-id="draft-recovery-dialog"] > .gb-modal-body {
   overflow-x: hidden !important;
 }
 .draft-recovery-list {
-  max-height: 360px;
+  max-height: min(65vh, 680px);
   min-width: 0;
   max-width: 100%;
   overflow-x: hidden;
@@ -27313,6 +27556,7 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 }
 .draft-recovery-row {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
@@ -27335,10 +27579,21 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 .draft-recovery-meta {
   font-size: var(--ui-font-12);
   color: var(--ui-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
+.draft-recovery-row time { font-size: var(--ui-font-12); color: var(--ui-fg-muted); }
+[data-draft-preview] { flex: 1 0 100%; min-width: 0; }
+.draft-recovery-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  font: var(--ui-font-12)/1.5 monospace;
+}
+.draft-recovery-diff > * { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 6px; }
+.draft-recovery-diff > :nth-child(odd) { border-right: 1px solid var(--ui-border); }
+.draft-diff-changed { background: color-mix(in srgb, var(--red, #d9534f) 16%, transparent); }
 .draft-recovery-actions {
   display: flex;
   flex: 0 0 auto;
@@ -27393,23 +27648,36 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
 .gb-palette--theme-settings .cs-theme-ui-tone-number { width: 38px; }
 .gb-palette--theme-settings .cs-theme-ui-tone-value { display: none; }
 
+/* 一括設定の色見本一覧（公式変種）: 5項目ずつの2列。項目名の列は同じ列の最長の項目名まで広げて1行で出し、
+   列幅が足りない時だけ列の中で折り返す（共通の128px項目名列は使わない）。色見本は列の右側に縦に揃える。 */
 .settings-simple-theme-grid {
+  --settings-simple-theme-swatch: 24px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, max-content) var(--settings-simple-theme-swatch) minmax(0, max-content) var(--settings-simple-theme-swatch);
   grid-template-rows: repeat(5, auto);
   grid-auto-flow: column;
-  column-gap: var(--ui-space-6);
+  justify-content: start;
+  column-gap: var(--ui-space-5, 12px);
+  row-gap: var(--ui-space-2);
 }
+.settings-simple-theme-grid > .settings-simple-theme-item:nth-child(n+6) { grid-column: 3 / span 2; }
+.settings-simple-theme-grid > .settings-simple-theme-item:nth-child(n+6) > .cs-row-label { margin-left: var(--ui-space-6); }
+.settings-simple-theme-item {
+  grid-column: 1 / span 2;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-height: var(--ui-h-xs);
+}
+.settings-simple-theme-item > .cs-row-label { width: auto; min-width: 0; line-height: 1.3; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
-  .settings-simple-theme-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
+  .settings-simple-theme-grid { grid-template-columns: minmax(0, max-content) var(--settings-simple-theme-swatch); grid-template-rows: none; grid-auto-flow: row; }
+  .settings-simple-theme-grid > .settings-simple-theme-item:nth-child(n+6) { grid-column: 1 / span 2; }
+  .settings-simple-theme-grid > .settings-simple-theme-item:nth-child(n+6) > .cs-row-label { margin-left: 0; }
 }
-/* 項目名の列幅は設定共通の項目名幅（gb-settings-fields.css の128px、da53c2e4）に揃え、
-   項目名とスウォッチを離さない。 */
-[data-settings-simple-theme] [data-simple-theme-item] { display: grid; grid-template-columns: minmax(0, 128px) 24px; justify-content: start; align-items: center; gap: var(--ui-space-3); }
-[data-simple-theme-item] .cs-swatch { box-sizing: border-box; }
+[data-simple-theme-item] .cs-swatch { box-sizing: border-box; width: var(--settings-simple-theme-swatch); height: var(--settings-simple-theme-swatch); min-width: 0; min-height: 0; padding: 0; }
 @media (max-width: 640px), (pointer: coarse) {
-  [data-settings-simple-theme] [data-simple-theme-item] { grid-template-columns: minmax(0, 128px) 44px; }
-  [data-simple-theme-item] .cs-swatch { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .settings-simple-theme-grid { --settings-simple-theme-swatch: var(--ui-h-touch, 44px); }
 }
 [data-settings-simple-theme] .cs-row-label { width: auto; min-width: 0; }
 [data-settings-simple-theme] .cs-swatch { flex-shrink: 0; }
@@ -27802,6 +28070,7 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
   margin-bottom: var(--ui-space-4);
   flex-shrink: 0;
 }
+.gb-hp-filter { flex: 1 1 auto; min-width: 0; }
 .gb-hp-entry {
   padding: 3px var(--ui-space-4);
   font-size: var(--ui-font-12);
@@ -28919,8 +29188,8 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
 .gb-tbo-close { align-self: flex-end; min-height: 28px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 @media (pointer: coarse), (max-width: 640px) {
   /* PCのツールバー用22px指定（.gb-toolbar-main …）より詳細度で勝たせ、スマホでは44pxの操作面にする。 */
-  .gb-toolbar-overflow-button,
-  .gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
+  :root:not([data-toolbar-density="desktop"]) .gb-toolbar-overflow-button,
+  :root:not([data-toolbar-density="desktop"]) .gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
 }
@@ -31991,6 +32260,48 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   text-align: center;
 }
 
+/* 階層別スタイルタブの行（プリセット行・階層一覧の行）を右レールの既定幅に収める（2026-11-22）。
+   ピッカーは中身の幅（プレビュー 200px/120px＋名前）より縮めず、横のボタンが枠の外や画面外へはみ出していた。
+   ピッカーを縮められるようにし、プレビューも最小幅まで縮める。横のボタンは縮めない。 */
+.bd-depth-in-panel .bd-detail-style-row {
+  flex-wrap: wrap;
+}
+/* 幅が足りない時は、ピッカーを1行まるごと使い、横のボタンは次の行へ送る（ピッカーの中の名前を切らない・折り返さない）。 */
+.bd-depth-in-panel .bd-detail-style-row > .bd-style-panel-picker {
+  flex: 1 1 100%;
+  width: auto;
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-detail-style-row > .bd-detail-style-action {
+  flex: 0 0 auto;
+}
+.bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker .bd-style-picker-preview {
+  flex: 0 1 200px;
+  min-width: 64px;
+}
+.bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker.bd-depth-preset-picker .bd-style-picker-preview {
+  flex: 0 1 120px;
+  min-width: 48px;
+}
+/* 書式設定ボタンは行の幅いっぱいに置き、名前を1行のまま全部見せる（狭い時に「トピックの書式設定」が折り返す・切れていた） */
+.bd-depth-in-panel .bd-style-format-open {
+  width: 100%;
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-style-format-open > span:last-child {
+  white-space: nowrap;
+}
+/* 区切りの列（1fr = minmax(auto,1fr)）が中身の最小幅で広がり、枠より数px はみ出していた。列を 0 まで縮められるようにする。 */
+.bd-depth-in-panel .bd-detail-section {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.bd-depth-in-panel .bd-detail-style-row {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 /* gb-template-picker.css: 全アプリ共通のテンプレート選択画面 */
 .gb-tpl-picker-modal.gb-modal {
   width: min(1040px, calc(100vw - 32px));
@@ -32112,14 +32423,16 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 .gb-tpl-thumb > svg { width: 100%; height: 100%; display: block; }
 .gb-tpl-thumb-fallback { color: var(--fg2); font-size: 12px; padding: 8px; text-align: center; }
 .gb-tpl-card-label { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 32px 0 2px; }
+/* 長いテンプレート名は切らずに折り返して全部見せる（2026-11-21 見た目の検査で「…」で切れていたのを検出）。 */
 .gb-tpl-card-name {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.35;
 }
 .gb-tpl-card-badge {
   flex: 0 0 auto;
@@ -35294,7 +35607,7 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not([data-ui-component="search-filter-row"]),
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar {
     display: none !important;
   }
@@ -37255,6 +37568,22 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .at-run-panel button {
 .chat-poll-dialog [hidden] { display:none; }
 .chat-poll-dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
 @media (pointer:coarse) { .chat-poll .chat-poll-choice { min-height:44px; } }
+
+.gb-search-filter-row { display:flex; align-items:center; gap:var(--ui-toolbar-gap,4px); min-width:0; flex-wrap:nowrap; padding:4px; box-sizing:border-box; }
+.gb-search-filter-input { flex:1 1 90px; width:90px; min-width:32px; height:var(--ui-toolbar-control-size,22px); box-sizing:border-box; padding:0 var(--ui-space-3,6px); font:inherit; color:var(--fg); background:var(--bg2); border:1px solid var(--border); border-radius:var(--ui-radius-sm,4px); }
+.gb-search-filter-buttons,.gb-search-filter-actions { display:flex; align-items:center; flex:0 0 auto; gap:var(--ui-toolbar-gap,4px); }
+.gb-search-filter-row .tb-icon-btn { flex:0 0 auto; width:var(--ui-toolbar-control-size,22px); height:var(--ui-toolbar-control-size,22px); padding:0; display:inline-flex; align-items:center; justify-content:center; }
+.gb-search-filter-actions > button { flex:0 0 auto; white-space:nowrap; }
+.gb-search-filter-popup { position:fixed; max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); overflow:auto; padding:12px; box-sizing:border-box; background:var(--ui-popup-bg); border:1px solid var(--ui-popup-border); border-radius:var(--ui-popup-radius); box-shadow:var(--ui-popup-shadow); }
+.gb-search-filter-fields { display:flex; flex-direction:column; gap:8px; min-width:180px; }
+.gb-search-filter-fields label { display:flex; flex-direction:column; gap:4px; }
+@media (max-width:640px) {
+  .gb-search-filter-row { gap:0; padding:2px 0; }
+  .gb-search-filter-input { height:var(--ui-h-touch,44px); }
+  .gb-search-filter-buttons,.gb-search-filter-actions { gap:0; }
+  .gb-search-filter-row .tb-icon-btn { width:var(--ui-h-touch,44px); height:var(--ui-h-touch,44px); }
+  .gb-search-filter-actions > button { min-height:var(--ui-h-touch,44px); padding-inline:var(--ui-space-2,4px); }
+}
 
 /* gb-view-tabs.css: ツールバー下のビュータブ（共通部品 MeldexViewTabs）
    寸法・選択表示はシート・ボードのビュータブと同じ共通トークンを使う。 */

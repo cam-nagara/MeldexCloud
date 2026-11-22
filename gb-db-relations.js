@@ -272,8 +272,13 @@ async function _createBidirectionalRelationValue({sourceDbPath, entityPath, prop
   throw error;
 }
 
+// 相手のシートのトピックの保存先。シートが持つ保存先（_entry_path）を最優先にする。表示名からの組み立ては、
+// 表示名とファイル名が違うシート（保存先がデータベースのシート等）で別の場所を指し、旧形式のフォルダ
+// （シート/表示名/列_値.md）を作ってしまっていた（2026-11-21 実データ:「エルフ」「ランポ」のフォルダ）。
 function _relationEntityPathFromMap(dbPath, entityName, map) {
   if (!dbPath || !entityName) return '';
+  const stored = String(map?.entities?.[entityName]?._entry_path || '').trim();
+  if (stored) return stored;
   return map?.new_format ? dbPath + '/' + entityName + '.md' : dbPath + '/' + entityName;
 }
 

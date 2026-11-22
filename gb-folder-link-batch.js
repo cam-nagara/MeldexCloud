@@ -109,11 +109,19 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     showStatus('表示元フォルダを特定できないため、リンク解除を中止しました', true);
     return { handled: true, result: null };
   }
-  const confirmed = await cfConfirm(`このフォルダから ${linked.length} 件のリンクを解除します。元ファイルは残ります。`);
-  if (!confirmed) return { handled: true, result: null };
-  const result = await removeFolderLinksBatchWithHistory(linked, folderPath);
+  // リンクの解除は元に戻す・やり直し・ヒストリーの3経路で戻せるので確認を出さない（app/AGENTS.md。
+  // 2026-11-22 M-014 フォルダパネル網羅テストで、取り消せるのに確認が出ていたため外した）。
+  let result;
+  try {
+    result = await removeFolderLinksBatchWithHistory(linked, folderPath);
+  } catch (error) {
+    showStatus('リンクを解除できませんでした: ' + (error?.userMessage || error?.message || error || ''), true);
+    return { handled: true, result: null };
+  }
   if (typeof options.refresh === 'function') await options.refresh();
   const removed = result?.removed_count || 0;
-  showStatus(removed ? `${removed} 件のリンクを解除しました（元ファイルは残ります）` : 'リンクはすでに解除されています');
+  const failed = result?.failed_count || 0;
+  if (failed) showStatus(`${removed} 件のリンクを解除し、${failed} 件は解除できませんでした（元ファイルは残ります）`, true);
+  else showStatus(removed ? `${removed} 件のリンクを解除しました（元ファイルは残ります）` : 'リンクはすでに解除されています');
   return { handled: true, result };
 }

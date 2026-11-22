@@ -1,3 +1,25 @@
+    if (_callGlobal('toggleOverlayVisibility')) {
+      _syncAnnotationBarState();
+      return true;
+    }
+    document.getElementById('btn-overlay-toggle')?.click?.();
+    _syncAnnotationBarState();
+    return true;
+  }
+
+  function _closeAnnotationToolbar() {
+    if (document.body?.dataset) delete document.body.dataset.cloudMobileAnnotationRequested;
+    return _callGlobal('closeAnnotationToolbar');
+  }
+
+  function _syncAnnotationBarState() {
+    if (!_annotationBar) return;
+    const tool = _currentAnnotationTool();
+    _annotationBar.querySelectorAll('[data-ann-mobile-tool]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.annMobileTool === tool);
+    });
+    _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
+      const group = button.dataset.annMobileGroup;
       const groupMembers = _annMobileGroupMembers(group);
       const isActive = groupMembers.some(member => member.tool === tool);
       button.classList.toggle('active', isActive);

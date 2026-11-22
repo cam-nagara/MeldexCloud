@@ -149,7 +149,8 @@
 
   async function addWorkspaceFromSettings() {
     let picked = null;
-    try { picked = await window.MeldexWorkspaces?.pickFolder?.(); } catch {}
+    try { picked = await window.MeldexWorkspaces?.pickFolder?.(); }
+    catch (error) { _status('フォルダを選べませんでした: ' + (error?.message || error), true); }
     let path = String(picked?.path || '').trim();
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
@@ -157,13 +158,14 @@
         : window.MeldexRuntimeAdapter?.isBrowserMode?.()
           ? 'ワークスペースにする端末内フォルダ'
           : 'ワークスペースにするフォルダの絶対パス';
-      path = window.prompt(promptLabel, '');
+      // ブラウザ標準の prompt は使わない（UI共通ルール: 共通の入力の画面。2026-11-22 M-014 で見つけた B13 と同じ）
+      path = typeof cfPrompt === 'function' ? await cfPrompt(promptLabel, '') : null;
       if (path == null) return;
       path = String(path || '').trim();
     }
     if (!path) return;
     const defaultName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'ワークスペース';
-    const name = window.prompt('ワークスペース名', defaultName);
+    const name = typeof cfPrompt === 'function' ? await cfPrompt('ワークスペース名', defaultName) : null;
     if (name == null) return;
     try {
       await window.MeldexWorkspaces.create({

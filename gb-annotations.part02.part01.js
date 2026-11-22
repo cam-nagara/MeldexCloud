@@ -823,7 +823,6 @@ function renderNote(id, shape, data, color, opacity, user, created, options = {}
     menu.style.position = 'fixed';
     menu.style.zIndex = '210';
     const hasTail = !!noteEl.querySelector('.ann-tail,.ann-tail-shape');
-    let closeTimer = 0;
     let tailOpen = false;
 
     const removeMenus = () => document.querySelectorAll('._note-ctx-menu').forEach(m => m.remove());
@@ -834,7 +833,6 @@ function renderNote(id, shape, data, color, opacity, user, created, options = {}
       items[next].focus();
     };
     const closeMenu = (restoreFocus = false) => {
-      clearTimeout(closeTimer);
       document.removeEventListener('pointerdown', onGlobalPointerDown, true);
       document.removeEventListener('keydown', onGlobalKeyDown, true);
       tailTrig?.setAttribute('aria-expanded', 'false');
@@ -849,33 +847,27 @@ function renderNote(id, shape, data, color, opacity, user, created, options = {}
       }
     };
     const hideTailPanel = () => {
-      clearTimeout(closeTimer);
       tailOpen = false;
       tailTrig.setAttribute('aria-expanded', 'false');
       tailPanel.hidden = true;
       tailPanel.style.display = 'none';
     };
     const showTailPanel = () => {
-      clearTimeout(closeTimer);
       if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
       tailOpen = true;
       tailTrig.setAttribute('aria-expanded', 'true');
       tailPanel.hidden = false;
       tailPanel.style.display = 'block';
       if (typeof positionPopup === 'function') {
-        positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+        const row = tailTrig.getBoundingClientRect();
+        const root = menu.getBoundingClientRect();
+        positionPopup(tailPanel, { left: root.left, right: root.right, top: row.top, bottom: row.bottom }, { prefer: 'right', gap: 2 });
       } else {
         const rect = tailTrig.getBoundingClientRect();
         tailPanel.style.left = rect.right + 2 + 'px';
         tailPanel.style.top = rect.top + 'px';
         if (typeof clampPopupToViewport === 'function') clampPopupToViewport(tailPanel);
       }
-    };
-    const scheduleTailClose = () => {
-      clearTimeout(closeTimer);
-      closeTimer = setTimeout(() => {
-        if (!tailPanel.matches(':hover') && !tailTrig.matches(':hover') && !tailPanel.contains(document.activeElement)) hideTailPanel();
-      }, 140);
     };
     function onGlobalPointerDown(ev) {
       const inMenu = menu.contains(ev.target) || tailPanel.contains(ev.target);
@@ -968,8 +960,7 @@ function renderNote(id, shape, data, color, opacity, user, created, options = {}
       });
       tailPanel.appendChild(si);
     });
-    tailTrig.addEventListener('mouseenter', showTailPanel);
-    tailTrig.addEventListener('mouseleave', scheduleTailClose);
+    attachHoverSubmenu(tailTrig, tailPanel, { onShow: showTailPanel, onHide: hideTailPanel });
     tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
     tailTrig.addEventListener('keydown', (ev) => {
       if (ev.key === 'ArrowRight' || ev.key === 'Enter' || ev.key === ' ') {
@@ -978,8 +969,6 @@ function renderNote(id, shape, data, color, opacity, user, created, options = {}
         requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
       }
     });
-    tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
-    tailPanel.addEventListener('mouseleave', scheduleTailClose);
     tailPanel.addEventListener('keydown', (ev) => handleMenuKeydown(ev, tailPanel, () => {
       hideTailPanel();
       tailTrig.focus();
@@ -1129,6 +1118,7 @@ async function deleteNote(id, el, options = {}) {
 
 // アノテーション読み込み
 async function loadAnnotations() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.reloadTarget(getAnnotationTarget());
   _discardEmptyAnnotationDrafts('target-change');
   const layer = document.getElementById('ann-layer');
   const targetPath = ann.targetPath;

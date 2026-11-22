@@ -14,6 +14,12 @@ function _chatSafeUserSegment() {
   return String(raw).trim().replace(/[\\/:*?"<>|]/g, '_') || 'anonymous';
 }
 
+// 発言者の表示名。名前が未設定（内部の既定値 anonymous）の時は「あなた」と出す（2026-11-22 利用者役の探索）。
+function _chatUserDisplayName() {
+  const raw = String((typeof getUsername === 'function' ? getUsername() : '') || '').trim();
+  return !raw || raw === 'anonymous' ? 'あなた' : raw;
+}
+
 function _chatSavedPathForSession(sessionId) {
   if (!sessionId) return '';
   return '_chat/llm/' + _chatSafeUserSegment() + '/' + sessionId + '.md';
@@ -815,7 +821,7 @@ function chatAddMessage(role, content, options = {}) {
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
   const model = options?.model || _chatState.model;
-  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model, options?.reasoning_level || ''));
+  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? _chatUserDisplayName() : getProviderLabel(provider, model, options?.reasoning_level || ''));
   const icon = isControl ? (typeof lucide === 'function' ? lucide('workflow', 16) : '') : (isUser ? getUserAvatarHtml(getUsername(), 18) : getProviderIconHtml(provider, 18));
 
   // ラッパー（名前+アイコン+バブル）

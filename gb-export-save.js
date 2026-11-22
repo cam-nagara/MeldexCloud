@@ -358,7 +358,9 @@ const MeldexExportSave = (() => {
       if (typeof showStatus === 'function') showStatus(messages.error || '保存に失敗しました', true);
       return false;
     } catch (err) {
-      if (typeof showStatus === 'function') showStatus(messages.error || (err?.message || '保存に失敗しました'), true);
+      const reason = _errorReason(err);
+      const base = messages.error || '保存に失敗しました';
+      if (typeof showStatus === 'function') showStatus(reason ? `${base}: ${reason}` : base, true);
       return false;
     }
   }
@@ -381,6 +383,7 @@ const MeldexExportSave = (() => {
     );
     return _showDialog({
       title: options.dialogTitle || '書き出して保存',
+      ...(options.initialdir ? { initialdir: String(options.initialdir) } : {}),
       initialfile,
       defaultextension: extension,
       filetypes: options.filetypes || [['すべてのファイル', '*.*']],
@@ -407,15 +410,15 @@ const MeldexExportSave = (() => {
         ...(options.ifMatchEtag ? { if_match_etag: String(options.ifMatchEtag) } : {}),
         ...(options.createOnly ? { create_only: true } : {}),
         ...(options.publishContext ? { publish_context: options.publishContext } : {}),
-      });
+      }, { silentError: true });
       if (res?.ok) {
         _notifyManualSaveSuccess((options.okMessage || '上書き保存しました') + ': ' + res.path);
         return res;
       }
       return false;
     } catch (err) {
-      if (typeof showStatus === 'function') showStatus(options.errorMessage || (err?.message || '保存に失敗しました'), true);
-      return false;
+      if (_isRecordedTargetMissing(err)) return { ok: false, missing: true, path };
+      return _failWithReason({ errorMessage: options.errorMessage || '保存に失敗しました' }, err);
     }
   }
 
@@ -432,6 +435,7 @@ const MeldexExportSave = (() => {
     const checked = _validatePublicationPackage(publicationPackage);
     return _showDialog({
       title: options.dialogTitle || 'HTML packageとして保存',
+      ...(options.initialdir ? { initialdir: String(options.initialdir) } : {}),
       initialfile,
       defaultextension: extension,
       filetypes: options.filetypes || [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
@@ -463,16 +467,130 @@ const MeldexExportSave = (() => {
         ...(options.ifMatchEtag ? { if_match_etag: String(options.ifMatchEtag) } : {}),
         ...(options.createOnly ? { create_only: true } : {}),
         ...(options.publishContext ? { publish_context: options.publishContext } : {}),
-      });
+      }, { silentError: true });
       if (res?.ok) {
         _notifyManualSaveSuccess((options.okMessage || '公開HTMLを更新しました') + ': ' + res.path);
         return res;
       }
       return false;
     } catch (error) {
-      if (typeof showStatus === 'function') showStatus(options.errorMessage || error?.message || '公開HTMLの更新に失敗しました', true);
+      // 記録した公開HTMLが消されている（Dropbox上で削除・移動された）。呼び出し元が作り直す。
+      if (_isRecordedTargetMissing(error)) return { ok: false, missing: true, path };
+      return _failWithReason({ errorMessage: options.errorMessage || '公開HTMLの更新に失敗しました' }, error);
+    }
+  }
+
+  function _isRecordedTargetMissing(error) {
+    const detail = error?.payload?.detail;
+    return Number(error?.status) === 428 && detail && typeof detail === 'object'
+      && detail.code === 'precondition_required' && !detail.current_etag;
+  }
+
+  function _errorReason(error) {
+    const detail = error?.payload?.detail;
+    const raw = (detail && typeof detail === 'object' ? detail.message : detail)
+      || error?.payload?.error || error?.message || '';
+    return String(raw || '').replace(/^HTTP\s+\d{3}:\s*/i, '').trim();
+  }
+
+  function _errorCode(error) {
+    return String(error?.payload?.detail?.code || error?.meldexCode || error?.code || '');
+  }
+
+  function _failWithReason(options, error) {
+    const reason = _errorReason(error);
+    const base = options.errorMessage || '保存に失敗しました';
+    if (typeof showStatus === 'function') showStatus(reason ? `${base}: ${reason}` : base, true);
+    return false;
+  }
+
+  async function _savePublicationToDropbox(path, checked, options) {
+    // Cloud版: Meldexの保存先（Dropbox）へ直接書く。50MBを超える画像は別ファイルの
+    // 資産フォルダが要るが、Cloud版はまだ資産フォルダを書けないため止める。
+    if (checked.assets.length) {
+      if (typeof showStatus === 'function') {
+        showStatus('50MBを超える画像を含むため、Cloud版では公開できません。デスクトップ版で公開してください', true);
+      }
       return false;
     }
+    const content = options.bom ? '\uFEFF' + checked.html : checked.html;
+    const url = '/file?path=' + encodeURIComponent(path);
+    const put = body => apiPut(url, { content, ...body }, { silentError: true });
+    let ifMatch = String(options.ifMatchEtag || '');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const res = await put(ifMatch ? { if_match_etag: ifMatch } : { create_only: true });
+        const etag = String(res?.transport_revision || res?.etag || '');
+        _notifyManualSaveSuccess((options.okMessage || '公開HTMLを保存しました') + ': ' + path);
+        return { ok: true, path, etag, vault_relative_path: path, inside_vault: true };
+      } catch (error) {
+        const exists = Number(error?.status) === 409 && !ifMatch;
+        if (exists && attempt === 0 && typeof options.confirmOverwrite === 'function'
+            && await options.confirmOverwrite(path)) {
+          try {
+            const current = await apiFetch(url + '&metadata_only=1', { silentError: true });
+            ifMatch = String(current?.transport_revision || current?.etag || '');
+          } catch (readError) {
+            return _failWithReason(options, readError);
+          }
+          if (ifMatch) continue;
+        }
+        if (exists) {
+          if (typeof showStatus === 'function') showStatus('公開を中止しました（同じ名前のファイルがあります）');
+          return false;
+        }
+        return _failWithReason(options, error);
+      }
+    }
+    return false;
+  }
+
+  /** 公開HTMLを、決まった保存先（Meldexの保存先の中の位置）へ保存する。
+      デスクトップ版は本体の公開確認を通して保存し、OSの保存ダイアログは開かない。
+      既にファイルがある時は options.confirmOverwrite で確認してから上書きする。 */
+  async function savePublicationToPath(path, publicationPackage, options = {}) {
+    const target = String(path || '').trim();
+    if (!target) {
+      if (typeof showStatus === 'function') showStatus('公開HTMLの保存先が決まっていません', true);
+      return false;
+    }
+    let checked;
+    try { checked = _validatePublicationPackage(publicationPackage); }
+    catch (error) { return _failWithReason(options, error); }
+    if (_isBrowserDataContext()) return _savePublicationToDropbox(target, checked, options);
+    if (_isStandaloneContext()) {
+      return savePublicationPackage(publicationPackage, { ...options, initialfile: guessNameFromPath(target, '公開.html') });
+    }
+    const payload = {
+      title: options.dialogTitle || '公開HTMLを保存',
+      target_path: target,
+      content: options.bom ? '\uFEFF' + checked.html : checked.html,
+      publication_assets: await _publicationAssetPayload(checked.assets),
+      register_publish_path: true,
+      ...(options.publishContext ? { publish_context: options.publishContext } : {}),
+      ...(options.operationId ? { operation_id: String(options.operationId) } : {}),
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const res = await apiPost('/save-file-dialog', payload, { silentError: true });
+        if (res?.ok) {
+          _notifyManualSaveSuccess((options.okMessage || '公開HTMLを保存しました') + ': ' + res.path);
+          return res;
+        }
+        return _failWithReason(options, null);
+      } catch (error) {
+        if (_errorCode(error) === 'publish_target_exists' && attempt === 0) {
+          if (typeof options.confirmOverwrite === 'function' && await options.confirmOverwrite(target)) {
+            payload.overwrite_confirmed = true;
+            continue;
+          }
+          if (typeof showStatus === 'function') showStatus('公開を中止しました（同じ名前のファイルがあります）');
+          return false;
+        }
+        return _failWithReason(options, error);
+      }
+    }
+    return false;
   }
 
   async function saveBlob(blob, options = {}) {
@@ -585,6 +703,8 @@ const MeldexExportSave = (() => {
   }
 
   return {
+    isBrowserDataContext: _isBrowserDataContext,
+    savePublicationToPath,
     sanitizeTitle,
     guessNameFromPath,
     splitFileName,

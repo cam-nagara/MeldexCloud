@@ -228,6 +228,12 @@ function flushPendingEditorAutosave() {
   return pending.length ? Promise.allSettled(pending) : Promise.resolve([]);
 }
 
+function _noteFrontmatterPrefix(raw) {
+  const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(String(raw || ''));
+  // 区切り線に挟まれた本文を設定欄として隠さない。設定欄はキーを持つ形に限る。
+  return match && /^[^\s#][^\n]*:(?:[ \t][^\n]*|[ \t]*)$/m.test(match[1]) ? match[0] : '';
+}
+
 function _noteMarkdownFromEditor(pc) {
   if (!pc) return '';
   const clone = window.MeldexNoteEmbedBlock?.cloneForMarkdown?.(pc) || pc.cloneNode(true);
@@ -236,7 +242,7 @@ function _noteMarkdownFromEditor(pc) {
   let md = htmlToMd(clone.innerHTML || '');
   const fm = pc.dataset.frontmatter || '';
   if (fm) md = fm + md;
-  return md;
+  return window.MeldexNoteSaveAdapter?.preserveLoadedMarkdown?.(pc, md) ?? md;
 }
 
 // ============================================================
@@ -296,7 +302,7 @@ function _noteMarkdownFromEditorNonDestructive(pc) {
   if (!pc) return '';
   const revision = pc._noteEditRevision || 0;
   const cache = pc._noteEditSerializeCache;
-  if (cache && cache.revision === revision) return cache.md;
+  if (cache && cache.revision === revision) return window.MeldexNoteSaveAdapter?.preserveLoadedMarkdown?.(pc, cache.md) ?? cache.md;
   const clone = window.MeldexNoteEmbedBlock?.cloneForMarkdown?.(pc) || pc.cloneNode(true);
   clone.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
   clone.normalize();
@@ -304,7 +310,7 @@ function _noteMarkdownFromEditorNonDestructive(pc) {
   const fm = pc.dataset.frontmatter || '';
   if (fm) md = fm + md;
   pc._noteEditSerializeCache = { revision, md };
-  return md;
+  return window.MeldexNoteSaveAdapter?.preserveLoadedMarkdown?.(pc, md) ?? md;
 }
 
 // 項目6: 見出し構造の軽量シグネチャ（個数＋各見出しのタグ・文字数）。完全な
@@ -385,7 +391,16 @@ function _flushNoteDraftReservation(pc, options) {
   // 手動保存が入力の退避タイマーより先に完了した場合、保存済みの本文を
   // 遅れて未保存ドラフトへ戻さない。保存後に追加入力があれば退避する。
   if (md !== (pc.dataset.lastSavedMd || '')) {
-    window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+    // この関数までに入力の待ち合わせは済んでいる。ここでさらにタイマーを
+    // 予約すると、再読込・終了でそのタイマーだけが捨てられ入力を失う。
+    const recovery = window.MeldexDraftRecovery;
+    if (typeof recovery?.reserveDraft === 'function') {
+      recovery.reserveDraft(draftPath, md, pc.dataset.lastSavedMd || '');
+    } else {
+      recovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+    }
+  } else if (typeof _dropNoteDraftIfBaselineRestored === 'function') {
+    _dropNoteDraftIfBaselineRestored(pc, draftPath);
   }
   _maybeRefreshNoteTocAfterEdit(pc);
 }
@@ -420,17 +435,38 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
       const md = _noteMarkdownFromEditorNonDestructive(host);
       if (md !== savedMd) return md;
     }
-    // 切替後の旧文書は最新本文を確認できない。残ったドラフトは次の
-    // 読込時にサーバー本文と照合し、ここで推測して削除しない。
+    // 切替後は最新本文を確認できない。保存した本文と一致する下書きだけを
+    // 同期済みにできるよう、呼び出し側へ未表示を返す。
     return found ? savedMd : null;
   };
-  if (live() === savedMd) await window.MeldexDraftRecovery?.markSynced?.(path);
+  const current = live();
+  if (current === savedMd || current === null) await window.MeldexDraftRecovery?.markSynced?.(path, savedMd);
   // IndexedDBの削除待ちの間にも入力できるので、完了後にもう一度照合する。
   const latest = live();
   if (latest !== null && latest !== savedMd) {
     window.MeldexDraftRecovery?.queueDraft?.(path, latest, savedMd);
     await window.MeldexDraftRecovery?.saveDraft?.(path, latest, savedMd);
   }
+}
+
+// 本文が保存済みの内容へ戻った時（空行を入れて消した、リンクを外して戻した等）は、途中で退避した
+// 下書きを消す。以前は「変更なし」で保存も下書きの削除もしなかったため、下書きが残り続け、起動の
+// たびに「未保存の変更」が出ていた（2026-11-21 報告）。同じノートを別の面で編集中ならその下書きは残す。
+function _dropNoteDraftIfBaselineRestored(pc, path) {
+  const recovery = window.MeldexDraftRecovery;
+  if (!path || typeof recovery?.markSynced !== 'function') return;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const hosts = coordinator?.getParticipants?.(coordinator.documentKeyForPath?.(path)) || [];
+  for (const host of hosts) {
+    if (!host || host === pc || host.dataset?.path !== path || host.isConnected === false) continue;
+    if (host.dataset?.loadFailed === '1') return;
+    const md = _noteMarkdownFromEditorNonDestructive(host);
+    const unchanged = typeof window.MeldexNoteSaveAdapter?.isUnchanged === 'function'
+      ? window.MeldexNoteSaveAdapter.isUnchanged(host, md)
+      : md === (host.dataset.lastSavedMd || '');
+    if (!unchanged) return;
+  }
+  Promise.resolve(recovery.markSynced(path)).catch(() => {});
 }
 
 // 戻り値は { outcome } で結果を返す（Ctrl+S 等、結果に応じて表示を変える
@@ -458,8 +494,10 @@ async function _runNoteAutoSave(pc, expectedPath) {
   const fm = pc.dataset.frontmatter || '';
   const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
   // 工程1項目2: 内容が保存済みbaselineと完全一致するなら何もしない（PUTを発生させない）
-  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return { outcome: 'unchanged' };
-  if (!md.trim() && !prevBody.trim() && fm === prevFm) return { outcome: 'unchanged' };
+  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md) || (!md.trim() && !prevBody.trim() && fm === prevFm)) {
+    _dropNoteDraftIfBaselineRestored(pc, currentPath);
+    return { outcome: 'unchanged' };
+  }
   const _prevSavedForDiff = prevSaved;
   window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
   try {
@@ -618,6 +656,9 @@ function _showNoteConflictDialog(path, md, pc) {
   const conflictGeneration = window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path);
   const conflictDocumentKey = window.MeldexNoteSaveAdapter?.documentKeyForPath?.(path) || path;
   let actionBusy = false;
+  // 上書きの対象は差分で確認した版。取得後にさらに更新された場合は409で保護する。
+  let comparedEtag = '';
+  let comparedRevision = '';
   // 工程2-B項目8: ダイアログを閉じた時はノート本文へ固定復帰せず、競合発生前に
   // ユーザーが移ろうとしていた要素（保存コーディネーターが記録したfocusTarget）へ
   // preventScroll付きで戻す。復帰先が削除済み・無効・不可視の場合だけpcへ
@@ -670,6 +711,7 @@ function _showNoteConflictDialog(path, md, pc) {
     return button;
   };
   const overwriteButton = makeActionButton('overwrite', 'note-conflict-overwrite', '自分の編集で上書き', true);
+  overwriteButton.disabled = true;
   const reloadButton = makeActionButton('reload', 'note-conflict-reload', '相手の変更を読み込む');
   const saveAsButton = makeActionButton('save-as', 'note-conflict-save-as', '別名で保存');
   const deferButton = makeActionButton('close', 'note-conflict-close', '保留');
@@ -723,6 +765,7 @@ function _showNoteConflictDialog(path, md, pc) {
     actionBusy = !!next;
     overlay.setAttribute('aria-busy', actionBusy ? 'true' : 'false');
     overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = actionBusy; });
+    overwriteButton.disabled = actionBusy || !comparedEtag;
     if (headerCloseButton) headerCloseButton.disabled = actionBusy;
   };
   const closeDialog = reason => modalApi.close(reason || 'defer');
@@ -742,7 +785,10 @@ function _showNoteConflictDialog(path, md, pc) {
     setActionBusy(true);
     try {
       if (action === 'overwrite') {
-        const res = await apiPut('/file?path=' + encodeURIComponent(path), _noteSavePayload(pc, md, { force_overwrite: true }));
+        if (!comparedEtag) throw new Error('ファイル側の最新版を取得してから上書きしてください');
+        const res = await apiPut('/file?path=' + encodeURIComponent(path), _noteSavePayload(pc, md, {
+          force_overwrite: true, if_match_etag: comparedEtag, transport_revision: comparedRevision,
+        }));
         if (window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== conflictGeneration) {
           throw new Error('競合状態が更新されたため、上書き結果を確定できません');
         }
@@ -856,6 +902,9 @@ function _showNoteConflictDialog(path, md, pc) {
     // 「保留」または別の解決操作で閉じた後に届いた応答は無効。
     if (!overlay.isConnected || actionBusy) return;
     const remote = String(data?.content || '');
+    comparedEtag = String(data?.etag || '');
+    comparedRevision = data?.transport_revision || comparedEtag;
+    overwriteButton.disabled = !comparedEtag;
     // 修正7（誤自動解決の防止）: 再起動/再読込後に復元された競合
     // （restorePendingConflictIfAny経由。コーディネーター側に本当の未保存内容を
     // 持たず、mdはサーバー再読込済み内容へのフォールバック値）では、正規化
@@ -930,7 +979,8 @@ function _noteMarkdownIsBoard(text) {
 
 function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
   const layers = window.MeldexDisplayLayers;
-  const autoLinksEnabled = !!layers?.isEnabled?.('autoLinks');
+  // 自動リンク・自動ルビはこのノートの状態（フロントマター）で決まる。
+  const autoLinksEnabled = !!layers?.isEnabled?.('autoLinks', path) || !!layers?.isEnabled?.('autoRuby', path);
   const commentsEnabled = !!layers?.isEnabled?.('comments');
   if (!autoLinksEnabled && !commentsEnabled) return;
   const initialEditRevision = pc._noteEditRevision || 0;
@@ -953,10 +1003,11 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
       // auto-linkだけを適用する。元HTMLへの総入れ替えはhydration済みDOMを失う。
       const scroll = window.MeldexNoteRuby?.captureScroll?.(pc);
       if (typeof MeldexAutoLink !== 'undefined') {
-        MeldexAutoLink.applyToDom(pc, path, { force: true });
+        MeldexAutoLink.applyToDom(pc, path);
       } else {
-        pc.innerHTML = applyAutoLinks(html, path, { force: true });
+        pc.innerHTML = applyAutoLinks(html, path);
       }
+      window.MeldexNoteDisplaySettings?.refreshRubyNodes?.(pc);
       window.MeldexNoteEmptyPrompt?.sync?.(pc);
       window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
@@ -1050,7 +1101,6 @@ async function openPage(label, path, opts) {
   // 独立した描画先は module 読込時の _wireNoteEditableElement(#page-content) の対象外
   // なので、このpc自身へ同じ配線を行う（IME合成・貼り付け・縦書き等）。
   if (openOpts.containerEl && !pc._noteEditableWired) {
-    pc._noteEditableWired = true;
     pc.contentEditable = 'true';
     _wireNoteEditableElement(pc);
   }
@@ -1110,7 +1160,7 @@ async function openPage(label, path, opts) {
       }
     }
     const raw = data.content || '';
-    const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
+    const loadedFrontmatter = _noteFrontmatterPrefix(raw);
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...', { loading });
       if (isStalePageLoad()) return;
@@ -1124,7 +1174,9 @@ async function openPage(label, path, opts) {
     // 非同期の重い描画待ちと競合世代の再確認が完了してからbaselineを確定する。
     // 先にdatasetだけ更新すると、待機中に別の解決操作が進んだ場合に
     // 「古いDOM＋新しいbaseline/etag」という巻き戻し可能な状態が残る。
-    pc.dataset.frontmatter = fmMatch ? fmMatch[1] : '';
+    pc.dataset.frontmatter = loadedFrontmatter;
+    // このノートの自動リンク・自動ルビの状態とルビの表示設定（フロントマター）を当てる。
+    window.MeldexNoteDisplaySettings?.applyToHost?.(pc, path, pc.dataset.frontmatter);
     pc.dataset.lastSavedMd = raw;
     pc.dataset.lastSavedEtag = data.etag || '';
     // パスは表示/再取得用、asset/provider ID は保存調停用の安定IDとして分離する。
@@ -1139,9 +1191,14 @@ async function openPage(label, path, opts) {
     // 強制表示せず「競合を保留中」の非モーダル表示だけを再開する。
     window.MeldexNoteSaveAdapter?.restorePendingConflictIfAny?.(pc, path);
     pc.contentEditable = isItemLocked(path) ? 'false' : 'true';
+    // 独立した表示面の読込では全体のタイトル更新を省くが、その面のロック理由は表示する。
+    const noteView = pc.closest('#page-view, [data-editor-local-id="page-view"], .gb-subpanel-note-view');
+    const localTitle = noteView?.querySelector('#page-title, [data-editor-local-id="page-title"]');
+    if (localTitle) window.MeldexFileLockBadge?.apply?.(localTitle, path);
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexNoteSaveAdapter?.rememberLoadedBaseline?.(pc);
     window.MeldexNoteEmptyPrompt?.sync?.(pc);
     window.MeldexNoteToolbarBlockSelect?.syncTriggerLabel?.();
     window.MeldexNoteEmbedBlock?.hydrate?.(pc, raw);
@@ -1197,8 +1254,10 @@ async function openPage(label, path, opts) {
     // 工程1項目2・4: 内容が保存済みbaselineと完全一致するなら、Markdown再変換以降の
     // 処理（PUT・etag更新・履歴追加）を一切行わない。未変更の非空ノートでも
     // blurのたびにPUTが発生していた回帰の修正（計画書§5工程1-4）。
-    if (window.MeldexNoteSaveAdapter?.isUnchanged?.(this, md)) return;
-    if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
+    if (window.MeldexNoteSaveAdapter?.isUnchanged?.(this, md) || (!md.trim() && !prevBody.trim() && fm === prevFm)) {
+      _dropNoteDraftIfBaselineRestored(this, currentPath);
+      return;
+    }
     const prevMd = this.dataset.lastSavedMd || '';
     try {
       // 工程1項目3・5: 直接apiPutを呼ばず、保存コーディネーターへ
@@ -1347,7 +1406,10 @@ function _readNoteTocFileState() {
 }
 
 function _writeNoteTocFileState(store) {
-  try { localStorage.setItem(NOTE_TOC_FILE_STATE_KEY, JSON.stringify(store)); } catch (_) {}
+  try { localStorage.setItem(NOTE_TOC_FILE_STATE_KEY, JSON.stringify(store)); }
+  catch (_) {
+    if (typeof showStatus === 'function') showStatus('目次の表示設定を保存できませんでした。この端末の保存容量と保存権限を確認してください。今回の表示だけ切り替えています', true);
+  }
 }
 
 function _noteTocCurrentPreferences() {
@@ -1511,7 +1573,8 @@ function initNoteTocResize(root = document) {
 // 形だったが、`this`/引数で完結しているため関数化してそのまま使い回せる
 // （ボードのリンクカード計画 Phase B-2: サブパネル専用ノートDOMにも同じ配線を行う）。
 function _wireNoteEditableElement(pc) {
-  if (!pc) return;
+  if (!pc || pc._noteEditableWired) return;
+  pc._noteEditableWired = true;
   pc.addEventListener('input', function(event) {
     const inputType = String(event.inputType || '');
     // 通常の追加入力で非空状態が空へ戻ることはないため、大きいノートの全文走査を避ける。
@@ -1638,7 +1701,18 @@ function _editableRangeFromPoint(el, x, y) {
       range.collapse(true);
     }
   }
-  return _rangeBelongsToEditable(el, range) ? range : null;
+  if (!_rangeBelongsToEditable(el, range)) return null;
+  const start = range.startContainer?.nodeType === 1 ? range.startContainer : range.startContainer?.parentElement;
+  const island = start?.closest?.('[contenteditable="false"]');
+  if (island && island !== el && el.contains(island)) {
+    const rect = island.getBoundingClientRect();
+    const vertical = !!globalThis.MeldexNoteWritingMode?.isVertical?.(el);
+    const before = vertical ? x > rect.left + rect.width / 2 : y < rect.top + rect.height / 2;
+    if (before) range.setStartBefore(island);
+    else range.setStartAfter(island);
+    range.collapse(true);
+  }
+  return range;
 }
 
 function _safeAutoLinkPasteHtml(html) {
@@ -1670,6 +1744,7 @@ function _readFileAsDataURL(file) {
 }
 
 function _insertHtmlAtEditableRange(el, range, html) {
+  el.focus({ preventScroll: true });
   _restoreEditableRange(el, range);
   document.execCommand('insertHTML', false, html);
   return _captureEditableSelection(el) || range;
@@ -1710,6 +1785,12 @@ function _applyInitialEmbeddedMediaSize(editable, media) {
     const width = longest > cap ? natW * (cap / longest) : natW;
     el.style.width = Math.max(1, Math.round(width)) + 'px';
     el.style.height = 'auto';
+    // 読込後の初期サイズは貼り付け・ドロップそのものの一部。
+    // 入力通知で別の履歴を増やすと、1回の取り消しでは画像を消せなくなる。
+    if (typeof _scopedNoteUndoState === 'function' && typeof _syncScopedNoteUndoState === 'function') {
+      const scoped = _scopedNoteUndoState(editable);
+      if (scoped) _syncScopedNoteUndoState(editable, scoped, scoped.kind);
+    }
     // 幅は ![alt|w=NNN](...) として保存される（保存経路は既存のまま）
     editable.dispatchEvent(new Event('input', { bubbles: true }));
   };
@@ -1841,7 +1922,10 @@ function _wireNotePasteHandler(pc) {
   const text = cd.getData('text/plain');
   if (text) {
     e.preventDefault();
+    const pasteStartBlock = _notePasteBlock(this, window.getSelection()?.getRangeAt?.(0)?.startContainer);
     document.execCommand('insertText', false, text);
+    // 貼り付けた語にも、このノートの設定どおりに自動リンク・自動ルビを付ける（2026-11-21）。
+    _decorateNotePastedBlocks(this, pasteStartBlock);
     // 共有リンクだけを貼った時は、その場で動画・ポストの埋め込みを表示する（保存内容は変えない）
     if (/^\s*https?:\/\/\S+\s*$/.test(text)) {
       const editor = this;
@@ -1849,6 +1933,54 @@ function _wireNotePasteHandler(pc) {
     }
   }
   });
+}
+
+// 貼り付けの範囲を含む本文のブロック（段落・見出し・リストの項目など）。本文の直下に文字がある時は本文そのもの。
+function _notePasteBlock(editor, node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement;
+  if (!el || !editor.contains(el)) return editor;
+  const block = el.closest('p,li,h1,h2,h3,h4,h5,h6,blockquote,td,th,div');
+  return block && block !== editor && editor.contains(block) ? block : editor;
+}
+
+// 貼り付けた範囲（貼り付け前のブロックからキャレットのあるブロックまで）に自動リンク・自動ルビを付ける。
+// キャレットの位置は目印の要素で保ち、付け終えたら戻す（自動の装飾は保存されない）。
+function _decorateNotePastedBlocks(editor, startBlock) {
+  const path = editor?.dataset?.path || '';
+  const layers = window.MeldexDisplayLayers;
+  if (!path || typeof MeldexAutoLink === 'undefined' || typeof MeldexAutoLink.applyToDom !== 'function') return;
+  const st = layers?.stateFor?.(path);
+  if (!st || (!st.autoLinks && !st.autoRuby)) return;
+  const sel = window.getSelection();
+  if (!sel?.rangeCount) return;
+  const caret = sel.getRangeAt(0);
+  const endBlock = _notePasteBlock(editor, caret.endContainer);
+  const marker = document.createElement('span');
+  marker.dataset.notePasteCaret = '1';
+  caret.collapse(false);
+  caret.insertNode(marker);
+  const blocks = [];
+  if (startBlock === editor || endBlock === editor || !startBlock?.isConnected) blocks.push(editor);
+  else {
+    for (let node = startBlock; node; node = node.nextElementSibling) {
+      blocks.push(node);
+      if (node === endBlock || node.contains(endBlock)) break;
+    }
+    if (!blocks.includes(endBlock) && !blocks.some(b => b.contains(endBlock))) blocks.push(endBlock);
+  }
+  try {
+    blocks.forEach(block => MeldexAutoLink.applyToDom(block, path));
+    window.MeldexNoteDisplaySettings?.refreshRubyNodes?.(editor);
+  } finally {
+    const range = document.createRange();
+    if (marker.isConnected) {
+      range.setStartBefore(marker);
+      range.collapse(true);
+      marker.remove();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
 }
 
 // ユニバーサルD&D: ノートビューへの挿入
@@ -1866,6 +1998,7 @@ function _activeMediaOwningEditor() {
 
 function _prepareEmbeddedMediaForControls(media) {
   if (!media) return;
+  if (!media.dataset.e2eId) media.dataset.e2eId = 'note-embedded-media';
   if (!media.hasAttribute('tabindex')) media.tabIndex = 0;
   if (!media.hasAttribute('role')) media.setAttribute('role', 'group');
   // 子要素のネイティブ画像ドラッグではなく、保存情報を持つラッパーを移動する。

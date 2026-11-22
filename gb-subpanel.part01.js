@@ -41,6 +41,32 @@ const GBSubPanel = (() => {
   let _loadFailureObserver = null;
   let _sheetEmbed = null;
   let _sheetEmbedSeq = 0;
+  let _toolbarSeq = 0;
+
+  // メインパネルと同じツールバー（ノート・シート）をサブパネルにも置く。トピック内のエディタと同じく、
+  // 本体のツールバーを複製し、ボタンの操作は操作対象のエディタ（GBEditorHost）へ向く。
+  // 以前はサブパネルのノート・シートにはツールバーが無く、書式・並び替え・公開などができなかった。
+  function _createEditorToolbar(templateId, label) {
+    if (typeof window.GBEditorHost?.toolbar !== 'function') return null;
+    let bar = null;
+    try { bar = window.GBEditorHost.toolbar(templateId, 'subpanel-' + (++_toolbarSeq)); } catch { return null; }
+    bar.classList.add('gb-subpanel-editor-toolbar');
+    bar.dataset.testid = 'gb-subpanel-editor-toolbar';
+    const title = bar.querySelector('[data-editor-local-id="toolbar-category"],[data-editor-local-id="page-title"]');
+    if (title) title.textContent = label || '';
+    return bar;
+  }
+
+  function _sheetToolbarCtx() {
+    return _sheetEmbed?.ctx || (_pane?.id && typeof getPaneContext === 'function' ? getPaneContext(_pane.id) : null);
+  }
+
+  function _prependSheetToolbar(entry) {
+    const bar = _createEditorToolbar('tb-db', entry.label || _basename(entry.path));
+    if (!bar) return;
+    Object.defineProperty(bar, '_dbPaneContext', { configurable: true, get: _sheetToolbarCtx });
+    _contentEl.insertBefore(bar, _contentEl.firstChild);
+  }
   let _sheetTheftObserver = null;
   let _editorOwnership = null;
 
@@ -387,6 +413,12 @@ const GBSubPanel = (() => {
   function _updateNavUi() {
     if (_backBtn) _backBtn.disabled = _navIndex <= 0;
     if (_forwardBtn) _forwardBtn.disabled = _navIndex >= _navHistory.length - 1;
+    // タブ行の戻る/進む（メインパネルと同じ部品）へ反映する。
+    try {
+      const host = typeof GBLayout !== 'undefined' && typeof GBLayout.getAllPanes === 'function' && GBLayout.root
+        ? GBLayout.getAllPanes(GBLayout.root).find(pane => pane?.meldexRole === 'subpanel-workspace') : null;
+      if (host?.id && typeof GBLayout.updatePaneNavButtons === 'function') GBLayout.updatePaneNavButtons(host.id);
+    } catch { /* タブ行が無い面（スマホのドロワー）では何もしない */ }
   }
 
   function _updateHeader(entry) {
@@ -538,7 +570,38 @@ const GBSubPanel = (() => {
     root.setAttribute('aria-multiline', 'true');
     root.contentEditable = 'false';
     root.style.cssText = 'flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:16px;line-height:1.7;outline:none;';
-    _contentEl.appendChild(root);
+    // メインパネルのノートと同じ並び（ツールバー → 目次 + 本文）。目次と目次の幅の調整はこの面の中に持つ
+    // （持たないと目次の操作がメインパネルの目次へ向く）。
+    const view = document.createElement('div');
+    view.className = 'gb-subpanel-note-view';
+    view.dataset.editorLocalId = 'page-view';
+    view.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
+    const body = document.createElement('div');
+    body.className = 'note-editor-body';
+    body.style.cssText = 'display:flex;flex:1;min-height:0;overflow:hidden;';
+    const suffix = 'subpanel-note-' + (++_toolbarSeq);
+    const toc = document.createElement('div');
+    toc.dataset.editorLocalId = 'note-toc'; toc.id = 'note-toc-' + suffix; toc.style.display = 'none';
+    const resize = document.createElement('div');
+    resize.dataset.editorLocalId = 'note-toc-resize'; resize.id = 'note-toc-resize-' + suffix; resize.style.display = 'none';
+    resize.setAttribute('role', 'separator'); resize.setAttribute('aria-label', '目次幅を調整'); resize.tabIndex = 0;
+    body.append(toc, resize, root);
+    const toolbar = _createEditorToolbar('page-rt-toolbar', entry.label || _basename(entry.path));
+    if (toolbar) view.appendChild(toolbar);
+    view.appendChild(body);
+    _contentEl.appendChild(view);
+    const title = toolbar?.querySelector('[data-editor-local-id="page-title"]');
+    if (title && typeof initPageTitle === 'function') {
+      initPageTitle(title, {
+        getPath: () => (_current === entry ? entry.path : ''),
+        onRenamed: ({ newPath, label, result }) => {
+          const oldPath = entry.path;
+          if (typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, newPath, { label, etag: result?.etag, titleOnly: !!result?.title_only, type: 'page' });
+        },
+      });
+    }
+    if (typeof initNoteTocResize === 'function') initNoteTocResize(view);
+    window.MeldexNoteStatusFilter?.bindButtons?.(view);
     openPage(entry.label || _basename(entry.path), entry.path, {
       containerEl: root,
       skipShowView: true,
@@ -626,6 +689,7 @@ const GBSubPanel = (() => {
     const requestedViewMode = entry.state?.calendarFile
       ? 'timeline'
       : (entry.state?.viewMode || (DB_VIEW_TYPES.has(entry.type) && !['database', 'db'].includes(entry.type) ? entry.type : ''));
+    _prependSheetToolbar(entry);
     instance.open(entry.path, { requestedViewMode }).then(ok => {
       if (ok === false && _current === entry) _renderErrorState(entry, 'シートを読み込めませんでした');
       else if (_current === entry) {
@@ -695,6 +759,7 @@ const GBSubPanel = (() => {
     if (_sheetSharedContainerClaimedElsewhere()) return _mountSheetIndependent(entry);
     const mounted = _mountVirtualEntry(entry);
     if (mounted) {
+      _prependSheetToolbar(entry);
       _watchSheetContainerTheft(entry);
       [0, 80, 220].forEach(delay => setTimeout(() => {
         if (_current !== entry) return;
@@ -717,10 +782,14 @@ const GBSubPanel = (() => {
     root.dataset.gbSubpanelEntityRoot = 'true';
     _contentEl.appendChild(root);
     if (window.MeldexEntityDetail?.mount) {
+      // パソコンではヘッダーはタブ行の1行だけなので、トピック名と親シートへのリンクは本文の先頭に出す
+      // （メインパネルのトピックと同じ）。スマホのドロワーだけは見出しに出す。
+      const inDrawer = _isMobileDrawerEnabled();
       window.MeldexEntityDetail.mount({ root, path: entry.path, surface: 'subpanel',
-        titleEl: _titleTextEl, parentHost: _parentLinkHost, onTitleChange: name => {
+        titleEl: inDrawer ? _titleTextEl : null, parentHost: inDrawer ? _parentLinkHost : null, onTitleChange: name => {
           entry.label = name;
           _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
+          _onEntryLabelChanged?.();
         } });
       return true;
     }

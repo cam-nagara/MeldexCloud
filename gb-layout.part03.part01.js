@@ -504,61 +504,8 @@
     }, 80);
   }
 
-  // === ブレークポイント変更時の再描画（アクティブペインのコンテンツを保持） ===
-  // モバイル⇔デスクトップの切替は render() を通す必要がある（表示するペイン集合や
-  // ラップ構造そのものが変わるため）。ただし render() は毎回 _layoutEl.innerHTML = ''
-  // で全ペインDOMを破棄し、ビューワー等のレガシーコンテナ／iframeを退避先ストレージへ
-  // 一旦移してから作り直したペインへ戻す（この退避・再配置がiframeの再読み込みを招く。
-  // ビューワー安定化計画 2026-07-31 §1「現状と原因」参照）。
-  //
-  // ここでは「今まさに画面に表示されているアクティブペインの中身」だけを、render()の
-  // 破棄・退避対象から完全に外す。具体的には:
-  //   1. アクティブペインの contentEl（タブ本体・iframe等を含む実コンテンツ領域）を、
-  //      render() 実行前に一旦DOMツリーから取り外す（プレースホルダに差し替え）。
-  //      こうするとレガシーコンテナ退避処理は document.getElementById() でこの中身を
-  //      見つけられなくなり、退避対象から自然に外れる。
-  //   2. render() 本体は通常どおり実行し、アクティブペインの「入れ物」（タブバー等の
-  //      chrome）だけを新しく作らせる。
-  //   3. render() が _postRender（マウント処理）を呼ぶ直前に、新しく作られた空の
-  //      contentEl を、退避しておいた実体の contentEl に差し替える。マウント処理は
-  //      同一要素を見ることになり、退避・再配置は一度も発生しない。
-  //
-  // アクティブペインが特定できない・新しいツリーに存在しない等のフォールバック時は
-  // 通常の render() と同じ結果になるだけで、現状より悪化することはない。
-  function _renderPreservingActivePane() {
-    if (!_layoutEl) return;
-    const activePaneId = _activePane;
-    const prevInfo = activePaneId ? _paneMap[activePaneId] : null;
-    const oldContentEl = prevInfo?.contentEl || null;
-    const activeNode = activePaneId ? findNode(_root, activePaneId)?.node : null;
-    const canPreserve = !!(
-      oldContentEl && oldContentEl.parentNode && activeNode && activeNode.type === 'pane'
-    );
-    if (!canPreserve) { render(); return; }
-
-    const placeholder = document.createComment('gb-preserved-pane-content');
-    oldContentEl.parentNode.replaceChild(placeholder, oldContentEl);
-
-    const originalPostRender = _postRender;
-    _postRender = function _patchedPostRenderForModeSwitch() {
-      _postRender = originalPostRender;
-      const freshInfo = _paneMap[activePaneId];
-      const freshContentEl = freshInfo?.contentEl || null;
-      if (freshInfo && freshContentEl && freshContentEl.parentNode && freshContentEl !== oldContentEl) {
-        freshContentEl.replaceWith(oldContentEl);
-        freshInfo.contentEl = oldContentEl;
-      }
-      if (originalPostRender) originalPostRender();
-    };
-    try {
-      render();
-    } finally {
-      // render()が例外を投げた場合や、_postRenderに一度も到達しなかった場合の後始末。
-      // 正常系ではpatchedPostRenderForModeSwitch内で既に元へ戻っている。
-      if (_postRender === originalPostRender) { /* 正常に復元済み */ }
-      else _postRender = originalPostRender;
-    }
-  }
+  // ブレークポイント変更も全ペイン共通の接続保持経路を通す。
+  function _renderPreservingActivePane() { render(); }
 
   // === 初期化 ===
   const STARTUP_ACTIVE_PANE_AVOID_TYPES = new Set([
@@ -879,8 +826,28 @@
     closeMenu = _bindLayoutContextMenuDismiss(menu, e?.currentTarget || null);
   }
 
+  // 「新しいウィンドウで開く」の開き方（メインパネルとサブパネルで共通）。開けた時だけ onOpened を呼ぶ。
+  function _openTabInNewWindow(tab, onOpened) {
+    const t = tab.type === 'database' ? 'pivot' : (tab.type || 'page');
+    const url = '/?open=' + encodeURIComponent(t) + '&path=' + encodeURIComponent(tab.path || '') + '&label=' + encodeURIComponent(tab.label || '');
+    const failed = () => { if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true); };
+    if (typeof _open_app_window_js === 'function') {
+      Promise.resolve(_open_app_window_js(url)).then((ok) => {
+        if (ok) onOpened?.();
+        else failed();
+      }).catch(failed);
+      return;
+    }
+    const opened = window.open(url, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+    if (opened) onOpened?.();
+    else failed();
+  }
+
   // === ペインタブ右クリックメニュー ===
-  function _showTabContextMenu(e, paneId, tab) {
+  // adapter を渡すと、レイアウトの外でタブを持つ面（サブパネル）が同じメニューを使う。
+  // adapter: { leadingItems: [{label, icon, action, disabled}], index, count,
+  //            openInNewWindow(), close(), closeSide(side), closeOthers() }
+  function _showTabContextMenu(e, paneId, tab, adapter) {
     // 既存メニューを除去
     document.querySelectorAll('[aria-expanded="true"][aria-haspopup="menu"]')
       .forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
@@ -891,10 +858,10 @@
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'タブ操作');
     menu.style.cssText = 'position:fixed;z-index:10000;';
-    const isLocked = () => isPaneLocked(paneId);
+    const isLocked = () => (adapter ? false : isPaneLocked(paneId));
     // 左右サイドバーのパネルは閉じるとレールのアイコンごと消えるため、
     // 閉じる系の項目自体を出さない（closeTab 側でも入口を塞いでいる）。
-    const isFixedRail = isFixedRailPane(paneId);
+    const isFixedRail = adapter ? false : isFixedRailPane(paneId);
     const showLockedStatus = () => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
     };
@@ -934,37 +901,38 @@
       const directionLabel = side === 'left' ? '左' : '右';
       pushLayoutHistory(`レイアウト: ${directionLabel}のタブを閉じる`, before, captureLayoutSnapshot(), tab.label || tab.path || '');
     }
+    // サブパネル等が加える先頭の項目（「メインパネルで開く」）
+    (adapter?.leadingItems || []).forEach(item => addItem(item.label, item.action, item.icon, !!item.disabled));
+    // メインパネルのタブは「サブパネルで開く」（サブパネルのタブの「メインパネルで開く」と対）。
+    // 左右サイドバーのパネル（閉じられない）とスマホのドロワー表示では出さない。
+    if (!adapter && !isFixedRail && typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.moveMainTab === 'function') {
+      addItem('サブパネルで開く', async () => {
+        if (isLocked()) { showLockedStatus(); return; }
+        const ok = await GBSubPanel.moveMainTab(paneId, tab.id);
+        if (ok === false && typeof showStatus === 'function') showStatus('サブパネルで開けませんでした', true);
+      }, 'panelRight', !tab.path);
+    }
     // 新しいウィンドウで開く
     addItem('新しいウィンドウで開く', () => {
       if (isLocked()) { showLockedStatus(); return; }
-      const t = tab.type === 'database' ? 'pivot' : (tab.type || 'page');
-      const url = '/?open=' + encodeURIComponent(t) + '&path=' + encodeURIComponent(tab.path || '') + '&label=' + encodeURIComponent(tab.label || '');
-      const closeSourceTab = () => { if (!isFixedRail) GBTabs.closeTab(paneId, tab.id); };
-      if (typeof _open_app_window_js === 'function') {
-        Promise.resolve(_open_app_window_js(url)).then((ok) => {
-          if (ok) closeSourceTab();
-          else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
-        }).catch(() => {
-          if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
-        });
-        return;
-      }
-      const opened = window.open(url, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
-      if (opened) closeSourceTab();
-      else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
+      if (adapter) { adapter.openInNewWindow(); return; }
+      _openTabInNewWindow(tab, () => { if (!isFixedRail) GBTabs.closeTab(paneId, tab.id); });
     }, 'monitor');
     if (!isFixedRail) addItem('タブを閉じる', () => {
       if (isLocked()) { showLockedStatus(); return; }
+      if (adapter) { adapter.close(); return; }
       GBTabs.closeTab(paneId, tab.id);
     }, 'x');
     if (!isFixedRail) {
-      const pane = findNode(_root, paneId)?.node;
-      const tabIndex = pane?.tabs?.findIndex(item => item.id === tab.id) ?? -1;
-      addItem('左のタブを閉じる', () => closeTabsOnSide('left'), 'panelLeftClose', tabIndex <= 0);
-      addItem('右のタブを閉じる', () => closeTabsOnSide('right'), 'panelRightClose', tabIndex < 0 || tabIndex >= (pane?.tabs?.length || 0) - 1);
+      const pane = adapter ? null : findNode(_root, paneId)?.node;
+      const tabIndex = adapter ? adapter.index : (pane?.tabs?.findIndex(item => item.id === tab.id) ?? -1);
+      const tabCount = adapter ? adapter.count : (pane?.tabs?.length || 0);
+      addItem('左のタブを閉じる', () => (adapter ? adapter.closeSide('left') : closeTabsOnSide('left')), 'panelLeftClose', tabIndex <= 0);
+      addItem('右のタブを閉じる', () => (adapter ? adapter.closeSide('right') : closeTabsOnSide('right')), 'panelRightClose', tabIndex < 0 || tabIndex >= tabCount - 1);
     }
     if (!isFixedRail) addItem('他のタブをすべて閉じる', async () => {
       if (isLocked()) { showLockedStatus(); return; }
+      if (adapter) { await adapter.closeOthers(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
       const pane = paneInfo.node;
@@ -985,7 +953,7 @@
       saveLayout();
       pushLayoutHistory('レイアウト: 他のタブを閉じる', before, captureLayoutSnapshot(), keep.label || keep.path || '');
     }, 'x');
-    if (_showFreeLayoutUi()) {
+    if (!adapter && _showFreeLayoutUi()) {
       addItem(isPaneLocked(paneId) ? 'パネルロックを解除' : 'パネルをロック', () => {
         togglePaneLocked(paneId);
       }, isPaneLocked(paneId) ? 'unlock' : 'lock');

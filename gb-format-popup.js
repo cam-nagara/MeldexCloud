@@ -454,8 +454,35 @@
       label.textContent = row.classList.contains('gb-fmt-popup-row--text') ? '文字・線' : row.classList.contains('gb-fmt-popup-row--text-decoration') ? '文字の装飾' : '背景・アクセント';
       row.before(label);
     }
+    _assignFormatControlIds(popup, options);
 
     return popup;
+  }
+
+  // 書式ポップアップ内の操作部品に安定ID（data-e2e-id）と名前を付ける（M-014 S31）。
+  // 既に id / data-e2e-id / data-testid / data-action を持つ部品はそのまま。値は
+  // 「gb-fmt-<用途>-<並び順>」で、同じポップアップ内で部品ごとに別の値になる。
+  // 呼出し元の実物の部品を一時的に移して使う options.content は、元の画面へ戻った後に
+  // 他の行の部品と同じ値で重ならないよう対象外にする。
+  function _assignFormatControlIds(popup, options = {}) {
+    if (!popup) return;
+    const contentRoots = Array.isArray(options.content) ? options.content.filter(Boolean) : [];
+    const variant = [...popup.classList].find(cls => cls.startsWith(POPUP_CLASS + '--'));
+    const prefix = 'gb-fmt-' + (variant ? variant.slice(POPUP_CLASS.length + 2) : 'popup');
+    let index = 0;
+    popup.querySelectorAll('button, input, select, textarea, [role="button"]').forEach(el => {
+      if (contentRoots.some(root => root === el || root.contains?.(el))) return;
+      if (!el.id && !el.dataset.e2eId && !el.dataset.testid && !el.dataset.action) {
+        el.dataset.e2eId = `${prefix}-${index}`;
+      }
+      index += 1;
+      if (!el.getAttribute('aria-label') && !el.getAttribute('title')) {
+        const text = el.closest('label')?.textContent?.trim()
+          || el.closest('.gb-fmt-popup-group')?.querySelector('.gb-fmt-label')?.textContent?.trim()
+          || el.getAttribute('placeholder') || '';
+        if (text) el.setAttribute('aria-label', text);
+      }
+    });
   }
 
   function openFormatPopup(anchorEl, options) {
@@ -778,6 +805,9 @@
     if (options.closeOnEscape !== false) {
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
+        // 書式ポップアップが別の経路で取り除かれていたら、Escape を横取りせずに後始末だけする
+        // （残った受け口が、別の画面の Escape を止めていた。M-014 シナリオ網羅テスト）。
+        if (!popup.isConnected) { _removeFormatPopup(popup, { skipCommit: true }); document.removeEventListener('keydown', escapeCloseHandler, true); return; }
         // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
         if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
         ev.preventDefault();
@@ -896,7 +926,8 @@
     closePopup: _removeFormatPopup,
     closeOwnedPopups(root) {
       for (const popup of document.querySelectorAll('.gb-fmt-popup')) {
-        if (root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
+        // 持ち主の無い書式ポップアップがあると contains(undefined) が例外になり、呼び出し元（ノートに埋め込んだボードの読込など）が止まっていた。
+        if (popup._gbFmtOwner instanceof Node && root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
       }
     },
   };

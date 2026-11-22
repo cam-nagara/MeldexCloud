@@ -7,6 +7,19 @@
   'use strict';
 
   const Scene = window.MeldexViewerScene;
+  // 狭いデスクトップのサブパネルをスマホと取り違えない。実際のスマホとタッチ表示は44pxを保つ。
+  function syncToolbarDensity() {
+    let desktopHost = false;
+    try {
+      desktopHost = window.parent !== window && window.parent.innerWidth > 640
+        && !window.parent.matchMedia('(pointer: coarse)').matches;
+    } catch (_) { /* 別オリジンの埋め込みは、その画面自身の幅で判断する。 */ }
+    if (desktopHost) document.documentElement.dataset.toolbarDensity = 'desktop';
+    else delete document.documentElement.dataset.toolbarDensity;
+  }
+  syncToolbarDensity();
+  window.addEventListener('resize', syncToolbarDensity);
+
   const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
 
   // flipHorizontal2 / flipVertical2 / rotateCw は共通アイコン置換表（meldex-core.part01.js の
@@ -141,6 +154,7 @@
     }
     // 逆再生は Shift+R と区別する（従来どおり Shift 付きでは動かさない）
     if ((e.key === 'r' || e.key === 'R') && e.shiftKey) return;
+    if ((e.ctrlKey || e.metaKey) && ['c', 'f'].includes(e.key.toLowerCase())) return;
     const id = window.MeldexShortcutRegistry?.matchEvent(e, ['viewer']) || '';
     const entry = VIEWER_ACTIONS[id];
     if (entry) {
@@ -173,7 +187,7 @@
 
   // 画像のダブルクリックは、フィット方式を維持したままズームとパンをリセットする。
   document.getElementById('display').addEventListener('dblclick', e => {
-    if (e.target.closest('.nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
+    if (e.target.closest('.viewer-text-layer, .nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
     e.preventDefault();
     Scene.resetZoom();
   });
@@ -201,7 +215,7 @@
         rotate: Scene.getRotateDeg(),
       };
     };
-    const isUi = target => !!target?.closest?.('.nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea');
+    const isUi = target => !!target?.closest?.('.viewer-text-layer, .nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea');
 
     display.addEventListener('pointerdown', e => {
       if (e.pointerType !== 'touch' || isUi(e.target) || window.MeldexViewerAnnotations?.isActive?.()) return;

@@ -227,6 +227,7 @@ function _usesEmbeddedAnnotationSurface(viewName) {
   return false;
 }
 function _getActiveAnnotationTab() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.target()?.tab || null;
   if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.findNode !== 'function') return null;
   const overlayPaneId = document.getElementById('ann-overlay')?.closest?.('.gb-pane')?.dataset?.paneId || '';
   if (overlayPaneId && GBLayout.paneMap?.[overlayPaneId]) {
@@ -316,6 +317,7 @@ function _dispatchEmbeddedAnnotationMessage(msg) {
 // 親側の右下フロートボタン／フローティングツールバーの見た目を追従させる。
 // event.source === iframe.contentWindow と同一オリジンを検証してから適用する。
 window.addEventListener('message', (ev) => {
+  if (window.GBAnnotationSurfaces?.enabled()) return;
   const iframe = _getTrustedViewerIframeElement();
   if (!iframe?.contentWindow || ev.source !== iframe.contentWindow) return;
   if (ev.origin !== window.location.origin && ev.origin !== 'null') return;
@@ -346,10 +348,10 @@ const _VIEWER_ANN_ERROR_CODE_MESSAGES = {
   unknown_error: 'アノテートを保存できませんでした',
 };
 const _VIEWER_ANN_ACTION_LABELS = { create: '作成', update: '更新', delete: '削除' };
-function _handleViewerAnnotationSaveResult(msg) {
+function _handleViewerAnnotationSaveResult(msg, options = {}) {
   if (msg?.ok) {
     const history = msg.history && typeof msg.history === 'object' ? msg.history : null;
-    if (history && (history.before || history.after)) {
+    if (options.recordHistory !== false && history && (history.before || history.after)) {
       const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg.action] || '更新';
       _pushAnnotationHistory(`アノテート: ${actionLabel}`, history.before || null, history.after || null, 'ビューワー');
     }
@@ -372,6 +374,16 @@ function _handleViewerAnnotationSaveResult(msg) {
   if (typeof showStatus === 'function') showStatus(text, true);
 }
 function toggleOverlayVisibility() {
+  if (window.GBAnnotationSurfaces?.enabled()) {
+    _overlayVisible = !_overlayVisible;
+    const control = document.getElementById('btn-overlay-toggle');
+    control?.classList.toggle('active', _overlayVisible);
+    if (control) {
+      _setAnnotationUtilityIcon(control, _overlayVisible ? 'eye' : 'eyeOff');
+      control.setAttribute('aria-label', _overlayVisible ? 'アノテートを非表示にする' : 'アノテートを表示する');
+    }
+    window.GBAnnotationSurfaces.broadcast(); return;
+  }
   _overlayVisible = !_overlayVisible;
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-overlay-toggle');
@@ -409,6 +421,7 @@ function _ensureOverlayVisible() {
 
 // アノテーションフローティングツールバーのオン/オフ
 function toggleAnnotationToolbar() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.toggle();
   const toolbar = document.getElementById('ann-toolbar');
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-tb-annotation');
@@ -450,6 +463,7 @@ function toggleAnnotationToolbar() {
 }
 
 function closeAnnotationToolbar() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.close();
   const toolbar = document.getElementById('ann-toolbar');
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-tb-annotation');
@@ -470,6 +484,7 @@ function closeAnnotationToolbar() {
 
 // メモ状態を同期（Phase D: iframe→直接呼び出し + iframeフォールバック）
 function _syncAnnStateToIframe() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.broadcast();
   _dispatchEmbeddedAnnotationMessage({
     type: 'ann-set-state',
     active: ann.active,
@@ -485,6 +500,7 @@ function _syncAnnStateToIframe() {
 
 // メモデータを送信
 function _loadAnnotationsToIframe() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.reloadTarget(getAnnotationTarget());
   if (!ann.targetPath) return;
   const targetPath = ann.targetPath;
   const viewName = _getAnnotationViewName();
@@ -792,6 +808,7 @@ function _refreshEmbeddedAnnotationHistoryTarget(targetPath) {
 }
 
 function _refreshAnnotationHistoryTarget(row) {
+  if (window.GBAnnotationSurfaces?.enabled()) { window.GBAnnotationSurfaces.reloadTarget(row?.target_path); return; }
   const targetPath = row?.target_path || ann?.targetPath || '';
   _markAnnotationMutated(targetPath);
   if (!_refreshEmbeddedAnnotationHistoryTarget(targetPath) && typeof loadAnnotations === 'function') loadAnnotations();
@@ -822,7 +839,7 @@ async function _deleteAnnotationHistoryRow(row, expectedRow) {
   return true;
 }
 
-function _pushAnnotationHistory(label, beforeRow, afterRow, detail) {
+function _pushAnnotationHistory(label, beforeRow, afterRow, detail, scopeOverride) {
   if (typeof historyPush !== 'function') return false;
   const before = _normalizeAnnotationHistoryRow(beforeRow);
   const after = _normalizeAnnotationHistoryRow(afterRow);
@@ -834,7 +851,7 @@ function _pushAnnotationHistory(label, beforeRow, afterRow, detail) {
     afterKey = JSON.stringify(after || null);
   } catch {}
   if (beforeKey && beforeKey === afterKey) return false;
-  const scope = (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
+  const scope = scopeOverride ?? ((typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '');
   historyPush(
     label,
     () => before ? _restoreAnnotationHistoryRow(before, after) : _deleteAnnotationHistoryRow(after, after),
@@ -873,7 +890,7 @@ async function _applyAnnotationHistoryRows(targetRows, previousRows, completed =
   return true;
 }
 
-function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
+function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail, scopeOverride) {
   if (typeof historyPush !== 'function') return false;
   const before = _normalizeAnnotationHistoryRows(beforeRows);
   const after = _normalizeAnnotationHistoryRows(afterRows);
@@ -885,7 +902,7 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
     afterKey = JSON.stringify(after);
   } catch {}
   if (beforeKey && beforeKey === afterKey) return false;
-  const scope = (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
+  const scope = scopeOverride ?? ((typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '');
   const undoCompleted = new Set();
   const redoCompleted = new Set();
   const replay = async (target, previous, completed) => {
@@ -904,12 +921,12 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail) {
   return true;
 }
 
-async function _pushAnnotationCreateHistory(annId, label, detail) {
+async function _pushAnnotationCreateHistory(annId, label, detail, scopeOverride) {
   const after = await _fetchAnnotationHistoryRow(annId);
-  return _pushAnnotationHistory(label || 'アノテート: 作成', null, after, detail);
+  return _pushAnnotationHistory(label || 'アノテート: 作成', null, after, detail, scopeOverride);
 }
 
-async function _putAnnotationWithHistory(annId, body, label, detail) {
+async function _putAnnotationWithHistory(annId, body, label, detail, scopeOverride) {
   const before = await _fetchAnnotationHistoryRow(annId);
   const payload = { ...(body || {}) };
   if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
@@ -925,7 +942,7 @@ async function _putAnnotationWithHistory(annId, body, label, detail) {
   if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
     _trayAnnotationHost.modified = String(after?.modified || '');
   }
-  _pushAnnotationHistory(label || 'アノテート: 更新', before, after, detail);
+  _pushAnnotationHistory(label || 'アノテート: 更新', before, after, detail, scopeOverride);
   return after;
 }
 
@@ -995,6 +1012,7 @@ function _bindAnnotationWidthControls() {
 }
 
 function getAnnotationTarget() {
+  if (window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.target()?.path || '';
   // 現在のビューに応じたターゲットパスを返す
   const viewName = _getAnnotationViewName();
   const activeTab = _getActiveAnnotationTab();
@@ -1288,7 +1306,8 @@ document.getElementById('ann-opacity').oninput = function() {
   const overlay = document.getElementById('ann-overlay');
   if (overlay) overlay.style.opacity = ann.opacity;
   _forEachStandaloneAnnotationNote(note => { note.style.opacity = ann.opacity; });
-  _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-opacity', opacity: ann.opacity });
+  if (window.GBAnnotationSurfaces?.enabled()) window.GBAnnotationSurfaces.broadcast();
+  else _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-opacity', opacity: ann.opacity });
 };
 
 function _isTrayAnnotationPaletteHost() {

@@ -54,6 +54,7 @@
     || hasOwn(n, '_userFontBold')
     || hasOwn(n, '_userW')
     || hasOwn(n, '_userCardStyle')
+    || Object.keys(n).some(key => /^_user[A-Z]\w*$/.test(key))
     || n.collapsed
     || n.minimized);
   if (hasXmindMeta) {
@@ -94,6 +95,10 @@
       if (hasOwn(n, '_userFontBold')) parts.push('userFontBold: ' + (n._userFontBold ? 'true' : 'false'));
       if (hasOwn(n, '_userW')) parts.push('userW: ' + (n._userW ? 'true' : 'false'));
       if (hasOwn(n, '_userCardStyle')) parts.push('userCardStyle: ' + (n._userCardStyle ? 'true' : 'false'));
+      // ほかの項目の個別の書式の印（形状・枠線など。階層別スタイルより優先する印）も保存する。
+      Object.keys(n).filter(key => /^_user[A-Z]\w*$/.test(key)
+        && !['_userBgColor', '_userFontSize', '_userFontBold', '_userW', '_userCardStyle'].includes(key))
+        .sort().forEach(key => parts.push(key.slice(1) + ': ' + (n[key] ? 'true' : 'false')));
       if (n.collapsed) parts.push('collapsed: true');
       if (n.minimized) parts.push('minimized: true');
       if (parts.length) fm += `  n${i}: {${parts.join(', ')}}\n`;
@@ -168,7 +173,8 @@
   const defaultDisplayFilters = typeof BD_DEFAULT_DISPLAY_FILTERS !== 'undefined' ? BD_DEFAULT_DISPLAY_FILTERS : {};
   const hasDisplayFilterOverrides = !!displayFiltersForSave && Object.keys(displayFiltersForSave)
     .some(key => displayFiltersForSave[key] !== defaultDisplayFilters[key]);
-  if (bd.activeCardStyle || bd.activeLineStyle || bd.activeDepthStylePreset || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
+  const hasDisplayLayers = !!bd.displayLayers && typeof bd.displayLayers.autoLinks === 'boolean';
+  if (bd.activeCardStyle || bd.activeLineStyle || bd.activeDepthStylePreset || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides || hasDisplayLayers) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
@@ -178,6 +184,7 @@
     if (bd._showShadow) fm += `  showShadow: true\n`;
     if (bd._textRotateOnLine) fm += `  textRotateOnLine: true\n`;
     if (hasDisplayFilterOverrides) fm += `  displayFilters: ${JSON.stringify(displayFiltersForSave)}\n`;
+    if (hasDisplayLayers) fm += `  autoLinks: ${bd.displayLayers.autoLinks ? 'true' : 'false'}\n`;
   }
   if (bd.connections.length) {
     fm += 'connections:\n';

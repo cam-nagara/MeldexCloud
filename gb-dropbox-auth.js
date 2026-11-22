@@ -1141,7 +1141,10 @@
       const detail = await _readDropboxError(response);
       if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(body?.path, options);
-      throw new Error(String(detail));
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: route,
+        dropboxPath: String(body?.path || ''), namespaceKind: options?.namespaceKind || 'home',
+      });
     }
     throw new Error('Dropboxへもう一度接続してください');
   }
@@ -1195,7 +1198,10 @@
       const detail = await _readDropboxError(response);
       if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(arg?.path, options);
-      throw new Error(String(detail));
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: route,
+        dropboxPath: String(arg?.path || ''), namespaceKind: options?.namespaceKind || 'home',
+      });
     }
     throw new Error('Dropboxへもう一度接続してください');
   }

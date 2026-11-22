@@ -258,6 +258,8 @@ function bdOpenToolbarStylePicker(kind, btn) {
           bdPushUndo();
           _bdAssignCardStyleToNodes([...bd.selected], styleId);
         } else {
+          // 既定のトピックスタイルの切り替えもボードに保存されるので、取り消せるように履歴へ積む。
+          if ((bd.activeCardStyle || '') !== (styleId || '')) bdPushUndo();
           bd.activeCardStyle = styleId || '';
         }
         return;
@@ -266,6 +268,7 @@ function bdOpenToolbarStylePicker(kind, btn) {
         bdPushUndo();
         _bdAssignLineStyleToConnections(typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [], styleId);
       } else {
+        if ((bd.activeLineStyle || '') !== (styleId || '')) bdPushUndo();
         bd.activeLineStyle = styleId || '';
       }
     },

@@ -244,6 +244,49 @@
     return paths.some(path => path === tabPath || path.startsWith(tabPath + '/') || tabPath.startsWith(path + '/'));
   }
 
+  // シートのセルや名前を入力中のパネルは、入力を終えるまで読み直さない（2026-11-21 報告: AIが同じシートを
+  // 書き換えた後の読み直しで、表が描き直されて入力中の文字が消えていた）。入力欄から焦点が外れたら読み直す。
+  function _paneHasOpenSheetEditor(paneId) {
+    const pane = document.querySelector(`.gb-pane[data-pane-id="${CSS.escape(String(paneId || ''))}"]`);
+    const active = document.activeElement;
+    if (!pane || !active || !pane.contains(active)) return false;
+    const editing = active.isContentEditable || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT';
+    return !!(editing && active.closest('td, th, .entity-rename-input, .db-form-view, .gb-form-field'));
+  }
+
+  const deferredExternalReloads = new Map();
+  function _deferReloadUntilEditorCloses(target) {
+    const key = target.paneId + '|' + _tabPath(target.tab);
+    if (deferredExternalReloads.has(key)) return;
+    const pane = document.querySelector(`.gb-pane[data-pane-id="${CSS.escape(String(target.paneId || ''))}"]`);
+    if (!pane) return;
+    let timer = null;
+    const check = () => {
+      setTimeout(() => {
+        if (_paneHasOpenSheetEditor(target.paneId)) return;
+        pane.removeEventListener('focusout', check, true);
+        clearInterval(timer);
+        if (!deferredExternalReloads.has(key)) return;
+        deferredExternalReloads.delete(key);
+        const current = _tabFromPaneId(target.paneId);
+        if (!current || current.id !== target.tab.id) return;
+        _reloadExternalTarget({ paneId: target.paneId, tab: current }).catch(() => {});
+      }, 0);
+    };
+    deferredExternalReloads.set(key, check);
+    pane.addEventListener('focusout', check, true);
+    // 入力欄が描き直しで取り除かれた時は焦点の移動の知らせが来ないことがあるため、待っている間だけ見回る。
+    timer = setInterval(check, 500);
+  }
+
+  async function _reloadExternalTarget(target) {
+    const path = _tabPath(target.tab);
+    const label = _tabLabel(target.tab, path);
+    await _flushPendingEditorBeforeReload(target.tab.type || '', path);
+    return await _reloadComponent(target.tab)
+      || (path ? await _reloadLegacyTab(target.tab, path, label, target.paneId) : false);
+  }
+
   async function reloadOpenFilesAfterExternalMutation(paths) {
     const normalized = _normalizedMutationPaths(paths);
     const paneIds = [...new Set(Array.from(document.querySelectorAll('.gb-pane[data-pane-id]'))
@@ -254,11 +297,11 @@
     let refreshed = 0;
     try {
       for (const target of targets) {
-        const path = _tabPath(target.tab);
-        const label = _tabLabel(target.tab, path);
-        await _flushPendingEditorBeforeReload(target.tab.type || '', path);
-        const handled = await _reloadComponent(target.tab)
-          || (path ? await _reloadLegacyTab(target.tab, path, label, target.paneId) : false);
+        if (DB_VIEW_TYPES.has(target.tab.type || '') && _paneHasOpenSheetEditor(target.paneId)) {
+          _deferReloadUntilEditorCloses(target);
+          continue;
+        }
+        const handled = await _reloadExternalTarget(target);
         if (handled) refreshed += 1;
       }
     } finally {

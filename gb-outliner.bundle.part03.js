@@ -1,3 +1,82 @@
+}
+function setNodeColor(path, color) {
+  const colors = getNodeColors();
+  const key = _pathToFileId(path) || path;
+  if (color) colors[key] = color; else delete colors[key];
+  try { localStorage.setItem(NODE_COLORS_KEY, JSON.stringify(colors)); } catch {}
+}
+
+const OUTLINER_SETTINGS_HISTORY_KEYS = [
+  SORT_SETTINGS_KEY,
+  MANUAL_ORDER_KEY,
+  LOCKED_ITEMS_KEY,
+  NODE_COLORS_KEY,
+  'meldex-favorites',
+];
+
+function refreshOutlinerSettingsAfterHistory() {
+  if (typeof renderFolderGrid === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
+    renderFolderGrid({ preserveSelectedPaths: typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems.map(item => item.path) : [] });
+  }
+  if (typeof refreshOutliner === 'function') {
+    refreshOutliner();
+    return;
+  }
+  if (typeof loadOutliner === 'function') loadOutliner();
+  if (typeof renderFavorites === 'function') renderFavorites();
+  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree({ reason: 'settings-history' });
+  if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+}
+
+async function refreshOutliner(options) {
+  const opts = options && typeof options === 'object' ? options : {};
+  if (!opts.ignoreInlineRename && _outlinerInlineRenameActive()) return [_outlinerDeferUntilInlineRenameEnds('refresh', opts)];
+  const refreshJobs = [];
+  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(opts)));
+  if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree({ reason: opts.reason || 'refresh-outliner' })));
+  if (typeof renderWorkspaceSidebar === 'function') refreshJobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
+  return Promise.allSettled(refreshJobs);
+}
+
+let _topicRecordsOutlinerRefreshTimer = null;
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('meldex:topic-records-updated', (event) => {
+    // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
+    // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
+    // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
+    // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
+    if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
+    // セルの値だけを保存した通知もトピック名やフォルダを変えない。連続入力のたびに
+    // ツリー全体を読み直していた（2026-11-19）。名前が変わる保存は structural のまま届く。
+    if (event.detail?.reason === 'save' && event.detail?.structural === false) return;
+    // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
+    // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
+    // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
+    const detail = event.detail || {};
+    const boardDocument = detail.viewDocument?.defaultSurface === 'board'
+      || /(?:\.mel-board|\.board\.md|\.board\.json|\.canvas\.json)$/i.test(detail.dbPath || detail.legacyPath || '');
+    if (boardDocument) return;
+    clearTimeout(_topicRecordsOutlinerRefreshTimer);
+    _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
+      const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
+      const failures = settled.filter(result => result.status === 'rejected');
+      if (!failures.length) return;
+      const detail = {
+        failures: failures.map(result => String(result.reason?.message || result.reason || '再読込に失敗しました')),
+        retry: () => refreshOutliner({ force: true, reason: 'topic-records-retry' }),
+      };
+      window.dispatchEvent(new CustomEvent('meldex:topic-outliner-refresh-failed', { detail }));
+      if (typeof showStatus === 'function') {
+        showStatus('保存は完了しましたが、フォルダ／トピック一覧を更新できませんでした。更新ボタンで再試行してください', true);
+      }
+    }, 40);
+  });
+}
+
+async function refreshOutlinerFromButton(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
   const btn = event?.currentTarget?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
     || event?.target?.closest?.('.sidebar-section-btn, .cloud-mobile-tree-refresh')
     || null;
@@ -671,7 +750,17 @@ function createTreeNodeFromBrowse(item, rootPath) {
     if (!draggedNode || draggedNode === div) return;
     const nodes = (draggedNodes || [draggedNode])
       .filter(n => n !== div && !_treeNodeIsAncestor(n, div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
-    if (nodes.length === 0) return;
+    if (nodes.length === 0) {
+      // 断った理由を出す（マニュアル: ドロップできない時は理由がステータス表示される。以前は何も出なかった: 2026-11-22 M-014）
+      clearDragIndicators();
+      const all = draggedNodes || [draggedNode];
+      const reason = all.some(n => n === div || _treeNodeIsAncestor(n, div)) ? 'フォルダをそれ自身の中へは移動できません'
+        : all.some(n => n._nodeData?._isRoot) ? 'ソースフォルダそのものは移動できません'
+          : all.some(n => n._nodeData?.path && isItemLocked(n._nodeData.path)) ? '編集ロック中の項目は移動できません'
+            : '移動できる項目がありません';
+      showStatus(reason, true);
+      return;
+    }
     const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
     // 移動元コンテナが仮想化されていた場合、DOM移動だけでは配列側に残留するため
     // 事前に元の親コンテナを記録しておき、移動完了後に配列からも取り除く。
@@ -687,11 +776,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
         const failed = result?.failed_count || 0;
         const changed = result?.created_count || 0;
         showStatus(`${changed} 件を「${item.name}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && changed === 0);
-      } catch {
-        showStatus('リンク登録に失敗', true);
+      } catch (error) {
+        showStatus('リンク登録に失敗しました' + (error?.userMessage || error?.message ? '：' + (error.userMessage || error.message) : ''), true);
       }
       clearDragIndicators();
-      loadOutliner();
+      // リンクを置いたフォルダだけを差分で反映する（全体の読み直しをしない）
+      await _outlinerSyncFoldersOrReload([item.path]);
       return;
     }
 
@@ -758,143 +848,53 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
-    (async () => {
-      const placement = { ..._outlinerRowDropTarget(div, item, position, rootPath), path: destFolder };
-      let siblings = null;
-      if (nodes.some(n => {
-        const path = n._nodeData?.path || '';
-        return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
-      })) {
-        try { siblings = await _outlinerDropSiblings(placement); }
-        catch (error) { showStatus('移動先を確認できませんでした: ' + error.message, true); return; }
+    // フォルダをまたぐ移動の履歴の枠はドロップの時点で取る（移動の往復とツリーの読み直しの前に Ctrl+Z を押すと、
+    // 移動ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
+    const crossesFolders = nodes.some(n => {
+      const path = n._nodeData?.path || '';
+      return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
+    });
+    const moveReservation = crossesFolders && typeof historyReserve === 'function'
+      ? historyReserve(`フォルダツリー: ${nodes.length} 件を移動`, '')
+      : null;
+    const pendingMoves = new Map();
+    const finishPendingMove = (node, failed) => {
+      const pending = pendingMoves.get(node);
+      if (!pending) return;
+      node.dataset.path = pending.path;
+      node.inert = pending.inert;
+      node.removeAttribute('aria-busy');
+      if (failed && pending.parent?.isConnected) {
+        pending.parent.insertBefore(node, pending.next?.parentElement === pending.parent ? pending.next : null);
       }
-      const moved = [];
-      const movedItems = [];
-      let movedAcrossFolders = false;
-      let processed = 0;
-      const failures = [];
-      const progressToken = window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length, { delayMs: 0, kind: 'file-move' });
-      for (const n of nodes) {
-        const dragData = n._nodeData;
-        if (!dragData || !dragData.path) {
-          moved.push(n);
-          processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
-          continue;
-        }
-        const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
-        if (destFolder === srcFolder) {
-          moved.push(n);
-          movedItems.push({ ...dragData, oldPath: dragData.path });
-          processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
-          continue;
-        }
-        movedAcrossFolders = true;
-        let moveCommitted = false;
-        try {
-          const oldPath = dragData.path;
-          const res = await apiPost('/outliner/move', {
-            path: dragData.path,
-            dest_folder: destFolder,
-            conflict_policy: 'error',
-          });
-          moveCommitted = true;
-          moved.push(n);
-          movedItems.push({ ...dragData, oldPath, path: res.new_path || oldPath, name: res.new_name || dragData.name });
-          if (res.new_path) {
-            // Rebind save targets before any fallible DOM/view callbacks.
-            if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
-            }
-            if (typeof _renameTreeNode === 'function') {
-              _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
-            } else {
-              dragData.path = res.new_path;
-              dragData.name = res.new_name || dragData.name;
-              const lbl = n.querySelector('.tree-label');
-              if (lbl && res.new_name) lbl.textContent = res.new_name;
-            }
-            window.GBOutlinerVirtualRender?.renamePath?.(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
-          }
-          if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
-        } catch (err) {
-          if (moveCommitted) {
-            // The filesystem is already committed. Do not report a failed move
-            // or skip the authoritative refresh because a view callback failed.
-            console.warn('[Meldex] 移動後の表示を再読み込みします', err);
-            continue;
-          }
-          // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
-          const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
-          failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
-          showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
-        } finally {
-          processed += 1;
-          window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
+      pendingMoves.delete(node);
+    };
+    if (crossesFolders) nodes.forEach(node => pendingMoves.set(node, {
+      path: node.dataset.path, parent: node.parentElement, next: node.nextSibling, inert: node.inert,
+    }));
+    // フォルダをまたぐ移動は、保存の往復を待たずに先に移動先へ行を移す（app/AGENTS.md の0.3秒。以前は保存の往復と
+    // 読み直しの後に出て0.4秒を超えていた: 2026-11-22 M-014 横断の検査）。移動先が読み込み済みで仮想化していない時だけ。
+    // 保存の後の差分の反映（下の _outlinerSyncFoldersOrReload）が、成功・失敗のどちらでも保存先の状態へ揃える。
+    if (crossesFolders) {
+      // フォルダの中へ落とした時は、そのフォルダを開く（以前の全体の読み直しと同じ見え方。閉じていれば開き、
+      // 未読込なら読み込みを始める＝保存の往復と並行して読み込む）
+      if (position === 'inside' && (isFolder || isDB) && toggle && childrenDiv) {
+        if (childrenDiv.dataset.loaded === 'true') {
+          childrenDiv.classList.remove('collapsed');
+          toggle.classList.add('expanded');
+          toggle.dataset.expanded = 'true';
+          saveExpandedState(item.path, true);
+        } else if (toggle.dataset.expanded !== 'true') {
+          toggle.click();
         }
       }
-      window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${moved.length}件移動・${failures.length}件失敗`, details: failures });
-      // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
-      // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
-      // サーバー上の確定状態を一度だけ読み直し、部分成功も含めてツリー全体を
-      // 同じスナップショットへ揃える。同一フォルダ内の並べ替えは下の局所更新を維持する。
-      if (movedAcrossFolders) {
-        try { _saveOutlinerDropPlacement(placement, siblings || [], movedItems); }
-        catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
-        if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
-        await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
-        window.MeldexFileMoveHistory?.register?.(
-          movedItems.map(movedItem => ({
-            oldPath: movedItem.oldPath,
-            newPath: movedItem.path,
-            currentPath: movedItem.path,
-            name: movedItem.name,
-            type: movedItem.type,
-            fileId: movedItem.file_id || movedItem.fileId,
-          })),
-          {
-            label: `フォルダツリー: ${movedItems.length} 件を移動`,
-            detail: `→ ${destFolder}`,
-            refresh: () => refreshOutliner({ force: true, reason: 'outliner-tree-move-history' }),
-          },
-        );
-        return;
-      }
-      if (moved.length === 0) return;
-      const vr = window.GBOutlinerVirtualRender;
-      // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
-      // 適切に後始末する（refresh()側の再マウントに新しい行要素の生成を任せる）。
-      // 戻り値: 非仮想な移動先で使い回せる場合は元のDOM要素、それ以外はnull
-      //         （nullの場合は呼び出し側が createTreeNodeFromBrowse で作り直す）。
-      function disposeOrReuse(n) {
-        const srcParent = _dragSourceParents.get(n);
-        if (srcParent === targetParent) return n; // 同一コンテナ内の並べ替え: refresh()が丸ごと作り直す
-        if (srcParent && vr && vr.isVirtualContainer(srcParent)) {
-          const path = n._nodeData?.path;
-          if (path) vr.removeFromContainer(srcParent, path);
-          else { if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n); n.remove(); }
-          return null;
-        }
-        if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
-        n.remove();
-        return n;
-      }
-      // DOM上の移動（ドロップ位置に順番通り挿入）
-      if (position === 'inside' && (isFolder || isDB)) {
-        if (childrenDiv.dataset.loaded === 'false') {
-          moved.forEach(n => { disposeOrReuse(n); });
-          if (toggle.dataset.expanded !== 'true') toggle.click();
-        } else if (vr && vr.isVirtualContainer(childrenDiv)) {
-          const movedData = moved.map(n => n._nodeData).filter(Boolean);
-          moved.forEach(n => { disposeOrReuse(n); });
-          vr.dropInto(childrenDiv, movedData);
-          if (toggle.dataset.expanded !== 'true') toggle.click();
-          setSortSetting(item.path, 'manual', 'asc');
-          vr.saveManualOrderFromVirtualModel(childrenDiv, item.path);
-          if (!movedAcrossFolders) {
-            pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
-          }
-        } else {
-          moved.forEach(n => {
-            const data = n._nodeData;
+      const optimisticContainer = position === 'inside' && (isFolder || isDB) ? childrenDiv : div.parentElement;
+      const containerReady = () => optimisticContainer && optimisticContainer.isConnected && optimisticContainer.classList.contains('tree-children')
+        && optimisticContainer.dataset.loaded === 'true' && optimisticContainer.dataset.virtual !== 'true'
+        && !optimisticContainer.classList.contains('collapsed');
+      const placeOptimistically = () => {
+        nodes.forEach(n => {
+          if (!pendingMoves.has(n)) return;
+          if (!n.isConnected || !n.parentElement || n.parentElement.dataset.virtual === 'true' || n.contains(optimisticContainer)) return;
+          if (n.parentElement === optimisticContainer) return;
+          // 開いたフォルダの一覧に同じ名前の行が既に出ていれば（保存の往復が先に終わった）、重ねて置かない

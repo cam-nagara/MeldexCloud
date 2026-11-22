@@ -278,8 +278,64 @@
     return result;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // 表の左上の全選択チェックボックス（2026-11-21。シートの表の行選択見出しを共通部品にしたもの）
+  //
+  // ・置き場所は、見出しの左端かつチェックボックス＆ハンドル列の上端のセル。
+  // ・押すと、表示中のすべての行を選択。すべて選択済みなら、すべて選択解除。
+  // ・一部だけ選択中は中間表示（indeterminate・aria-checked="mixed"）。押すと全選択。
+  // ・見た目は .row-select-all-cb（gb-tools.part01.part01.css）。シート・シナリオのタイプ表／キャラ表で共通。
+  // ---------------------------------------------------------------------------
+
+  function _selectAllLabel(unit, allSelected) {
+    const name = unit || '行';
+    return allSelected ? `表示中のすべての${name}を選択解除` : `表示中のすべての${name}を選択`;
+  }
+
+  /**
+   * 全選択チェックボックスを作る。
+   * @param {{e2eId?:string, unit?:string, onToggle:(shouldSelect:boolean, event:Event)=>void}} options
+   */
+  function createSelectAllCheckbox(options = {}) {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'row-select-all-cb';
+    checkbox.dataset.uiComponent = 'row-select-all';
+    checkbox.dataset.selectAllUnit = String(options.unit || '行');
+    if (options.e2eId) checkbox.dataset.e2eId = String(options.e2eId);
+    checkbox.addEventListener('click', event => {
+      event.stopPropagation();
+      options.onToggle?.(checkbox.checked, event);
+    });
+    checkbox.setAttribute('aria-checked', 'false');
+    checkbox.setAttribute('aria-label', _selectAllLabel(options.unit, false));
+    checkbox.title = checkbox.getAttribute('aria-label');
+    return checkbox;
+  }
+
+  /**
+   * 全選択チェックボックスの表示を、表示中の行数と選択数へ合わせる。
+   * @param {HTMLInputElement} checkbox
+   * @param {{total:number, selected:number, unit?:string}} state
+   */
+  function syncSelectAllCheckbox(checkbox, state = {}) {
+    if (!checkbox) return;
+    const total = Math.max(0, Number(state.total) || 0);
+    const selected = Math.max(0, Math.min(total, Number(state.selected) || 0));
+    const allSelected = total > 0 && selected === total;
+    const mixed = selected > 0 && !allSelected;
+    checkbox.checked = allSelected;
+    checkbox.indeterminate = mixed;
+    checkbox.setAttribute('aria-checked', mixed ? 'mixed' : (allSelected ? 'true' : 'false'));
+    const label = _selectAllLabel(state.unit || checkbox.dataset.selectAllUnit, allSelected);
+    checkbox.setAttribute('aria-label', label);
+    checkbox.title = label;
+  }
+
   global.MeldexRowHandleMenu = Object.freeze({
     bind, open, anchorRect, DRAG_THRESHOLD,
     runsOf, resolveTargets, planInsertions, moveOrder, buildItems,
+    createSelectAllCheckbox, syncSelectAllCheckbox,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

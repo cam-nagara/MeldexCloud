@@ -45,9 +45,23 @@
     const target = metadata || {};
     const ids = { ...(target.property_ids || {}) };
     const types = propertyTypes || target.property_types || {};
+    // 列の安定IDの重複を作らない（2026-11-21 実データ: 旧名「テキスト2」の控えに残った「名」のIDを、
+    // 同じ初期名で作った新しい列が引き継ぎ、2つの列が同じIDになっていた）。列自身が持つIDを先に確保し、
+    // 名前の表からの引き継ぎは、そのIDをほかの今の列が使っていない時だけにする。
+    const claimed = new Map();
+    Object.keys(types).forEach(name => {
+      const config = types[name] && typeof types[name] === 'object' ? types[name] : null;
+      const own = String(config?.property_id || '').trim();
+      if (own && !claimed.has(own)) claimed.set(own, name);
+    });
     Object.keys(types).forEach(name => {
       const config = types[name] && typeof types[name] === 'object' ? types[name] : {};
-      const id = String(config.property_id || ids[name] || '').trim() || newId('prop');
+      let id = String(config.property_id || '').trim();
+      if (!id) {
+        const inherited = String(ids[name] || '').trim();
+        id = inherited && (!claimed.has(inherited) || claimed.get(inherited) === name) ? inherited : newId('prop');
+        claimed.set(id, name);
+      }
       ids[name] = id;
       config.property_id = id;
       types[name] = config;
@@ -115,6 +129,11 @@
     return current;
   }
 
+  function isSchemaRevisionConflict(error) {
+    return String(error?.code || '') === 'SCHEMA_REVISION_CONFLICT'
+      || String(error?.message || '').includes('SCHEMA_REVISION_CONFLICT');
+  }
+
   function isUnknownResultError(error) {
     const message = String(error?.message || '').toLowerCase();
     return error?.name === 'AbortError'
@@ -166,7 +185,10 @@
         body,
         async () => {
           const current = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
-          return current?.schema_operations?.[body.operation_id] || null;
+          const receipt = current?.schema_operations?.[body.operation_id];
+          if (!receipt) return null;
+          // 控えには全列の property_ids を持たない（2026-11-20）。シートの今の値で補う。
+          return ('property_ids' in receipt) ? receipt : { ...receipt, property_ids: { ...(current.property_ids || {}) } };
         }
       );
       return applyMetadataResult(dbPath, result || {}, payload, generation);
@@ -351,7 +373,7 @@
         expected_schema_revision: Number(ensured.metadata.schema_revision) || 0,
         operation_id: operationId,
       };
-      const result = await putIdempotent('/db-property/rename', body, async () => {
+      const reconcile = async () => {
         const current = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
         if (current?.property_ids?.[options.newName] !== propertyId
           || current?.property_ids?.[options.oldName]) return null;
@@ -363,7 +385,25 @@
           schema_revision: Number(current.schema_revision) || 0,
           operation_id: operationId,
         };
-      });
+      };
+      let result;
+      try {
+        result = await putIdempotent('/db-property/rename', body, reconcile);
+      } catch (error) {
+        // 手元の設定の版だけが古い時（取り消し→やり直しの直後の再読込で古い設定を受け取った等）は、
+        // 保存先の今の状態がまだ旧名（同じ列の識別子）で新名が無い場合に限り、今の版で1回だけ送り直す。
+        // 別の画面で名前が変わっていた等の本当の競合は、そのまま失敗にする（2026-11-21）。
+        if (!isSchemaRevisionConflict(error)) throw error;
+        const current = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, silentError: true });
+        const currentIds = current?.property_ids || {};
+        const currentTypes = current?.property_types || {};
+        const stillOldName = currentIds[options.oldName] === propertyId
+          && !Object.prototype.hasOwnProperty.call(currentTypes, options.newName)
+          && !currentIds[options.newName];
+        if (!stillOldName || !Number.isInteger(Number(current?.schema_revision))) throw error;
+        body.expected_schema_revision = Number(current.schema_revision);
+        result = await putIdempotent('/db-property/rename', body, reconcile);
+      }
       if (result?.fallback) return result;
       const payload = {
         property_ids: result?.property_ids || {

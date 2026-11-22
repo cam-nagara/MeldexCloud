@@ -10,12 +10,12 @@
         this._calcCache = null;
         // DOM操作のみで行を入れ替え（_render()を避けて軽量化）
         const targetRow = this.host?.querySelector(`.sn2-row[data-row-id="${targetRowId}"]`);
-        if (row && targetRow && !this._filterRoles) {
-          // フィルタなし: DOM操作のみで軽量入れ替え
+        if (row && targetRow && row.parentNode === targetRow.parentNode) {
+          // DOM操作のみで軽量入れ替え（フィルタありでも、入れ替え相手は表示中の隣の行）
           if (dir === -1) row.parentNode.insertBefore(row, targetRow);
           else row.parentNode.insertBefore(row, targetRow.nextSibling);
-          // ガター更新
-          this._updateGuttersFrom(Math.min(idx, targetIdx));
+          // ガター更新（番号が変わった行だけ書き直す）
+          this._updateGuttersFrom(Math.min(idx, targetIdx), { movedRowIds: [rowId, targetRowId] });
           // ハイライトアニメーション
           row.classList.add('sn2-swap-highlight');
           setTimeout(() => row.classList.remove('sn2-swap-highlight'), 400);
@@ -371,6 +371,9 @@
         sel.addRange(range);
         this._syncRowFromDom(textEl, { skipUndo: true });
         this._scheduleTextCellLiveResize?.(textEl);
+        // 貼り付けた語にも、入力した時と同じく自動リンク・自動ルビ（このファイルの設定どおり）を付ける。
+        // 貼り付けは入力の出来事を起こさないので、ここで装飾を予約する（2026-11-21）。
+        this._scheduleAutoDecorate?.(textEl, 0);
         return;
       }
       // 複数行: 現在行にカーソル前後のテキストを分割し、残りの行を新規追加
@@ -844,6 +847,53 @@
     return isPrev ? rows[rows.length - 1] : rows[0];
   }
 
+  // 縦書きのセルで、キャレット（rect）がセルの最初の行（isPrev）／最後の行にあるか。
+  // 判定できない時（キャレットの位置が取れない等）は null。最後が改行で終わる（空の最後の行がある）時は、
+  // 最後の文字の行はまだ最後の行ではないので false。
+  _sn2CaretOnEdgeLineVertical(textEl, caretRect, isPrev, cs) {
+    if (!caretRect || (caretRect.width <= 0 && caretRect.height <= 0)) return null;
+    // セルの端（最初／最後）にある、表示される文字を探す。改行（br・改行文字）が端にあれば、その先に
+    // 空の行がある（セル内改行で入る br の2つ並び、または改行文字2つ）。その時キャレットは端の行にいない
+    // （端そのもの＝先頭・末尾にいる場合は呼び出し元が先に判定している）。
+    const isBr = node => node && node.nodeName === 'BR';
+    const isEmptyText = node => node && node.nodeType === 3 && !node.length;
+    const step = node => (isPrev ? node.nextSibling : node.previousSibling);
+    let node = isPrev ? textEl.firstChild : textEl.lastChild;
+    while (isEmptyText(node)) node = step(node);
+    if (isBr(node)) {
+      let next = step(node);
+      while (isEmptyText(next)) next = step(next);
+      // 先頭の br、または末尾の br が2つ並ぶ（入力した改行＋表示用の br）→ 端は空の行
+      if (isPrev || isBr(next) || (next?.nodeType === 3 && /\n$/.test(next.data))) return false;
+      node = next; // 末尾に1つだけの br は表示用（行を作らない）
+    }
+    while (node && node.nodeType === 1 && !isBr(node) && node.childNodes.length) node = isPrev ? node.firstChild : node.lastChild;
+    if (!node || node.nodeType !== 3 || !node.length) return null;
+    const text = node.data;
+    let index;
+    if (isPrev) {
+      if (text[0] === '\n') return false; // 先頭が改行 → 最初の行は空
+      index = 0;
+    } else {
+      index = text.length - 1;
+      if (text[index] === '\n') {
+        if (index > 0 && text[index - 1] === '\n') return false; // 末尾に改行2つ → 最後の行は空
+        index -= 1; // 末尾の改行1つは行を作らない。その前の文字の行が最後の行
+        if (index < 0) return null;
+      }
+    }
+    const range = document.createRange();
+    range.setStart(node, index);
+    range.setEnd(node, index + 1);
+    const rects = range.getClientRects();
+    const edgeRect = rects[isPrev ? 0 : rects.length - 1] || range.getBoundingClientRect();
+    if (!edgeRect || edgeRect.width <= 0) return null;
+    const fontSize = parseFloat(cs?.fontSize) || 14;
+    const caretCenter = caretRect.left + caretRect.width / 2;
+    const edgeCenter = edgeRect.left + edgeRect.width / 2;
+    return Math.abs(caretCenter - edgeCenter) < Math.max(3, fontSize * 0.45);
+  }
+
   _isAtBoundary(textEl, isPrev, allowSelection) {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return false;
@@ -883,6 +933,11 @@
 
     if (isVertical) {
       if (elRect.width <= 0) return true;
+      // キャレットが、セルの最初（最後）の文字と同じ行にあるかで決める。以前は行の高さの設定値から
+      // 行の間隔を推し量っていたため、実際の行の間隔が設定値より狭い時（行の高さ1.0〜1.2など）や、
+      // 最後が改行で終わる空の行がある時に、最後の行へ矢印キーで移れなかった（2026-11-21）。
+      const sameLine = this._sn2CaretOnEdgeLineVertical(textEl, rect, isPrev, cs);
+      if (sameLine !== null) return sameLine;
       const padRight = parseFloat(cs.paddingRight) || 0;
       const padLeft = parseFloat(cs.paddingLeft) || 0;
       const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.6;
@@ -912,8 +967,9 @@
     return rect.bottom > elRect.bottom - padBot - lh;
   }
 
-  _focusText(textEl, place = 'start') {
-    textEl.focus();
+  _focusText(textEl, place = 'start', options = {}) {
+    if (options.preventScroll) textEl.focus({ preventScroll: true });
+    else textEl.focus();
     const sel = window.getSelection();
     if (!sel) return;
     const range = document.createRange();

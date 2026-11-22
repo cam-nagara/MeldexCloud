@@ -177,7 +177,7 @@
     )).join('');
     return `<section class="dup-group" data-group="${groupIndex}">
       <div class="dup-group-header">
-        <label class="dup-group-include"><input type="checkbox" data-dup-include data-group="${groupIndex}"
+        <label class="dup-group-include"><input type="checkbox" data-dup-include data-group="${groupIndex}" data-e2e-id="duplicate-include-group-${groupIndex}"
           ${options.included === false ? '' : 'checked'} aria-label="グループ ${groupIndex + 1}を一括整理の対象にする">整理対象</label>
         <span class="gb-badge ${type[1]}">${type[0]}</span>
         <span class="dup-group-title">グループ ${groupIndex + 1}</span>
@@ -190,9 +190,9 @@
       <div class="dup-group-choice">残すファイル: ${esc(fileName(group.files[initialIndex]))}</div>
       <div class="dup-group-body">${items}</div>
       ${group.files.length > end - offset ? `<div class="dup-file-pager">
-        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="-1" data-group="${groupIndex}" ${offset ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の前のファイル">前へ</button>
+        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="-1" data-group="${groupIndex}" data-e2e-id="duplicate-group-${groupIndex}-files-prev" ${offset ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の前のファイル">前へ</button>
         <span>${offset + 1}–${end} / ${group.files.length}件</span>
-        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="1" data-group="${groupIndex}" ${end < group.files.length ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の次のファイル">次へ</button>
+        <button type="button" class="gb-btn gb-btn-xs" data-dup-files="1" data-group="${groupIndex}" data-e2e-id="duplicate-group-${groupIndex}-files-next" ${end < group.files.length ? '' : 'disabled'} aria-label="グループ ${groupIndex + 1}の次のファイル">次へ</button>
       </div>` : ''}
     </section>`;
   }
@@ -230,20 +230,20 @@
     const tools = overlay.querySelector('[data-dup-result-tools]');
     tools.hidden = false;
     tools.innerHTML = `<div class="dup-result-filters">
-      <input type="search" class="gb-input" data-dup-search placeholder="ファイル名・保存場所で検索" aria-label="重複ファイルを検索">
-      <select class="gb-select" data-dup-type aria-label="重複の種類"><option value="">すべての種類</option>
+      <input type="search" class="gb-input" data-dup-search data-e2e-id="duplicate-result-search" placeholder="ファイル名・保存場所で検索" aria-label="重複ファイルを検索">
+      <select class="gb-select" data-dup-type data-e2e-id="duplicate-result-type" aria-label="重複の種類"><option value="">すべての種類</option>
         ${Object.entries(TYPE_LABELS).map(([key, label]) => `<option value="${key}">${label[0]}</option>`).join('')}</select>
-      <select class="gb-select" data-dup-state aria-label="整理状況"><option value="">すべての状況</option><option value="pending">未整理</option><option value="resolved">整理済み</option></select>
-      <select class="gb-select" data-dup-selection aria-label="整理対象を一括変更"><option value="">整理対象を一括変更</option>
+      <select class="gb-select" data-dup-state data-e2e-id="duplicate-result-state" aria-label="整理状況"><option value="">すべての状況</option><option value="pending">未整理</option><option value="resolved">整理済み</option></select>
+      <select class="gb-select" data-dup-selection data-e2e-id="duplicate-result-selection" aria-label="整理対象を一括変更"><option value="">整理対象を一括変更</option>
         <option value="all-on">すべてを対象にする</option><option value="all-off">すべてを対象外にする</option>
         <option value="filtered-on">絞り込み結果を対象にする</option><option value="filtered-off">絞り込み結果を対象外にする</option></select>
-      <label class="dup-compact-toggle"><input type="checkbox" data-dup-compact ${groups.length > 20 ? 'checked' : ''}>コンパクト表示</label>
+      <label class="dup-compact-toggle"><input type="checkbox" data-dup-compact data-e2e-id="duplicate-result-compact" ${groups.length > 20 ? 'checked' : ''}>コンパクト表示</label>
     </div><div class="dup-result-navigation">
       <span data-dup-page-summary role="status"></span>
-      <label><input type="checkbox" data-dup-page-include>このページを整理対象にする</label>
+      <label><input type="checkbox" data-dup-page-include data-e2e-id="duplicate-result-page-include">このページを整理対象にする</label>
       <span class="dup-group-spacer"></span>
-      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="-1" aria-label="前の重複グループ">前へ</button>
-      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="1" aria-label="次の重複グループ">次へ</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="-1" data-e2e-id="duplicate-result-page-prev" aria-label="前の重複グループ">前へ</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-page="1" data-e2e-id="duplicate-result-page-next" aria-label="次の重複グループ">次へ</button>
     </div><div class="gb-section-desc">各グループで残すファイルを選びます。一括整理は、検索やページ外を含む「整理対象」の全グループに適用されます。</div>`;
     let page = 0;
     let visible = [];

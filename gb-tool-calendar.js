@@ -85,8 +85,6 @@ class CalendarComponent extends ToolComponent {
     return `<div class="gb-cal-status" role="status" aria-live="polite"></div>
 <div class="gb-toolbar gb-toolbar-main gb-toolbar-cal" role="toolbar" aria-label="スケジュール">
   ${typeof toolbarAppIconHtml === 'function' ? toolbarAppIconHtml('calendar') : ''}
-  <button type="button" class="tb-icon-btn tool-menu-btn" title="メニュー" aria-label="メニュー" aria-haspopup="menu" data-action="showToolMenu(event,'calendar')"><span class="ico ico-menu"></span></button>
-  <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('calendar', event)"><span class="ico ico-folderTree"></span></button>
   <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="toggleSidebar" title="スケジュールサイドバー" aria-label="スケジュールサイドバー"><span class="ico ico-panelLeft"></span></button>
   <div class="sep"></div>
   <div class="gb-cal-surface-switch" role="tablist" aria-label="表示するシート">
@@ -151,18 +149,18 @@ class CalendarComponent extends ToolComponent {
     <div class="gb-cal-mini">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
         <button type="button" class="gb-cal-mini-nav" data-cal-action="miniPrev" title="前の月" aria-label="前の月">${lucide('chevronLeft', 12)}</button>
-        <span class="gb-cal-mini-title" style="font-size:12px;font-weight:bold;"></span>
+        <span class="gb-cal-mini-title"></span>
         <button type="button" class="gb-cal-mini-nav" data-cal-action="miniNext" title="次の月" aria-label="次の月">${lucide('chevronRight', 12)}</button>
       </div>
       <div class="gb-cal-mini-grid"></div>
     </div>
-    <div><div class="gb-cal-sidebar-title-row"><span>今日のToDo</span><button type="button" data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="ToDo追加" aria-label="今日のToDoを追加">${lucide('plus', 16)}</button></div><div class="gb-cal-today-tasks" style="font-size:12px;"></div></div>
+    <div><div class="gb-cal-sidebar-title-row"><span>今日のToDo</span><button type="button" data-cal-action="addTodayTask" class="gb-cal-sidebar-add-task" title="ToDo追加" aria-label="今日のToDoを追加">${lucide('plus', 16)}</button></div><div class="gb-cal-today-tasks"></div></div>
     <div style="margin-top:12px;">
       <div class="gb-cal-sidebar-title-row">
         <span>カレンダー</span>
         <button type="button" data-cal-action="createCalendar" class="gb-cal-sidebar-add-task gb-cal-sidebar-add-calendar" title="新規カレンダー" aria-label="新規カレンダー">${lucide('plus', 16)}</button>
       </div>
-      <div class="gb-cal-list" style="font-size:12px;"></div>
+      <div class="gb-cal-list"></div>
     </div>
   </div>
   <div class="gb-cal-sidebar-resize"></div>
@@ -199,7 +197,7 @@ class CalendarComponent extends ToolComponent {
         this._selectedMiniDates.clear();
         this._lastMiniDateStr = '';
         if (this._view !== 'multi') this.setView('multi');
-        else { this._syncMultiDayControls(); this._render(); this._renderMiniCal(); }
+        else { this._syncMultiDayControls(); this._persistViewToTabState?.(this._view); this._render(); this._renderMiniCal(); }
       });
     }
     const surfaceSwitch = this.el.querySelector('.gb-cal-surface-switch');
@@ -346,9 +344,15 @@ class CalendarComponent extends ToolComponent {
 
   _refreshAfterActivation() {
     if (this._destroyed || !this._active) return;
-    this._render();
-    this._renderMiniCal();
-    this._renderTodayTasks();
+    const previous = this._renderedActivationState;
+    const key = JSON.stringify([this.getState(), this._date?.getTime()]);
+    if (!previous || previous.key !== key || previous.events !== this._events
+        || previous.tasks !== this._tasks || previous.calendars !== this._calendars
+        || !this._contentEl?.firstElementChild) {
+      this._render();
+      this._renderMiniCal();
+      this._renderTodayTasks();
+    }
     this._updateClockStatus();
     this._ensureAlarmTimer();
     if (typeof this._syncHistoryScope === 'function') this._syncHistoryScope();
@@ -711,11 +715,13 @@ class CalendarComponent extends ToolComponent {
     // （historyUndo() 自体は scope の stack.pop() を同期的に行うため、ガード無しで連打すると
     // 2件目の復元が1件目と並行実行され、レストア対象のずれや redo スタックの不整合を招く）。
     if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
-      if (this._undoBusy) return;
+      // 処理中に押された取り消し・やり直しは捨てずに順番に行う（連打の3回目まで効くように。
+      // M-014 スケジュール網羅で発見: 保存の遅れている時に Ctrl+Z を3回押すと1回分しか戻らなかった）。
+      if (this._undoBusy) { (this._historyKeyQueue ||= []).push('undo'); return; }
       this._undoBusy = true;
       try { await historyUndo(_schedHistoryScope(this)); }
       finally { this._undoBusy = false; }
-      return;
+      return this._drainHistoryKeyQueue();
     }
     if (!this._undoStack.length || this._undoBusy) return;
     this._undoBusy = true;
@@ -735,11 +741,11 @@ class CalendarComponent extends ToolComponent {
 
   async _redo() {
     if (typeof _schedHasCommonHistory === 'function' && _schedHasCommonHistory()) {
-      if (this._undoBusy) return;
+      if (this._undoBusy) { (this._historyKeyQueue ||= []).push('redo'); return; }
       this._undoBusy = true;
       try { await historyRedo(_schedHistoryScope(this)); }
       finally { this._undoBusy = false; }
-      return;
+      return this._drainHistoryKeyQueue();
     }
     if (!this._redoStack.length || this._undoBusy) return;
     this._undoBusy = true;
@@ -755,6 +761,15 @@ class CalendarComponent extends ToolComponent {
     } finally {
       this._undoBusy = false;
     }
+  }
+
+  // 処理中に押されて待っていた取り消し・やり直しを、押された順に1件ずつ行う（上限20件。表示を離れた後は捨てる）。
+  _drainHistoryKeyQueue() {
+    const queue = this._historyKeyQueue;
+    if (!queue?.length || this._destroyed) { if (queue) queue.length = 0; return undefined; }
+    if (queue.length > 20) queue.splice(0, queue.length - 20);
+    const next = queue.shift();
+    return next === 'redo' ? this._redo() : this._undo();
   }
 
   async _restoreSnapshot(snap) {
@@ -939,6 +954,9 @@ class CalendarComponent extends ToolComponent {
     if (this._contentEl && typeof CommentBadges !== 'undefined' && typeof CommentBadges.refreshCalendar === 'function') {
       try { CommentBadges.refreshCalendar(this._contentEl); } catch (_) {}
     }
+    this._renderedActivationState = {key:JSON.stringify([this.getState(), this._date?.getTime()]),
+      events:this._events, tasks:this._tasks, calendars:this._calendars};
+
   }
 
   // 以降の描画メソッドは gb-tool-calendar-views.js に定義

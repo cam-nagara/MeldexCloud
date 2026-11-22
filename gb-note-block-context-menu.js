@@ -123,6 +123,7 @@
       menuApi.open({
         anchorRect: trigger.getBoundingClientRect(),
         prefer: 'right',
+        submenuTrigger: trigger,
         editable,
         range: _rangeAtBlockStart(blockInfo.block),
         blockInfo,
@@ -154,10 +155,11 @@
       if (menuApi.isOpen()) closeSubmenu(); else openSubmenu();
     });
     trigger.addEventListener('keydown', (ev) => {
-      if ((ev.key === 'ArrowRight' || ev.key === 'Enter' || ev.key === ' ') && !menuApi.isOpen()) {
+      if (ev.key === 'ArrowRight' || ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
         ev.stopPropagation();
-        openSubmenu();
+        if (!menuApi.isOpen()) openSubmenu();
+        document.querySelector('.note-block-menu .note-block-menu-item:not(.disabled)')?.focus({ preventScroll: true });
       }
     });
 

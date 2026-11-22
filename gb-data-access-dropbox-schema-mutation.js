@@ -2,8 +2,23 @@
 (function () {
   'use strict';
 
+  // 読み取った世代の印（記号のキー）は JSON の写しで落ちるので、いちばん上の段の記号のキーは引き継ぐ。
+  // 落ちると保存が「新しいファイルの作成」として送られ、既存のシート設定と競合する（2026-11-21）。
   function clone(value) {
-    return value == null ? value : JSON.parse(JSON.stringify(value));
+    if (value == null) return value;
+    const copy = JSON.parse(JSON.stringify(value));
+    if (typeof value === 'object' && copy && typeof copy === 'object') {
+      Object.getOwnPropertySymbols(value).forEach((key) => { copy[key] = value[key]; });
+    }
+    return copy;
+  }
+
+  // 書き換え済みのファイルを元へ戻す時は、書いた後の世代を条件にする（書く前の世代では必ず競合する）。
+  function restoreTarget(adapter, write) {
+    const frontmatter = write.before.frontmatter;
+    return typeof adapter.atSavedRevision === 'function' && write.saved
+      ? adapter.atSavedRevision(frontmatter, write.saved)
+      : frontmatter;
   }
 
   function conflict(message, code) {
@@ -98,6 +113,10 @@
         propertyId: request.propertyId,
       });
       if (!rewritten?.changed) continue;
+      // 書き換えた写しにも、読み取った世代の印を引き継ぐ（無いと保存が既存の設定と競合する）
+      Object.getOwnPropertySymbols(note.frontmatter || {}).forEach((key) => {
+        if (!(key in rewritten.metadata)) rewritten.metadata[key] = note.frontmatter[key];
+      });
       rewritten.metadata.schema_revision = Number(note.frontmatter?.schema_revision || 0) + 1;
       writes.push({ path: note.path, before: note, next: rewritten.metadata, changed: rewritten.changed });
     }
@@ -149,7 +168,11 @@
       ? current.schema_operations
       : {};
     if (operationId && currentOperations[operationId]) {
-      return { replay: { ...currentOperations[operationId] } };
+      // 控えには全列の property_ids を持たない（2026-11-20、設定欄の肥大でシートがフォルダに見えた）。
+      // 再送の応答では、シートの今の値で補う。
+      const receipt = { ...currentOperations[operationId] };
+      if (!('property_ids' in receipt)) receipt.property_ids = { ...(current.property_ids || {}) };
+      return { replay: receipt };
     }
     const request = validateRequest(adapter, body, current);
     if (!request.propertyIds[request.oldName]
@@ -199,7 +222,15 @@
       ),
     };
     if (plan.request.operationId) {
-      plan.request.operations[plan.request.operationId] = { ...result };
+      Object.keys(plan.request.operations).forEach((key) => {
+        const stored = plan.request.operations[key];
+        if (stored && typeof stored === 'object' && 'property_ids' in stored) {
+          const { property_ids: _omitted, ...compact } = stored;
+          plan.request.operations[key] = compact;
+        }
+      });
+      const { property_ids: _resultIds, ...receipt } = result;
+      plan.request.operations[plan.request.operationId] = receipt;
       while (Object.keys(plan.request.operations).length > 50) {
         delete plan.request.operations[Object.keys(plan.request.operations)[0]];
       }
@@ -221,7 +252,7 @@
     }
     for (const write of completedDependents.reverse()) {
       try {
-        await adapter.writeFrontmatter(write.path, write.before.frontmatter, write.before.body || '');
+        await adapter.writeFrontmatter(write.path, restoreTarget(adapter, write), write.before.body || '');
       } catch (error) {
         errors.push(write.path + ': ' + (error?.message || error));
       }
@@ -235,7 +266,7 @@
     }
     for (const write of completedValues.reverse()) {
       try {
-        await adapter.writeFrontmatter(write.path, write.before.frontmatter, write.before.body || '');
+        await adapter.writeFrontmatter(write.path, restoreTarget(adapter, write), write.before.body || '');
       } catch (error) {
         errors.push(write.path + ': ' + (error?.message || error));
       }
@@ -252,11 +283,11 @@
         await adapter.writeSheetStore(plan.request.dbPath, plan.storePlan.next);
       }
       for (const write of plan.markdownWrites) {
-        await adapter.writeFrontmatter(write.path, write.next, write.before.body || '');
+        write.saved = await adapter.writeFrontmatter(write.path, write.next, write.before.body || '');
         completedValues.push(write);
       }
       for (const write of plan.dependentWrites) {
-        await adapter.writeFrontmatter(write.path, write.next, write.before.body || '');
+        write.saved = await adapter.writeFrontmatter(write.path, write.next, write.before.body || '');
         completedDependents.push(write);
       }
       await adapter.writeFrontmatter(

@@ -70,7 +70,9 @@ class CanvasComponent extends ToolComponent {
     if (!this.el) return false;
     super.activate();
     const isPaneActive = this._isOwnPaneActive();
+    const runtimeUnchanged = CanvasComponent._lastRuntimeOwner === this;
     if (isPaneActive) {
+      CanvasComponent._lastRuntimeOwner = this;
       // Visible split panes are not deactivated by the layout bridge. Hand off
       // the shared runtime before changing its root so each pane keeps its camera.
       const previous = CanvasComponent._runtimeOwner;
@@ -131,8 +133,26 @@ class CanvasComponent extends ToolComponent {
     // ボードを開く:
     //  - dump があれば restore（複数キャンバスタブ間の state 分離）
     //  - なければ通常の bdOpenBoard で読み込み
+    // 他のボードへ実行状態を渡していないタブ往復では、既存のDOMと選択をそのまま使う。
+    if (this._bdDump && runtimeUnchanged && bd.path === this._bdDump.bd?.path) this._bdDump = null;
     if (this._bdDump) {
-      if (typeof bdLoadState === 'function') bdLoadState(this._bdDump);
+      const dumpPath = this._bdDump?.bd?.path || '';
+      if (dumpPath && typeof bd !== 'undefined' && bd.path === dumpPath && Array.isArray(bd.nodes)) {
+        // 同じボードを2つのパネルで開いている時、共有の bd はいま離れたパネルの最新の中身と保存の版を持つ。
+        // ここで自分の古い写し（古いトピックと古い保存の版）を戻すと、もう一方のパネルの追加が消えて見え、
+        // 次の保存は「別の端末で更新されています」で拒否される（拒否されなければ相手の変更を上書きする）。
+        // 中身は最新のまま使い、このパネルの表示位置だけを戻す（M-014 ボード網羅テストで発見）。
+        const view = this._bdDump.bd;
+        ['zoom', 'panX', 'panY', 'rotation'].forEach(key => { if (view[key] !== undefined) bd[key] = view[key]; });
+        if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
+        bd.selected = new Set();
+        if (typeof bdClearConnectionSelection === 'function') bdClearConnectionSelection();
+        if (typeof bdTransform === 'function') bdTransform();
+        if (typeof bdRunFullRender === 'function') bdRunFullRender('board-pane-switch-same-file');
+        else if (typeof bdRender === 'function') bdRender();
+      } else if (typeof bdLoadState === 'function') {
+        bdLoadState(this._bdDump);
+      }
       this._bdDump = null;
     } else if (!this._boardLoadPending && !this._activatingForReload
         && this.state.boardPath && bd.path !== this.state.boardPath) {
@@ -161,6 +181,7 @@ class CanvasComponent extends ToolComponent {
     if (typeof showDbTabs === 'function') showDbTabs(false);
     if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
+    if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
     if (typeof hideScriptnoteDetailTabs === 'function') hideScriptnoteDetailTabs();
     const ownTab = this._ownTab();
     const boardPath = this.state.boardPath || ownTab?.path

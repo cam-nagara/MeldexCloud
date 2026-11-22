@@ -1,3 +1,148 @@
+let _statusProgressHandle = null;
+let _statusProgressIdleTimer = 0;
+
+function _isStatusProgressMessage(text, isError, options) {
+  if (options?.progress === true) return true;
+  if (options?.progress === false || isError || !text) return false;
+  const core = text.replace(_STATUS_PROGRESS_ELLIPSIS_RE, '');
+  if (core !== text) return /中|して(?:い|お)|ています|ており|準備/.test(core);
+  return /中(?:です)?$/.test(text);
+}
+
+function _statusProgressApi() {
+  const api = typeof window !== 'undefined' ? window.MeldexOperationProgress : null;
+  return api && typeof api.begin === 'function' ? api : null;
+}
+
+function _statusProgressLabel(text) {
+  return String(text || '').replace(_STATUS_PROGRESS_ELLIPSIS_RE, '').trim() || '処理中';
+}
+
+function _beginStatusProgress(api, text) {
+  const label = _statusProgressLabel(text);
+  const current = _statusProgressHandle;
+  const state = current?.getState?.();
+  if (current && state && !api.isTerminalStatus?.(state.status)) current.update({ label });
+  else _statusProgressHandle = api.begin({ kind: 'status-progress', label, delayMs: 250 });
+  clearTimeout(_statusProgressIdleTimer);
+  // 終わりの知らせが来ない処理（保存のダイアログを閉じた等）でも、処理パネルに残り続けない。
+  _statusProgressIdleTimer = setTimeout(() => _endStatusProgress('', false), _STATUS_PROGRESS_IDLE_MS);
+}
+
+function _endStatusProgress(text, isError) {
+  const handle = _statusProgressHandle;
+  if (!handle) return;
+  _statusProgressHandle = null;
+  clearTimeout(_statusProgressIdleTimer);
+  if (isError) handle.fail({ error: text || '失敗しました' });
+  else handle.succeed(text ? { summary: text } : {});
+}
+
+// 長い処理（HTMLの作成など）を処理パネルに出しながら実行する。開始直後から表示し、終わったら閉じる。
+async function runWithProgress(label, task, options = {}) {
+  const api = _statusProgressApi();
+  const handle = api ? api.begin({ kind: options.kind || 'operation', label: label || '処理中', showImmediately: options.showImmediately !== false, delayMs: options.delayMs }) : null;
+  if (!handle && typeof showStatus === 'function') showStatus((label || '処理中') + '...', false, { progress: false });
+  try {
+    const result = await task(handle);
+    const state = handle?.getState?.();
+    if (handle && state && !api.isTerminalStatus?.(state.status)) {
+      if (result === false) handle.cancelled?.({});
+      else handle.succeed(options.summary ? { summary: options.summary } : {});
+    }
+    return result;
+  } catch (error) {
+    handle?.fail?.(error instanceof Error ? error : { error: String(error?.message || error || '失敗しました') });
+    throw error;
+  }
+}
+if (typeof window !== 'undefined') window.runWithProgress = runWithProgress;
+
+function showStatus(msg, isError, options) {
+  const el = document.getElementById('sb-msg');
+  const text = String(msg || '');
+  if (_isStatusProgressMessage(text, isError, options)) {
+    const api = _statusProgressApi();
+    if (api) { _beginStatusProgress(api, text); return; }
+  } else if (text || isError) {
+    _endStatusProgress(text, isError);
+  }
+  if (!el) {
+    console.log((isError ? 'ERROR: ' : '') + text);
+    if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
+    return;
+  }
+  el.textContent = text;
+  el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
+  if (text) {
+    el.dataset.statusKind = isError ? 'error' : 'success';
+    el.setAttribute('aria-label', (isError ? 'エラー: ' : '状態: ') + text);
+  } else {
+    delete el.dataset.statusKind;
+    el.removeAttribute('aria-label');
+  }
+  _showMobileStatusToast(text, !!isError);
+  if (isError) {
+    setTimeout(() => {
+      if (el.textContent === text) {
+        el.textContent = '';
+        delete el.dataset.statusKind;
+        el.removeAttribute('aria-label');
+      }
+    }, 5000);
+  } else if (_isSaveSuccessStatusMessage(text, isError, options)) {
+    _queueSaveDialog(text);
+  }
+}
+window.showStatus = showStatus;
+
+function getCssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function rgbToHex(rgb) {
+  if (!rgb || rgb.startsWith('#')) return rgb || '#000000';
+  const m = rgb.match(/(\d+)/g);
+  if (!m || m.length < 3) return '#000000';
+  return '#' + m.slice(0,3).map(n => parseInt(n).toString(16).padStart(2,'0')).join('');
+}
+
+// ============================================================
+// 定数
+// ============================================================
+const FILE_TYPE_LABELS = {
+  folder: 'フォルダ', database: 'シート', pivot: 'シート', page: 'ノート', scenario: '旧シナリオ', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー',
+  entity: 'ページ', chat: 'チャット',
+  image: '画像', video: '動画', audio: '音声', html: 'HTML', csv: 'CSV',
+  psd: 'Photoshop', clip: 'CLIP STUDIO', '3d': '3D', document: '文書',
+  'form-app': 'フォーム', archive: 'アーカイブ', app: 'アプリ', unknown: 'ファイル',
+};
+
+const NATIVE_TYPES = new Set(['form-app','page','board','calendar','image','video','audio','html','csv','database','entity','folder','scriptnote','scenario','chat']);
+
+const PALETTE_COLORS = [
+  '#ffffff','#d4d4d4','#ababab','#808080','#545454','#2b2b2b','#000000',
+  '#cf9b9b','#cfc39b','#b4cf9b','#9bcfaa','#9bcccf','#9ba4cf','#b89bcf','#cf9bbd',
+  '#9e4f4f','#9e8c4f','#759e4f','#4f9e65','#4f9a9e','#4f5e9e','#7c4f9e','#9e4f84',
+  '#4f2828','#4f4628','#3b4f28','#284f33','#284d4f','#282f4f','#3e284f','#4f2842',
+];
+
+const PALETTE_BG_COLORS = [
+  '#544040','#544940','#545040','#445440','#40544c','#404c54','#434054','#504054',
+  '#493232','#493d32','#494632','#394932','#32493f','#323d49','#393249','#463249',
+  '#3d2c2c','#3d342c','#3d3a2c','#313d2c','#2c3d35','#2c343d','#312c3d','#3a2c3d',
+];
+
+// ============================================================
+// Lucide Icons (ISC License)
+// ============================================================
+const LUCIDE = {
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  moreHorizontal: '<circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/><circle cx="5" cy="12" r="1" fill="currentColor"/>',
+  moreVertical: '<circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/>',
+  folderPen: '<path d="M8.4 10.6a2 2 0 0 1 3 3L6 19l-4 1 1-4Z"/><path d="M2 11.5V5a2 2 0 0 1 2-2h3.9a2 2 0 0 0 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9.5"/>',
+  folderTree: '<path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z"/><path d="M3 5a2 2 0 0 0 2 2h3"/><path d="M3 3v13a2 2 0 0 0 2 2h3"/>',
+  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  page: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  db: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
   scenario: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
   sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   calendarSync: '<path d="M11 10v4h4"/><path d="m11 14 1.535-1.605a5 5 0 0 1 8 1.5"/><path d="M16 2v4"/><path d="m21 18-1.535 1.605a5 5 0 0 1-8-1.5"/><path d="M21 22v-4h-4"/><path d="M21 8.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4.3"/><path d="M3 10h4"/><path d="M8 2v4"/>',
@@ -66,6 +211,8 @@
   tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   tags: '<path d="m15 5 6.3 6.3a2.4 2.4 0 0 1 0 3.4L17 19"/><path d="M9.586 5.586A2 2 0 0 0 8.172 5H3a1 1 0 0 0-1 1v5.172a2 2 0 0 0 .586 1.414L8.29 18.29a2.426 2.426 0 0 0 3.42 0l3.58-3.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/>',
   link2: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>',
+  // 自動ルビの切り替え（親文字の上にルビの線）
+  furigana: '<path d="M8 3h8"/><path d="M6 9h12"/><path d="M12 9v12"/><path d="M9 21h6"/>',
   alignLeft: '<line x1="21" x2="3" y1="6" y2="6"/><line x1="15" x2="3" y1="12" y2="12"/><line x1="17" x2="3" y1="18" y2="18"/>',
   calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
   sigma: '<path d="M18 6H7.5l4.244 6L7.5 18H18"/>',
@@ -251,15 +398,16 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
-// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// 主要アプリツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19「ツールバー」）。
 // どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
-// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。押すと、そのアプリの
+// メインメニュー（旧☰メニューと同じ項目）を開く。☰ボタンと「フォルダツリーで表示」ボタンは置かない。
 const UI_TOOLBAR_APP_ICON_LABELS = {
   database: 'シート',
   page: 'ノート',
   scriptnote: 'シナリオ',
   board: 'ボード',
-  calendar: 'カレンダー',
+  calendar: 'スケジュール',
   'form-app': 'フォーム',
   map: 'マップ',
   csv: 'CSV',
@@ -269,34 +417,72 @@ const UI_TOOLBAR_APP_ICON_LABELS = {
 };
 const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
 const UI_TOOLBAR_APP_ICON_SIZE = 24;
+const UI_TOOLBAR_MAIN_MENU_TITLE = 'メインメニュー';
 
 function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-function toolbarAppIconHtml(type) {
+// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
+// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
+function toolbarMainMenuCaretHtml() {
+  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
+}
+
+function toolbarMainMenuLabel(type) {
+  const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
+  return label ? `${label}のメインメニュー` : UI_TOOLBAR_MAIN_MENU_TITLE;
+}
+
+// options.menu: 旧☰と同じ showToolMenu(event, toolType) を開く種別。省略時は toolType=type。
+// options.menu === false の時だけ、操作を持たない目印（role="img"）を返す（現役の呼び出しはない）。
+function toolbarAppIconHtml(type, options) {
   const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
-  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
   const name = toolbarAppIconName(key);
-  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+  const svg = name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : '';
+  if (options?.menu === false) {
+    const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+    return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${svg}</span>`;
+  }
+  const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
+  const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
+  return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
 }
 
-function toolbarAppIconElement(type) {
+// JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
+function toolbarAppIconElement(type, options) {
   const template = document.createElement('template');
-  template.innerHTML = toolbarAppIconHtml(type);
-  return template.content.firstElementChild;
+  const onClick = typeof options?.onClick === 'function' ? options.onClick : null;
+  template.innerHTML = toolbarAppIconHtml(type, onClick ? { ...options, action: false } : options);
+  const el = template.content.firstElementChild;
+  if (el && onClick) el.addEventListener('click', onClick);
+  return el;
 }
 
+// 静的HTMLに置いた空の .tb-app-icon を埋める。メインメニューボタン（button）の名前・状態も揃える。
 function hydrateToolbarAppIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
   const nodes = [];
   if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
   scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
   nodes.forEach(el => {
-    if (el.querySelector('svg')) return;
     const key = el.getAttribute('data-app-icon') || '';
-    const name = toolbarAppIconName(key);
-    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.querySelector('svg')) {
+      const name = toolbarAppIconName(key);
+      if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    }
+    if (el.tagName === 'BUTTON') {
+      // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
+      if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
+      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
+      if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
+      if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
+      if (!el.hasAttribute('aria-haspopup')) el.setAttribute('aria-haspopup', 'menu');
+      if (!el.hasAttribute('aria-expanded')) el.setAttribute('aria-expanded', 'false');
+      return;
+    }
     if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
     if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
   });
@@ -304,6 +490,7 @@ function hydrateToolbarAppIcons(root) {
 if (typeof window !== 'undefined') {
   window.toolbarAppIconHtml = toolbarAppIconHtml;
   window.toolbarAppIconElement = toolbarAppIconElement;
+  window.toolbarMainMenuLabel = toolbarMainMenuLabel;
   window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
 }
 
@@ -435,6 +622,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-clipboardCheck')) name = 'clipboardCheck';
     else if (cls.includes('ico-disc')) name = 'disc';
     else if (cls.includes('ico-funnel')) name = 'funnel';
+    else if (cls.includes('ico-scanText')) name = 'scanText';
+    else if (cls.includes('ico-textCursorInput')) name = 'textCursorInput';
     else if (cls.includes('ico-type')) name = 'type';
     else if (cls.includes('ico-table')) name = 'table';
     // 右レール タグパネル等のタグアイコン（ico-tags は ico-tag より前に置く）
@@ -457,11 +646,19 @@ function replaceIcons(root) {
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
     // ボタン(ico-terminal)が未登録で常に空アイコンになっていたため追加。
     else if (cls.includes('ico-terminal')) name = 'terminal';
+    // ツールバーの自動ルビの切り替え（2026-11-21）
+    else if (cls.includes('ico-furigana')) name = 'furigana';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
       const iconSize = inToolbar ? 16 : 18;
-      el.innerHTML = lucide(name, iconSize);
+      const html = lucide(name, iconSize);
+      // 同じ絵がすでに描かれていれば描き直さない。描き直すと押している最中のボタンの中身が差し替わり、
+      // クリックが届かなくなる（オプションの描き直しなどページ全体を対象にした呼び出しで起きていた）。
+      if (el._gbIcoHtml === html && el._gbIcoNode && el.firstElementChild === el._gbIcoNode && el.childNodes.length === 1) return;
+      el.innerHTML = html;
+      el._gbIcoHtml = html;
+      el._gbIcoNode = el.firstElementChild;
       // ツールバー外の旧互換アイコンだけインラインサイズを補完する
       if (!inToolbar) {
         el.style.width = '18px';
@@ -582,7 +779,7 @@ function _coreAnnotationElementHit(el, x, y, tolerance = 10) {
  * 親からpostMessageでツール状態を受信し、描画結果を親に送信
  * 親側は ann-markup-sync / ann-markup-save で同期
  */
-function initIframeMarkup(scrollContainer) {
+function initIframeMarkup(scrollContainer, options = {}) {
   const _svgNS = 'http://www.w3.org/2000/svg';
   const _widthDefaults = { pen: 3, marker: 12, eraser: 14 };
   function _loadToolWidths() {
@@ -604,15 +801,17 @@ function initIframeMarkup(scrollContainer) {
     : null;
   const wrapper = boardWorld || host;
   const boardMode = !!boardWorld || wrapper?.id === 'bd-world' || wrapper?.dataset?.bdRole === 'world';
-  if (host._annBridge) return host._annBridge;
+  if (host._annBridge) { Object.assign(host._annBridge.options || {}, options); return host._annBridge; }
   if (wrapper._annBridge) {
+    Object.assign(wrapper._annBridge.options || {}, options);
     if (host !== wrapper) host._annBridge = wrapper._annBridge;
     return wrapper._annBridge;
   }
   wrapper.style.position = wrapper.style.position || 'relative';
   const svg = document.createElementNS(_svgNS, 'svg');
   svg.id = 'iframe-ann-overlay';
-  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;');
+  svg.style.touchAction = 'none';
+  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;touch-action:none;');
   const hitRect = document.createElementNS(_svgNS, 'rect');
   hitRect.setAttribute('width', '100%'); hitRect.setAttribute('height', '100%');
   hitRect.setAttribute('fill', 'transparent');
@@ -699,202 +898,3 @@ function initIframeMarkup(scrollContainer) {
       lx = rx + cx;
       ly = ry + cy;
     }
-    const zoom = (typeof bd !== 'undefined') ? Math.max(0.1, bd.zoom || 1) : 1;
-    const panX = (typeof bd !== 'undefined') ? (Number(bd.panX) || 0) : 0;
-    const panY = (typeof bd !== 'undefined') ? (Number(bd.panY) || 0) : 0;
-    return { x: (lx - panX) / zoom, y: (ly - panY) / zoom };
-  }
-  function _updateSize() {
-    _surfaceBounds = _computeSurfaceBounds();
-    svg.style.left = _surfaceBounds.left + 'px';
-    svg.style.top = _surfaceBounds.top + 'px';
-    svg.style.width = _surfaceBounds.width + 'px';
-    svg.style.height = _surfaceBounds.height + 'px';
-    svg.setAttribute('viewBox', `${_surfaceBounds.left} ${_surfaceBounds.top} ${_surfaceBounds.width} ${_surfaceBounds.height}`);
-    hitRect.setAttribute('x', _surfaceBounds.left);
-    hitRect.setAttribute('y', _surfaceBounds.top);
-    hitRect.setAttribute('width', _surfaceBounds.width);
-    hitRect.setAttribute('height', _surfaceBounds.height);
-    notesLayer.style.left = _surfaceBounds.left + 'px';
-    notesLayer.style.top = _surfaceBounds.top + 'px';
-    notesLayer.style.width = svg.style.width;
-    notesLayer.style.height = svg.style.height;
-    notesLayer.querySelectorAll('.ann-note-embedded').forEach(note => _applyNotePosition(note, note._annData));
-  }
-  const _resizeObs = new ResizeObserver(_updateSize);
-  _resizeObs.observe(wrapper);
-  if (host !== wrapper) _resizeObs.observe(host);
-  _updateSize();
-
-  // 描画関数
-  function _pathD(pts) {
-    if (pts.length < 2) return '';
-    let d = `M ${pts[0][0]} ${pts[0][1]}`;
-    for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0]} ${pts[i][1]}`;
-    return d;
-  }
-
-  function _rectData(pts) {
-    const a = pts?.[0] || [0, 0], b = pts?.[pts.length - 1] || a;
-    const x1 = Number(a[0]) || 0, y1 = Number(a[1]) || 0, x2 = Number(b[0]) || 0, y2 = Number(b[1]) || 0;
-    return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
-  }
-
-  function _applyRectEl(el, data, color, opacity, preview) {
-    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
-    el.setAttribute('x', Number(data?.x) || 0);
-    el.setAttribute('y', Number(data?.y) || 0);
-    el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
-    el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
-    el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
-    el.setAttribute('stroke', color);
-    el.setAttribute('stroke-width', '1');
-    el.setAttribute('stroke-opacity', String(normalizedOpacity));
-    if (preview) el.setAttribute('stroke-dasharray', '4,4');
-    else el.removeAttribute('stroke-dasharray');
-    return el;
-  }
-
-  function _toLocalCoords(clientX, clientY) {
-    if (boardMode) {
-      return _boardClientToWorld(clientX, clientY);
-    }
-    const r = wrapper.getBoundingClientRect();
-    return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
-  }
-
-  function _elementTransformOrigin(el) {
-    const style = getComputedStyle(el);
-    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
-    return {
-      x: Number.parseFloat(parts[0]) || 0,
-      y: Number.parseFloat(parts[1]) || 0,
-      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
-    };
-  }
-
-  function _elementLocalToBoardWorld(el, point) {
-    let x = Number(point?.[0]) || 0;
-    let y = Number(point?.[1]) || 0;
-    let current = el;
-    let depth = 0;
-    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
-      const transform = _elementTransformOrigin(current);
-      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
-      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
-      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
-      current = current.offsetParent;
-      depth += 1;
-    }
-    return [x, y];
-  }
-
-  function _boardWorldToElementLocal(el, point) {
-    const chain = [];
-    let current = el;
-    let depth = 0;
-    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
-      chain.push(current);
-      current = current.offsetParent;
-      depth += 1;
-    }
-    let x = Number(point?.[0]) || 0;
-    let y = Number(point?.[1]) || 0;
-    for (let i = chain.length - 1; i >= 0; i -= 1) {
-      const item = chain[i];
-      x -= Number(item.offsetLeft) || 0;
-      y -= Number(item.offsetTop) || 0;
-      const transform = _elementTransformOrigin(item);
-      let inverse;
-      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
-      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
-      x = transformed.x + transform.x;
-      y = transformed.y + transform.y;
-    }
-    return [x, y];
-  }
-
-  function _boardAnnotationNode(anchor) {
-    if (!boardMode || !anchor?.nodeId) return null;
-    const el = document.getElementById('bdn-' + anchor.nodeId);
-    if (!el || !el.isConnected) return null;
-    return el;
-  }
-
-  function _annotationAnchorAt(clientX, clientY, worldPoint) {
-    if (!boardMode) return null;
-    const hit = document.elementsFromPoint(clientX, clientY)
-      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
-    const nodeEl = hit?.closest?.('.bd-node');
-    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
-    if (!nodeEl || !nodeId) return null;
-    const width = Math.max(1, nodeEl.offsetWidth || 0);
-    const height = Math.max(1, nodeEl.offsetHeight || 0);
-    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
-    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
-    const imageEl = nodeEl.querySelector?.('.bd-img');
-    const imageRect = imageEl?.getBoundingClientRect?.();
-    const insideImage = !!imageRect
-      && clientX >= imageRect.left && clientX <= imageRect.right
-      && clientY >= imageRect.top && clientY <= imageRect.bottom;
-    return {
-      data: {
-        version: 1,
-        kind: 'board-node',
-        nodeId,
-        subject: insideImage ? 'image' : 'card',
-        baseWidth: width,
-        baseHeight: height,
-        geometrySpace: 'local',
-      },
-      nodeEl,
-    };
-  }
-
-  function _annotationPointToLocal(anchor, point) {
-    const nodeEl = _boardAnnotationNode(anchor);
-    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
-    const current = _boardWorldToElementLocal(nodeEl, point);
-    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
-    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
-    return [current[0] / scaleX, current[1] / scaleY];
-  }
-
-  function _annotationPointToWorld(anchor, point) {
-    const nodeEl = _boardAnnotationNode(anchor);
-    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
-    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
-    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
-    return _elementLocalToBoardWorld(nodeEl, [
-      (Number(point?.[0]) || 0) * scaleX,
-      (Number(point?.[1]) || 0) * scaleY,
-    ]);
-  }
-
-  function _annotationAnchorScale(anchor) {
-    const nodeEl = _boardAnnotationNode(anchor);
-    if (!nodeEl) return 1;
-    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
-    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
-    return Math.sqrt(Math.abs(scaleX * scaleY));
-  }
-
-  function _anchoredRectPoints(data) {
-    const x = Number(data?.x) || 0;
-    const y = Number(data?.y) || 0;
-    const width = Number(data?.width) || 0;
-    const height = Number(data?.height) || 0;
-    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
-  }
-
-  function _anchoredWorldPoints(type, data) {
-    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
-    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
-  }
-
-  function _parentMessageTargetOrigin() {
-    try {
-      const origin = window.location?.origin || '';
-      return origin && origin !== 'null' ? origin : '*';
-    } catch {

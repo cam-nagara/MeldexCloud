@@ -151,6 +151,11 @@
       + settingsHtml()
       + '</div>';
     host.dataset.bdBoardInfoKey = renderKey || '';
+    bindSettings(host);
+    return host.querySelector('[data-bd-board-file-info]');
+  }
+
+  function bindSettings(host) {
     host.querySelector('[data-bd-default-open-target]')?.addEventListener('change', event => {
       setDefaultTarget(event.currentTarget.value);
       if (typeof global.showStatus === 'function') global.showStatus('ファイルを開く場所を保存しました');
@@ -159,7 +164,18 @@
       setSelectAutoSubpanelEnabled(!!event.currentTarget.checked);
       if (typeof global.showStatus === 'function') global.showStatus('選択時の表示設定を保存しました');
     });
-    return host.querySelector('[data-bd-board-file-info]');
+  }
+
+  // 右レールの「プロパティ」でボードを表示している時に、リンクを開く設定を足す（マニュアルの「右レールの
+  // プロパティにある ファイルを開く場所」の入口。以前は呼ばれないタブにだけ描いていて、画面から変えられなかった）。
+  function appendOpenTargetSettings(host) {
+    if (!host || host.querySelector('[data-e2e-id="bd-board-open-target-setting"]')) return false;
+    const wrap = global.document.createElement('div');
+    wrap.className = 'bd-board-information';
+    wrap.innerHTML = settingsHtml();
+    host.appendChild(wrap);
+    bindSettings(wrap);
+    return true;
   }
 
   function selectedNodes(fallbackNode) {
@@ -324,6 +340,7 @@
 
   global.MeldexBoardInfoPanel = Object.freeze({
     render,
+    appendOpenTargetSettings,
     cancel,
     hasInformation,
     resolveTarget,

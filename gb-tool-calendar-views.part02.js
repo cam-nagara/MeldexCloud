@@ -1,6 +1,7 @@
 
 CalendarComponent.prototype._saveTask = async function(editId, overlay) {
-  this._pushUndo(editId ? 'ToDo編集' : 'ToDo作成');
+  // 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽履歴は残さない）。
+  const undo = this._reserveUndo(editId ? 'ToDo編集' : 'ToDo作成');
   const o = overlay;
   const data = {
     title: o.querySelector('.tk-title').value, status: o.querySelector('.tk-status').value,
@@ -13,9 +14,10 @@ CalendarComponent.prototype._saveTask = async function(editId, overlay) {
   o.remove();
   try {
     if (editId) await apiPut('/cal/tasks/' + editId, data); else await apiPost('/cal/tasks', data);
+    undo.commit();
     await this._loadTasks(); this._render(); this._renderTodayTasks();
     this._showStatus('ToDoを保存しました');
-  } catch { this._showStatus('保存に失敗', true); }
+  } catch { undo.cancel(); this._showStatus('保存に失敗', true); }
 };
 
 CalendarComponent.prototype._deleteTask = async function(id) {
@@ -60,18 +62,19 @@ CalendarComponent.prototype._ganttDateValue = function(date, original, isEnd) {
   return this._localDateTimeStr(value);
 };
 
-// 取り消し履歴は保存成功後にだけ積む（失敗した操作の偽履歴は残さない）。
+// 取り消しの履歴の枠は操作の時点で取り、保存が成功した時だけ中身を入れる（失敗した操作の偽履歴は残さない）。
 CalendarComponent.prototype._commitGanttEventPatch = async function(ev, patch, label) {
-  const undoSnapshot = this._eventIsUndoable(ev) && typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : null;
+  const undo = this._eventIsUndoable(ev) ? this._reserveUndo(label) : null;
   try {
     await _calApplyEventTimePatch(this, ev, patch);
   } catch (error) {
+    undo?.cancel();
     this._showStatus?.('ガントの更新に失敗しました: ' + (error?.userMessage || error?.message || error), true);
     try { await this._loadEvents(); } catch (reloadError) { console.warn('[calendar] gantt reload failed:', reloadError); }
     this._render();
     return false;
   }
-  if (undoSnapshot) this._pushUndo(label, undoSnapshot);
+  undo?.commit();
   try {
     await this._loadEvents();
   } catch (reloadError) {
@@ -93,7 +96,8 @@ CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range
     if (pointerEvent.button !== 0) return;
     pointerEvent.preventDefault();
     pointerEvent.stopPropagation();
-    bar.setPointerCapture?.(pointerEvent.pointerId);
+    // 取り込めないポインター（離した直後・合成の入力）でも例外で操作ごと止めない。
+    try { bar.setPointerCapture?.(pointerEvent.pointerId); } catch (_) {}
     const startX = pointerEvent.clientX;
     const originalStart = new Date(range.start);
     const originalEnd = new Date(range.end);
@@ -118,7 +122,7 @@ CalendarComponent.prototype._bindGanttEventDrag = function(bar, track, ev, range
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onUp);
-      bar.releasePointerCapture?.(upEvent?.pointerId ?? pointerEvent.pointerId);
+      try { bar.releasePointerCapture?.(upEvent?.pointerId ?? pointerEvent.pointerId); } catch (_) {}
       if (!deltaDays) return;
       const deltaMs = deltaDays * 86400000;
       let nextStart = mode === 'end' ? originalStart : new Date(originalStart.getTime() + deltaMs);
@@ -743,7 +747,8 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   const calendarId = this._calendarIdForNewEvent();
   const createdIds = [];
   let count = 0;
-  this._pushUndo('テンプレート一括生成');
+  // 取り消しの履歴の枠は操作の時点で取り、全件の生成が成功した時だけ中身を入れる（失敗時は作った分を消すので履歴を残さない）。
+  const undo = this._reserveUndo('テンプレート一括生成');
   try {
     for (let w = 0; w < weeks; w++) {
       for (const entry of entries) {
@@ -763,12 +768,14 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       }
     }
   } catch (e) {
+    undo.cancel();
     await Promise.all(createdIds.map(id => apiFetch('/cal/events/' + id, { method: 'DELETE' }).catch(() => {})));
     await this._loadEvents();
     this._render();
     this._showStatus('一括生成に失敗しました。作成済み分は取り消しました', true);
     return false;
   }
+  undo.commit();
   if (typeof overlay?._calendarClose === 'function') overlay._calendarClose('generated');
   else overlay?.remove();
   await this._loadEvents(); this._render();

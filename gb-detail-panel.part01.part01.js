@@ -30,6 +30,7 @@ function _normalizeDetailTab(tab) {
     'board-group-style',
     'backlinks',
     'publish',
+    'note-ruby',
     'sn2-main',
     'sn2-roles',
     'sn2-theme',
@@ -48,7 +49,7 @@ function _resolveDetailTabForType(type, defaultTab) {
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'scriptnote']);
   if (cur === 'publish' && publishTypes.has(type)) return cur;
   const compatible = {
-    page: ['publish'],
+    page: ['note-ruby', 'publish'],
     folder: [],
     database: ['db-property-settings', 'db-tree', 'publish'],
     board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style'],
@@ -87,7 +88,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'form-field', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
+  ['note-editor', 'note-ruby', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'map-settings', 'map-selection', 'form-field', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'board-group-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -120,6 +121,7 @@ function switchDetailTab(tab) {
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
   }
+  if (tab === 'note-ruby') renderNoteRubyDetailTab();
   if (tab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.rememberDetailTab === 'function') {
     GBPaneBridge.rememberDetailTab(tab);
@@ -167,6 +169,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('board-card', 'detail-tab-board detail-tab-board-card', 'トピック')}
       ${_detailTabButtonHtml('board-line', 'detail-tab-board detail-tab-board-line', 'ライン')}
       ${_detailTabButtonHtml('board-note', 'detail-tab-board-note', 'ノート')}
+      ${_detailTabButtonHtml('note-ruby', 'detail-tab-note-ruby', 'ルビ')}
       ${_detailTabButtonHtml('publish', 'detail-tab-publish', '公開')}
       ${_detailTabButtonHtml('board-card-style', 'detail-tab-board-style detail-tab-board-card-style', 'トピックスタイル')}
       ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
@@ -195,6 +198,7 @@ function _detailTabShellHtml() {
     </div>
     <div id="detail-tab-file-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-backlinks" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-note-ruby" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-publish" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-shortcuts" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-empty" class="gb-empty-placeholder">選択中の項目がありません</div>`;
@@ -590,9 +594,59 @@ function renderPublishDetailTab() {
     el.innerHTML = '<div class="gb-section-desc" style="padding:var(--ui-space-4);">公開設定を読み込めませんでした</div>';
     return;
   }
-  el.innerHTML = `<div style="padding:var(--ui-space-4);">${renderPublishSettingsPanel()}</div>`;
-  if (typeof bindPublishSettingsPanel === 'function') bindPublishSettingsPanel(el);
+  const publishHtml = renderPublishSettingsPanel();
+  // 公開の対象が無い画面（ファイルを持たないスケジュールなど）では、空白にせず理由を出す（M-014 スケジュール網羅で発見）。
+  el.innerHTML = publishHtml
+    ? `<div style="padding:var(--ui-space-4);">${publishHtml}</div>`
+    : '<div class="gb-section-desc" data-e2e-id="detail-publish-unavailable" style="padding:var(--ui-space-4);">この画面には公開できるファイルがありません。公開するファイルを開くと設定できます。</div>';
+  if (!publishHtml) return;
+  // 操作には表示中の公開対象を渡す（渡さないとボタンが何もしない）
+  const contextSnapshot = typeof createPublishContextSnapshot === 'function'
+    ? createPublishContextSnapshot(undefined, { silentError: true })
+    : null;
+  if (typeof bindPublishSettingsPanel === 'function') bindPublishSettingsPanel(el, { contextSnapshot });
   if (typeof replaceIcons === 'function') replaceIcons(el);
+}
+
+// ノートのルビタブ。シナリオのルビタブ（renderRubyPanel）と同じ並びで、ルビの表示設定を
+// 共通部品 MeldexRubySettingsUI で出す。値はノートのフロントマターに保存する。
+function renderNoteRubyDetailTab() {
+  const el = document.getElementById('detail-tab-note-ruby');
+  if (!el) return;
+  el.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'sn2-ruby-panel note-ruby-panel';
+  const header = document.createElement('div');
+  header.className = 'sn2-detail-header';
+  const title = document.createElement('span');
+  title.className = 'sn2-ruby-title';
+  title.textContent = 'ルビ';
+  header.appendChild(title);
+  wrap.appendChild(header);
+  const label = document.createElement('div');
+  label.className = 'sn2-detail-settings-label sn2-ruby-section-label';
+  label.textContent = '表示設定';
+  wrap.appendChild(label);
+  const editor = window.MeldexNoteDisplaySettings?.rubySettingsEditor?.();
+  if (editor && typeof MeldexRubySettingsUI !== 'undefined') {
+    wrap.appendChild(MeldexRubySettingsUI.createEditorSettings(editor, { scope: 'note-ruby-tab' }));
+  } else {
+    const unavailable = document.createElement('span');
+    unavailable.className = 'fs-muted';
+    unavailable.textContent = 'ノートを開くと設定できます';
+    wrap.appendChild(unavailable);
+  }
+  el.appendChild(wrap);
+}
+
+function showNoteRubyDetailTab(visible) {
+  const rpDetail = document.getElementById('rp-detail');
+  if (rpDetail) _ensureDetailTabShell(rpDetail);
+  document.querySelectorAll('.detail-tab-note-ruby').forEach(t => { t.hidden = !visible; });
+  if (!visible && _currentDetailTab === 'note-ruby') {
+    switchDetailTab(null);
+  }
+  if (visible && _currentDetailTab === 'note-ruby') renderNoteRubyDetailTab();
 }
 
 function showPublishDetailTab(visible) {
@@ -612,6 +666,33 @@ function showPublishDetailTab(visible) {
 // --sn2-* を host の内部要素に setProperty する（ライブプレビュー）。
 // page / db / board はフロントマターの style: に格納された --* 変数をバッキングし、
 // _getCurrentFileStyle / _saveFileTheme + applyFileStyleToPanel 経由で適用する。
+// シートの候補値の見た目（列タイプごと）。セレクト・マルチセレクト・リレーション・ロールアップ・タグが
+// それぞれ色・背景・太字・文字サイズ・角丸・左右の余白・枠線の色と太さを持つ（--db-option-<種類>-*）。
+// 未設定の項目は v0.7.515 の「候補値」共通の設定（--db-option-chip-*）を引き継ぐ。
+const DB_OPTION_CHIP_TYPES = [
+  { id: 'select', label: 'セレクト' },
+  { id: 'multi', label: 'マルチセレクト' },
+  { id: 'relation', label: 'リレーション' },
+  { id: 'rollup', label: 'ロールアップ' },
+  { id: 'tag', label: 'タグ' },
+];
+function _dbOptionChipThemeFields() {
+  return DB_OPTION_CHIP_TYPES.flatMap(({ id, label }) => {
+    const k = suffix => `--db-option-${id}-${suffix}`;
+    return [
+      { key: k('fg'), label: `${label} 文字色`, type: 'color' },
+      { key: k('bg'), label: `${label} 背景`, type: 'color', bgType: 'rgba' },
+      { key: k('bold'), label: `${label} 太字`, type: 'toggle', on: 'bold', off: 'normal' },
+      { key: k('font-size'), label: `${label} フォントサイズ`, type: 'number', unit: 'px', cssUnit: 'px', min: 8, max: 24, step: 1, themeManaged: true },
+      { key: k('radius'), label: `${label} 角丸`, type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, themeManaged: true, popupSection: '形' },
+      { key: k('padding-x'), label: `${label} 左右の余白`, type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, themeManaged: true, popupSection: '形' },
+      { key: k('border-color'), label: `${label} 枠線 色`, type: 'color' },
+      { key: k('border-width'), label: `${label} 枠線 太さ`, type: 'pxtext', themeManaged: true },
+    ];
+  });
+}
+if (typeof window !== 'undefined') window.DB_OPTION_CHIP_TYPES = DB_OPTION_CHIP_TYPES;
+
 const _FS_FIELDS = {
   folder: {
     display: [
@@ -646,6 +727,8 @@ const _FS_FIELDS = {
       }).flat()),
       { key: '--page-margin-x', label: '余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
       { key: '--page-content-max-width', label: '内容最大幅', type: 'rangeNumber', unit: 'px', min: 480, max: 3200, step: 10, fallback: '1200px' },
+      // ルビの表示設定（シナリオと同じ共通部品。値はノートのフロントマターの ruby_presentation に保存）
+      { key: 'rubyPresentation', label: 'ルビ表示', type: 'rubyPresentation' },
       // タイトル
       { key: '--page-title-fg',     label: 'タイトル 色',     type: 'color' },
       { key: '--page-title-bg',     label: 'タイトル 背景',   type: 'color' },
@@ -736,16 +819,8 @@ const _FS_FIELDS = {
       // 罫線
       { key: '--db-grid-border', label: '罫線 色',   type: 'color' },
       { key: '--db-show-grid',   label: '罫線 表示', type: 'toggle', on: '1px', off: '0px' },
-      // 候補値（セレクト・マルチセレクト・リレーション・ロールアップ・タグの札）。2026-11-20 追加。
-      // 選択肢ごとの色・タグの色・列ごとの表示設定は、ここより優先する。
-      { key: '--db-option-chip-fg',           label: '候補値 色',         type: 'color' },
-      { key: '--db-option-chip-bg',           label: '候補値 背景',       type: 'color', bgType: 'rgba' },
-      { key: '--db-option-chip-bold',         label: '候補値 太字',       type: 'toggle', on: 'bold', off: 'normal' },
-      { key: '--db-option-chip-font-size',    label: '候補値 文字サイズ', type: 'rangeNumber', unit: 'px', min: 9, max: 24, step: 1, fallback: '12px', themeManaged: true },
-      { key: '--db-option-chip-radius',       label: '候補値 角丸',       type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '10px', themeManaged: true },
-      { key: '--db-option-chip-padding-x',    label: '候補値 左右の余白', type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, fallback: '8px', themeManaged: true },
-      { key: '--db-option-chip-border-color', label: '候補値 枠線 色',    type: 'color' },
-      { key: '--db-option-chip-border-width', label: '候補値 枠線 太さ',  type: 'pxtext', themeManaged: true },
+      // 候補値（列タイプごと）。見本1つから共通の書式設定ポップアップで編集する（2026-11-20）。
+      ..._dbOptionChipThemeFields(),
     ],
     editOps: [
       { key: '--db-selection-fg',    label: '選択文字', type: 'color' },
@@ -1309,13 +1384,16 @@ function _fsIsToggleOn(field, cur) {
 function _fsBuildControl(field, adapter, rowLabel) {
   const cur = _fsNormalizeFieldValue(field, _fsReadFieldValue(field, adapter));
   if (field.type === 'rubyPresentation') {
-    const editor = typeof _getScriptNoteEditorForFileStyle === 'function' ? _getScriptNoteEditorForFileStyle() : null;
+    const isNote = adapter?.kind !== 'scriptnote' && (adapter?.ctx || (typeof _getCurrentFileStyleContext === 'function' ? _getCurrentFileStyleContext() : '')) === 'page';
+    const editor = isNote
+      ? (window.MeldexNoteDisplaySettings?.rubySettingsEditor?.() || null)
+      : (typeof _getScriptNoteEditorForFileStyle === 'function' ? _getScriptNoteEditorForFileStyle() : null);
     if (editor && typeof MeldexRubySettingsUI !== 'undefined') {
-      return MeldexRubySettingsUI.createEditorSettings(editor, { scope: 'file-theme' });
+      return MeldexRubySettingsUI.createEditorSettings(editor, { scope: isNote ? 'note-file-theme' : 'file-theme' });
     }
     const unavailable = document.createElement('span');
     unavailable.className = 'fs-muted';
-    unavailable.textContent = 'シナリオを開くと設定できます';
+    unavailable.textContent = isNote ? 'ノートを開くと設定できます' : 'シナリオを開くと設定できます';
     return unavailable;
   }
   if (field.type === 'boardBgColorReset') {

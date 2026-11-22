@@ -535,11 +535,53 @@ function _chatCopyTextFallback(text) {
   return ok;
 }
 
+// AIの応答が終わった時にチャットの入力欄へキーボードを戻すのは、キーボードがどこにも無い時か、チャットの中にある時だけ。
+// 表のセルやノートで入力中に戻すと、打った文字がチャットへ入り、入力中の値が消えていた（2026-11-21 探索）。
+function _chatRefocusInputAfterStream(input) {
+  if (!input?.isConnected) return false;
+  const active = document.activeElement;
+  const chatRoot = input.closest('.rp-content') || input.closest('#chat-composer') || input.parentElement;
+  const idle = !active || active === document.body || active === document.documentElement;
+  if (!idle && !(chatRoot && chatRoot.contains(active))) return false;
+  if (window.GBChatFormatting?.focusInput?.()) return true;
+  input.focus();
+  return true;
+}
+
+// クリックやキー操作の最中に、copy イベントへ文字を渡して同期でクリップボードへ書く（v0.7.538）。
+// 非同期のクリップボードの口は、デスクトップ版の画面部品で権限や焦点の状態によって書けないことがあるため、
+// 操作の最中に確実に書けるこちらを先に試す。ほかの copy の処理（シート・ボード等）へは渡さない。
+function _chatCopyTextViaCopyEvent(value) {
+  if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false;
+  let delivered = false;
+  const handler = (event) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData('text/plain', value);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    delivered = true;
+  };
+  window.addEventListener('copy', handler, true);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  } finally {
+    window.removeEventListener('copy', handler, true);
+  }
+  return !!(ok && delivered);
+}
+
 async function _chatCopyText(text, okMessage = 'コピーしました') {
   const value = String(text ?? '');
   if (!value) {
     if (typeof showStatus === 'function') showStatus('コピーする内容がありません', true);
     return false;
+  }
+  if (_chatCopyTextViaCopyEvent(value)) {
+    if (typeof showStatus === 'function') showStatus(okMessage);
+    return true;
   }
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
@@ -841,9 +883,18 @@ function getProviderIconHtml(provider, size = 16) {
   return `<span class="chat-provider-icon" style="display:inline-flex;align-items:center;justify-content:center;width:${box}px;height:${box}px;border-radius:50%;background:${bg};color:${color};border:1px solid ${border};box-sizing:border-box;flex:0 0 auto;" title="${esc(meta.label)}" aria-label="${esc(meta.label)}">${lucide('bot', size)}</span>`;
 }
 
+// モデルの識別子（例: claude-opus-5-5[1m]）を利用者向けの名前（Opus 5.5）へ。識別子でなければそのまま返す。
+function _chatFriendlyModelLabel(model) {
+  const raw = String(model || '').trim();
+  const m = raw.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?(?:-\d{8})?(?:\[[^\]]*\])?$/i);
+  if (!m) return raw;
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  return family + ' ' + m[2] + (m[3] ? '.' + m[3] : '');
+}
+
 function getProviderLabel(provider, model, reasoningLevel = '') {
   const meta = CHAT_PROVIDER_META[_chatProviderKey(provider)];
-  const base = model || (meta ? meta.label : (provider || 'LLM'));
+  const base = _chatFriendlyModelLabel(model) || (meta ? meta.label : (provider || 'LLM'));
   if (!reasoningLevel || typeof _chatReasoningLevelLabel !== 'function') return base;
   const depth = _chatReasoningLevelLabel(_chatProviderKey(provider), model, reasoningLevel);
   return depth ? base + ' · 思考: ' + depth : base;

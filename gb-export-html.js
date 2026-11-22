@@ -9,6 +9,9 @@
 const MeldexExportHtml = (() => {
 
   const INLINE_ASSET_MAX_BYTES = 50 * 1024 * 1024;
+  // 公開（HTML出力）できる元ファイルの種類。本体側の PUBLISH_SOURCE_KINDS（meldex_api_shell.py）と
+  // 同じ一覧でなければならない（tests/test_meldex_publish_source_kinds.py が食い違いを検出する）。
+  const PUBLISH_SOURCE_KINDS = Object.freeze(['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote']);
   const ASSET_BASE_TOKEN = '__MELDEX_ASSET_BASE__';
 
   function _assetExtension(blob, rawUrl) {
@@ -135,6 +138,327 @@ const MeldexExportHtml = (() => {
     if (maxWidth && maxWidth !== 'none') clone.style.setProperty('max-width', maxWidth);
   }
 
+  // ================================================================
+  // 1-b. 見た目の固定（公開HTMLを画面と1pxも違わない見た目にする）
+  // ================================================================
+  // 画面の見た目は、祖先のパネル・ファイルテーマ・表示倍率・状態クラス等の組み合わせで決まる。
+  // 書き出しには祖先が無いため、CSSファイルを同梱するだけでは寸法・余白・文字が少しずつずれる。
+  // 各要素の計算済みスタイルを、既定値と異なるものだけ style 属性へ写して固定する。
+  // ::before / ::after は属性の目印を付けて、同じ値を公開HTMLのCSSとして書き出す。
+
+  const FREEZE_SKIP_PROPS = new Set([
+    'transition', 'transition-property', 'transition-duration', 'transition-delay', 'transition-timing-function',
+    'transition-behavior', 'animation', 'animation-name', 'animation-duration', 'animation-delay',
+    'animation-iteration-count', 'animation-direction', 'animation-fill-mode', 'animation-play-state',
+    'animation-timing-function', 'animation-composition', 'animation-range-start', 'animation-range-end',
+    'animation-timeline', 'cursor', 'pointer-events', 'user-select', '-webkit-user-select', 'caret-color',
+    'will-change', 'view-transition-name', 'content-visibility', 'contain-intrinsic-size',
+    'contain-intrinsic-width', 'contain-intrinsic-height', 'contain-intrinsic-block-size',
+    'contain-intrinsic-inline-size', '-webkit-user-modify', '-webkit-user-drag', 'touch-action',
+    'outline-color', 'outline-style', 'outline-width', 'outline-offset', 'interactivity',
+  ]);
+  const FREEZE_INHERITED_PROPS = new Set([
+    'color', 'font-family', 'font-size', 'font-style', 'font-weight', 'font-variant', 'font-stretch',
+    'font-feature-settings', 'font-variation-settings', 'font-kerning', 'font-optical-sizing',
+    'font-variant-ligatures', 'font-variant-numeric', 'font-variant-east-asian', 'font-variant-caps',
+    'font-variant-alternates', 'font-variant-position', 'font-palette', 'font-synthesis-weight',
+    'font-synthesis-style', 'font-synthesis-small-caps', 'font-size-adjust', 'line-height', 'letter-spacing',
+    'word-spacing', 'text-align', 'text-align-last', 'text-indent', 'text-transform', 'white-space',
+    'white-space-collapse', 'text-wrap', 'text-wrap-mode', 'text-wrap-style', 'writing-mode', 'direction',
+    'text-orientation', 'text-combine-upright', 'visibility', 'list-style-type', 'list-style-position',
+    'list-style-image', 'word-break', 'overflow-wrap', 'line-break', 'hyphens', 'tab-size', 'quotes',
+    'ruby-position', 'ruby-align', 'text-shadow', 'text-rendering', 'text-underline-position',
+    'text-emphasis-style', 'text-emphasis-color', 'text-emphasis-position', 'text-size-adjust',
+    '-webkit-text-stroke-width', '-webkit-text-stroke-color', '-webkit-text-fill-color',
+    '-webkit-font-smoothing', '-webkit-locale', 'border-collapse', 'border-spacing', 'caption-side',
+    'empty-cells', 'image-rendering', 'print-color-adjust', '-webkit-print-color-adjust', 'paint-order',
+    'color-scheme', 'forced-color-adjust', 'math-depth', 'math-style', 'text-spacing-trim', 'text-autospace',
+    'hanging-punctuation', 'orphans', 'widows', 'dominant-baseline', 'fill', 'fill-opacity', 'fill-rule',
+    'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-linecap',
+    'stroke-linejoin', 'stroke-miterlimit', 'marker-start', 'marker-mid', 'marker-end', 'shape-rendering',
+    'clip-rule', 'color-interpolation', 'color-interpolation-filters', 'color-rendering', 'text-anchor',
+    'pointer-events', 'cursor', 'caret-color', 'speak', 'font-display',
+  ]);
+  const FREEZE_PSEUDOS = ['::before', '::after'];
+  const FREEZE_MARKER_PROPS = [
+    'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'font-variant-numeric',
+    'text-combine-upright', 'unicode-bidi', 'direction', 'content', 'letter-spacing', 'white-space',
+    'text-transform', 'line-height',
+  ];
+  const FREEZE_MARKER = 'data-mx-ps';
+  let _freezeDefaultsFrame = null;
+  const _freezeDefaults = new Map();
+
+  function _freezeDefaultStyle(element, pseudo) {
+    const ns = element.namespaceURI || '';
+    const tag = String(element.localName || element.tagName || 'div').toLowerCase();
+    const key = ns + '|' + tag + '|' + (pseudo || '');
+    if (_freezeDefaults.has(key)) return _freezeDefaults.get(key);
+    if (!_freezeDefaultsFrame || !_freezeDefaultsFrame.isConnected) {
+      _freezeDefaultsFrame = document.createElement('iframe');
+      _freezeDefaultsFrame.setAttribute('aria-hidden', 'true');
+      _freezeDefaultsFrame.tabIndex = -1;
+      _freezeDefaultsFrame.style.cssText = 'position:fixed;left:-10000px;top:0;width:10px;height:10px;border:0;visibility:hidden';
+      document.body.appendChild(_freezeDefaultsFrame);
+      _freezeDefaultsFrame.contentDocument.open();
+      _freezeDefaultsFrame.contentDocument.write('<!DOCTYPE html><html><head><style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}</style></head><body></body></html>');
+      _freezeDefaultsFrame.contentDocument.close();
+    }
+    const doc = _freezeDefaultsFrame.contentDocument;
+    const probe = ns && ns !== 'http://www.w3.org/1999/xhtml' ? doc.createElementNS(ns, tag) : doc.createElement(tag);
+    const host = ns === 'http://www.w3.org/2000/svg' && tag !== 'svg'
+      ? doc.body.appendChild(doc.createElementNS(ns, 'svg'))
+      : doc.body;
+    host.appendChild(probe);
+    const cs = _freezeDefaultsFrame.contentWindow.getComputedStyle(probe, pseudo || null);
+    const values = new Map();
+    for (let i = 0; i < cs.length; i++) values.set(cs[i], cs.getPropertyValue(cs[i]));
+    probe.remove();
+    if (host !== doc.body) host.remove();
+    _freezeDefaults.set(key, values);
+    return values;
+  }
+
+  // 論理プロパティ（block/inline）は物理プロパティの別名。両方を書くと後勝ちで食い違うため物理側だけ書く。
+  const FREEZE_LOGICAL_RE = /^(border-(block|inline)|inset-(block|inline)|margin-(block|inline)|padding-(block|inline)|(min-|max-)?(block|inline)-size$|overflow-(block|inline)|scroll-(margin|padding)|overscroll-behavior-(block|inline)|contain-intrinsic)/;
+
+  // 寸法と位置は「指定した値」で写す。計算済みの値（実際の寸法）を写すと、高さを固定したことで
+  // 子の余白の相殺が止まる等、画面と組み方が変わる（箇条書きの後ろが2px詰まった実例がある）。
+  const FREEZE_SPECIFIED_PROPS = new Set([
+    'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+    'top', 'right', 'bottom', 'left', 'flex-basis',
+  ]);
+
+  function _specifiedValue(map, name) {
+    if (!map) return null;
+    try {
+      const value = map.get(name);
+      return value == null ? null : String(value);
+    } catch { return null; }
+  }
+
+  let _freezeBase = null;
+  function _freezeBaseDefaults() {
+    if (!_freezeBase) _freezeBase = _freezeDefaultStyle(document.createElement('span'), '');
+    return _freezeBase;
+  }
+
+  function _freezeDeclarations(cs, defaults, parentCs, isRoot, styleMap) {
+    const parts = [];
+    const noneStyle = side => cs.getPropertyValue(`border-${side}-style`) === 'none';
+    const hasTransform = cs.getPropertyValue('transform') !== 'none'
+      || cs.getPropertyValue('rotate') !== 'none' || cs.getPropertyValue('scale') !== 'none'
+      || cs.getPropertyValue('translate') !== 'none';
+    for (let i = 0; i < cs.length; i++) {
+      const name = cs[i];
+      if (!name || name.startsWith('--') || FREEZE_SKIP_PROPS.has(name) || FREEZE_LOGICAL_RE.test(name)) continue;
+      const value = cs.getPropertyValue(name);
+      if (value === '' || value == null) continue;
+      const side = /^border-(top|right|bottom|left)-(color|width|style)$/.exec(name);
+      if (side) {
+        // 線が無い辺は色・幅を書かない。線がある辺は幅を必ず書く（省くと既定の太さ3pxになる）
+        if (noneStyle(side[1])) { if (side[2] === 'style' && defaults.get(name) !== value) parts.push(name + ':' + value); continue; }
+        if (side[2] !== 'color' || defaults.get(name) !== value) parts.push(name + ':' + value);
+        continue;
+      }
+      if (/^column-rule-(color|width)$/.test(name) && cs.getPropertyValue('column-rule-style') === 'none') continue;
+      if (name === 'row-rule-color' || name === 'row-rule-width') continue;
+      if (name === 'text-decoration-color' && cs.getPropertyValue('text-decoration-line') === 'none') continue;
+      if ((name === 'transform-origin' || name === 'perspective-origin') && !hasTransform
+        && cs.getPropertyValue('perspective') === 'none') continue;
+      if (styleMap && FREEZE_SPECIFIED_PROPS.has(name)) {
+        const specified = _specifiedValue(styleMap, name);
+        if (specified !== null) {
+          if (specified === 'auto' || specified === 'none') {
+            if (defaults.get(name) !== specified) parts.push(name + ':' + specified);
+            continue;
+          }
+          parts.push(name + ':' + specified);
+          continue;
+        }
+      }
+      if (FREEZE_INHERITED_PROPS.has(name)) {
+        // 受け継ぐ値は、親と同じなら書かない（親から同じ値を受け継ぐ）
+        // ただし見出しセル（中央揃え）・太字の要素のように、ブラウザが要素ごとに既定値を持つものは
+        // 親と同じでも書く（書かないと要素の既定値に戻る）
+        if (!isRoot && parentCs && parentCs.getPropertyValue(name) === value
+          && defaults.get(name) === _freezeBaseDefaults().get(name)) continue;
+      } else if (defaults.get(name) === value) {
+        continue;
+      }
+      parts.push(name + ':' + value);
+    }
+    return parts;
+  }
+
+  function _parseRgba(value) {
+    const match = String(value || '').match(/rgba?\(([^)]+)\)/i);
+    if (!match) return null;
+    const parts = match[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+    if (parts.length < 3 || parts.some(n => !Number.isFinite(n))) return null;
+    return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+  }
+
+  /** 画面の要素の「後ろに見えている色」（祖先の背景を重ねた色）。公開HTMLの下地にする。
+      半透明の背景は下地の色と混ざって見えるため、下地が違うと色が変わる。 */
+  function backdropColor(originalEl) {
+    const layers = [];
+    let node = originalEl?.parentElement || null;
+    while (node) {
+      const color = _parseRgba(getComputedStyle(node).backgroundColor);
+      if (color && color.a > 0) {
+        layers.push(color);
+        if (color.a >= 1) break;
+      }
+      node = node.parentElement;
+    }
+    let base = { r: 255, g: 255, b: 255 };
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      base = {
+        r: layer.r * layer.a + base.r * (1 - layer.a),
+        g: layer.g * layer.a + base.g * (1 - layer.a),
+        b: layer.b * layer.a + base.b * (1 - layer.a),
+      };
+    }
+    return `rgb(${Math.round(base.r)}, ${Math.round(base.g)}, ${Math.round(base.b)})`;
+  }
+
+  /** 画面の要素とその中で使っている文字の太さを、埋め込むフォントの種類で返す */
+  function usedFontWeights(originalEl) {
+    const keys = new Set();
+    if (!originalEl?.isConnected) return ['regular'];
+    [originalEl, ...originalEl.querySelectorAll('*')].forEach(node => {
+      const weight = parseInt(getComputedStyle(node).fontWeight, 10) || 400;
+      keys.add(weight >= 650 ? 'bold' : weight >= 450 ? 'medium' : 'regular');
+    });
+    return ['regular', 'medium', 'bold'].filter(key => keys.has(key));
+  }
+
+  // ルビ（::before / ::after で親文字に重ねて描くもの）は、本物の要素として親文字の中に置く。縦書きの親文字は
+  // inline のため、疑似要素の位置の基準がブラウザで違い、iPhone（Safari と同じ描画の仕組み）ではルビが親文字から
+  // 離れて出ていた。画面（Chrome）で決まった位置を、行の太さの方向は親文字の中心から、文字の並ぶ方向は
+  // 親文字の先頭から、の位置として置く。
+  const FREEZE_RUBY_ATTR = 'data-mx-ruby-placed';
+  const FREEZE_RUBY_SKIP = new Set(['content', 'position', 'left', 'right', 'top', 'bottom', 'inset', 'width', 'height',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'transform']);
+
+  function _freezePlaceRuby(source, target, pcs, cs) {
+    const px = value => parseFloat(value) || 0;
+    const rect = source.getBoundingClientRect();
+    const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
+    const spanW = rect.width / z;
+    const spanH = rect.height / z;
+    const w = px(pcs.width);
+    const h = px(pcs.height);
+    if (!(w > 0 && h > 0)) return false;
+    const x = pcs.left !== 'auto' ? px(pcs.left) : spanW - px(pcs.right) - w;
+    const y = pcs.top !== 'auto' ? px(pcs.top) : spanH - px(pcs.bottom) - h;
+    const vertical = String(cs.writingMode || '').startsWith('vertical');
+    const ruby = document.createElement('span');
+    ruby.className = 'mx-export-ruby';
+    ruby.setAttribute('aria-hidden', 'true');
+    const raw = pcs.getPropertyValue('content');
+    const text = /^["']/.test(raw) ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : (source.getAttribute('data-ruby-rendered') || source.getAttribute('data-ruby') || '');
+    ruby.textContent = text;
+    const decls = [];
+    for (let i = 0; i < pcs.length; i++) {
+      const name = pcs[i];
+      if (!name || name.startsWith('--') || FREEZE_SKIP_PROPS.has(name) || FREEZE_LOGICAL_RE.test(name) || FREEZE_RUBY_SKIP.has(name)) continue;
+      const value = pcs.getPropertyValue(name);
+      if (value) decls.push(name + ':' + value);
+    }
+    decls.push('position:absolute', 'margin:0', 'pointer-events:none', `width:${w}px`, `height:${h}px`);
+    if (vertical) decls.push(`left:calc(50% + ${x - spanW / 2}px)`, `top:${y}px`);
+    else decls.push(`left:${x}px`, `top:calc(50% + ${y - spanH / 2}px)`);
+    ruby.setAttribute('style', decls.join(';'));
+    target.setAttribute(FREEZE_RUBY_ATTR, vertical ? 'v' : 'h');
+    const style = target.getAttribute('style') || '';
+    if (!/(^|;)\s*position\s*:/.test(style) || /position\s*:\s*static/.test(style)) {
+      target.setAttribute('style', (style ? style + ';' : '') + 'position:relative');
+    }
+    target.appendChild(ruby);
+    return true;
+  }
+
+  /** 公開HTMLへ足すCSS（見た目を固定した書き出し用）。Safari と同じ描画の仕組み（WebKit）は縦書きの詰め（vpal）を
+      正しく扱えないため、縦書き用の字形（vert）だけを使う。ルビの親文字は inline-block にして位置の基準を固定する。 */
+  function frozenPublishCss() {
+    return [
+      `[${FREEZE_RUBY_ATTR}]::before, [${FREEZE_RUBY_ATTR}]::after { content: none !important; }`,
+      '@supports (hanging-punctuation: first) {',
+      '  [data-mx-vertical], [data-mx-vertical] * { font-feature-settings: "vert" 1 !important; }',
+      `  [${FREEZE_RUBY_ATTR}="v"] { display: inline-block !important; }`,
+      '}',
+    ].join('\n');
+  }
+
+  /** 画面の要素 originalEl と、その複製 clone（cloneNode 直後の同じ構造）の見た目を固定する。
+      戻り値は ::before / ::after 用のCSS。 */
+  function freezeComputedStyles(originalEl, clone) {
+    if (!originalEl || !clone) return '';
+    const sources = [originalEl, ...originalEl.querySelectorAll('*')];
+    const targets = [clone, ...clone.querySelectorAll('*')];
+    if (sources.length !== targets.length) return '';
+    const rules = [];
+    let seq = 0;
+    const computed = sources.map(node => getComputedStyle(node));
+    const indexOf = new Map(sources.map((node, index) => [node, index]));
+    sources.forEach((source, index) => {
+      const target = targets[index];
+      const cs = computed[index];
+      const parentIndex = source === originalEl ? -1 : indexOf.get(source.parentElement);
+      const parentCs = parentIndex >= 0 ? computed[parentIndex] : null;
+      const styleMap = typeof source.computedStyleMap === 'function' ? source.computedStyleMap() : null;
+      const decls = _freezeDeclarations(cs, _freezeDefaultStyle(source, ''), parentCs, index === 0, styleMap);
+      if (index === 0) {
+        // 根元の寸法は、計算済みの値（小数2桁程度に丸められる）ではなく実寸で固定する。
+        // 丸めた幅だと端数が変わり、文字の折り返しや位置が1px未満ずつずれる。
+        const rect = source.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0 && cs.boxSizing === 'border-box' && cs.display !== 'inline') {
+          for (let d = decls.length - 1; d >= 0; d--) {
+            if (/^(width|height|flex-basis|flex-grow|flex-shrink):/.test(decls[d])) decls.splice(d, 1);
+          }
+          // 表は高さを指定すると、セルの中の高さ100%の部品まで伸びて組み方が変わるため幅だけにする
+          const tableBox = /table/.test(cs.display);
+          decls.push('width:' + rect.width + 'px', 'flex:none');
+          if (!tableBox) decls.push('height:' + rect.height + 'px');
+        }
+        // 祖先から受け継いでいた値（テーマの変数を含む）も根元へ固定する
+        for (let i = 0; i < cs.length; i++) {
+          const name = cs[i];
+          if (name && name.startsWith('--')) decls.push(name + ':' + cs.getPropertyValue(name).trim());
+        }
+      }
+      target.setAttribute('style', decls.join(';'));
+      if (index === 0 && String(cs.writingMode || '').startsWith('vertical')) target.setAttribute('data-mx-vertical', '1');
+      if (cs.display === 'list-item') {
+        // ::marker（箇条書きの記号・番号）。縦書きの番号の縦中横など、書式を固定する
+        const mcs = getComputedStyle(source, '::marker');
+        const mdecls = FREEZE_MARKER_PROPS
+          .map(name => [name, mcs.getPropertyValue(name)])
+          .filter(([name, value]) => value && value !== cs.getPropertyValue(name)
+            && !(name === 'content' && value === 'normal'))
+          .map(([name, value]) => name + ':' + value);
+        if (mdecls.length) {
+          if (!target.hasAttribute(FREEZE_MARKER)) target.setAttribute(FREEZE_MARKER, String(++seq));
+          rules.push(`[${FREEZE_MARKER}="${target.getAttribute(FREEZE_MARKER)}"]::marker{${mdecls.join(';')}}`);
+        }
+      }
+      for (const pseudo of FREEZE_PSEUDOS) {
+        const pcs = getComputedStyle(source, pseudo);
+        const content = pcs.getPropertyValue('content');
+        if (!content || content === 'none' || content === 'normal') continue;
+        if (source.hasAttribute('data-ruby') && _freezePlaceRuby(source, target, pcs, cs)) continue;
+        if (!target.hasAttribute(FREEZE_MARKER)) target.setAttribute(FREEZE_MARKER, String(++seq));
+        const pdecls = _freezeDeclarations(pcs, _freezeDefaultStyle(source, pseudo), cs, false);
+        if (!pdecls.some(d => d.startsWith('content:'))) pdecls.push('content:' + content);
+        rules.push(`[${FREEZE_MARKER}="${target.getAttribute(FREEZE_MARKER)}"]${pseudo}{${pdecls.join(';')}}`);
+      }
+    });
+    return rules.join('\n');
+  }
+
   // アプリ本体と同じ基本リセット（gb-theme.css）。無いと引用・段落・見出し等にブラウザ既定の
   // 余白が付き、画面と配置が変わる。
   const APP_RESET_CSS = '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }';
@@ -142,6 +466,20 @@ const MeldexExportHtml = (() => {
   function cloneAndClean(el, opts) {
     const options = opts || {};
     const clone = el.cloneNode(true);
+    if (options.freezeStyles) {
+      // 構造を変える前に、画面の計算済みスタイルを複製へ固定する
+      const pseudoCss = freezeComputedStyles(el, clone);
+      if (Array.isArray(options.frozenCssOut)) options.frozenCssOut.push(pseudoCss);
+      // チェックボックス等の状態は属性ではなく値で持つため、複製へ写す
+      const sourceInputs = el.querySelectorAll('input');
+      const cloneInputs = clone.querySelectorAll('input');
+      if (sourceInputs.length === cloneInputs.length) {
+        sourceInputs.forEach((input, index) => {
+          if (input.checked) cloneInputs[index].setAttribute('checked', '');
+          else cloneInputs[index].removeAttribute('checked');
+        });
+      }
+    }
     const allNodes = [clone, ...clone.querySelectorAll('*')];
     // contenteditable 除去
     allNodes.forEach(node => {
@@ -182,19 +520,31 @@ const MeldexExportHtml = (() => {
       image.src = dataUrl;
       image.alt = source.getAttribute('aria-label') || '';
       image.className = source.className || '';
-      image.setAttribute('style', source.getAttribute('style') || '');
+      // 見た目を固定した複製では、固定した値（複製側の style）を引き継ぐ
+      image.setAttribute('style', (options.freezeStyles ? target.getAttribute('style') : source.getAttribute('style')) || '');
       target.replaceWith(image);
     });
     // input / textarea / select をテキストに変換、button は無効化
     // preserveFormControls=true の場合はフォーム操作を残すためスキップ
     if (!options.preserveFormControls) {
       clone.querySelectorAll('input, textarea, select, button').forEach(node => {
+        const inputType = String(node.type || '').toLowerCase();
+        if (options.freezeStyles && node.tagName === 'INPUT' && (inputType === 'checkbox' || inputType === 'radio')) {
+          // 見た目を画面と同じにするため、チェックボックスは操作できない状態で残す
+          node.setAttribute('inert', '');
+          node.setAttribute('tabindex', '-1');
+          node.removeAttribute('name');
+          node.removeAttribute('id');
+          return;
+        }
         if (node.tagName === 'BUTTON') {
-          node.setAttribute('disabled', 'disabled');
+          if (options.freezeStyles) node.setAttribute('inert', '');
+          else node.setAttribute('disabled', 'disabled');
           node.style.pointerEvents = 'none';
         } else {
           const span = document.createElement('span');
           span.className = node.className;
+          if (options.freezeStyles && node.getAttribute('style')) span.setAttribute('style', node.getAttribute('style'));
           span.textContent = _getFormControlStaticText(node);
           node.replaceWith(span);
         }
@@ -211,6 +561,8 @@ const MeldexExportHtml = (() => {
     'data-ruby', 'data-checked', 'data-cell-overflow', 'data-bd-role', 'data-status', 'data-status-kind',
     'data-note-status', 'data-chip-border', 'data-chip-bg', 'data-bd-group-color', 'data-shape', 'data-dir',
     'data-item-type', 'data-today', 'data-small-list', 'data-stage', 'data-cal-dow', 'data-editor-local-id',
+    // 見た目の固定で ::before / ::after のCSSを結び付ける通し番号・ルビを置いた親文字・縦書きの根元
+    'data-mx-ps', 'data-mx-ruby-placed', 'data-mx-vertical',
   ]);
   const PUBLISHED_FORBIDDEN_ELEMENTS = 'script,iframe,object,embed,base,meta,link,portal';
 
@@ -344,6 +696,54 @@ const MeldexExportHtml = (() => {
 
   /** Noto Sans JP を data URI で埋め込む。既定は Regular のみ。
       太字を使うビュー（エントリレイアウトのセル書式等）は weights: ['regular','bold'] を渡す。 */
+  // ---- 使っている文字だけのフォント（どの端末でも画面と同じ字形にする） ----
+
+  const SUBSET_TEXT_ATTRIBUTES = ['data-ruby', 'data-ruby-rendered', 'data-before', 'data-after', 'data-export-text'];
+
+  /** 画面の要素の中で使っているフォントの指定（書体・太さ・斜体）と文字を集める */
+  function collectFontUsage(rootEl) {
+    const requests = new Map();
+    const chars = new Set();
+    if (!rootEl) return { requests: [], text: '' };
+    const add = cs => {
+      if (!cs) return;
+      const family = cs.fontFamily || '';
+      const weight = parseInt(cs.fontWeight, 10) || 400;
+      const italic = cs.fontStyle === 'italic' || cs.fontStyle === 'oblique';
+      const key = family + '|' + weight + '|' + italic;
+      if (!requests.has(key)) requests.set(key, { family, weight, italic });
+    };
+    [rootEl, ...rootEl.querySelectorAll('*')].forEach(node => {
+      add(getComputedStyle(node));
+      for (const pseudo of ['::before', '::after']) {
+        const pcs = getComputedStyle(node, pseudo);
+        if (pcs.content && pcs.content !== 'none' && pcs.content !== 'normal') add(pcs);
+      }
+      SUBSET_TEXT_ATTRIBUTES.forEach(name => {
+        const value = node.getAttribute?.(name);
+        if (value) for (const ch of value) chars.add(ch);
+      });
+    });
+    for (const ch of rootEl.textContent || '') chars.add(ch);
+    return { requests: Array.from(requests.values()), text: Array.from(chars).join('') };
+  }
+
+  /** 使っている文字だけのフォントの @font-face を作る（デスクトップ版の本体で作る）。
+      作れない環境（Cloud版・単独アプリ・本体が古い）では null を返し、呼び出し元は従来の埋め込みに戻る。 */
+  async function subsetFontCss(rootEl) {
+    if (typeof apiPost !== 'function') return null;
+    if (typeof MeldexExportSave !== 'undefined' && MeldexExportSave.isBrowserDataContext?.()) return null;
+    const usage = collectFontUsage(rootEl);
+    if (!usage.requests.length) return null;
+    try {
+      const result = await apiPost('/export/font-subset', { fonts: usage.requests, text: usage.text }, { silentError: true, timeoutMs: 180000 });
+      if (!result || typeof result.css !== 'string' || !result.css) return null;
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
   async function embedFont(weights, assetCollector) {
     const list = Array.isArray(weights) && weights.length ? weights : ['regular'];
     const parts = [];
@@ -367,15 +767,18 @@ const MeldexExportHtml = (() => {
   // 5. 完全静的化CSS
   // ================================================================
 
-  function getStaticCss() {
+  function getStaticCss(options) {
+    // 見た目を固定した公開HTMLでは、画面と同じに描いたチェックボックス・ボタンを隠したり
+    // 不透明度を変えたりしない（操作は inert で止める）
+    const frozen = !!options?.frozen;
     return `
 /* 完全静的化: インタラクティブ要素を無効化 */
 * { cursor: default !important; }
 *:hover, *:focus, *:active { outline: none !important; }
 *::selection { background: rgba(100,150,255,0.2); }
 [contenteditable] { -webkit-user-modify: read-only; caret-color: transparent; }
-input, textarea, select { display: none !important; }
-button[disabled] { cursor: default !important; opacity: 1 !important; pointer-events: none; }
+${frozen ? '[inert] { pointer-events: none; }' : `input, textarea, select { display: none !important; }
+button[disabled] { cursor: default !important; opacity: 1 !important; pointer-events: none; }`}
 a { pointer-events: none; }
 /* 印刷時の背景色保持 */
 * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -498,7 +901,7 @@ a { pointer-events: none; }
   // 8. HTML組み立て
   // ================================================================
 
-  function buildHtml(title, bodyHtml, css, fontCss, extraHeadHtml) {
+  function buildHtml(title, bodyHtml, css, fontCss, extraHeadHtml, options) {
     const escHtml = MeldexEscape.html;
     const suppliedHead = String(extraHeadHtml || '');
     const csp = /Content-Security-Policy/i.test(suppliedHead) ? ''
@@ -515,7 +918,7 @@ ${csp}
 <style>
 ${fontCss}
 ${css}
-${getStaticCss()}
+${getStaticCss(options)}
 </style>
 ${suppliedHead}
 </head>
@@ -569,6 +972,10 @@ ${bodyHtml}
       const options = {
         title,
         extension: '.html',
+        ...(publishCtx ? {
+          initialfile: defaultPublishHtmlName(publishCtx),
+          initialdir: publishSourceFolder(publishCtx),
+        } : {}),
         dialogTitle: 'HTMLとして保存',
         filetypes: [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']],
         bom: true,
@@ -646,20 +1053,19 @@ ${bodyHtml}
   // ================================================================
 
   async function exportCurrentView(viewType) {
-    showStatus('HTML を生成中...');
     try {
-      let html;
-      switch (viewType) {
-        case 'page': html = await _exportNotePage(); break;
-        case 'database': html = await _exportDatabase(); break;
-        case 'csv': html = await _exportCsv(); break;
-        case 'calendar': html = await _exportCalendar(); break;
-        case 'board': html = await _exportBoard(); break;
-        case 'entity-layout': html = await _exportEntityLayout(); break;
-        default:
-          showStatus('このビューのHTML出力は未対応です', true);
-          return;
+      const builders = {
+        page: _exportNotePage, database: _exportDatabase, csv: _exportCsv,
+        calendar: _exportCalendar, board: _exportBoard, 'entity-layout': _exportEntityLayout,
+      };
+      if (!builders[viewType]) {
+        showStatus('このビューのHTML出力は未対応です', true);
+        return;
       }
+      // HTMLの作成中は処理パネルに出す（ステータスバーには進捗を出さない。2026-11-21）。保存のダイアログの前に閉じる。
+      const html = typeof runWithProgress === 'function'
+        ? await runWithProgress('HTMLを作成しています', () => builders[viewType](), { kind: 'export-html' })
+        : await builders[viewType]();
       if (!html) return;
       const title = _getViewTitle(viewType);
       await saveWithDialog(html, title, null);
@@ -680,8 +1086,7 @@ ${bodyHtml}
       if (!publishCtx) return false;
     }
     const kind = viewType || publishCtx.kind;
-    const supportedKinds = ['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote'];
-    if (!supportedKinds.includes(kind) || kind !== publishCtx.kind) {
+    if (!PUBLISH_SOURCE_KINDS.includes(kind) || kind !== publishCtx.kind) {
       showStatus('このビューは公開HTMLに未対応です', true);
       return false;
     }
@@ -689,7 +1094,6 @@ ${bodyHtml}
       showStatus('公開HTMLランタイムを読み込めませんでした', true);
       return false;
     }
-    showStatus('公開HTMLを生成中...');
     const cfg = typeof getPublishConfigForContext === 'function' ? getPublishConfigForContext(publishCtx) : {};
     if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) {
       return false;
@@ -707,17 +1111,22 @@ ${bodyHtml}
       db_path: kind === 'board' ? '' : (publishCtx.path || cfg.db_path || ''),
       board_snapshot: publishCtx.board || null,
     };
-    let publicationPackage = null;
-    if (kind === 'scriptnote') {
-      // シナリオは HTML保存・画像と同じ静的スナップショットを公開する（設定の反映を一致させる）
-      publicationPackage = await _buildScriptNotePublicationPackage(publishCtx, cfg);
-      if (!publicationPackage) return false;
-      mergedCfg.title = publicationPackage.title || mergedCfg.title;
-    } else {
-      publicationPackage = typeof MeldexPublicRuntime.buildPublishPackage === 'function'
+    // 公開用のHTMLの作成中は処理パネルに出す（ステータスバーには進捗を出さない。2026-11-21）。
+    const buildPublication = async () => {
+      if (kind === 'scriptnote') {
+        // シナリオは HTML保存・画像と同じ静的スナップショットを公開する（設定の反映を一致させる）
+        const pkg = await _buildScriptNotePublicationPackage(publishCtx, cfg);
+        if (pkg) mergedCfg.title = pkg.title || mergedCfg.title;
+        return pkg || false;
+      }
+      return typeof MeldexPublicRuntime.buildPublishPackage === 'function'
         ? await MeldexPublicRuntime.buildPublishPackage(kind, mergedCfg)
         : { html: await MeldexPublicRuntime.buildPublishHtml(kind, mergedCfg), assets: [] };
-    }
+    };
+    const publicationPackage = typeof runWithProgress === 'function'
+      ? await runWithProgress('公開用のHTMLを作成しています', buildPublication, { kind: 'publish-html' })
+      : await buildPublication();
+    if (!publicationPackage) return false;
     const html = publicationPackage?.html;
     if (!html) return false;
     if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
@@ -726,7 +1135,21 @@ ${bodyHtml}
     if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) return false;
     if (typeof assertPublishSourceRevisionCurrent === 'function' && !await assertPublishSourceRevisionCurrent(publishCtx)) return false;
     let result = false;
-    if (cfg.html_path && cfg.html_etag && !publishOpts.changePath && typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveTextDirect === 'function') {
+    const browserData = typeof MeldexExportSave !== 'undefined' && !!MeldexExportSave.isBrowserDataContext?.();
+    let targetPath = String(publishOpts.targetPath || '');
+    if (!targetPath && !cfg.html_path && !publishOpts.changePath) {
+      // 未公開のファイルは、元のファイルと同じフォルダの「元の名前.html」へ保存する
+      targetPath = defaultPublishHtmlPath(publishCtx);
+    }
+    if (!targetPath && browserData) {
+      // Cloud版にはOSの保存ダイアログが無い。フォルダツリーで保存先フォルダを選ぶ。
+      targetPath = publishOpts.changePath ? await pickPublishTargetPath(publishCtx, cfg) : String(cfg.html_path || '');
+      if (!targetPath) return false;
+    }
+    if (targetPath) {
+      const recordedEtag = targetPath === String(cfg.html_path || '') ? String(cfg.html_etag || '') : '';
+      result = await savePublicationToTarget(targetPath, publicationPackage, publishCtx, recordedEtag);
+    } else if (cfg.html_path && cfg.html_etag && !publishOpts.changePath && typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveTextDirect === 'function') {
       const directOptions = {
         bom: true,
         allowRegister: false,
@@ -738,6 +1161,10 @@ ${bodyHtml}
       result = typeof MeldexExportSave.savePublicationPackageDirect === 'function'
         ? await MeldexExportSave.savePublicationPackageDirect(cfg.html_path, publicationPackage, directOptions)
         : await MeldexExportSave.saveTextDirect(cfg.html_path, html, directOptions);
+      if (result?.missing) {
+        // 記録した公開HTMLが消されていた時は、同じ場所へ作り直す（同じ名前のファイルがあれば確認する）
+        result = await savePublicationToTarget(String(cfg.html_vault_path || cfg.html_path), publicationPackage, publishCtx, '');
+      }
     } else {
       result = await saveWithDialog(publicationPackage, mergedCfg.title, publishCtx);
     }
@@ -748,11 +1175,112 @@ ${bodyHtml}
         ...(cfg || {}),
         html_path: result.path,
         html_etag: result.etag || '',
+        html_vault_path: result.vault_relative_path || (browserData ? result.path : ''),
         last_published_at: new Date().toISOString(),
       };
       await savePublishConfigForContext(publishCtx, next);
     }
+    if (result?.path) _reportPublishedLocation(result, browserData);
     return !!result;
+  }
+
+  // ---- 公開先（保存場所）の決め方 ----
+
+  const PUBLISH_SOURCE_SUFFIX_RE = /(\.mel-[a-z0-9-]+|\.scriptnote\.json|\.[A-Za-z0-9]{1,8})$/i;
+
+  function _splitDirAndName(path) {
+    const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const index = normalized.lastIndexOf('/');
+    return index >= 0
+      ? { dir: normalized.slice(0, index), name: normalized.slice(index + 1) }
+      : { dir: '', name: normalized };
+  }
+
+  /** 公開HTMLの既定のファイル名（元のファイルの名前＋ .html） */
+  function defaultPublishHtmlName(ctx) {
+    const { name } = _splitDirAndName(ctx?.path);
+    // シート・カレンダーはフォルダそのものが元ファイル。フォルダ名をそのまま使う。
+    const folderKind = ctx?.kind === 'database' || ctx?.kind === 'calendar';
+    const stem = (folderKind ? name : name.replace(PUBLISH_SOURCE_SUFFIX_RE, '')) || name || '公開';
+    const safe = typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.sanitizeTitle === 'function'
+      ? MeldexExportSave.sanitizeTitle(stem, '公開')
+      : stem;
+    return safe + '.html';
+  }
+
+  /** 公開HTMLの既定の保存先（元のファイルと同じフォルダ。Meldexの保存先からの位置） */
+  function defaultPublishHtmlPath(ctx) {
+    if (!ctx?.path) return '';
+    const { dir } = _splitDirAndName(ctx.path);
+    const name = defaultPublishHtmlName(ctx);
+    return dir ? dir + '/' + name : name;
+  }
+
+  /** 元のファイルがあるフォルダ（OSの保存ダイアログの開始位置） */
+  function publishSourceFolder(ctx) {
+    return _splitDirAndName(ctx?.path).dir;
+  }
+
+  /** フォルダツリーで保存先フォルダを選ぶ。ファイル名は記録済みの名前、無ければ既定の名前。 */
+  async function pickPublishTargetPath(ctx, cfg) {
+    if (!window.GBFolderPicker?.pickFolder) {
+      showStatus('フォルダ選択を読み込めませんでした', true);
+      return '';
+    }
+    const recorded = String(cfg?.html_vault_path || '');
+    const initialFolder = recorded ? _splitDirAndName(recorded).dir : publishSourceFolder(ctx);
+    const selection = await window.GBFolderPicker.pickFolder({
+      title: '公開HTMLの保存先フォルダを選択',
+      includeHome: true,
+      includeSources: true,
+      includeWorkspaces: true,
+      initialPath: initialFolder,
+      revealPath: initialFolder,
+    });
+    if (!selection?.path) return '';
+    const fileName = _splitDirAndName(cfg?.html_path || '').name || defaultPublishHtmlName(ctx);
+    const folder = String(selection.path).replace(/\\/g, '/').replace(/\/+$/, '');
+    return folder ? folder + '/' + fileName : fileName;
+  }
+
+  function _confirmPublishOverwrite(path) {
+    const name = _splitDirAndName(path).name || path;
+    if (typeof showConfirmDialog !== 'function') return Promise.resolve(false);
+    return new Promise(resolve => {
+      try {
+        showConfirmDialog(`「${name}」は既にあります。上書きしますか？`, () => resolve(true), () => resolve(false));
+      } catch { resolve(false); }
+    });
+  }
+
+  /** 決まった保存先へ公開HTMLを保存する。既にファイルがある時は上書きを確認する。 */
+  async function savePublicationToTarget(targetPath, publicationPackage, publishCtx, recordedEtag) {
+    if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.savePublicationToPath !== 'function') {
+      showStatus('保存処理を初期化できませんでした', true);
+      return false;
+    }
+    const publishContext = _publishSaveContext(publishCtx);
+    const operationKey = JSON.stringify({ targetPath, html: publicationPackage?.html || '', publishContext });
+    if (_pendingPublishDialogOperation?.key !== operationKey) {
+      _pendingPublishDialogOperation = { key: operationKey, id: _newPublishOperationId() };
+    }
+    const result = await MeldexExportSave.savePublicationToPath(targetPath, publicationPackage, {
+      bom: true,
+      publishContext,
+      operationId: _pendingPublishDialogOperation.id,
+      ifMatchEtag: recordedEtag || '',
+      okMessage: '公開HTMLを保存しました',
+      errorMessage: '公開HTMLの保存に失敗しました',
+      confirmOverwrite: _confirmPublishOverwrite,
+    });
+    if (result) _pendingPublishDialogOperation = null;
+    return result;
+  }
+
+  function _reportPublishedLocation(result, browserData) {
+    if (!browserData && result.inside_vault === false) {
+      showStatus('Meldexの保存先（Dropbox）の外に保存しました。共有するにはDropboxの中へ保存し直してください', true);
+    }
   }
 
   function _activeScriptNoteEditorForPath(path) {
@@ -792,7 +1320,7 @@ ${bodyHtml}
         return String(editor?.doc?.title || stem || 'シナリオ');
       }
       case 'page': {
-        const pc = document.getElementById('page-content');
+        const pc = (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content'));
         const h1 = pc?.querySelector('h1, h2, h3');
         return h1?.textContent || pc?.dataset?.path?.split('/').pop()?.replace(/\.\w+$/, '') || 'ノート';
       }
@@ -951,7 +1479,7 @@ ${bodyHtml}
   }
 
   async function _exportNotePage() {
-    const pc = document.getElementById('page-content');
+    const pc = (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content'));
     if (!pc) { showStatus('ノートが開かれていません', true); return null; }
     const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(pc));
     return exportToHtml(pc, noteExportOptions(pc, vertical, _getViewTitle('page')));
@@ -959,7 +1487,7 @@ ${bodyHtml}
 
   // --- データベース ---
   async function _exportDatabase() {
-    const table = document.getElementById('pivot-table');
+    const table = (window.GBEditorHost?.surfaceElement?.('pivot-table') || document.getElementById('pivot-table'));
     if (!table) { showStatus('シートが開かれていません', true); return null; }
     // テーブルの列幅を computed value で固定化
     // preTransform 実行前にオリジナルの測定値を収集する（クローンは未アタッチのため getComputedStyle が使えない）
@@ -1104,6 +1632,14 @@ ${bodyHtml}
   // ================================================================
 
   return {
+    PUBLISH_SOURCE_KINDS,
+    freezeComputedStyles,
+    frozenPublishCss,
+    usedFontWeights,
+    backdropColor,
+    defaultPublishHtmlName,
+    defaultPublishHtmlPath,
+    pickPublishTargetPath,
     exportToHtml,
     exportCurrentView,
     publishCurrentView,
@@ -1118,6 +1654,8 @@ ${bodyHtml}
     createAssetCollector,
     ASSET_BASE_TOKEN,
     embedFont,
+    collectFontUsage,
+    subsetFontCss,
     embedImages,
     saveWithDialog,
     buildHtml,

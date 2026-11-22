@@ -286,7 +286,10 @@
     if (this._caretSelChangeHandler) this._caretSelChangeHandler();
   }
 
-  _updateGuttersFrom(startIdx) {
+  // options.movedRowIds: 行の入れ替えなどで動いた行。渡すと、表示が変わらない行は書き直さない
+  // （840行のシナリオで Ctrl+矢印 の入れ替えが約0.85秒→ 以後の全行の番号とスタイルを書き直していた。2026-11-21）。
+  _updateGuttersFrom(startIdx, options = {}) {
+    const moved = options.movedRowIds ? new Set(options.movedRowIds) : null;
     const calc = this._calcPagePanel();
     const cc = this.doc.editor?.countConfig || {};
     const rows = this.host.querySelectorAll('.sn2-row');
@@ -295,6 +298,9 @@
     const rowIndexById = new Map(this.doc.rows.map((row, index) => [row.id, index]));
     const clearCc = (el) => { delete el.dataset.ccBg; delete el.dataset.ccColor; delete el.dataset.ccWeight; delete el.dataset.ccSize; };
     const setCc = (el, gs) => { if (gs.bgColor) el.dataset.ccBg = gs.bgColor; if (gs.textColor) el.dataset.ccColor = gs.textColor; if (gs.fontWeight) el.dataset.ccWeight = gs.fontWeight; if (gs.fontSize) el.dataset.ccSize = gs.fontSize; };
+    const sameGutter = (el, text, gs) => el.textContent === text
+      && (el.dataset.ccBg || '') === ((text && gs?.bgColor) || '') && (el.dataset.ccColor || '') === ((text && gs?.textColor) || '')
+      && (el.dataset.ccWeight || '') === ((text && gs?.fontWeight) || '') && (el.dataset.ccSize || '') === String((text && gs?.fontSize) || '');
     let prevVisibleCalc = null;
     for (const rowEl of rows) {
       const rowId = rowEl.dataset.rowId;
@@ -304,32 +310,29 @@
       if (!rowCalc) continue;
       const prevCalc = prevVisibleCalc;
       if (docIdx >= startIdx) {
-        // 大区切り（primary）
+        let changed = !moved || moved.has(rowId);
         const gutter = rowEl.querySelector('.sn2-gutter:not(.sn2-gutter2)');
-        if (gutter) {
-          const gutterText = this._formatGutterPrimary(rowCalc);
-          const prevGutterText = (mergeDisplay && prevCalc) ? this._formatGutterPrimary(prevCalc) : '';
-          const showGutterText = !(mergeDisplay && gutterText === prevGutterText);
-          gutter.textContent = showGutterText ? gutterText : '';
-          // 縦書き: 半角英数字を縦中横に再ラップ (textContent 設定で tcy span が消えるため)
-          if (isVert) this._wrapTcy(gutter, 'sn2-tcy-wide');
-          clearCc(gutter);
-          if (showGutterText && cc.primaryStyle) setCc(gutter, cc.primaryStyle);
-        }
-        // 小区切り（secondary）
         const gutter2 = rowEl.querySelector('.sn2-gutter2');
-        if (gutter2) {
-          const gutter2Text = this._formatGutterSecondary(rowCalc);
-          const prevGutter2Text = (mergeDisplay && prevCalc) ? this._formatGutterSecondary(prevCalc) : '';
-          const showGutter2Text = !(mergeDisplay && gutter2Text === prevGutter2Text);
-          gutter2.textContent = showGutter2Text ? gutter2Text : '';
-          if (isVert) this._wrapTcy(gutter2, 'sn2-tcy-wide');
-          clearCc(gutter2);
-          if (showGutter2Text && cc.secondaryStyle) setCc(gutter2, cc.secondaryStyle);
+        const gutterText = this._formatGutterPrimary(rowCalc);
+        const showGutterText = !(mergeDisplay && prevCalc && gutterText === this._formatGutterPrimary(prevCalc));
+        const gutter2Text = this._formatGutterSecondary(rowCalc);
+        const showGutter2Text = !(mergeDisplay && prevCalc && gutter2Text === this._formatGutterSecondary(prevCalc));
+        const primary = { el: gutter, text: showGutterText ? gutterText : '', style: showGutterText ? cc.primaryStyle : null };
+        const secondary = { el: gutter2, text: showGutter2Text ? gutter2Text : '', style: showGutter2Text ? cc.secondaryStyle : null };
+        for (const part of [primary, secondary]) {
+          if (!part.el) continue;
+          // 表示が同じなら書き直さない（動いた行を渡された時だけ。従来の呼び出しは全部書き直す）
+          if (moved && sameGutter(part.el, part.text, part.style)) continue;
+          changed = true;
+          part.el.textContent = part.text;
+          // 縦書き: 半角英数字を縦中横に再ラップ (textContent 設定で tcy span が消えるため)
+          if (isVert) this._wrapTcy(part.el, 'sn2-tcy-wide');
+          clearCc(part.el);
+          if (part.text && part.style) setCc(part.el, part.style);
         }
-        // スタイル再適用
+        // スタイル再適用（番号が変わった行と動いた行だけ。スタイルは行の位置に依らない）
         const row = this.doc.rows[docIdx];
-        if (row) this._applyRowStyle(rowEl, row.role);
+        if (row && changed) this._applyRowStyle(rowEl, row.role);
       }
       prevVisibleCalc = rowCalc;
     }
@@ -386,7 +389,11 @@
         node.childNodes.forEach(walk);
       }
     };
-    textEl.childNodes.forEach(walk);
+    // \u4E2D\u8EAB\u3092\u6D88\u3057\u305F\u30BB\u30EB\u306B\u30D6\u30E9\u30A6\u30B6\u304C\u6B8B\u3059 <br> 1\u500B\u3060\u3051\u306E\u6642\u306F\u7A7A\u306E\u30BB\u30EB\u3068\u3057\u3066\u6271\u3046\uFF08\u6539\u884C\u3068\u3057\u3066\u4FDD\u5B58\u3057\u306A\u3044\uFF09\u3002
+    const meaningful = Array.from(textEl.childNodes).filter(n => !(n.nodeType === 3 && n.textContent === ''));
+    if (!(meaningful.length === 1 && meaningful[0].nodeType === 1 && meaningful[0].tagName === 'BR')) {
+      textEl.childNodes.forEach(walk);
+    }
     text = text.replace(/\u00A0/g, ' ');
     if (row.text !== text) {
       const wasEmpty = !row.text;
@@ -421,61 +428,14 @@
     const spans = this.host.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
     if (!spans.length) return;
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-    const rows = new Map();
-    const spanToInfo = new Map();
-    const cells = new Map();
-    // 書き込み（余白の解除）→全ルビの測定→書き込み（位置の変数）を分けてまとめる。
-    // ルビごとに書いて測ると、ルビの数だけ画面全体の再レイアウトが走る。
-    spans.forEach(span => {
-      span.style.marginLeft = '';
-      span.style.marginTop = '';
-    });
-    const measured = [...spans].map(span => ({
-      span,
-      rect: span.getBoundingClientRect(),
-      fontSize: parseFloat(getComputedStyle(span).fontSize) || 16,
-    }));
-    const baseEdges = [];
-    measured.forEach(({ span, rect, fontSize }, index) => {
-      const parentStart = (isVertical ? rect.top : rect.left) / z;
-      const parentEnd = (isVertical ? rect.bottom : rect.right) / z;
-      const rubyText = span.dataset.rubyRendered || span.dataset.ruby;
-      const baseEm = fontSize;
-      const info = model.createRubyLayoutInfo({
-        parentStart,
-        parentEnd,
-        baseEm,
-        rubyText,
-        presentation,
-        style: span.dataset.rubyStyle,
-      });
-      info.span = span;
-      info.groupId = span.dataset.rubyGroupId || `span-${index}`;
-      const crossStart = (isVertical ? rect.left : rect.top) / z;
-      const cell = span.closest('.sn2-text, .sn2-custom-text');
-      if (!cells.has(cell)) cells.set(cell, cells.size);
-      const lineKey = `${cells.get(cell)}:${Math.round(crossStart * 2) / 2}`;
-      info._lineKey = lineKey;
-      if (!rows.has(lineKey)) rows.set(lineKey, []);
-      rows.get(lineKey).push(info);
-      spanToInfo.set(span, info);
-      const crossSize = (isVertical ? rect.width : rect.height) / z;
-      baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
-    });
-    baseEdges.forEach(([span, value]) => span.style.setProperty('--sn2-ruby-base-edge', value));
-    this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z);
-    rows.forEach(infos => {
-      model.resolveRubyOverlaps(infos).forEach(info => {
-        if (!info.span) return;
-        const layout = model.finalizeRubyLayout(info);
-        if (!layout) return;
-        const style = info.span.style;
-        style.setProperty('--sn2-ruby-inline-start', layout.inlineStartPx + 'px');
-        style.setProperty('--sn2-ruby-layout-extent', layout.extentPx + 'px');
-        style.setProperty('--sn2-ruby-size-override', layout.fontSizePx + 'px');
-        style.setProperty('--sn2-ruby-effective-letter-spacing', layout.letterSpacingPx + 'px');
-        style.setProperty('--sn2-ruby-gap-px', layout.gapPx + 'px');
-      });
+    // 配置の計算はノートと共通（MeldexRubyPresentation.layoutRubySpans）。
+    model.layoutRubySpans(spans, {
+      presentation,
+      isVertical,
+      zoom: z,
+      prefix: '--sn2-ruby',
+      cellOf: span => span.closest('.sn2-text, .sn2-custom-text'),
+      beforeResolve: (rows, spanToInfo) => this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z),
     });
   }
 
@@ -540,15 +500,34 @@
     };
   }
 
-  // 自動ルビルールをテキスト要素に適用（表示のみ、data-auto-ruby属性で識別）
+  // このシナリオの自動リンク・自動ルビの状態（ファイルの editor.autoLinks / editor.autoRuby）。
+  // 保存していないファイルは、旧版の全体の値を初期値にする。自動ルビのルールを持つ旧ファイルは
+  // 今までどおりルールのルビが見えるよう、自動ルビをオンで始める。
+  _displayLayerState() {
+    const editor = this.doc?.editor || {};
+    const layers = typeof globalThis.MeldexDisplayLayers?.registerApp === 'function' ? MeldexDisplayLayers : null;
+    if (!layers) return { autoLinks: false, autoRuby: true };
+    const hasRules = Array.isArray(this.doc?.rubyRules) && this.doc.rubyRules.some(rule => rule && rule.text && rule.ruby);
+    const next = layers.normalizeFileState(
+      { autoLinks: editor.autoLinks, autoRuby: editor.autoRuby },
+      { autoRubyDefault: hasRules },
+    );
+    const path = this._path || this.doc?.source?.path || '';
+    if (path) layers.setFileState(path, next);
+    return next;
+  }
+
+  // 自動ルビルールをテキスト要素に適用（表示のみ、data-auto-ruby属性で識別）。
+  // 自動ルビがオンのファイルでだけ付ける。辞書のルビ（data-auto-ruby="dict"）は自動リンク側が持つ。
   _applyAutoRuby(textEl) {
     const rules = this.doc?.rubyRules;
     // 既存の自動ルビを除去（再適用時の二重表示を防止）
-    textEl.querySelectorAll('[data-auto-ruby]').forEach(span => {
+    textEl.querySelectorAll('[data-auto-ruby]:not([data-auto-ruby="dict"])').forEach(span => {
       span.replaceWith(document.createTextNode(span.textContent));
     });
     textEl.normalize();
     if (!rules || !rules.length) return;
+    if (!this._displayLayerState().autoRuby) return;
     // 既にルビが付いているテキストを避けるため、テキストノードのみを対象にする
     const textNodes = [];
     const collectTextNodes = (node) => {
@@ -683,7 +662,7 @@
   // 自動リンク（linkDict）をテキスト要素に適用（表示のみ、data-auto-link属性で識別）
   _applyAutoLinks(textEl) {
     if (typeof MeldexAutoLink !== 'undefined') {
-      MeldexAutoLink.applyToDom(textEl, this._path || this.doc?.source?.path || '');
+      MeldexAutoLink.applyToDom(textEl, this._path || this.doc?.source?.path || '', { state: this._displayLayerState() });
     }
   }
 

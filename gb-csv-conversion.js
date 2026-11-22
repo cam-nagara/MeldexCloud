@@ -177,7 +177,10 @@
     cancelButton.textContent = '閉じて作業を続ける';
     cancelButton.setAttribute('aria-label', cancelButton.textContent);
     try {
-      const result = await runBackgroundJob('/import-csv', { ...body, background: true }, { operationLabel: 'CSVをシートに変換しています' });
+      // 単独シートアプリには裏の処理の仕組み（runBackgroundJob と /api/jobs）が無いので、その場で取り込む要求を送る。
+      const result = typeof runBackgroundJob === 'function'
+        ? await runBackgroundJob('/import-csv', { ...body, background: true }, { operationLabel: 'CSVをシートに変換しています' })
+        : await apiPost('/import-csv', body);
       if (!result?.ok) throw new Error('変換を完了できませんでした');
       if (!dialog.isConnected) {
         if (typeof showStatus === 'function') showStatus(`シートを作成しました: ${result.imported_count || 0}件`);

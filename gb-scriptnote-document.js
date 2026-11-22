@@ -26,11 +26,24 @@ function _scriptNoteLayoutOrDefault(layout) {
 }
 
 function _scriptNoteNormalizeRows(rows, now) {
+  // 行IDが重複したファイル（実データにある形）は、2件目以降へ別のIDを振る。同じIDの行が
+  // 複数あると、編集・削除・移動が別の行へ当たる（1件目のIDと内容は保つ）
+  const seenIds = new Set();
+  const uniqueRowId = (id, index) => {
+    let next = id || `sn-${now}-${index}`;
+    if (seenIds.has(next)) {
+      let n = index;
+      while (seenIds.has(`${next}-d${n}`)) n += 1;
+      next = `${next}-d${n}`;
+    }
+    seenIds.add(next);
+    return next;
+  };
   const normalized = Array.isArray(rows) ? rows.map((row, index) => {
     const item = _scriptNotePlainObject(row);
     return {
       ...item,
-      id: item.id || `sn-${now}-${index}`,
+      id: uniqueRowId(item.id, index),
       role: String(item.role || ''),
       ...(item.roleRef && typeof item.roleRef === 'object'
         ? { roleRef: { ...item.roleRef } }

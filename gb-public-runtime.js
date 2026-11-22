@@ -165,7 +165,7 @@ const MeldexPublicRuntime = (() => {
     if (viewType === 'page' || viewType === 'entity') {
       const el = viewType === 'entity'
         ? document.getElementById('entity-view')
-        : document.getElementById('page-content');
+        : (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content'));
       // ノート本文の組方向は公開HTMLにも反映する。スタイル本体は gb-export-html.js の
       // noteExportCss と共有して、書き出し・画像・公開で見た目がずれないようにする。
       const noteVertical = viewType === 'page'
@@ -252,8 +252,19 @@ const MeldexPublicRuntime = (() => {
           notFound: 'フォームを構築できません',
         };
       }
+      // 表ビュー以外（ツリー・ギャラリー・カンバン・タイムライン・チャート・グラフ）は、
+      // 表示中のビューの領域をそのまま公開する（表の要素を固定で拾うと別のビューを書き出す）
+      const viewEl = _visibleDatabaseViewElement(viewMode);
+      if (viewEl && viewEl.id !== 'pivot-table') {
+        return {
+          el: viewEl,
+          cssFiles: ['gb-tools.css', 'gb-ui.css'],
+          extraCss: 'body { padding: 16px; }\n',
+          notFound: 'シートのビューが表示されていません',
+        };
+      }
       return {
-        el: document.getElementById('pivot-table'),
+        el: (window.GBEditorHost?.surfaceElement?.('pivot-table') || document.getElementById('pivot-table')),
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss:
           'body { padding: 16px; }\n'
@@ -265,9 +276,8 @@ const MeldexPublicRuntime = (() => {
       };
     }
     if (viewType === 'csv') {
-      const container = document.getElementById('csv-table-container');
       return {
-        el: container ? container.querySelector('table') : null,
+        el: _visibleCsvTable(),
         cssFiles: [],
         extraCss:
           'body { padding: 16px; }\n'
@@ -302,6 +312,10 @@ const MeldexPublicRuntime = (() => {
       return {
         el,
         disposeEl: holder,
+        preFrozen: !!snapshot.frozen,
+        preFrozenCss: snapshot.frozenCss || '',
+        backdropColor: snapshot.backdropColor || '',
+        frozenExtraCss: '#bd-canvas { margin: 0 auto; }',
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss: 'body { padding: 16px; }\n#bd-canvas { margin: 0 auto; }\n',
         notFound: 'ボードの公開内容を構築できません',
@@ -342,6 +356,38 @@ const MeldexPublicRuntime = (() => {
       };
     }
     return { el: null, cssFiles: [], extraCss: '', notFound: 'この種別は公開 HTML 未対応です' };
+  }
+
+  const DATABASE_VIEW_ELEMENT_IDS = {
+    pivot: 'pivot-table', tree: 'tree-view', gallery: 'gallery-view', kanban: 'kanban-view',
+    timeline: 'timeline-view', chart: 'chart-view', graph: 'graph-view',
+  };
+
+  function _isShown(el) {
+    if (!el?.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+  }
+
+  function _visibleDatabaseViewElement(viewMode) {
+    const id = DATABASE_VIEW_ELEMENT_IDS[viewMode] || 'pivot-table';
+    const el = document.getElementById(id);
+    if (_isShown(el)) return el;
+    return Object.values(DATABASE_VIEW_ELEMENT_IDS).map(key => document.getElementById(key)).find(_isShown) || el;
+  }
+
+  // CSV は通常シートと同じ表（#pivot-table）で表示される。サブパネル等では専用の描画先へ出る。
+  // 画面に出ていない旧来の表示領域を書き出さないよう、表示中の表を選ぶ。
+  function _visibleCsvTable() {
+    const sheetMode = typeof _csvSheetModeActive !== 'undefined' && _csvSheetModeActive;
+    if (sheetMode) {
+      const table = (window.GBEditorHost?.surfaceElement?.('pivot-table') || document.getElementById('pivot-table'));
+      if (table?.isConnected) return table;
+    }
+    const container = typeof _csvTableContainerEl === 'function'
+      ? _csvTableContainerEl()
+      : document.getElementById('csv-table-container');
+    return container ? container.querySelector('table') : null;
   }
 
   // DB テーブル: 列幅とステータスバッジ色を computed value でインライン化
@@ -394,14 +440,23 @@ const MeldexPublicRuntime = (() => {
       return null;
     }
     try {
-      // DOM クローン → クリーンアップ → ルビ変換 → preTransform → 画像埋込
+      // 画面に表示中の要素は、計算済みスタイルを固定して画面と同じ見た目で書き出す。
+      // 画面に無い要素（公開フォーム・保存済みスナップショット）は従来どおりCSSで組む。
+      const freeze = !def.preserveFormControls && !!def.el.isConnected
+        && typeof MeldexExportHtml.freezeComputedStyles === 'function';
+      const frozen = freeze || !!def.preFrozen;
+      const frozenCss = [];
+      // DOM クローン → 見た目の固定 → クリーンアップ → ルビ変換 → preTransform → 画像埋込
       const clone = MeldexExportHtml.cloneAndClean(def.el, {
         preserveFormControls: !!def.preserveFormControls,
+        freezeStyles: freeze,
+        frozenCssOut: frozenCss,
       });
-      if (def.inheritComputedContext && typeof MeldexExportHtml.applyComputedContext === 'function') {
+      if (def.preFrozenCss) frozenCss.push(def.preFrozenCss);
+      if (!frozen && def.inheritComputedContext && typeof MeldexExportHtml.applyComputedContext === 'function') {
         MeldexExportHtml.applyComputedContext(def.el, clone);
       }
-      if (!def.keepDataRuby) MeldexExportHtml.convertDataRuby(clone);
+      if (!frozen && !def.keepDataRuby) MeldexExportHtml.convertDataRuby(clone);
       if (typeof def.preTransform === 'function') def.preTransform(def.el, clone);
       await MeldexExportHtml.embedImages(clone, assetCollector);
       MeldexExportHtml.sanitizePublishedClone(clone, {
@@ -412,24 +467,46 @@ const MeldexPublicRuntime = (() => {
     const varDecls = typeof MeldexExportHtml.collectCssVars === 'function'
       ? MeldexExportHtml.collectCssVars()
       : '';
-    let cssText = (def.appReset && MeldexExportHtml.APP_RESET_CSS ? MeldexExportHtml.APP_RESET_CSS + '\n' : '')
+    let cssText = ((frozen || def.appReset) && MeldexExportHtml.APP_RESET_CSS ? MeldexExportHtml.APP_RESET_CSS + '\n' : '')
       + ':root { ' + varDecls + ' }\n';
     cssText += 'html, body { margin: 0; padding: 0; background: var(--bg, #1e1e1e); color: var(--fg, #d4d4d4);'
       + ' font-family: var(--ui-font, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif);'
       + ' font-size: var(--ui-font-size, 15px); }\n';
-    for (const f of def.cssFiles) {
-      cssText += await MeldexExportHtml.fetchCss(f, undefined, assetCollector) + '\n';
+    const inlineCss = async text => (MeldexExportHtml.inlineCssAssets
+      ? MeldexExportHtml.inlineCssAssets(text, document.baseURI, assetCollector)
+      : text);
+    if (frozen) {
+      // 見た目は各要素へ固定済み。アプリのCSSを足すと、画面では効いていない規則が効いてずれる。
+      cssText += 'body { padding: 16px; }\n';
+      // 画面で要素の後ろに見えている色を下地にする（半透明の背景・罫線の色を画面と同じにする）
+      const backdrop = def.backdropColor || (freeze && typeof MeldexExportHtml.backdropColor === 'function'
+        ? MeldexExportHtml.backdropColor(def.el) : '');
+      if (backdrop) cssText += `html, body { background: ${backdrop}; }\n`;
+      cssText += await inlineCss(frozenCss.filter(Boolean).join('\n')) + '\n';
+      if (typeof MeldexExportHtml.frozenPublishCss === 'function') cssText += MeldexExportHtml.frozenPublishCss() + '\n';
+      if (def.frozenExtraCss) cssText += def.frozenExtraCss + '\n';
+    } else {
+      for (const f of def.cssFiles) {
+        cssText += await MeldexExportHtml.fetchCss(f, undefined, assetCollector) + '\n';
+      }
+      cssText += await inlineCss(def.extraCss) + '\n';
     }
-    cssText += (MeldexExportHtml.inlineCssAssets
-      ? await MeldexExportHtml.inlineCssAssets(def.extraCss, document.baseURI, assetCollector)
-      : def.extraCss) + '\n';
     // 公開ランタイム用の補助スタイル (メッセージ表示等)
     cssText += '#meldex-publish-msg { margin-top: 10px; color: var(--accent, #4a90d9); font-size: 13px; }\n';
 
     // フォント埋込 (publish 設定で制御)
-    const fontCss = publishCfg.embed_font !== false
-      ? await MeldexExportHtml.embedFont(undefined, assetCollector)
-      : '';
+    // 画面で使っている太さのフォントを埋め込む（通常の太さだけだと太字が合成の太字になり形が変わる）
+    const fontWeights = freeze && typeof MeldexExportHtml.usedFontWeights === 'function'
+      ? MeldexExportHtml.usedFontWeights(def.el)
+      : (def.fontWeights || undefined);
+    // 使っている文字だけのフォント（画面と同じ書体）を埋め込む。作れない環境では同梱のフォントを丸ごと埋め込む
+    let fontCss = '';
+    if (publishCfg.embed_font !== false) {
+      const subset = freeze && typeof MeldexExportHtml.subsetFontCss === 'function'
+        ? await MeldexExportHtml.subsetFontCss(def.el)
+        : null;
+      fontCss = subset?.css || await MeldexExportHtml.embedFont(fontWeights, assetCollector);
+    }
 
     const isFormPublication = !!def.preserveFormControls && !!clone.querySelector('form[data-publish-form]');
     // ランタイム設定は公開フォームにだけ埋め込む。通常公開へdb pathやtokenを
@@ -475,7 +552,7 @@ const MeldexPublicRuntime = (() => {
     const bodyHtml = clone.outerHTML + (isFormPublication ? '\n<div id="meldex-publish-msg"></div>' : '');
 
     const title = publishCfg.title || (typeof _getViewTitle === 'function' ? _getViewTitle(viewType) : 'Meldex');
-      return MeldexExportHtml.buildHtml(title, bodyHtml, cssText, fontCss, extraHeadHtml);
+      return MeldexExportHtml.buildHtml(title, bodyHtml, cssText, fontCss, extraHeadHtml, { frozen });
     } finally {
       // 画面外に一時配置したフォーム等の仮要素を破棄
       if (def.disposeEl && def.disposeEl.parentNode) {

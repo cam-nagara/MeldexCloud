@@ -90,6 +90,51 @@ function _csvRegisterHistory(label, beforeSnapshot) {
   return true;
 }
 
+// ── ツールバーの自動リンクの切り替え（CSVごと） ──
+// CSVの書式には表示設定を入れる場所が無く、横に置く設定ファイルの置き場（.meldex）は保存フォルダ内で
+// 使えないため、この端末の中にファイルごとに覚える（ファイルIDで引くので改名・移動でも保たれる）。
+const _CSV_DISPLAY_LAYERS_KEY = 'meldex.csvDisplayLayers.v1';
+function _csvDisplayLayersKey(path) {
+  try { if (typeof _pathToFileId === 'function') return _pathToFileId(path) || String(path || ''); } catch {}
+  return String(path || '');
+}
+function _csvReadDisplayLayers(path) {
+  try {
+    const store = JSON.parse(localStorage.getItem(_CSV_DISPLAY_LAYERS_KEY) || '{}');
+    return store && typeof store === 'object' ? store[_csvDisplayLayersKey(path)] || null : null;
+  } catch { return null; }
+}
+function _csvWriteDisplayLayers(path, next) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(_CSV_DISPLAY_LAYERS_KEY) || '{}');
+    const store = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    store[_csvDisplayLayersKey(path)] = { autoLinks: !!next.autoLinks };
+    localStorage.setItem(_CSV_DISPLAY_LAYERS_KEY, JSON.stringify(store));
+    return true;
+  } catch { return false; }
+}
+function _csvRegisterDisplayLayers(path) {
+  if (!(typeof globalThis.MeldexDisplayLayers?.registerApp === 'function') || !path) return;
+  if (!_csvRegisterDisplayLayers.done) {
+    _csvRegisterDisplayLayers.done = true;
+    MeldexDisplayLayers.registerApp('csv', {
+      supportsAutoRuby: false,
+      pathForButton() { return _csvPath || ''; },
+      async write(target, next) {
+        if (!_csvWriteDisplayLayers(target, next)) return false;
+        MeldexDisplayLayers.setFileState(target, next, { supportsAutoRuby: false });
+        if (target === _csvPath) {
+          if (_csvSheetModeActive && globalThis.MeldexCsvWorkbench) globalThis.MeldexCsvWorkbench.render();
+          else renderCsvTable();
+        }
+        return true;
+      },
+    });
+  }
+  MeldexDisplayLayers.setFileState(path, _csvReadDisplayLayers(path), { supportsAutoRuby: false });
+  MeldexDisplayLayers.refreshControls();
+}
+
 function _csvSetDecoratedText(el, text) {
   if (!el) return;
   const displayText = String(text ?? '');
@@ -362,6 +407,7 @@ async function openCsvFile(label, path, opts) {
       throw new Error('CSV conflict generation changed while reloading');
     }
     _csvPath = path;
+    _csvRegisterDisplayLayers(path);
     _csvData = parsed;
     _csvHeaders = _csvData.length > 0 ? _csvData[0] : [];
     _csvLastSavedEtag = data.etag || '';

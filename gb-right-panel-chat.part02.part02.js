@@ -256,12 +256,14 @@ function chatSave(event) {
 }
 
 // チャット履歴一覧を表示
-async function renderChatHistory() {
+async function renderChatHistory(options = {}) {
   const listEl = document.getElementById('chat-history-list');
   if (!listEl) return;
-  listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">読み込み中...</div>';
+  window.MeldexChatManagementSheet?.ensureToolbar();
   try {
-    const items = await window.GBChatStorageContext.fetchHistory('/chat/list');
+    const history = window.MeldexChatManagementSheet;
+    const allItems = await history.load(!options.localOnly);
+    const items = allItems.filter(row => history.matches(row)).slice(0,50).map(row=>({...row,name:row.name || row.sessionId || String(row.path).split(/[\\/]/).pop()?.replace(/\.md$/i,'')}));
     if (!items || items.length === 0) {
       listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴がありません</div>';
       return;
@@ -300,17 +302,16 @@ async function renderChatHistory() {
       const providerIcon = getProviderIconHtml(item.provider || 'gemini', 14);
       div.innerHTML = `<div data-chat-state-host style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
       div.addEventListener('click', () => {
-        openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
+        if(item.store==='cli') {switchChatHistoryView('cli');window.GBChatCli?.openSession(item.provider,item.sessionId);}
+        else openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
       listEl.appendChild(div);
     });
     window.MeldexChatListbox?.decorateHistory?.();
   } catch (e) {
-    listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴を取得できません</div>';
+    if(!listEl.children.length) listEl.innerHTML = '<div role="status">履歴を取得できません。再試行してください</div>';
   } finally {
-    if (typeof refreshOpenChatHistorySheet === 'function') {
-      refreshOpenChatHistorySheet().catch(() => {});
-    }
+    if(!options.skipSheetRefresh) window.MeldexChatManagementSheet?.redraw();
   }
 }
 

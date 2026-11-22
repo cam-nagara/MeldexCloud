@@ -1986,7 +1986,10 @@
       const detail = await _readDropboxError(response);
       if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(body?.path, options);
-      throw new Error(String(detail));
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: route,
+        dropboxPath: String(body?.path || ''), namespaceKind: options?.namespaceKind || 'home',
+      });
     }
     throw new Error('Dropboxへもう一度接続してください');
   }
@@ -2040,7 +2043,10 @@
       const detail = await _readDropboxError(response);
       if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
       if (response.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(detail))) _invalidateReadFolders(arg?.path, options);
-      throw new Error(String(detail));
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: route,
+        dropboxPath: String(arg?.path || ''), namespaceKind: options?.namespaceKind || 'home',
+      });
     }
     throw new Error('Dropboxへもう一度接続してください');
   }
@@ -4819,8 +4825,10 @@
         this._listCache.delete(normalized);
         return null;
       }
+      // 使った順は更新するが、取得した時刻は延ばさない。読むたびに有効期限を延ばすと、読み続ける間は
+      // 古い一覧がいつまでも返る（2026-11-22 M-014 フォルダ網羅テスト: Cloud版で作成・改名の後も一覧が古いまま）。
       this._listCache.delete(normalized);
-      this._listCache.set(normalized, { ...cached, at: Date.now() });
+      this._listCache.set(normalized, cached);
       return this._cloneListEntries(cached.entries);
     }
 
@@ -4844,6 +4852,27 @@
       [...this._listInFlight.keys()].forEach((key) => {
         if (key.startsWith(prefix)) this._listInFlight.delete(key);
       });
+      this._forgetListCacheAliases(normalized);
+    }
+
+    // 同じフォルダを2つの書き方で指すことがある（保存先の相対パス「作品/話」と、ソースフォルダの印つきの
+    // 「__dropbox_root__/…/作品/話」）。画面の操作の保存は印つき、一覧の読み込みは印なしで覚えるため、
+    // 片方の書き方で捨てても、もう片方の覚え書きが残って古い一覧を返していた（2026-11-22 M-014）。
+    // Dropbox 上の実際の場所で比べて、同じフォルダ・その親・配下の覚え書きをまとめて捨てる。
+    _forgetListCacheAliases(normalized) {
+      let target = '';
+      const where = key => {
+        try { return String(this._dropboxLocation(key)?.path || '').replace(/\/+$/, '').toLowerCase(); } catch { return ''; }
+      };
+      target = where(normalized);
+      if (!target) return;
+      const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
+      const matches = key => {
+        const location = where(key);
+        return !!location && (location === target || location === parent || location.startsWith(target + '/'));
+      };
+      [...this._listCache.keys()].forEach((key) => { if (matches(key)) this._listCache.delete(key); });
+      [...this._listInFlight.keys()].forEach((key) => { if (matches(key)) this._listInFlight.delete(key); });
     }
 
     invalidateReadCache(relativePath) {
@@ -9114,7 +9143,22 @@
       requestOpts.body = JSON.stringify(requestOpts.body);
     }
     const response = await fetch(url.toString(), requestOpts);
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    if (!response.ok) {
+      // サーバーが返した理由（detail / error / message）を利用者に見せる。以前は「HTTP 500: Internal Server Error」だけで、
+      // 原因が分からなかった（M-014 スケジュール網羅: 自動割り当ての案の作成・名前の変更の失敗）。
+      let detail = '';
+      try {
+        const data = await response.clone().json();
+        const raw = data?.detail ?? data?.error ?? data?.message ?? '';
+        detail = typeof raw === 'string' ? raw : (raw?.message || raw?.msg || '');
+      } catch {}
+      const reading = String(requestOpts.method || 'GET').toUpperCase() === 'GET';
+      const head = reading ? '読み込めませんでした' : '保存できませんでした';
+      const err = new Error(detail ? `${head}: ${detail}` : `${head}（HTTP ${response.status}）`);
+      err.status = response.status;
+      err.userMessage = err.message;
+      throw err;
+    }
     return response.json();
   }
 
@@ -10132,7 +10176,7 @@
         || typeof provider?.walkEntriesFresh !== 'function') {
       throw Object.assign(new Error('bounded参照走査に対応していない保存先です'), { status: 503 });
     }
-    const files = []; const seen = new Set();
+    const files = []; const seen = new Set(); const freshSizes = new Map();
     for (const rootPath of await _workspaceScanRoots()) {
       const remaining = scanner.MAX_FILES - files.length;
       if (remaining <= 0) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
@@ -10140,13 +10184,15 @@
         if (entry.kind !== 'file') continue;
         const path = _normalizeFolderPath(entry.path);
         if (_isExcludedWorkspacePath(path)) continue;
+        if (typeof entry.size === 'number' && Number.isFinite(entry.size) && entry.size >= 0) freshSizes.set(path, entry.size);
         if (!seen.has(path)) { seen.add(path); files.push(path); }
       }
     }
     return scanner.query({
       items, listFiles: async () => files,
       readTextBounded: (path, remaining) => provider.readTextBounded(path, remaining),
-      statSize: async path => Number((await provider.statPathFresh(path))?.size),
+      // fresh走査で受け取った大きさを再利用する。本文は毎回上限つきで読み、実際の総バイト数も走査側で検査する。
+      statSize: async path => freshSizes.has(path) ? freshSizes.get(path) : Number((await provider.statPathFresh(path))?.size),
       isTextLike: scanner.isTextLikePath,
       displayName: path => _displayLabelForPath(path, ''),
     });
@@ -17546,8 +17592,28 @@
     return { entries, owners, record: owners.get(tokenHash) || null };
   }
 
+  // 同じ画面の中で、同じ保持者の記録ファイルへの書き込みを1本ずつにする。コピー・貼り付けや複数の保存が
+  // 同時にロックを取ると、同じファイルへ並行して書いて Dropbox で競合し、再試行の上限（5回）を超えて
+  // 「ほかの変更とぶつかりました」で操作が失敗していた（2026-11-22 M-014 フォルダ網羅テスト、Cloud版）。
+  // 別の端末との競合は、これまでどおり版の確認と再試行で扱う。
+  const _ownerWriteQueues = new Map();
   async function _mutateOwnerStore(provider, scope, updater, tokenHash) {
     if (!/^[0-9a-f]{64}$/.test(tokenHash)) throw new Error('編集リースの保持者を確認できません');
+    const previous = _ownerWriteQueues.get(tokenHash) || Promise.resolve();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const tail = previous.then(() => gate, () => gate);
+    _ownerWriteQueues.set(tokenHash, tail);
+    await previous.catch(() => {});
+    try {
+      return await _mutateOwnerStoreNow(provider, scope, updater, tokenHash);
+    } finally {
+      release();
+      if (_ownerWriteQueues.get(tokenHash) === tail) _ownerWriteQueues.delete(tokenHash);
+    }
+  }
+
+  async function _mutateOwnerStoreNow(provider, scope, updater, tokenHash) {
     const contract = window.MeldexSystemStorage;
     for (let attempt = 0; attempt < 5; attempt++) {
       const [state, legacy] = await Promise.all([_readOwnerRecords(scope, tokenHash), _readLegacyEntries(provider, scope)]);
@@ -22062,6 +22128,10 @@
       provider: String(parsed.frontmatter.provider || ''),
       model: String(parsed.frontmatter.model || ''),
       messageCount: messages.length,
+      searchText: messages.map(message => _chatMessageText(message.content)).join('\n'),
+      hasAttachments: messages.some(message => Array.isArray(message.content) && message.content.some(part => part?.type && !['text','input_text','output_text'].includes(part.type))),
+      store: 'saved',
+      sourceFolder,
       modified: String(stats.modified || '') || (modifiedMs > 0 ? new Date(modifiedMs).toISOString() : ''),
       _modifiedMs: modifiedMs,
     };
@@ -25891,7 +25961,40 @@
   const activeCalendarLeases = new WeakMap();
   const LEASE_PROVIDER_ORIGINAL = Symbol.for('meldex.lease.originalProvider');
 
+  // 同じ画面の中の別々の更新（既定カレンダーの作成と表示の保存など）が同時に共有の更新ロックを取ると、
+  // 互いのロックを奪い合って両方とも「更新ロックを失いました」で失敗していた（M-014 スケジュール網羅、Cloud版の初回起動で発見）。
+  // 同じ保存先への更新は、この画面の中では順番に行う。入れ子の呼び出しで待ち続けないよう、待つのは最大30秒まで。
+  const calendarLeaseQueues = new WeakMap();
+  const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
+
   async function withCalendarLease(provider, operation, context = null) {
+    const active = activeCalendarLeases.get(provider);
+    if (context?.token && active?.token === context.token) return operation(active.context);
+    const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
+    // ロックの中で渡された保存先（guardProvider の写し）からの呼び出しは、今のロックの中の入れ子なので待たない。
+    if (active && key !== provider) return operation(active.context);
+    const previous = (key && calendarLeaseQueues.get(key)) || Promise.resolve();
+    let releaseTurn = () => {};
+    const turn = new Promise(resolve => { releaseTurn = resolve; });
+    if (key) calendarLeaseQueues.set(key, previous.then(() => turn, () => turn));
+    let timer = null;
+    const waited = await Promise.race([
+      previous.then(() => 'turn', () => 'turn'),
+      new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 30000); }),
+    ]);
+    clearTimeout(timer);
+    if (waited === 'timeout') {
+      releaseTurn();
+      fail('カレンダーは別の更新の途中です。少し待ってから再試行してください', 409, 'calendar_lease_conflict');
+    }
+    try {
+      return await withCalendarLeaseNow(provider, operation, context);
+    } finally {
+      releaseTurn();
+    }
+  }
+
+  async function withCalendarLeaseNow(provider, operation, context = null) {
     const store = window.MeldexActiveLockStore;
     if (!store?.acquire || !store?.release || !store?.heartbeat) {
       fail('共有カレンダーの更新ロックを利用できません。再読み込みしてから再試行してください', 503, 'CALENDAR_LOCK_UNAVAILABLE');
@@ -25901,7 +26004,10 @@
     const token = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `calendar-${Date.now()}-${Math.random()}`;
     const holderId = `calendar-mutation:${token}`;
     const lease = {
-      path: 'カレンダー', token, holder_id: holderId, locked_by: 'カレンダー更新',
+      // ロックの持ち主は、この画面で1つ（PAGE_LEASE_TOKEN）。更新ごとに新しい持ち主を作ると、Dropbox の持ち主ごとの
+      // ロックの記録が解放後も残って増え続け、以後のロックの読み書きが全部の記録を読むため、1回の保存が数百回の通信になっていた
+      // （M-014 スケジュール網羅の Cloud版で発見: 数分で43個・約4,400回の読み込み）。更新ごとの区別は holder_id で行う。
+      path: 'カレンダー', token: PAGE_LEASE_TOKEN, holder_id: holderId, locked_by: 'カレンダー更新',
       device_label: 'カレンダー', kind: 'calendar-mutation', include_descendants: true, lease_seconds: 300,
     };
     await store.acquire(provider, lease);
@@ -25967,7 +26073,7 @@
       guardedAliases.forEach(alias => {
         if (activeCalendarLeases.get(alias)?.token === token) activeCalendarLeases.delete(alias);
       });
-      try { await store.release(provider, lease.path, token, holderId); }
+      try { await store.release(provider, lease.path, PAGE_LEASE_TOKEN, holderId); }
       catch (error) { console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error); }
     }
   }
@@ -27204,10 +27310,20 @@
     return { ...receipt.result };
   }
 
-  function _finishValueWrite(frontmatter, body, result) {
+  // 利用者が見ていたセルの中身（cell_base）が保存先の今のセルと同じか（デスクトップ版の cell_base_matches と同じ規則）。
+  // 行の版が古くても、そのセル自体が変わっていなければ保存してよい（別の画面・AIが同じ行の別のセルを書き換えただけ）。
+  function _cellBaseMatches(candidates, body) {
+    if (!body || !Array.isArray(body.cell_base)) return false;
+    const signature = list => (Array.isArray(list) ? list : []).map(item => (item && typeof item === 'object')
+      ? [String(item.value ?? ''), String(item.status || '採用')] : [String(item), '採用']);
+    return JSON.stringify(signature(candidates)) === JSON.stringify(signature(body.cell_base));
+  }
+
+  function _finishValueWrite(frontmatter, body, result, options = {}) {
     const current = Number(frontmatter.meldex_revision || 0);
     for (const key of ['baseRevision', 'base_revision', 'entryRevision', 'revision']) {
       if (body?.[key] == null || body[key] === '') continue;
+      if (options.cellUnchanged) break;
       if (!Number.isInteger(Number(body[key])) || Number(body[key]) !== current) {
         throw Object.assign(new Error('トピックが別の画面または端末で更新されています'), { status: 409, code: 'entry_revision_conflict' });
       }
@@ -27286,7 +27402,7 @@
       if (snapshot && (snapshot.provider !== provider || snapshot.path !== normalized)) {
         throw Object.assign(new Error('読込元と保存先が一致しません'), { status: 409, code: 'snapshot_target_mismatch' });
       }
-      await provider.uploadBytesConditional(normalized, new TextEncoder().encode(content), snapshot?.revision ?? null);
+      return provider.uploadBytesConditional(normalized, new TextEncoder().encode(content), snapshot?.revision ?? null);
     } else {
       if (snapshot) throw Object.assign(new Error('条件付き保存を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
       await provider.writeText(normalized, content);
@@ -27309,11 +27425,28 @@
     return entry?.kind === 'file' ? note : '';
   }
 
+  // 読み取った世代（_frontmatterReadRevision）は記号のキーなので structuredClone で落ちる。
+  // 落ちると次の保存が「新しいファイルの作成」として送られ、既存のシート設定と必ず競合する（2026-11-21）。
+  function _cloneFolderNote(note) {
+    const copy = structuredClone(note);
+    const revision = note?.frontmatter?.[_frontmatterReadRevision];
+    if (revision && copy?.frontmatter && typeof copy.frontmatter === 'object') copy.frontmatter[_frontmatterReadRevision] = revision;
+    return copy;
+  }
+
+  // 保存した後の世代で、同じ内容を書き戻せるようにした控え（列名変更の巻き戻しなどで使う）。
+  function _frontmatterAtSavedRevision(frontmatter, saved) {
+    const snapshot = frontmatter?.[_frontmatterReadRevision];
+    const revision = String(saved?.revision || saved?.rev || '').trim();
+    if (!snapshot || !revision) return frontmatter;
+    return { ...frontmatter, [_frontmatterReadRevision]: { ...snapshot, revision } };
+  }
+
   async function _folderFrontmatter(provider, folderPath) {
     let flights = _folderNoteFlights.get(provider);
     if (!flights) { flights = new Map(); _folderNoteFlights.set(provider, flights); }
     const key = JSON.stringify([provider._mediaScope || '', provider._dropboxLocation?.(folderPath) || folderPath]);
-    if (flights.has(key)) return structuredClone(await flights.get(key));
+    if (flights.has(key)) return _cloneFolderNote(await flights.get(key));
     const pending = (async () => {
       const note = await _folderNotePath(provider, folderPath);
       if (!note) return { path: '', frontmatter: {}, body: '' };
@@ -27321,7 +27454,7 @@
       return { path: note, ...parsed };
     })();
     flights.set(key, pending);
-    try { return structuredClone(await pending); }
+    try { return _cloneFolderNote(await pending); }
     finally { if (flights.get(key) === pending) flights.delete(key); }
   }
 
@@ -28087,6 +28220,30 @@
   }
   internals._deleteSheetStoreEntryIfNeeded = _deleteSheetStoreEntryIfNeeded;
 
+  // 削除の確認（gb-cloud-delete-confirmation.js）で使う、シートの保管ファイルにだけある行の状態（2026-11-22）。
+  // 行ごとのファイルが無い行は Dropbox の状態を引けず、行の削除も、追加した行の取り消しも
+  // 「削除対象の状態を確認できません」で必ず止まっていた。行の識別と中身で確かめ、変わったら止める。
+  async function _sheetStoreRowConfirmationMetadata(provider, rawPath) {
+    const path = _normalizeFolderPath(rawPath || '');
+    if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
+    const dbPath = _dirname(path);
+    if (_isProductionManagementSheetMetadataPath(dbPath)) return null;
+    const store = await _sheetStoreForRead(provider, dbPath);
+    const fileName = _sheetStoreFileName(path);
+    const row = store?.rows?.[fileName];
+    if (!row || row.deleted) return null;
+    const body = String(row.body || '');
+    return {
+      kind: 'file',
+      meta: {
+        id: String(row.frontmatter?._id || row.frontmatter?.id || `sheet-row:${_joinPath(dbPath, fileName)}`),
+        revision: JSON.stringify([row.frontmatter || {}, body, row.updated || '']),
+      },
+      size: body.length,
+    };
+  }
+  internals._sheetStoreRowConfirmationMetadata = _sheetStoreRowConfirmationMetadata;
+
   // _deleteSheetStoreEntryIfNeeded が書いたtombstoneを、その直後の物理ファイル
   // 移動が失敗した時だけ元に戻す（デスクトップ側のロールバック
   // sync_sheet_entry_if_needed(strict=True) と対称）。これが無いと、移動失敗時に
@@ -28394,8 +28551,13 @@
       const fm = _parseFrontmatter(await provider.readText(_joinPath(path, noteName))).frontmatter;
       if (fm.type !== 'settings-db' || fm.meldex_registry !== 'quick-memo-v1') return null;
       return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
-    } catch {
-      return null;
+    } catch (error) {
+      // "Missing" is the only reason to try a different sheet. Permissions,
+      // connectivity and namespace failures must keep their original evidence
+      // and must never silently redirect a pending memo to another root.
+      if (error?.status === 404 || error?.name === 'NotFoundError'
+          || /^(?:not_found|path\/not_found)(?:\/|$)/.test(String(error?.code || error?.message || ''))) return null;
+      throw error;
     }
   }
 
@@ -28678,6 +28840,7 @@
       throw new Error('制作管理に必要な列の名前は変更できません');
     }
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
+    const cellUnchanged = _cellBaseMatches(props[prop], body);
     const list = _normalizeCandidates(props[prop]);
     let index = Number.isInteger(body?.candidate_index) ? body.candidate_index : Number(body?.candidate_index);
     if (!Number.isInteger(index) || index < 0 || index >= list.length) {
@@ -28718,7 +28881,7 @@
     parsed.frontmatter.properties = props;
     return {
       body: parsed.body || '',
-      result: _finishValueWrite(parsed.frontmatter, body, { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex }),
+      result: _finishValueWrite(parsed.frontmatter, body, { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex }, { cellUnchanged }),
     };
   }
 
@@ -29313,6 +29476,7 @@
       folderFrontmatter: path => _folderFrontmatter(provider, path),
       readFrontmatter: path => _readFrontmatterFile(provider, path),
       writeFrontmatter: (path, frontmatter, text) => _writeFrontmatterFile(provider, path, frontmatter, text),
+      atSavedRevision: (frontmatter, saved) => _frontmatterAtSavedRevision(frontmatter, saved),
       listDirectoryEntries: path => _listDirectoryEntries(provider, path),
       listDatabases: () => _listDatabases(provider),
       sheetStoreMode: path => _sheetStoreMode(provider, path),
@@ -29554,7 +29718,12 @@
     const schemaOperations = fm.schema_operations && typeof fm.schema_operations === 'object'
       ? { ...fm.schema_operations }
       : {};
-    if (operationId && schemaOperations[operationId]) return { ...schemaOperations[operationId] };
+    if (operationId && schemaOperations[operationId]) {
+      // 控えには全列の property_ids を持たない。再送の応答はシートの今の値で補う。
+      const receipt = { ...schemaOperations[operationId] };
+      if (!('property_ids' in receipt)) receipt.property_ids = { ...(fm.property_ids || {}) };
+      return receipt;
+    }
     if (expectedSchemaRevision != null && Number(expectedSchemaRevision) !== currentSchemaRevision) {
       const error = new Error('列設定が別の画面または端末で更新されています');
       error.status = 409;
@@ -29588,7 +29757,15 @@
       result.property_ids = fm.property_ids || {};
       result.operation_id = operationId;
       if (operationId) {
-        schemaOperations[operationId] = { ...result };
+        Object.keys(schemaOperations).forEach((key) => {
+          const stored = schemaOperations[key];
+          if (stored && typeof stored === 'object' && 'property_ids' in stored) {
+            const { property_ids: _omitted, ...compact } = stored;
+            schemaOperations[key] = compact;
+          }
+        });
+        const { property_ids: _resultIds, ...receipt } = result;
+        schemaOperations[operationId] = receipt;
         while (Object.keys(schemaOperations).length > 50) delete schemaOperations[Object.keys(schemaOperations)[0]];
         fm.schema_operations = schemaOperations;
       }
@@ -34115,7 +34292,7 @@
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
     await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
-    for (const step of steps) {
+    for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
       if (inProgress && inProgress.name !== step.name) throw new Error('Cloud aftercareの実行中stepが一致しません');
@@ -34155,11 +34332,13 @@
           before_manifest_digest: String(intent.aftercare_in_progress?.before_manifest_digest || ''),
           after_manifest_digest: String(after?.manifest_digest || ''),
         } };
-      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
       completed.add(step.name);
       intent.aftercare_completed = [...completed];
       if (checkpoint) intent.aftercare_manifest_digest = after.manifest_digest;
-      delete intent.aftercare_in_progress;
+      const next = steps.slice(stepIndex + 1).find(candidate => !completed.has(candidate.name));
+      if (next) intent.aftercare_in_progress = { name: next.name,
+        before_manifest_digest: String(after?.manifest_digest || '') };
+      else delete intent.aftercare_in_progress;
       await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
     }
     return { ...record, intent };
@@ -34929,6 +35108,32 @@ async function _writeAnnotationRecord(provider, record) {
   await adapter.save(kind, docId, record);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+}
+
+// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
+// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
+async function _restoreAnnotationRecord(provider, body) {
+  const id = _safeId(body.id, 'annotation id');
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
+  const matches = await _findAnnotationRecordsById(provider, id);
+  const match = matches[0];
+  const current = match?.stored || null;
+  const existing = current?.payload || null;
+  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
+  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
+  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
+  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
+  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
+  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
+  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
+  delete record.tombstone; delete record.deleted; delete record.deleted_at;
+  if (record.state === 'deleted') delete record.state;
+  if (record.status === 'tombstoned') delete record.status;
+  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return { ok: true, id };
 }
 
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
@@ -37445,18 +37650,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
-      const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
-      if (body?.created) {
-        record.created = body.created;
-        record.created_at = body.created_at || body.created;
-      }
-      if (body?.modified) {
-        record.modified = body.modified;
-        record.modified_at = body.modified_at || body.modified;
-      }
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id };
+      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
     }
     if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -37666,8 +37860,16 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
     if (pathname === '/outliner/add' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      const parent = _normalizeFolderPath(body?.parent || '');
+      let parent = _normalizeFolderPath(body?.parent || '');
       const type = String(body?.type || '');
+      if (type === 'form-app') {
+        const home = await window.MeldexDataAccess.requestJson('/home-folder', { method: 'GET' });
+        const personal = _normalizeFolderPath(home?.path || '');
+        if (!personal || home.exists === false || personal.split('/').some(part => part === '..' || part === '.'))
+          throw new Error('個人のホームを設定してください');
+        if (parent.split('/').some(part => part === '..' || part === '.')
+          || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
+      }
       const titleHelper = window.GBPathUtils?.displayTitle;
       const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
@@ -44198,7 +44400,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             else {
               if (typeof state !== 'undefined') { state.view = 'entity'; state.currentEntityPath = entryPath; }
               window.GBOptionTargetContext?.set({ path: entryPath, kind: 'entity' }, 'topic-columns');
-              if (typeof historySetScope === 'function') historySetScope('');
+              // シートの横（サブパネル・ドロワー）では、そのシートの履歴の範囲にする（列一覧・レイアウトの操作がそこへ積まれる）。
+              // 単独のタブのトピックの画面は共通の範囲のまま。
+              if (typeof historySetScope === 'function') historySetScope(typeof options.historyScope === 'function' ? (options.historyScope() || '') : '');
               // The topic is already mounted: the legacy entity-detail sync
               // reopens the subpanel and would discard retained file editors.
               if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.();
@@ -44388,11 +44592,26 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       add('他のタブをすべて閉じる', 'x', () => closeTabs(ids.filter(id => id !== desc.id), desc.id), index < 0 || ids.length <= 1);
       const closedCount = tabRows().length - rows.length;
       if (closedCount > 0) add(`閉じたタブを再表示（${closedCount}）`, 'eye', reopenClosedTabs);
+      // レイアウトのタブの「…」に、トピックレイアウトの編集・名前の変更・複製・書き出し・削除を出す（2026-11-21 ユーザー決定）
+      const layoutId = desc.selectable?.topicLayoutId;
+      if (layoutId && !options.readOnly && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
+        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId });
+        if (layoutItems.length) {
+          separator();
+          layoutItems.forEach(entry => add(entry.label, entry.icon, async () => {
+            // 編集は、そのレイアウトのタブを選んでから始める（タブの表示と編集中の配置をそろえる）
+            if (entry.key === 'edit' && await selectAttachment(desc.selectable) === false) return;
+            await entry.run();
+          }));
+        }
+      }
       if (item && !options.readOnly) {
         const remove = async deleteFile => {
           const name = item.name || item.path;
           const question = deleteFile ? `ファイル「${name}」を削除してトピックから外しますか？ この削除はUndoでは元に戻せません。` : `「${name}」をトピックから外しますか？ ファイルは残ります。`;
-          const confirmed = typeof cfConfirm === 'function' ? await cfConfirm(question) : confirm(question);
+          // ファイルを残して外すだけの時は確認を出さない（Ctrl+Z・やり直し・共通の履歴で戻せる。app/AGENTS.md、
+          // 2026-11-21 予期しないダイアログの検査）。ファイルも消す時は元に戻せないので確認する。
+          const confirmed = !deleteFile || (typeof cfConfirm === 'function' ? await cfConfirm(question) : confirm(question));
           if (!confirmed || options.beforeMutation && !await options.beforeMutation()) return;
           const current = await apiFetch('/entity?path=' + encodeURIComponent(entryPath));
           const result = await apiPost('/sheet-entry/detach', { entry_path: entryPath, attachment_id: item.id, delete_file: deleteFile, expected_revision: current.revision });
@@ -44646,6 +44865,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           { id: 'create-board', icon: getAttachmentIcon('board'), label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
           { id: 'create-form', icon: getAttachmentIcon('form'), label: '新規フォーム', action: () => handleCreateNew('form-app', 'フォーム') },
         ];
+        // トピックレイアウトの追加も統合タブの「＋」から行う（2026-11-21 ユーザー決定）
+        if (columns && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.showAddLayoutMenu) {
+          menuItems.push({ divider: true }, {
+            id: 'add-topic-layout', icon: 'layoutTemplate', label: 'トピックレイアウトを追加…',
+            action: () => window.GBEntityLayout.showAddLayoutMenu(addBtn, options.topicLayoutContext()),
+          });
+        }
 
         menuItems.forEach((item) => {
           if (item.divider) {
@@ -45101,15 +45327,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const name = await uniqueName(label, '.mel-scenario');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'scenario';
+        // 本体の新規作成と同じ現行の形（schema_version 4・文書IDつき）で作る（M-014 S9）。
         const emptyDoc = {
           fileType: 'meldex-scriptnote',
-          schema_version: 3,
+          schema_version: 4,
           version: 1,
           title: name.replace(/\.mel-scenario$/, ''),
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02 },
           scenarioTypes: [], characters: [], characterDb: [], notes: [], rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
+          meldex: { metadata_version: 1, document_id: global.MeldexDocumentIdentity?.newDocumentId?.() || global.crypto?.randomUUID?.() || `scenario-${Date.now()}` },
         };
         await provider.writeText(createdPath, JSON.stringify(emptyDoc, null, 2));
       } else if (itemType === 'form-app') {
@@ -51206,11 +51434,44 @@ if (typeof window !== 'undefined') {
 // 親メニューの overflow/スクロールや zoom 環境でも見切れない
 // panelEl は最初は hidden（display:none）で、class '.gb-context-menu' を付けておくこと
 // （closeTreeContextMenu 等の一括削除対象になる）
-function attachHoverSubmenu(triggerEl, panelEl) {
+const _hoverSubmenuOwners = new WeakMap();
+const _hoverSubmenuGroups = new WeakMap();
+function attachHoverSubmenu(triggerEl, panelEl, options = {}) {
   let hideTimer = null;
-  const clearHide = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
-  const show = () => {
+  let origin = null;
+  let pendingSwitch = null;
+  triggerEl.setAttribute('aria-haspopup', 'menu');
+  triggerEl.setAttribute('aria-expanded', 'false');
+  if (!triggerEl.hasAttribute('tabindex')) triggerEl.tabIndex = 0;
+  panelEl.setAttribute('role', 'menu');
+  const clearHide = (cancelSwitch = true) => {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (cancelSwitch) pendingSwitch = null;
+    document.removeEventListener('mousemove', travel);
+  };
+  const travel = event => {
+    if (!panelEl.isConnected || !triggerEl.isConnected) { clearHide(); return; }
+    if (!origin) return;
+    const rect = panelEl.getBoundingClientRect();
+    const edge = rect.left >= origin.x ? rect.left : rect.right;
+    const fraction = (event.clientX - origin.x) / (edge - origin.x);
+    const top = origin.y + (rect.top - 6 - origin.y) * fraction;
+    const bottom = origin.y + (rect.bottom + 6 - origin.y) * fraction;
+    if (fraction >= 0 && fraction <= 1 && event.clientY >= top && event.clientY <= bottom) hide();
+  };
+  const show = event => {
+    const host = triggerEl.closest('.gb-context-menu, .ab-dropdown');
+    const previous = host && _hoverSubmenuGroups.get(host);
+    if (event?.type === 'mouseenter' && previous && previous !== owner && previous.visible()) {
+      previous.switchTo(() => show());
+      return;
+    }
+    if (previous && previous !== owner) previous.close();
+    if (host) _hoverSubmenuGroups.set(host, owner);
     clearHide();
+    keepAncestors();
+    if (Number.isFinite(event?.clientX)) origin = { x: event.clientX, y: event.clientY };
+    triggerEl.setAttribute('aria-expanded', 'true');
     if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
     panelEl.style.position = 'fixed';
     panelEl.style.zIndex = '10002';
@@ -51218,27 +51479,68 @@ function attachHoverSubmenu(triggerEl, panelEl) {
     panelEl.style.maxWidth = ''; panelEl.style.maxHeight = '';
     panelEl.style.overflowX = ''; panelEl.style.overflowY = '';
     panelEl.style.display = 'block';
+    panelEl.hidden = false;
     const rect = triggerEl.getBoundingClientRect();
     const z = _getZoom();
     panelEl.style.left = (rect.right / z) + 'px';
     panelEl.style.top = (rect.top / z - 4) + 'px';
-    clampPopupToViewport(panelEl);
     // 右端で見切れる場合は trigger の左側に反転
     const pr = panelEl.getBoundingClientRect();
     const vw = window.innerWidth / z;
     if (pr.right / z > vw - 4) {
       panelEl.style.left = Math.max(4, (rect.left / z) - (pr.width / z)) + 'px';
-      clampPopupToViewport(panelEl);
     }
+    clampPopupToViewport(panelEl);
+    options.onShow?.();
   };
   const hide = () => {
-    clearHide();
-    hideTimer = setTimeout(() => { panelEl.style.display = 'none'; }, 200);
+    clearHide(false);
+    hideTimer = setTimeout(() => {
+      const next = pendingSwitch;
+      hideNow();
+      next?.();
+    }, 200);
+    document.addEventListener('mousemove', travel);
   };
+  const keepAncestors = () => {
+    const owner = _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'));
+    owner?.keep();
+  };
+  const hideNow = () => {
+    _hoverSubmenuGroups.get(panelEl)?.close();
+    clearHide(); panelEl.style.display = 'none';
+    triggerEl.setAttribute('aria-expanded', 'false');
+    options.onHide?.();
+  };
+  const leaveAncestors = () => _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'))?.leave();
+  const owner = {
+    keep: () => { clearHide(); keepAncestors(); },
+    leave: () => { hide(); leaveAncestors(); },
+    visible: () => panelEl.isConnected && panelEl.style.display !== 'none',
+    close: hideNow,
+    switchTo: next => { pendingSwitch = next; hide(); },
+  };
+  _hoverSubmenuOwners.set(panelEl, owner);
   triggerEl.addEventListener('mouseenter', show);
   triggerEl.addEventListener('mouseleave', hide);
-  panelEl.addEventListener('mouseenter', clearHide);
-  panelEl.addEventListener('mouseleave', hide);
+  triggerEl.addEventListener('mousemove', event => { origin = { x: event.clientX, y: event.clientY }; });
+  panelEl.addEventListener('mouseenter', () => { clearHide(); keepAncestors(); });
+  panelEl.addEventListener('mouseleave', () => { hide(); leaveAncestors(); });
+  // 呼出元ごとの実装差に関わらず同じ左右キーで往復できる。
+  triggerEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowRight') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    show();
+    const first = panelEl.querySelector('.gb-context-menu-item:not(.disabled):not(:disabled), .ab-dropdown-item:not(.disabled)');
+    if (first) { if (!first.hasAttribute('tabindex')) first.tabIndex = 0; first.focus({ preventScroll: true }); }
+  }, true);
+  panelEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowLeft') return;
+    // ポータル化された更に深い子のキーはその子自身が受け持つ。
+    event.preventDefault(); event.stopImmediatePropagation();
+    hideNow();
+    triggerEl.focus({ preventScroll: true });
+  }, true);
 }
 
 // 全てのポップアップ要素にclampPopupToViewportを自動適用する安全網
@@ -51446,9 +51748,80 @@ function _showMobileStatusToast(text, isError) {
   }, isError ? 5000 : 3500);
 }
 
+// ── 進捗は処理パネル（共通の進捗表示 MeldexOperationProgress）に出し、ステータスバーには出さない ──
+// （2026-11-21 ユーザー指示・UI共通ルール §10）。「〜中...」「〜しています…」のような進行中の知らせは
+// 処理パネルの1件として出し、次の結果・エラーの知らせ（ステータスバーに出す）でその1件を終える。
+const _STATUS_PROGRESS_ELLIPSIS_RE = /(?:\.{3}|…|・・・)\s*$/;
+const _STATUS_PROGRESS_IDLE_MS = 120000;
+let _statusProgressHandle = null;
+let _statusProgressIdleTimer = 0;
+
+function _isStatusProgressMessage(text, isError, options) {
+  if (options?.progress === true) return true;
+  if (options?.progress === false || isError || !text) return false;
+  const core = text.replace(_STATUS_PROGRESS_ELLIPSIS_RE, '');
+  if (core !== text) return /中|して(?:い|お)|ています|ており|準備/.test(core);
+  return /中(?:です)?$/.test(text);
+}
+
+function _statusProgressApi() {
+  const api = typeof window !== 'undefined' ? window.MeldexOperationProgress : null;
+  return api && typeof api.begin === 'function' ? api : null;
+}
+
+function _statusProgressLabel(text) {
+  return String(text || '').replace(_STATUS_PROGRESS_ELLIPSIS_RE, '').trim() || '処理中';
+}
+
+function _beginStatusProgress(api, text) {
+  const label = _statusProgressLabel(text);
+  const current = _statusProgressHandle;
+  const state = current?.getState?.();
+  if (current && state && !api.isTerminalStatus?.(state.status)) current.update({ label });
+  else _statusProgressHandle = api.begin({ kind: 'status-progress', label, delayMs: 250 });
+  clearTimeout(_statusProgressIdleTimer);
+  // 終わりの知らせが来ない処理（保存のダイアログを閉じた等）でも、処理パネルに残り続けない。
+  _statusProgressIdleTimer = setTimeout(() => _endStatusProgress('', false), _STATUS_PROGRESS_IDLE_MS);
+}
+
+function _endStatusProgress(text, isError) {
+  const handle = _statusProgressHandle;
+  if (!handle) return;
+  _statusProgressHandle = null;
+  clearTimeout(_statusProgressIdleTimer);
+  if (isError) handle.fail({ error: text || '失敗しました' });
+  else handle.succeed(text ? { summary: text } : {});
+}
+
+// 長い処理（HTMLの作成など）を処理パネルに出しながら実行する。開始直後から表示し、終わったら閉じる。
+async function runWithProgress(label, task, options = {}) {
+  const api = _statusProgressApi();
+  const handle = api ? api.begin({ kind: options.kind || 'operation', label: label || '処理中', showImmediately: options.showImmediately !== false, delayMs: options.delayMs }) : null;
+  if (!handle && typeof showStatus === 'function') showStatus((label || '処理中') + '...', false, { progress: false });
+  try {
+    const result = await task(handle);
+    const state = handle?.getState?.();
+    if (handle && state && !api.isTerminalStatus?.(state.status)) {
+      if (result === false) handle.cancelled?.({});
+      else handle.succeed(options.summary ? { summary: options.summary } : {});
+    }
+    return result;
+  } catch (error) {
+    handle?.fail?.(error instanceof Error ? error : { error: String(error?.message || error || '失敗しました') });
+    throw error;
+  }
+}
+if (typeof window !== 'undefined') window.runWithProgress = runWithProgress;
+
 function showStatus(msg, isError, options) {
   const el = document.getElementById('sb-msg');
   const text = String(msg || '');
+  if (_isStatusProgressMessage(text, isError, options)) {
+    const api = _statusProgressApi();
+    if (api) { _beginStatusProgress(api, text); return; }
+  } else if (text || isError) {
+    _endStatusProgress(text, isError);
+  }
   if (!el) {
     console.log((isError ? 'ERROR: ' : '') + text);
     if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
@@ -51593,6 +51966,8 @@ const LUCIDE = {
   tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   tags: '<path d="m15 5 6.3 6.3a2.4 2.4 0 0 1 0 3.4L17 19"/><path d="M9.586 5.586A2 2 0 0 0 8.172 5H3a1 1 0 0 0-1 1v5.172a2 2 0 0 0 .586 1.414L8.29 18.29a2.426 2.426 0 0 0 3.42 0l3.58-3.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/>',
   link2: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>',
+  // 自動ルビの切り替え（親文字の上にルビの線）
+  furigana: '<path d="M8 3h8"/><path d="M6 9h12"/><path d="M12 9v12"/><path d="M9 21h6"/>',
   alignLeft: '<line x1="21" x2="3" y1="6" y2="6"/><line x1="15" x2="3" y1="12" y2="12"/><line x1="17" x2="3" y1="18" y2="18"/>',
   calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
   sigma: '<path d="M18 6H7.5l4.244 6L7.5 18H18"/>',
@@ -51778,15 +52153,16 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
-// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// 主要アプリツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19「ツールバー」）。
 // どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
-// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。押すと、そのアプリの
+// メインメニュー（旧☰メニューと同じ項目）を開く。☰ボタンと「フォルダツリーで表示」ボタンは置かない。
 const UI_TOOLBAR_APP_ICON_LABELS = {
   database: 'シート',
   page: 'ノート',
   scriptnote: 'シナリオ',
   board: 'ボード',
-  calendar: 'カレンダー',
+  calendar: 'スケジュール',
   'form-app': 'フォーム',
   map: 'マップ',
   csv: 'CSV',
@@ -51796,34 +52172,72 @@ const UI_TOOLBAR_APP_ICON_LABELS = {
 };
 const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
 const UI_TOOLBAR_APP_ICON_SIZE = 24;
+const UI_TOOLBAR_MAIN_MENU_TITLE = 'メインメニュー';
 
 function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-function toolbarAppIconHtml(type) {
+// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
+// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
+function toolbarMainMenuCaretHtml() {
+  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
+}
+
+function toolbarMainMenuLabel(type) {
+  const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
+  return label ? `${label}のメインメニュー` : UI_TOOLBAR_MAIN_MENU_TITLE;
+}
+
+// options.menu: 旧☰と同じ showToolMenu(event, toolType) を開く種別。省略時は toolType=type。
+// options.menu === false の時だけ、操作を持たない目印（role="img"）を返す（現役の呼び出しはない）。
+function toolbarAppIconHtml(type, options) {
   const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
-  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
   const name = toolbarAppIconName(key);
-  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+  const svg = name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : '';
+  if (options?.menu === false) {
+    const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+    return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${svg}</span>`;
+  }
+  const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
+  const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
+  return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
 }
 
-function toolbarAppIconElement(type) {
+// JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
+function toolbarAppIconElement(type, options) {
   const template = document.createElement('template');
-  template.innerHTML = toolbarAppIconHtml(type);
-  return template.content.firstElementChild;
+  const onClick = typeof options?.onClick === 'function' ? options.onClick : null;
+  template.innerHTML = toolbarAppIconHtml(type, onClick ? { ...options, action: false } : options);
+  const el = template.content.firstElementChild;
+  if (el && onClick) el.addEventListener('click', onClick);
+  return el;
 }
 
+// 静的HTMLに置いた空の .tb-app-icon を埋める。メインメニューボタン（button）の名前・状態も揃える。
 function hydrateToolbarAppIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
   const nodes = [];
   if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
   scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
   nodes.forEach(el => {
-    if (el.querySelector('svg')) return;
     const key = el.getAttribute('data-app-icon') || '';
-    const name = toolbarAppIconName(key);
-    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.querySelector('svg')) {
+      const name = toolbarAppIconName(key);
+      if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    }
+    if (el.tagName === 'BUTTON') {
+      // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
+      if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
+      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
+      if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
+      if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
+      if (!el.hasAttribute('aria-haspopup')) el.setAttribute('aria-haspopup', 'menu');
+      if (!el.hasAttribute('aria-expanded')) el.setAttribute('aria-expanded', 'false');
+      return;
+    }
     if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
     if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
   });
@@ -51831,6 +52245,7 @@ function hydrateToolbarAppIcons(root) {
 if (typeof window !== 'undefined') {
   window.toolbarAppIconHtml = toolbarAppIconHtml;
   window.toolbarAppIconElement = toolbarAppIconElement;
+  window.toolbarMainMenuLabel = toolbarMainMenuLabel;
   window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
 }
 
@@ -51962,6 +52377,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-clipboardCheck')) name = 'clipboardCheck';
     else if (cls.includes('ico-disc')) name = 'disc';
     else if (cls.includes('ico-funnel')) name = 'funnel';
+    else if (cls.includes('ico-scanText')) name = 'scanText';
+    else if (cls.includes('ico-textCursorInput')) name = 'textCursorInput';
     else if (cls.includes('ico-type')) name = 'type';
     else if (cls.includes('ico-table')) name = 'table';
     // 右レール タグパネル等のタグアイコン（ico-tags は ico-tag より前に置く）
@@ -51984,11 +52401,19 @@ function replaceIcons(root) {
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
     // ボタン(ico-terminal)が未登録で常に空アイコンになっていたため追加。
     else if (cls.includes('ico-terminal')) name = 'terminal';
+    // ツールバーの自動ルビの切り替え（2026-11-21）
+    else if (cls.includes('ico-furigana')) name = 'furigana';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
       const iconSize = inToolbar ? 16 : 18;
-      el.innerHTML = lucide(name, iconSize);
+      const html = lucide(name, iconSize);
+      // 同じ絵がすでに描かれていれば描き直さない。描き直すと押している最中のボタンの中身が差し替わり、
+      // クリックが届かなくなる（オプションの描き直しなどページ全体を対象にした呼び出しで起きていた）。
+      if (el._gbIcoHtml === html && el._gbIcoNode && el.firstElementChild === el._gbIcoNode && el.childNodes.length === 1) return;
+      el.innerHTML = html;
+      el._gbIcoHtml = html;
+      el._gbIcoNode = el.firstElementChild;
       // ツールバー外の旧互換アイコンだけインラインサイズを補完する
       if (!inToolbar) {
         el.style.width = '18px';
@@ -52107,7 +52532,7 @@ function _coreAnnotationElementHit(el, x, y, tolerance = 10) {
  * 親からpostMessageでツール状態を受信し、描画結果を親に送信
  * 親側は ann-markup-sync / ann-markup-save で同期
  */
-function initIframeMarkup(scrollContainer) {
+function initIframeMarkup(scrollContainer, options = {}) {
   const _svgNS = 'http://www.w3.org/2000/svg';
   const _widthDefaults = { pen: 3, marker: 12, eraser: 14 };
   function _loadToolWidths() {
@@ -52129,15 +52554,17 @@ function initIframeMarkup(scrollContainer) {
     : null;
   const wrapper = boardWorld || host;
   const boardMode = !!boardWorld || wrapper?.id === 'bd-world' || wrapper?.dataset?.bdRole === 'world';
-  if (host._annBridge) return host._annBridge;
+  if (host._annBridge) { Object.assign(host._annBridge.options || {}, options); return host._annBridge; }
   if (wrapper._annBridge) {
+    Object.assign(wrapper._annBridge.options || {}, options);
     if (host !== wrapper) host._annBridge = wrapper._annBridge;
     return wrapper._annBridge;
   }
   wrapper.style.position = wrapper.style.position || 'relative';
   const svg = document.createElementNS(_svgNS, 'svg');
   svg.id = 'iframe-ann-overlay';
-  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;');
+  svg.style.touchAction = 'none';
+  svg.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;overflow:visible;touch-action:none;');
   const hitRect = document.createElementNS(_svgNS, 'rect');
   hitRect.setAttribute('width', '100%'); hitRect.setAttribute('height', '100%');
   hitRect.setAttribute('fill', 'transparent');
@@ -52246,6 +52673,22 @@ function initIframeMarkup(scrollContainer) {
     notesLayer.style.height = svg.style.height;
     notesLayer.querySelectorAll('.ann-note-embedded').forEach(note => _applyNotePosition(note, note._annData));
   }
+  function syncSurfaceScroll() {
+    if (!options.scrollContainer || boardMode) return;
+    const sc = options.scrollContainer;
+    const transform = `translate(${-sc.scrollLeft}px, ${-sc.scrollTop}px)`;
+    layer.style.transform = transform;
+    notesLayer.style.transform = transform;
+  }
+  options.scrollContainer?.addEventListener('scroll', syncSurfaceScroll, { passive: true });
+  svg.addEventListener('wheel', event => {
+    const sc = options.scrollContainer;
+    if (!sc || !_ann.active || event.ctrlKey) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? sc.clientHeight : 1;
+    sc.scrollLeft += event.deltaX * unit; sc.scrollTop += event.deltaY * unit;
+    event.preventDefault(); event.stopPropagation();
+  }, { passive: false });
+  syncSurfaceScroll();
   const _resizeObs = new ResizeObserver(_updateSize);
   _resizeObs.observe(wrapper);
   if (host !== wrapper) _resizeObs.observe(host);
@@ -52286,7 +52729,9 @@ function initIframeMarkup(scrollContainer) {
       return _boardClientToWorld(clientX, clientY);
     }
     const r = wrapper.getBoundingClientRect();
-    return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+    const sc = options.scrollContainer || wrapper;
+    const uiZoom = options.localSurface && typeof _annotationUiZoom === 'function' ? _annotationUiZoom() : 1;
+    return { x: (clientX - r.left) / uiZoom + sc.scrollLeft, y: (clientY - r.top) / uiZoom + sc.scrollTop };
   }
 
   function _elementTransformOrigin(el) {
@@ -52490,50 +52935,62 @@ function initIframeMarkup(scrollContainer) {
     catch { return 'anonymous'; }
   }
 
+  const pendingWrites = new Set();
   function _saveBoardAnnotation(payload, onSaved, onError) {
-    if (!boardMode || typeof apiPost !== 'function') return false;
-    apiPost('/annotations', payload).then((res) => {
+    if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = apiPost('/annotations', payload).then(async (res) => {
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
         const label = payload?.shape === 'sticky' || payload?.type === 'comment' ? 'アノテート: 付箋追加' : 'アノテート: 描画追加';
-        _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath).catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, label, payload?.target_path || _ann.targetPath, historyScope).catch(() => {});
       }
+      options.onMutation?.();
       onSaved?.(res);
     }).catch((error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
   function _updateBoardAnnotation(annId, payload, onSaved, onError) {
-    if (!boardMode || !annId || typeof apiPut !== 'function') return false;
-    const handleSaved = (res) => { onSaved?.(res); };
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiPut !== 'function') return false;
+    options.onMutation?.();
+    const handleSaved = (res) => { options.onMutation?.(); onSaved?.(res); };
     const handleError = (error) => {
       _reportMarkupSaveFailure(error);
       onError?.(error);
     };
     if (typeof _putAnnotationWithHistory === 'function') {
       const label = Object.prototype.hasOwnProperty.call(payload || {}, 'color') ? 'アノテート: 色変更' : 'アノテート: 付箋更新';
-      Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId)).then(handleSaved).catch(handleError);
+      const saving = Promise.resolve(_putAnnotationWithHistory(annId, payload, label, annId, options.historyScope?.())).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     } else {
-      apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError);
+      const saving = apiPut('/annotations/' + encodeURIComponent(annId), payload).then(handleSaved).catch(handleError).finally(() => pendingWrites.delete(saving));
+      pendingWrites.add(saving);
     }
     return true;
   }
 
   function _deleteBoardAnnotation(annId, onDeleted, onError) {
-    if (!boardMode || !annId || typeof apiDelete !== 'function') return false;
-    (async () => {
+    if ((!boardMode && !options.localSurface) || !annId || typeof apiDelete !== 'function') return false;
+    options.onMutation?.();
+    const historyScope = options.historyScope?.();
+    const saving = (async () => {
       const before = typeof _fetchAnnotationHistoryRow === 'function'
         ? await _fetchAnnotationHistoryRow(annId).catch(() => null)
         : null;
       await apiDelete('/annotations/' + encodeURIComponent(annId));
-      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId);
+      if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('アノテート: 削除', before, null, annId, historyScope);
+      options.onMutation?.();
       onDeleted?.();
     })().catch((error) => {
       _reportMarkupSaveFailure(error, 'アノテートを削除できませんでした');
       onError?.(error);
-    });
+    }).finally(() => pendingWrites.delete(saving));
+    pendingWrites.add(saving);
     return true;
   }
 
@@ -52877,7 +53334,7 @@ function initIframeMarkup(scrollContainer) {
     const persist = () => {
       const next = _notePayload(data, editor, note);
       Object.assign(data, next);
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = next;
         return;
       }
@@ -52928,7 +53385,7 @@ function initIframeMarkup(scrollContainer) {
       const payload = _notePayload(data, editor, note);
       payload.deleted = true;
       payload.deletedAt = new Date().toISOString();
-      if (boardMode && String(item.id || '').startsWith('pending-note-')) {
+      if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) {
         item._pendingData = payload;
         note.remove();
         return;
@@ -52954,7 +53411,6 @@ function initIframeMarkup(scrollContainer) {
       menu.style.position = 'fixed';
       menu.style.zIndex = '210';
       const hasTail = !!note.querySelector('.ann-tail,.ann-tail-shape');
-      let closeTimer = 0;
       let tailOpen = false;
       let tailTrig = null;
       let tailPanel = null;
@@ -52967,7 +53423,6 @@ function initIframeMarkup(scrollContainer) {
         items[next].focus();
       };
       const closeMenu = (restoreFocus = false) => {
-        clearTimeout(closeTimer);
         document.removeEventListener('pointerdown', onGlobalPointerDown, true);
         document.removeEventListener('keydown', onGlobalKeyDown, true);
         tailTrig?.setAttribute('aria-expanded', 'false');
@@ -52975,7 +53430,6 @@ function initIframeMarkup(scrollContainer) {
         if (restoreFocus && restoreTarget?.isConnected) restoreTarget.focus?.();
       };
       const hideTailPanel = () => {
-        clearTimeout(closeTimer);
         tailOpen = false;
         tailTrig?.setAttribute('aria-expanded', 'false');
         if (tailPanel) {
@@ -52984,7 +53438,6 @@ function initIframeMarkup(scrollContainer) {
         }
       };
       const showTailPanel = () => {
-        clearTimeout(closeTimer);
         if (!tailPanel) return;
         if (!tailPanel.isConnected) document.body.appendChild(tailPanel);
         tailOpen = true;
@@ -52992,19 +53445,15 @@ function initIframeMarkup(scrollContainer) {
         tailPanel.hidden = false;
         tailPanel.style.display = 'block';
         if (typeof window.positionPopup === 'function') {
-          window.positionPopup(tailPanel, tailTrig.getBoundingClientRect(), { prefer: 'right', gap: 2, avoidRect: menu.getBoundingClientRect() });
+          const row = tailTrig.getBoundingClientRect();
+          const root = menu.getBoundingClientRect();
+          window.positionPopup(tailPanel, { left: root.left, right: root.right, top: row.top, bottom: row.bottom }, { prefer: 'right', gap: 2 });
         } else {
           const rect = tailTrig.getBoundingClientRect();
           tailPanel.style.left = rect.right + 2 + 'px';
           tailPanel.style.top = rect.top + 'px';
           if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(tailPanel);
         }
-      };
-      const scheduleTailClose = () => {
-        clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => {
-          if (!tailPanel?.matches(':hover') && !tailTrig?.matches(':hover') && !tailPanel?.contains(document.activeElement)) hideTailPanel();
-        }, 140);
       };
       function onGlobalPointerDown(e2) {
         const inAny = menu.contains(e2.target) || !!tailPanel?.contains(e2.target);
@@ -53107,7 +53556,7 @@ function initIframeMarkup(scrollContainer) {
           window.openColorPalette(note, item.color || '', (newColor) => {
             item.color = newColor || item.color;
             _applyNoteColor(note, item.color);
-            if (boardMode && String(item.id || '').startsWith('pending-note-')) return;
+            if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
             if (_updateBoardAnnotation(item.id, { color: item.color })) return;
             _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
           });
@@ -53135,8 +53584,7 @@ function initIframeMarkup(scrollContainer) {
         });
         tailPanel.appendChild(tailButton);
       });
-      tailTrig.addEventListener('mouseenter', showTailPanel);
-      tailTrig.addEventListener('mouseleave', scheduleTailClose);
+      attachHoverSubmenu(tailTrig, tailPanel, { onShow: showTailPanel, onHide: hideTailPanel });
       tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
       tailTrig.addEventListener('keydown', (e2) => {
         if (e2.key === 'ArrowRight' || e2.key === 'Enter' || e2.key === ' ') {
@@ -53145,8 +53593,6 @@ function initIframeMarkup(scrollContainer) {
           requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
         }
       });
-      tailPanel.addEventListener('mouseenter', () => clearTimeout(closeTimer));
-      tailPanel.addEventListener('mouseleave', scheduleTailClose);
       tailPanel.addEventListener('keydown', (e2) => handleMenuKeydown(e2, tailPanel, () => {
         hideTailPanel();
         tailTrig.focus();
@@ -53208,6 +53654,7 @@ function initIframeMarkup(scrollContainer) {
   // ポインターイベント
   svg.addEventListener('pointerdown', (e) => {
     if (!_ann.active) return;
+    options.onPointer?.();
     if (boardMode && e.button !== 0) return;
     _updateSize();
     if (_ann.tool === 'sticky') {
@@ -53317,6 +53764,8 @@ function initIframeMarkup(scrollContainer) {
       preview.setAttribute('stroke-linecap', 'round'); preview.setAttribute('stroke-linejoin', 'round');
     }
   });
+
+  svg.addEventListener('pointercancel', () => { _ann.drawing = false; _ann.path = []; _ann.pressures = []; layer.querySelector('.ann-preview')?.remove(); });
 
   svg.addEventListener('pointerup', (e) => {
     if (!_ann.drawing) return;
@@ -53571,7 +54020,7 @@ function initIframeMarkup(scrollContainer) {
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -53657,19 +54106,34 @@ function initIframeMarkup(scrollContainer) {
   }
 
   // 親からのpostMessageで同期
-  window.addEventListener('message', (ev) => {
-    if (!_isTrustedParentMessageEvent(ev)) return;
+  const onParentMessage = (ev) => {
+    if (options.localSurface || !_isTrustedParentMessageEvent(ev)) return;
     const msg = ev.data;
     _handleMessage(msg);
-  });
+  };
+  if (!options.localSurface) window.addEventListener('message', onParentMessage);
 
   const bridge = {
+    options,
+    hasPendingWrites: () => pendingWrites.size > 0,
+    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
     svg,
     layer,
     notesLayer,
     ann: _ann,
     handleMessage: _handleMessage,
     updateSize: _updateSize,
+    dispose() {
+      _resizeObs.disconnect();
+      options.scrollContainer?.removeEventListener('scroll', syncSurfaceScroll);
+      _anchoredResizeObserver.disconnect();
+      _anchoredMutationObserver?.disconnect();
+      if (_anchoredRefreshHandle) cancelAnimationFrame(_anchoredRefreshHandle);
+      window.removeEventListener('message', onParentMessage);
+      svg.remove(); notesLayer.remove();
+      delete wrapper._annBridge;
+      if (host !== wrapper) delete host._annBridge;
+    },
     refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
   };
   const e2eBridgeEnabled = (() => {
@@ -55162,6 +55626,9 @@ document.addEventListener('DOMContentLoaded', () => {
       retryable: state.retryable,
       persistentJobId: state.persistentJobId,
       priority: state.priority,
+      attentionKey: state.attentionKey,
+      retryLabel: state.retryLabel,
+      notices: state.notices.slice(),
     };
   }
 
@@ -55258,10 +55725,31 @@ document.addEventListener('DOMContentLoaded', () => {
     return _snapshot(record);
   }
 
+  // 実行中の見出し（「〜しています」「〜中」）を、成功後は結果の言い方（「〜しました」）へ直す。
+  // 呼び出し側が succeed({ label }) で完了後の見出しを渡した場合はそれを使う。
+  function completedLabel(label) {
+    const text = String(label || '').replace(/(?:\.{3}|…|・・・)\s*$/, '').trim();
+    if (!text) return text;
+    let match = text.match(/^(.*)(?:して|し)(?:います|いる|おります)$/);
+    if (match && match[1]) return match[1] + 'しました';
+    match = text.match(/^(.*)て(?:います|いる|おります)$/);
+    if (match && match[1]) return match[1] + 'ました';
+    match = text.match(/^(.*[一-鿿゠-ヿA-Za-z0-9])中$/);
+    if (match && match[1].length >= 2) return match[1] + 'しました';
+    match = text.match(/^(.*[ぁ-ん])中$/);
+    if (match && match[1].length >= 2) return match[1] + 'ました';
+    return text;
+  }
+
   function _finish(record, status, values) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
     _clearTimer(record, 'showTimer');
+    if (status === 'succeeded') {
+      record.state.label = next.label !== undefined && String(next.label || '').trim()
+        ? String(next.label)
+        : completedLabel(record.state.label);
+    }
     record.state.status = status;
     record.state.cancellable = false;
     record.state.completedAt = Date.now();
@@ -55274,6 +55762,9 @@ document.addEventListener('DOMContentLoaded', () => {
       record.state.retryable = true;
     }
     if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.attentionKey !== undefined) record.state.attentionKey = String(next.attentionKey || '');
+    if (next.retryLabel !== undefined) record.state.retryLabel = String(next.retryLabel || '');
+    if (Array.isArray(next.notices)) record.state.notices = next.notices.map(function (item) { return String(item || ''); }).filter(Boolean);
     if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
     if (status === 'succeeded' && record.state.mode === 'determinate' && record.state.total > 0) {
       record.state.processed = record.state.total;
@@ -55366,6 +55857,10 @@ document.addEventListener('DOMContentLoaded', () => {
         retryable: typeof opts.retry === 'function',
         persistentJobId: String(opts.persistentJobId || ''),
         priority: _number(opts.priority, 0),
+        // 閉じた時に「同じ内容を二度と出さない」と記録するための鍵（サーバーが決める）。
+        attentionKey: '',
+        retryLabel: '',
+        notices: [],
       },
       cancel: typeof opts.cancel === 'function' ? opts.cancel : null,
       retry: typeof opts.retry === 'function' ? opts.retry : null,
@@ -55446,7 +55941,67 @@ document.addEventListener('DOMContentLoaded', () => {
     return function () { subscribers.delete(listener); };
   }
 
+  // Poll in the progress owner's realm. A subpanel can be destroyed while a
+  // background job continues; its timers and Promise reactions cannot own this.
+  async function runRemoteJob(options) {
+    const endpoint = String(options.endpoint || '').replace(/\/+$/, '');
+    if (!/^\/api\/[a-z0-9/-]+$/i.test(endpoint)) throw new Error('処理の接続先が正しくありません');
+    const bodyText = JSON.stringify(options.body || {});
+    const label = String(options.label || '処理中');
+    const kind = String(options.kind || 'operation');
+    const quiet = !!options.quiet;
+    let complete = options.onComplete;
+    let ownerFrame = options.ownerFrame, ownerDocument = options.ownerDocument;
+    options = null;
+    let jobId = '', cancelRequested = false;
+    const send = async (suffix, body) => {
+      const response = await window.fetch(endpoint + suffix, body === undefined ? {} : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : '処理を確認できません');
+      return value;
+    };
+    const discardClosedOwner = () => {
+      if (ownerFrame && (!ownerFrame.isConnected || ownerFrame.contentDocument !== ownerDocument)) {
+        complete = null; ownerFrame = null; ownerDocument = null;
+      }
+    };
+    const operation = quiet ? null : begin({ label, kind, background: true, cancellable: true, cancelCompletes: false,
+      cancel: () => { cancelRequested = true; return jobId ? send('/jobs/' + encodeURIComponent(jobId), '{}') : Promise.resolve(); },
+      retry: () => {
+        discardClosedOwner();
+        return runRemoteJob({ endpoint, body: JSON.parse(bodyText), label, kind, quiet,
+          onComplete: complete, ownerFrame, ownerDocument });
+      },
+    });
+    try {
+      let current = await send('/jobs', bodyText);
+      jobId = String(current.id || '');
+      if (!jobId) throw new Error('処理の番号を取得できませんでした');
+      operation?.setPersistentJobId(jobId);
+      if (cancelRequested) await send('/jobs/' + encodeURIComponent(jobId), '{}');
+      while (current.status === 'queued' || current.status === 'running') {
+        discardClosedOwner();
+        operation?.update({ mode: current.total ? 'determinate' : 'indeterminate', processed: current.processed, total: current.total });
+        await new Promise(resolve => window.setTimeout(resolve, 250));
+        current = await send('/jobs/' + encodeURIComponent(jobId));
+      }
+      if (current.status === 'cancelled') { operation?.cancelled(); return null; }
+      if (current.status !== 'succeeded') throw new Error(current.error || '処理に失敗しました');
+      discardClosedOwner();
+      complete?.(current.result);
+      operation?.succeed();
+      return current.result;
+    } catch (error) {
+      operation?.fail({ message: error.message, error });
+      if (!quiet) throw error;
+      return null;
+    }
+  }
+
   window.MeldexOperationProgress = {
+    runRemoteJob,
     begin: begin,
     get: get,
     findByPersistentJobId: findByPersistentJobId,
@@ -55455,6 +56010,7 @@ document.addEventListener('DOMContentLoaded', () => {
     requestCancel: requestCancel,
     retry: retry,
     isTerminalStatus: function (status) { return TERMINAL.has(String(status || '')); },
+    completedLabel: completedLabel,
   };
 })();
 
@@ -55490,6 +56046,7 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
   let trayDragSuppressClick = false;
   const TRAY_AVOID_SELECTOR = [
+    '.gb-context-menu',
     '[data-meldex-operation-avoid]',
     '#controls.gb-toolbar-viewer',
     '.gb-toolbar',
@@ -55519,7 +56076,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (operation.status === 'partial') return '一部失敗';
     if (operation.status === 'unknown') return '結果未確認';
     if (operation.status === 'cancelled') return '中止しました';
-    if (operation.status === 'succeeded') return '完了';
+    // 見出しが既に結果の言い方（「〜しました」）なら「完了」を重ねない。
+    if (operation.status === 'succeeded') return /(?:ました|完了)$/.test(_text(operation.label)) ? '' : '完了';
     const phase = operation.phase || '処理中';
     if (operation.mode === 'determinate' && operation.percent != null) {
       return phase + ' ' + operation.percent + '%';
@@ -55532,7 +56090,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (operation.summary) return operation.summary;
     const parts = [];
     if (operation.mode === 'determinate' && operation.total > 0) {
-      parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
+      if (operation.kind === 'download') {
+        parts.push((Math.min(operation.processed, operation.total) / 1048576).toFixed(1)
+          + ' / ' + (operation.total / 1048576).toFixed(1) + ' MiB');
+      } else parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
     } else if (operation.processed > 0) {
       parts.push(operation.processed + '件確認済み');
     }
@@ -55899,7 +56460,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
-      if (operation.settingsPanel && typeof showSettingsModal === 'function') {
+      // 確認の項目は「押せば直る操作」1つだけを出す。設定を開くだけのボタンは並べない。
+      if (operation.settingsPanel && !operation.attentionKey && typeof showSettingsModal === 'function') {
         const open = document.createElement('button');
         open.type = 'button';
         open.dataset.action = 'open-operation-settings';
@@ -55921,7 +56483,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const retry = document.createElement('button');
         retry.type = 'button';
         retry.dataset.action = 'retry-operation-progress';
-        retry.textContent = '再試行';
+        retry.dataset.e2eId = 'operation-progress-retry:' + operation.id;
+        retry.textContent = operation.retryLabel || '再試行';
         retry.addEventListener('click', function () { window.MeldexOperationProgress.retry(operation.id); });
         actions.appendChild(retry);
       }
@@ -55929,8 +56492,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.dataset.action = 'dismiss-operation-progress';
+        dismiss.dataset.e2eId = 'operation-progress-dismiss:' + operation.id;
         dismiss.textContent = '閉じる';
-        dismiss.addEventListener('click', function () { window.MeldexOperationProgress.get(operation.id)?.dispose(); });
+        dismiss.title = operation.attentionKey
+          ? '閉じても保存済みの内容は消えません。同じ内容は次回から表示しません'
+          : '閉じても保存済みの内容は消えません';
+        dismiss.addEventListener('click', function () {
+          const key = operation.attentionKey;
+          window.MeldexOperationProgress.get(operation.id)?.dispose();
+          // 閉じた内容をサーバーへ残し、再起動後や次回の取り込みで同じ内容を出さない。
+          if (key && typeof apiPost === 'function') {
+            Promise.resolve(apiPost('/import-attention/dismiss', { key: key }, { silentError: true })).catch(function (error) {
+              console.error('閉じた記録を残せませんでした', error);
+            });
+          }
+        });
         actions.appendChild(dismiss);
       }
       row.appendChild(actions);
@@ -56078,7 +56654,8 @@ document.addEventListener('DOMContentLoaded', () => {
     _renderOrigins(operations);
     if (detail?.operation && (detail.reason === 'failed' || detail.reason === 'partial' || detail.reason === 'succeeded')) {
       const op = detail.operation;
-      _ensureLiveRegion().textContent = op.label + ': ' + _statusLabel(op) + (_detailText(op) ? '。' + _detailText(op) : '');
+      const stateText = _statusLabel(op);
+      _ensureLiveRegion().textContent = op.label + (stateText ? ': ' + stateText : '') + (_detailText(op) ? '。' + _detailText(op) : '');
     }
   }
 
@@ -56095,6 +56672,7 @@ document.addEventListener('DOMContentLoaded', () => {
       _scheduleTrayPosition();
     }).observe(document.body, { childList: true });
     window.addEventListener('resize', _scheduleTrayPosition);
+    window.addEventListener('meldex-context-menu-layout', _scheduleTrayPosition);
     window.addEventListener('gb:layout-viewport-resize', _scheduleTrayPosition);
     window.MeldexOperationProgress.subscribe(_render);
   }
@@ -56265,7 +56843,8 @@ document.addEventListener('DOMContentLoaded', () => {
         img.classList.add('meldex-image-load-error');
         const name = state.originalAlt || '画像';
         img.setAttribute('aria-label', name + 'を読み込めません。クリックまたはEnterで再読み込みできます');
-        img.setAttribute('alt', name + 'を読み込めません（再読み込み）');
+        // alt はノート本文へ保存する原文。失敗の案内は表示用の属性だけへ置く。
+        if (!img.getAttribute('data-e2e-id')) img.setAttribute('data-e2e-id', 'content-image-retry');
         img.setAttribute('title', 'クリックまたはEnterで再読み込み');
         img.tabIndex = img.tabIndex >= 0 ? img.tabIndex : 0;
         if (host) {
@@ -57139,6 +57718,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!text || text.length < 4) return false;
     if (/^(?:https?:\/\/|file:\/\/|[a-z]:[\\/]|\\\\|\/(?!\/))/i.test(text)) return true;
     if (!/[\\/]/.test(text) || /\s[\\/]|[\\/]\s/.test(text)) return false;
+    // 日付（2026/11/22 00:42 や 11/22）はパスではない（チャットの日時が「2026/…22」と中略されていた）。
+    if (/^\d{1,4}\/\d{1,2}(?:\/\d{1,4})?(?:[\sT]\d{1,2}:\d{2}(?::\d{2})?)?$/.test(text)) return false;
     return text.split(/[\\/]+/).filter(Boolean).length >= 2;
   }
 
@@ -58354,7 +58935,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gb-icon-picker-cell';
-        btn.dataset.e2eId = 'icon-picker-cell';
+        // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
+        btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
         btn.title = _itemTooltip(item);
         btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
         btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
@@ -58542,7 +59124,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return '---\n' + raw + '\n---\n' + (match ? text.slice(match[0].length) : text || '');
   }
+  // 通常の保存の入口（Cloud版の /file 保存）で通す。フォルダの表示設定（folder_display）も同じく守る。
   function preserve(newText, oldText, path) {
+    const kept = preserveIcon(newText, oldText, path);
+    const folderDisplay = global.MeldexFolderDisplaySettings?.preserve;
+    return typeof folderDisplay === 'function' ? folderDisplay(kept, oldText, path) : kept;
+  }
+  function preserveIcon(newText, oldText, path) {
     if (!String(oldText || '').trim()) return newText;
     if (!/^display_icon(?:_source)?:|"display_icon(?:_source)?"\s*:/m.test(oldText)) return newText;
     const old = readFields(oldText, path), incoming = readFields(newText, path);
@@ -58686,6 +59274,15 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshTabs();
     global.dispatchEvent(new CustomEvent('meldex:file-icon-changed', {detail: {path, icon: spec}}));
   }
+  // 取り消し・やり直し用: 今の版を読み直してからアイコンを書き換える（失敗は例外にして履歴に任せる）。
+  async function replaceIcon(path, spec) {
+    const current = await apiFetch('/file-icon?path=' + encodeURIComponent(path), {silentError: true});
+    const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path, icon: spec || '', if_match_etag: current?.etag || ''}), silentError: true});
+    adoptRevision(path, current?.etag || '', result?.etag || '');
+    await refresh(path, result?.icon || '');
+    return true;
+  }
   async function openPicker(item, anchorEl) {
     if (!canEdit(item) || !global.GBIconAssets) return;
     const path = item.path, activeScope = scope();
@@ -58701,14 +59298,24 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       const save = async spec => {
         if (!isCurrent()) return;
+        // アイコンの変更を取り消せるようにする（以前は記録が無く Ctrl+Z で戻せなかった: 2026-11-22 M-014 網羅テスト）。
+        // 枠は選んだ時点で取り、共通の履歴（ファイルの操作と同じ）へ積む。保存に失敗したら枠を外す。
+        const previousIcon = loaded.icon || '';
+        const reservation = typeof global.historyReserve === 'function' ? global.historyReserve('アイコンを変更', '') : null;
         try {
           const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
-          if (!isCurrent()) return;
+          if (!isCurrent()) { reservation?.cancel(); return; }
           item.display_icon = result.icon || '';
           adoptRevision(path, loaded.etag, result.etag);
+          const nextIcon = result.icon || '';
+          const pushHistory = () => typeof global.historyPush === 'function'
+            ? global.historyPush('アイコンを変更', () => replaceIcon(path, previousIcon), () => replaceIcon(path, nextIcon), '', path)
+            : null;
+          if (reservation) reservation.capture(pushHistory); else pushHistory();
           await refresh(path, result.icon);
         } catch (error) {
+          reservation?.cancel();
           showStatus('アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
         }
       };
@@ -58936,7 +59543,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return value.path ? render(value, px, fallback) : fallback;
   }
   global.MeldexFileIcons = {canEdit, remember, render, openPicker, tabIcon, readFields, writeFields, preserve, matchesScope,
-    toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
+    scope, adoptRevision, toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
   const extensions = global.__MeldexPwaDataAccessExtensions;
   if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body}) => {
     const internals = global.__MeldexPwaDataAccessInternals;
@@ -60380,6 +60987,10 @@ const MeldexDnD = (() => {
     }
     const imageCell = element.closest('.gb-image-cell');
     if (imageCell) return {kind:'native', target:imageCell};
+    // トピックの関連ファイルの欄は、ドロップしたファイルをそのトピックへリンクする（欄の受け口へ渡す）。
+    // ここで止めないと、トピックを開いたシートのタブとしてシートへの取り込み（新しいトピックの作成）になる。
+    const attachments = element.closest('[data-e2e-id="entity-attachments-section"],.meldex-entity-attachments-section');
+    if (attachments) return {kind:'native', target:attachments};
     const note = element.closest('#page-content,#entity-freetext,.gb-subpanel-note-content,[data-editor-local-id="page-content"]');
     const noteRoot = element.closest('#page-view,.gb-note-root,.gb-tool-editor');
     const editable = note || noteRoot?.querySelector('#page-content,[contenteditable="true"]');
@@ -61008,6 +61619,7 @@ const MeldexLinkModal = (() => {
   let _callback = null;
   // サイドバーを一時的にモーダルへ移動するため、元の親 / 次兄弟 / display を記録
   let _sidebarOrigParent = null;
+  let _sidebarEl = null;
   let _sidebarOrigNextSibling = null;
   let _sidebarOrigDisplay = null;
   let _sidebarClickHandler = null;
@@ -61073,12 +61685,16 @@ const MeldexLinkModal = (() => {
     e.stopImmediatePropagation();
     e.stopPropagation();
 
-    insertFileLink({ name, path, type: type || _inferTypeFromPath(path) });
+    insertFileLink({ name, path, type: type || _inferTypeFromPath(path) }).catch(error => {
+      if (typeof showStatus === 'function') showStatus(error.userMessage || error.message || 'リンクを挿入できませんでした', true);
+    });
   }
 
   function _moveSidebarInto(container) {
     const sidebar = document.getElementById('sidebar');
     if (!sidebar) return false;
+    // ダイアログを閉じると外枠ごと文書から外れるので、戻す時は id で探さずこの要素そのものを戻す。
+    _sidebarEl = sidebar;
     _sidebarOrigParent = sidebar.parentNode;
     _sidebarOrigNextSibling = sidebar.nextSibling;
     _sidebarOrigDisplay = sidebar.style.display;
@@ -61093,7 +61709,10 @@ const MeldexLinkModal = (() => {
   }
 
   function _restoreSidebar() {
-    const sidebar = document.getElementById('sidebar');
+    // ダイアログの外枠は onClose より先に文書から外れる（gb-ui.js _finishClose）。その時フォルダツリーは
+    // 外枠の中にあって getElementById では見つからず、戻されないまま画面から消えていた（M-014 第3段階 links で発見）。
+    const sidebar = _sidebarEl || document.getElementById('sidebar');
+    _sidebarEl = null;
     if (!sidebar || !_sidebarOrigParent) return;
     if (_sidebarClickHandler) {
       sidebar.removeEventListener('click', _sidebarClickHandler, true);
@@ -61333,18 +61952,41 @@ const MeldexLinkModal = (() => {
     return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent2);">${esc(text)}</a> `;
   }
 
-  function insertFileLink(item) {
+  async function insertFileLink(item) {
     if (_callback) {
       _callback({ type: 'file', name: item.name, path: item.path, fileType: item.type });
       close();
       return;
     }
-    if (_savedRange) {
+    const range = _savedRange?.cloneRange?.();
+    const host = _resolveHeadingHost(range);
+    const owner = host?.closest?.('[data-path],[data-entity-path]') || host;
+    const dialog = _dialogApi;
+    const path = owner?.dataset?.path || owner?.dataset?.entityPath;
+    if (host && path && typeof apiFetch === 'function') {
+      const lock = await apiFetch('/file-lock/check?path=' + encodeURIComponent(path), { silentError:true });
+      if (lock.locked) throw new Error('編集ロック中のためリンクを挿入できません: ' + (lock.lock_reason || lock.entry?.lock_reason || 'ロックを解除してから操作してください'));
+      if (lock.verification?.ok === false && !lock.verification.skipped) throw new Error('編集ロックの署名を確認できないためリンクを挿入できません');
+    }
+    if (host && typeof ViewLock !== 'undefined' && typeof _getActiveViewLockInfo === 'function') {
+      const info = _getActiveViewLockInfo();
+      if (info && !await ViewLock.guardAction(info.viewKey, info.kind)) return;
+    }
+    if (host && (!host.isConnected || !host.isContentEditable || owner?.contentEditable === 'false' || _dialogApi !== dialog
+        || (owner.dataset.path || owner.dataset.entityPath) !== path)) return;
+    if (range) {
+      host?.focus();
       const sel = window.getSelection();
       sel.removeAllRanges();
-      sel.addRange(_savedRange);
+      sel.addRange(range);
     }
     const selectedText = window.getSelection()?.toString() || item.name;
+    // insertHTML はブラウザがspanの独自属性を落とし、リンクを色付きの文字へ変えてしまう。
+    // フォルダからのドロップと同じ挿入を使い、参照先と取り消しを保つ。
+    if (host && typeof MeldexDnD.insertNodeAtEditableRange === 'function') {
+      if (typeof _pushCustomUndo === 'function') _pushCustomUndo(host);
+      if (MeldexDnD.insertNodeAtEditableRange(host, { ...item, name:selectedText }, range)) { close(); return; }
+    }
     const html = MeldexDnD.createAutoLinkHtml(selectedText, item.path, item.type);
     document.execCommand('insertHTML', false, html);
     close();
@@ -63053,6 +63695,7 @@ if (typeof window !== 'undefined') {
       close.type = 'button';
       close.className = 'gb-btn gb-btn-sm';
       close.textContent = '確認しました';
+      close.dataset.e2eId = 'save-failure-modal-confirm';
       const modal = GBUI.createModal({ title, body, footer: close, closeOnOverlay: false, onClose: () => { modalOpen = false; } });
       close.addEventListener('click', modal.close);
       document.body.appendChild(modal.overlay);
@@ -63193,6 +63836,8 @@ if (typeof window !== 'undefined') {
   const MAX_BYTES = 1024 * 1024;
   const RESERVATION_PREFIX = 'meldex-draft-reservation-v1:';
   const timers = new Map();
+  const queuedContents = new Map();
+  const generations = new Map();
   // 今回の起動中に保全した編集は、前回終了時の残留下書きとして通知しない。
   // 保全データ自体は残し、明示的な一覧と次回起動では従来どおり扱う。
   const sessionDraftKeys = new Set();
@@ -63294,7 +63939,7 @@ if (typeof window !== 'undefined') {
         let value;
         try { value = fn(store); } catch (error) { reject(error); return; }
         tx.oncomplete = () => resolve(value);
-        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction failed'));
       });
     } finally {
       db.close();
@@ -63337,8 +63982,11 @@ if (typeof window !== 'undefined') {
     if (_isPathLocked(safePath)) return { ok: false, skipped: true };
     const scope = _draftScope();
     const key = _draftStorageKey(safePath);
+    const generation = generations.get(key) || 0;
+    generations.set(key, generation);
     const savedAt = new Date().toISOString();
     return _store('readwrite', (store) => {
+      if ((generations.get(key) || 0) !== generation) return { ok: false, skipped: true };
       store.put({ path: key, filePath: safePath, scope, content: String(content || ''), savedAt, lastSyncedAt: String(lastSyncedAt || '') });
       _prune(store, scope).catch(() => {});
       return { ok: true, path: safePath, savedAt };
@@ -63386,8 +64034,10 @@ if (typeof window !== 'undefined') {
     const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
     if (!safePath || _isPathLocked(safePath)) return;
+    queuedContents.set(key, contentSource);
     timers.set(key, setTimeout(() => {
       timers.delete(key);
+      queuedContents.delete(key);
       let content;
       try {
         content = typeof contentSource === 'function' ? contentSource() : contentSource;
@@ -63411,18 +64061,22 @@ if (typeof window !== 'undefined') {
 
   async function clearAllDrafts() {
     const scope = _draftScope();
+    for (const key of generations.keys()) {
+      if (key.startsWith(scope + '\n')) generations.set(key, generations.get(key) + 1);
+    }
     for (const timer of timers.keys()) {
       if (String(timer).startsWith(scope + '\n')) {
         clearTimeout(timers.get(timer));
         timers.delete(timer);
+        queuedContents.delete(timer);
       }
     }
     await _store('readwrite', async (store) => {
       const all = await _request(store.getAll());
       all.filter(item => _isCurrentScopeDraft(item, scope)).forEach(item => store.delete(item.path));
-    }).catch(() => {});
+    });
     for (const item of _reservations().filter(item => _isCurrentScopeDraft(item, scope))) {
-      try { localStorage.removeItem(RESERVATION_PREFIX + item.path); } catch (_) {}
+      localStorage.removeItem(RESERVATION_PREFIX + item.path);
     }
   }
 
@@ -63431,23 +64085,46 @@ if (typeof window !== 'undefined') {
   // 一覧を出した時点とボタンを押した時点でキーの組み立て結果が変わることがあり、
   // その場で作り直すと別キーを消して無言で失敗する（破棄しても毎回再表示される
   // 原因になっていた）。
-  async function clearDraft(path, storageKey) {
+  async function clearDraft(path, storageKey, expectedContent) {
     const safePath = String(path || '').trim();
     if (!safePath) return;
-    const key = _draftTimerKey(safePath);
-    clearTimeout(timers.get(key));
-    timers.delete(key);
+    const matches = content => expectedContent === undefined || content === expectedContent;
     const targets = new Set([_draftStorageKey(safePath)]);
     const explicit = String(storageKey || '').trim();
     if (explicit) targets.add(explicit);
-    targets.forEach(target => { try { localStorage.removeItem(RESERVATION_PREFIX + target); } catch (_) {} });
-    await _store('readwrite', (store) => {
-      targets.forEach(target => store.delete(target));
-    }).catch(() => {});
+    targets.forEach(target => {
+      if (expectedContent === undefined) generations.set(target, (generations.get(target) || 0) + 1);
+      const pending = queuedContents.get(target);
+      let content;
+      try { content = typeof pending === 'function' ? pending() : pending; } catch (_) {}
+      if (matches(content)) { clearTimeout(timers.get(target)); timers.delete(target); queuedContents.delete(target); }
+    });
+    await _store('readwrite', async (store) => {
+      for (const target of targets) {
+        const item = await _request(store.get(target));
+        if (item && matches(item.content)) store.delete(target);
+      }
+    });
+    targets.forEach(target => {
+      const item = JSON.parse(localStorage.getItem(RESERVATION_PREFIX + target) || 'null');
+      if (item && matches(item.content)) localStorage.removeItem(RESERVATION_PREFIX + target);
+    });
   }
 
   async function markSynced(path, expectedContent) {
     const key = _draftStorageKey(path);
+    // 保存完了より遅い退避タイマーが、保存済み本文を下書きへ戻さない。
+    // 新しい入力の予約は下の内容照合で保持する。
+    if (expectedContent !== undefined && timers.has(key)) {
+      const pending = queuedContents.get(key);
+      let content;
+      try { content = typeof pending === 'function' ? pending() : pending; } catch (_) {}
+      if (content === expectedContent) {
+        clearTimeout(timers.get(key));
+        timers.delete(key);
+        queuedContents.delete(key);
+      }
+    }
     if (expectedContent === undefined) {
       // Older callers cannot identify which live-input reservation they saved.
       // Preserve it rather than clearing a newer edit in another surface.
@@ -63481,10 +64158,14 @@ if (typeof window !== 'undefined') {
     return String(path || '').split('/').pop() || String(path || '');
   }
 
+  function _draftLabel(item) {
+    return window.GBPathUtils?.displayTitle?.read?.(item.content, item.path) || _fileLabel(item.path);
+  }
+
   async function _overwriteDraft(item) {
-    if (typeof apiPut !== 'function') return;
+    if (typeof apiPut !== 'function') throw new Error('保存できませんでした');
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
-    await clearDraft(item.path, item.storageKey);
+    await clearDraft(item.path, item.storageKey, item.content);
     const format = window.MeldexDocumentIdentity?.formatForPath?.(item.path, item.content);
     if ((format === 'scenario' || /\.(?:mel-scenario|scriptnote\.json)$/i.test(item.path)) && typeof openScenarioInScriptNote === 'function') {
       await openScenarioInScriptNote(item.path, _fileLabel(item.path));
@@ -63501,7 +64182,7 @@ if (typeof window !== 'undefined') {
   async function _fileExists(path) {
     if (typeof apiFetch !== 'function') return false;
     try {
-      await apiFetch('/file?path=' + encodeURIComponent(path), { silentError: true });
+      await apiFetch('/file?path=' + encodeURIComponent(path) + '&metadata_only=1', { silentError: true });
       return true;
     } catch (error) {
       if (error?.status === 404) return false;
@@ -63514,14 +64195,28 @@ if (typeof window !== 'undefined') {
     const fallback = String(item.path || '').replace(/(\.[^/.]+)?$/, '_recovered$1');
     const nextPath = await cfPrompt('保存されていない編集内容を別名で保存', fallback);
     if (!nextPath) return false;
+    const canonical = value => {
+      let path = String(value || '').trim().replace(/\\/g, '/');
+      const cloud = window.MeldexRuntimeAdapter?.getMode?.() === 'dropbox';
+      if (!cloud && !/^(?:[a-z]:\/|\/)/i.test(path)) {
+        try { if (typeof state !== 'undefined' && state.vaultPath) path = state.vaultPath.replace(/\\/g, '/') + '/' + path; } catch (_) {}
+      }
+      const parts = [];
+      for (const part of path.split('/')) {
+        if (part === '.') continue;
+        if (part === '..' && parts.length) parts.pop();
+        else parts.push(part);
+      }
+      return parts.join('/').toLowerCase();
+    };
+    if (canonical(nextPath) === canonical(item.path)) {
+      if (typeof showStatus === 'function') showStatus('元ファイルとは別の名前を指定してください', true);
+      return false;
+    }
     const exists = await _fileExists(nextPath);
     if (exists) {
-      if (typeof cfConfirm !== 'function') {
-        if (typeof showStatus === 'function') showStatus('同名のファイルが既にあります', true);
-        return false;
-      }
-      const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
-      if (!ok) return false;
+      if (typeof showStatus === 'function') showStatus('同名のファイルが既にあります。別の名前を指定してください', true);
+      return false;
     }
     let content = item.content || '';
     if (String(nextPath) !== String(item.path)) {
@@ -63536,9 +64231,9 @@ if (typeof window !== 'undefined') {
     }
     await apiPut('/file?path=' + encodeURIComponent(nextPath), {
       content,
-      ...(exists ? { force_overwrite: true } : { create_only: true }),
+      create_only: true,
     });
-    await clearDraft(item.path, item.storageKey);
+    await clearDraft(item.path, item.storageKey, item.content);
     if (typeof showStatus === 'function') showStatus('保存されていない編集内容を別名保存しました');
     return true;
   }
@@ -63549,6 +64244,92 @@ if (typeof window !== 'undefined') {
     }
     if (typeof window.confirm === 'function') return window.confirm(message);
     return false;
+  }
+
+  // 読込も描画も明示操作時だけ。差分計算の入力を先に制限する。
+  async function _inspectDraft(item, host) {
+    if (host.dataset.loaded === '1' || host.dataset.loading === '1') return;
+    host.dataset.loading = '1';
+    host.textContent = '読み込み中...';
+    const limit = 16000;
+    const split = text => {
+      const raw = String(text || '');
+      const frontmatter = /\.md$/i.test(item.path) ? /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(raw)?.[0] || '' : '';
+      return {frontmatter, body: raw.slice(frontmatter.length)};
+    };
+    const clip = text => String(text || '').slice(0, limit).split('\n').slice(0, 200).join('\n');
+    try {
+      let disk = '', diskFrontmatter = '', missing = false, truncated = false;
+      try {
+        const result = await apiFetch('/file?path=' + encodeURIComponent(item.path) + '&preview_chars=' + limit, { silentError: true });
+        const source = split(result.content);
+        disk = source.body;
+        diskFrontmatter = String(result.frontmatter || source.frontmatter || '');
+        truncated = !!result.truncated;
+      } catch (error) {
+        if (error?.status !== 404) throw error;
+        missing = true;
+      }
+      const source = split(item.content);
+      const draft = clip(source.body), current = clip(disk);
+      truncated ||= draft !== source.body || current !== disk;
+      host.textContent = '';
+      const status = document.createElement('div');
+      status.className = 'gb-section-desc';
+      status.textContent = missing ? 'ファイルが見つかりません' : draft === current ? '表示範囲に差分はありません' : '変更箇所';
+      host.append(status);
+      if (source.frontmatter || diskFrontmatter) {
+        const metadata = document.createElement('div');
+        metadata.textContent = source.frontmatter === diskFrontmatter ? '本文を表示' : '設定にも変更があります';
+        metadata.title = '本文から保存設定を除いて比較しています。保存は設定を含む下書き全体を対象にします';
+        host.append(metadata);
+      }
+      const grid = document.createElement('div');
+      grid.className = 'draft-recovery-diff';
+      grid.setAttribute('role', 'table');
+      grid.setAttribute('aria-label', '未保存の内容と現在のファイル');
+      const render = (left, right) => {
+        grid.textContent = '';
+        for (const title of ['未保存の内容', '現在のファイル']) {
+          const label = document.createElement('strong'); label.textContent = title; grid.append(label);
+        }
+        const a = clip(left).split('\n'), b = missing ? [] : clip(right).split('\n');
+        const rows = typeof _computeDiff === 'function' ? _computeDiff(a, b)
+          : Array.from({length: Math.max(a.length, b.length)}, (_, i) => ({textA:a[i],textB:b[i],type:a[i]===b[i]?'equal':'change'}));
+        for (const row of rows) {
+          for (const text of [row.textA, row.textB]) {
+            const line = document.createElement('div');
+            line.className = row.type === 'equal' ? '' : 'draft-diff-changed';
+            line.textContent = text ?? '';
+            grid.append(line);
+          }
+        }
+      };
+      render(draft, current);
+      if (source.frontmatter || diskFrontmatter) {
+        const toggle = document.createElement('button');
+        toggle.className = 'gb-btn gb-btn-sm';toggle.type = 'button';toggle.textContent = '設定の差分';
+        toggle.setAttribute('aria-pressed', 'false');
+        toggle.title = '保存設定も先頭16,000文字・200行まで比較できます';
+        toggle.addEventListener('click', () => {
+          const settings = toggle.getAttribute('aria-pressed') !== 'true';
+          toggle.setAttribute('aria-pressed', String(settings));toggle.textContent = settings ? '本文の差分' : '設定の差分';
+          render(settings ? source.frontmatter : draft, settings ? diskFrontmatter : current);
+        });
+        host.append(toggle);
+      }
+      host.append(grid);
+      if (truncated || clip(source.frontmatter) !== source.frontmatter || clip(diskFrontmatter) !== diskFrontmatter) {
+        const label = document.createElement('div'); label.textContent = '先頭部分のみ表示';
+        label.title = '各本文の先頭16,000文字・200行まで表示します。保存は下書き全体を対象にします';
+        host.append(label);
+      }
+      host.dataset.loaded = '1';
+    } catch (error) {
+      host.textContent = '読み込めませんでした';
+      const retry = document.createElement('button');retry.className = 'gb-btn gb-btn-sm';retry.textContent = '再試行';
+      retry.addEventListener('click', () => _inspectDraft(item, host));host.append(retry);
+    } finally { delete host.dataset.loading; }
   }
 
   // 編集ロック中（マニュアル等のシステム保護を含む）のパスに残っているドラフトを消す。
@@ -63584,7 +64365,7 @@ if (typeof window !== 'undefined') {
     }
     const alive = new Set(remaining.map(item => String(item.path || '')));
     overlay.querySelectorAll('[data-draft-row]').forEach((row) => {
-      const label = row.querySelector('.draft-recovery-meta')?.getAttribute('title') || '';
+      const label = row.dataset.draftPath || '';
       if (label && !alive.has(label)) row.remove();
     });
     if (!overlay.querySelector('[data-draft-row]')) {
@@ -63599,6 +64380,7 @@ if (typeof window !== 'undefined') {
   }
 
   async function showRecoveryDialog(options = {}) {
+    if (options.startup && startupPromptSettled) return;
     const available = await _pruneLockedDrafts(await listDrafts());
     const drafts = options.startup
       // 旧同梱マニュアルは保存方式の初期化順序に関係なく自動案内から外す。
@@ -63628,16 +64410,20 @@ if (typeof window !== 'undefined') {
     if (activeRecoveryModal && !activeRecoveryModal.isOpen()) activeRecoveryModal.close('stale');
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const rows = drafts.map((item, index) => `
-      <div class="draft-recovery-row" data-draft-row data-draft-index="${index}">
+      <div class="draft-recovery-row" data-draft-row data-draft-index="${index}" data-draft-path="${esc(item.path)}">
         <div class="draft-recovery-info">
-          <div class="draft-recovery-name" title="${esc(_fileLabel(item.path))}">${esc(_fileLabel(item.path))}</div>
-          <div class="draft-recovery-meta" title="${esc(item.path)}">${esc(item.path)} / ${esc(item.savedAt || '')}</div>
+          <div class="draft-recovery-name" title="${esc(_draftLabel(item))}">${esc(_draftLabel(item))}</div>
+          <div class="draft-recovery-meta draft-recovery-location">${esc(item.path)}</div>
+          <time datetime="${esc(item.savedAt || '')}">${esc(new Date(item.savedAt).toLocaleString())}</time>
         </div>
         <div class="draft-recovery-actions">
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="inspect" data-draft-index="${index}" aria-expanded="false">内容を確認</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="reveal" data-draft-index="${index}" title="フォルダツリーで表示">場所を表示</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} の保存されていない変更を破棄">破棄</button>
         </div>
+        <div data-draft-preview hidden></div>
       </div>`).join('');
     const body = document.createElement('div');
     body.className = 'draft-recovery-content';
@@ -63659,6 +64445,7 @@ if (typeof window !== 'undefined') {
     closeButton.dataset.draftAction = 'close';
     closeButton.dataset.e2eId = 'draft-recovery-close';
     closeButton.textContent = '閉じる';
+    closeButton.title = '下書きを残して閉じます。設定から再び確認できます';
     let busy = false;
     const modalApi = window.GBUI.createModal({
       id: 'draft-recovery',
@@ -63691,15 +64478,18 @@ if (typeof window !== 'undefined') {
       if (!button || !overlay.contains(button)) return;
       const action = button.dataset.draftAction;
       if (!action) return;
+      if (busy) return;
       if (action === 'close') { modalApi.close('close-button'); return; }
       if (action === 'discard-all') {
-        if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
         busy = true;
         try {
+          if (!await _confirmDiscard('保存されていない変更をすべて破棄しますか？この操作は元に戻せません。')) return;
           await clearAllDrafts();
           busy = false;
           modalApi.close('discard-all');
           if (typeof showStatus === 'function') showStatus('保存されていない変更をすべて破棄しました');
+        } catch (error) {
+          if (typeof showStatus === 'function') showStatus(error?.message || '破棄できませんでした', true);
         } finally {
           busy = false;
         }
@@ -63707,9 +64497,23 @@ if (typeof window !== 'undefined') {
       }
       const item = drafts[Number(button.dataset.draftIndex)];
       if (!item) return;
+      if (action === 'inspect') {
+        const host = button.closest('[data-draft-row]').querySelector('[data-draft-preview]');
+        host.hidden = !host.hidden;
+        button.setAttribute('aria-expanded', String(!host.hidden));
+        if (!host.hidden) await _inspectDraft(item, host);
+        return;
+      }
+      if (action === 'reveal') {
+        await window.revealPathInFolderTree?.(item.path);
+        modalApi.close('reveal');
+        return;
+      }
       busy = true;
+      overlay.querySelectorAll('[data-draft-action]').forEach(b => { b.disabled = true; });
       try {
         if (action === 'overwrite') {
+          if (typeof cfConfirm !== 'function' || !await cfConfirm('現在のファイルを下書きで上書きしますか？', {danger:true,okLabel:'上書き保存',cancelLabel:'キャンセル'})) return;
           await _overwriteDraft(item);
           busy = false;
           modalApi.close('overwrite');
@@ -63721,15 +64525,18 @@ if (typeof window !== 'undefined') {
           }
         } else if (action === 'discard') {
           if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の保存されていない変更を破棄しますか？この操作は元に戻せません。`)) return;
-          await clearDraft(item.path, item.storageKey);
+          await clearDraft(item.path, item.storageKey, item.content);
           button.closest('[data-draft-row]')?.remove();
           if (!overlay.querySelector('[data-draft-row]')) {
             busy = false;
             modalApi.close('discard-last');
           }
         }
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || '保存できませんでした', true);
       } finally {
         busy = false;
+        overlay.querySelectorAll('[data-draft-action]').forEach(b => { b.disabled = false; });
       }
     });
     modalApi.open();
@@ -64726,13 +65533,29 @@ if (typeof window !== 'undefined') {
   // 「未変更」判定: 直列化結果が自ホストの保存済みbaselineと完全一致するか。
   // 計画書§5工程1-4「現在revisionが保存済みbaselineと同じなら、blur時にMarkdown
   // 再変換、PUT、etag更新、履歴追加を一切行わない」の判定に使う。
+  const _loadedBaselines = new WeakMap();
+  function rememberLoadedBaseline(hostEl, source = hostEl.dataset.lastSavedMd || '') {
+    _loadedBaselines.delete(hostEl);
+    hostEl._noteEditSerializeCache = null;
+    _loadedBaselines.set(hostEl, { source, serialized: serialize(hostEl),
+      path: hostEl.dataset.path, loadSeq: hostEl._openPageLoadSeq });
+  }
+
+  function preserveLoadedMarkdown(hostEl, serialized) {
+    const loaded = _loadedBaselines.get(hostEl);
+    return loaded && loaded.path === hostEl.dataset.path && loaded.loadSeq === hostEl._openPageLoadSeq
+      && loaded.serialized === serialized ? loaded.source : serialized;
+  }
+
   function isUnchanged(hostEl, md) {
     const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
     const coordinator = _coordinator();
     const key = hostEl?.dataset?.documentKey || documentKeyForPath(hostEl?.dataset?.path || '');
     // A -> B (saving) -> A is a new edit: the outstanding B may still reach disk.
     // An unchanged sibling must not submit its old copy over another host's edit.
-    return md === prevSaved && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
+    const loaded = _loadedBaselines.get(hostEl);
+    const matchesLoaded = loaded?.source === prevSaved && md === loaded.serialized;
+    return (md === prevSaved || matchesLoaded) && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
       && !_uncertainSaves.get(hostEl)?.has(hostEl?.dataset?.path || '');
   }
 
@@ -65025,12 +65848,12 @@ if (typeof window !== 'undefined') {
   function renderSavedMarkdownIntoCleanHost(host, path, md) {
     if (typeof window.mdToHtml !== 'function') return false;
     const raw = String(md || '');
-    const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
-    const frontmatter = fmMatch ? fmMatch[1] : '';
+    const frontmatter = typeof window._noteFrontmatterPrefix === 'function' ? window._noteFrontmatterPrefix(raw) : '';
     const bodyMd = frontmatter ? raw.slice(frontmatter.length) : raw;
     const scrollTop = Number(host.scrollTop) || 0;
     const scrollLeft = Number(host.scrollLeft) || 0;
     let html = window.mdToHtml(bodyMd, { basePath: path });
+    window.MeldexNoteDisplaySettings?.applyToHost?.(host, path, frontmatter);
     if (typeof window.applyAutoLinks === 'function') html = window.applyAutoLinks(html, path);
     host.dataset.frontmatter = frontmatter;
     window.MeldexNoteEmbedBlock?.disposeWithin?.(host);
@@ -65046,6 +65869,7 @@ if (typeof window !== 'undefined') {
     if (typeof window._maybeRefreshNoteTocAfterEdit === 'function') window._maybeRefreshNoteTocAfterEdit(host);
     host.scrollTop = scrollTop;
     host.scrollLeft = scrollLeft;
+    rememberLoadedBaseline(host, raw);
     return true;
   }
 
@@ -65198,10 +66022,12 @@ if (typeof window !== 'undefined') {
       }
     };
     sendFn.confirmsWrites = true;
-    return coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
+    const savePromise = coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
       reason: options.reason || 'save',
       focusTarget: options.focusTarget || null,
-    }).then((res) => {
+    });
+    window.MeldexDiagnostics?.watchSheetTask?.('note.save', path, savePromise, { label: 'ノートの保存' });
+    return savePromise.then((res) => {
       // 工程2-A項目4: conflict-pending中はコーディネーターがネットワーク送信
       // 自体をスキップして返す（res.conflictPending）。実際にサーバーへ何も
       // 送っていないため、baseline同期（他ホストへの追従）を一切行わない
@@ -65232,6 +66058,15 @@ if (typeof window !== 'undefined') {
       }
       if (res) coordinator.bindDocumentIdentity?.(path, res);
       return res;
+    }).catch(error => {
+      if (Number(error?.status || error?.httpStatus || 0) !== 409) {
+        window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+          op: 'note.save', endpoint: '/file', method: 'PUT',
+          status: Number(error?.status || error?.httpStatus || 0) || 0,
+          errorType: String(error?.name || 'Error').slice(0, 60), sheet: path,
+        });
+      }
+      throw error;
     });
   }
 
@@ -65240,6 +66075,8 @@ if (typeof window !== 'undefined') {
     bindHostIdentity,
     serialize,
     isUnchanged,
+    rememberLoadedBaseline,
+    preserveLoadedMarkdown,
     registerHost,
     performSave,
     renderSavedMarkdownIntoCleanHost,
@@ -69541,6 +70378,29 @@ ${reason.message}`
       action: info => info.nextAction || '対象ファイルをデスクトップ版で開き、同じメニューから操作を続けてください。',
     },
     {
+      // 400/405/422/428 は本体が理由の文言を返す。理由を出さないと「操作に失敗しました」だけになり、
+      // 何が足りないのか分からない（公開元の種類の登録漏れが原因不明のまま残った実例がある）。
+      test: info => info.status === 400 || info.status === 422,
+      title: '内容を受け付けられませんでした',
+      message: info => _detailText(info) || '送った内容がMeldex本体の確認を通りませんでした。',
+      action: '表示中の対象や入力内容を確認してから、もう一度試してください。',
+      showDetail: true,
+    },
+    {
+      test: info => info.status === 405,
+      title: 'この操作は利用できません',
+      message: info => _detailText(info) || 'Meldex本体がこの操作を受け付けませんでした。',
+      action: '画面を更新してもう一度試し、繰り返す場合はサポートに送信してください。',
+      showDetail: true,
+    },
+    {
+      test: info => info.status === 428,
+      title: '必要な情報が足りません',
+      message: info => _detailText(info) || '操作に必要な情報が足りませんでした。',
+      action: '対象を開き直してから、もう一度試してください。',
+      showDetail: true,
+    },
+    {
       test: info => info.status === 501
         || String(info.code || '') === 'cloud_route_unwired'
         || /not implemented|cloud_route_unwired/i.test(info.raw),
@@ -69561,6 +70421,11 @@ ${reason.message}`
       action: '少し待って再試行し、繰り返す場合はサポートに送信してください。',
     },
   ];
+
+  // 「HTTP 400: 理由」から理由の部分だけを取り出す
+  function _detailText(info) {
+    return String(info?.raw || '').replace(/^\s*HTTP\s+\d{3}\s*:?\s*/i, '').trim();
+  }
 
   function _rawMessage(error) {
     if (error == null) return '';
@@ -69602,17 +70467,18 @@ ${reason.message}`
     const selected = rule || fallback;
     return {
       title: selected.title,
-      message: selected.message,
+      message: typeof selected.message === 'function' ? selected.message(info) : selected.message,
       action: typeof selected.action === 'function' ? selected.action(info) : selected.action,
       technical: raw,
       status: info.status,
       matched: !!rule,
+      showDetail: !!selected.showDetail,
     };
   }
 
   function toStatusText(error, context) {
     const info = translate(error, context);
-    if (!info.matched && info.message) {
+    if ((!info.matched || info.showDetail) && info.message) {
       return `${info.title}: ${info.message} ${info.action}`;
     }
     return `${info.title}: ${info.action}`;
@@ -70410,7 +71276,149 @@ ${reason.message}`
   _installOperationCapture();
   _installStartupNoticeInteractionWatch();
 
+  // ---- シートで起きた問題の自己記録（M-014 追加3、2026-11-20） ----
+  // 保存の失敗・再試行で回復しなかった処理・想定外の例外・止まったままの処理・読み込みの失敗を、
+  // 本体の利用者データフォルダの meldex-sheet-incidents.jsonl へ残す（サーバー側 meldex_sheet_incidents.py）。
+  // 残すのは日時・種類・操作・シートのパス・要求の種類と結果の番号・エラーの種類だけ。本文・値・エラー文は送らない。
+  // Cloud版（保存先がブラウザから直接のDropbox）はローカルのサーバーが無いので、この端末のブラウザ内に直近200件を残す。
+  const SHEET_INCIDENT_ROUTES = /^\/(?:value|values|db-metadata|db-property|db-view|db-views|entity|entities|pivot|sheet-[\w-]+|topic-views|topics|db-[\w-]+)(?:\/|$)/;
+  // スケジュール（/cal/ の保存）も同じ記録へ残す。op は「schedule.」で始め、シートの行と見分ける（M-014 スケジュール網羅、2026-11-22）。
+  const SCHEDULE_INCIDENT_ROUTES = /^\/cal\/(?:events|tasks|calendars|shifts|time|schedule-templates|history)(?:\/|$)/;
+  // フォルダツリー・フォルダパネルのファイル操作（作成・改名・移動・削除・復元・複製・貼り付け・リンク・アイコン）の
+  // 失敗も同じ記録へ残す（2026-11-22 M-014 フォルダ網羅テスト: 改名の保存の失敗が記録0件だった）。
+  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|delete|delete-batch|restore|duplicate|save-as)|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display)(?:\/|$)/;
+  const SHEET_INCIDENT_LOCAL_KEY = 'meldex:sheet-incidents';
+  const _sheetIncidentRecent = new Map();
+  function _incidentRoute(path) {
+    return _safeEndpoint(String(path || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/api(?=\/)/, ''));
+  }
+  function _incidentSheetFrom(path, opts) {
+    try {
+      const url = new URL(String(path || ''), 'http://local');
+      const q = url.searchParams.get('path') || url.searchParams.get('db') || url.searchParams.get('dbPath');
+      // 値の保存はトピックのファイルを指す（…/トピック.md）。記録はシートの単位にする。
+      if (q) return /\.md$/i.test(q) ? q.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : q;
+    } catch {}
+    try {
+      const body = typeof opts?.body === 'string' ? JSON.parse(opts.body) : null;
+      if (body && typeof body === 'object') {
+        const direct = body.db_path || body.dbPath || body.parent_path || body.path || body.old_path || body.parent || '';
+        if (direct) return String(direct);
+        const entry = body.entry_path || body.entity_path || body.entryPath || '';
+        if (entry) return String(entry).split('/').slice(0, -1).join('/');
+      }
+    } catch {}
+    try { return (typeof state !== 'undefined' && state?.currentDbPath) || ''; } catch { return ''; }
+  }
+  function _incidentErrorType(error) {
+    if (!error) return '';
+    if (error.name === 'AbortError' || /timeout|タイムアウト/i.test(String(error.message || ''))) return 'timeout';
+    const status = error.status || error.httpStatus || 0;
+    if (status) return 'HTTP ' + status;
+    return String(error.name || 'Error').replace(/[^\w .:-]/g, '').slice(0, 60) || 'Error';
+  }
+  function _incidentSurface() {
+    try {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return window.matchMedia?.('(max-width: 767px)')?.matches ? 'mobile' : 'cloud';
+    } catch {}
+    return 'desktop';
+  }
+  function _incidentSheetPath(value) {
+    const text = String(value || '').replace(/\\/g, '/');
+    if (/^(?:[A-Za-z]:\/|\/\/|file:)/.test(text)) return text.split('/').filter(Boolean).slice(-2).join('/');
+    return text.slice(0, 300);
+  }
+  function recordSheetIncident(kind, detail = {}) {
+    try {
+      const entry = {
+        kind,
+        op: String(detail.op || '').replace(/[^\w.:/-]/g, '').slice(0, 80),
+        endpoint: detail.endpoint || '',
+        method: detail.method || '',
+        status: detail.status || 0,
+        errorType: detail.errorType || '',
+        sheet: _incidentSheetPath(detail.sheet || ''),
+        ms: detail.ms || 0,
+        source: detail.source || '',
+        surface: _incidentSurface(),
+        appVersion: String(window.MELDEX_VERSION || window.__MELDEX_VERSION__ || '').slice(0, 32),
+      };
+      // 同じ問題が続けて起きた時は10秒に1回だけ残す（記録が画面の操作を重くしないように）。
+      const fingerprint = [entry.kind, entry.op, entry.endpoint, entry.method, entry.status, entry.errorType, entry.sheet].join('|');
+      const now = Date.now();
+      if (now - (_sheetIncidentRecent.get(fingerprint) || 0) < 10000) return false;
+      _sheetIncidentRecent.set(fingerprint, now);
+      if (_sheetIncidentRecent.size > 200) _sheetIncidentRecent.delete(_sheetIncidentRecent.keys().next().value);
+      _push(operationLogs, { label: 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+        try {
+          const list = JSON.parse(localStorage.getItem(SHEET_INCIDENT_LOCAL_KEY) || '[]');
+          list.push({ time: _now(), ...entry });
+          localStorage.setItem(SHEET_INCIDENT_LOCAL_KEY, JSON.stringify(list.slice(-200)));
+        } catch {}
+        return true;
+      }
+      if (typeof apiFetch === 'function') {
+        apiFetch('/diagnostics/sheet-incident', {
+          method: 'POST', body: JSON.stringify(entry), headers: { 'Content-Type': 'application/json' }, silentError: true,
+        }).catch(() => {});
+      }
+      return true;
+    } catch { return false; }
+  }
+  // apiFetch の失敗処理から呼ばれる（保存は silentError でも記録する。読み込みは画面に出した失敗だけ）。
+  function noteRequestFailure(path, opts, error) {
+    const route = _incidentRoute(path);
+    if (!route || route.startsWith('/diagnostics') || route.startsWith('/debug-log')) return;
+    const schedule = SCHEDULE_INCIDENT_ROUTES.test(route);
+    if (!schedule && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
+    const method = String(opts?.method || 'GET').toUpperCase();
+    if (method === 'GET' && (opts?.silentError || error?.name === 'AbortError')) return;
+    // 予定などの ID はパスに入るので、記録の操作名からは外す（/cal/events/<id> → schedule.cal.events.put）。
+    const opRoute = schedule ? 'schedule.' + route.split('/').slice(1, 3).join('.') : route.replace(/^\//, '').replace(/\//g, '.');
+    recordSheetIncident(method === 'GET' ? 'load-failed' : 'save-failed', {
+      op: (opts?.diagnosticOp || (opRoute + '.' + method.toLowerCase())),
+      endpoint: route, method, status: error?.status || error?.httpStatus || 0,
+      errorType: _incidentErrorType(error), sheet: schedule ? '' : _incidentSheetFrom(path, opts),
+    });
+  }
+  // 保存などの処理が一定時間（既定30秒）終わらない時に1回だけ記録し、既存の状態表示で知らせる。
+  function watchSheetTask(op, sheet, promise, options = {}) {
+    const thresholdMs = Number(options.thresholdMs) || 30000;
+    const startedAt = Date.now();
+    let done = false;
+    Promise.resolve(promise).then(() => { done = true; }, () => { done = true; });
+    const timer = setTimeout(() => {
+      if (done) return;
+      recordSheetIncident('stalled', { op, sheet, ms: Date.now() - startedAt, errorType: 'stalled' });
+      const label = options.label || 'シートの保存';
+      try { if (typeof showStatus === 'function') showStatus(label + 'が終わっていません（' + Math.round((Date.now() - startedAt) / 1000) + '秒）', true); } catch {}
+    }, thresholdMs);
+    Promise.resolve(promise).finally(() => clearTimeout(timer)).catch(() => {});
+    return promise;
+  }
+  // スケジュールの保存（予定・ToDo・カレンダー・シフト・打刻）が一定時間終わらない時の記録と知らせ。
+  function watchScheduleTask(op, promise, options = {}) {
+    return watchSheetTask('schedule.' + String(op || 'save'), '', promise, { label: 'スケジュールの保存', ...options });
+  }
+  function _sheetSourceOfStack(stack) {
+    const match = String(stack || '').match(/(gb-(?:db|sheet|topic|database|tool-calendar|scheduler|calendar-item-history|cal-)[\w.-]*\.js)/);
+    return match ? match[1] : '';
+  }
+  function _noteSheetException(error) {
+    const source = _sheetSourceOfStack(error?.stack);
+    if (!source) return;
+    const schedule = /^gb-(?:tool-calendar|scheduler|calendar-item-history|cal-)/.test(source);
+    recordSheetIncident('exception', { op: schedule ? 'schedule.uncaught' : 'uncaught', errorType: _incidentErrorType(error), source, sheet: schedule ? '' : _incidentSheetFrom('', null) });
+  }
+  window.addEventListener('error', event => { try { _noteSheetException(event.error || { stack: event.filename, name: 'Error' }); } catch {} });
+  window.addEventListener('unhandledrejection', event => { try { _noteSheetException(event.reason); } catch {} });
+
   window.MeldexDiagnostics = {
+    recordSheetIncident,
+    noteRequestFailure,
+    watchSheetTask,
+    watchScheduleTask,
     rememberError,
     captureApiError,
     recordOperation,
@@ -70747,7 +71755,7 @@ ${reason.message}`
     showfolderpanelsettings: 'フォルダビューのオプションを開きます',
     showpanelmenu: 'パネルメニューを開きます',
     showsettingsmodal: '設定を開きます',
-    showtoolmenu: 'ツールメニューを開きます',
+    showtoolmenu: 'メインメニューを開きます',
     showunifiedfiltermodal: 'フィルタ条件を設定します',
     showusermenu: 'ユーザー設定を開きます',
     showvalidationrulesmodal: '検証ルールを管理します',
@@ -71598,6 +72606,7 @@ ${reason.message}`
   regSemantic('panel.right.toggle', { label: '右サイドバー', desc: '右サイドバーを開閉します' });
   regSemantic('history.undo', { label: '元に戻す', desc: '直前の操作を元に戻します', shortcutId: 'global.undo' });
   regSemantic('history.redo', { label: 'やり直す', desc: '元に戻した操作をやり直します', shortcutId: 'global.redo' });
+  regSemantic('toolbar.mainMenu', { label: 'メインメニュー', desc: 'このアプリのメニュー（新規作成・保存・書き出し・フォルダツリーで表示など）を開きます' });
   regSemantic('file.save', { label: '保存', desc: '現在の内容を保存します', shortcutId: 'global.save' });
   regSemantic('file.open', { label: '開く', desc: 'ファイルを選んで開きます' });
   regSemantic('file.new', { label: '新規作成', desc: '新しいファイルを作成します' });
@@ -71897,7 +72906,7 @@ ${reason.message}`
   regAction('openscenariocharacterdbimport', { label: 'キャラ取り込み', desc: 'シナリオで使うキャラ情報をシートから取り込みます' });
 
   // ツールメニュー / モバイル / スクショ
-  regAction('showtoolmenu',          { label: 'ツールメニュー', desc: '現在のビューのツールメニューを開きます' });
+  regAction('showtoolmenu',          { label: 'メインメニュー', desc: 'このアプリのメニューを開きます' });
   regAction('showmobiletoolmenu',    { label: 'ツールメニュー', desc: 'モバイル向けツールメニューを開きます' });
   regAction('showscreenshotmenu',    { label: 'スクリーンショット', desc: 'スクリーンショット撮影メニューを開きます' });
   regAction('opentooltab',           { label: 'ツールタブを開く', desc: '指定したツールのタブを開きます' });
@@ -72609,6 +73618,133 @@ ${reason.message}`
 
 ;
 
+/* === gb-search-field.js === */
+;
+/*
+ * gb-search-field.js — 一覧の絞り込みに使う共通の検索欄（UI共通ルール 4.0「検索欄」, 2026-11-21）。
+ *
+ * MeldexSearchField.create(options) → { element, input, getValue(), setValue(v), clear(), focus(), matches(text) }
+ *   placeholder  入力欄の薄い文字（既定「検索」）
+ *   ariaLabel    読み上げ用の名前（既定は placeholder）
+ *   e2eId        data-e2e-id（入力欄に付ける）
+ *   onInput(q)   入力が変わるたびに呼ぶ（同期。重い処理は呼び出し側で間引く）
+ *   onEscape()   入力が空の時の Esc（入力があれば Esc は入力を消すだけ）
+ *
+ * 状態の不変条件（UI共通ルール §19「状態変化で寸法を変えない」）:
+ *   - 消去ボタンは常に場所を取り、入力の有無では表示（visibility）だけを切り替える。
+ *   - 焦点・ホバーでは枠の色だけを変え、太さ・余白・高さは変えない。
+ */
+(function (global) {
+  'use strict';
+
+  const STYLE_ID = 'meldex-search-field-style';
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+:root{--meldex-search-field-height:24px;--meldex-search-field-radius:4px;--meldex-search-field-font-size:12px;--meldex-search-field-icon-size:14px;}
+.meldex-search-field{position:relative;display:flex;align-items:center;box-sizing:border-box;height:var(--meldex-search-field-height);min-height:var(--meldex-search-field-height);border:1px solid var(--border);border-radius:var(--meldex-search-field-radius);background:var(--bg, transparent);color:var(--fg);padding:0 2px 0 6px;gap:4px;flex:0 0 auto;}
+.meldex-search-field:focus-within{border-color:var(--accent);}
+.meldex-search-field-icon{display:inline-flex;align-items:center;justify-content:center;width:var(--meldex-search-field-icon-size);height:var(--meldex-search-field-icon-size);color:var(--fg2);flex:0 0 auto;pointer-events:none;}
+.meldex-search-field-input{flex:1 1 auto;min-width:0;height:100%;box-sizing:border-box;margin:0;padding:0;border:0 !important;outline:none !important;box-shadow:none !important;background:transparent !important;color:inherit;font:inherit;font-size:var(--meldex-search-field-font-size);line-height:1;}
+.meldex-search-field-input::-webkit-search-cancel-button{display:none;}
+.meldex-search-field-clear{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;min-width:18px;min-height:18px;margin:0;padding:0;border:0;border-radius:3px;background:transparent;color:var(--fg2);cursor:pointer;flex:0 0 auto;visibility:hidden;}
+.meldex-search-field.has-value .meldex-search-field-clear{visibility:visible;}
+.meldex-search-field-clear:hover{background:var(--bg3, rgba(127,127,127,.12));color:var(--fg);}
+`;
+    document.head.appendChild(style);
+  }
+
+  function icon(name, size) {
+    return typeof global.lucide === 'function' ? global.lucide(name, size) : '';
+  }
+
+  // 大文字小文字・全角半角・ひらがなカタカナの違いを無視して比べる。
+  function normalize(text) {
+    let value = String(text ?? '');
+    try { value = value.normalize('NFKC'); } catch (_) { /* 古い環境 */ }
+    value = value.toLowerCase();
+    return value.replace(/[ぁ-ゖ]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+  }
+
+  function matches(text, query) {
+    const terms = normalize(query).split(/\s+/).filter(Boolean);
+    if (!terms.length) return true;
+    const target = normalize(text);
+    return terms.every(term => target.includes(term));
+  }
+
+  function create(options = {}) {
+    ensureStyle();
+    const element = document.createElement('div');
+    element.className = 'meldex-search-field';
+    element.setAttribute('role', 'search');
+    const searchIcon = document.createElement('span');
+    searchIcon.className = 'meldex-search-field-icon';
+    searchIcon.setAttribute('aria-hidden', 'true');
+    searchIcon.innerHTML = icon('search', 14);
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.className = 'meldex-search-field-input';
+    input.placeholder = options.placeholder || '検索';
+    input.setAttribute('aria-label', options.ariaLabel || options.placeholder || '検索');
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    if (options.e2eId) input.dataset.e2eId = options.e2eId;
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.className = 'meldex-search-field-clear';
+    clearButton.setAttribute('aria-label', '検索の文字を消す');
+    clearButton.title = '検索の文字を消す';
+    clearButton.tabIndex = -1;
+    clearButton.innerHTML = icon('x', 12) || '×';
+    element.append(searchIcon, input, clearButton);
+
+    const sync = () => {
+      element.classList.toggle('has-value', input.value !== '');
+      try { options.onInput?.(input.value); } catch (error) { console.error('[search-field] onInput failed', error); }
+    };
+    input.addEventListener('input', sync);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || event.isComposing) return;
+      if (input.value) {
+        event.preventDefault();
+        event.stopPropagation();
+        input.value = '';
+        sync();
+      } else if (typeof options.onEscape === 'function') {
+        event.preventDefault();
+        event.stopPropagation();
+        options.onEscape();
+      }
+    });
+    clearButton.addEventListener('mousedown', event => event.preventDefault());
+    clearButton.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      input.value = '';
+      sync();
+      input.focus();
+    });
+
+    return {
+      element,
+      input,
+      getValue: () => input.value,
+      setValue: value => { input.value = String(value ?? ''); sync(); },
+      clear: () => { input.value = ''; sync(); },
+      focus: () => input.focus({ preventScroll: true }),
+      matches: text => matches(text, input.value),
+    };
+  }
+
+  global.MeldexSearchField = { create, matches, normalize };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-column-manager.js === */
 ;
 /*
@@ -72628,9 +73764,16 @@ ${reason.message}`
  *   title        見出し
  *   className    追加するクラス（既存のテストや後始末用）
  *   e2eId        data-e2e-id
- *   getItems()   [{ id, label, visible, lockedVisible? }] を現在の並び順で返す
+ *   icon         見出しの前に出すアイコン名（任意。列管理は専用の columns3Cog）
+ *   getItems()   [{ id, label, visible, lockedVisible?, iconHtml? }] を現在の並び順で返す。
+ *                iconHtml は列名の前に出すアイコン（列見出しと同じ列タイプのアイコン。呼び出し側が作る）
  *   onChange(items, detail)  並び順・表示を変えた時。items は新しい並び順（visible 付き）
  *   renderExtra(container)   見出しの下に追加する設定欄（任意。カードの表示設定など）
+ *   getRowMenuItems(targets) つまみのクリックメニューへ足す項目（任意）。{ duplicate, settings, danger } の
+ *                配列を返す（MeldexContextMenuUI の項目）。targets は MeldexRowHandleMenu.resolveTargets の結果に
+ *                items（対象の行）と refresh()（列を増減した後に一覧を読み直す）を足したもの。
+ *                並べ替え（上へ・下へ）・表示の切り替え・選択の解除と反転は部品側で入れる（UI共通ルール §6）。
+ *   initialQuery 開いた時に検索欄へ入れておく文字（任意。列名の変更で非表示の同名列がある時など）
  *   onClose()    閉じた時
  */
 (function (global) {
@@ -72642,6 +73785,7 @@ ${reason.message}`
   const MIN_WIDTH = 220;
   const MIN_HEIGHT = 160;
   const RESIZE_DIRS = ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'];
+  const ROW_MENU_E2E_ID = 'column-manager-row-menu';
   let current = null;
   let rememberedSize = null;
 
@@ -72656,23 +73800,39 @@ ${reason.message}`
     style.textContent = `
 /* 外枠は角丸で中身を切り抜き、スクロールは内側の本文だけで行う。外枠ごとスクロールさせると、
    スクロールバーが右上・右下の角丸の上に描かれて枠線が途切れる（2026-11-20 報告）。 */
-.meldex-column-manager{position:fixed;z-index:10000;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:hidden;padding:0;display:flex;flex-direction:column;}
+.meldex-column-manager{position:fixed;z-index:10000;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:visible;padding:0;display:flex;flex-direction:column;}
 .meldex-column-manager.is-resized{min-width:0;max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);}
-.meldex-column-manager-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;}
+/* 角丸の切り抜きは本文が自分で行う（外枠は切り抜かない。大きさ変更の取っ手を外枠のすぐ外側へ置くため）。 */
+.meldex-column-manager-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;border-top-left-radius:inherit;border-top-right-radius:inherit;}
+.meldex-column-manager-body:last-child{border-bottom-left-radius:inherit;border-bottom-right-radius:inherit;}
 .meldex-column-manager-body > *{flex-shrink:0;}
-.meldex-column-manager > .meldex-dropdown-close-row{flex-shrink:0;margin-top:0;padding:var(--ui-space-2, 4px) var(--ui-space-3, 6px);}
+.meldex-column-manager > .meldex-dropdown-close-row{flex-shrink:0;margin-top:0;padding:var(--ui-space-2, 4px) var(--ui-space-3, 6px);border-bottom-left-radius:inherit;border-bottom-right-radius:inherit;}
+/* 共通メニューの「直下の div のホバーで背景色」を、本文と取っ手には当てない（2026-11-21 報告: 端へカーソルを
+   近づけると背景色が変わる）。取っ手はカーソルの形だけを変える。 */
+/* 共通メニューの「直下の div は項目」の余白・指カーソルも当てない（取っ手が余白の分だけ太くなり、本文のスクロールバーへ
+   かぶっていた）。本文の余白は今までの見た目（項目と同じ余白）を明示して保つ。 */
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-body{padding:var(--ui-menu-item-padding-y, 4px) var(--ui-menu-item-padding-x, 12px);cursor:default;}
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize{padding:0;margin:0;font-size:0;}
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-body:hover,
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize,
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize:hover{background:transparent;}
+/* 取っ手は外枠のすぐ外側に置き、本文のスクロールバーと重ねない（重なるとスクロールバーを操作できない）。 */
 .meldex-column-manager-resize{position:absolute;z-index:2;touch-action:none;}
-.meldex-column-manager-resize[data-dir="n"]{top:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
-.meldex-column-manager-resize[data-dir="s"]{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
-.meldex-column-manager-resize[data-dir="e"]{top:8px;bottom:8px;right:0;width:5px;cursor:ew-resize;}
-.meldex-column-manager-resize[data-dir="w"]{top:8px;bottom:8px;left:0;width:5px;cursor:ew-resize;}
-.meldex-column-manager-resize[data-dir="ne"]{top:0;right:0;width:10px;height:10px;cursor:nesw-resize;}
-.meldex-column-manager-resize[data-dir="nw"]{top:0;left:0;width:10px;height:10px;cursor:nwse-resize;}
-.meldex-column-manager-resize[data-dir="se"]{bottom:0;right:0;width:10px;height:10px;cursor:nwse-resize;}
-.meldex-column-manager-resize[data-dir="sw"]{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize;}
-.meldex-column-manager-head{display:flex;align-items:center;gap:6px;padding:2px 4px 4px;font-weight:600;font-size:12px;}
-.meldex-column-manager-head .meldex-column-manager-title{flex:1;min-width:0;}
-.meldex-column-manager-head button{font-size:11px;padding:1px 6px;}
+.meldex-column-manager-resize[data-dir="n"]{top:-6px;left:8px;right:8px;height:6px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="s"]{bottom:-6px;left:8px;right:8px;height:6px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="e"]{top:8px;bottom:8px;right:-6px;width:6px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="w"]{top:8px;bottom:8px;left:-6px;width:6px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="ne"]{top:-6px;right:-6px;width:8px;height:8px;cursor:nesw-resize;}
+.meldex-column-manager-resize[data-dir="nw"]{top:-6px;left:-6px;width:8px;height:8px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="se"]{bottom:-6px;right:-6px;width:8px;height:8px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="sw"]{bottom:-6px;left:-6px;width:8px;height:8px;cursor:nesw-resize;}
+/* 見出しの文字は折り返さない（2026-11-21 報告:「列管理」が改行されていた）。幅が足りない時は
+   「すべて表示」「すべて非表示」のほうを次の行へ送る。 */
+.meldex-column-manager-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;padding:2px 4px 4px;font-weight:600;font-size:12px;}
+.meldex-column-manager-head-icon{display:inline-flex;align-items:center;flex:0 0 auto;color:var(--fg2);}
+.meldex-column-manager-head .meldex-column-manager-title{flex:1 0 auto;white-space:nowrap;}
+.meldex-column-manager-head button{font-size:11px;padding:1px 6px;white-space:nowrap;flex:0 0 auto;}
+.meldex-column-manager-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:20px;flex:0 0 auto;opacity:.8;}
 .meldex-column-manager-section{font-size:11px;color:var(--fg2);padding:6px 6px 2px;display:flex;align-items:center;gap:6px;}
 .meldex-column-manager-section-count{opacity:.8;}
 .meldex-column-manager-list{display:flex;flex-direction:column;min-height:22px;border-radius:4px;}
@@ -72691,6 +73851,7 @@ ${reason.message}`
 .meldex-column-manager-row.is-hidden .meldex-column-manager-eye{color:var(--fg2);}
 .meldex-column-manager-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
 .meldex-column-manager-drop-line{height:2px;background:var(--accent);border-radius:1px;margin:0 4px;pointer-events:none;}
+.meldex-column-manager-search{margin:0 2px 2px;}
 .meldex-column-manager-extra{display:flex;flex-direction:column;gap:2px;padding-bottom:4px;border-bottom:1px solid var(--border);margin-bottom:2px;}
 `;
     document.head.appendChild(style);
@@ -72789,6 +73950,9 @@ ${reason.message}`
     const state = current;
     current = null;
     state.cleanup.forEach(fn => { try { fn(); } catch (_) { /* noop */ } });
+    if (document.querySelector(`.gb-row-handle-menu[data-e2e-id="${ROW_MENU_E2E_ID}"]`)) {
+      try { global.MeldexContextMenuUI?.close?.(); } catch (_) { /* noop */ }
+    }
     state.root.remove();
     try { state.options.onClose?.(); } catch (_) { /* noop */ }
   }
@@ -72815,7 +73979,7 @@ ${reason.message}`
     const state = {
       root, options, cleanup: [],
       items: [], selected: new Set(), anchorId: null, toggleAnchorId: null,
-      paint: null, drag: null,
+      paint: null, drag: null, query: '',
     };
     current = state;
     // 中身はスクロールする本文へ入れる（外枠はスクロールさせない）。
@@ -72825,6 +73989,13 @@ ${reason.message}`
 
     const head = document.createElement('div');
     head.className = 'meldex-column-manager-head';
+    if (options.icon) {
+      const headIcon = document.createElement('span');
+      headIcon.className = 'meldex-column-manager-head-icon';
+      headIcon.setAttribute('aria-hidden', 'true');
+      headIcon.innerHTML = icon(options.icon, 14);
+      head.appendChild(headIcon);
+    }
     const titleEl = document.createElement('span');
     titleEl.className = 'meldex-column-manager-title';
     titleEl.textContent = options.title || '列管理';
@@ -72846,6 +74017,34 @@ ${reason.message}`
       if (extra.childNodes.length) body.appendChild(extra);
     }
 
+    // 列名で絞り込む検索欄（共通部品 MeldexSearchField。2026-11-21 ユーザー指示）。絞り込みは表示だけで、
+    // 並べ替え・表示の切り替えの保存は常に全部の列の並びで行う（絞り込みで隠れた列を失わない）。
+    const search = global.MeldexSearchField?.create?.({
+      placeholder: '列名で検索',
+      ariaLabel: '列名で検索',
+      e2eId: 'column-manager-search',
+      onInput: (query) => {
+        state.query = String(query || '');
+        render();
+      },
+    }) || null;
+    if (search) {
+      search.element.classList.add('meldex-column-manager-search');
+      if (options.initialQuery) {
+        search.input.value = String(options.initialQuery);
+        search.element.classList.add('has-value');
+        state.query = String(options.initialQuery);
+      }
+      search.input.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowDown' || event.isComposing) return;
+        const first = shownOrder()[0];
+        if (!first) return;
+        event.preventDefault();
+        rowOf(first.id)?.focus();
+      });
+      body.appendChild(search.element);
+    }
+
     const visibleHead = document.createElement('div');
     visibleHead.className = 'meldex-column-manager-section';
     const visibleList = document.createElement('div');
@@ -72865,6 +74064,7 @@ ${reason.message}`
         label: String(item.label ?? item.id),
         visible: item.visible !== false,
         lockedVisible: item.lockedVisible === true,
+        iconHtml: typeof item.iconHtml === 'string' ? item.iconHtml : null,
       }));
     };
 
@@ -72892,7 +74092,6 @@ ${reason.message}`
       });
     }
 
-    const orderedIds = () => state.items.map(item => item.id);
     const rowOf = id => root.querySelector(`.meldex-column-manager-row[data-id="${cssEscape(id)}"]`);
 
     function cssEscape(value) {
@@ -72911,18 +74110,23 @@ ${reason.message}`
       if (changed) commit(next, detail, commitOptions);
     }
 
-    // 表示中の欄 → 非表示の欄の順に並べ直した「画面の並び」。
+    // 表示中の欄 → 非表示の欄の順に並べ直した「画面の並び」（絞り込み前の全部の列）。
     const displayOrder = () => [
       ...state.items.filter(item => item.visible),
       ...state.items.filter(item => !item.visible),
     ];
+    // 検索欄の文字に一致する列だけ（画面に出ている行）。選択の範囲・キー移動はこちらで決める。
+    const isShown = item => !state.query || (global.MeldexSearchField?.matches
+      ? global.MeldexSearchField.matches(item.label, state.query)
+      : String(item.label).toLowerCase().includes(state.query.toLowerCase()));
+    const shownOrder = () => displayOrder().filter(isShown);
 
     // Shift+目のボタン: 前回押した行（起点）からの範囲。起点の行は押した時に別の欄へ移るので、
     // 起点が元いた欄での位置を覚えておき、同じ欄の今の並びで範囲を決める。
     function toggleRangeIds(anchor, toId) {
       const to = state.items.find(item => item.id === toId);
       if (!to || to.visible !== anchor.visible) return [toId];
-      const section = displayOrder().filter(item => item.visible === anchor.visible).map(item => item.id);
+      const section = shownOrder().filter(item => item.visible === anchor.visible).map(item => item.id);
       const j = section.indexOf(toId);
       const anchorStill = section.indexOf(anchor.id);
       if (anchorStill >= 0) {
@@ -72939,7 +74143,7 @@ ${reason.message}`
       const from = state.items.find(item => item.id === fromId);
       const to = state.items.find(item => item.id === toId);
       if (!from || !to || from.visible !== to.visible) return [toId];
-      const order = displayOrder().map(item => item.id);
+      const order = shownOrder().map(item => item.id);
       const a = order.indexOf(fromId);
       const b = order.indexOf(toId);
       if (a < 0 || b < 0) return [toId];
@@ -72959,8 +74163,10 @@ ${reason.message}`
       const handle = document.createElement('span');
       handle.className = 'meldex-column-manager-handle';
       handle.innerHTML = icon('gripVertical', 14);
-      handle.title = 'ドラッグで並べ替え';
-      handle.setAttribute('aria-hidden', 'true');
+      handle.title = 'クリックでメニュー / ドラッグで並べ替え';
+      handle.setAttribute('role', 'button');
+      handle.setAttribute('aria-label', `${item.label}のメニュー`);
+      handle.dataset.e2eId = 'column-manager-handle';
       const eye = document.createElement('button');
       eye.type = 'button';
       eye.className = 'meldex-column-manager-eye';
@@ -72973,27 +74179,41 @@ ${reason.message}`
       const label = document.createElement('span');
       label.className = 'meldex-column-manager-label';
       label.textContent = item.label;
-      row.append(handle, eye, label);
+      row.append(handle, eye);
+      // 列名の前のアイコン。1行でもアイコンを持つ時は、持たない行（トピック名の列など）にも同じ幅の
+      // 空欄を置いて列名の開始位置をそろえる。
+      if (state.items.some(entry => entry.iconHtml !== null)) {
+        const typeIcon = document.createElement('span');
+        typeIcon.className = 'meldex-column-manager-icon';
+        typeIcon.setAttribute('aria-hidden', 'true');
+        typeIcon.innerHTML = item.iconHtml || '';
+        row.appendChild(typeIcon);
+      }
+      row.appendChild(label);
+      bindRowMenu(handle, row, item);
       return row;
     }
 
     function render() {
       const scrollTop = body.scrollTop;
       const focusedId = document.activeElement?.closest?.('.meldex-column-manager-row')?.dataset.id || null;
-      const visibleItems = state.items.filter(item => item.visible);
-      const hiddenItems = state.items.filter(item => !item.visible);
+      const visibleItems = state.items.filter(item => item.visible && isShown(item));
+      const hiddenItems = state.items.filter(item => !item.visible && isShown(item));
       visibleHead.innerHTML = `<span>表示中</span><span class="meldex-column-manager-section-count">${visibleItems.length}</span>`;
       hiddenHead.innerHTML = `<span>非表示</span><span class="meldex-column-manager-section-count">${hiddenItems.length}</span>`;
       visibleList.replaceChildren(...visibleItems.map(buildRow));
       hiddenList.replaceChildren(...hiddenItems.map(buildRow));
-      if (!visibleItems.length) visibleList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると表示します</div>';
-      if (!hiddenItems.length) hiddenList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると非表示にします</div>';
+      const emptyText = (dropText) => (state.query ? '一致する列はありません' : dropText);
+      if (!visibleItems.length) visibleList.innerHTML = `<div class="meldex-column-manager-empty">${emptyText('ここへドラッグすると表示します')}</div>`;
+      if (!hiddenItems.length) hiddenList.innerHTML = `<div class="meldex-column-manager-empty">${emptyText('ここへドラッグすると非表示にします')}</div>`;
       body.scrollTop = scrollTop;
       if (focusedId) rowOf(focusedId)?.focus({ preventScroll: true });
     }
 
-    showAll.addEventListener('click', () => setVisibility(orderedIds(), true, 'すべて表示'));
-    hideAll.addEventListener('click', () => setVisibility(orderedIds(), false, 'すべて非表示'));
+    // 絞り込み中は、一致している列だけをまとめて切り替える。
+    const shownIds = () => shownOrder().map(item => item.id);
+    showAll.addEventListener('click', () => setVisibility(shownIds(), true, 'すべて表示'));
+    hideAll.addEventListener('click', () => setVisibility(shownIds(), false, 'すべて非表示'));
 
     // --- 選択 -------------------------------------------------------------
     function selectRow(id, event) {
@@ -73079,7 +74299,7 @@ ${reason.message}`
       }
       const row = event.target.closest?.('.meldex-column-manager-row');
       if (!row) return;
-      const order = displayOrder().map(item => item.id);
+      const order = shownOrder().map(item => item.id);
       const idx = order.indexOf(row.dataset.id);
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.altKey) {
         event.preventDefault();
@@ -73122,6 +74342,85 @@ ${reason.message}`
       const other = display.filter(item => item.visible !== section);
       commit(section ? [...nextSection, ...other] : [...other, ...nextSection], block.map(item => item.label).join('、'));
       rowOf(ids[0])?.focus();
+    }
+
+    // --- つまみのクリックメニュー（UI共通ルール §6 行ハンドルのクリックメニュー・一括実行） ------
+    // ドラッグ（4px以上）とクリックは MeldexRowHandleMenu が区別する。クリックは選択を変えない。
+    function refreshItems() {
+      if (current !== state) return;
+      state.items = readItems();
+      const ids = new Set(state.items.map(item => item.id));
+      state.selected = new Set([...state.selected].filter(id => ids.has(id)));
+      render();
+    }
+
+    // 対象（同じ欄の中で連続していなくてもよい）をまとめて1つ上／下へ。欄の端に当たる時は動かさない。
+    function movedSectionOrder(ids, dir) {
+      const targets = state.items.filter(item => ids.includes(item.id));
+      if (!targets.length || targets.some(item => item.visible !== targets[0].visible)) return null;
+      const section = displayOrder().filter(item => item.visible === targets[0].visible);
+      const order = global.MeldexRowHandleMenu?.moveOrder?.(section.map(item => item.id), ids, dir);
+      return order ? { visible: targets[0].visible, order } : null;
+    }
+
+    function applyMovedSection(moved, detail) {
+      const byId = new Map(state.items.map(item => [item.id, item]));
+      const section = moved.order.map(id => byId.get(id));
+      const other = displayOrder().filter(item => item.visible !== moved.visible);
+      commit(moved.visible ? [...section, ...other] : [...other, ...section], detail);
+    }
+
+    function rowMenuItems(rowId) {
+      const order = displayOrder().map(item => item.id);
+      const targets = global.MeldexRowHandleMenu?.resolveTargets?.(rowId, order, state.selected)
+        || { batch: false, ids: [rowId], runs: [[rowId]], count: 1, rowId };
+      const targetItems = targets.ids.map(id => state.items.find(item => item.id === id)).filter(Boolean);
+      if (!targetItems.length) return [];
+      const detail = targetItems.map(item => item.label).join('、');
+      let own = {};
+      if (typeof options.getRowMenuItems === 'function') {
+        try { own = options.getRowMenuItems({ ...targets, items: targetItems.map(item => ({ ...item })), refresh: refreshItems }) || {}; }
+        catch (error) { console.warn('[MeldexColumnManager] 行メニューの項目を作れませんでした', error); }
+      }
+      const up = movedSectionOrder(targets.ids, -1);
+      const down = movedSectionOrder(targets.ids, 1);
+      const allVisible = targetItems.every(item => item.visible);
+      const canHide = targetItems.some(item => item.visible && !item.lockedVisible);
+      const items = [
+        ...(own.duplicate || []),
+        { type: 'separator' },
+        { label: '上へ移動', icon: 'arrowUp', batch: true, disabled: !up, e2eId: 'column-manager-move-up',
+          action: () => { if (up) applyMovedSection(up, detail); } },
+        { label: '下へ移動', icon: 'arrowDown', batch: true, disabled: !down, e2eId: 'column-manager-move-down',
+          action: () => { if (down) applyMovedSection(down, detail); } },
+        { type: 'separator' },
+        ...(own.settings || []),
+        allVisible
+          ? { label: '非表示にする', icon: 'eyeOff', batch: true, disabled: !canHide, e2eId: 'column-manager-hide',
+            action: () => setVisibility(targets.ids, false, detail) }
+          : { label: '表示する', icon: 'eye', batch: true, e2eId: 'column-manager-show',
+            action: () => setVisibility(targets.ids, true, detail) },
+        { type: 'separator' },
+        { label: '選択を解除', batchOnly: true, e2eId: 'column-manager-clear-selection',
+          action: () => { state.selected = new Set(); render(); } },
+        { label: '選択を反転', batchOnly: true, e2eId: 'column-manager-invert-selection',
+          action: () => { state.selected = new Set(order.filter(id => !state.selected.has(id))); render(); } },
+        { type: 'separator' },
+        ...(own.danger || []),
+      ];
+      return global.MeldexRowHandleMenu?.buildItems
+        ? global.MeldexRowHandleMenu.buildItems(items, targets, { unit: '列' })
+        : items.filter(item => !item.batchOnly);
+    }
+
+    function bindRowMenu(handle, row, item) {
+      if (!global.MeldexRowHandleMenu?.bind) return;
+      global.MeldexRowHandleMenu.bind(handle, {
+        getRow: () => row,
+        getItems: () => rowMenuItems(item.id),
+        ariaLabel: `${item.label}のメニュー`,
+        e2eId: ROW_MENU_E2E_ID,
+      });
     }
 
     // --- ドラッグで並べ替え -------------------------------------------------
@@ -73226,6 +74525,8 @@ ${reason.message}`
     const anchor = options.anchor || null;
     const outside = (event) => {
       if (root.contains(event.target)) return;
+      // 列管理から開いた行メニュー・確認ダイアログの中の操作では閉じない。
+      if (event.target?.closest?.(`.gb-context-menu[role="menu"], .modal-overlay`)) return;
       if (anchor && (event.target === anchor || anchor.contains?.(event.target))) return;
       close();
     };
@@ -73249,18 +74550,14 @@ ${reason.message}`
     attachResizeHandles(root);
     applySize(root, readRememberedSize());
     position(root, anchor);
-    return {
-      root,
-      close,
-      refresh() {
-        if (current !== state) return;
-        state.items = readItems();
-        render();
-      },
-    };
+    state.refresh = refreshItems;
+    return { root, close, refresh: refreshItems };
   }
 
-  global.MeldexColumnManager = { open, close, isOpen: () => !!current };
+  // 開いている列管理を読み直す（列名の変更など、列管理の外で列が変わった時）。
+  function refresh() { current?.refresh?.(); }
+
+  global.MeldexColumnManager = { open, close, refresh, isOpen: () => !!current };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 ;
@@ -76989,7 +78286,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 2;
+  const THEME_UI_DEFAULTS_VERSION = 4;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -79128,7 +80425,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function scheduleBoardRender() {
     const board = getBoardState();
     if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    const render = global.bdRefreshThemeStyles;
     if (typeof render !== 'function') return;
     const token = ++_boardRenderToken;
     const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
@@ -79877,8 +81174,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
       } else {
         const stored = JSON.parse(raw);
         if (stored?._defaultsVersion !== THEME_UI_DEFAULTS_VERSION) {
+          const resolved = resolveSavedThemeUiApplications(themeDef, stored);
+          const encoded = JSON.parse(_encodeThemeUiApplications(resolved));
+          // Keep the exact pre-repair value for recovery, even if an old
+          // explicit choice happens to equal the entire former shipped preset.
+          if (JSON.stringify(normalizeThemeUiApplications(stored)) !== JSON.stringify(resolved)) {
+            encoded._previousDefaults = stored;
+          } else if (stored?._previousDefaults) encoded._previousDefaults = stored._previousDefaults;
           localStorage.setItem(THEME_UI_APPLICATIONS_KEY,
-            _encodeThemeUiApplications(resolveSavedThemeUiApplications(themeDef, stored)));
+            JSON.stringify(encoded));
           wroteApplications = true;
         }
       }
@@ -79911,7 +81215,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const previous = clone(applications);
     previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
     const legacyDefaults = [previous];
-    if (stored._defaultsVersion == null) {
+    // Shipped defaults also used white selected text and an unshaded rail.
+    // v3 stamped that snapshot unchanged, so a version number alone cannot
+    // prove it was repaired. Match the complete former preset, never individual
+    // auto-color fields (which may be genuine user choices).
+    const whiteTextDefaults = clone(previous);
+    whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
+    legacyDefaults.push(whiteTextDefaults);
+    // v1/v2 could stamp the original sequential defaults without upgrading them.
+    // Treat that exact snapshot like the unversioned original; a current save
+    // (including an intentional auto-color choice) is still returned above.
+    if (stored._defaultsVersion == null || [1, 2].includes(stored._defaultsVersion)) {
       const oldTreeDefaults = clone(previous);
       oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
       const treeOnlyDefaults = clone(applications);
@@ -80994,8 +82308,35 @@ async function _applyImportedCustomColors(rawColors, mode) {
       label.textContent = row.classList.contains('gb-fmt-popup-row--text') ? '文字・線' : row.classList.contains('gb-fmt-popup-row--text-decoration') ? '文字の装飾' : '背景・アクセント';
       row.before(label);
     }
+    _assignFormatControlIds(popup, options);
 
     return popup;
+  }
+
+  // 書式ポップアップ内の操作部品に安定ID（data-e2e-id）と名前を付ける（M-014 S31）。
+  // 既に id / data-e2e-id / data-testid / data-action を持つ部品はそのまま。値は
+  // 「gb-fmt-<用途>-<並び順>」で、同じポップアップ内で部品ごとに別の値になる。
+  // 呼出し元の実物の部品を一時的に移して使う options.content は、元の画面へ戻った後に
+  // 他の行の部品と同じ値で重ならないよう対象外にする。
+  function _assignFormatControlIds(popup, options = {}) {
+    if (!popup) return;
+    const contentRoots = Array.isArray(options.content) ? options.content.filter(Boolean) : [];
+    const variant = [...popup.classList].find(cls => cls.startsWith(POPUP_CLASS + '--'));
+    const prefix = 'gb-fmt-' + (variant ? variant.slice(POPUP_CLASS.length + 2) : 'popup');
+    let index = 0;
+    popup.querySelectorAll('button, input, select, textarea, [role="button"]').forEach(el => {
+      if (contentRoots.some(root => root === el || root.contains?.(el))) return;
+      if (!el.id && !el.dataset.e2eId && !el.dataset.testid && !el.dataset.action) {
+        el.dataset.e2eId = `${prefix}-${index}`;
+      }
+      index += 1;
+      if (!el.getAttribute('aria-label') && !el.getAttribute('title')) {
+        const text = el.closest('label')?.textContent?.trim()
+          || el.closest('.gb-fmt-popup-group')?.querySelector('.gb-fmt-label')?.textContent?.trim()
+          || el.getAttribute('placeholder') || '';
+        if (text) el.setAttribute('aria-label', text);
+      }
+    });
   }
 
   function openFormatPopup(anchorEl, options) {
@@ -81318,6 +82659,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (options.closeOnEscape !== false) {
       escapeCloseHandler = (ev) => {
         if (ev.key !== 'Escape') return;
+        // 書式ポップアップが別の経路で取り除かれていたら、Escape を横取りせずに後始末だけする
+        // （残った受け口が、別の画面の Escape を止めていた。M-014 シナリオ網羅テスト）。
+        if (!popup.isConnected) { _removeFormatPopup(popup, { skipCommit: true }); document.removeEventListener('keydown', escapeCloseHandler, true); return; }
         // 子のカラーパレットが Escape を処理し、親の書式編集は継続する。
         if (document.querySelector('.gb-palette-popup,.gb-palette')) return;
         ev.preventDefault();
@@ -81436,7 +82780,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     closePopup: _removeFormatPopup,
     closeOwnedPopups(root) {
       for (const popup of document.querySelectorAll('.gb-fmt-popup')) {
-        if (root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
+        // 持ち主の無い書式ポップアップがあると contains(undefined) が例外になり、呼び出し元（ノートに埋め込んだボードの読込など）が止まっていた。
+        if (popup._gbFmtOwner instanceof Node && root?.contains(popup._gbFmtOwner)) _removeFormatPopup(popup);
       }
     },
   };
@@ -84000,7 +85345,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (typeof provider?.statPathFresh !== 'function') {
       throw _error('削除確認専用のfresh statを利用できません', 503);
     }
-    const metadata = await provider.statPathFresh(item.path);
+    let metadata = await provider.statPathFresh(item.path);
+    // Cloud 版のシートの行は、行ごとのファイルではなくシートの保管ファイルにだけあることがある（2026-11-22）。
+    // その行の状態（識別と更新時刻）で確かめる。無ければこれまでどおり止める。
+    if (!metadata && item.kind !== 'folder') {
+      const rowState = window.__MeldexPwaDataAccessInternals?._sheetStoreRowConfirmationMetadata;
+      if (typeof rowState === 'function') metadata = await rowState(provider, item.path);
+    }
     if (!metadata) throw _error(`削除対象の状態を確認できません: ${item.path}`, 409);
     const actualKind = metadata.kind === 'directory' ? 'folder' : 'file';
     if (actualKind !== item.kind) throw _error(`削除対象の種類が変更されました: ${item.path}`, 409);
@@ -84104,6 +85455,25 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return { ...(aggregateImpact || {}), confirmations: [confirmation], confirmationToken: token, graphRevision };
   }
 
+  // デスクトップ版のサーバー（require_reference_delete_confirmation）と同じく、参照元が0件で確認が完全な
+  // ごみ箱移動は token なしで通す（2026-11-22）。追加したトピックの取り消し等、利用者に確認を出さない削除が
+  // Cloud 版だけ必ず失敗していた。対象の状態と参照の指紋は受領に残し、削除の直前の再確認で変化を止める。
+  async function _unreferencedTrashReceipt(provider, groups, options) {
+    const receiptGroups = [];
+    for (const group of groups) {
+      const getState = options?.getState || _defaultState;
+      const before = await _states(provider, group.localItems, getState);
+      const impactTargets = _impactItems(group.localItems, before);
+      const impact = await _latestImpact(provider, impactTargets, options?.queryImpact);
+      if (Number(impact?.sourceFileCount || 0) !== 0) return null;
+      const after = await _states(provider, group.localItems, getState);
+      if (_fingerprint(before) !== _fingerprint(after)) throw _error('確認中に削除対象が変更されました', 409, impact);
+      receiptGroups.push({ localTargets: group.localItems, states: _storedStates(after),
+        impactTargets, graphRevision: _impactFingerprint(impact) });
+    }
+    return receiptGroups.length ? { groups: receiptGroups } : null;
+  }
+
   async function consumeProviderDelete(options) {
     const provider = options?.provider;
     const operation = _operation(options?.operation);
@@ -84112,9 +85482,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const supplied = Array.isArray(options?.confirmations) && options.confirmations.length
       ? options.confirmations
       : [{ token: options?.confirmationToken || options?.confirmation_token, graphRevision: options?.graphRevision || options?.graph_revision }];
+    const suppliedToken = supplied.length === 1
+      ? String(supplied[0]?.token || supplied[0]?.confirmationToken || '').trim() : '';
+    if (!suppliedToken && supplied.length <= 1 && operation === 'trash') {
+      const receipt = await _unreferencedTrashReceipt(provider, groups, options);
+      if (receipt) return { ok: true, receipt };
+    }
     if (supplied.length !== 1) throw _error('削除前の参照影響確認が必要です', 409);
     const confirmation = supplied[0];
-    const token = String(confirmation?.token || confirmation?.confirmationToken || '').trim();
+    const token = suppliedToken;
     if (!token) throw _error('削除前の参照影響確認が必要です', 409);
     const ledger = await _ledgerAdapter(provider, groups);
     const kind = window.MeldexSystemStorage.SystemStorageKind.REFERENCE_CONFIRMATIONS;
@@ -85100,6 +86476,28 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   if (window.MeldexCloudBatchRename) return;
 
+  const localOperations = new Map();
+  const usesLocalBackend = options => !options?.provider && window.MeldexRuntimeAdapter?.getMode?.() === 'legacy';
+  async function callLocalBatchTool(name, args) {
+    const response = await apiPost('/mcp/tool-call', { tool: 'meldex_' + name, arguments: args }, { silentError: true });
+    const result = response?.result;
+    if (!response?.ok || !result || result.ok === false || result.error) {
+      throw new CloudBatchRenameError(result?.error || '一括変更を保存できませんでした', result?.code);
+    }
+    return result;
+  }
+  async function reflectLocalBatch(entries) {
+    for (const entry of entries) {
+      if (typeof renameAppPathReferences === 'function') renameAppPathReferences(entry.source, entry.destination, {
+        preserveMountedViews: true, label: basename(entry.destination), type: 'image',
+      });
+    }
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-batch-rename' });
+    if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+      await openFolder(basename(_folderPath), _folderPath, { silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
+    }
+  }
+
   const IMAGE_EXTENSIONS = new Set([
     '.avif', '.bmp', '.gif', '.heic', '.heif', '.ico', '.jfif', '.jpeg',
     '.jpg', '.jxl', '.png', '.svg', '.tif', '.tiff', '.webp',
@@ -85230,6 +86628,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   async function plan(options = {}) {
+    if (usesLocalBackend(options)) {
+      const args = { path: options.folder || options.path || '', transform: 'remove_leading_datetime', recursive: !!options.recursive,
+        extensions: options.extensions, conflict_policy: options.conflictPolicy || options.conflict_policy || 'fail' };
+      const result = await callLocalBatchTool('batch_rename', { ...args, dry_run: true });
+      return { entries: (result.changes || []).map(row => ({ source: row.old_path, destination: row.new_path })),
+        conflicts: result.conflicts || [], skipped_unchanged_count: result.skipped_already_normalized || 0,
+        target_folder: result.target_path, _localArgs: args, _localPlanId: result.plan_id };
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new CloudBatchRenameError('Cloud保存先がありません', 'provider_unavailable');
     if (!await provider.ensureWorkspacePermission?.('readwrite')) throw new CloudBatchRenameError('保存先を編集できません', 'permission_denied');
@@ -85419,6 +86825,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   async function applyPlan(batchPlan, options = {}) {
+    if (batchPlan?._localArgs) {
+      const result = await callLocalBatchTool('batch_rename', { ...batchPlan._localArgs, dry_run: false, plan_id: batchPlan._localPlanId });
+      localOperations.set(result.operation_id, { folder: normalizePath(batchPlan.target_folder), entries: batchPlan.entries, state: 'applied' });
+      await reflectLocalBatch(batchPlan.entries);
+      return { ...result, changed_count: result.renamed_count || 0, state: 'applied' };
+    }
     const provider = options.provider || batchPlan?._provider || window.MeldexStorageAdapter?.getProvider?.();
     if (!batchPlan || !Array.isArray(batchPlan.entries)) throw new CloudBatchRenameError('一括改名計画が不正です', 'invalid_plan');
     if (batchPlan.conflicts?.length) throw new CloudBatchRenameError('同名になるファイルがあります', 'destination_conflicts', batchPlan.conflicts);
@@ -85468,6 +86880,16 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   async function replay(operationId, direction, options = {}) {
+    if (usesLocalBackend(options)) {
+      const result = await callLocalBatchTool('batch_rename_' + direction, { operation_id: operationId });
+      const local = localOperations.get(operationId);
+      if (local) {
+        local.state = direction === 'undo' ? 'undone' : 'applied';
+        await reflectLocalBatch(direction === 'undo'
+          ? local.entries.map(row => ({ source: row.destination, destination: row.source })) : local.entries);
+      }
+      return { ...result, state: direction === 'undo' ? 'undone' : 'applied' };
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     const journal = await loadJournal(provider, operationId);
     const expected = direction === 'undo' ? 'applied' : 'undone';
@@ -85544,6 +86966,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   async function recentOperation(folder, options = {}) {
+    if (usesLocalBackend(options)) {
+      const found = [...localOperations].reverse().find(([, value]) => value.folder === normalizePath(folder));
+      return found ? { documentId: found[0], payload: { state: found[1].state } } : null;
+    }
     const provider = options.provider || window.MeldexStorageAdapter?.getProvider?.();
     const { adapter, kind } = await resolveJournalAdapter(provider);
     if (typeof adapter.listDocuments !== 'function') return null;
@@ -87702,6 +89128,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _renderItems(pane, items) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
+    window.GBOutlinerThumbnails?.detachWithin?.(list);
     list.replaceChildren();
     list.dataset.layout = _layout;
     list.dataset.state = items.length ? 'ready' : 'empty';
@@ -87726,7 +89153,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _fillItemVisual(el, item) {
     if (!el) return;
     const type = String(item?.type || '').toLowerCase();
-    const canThumb = (type === 'image' || type === 'video') && item?.path && _layout !== 'list';
+    if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
+      const icon = document.createElement('span');
+      icon.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      el.replaceChildren(icon);
+      window.GBOutlinerThumbnails.attachToElement(el, item, icon, 256);
+      return;
+    }
+    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _layout !== 'list';
     if (!canThumb) {
       const fallback = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
       el.innerHTML = window.MeldexFileIcons?.render(item, _layout === 'list' ? 20 : 28, fallback) ?? fallback;
@@ -88273,6 +89707,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   'use strict';
 
   const STORAGE_KEY = 'meldex-scriptnote-ruby-presentation-defaults-v2';
+  // ノートのルビの全体の既定値（設定ダイアログのテーマの「ノート」欄）。シナリオとは別に持つ。
+  const NOTE_STORAGE_KEY = 'meldex-note-ruby-presentation-defaults-v1';
   const VERSION = 2;
   const DEFAULTS = Object.freeze({
     version: VERSION,
@@ -88285,6 +89721,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     smallKana: 'keep',
     fontPreset: 'inherit',
     defaultStyle: 'group',
+  });
+  // ノートの初期値は、今までのノートのルビの見た目（親文字の半分・間隔なし・字間なし・本文と同じ行間）。
+  const NOTE_DEFAULTS = Object.freeze({
+    ...DEFAULTS,
+    letterSpacingEm: 0,
+    lineHeight: 1.6,
   });
   const LIMITS = Object.freeze({
     sizePercent: Object.freeze({ min: 5, max: 200 }),
@@ -88370,22 +89812,26 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return result;
   }
 
-  function readStoredDefaults() {
+  function _scopeKey(scope) { return scope === 'note' ? NOTE_STORAGE_KEY : STORAGE_KEY; }
+  function _scopeDefaults(scope) { return scope === 'note' ? NOTE_DEFAULTS : DEFAULTS; }
+
+  function readStoredDefaults(scope) {
+    const base = _scopeDefaults(scope);
     try {
-      if (!global.localStorage) return { ...DEFAULTS };
-      const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
-      const normalized = normalize(parsed);
+      if (!global.localStorage) return { ...base };
+      const parsed = JSON.parse(global.localStorage.getItem(_scopeKey(scope)) || '{}');
+      const normalized = normalize(parsed, base);
       delete normalized.compatibility;
       return normalized;
     } catch (_) {
-      return { ...DEFAULTS };
+      return { ...base };
     }
   }
 
-  function writeStoredDefaults(value) {
-    const normalized = normalize(value);
+  function writeStoredDefaults(value, scope) {
+    const normalized = normalize(value, _scopeDefaults(scope));
     delete normalized.compatibility;
-    try { global.localStorage?.setItem(STORAGE_KEY, JSON.stringify(normalized)); } catch (_) {}
+    try { global.localStorage?.setItem(_scopeKey(scope), JSON.stringify(normalized)); } catch (_) {}
     return normalized;
   }
 
@@ -88727,6 +90173,78 @@ async function _applyImportedCustomColors(rawColors, mode) {
     };
   }
 
+  // ルビの親文字を測って、JIS系の配置（グループ・モノ・熟語の配り方と隣のルビとの衝突の解決）を
+  // CSS変数（prefix + -inline-start / -layout-extent / -size-override / -effective-letter-spacing /
+  // -gap-px / -base-edge）へ書く。シナリオとノートで同じ計算を使う（2026-11-21）。
+  // options: presentation, isVertical, zoom, prefix, cellOf(span) -> 行を分ける単位, beforeResolve(rows, spanToInfo)
+  function layoutRubySpans(spans, options = {}) {
+    const list = Array.from(spans || []);
+    const rows = new Map();
+    const spanToInfo = new Map();
+    if (!list.length) return { rows, spanToInfo };
+    const presentation = options.presentation;
+    const isVertical = !!options.isVertical;
+    const z = Number(options.zoom) || 1;
+    const prefix = options.prefix || '--sn2-ruby';
+    const cellOf = typeof options.cellOf === 'function' ? options.cellOf : () => null;
+    const cells = new Map();
+    // 書き込み（余白の解除）→全ルビの測定→書き込み（位置の変数）を分けてまとめる。
+    // ルビごとに書いて測ると、ルビの数だけ画面全体の再レイアウトが走る。
+    list.forEach(span => {
+      span.style.marginLeft = '';
+      span.style.marginTop = '';
+    });
+    const computed = typeof global.getComputedStyle === 'function' ? global.getComputedStyle.bind(global) : null;
+    const measured = list.map(span => ({
+      span,
+      rect: span.getBoundingClientRect(),
+      fontSize: (computed && parseFloat(computed(span).fontSize)) || 16,
+    }));
+    const baseEdges = [];
+    measured.forEach(({ span, rect, fontSize }, index) => {
+      const parentStart = (isVertical ? rect.top : rect.left) / z;
+      const parentEnd = (isVertical ? rect.bottom : rect.right) / z;
+      const rubyText = span.dataset.rubyRendered || span.dataset.ruby;
+      const baseEm = fontSize;
+      const info = createRubyLayoutInfo({
+        parentStart,
+        parentEnd,
+        baseEm,
+        rubyText,
+        presentation,
+        style: span.dataset.rubyStyle,
+      });
+      info.span = span;
+      info.groupId = span.dataset.rubyGroupId || `span-${index}`;
+      const crossStart = (isVertical ? rect.left : rect.top) / z;
+      const cell = cellOf(span);
+      if (!cells.has(cell)) cells.set(cell, cells.size);
+      const lineKey = `${cells.get(cell)}:${Math.round(crossStart * 2) / 2}`;
+      info._lineKey = lineKey;
+      if (!rows.has(lineKey)) rows.set(lineKey, []);
+      rows.get(lineKey).push(info);
+      spanToInfo.set(span, info);
+      const crossSize = (isVertical ? rect.width : rect.height) / z;
+      baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
+    });
+    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
+    if (typeof options.beforeResolve === 'function') options.beforeResolve(rows, spanToInfo);
+    rows.forEach(infos => {
+      resolveRubyOverlaps(infos).forEach(info => {
+        if (!info.span) return;
+        const layout = finalizeRubyLayout(info);
+        if (!layout) return;
+        const style = info.span.style;
+        style.setProperty(prefix + '-inline-start', layout.inlineStartPx + 'px');
+        style.setProperty(prefix + '-layout-extent', layout.extentPx + 'px');
+        style.setProperty(prefix + '-size-override', layout.fontSizePx + 'px');
+        style.setProperty(prefix + '-effective-letter-spacing', layout.letterSpacingPx + 'px');
+        style.setProperty(prefix + '-gap-px', layout.gapPx + 'px');
+      });
+    });
+    return { rows, spanToInfo };
+  }
+
   function fullsizeKana(text) {
     return Array.from(String(text || ''), char => SMALL_KANA[char] || char).join('');
   }
@@ -88772,10 +90290,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return presentation;
   }
 
-  function setGlobalDefaults(patch) {
-    const next = writeStoredDefaults({ ...readStoredDefaults(), ...plain(patch) });
+  function setGlobalDefaults(patch, scope) {
+    const next = writeStoredDefaults({ ...readStoredDefaults(scope), ...plain(patch) }, scope);
     try {
-      global.dispatchEvent?.(new CustomEvent('meldex:ruby-presentation-defaults-change', { detail: clone(next) }));
+      global.dispatchEvent?.(new CustomEvent('meldex:ruby-presentation-defaults-change', {
+        detail: { ...clone(next), scope: scope === 'note' ? 'note' : 'scriptnote' },
+      }));
     } catch (_) {}
     return next;
   }
@@ -88783,7 +90303,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
   global.MeldexRubyPresentation = Object.freeze({
     VERSION,
     STORAGE_KEY,
+    NOTE_STORAGE_KEY,
     DEFAULTS,
+    NOTE_DEFAULTS,
     LIMITS,
     FONT_PRESETS,
     LEGACY_TRANSFER_METRICS,
@@ -88804,6 +90326,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     createRubyLayoutInfo,
     resolveRubyOverlaps,
     finalizeRubyLayout,
+    layoutRubySpans,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
 

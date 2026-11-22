@@ -109,7 +109,8 @@ function _fsResolveSections(ctx, spec) {
         rows: [
           { label: '行間', fields: pick(['baseTextLineHeightH', 'baseTextLineHeightV']) },
           { label: '字間', fields: pick(['baseTextLetterSpacingH', 'baseTextLetterSpacingV']) },
-          { label: 'ルビ', fields: pick(['rubyFontSize', 'rubyOffset']) },
+          // 以前は存在しない項目（rubyFontSize / rubyOffset）を見ていて、この行が出ていなかった。
+          { label: 'ルビ', fields: pick(['rubyPresentation']), preview: false },
           { label: '折り返し', fields: pick(['wrapMode']) },
         ],
       },
@@ -146,6 +147,7 @@ function _fsResolveSections(ctx, spec) {
         rows: [
           { label: '余白', fields: pick(['--page-margin-x']), preview: false },
           { label: '内容最大幅', fields: pick(['--page-content-max-width']), preview: false },
+          { label: 'ルビ', fields: pick(['rubyPresentation']), preview: false },
         ],
       },
     ];
@@ -163,8 +165,11 @@ function _fsResolveSections(ctx, spec) {
           { label: 'セル',         fields: pick(['--db-cell-fg', '--db-cell-bg', '--db-cell-bold', '--db-cell-italic', '--db-cell-font']) },
           { label: 'アクティブセル枠', fields: pick(['--db-active-color', '--db-active-width']) },
           { label: 'テーブル罫線', fields: pick(['--db-grid-border', '--db-show-grid']) },
-          { label: '候補値', fields: pick(['--db-option-chip-fg', '--db-option-chip-bg', '--db-option-chip-bold', '--db-option-chip-font-size',
-            '--db-option-chip-radius', '--db-option-chip-padding-x', '--db-option-chip-border-color', '--db-option-chip-border-width']) },
+          // 候補値は列タイプごとに見本1つ（クリックで共通の書式設定ポップアップ）。個々の書式を行として並べない。
+          ...(typeof DB_OPTION_CHIP_TYPES !== 'undefined' ? DB_OPTION_CHIP_TYPES : []).map(({ id, label }) => ({
+            label, keepTogether: true,
+            fields: pick(['fg', 'bg', 'bold', 'font-size', 'radius', 'padding-x', 'border-color', 'border-width'].map(suffix => `--db-option-${id}-${suffix}`)),
+          })),
         ],
       },
     ];

@@ -15,13 +15,13 @@
     // 取り消し履歴は作成成功後にだけ積む（失敗した操作の偽履歴は残さない）
     const undoSnapshot = (typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined);
     try {
-      const res = await apiPost('/cal/tasks', {
+      const res = await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('todo-save', apiPost('/cal/tasks', {
         title: '無題',
         status: opts.status || 'todo',
         priority: opts.priority || 'medium',
         due_date: opts.due_date || '',
         user: this._getUser(),
-      });
+      }));
       this._pushUndo('ToDo作成', undoSnapshot);
       await this._loadTasks();
       this._render();
@@ -125,7 +125,7 @@
     this._savingTaskIds.add(editId);
     let saved = false;
     try {
-      await apiPut('/cal/tasks/' + editId, data);
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('todo-save', apiPut('/cal/tasks/' + editId, data));
       saved = true;
       this._pushUndo('ToDo編集', undoSnapshot);
       await this._loadTasks();
@@ -143,11 +143,15 @@
 
   CalendarComponent.prototype._deleteTaskFromOptions = async function(id) {
     const body = this._taskOptionBody;
-    if (await this._deleteTask(id)) {
+    const deleted = await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('todo-save', Promise.resolve(this._deleteTask(id)));
+    if (deleted) {
       // 他の予定・ToDoへ切り替えた後に、完了した削除でその編集面を消さない。
       if (body?.isConnected && this._taskOptionBody === body) {
         body.innerHTML = '<div class="cal-option-empty">ToDoを削除しました</div>';
       }
+    } else {
+      // 削除の失敗を黙って終わらせない（以前は何も表示されず、押しても消えないだけだった。M-014 で発見）。
+      this._showStatus('ToDoを削除できませんでした。もう一度お試しください', true);
     }
   };
 })();

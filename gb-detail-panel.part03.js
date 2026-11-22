@@ -16,6 +16,8 @@ function _fsNotifyFieldChanged(anchor, field, adapter, value) {
 
 function _dpApplyNoteFileStyle(body, fm) {
   if (!body) return;
+  // このノートの自動リンク・自動ルビの状態とルビの表示設定を、本文を描く前に当てる。
+  window.MeldexNoteDisplaySettings?.applyToHost?.(body, '', fm || '');
   const style = (typeof _parseFileStyleFromFrontmatter === 'function' ? _parseFileStyleFromFrontmatter(fm || '') : null)
     || (typeof _getDefaultFileStyle === 'function' ? _getDefaultFileStyle('page') : null)
     || {};

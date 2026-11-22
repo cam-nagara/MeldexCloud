@@ -1,3 +1,28 @@
+        if (parent.split('/').some(part => part === '..' || part === '.')
+          || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
+      }
+      const titleHelper = window.GBPathUtils?.displayTitle;
+      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
+      const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
+      const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
+      const shown = name => title !== null && title !== label ? title : name;
+      const titled = (text, path) => title !== null && title !== label ? titleHelper.write(text,title,path,type) : text;
+      const createText = async (path, text) => {
+        if (typeof provider.uploadBytesConditional !== 'function') {
+          throw Object.assign(new Error('新規ファイルの安全な作成を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
+        }
+        const identity = window.MeldexDocumentIdentity;
+        const format = identity?.formatForPath?.(path, text);
+        const content = format ? identity.ensureDocumentId(text, format).text : text;
+        return provider.uploadBytesConditional(path, new TextEncoder().encode(content), null);
+      };
+      const blockedCreate = {
+        database: ['シート', 'Phase 4'],
+        calendar: ['カレンダー', 'Phase 3'],
+      }[type];
+      if (blockedCreate) throw new Error(_phaseUnsupported(blockedCreate[0], blockedCreate[1]).error);
+      if (type === 'folder') {
+        const labelName = await _uniqueName(provider, parent, label, '');
         const targetPath = _joinPath(parent, labelName);
         await _directoryHandle(provider, targetPath, true);
         return { ok: true, node: { type: 'folder', label: shown(labelName), path: targetPath, children: [] } };
@@ -873,28 +898,3 @@
           results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
             item, receipt: consumed.receipt,
             queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
-          }) });
-        } catch (error) {
-          results.push({ ok: false, error: error?.message || String(error) });
-        }
-      }
-      return { ok: true, results };
-    }
-
-    if (pathname === '/outliner/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const trashName = _validateItemName(body?.trash_name || '', 'trash_name');
-      const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
-      const trashPath = _joinPath(trashRoot.path, trashName);
-      const metaPath = trashPath + '._trash_meta.json';
-      const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
-      const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
-      await _moveEntry(provider, trashPath, originalPath);
-      const warnings = [];
-      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
-      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
-        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
-          const sidecarPath = _csvMetadataPath(originalPath);

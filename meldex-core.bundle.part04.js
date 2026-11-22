@@ -1,3 +1,224 @@
+        closeMenu(false);
+        if (typeof window.openColorPalette === 'function') {
+          window.openColorPalette(note, item.color || '', (newColor) => {
+            item.color = newColor || item.color;
+            _applyNoteColor(note, item.color);
+            if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
+            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
+            _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
+          });
+        }
+      });
+      menu.appendChild(colorItem);
+
+      tailTrig = createMenuButton({ label: 'フキダシのしっぽ', icon: 'messageSquare', action: 'tail' });
+      tailTrig.classList.add('has-submenu');
+      tailTrig.setAttribute('aria-haspopup', 'menu');
+      tailTrig.setAttribute('aria-expanded', 'false');
+      tailPanel = document.createElement('div');
+      tailPanel.className = 'gb-context-menu _note-ctx-menu embedded-annotation-note-tail-menu annotation-note-tail-menu';
+      tailPanel.setAttribute('role', 'menu');
+      tailPanel.setAttribute('aria-label', 'フキダシのしっぽ');
+      tailPanel.hidden = true;
+      tailPanel.style.position = 'fixed';
+      tailPanel.style.zIndex = '211';
+      tailPanel.style.display = 'none';
+      [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
+        const tailButton = createMenuButton({ label, action: isRemove ? 'tail-remove' : 'tail-add', role: 'menuitemradio', checked: hasTail === isRemove });
+        tailButton.addEventListener('click', () => {
+          closeMenu(false);
+          applyTailOperation(isRemove);
+        });
+        tailPanel.appendChild(tailButton);
+      });
+      attachHoverSubmenu(tailTrig, tailPanel, { onShow: showTailPanel, onHide: hideTailPanel });
+      tailTrig.addEventListener('click', () => tailOpen ? hideTailPanel() : showTailPanel());
+      tailTrig.addEventListener('keydown', (e2) => {
+        if (e2.key === 'ArrowRight' || e2.key === 'Enter' || e2.key === ' ') {
+          e2.preventDefault();
+          showTailPanel();
+          requestAnimationFrame(() => focusMenuItem(menuItems(tailPanel), 0));
+        }
+      });
+      tailPanel.addEventListener('keydown', (e2) => handleMenuKeydown(e2, tailPanel, () => {
+        hideTailPanel();
+        tailTrig.focus();
+      }));
+      menu.appendChild(tailTrig);
+
+      const deleteItem = createMenuButton({ label: '削除', icon: 'trash2', action: 'delete', danger: true });
+      deleteItem.addEventListener('click', () => {
+        closeMenu(false);
+        _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
+      });
+      menu.appendChild(deleteItem);
+      document.body.appendChild(menu);
+      if (restoreTarget && restoreTarget.classList?.contains('note-more-btn') && typeof window.positionPopup === 'function') {
+        window.positionPopup(menu, restoreTarget.getBoundingClientRect(), { prefer: 'below', gap: 2 });
+      } else if (typeof window.positionPopup === 'function') {
+        window.positionPopup(menu, { left: clientX, right: clientX, top: clientY, bottom: clientY }, { prefer: 'below', gap: 2 });
+      } else {
+        const z = (typeof window._getZoom === 'function') ? window._getZoom() : (parseFloat(document.documentElement.style.zoom) || 1);
+        menu.style.left = (clientX / z) + 'px';
+        menu.style.top = (clientY / z) + 'px';
+        if (typeof window.clampPopupToViewport === 'function') window.clampPopupToViewport(menu);
+      }
+      menu.addEventListener('keydown', (e2) => handleMenuKeydown(e2, menu));
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onGlobalPointerDown, true);
+        document.addEventListener('keydown', onGlobalKeyDown, true);
+        requestAnimationFrame(() => menuItems(menu)[0]?.focus());
+      }, 0);
+    }
+
+    // ヘッダー右端の「…」ボタン: 右クリックと同じメニューを開く
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'note-more-btn';
+    moreBtn.dataset.annMore = '1';
+    moreBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-menu`;
+    moreBtn.setAttribute('aria-label', 'アノテートメニュー');
+    moreBtn.title = 'メニュー';
+    moreBtn.innerHTML = lucide('moreHorizontal', 16);
+    _normalizeEmbeddedNoteIcon(moreBtn, 16);
+    moreBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    moreBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showEmbeddedNoteContextMenu(e);
+    });
+    actions.appendChild(moreBtn);
+
+    note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
+    if (typeof window.addLongPressHandler === 'function') {
+      window.addLongPressHandler(note, _showEmbeddedNoteContextMenu);
+    }
+
+    notesLayer.appendChild(note);
+    return note;
+  }
+
+  // ポインターイベント
+  svg.addEventListener('pointerdown', (e) => {
+    if (!_ann.active) return;
+    options.onPointer?.();
+    if (boardMode && e.button !== 0) return;
+    _updateSize();
+    if (_ann.tool === 'sticky') {
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      const annClientId = 'pending-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '', html: '', user: _annotationUser() };
+      let item = null;
+      let note = null;
+      if (_saveBoardAnnotation({
+        target_path: _ann.targetPath,
+        type: 'comment',
+        shape: 'sticky',
+        data: noteData,
+        color: _ann.color,
+        opacity: _ann.opacity,
+        user: _annotationUser(),
+      }, (res) => {
+        if (!item || !note) return;
+        item.id = res?.id || item.id;
+        note.dataset.annId = item.id || '';
+        if (item._pendingData && item.id) _updateBoardAnnotation(item.id, { data: item._pendingData });
+      }, () => { note?.remove(); })) {
+        item = {
+          id: annClientId,
+          type: 'comment',
+          shape: 'sticky',
+          color: _ann.color,
+          opacity: _ann.opacity,
+          user: _annotationUser(),
+          created: new Date().toISOString(),
+        };
+        note = _renderNote(item, noteData);
+        return;
+      }
+      _postToParent({ type: 'ann-create-note', x: pt.x, y: pt.y, color: _ann.color, targetPath: _ann.targetPath, annClientId });
+      return;
+    }
+    if (_ann.tool === 'eraser') {
+      const pt = _toLocalCoords(e.clientX, e.clientY);
+      const x = pt.x;
+      const y = pt.y;
+      // ヒットテスト
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
+      const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
+      for (const el of els) {
+        if (_markupElementHit(el, x, y, tolerance)) {
+          const annId = el.dataset.annId;
+          if (annId) {
+            if (_deleteBoardAnnotation(annId, () => el.remove())) return;
+            el.remove();
+            _postToParent({ type: 'ann-delete', annId });
+            return;
+          }
+          el.remove();
+          return;
+        }
+      }
+      return;
+    }
+    _ann.drawing = true;
+    const pt = _toLocalCoords(e.clientX, e.clientY);
+    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
+    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
+    _ann.path = [_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]];
+    _ann.pressures = [e.pressure || 0.5];
+    try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!_ann.drawing) return;
+    const pt = _toLocalCoords(e.clientX, e.clientY);
+    _ann.path.push(_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]);
+    _ann.pressures.push(e.pressure || 0.5);
+    let preview = layer.querySelector('.ann-preview');
+    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
+    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
+    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
+    if (!preview || preview.tagName.toLowerCase() !== previewTag) {
+      preview?.remove();
+      preview = document.createElementNS(_svgNS, previewTag);
+      preview.classList.add('ann-preview');
+      layer.appendChild(preview);
+    }
+    if (_ann.anchor) {
+      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+      const previewData = previewType === 'rect'
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
+    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
+      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
+      data.lineWidth = _ann.widths?.pen;
+      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'lasso') {
+      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-dasharray', '4,4');
+    } else {
+      preview.setAttribute('d', _pathD(_ann.path));
+      preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
+      preview.setAttribute('stroke-width', _drawWidth(_ann.tool, _ann.pressures, _ann.widths?.[_ann.tool]));
+      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_normalizeMarkupOpacity(_ann.opacity, 1) * 0.5) : String(_normalizeMarkupOpacity(_ann.opacity, 1)));
+      preview.setAttribute('stroke-linecap', 'round'); preview.setAttribute('stroke-linejoin', 'round');
+    }
+  });
+
+  svg.addEventListener('pointercancel', () => { _ann.drawing = false; _ann.path = []; _ann.pressures = []; layer.querySelector('.ann-preview')?.remove(); });
+
+  svg.addEventListener('pointerup', (e) => {
+    if (!_ann.drawing) return;
+    _ann.drawing = false;
+    layer.querySelector('.ann-preview')?.remove();
+    if (_ann.path.length < 2) return;
     const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
     const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
@@ -246,7 +467,7 @@
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -332,19 +553,34 @@
   }
 
   // 親からのpostMessageで同期
-  window.addEventListener('message', (ev) => {
-    if (!_isTrustedParentMessageEvent(ev)) return;
+  const onParentMessage = (ev) => {
+    if (options.localSurface || !_isTrustedParentMessageEvent(ev)) return;
     const msg = ev.data;
     _handleMessage(msg);
-  });
+  };
+  if (!options.localSurface) window.addEventListener('message', onParentMessage);
 
   const bridge = {
+    options,
+    hasPendingWrites: () => pendingWrites.size > 0,
+    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
     svg,
     layer,
     notesLayer,
     ann: _ann,
     handleMessage: _handleMessage,
     updateSize: _updateSize,
+    dispose() {
+      _resizeObs.disconnect();
+      options.scrollContainer?.removeEventListener('scroll', syncSurfaceScroll);
+      _anchoredResizeObserver.disconnect();
+      _anchoredMutationObserver?.disconnect();
+      if (_anchoredRefreshHandle) cancelAnimationFrame(_anchoredRefreshHandle);
+      window.removeEventListener('message', onParentMessage);
+      svg.remove(); notesLayer.remove();
+      delete wrapper._annBridge;
+      if (host !== wrapper) delete host._annBridge;
+    },
     refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
   };
   const e2eBridgeEnabled = (() => {
@@ -662,239 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
       const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
       if (_saCurrentTargetPath() !== targetPath) return;
       if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
-      else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
-    } catch (error) { _saReportSaveFailure(error); }
-    finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
-  });
-
-  function _isStandaloneNoteAnnotation(item, data) {
-    if (!item || data?.deleted) return false;
-    const type = String(item.type || '');
-    const shape = String(item.shape || data?.shape || '');
-    const hasPosition = data && (data.x != null || data.y != null || data.width != null || data.height != null);
-    if (type === 'comment') {
-      return shape === 'sticky' || data?.noteType === 'sticky' || hasPosition;
-    }
-    return type === 'note' || type === 'sticky';
-  }
-
-  function _renderNote(annId, data, color) {
-    const note = document.createElement('div');
-    note.className = 'sa-note'; note.dataset.annId = annId;
-    _saFitNoteData(data);
-    note.style.cssText = `position:absolute;box-sizing:border-box;left:${data.x}px;top:${data.y}px;width:${data.width||180}px;min-height:${data.height||100}px;background:${color};color:#333;padding:8px;border-radius:4px;font-size:12px;cursor:move;z-index:12;border:1px solid rgba(0,0,0,0.15);`;
-    const textarea = document.createElement('textarea');
-    textarea.value = data.text || '';
-    textarea.style.cssText = 'box-sizing:border-box;width:100%;height:80px;background:transparent;border:none;color:#333;font-size:12px;resize:both;outline:none;';
-    note.style.pointerEvents = _ann.active ? 'auto' : 'none';
-    _applyStandaloneNoteSize(note, textarea, data);
-    textarea.onblur = async () => {
-      const previousData = { ...data };
-      const previousStyle = {
-        width: note.style.width,
-        minHeight: note.style.minHeight,
-        textareaHeight: textarea.style.height,
-      };
-      Object.assign(data, _saNotePayload(data, textarea, note));
-      try {
-        await _saUpdateAnnotation(annId, { data: { ...data } });
-      } catch (error) {
-        Object.keys(data).forEach(key => { delete data[key]; });
-        Object.assign(data, previousData);
-        note.style.width = previousStyle.width;
-        note.style.minHeight = previousStyle.minHeight;
-        textarea.style.height = previousStyle.textareaHeight;
-        textarea.value = previousData.text || '';
-        _saReportSaveFailure(error);
-      }
-    };
-    note.appendChild(textarea);
-    let dx = 0, dy = 0;
-    note.addEventListener('pointerdown', (e) => {
-      if (_ann.active && _ann.tool === 'eraser') {
-        e.preventDefault();
-        e.stopPropagation();
-        _saDeleteNoteElement(note);
-        return;
-      }
-      if (e.target === textarea) return; e.preventDefault();
-      const rect = note.getBoundingClientRect();
-      dx = e.clientX - rect.left; dy = e.clientY - rect.top;
-      const previous = {
-        x: data.x || 0,
-        y: data.y || 0,
-        text: data.text || '',
-        width: data.width,
-        height: data.height,
-        left: note.style.left,
-        top: note.style.top,
-        noteWidth: note.style.width,
-        noteMinHeight: note.style.minHeight,
-        textareaHeight: textarea.style.height,
-      };
-      const onMove = (e2) => {
-        const pt = _toCoords(e2.clientX - dx, e2.clientY - dy);
-        const fitted = _saClampNotePosition(pt.x, pt.y, note.offsetWidth, note.offsetHeight);
-        note.style.left = fitted.x + 'px';
-        note.style.top = fitted.y + 'px';
-      };
-      const onUp = async () => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        Object.assign(data, _saNotePayload(data, textarea, note), {
-          x: parseFloat(note.style.left) || 0,
-          y: parseFloat(note.style.top) || 0,
-        });
-        try {
-          await _saUpdateAnnotation(annId, { data: { ...data } });
-        } catch (error) {
-          data.x = previous.x;
-          data.y = previous.y;
-          data.text = previous.text;
-          data.width = previous.width;
-          data.height = previous.height;
-          note.style.left = previous.left;
-          note.style.top = previous.top;
-          note.style.width = previous.noteWidth;
-          note.style.minHeight = previous.noteMinHeight;
-          textarea.style.height = previous.textareaHeight;
-          textarea.value = previous.text;
-          _saReportSaveFailure(error);
-        }
-      };
-      document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp);
-    });
-    container.appendChild(note);
-  }
-
-  async function loadAnnotations(targetPath) {
-    const requestSeq = ++_loadAnnotationsSeq;
-    const requestedTarget = String(targetPath || '');
-    layer.innerHTML = ''; container.querySelectorAll('.sa-note').forEach(n => n.remove());
-    if (!requestedTarget) return;
-    try {
-      const items = await apiFetch('/annotations?target=' + encodeURIComponent(requestedTarget));
-      const activeTarget = typeof getTargetPath === 'function' ? String(getTargetPath() || '') : requestedTarget;
-      if (requestSeq !== _loadAnnotationsSeq || activeTarget !== requestedTarget) return;
-      items.forEach(item => {
-        const data = _saParseAnnotationData(item);
-        if (!data) return;
-        if (_isStandaloneNoteAnnotation(item, data)) _renderNote(item.id, data, item.color);
-        else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') return;
-        else if (item.type === 'rect' && data?.width != null && data?.height != null) _renderRect(data, item.color, item.opacity, item.id);
-        else if (data.points) _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id);
-      });
-      _syncStandaloneNoteInteractivity();
-    } catch (error) {
-      if (requestSeq === _loadAnnotationsSeq) _saReportSaveFailure(error, 'アノテートを読み込めませんでした');
-    }
-  }
-
-  function toggle(active) {
-    if (active === undefined) active = !_ann.active;
-    _ann.active = active;
-    svg.style.pointerEvents = active ? 'auto' : 'none';
-    svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
-    hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
-    _syncStandaloneNoteInteractivity();
-  }
-  function setTool(tool) { _ann.tool = tool; if (_ann.active) svg.style.cursor = tool === 'eraser' ? 'not-allowed' : tool === 'sticky' ? 'cell' : 'crosshair'; }
-  function setColor(c) { _ann.color = c; }
-  function setOpacity(o) {
-    const opacity = _saNormalizeOpacity(o, 1);
-    _ann.opacity = opacity;
-    svg.style.opacity = opacity;
-    container.querySelectorAll('.sa-note').forEach(n => { n.style.opacity = opacity; });
-  }
-  function destroy() { svg.remove(); container.querySelectorAll('.sa-note').forEach(n => n.remove()); }
-
-  return { svg, layer, ann: _ann, toggle, loadAnnotations, setTool, setColor, setOpacity, destroy };
-}
-
-const STANDALONE_MARKUP_TOOLBAR_CSS = `
-.sa-markup-toolbar {
-  position: fixed;
-  z-index: 55;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border, #333);
-  border-radius: 8px;
-  border-bottom: 1px solid var(--border, #333);
-  background: var(--ui-popup-bg, var(--bg2, #252525));
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  bottom: 60px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-.sa-markup-toolbar .sa-tb-btn,
-.sa-markup-toolbar .sa-markup-color-btn,
-.sa-markup-toolbar .sa-markup-close-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
-  padding: 0;
-  border: 1px solid var(--border, #333);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg, #d4d4d4);
-  cursor: pointer;
-}
-.sa-markup-toolbar .sa-tb-btn:hover,
-.sa-markup-toolbar .sa-markup-color-btn:hover,
-.sa-markup-toolbar .sa-markup-close-btn:hover {
-  background: var(--bg3, #2d2d2d);
-  border-color: var(--accent, #569cd6);
-}
-.sa-markup-toolbar .sa-tb-btn.active,
-.sa-markup-toolbar .sa-tb-btn[aria-pressed="true"] {
-  background: var(--accent, #569cd6);
-  border-color: var(--accent, #569cd6);
-  color: var(--ui-accent-fg, var(--ui-selection-fg));
-}
-.sa-markup-toolbar .sa-tb-btn svg {
-  width: 18px;
-  height: 18px;
-}
-.sa-markup-toolbar .sa-markup-close-btn svg {
-  width: 14px;
-  height: 14px;
-}
-.sa-markup-color-swatch {
-  width: 18px;
-  height: 18px;
-  border: 2px solid var(--border, #333);
-  border-radius: 999px;
-  pointer-events: none;
-}
-.sa-markup-palette {
-  position: fixed;
-  z-index: 56;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  width: 188px;
-  padding: 6px;
-  border: 1px solid var(--border, #333);
-  border-radius: 6px;
-  background: var(--ui-popup-bg, var(--bg2, #252525));
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-}
-.sa-markup-color-dot {
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
-  min-height: 24px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 999px;
-  cursor: pointer;
-}
-@media (max-width: 640px) {

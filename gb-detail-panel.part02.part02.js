@@ -111,6 +111,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
+  if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(type === 'page');
   if (['note-editor', 'file-style', 'backlinks', 'shortcuts'].includes(_currentDetailTab)) switchDetailTab(null);
   if (type === 'page') {
     if (typeof _showFileInfoInDetailPanel === 'function') {

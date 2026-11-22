@@ -471,8 +471,12 @@
       if (settings.readOnly) return;
       const input = document.createElement('input'); input.type = 'text'; input.value = name;
       input.className = 'bd-topic-view-rename-input'; input.setAttribute('aria-label', 'ビュー名');
+      // Enter で確定すると、タブの描き直しで入力欄が外れる時の blur でもう一度呼ばれ、
+      // 同じ名前の変更が2回履歴に積まれていた（1回の取り消しで戻らない）。確定は1回だけにする。
+      let finished = false;
       const finish = cancelled => {
-        if (!input.isConnected) return;
+        if (finished || !input.isConnected) return;
+        finished = true;
         if (!cancelled && input.value.trim() && input.value.trim() !== name) {
           try { controller.renameMixed(ref, input.value.trim()); }
           catch (error) { global.showStatus?.(error?.message || 'ビュー名を変更できません', true); }

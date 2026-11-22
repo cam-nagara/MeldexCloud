@@ -410,7 +410,16 @@ function renderDbNoViewsGuide(ctx) {
     ? _dbViewSurfaceEl(ctx, '.pivot-view', 'pivot-view')
     : (_paneEl(ctx, '.pivot-view') || document.getElementById('pivot-view'));
   if (!container) return;
-  container.innerHTML = '';
+  // 表の要素（#pivot-table 等）は消さずに隠す。消すと「ビューを追加」の後の表の描画先が無くなり、
+  // 案内が残ったまま「シート表示領域を準備できませんでした」になっていた（2026-11-20 網羅テストで発見）。
+  container.querySelectorAll(':scope > .db-no-views-guide').forEach(el => el.remove());
+  Array.from(container.children).forEach(child => {
+    if (child.dataset.dbNoViewsHidden !== '1') {
+      child.dataset.dbNoViewsHidden = '1';
+      child.dataset.dbNoViewsPrevDisplay = child.style.display || '';
+    }
+    child.style.display = 'none';
+  });
   const guide = document.createElement('div');
   guide.className = 'db-no-views-guide';
   guide.style.cssText = 'min-height:260px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--fg2);';
@@ -430,6 +439,20 @@ function renderDbNoViewsGuide(ctx) {
   guide.appendChild(desc);
   guide.appendChild(add);
   container.appendChild(guide);
+}
+
+// ビューが追加された後、ビューが無い時の案内を外し、隠していた表を戻す（renderPivot の先頭で呼ぶ）。
+function clearDbNoViewsGuide(ctx) {
+  const container = typeof _dbViewSurfaceEl === 'function'
+    ? _dbViewSurfaceEl(ctx, '.pivot-view', 'pivot-view')
+    : (_paneEl(ctx, '.pivot-view') || document.getElementById('pivot-view'));
+  if (!container || !container.querySelector(':scope > .db-no-views-guide')) return;
+  container.querySelectorAll(':scope > .db-no-views-guide').forEach(el => el.remove());
+  container.querySelectorAll(':scope > [data-db-no-views-hidden="1"]').forEach(child => {
+    child.style.display = child.dataset.dbNoViewsPrevDisplay || '';
+    delete child.dataset.dbNoViewsHidden;
+    delete child.dataset.dbNoViewsPrevDisplay;
+  });
 }
 
 /* ==============================
@@ -1248,7 +1271,7 @@ function loadSavedView(idx, ctx, options = {}) {
 
 // ビューごとの列の表示と並び順（2026-11-18「表示列を切替」から改名・作り直し）。
 // 項目を押しても閉じず、並べ替え・複数選択・非表示の列をまとめた欄を持つ。
-function openDbViewColumnManager(idx, ctx, anchorEl) {
+function openDbViewColumnManager(idx, ctx, anchorEl, options = {}) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
   const allColumns = () => {
@@ -1273,17 +1296,63 @@ function openDbViewColumnManager(idx, ctx, anchorEl) {
       order.unshift('__entity__');
     }
     const hidden = new Set(view?.hiddenCols || []);
-    return order.map(name => ({ id: name, label: columnDisplayName(name), visible: !hidden.has(name) }));
+    const types = typeof getPropertyTypes === 'function' ? (getPropertyTypes(dbPath, ctx) || {}) : {};
+    // 列名の前に列見出しと同じ列タイプのアイコン（トピック名の列は見出しにアイコンが無いので空欄）。
+    const iconOf = name => (name === '__entity__' || typeof _dbColumnTypeIconHtml !== 'function'
+      ? '' : _dbColumnTypeIconHtml(types[name], dbPath, 14));
+    return order.map(name => ({ id: name, label: columnDisplayName(name), visible: !hidden.has(name), iconHtml: iconOf(name) }));
+  };
+  const productionSchemaLocked = typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(dbPath);
+  const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function' && isProductionManagementWriteBlocked(dbPath, ctx);
+  // 複製した列を、このビューの列順でも元の列のすぐ後ろへ置く（列管理は現在のビュー以外も開ける）。
+  const placeAfterInView = (fromId, newId) => {
+    const cfg = getDbViewConfig(dbPath);
+    const target = (cfg.savedViews || [])[idx];
+    if (!target || !Array.isArray(target.colOrder)) return;
+    const order = target.colOrder.filter(name => name !== newId);
+    const at = order.indexOf(fromId);
+    if (at < 0) return;
+    order.splice(at + 1, 0, newId);
+    target.colOrder = order;
+    saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+  };
+  // つまみのクリックメニュー: 列の複製・列設定・削除は列見出しの「…」メニューと同じ処理・確認・取り消し。
+  // 一括（2列以上を選択中）では、まとめて行える並べ替え・表示の切り替えだけを出す（部品側）。
+  const getRowMenuItems = (targets) => {
+    if (targets.batch) return {};
+    const id = targets.ids[0];
+    const settings = [{ label: '列設定を開く', icon: 'settings', e2eId: 'column-manager-open-settings',
+      action: () => showDbPropertySettingsForColumn(dbPath, id, { switchTab: true, ctx }) }];
+    if (id === '__entity__') return { settings };
+    return {
+      duplicate: !productionSchemaLocked && !productionWriteBlocked && typeof duplicateDbColumn === 'function'
+        ? [{ label: '列を複製', icon: 'copy', e2eId: 'column-manager-duplicate', action: async () => {
+          const created = await duplicateDbColumn(dbPath, id, ctx);
+          if (!created) return;
+          placeAfterInView(id, created);
+          targets.refresh();
+        } }]
+        : [],
+      settings,
+      danger: !productionSchemaLocked && typeof _deleteColumn === 'function'
+        ? [{ label: '列を削除', icon: 'trash2', danger: true, e2eId: 'column-manager-delete', action: async () => {
+          if (await _deleteColumn(dbPath, id, ctx)) targets.refresh();
+        } }]
+        : [],
+    };
   };
   const anchor = anchorEl
     || _paneEl(ctx, '.db-view-tabs')?.querySelectorAll('.view-tab')[idx]
     || _paneEl(ctx, '.db-view-tabs');
   return window.MeldexColumnManager?.open({
     anchor,
+    initialQuery: options.initialQuery || '',
     title: '列管理',
+    icon: 'columns3Cog',
     className: 'db-view-column-manager',
     e2eId: 'db-view-column-manager',
     getItems,
+    getRowMenuItems,
     onChange(items, detail) {
       const cfg = getDbViewConfig(dbPath);
       const target = (cfg.savedViews || [])[idx];
@@ -1368,7 +1437,8 @@ function showViewTabMenu(e, idx, fromMoreBtn, ctx) {
       });
     }},
     { type: 'sep' },
-    { label: lucide('columns3', 14) + ' 列管理', e2eId: 'db-view-column-manager', action: () => {
+    // 列管理専用のアイコン（列幅自動調整の columns3 と重ねない。2026-11-21）。
+    { label: lucide('columns3Cog', 14) + ' 列管理', e2eId: 'db-view-column-manager', action: () => {
       openDbViewColumnManager(idx, ctx, targetTab?.isConnected ? targetTab : null);
     }},
     {

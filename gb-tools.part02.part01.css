@@ -28,6 +28,9 @@
   background: var(--ui-button-bg); color: var(--ui-button-fg); cursor: pointer;
   font-size: var(--ui-button-font-size); font-weight: var(--ui-button-font-weight); font-family: var(--ui-button-font);
 }
+/* 色見本（クラス名に swatch を含むボタン）は共通ボタンの最小高さ・左右余白を受けない。受けると
+   幅24px・高さ32pxの縦長になる（v0.7.493〜）。詳細度は上の規則と同じに保ち、各色見本の寸法規則が勝つ。 */
+.modal button:where([class*="swatch"]:not([class*="swatches"])) { min-height: 0; padding: 0; }
 .modal button.primary { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .modal button:where(:not([data-style-preview-native="1"])):hover {
   color: var(--ui-button-hover-fg); background: var(--ui-button-hover-bg); border-color: var(--ui-button-hover-border);
@@ -1045,6 +1048,13 @@ button.pt-chip-style-sample--relation,
 .tree-children {
   padding-left: var(--ui-row-indent);
   position: relative;
+}
+/* 深い入れ子でも名前と操作領域を残す。最初の4段は通常の字下げを保つ。 */
+#outliner-tree .tree-children .tree-children .tree-children .tree-children .tree-children {
+  padding-left: min(var(--ui-row-indent), 4px);
+}
+#outliner-tree .tree-children .tree-children .tree-children .tree-children .tree-children::before {
+  left: 1px;
 }
 .tree-children.collapsed { display: none; }
 /* 階層を示す縦線（フォルダツリー改修Phase3 §2.3-2）:

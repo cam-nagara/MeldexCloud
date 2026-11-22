@@ -41,7 +41,9 @@
       const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
       const selectedIds = this._detailTypeSelection || new Set();
       const selected = types.filter(type => selectedIds.has(type.id));
-      return selected.length ? selected : types;
+      // 未選択時も写しを返す。呼出し側が既定タイプを push するため、doc.scenarioTypes そのものを
+      // 返すと名前の無い既定タイプがタイプ一覧へ紛れ込み、以後の保存が保存前検査で拒否される（S1）
+      return selected.length ? selected : types.slice();
     };
     const applyChanges = (changes, opts = {}) => {
       this._pushUndo('タイプ一括変更');
@@ -107,7 +109,7 @@
       const ths = panelContainer?.querySelectorAll?.('.sn2-detail-th-col') || [];
       return (i >= 0 && ths[i]) ? ths[i] : anchorEl;
     };
-    openFormatPopup(anchorEl, {
+    const bulkPopup = openFormatPopup(anchorEl, {
       values: popupValues,
       fields: popupFields,
       verticalWriting: this.doc.editor?.viewMode === 'vertical',
@@ -169,6 +171,60 @@
         this._markDirty();
         this.renderDetailPanel(panelContainer);
       },
+    });
+    // 「全行に適用」の選択欄に安定IDを付ける（共通の書式ポップアップが付けていない場合だけ。S31）
+    const bulkToggle = bulkPopup?.querySelector?.('.gb-fmt-popup-row--bordered > label.gb-fmt-popup-group > input[type="checkbox"]');
+    if (bulkToggle && !bulkToggle.dataset.e2eId) {
+      bulkToggle.dataset.e2eId = `scriptnote-colbulk-apply-all-${colId}`;
+      if (!bulkToggle.getAttribute('aria-label')) bulkToggle.setAttribute('aria-label', '全行に適用（新規行にも反映）');
+    }
+    this._sn2EnsureStableControlIds(bulkPopup, `scriptnote-colbulk-${colId}`);
+  },
+
+  // オプションパネル・その中から開く設定や書式のポップアップ・ダイアログの操作部品に、安定ID
+  // （data-e2e-id）と名前を付ける（S31）。既に id / data-e2e-id を持つ部品はそのまま。IDは部品の
+  // data-* 属性（data-opt-check="isBreak" 等）から作るので、描き直しても同じ値になる。data-* の無い
+  // 部品は、根の中で同じ種類の何番目かで作る。名前の無い入力欄は、直前の項目名か入力例を名前にする。
+  _sn2EnsureStableControlIds(root, prefix) {
+    if (!root?.querySelectorAll || !prefix) return;
+    const SKIP_DATA = new Set(['e2eId', 'testid', 'e2eLabel', 'gbTooltip', 'scriptnoteBound', 'shortcutTabBound']);
+    const slug = value => String(value ?? '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+    const used = new Set([...root.querySelectorAll('[data-e2e-id]')].map(el => el.dataset.e2eId));
+    const counters = new Map();
+    const unique = (base) => {
+      let id = base;
+      let n = 2;
+      while (used.has(id)) id = `${base}-${n++}`;
+      used.add(id);
+      return id;
+    };
+    const controls = root.querySelectorAll('button, input, select, textarea, a[href], [role="button"], [role="checkbox"], [role="switch"], .gb-field-help');
+    controls.forEach((el) => {
+      if (!el.id && !el.dataset.e2eId && !el.dataset.testid) {
+        const dataKey = Object.keys(el.dataset || {}).find(key => !SKIP_DATA.has(key));
+        let base = '';
+        if (dataKey) {
+          const kebab = dataKey.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
+          const value = slug(el.dataset[dataKey]);
+          base = `${prefix}-${kebab}${value ? '-' + value : ''}`;
+        } else {
+          const kind = el.classList.contains('gb-field-help') ? 'help'
+            : (el.tagName.toLowerCase() === 'input' ? `input-${String(el.type || 'text').toLowerCase()}` : el.tagName.toLowerCase());
+          const n = (counters.get(kind) || 0) + 1;
+          counters.set(kind, n);
+          base = `${prefix}-${kind}-${n}`;
+        }
+        el.dataset.e2eId = unique(base);
+      }
+      const tag = el.tagName.toLowerCase();
+      if ((tag === 'input' || tag === 'select' || tag === 'textarea') && !el.getAttribute('aria-label')
+        && !el.getAttribute('title') && !el.getAttribute('placeholder') && !el.closest('label')
+        && !(el.id && root.querySelector(`label[for="${MeldexEscape.cssIdent(el.id)}"]`))) {
+        let prev = el.previousElementSibling;
+        while (prev && !String(prev.textContent || '').trim()) prev = prev.previousElementSibling;
+        const name = String(prev?.textContent || '').trim();
+        if (name) el.setAttribute('aria-label', name.slice(0, 60));
+      }
     });
   },
 
@@ -275,6 +331,7 @@
           <button type="button" class="sn2-detail-add-btn sn2-role-opts-flex1 sn2-role-opts-del" data-role-delete>削除</button>
         </div>
       </div>`;
+    this._sn2EnsureStableControlIds(popup, 'scriptnote-type-option');
     // outlineColor swatch 初期背景 (インライン指定)
     const outlineBtn = popup.querySelector('[data-outline-color]');
     if (outlineBtn) Object.assign(outlineBtn.style, { background: chara.outlineColor || 'var(--border)' });

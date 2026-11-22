@@ -653,8 +653,10 @@
         this._listCache.delete(normalized);
         return null;
       }
+      // 使った順は更新するが、取得した時刻は延ばさない。読むたびに有効期限を延ばすと、読み続ける間は
+      // 古い一覧がいつまでも返る（2026-11-22 M-014 フォルダ網羅テスト: Cloud版で作成・改名の後も一覧が古いまま）。
       this._listCache.delete(normalized);
-      this._listCache.set(normalized, { ...cached, at: Date.now() });
+      this._listCache.set(normalized, cached);
       return this._cloneListEntries(cached.entries);
     }
 
@@ -678,6 +680,27 @@
       [...this._listInFlight.keys()].forEach((key) => {
         if (key.startsWith(prefix)) this._listInFlight.delete(key);
       });
+      this._forgetListCacheAliases(normalized);
+    }
+
+    // 同じフォルダを2つの書き方で指すことがある（保存先の相対パス「作品/話」と、ソースフォルダの印つきの
+    // 「__dropbox_root__/…/作品/話」）。画面の操作の保存は印つき、一覧の読み込みは印なしで覚えるため、
+    // 片方の書き方で捨てても、もう片方の覚え書きが残って古い一覧を返していた（2026-11-22 M-014）。
+    // Dropbox 上の実際の場所で比べて、同じフォルダ・その親・配下の覚え書きをまとめて捨てる。
+    _forgetListCacheAliases(normalized) {
+      let target = '';
+      const where = key => {
+        try { return String(this._dropboxLocation(key)?.path || '').replace(/\/+$/, '').toLowerCase(); } catch { return ''; }
+      };
+      target = where(normalized);
+      if (!target) return;
+      const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
+      const matches = key => {
+        const location = where(key);
+        return !!location && (location === target || location === parent || location.startsWith(target + '/'));
+      };
+      [...this._listCache.keys()].forEach((key) => { if (matches(key)) this._listCache.delete(key); });
+      [...this._listInFlight.keys()].forEach((key) => { if (matches(key)) this._listInFlight.delete(key); });
     }
 
     invalidateReadCache(relativePath) {

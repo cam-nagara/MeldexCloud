@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const VERSION = 5;
+  const VERSION = 6;
   const RIGHT = Object.freeze([
     { type: 'detail',      label: 'オプション',       icon: 'slidersHorizontal', section: 'primary' },
     { type: 'subpanel',    label: 'サブパネル',       icon: 'panelRight',        section: 'bottom', external: true },
@@ -20,6 +20,7 @@
     { type: 'history',     label: 'ヒストリー',       icon: 'history',           section: 'record' },
     { type: 'version',     label: 'バージョン管理',   icon: 'gitBranch',         section: 'record', separatorAfter: true },
     { type: 'chat',        label: 'チャット',         icon: 'messagesSquare',    section: 'bottom' },
+    { type: 'annotate-tool', label: 'アノテートツール', icon: 'pencil', section: 'bottom', external: true },
   ]);
   const RETIRED_TYPES = Object.freeze(['timer']);
   const QUICK_MEMO = Object.freeze({

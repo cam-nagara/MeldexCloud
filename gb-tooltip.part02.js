@@ -275,7 +275,7 @@
   regAction('openscenariocharacterdbimport', { label: 'キャラ取り込み', desc: 'シナリオで使うキャラ情報をシートから取り込みます' });
 
   // ツールメニュー / モバイル / スクショ
-  regAction('showtoolmenu',          { label: 'ツールメニュー', desc: '現在のビューのツールメニューを開きます' });
+  regAction('showtoolmenu',          { label: 'メインメニュー', desc: 'このアプリのメニューを開きます' });
   regAction('showmobiletoolmenu',    { label: 'ツールメニュー', desc: 'モバイル向けツールメニューを開きます' });
   regAction('showscreenshotmenu',    { label: 'スクリーンショット', desc: 'スクリーンショット撮影メニューを開きます' });
   regAction('opentooltab',           { label: 'ツールタブを開く', desc: '指定したツールのタブを開きます' });

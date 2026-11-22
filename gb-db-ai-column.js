@@ -625,6 +625,9 @@ function _ptRenderAiAutofillSection(root, dbPath, propName, ctx) {
   _ptBindAiAutofillSection(root, section, dbPath, propName, ctx);
 }
 
+// 保存に失敗した AI 自動生成の設定（列ごと）。設定欄が描き直されても「未保存」と「再保存」を出し続ける。
+const _ptAiFailedConfigs = new Map();
+
 function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
   const get = id => section.querySelector('#' + id);
   const status = section.querySelector('[data-pt-ai-status]');
@@ -632,16 +635,36 @@ function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
   let saved = _ptNormalizeAiAutofillConfig((getPropertyTypes(dbPath, ctx) || {})[propName]?.ai_autofill);
   let timer = null;
   let pending = null;
-  const commit = () => {
+  // 保存に失敗した入力は、自動では再保存しない（フォーカスが外れた時などに黙って入っていた。2026-11-21 ユーザー決定）。
+  // 「未保存」と「再保存」を出し、利用者が押した時か、入力を変えた時だけ保存する（セルの「未保存の入力」と同じ扱い）。
+  const failedKey = JSON.stringify([String(dbPath || ''), String(propName || '')]);
+  let failedConfig = _ptAiFailedConfigs.get(failedKey) || null;
+  const resaveButton = document.createElement('button');
+  resaveButton.type = 'button';
+  resaveButton.className = 'gb-btn gb-btn-sm';
+  resaveButton.textContent = '再保存';
+  resaveButton.dataset.e2eId = 'pt-ai-autofill-resave';
+  resaveButton.hidden = true;
+  if (status) status.insertAdjacentElement('afterend', resaveButton);
+  else section.appendChild(resaveButton);
+  if (failedConfig) {
+    resaveButton.hidden = false;
+    if (status) status.textContent = '未保存（保存できませんでした）';
+  }
+  const commit = (options = {}) => {
     clearTimeout(timer);
     timer = null;
-    const next = _ptCollectAiConfig(section, saved);
+    const next = options.config || _ptCollectAiConfig(section, saved);
     const savedComparable = saved || _ptNormalizeAiAutofillConfig({});
     if (JSON.stringify(next) === JSON.stringify(savedComparable)) return pending || Promise.resolve(true);
+    if (!options.manual && failedConfig && JSON.stringify(next) === JSON.stringify(failedConfig)) return Promise.resolve(false);
+    resaveButton.hidden = true;
     if (status) status.textContent = '保存中...';
     const run = (pending || Promise.resolve()).then(() => _ptSaveAiConfig(dbPath, propName, ctx, next))
       .then(() => {
         saved = next;
+        failedConfig = null;
+        _ptAiFailedConfigs.delete(failedKey);
         const autoWanted = next.enabled && next.triggers.length;
         const appAuto = _ptAiSettingsCache?.settings?.auto_enabled === true;
         if (status) status.textContent = autoWanted && !appAuto && !_ptIsCloudSurface()
@@ -650,7 +673,10 @@ function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
         return true;
       })
       .catch((error) => {
-        if (status) status.textContent = '保存できませんでした';
+        failedConfig = next;
+        _ptAiFailedConfigs.set(failedKey, next);
+        if (status) status.textContent = '未保存（保存できませんでした）';
+        resaveButton.hidden = false;
         if (typeof showStatus === 'function') showStatus('AI自動生成の設定を保存できませんでした: ' + (error?.message || error), true);
         return false;
       });
@@ -662,6 +688,10 @@ function _ptBindAiAutofillSection(root, section, dbPath, propName, ctx) {
     clearTimeout(timer);
     timer = setTimeout(commit, delay);
   };
+  resaveButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    commit({ manual: true, config: failedConfig || undefined });
+  });
   section._ptAiFlush = commit;
   section.addEventListener('input', (event) => {
     if (event.target?.id === 'pt-ai-app-auto') return;

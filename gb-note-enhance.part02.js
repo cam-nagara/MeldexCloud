@@ -558,7 +558,7 @@ async function _noteTableDeleteRow(cell, editable = _noteTableEditable(cell?.clo
   if (!table || !row) return false;
   if (!_noteTableCanEdit(editable)) return false;
   const removesTable = table.querySelectorAll('tr').length <= 1;
-  const ok = await _noteTableConfirm(removesTable ? '最後の行です。表全体を削除しますか？' : 'この行を削除しますか？');
+  const ok = await _noteTableConfirm(removesTable ? '最後の行です。表全体を削除しますか？' : 'この行を削除しますか？', editable);
   if (!ok) return false;
   if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
@@ -586,7 +586,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
   if (!rows.length) return false;
   const colIdx = Math.max(0, _noteTableColumnIndex(cell));
   const colCount = Math.max(...rows.map(tr => tr.cells.length));
-  const ok = await _noteTableConfirm(colCount <= 1 ? '最後の列です。表全体を削除しますか？' : 'この列を削除しますか？');
+  const ok = await _noteTableConfirm(colCount <= 1 ? '最後の列です。表全体を削除しますか？' : 'この列を削除しますか？', editable);
   if (!ok) return false;
   if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
@@ -610,7 +610,7 @@ async function _noteTableDeleteColumn(cell, editable = _noteTableEditable(cell?.
 async function _noteTableDeleteTable(table, editable = _noteTableEditable(table)) {
   if (!table) return false;
   if (!_noteTableCanEdit(editable)) return false;
-  const ok = await _noteTableConfirm('表を削除しますか？');
+  const ok = await _noteTableConfirm('表を削除しますか？', editable);
   if (!ok) return false;
   if (!_noteTableStillEditableAfterConfirm(table, editable)) return false;
   const beforeHtml = editable ? editable.innerHTML : '';
@@ -672,6 +672,7 @@ function _noteTableControlButton(action, label, title) {
   btn.className = action === 'menu' ? 'note-table-cell-menu-btn' : 'note-table-cell-plus';
   btn.dataset.noteTableAction = action;
   btn.dataset.e2eId = 'note-table-cell-' + action;
+  if (action === 'menu') btn.dataset.e2eId = 'note-table-cell-menu-trigger';
   btn.title = title;
   btn.setAttribute('aria-label', title);
   btn.innerHTML = _noteEnhanceRenderIcon(action === 'menu' ? 'moreHorizontal' : 'plus', 14, label);

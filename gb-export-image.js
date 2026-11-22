@@ -422,13 +422,13 @@ const MeldexExportImage = (() => {
    */
   async function exportCurrentView(viewType) {
     const targets = {
-      page: () => document.getElementById('page-content'),
+      page: () => (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content')),
       scriptnote: () => {
         if (typeof _sn2GetActiveEditor !== 'function') return null;
         const editor = _sn2GetActiveEditor();
         return editor?.host?.querySelector('.sn2-scroll') || null;
       },
-      database: () => document.getElementById('pivot-table'),
+      database: () => (window.GBEditorHost?.surfaceElement?.('pivot-table') || document.getElementById('pivot-table')),
       csv: () => {
         const c = document.getElementById('csv-table-container');
         return c?.querySelector('table') || null;
@@ -450,7 +450,7 @@ const MeldexExportImage = (() => {
 
     const titleMap = {
       page: () => {
-        const pc = document.getElementById('page-content');
+        const pc = (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content'));
         const h = pc?.querySelector('h1, h2, h3');
         return h?.textContent || 'ノート';
       },
@@ -563,7 +563,7 @@ const MeldexExportImage = (() => {
   }
 
   function _databasePreTransformOptions() {
-    const table = document.getElementById('pivot-table');
+    const table = (window.GBEditorHost?.surfaceElement?.('pivot-table') || document.getElementById('pivot-table'));
     const origCells = table ? Array.from(table.querySelectorAll('th, td')) : [];
     const cellStyles = origCells.map(cell => {
       const style = getComputedStyle(cell);
@@ -604,7 +604,7 @@ const MeldexExportImage = (() => {
     switch (viewType) {
       case 'page':
         if (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportOptions) {
-          const pc = document.getElementById('page-content');
+          const pc = (window.GBEditorHost?.surfaceElement?.('page-content') || document.getElementById('page-content'));
           return MeldexExportHtml.noteExportOptions(pc, !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isActive()), '');
         }
         return {

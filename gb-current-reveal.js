@@ -182,6 +182,10 @@
   }
 
   function _ensureOutlinerVisible(activeSnapshot) {
+    // スマホ表示ではフォルダツリーは全画面の画面として開く（メインメニューの「フォルダツリーで表示」から）。
+    if (document.body?.dataset?.cloudMobile === '1' && typeof window.MeldexCloudMobile?.openSidebar === 'function') {
+      if (window.MeldexCloudMobile.openSidebar(false) !== false) return true;
+    }
     if (_hasVisibleOutlinerNodes() && _ensureSidebarOutlinerVisible()) return true;
     const visible = _findOutlinerTab({ activeOnly: true });
     if (visible && !_wouldReplaceActiveTab(visible, activeSnapshot) && _activateOutlinerMatch(visible, activeSnapshot)) return true;

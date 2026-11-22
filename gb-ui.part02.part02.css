@@ -369,6 +369,7 @@
   margin-bottom: var(--ui-space-4);
   flex-shrink: 0;
 }
+.gb-hp-filter { flex: 1 1 auto; min-width: 0; }
 .gb-hp-entry {
   padding: 3px var(--ui-space-4);
   font-size: var(--ui-font-12);

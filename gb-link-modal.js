@@ -9,6 +9,7 @@ const MeldexLinkModal = (() => {
   let _callback = null;
   // サイドバーを一時的にモーダルへ移動するため、元の親 / 次兄弟 / display を記録
   let _sidebarOrigParent = null;
+  let _sidebarEl = null;
   let _sidebarOrigNextSibling = null;
   let _sidebarOrigDisplay = null;
   let _sidebarClickHandler = null;
@@ -74,12 +75,16 @@ const MeldexLinkModal = (() => {
     e.stopImmediatePropagation();
     e.stopPropagation();
 
-    insertFileLink({ name, path, type: type || _inferTypeFromPath(path) });
+    insertFileLink({ name, path, type: type || _inferTypeFromPath(path) }).catch(error => {
+      if (typeof showStatus === 'function') showStatus(error.userMessage || error.message || 'リンクを挿入できませんでした', true);
+    });
   }
 
   function _moveSidebarInto(container) {
     const sidebar = document.getElementById('sidebar');
     if (!sidebar) return false;
+    // ダイアログを閉じると外枠ごと文書から外れるので、戻す時は id で探さずこの要素そのものを戻す。
+    _sidebarEl = sidebar;
     _sidebarOrigParent = sidebar.parentNode;
     _sidebarOrigNextSibling = sidebar.nextSibling;
     _sidebarOrigDisplay = sidebar.style.display;
@@ -94,7 +99,10 @@ const MeldexLinkModal = (() => {
   }
 
   function _restoreSidebar() {
-    const sidebar = document.getElementById('sidebar');
+    // ダイアログの外枠は onClose より先に文書から外れる（gb-ui.js _finishClose）。その時フォルダツリーは
+    // 外枠の中にあって getElementById では見つからず、戻されないまま画面から消えていた（M-014 第3段階 links で発見）。
+    const sidebar = _sidebarEl || document.getElementById('sidebar');
+    _sidebarEl = null;
     if (!sidebar || !_sidebarOrigParent) return;
     if (_sidebarClickHandler) {
       sidebar.removeEventListener('click', _sidebarClickHandler, true);
@@ -334,18 +342,41 @@ const MeldexLinkModal = (() => {
     return `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent2);">${esc(text)}</a> `;
   }
 
-  function insertFileLink(item) {
+  async function insertFileLink(item) {
     if (_callback) {
       _callback({ type: 'file', name: item.name, path: item.path, fileType: item.type });
       close();
       return;
     }
-    if (_savedRange) {
+    const range = _savedRange?.cloneRange?.();
+    const host = _resolveHeadingHost(range);
+    const owner = host?.closest?.('[data-path],[data-entity-path]') || host;
+    const dialog = _dialogApi;
+    const path = owner?.dataset?.path || owner?.dataset?.entityPath;
+    if (host && path && typeof apiFetch === 'function') {
+      const lock = await apiFetch('/file-lock/check?path=' + encodeURIComponent(path), { silentError:true });
+      if (lock.locked) throw new Error('編集ロック中のためリンクを挿入できません: ' + (lock.lock_reason || lock.entry?.lock_reason || 'ロックを解除してから操作してください'));
+      if (lock.verification?.ok === false && !lock.verification.skipped) throw new Error('編集ロックの署名を確認できないためリンクを挿入できません');
+    }
+    if (host && typeof ViewLock !== 'undefined' && typeof _getActiveViewLockInfo === 'function') {
+      const info = _getActiveViewLockInfo();
+      if (info && !await ViewLock.guardAction(info.viewKey, info.kind)) return;
+    }
+    if (host && (!host.isConnected || !host.isContentEditable || owner?.contentEditable === 'false' || _dialogApi !== dialog
+        || (owner.dataset.path || owner.dataset.entityPath) !== path)) return;
+    if (range) {
+      host?.focus();
       const sel = window.getSelection();
       sel.removeAllRanges();
-      sel.addRange(_savedRange);
+      sel.addRange(range);
     }
     const selectedText = window.getSelection()?.toString() || item.name;
+    // insertHTML はブラウザがspanの独自属性を落とし、リンクを色付きの文字へ変えてしまう。
+    // フォルダからのドロップと同じ挿入を使い、参照先と取り消しを保つ。
+    if (host && typeof MeldexDnD.insertNodeAtEditableRange === 'function') {
+      if (typeof _pushCustomUndo === 'function') _pushCustomUndo(host);
+      if (MeldexDnD.insertNodeAtEditableRange(host, { ...item, name:selectedText }, range)) { close(); return; }
+    }
     const html = MeldexDnD.createAutoLinkHtml(selectedText, item.path, item.type);
     document.execCommand('insertHTML', false, html);
     close();

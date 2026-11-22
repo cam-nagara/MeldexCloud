@@ -689,6 +689,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     const onKeydown = (ev) => {
       if (ev.key !== 'Escape') return;
+      // ポップアップが閉じる処理を通らずに外された時は、残った Escape 処理が次の Escape を横取りしないよう後始末だけする（M-014 S20/S21）。
+      if (!menu.isConnected) { close(); return; }
       ev.preventDefault();
       ev.stopPropagation();
       close({ restoreFocus: true });

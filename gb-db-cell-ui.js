@@ -149,9 +149,9 @@ function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
   if (typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath)) return false;
   if (_cellUiWriteBlockedMessage(ctx)) return false;
   if (_cellUiColumnLockMessage(dbPath, propName, ctx)) return false;
-  if (options.hasExistingValue && typeof getStatusEnabled === 'function' && !getStatusEnabled(dbPath)) {
-    return ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link', 'image'].includes(type);
-  }
+  // 値のあるセルへの追加も、ステータス機能のオン・オフにかかわらずできる（ユーザー判断 案A 2026-07-25。
+  // 1セル1値は制作管理のシートだけで、上の hidesCandidateStatusUi が止める）。以前はステータス機能がオフだと
+  // 拒否していたため、既定のオフのシートでは表から候補値を足せなかった（2026-11-21 利用者報告）。
   return true;
 }
 
@@ -543,6 +543,16 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       _dbOpenConfiguredTarget(v, link.textContent, { dbPath: _dbPathFromEntityPath(entityPath), sourceEl: link,
         entry: { type: 'html', path: v, label: v, urlExternal: true } });
     });
+    // キーボード（Enter・F2・候補値の選択中の Enter）で編集を始める時は、リンクを開かずに値の編集欄にする
+    // （以前はリンクのクリックとして扱われ、URLの値のセルで Enter を押すと既定のブラウザが開いていた。2026-11-21）。
+    link.addEventListener('meldex:edit-value', (e) => {
+      e.stopPropagation();
+      const span = document.createElement('span');
+      span.className = 'value-text';
+      span.textContent = v;
+      link.replaceWith(span);
+      startInlineEdit(span, val, entityPath, propName);
+    });
     row.appendChild(link);
     return row;
   }
@@ -906,12 +916,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
       showStatus('削除できる候補値がありません', true);
       return;
     }
-    if (typeof cfConfirm === 'function') {
-      const ok = await cfConfirm('この候補値を削除しますか？');
-      if (!ok) return;
-    } else if (typeof window !== 'undefined' && !window.confirm('この候補値を削除しますか？')) {
-      return;
-    }
+    // 確認は出さない。候補値の削除は Ctrl+Z・やり直し・共通の履歴で戻せる（app/AGENTS.md、2026-11-21 予期しないダイアログの検査）。
     try {
       const bidirectionalCtx = (_ptc && (_ptc.type === 'relation' || _ptc.type === 'multi-relation') && _ptc.bidirectional)
         ? { entityPath, propName, ptc: _ptc }
@@ -1133,6 +1138,9 @@ function startInlineEdit(span, val, entityPath, propName) {
   input.innerHTML = oldRichHtml || _dbRichPlainTextToHtml(old);
   span.textContent = '';
   span.appendChild(input);
+  // 確定前に画面を閉じた時は、未保存の入力として退避する（gb-db-cell-recovery.js）。
+  window.MeldexSheetCellRecovery?.watchEditor?.({ element: input, dbPath, entryPath: entityPath, property: propName,
+    candidateIndex: val?.candidate_index ?? null, before: old, read: () => String(input.innerText || '').replace(/\n$/, '') });
   _cellUiAutosizeTextarea(input);
   input.focus();
   const selection = window.getSelection?.();
@@ -1141,6 +1149,8 @@ function startInlineEdit(span, val, entityPath, propName) {
     range.selectNodeContents(input);
     selection.removeAllRanges();
     selection.addRange(range);
+    // 編集の開始の全選択は利用者の文字選択ではないので、書式設定ポップアップを出さない（2026-11-22 探索）。
+    window.GBTextSelectionFormat?.ignoreCurrentSelection?.();
   }
 
   const restoreOldDisplay = () => {
@@ -1591,10 +1601,18 @@ function _enableDropdownKeyNav(dd, itemSelector) {
       item.addEventListener('pointerenter', () => setActiveFromItem(item));
     });
   };
+  // 開いた時の強調は、今の値の候補（data-dd-initial）を優先し、無ければ先頭の候補にする。「解除」は既定にしない
+  // （2026-11-21 探索: セレクトで Enter→Enter と押すだけで値が消え、画面には元の値が残っていた）。
   const ensureInitialActive = () => {
     bindItems();
     const items = getItems();
-    if (items.length > 0 && activeIdx < 0) { activeIdx = 0; highlight(items, 0); }
+    if (items.length > 0 && activeIdx < 0) {
+      let idx = items.findIndex(item => item.dataset?.ddInitial === '1');
+      if (idx < 0) idx = items.findIndex(item => !item.classList?.contains('status-dropdown-clear'));
+      if (idx < 0) idx = 0;
+      activeIdx = idx;
+      highlight(items, idx);
+    }
   };
   // 初期状態で先頭をアクティブにする。キー入力が次フレームより先に来ても選択位置を安定させる。
   ensureInitialActive();

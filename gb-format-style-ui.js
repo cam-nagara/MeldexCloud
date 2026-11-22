@@ -35,8 +35,26 @@
 
   function _cssVar(key) {
     if (!key) return '';
-    if (typeof getCssVar === 'function') return getCssVar(key);
-    return getComputedStyle(document.documentElement).getPropertyValue(key).trim();
+    const read = name => (typeof getCssVar === 'function'
+      ? getCssVar(name)
+      : getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+    const value = read(key);
+    if (value) return value;
+    const inherited = _inheritedStyleKey(key);
+    return inherited ? read(inherited) : value;
+  }
+
+  // 未設定の時に引き継ぐ項目。シートの候補値（列タイプごと）は、v0.7.515 の「候補値」共通の設定を初期値にする。
+  function _inheritedStyleKey(key) {
+    const match = String(key || '').match(/^--db-option-(?:select|multi|relation|rollup|tag)-(fg|bg|bold|font-size|radius|padding-x|border-color|border-width)$/);
+    return match ? `--db-option-chip-${match[1]}` : '';
+  }
+
+  // 見本の CSS で使う変数参照（引き継ぎ元があれば代替値に入れる）。
+  function _varRef(key, fallback) {
+    const inherited = _inheritedStyleKey(key);
+    const tail = inherited ? `var(${inherited}${fallback ? `, ${fallback}` : ''})` : (fallback || '');
+    return tail ? `var(${key}, ${tail})` : `var(${key})`;
   }
 
   function _isTransparent(value) {
@@ -425,9 +443,9 @@
     const values = _settingsValues(def, map);
     const isCaret = CARET_RE.test(def.label || '');
     const previewSize = _previewFontSize(def.label);
-    const bg = map.bgColor && !_isTransparent(values.bgColor) ? `var(${map.bgColor})` : PAGE_BG;
-    const fg = map.textColor ? `var(${map.textColor})` : def.line ? `var(${def.line})` : 'var(--fg)';
-    const lineWidth = map.borderWidth ? `var(${map.borderWidth})` : '3px';
+    const bg = map.bgColor && !_isTransparent(values.bgColor) ? _varRef(map.bgColor) : PAGE_BG;
+    const fg = map.textColor ? _varRef(map.textColor) : def.line ? _varRef(def.line) : 'var(--fg)';
+    const lineWidth = map.borderWidth ? _varRef(map.borderWidth) : '3px';
     const lineStyle = map.borderStyle ? `var(${map.borderStyle}, none)` : 'solid';
     const fallbackAccent = map.borderColor ? `var(${map.borderColor})` : fg;
     const accent = map.accentColor ? `var(${map.accentColor}, ${fallbackAccent})` : fallbackAccent;
@@ -435,18 +453,19 @@
       `background:${bg}`,
       `color:${fg}`,
     ];
-    if (map.fontWeight) parts.push(`font-weight:var(${map.fontWeight})`);
+    if (map.fontWeight) parts.push(`font-weight:${_varRef(map.fontWeight)}`);
     if (map.fontStyle) parts.push(`font-style:var(${map.fontStyle})`);
     if (map.fontSize) {
       const fallback = previewSize ? `, ${previewSize}px` : '';
-      parts.push(`font-size:var(${map.fontSize}${fallback})`);
+      if (_inheritedStyleKey(map.fontSize)) parts.push(`font-size:${_varRef(map.fontSize, previewSize ? `${previewSize}px` : '')}`);
+      else parts.push(`font-size:var(${map.fontSize}${fallback})`);
     }
     if (map.lineHeight) parts.push(`line-height:var(${map.lineHeight}, ${_lineHeightFallback(def)}%)`);
     if (map.fontFamily) parts.push(`font-family:var(${map.fontFamily}, inherit)`);
     if (map.textStrokeColor) parts.push(`-webkit-text-stroke-color:var(${map.textStrokeColor})`, `-webkit-text-stroke-width:var(${map.textStrokeWidth || '--_zero'}, 0px)`, 'paint-order:stroke fill');
     if (values.leftAccent) parts.push(`box-shadow:-${STYLE_LEFT_ACCENT_WIDTH} 0 0 0 ${accent}`, `padding-left:${STYLE_LEFT_ACCENT_WIDTH}`);
     if (values.underline) parts.push(`border-bottom:${STYLE_UNDERLINE_WIDTH} solid ${accent}`);
-    if (def.line) parts.push(`border-bottom:${lineWidth} ${lineStyle} var(${def.line})`);
+    if (def.line) parts.push(`border-bottom:${lineWidth} ${lineStyle} ${_varRef(def.line)}`);
     if (isCaret) {
       const caretColor = `var(${map.caretColor || '--editor-caret-color'})`;
       const caretWidth = `var(${map.caretWidth || '--editor-caret-width'}, 2px)`;
@@ -722,6 +741,13 @@
   }
 
   function renderStyleRowUnified(def) {
+    // 「ルビ表示」の既定値の行は専用の部品で描く。共通の行描画（renderStyleRow）をこの関数で
+    // 置き換えた時にこの分岐が抜け、設定画面に行が出なくなっていた（M-014 S27）。
+    if (def?.type === 'rubyPresentationDefaults') {
+      return typeof MeldexRubySettingsUI !== 'undefined' && typeof MeldexRubySettingsUI.globalSettingsHtml === 'function'
+        ? MeldexRubySettingsUI.globalSettingsHtml({ scope: def.scope })
+        : '';
+    }
     if (Array.isArray(def.numbers) && def.numbers.length) {
       const styleId = _registerSettingsDef(def);
       const previewText = def.text || def.label || '数値';
@@ -1130,6 +1156,9 @@
   function _expandFileRow(rowData) {
     const fields = rowData?.fields || [];
     if (fields.length <= 1) return [rowData];
+    // 見本1つにまとめる行（シートの候補値など）。共通の書式設定ポップアップに無い項目は、
+    // ポップアップ内の数値欄に出す（行を項目ごとに分けない）。
+    if (rowData.keepTogether) return [rowData];
     const mapped = new Set(Object.values(_mapFileRow(rowData).map).filter(Boolean));
     const unsupported = fields.filter(field => !mapped.has(field));
     if (unsupported.length && fields.every(field => /^--page-(ul|ol)-[1-6]-/.test(field.key || ''))) return [rowData];
@@ -1263,6 +1292,8 @@
       return value ? field.on : field.off;
     }
     if (field.type === 'pxtext') return String(value).match(/px|em|rem|%$/) ? String(value) : value + 'px';
+    // CSS の値として単位付きで保存する数値（シートの候補値の文字サイズなど）。
+    if (field.cssUnit && Number.isFinite(Number(value))) return `${Number(value)}${field.cssUnit}`;
     return value;
   }
 
@@ -1288,6 +1319,8 @@
   // 箇条書き・番号付きリストは未設定の項目が本文の書式を継承する（CSSと同じ順序）。
   function _inheritedFileFieldValue(field, adapter) {
     const key = String(field?.key || '');
+    const inherited = _inheritedStyleKey(key);
+    if (inherited) return _readFile({ key: inherited, type: field.type }, adapter);
     const match = key.match(/^--page-(?:ul|ol)-[1-6](-(?:fg|font-size|font|bold|italic|line-height))$/);
     if (!match) return '';
     return _readFile({ key: `--page-text${match[1]}`, type: field.type }, adapter);
@@ -1380,7 +1413,8 @@
       if (extraFields.every(_isFileNumberField)) {
         const sectionTitle = document.createElement('div');
         sectionTitle.className = 'gb-fmt-section-title';
-        sectionTitle.textContent = extraFields.some(field => /line-height|space-|行間|余白/i.test(`${field.key || ''} ${field.label || ''}`)) ? '行間・余白' : '数値';
+        sectionTitle.textContent = extraFields.find(field => field.popupSection)?.popupSection
+          || (extraFields.some(field => /line-height|space-|行間|余白/i.test(`${field.key || ''} ${field.label || ''}`)) ? '行間・余白' : '数値');
         popup.insertBefore(sectionTitle, before);
       }
       popup.insertBefore(row, before);
@@ -1522,7 +1556,8 @@
 
     el.appendChild(wrap);
     _fsBindThemePanel(el, ctx);
-    if (typeof replaceIcons === 'function') replaceIcons();
+    // 描いた範囲だけアイコンを描く（ページ全体を描き直すと、押しているボタンのクリックが消える）。
+    if (typeof replaceIcons === 'function') replaceIcons(el);
   }
 
   window.renderStyleRow = renderStyleRowUnified;

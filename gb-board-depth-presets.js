@@ -533,9 +533,12 @@
       if (!popupEl || popupEl !== self) return;
       const presets = listPresets();
       const activeId = matchedPresetId();
+      // 選んだプリセットを編集した後に一覧を開き直しても、そのプリセットを選んだままにする
+      // （内容が変わると一致しなくなり、先頭の標準搭載が選ばれて「上書き」できなかった）。
+      const chosenId = boardState()?.activeDepthStylePreset || '';
       const selectedId = presets.some(entry => entry.id === opts.selectedId)
         ? opts.selectedId
-        : (activeId || presets[0]?.id || '');
+        : (activeId || (presets.some(entry => entry.id === chosenId) ? chosenId : '') || presets[0]?.id || '');
       opts.selectedId = selectedId;
       const selected = presets.find(entry => entry.id === selectedId) || null;
       const icon = (name, fallback) => (typeof global.lucide === 'function' ? global.lucide(name, 14) : fallback);

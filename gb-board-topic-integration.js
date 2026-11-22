@@ -389,10 +389,17 @@
       return false;
     }
     const document = normalizeTopicDocument(detail.viewDocument, board, board.path);
-    const activeId = board.activeBoardViewId || document.activeBoardViewId
-      || document.boardViews?.[0]?.boardViewId;
+    // 開いた直後のボードは、手元で作った仮のビューID（board-view:<hash>）を持つ。共通トピックへの移行で
+    // 保存先の文書が別のビューIDを返すと、仮のIDで配置を絞り込んで0件になり、全トピックを消した後に
+    // 文字と位置だけのトピックを作り直していた（親子・リンク・画像・書式・IDが失われる。M-014 link で発見）。
+    // 保存先の文書に実在するビューIDだけを使う。
+    const viewIds = new Set((document.boardViews || []).map(view => String(view?.boardViewId || '')));
+    const activeId = [board.activeBoardViewId, document.activeBoardViewId, document.boardViews?.[0]?.boardViewId]
+      .find(id => id && viewIds.has(String(id))) || null;
     const placements = (document.placements || []).filter(item => item?.surface === 'board'
       && (!activeId || String(item.viewId) === String(activeId)));
+    // 保存先の配置が1件も無いのに手元に共通トピックがある時は、手元を消さない（作り直しで中身を失わない）。
+    if (!placements.length && (board.nodes || []).some(node => node?.topicRef)) return false;
     const allowed = new Set(placements.map(item => topicKey(item.topicRef)));
     const records = new Map((detail.topicRecords || []).map(record => [
       topicKey(record?.topicRef || canonicalRef(detail.sourceId, record?.topicId)), record,
@@ -403,14 +410,15 @@
       if (!existing.has(key)) existing.set(key, []);
       existing.get(key).push(node);
     });
-    const unbound = (board.nodes || []).filter(node => !node?.topicRef);
+    const existingNodes = board.nodes || [];
     const nodes = [];
     placements.forEach((placement, index) => {
       const key = topicKey(placement.topicRef);
       const record = records.get(key);
       const position = placement.position || placement.boardPosition || {};
       const visuals = existing.get(key) || [];
-      if (!visuals.length) {
+      const created = !visuals.length;
+      if (created) {
         const id = `topic-${hashText(key)}`;
         const x = Number.isFinite(+position.x) ? +position.x : 40 + (index % 5) * 180;
         const y = Number.isFinite(+position.y) ? +position.y : 40 + Math.floor(index / 5) * 100;
@@ -423,8 +431,10 @@
       visuals.forEach(node => {
         node.topicRef = clone(placement.topicRef);
         if (record && !global.bdHasPendingNodeTextWrite?.(node)) node.text = recordText(record);
-        if (visuals.length === 1 && Number.isFinite(+position.x)) node.x = +position.x;
-        if (visuals.length === 1 && Number.isFinite(+position.y)) node.y = +position.y;
+        // 位置は新しく作ったトピックにだけ入れる。手元のボード（ファイル）の配置が正で、保存先の写しは
+        // 保存の直後には古いことがある（古い写しで、動かしたトピックが元の位置へ戻っていた）。
+        if (created && Number.isFinite(+position.x)) node.x = +position.x;
+        if (created && Number.isFinite(+position.y)) node.y = +position.y;
         node._topicCanonicalOnly = !record?.legacyNodeId || (record?.originDocumentId
           && record.originDocumentId !== document.documentId)
           || (record?.topicRef?.sourceId && record.topicRef.sourceId !== detail.sourceId);
@@ -432,9 +442,14 @@
         if (!nodes.some(item => item.id === node.id)) nodes.push(node);
       });
     });
-    board.nodes = [...unbound, ...nodes];
+    // 手元のトピックは消さない。保存先の写しに配置が無いトピック（保存の直後で写しが古い時の、追加したばかりの
+    // トピック等）を外すと、次の保存でファイルからも消えていた（M-014 link で発見: 追加→取り消し→やり直し→再読込の後）。
+    const createdNodes = nodes.filter(node => !existingNodes.includes(node));
+    board.nodes = [...existingNodes, ...createdNodes];
     board.topicViewDocument = document;
     board.activeBoardViewId = activeId;
+    // 写しのビューへ手元の配置・ライン・グループを写してから表示へ当てる（古い写しで手元の配置を戻さない）。
+    if (activeId) captureRuntime(board, { commitEdits: false });
     applyView(board, activeView(board));
     return true;
   }

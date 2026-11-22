@@ -287,17 +287,14 @@
     if (start.right && start.x - event.clientX > 28) reveal(instance, 'right', true);
   }
 
-  // 新規作成直後のボードは、ファイル名の見出しから作られたルートカードを 1 枚だけ持つ。
-  // 利用者から見ればこれは「まだ何も作っていない」状態なので、空状態の案内を出す対象に含める。
-  // 本文の追記・画像・リンク・ライン・グループのいずれかが付いた時点で「中身あり」に切り替わる。
+  // 新規作成のボードはトピックが無い空の状態で作られる（v0.7.446 以降。以前はファイル名の見出しから
+  // ルートカードを1枚作っていたので、1枚だけのボードも「まだ何も作っていない」と数えていた）。
+  // マニュアルのとおり、トピックを1つでも増やす・ラインを引く・グループを作ると案内は消える
+  // （1枚目のトピックを足しても案内が中央に残り、トピックと重なっていた。M-014 ボード網羅テストで発見）。
   function looksUntouched(state) {
     const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
-    if (!nodes.length) return true;
-    if (nodes.length > 1) return false;
-    if ((state.connections?.length || 0) > 0 || (state.groups?.length || 0) > 0) return false;
-    const only = nodes[0] || {};
-    if (only.img || only.link || only.note || only.parent) return false;
-    return !String(only.text || '').includes('\n');
+    if (nodes.length) return false;
+    return !((state.connections?.length || 0) > 0 || (state.groups?.length || 0) > 0);
   }
 
   function hasPersistentContent(instance) {

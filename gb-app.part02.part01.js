@@ -778,6 +778,8 @@ function _gbAppApiFetchAcquireLane(path, opts) {
 }
 
 async function apiFetch(path, opts) {
+  const historyProjection = await window.MeldexChatManagementSheet?.handleApi?.(path, opts);
+  if (historyProjection) return historyProjection.value;
   const method = _gbAppApiFetchMethod(opts);
   const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
   const cacheGeneration = _gbAppApiFetchCacheGeneration;
@@ -875,6 +877,8 @@ async function apiFetch(path, opts) {
         });
       }
       const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      // シートの保存の失敗・読み込みの失敗を自己記録へ残す（silentError の保存も含む。gb-log-export.js）。
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
       if (!opts?.silentError && !quietReadAbort) {
         window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
       }
@@ -987,6 +991,13 @@ async function _gbAppPutValueConfirmed(path, body, options) {
         result = null;
       }
       _gbAppPendingValueWrites.delete(key);
+      if (result) {
+        // 失敗と表示した保存が、この送り直しで入った。黙って入れずに知らせ、表示を読み直させる（2026-11-21 ユーザー決定）。
+        try {
+          window.dispatchEvent(new CustomEvent('meldex:value-write-replayed', { detail: { path: key, body: uncertain, result } }));
+        } catch {}
+        if (typeof showStatus === 'function') showStatus('前に失敗した保存を反映しました');
+      }
       const canonical = value => Array.isArray(value) ? value.map(canonical)
         : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
       const withoutId = value => JSON.stringify(canonical(Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'operation_id'))));
@@ -1021,8 +1032,13 @@ async function _gbAppPutValueConfirmed(path, body, options) {
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
   if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
-    const result = await _gbAppPutValueConfirmed(path, guardedBody, options);
+    const notify = phase => { if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, phase, guardedBody); };
+    notify('pending');
+    let result;
+    try { result = await _gbAppPutValueConfirmed(path, guardedBody, options); }
+    catch (error) { setTimeout(() => notify('failed'), 0); throw error; }
     _scheduleLinkDictionaryRefreshForMutation(path);
+    notify('saved');
     return result;
   }
   const requestOptions = {
@@ -1041,6 +1057,7 @@ async function apiPut(path, body, options = {}) {
     result = await pending;
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
+  window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   return result;
 }
 
@@ -1053,6 +1070,17 @@ function _scheduleLinkDictionaryRefreshForMutation(path) {
   if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
     MeldexAutoLink.scheduleReload(3000);
   }
+}
+
+// 同じトピックを表示している別の面（サブパネルのトピックなど）へ、値の保存を知らせる（2026-11-21）。
+// pending=保存の前（表の手元の値は反映済み）・saved=保存の後・failed=保存の失敗（表は元に戻る）。
+function _gbAppNotifyEntityValuesChanged(path, phase, body) {
+  try {
+    if (String(path || '').split('?')[0].replace(/^\/api/, '') !== '/value') return;
+    const entityPath = new URLSearchParams(String(path).split('?')[1] || '').get('path')
+      || (body && typeof body === 'object' ? (body.entry_path || body.folder_path || '') : '');
+    if (entityPath) window.dispatchEvent(new CustomEvent('meldex:entity-values-changed', { detail: { path: entityPath, phase } }));
+  } catch {}
 }
 
 async function apiPost(path, body, options = {}) {
@@ -1073,14 +1101,23 @@ async function apiPost(path, body, options = {}) {
       || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
     body = prepared.body; stableCopyKey = prepared.key;
   }
-  const result = await apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
+  if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'pending', body);
+  let result;
+  try {
+    result = await apiFetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      ...(options || {}),
+    });
+  } catch (error) {
+    if (typeof _gbAppNotifyEntityValuesChanged === 'function') setTimeout(() => _gbAppNotifyEntityValuesChanged(path, 'failed', body), 0);
+    throw error;
+  }
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   _scheduleLinkDictionaryRefreshForMutation(path);
+  if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'saved', body);
   return result;
 }
 

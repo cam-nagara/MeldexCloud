@@ -76,8 +76,10 @@ function setPropertyType(dbPath, propName, typeConfig, ctxOverride) {
   const c = getDbViewConfig(targetPath);
   if (!c.propertyTypes) c.propertyTypes = {};
   c.propertyTypes[propName] = typeConfig;
-  _unmarkDbPropertyDeletedInConfig(c, propName);
-  saveDbViewConfig(targetPath, c, { skipBackend: true, ctx: ctxOverride });
+  // 削除した列と同じ名前で列を作り直した時は、保存先のシートの設定の削除済み一覧からも外す。
+  // 手元だけ外していたため、再読み込みや別の端末では今ある列が削除済みとして扱われていた（2026-11-21 実データ「姓」）。
+  const unmarkedDeleted = _unmarkDbPropertyDeletedInConfig(c, propName);
+  saveDbViewConfig(targetPath, c, { skipBackend: !unmarkedDeleted, ctx: ctxOverride });
   // state.dbMetadata にも反映
   const targetMetadata = _ptMetadataForDbPath(targetPath, ctxOverride);
   if (targetMetadata) {
@@ -154,7 +156,7 @@ async function _ptApplyStoredTypeConfig(dbPath, propName, previousConfig, reques
 
 // 列タイプ変更を Undo/Redo 履歴へ積む共通処理（列名リネームの historyPush と揃える）。
 // 双方向リレーションは元シートと対応先シートを同じ操作として戻す。
-function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, ctx) {
+function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, ctx, valueMigration = null) {
   if (typeof historyPush !== 'function' || typeof _dbScope !== 'function') return;
   if (!dbPath || !propName) return;
   const before = JSON.parse(JSON.stringify(beforeConfig || {}));
@@ -173,11 +175,129 @@ function _ptPushTypeChangeHistory(dbPath, propName, beforeConfig, afterConfig, c
       try { renderDbPropertySettingsPanel(dbPath, propName); } catch {}
     }
   };
+  // 列タイプの変更で値を置き換えた時（リレーションの識別番号⇔名前）は、取り消しで元の値へ、
+  // やり直しで置き換えた値へ戻す。列設定を先に戻してから値を戻す。
+  const _restoreValues = async (forward) => {
+    if (!valueMigration) return;
+    if (forward) await valueMigration.reapply();
+    else await valueMigration.rollback();
+    const rc = _resolveCtx();
+    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(rc, dbPath);
+  };
   historyPush((beforeType === afterType ? '列設定変更: ' : '列タイプ変更: ') + propName,
-    () => _restore(after, before),
-    () => _restore(before, after),
+    async () => { await _restore(after, before); await _restoreValues(false); },
+    async () => { await _restore(before, after); await _restoreValues(true); },
     (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
   );
+}
+
+// 列タイプの変更に伴う値の置き換え（v0.7.538）。
+// リレーション列を文字などへ変える時は、識別番号（ent_…）を相手のトピックの名前へ置き換える。
+// 文字などをリレーション列へ変える時は、名前が参照先のトピック1件だけに一致する時だけ相手のトピックへ置き換える
+// （見つからない・同じ名前が複数ある時はそのまま残し、未解決として表示される。セルの貼り付けと同じ規則）。
+const PT_VALUE_RELATION_TYPES = ['relation', 'multi-relation'];
+const PT_VALUE_DERIVED_TYPES = ['formula', 'rollup', 'button', 'multi-source-relation', 'chat', 'created-time', 'last-edited-time', 'created-by', 'last-edited-by'];
+
+function _ptValueTypeOf(config) {
+  return String(config?.type || 'text').replace(/_/g, '-');
+}
+
+function _ptSplitValueTokens(raw) {
+  return String(raw ?? '').split(/[,、]/).map(token => token.trim()).filter(Boolean);
+}
+
+function _ptPivotDataForTypeChange(dbPath, ctx) {
+  const target = _ptNormalizeDbPath(dbPath || '');
+  if (ctx?.pivotData?.entities && (!ctx.dbPath || _ptNormalizeDbPath(ctx.dbPath) === target)) return ctx.pivotData;
+  const found = typeof _dbFindPaneContextForPath === 'function' && target ? _dbFindPaneContextForPath(target) : null;
+  if (found?.pivotData?.entities) return found.pivotData;
+  return _ptIsCurrentDbPath(target) ? state.pivotData : null;
+}
+
+async function _ptPlanTypeChangeValues(dbPath, propName, beforeConfig, afterConfig, ctx) {
+  const fromType = _ptValueTypeOf(beforeConfig);
+  const toType = _ptValueTypeOf(afterConfig);
+  const fromRelation = PT_VALUE_RELATION_TYPES.includes(fromType);
+  const toRelation = PT_VALUE_RELATION_TYPES.includes(toType);
+  if (fromRelation === toRelation) return { writes: [] };
+  if (PT_VALUE_DERIVED_TYPES.includes(fromType) || PT_VALUE_DERIVED_TYPES.includes(toType)) return { writes: [] };
+  const relationConfig = fromRelation ? beforeConfig : afterConfig;
+  const relationDb = typeof _dbResolveRelationDbPath === 'function' ? _dbResolveRelationDbPath(dbPath, relationConfig) : '';
+  if (!relationDb || typeof _getRelationMap !== 'function') return { writes: [] };
+  const map = await _getRelationMap(relationDb);
+  const idToName = map?.idToName || {};
+  const nameToId = map?.nameToId || {};
+  const nameCounts = new Map();
+  Object.values(idToName).forEach(name => nameCounts.set(name, (nameCounts.get(name) || 0) + 1));
+  const convert = (raw) => {
+    if (fromRelation) {
+      const tokens = _ptSplitValueTokens(raw);
+      return tokens.map(token => (Object.prototype.hasOwnProperty.call(idToName, token) ? idToName[token] : token)).join(', ');
+    }
+    const tokens = toType === 'multi-relation' ? _ptSplitValueTokens(raw) : [String(raw ?? '').trim()].filter(Boolean);
+    return tokens.map(token => {
+      if (Object.prototype.hasOwnProperty.call(idToName, token)) return token;
+      if ((nameCounts.get(token) || 0) === 1 && Object.prototype.hasOwnProperty.call(nameToId, token)) return nameToId[token];
+      return token;
+    }).join(', ');
+  };
+  const pivotData = _ptPivotDataForTypeChange(dbPath, ctx);
+  const writes = [];
+  Object.values(pivotData?.entities || {}).forEach(entityData => {
+    (entityData?.[propName] || []).forEach(valueRef => {
+      if (!valueRef || valueRef.value == null) return;
+      const oldValue = String(valueRef.value);
+      if (!oldValue.trim()) return;
+      const newValue = convert(oldValue);
+      if (newValue && newValue !== oldValue) {
+        if (!valueRef.property) valueRef.property = propName;
+        writes.push({ ref: valueRef, oldValue, newValue });
+      }
+    });
+  });
+  return { writes, fromType, toType, relationDb };
+}
+
+function _ptPlannedValues(plan, pivotData, propName) {
+  const replaced = new Map((plan?.writes || []).map(write => [write.ref, write.newValue]));
+  const values = [];
+  Object.values(pivotData?.entities || {}).forEach(entityData => {
+    (entityData?.[propName] || []).forEach(valueRef => {
+      values.push(replaced.has(valueRef) ? replaced.get(valueRef) : valueRef?.value);
+    });
+  });
+  return values;
+}
+
+async function _ptWriteValueSet(writes, key) {
+  const completed = [];
+  try {
+    for (const write of writes) {
+      await _apiPutValue(write.ref, { new_value: write[key] });
+      write.ref.value = write[key];
+      completed.push(write);
+    }
+  } catch (error) {
+    const back = key === 'newValue' ? 'oldValue' : 'newValue';
+    for (const write of completed.reverse()) {
+      try { await _apiPutValue(write.ref, { new_value: write[back] }); write.ref.value = write[back]; } catch (rollbackError) {
+        console.error('列タイプ変更の値の復元に失敗:', rollbackError, error);
+      }
+    }
+    throw error;
+  }
+}
+
+// 置き換えを保存し、取り消し・やり直し用の操作を返す。置き換える値が無ければ null。
+async function _ptApplyTypeChangeValuePlan(plan) {
+  const writes = plan?.writes || [];
+  if (!writes.length) return null;
+  await _ptWriteValueSet(writes, 'newValue');
+  return {
+    count: writes.length,
+    rollback: () => _ptWriteValueSet(writes, 'oldValue'),
+    reapply: () => _ptWriteValueSet(writes, 'newValue'),
+  };
 }
 
 const _ptBackendSaveQueues = {};
@@ -258,11 +378,24 @@ async function _deleteColumn(dbPath, propName, ctx) {
     return false;
   }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
-  const ok = await cfConfirm(
-    `列「${propName}」を削除します。\n\n既存の候補値データはトピックに残りますが、表示されなくなります。\n（再度同名の列を追加すれば値は復活します）\n\n削除しますか？`
-  );
-  if (!ok) return false;
+  // 確認は出さない。列の削除は Ctrl+Z・やり直し・共通の履歴で元に戻せ、値もトピックに残るため
+  // （app/AGENTS.md「3経路で復元できる場合に限り確認を出さない」。2026-11-21 予期しないダイアログの検査で検出）。
+  // 取り消しの記録は操作した時点で枠を取る（保存の完了後に記録すると、保存が終わる前の Ctrl+Z が直前の別の操作を
+  // 取り消してしまう。Cloud版・exe など保存が遅い環境で再現、2026-11-21）。保存に失敗した時は枠を取り除く。
+  const historyScope = (typeof historyPush === 'function' && typeof _dbScope === 'function')
+    ? (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath)) : '';
+  const reservation = historyScope && typeof historyReserve === 'function' ? historyReserve('列削除: ' + propName, historyScope) : null;
+  try {
+    const result = await _deleteColumnConfirmed(dbPath, propName, renderCtx, reservation, historyScope);
+    if (result !== true) reservation?.cancel();
+    return result;
+  } catch (error) {
+    reservation?.cancel();
+    throw error;
+  }
+}
 
+async function _deleteColumnConfirmed(dbPath, propName, renderCtx, reservation, historyScope) {
   // undo用スナップショット
   const oldCfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
   const oldBackendPropertyTypes = JSON.parse(JSON.stringify((typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : oldCfg.propertyTypes) || {}));
@@ -292,8 +425,11 @@ async function _deleteColumn(dbPath, propName, ctx) {
   const layoutError = commit.layoutError;
 
   // Undo/Redo
-  if (typeof historyPush === 'function' && typeof _dbScope === 'function') {
-    historyPush('列削除: ' + propName,
+  if (historyScope) {
+    const recordHistory = reservation
+      ? (label, undoFn, redoFn) => reservation.fill(undoFn, redoFn, label)
+      : historyPush;
+    recordHistory('列削除: ' + propName,
       () => { // undo: 設定を復元
         saveDbViewConfig(dbPath, oldCfg);
         if (state.dbMetadata) {
@@ -316,7 +452,7 @@ async function _deleteColumn(dbPath, propName, ctx) {
       () => { // redo: 再削除
         return _deleteColumnNoConfirm(dbPath, propName, renderCtx);
       },
-      (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
+      historyScope
     );
   }
 
@@ -342,6 +478,8 @@ function _ptRenderAfterColumnDelete(renderCtx, dbPath) {
   } else if (typeof selectDatabase === 'function') {
     selectDatabase(dbPath, renderCtx);
   }
+  // 開いている列管理も保存の完了を待たずに追従させる（削除・保存失敗での復元の両方）。
+  try { window.MeldexColumnManager?.refresh?.(); } catch (_) { /* 列管理が開いていない */ }
 }
 
 // 削除後の表示設定と列タイプを画面側へ先に反映し、すぐ描き直す。
@@ -485,6 +623,59 @@ async function _ptPropertyTypesPayloadForSave(targetPath, ctxOverride) {
   }
 }
 
+// 列の安定IDは1列に1つ。2つの列が同じIDを持っていたら（2026-11-22 利用者役の探索: リレーション列の複製が
+// 元の列のIDを写していた）、先にそのIDを持っていた列に残し、ほかの列からは外して新しいIDを振らせる。
+function _ptReleaseDuplicatedPropertyIds(meta, propertyTypes) {
+  if (!propertyTypes || typeof propertyTypes !== 'object') return;
+  const known = (meta && typeof meta.property_ids === 'object' && meta.property_ids) || {};
+  const owners = new Map();
+  const names = Object.keys(propertyTypes);
+  // 名前の表でもそのIDを指している列を先に持ち主とする（無ければ並び順で先の列）。
+  [true, false].forEach(preferMapped => {
+    names.forEach(name => {
+      const config = propertyTypes[name];
+      const id = config && typeof config === 'object' ? String(config.property_id || '').trim() : '';
+      if (!id || owners.has(id)) return;
+      if (preferMapped && String(known[name] || '') !== id) return;
+      owners.set(id, name);
+    });
+  });
+  names.forEach(name => {
+    const config = propertyTypes[name];
+    const id = config && typeof config === 'object' ? String(config.property_id || '').trim() : '';
+    if (id && owners.get(id) !== name) delete config.property_id;
+  });
+}
+
+// 名前の表から、今の列ではない名前のうち今の列と同じIDを指すもの（改名・取り消しの残り）を除く。
+function _ptDropStalePropertyIdAliases(propertyIds, propertyTypes) {
+  const ids = { ...(propertyIds || {}) };
+  const types = propertyTypes || {};
+  const live = new Set(Object.keys(types).map(name => String(ids[name] || types[name]?.property_id || '')).filter(Boolean));
+  Object.keys(ids).forEach(name => {
+    if (Object.prototype.hasOwnProperty.call(types, name)) return;
+    if (live.has(String(ids[name] || ''))) delete ids[name];
+  });
+  return ids;
+}
+
+// 列の名前を名前の表（列の安定ID）から外す。複製を取り消した列のように、無かったことにする列で使う。
+function _ptForgetPropertyIdName(dbPath, propName, ctx) {
+  if (!propName) return;
+  const targets = new Set();
+  const add = meta => { if (meta && typeof meta === 'object') targets.add(meta); };
+  add(_ptMetadataForDbPath(dbPath, ctx));
+  if (ctx?.dbMetadata && _ptNormalizeDbPath(ctx.dbPath || '') === _ptNormalizeDbPath(dbPath || '')) add(ctx.dbMetadata);
+  if (_ptIsCurrentDbPath(dbPath)) add(state.dbMetadata);
+  if (typeof _dbPaneContextsForPath === 'function') (_dbPaneContextsForPath(dbPath) || []).forEach(item => add(item?.dbMetadata));
+  targets.forEach(meta => {
+    if (meta.property_ids && Object.prototype.hasOwnProperty.call(meta.property_ids, propName)) {
+      meta.property_ids = { ...meta.property_ids };
+      delete meta.property_ids[propName];
+    }
+  });
+}
+
 async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
   if (typeof isProductionManagementWriteBlocked === 'function'
@@ -525,11 +716,13 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
             : null) || {};
           const schemaMutation = globalThis.GbDbSchemaMutation;
           if (schemaMutation && payload.property_types) {
+            _ptReleaseDuplicatedPropertyIds(meta, payload.property_types);
             const ensured = schemaMutation.ensurePropertyIds(
               targetPath, meta, payload.property_types
             );
             payload.property_types = ensured.propertyTypes;
-            payload.property_ids = ensured.propertyIds;
+            payload.property_ids = _ptDropStalePropertyIdAliases(ensured.propertyIds, ensured.propertyTypes);
+            if (meta && typeof meta === 'object') meta.property_ids = { ...payload.property_ids };
           }
           if (schemaMutation) {
             await schemaMutation.saveMetadata(targetPath, payload, ctxOverride);
@@ -854,7 +1047,90 @@ function _renameValidationRulesForColumn(sourceDbPath, oldName, newName, propert
 // 対象にしてしまう。埋め込みシート（グローバル _panes レジストリに未登録）から呼ぶ場合は特に
 // 必須（_dbFindPaneContextForPath() のレジストリ探索では見つからないため）。渡さない場合は
 // 従来通りの再解決にフォールバックする（挙動は変わらない）。2026-07-15 フェーズD1で確認。
+// 旧形式（マークダウン）のシートの列名変更は、値を1件ずつ新しい名前へ移してから列の設定を保存する。
+// 途中で本体が止まる・画面が閉じると、列の設定は旧名のまま一部の値だけが新名へ移り、その値が見えなくなっていた
+// （M-014 追加4、2026-11-20）。移す前に端末へ「列名の変更中」を記録し、次にそのシートを開いた時に記録が残っていれば、
+// 移した値を旧名へ戻して元の状態にする（列の設定まで保存できていれば記録を消すだけ）。
+const _PT_LEGACY_RENAME_JOURNAL = 'meldex-sheet-legacy-rename-v1:';
+const _ptLegacyRenamesInFlight = new Set();
+function _ptLegacyRenameJournalKey(dbPath) {
+  return _PT_LEGACY_RENAME_JOURNAL + (typeof _dbNormalizePath === 'function' ? _dbNormalizePath(dbPath) : String(dbPath || ''));
+}
+function _ptWriteLegacyRenameJournal(dbPath, oldName, newName) {
+  try { localStorage.setItem(_ptLegacyRenameJournalKey(dbPath), JSON.stringify({ dbPath, oldName, newName, startedAt: new Date().toISOString() })); } catch {}
+}
+function _ptClearLegacyRenameJournal(dbPath) {
+  try { localStorage.removeItem(_ptLegacyRenameJournalKey(dbPath)); } catch {}
+}
+async function _ptRecoverInterruptedLegacyRename(dbPath, ctx) {
+  let journal = null;
+  try { journal = JSON.parse(localStorage.getItem(_ptLegacyRenameJournalKey(dbPath)) || 'null'); } catch {}
+  if (!journal || !journal.oldName || !journal.newName) return false;
+  const key = _ptLegacyRenameJournalKey(dbPath);
+  if (_ptLegacyRenamesInFlight.has(key)) return false;
+  _ptLegacyRenamesInFlight.add(key);
+  try {
+    const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, silentError: true });
+    const types = meta?.property_types || {};
+    if (types[journal.newName] && !types[journal.oldName]) { _ptClearLegacyRenameJournal(dbPath); return false; }
+    if (!types[journal.oldName]) { _ptClearLegacyRenameJournal(dbPath); return false; }
+    // 列の設定は旧名のまま: 新名へ移っていた値を旧名へ戻す。列の設定に無い名前の値はシートの表に載らないので、
+    // トピックごとに読み直して探す（旧形式のシートは件数が少ない。この確認は記録が残っている時だけ走る）。
+    const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, silentError: true });
+    let restored = 0;
+    let failed = 0;
+    for (const name of Object.keys(pivot?.entities || {})) {
+      const entryPath = typeof _entityPath === 'function' ? _entityPath(dbPath, name, pivot) : `${dbPath}/${name}.md`;
+      let entity = null;
+      try { entity = await apiFetch('/entity?path=' + encodeURIComponent(entryPath), { skipBrowseCache: true, silentError: true }); }
+      catch { failed += 1; continue; }
+      const moved = Array.isArray(entity?.properties?.[journal.newName]) ? entity.properties[journal.newName] : [];
+      for (let index = moved.length - 1; index >= 0; index -= 1) {
+        const ref = { entry_path: entryPath, property: journal.newName, candidate_index: index,
+          candidate_id: moved[index]?.candidate_id || '', entry_id: entity?.id || entity?.entry_id || '' };
+        try { await _apiPutValue(ref, { new_property: journal.oldName }); restored += 1; }
+        catch { failed += 1; }
+      }
+    }
+    if (failed) {
+      showStatus('中断した列名の変更を元に戻せませんでした（' + failed + '件）。もう一度シートを開いてください', true);
+      window.MeldexDiagnostics?.recordSheetIncident?.('retry-failed', { op: 'column-rename-recovery', sheet: dbPath, errorType: 'partial' });
+      return false;
+    }
+    _ptClearLegacyRenameJournal(dbPath);
+    if (restored) {
+      showStatus('中断した列名の変更（' + journal.oldName + ' → ' + journal.newName + '）を元に戻しました。もう一度変更してください', true);
+      window.MeldexDiagnostics?.recordSheetIncident?.('retry-failed', { op: 'column-rename-interrupted', sheet: dbPath, errorType: 'rolled-back' });
+      if (typeof selectDatabase === 'function') await selectDatabase(dbPath, ctx, { silent: true, forceReload: true });
+    }
+    return restored > 0;
+  } finally {
+    _ptLegacyRenamesInFlight.delete(key);
+  }
+}
+
+// 列名の変更の取り消しの記録は、保存の完了を待たずに、操作した時点で履歴の枠を取る（2026-11-21）。
+// 以前は保存の完了後に記録していたため、保存が終わる前に Ctrl+Z を押すと、直前の別の操作（セルの編集など）が
+// 取り消され、列名の変更の記録はその後に積まれていた（exe など保存が遅い環境で再現）。枠は保存が終わるまで
+// 取り消しを待たせ、失敗した時は取り除く（セルの値の変更の _dbReserveValueHistory と同じ扱い）。
 async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}) {
+  if (!dbPath || !oldName || !newName || oldName === newName) return false;
+  if (opts.skipHistory || opts.historyReservation || typeof historyReserve !== 'function') {
+    return _renameDbPropertyCore(dbPath, oldName, newName, ctxOverride, opts);
+  }
+  const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+  const reservation = scope ? historyReserve('列名変更: ' + oldName + ' → ' + newName, scope) : null;
+  try {
+    const result = await _renameDbPropertyCore(dbPath, oldName, newName, ctxOverride, { ...opts, historyReservation: reservation });
+    if (result !== true) reservation?.cancel();
+    return result;
+  } catch (error) {
+    reservation?.cancel();
+    throw error;
+  }
+}
+
+async function _renameDbPropertyCore(dbPath, oldName, newName, ctxOverride, opts = {}) {
   if (!dbPath || !oldName || !newName || oldName === newName) return false;
   const targetCtx = ctxOverride || (typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null);
   const renameProtectionLevel = _dbSchemaProtectionLevel(dbPath, oldName);
@@ -1004,10 +1280,13 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
       view_config: beforeCfg,
     }, targetCtx);
   };
+  // 移した値を旧名へ戻す。全部戻せた時だけ true（戻せなかった時は「列名の変更中」の記録を残し、次に開いた時に戻す）。
   const rollbackMovedValues = async () => {
+    let ok = true;
     for (const ref of [...movedValueRefs].reverse()) {
-      try { await _apiPutValue(ref, { new_property: oldName }); } catch {}
+      try { await _apiPutValue(ref, { new_property: oldName }); } catch { ok = false; }
     }
+    return ok;
   };
   // 楽観的描画のロールバック: 付け替えた pivotData を旧名へ戻し、設定も戻して再描画する。
   const rollbackOptimistic = async () => {
@@ -1018,6 +1297,7 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
     }
     if (typeof _renderCurrentDbView === 'function' && targetCtx) _renderCurrentDbView(targetCtx, dbPath);
     else if (typeof renderPivot === 'function' && targetCtx) renderPivot(targetCtx);
+    if (typeof _ptSyncColumnRenameToPanels === 'function') _ptSyncColumnRenameToPanels(dbPath, newName, oldName, 'reverted');
   };
   // レガシー（旧マークダウン）形式は下の逐次経路でサーバーへ値を移送する。楽観的に
   // entities を新名へ移すと ent[oldName] が消えて逐次 PUT が飛ばなくなるため、移送前に
@@ -1033,6 +1313,8 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
   _applyPivotRename(oldName, newName);
   if (typeof _renderCurrentDbView === 'function' && targetCtx) _renderCurrentDbView(targetCtx, dbPath);
   else if (typeof renderPivot === 'function' && targetCtx) renderPivot(targetCtx);
+  // オプションパネルの列設定タブ・列管理も保存の完了を待たずに新しい名前へ（失敗時は rollbackOptimistic で戻す）。
+  if (typeof _ptSyncColumnRenameToPanels === 'function') _ptSyncColumnRenameToPanels(dbPath, oldName, newName, 'applied');
   // SQLiteネイティブシートはサーバー側で列名を全エントリ一括変更する。
   // 従来は1マスずつ PUT し、そのたびにシート全体のスナップショットを保存していたため
   // 数百行の列で数百往復＋数百スナップショットになり、確定に数秒かかっていた。
@@ -1070,6 +1352,9 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
   if (!bulkRenamed) {
     // レガシー形式: スナップショットした旧名の値をサーバーへ逐次移送する。
     // pivotData の表示は既に楽観移送済みなので、ここではサーバー側だけを更新する。
+    // 中断に備えて「列名の変更中」を記録する（_ptRecoverInterruptedLegacyRename）。
+    _ptWriteLegacyRenameJournal(dbPath, oldName, newName);
+    _ptLegacyRenamesInFlight.add(_ptLegacyRenameJournalKey(dbPath));
     for (const { vals } of fallbackMoves) {
       const moveVals = vals.slice().sort((a, b) => (Number(b?.candidate_index) || 0) - (Number(a?.candidate_index) || 0));
       for (const val of moveVals) {
@@ -1080,7 +1365,8 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
         catch (e) { valueErrors.push(e); }
       }
       if (valueErrors.length) {
-        await rollbackMovedValues();
+        if (await rollbackMovedValues()) _ptClearLegacyRenameJournal(dbPath);
+        _ptLegacyRenamesInFlight.delete(_ptLegacyRenameJournalKey(dbPath));
         await rollbackOptimistic();
         const msg = valueErrors[0]?.message || valueErrors[0] || '値の更新に失敗しました';
         showStatus('列名変更に失敗: ' + msg, true);
@@ -1102,17 +1388,23 @@ async function renameDbProperty(dbPath, oldName, newName, ctxOverride, opts = {}
         view_config: c,
       }, targetCtx);
     } catch (error) {
-      await rollbackMovedValues();
+      if (await rollbackMovedValues()) _ptClearLegacyRenameJournal(dbPath);
+      _ptLegacyRenamesInFlight.delete(_ptLegacyRenameJournalKey(dbPath));
       await rollbackOptimistic();
       showStatus('列名変更の設定保存に失敗: ' + (error?.message || error), true);
       throw error;
     }
+    _ptClearLegacyRenameJournal(dbPath);
+    _ptLegacyRenamesInFlight.delete(_ptLegacyRenameJournalKey(dbPath));
   }
   // Undo/Redo: 列削除と同型に、逆方向/順方向の renameDbProperty を呼び直す。
   // skipHistory で undo/redo 実行時の再帰 push を防ぐ。ctx はクロージャ実行時に再解決し、
   // ペインの開き直しにも追従させる（捕捉した targetCtx は stale になり得る）。
   if (!opts.skipHistory && typeof historyPush === 'function' && typeof _dbScope === 'function') {
-    historyPush('列名変更: ' + oldName + ' → ' + newName,
+    const recordHistory = opts.historyReservation
+      ? (label, undoFn, redoFn) => opts.historyReservation.fill(undoFn, redoFn, label)
+      : historyPush;
+    recordHistory('列名変更: ' + oldName + ' → ' + newName,
       async () => { // undo: 新名 → 旧名へ戻す
         await renameDbProperty(dbPath, newName, oldName, _ptContextForDbPath(dbPath), { skipHistory: true });
         if (typeof selectDatabase === 'function') selectDatabase(dbPath, _ptContextForDbPath(dbPath));
@@ -1226,7 +1518,43 @@ function _dbPickerBuildTree(dbs) {
   return roots;
 }
 
-function _attachDbPicker(input, dbPath) {
+// 参照先シートの表示名。保存先の絶対パスは見せず、入っている場所（ホームフォルダ等）から見た位置で示す
+// （2026-11-22 利用者役の探索: 「C:/Users/…/組織」と保存先の絶対パスが出ていた）。
+function _dbRelationDbDisplayLabel(dbPath, raw, roots) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  const resolved = typeof _dbResolveConfiguredRelationPath === 'function' ? _dbResolveConfiguredRelationPath(dbPath, value) : value;
+  const normalized = String(resolved || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!(/^[A-Za-z]:\//.test(normalized) || normalized.startsWith('/'))) return value.replace(/\\/g, '/');
+  let best = null;
+  let bestAbs = '';
+  (Array.isArray(roots) ? roots : []).forEach(root => {
+    const rootAbs = _dbPickerNormAbs(root?.rootPath || root?.path);
+    if (rootAbs && _dbPickerInside(normalized, rootAbs) && rootAbs.length >= bestAbs.length) {
+      best = root;
+      bestAbs = rootAbs;
+    }
+  });
+  if (best) return normalized.slice(bestAbs.length).replace(/^\/+/, '') || String(best.name || '');
+  const name = normalized.split('/').filter(Boolean).pop() || normalized;
+  return `${name}（保存先の外）`;
+}
+
+// 参照先シート欄の値（保存する参照先）。表示名を出している間は控えておいた参照先を返す。
+function _dbRelationDbInputValue(input) {
+  if (!input) return '';
+  if (input.dataset.relationDbPath != null && input.value === input._relationDisplayValue) return input.dataset.relationDbPath;
+  return String(input.value || '').trim();
+}
+
+// 絞り込みの一言。ルート名と種類が同じ（「ホームフォルダ」等）なら繰り返さない。
+function _dbPickerRootScopeHint(root) {
+  const kind = _dbPickerRootKindLabel(root?.kind);
+  const name = String(root?.name || '').trim();
+  return (!name || name === kind) ? `${kind}内のシートを表示中` : `${name}（${kind}）内のシートを表示中`;
+}
+
+function _attachDbPicker(input, dbPath, opts = {}) {
   // inputの隣にピッカーボタンを追加
   if (input.dataset.dbPickerAttached) return;
   input.dataset.dbPickerAttached = '1';
@@ -1271,6 +1599,36 @@ function _attachDbPicker(input, dbPath) {
     }
     return _rootsCache;
   };
+  // opts.displayNames: 欄には参照先シートの表示名を出し、保存する参照先は控えに持つ（リレーション列の参照先シート）。
+  const displayNames = !!opts.displayNames;
+  const displayLabelToPath = new Map();
+  const showRelationPath = async (path) => {
+    input.dataset.relationDbPath = path;
+    const roots = await _ensureRoots();
+    if (input.dataset.relationDbPath !== path) return;
+    const label = _dbRelationDbDisplayLabel(dbPath, path, roots);
+    input._relationDisplayValue = label;
+    input.value = label;
+    // 中略表示を新しい値へ合わせる（変更の知らせは出さない。開いただけで列の設定を保存しないため）。
+    window.GBPathUtils?.bindMiddleEllipsisInput?.(input);
+  };
+  if (displayNames) {
+    const onEdited = (event) => {
+      if (input.dataset.relationDbPath != null && input.value === input._relationDisplayValue) return;
+      delete input.dataset.relationDbPath;
+      input._relationDisplayValue = undefined;
+      if (event.type !== 'change') return;
+      const typed = String(input.value || '').trim();
+      // 候補（表示名）を選んだ・一覧から選んだ・保存先のパスを貼り付けた時は、参照先を控えて表示名に直す。
+      const fromList = displayLabelToPath.get(typed);
+      if (fromList) showRelationPath(fromList);
+      else if (/^[A-Za-z]:[\\/]/.test(typed) || typed.startsWith('/')) showRelationPath(typed);
+    };
+    input.addEventListener('input', onEdited);
+    input.addEventListener('change', onEdited);
+    const initial = String(input.value || '').trim();
+    if (initial) showRelationPath(initial);
+  }
   const refreshCandidates = async () => {
     const dbs = await _getAllDatabases();
     let { list, scoped } = _dbPickerScopeToWorkFolder(dbs, dbPath);
@@ -1284,10 +1642,21 @@ function _attachDbPicker(input, dbPath) {
       if (rootScope.scoped) {
         list = rootScope.list;
         scoped = true;
-        hintText = `${rootScope.root.name}（${_dbPickerRootKindLabel(rootScope.root.kind)}）内のシートを表示中`;
+        hintText = _dbPickerRootScopeHint(rootScope.root);
       }
     }
     datalist.innerHTML = list.map(d => `<option value="${esc(d.path)}">${esc(d.name)}</option>`).join('');
+    if (displayNames) {
+      // 候補にも保存先の絶対パスを出さない。表示名から参照先を引けるよう控えておく。
+      const roots = await _ensureRoots();
+      displayLabelToPath.clear();
+      datalist.querySelectorAll('option').forEach(option => {
+        const path = option.value;
+        const label = _dbRelationDbDisplayLabel(dbPath, path, roots) || path;
+        displayLabelToPath.set(label, path);
+        option.value = label;
+      });
+    }
     if (scoped) {
       scopeHint.textContent = hintText;
       scopeHint.hidden = false;
@@ -1648,6 +2017,8 @@ async function _buttonActionWriteValue(dbPath, entityName, entityPath, propName,
     _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, target, value, {}, actionCtx);
   } else {
     const result = await _apiPostValue(entityPath, propName, value, '採用', '');
+    // 空のセルへ書いた値も、既存の値の書き換えと同じく取り消せるようにする
+    if (typeof _dbUndoCreatedValue === 'function') _dbUndoCreatedValue(propName, entityPath, propName, value, result, { dbPath, ctx: actionCtx });
     _buttonActionUpdateLocalValue(dbPath, entityPath, entityName, propName, null, value, {
       file: result?.path || result?.file,
       candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index,

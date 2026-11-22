@@ -418,11 +418,14 @@
       const existingVisible = typeof GBLayout.isPaneVisible === 'function'
         ? GBLayout.isPaneVisible(paneId)
         : paneId === activePane;
-      const closeExisting = openOpts.toggleExisting && (paneId === activePane || (preserveWorkActive && existingVisible) || (existing.panelsetNode && existingVisible));
+      // 閉じるのは「今見えている」時だけ。畳まれた右レールの中のペインがアクティブのまま残っていると、
+      // 以前は「アクティブだから閉じる」になり、ツールバーの「オプションを開く」で二度と開けなかった
+      // （2026-11-22 ノートの網羅テストで発見。右レールのアイコンで開き、ツールバーで閉じた後）。
+      const closeExisting = openOpts.toggleExisting && existingVisible && (paneId === activePane || preserveWorkActive || !!existing.panelsetNode);
       if (!closeExisting) {
         const restorePaneId = _getContentPane(activePane) || _getFileOpenPane(activePane);
         _activateToolPaneMatch(existing, { preserveActivePane: preserveWorkActive });
-        if (openOpts.userIntent && typeof GBLayout?.revealPane === 'function') {
+        if ((openOpts.userIntent || (openOpts.toggleExisting && !existingVisible)) && typeof GBLayout?.revealPane === 'function') {
           GBLayout.revealPane(paneId, { userIntent: true, activate: !preserveWorkActive });
         }
         if (toolType === 'detail') _syncDetailForActivePane(restorePaneId || activePane);
@@ -766,6 +769,10 @@
     canUseRightSidebarTools: _canUseRightSidebarTools,
     isRightSidebarRestrictedTool: _isRightSidebarRestrictedTool,
     guardRightSidebarTool: _guardRightSidebarTool,
+    // レイアウト初回マウントの完了を待つ。後続の他面操作と初回読込を混同しない。
+    async whenSettled() {
+      while (_legacyLoadJobs.size) await Promise.all([..._legacyLoadJobs.values()].map(job => job.promise));
+    },
     get initialized() { return _initialized; },
   };
 })();

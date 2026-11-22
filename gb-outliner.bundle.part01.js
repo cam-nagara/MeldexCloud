@@ -64,6 +64,27 @@ function compareItemsForFolderSort(a, b, sort = 'name', order = 'asc') {
  * フォルダツリー、検索、フィルタ、お気に入り、サイドバー
  */
 
+const _outlinerPendingRenames = new Map();
+const _outlinerPendingRenameKey = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+async function _outlinerAwaitPendingRename(item) {
+  for (let depth = 0; depth < 16; depth++) {
+    const key = _outlinerPendingRenameKey(item?.path);
+    let pending = _outlinerPendingRenames.get(key);
+    if (!pending) {
+      const matches = [..._outlinerPendingRenames].filter(([path]) => path.endsWith('/' + key) || key.endsWith('/' + path));
+      if (matches.length > 1) throw new Error('名前を変更中の項目を特定できません');
+      pending = matches[0]?.[1];
+    }
+    if (!pending) return item;
+    const result = await pending.promise;
+    if (!result.ok) throw new Error('名前の変更を保存できなかったため、移動を中止しました');
+    item.path = result.newPath;
+    item.name = result.newName || item.name;
+    if (result.fileId) item.file_id = result.fileId;
+  }
+  throw new Error('名前の変更の完了を確認できません');
+}
+
 // サイドバー全体でブラウザ標準の右クリックメニューを抑制（captureフェーズで確実に）
 document.addEventListener('contextmenu', (e) => {
   if (e.target?.closest?.('#sidebar')) e.preventDefault();
@@ -360,8 +381,33 @@ function _outlinerIconMarkup(item, size) {
   return window.MeldexFileIcons?.render(item, size || 18, fallback) ?? fallback;
 }
 
+// ツリーの名前の入力欄（その場の名前の変更）が開いているか
+function _outlinerInlineRenameActive() {
+  return !!document.querySelector('#outliner-tree .tree-label > input, #body-home .tree-label > input, #body-workspaces .tree-label > input');
+}
+
+// 名前の入力中は、ツリーの作り直しを入力が終わった後へ回す（作り直すと入力欄ごと消えて、入力中の名前が
+// 失われていた。取込の完了などの外部の変更の通知から直接呼ばれる経路で起きる: 2026-11-22 M-014 横断の検査）。
+// 呼び出し元は待たせない（入力が長く続いても、ほかの処理が止まらないように）。後回しにした読み直しは1回にまとめる。
+let _outlinerDeferredRefresh = null;
+function _outlinerDeferUntilInlineRenameEnds(kind, opts) {
+  const pending = _outlinerDeferredRefresh || (_outlinerDeferredRefresh = { kind, opts: { ...opts, ignoreInlineRename: true } });
+  if (kind === 'refresh') { pending.kind = 'refresh'; pending.opts = { ...opts, ignoreInlineRename: true }; }
+  if (!pending.timer) {
+    pending.timer = setInterval(() => {
+      if (_outlinerInlineRenameActive()) return;
+      clearInterval(pending.timer);
+      _outlinerDeferredRefresh = null;
+      const run = pending.kind === 'refresh' ? refreshOutliner : loadOutliner;
+      Promise.resolve().then(() => run(pending.opts)).catch(error => console.warn('[outliner] 後回しにした読み直しに失敗しました', error));
+    }, 150);
+  }
+  return { deferred: true };
+}
+
 async function loadOutliner(options) {
   const opts = options && typeof options === 'object' ? options : {};
+  if (!opts.ignoreInlineRename && _outlinerInlineRenameActive()) return _outlinerDeferUntilInlineRenameEnds('load', opts);
   const perfStartedAt = _outlinerNowMs();
   if (!opts.force && opts.coalesce && _outlinerLoadInFlight) {
     if (typeof _logPerfEvent === 'function') {
@@ -852,49 +898,3 @@ const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
   _lastClicked: null,
   // lastClickedの安定パス（ファイルパス）。仮想化フォルダ(150件超)ではスクロールで
-  // lastClickedがDOMからアンマウントされ得るため（gb-outliner-virtual-render.js）、
-  // DOM参照が切れてもrangeTo()が復元できるよう、代入のたびに併記保持する
-  // （下のlastClickedゲッター/セッター経由で、既存の全代入箇所を変更せず自動追従する）。
-  _lastClickedPath: null,
-  get lastClicked() { return this._lastClicked; },
-  set lastClicked(nodeEl) {
-    this._lastClicked = nodeEl;
-    this._lastClickedPath = (nodeEl && nodeEl._nodeData && nodeEl._nodeData.path) || null;
-  },
-  clear() {
-    this.items.forEach(n => n.querySelector('.tree-node-row')?.classList.remove('selected'));
-    this.items.clear();
-  },
-  add(nodeEl) {
-    this.items.add(nodeEl);
-    nodeEl.querySelector('.tree-node-row')?.classList.add('selected');
-  },
-  remove(nodeEl) {
-    this.items.delete(nodeEl);
-    nodeEl.querySelector('.tree-node-row')?.classList.remove('selected');
-  },
-  has(nodeEl) { return this.items.has(nodeEl); },
-  toggle(nodeEl) { this.has(nodeEl) ? this.remove(nodeEl) : this.add(nodeEl); },
-  // Shiftクリック: 同じツリー内の可視ノードだけを対象に範囲選択
-  rangeTo(nodeEl) {
-    const scopeSelector = _getTreeSelectionScope(nodeEl);
-    if (!this.lastClicked || _getTreeSelectionScope(this.lastClicked) !== scopeSelector) {
-      this.clear();
-      this.add(nodeEl);
-      return;
-    }
-    const allRows = _getVisibleTreeNodes(scopeSelector);
-    const from = allRows.indexOf(this.lastClicked);
-    const to = allRows.indexOf(nodeEl);
-    if (from < 0 || to < 0) {
-      // DOM当たり判定(_getVisibleTreeNodes)で見つからない: 仮想化コンテナ内でアンカー
-      // (lastClicked)がスクロールによりアンマウント済みの可能性がある。安定パスと
-      // 論理モデル(GBOutlinerVirtual)で範囲を復元できるか試み、駄目なら単一選択へ。
-      if (this._virtualRangeTo(nodeEl)) return;
-      this.clear();
-      this.add(nodeEl);
-      return;
-    }
-    this.clear();
-    const [start, end] = from < to ? [from, to] : [to, from];
-    for (let i = start; i <= end; i++) this.add(allRows[i]);

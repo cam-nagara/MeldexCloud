@@ -171,6 +171,7 @@
       });
     }
 
+    this._sn2EnsureStableControlIds?.(wrap, 'scriptnote-theme');
     container.appendChild(wrap);
   },
 

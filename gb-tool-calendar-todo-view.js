@@ -61,8 +61,8 @@
     cols.forEach(dateStr => {
       html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
       this._allDayEventsForDay(dateStr).forEach(ev => {
-        const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 14) : '';
-        html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${_todoEsc(ev.id)}" data-calendar-id="${_todoEsc(ev.calendar_id || '_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${_todoEsc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml()}${avatars}</div>`;
+        const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 16) : '';
+        html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${_todoEsc(ev.id)}" data-calendar-id="${_todoEsc(ev.calendar_id || '_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${_todoEsc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'all-day-' + dateStr)}${avatars}</div>`;
       });
       this._todoForAllDayStrip(dateStr).forEach(task => {
         if (task?.id) html += this._todoAllDayChipHtml(task);
@@ -81,5 +81,79 @@
         this._showTaskModal(taskEl.dataset.taskId);
       });
     });
+  };
+  // ToDoリスト: カードを別の列へドラッグすると状態が変わる（マニュアル「ステータス変更」。M-014 で未実装を発見）。
+  // 保存の後でだけ取り消しの履歴に積み、失敗したら元の列へ戻して原因を出す。
+  const _baseRenderTaskBoard = CalendarComponent.prototype._renderTaskBoard;
+  CalendarComponent.prototype._renderTaskBoard = function(...args) {
+    const result = _baseRenderTaskBoard?.apply(this, args);
+    const el = this._contentEl;
+    if (!el) return result;
+    el.querySelectorAll('.gb-cal-task-card[data-task-id]').forEach(card => {
+      card.setAttribute('draggable', 'true');
+      card.addEventListener('dragstart', event => {
+        event.dataTransfer?.setData('text/x-meldex-cal-task', card.dataset.taskId || '');
+        event.dataTransfer?.setData('text/plain', card.dataset.taskId || '');
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        card.classList.add('is-dragging');
+      });
+      card.addEventListener('dragend', () => card.classList.remove('is-dragging'));
+    });
+    el.querySelectorAll('.gb-cal-task-column').forEach(column => {
+      const status = column.querySelector('[data-add-task]')?.dataset.addTask || '';
+      if (!status) return;
+      column.dataset.taskStatus = status;
+      column.addEventListener('dragover', event => {
+        const types = Array.from(event.dataTransfer?.types || []);
+        if (!types.includes('text/x-meldex-cal-task')) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        column.classList.add('is-drop-target');
+      });
+      column.addEventListener('dragleave', event => {
+        if (!column.contains(event.relatedTarget)) column.classList.remove('is-drop-target');
+      });
+      column.addEventListener('drop', event => {
+        const id = event.dataTransfer?.getData('text/x-meldex-cal-task') || '';
+        column.classList.remove('is-drop-target');
+        if (!id) return;
+        event.preventDefault();
+        this._moveTaskToStatus(id, status);
+      });
+    });
+    return result;
+  };
+
+  CalendarComponent.prototype._moveTaskToStatus = async function(id, status) {
+    const task = (this._tasks || []).find(item => item.id === id);
+    if (!task || task.status === status) return false;
+    if (!this._savingTaskIds) this._savingTaskIds = new Set();
+    if (this._savingTaskIds.has(id)) {
+      this._showStatus('保存中です。少し待ってからもう一度お試しください');
+      return false;
+    }
+    const undoSnapshot = typeof this._captureUndoSnapshot === 'function' ? this._captureUndoSnapshot() : undefined;
+    const previous = task.status;
+    task.status = status;
+    this._render();
+    this._savingTaskIds.add(id);
+    try {
+      const { id: _id, created, modified, external_id, task_source, last_synced, ...data } = task;
+      const save = apiPut('/cal/tasks/' + encodeURIComponent(id), { ...data, status, user: this._getUser() });
+      await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('todo-save', save);
+    } catch (error) {
+      task.status = previous;
+      this._render();
+      this._showStatus('ToDoの状態を変更できませんでした: ' + (error?.userMessage || error?.message || error), true);
+      return false;
+    } finally {
+      this._savingTaskIds.delete(id);
+    }
+    this._pushUndo('ToDo編集', undoSnapshot);
+    try { await this._loadTasks(); } catch {}
+    this._render();
+    this._renderTodayTasks?.();
+    this._showStatus('ToDoの状態を変更しました');
+    return true;
   };
 })();

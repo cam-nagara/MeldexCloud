@@ -710,6 +710,8 @@ function bdAppendLinkBadge(div, node, showStatus) {
   });
   div.addEventListener('dblclick', ev => {
     if (ev.button !== 0 || ev.target.closest('.bd-card-menu-btn,.bd-link-open-btn')) return;
+    // Ctrl+ダブルクリックはリンク先を開かず文字を編集する（マニュアル。キャンバス側の処理へ渡す。M-014 ボード網羅テストで発見）。
+    if (ev.ctrlKey || ev.metaKey) return;
     ev.preventDefault();
     ev.stopPropagation();
     if (typeof bdShouldSuppressNodeClickAfterDrag === 'function' && bdShouldSuppressNodeClickAfterDrag(node.id)) return;
@@ -1109,4 +1111,26 @@ function bdInsertNodeElement(container, node, div, ctx) {
     }
   }
   container.appendChild(div);
+}
+
+// テーマ変更は既存カードのスタイルだけを更新し、入力・動画・選択のDOMを保持する。
+function bdRefreshThemeStyles() {
+  const canvas = bdGetBoardElement('canvas');
+  const world = bdGetBoardElement('world');
+  bdApplyBoardFileStyleAndTheme(canvas, world);
+  const nodes = new Map((bd.nodes || []).map(node => [String(node.id), node]));
+  for (const el of canvas?.querySelectorAll('.bd-node[data-card-id]') || []) {
+    const node = nodes.get(el.dataset.cardId);
+    if (!node) continue;
+    const style = bdGetNodeStyle(node);
+    const sample = document.createElement('div');
+    bdApplyNodeBaseStyles(sample, node, style, !bd.displayFilters || bd.displayFilters.showStatus !== false);
+    for (const key of ['background', 'color', 'border-color', 'border-width', 'border-style', 'border-radius',
+      'box-shadow', 'filter', '--bd-base-filter']) {
+      const value = sample.style.getPropertyValue(key);
+      if (value) el.style.setProperty(key, value); else el.style.removeProperty(key);
+    }
+    const text = el.querySelector(':scope > .bd-text');
+    if (text) text.style.color = style.textColor || '';
+  }
 }

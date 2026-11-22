@@ -388,6 +388,9 @@
     const folderItems = Utils.sortEntriesByName(data).map(it => makeImageItem(it.path, it.name));
     const startIdx = Utils.findImageItemIndex(folderItems, filePath, fileName);
     if (startIdx < 0) return;
+    // Keep the locator used by the visible image and its annotations. The
+    // sibling API can return a vault-relative alias for an absolute open path.
+    folderItems[startIdx].path = filePath;
     items = folderItems;
     idx = startIdx;
     preloadNearbyImageMeta(idx, items);
@@ -418,6 +421,8 @@
     items = [];
     const layerA = document.getElementById('layerA');
     const layerB = document.getElementById('layerB');
+    window.MeldexViewerTextLayer?.disposeIn(layerA);
+    window.MeldexViewerTextLayer?.disposeIn(layerB);
     if (layerA) layerA.innerHTML = '';
     if (layerB) layerB.innerHTML = '';
     document.getElementById('bgA')?.classList.remove('show');
@@ -647,6 +652,16 @@
   }
 
   const renderCache = new Map();
+  function cachePdfCanvas(key, canvas) {
+    renderCache.delete(key);
+    renderCache.set(key, canvas);
+    while (renderCache.size > 8) {
+      const oldest = renderCache.keys().next().value;
+      const evicted = renderCache.get(oldest);
+      renderCache.delete(oldest);
+      if (!evicted.isConnected) window.MeldexViewerTextLayer?.dispose(evicted);
+    }
+  }
 
   function notifyParentCurrentViewerFile() {
     if (window.parent === window) return;
@@ -723,7 +738,7 @@
       pageEntry.w = size.width; pageEntry.h = size.height;
     }
     const canvas = await PdfRenderer.renderPageToNewCanvas(pdfDoc, pageNum, zoom);
-    renderCache.set(key, canvas);
+    cachePdfCanvas(key, canvas);
     return canvas;
   }
 
@@ -767,6 +782,7 @@
     }
     const target = activeLayer === 'A' ? 'B' : 'A';
     const layer = document.getElementById('layer' + target);
+    window.MeldexViewerTextLayer?.disposeIn(layer);
     layer.innerHTML = '';
     incomingLayer = target;
 
@@ -841,7 +857,9 @@
     updateHud();
     const swapLayers = () => {
       if (token !== showGroupToken) return;
-      document.getElementById('layer' + activeLayer).classList.remove('show');
+      const previousLayer = document.getElementById('layer' + activeLayer);
+      previousLayer.classList.remove('show');
+      window.MeldexViewerTextLayer?.disposeIn(previousLayer);
       layer.classList.add('show');
       activeLayer = target;
       incomingLayer = '';
@@ -852,6 +870,13 @@
       hideViewerLoading(loadingToken);
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
       window.MeldexViewerAnnotations?.onSceneChanged?.();
+      if (isPdf) layer.querySelectorAll('canvas.page-canvas').forEach(canvas => {
+        canvas._viewerTextReady = window.MeldexViewerTextLayer?.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, pdfPath)
+          .then(() => window.MeldexViewerOcr?.onSceneChanged())
+          .catch(error => console.warn('テキストを読み込めませんでした', error));
+      });
+      window.MeldexViewerTextLayer?.updateIndicator();
+      if (!isPdf) window.MeldexViewerOcr?.onSceneChanged();
       window.MeldexViewerVideo?.startActiveVideoPlayback?.();
       window.MeldexViewerAudio?.startActiveAudioPlayback?.();
       window.MeldexStandaloneNative?.markReady();
@@ -897,7 +922,7 @@
     const group = getGroup(idx);
     showGroup(idx + group.length);
   }
-  function goToIndex(newIdx) { showGroup(newIdx); } // シークバー等の直接ジャンプ用
+  function goToIndex(newIdx) { return showGroup(newIdx); } // シークバー等の直接ジャンプ用
   async function prevGroup() {
     if (items.length === 0) return;
     if (mode === 'single') { showGroup(idx <= 0 ? items.length - 1 : idx - 1); return; }
@@ -1097,7 +1122,7 @@
       if (!pageNum || !pdfDoc) return;
       PdfRenderer.refitCanvas(canvas, pdfDoc, pageNum, zoom)
         .then(() => {
-          renderCache.set(pageNum + '_' + zoom.toFixed(4), canvas);
+          cachePdfCanvas(pageNum + '_' + zoom.toFixed(4), canvas);
           // refitCanvas()はasync（canvas.style.width/heightの更新が非同期）のため、
           // 直後のclampPan()は旧サイズを見てしまうことがある。実サイズ確定後に再クランプする。
           clampPan();
@@ -1411,7 +1436,7 @@
     const display = document.getElementById('display');
     let activePointerId = null, startX = 0, startY = 0, panX0 = 0, panY0 = 0;
     function isBlockedTarget(e) {
-      if (e.target.closest('.nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea, [contenteditable="true"]')) return true;
+      if (e.target.closest('.viewer-text-layer, .nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea, [contenteditable="true"]')) return true;
       if (e.target.tagName === 'VIDEO') {
         const videoRect = e.target.getBoundingClientRect();
         if (e.clientY >= videoRect.bottom - 40) return true;
@@ -1754,7 +1779,7 @@
     });
     refitPdfForResize();
     applyViewerTransform();
-    clampPan();
+    // 外部のパネル開閉・寸法変更では利用者の閲覧位置を動かさない。
     applyPan();
   }
   window.addEventListener('viewer-layout-resize', notifyResize);
@@ -1773,7 +1798,7 @@
     currentPath: currentViewerPathForFolderNavigation,
     currentRootPath: () => nativeRoot,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
-    getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
+    getPdfDocument: () => pdfDoc, getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
     getFitMode: () => fitMode, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
     getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,

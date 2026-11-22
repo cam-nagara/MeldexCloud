@@ -15,9 +15,16 @@
  *   title        見出し
  *   className    追加するクラス（既存のテストや後始末用）
  *   e2eId        data-e2e-id
- *   getItems()   [{ id, label, visible, lockedVisible? }] を現在の並び順で返す
+ *   icon         見出しの前に出すアイコン名（任意。列管理は専用の columns3Cog）
+ *   getItems()   [{ id, label, visible, lockedVisible?, iconHtml? }] を現在の並び順で返す。
+ *                iconHtml は列名の前に出すアイコン（列見出しと同じ列タイプのアイコン。呼び出し側が作る）
  *   onChange(items, detail)  並び順・表示を変えた時。items は新しい並び順（visible 付き）
  *   renderExtra(container)   見出しの下に追加する設定欄（任意。カードの表示設定など）
+ *   getRowMenuItems(targets) つまみのクリックメニューへ足す項目（任意）。{ duplicate, settings, danger } の
+ *                配列を返す（MeldexContextMenuUI の項目）。targets は MeldexRowHandleMenu.resolveTargets の結果に
+ *                items（対象の行）と refresh()（列を増減した後に一覧を読み直す）を足したもの。
+ *                並べ替え（上へ・下へ）・表示の切り替え・選択の解除と反転は部品側で入れる（UI共通ルール §6）。
+ *   initialQuery 開いた時に検索欄へ入れておく文字（任意。列名の変更で非表示の同名列がある時など）
  *   onClose()    閉じた時
  */
 (function (global) {
@@ -29,6 +36,7 @@
   const MIN_WIDTH = 220;
   const MIN_HEIGHT = 160;
   const RESIZE_DIRS = ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'];
+  const ROW_MENU_E2E_ID = 'column-manager-row-menu';
   let current = null;
   let rememberedSize = null;
 
@@ -43,23 +51,39 @@
     style.textContent = `
 /* 外枠は角丸で中身を切り抜き、スクロールは内側の本文だけで行う。外枠ごとスクロールさせると、
    スクロールバーが右上・右下の角丸の上に描かれて枠線が途切れる（2026-11-20 報告）。 */
-.meldex-column-manager{position:fixed;z-index:10000;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:hidden;padding:0;display:flex;flex-direction:column;}
+.meldex-column-manager{position:fixed;z-index:10000;box-sizing:border-box;min-width:240px;max-width:340px;max-height:min(70vh,520px);overflow:visible;padding:0;display:flex;flex-direction:column;}
 .meldex-column-manager.is-resized{min-width:0;max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);}
-.meldex-column-manager-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;}
+/* 角丸の切り抜きは本文が自分で行う（外枠は切り抜かない。大きさ変更の取っ手を外枠のすぐ外側へ置くため）。 */
+.meldex-column-manager-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:2px;border-top-left-radius:inherit;border-top-right-radius:inherit;}
+.meldex-column-manager-body:last-child{border-bottom-left-radius:inherit;border-bottom-right-radius:inherit;}
 .meldex-column-manager-body > *{flex-shrink:0;}
-.meldex-column-manager > .meldex-dropdown-close-row{flex-shrink:0;margin-top:0;padding:var(--ui-space-2, 4px) var(--ui-space-3, 6px);}
+.meldex-column-manager > .meldex-dropdown-close-row{flex-shrink:0;margin-top:0;padding:var(--ui-space-2, 4px) var(--ui-space-3, 6px);border-bottom-left-radius:inherit;border-bottom-right-radius:inherit;}
+/* 共通メニューの「直下の div のホバーで背景色」を、本文と取っ手には当てない（2026-11-21 報告: 端へカーソルを
+   近づけると背景色が変わる）。取っ手はカーソルの形だけを変える。 */
+/* 共通メニューの「直下の div は項目」の余白・指カーソルも当てない（取っ手が余白の分だけ太くなり、本文のスクロールバーへ
+   かぶっていた）。本文の余白は今までの見た目（項目と同じ余白）を明示して保つ。 */
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-body{padding:var(--ui-menu-item-padding-y, 4px) var(--ui-menu-item-padding-x, 12px);cursor:default;}
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize{padding:0;margin:0;font-size:0;}
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-body:hover,
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize,
+.gb-context-menu.meldex-column-manager > .meldex-column-manager-resize:hover{background:transparent;}
+/* 取っ手は外枠のすぐ外側に置き、本文のスクロールバーと重ねない（重なるとスクロールバーを操作できない）。 */
 .meldex-column-manager-resize{position:absolute;z-index:2;touch-action:none;}
-.meldex-column-manager-resize[data-dir="n"]{top:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
-.meldex-column-manager-resize[data-dir="s"]{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize;}
-.meldex-column-manager-resize[data-dir="e"]{top:8px;bottom:8px;right:0;width:5px;cursor:ew-resize;}
-.meldex-column-manager-resize[data-dir="w"]{top:8px;bottom:8px;left:0;width:5px;cursor:ew-resize;}
-.meldex-column-manager-resize[data-dir="ne"]{top:0;right:0;width:10px;height:10px;cursor:nesw-resize;}
-.meldex-column-manager-resize[data-dir="nw"]{top:0;left:0;width:10px;height:10px;cursor:nwse-resize;}
-.meldex-column-manager-resize[data-dir="se"]{bottom:0;right:0;width:10px;height:10px;cursor:nwse-resize;}
-.meldex-column-manager-resize[data-dir="sw"]{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize;}
-.meldex-column-manager-head{display:flex;align-items:center;gap:6px;padding:2px 4px 4px;font-weight:600;font-size:12px;}
-.meldex-column-manager-head .meldex-column-manager-title{flex:1;min-width:0;}
-.meldex-column-manager-head button{font-size:11px;padding:1px 6px;}
+.meldex-column-manager-resize[data-dir="n"]{top:-6px;left:8px;right:8px;height:6px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="s"]{bottom:-6px;left:8px;right:8px;height:6px;cursor:ns-resize;}
+.meldex-column-manager-resize[data-dir="e"]{top:8px;bottom:8px;right:-6px;width:6px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="w"]{top:8px;bottom:8px;left:-6px;width:6px;cursor:ew-resize;}
+.meldex-column-manager-resize[data-dir="ne"]{top:-6px;right:-6px;width:8px;height:8px;cursor:nesw-resize;}
+.meldex-column-manager-resize[data-dir="nw"]{top:-6px;left:-6px;width:8px;height:8px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="se"]{bottom:-6px;right:-6px;width:8px;height:8px;cursor:nwse-resize;}
+.meldex-column-manager-resize[data-dir="sw"]{bottom:-6px;left:-6px;width:8px;height:8px;cursor:nesw-resize;}
+/* 見出しの文字は折り返さない（2026-11-21 報告:「列管理」が改行されていた）。幅が足りない時は
+   「すべて表示」「すべて非表示」のほうを次の行へ送る。 */
+.meldex-column-manager-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;padding:2px 4px 4px;font-weight:600;font-size:12px;}
+.meldex-column-manager-head-icon{display:inline-flex;align-items:center;flex:0 0 auto;color:var(--fg2);}
+.meldex-column-manager-head .meldex-column-manager-title{flex:1 0 auto;white-space:nowrap;}
+.meldex-column-manager-head button{font-size:11px;padding:1px 6px;white-space:nowrap;flex:0 0 auto;}
+.meldex-column-manager-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:20px;flex:0 0 auto;opacity:.8;}
 .meldex-column-manager-section{font-size:11px;color:var(--fg2);padding:6px 6px 2px;display:flex;align-items:center;gap:6px;}
 .meldex-column-manager-section-count{opacity:.8;}
 .meldex-column-manager-list{display:flex;flex-direction:column;min-height:22px;border-radius:4px;}
@@ -78,6 +102,7 @@
 .meldex-column-manager-row.is-hidden .meldex-column-manager-eye{color:var(--fg2);}
 .meldex-column-manager-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
 .meldex-column-manager-drop-line{height:2px;background:var(--accent);border-radius:1px;margin:0 4px;pointer-events:none;}
+.meldex-column-manager-search{margin:0 2px 2px;}
 .meldex-column-manager-extra{display:flex;flex-direction:column;gap:2px;padding-bottom:4px;border-bottom:1px solid var(--border);margin-bottom:2px;}
 `;
     document.head.appendChild(style);
@@ -176,6 +201,9 @@
     const state = current;
     current = null;
     state.cleanup.forEach(fn => { try { fn(); } catch (_) { /* noop */ } });
+    if (document.querySelector(`.gb-row-handle-menu[data-e2e-id="${ROW_MENU_E2E_ID}"]`)) {
+      try { global.MeldexContextMenuUI?.close?.(); } catch (_) { /* noop */ }
+    }
     state.root.remove();
     try { state.options.onClose?.(); } catch (_) { /* noop */ }
   }
@@ -202,7 +230,7 @@
     const state = {
       root, options, cleanup: [],
       items: [], selected: new Set(), anchorId: null, toggleAnchorId: null,
-      paint: null, drag: null,
+      paint: null, drag: null, query: '',
     };
     current = state;
     // 中身はスクロールする本文へ入れる（外枠はスクロールさせない）。
@@ -212,6 +240,13 @@
 
     const head = document.createElement('div');
     head.className = 'meldex-column-manager-head';
+    if (options.icon) {
+      const headIcon = document.createElement('span');
+      headIcon.className = 'meldex-column-manager-head-icon';
+      headIcon.setAttribute('aria-hidden', 'true');
+      headIcon.innerHTML = icon(options.icon, 14);
+      head.appendChild(headIcon);
+    }
     const titleEl = document.createElement('span');
     titleEl.className = 'meldex-column-manager-title';
     titleEl.textContent = options.title || '列管理';
@@ -233,6 +268,34 @@
       if (extra.childNodes.length) body.appendChild(extra);
     }
 
+    // 列名で絞り込む検索欄（共通部品 MeldexSearchField。2026-11-21 ユーザー指示）。絞り込みは表示だけで、
+    // 並べ替え・表示の切り替えの保存は常に全部の列の並びで行う（絞り込みで隠れた列を失わない）。
+    const search = global.MeldexSearchField?.create?.({
+      placeholder: '列名で検索',
+      ariaLabel: '列名で検索',
+      e2eId: 'column-manager-search',
+      onInput: (query) => {
+        state.query = String(query || '');
+        render();
+      },
+    }) || null;
+    if (search) {
+      search.element.classList.add('meldex-column-manager-search');
+      if (options.initialQuery) {
+        search.input.value = String(options.initialQuery);
+        search.element.classList.add('has-value');
+        state.query = String(options.initialQuery);
+      }
+      search.input.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowDown' || event.isComposing) return;
+        const first = shownOrder()[0];
+        if (!first) return;
+        event.preventDefault();
+        rowOf(first.id)?.focus();
+      });
+      body.appendChild(search.element);
+    }
+
     const visibleHead = document.createElement('div');
     visibleHead.className = 'meldex-column-manager-section';
     const visibleList = document.createElement('div');
@@ -252,6 +315,7 @@
         label: String(item.label ?? item.id),
         visible: item.visible !== false,
         lockedVisible: item.lockedVisible === true,
+        iconHtml: typeof item.iconHtml === 'string' ? item.iconHtml : null,
       }));
     };
 
@@ -279,7 +343,6 @@
       });
     }
 
-    const orderedIds = () => state.items.map(item => item.id);
     const rowOf = id => root.querySelector(`.meldex-column-manager-row[data-id="${cssEscape(id)}"]`);
 
     function cssEscape(value) {
@@ -298,18 +361,23 @@
       if (changed) commit(next, detail, commitOptions);
     }
 
-    // 表示中の欄 → 非表示の欄の順に並べ直した「画面の並び」。
+    // 表示中の欄 → 非表示の欄の順に並べ直した「画面の並び」（絞り込み前の全部の列）。
     const displayOrder = () => [
       ...state.items.filter(item => item.visible),
       ...state.items.filter(item => !item.visible),
     ];
+    // 検索欄の文字に一致する列だけ（画面に出ている行）。選択の範囲・キー移動はこちらで決める。
+    const isShown = item => !state.query || (global.MeldexSearchField?.matches
+      ? global.MeldexSearchField.matches(item.label, state.query)
+      : String(item.label).toLowerCase().includes(state.query.toLowerCase()));
+    const shownOrder = () => displayOrder().filter(isShown);
 
     // Shift+目のボタン: 前回押した行（起点）からの範囲。起点の行は押した時に別の欄へ移るので、
     // 起点が元いた欄での位置を覚えておき、同じ欄の今の並びで範囲を決める。
     function toggleRangeIds(anchor, toId) {
       const to = state.items.find(item => item.id === toId);
       if (!to || to.visible !== anchor.visible) return [toId];
-      const section = displayOrder().filter(item => item.visible === anchor.visible).map(item => item.id);
+      const section = shownOrder().filter(item => item.visible === anchor.visible).map(item => item.id);
       const j = section.indexOf(toId);
       const anchorStill = section.indexOf(anchor.id);
       if (anchorStill >= 0) {
@@ -326,7 +394,7 @@
       const from = state.items.find(item => item.id === fromId);
       const to = state.items.find(item => item.id === toId);
       if (!from || !to || from.visible !== to.visible) return [toId];
-      const order = displayOrder().map(item => item.id);
+      const order = shownOrder().map(item => item.id);
       const a = order.indexOf(fromId);
       const b = order.indexOf(toId);
       if (a < 0 || b < 0) return [toId];
@@ -346,8 +414,10 @@
       const handle = document.createElement('span');
       handle.className = 'meldex-column-manager-handle';
       handle.innerHTML = icon('gripVertical', 14);
-      handle.title = 'ドラッグで並べ替え';
-      handle.setAttribute('aria-hidden', 'true');
+      handle.title = 'クリックでメニュー / ドラッグで並べ替え';
+      handle.setAttribute('role', 'button');
+      handle.setAttribute('aria-label', `${item.label}のメニュー`);
+      handle.dataset.e2eId = 'column-manager-handle';
       const eye = document.createElement('button');
       eye.type = 'button';
       eye.className = 'meldex-column-manager-eye';
@@ -360,27 +430,41 @@
       const label = document.createElement('span');
       label.className = 'meldex-column-manager-label';
       label.textContent = item.label;
-      row.append(handle, eye, label);
+      row.append(handle, eye);
+      // 列名の前のアイコン。1行でもアイコンを持つ時は、持たない行（トピック名の列など）にも同じ幅の
+      // 空欄を置いて列名の開始位置をそろえる。
+      if (state.items.some(entry => entry.iconHtml !== null)) {
+        const typeIcon = document.createElement('span');
+        typeIcon.className = 'meldex-column-manager-icon';
+        typeIcon.setAttribute('aria-hidden', 'true');
+        typeIcon.innerHTML = item.iconHtml || '';
+        row.appendChild(typeIcon);
+      }
+      row.appendChild(label);
+      bindRowMenu(handle, row, item);
       return row;
     }
 
     function render() {
       const scrollTop = body.scrollTop;
       const focusedId = document.activeElement?.closest?.('.meldex-column-manager-row')?.dataset.id || null;
-      const visibleItems = state.items.filter(item => item.visible);
-      const hiddenItems = state.items.filter(item => !item.visible);
+      const visibleItems = state.items.filter(item => item.visible && isShown(item));
+      const hiddenItems = state.items.filter(item => !item.visible && isShown(item));
       visibleHead.innerHTML = `<span>表示中</span><span class="meldex-column-manager-section-count">${visibleItems.length}</span>`;
       hiddenHead.innerHTML = `<span>非表示</span><span class="meldex-column-manager-section-count">${hiddenItems.length}</span>`;
       visibleList.replaceChildren(...visibleItems.map(buildRow));
       hiddenList.replaceChildren(...hiddenItems.map(buildRow));
-      if (!visibleItems.length) visibleList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると表示します</div>';
-      if (!hiddenItems.length) hiddenList.innerHTML = '<div class="meldex-column-manager-empty">ここへドラッグすると非表示にします</div>';
+      const emptyText = (dropText) => (state.query ? '一致する列はありません' : dropText);
+      if (!visibleItems.length) visibleList.innerHTML = `<div class="meldex-column-manager-empty">${emptyText('ここへドラッグすると表示します')}</div>`;
+      if (!hiddenItems.length) hiddenList.innerHTML = `<div class="meldex-column-manager-empty">${emptyText('ここへドラッグすると非表示にします')}</div>`;
       body.scrollTop = scrollTop;
       if (focusedId) rowOf(focusedId)?.focus({ preventScroll: true });
     }
 
-    showAll.addEventListener('click', () => setVisibility(orderedIds(), true, 'すべて表示'));
-    hideAll.addEventListener('click', () => setVisibility(orderedIds(), false, 'すべて非表示'));
+    // 絞り込み中は、一致している列だけをまとめて切り替える。
+    const shownIds = () => shownOrder().map(item => item.id);
+    showAll.addEventListener('click', () => setVisibility(shownIds(), true, 'すべて表示'));
+    hideAll.addEventListener('click', () => setVisibility(shownIds(), false, 'すべて非表示'));
 
     // --- 選択 -------------------------------------------------------------
     function selectRow(id, event) {
@@ -466,7 +550,7 @@
       }
       const row = event.target.closest?.('.meldex-column-manager-row');
       if (!row) return;
-      const order = displayOrder().map(item => item.id);
+      const order = shownOrder().map(item => item.id);
       const idx = order.indexOf(row.dataset.id);
       if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.altKey) {
         event.preventDefault();
@@ -509,6 +593,85 @@
       const other = display.filter(item => item.visible !== section);
       commit(section ? [...nextSection, ...other] : [...other, ...nextSection], block.map(item => item.label).join('、'));
       rowOf(ids[0])?.focus();
+    }
+
+    // --- つまみのクリックメニュー（UI共通ルール §6 行ハンドルのクリックメニュー・一括実行） ------
+    // ドラッグ（4px以上）とクリックは MeldexRowHandleMenu が区別する。クリックは選択を変えない。
+    function refreshItems() {
+      if (current !== state) return;
+      state.items = readItems();
+      const ids = new Set(state.items.map(item => item.id));
+      state.selected = new Set([...state.selected].filter(id => ids.has(id)));
+      render();
+    }
+
+    // 対象（同じ欄の中で連続していなくてもよい）をまとめて1つ上／下へ。欄の端に当たる時は動かさない。
+    function movedSectionOrder(ids, dir) {
+      const targets = state.items.filter(item => ids.includes(item.id));
+      if (!targets.length || targets.some(item => item.visible !== targets[0].visible)) return null;
+      const section = displayOrder().filter(item => item.visible === targets[0].visible);
+      const order = global.MeldexRowHandleMenu?.moveOrder?.(section.map(item => item.id), ids, dir);
+      return order ? { visible: targets[0].visible, order } : null;
+    }
+
+    function applyMovedSection(moved, detail) {
+      const byId = new Map(state.items.map(item => [item.id, item]));
+      const section = moved.order.map(id => byId.get(id));
+      const other = displayOrder().filter(item => item.visible !== moved.visible);
+      commit(moved.visible ? [...section, ...other] : [...other, ...section], detail);
+    }
+
+    function rowMenuItems(rowId) {
+      const order = displayOrder().map(item => item.id);
+      const targets = global.MeldexRowHandleMenu?.resolveTargets?.(rowId, order, state.selected)
+        || { batch: false, ids: [rowId], runs: [[rowId]], count: 1, rowId };
+      const targetItems = targets.ids.map(id => state.items.find(item => item.id === id)).filter(Boolean);
+      if (!targetItems.length) return [];
+      const detail = targetItems.map(item => item.label).join('、');
+      let own = {};
+      if (typeof options.getRowMenuItems === 'function') {
+        try { own = options.getRowMenuItems({ ...targets, items: targetItems.map(item => ({ ...item })), refresh: refreshItems }) || {}; }
+        catch (error) { console.warn('[MeldexColumnManager] 行メニューの項目を作れませんでした', error); }
+      }
+      const up = movedSectionOrder(targets.ids, -1);
+      const down = movedSectionOrder(targets.ids, 1);
+      const allVisible = targetItems.every(item => item.visible);
+      const canHide = targetItems.some(item => item.visible && !item.lockedVisible);
+      const items = [
+        ...(own.duplicate || []),
+        { type: 'separator' },
+        { label: '上へ移動', icon: 'arrowUp', batch: true, disabled: !up, e2eId: 'column-manager-move-up',
+          action: () => { if (up) applyMovedSection(up, detail); } },
+        { label: '下へ移動', icon: 'arrowDown', batch: true, disabled: !down, e2eId: 'column-manager-move-down',
+          action: () => { if (down) applyMovedSection(down, detail); } },
+        { type: 'separator' },
+        ...(own.settings || []),
+        allVisible
+          ? { label: '非表示にする', icon: 'eyeOff', batch: true, disabled: !canHide, e2eId: 'column-manager-hide',
+            action: () => setVisibility(targets.ids, false, detail) }
+          : { label: '表示する', icon: 'eye', batch: true, e2eId: 'column-manager-show',
+            action: () => setVisibility(targets.ids, true, detail) },
+        { type: 'separator' },
+        { label: '選択を解除', batchOnly: true, e2eId: 'column-manager-clear-selection',
+          action: () => { state.selected = new Set(); render(); } },
+        { label: '選択を反転', batchOnly: true, e2eId: 'column-manager-invert-selection',
+          action: () => { state.selected = new Set(order.filter(id => !state.selected.has(id))); render(); } },
+        { type: 'separator' },
+        ...(own.danger || []),
+      ];
+      return global.MeldexRowHandleMenu?.buildItems
+        ? global.MeldexRowHandleMenu.buildItems(items, targets, { unit: '列' })
+        : items.filter(item => !item.batchOnly);
+    }
+
+    function bindRowMenu(handle, row, item) {
+      if (!global.MeldexRowHandleMenu?.bind) return;
+      global.MeldexRowHandleMenu.bind(handle, {
+        getRow: () => row,
+        getItems: () => rowMenuItems(item.id),
+        ariaLabel: `${item.label}のメニュー`,
+        e2eId: ROW_MENU_E2E_ID,
+      });
     }
 
     // --- ドラッグで並べ替え -------------------------------------------------
@@ -613,6 +776,8 @@
     const anchor = options.anchor || null;
     const outside = (event) => {
       if (root.contains(event.target)) return;
+      // 列管理から開いた行メニュー・確認ダイアログの中の操作では閉じない。
+      if (event.target?.closest?.(`.gb-context-menu[role="menu"], .modal-overlay`)) return;
       if (anchor && (event.target === anchor || anchor.contains?.(event.target))) return;
       close();
     };
@@ -636,16 +801,12 @@
     attachResizeHandles(root);
     applySize(root, readRememberedSize());
     position(root, anchor);
-    return {
-      root,
-      close,
-      refresh() {
-        if (current !== state) return;
-        state.items = readItems();
-        render();
-      },
-    };
+    state.refresh = refreshItems;
+    return { root, close, refresh: refreshItems };
   }
 
-  global.MeldexColumnManager = { open, close, isOpen: () => !!current };
+  // 開いている列管理を読み直す（列名の変更など、列管理の外で列が変わった時）。
+  function refresh() { current?.refresh?.(); }
+
+  global.MeldexColumnManager = { open, close, refresh, isOpen: () => !!current };
 })(typeof window !== 'undefined' ? window : globalThis);

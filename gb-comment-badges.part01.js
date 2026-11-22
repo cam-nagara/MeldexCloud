@@ -280,6 +280,9 @@
     if (!badge) {
       badge = document.createElement('span');
       badge.className = 'cmt-badge';
+      // 画面部品の検査用の安定した目印（付け先の目印から作る。シートのセルなら行と列ごとに別の名前になる）
+      const hostId = hostEl.dataset?.e2eId || hostEl.id || '';
+      if (hostId) badge.dataset.e2eId = hostId + '-comment-badge';
       badge.contentEditable = 'false';
       badge.style.cssText = 'display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:0 5px;margin-left:6px;background:var(--accent,#4a90e2);color:var(--ui-accent-fg, var(--ui-fg-strong));border-radius:8px;cursor:pointer;user-select:none;vertical-align:middle;line-height:14px;height:14px;';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
@@ -289,6 +292,10 @@
     }
     badge.textContent = '💬' + n;
     badge.title = n + '件のコメント';
+    // 安定ID: 付けた先（シナリオの行・シートの行等）の識別子から決める（同じ画面に同じIDのバッジが並ばないように）。
+    const hostKey = hostEl.dataset?.rowId || hostEl.dataset?.entryId || hostEl.dataset?.e2eId || hostEl.id
+      || hostEl.querySelector(':scope > span._nl-id[data-line-id]')?.dataset.lineId || '';
+    if (hostKey && !badge.dataset.e2eId) badge.dataset.e2eId = 'cmt-badge:' + hostKey;
     _setCommentBadgeControlAttrs(badge, n);
     if (typeof onClick === 'function') badge._cmtClick = onClick;
   }
@@ -351,6 +358,9 @@
   document.addEventListener('contextmenu', event => {
     const target = event.target.closest?.('.cmt-highlight,.cmt-line-highlight');
     if (!target?._cmtComments?.length) return;
+    // シナリオの行は本文の右クリックメニュー（ルビ・リンク・貼り付け・コメントの追加と一覧）を
+    // 持つので、コメントの付いた行でも横取りしない（M-014 S18）。
+    if (event.target.closest?.('.sn2-row')) return;
     event.preventDefault(); event.stopImmediatePropagation();
     window.closeMeldexDropdowns?.();
     const menu = document.createElement('div');
@@ -1036,6 +1046,7 @@
       box.appendChild(label);
       const ta = document.createElement('textarea');
       ta.className = 'gb-inline-comment-popup-textarea';
+      ta.dataset.e2eId = 'gb-inline-comment-input';
       ta.value = initialText || '';
       ta.placeholder = 'Enter=保存, Shift+Enter=改行, ESC=キャンセル';
       ta.setAttribute('aria-label', 'コメント本文');

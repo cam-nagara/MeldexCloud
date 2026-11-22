@@ -23,6 +23,21 @@
   let _savedRange = null;
   let _savedRoot = null;
   let _suppressUntil = 0;
+  // 編集の開始時にプログラムで全選択した範囲。利用者が選び直すまでは書式ツールを出さない。
+  let _ignoredRange = null;
+
+  function _sameRange(a, b) {
+    return !!(a && b
+      && a.startContainer === b.startContainer && a.startOffset === b.startOffset
+      && a.endContainer === b.endContainer && a.endOffset === b.endOffset);
+  }
+
+  function ignoreCurrentSelection() {
+    const sel = window.getSelection?.();
+    _ignoredRange = sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+    clearTimeout(_timer);
+    _closeSelectionPopup();
+  }
 
   function _closeSelectionPopup() {
     document.querySelectorAll('.' + POPUP_CLASS).forEach(el => el.remove());
@@ -353,6 +368,13 @@
       return;
     }
     const range = sel.getRangeAt(0);
+    if (_ignoredRange) {
+      if (_sameRange(range, _ignoredRange)) {
+        _closeSelectionPopup();
+        return;
+      }
+      _ignoredRange = null;
+    }
     const root = _allowedRootFromRange(range);
     const rect = root ? _rangeRect(range) : null;
     if (!root || !rect) {
@@ -438,7 +460,15 @@
     if (key.startsWith('Arrow') || key === 'Shift' || key === 'Home' || key === 'End') _schedule();
   }, true);
   document.addEventListener('pointerdown', (ev) => {
+    _ignoredRange = null;
     if (ev.target?.closest?.('.gb-fmt-popup, .gb-palette-popup')) _suppressUntil = Date.now() + 800;
+  }, true);
+  // 利用者のキー操作（Shift+矢印・Ctrl+A など）で選び直した時は、同じ範囲でも書式ツールを出す。
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Shift' || ev.shiftKey || ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === 'a')) {
+      _ignoredRange = null;
+      _schedule();
+    }
   }, true);
   document.addEventListener('contextmenu', () => {
     _suppressUntil = Date.now() + 800;
@@ -644,6 +674,7 @@
   window.GBTextSelectionFormat = {
     openForSelection: _openForSelection,
     close: _closeSelectionPopup,
+    ignoreCurrentSelection,
     suppressFor(milliseconds = 1000) {
       _suppressUntil = Math.max(_suppressUntil, Date.now() + Math.max(0, Number(milliseconds) || 0));
       clearTimeout(_timer);

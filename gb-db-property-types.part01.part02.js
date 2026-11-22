@@ -42,7 +42,7 @@
       <input id="pt-cascade-key" type="text" value="${esc(current.cascadeKey||current.cascadeFrom||'')}" placeholder="参照先シート側で照合に使う列名">
     </div>`;
     // DBピッカーを参照先DB入力に取り付け
-    setTimeout(() => { const dbInput = _ptGet('pt-relation-db', scope); if (dbInput) _attachDbPicker(dbInput, _ptState(scope)?.dbPath); }, 0);
+    setTimeout(() => { const dbInput = _ptGet('pt-relation-db', scope); if (dbInput) _attachDbPicker(dbInput, _ptState(scope)?.dbPath, { displayNames: true }); }, 0);
     _ptGet('pt-bidirectional-enabled', scope)?.addEventListener('change', function() {
       const row = _ptGet('pt-bidirectional-prop-row', scope);
       const propInput = _ptGet('pt-bidirectional-prop', scope);

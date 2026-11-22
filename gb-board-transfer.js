@@ -468,6 +468,7 @@
     const uploadQueue = [];
     let embeddedBytes = embeddedBoardBytes();
     let failed = 0;
+    let uploadError = '';
     if (typeof showStatus === 'function') {
       showStatus(files.length > 1 ? `${files.length}件のファイルを取り込み中…` : 'ファイルを取り込み中…');
     }
@@ -512,6 +513,8 @@
           const response = uploaded[resultIndex];
           if (!response?.ok || !response.path) {
             failed += 1;
+            // 保存の失敗（通信・権限・容量）の原因を利用者へ伝えるため、最初の理由を残す。
+            if (!uploadError) uploadError = String(response?.error || '').trim() || '保存先の応答がありません';
             return;
           }
           const path = normalizePath(response.path);
@@ -536,8 +539,13 @@
     });
     if (typeof showStatus === 'function') {
       if (ids.length) {
-        const suffix = failed ? `（${failed}件は読み込めませんでした）` : '';
-        showStatus(ids.length > 1 ? `${ids.length}件のファイルトピックを貼り付けました${suffix}` : `ファイルトピックを貼り付けました${suffix}`);
+        const suffix = failed
+          ? (uploadError ? `（${failed}件はファイルを保存できませんでした: ${uploadError}）` : `（${failed}件は読み込めませんでした）`)
+          : '';
+        showStatus(ids.length > 1 ? `${ids.length}件のファイルトピックを貼り付けました${suffix}` : `ファイルトピックを貼り付けました${suffix}`, !!(failed && uploadError));
+      } else if (uploadError) {
+        // 以前は保存の失敗でも「貼り付けられるファイルがありませんでした」と出て、原因が分からなかった（M-014 link）。
+        showStatus(`ファイルを保存できませんでした: ${uploadError}`, true);
       } else {
         showStatus('貼り付けられるファイルがありませんでした', true);
       }

@@ -205,7 +205,7 @@
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
     await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
-    for (const step of steps) {
+    for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
       if (inProgress && inProgress.name !== step.name) throw new Error('Cloud aftercareの実行中stepが一致しません');
@@ -245,11 +245,13 @@
           before_manifest_digest: String(intent.aftercare_in_progress?.before_manifest_digest || ''),
           after_manifest_digest: String(after?.manifest_digest || ''),
         } };
-      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
       completed.add(step.name);
       intent.aftercare_completed = [...completed];
       if (checkpoint) intent.aftercare_manifest_digest = after.manifest_digest;
-      delete intent.aftercare_in_progress;
+      const next = steps.slice(stepIndex + 1).find(candidate => !completed.has(candidate.name));
+      if (next) intent.aftercare_in_progress = { name: next.name,
+        before_manifest_digest: String(after?.manifest_digest || '') };
+      else delete intent.aftercare_in_progress;
       await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
     }
     return { ...record, intent };

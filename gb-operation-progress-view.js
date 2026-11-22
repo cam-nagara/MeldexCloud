@@ -26,6 +26,7 @@
   })();
   let trayDragSuppressClick = false;
   const TRAY_AVOID_SELECTOR = [
+    '.gb-context-menu',
     '[data-meldex-operation-avoid]',
     '#controls.gb-toolbar-viewer',
     '.gb-toolbar',
@@ -55,7 +56,8 @@
     if (operation.status === 'partial') return '一部失敗';
     if (operation.status === 'unknown') return '結果未確認';
     if (operation.status === 'cancelled') return '中止しました';
-    if (operation.status === 'succeeded') return '完了';
+    // 見出しが既に結果の言い方（「〜しました」）なら「完了」を重ねない。
+    if (operation.status === 'succeeded') return /(?:ました|完了)$/.test(_text(operation.label)) ? '' : '完了';
     const phase = operation.phase || '処理中';
     if (operation.mode === 'determinate' && operation.percent != null) {
       return phase + ' ' + operation.percent + '%';
@@ -68,7 +70,10 @@
     if (operation.summary) return operation.summary;
     const parts = [];
     if (operation.mode === 'determinate' && operation.total > 0) {
-      parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
+      if (operation.kind === 'download') {
+        parts.push((Math.min(operation.processed, operation.total) / 1048576).toFixed(1)
+          + ' / ' + (operation.total / 1048576).toFixed(1) + ' MiB');
+      } else parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
     } else if (operation.processed > 0) {
       parts.push(operation.processed + '件確認済み');
     }
@@ -435,7 +440,8 @@
     if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial' || operation.status === 'unknown') {
       const actions = document.createElement('div');
       actions.className = 'meldex-operation-actions';
-      if (operation.settingsPanel && typeof showSettingsModal === 'function') {
+      // 確認の項目は「押せば直る操作」1つだけを出す。設定を開くだけのボタンは並べない。
+      if (operation.settingsPanel && !operation.attentionKey && typeof showSettingsModal === 'function') {
         const open = document.createElement('button');
         open.type = 'button';
         open.dataset.action = 'open-operation-settings';
@@ -457,7 +463,8 @@
         const retry = document.createElement('button');
         retry.type = 'button';
         retry.dataset.action = 'retry-operation-progress';
-        retry.textContent = '再試行';
+        retry.dataset.e2eId = 'operation-progress-retry:' + operation.id;
+        retry.textContent = operation.retryLabel || '再試行';
         retry.addEventListener('click', function () { window.MeldexOperationProgress.retry(operation.id); });
         actions.appendChild(retry);
       }
@@ -465,8 +472,21 @@
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.dataset.action = 'dismiss-operation-progress';
+        dismiss.dataset.e2eId = 'operation-progress-dismiss:' + operation.id;
         dismiss.textContent = '閉じる';
-        dismiss.addEventListener('click', function () { window.MeldexOperationProgress.get(operation.id)?.dispose(); });
+        dismiss.title = operation.attentionKey
+          ? '閉じても保存済みの内容は消えません。同じ内容は次回から表示しません'
+          : '閉じても保存済みの内容は消えません';
+        dismiss.addEventListener('click', function () {
+          const key = operation.attentionKey;
+          window.MeldexOperationProgress.get(operation.id)?.dispose();
+          // 閉じた内容をサーバーへ残し、再起動後や次回の取り込みで同じ内容を出さない。
+          if (key && typeof apiPost === 'function') {
+            Promise.resolve(apiPost('/import-attention/dismiss', { key: key }, { silentError: true })).catch(function (error) {
+              console.error('閉じた記録を残せませんでした', error);
+            });
+          }
+        });
         actions.appendChild(dismiss);
       }
       row.appendChild(actions);
@@ -614,7 +634,8 @@
     _renderOrigins(operations);
     if (detail?.operation && (detail.reason === 'failed' || detail.reason === 'partial' || detail.reason === 'succeeded')) {
       const op = detail.operation;
-      _ensureLiveRegion().textContent = op.label + ': ' + _statusLabel(op) + (_detailText(op) ? '。' + _detailText(op) : '');
+      const stateText = _statusLabel(op);
+      _ensureLiveRegion().textContent = op.label + (stateText ? ': ' + stateText : '') + (_detailText(op) ? '。' + _detailText(op) : '');
     }
   }
 
@@ -631,6 +652,7 @@
       _scheduleTrayPosition();
     }).observe(document.body, { childList: true });
     window.addEventListener('resize', _scheduleTrayPosition);
+    window.addEventListener('meldex-context-menu-layout', _scheduleTrayPosition);
     window.addEventListener('gb:layout-viewport-resize', _scheduleTrayPosition);
     window.MeldexOperationProgress.subscribe(_render);
   }

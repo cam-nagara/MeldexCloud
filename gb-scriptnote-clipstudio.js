@@ -109,6 +109,13 @@ function _sn2SepConnect() {
 }
 
 function _sn2GetActiveEditor() {
+  // サブパネル・トピック内のエディタが操作対象なら、それを使う（以前はメインパネルのタブしか見ず、
+  // サブパネルのシナリオでは書き出し・公開・印刷が「開かれていません」で止まっていた）。
+  const host = window.GBEditorHost?.get?.();
+  if (host?.kind === 'scriptnote') {
+    const editor = host.component?._editor;
+    if (editor?.doc) return editor;
+  }
   if (typeof GBLayout !== 'undefined' && typeof getComponentInstance === 'function') {
     const paneId = GBLayout.activePane;
     if (paneId) {
@@ -247,14 +254,15 @@ function _sn2ShowSepDialog(editor) {
   const hasSelection = selectedRows.length > 0 && selectedRows.length < doc.rows.length;
   const allChecked = hasSelection ? '' : ' checked';
   const selectedOption = hasSelection
-    ? `<label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="selected" checked> 選択範囲（${selectedRows.length}行）</label>`
+    ? `<label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="selected" data-e2e-id="scriptnote-clipstudio-range-selected" checked> 選択範囲（${selectedRows.length}行）</label>`
     : '';
   const owner = document.activeElement;
   const body = document.createElement('div');
   body.className = 'sn2-sep-modal-body';
-  body.innerHTML = `<div class="sn2-sep-help">${fieldHelp('「送信」を押した後、カウントダウン中にCLIP STUDIO PAINTのストーリーエディタをクリックしてください')}</div>
+  // 部品の安定ID（M-014 S31）: 補足・送信範囲の選択肢は項目ごとに別の値
+  body.innerHTML = `<div class="sn2-sep-help">${fieldHelp('「送信」を押した後、カウントダウン中にCLIP STUDIO PAINTのストーリーエディタをクリックしてください', { e2eId: 'scriptnote-clipstudio-help' })}</div>
     <div class="field"><label>送信範囲</label><div class="sn2-sep-range-row">
-      <label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
+      <label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="all" data-e2e-id="scriptnote-clipstudio-range-all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-affix"> テキストの前後設定（「」（）等）を含める</label></div>
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-summary"> プロット行も出力する</label></div>
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-break-text"> 区切り行のテキストも出力する</label></div>
@@ -268,6 +276,7 @@ function _sn2ShowSepDialog(editor) {
   stop.type = 'button'; stop.className = 'gb-btn gb-btn-sm sn2-sep-stop-btn'; stop.dataset.sn2Role = 'stop'; stop.textContent = '中断';
   const send = document.createElement('button');
   send.type = 'button'; send.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; send.dataset.sn2Role = 'send'; send.textContent = '送信';
+  [cancel, stop, send].forEach(button => { button.dataset.e2eId = `scriptnote-clipstudio-${button.dataset.sn2Role}`; });
   const modalApi = window.GBUI.createModal({
     id: 'scriptnote-clipstudio-send', title: 'CLIP STUDIO PAINTへ送信', body, footer: [cancel, stop, send],
     variant: 'standard', geometryKey: 'scriptnote-clipstudio-send', minWidth: '0',

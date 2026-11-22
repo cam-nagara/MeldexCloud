@@ -1151,11 +1151,7 @@ function _ensureGlobalLoadingIndicator() {
 
 function _renderLoadingUi(msg) {
   const text = _loadingText(msg);
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    _setLoadingNodeContent(statusEl, text);
-    statusEl.style.display = '';
-  }
+  // 進捗はステータスバーに出さない（2026-11-21 UI共通ルール §10）。処理パネルが無い時の代わりは浮かぶ表示だけ。
   const floatingEl = _ensureGlobalLoadingIndicator();
   if (floatingEl) {
     _setLoadingNodeContent(floatingEl, text);

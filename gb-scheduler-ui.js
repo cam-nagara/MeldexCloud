@@ -621,12 +621,12 @@
     toolbarObserver.observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('meldex:scheduler-proposals-changed', event => {
       syncAllSelectors();
-      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.(event));
+      document.querySelectorAll('.gb-production-sidebar-content, .gb-scheduler-allocation-host').forEach(host => host.__schedulerRefresh?.(event));
     });
     // タスクリスト面の空状態カード（同じ「制作管理を始める」導線）から開始した場合も、
     // 同時に開いているこのパネルの空状態を即座に解除する。
     document.addEventListener('meldex:production-management-started', () => {
-      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.());
+      document.querySelectorAll('.gb-production-sidebar-content, .gb-scheduler-allocation-host').forEach(host => host.__schedulerRefresh?.());
     });
   }
 

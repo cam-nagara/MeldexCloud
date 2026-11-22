@@ -123,11 +123,16 @@ function convertScriptNoteDocToScenarioDoc(scriptDoc = {}, options = {}) {
   return nextDoc;
 }
 
+// 新しく作るシナリオは本体の新規作成と同じ現行の拡張子 .mel-scenario にする
+// （CHANGELOG 2026-10-22。M-014 S7/S10）。旧シナリオ .scenario.json は二重拡張子にしない。
+const SCRIPTNOTE_CURRENT_EXT = '.mel-scenario';
+const _SN2_SCENARIO_SOURCE_EXT_RE = /(?:\.mel-scenario|\.scriptnote\.json|\.scenario\.json|\.(?:json|csv|xlsx|xls))$/i;
+
 function suggestScriptNotePath(path = '', title = '') {
   const base = String(path || '').trim();
-  if (base) return base.replace(/\.(json|csv|xlsx|xls)$/i, '') + '.scriptnote.json';
+  if (base) return base.replace(_SN2_SCENARIO_SOURCE_EXT_RE, '') + SCRIPTNOTE_CURRENT_EXT;
   const safeTitle = String(title || '無題シナリオ').trim() || '無題シナリオ';
-  return safeTitle + '.scriptnote.json';
+  return safeTitle + SCRIPTNOTE_CURRENT_EXT;
 }
 
 function _sn2GetActiveSaveContext() {
@@ -142,9 +147,12 @@ function _sn2GetActiveSaveContext() {
 function _sn2NormalizeScriptNoteFileName(name = '') {
   const raw = String(name || '').trim();
   const base = raw || '無題シナリオ';
-  if (/\.scriptnote\.json$/i.test(base)) return base;
-  if (/\.json$/i.test(base)) return base.replace(/\.json$/i, '.scriptnote.json');
-  return base.replace(/\.[^./\\]+$/i, '') + '.scriptnote.json';
+  // シナリオの拡張子（現行 .mel-scenario・旧 .scriptnote.json）はそのまま使う。旧形式のファイルを
+  // 既定の名前で保存しても同じファイルへの通常の保存になり、別のファイルや別の文書にならない。
+  if (/(?:\.mel-scenario|\.scriptnote\.json)$/i.test(base)) return base;
+  if (/\.scenario\.json$/i.test(base)) return base.replace(/\.scenario\.json$/i, '') + SCRIPTNOTE_CURRENT_EXT;
+  if (/\.json$/i.test(base)) return base.replace(/\.json$/i, '') + SCRIPTNOTE_CURRENT_EXT;
+  return base.replace(/\.[^./\\]+$/i, '') + SCRIPTNOTE_CURRENT_EXT;
 }
 
 function _sn2JoinPath(folder = '', fileName = '') {
@@ -192,7 +200,7 @@ function _sn2SetActiveScriptNotePath(ctx, targetPath, saveResult = {}) {
   }
   const label = typeof getScriptNoteLabelFromPath === 'function'
     ? getScriptNoteLabelFromPath(targetPath, editor.doc?.title || '')
-    : (targetPath.split('/').pop() || targetPath).replace(/\.scriptnote\.json$/i, '');
+    : (targetPath.split('/').pop() || targetPath).replace(/(?:\.mel-scenario|\.scriptnote\.json)$/i, '');
   if (comp?.state) {
     comp.state.scenarioPath = targetPath;
     comp.state.label = label;
@@ -661,7 +669,7 @@ async function promptSaveCurrentScriptNoteAs() {
         if (typeof saveLastView === 'function') {
           const label = typeof getScriptNoteLabelFromPath === 'function'
             ? getScriptNoteLabelFromPath(targetPath)
-            : targetPath.split('/').pop().replace(/\.scriptnote\.json$/i, '').replace(/\.\w+$/, '');
+            : targetPath.split('/').pop().replace(/(?:\.mel-scenario|\.scriptnote\.json)$/i, '').replace(/\.\w+$/, '');
           try {
             saveLastView({ type: 'scriptnote', label, path: targetPath });
           } catch (error) {
@@ -786,14 +794,134 @@ const SN2_EXPORT_CONTROL_PROPS = [
   'writing-mode', 'text-orientation', 'white-space', 'overflow-x', 'overflow-y', 'text-overflow',
 ];
 
+// 寸法は整数に丸めた offsetWidth/offsetHeight ではなく実寸で固定する。丸めると列ごとに
+// 1px未満のずれが積み重なり、公開HTMLの文字の位置が画面と1px違ってくる。
+function _sn2ExportExactSize(el, axis) {
+  const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
+  const rect = el.getBoundingClientRect();
+  const value = (axis === 'height' ? rect.height : rect.width) / z;
+  if (!(Number.isFinite(value) && value > 0)) return axis === 'height' ? el.offsetHeight : el.offsetWidth;
+  // 書き出しの style 属性は有効数字6桁で書かれる（35.390625px → 35.3906px）。ブラウザは寸法を
+  // 1/64px 単位に切り捨てるため、そのままだと 1/64px 小さくなり、縦書きの文字が1px近くずれる。
+  // 1/64px 単位へ揃えた値に半単位（1/128px）を足し、6桁に丸めても同じ寸法に戻るようにする。
+  return Math.floor(value * 64 + 1e-6) / 64 + 1 / 128;
+}
+
+// ルビは画面では親文字の ::after として、親文字からの相対位置で置いている。縦書きの親文字は
+// inline のため、その基準（包含ブロック）の決め方がブラウザで違い、iPhone（Safari と同じ描画の仕組み）では
+// ルビが親文字から離れて出ていた。書き出しでは、画面で決まったルビの位置を本文のセルからの位置として
+// 計り、本物の要素として置く（どのブラウザでも同じ位置になる）。
+const SN2_EXPORT_RUBY_STYLE_PROPS = [
+  'font-family', 'font-size', 'font-weight', 'font-style', 'font-stretch', 'font-variant-east-asian',
+  'font-feature-settings', 'font-kerning', 'letter-spacing', 'word-spacing', 'color', 'opacity', 'line-height',
+  'white-space', 'writing-mode', 'text-orientation', 'text-align', 'text-indent', 'text-shadow',
+  '-webkit-text-stroke-width', '-webkit-text-stroke-color', '-webkit-text-fill-color',
+  'text-decoration-line', 'text-decoration-color', 'text-decoration-style', 'paint-order',
+];
+
+// 縦書き用の字形（OpenType の vert）を明示して使う。Chrome は縦書きで自動的に使うが、Safari と同じ描画の
+// 仕組み（WebKit）は埋め込んだフォントで使わないことがあり、「 」（ ）…ー、。が横書きの形のまま並んでいた。
+function _sn2ExportWithVert(value) {
+  const current = String(value || '').trim();
+  if (/["']vert["']/.test(current)) return current;
+  return current && current !== 'normal' ? `${current}, "vert" 1` : '"vert" 1';
+}
+
+function _sn2ExportEnableVerticalGlyphs(original, clone) {
+  if (!original.classList.contains('sn2-vertical')) return;
+  const sources = [original, ...original.querySelectorAll('*')];
+  const targets = [clone, ...clone.querySelectorAll('*')];
+  if (sources.length !== targets.length) return;
+  sources.forEach((src, index) => {
+    const value = getComputedStyle(src).fontFeatureSettings;
+    targets[index].style.setProperty('font-feature-settings', _sn2ExportWithVert(value));
+  });
+}
+
+function _sn2ExportPlaceRuby(original, clone) {
+  const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
+  const px = value => parseFloat(value) || 0;
+  const sources = original.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
+  const targets = clone.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
+  if (sources.length !== targets.length) return;
+  const vertical = original.classList.contains('sn2-vertical');
+  sources.forEach((src, index) => {
+    const dst = targets[index];
+    const cell = src.closest('.sn2-text, .sn2-custom-text');
+    const dstCell = dst.closest('.sn2-text, .sn2-custom-text');
+    if (!cell || !dstCell) return;
+    const ps = getComputedStyle(src, '::after');
+    if (!ps.content || ps.content === 'none' || ps.content === 'normal') return;
+    const span = src.getBoundingClientRect();
+    const box = cell.getBoundingClientRect();
+    const width = px(ps.width);
+    const height = px(ps.height);
+    const left = span.left / z + px(ps.left);
+    const top = vertical ? span.top / z + px(ps.top) : span.bottom / z - px(ps.bottom) - height;
+    const ruby = document.createElement('span');
+    ruby.className = 'sn2-export-ruby';
+    ruby.setAttribute('aria-hidden', 'true');
+    ruby.textContent = src.getAttribute('data-ruby-rendered') || src.getAttribute('data-ruby') || '';
+    SN2_EXPORT_RUBY_STYLE_PROPS.forEach(name => {
+      const value = ps.getPropertyValue(name);
+      if (value) ruby.style.setProperty(name, value);
+    });
+    if (vertical) ruby.style.setProperty('font-feature-settings', _sn2ExportWithVert(ps.fontFeatureSettings));
+    // 親文字（span）からの位置で置く。親文字が別の位置へ組まれるブラウザでも、ルビは親文字に付いて動く。
+    // 行の太さの方向（縦書きは左右、横書きは上下）は、親文字の箱の大きさがブラウザで違う（行間の扱いの差）ため、
+    // 親文字の中心からの位置で置く。
+    const spanW = span.width / z;
+    const spanH = span.height / z;
+    ruby.style.setProperty('position', 'absolute');
+    if (vertical) {
+      ruby.style.setProperty('left', `calc(50% + ${left - span.left / z - spanW / 2}px)`);
+      ruby.style.setProperty('top', (top - span.top / z) + 'px');
+    } else {
+      ruby.style.setProperty('left', (left - span.left / z) + 'px');
+      ruby.style.setProperty('top', `calc(50% + ${top - span.top / z - spanH / 2}px)`);
+    }
+    ruby.style.setProperty('width', width + 'px');
+    ruby.style.setProperty('height', height + 'px');
+    ruby.style.setProperty('margin', '0');
+    ruby.style.setProperty('padding', '0');
+    ruby.style.setProperty('pointer-events', 'none');
+    ruby.style.setProperty('overflow', 'visible');
+    dst.setAttribute('data-ruby-placed', '1');
+    dst.style.setProperty('position', 'relative');
+    dst.appendChild(ruby);
+  });
+}
+
+// 三点リーダー（…）・二点リーダー（‥）は、本文を「正立」で組むと、Safari と同じ描画の仕組み（iPhone の
+// Dropbox アプリ等）では縦書き用の字形に差し替わらず、横向きのまま描かれる。縦書きの本文では、同じ形の
+// 縦書き用の文字（︙ ︰）に置き換える（Chrome の画面でも縦向きに描かれている）。埋め込むフォントには、
+// 元の約物の縦書き用の字形を縦書き用の文字として足してあり、画面と同じ字形になる（meldex_font_subset.py）。
+const SN2_EXPORT_VERTICAL_FORMS = { '…': '︙', '‥': '︰' };
+
+function _sn2ExportVerticalForms(clone) {
+  if (!clone.classList.contains('sn2-vertical')) return;
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!node.parentElement?.closest('.sn2-text, .sn2-custom-text')) continue;
+    const value = node.nodeValue || '';
+    if (/[…‥]/.test(value)) node.nodeValue = value.replace(/[…‥]/g, ch => SN2_EXPORT_VERTICAL_FORMS[ch] || ch);
+  }
+}
+
+// 縦書きの約物（※・…・ー・括弧・句読点・全角の！？等）の向き: 本文のセルは画面と同じく「正立」
+// （text-orientation: upright）を明示しており、向きは縦書き用の字形（vert）で決まる。約物を1文字ずつ
+// 別の要素に分けると、Safari と同じ描画の仕組みでは縦書き用の字形に差し替わらなくなるため、分けない
+// （2026-11-21 に WebKit で確認）。
+
 function _sn2ExportFreezeLayout(original, clone) {
   const vertical = original.classList.contains('sn2-vertical');
   const freezeMainAxis = (src, dst) => {
     const cs = getComputedStyle(src);
     if (cs.display === 'none') return;
     dst.style.setProperty('box-sizing', 'border-box', 'important');
-    if (vertical) dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
-    else dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
+    if (vertical) dst.style.setProperty('height', _sn2ExportExactSize(src, 'height') + 'px', 'important');
+    else dst.style.setProperty('width', _sn2ExportExactSize(src, 'width') + 'px', 'important');
     dst.style.setProperty('flex', '0 0 auto', 'important');
   };
   // 見出しセルはエディタで表示領域に合わせて縮められ、行はその寸法に揃えてある。
@@ -809,8 +937,8 @@ function _sn2ExportFreezeLayout(original, clone) {
   pairs('.sn2-header', (src, dst) => {
     if (getComputedStyle(src).display === 'none') return;
     dst.style.setProperty('box-sizing', 'border-box', 'important');
-    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px', 'important');
-    else dst.style.setProperty('height', src.offsetHeight + 'px', 'important');
+    if (vertical) dst.style.setProperty('width', _sn2ExportExactSize(src, 'width') + 'px', 'important');
+    else dst.style.setProperty('height', _sn2ExportExactSize(src, 'height') + 'px', 'important');
     dst.style.setProperty('flex-shrink', '0', 'important');
   });
   // 行内のセルも同様（行の寸法はエディタが見出しに合わせて固定済み。セル側は縮み方が
@@ -818,12 +946,21 @@ function _sn2ExportFreezeLayout(original, clone) {
   // 行の太さ（縦書きは幅、横書きは高さ）もエディタの実寸に揃える
   pairs('.sn2-row', (src, dst) => {
     if (getComputedStyle(src).display === 'none') return;
-    if (vertical) dst.style.setProperty('width', src.offsetWidth + 'px');
-    else dst.style.setProperty('height', src.offsetHeight + 'px');
+    if (vertical) dst.style.setProperty('width', _sn2ExportExactSize(src, 'width') + 'px');
+    else dst.style.setProperty('height', _sn2ExportExactSize(src, 'height') + 'px');
   });
   pairs('.sn2-row > *', (src, dst) => {
     if (src.matches('.sn2-row-spacer, .sn2-handle-zone, .sn2-handle')) return;
     freezeMainAxis(src, dst);
+  });
+  // ルビの親文字には、アプリ全体のCSS（ノートと共通の [data-ruby] の規則。親文字の途中で行を分けない）も
+  // 効いている。書き出しはシナリオのCSSだけを持つため、行分けに関わる値を計算済みの値で写す。
+  pairs('[data-ruby]', (src, dst) => {
+    const cs = getComputedStyle(src);
+    ['white-space-collapse', 'text-wrap-mode'].forEach(name => {
+      const value = cs.getPropertyValue(name);
+      if (value) dst.style.setProperty(name, value);
+    });
   });
   // ボタン・入力欄は既定書体（ブラウザ既定）と既定の枠を持つ。span 化しても同じ見た目に
   // なるよう計算済みスタイルを書き写しておく。
@@ -980,7 +1117,10 @@ async function buildScriptNoteExportDocument(editor, options = {}) {
 
   const clone = scroll.cloneNode(true);
   _sn2ExportFreezeLayout(scroll, clone);
+  _sn2ExportEnableVerticalGlyphs(scroll, clone);
+  _sn2ExportPlaceRuby(scroll, clone);
   _sn2ExportStripInteractive(clone);
+  _sn2ExportVerticalForms(clone);
 
   // 祖先由来の CSS 変数（テーマ・ファイルテーマ・UI設定）を計算値で固定する
   _sn2ExportComputedCustomProperties(scroll).forEach(([name, value]) => {
@@ -1000,10 +1140,15 @@ async function buildScriptNoteExportDocument(editor, options = {}) {
     try { await MeldexExportHtml.embedImages(clone); } catch {}
   }
 
-  const [editorCss, fontCss] = await Promise.all([
-    _sn2ExportEditorCss(),
-    _sn2ExportEmbedFontCss(options.embedFont, _sn2ExportUsedFontWeights(scroll)),
-  ]);
+  // HTML保存・公開は、使っている文字だけのフォント（画面と同じ書体）を埋め込む。iPhone 等には同じ
+  // フォントが無く、置き換わると字形・文字の幅・約物の向きが変わってルビもずれるため。
+  // 画像（PNG）は画面と同じブラウザで描くため、従来の埋め込みのままにする。
+  const subsetFont = options.purpose !== 'image' && options.embedFont !== false
+    && typeof MeldexExportHtml !== 'undefined' && typeof MeldexExportHtml.subsetFontCss === 'function'
+    ? MeldexExportHtml.subsetFontCss(scroll)
+    : Promise.resolve(null);
+  const [editorCss, subset] = await Promise.all([_sn2ExportEditorCss(), subsetFont]);
+  const fontCss = subset?.css || await _sn2ExportEmbedFontCss(options.embedFont, _sn2ExportUsedFontWeights(scroll));
   const rootVars = _sn2ExportComputedCustomProperties(document.documentElement)
     .map(([name, value]) => `${name}: ${value};`).join(' ');
 
@@ -1038,6 +1183,22 @@ html, body {
   font-size: var(--ui-font-size, 15px);
 }
 ${editorCss}
+/* 書き出し: ルビは本物の要素として置く（::after は使わない） */
+[data-ruby-placed]::after { content: none !important; }
+/* Safari と同じ描画の仕組み（iPhone の Dropbox アプリ等）だけに効かせる（WebKit だけが対応している「句読点のぶら下げ」で見分ける）。縦書きの詰め（vpal）を正しく扱えず、
+   括弧・三点リーダー・長音が文字の枠からはみ出したり横向きの形のまま描かれたりするため、縦書き用の字形（vert）
+   だけを使う。 */
+@supports (hanging-punctuation: first) {
+  .sn2-scroll.sn2-vertical, .sn2-scroll.sn2-vertical * { font-feature-settings: "vert" 1 !important; }
+  /* inline の親文字を基準にした位置は、WebKit では行の太さの分ずれる。inline-block にすると、
+     親文字の箱（字面を中央に置く）を基準にでき、ルビの位置（親文字の中心から）が Chrome と一致する */
+  .sn2-scroll.sn2-vertical .sn2-text span[data-ruby][data-ruby-placed],
+  .sn2-scroll.sn2-vertical .sn2-custom-text span[data-ruby][data-ruby-placed] { display: inline-block !important; }
+}
+/* 縦書きの詰めは埋め込むフォントに書き込んである（meldex_font_subset.py）。ブラウザ独自の約物の詰め
+   （text-spacing-trim）は、画面では縦書きの詰めの指定があるため働かない。詰めの指定を使わないブラウザでも
+   二重に詰めないよう、明示して止める */
+.sn2-scroll.sn2-vertical .sn2-text, .sn2-scroll.sn2-vertical .sn2-custom-text { text-spacing-trim: space-all; }
 /* 静的エクスポート用の上書き: 操作 UI を隠し、内容の寸法で配置する */
 body { padding: 16px; box-sizing: border-box; }
 body > .sn2-scroll {
@@ -1082,10 +1243,13 @@ async function exportCurrentScriptNoteAsHtml() {
     if (typeof showStatus === 'function') showStatus('シナリオファイルが開かれていません', true);
     return;
   }
-  if (typeof showStatus === 'function') showStatus('HTML を生成中...');
   let snapshot = null;
   try {
-    snapshot = await buildScriptNoteExportDocument(editor, { purpose: 'html' });
+    // HTMLの作成中は処理パネルに出す（ステータスバーには進捗を出さない。2026-11-21）。
+    const build = () => buildScriptNoteExportDocument(editor, { purpose: 'html' });
+    snapshot = typeof runWithProgress === 'function'
+      ? await runWithProgress('HTMLを作成しています', build, { kind: 'export-html' })
+      : await build();
   } catch (error) {
     if (typeof showStatus === 'function') showStatus('HTML の生成に失敗しました: ' + (error?.message || error), true);
     return;

@@ -4,6 +4,8 @@ function _applySelectedColumnClasses(ctx, dbPath) {
     : (!ctx ? document.getElementById('pivot-table') : null);
   if (!table) return;
   const selected = typeof _getSelectedColumns === 'function' ? _getSelectedColumns(dbPath) : [];
+  // 列を選んだら、前に選んでいたセルの枠は外す（強調は常に1か所。2026-11-22 探索で2か所になっていた）。
+  if (selected.length && typeof _clearDbCellSelection === 'function') _clearDbCellSelection(table);
   table.querySelectorAll('th.col-selected, td.col-selected').forEach(el => el.classList.remove('col-selected'));
   if (selected.includes('__entity__')) {
     table.querySelector('thead th.col-entity-header')?.classList.add('col-selected');
@@ -404,6 +406,43 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   return entityNames;
 }
 
+// 列見出しの右側に「…」ボタン（右端から14px・幅約20px）の場所を常に空けておく幅。
+const DB_TH_MENU_BUTTON_ROOM = 36;
+// 列名の横に並ぶ印（列タイプ・フィルター・鍵・リンク切れ）の幅を列名の最大幅から差し引く。
+function _dbSyncHeaderLabelRoom(th) {
+  const label = th?.querySelector?.(':scope > .th-label');
+  if (!label) return;
+  let room = 0;
+  [...th.children].forEach(child => {
+    if (child === label || child.matches('.th-more-btn, .col-resize-handle, .th-rename-input')) return;
+    if (child.hidden || child.style.display === 'none') return;
+    room += child.classList.contains('th-type-icon') ? 18 : 16;
+  });
+  label.style.setProperty('--th-label-room', room + 'px');
+}
+
+// 列見出しの警告アイコン用の「参照先シートが見つからない」判定。確かめてから時間がたった記録も、確かめ直すまでは
+// 見つからないものとして扱い、裏で確かめ直して見出しを更新する（2026-11-22 利用者役の探索: 確かめてから30秒たつと、
+// 列の複製や折り返し設定の変更による描き直しのたびに警告が消え、開き直すまで出なかった）。
+const _dbHeaderRelationRecheckAt = new Map();
+function _dbHeaderRelationTargetMissing(target, ctx) {
+  if (_isRelationTargetMissing(target)) return true;
+  const miss = typeof _relationMissingCache !== 'undefined' ? _relationMissingCache[target] : null;
+  if (!miss || !miss.missing) return false;
+  // 確かめ直しは参照先ごとに30秒に1回まで（通信の失敗で記録が古いままでも繰り返さない）。
+  const last = _dbHeaderRelationRecheckAt.get(target) || 0;
+  if (Date.now() - last > 30000 && typeof _getRelationMap === 'function') {
+    _dbHeaderRelationRecheckAt.set(target, Date.now());
+    Promise.resolve()
+      .then(() => _getRelationMap(target))
+      .catch(() => {})
+      .finally(() => {
+        try { _syncRelationWarningIcons(ctx); } catch (_) { /* 見出しが閉じられた */ }
+      });
+  }
+  return true;
+}
+
 // リンク切れ（参照先シート欠落）を列見出しに示す警告アイコンを生成する。
 // 色だけに頼らず三角形状＋aria-label で意味を担保（UI共通ルール準拠）。
 // ホバー/フォーカス/長押しの説明は gb-tooltip が data-gb-tooltip / title を拾って表示する。
@@ -453,12 +492,12 @@ function _syncRelationWarningIcons(ctx) {
     let targetName = '';
     if (ptc && (ptc.type === 'relation' || ptc.type === 'multi-relation')) {
       const target = _relationColumnTargetPath(dbPath, ptc);
-      if (target && target !== dbPath && _isRelationTargetMissing(target)) targetName = basename(target);
+      if (target && target !== dbPath && _dbHeaderRelationTargetMissing(target, ctx)) targetName = basename(target);
     } else if (ptc && ptc.type === 'multi-source-relation') {
       // 複数ソースのうち欠落しているシートがあれば警告（欠落シート名を列挙）。
       const missNames = (ptc.sources || [])
         .map(src => src && src.db)
-        .filter(sdb => sdb && sdb !== dbPath && _isRelationTargetMissing(sdb))
+        .filter(sdb => sdb && sdb !== dbPath && _dbHeaderRelationTargetMissing(sdb, ctx))
         .map(basename);
       if (missNames.length) targetName = missNames.join('・');
     }
@@ -474,9 +513,11 @@ function _syncRelationWarningIcons(ctx) {
         const label = th.querySelector(':scope > .th-label');
         if (label && label.nextSibling) th.insertBefore(icon, label.nextSibling);
         else th.appendChild(icon);
+        _dbSyncHeaderLabelRoom(th);
       }
     } else if (existing) {
       existing.remove();
+      _dbSyncHeaderLabelRoom(th);
     }
   });
   } catch (e) {
@@ -490,6 +531,8 @@ function renderPivot(ctx) {
   if (!ctx) return;
   const data = ctx.pivotData || state.pivotData;
   if (!data || !data.properties || !data.entities) { clearPivot(ctx); return; }
+  if (typeof _dbRefreshTopicCountStatus === 'function') _dbRefreshTopicCountStatus(ctx, data);
+  if (typeof clearDbNoViewsGuide === 'function' && getSavedViews(ctx.dbPath || state.currentDbPath).length) clearDbNoViewsGuide(ctx);
   // 表ビューでは一括操作バーを出さない。ツリービューから切り替えた時に残ったバーを消す（UI共通ルール §6）。
   if (!(typeof _dbTreeIsCurrentView === 'function' && _dbTreeIsCurrentView(ctx, ctx.dbPath || state.currentDbPath))) {
     document.querySelectorAll(`.db-bulk-edit-bar[data-pane-id="${MeldexEscape.cssIdent(ctx.paneId || 'main')}"]`).forEach(bar => bar.remove());
@@ -704,6 +747,13 @@ function renderPivot(ctx) {
       if (typeof addLongPressHandler === 'function') {
         addLongPressHandler(th0, (e) => showEntityColMenu(e, ctx, dbPath));
       }
+      // ダブルクリック → トピック名列の列名をその場で変更（ほかの列見出しと同じ操作。列メニュー上部の名前欄と同じ保存）
+      th0.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.col-resize-handle, .th-more-btn, .th-rename-input')) return;
+        e.stopPropagation();
+        closeColHeaderMenu();
+        if (typeof _dbStartEntityHeaderInlineRename === 'function') _dbStartEntityHeaderInlineRename(th0);
+      });
       th0.addEventListener('click', (e) => {
         if (e.target.closest('.col-resize-handle, .th-more-btn')) return;
         e.stopPropagation();
@@ -720,7 +770,8 @@ function renderPivot(ctx) {
       _setupDbColumnResizeHandleA11y(th0Handle, th0, domColIndex, '__entity__', dbPath, ctx);
       th0Handle.addEventListener('pointerdown', (e) => startColResize(e, th0, domColIndex, '__entity__'));
       th0Handle.addEventListener('click', (e) => { e.stopPropagation(); });
-      th0Handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
+      // 境界のダブルクリックで、この列だけ自動調整する（2026-11-21 ユーザー決定）
+      th0Handle.addEventListener('dblclick', (e) => { e.stopPropagation(); e.preventDefault(); if (typeof autoFitSheetColumn === 'function') autoFitSheetColumn(ctx, dbPath, '__entity__'); });
       th0.appendChild(th0Handle);
       // D&D 列並び替え（プロパティ列と同じ機構。他の列と同様に並べ替え可能）
       th0.draggable = true;
@@ -769,13 +820,11 @@ function renderPivot(ctx) {
     const typeIcon = document.createElement('span');
     typeIcon.className = 'th-type-icon';
     typeIcon.style.cssText = 'opacity:0.8;margin-right:4px;';
-    typeIcon.innerHTML = ptcHeader?.icon && window.GBIconAssets?.render
-      ? GBIconAssets.render(ptcHeader.icon, 14, { contextPath: dbPath })
-      : lucide(PROP_TYPE_ICON[ptcHeader?.type] || PROP_TYPE_ICON.text, 14);
+    typeIcon.innerHTML = _dbColumnTypeIconHtml(ptcHeader, dbPath, 14);
     th.appendChild(typeIcon);
     const labelSpan = document.createElement('span');
     labelSpan.className = 'th-label';
-    labelSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    labelSpan.style.cssText = 'display:inline-block;vertical-align:bottom;max-width:calc(100% - var(--th-label-room, 0px));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
     labelSpan.textContent = p;
     th.appendChild(labelSpan);
     if (typeof isDbColumnFilterActive === 'function' && isDbColumnFilterActive(dbPath, p, ctx)) {
@@ -830,6 +879,10 @@ function renderPivot(ctx) {
     moreBtn.addEventListener('mouseleave', () => { moreBtn.style.background = 'var(--bg2)'; });
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, domColIndex, ctx, dbPath); });
     th.appendChild(moreBtn);
+    // 列名は「…」ボタンの手前で省略する。ボタンの場所はホバーの前から空けておき、ホバーで寸法を変えない
+    // （2026-11-22 利用者役の探索: ボタンが列名の中ほどに重なり「メモ コ…ー」と中間が隠れていた）。
+    th.style.paddingRight = DB_TH_MENU_BUTTON_ROOM + 'px';
+    _dbSyncHeaderLabelRoom(th);
     th.style.position = pinnedCols.includes(p) ? 'sticky' : 'relative';
     th.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; });
     th.addEventListener('mouseleave', () => { moreBtn.style.opacity = '0'; });
@@ -841,7 +894,7 @@ function renderPivot(ctx) {
     _setupDbColumnResizeHandleA11y(handle, th, domColIndex, p, dbPath, ctx);
     handle.addEventListener('pointerdown', (e) => startColResize(e, th, domColIndex, p));
     handle.addEventListener('click', (e) => { e.stopPropagation(); });
-    handle.addEventListener('dblclick', (e) => { e.stopPropagation(); });
+    handle.addEventListener('dblclick', (e) => { e.stopPropagation(); e.preventDefault(); if (typeof autoFitSheetColumn === 'function') autoFitSheetColumn(ctx, dbPath, p); });
     th.appendChild(handle);
 
     // D&D 列並び替え

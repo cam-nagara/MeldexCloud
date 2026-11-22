@@ -2,6 +2,7 @@
 <html data-standalone-app="viewer" data-standalone-cloud="viewer" data-meldex-cloud-app="viewer" lang="ja" spellcheck="false">
 <head>
   <base href="../../">
+  <meta name="meldex-app-version" content="0.7.588">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
@@ -26,7 +27,8 @@
 <link rel="stylesheet" href="gb-ui.css">
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-loading-indicators.css">
-<link rel="stylesheet" href="viewer.css"><script src="gb-escape.js"></script>
+<link rel="stylesheet" href="viewer.css">
+<link rel="stylesheet" href="viewer-text-layer.css"><script src="gb-escape.js"></script>
 <script src="gb-theme-migration.js"></script>
 <script src="offline-bundles/gb-theme-manager.js"></script>
 <script src="gb-theme-document.js"></script>
@@ -79,8 +81,8 @@
   <div id="hud-info"></div>
 </div>
 
-<div id="controls" class="gb-toolbar gb-toolbar-viewer">
-  <span class="tb-app-icon" data-app-icon="media" role="img" aria-label="ビューワー"></span>
+<div id="controls" class="gb-toolbar gb-toolbar-main gb-toolbar-viewer">
+  <button id="btn-viewer-main-menu" class="tb-app-icon tb-main-menu-btn" data-app-icon="media" data-gb-tooltip-key="toolbar.mainMenu" type="button" title="メインメニュー" aria-label="ビューワーのメインメニュー" aria-haspopup="menu" aria-expanded="false" data-e2e-id="viewer-main-menu"></button>
   <!-- 前後のフォルダのアイコン（skipBack / skipForward）は共通のアイコン置換表に無いため、viewer-controls.js が描画する -->
   <button id="btn-prev-folder" class="tb-icon-btn" title="前のフォルダ (↑)" aria-label="前のフォルダ" data-e2e-id="viewer-prev-folder"></button>
   <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ"><span class="ico ico-arrowLeft"></span></button>
@@ -103,6 +105,8 @@
   <button id="btn-flip-v" class="tb-icon-btn" title="上下反転" aria-label="上下反転"><span class="ico ico-flipVertical2"></span></button>
   <button id="btn-rotate" class="tb-icon-btn" title="回転 (Q)" aria-label="回転"><span class="ico ico-rotateCw"></span></button>
   <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
+  <button id="btn-ocr" class="tb-icon-btn" title="OCR" aria-label="OCR" hidden><span class="ico ico-scanText"></span></button>
+  <button id="btn-text-layer" class="tb-icon-btn" title="テキストなし／認識範囲の表示切替" aria-label="認識範囲の表示切替" aria-pressed="false"><span class="ico ico-textCursorInput"></span></button>
   <button id="btn-annotation" class="tb-icon-btn" title="アノテート (A)" aria-label="アノテート" aria-pressed="false" data-e2e-id="viewer-annotation-toggle"><span class="ico ico-squarePen"></span></button>
   <!-- アノテートのバージョン管理と既定アプリの設定は、下端ツールバーではなく右クリックメニューから開く -->
 </div>
@@ -129,6 +133,9 @@
 <script src="standalone-offline-outbox.js"></script>
 <script src="viewer-scene-utils.js"></script>
 <script src="viewer-pdf-renderer.js"></script>
+<script src="viewer-text-layer.js"></script>
+<script src="gb-ui.js"></script>
+<script src="viewer-ocr-controls.js"></script>
 <script src="viewer-media-seek.js"></script>
 <script src="viewer-video.js"></script>
 <script src="viewer-audio.js"></script>

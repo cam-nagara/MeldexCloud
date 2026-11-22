@@ -217,6 +217,8 @@
     row.dataset.gbPickerName = String(name || '').toLocaleLowerCase('ja');
     row.dataset.gbPickerPath = String(path || '').toLocaleLowerCase('ja');
     row.dataset.path = path;
+    // 自動操作・検査用の安定ID。同じ画面に行が複数あるので行ごとにパスを入れる（M-014 S31）
+    row.dataset.e2eId = `gb-folder-picker-row:${path}`;
     row.setAttribute('role', 'treeitem');
     row.setAttribute('aria-level', String(depth + 1));
     row.setAttribute('aria-selected', 'false');
@@ -228,6 +230,7 @@
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'gb-folder-picker-toggle';
+    toggle.dataset.e2eId = `gb-folder-picker-toggle:${path}`;
     toggle.tabIndex = -1;
     toggle.title = '展開';
     toggle.setAttribute('aria-label', `${name}を展開`);
@@ -658,6 +661,8 @@
           const heading = document.createElement('button');
           heading.type = 'button';
           heading.className = 'gb-folder-picker-section';
+          // 区分ごとに別の安定ID（M-014 S31）。名前は見出しの文字
+          heading.dataset.e2eId = `gb-folder-picker-section-${kind}`;
           heading.setAttribute('aria-expanded', 'true');
           const chevron = document.createElement('span');
           chevron.className = 'sidebar-section-toggle expanded';

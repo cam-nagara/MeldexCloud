@@ -14,6 +14,18 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   if (type === 'location' && typeof MeldexSheetLocation !== 'undefined') {
     MeldexSheetLocation.editCell(td, entityPath, propName, null, { dbPath, ctx }); return;
   }
+  // 複数の参照元のリレーションは、値の有無にかかわらず候補の一覧で選ぶ（文字の入力欄は開かない）。
+  // 自動収集の列は読み取り専用。
+  if (type === 'multi-source-relation') {
+    if (ptc?.mode === 'auto') { showStatus('自動収集の列は読み取り専用です'); return; }
+    if (typeof _showMsrDropdown !== 'function') return;
+    const values = ((ctx && ctx.pivotData) || state.pivotData)?.entities?.[entityName]?.[propName] || [];
+    const existing = (typeof getAdoptedValueForWrite === 'function' ? getAdoptedValueForWrite(values) : null)
+      || values.find(value => value?.file) || null;
+    const anchor = td.querySelector('.msr-tags') || container;
+    _showMsrDropdown(anchor, existing, entityPath, propName, { ...ptc, __sourceDbPath: dbPath });
+    return;
+  }
   // 値のあるリレーションは、クリックでもキーボードでも同じ置換エディタを使う。
   // 空セル用の追加経路では既存選択・解除・逆参照の更新を扱えない。
   if ((type === 'relation' || type === 'multi-relation') && typeof _showRelationDropdown === 'function') {
@@ -31,9 +43,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     if (isPickerReplacementType) existingInlineEditor.remove();
     else return;
   }
-  // ステータス機能 OFF の DB は 1セル1値運用。既存値ありセルへの新規候補追加を禁止
+  // 1セル1値で運用するシート（制作管理でステータス機能オフ）だけ、既存値ありセルへの新規候補追加を禁止する。
+  // 通常のシートはステータス機能がオフでも候補値を足せる（ユーザー判断 案A 2026-07-25、トピック詳細パネルの ＋ と同じ）。
   // セレクト / リレーション / ユーザー系は既存値の置き換え編集として扱うため、既存値ありでも候補ドロップダウンを開く。
-  if (!getStatusEnabled(dbPath) && container.querySelector('.cell-value') && !isPickerReplacementType) {
+  if (typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath)
+      && container.querySelector('.cell-value') && !isPickerReplacementType) {
     showStatus('このシートは1セル1値運用です（ステータス機能オフ）');
     return;
   }
@@ -1136,9 +1150,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         if (!selectOptions.includes(v)) selectOptions.push(v);
       });
     }
+    const currentSelectValue = String((typeof _dbCellPrimaryValue === 'function' ? _dbCellPrimaryValue(td, ctx)?.value : '') ?? '');
     selectOptions.forEach(opt => {
       const item = document.createElement('div');
       item.className = 'status-dropdown-item';
+      if (currentSelectValue && String(opt) === currentSelectValue) item.dataset.ddInitial = '1';
       if (typeof appendDbOptionColorSwatch === 'function') {
         appendDbOptionColorSwatch(item, { dbPath, propName, option: opt, ctx });
       } else if (typeof createDbOptionColorDot === 'function') {
@@ -1501,6 +1517,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     _fixInlineEditorHeight(inp);
     container.insertBefore(inp, addBtn);
     if (isPlainText) _autosizeInlineTextarea(inp);
+    // 確定前に画面を閉じた時は、未保存の入力として退避する（gb-db-cell-recovery.js）。
+    if (forType !== 'select' && forType !== 'multi-select') {
+      window.MeldexSheetCellRecovery?.watchEditor?.({ element: inp, dbPath, entryPath: entityPath, property: propName,
+        candidateIndex: null, before: '', read: () => inp.value });
+    }
     inp.focus();
     _attachCommitHandlers(inp, forType === 'select' ? saveSelectAndRestore : saveAndRestore, cancel);
   }
@@ -1523,7 +1544,10 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   function _fixInlineEditorHeight(inp) {
     const td = container.closest('td');
     const style = td ? getComputedStyle(td) : null;
-    const verticalPadding = style ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) : 0;
+    // セルの高さ（枠線込み）から余白と枠線を引いた内側の高さに合わせる。枠線を引かないと入力欄が1px高くなり、
+    // 編集を始めた時に行が伸びて下の行がずれた（UI共通ルール §10、2026-11-20 状態の総当たり検査で検出）。
+    const verticalPadding = style ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+      + (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) : 0;
     const height = Math.max(20, Math.floor((td?.getBoundingClientRect?.().height || container.getBoundingClientRect?.().height || 0) - verticalPadding));
     if (inp.dataset) inp.dataset.dbFixedEditorHeight = String(height);
     inp.style.height = height + 'px';

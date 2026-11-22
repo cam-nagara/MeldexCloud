@@ -1478,12 +1478,18 @@
             scheduleStreamPaint({ assistant: true, scroll: true });
           } else if (data.type === 'text_replace') {
             // 途中送信で文字が壊れていた場合、CLIが最後に返す完成テキストで本文を差し替える。
+            // reset: ツールを使う前の途中の文章を本文から外す（進捗の側へ移す）。返信本文は最後の文章だけにする。
             const finalText = data.content == null ? '' : String(data.content);
-            if (!finalText) continue;
+            if (!finalText && !data.reset) continue;
             fullText = finalText;
             markCliOutput(true);
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
             scheduleStreamPaint({ assistant: true, scroll: true });
+          } else if (data.type === 'meldex_sheet_changed') {
+            // AIのツールがシートを書き換えた。開いているシートへ映し、取り消しの履歴へ積む。
+            if (typeof window.meldexApplyLlmSheetChange === 'function') {
+              window.meldexApplyLlmSheetChange(data).catch(error => console.warn('[Meldex] AIの変更を反映できませんでした', error));
+            }
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
@@ -1629,7 +1635,7 @@
         if (!_chatState.streaming) cliChatSetSendButtonStreaming(false);
         if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-        if (streamVisibleInCurrentChat() && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+        if (streamVisibleInCurrentChat()) _chatRefocusInputAfterStream(input);
         if (interruptedByDraft && typeof _chatSendQueuedMessagesAfterStream === 'function') {
           setTimeout(() => {
             _chatSendQueuedMessagesAfterStream({
@@ -1766,6 +1772,7 @@
   window.renderCliTranscripts = renderCliTranscripts;
   window.switchChatHistoryView = switchChatHistoryView;
   window.GBChatCli = {
+    openSession: openCliSession,
     render: renderCliTranscripts,
     switchHistoryView: switchChatHistoryView,
     applyImportVisibility: applyCliImportVisibility,

@@ -4,6 +4,7 @@
   const QUEUE_KEY = 'meldex:quick-memo:queue:v1';
   const CURRENT_KEY = 'meldex:quick-memo:current:v1';
   const CLIENT_ID_KEY = 'meldex:quick-memo:client-id:v1';
+  const DELIVERY_KEY = 'meldex:quick-memo:delivery:v1';
   const CLOUD_SHEET_NAME = 'クイックメモ';
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
   const els = {};
@@ -109,6 +110,7 @@
     registerCloseContract();
     switchMode(state.currentMode);
     initCloudMode();
+    initDeliveryInfo();
     if (!isCloudMode()) loadStorageLocation();
     loadTags();
     listenInstallPrompt();
@@ -244,6 +246,7 @@
         onStatus: setStatus,
         beforeNavigate: preserveCurrentForNavigation,
         onOpen: openExistingMemo,
+        onPendingInfo: showDeliveryInfo,
       });
     } catch (error) {
       errors.push(error);
@@ -404,9 +407,10 @@
     on(els.voiceStopBtn, 'click', stopVoiceRecording);
     window.addEventListener('online', flushPendingQueue);
     window.addEventListener('online', () => loadTags());
-    window.addEventListener('focus', () => loadTags());
+    window.addEventListener('focus', () => { loadTags(); flushPendingQueue(); });
+    window.addEventListener('pageshow', flushPendingQueue);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') loadTags();
+      if (document.visibilityState === 'visible') { loadTags(); flushPendingQueue(); }
     });
     ['meldex:standalone-cloud-ready', 'meldex:standalone-auth-changed', 'meldex:dropbox-auth-session-changed']
       .forEach(type => window.addEventListener(type, () => {
@@ -1158,6 +1162,7 @@
     const results = new Map();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
     for (const item of snapshot) {
+      recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '' });
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
@@ -1191,8 +1196,12 @@
           await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
         }
         sent.add(item.memo_id);
+        recordDelivery(item, { state: 'sent', reason: '保存済みです' });
       } catch (error) {
         state.lastSaveError = syncFailureDetail(error);
+        recordDelivery(item, { state: 'failed', reason: state.lastSaveError,
+          status: Number(error?.httpStatus || error?.status || 0), code: String(error?.code || 'save_failed'),
+          failure_path: error?.dropboxPath || '', namespace: error?.namespaceKind || (readJson(DELIVERY_KEY, {}) || {})[item.memo_id]?.namespace || '' });
         failed.add(item.memo_id);
       }
     }
@@ -1212,6 +1221,107 @@
     });
     if (!writeJson(QUEUE_KEY, remaining)) return false;
     return remaining.length === 0;
+  }
+
+  function recordDelivery(item, update) {
+    const records = readJson(DELIVERY_KEY, {}) || {};
+    const previous = records[item.memo_id] || {};
+    const entry = { ...previous, ...update, version: appVersion() };
+    records[item.memo_id] = entry;
+    // Diagnostics have a separate key: never mutate the queued snapshot used
+    // to detect edits made while a save is in flight.
+    const recent = Object.entries(records).sort((a, b) => String(b[1].attempted_at || '').localeCompare(String(a[1].attempted_at || ''))).slice(0, 200);
+    writeJson(DELIVERY_KEY, Object.fromEntries(recent));
+    if (update.state === 'failed') window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+      op: 'quick-memo.send', sheet: entry.target_path || item.server_path || '',
+      endpoint: '/quick-memo/file', method: 'POST', status: entry.status || 0,
+      errorType: entry.code || 'save_failed', source: 'quick-memo',
+    });
+    window.dispatchEvent(new Event('meldex:quick-memo-delivery'));
+  }
+
+  function appVersion() {
+    return String(document.querySelector('meta[name="meldex-app-version"]')?.content
+      || window.MELDEX_VERSION || window.MeldexCloudRuntimeConfig?.version?.semver || '不明');
+  }
+
+  function showDeliveryInfo(item, openMemo) {
+    const body = document.createElement('div');
+    body.className = 'qm-delivery-info';
+    body.setAttribute('aria-live', 'polite');
+    function render() {
+      const entry = (readJson(DELIVERY_KEY, {}) || {})[item.memo_id] || {};
+      body.replaceChildren();
+      const rows = [
+        ['アプリの版', appVersion()],
+        ['最後の送信', entry.attempted_at ? new Date(entry.attempted_at).toLocaleString('ja-JP') : 'まだ送信を試していません'],
+        ['送信結果', entry.reason || (cloudConnected() ? '送信の準備を待っています' : 'Dropboxに接続してください')],
+        ['保存先', entry.target_path || item.server_path || '保存先の確認前です'],
+        ['失敗した場所', entry.failure_path || 'なし'],
+        ['Dropboxの領域', entry.namespace === 'team_root' ? 'チーム領域' : entry.namespace === 'home' ? '個人ホーム' : '確認前です'],
+      ];
+      for (const [label, value] of rows) {
+        const line = document.createElement('p');
+        line.textContent = label + ': ' + value;
+        body.append(line);
+      }
+    }
+    render();
+    const retry = document.createElement('button');
+    retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '今すぐ再送';
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      try { await flushPendingQueue(); render(); } finally { retry.disabled = false; }
+    });
+    const footer = [retry];
+    let dialog;
+    if (openMemo) {
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'gb-btn'; edit.textContent = 'メモを開く';
+      edit.addEventListener('click', () => { dialog.close(); openMemo(); });
+      footer.unshift(edit);
+    }
+    window.addEventListener('meldex:quick-memo-delivery', render);
+    dialog = window.GBUI.createModal({ id: 'qm-delivery-dialog', extraClass: 'qm-delivery-dialog', title: 'メモの送信状況', body, footer,
+      onClose: () => window.removeEventListener('meldex:quick-memo-delivery', render) });
+    dialog.open();
+  }
+
+  function initDeliveryInfo() {
+    const button = document.createElement('button');
+    button.type = 'button'; button.id = 'memoDeliveryInfo'; button.className = 'qm-icon';
+    button.textContent = 'ⓘ'; button.setAttribute('aria-label', 'メモの送信状況');
+    button.addEventListener('click', () => showDeliveryInfo(readJson(CURRENT_KEY, {}) || {}));
+    document.querySelector('#editorView .qm-header-actions')?.prepend(button);
+    const version = document.createElement('small');
+    version.id = 'memoAppVersion'; version.textContent = 'v' + appVersion();
+    version.hidden = appVersion() === '不明';
+    document.querySelector('#editorView .qm-brand')?.append(version);
+    const update = document.createElement('button');
+    update.type = 'button'; update.className = 'gb-btn'; update.id = 'memoUpdate';
+    update.setAttribute('role', 'menuitem');
+    update.textContent = '更新を確認';
+    if (isCloudMode()) document.getElementById('quickMemoMenu')?.append(update);
+    let available = '';
+    async function checkUpdate() {
+      if (!isCloudMode()) return;
+      try {
+        const registration = await navigator.serviceWorker?.getRegistration?.();
+        await registration?.update?.();
+        const response = await fetch(new URL('version.json', document.baseURI), { cache: 'no-store' });
+        if (!response.ok) return;
+        available = String((await response.json()).semver || '');
+        update.textContent = available && available !== appVersion() ? `v${available}に更新して再読込` : '最新版です・再確認';
+      } catch { update.textContent = '接続後に更新を再確認'; }
+    }
+    update.addEventListener('click', async () => {
+      if (available && available !== appVersion()) {
+        if (!await finalizeVoiceForClose() || !await saveNow({ localOnly: true })) return;
+        location.reload();
+      } else await checkUpdate();
+    });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+    checkUpdate();
   }
 
   function enqueueMemo(memo) {
@@ -1487,6 +1597,8 @@
   async function saveMemoCloud(item) {
     await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
     const path = cloudMemoPath(item, item.server_path ? '' : await cloudFolderPath());
+    const location = window.MeldexStorageAdapter?.getProvider?.()?._dropboxLocation?.(path);
+    recordDelivery(item, { target_path: location?.path || path, namespace: location?.namespaceKind || '' });
     const folder = path.split('/').slice(0, -1).join('/');
     const tags = cloudMemoTags(item);
     // 本文とクイックメモ識別子を一度の条件付き書込で保存する。
@@ -1813,12 +1925,24 @@
 
   function syncFailureDetail(error) {
     const detail = String(error?.userMessage || error?.message || error || '同期できませんでした');
+    const httpStatus = Number(error?.httpStatus || error?.status || 0);
     // Static hosts/proxies can return an entire error page. Never expose its
     // markup as a tag/status message, including on an older installed PWA.
     if (/<(?:!doctype|html|head|body|title|meta|style)\b/i.test(detail)) {
-      const status = Number(error?.status) || Number(detail.match(/HTTP\s+(\d{3})/i)?.[1]);
+      const status = httpStatus || Number(detail.match(/HTTP\s+(\d{3})/i)?.[1]);
       return '同期先へ接続できませんでした' + (status ? `（HTTP ${status}）` : '');
     }
+    if (httpStatus === 429) return 'Dropboxの利用制限に達しました。少し待って再送してください（HTTP 429）';
+    if (httpStatus >= 500) return `Dropboxが一時的に利用できません。再送してください（HTTP ${httpStatus}: ${detail.slice(0, 80)}）`;
+    if (error?.httpStatus) {
+      const reasons = { 400: 'Dropboxが保存要求を受け付けませんでした',
+        401: 'Dropboxの接続期限が切れました。接続を確認してください',
+        403: 'Dropboxの保存権限がありません',
+        409: /not_found/.test(detail) ? 'Dropboxの保存先が見つかりません' : 'Dropboxの保存先が更新されています。再送して確認してください',
+        422: 'Dropboxの保存領域を確認できません。接続を確認してください' };
+      if (reasons[httpStatus]) return `${reasons[httpStatus]}（HTTP ${httpStatus}: ${detail.slice(0, 80)}）`;
+    }
+    if (/Failed to fetch|NetworkError|Load failed/i.test(detail)) return '通信できません。ネット接続を確認して再送してください';
     return detail.replace(/\s+/g, ' ').trim().slice(0, 180);
   }
 

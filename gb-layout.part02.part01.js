@@ -2,9 +2,12 @@
   function _updatePaneNavButtons(paneId) {
     const paneInfo = _paneMap[paneId];
     const paneNode = paneInfo?.node || findNode(_root, paneId)?.node;
-    const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
-      ? GBPanelSet.rightRailNavigationState(paneId)
-      : null;
+    // サブパネルの戻る/進むは、表示中のサブパネルのタブの履歴で決まる。
+    const railState = (paneNode?.meldexRole === 'subpanel-workspace' && typeof window.GBSubPanel?.navState === 'function')
+      ? window.GBSubPanel.navState()
+      : (typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
+        ? GBPanelSet.rightRailNavigationState(paneId)
+        : null);
     // 戻る/進む履歴はタブ単位（②タブ別ナビ履歴、2026-07-21）。ペインではなく
     // 「今アクティブなタブ」の navHistory/navIndex を読む。
     const activeTab = Array.isArray(paneNode?.tabs) ? paneNode.tabs[paneNode.activeTabIndex] : null;

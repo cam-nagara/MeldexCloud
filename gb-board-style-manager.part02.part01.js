@@ -386,7 +386,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       live._default = _bdCloneStyleForDefault(live);
       _bdSaveGlobalStyleDefault(kind, live);
       bdDirty();
-      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`, false, { showSaveDialog: true });
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」をデフォルトとして保存しました`);
       render();
     });
 
@@ -412,9 +412,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       const activeRefKey = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
       const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
       const usage = _bdCountStyleUsage(kind, live.id);
-      const usageMsg = usage > 0 ? `\n\nこのスタイルは ${usage} 個の${unitLabel}で使用中です。削除すると、それらは別のスタイルに切り替わります。` : '';
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
-      if (!ok) return;
+      // 削除は取り消し（Ctrl+Z・共通履歴）で戻せるので確認を出さない（app/AGENTS.md）。使っていた件数は削除後の知らせに出す。
       const arr = liveArr();
       const liveIndex = arr.findIndex(style => style.id === live.id);
       if (liveIndex < 0) return;
@@ -440,7 +438,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       opts.currentId = fallbackId;
       if (typeof opts.onSelect === 'function') opts.onSelect(fallbackId);
       render();
-      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しました`);
+      showStatus(`${kind === 'card' ? 'トピック' : 'ライン'}スタイル「${live.name}」を削除しました${usage > 0 ? `（使っていた ${usage} 個の${unitLabel}は別のスタイルに切り替えました。Ctrl+Z で元に戻せます）` : ''}`);
     });
   };
 
@@ -455,6 +453,14 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
 // 入力中の <input> がガベコレされ、フォーカスと IME 変換候補が飛ぶので、
 // メタ・ピッカー表示だけを差分更新する。
 // style 追加/削除/複製/reset やピッカー経由の選択変更時は 'full' で呼び、全再構築する。
+// スタイル管理タブに表示中のスタイルの値の写し。取り消し・やり直しで値が変わったのに
+// 表示が古いまま（欄の値が実際と違う）になるのを見つけるために使う。
+function _bdStyleTabSignature(kind, styleId) {
+  const arr = typeof bd === 'undefined' ? [] : (kind === 'card' ? bd.cardStyles : bd.lineStyles);
+  const style = (arr || []).find(s => s && s.id === styleId);
+  try { return style ? JSON.stringify(style) : ''; } catch { return ''; }
+}
+
 function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   if (!container) return;
   bdEnsureBoardUiState();
@@ -490,6 +496,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
     if (pickerLabel) pickerLabel.textContent = pickerLabelText;
     const pickerBtn = container.querySelector('[data-bd-style-panel-picker]');
     if (pickerBtn) pickerBtn.dataset.bdCurrentStyleId = selected.id;
+    container._bdShownStyleSig = _bdStyleTabSignature(kind, selected.id);
     return;
   }
 
@@ -538,7 +545,14 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
       const arr = kind === 'card' ? bd.cardStyles : bd.lineStyles;
       return (arr || []).find(s => s.id === selected.id) || (arr || [])[0] || null;
     },
+    // 名前も同じ理由で、毎回 ID から生きているスタイルを取り直す（以前は描画時の古いオブジェクトへ
+    // 書き込み、配列が作り直された後の名前の変更が保存されずに消えていた）。
+    nameEditTarget: () => {
+      const arr = kind === 'card' ? bd.cardStyles : bd.lineStyles;
+      return (arr || []).find(s => s.id === selected.id) || null;
+    },
   });
+  container._bdShownStyleSig = _bdStyleTabSignature(kind, selected.id);
 
   const pickerBtn = container.querySelector('[data-bd-style-panel-picker]');
   container.querySelector('[data-bd-style-panel-export-board-styles]')?.addEventListener('click', () => {
@@ -1127,7 +1141,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
         ? bdNormalizeDepthStyles(bd.depthStyles)
         : (bd.depthStyles || []).slice();
       _bdSaveGlobalDepthStyles(snapshot);
-      showStatus('階層別スタイルをデフォルトとして保存しました', false, { showSaveDialog: true });
+      showStatus('階層別スタイルをデフォルトとして保存しました');
     });
 
     popup.querySelector('[data-bd-popup-depth-reset]')?.addEventListener('click', () => {

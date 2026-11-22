@@ -494,15 +494,15 @@
               <strong>${_stEsc(name)}</strong>
               <span>${_stEsc(_stTemplateLine(template))}</span>
             </div>
-            <button type="button" data-cal-shift-template-edit="${_stEsc(template.id)}" aria-label="${_stEsc(name)}を編集" title="${_stEsc(name)}を編集">${_stIcon('pencil', 14)}</button>
-            <button type="button" data-cal-shift-template-delete="${_stEsc(template.id)}" aria-label="${_stEsc(name)}を削除" title="${_stEsc(name)}を削除">${_stIcon('trash2', 14)}</button>
+            <button type="button" data-cal-shift-template-edit="${_stEsc(template.id)}" data-e2e-id="calendar-shift-template-edit-${_stEsc(template.id)}" aria-label="${_stEsc(name)}を編集" title="${_stEsc(name)}を編集">${_stIcon('pencil', 14)}</button>
+            <button type="button" data-cal-shift-template-delete="${_stEsc(template.id)}" data-e2e-id="calendar-shift-template-delete-${_stEsc(template.id)}" aria-label="${_stEsc(name)}を削除" title="${_stEsc(name)}を削除">${_stIcon('trash2', 14)}</button>
           </div>`;
         }).join('')
         : '<div class="gb-section-desc">テンプレートがありません。</div>';
       field.innerHTML = `
         <label>シフト勤務テンプレート</label>
         <div class="gb-cal-shift-template-list">${rows}</div>
-        <button type="button" class="gb-cal-shift-template-add" data-cal-shift-template-new aria-label="シフト勤務テンプレートを追加" title="シフト勤務テンプレートを追加">${_stIcon('plus', 14)} テンプレート追加</button>`;
+        <button type="button" class="gb-cal-shift-template-add" data-cal-shift-template-new data-e2e-id="calendar-shift-template-add" aria-label="シフト勤務テンプレートを追加" title="シフト勤務テンプレートを追加">${_stIcon('plus', 14)} テンプレート追加</button>`;
       field.querySelectorAll('[data-cal-shift-template-new],[data-cal-shift-template-edit],[data-cal-shift-template-delete]').forEach(button => {
         button.style.minHeight = '44px';
         if (!button.hasAttribute('data-cal-shift-template-new')) button.style.minWidth = '44px';
@@ -515,7 +515,15 @@
       field.querySelectorAll('[data-cal-shift-template-delete]').forEach(btn => {
         btn.addEventListener('click', async () => {
           if (typeof cfConfirm === 'function' && !await cfConfirm('このシフト勤務テンプレートを削除しますか？', { danger: true, okLabel: '削除' })) return;
-          await apiFetch('/cal/schedule-templates/' + encodeURIComponent(btn.dataset.calShiftTemplateDelete), { method: 'DELETE' });
+          try {
+            const remove = apiFetch('/cal/schedule-templates/' + encodeURIComponent(btn.dataset.calShiftTemplateDelete), { method: 'DELETE' });
+            await (globalThis.MeldexDiagnostics?.watchScheduleTask || ((op, task) => task))('shift-template-save', remove);
+          } catch (error) {
+            // 以前は失敗が捕まえられず、何も表示されなかった（M-014 で発見）。
+            this._showStatus?.('シフト勤務テンプレートを削除できませんでした: ' + (error?.userMessage || error?.message || error), true);
+            this._renderShiftTemplateSettings(body);
+            return;
+          }
           this._renderShiftTemplateSettings(body);
           this._showStatus?.('シフト勤務テンプレートを削除しました');
         });

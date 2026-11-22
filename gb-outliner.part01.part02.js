@@ -585,7 +585,17 @@
     if (!draggedNode || draggedNode === div) return;
     const nodes = (draggedNodes || [draggedNode])
       .filter(n => n !== div && !_treeNodeIsAncestor(n, div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
-    if (nodes.length === 0) return;
+    if (nodes.length === 0) {
+      // 断った理由を出す（マニュアル: ドロップできない時は理由がステータス表示される。以前は何も出なかった: 2026-11-22 M-014）
+      clearDragIndicators();
+      const all = draggedNodes || [draggedNode];
+      const reason = all.some(n => n === div || _treeNodeIsAncestor(n, div)) ? 'フォルダをそれ自身の中へは移動できません'
+        : all.some(n => n._nodeData?._isRoot) ? 'ソースフォルダそのものは移動できません'
+          : all.some(n => n._nodeData?.path && isItemLocked(n._nodeData.path)) ? '編集ロック中の項目は移動できません'
+            : '移動できる項目がありません';
+      showStatus(reason, true);
+      return;
+    }
     const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
     // 移動元コンテナが仮想化されていた場合、DOM移動だけでは配列側に残留するため
     // 事前に元の親コンテナを記録しておき、移動完了後に配列からも取り除く。
@@ -601,11 +611,12 @@
         const failed = result?.failed_count || 0;
         const changed = result?.created_count || 0;
         showStatus(`${changed} 件を「${item.name}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && changed === 0);
-      } catch {
-        showStatus('リンク登録に失敗', true);
+      } catch (error) {
+        showStatus('リンク登録に失敗しました' + (error?.userMessage || error?.message ? '：' + (error.userMessage || error.message) : ''), true);
       }
       clearDragIndicators();
-      loadOutliner();
+      // リンクを置いたフォルダだけを差分で反映する（全体の読み直しをしない）
+      await _outlinerSyncFoldersOrReload([item.path]);
       return;
     }
 
@@ -672,15 +683,98 @@
 
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
+    // フォルダをまたぐ移動の履歴の枠はドロップの時点で取る（移動の往復とツリーの読み直しの前に Ctrl+Z を押すと、
+    // 移動ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
+    const crossesFolders = nodes.some(n => {
+      const path = n._nodeData?.path || '';
+      return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
+    });
+    const moveReservation = crossesFolders && typeof historyReserve === 'function'
+      ? historyReserve(`フォルダツリー: ${nodes.length} 件を移動`, '')
+      : null;
+    const pendingMoves = new Map();
+    const finishPendingMove = (node, failed) => {
+      const pending = pendingMoves.get(node);
+      if (!pending) return;
+      node.dataset.path = pending.path;
+      node.inert = pending.inert;
+      node.removeAttribute('aria-busy');
+      if (failed && pending.parent?.isConnected) {
+        pending.parent.insertBefore(node, pending.next?.parentElement === pending.parent ? pending.next : null);
+      }
+      pendingMoves.delete(node);
+    };
+    if (crossesFolders) nodes.forEach(node => pendingMoves.set(node, {
+      path: node.dataset.path, parent: node.parentElement, next: node.nextSibling, inert: node.inert,
+    }));
+    // フォルダをまたぐ移動は、保存の往復を待たずに先に移動先へ行を移す（app/AGENTS.md の0.3秒。以前は保存の往復と
+    // 読み直しの後に出て0.4秒を超えていた: 2026-11-22 M-014 横断の検査）。移動先が読み込み済みで仮想化していない時だけ。
+    // 保存の後の差分の反映（下の _outlinerSyncFoldersOrReload）が、成功・失敗のどちらでも保存先の状態へ揃える。
+    if (crossesFolders) {
+      // フォルダの中へ落とした時は、そのフォルダを開く（以前の全体の読み直しと同じ見え方。閉じていれば開き、
+      // 未読込なら読み込みを始める＝保存の往復と並行して読み込む）
+      if (position === 'inside' && (isFolder || isDB) && toggle && childrenDiv) {
+        if (childrenDiv.dataset.loaded === 'true') {
+          childrenDiv.classList.remove('collapsed');
+          toggle.classList.add('expanded');
+          toggle.dataset.expanded = 'true';
+          saveExpandedState(item.path, true);
+        } else if (toggle.dataset.expanded !== 'true') {
+          toggle.click();
+        }
+      }
+      const optimisticContainer = position === 'inside' && (isFolder || isDB) ? childrenDiv : div.parentElement;
+      const containerReady = () => optimisticContainer && optimisticContainer.isConnected && optimisticContainer.classList.contains('tree-children')
+        && optimisticContainer.dataset.loaded === 'true' && optimisticContainer.dataset.virtual !== 'true'
+        && !optimisticContainer.classList.contains('collapsed');
+      const placeOptimistically = () => {
+        nodes.forEach(n => {
+          if (!pendingMoves.has(n)) return;
+          if (!n.isConnected || !n.parentElement || n.parentElement.dataset.virtual === 'true' || n.contains(optimisticContainer)) return;
+          if (n.parentElement === optimisticContainer) return;
+          // 開いたフォルダの一覧に同じ名前の行が既に出ていれば（保存の往復が先に終わった）、重ねて置かない
+          const name = n._nodeData?.name;
+          if (name && Array.from(optimisticContainer.children).some(child => child !== n && child._nodeData?.name === name)) return;
+          if (position === 'inside') optimisticContainer.appendChild(n);
+          else if (position === 'above') optimisticContainer.insertBefore(n, div);
+          else optimisticContainer.insertBefore(n, div.nextSibling);
+          // 表示だけを先に移す。保存先や開いたエディタの参照は成功後に更新する。
+          // 確定前の行は操作不可にし、失敗時は元の位置とパスへ戻す。
+          const oldPath = pendingMoves.get(n).path || '';
+          n.dataset.path = destFolder + '/' + oldPath.slice(oldPath.lastIndexOf('/') + 1);
+          n.inert = true;
+          n.setAttribute('aria-busy', 'true');
+          if (!n._outlinerPendingMoveGuard) {
+            n._outlinerPendingMoveGuard = true;
+            const guard = event => {
+              if (!n.inert || n.getAttribute('aria-busy') !== 'true') return;
+              if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && /^[zy]$/i.test(event.key)) return;
+              event.preventDefault(); event.stopImmediatePropagation();
+            };
+            ['click', 'dblclick', 'contextmenu', 'dragstart', 'keydown'].forEach(type => n.addEventListener(type, guard, true));
+          }
+        });
+      };
+      if (containerReady()) {
+        placeOptimistically();
+      } else if (position === 'inside' && optimisticContainer && optimisticContainer.dataset.virtual !== 'true') {
+        // 閉じていた・未読込のフォルダの中へ落とした時は、開いて一覧が出た時点で先に置く（保存の往復を待たない。
+        // 以前はフォルダの読み込みと保存の往復の両方を待って0.3秒を超えていた: 2026-11-22 M-014）。
+        const watcher = new MutationObserver(() => {
+          if (!containerReady()) return;
+          watcher.disconnect();
+          placeOptimistically();
+        });
+        watcher.observe(optimisticContainer, { attributes: true, attributeFilter: ['data-loaded', 'class', 'data-virtual'] });
+        setTimeout(() => watcher.disconnect(), 3000);
+      }
+    }
     (async () => {
       const placement = { ..._outlinerRowDropTarget(div, item, position, rootPath), path: destFolder };
       let siblings = null;
-      if (nodes.some(n => {
-        const path = n._nodeData?.path || '';
-        return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
-      })) {
+      if (crossesFolders) {
         try { siblings = await _outlinerDropSiblings(placement); }
-        catch (error) { showStatus('移動先を確認できませんでした: ' + error.message, true); return; }
+        catch (error) { [...pendingMoves.keys()].forEach(n => finishPendingMove(n, true)); showStatus('移動先を確認できませんでした: ' + error.message, true); return; }
       }
       const moved = [];
       const movedItems = [];
@@ -691,6 +785,7 @@
       for (const n of nodes) {
         const dragData = n._nodeData;
         if (!dragData || !dragData.path) {
+          finishPendingMove(n, true);
           moved.push(n);
           processed += 1;
           window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
@@ -698,6 +793,7 @@
         }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
         if (destFolder === srcFolder) {
+          finishPendingMove(n, false);
           moved.push(n);
           movedItems.push({ ...dragData, oldPath: dragData.path });
           processed += 1;
@@ -707,6 +803,7 @@
         movedAcrossFolders = true;
         let moveCommitted = false;
         try {
+          await _outlinerAwaitPendingRename(dragData);
           const oldPath = dragData.path;
           const res = await apiPost('/outliner/move', {
             path: dragData.path,
@@ -714,12 +811,13 @@
             conflict_policy: 'error',
           });
           moveCommitted = true;
+          finishPendingMove(n, false);
           moved.push(n);
           movedItems.push({ ...dragData, oldPath, path: res.new_path || oldPath, name: res.new_name || dragData.name });
           if (res.new_path) {
             // Rebind save targets before any fallible DOM/view callbacks.
             if (typeof renameAppPathReferences === 'function') {
-              renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
+              renameAppPathReferences(oldPath, res.new_path, { preserveMountedViews: true, label: res.new_name || dragData.name, fileId: res.file_id, type: dragData.type || 'page' });
             }
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
@@ -744,6 +842,7 @@
           failures.push({ path: dragData.path, message: reason || '移動に失敗しました' });
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
         } finally {
+          finishPendingMove(n, !moveCommitted);
           processed += 1;
           window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
         }
@@ -757,8 +856,16 @@
         try { _saveOutlinerDropPlacement(placement, siblings || [], movedItems); }
         catch (error) { showStatus('移動後の挿入位置を保存できませんでした: ' + error.message, true); }
         if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
-        await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
-        window.MeldexFileMoveHistory?.register?.(
+        // 移動先と移動元のフォルダだけを保存先の一覧に合わせる（全体の読み直しは差分で反映できない時だけ）。
+        // 以前は毎回ツリー全体を読み直し、2件の移動で0.6秒を超えていた（2026-11-22 M-014）。
+        await _outlinerSyncFoldersOrReload([destFolder, ...movedItems.map(movedItem => _outlinerParentPath(movedItem.oldPath))]);
+        // ドロップで読み込みを始めた移動先は、読み込みが移動の前の一覧のことがあるので、読み終えてからもう一度合わせる
+        const destChildren = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(destFolder)?.querySelector(':scope > .tree-children') : null;
+        if (destChildren && destChildren.dataset.loaded !== 'true') {
+          for (let waited = 0; waited < 3000 && destChildren.dataset.loaded !== 'true'; waited += 50) await new Promise(r => setTimeout(r, 50));
+          if (destChildren.dataset.loaded === 'true') await _outlinerSyncFolderChildren(destFolder);
+        }
+        const registerMove = () => window.MeldexFileMoveHistory?.register?.(
           movedItems.map(movedItem => ({
             oldPath: movedItem.oldPath,
             newPath: movedItem.path,
@@ -773,10 +880,14 @@
             refresh: () => refreshOutliner({ force: true, reason: 'outliner-tree-move-history' }),
           },
         );
+        if (moveReservation) moveReservation.capture(registerMove); else registerMove();
         return;
       }
       if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
+      const ensureManualSaved = saved => {
+        if (saved === false) throw Object.assign(new Error('並び順を保存できませんでした。この端末の保存領域を確認してください'), { manualOrderFailure: true });
+      };
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
       // 適切に後始末する（refresh()側の再マウントに新しい行要素の生成を任せる）。
       // 戻り値: 非仮想な移動先で使い回せる場合は元のDOM要素、それ以外はnull
@@ -805,7 +916,7 @@
           vr.dropInto(childrenDiv, movedData);
           if (toggle.dataset.expanded !== 'true') toggle.click();
           setSortSetting(item.path, 'manual', 'asc');
-          vr.saveManualOrderFromVirtualModel(childrenDiv, item.path);
+          ensureManualSaved(vr.saveManualOrderFromVirtualModel(childrenDiv, item.path));
           if (!movedAcrossFolders) {
             pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
           }
@@ -817,7 +928,7 @@
           });
           if (toggle.dataset.expanded !== 'true') toggle.click();
           setSortSetting(item.path, 'manual', 'asc');
-          saveManualOrderFromDOM(childrenDiv, item.path);
+          ensureManualSaved(saveManualOrderFromDOM(childrenDiv, item.path));
           if (!movedAcrossFolders) {
             pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, item.path, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
           }
@@ -848,16 +959,31 @@
           : (parentNode?._nodeData?.path || '_root');
         setSortSetting(parentPath, 'manual', 'asc');
         if (vr && vr.isVirtualContainer(targetParent)) {
-          vr.saveManualOrderFromVirtualModel(targetParent, parentPath);
+          ensureManualSaved(vr.saveManualOrderFromVirtualModel(targetParent, parentPath));
         } else {
-          saveManualOrderFromDOM(targetParent, parentPath);
+          ensureManualSaved(saveManualOrderFromDOM(targetParent, parentPath));
         }
         if (!movedAcrossFolders) {
           pushOutlinerSettingsHistory('フォルダツリー: 並び順', orderBefore, parentPath, [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
         }
       }
       if (nodes.some(node => node._nodeData?._form_parent_path)) await loadOutliner();
-    })();
+    })().catch(async error => {
+      if (error?.manualOrderFailure && !crossesFolders) {
+        for (const key of orderBefore.keys || []) {
+          const value = orderBefore.storage?.[key];
+          if (localStorage.getItem(key) === value) continue;
+          try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch {}
+        }
+        await refreshOutliner({ force: true, reason: 'manual-sort-save-failed' });
+      }
+      // 移動の後始末（表示の読み直し・並び順の保存）の失敗も、黙らせずに原因つきで表示する
+      if (typeof console !== 'undefined') {
+        if (error?.manualOrderFailure) console.warn('[outliner] 並び順の保存に失敗', error);
+        else console.error('[outliner] ドロップの処理に失敗', error);
+      }
+      if (typeof showStatus === 'function') showStatus('移動の処理に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+    }).finally(() => { moveReservation?.cancel(); });
   });
 
   _registerTreeNode(div);

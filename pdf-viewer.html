@@ -25,6 +25,9 @@
 <script src="gb-cloud-file-url.js"></script>
 <!-- PDF.js — Copyright Mozilla Foundation. Licensed under Apache License 2.0: https://github.com/mozilla/pdf.js/blob/master/LICENSE -->
 <link rel="stylesheet" href="gb-theme.css">
+<link rel="stylesheet" href="viewer-text-layer.css">
+<script src="viewer-pdf-renderer.js"></script>
+<script src="viewer-text-layer.js"></script>
 <style>
 :root {
   --bg: #1e1e1e; --bg2: #252525; --border: #333; --fg: #d4d4d4; --fg2: #969696; --accent: #569cd6;
@@ -163,6 +166,7 @@ async function renderPage(num) {
     const viewport = page.getViewport({ scale: zoom * (window.devicePixelRatio || 1) });
     const canvas = document.createElement('canvas');
     canvas.className = 'page-canvas';
+    canvas._viewerPageNum = num;
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     canvas.style.width = (viewport.width / (window.devicePixelRatio || 1)) + 'px';
@@ -207,6 +211,8 @@ async function showPages() {
       if (mode === 'manga') canvases.reverse();
       canvases.forEach(c => viewer.appendChild(c));
     }
+    await Promise.all([...viewer.querySelectorAll('canvas.page-canvas')].map(canvas =>
+      window.MeldexViewerTextLayer.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, filePath)));
     updateUI();
   } catch (e) {
     if (token !== showPagesToken) return;

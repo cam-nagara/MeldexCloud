@@ -1,3 +1,6 @@
+    const items = focusableItems();
+    if (!items.length) return;
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement));
     let nextIndex = currentIndex;
     if (ev.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
     else if (ev.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
@@ -756,6 +759,8 @@ function _gbAppApiFetchAcquireLane(path, opts) {
 }
 
 async function apiFetch(path, opts) {
+  const historyProjection = await window.MeldexChatManagementSheet?.handleApi?.(path, opts);
+  if (historyProjection) return historyProjection.value;
   const method = _gbAppApiFetchMethod(opts);
   const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
   const cacheGeneration = _gbAppApiFetchCacheGeneration;
@@ -853,6 +858,8 @@ async function apiFetch(path, opts) {
         });
       }
       const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      // シートの保存の失敗・読み込みの失敗を自己記録へ残す（silentError の保存も含む。gb-log-export.js）。
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
       if (!opts?.silentError && !quietReadAbort) {
         window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
       }
@@ -891,10 +898,3 @@ async function _gbAppPrepareFullFileWrite(path, body) {
   const payload = { ...(body || {}) };
   if (!_gbAppIsFullFileWrite(path, payload)) return payload;
   const coordinator = window.MeldexDocumentSaveCoordinator;
-  const force = !!(payload.force_overwrite || payload.forceOverwrite);
-  const createOnly = !!(payload.create_only || payload.createOnly);
-  let revision = payload.transport_revision || payload.transportRevision
-    || payload.if_match_transport_revision || payload.if_match_etag || payload.ifMatchEtag || '';
-
-  if (revision && coordinator?.revisionTokenForWrite) {
-    payload.if_match_etag = coordinator.revisionTokenForWrite(revision);

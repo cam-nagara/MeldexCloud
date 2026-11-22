@@ -338,10 +338,11 @@
     if (!workspace) throw new Error('Dropboxへ接続してください');
     return provider;
   }
-  async function _requireUnlockedPath(path, options, allowInternal) {
+  async function _requireUnlockedPath(path, options, allowInternal, request) {
     _requireWriteDependencies();
     const normalized = normalizePath(path);
-    _pathPolicy().assertInside(normalized, { allowRoot: true, allowInternal: allowInternal === true, action: 'ファイル保護を確認' });
+    if (request) _pathPolicy().assertLockPath(normalized, request);
+    else _pathPolicy().assertInside(normalized, { allowRoot: true, allowInternal: allowInternal === true, action: 'ファイル保護を確認' });
     const provider = await _provider();
     await window.MeldexFileLockStore.requireUnlocked(provider, normalized, options || {});
     return { ok: true, path: normalized };
@@ -630,10 +631,10 @@
       for (const lockPath of manualLockPaths) {
         const includeDescendants = ['/outliner/delete', '/outliner/delete-batch'].includes(endpoint)
           || (['/outliner/move', '/outliner/rename'].includes(endpoint) && lockPath === mutationSourcePath);
-        await requireUnlocked(lockPath, {
+        await _requireUnlockedPath(lockPath, {
           action: 'standalone-' + endpoint.replace(/^\//, '').replace(/\//g, '-'),
           includeDescendants,
-        });
+        }, false, { endpoint, queryPath: _pathQuery(path) });
       }
     }
     const activeLockPaths = write ? _uniqueLockPaths(_activeLockPaths(endpoint, path, originalBody)) : [];

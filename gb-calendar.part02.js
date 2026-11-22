@@ -153,6 +153,7 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
   if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
   if (typeof renderFileStyleTab === 'function') renderFileStyleTab('calendar');
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(true);
+  if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(false);
   if (typeof switchDetailTab === 'function') switchDetailTab('calendar-today');
   const titleEl = detailRoot.querySelector('#split-right-title');
   if (titleEl) titleEl.textContent = ev.name || 'イベント詳細';

@@ -264,7 +264,7 @@
         liveSendBtn.disabled = false;
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-      if (streamVisibleInCurrentChat() && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
+      if (streamVisibleInCurrentChat()) _chatRefocusInputAfterStream(input);
       const shouldInterruptSend = interruptedByDraft;
       if ((streamCompleted || shouldInterruptSend) && typeof _chatSendQueuedMessagesAfterStream === 'function') {
         setTimeout(() => {

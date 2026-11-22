@@ -283,6 +283,7 @@
     if (nlIdSpan) wrap.appendChild(nlIdSpan);
     const icon = document.createElement('span');
     icon.className = 'callout-icon';
+    icon.dataset.e2eId = `note-callout-icon:${crypto.randomUUID()}`;
     icon.setAttribute('role', 'button');
     icon.tabIndex = 0;
     icon.setAttribute('aria-label', 'コールアウトアイコンを変更');
@@ -293,6 +294,7 @@
     wrap.appendChild(icon);
     const body = document.createElement('div');
     body.className = 'callout-body';
+    body.dataset.e2eId = `note-callout-body:${crypto.randomUUID()}`;
     body.setAttribute('contenteditable', 'true');
     if (nodes && nodes.length && _hasMeaningfulContent(nodes)) nodes.forEach((n) => body.appendChild(n));
     else body.appendChild(document.createElement('br'));
@@ -346,10 +348,8 @@
       checkbox.setAttribute('contenteditable', 'false');
       checkbox.tabIndex = -1;
       checkbox.setAttribute('aria-label', 'チェック項目');
-      // 共通UI監査（gb-e2e-coverage.js）が要求する安定した識別子。
-      // 同一ノート内に複数のチェックリスト項目があっても、各要素は自分自身の
-      // datasetだけを見て判定されるため、この行種共通の値で全項目を満たせる。
-      checkbox.setAttribute('data-e2e-id', 'note-checklist-check');
+      // 各チェック項目を区別する。描画済みの項目と新規項目でも重ならない。
+      checkbox.setAttribute('data-e2e-id', `note-checklist-check:${crypto.randomUUID()}`);
       if (opts.checked) checkbox.checked = true;
       li.appendChild(checkbox);
     }
@@ -1138,12 +1138,12 @@
       readOnlyState: READONLY_STATE,
       convert(info, ctx) { return _performConvert('body', info, ctx); },
     },
-    { id: 'h1', label: '見出し１', icon: 'heading', shortcutId: 'note.h1', sampleTag: 'h1', sampleClass: '', keywords: ['見出し', 'heading', 'h1', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h1', info, ctx); } },
-    { id: 'h2', label: '見出し２', icon: 'heading', shortcutId: 'note.h2', sampleTag: 'h2', sampleClass: '', keywords: ['見出し', 'heading', 'h2', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h2', info, ctx); } },
-    { id: 'h3', label: '見出し３', icon: 'heading', shortcutId: 'note.h3', sampleTag: 'h3', sampleClass: '', keywords: ['見出し', 'heading', 'h3', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h3', info, ctx); } },
-    { id: 'h4', label: '見出し４', icon: 'heading', shortcutId: 'note.h4', sampleTag: 'h4', sampleClass: '', keywords: ['見出し', 'heading', 'h4', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h4', info, ctx); } },
-    { id: 'h5', label: '見出し５', icon: 'heading', shortcutId: 'note.h5', sampleTag: 'h5', sampleClass: '', keywords: ['見出し', 'heading', 'h5', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h5', info, ctx); } },
-    { id: 'h6', label: '見出し６', icon: 'heading', shortcutId: 'note.h6', sampleTag: 'h6', sampleClass: '', keywords: ['見出し', 'heading', 'h6', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h6', info, ctx); } },
+    { id: 'h1', label: '見出し１', icon: 'heading1', shortcutId: 'note.h1', sampleTag: 'h1', sampleClass: '', keywords: ['見出し', 'heading', 'h1', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h1', info, ctx); } },
+    { id: 'h2', label: '見出し２', icon: 'heading2', shortcutId: 'note.h2', sampleTag: 'h2', sampleClass: '', keywords: ['見出し', 'heading', 'h2', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h2', info, ctx); } },
+    { id: 'h3', label: '見出し３', icon: 'heading3', shortcutId: 'note.h3', sampleTag: 'h3', sampleClass: '', keywords: ['見出し', 'heading', 'h3', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h3', info, ctx); } },
+    { id: 'h4', label: '見出し４', icon: 'heading4', shortcutId: 'note.h4', sampleTag: 'h4', sampleClass: '', keywords: ['見出し', 'heading', 'h4', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h4', info, ctx); } },
+    { id: 'h5', label: '見出し５', icon: 'heading5', shortcutId: 'note.h5', sampleTag: 'h5', sampleClass: '', keywords: ['見出し', 'heading', 'h5', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h5', info, ctx); } },
+    { id: 'h6', label: '見出し６', icon: 'heading6', shortcutId: 'note.h6', sampleTag: 'h6', sampleClass: '', keywords: ['見出し', 'heading', 'h6', 'みだし'], readOnlyState: READONLY_STATE, convert(info, ctx) { return _performConvert('h6', info, ctx); } },
     {
       id: 'ul', label: '箇条書き', icon: 'list', shortcutId: 'note.ul',
       sampleTag: 'li', sampleClass: '', keywords: ['箇条書き', 'リスト', 'list', 'bullet', 'りすと'],

@@ -87,7 +87,7 @@
       if (ctx.snapshot) payload.target_snapshot = ctx.snapshot;
       const res = await apiPost('/annotations', payload);
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
       // Adding a comment is an explicit request to see its anchor immediately.
@@ -135,8 +135,9 @@
         if (panel?.classList.contains('open')) loadRpAnnotationList();
       }
       if (typeof showStatus === 'function') showStatus(`コメントを追加 (${kindLabel})`);
-    } catch {
-      if (typeof showStatus === 'function') showStatus('コメント追加に失敗', true);
+    } catch (error) {
+      // 原因を画面に出す（以前は理由なしで「失敗」とだけ出し、ボードのラインのコメントの失敗の原因が分からなかった）。
+      if (typeof showStatus === 'function') showStatus('コメント追加に失敗: ' + String(error?.message || error || '不明なエラー').slice(0, 160), true);
     }
   }
 

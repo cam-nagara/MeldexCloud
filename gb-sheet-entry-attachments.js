@@ -415,7 +415,9 @@
             else {
               if (typeof state !== 'undefined') { state.view = 'entity'; state.currentEntityPath = entryPath; }
               window.GBOptionTargetContext?.set({ path: entryPath, kind: 'entity' }, 'topic-columns');
-              if (typeof historySetScope === 'function') historySetScope('');
+              // シートの横（サブパネル・ドロワー）では、そのシートの履歴の範囲にする（列一覧・レイアウトの操作がそこへ積まれる）。
+              // 単独のタブのトピックの画面は共通の範囲のまま。
+              if (typeof historySetScope === 'function') historySetScope(typeof options.historyScope === 'function' ? (options.historyScope() || '') : '');
               // The topic is already mounted: the legacy entity-detail sync
               // reopens the subpanel and would discard retained file editors.
               if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.clearDetailPaneShell?.();
@@ -605,11 +607,26 @@
       add('他のタブをすべて閉じる', 'x', () => closeTabs(ids.filter(id => id !== desc.id), desc.id), index < 0 || ids.length <= 1);
       const closedCount = tabRows().length - rows.length;
       if (closedCount > 0) add(`閉じたタブを再表示（${closedCount}）`, 'eye', reopenClosedTabs);
+      // レイアウトのタブの「…」に、トピックレイアウトの編集・名前の変更・複製・書き出し・削除を出す（2026-11-21 ユーザー決定）
+      const layoutId = desc.selectable?.topicLayoutId;
+      if (layoutId && !options.readOnly && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
+        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId });
+        if (layoutItems.length) {
+          separator();
+          layoutItems.forEach(entry => add(entry.label, entry.icon, async () => {
+            // 編集は、そのレイアウトのタブを選んでから始める（タブの表示と編集中の配置をそろえる）
+            if (entry.key === 'edit' && await selectAttachment(desc.selectable) === false) return;
+            await entry.run();
+          }));
+        }
+      }
       if (item && !options.readOnly) {
         const remove = async deleteFile => {
           const name = item.name || item.path;
           const question = deleteFile ? `ファイル「${name}」を削除してトピックから外しますか？ この削除はUndoでは元に戻せません。` : `「${name}」をトピックから外しますか？ ファイルは残ります。`;
-          const confirmed = typeof cfConfirm === 'function' ? await cfConfirm(question) : confirm(question);
+          // ファイルを残して外すだけの時は確認を出さない（Ctrl+Z・やり直し・共通の履歴で戻せる。app/AGENTS.md、
+          // 2026-11-21 予期しないダイアログの検査）。ファイルも消す時は元に戻せないので確認する。
+          const confirmed = !deleteFile || (typeof cfConfirm === 'function' ? await cfConfirm(question) : confirm(question));
           if (!confirmed || options.beforeMutation && !await options.beforeMutation()) return;
           const current = await apiFetch('/entity?path=' + encodeURIComponent(entryPath));
           const result = await apiPost('/sheet-entry/detach', { entry_path: entryPath, attachment_id: item.id, delete_file: deleteFile, expected_revision: current.revision });
@@ -863,6 +880,13 @@
           { id: 'create-board', icon: getAttachmentIcon('board'), label: '新規ボード', action: () => handleCreateNew('board', 'ボード') },
           { id: 'create-form', icon: getAttachmentIcon('form'), label: '新規フォーム', action: () => handleCreateNew('form-app', 'フォーム') },
         ];
+        // トピックレイアウトの追加も統合タブの「＋」から行う（2026-11-21 ユーザー決定）
+        if (columns && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.showAddLayoutMenu) {
+          menuItems.push({ divider: true }, {
+            id: 'add-topic-layout', icon: 'layoutTemplate', label: 'トピックレイアウトを追加…',
+            action: () => window.GBEntityLayout.showAddLayoutMenu(addBtn, options.topicLayoutContext()),
+          });
+        }
 
         menuItems.forEach((item) => {
           if (item.divider) {
@@ -1318,15 +1342,17 @@
         const name = await uniqueName(label, '.mel-scenario');
         createdPath = `${attachmentDir}/${name}`;
         kind = 'scenario';
+        // 本体の新規作成と同じ現行の形（schema_version 4・文書IDつき）で作る（M-014 S9）。
         const emptyDoc = {
           fileType: 'meldex-scriptnote',
-          schema_version: 3,
+          schema_version: 4,
           version: 1,
           title: name.replace(/\.mel-scenario$/, ''),
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02 },
           scenarioTypes: [], characters: [], characterDb: [], notes: [], rows: [],
           source: { importedFrom: '', modeName: 'マンガ縦書き' },
+          meldex: { metadata_version: 1, document_id: global.MeldexDocumentIdentity?.newDocumentId?.() || global.crypto?.randomUUID?.() || `scenario-${Date.now()}` },
         };
         await provider.writeText(createdPath, JSON.stringify(emptyDoc, null, 2));
       } else if (itemType === 'form-app') {

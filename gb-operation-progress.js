@@ -79,6 +79,9 @@
       retryable: state.retryable,
       persistentJobId: state.persistentJobId,
       priority: state.priority,
+      attentionKey: state.attentionKey,
+      retryLabel: state.retryLabel,
+      notices: state.notices.slice(),
     };
   }
 
@@ -175,10 +178,31 @@
     return _snapshot(record);
   }
 
+  // 実行中の見出し（「〜しています」「〜中」）を、成功後は結果の言い方（「〜しました」）へ直す。
+  // 呼び出し側が succeed({ label }) で完了後の見出しを渡した場合はそれを使う。
+  function completedLabel(label) {
+    const text = String(label || '').replace(/(?:\.{3}|…|・・・)\s*$/, '').trim();
+    if (!text) return text;
+    let match = text.match(/^(.*)(?:して|し)(?:います|いる|おります)$/);
+    if (match && match[1]) return match[1] + 'しました';
+    match = text.match(/^(.*)て(?:います|いる|おります)$/);
+    if (match && match[1]) return match[1] + 'ました';
+    match = text.match(/^(.*[一-鿿゠-ヿA-Za-z0-9])中$/);
+    if (match && match[1].length >= 2) return match[1] + 'しました';
+    match = text.match(/^(.*[ぁ-ん])中$/);
+    if (match && match[1].length >= 2) return match[1] + 'ました';
+    return text;
+  }
+
   function _finish(record, status, values) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
     _clearTimer(record, 'showTimer');
+    if (status === 'succeeded') {
+      record.state.label = next.label !== undefined && String(next.label || '').trim()
+        ? String(next.label)
+        : completedLabel(record.state.label);
+    }
     record.state.status = status;
     record.state.cancellable = false;
     record.state.completedAt = Date.now();
@@ -191,6 +215,9 @@
       record.state.retryable = true;
     }
     if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.attentionKey !== undefined) record.state.attentionKey = String(next.attentionKey || '');
+    if (next.retryLabel !== undefined) record.state.retryLabel = String(next.retryLabel || '');
+    if (Array.isArray(next.notices)) record.state.notices = next.notices.map(function (item) { return String(item || ''); }).filter(Boolean);
     if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
     if (status === 'succeeded' && record.state.mode === 'determinate' && record.state.total > 0) {
       record.state.processed = record.state.total;
@@ -283,6 +310,10 @@
         retryable: typeof opts.retry === 'function',
         persistentJobId: String(opts.persistentJobId || ''),
         priority: _number(opts.priority, 0),
+        // 閉じた時に「同じ内容を二度と出さない」と記録するための鍵（サーバーが決める）。
+        attentionKey: '',
+        retryLabel: '',
+        notices: [],
       },
       cancel: typeof opts.cancel === 'function' ? opts.cancel : null,
       retry: typeof opts.retry === 'function' ? opts.retry : null,
@@ -363,7 +394,67 @@
     return function () { subscribers.delete(listener); };
   }
 
+  // Poll in the progress owner's realm. A subpanel can be destroyed while a
+  // background job continues; its timers and Promise reactions cannot own this.
+  async function runRemoteJob(options) {
+    const endpoint = String(options.endpoint || '').replace(/\/+$/, '');
+    if (!/^\/api\/[a-z0-9/-]+$/i.test(endpoint)) throw new Error('処理の接続先が正しくありません');
+    const bodyText = JSON.stringify(options.body || {});
+    const label = String(options.label || '処理中');
+    const kind = String(options.kind || 'operation');
+    const quiet = !!options.quiet;
+    let complete = options.onComplete;
+    let ownerFrame = options.ownerFrame, ownerDocument = options.ownerDocument;
+    options = null;
+    let jobId = '', cancelRequested = false;
+    const send = async (suffix, body) => {
+      const response = await window.fetch(endpoint + suffix, body === undefined ? {} : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : '処理を確認できません');
+      return value;
+    };
+    const discardClosedOwner = () => {
+      if (ownerFrame && (!ownerFrame.isConnected || ownerFrame.contentDocument !== ownerDocument)) {
+        complete = null; ownerFrame = null; ownerDocument = null;
+      }
+    };
+    const operation = quiet ? null : begin({ label, kind, background: true, cancellable: true, cancelCompletes: false,
+      cancel: () => { cancelRequested = true; return jobId ? send('/jobs/' + encodeURIComponent(jobId), '{}') : Promise.resolve(); },
+      retry: () => {
+        discardClosedOwner();
+        return runRemoteJob({ endpoint, body: JSON.parse(bodyText), label, kind, quiet,
+          onComplete: complete, ownerFrame, ownerDocument });
+      },
+    });
+    try {
+      let current = await send('/jobs', bodyText);
+      jobId = String(current.id || '');
+      if (!jobId) throw new Error('処理の番号を取得できませんでした');
+      operation?.setPersistentJobId(jobId);
+      if (cancelRequested) await send('/jobs/' + encodeURIComponent(jobId), '{}');
+      while (current.status === 'queued' || current.status === 'running') {
+        discardClosedOwner();
+        operation?.update({ mode: current.total ? 'determinate' : 'indeterminate', processed: current.processed, total: current.total });
+        await new Promise(resolve => window.setTimeout(resolve, 250));
+        current = await send('/jobs/' + encodeURIComponent(jobId));
+      }
+      if (current.status === 'cancelled') { operation?.cancelled(); return null; }
+      if (current.status !== 'succeeded') throw new Error(current.error || '処理に失敗しました');
+      discardClosedOwner();
+      complete?.(current.result);
+      operation?.succeed();
+      return current.result;
+    } catch (error) {
+      operation?.fail({ message: error.message, error });
+      if (!quiet) throw error;
+      return null;
+    }
+  }
+
   window.MeldexOperationProgress = {
+    runRemoteJob,
     begin: begin,
     get: get,
     findByPersistentJobId: findByPersistentJobId,
@@ -372,5 +463,6 @@
     requestCancel: requestCancel,
     retry: retry,
     isTerminalStatus: function (status) { return TERMINAL.has(String(status || '')); },
+    completedLabel: completedLabel,
   };
 })();

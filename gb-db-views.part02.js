@@ -697,7 +697,21 @@ function renderGallery(ctx) {
         .map(value => encodeURIComponent(String(value || ''))).join(':');
       valSpan.dataset.entityName = String(entityName || '');
       valSpan.dataset.propertyName = String(propName || '');
-      if (!ptcG?.source && typeof _dbRichAppendValuePreview === 'function') {
+      // リレーション・共通タグは内部の識別番号ではなく名前で出す（表と同じ。2026-11-21 探索: カードに ent_… が並んでいた）。
+      const cardIdType = String(ptcG?.type || '').replace(/_/g, '-');
+      const cardNameText = (() => {
+        if (!['relation', 'multi-relation', 'common-tags'].includes(cardIdType)) return null;
+        const raws = filterValues(entityData[propName] || [], undefined, ctx?.filter).map(v => String(v?.value ?? '')).filter(Boolean);
+        if (cardIdType === 'common-tags') {
+          return typeof _dbClipboardCommonTagsText === 'function' ? raws.map(raw => _dbClipboardCommonTagsText(raw, dbPath)).join(', ') : null;
+        }
+        const relDb = typeof _dbResolveRelationDbPath === 'function' ? _dbResolveRelationDbPath(dbPath, ptcG) : '';
+        return raws.map(raw => raw.split(',').map(t => t.trim()).filter(Boolean)
+          .map(t => (typeof _resolveRelationNameSync === 'function' ? _resolveRelationNameSync(t, relDb) : t)).join(', ')).join(', ');
+      })();
+      if (cardNameText !== null) {
+        valSpan.textContent = cardNameText;
+      } else if (!ptcG?.source && typeof _dbRichAppendValuePreview === 'function') {
         // 互換テスト用: _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || []));
         _dbRichAppendValuePreview(valSpan, filterValues(entityData[propName] || [], undefined, ctx?.filter));
       } else {
@@ -968,6 +982,12 @@ function renderKanban(ctx) {
     });
   } else {
     // プロパティベースのカンバン
+    // 選択肢は、カードが1枚も無くても列として出す（そこへカードを移せるように。2026-11-21 ユーザー決定）。
+    const groupOptions = Array.isArray(propTypes?.[groupByProp]?.options) ? propTypes[groupByProp].options : [];
+    groupOptions.forEach(option => {
+      const key = String(option && typeof option === 'object' ? (option.value ?? option.name ?? '') : (option ?? '')).trim();
+      if (key && !columns.has(key)) columns.set(key, []);
+    });
     entityNames.forEach(entityName => {
       const entityData = entitiesMap[entityName];
       const vals = filterValues(entityData[groupByProp] || [], undefined, ctx?.filter);

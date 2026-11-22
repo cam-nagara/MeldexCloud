@@ -287,6 +287,21 @@ function isOfflineShellRequest(request) {
 }
 
 async function respondOfflineShell(request) {
+  // Receive Quick Memo fixes online even after downloading an offline shell.
+  // Keep the verified snapshot intact for a complete offline fallback.
+  const phoneBase = new URL('./quick-memo.html', self.registration.scope);
+  const phoneApp = new URL('./apps/quick-memo/', self.registration.scope);
+  const isMemoUrl = value => {
+    try { const url = new URL(value); return url.origin === phoneBase.origin
+      && (url.pathname === phoneBase.pathname || url.pathname.startsWith(phoneApp.pathname)); } catch { return false; }
+  };
+  if (isMemoUrl(request.url) || isMemoUrl(request.referrer)
+      || new URL(request.url).pathname === new URL('./version.json', self.registration.scope).pathname) {
+    try {
+      const response = await fetch(new Request(request, { cache: 'no-cache' }));
+      if (response.ok) return response;
+    } catch { /* Use the saved shell when the network is unavailable. */ }
+  }
   const cacheName = activeOfflineCacheName || await loadOfflineState();
   if (!cacheName) return fetch(request);
   const cache = await caches.open(cacheName);

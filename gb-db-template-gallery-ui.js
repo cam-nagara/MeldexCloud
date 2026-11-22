@@ -148,14 +148,8 @@ async function _deleteDbCustomTemplateWithConfirm(tmpl, onDeleted, actionButton 
     actionButton.disabled = true;
   }
   try {
-    let confirmed = false;
-    try {
-      confirmed = await _confirmDbTemplate('カスタムテンプレート「' + tmpl.name + '」を削除しますか？');
-    } catch (error) {
-      showStatus('カスタムテンプレートの削除確認を表示できませんでした: ' + (error?.message || error), true);
-      return false;
-    }
-    if (!confirmed) return false;
+    // 確認は出さない。カスタムテンプレートの削除は Ctrl+Z・やり直し・共通の履歴で戻せる
+    // （app/AGENTS.md、2026-11-21 予期しないダイアログの検査）。
     const customs = getCustomTemplates().filter(c => c.id !== tmpl.id);
     let saved = false;
     try {

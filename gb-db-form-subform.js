@@ -23,7 +23,11 @@
       fields: config.columns ? config.columns.map(find).filter(Boolean) : config.fields || [] };
   }
   function parentTokens(ctx) {
-    return new Set([ctx.data?.entry_id, ctx.data?.id, ctx.data?.entity,
+    // トピックの読み込み（/entity）はトピックのIDを候補値ごとの entry_id としてだけ返す。リレーション列はIDで保存されるので、
+    // 候補値の entry_id も親のIDとして数える（無いと、IDで親を指す子の行が「関連行はありません」になっていた）。
+    const candidateIds = Object.values(ctx.data?.properties || {})
+      .flatMap(list => (Array.isArray(list) ? list : []).map(item => item?.entry_id));
+    return new Set([ctx.data?.entry_id, ctx.data?.id, ctx.data?.entity, ...candidateIds,
       String(ctx.entityPath || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '')].filter(Boolean).map(String));
   }
   function matches(values, tokens) {
@@ -135,14 +139,16 @@
         related.forEach(([name, values]) => {
           const tr = rows.insertRow(); tr.insertCell().textContent = name;
           cfg.fields.forEach(prop => { tr.insertCell().textContent = (values[prop] || []).filter(item => ['採用', '掲載済み'].includes(item.status || '採用')).map(item => item.value || '').join(' / '); });
-          tr.insertCell().appendChild(button('行を開く', () => openRow(_entityPath(cfg.dbPath, name, pivot), name, metadata.property_types, access.readOnly)));
+          const openBtn = button('行を開く', () => openRow(_entityPath(cfg.dbPath, name, pivot), name, metadata.property_types, access.readOnly));
+          openBtn.dataset.e2eId = 'form-subform-open-row';
+          tr.insertCell().appendChild(openBtn);
         });
         body.appendChild(table);
         if (!related.length) { const empty = document.createElement('p'); empty.textContent = '関連行はありません'; body.appendChild(empty); }
         const canAdd = !ctx.readOnly && !access.readOnly && !relation.bidirectional && !ctx.editMode
           && api().writable(ctx.grid, cfg.dbPath, ctx.options?.ctx);
-        if (canAdd) body.appendChild(button('行を追加', () => openNew(metadata.property_types)));
-        body.appendChild(button('関連行を再読込', load));
+        if (canAdd) { const addBtn = button('行を追加', () => openNew(metadata.property_types)); addBtn.dataset.e2eId = 'form-subform-add-row'; body.appendChild(addBtn); }
+        const reloadBtn = button('関連行を再読込', load); reloadBtn.dataset.e2eId = 'form-subform-reload'; body.appendChild(reloadBtn);
       } catch (error) {
         if (root.isConnected) { body.textContent = '関連行を読み込めません: ' + (error.message || error); body.appendChild(button('再試行', load)); }
       } finally { loading = false; }

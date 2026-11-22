@@ -1,3 +1,48 @@
+    applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
+  }
+} catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
+
+// Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
+document.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  // キャンバス・フォルダビュー等の独自ズームが処理する場合はスキップ
+  const canvas = document.getElementById('bd-canvas');
+  if (canvas && canvas.contains(e.target)) return;
+  const folderGrid = document.getElementById('folder-grid');
+  if (folderGrid && folderGrid.contains(e.target)) return;
+  e.preventDefault();
+  const steps = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+  const cur = parseInt(localStorage.getItem('ui-scale') || '100', 10);
+  const idx = steps.indexOf(cur);
+  let newIdx;
+  if (idx === -1) {
+    // 現在値がステップ外の場合、最も近いステップを探す
+    newIdx = steps.reduce((best, v, i) => Math.abs(v - cur) < Math.abs(steps[best] - cur) ? i : best, 0);
+  } else {
+    newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
+  }
+  if (steps[newIdx] !== cur) {
+    // Ctrl+ホイールは常にユーザー自身の操作なので「手動」として記録する
+    const applied = applyUIScale(steps[newIdx], { source: 'manual' });
+    if (applied !== cur) showStatus('表示サイズ: ' + applied + '%');
+  }
+}, { passive: false });
+
+// モバイルツールメニュー（トップバー折りたたみ時）
+function showMobileToolMenu(e) {
+  document.querySelectorAll('.mobile-tool-menu').forEach(el => el.remove());
+  const btn = e.target.closest('button') || e.target;
+  const items = [
+    { label: 'フォルダ', action: () => openToolTab('folder') },
+    { label: 'ノート', action: () => openToolTab('page') },
+    { label: 'シート', action: () => openToolTab('database') },
+    { label: 'ボード', action: () => openToolTab('board') },
+    null,
+    { label: 'ビューワー', action: () => toggleRightPanelTab('preview') },
+    { label: 'オプション', action: () => toggleOptionPanel() },
+    null,
+    { label: 'アノテートツール', action: () => toggleAnnotationToolbar() },
+    { label: 'オーバーレイ', action: () => toggleOverlayVisibility() },
   ];
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu mobile-tool-menu';
@@ -219,11 +264,7 @@ function _ensureGlobalLoadingIndicator() {
 
 function _renderLoadingUi(msg) {
   const text = _loadingText(msg);
-  const statusEl = document.getElementById('sb-loading');
-  if (statusEl) {
-    _setLoadingNodeContent(statusEl, text);
-    statusEl.style.display = '';
-  }
+  // 進捗はステータスバーに出さない（2026-11-21 UI共通ルール §10）。処理パネルが無い時の代わりは浮かぶ表示だけ。
   const floatingEl = _ensureGlobalLoadingIndicator();
   if (floatingEl) {
     _setLoadingNodeContent(floatingEl, text);

@@ -69,6 +69,8 @@ function _appendGanttUnscheduled(container, entries, dbPath, ctx) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'tl-gantt-unscheduled-item';
+    // 一覧の項目も操作台帳では「ガント: 未スケジュールのトピック」（gantt-unscheduled）の一部として数える。
+    button.dataset.e2eId = `gantt-unscheduled-${encodeURIComponent(String(entry.name || ''))}`;
     button.innerHTML = `<span>${esc(entry.name)}</span><small>${esc(entry.reason)}</small>`;
     button.addEventListener('click', () => _dbOpenConfiguredEntity(_entityPath(dbPath, entry.name, ctx?.pivotData), entry.name, ctx));
     list.appendChild(button);
@@ -1288,49 +1290,54 @@ function renderTimeline(ctx) {
                 ? filterValues(a, '採用')[0]
                 : a.find(v => (v?.status || '採用') === '採用');
             };
-            if (isLeft) {
-              const tv = pickAdopted(ed[cfg.timeProp]);
-              if (tv) {
-                const oldVal = tv.value || '';
-                const targetTime = typeof _timelineValueForDropTarget === 'function'
-                  ? _timelineValueForDropTarget(oldVal, targetTimeGroup, cfg.scale, propTypes[cfg.timeProp] || {})
-                  : targetTimeGroup;
-                let newVal = targetTime;
-                const endUsesTimeProp = !!cfg.endProp && cfg.endProp === cfg.timeProp;
-                if ((!cfg.endProp || endUsesTimeProp) && typeof _dbDateSerializeValue === 'function') {
-                  const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(oldVal) : null;
-                  if (parsed?.range) {
-                    newVal = _dbDateSerializeValue(targetTime, parsed.end || '', propTypes[cfg.timeProp] || {}, oldVal);
-                  }
-                }
-                await _apiPutValue(tv, { new_value: newVal });
-                _dbUndoValue(cfg.timeProp, tv, oldVal, newVal);
-              }
-            } else {
-              const endUsesTimeProp = !!cfg.endProp && cfg.endProp === cfg.timeProp;
-              const ev2 = (cfg.endProp && !endUsesTimeProp) ? pickAdopted(ed[cfg.endProp]) : null;
-              if (ev2) {
-                const oldVal = ev2.value || '';
-                const targetTime = typeof _timelineValueForDropTarget === 'function'
-                  ? _timelineValueForDropTarget(oldVal, targetTimeGroup, cfg.scale, propTypes[cfg.endProp] || {})
-                  : targetTimeGroup;
-                await _apiPutValue(ev2, { new_value: targetTime });
-                _dbUndoValue(cfg.endProp, ev2, oldVal, targetTime);
-              } else {
+            // 保存の失敗を画面に出し、表示を保存先の値へ戻す（以前は捕まえず、未処理の失敗になっていた）。
+            try {
+              if (isLeft) {
                 const tv = pickAdopted(ed[cfg.timeProp]);
-                if (tv && typeof _dbDateSerializeValue === 'function') {
+                if (tv) {
                   const oldVal = tv.value || '';
                   const targetTime = typeof _timelineValueForDropTarget === 'function'
                     ? _timelineValueForDropTarget(oldVal, targetTimeGroup, cfg.scale, propTypes[cfg.timeProp] || {})
                     : targetTimeGroup;
-                  const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(oldVal) : null;
-                  if (parsed?.range) {
-                    const newVal = _dbDateSerializeValue(parsed.start || '', targetTime, propTypes[cfg.timeProp] || {}, oldVal);
-                    await _apiPutValue(tv, { new_value: newVal });
-                    _dbUndoValue(cfg.timeProp, tv, oldVal, newVal);
+                  let newVal = targetTime;
+                  const endUsesTimeProp = !!cfg.endProp && cfg.endProp === cfg.timeProp;
+                  if ((!cfg.endProp || endUsesTimeProp) && typeof _dbDateSerializeValue === 'function') {
+                    const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(oldVal) : null;
+                    if (parsed?.range) {
+                      newVal = _dbDateSerializeValue(targetTime, parsed.end || '', propTypes[cfg.timeProp] || {}, oldVal);
+                    }
+                  }
+                  await _apiPutValue(tv, { new_value: newVal });
+                  _dbUndoValue(cfg.timeProp, tv, oldVal, newVal);
+                }
+              } else {
+                const endUsesTimeProp = !!cfg.endProp && cfg.endProp === cfg.timeProp;
+                const ev2 = (cfg.endProp && !endUsesTimeProp) ? pickAdopted(ed[cfg.endProp]) : null;
+                if (ev2) {
+                  const oldVal = ev2.value || '';
+                  const targetTime = typeof _timelineValueForDropTarget === 'function'
+                    ? _timelineValueForDropTarget(oldVal, targetTimeGroup, cfg.scale, propTypes[cfg.endProp] || {})
+                    : targetTimeGroup;
+                  await _apiPutValue(ev2, { new_value: targetTime });
+                  _dbUndoValue(cfg.endProp, ev2, oldVal, targetTime);
+                } else {
+                  const tv = pickAdopted(ed[cfg.timeProp]);
+                  if (tv && typeof _dbDateSerializeValue === 'function') {
+                    const oldVal = tv.value || '';
+                    const targetTime = typeof _timelineValueForDropTarget === 'function'
+                      ? _timelineValueForDropTarget(oldVal, targetTimeGroup, cfg.scale, propTypes[cfg.timeProp] || {})
+                      : targetTimeGroup;
+                    const parsed = typeof _dbDateParseValue === 'function' ? _dbDateParseValue(oldVal) : null;
+                    if (parsed?.range) {
+                      const newVal = _dbDateSerializeValue(parsed.start || '', targetTime, propTypes[cfg.timeProp] || {}, oldVal);
+                      await _apiPutValue(tv, { new_value: newVal });
+                      _dbUndoValue(cfg.timeProp, tv, oldVal, newVal);
+                    }
                   }
                 }
               }
+            } catch (err) {
+              if (typeof showStatus === 'function') showStatus('タイムラインの期間の変更に失敗: ' + (err?.message || err), true);
             }
             selectDatabase(dbPath, ctx);
           };

@@ -52,17 +52,20 @@ function _resolveRpAnnotationCurrentTarget() {
   const search = document.getElementById('rp-ann-search');
   const targetFilter = _readRpAnnotationTargetFilter(search);
   const candidates = [
-    targetFilter?.targetPath,
     (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.getCurrentAnnotationTarget === 'function')
       ? GBPaneBridge.getCurrentAnnotationTarget()
       : '',
     (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '',
+    targetFilter?.targetPath,
     search?.dataset?.currentTarget,
     panel?.dataset?.currentTarget,
     _lastRpAnnotationCurrentTarget,
   ];
   for (const candidate of candidates) {
-    if (_isRpAnnotationConcreteTarget(candidate)) return _rememberRpAnnotationCurrentTarget(candidate);
+    if (_isRpAnnotationConcreteTarget(candidate)) {
+      if (targetFilter?.targetPath && targetFilter.targetPath !== candidate && search) delete search.dataset.targetFilter;
+      return _rememberRpAnnotationCurrentTarget(candidate);
+    }
   }
   return '';
 }
@@ -79,7 +82,10 @@ function _syncLegacyRightPanelTargetHeaders() {
     return;
   }
   const path = _resolveRpAnnotationCurrentTarget();
-  const context = path ? { targets: [{ path, kind: 'file' }] } : targetContext;
+  // 保存用のファイル名と画面のノート名は別。開いているタブの表示名で揃える。
+  const panes = typeof GBLayout !== 'undefined' && GBLayout.root ? GBLayout.getAllPanes(GBLayout.root) : [];
+  const tab = panes.flatMap(pane => pane.tabs || []).find(tab => tab.path === path);
+  const context = path ? { targets: [{ path, kind: 'file', label: tab?.label || '' }] } : targetContext;
   window.GBOptionTargetContext?.renderHeader?.(annotation, context);
 }
 
@@ -249,8 +255,8 @@ async function loadRpAnnotationList() {
   const dateTo = document.getElementById('rp-ann-date-to')?.value || '';
   const searchEl = document.getElementById('rp-ann-search');
   const searchQuery = searchEl?.value?.toLowerCase() || '';
-  let targetFilter = _readRpAnnotationTargetFilter(searchEl);
   const currentTarget = scopeFilter === 'current' ? _resolveRpAnnotationCurrentTarget() : '';
+  let targetFilter = _readRpAnnotationTargetFilter(searchEl);
   const currentTargetCandidates = scopeFilter === 'current' ? _rpAnnotationCurrentTargetCandidates(currentTarget) : [];
   if (scopeFilter === 'current' && !currentTarget) {
     _renderRpAnnotationEmptyState(list, {

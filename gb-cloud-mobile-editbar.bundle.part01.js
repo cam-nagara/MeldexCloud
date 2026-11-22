@@ -438,12 +438,27 @@
     return false;
   }
 
+  // スマホの幅ではシートのツールバーが出ない（2026-11-22）。パソコンのツールバーにだけある操作を、同じ処理でメニューへ出す。
+  function _sheetToolbarItemsForMobile() {
+    const anchor = () => (_mainButton?.isConnected ? _mainButton : document.getElementById('cloud-mobile-main-button'));
+    return [
+      { id: 'sheet-filter', label: 'フィルタ', icon: 'filter', action: () => _callGlobal('showUnifiedFilterModal') },
+      { id: 'sheet-sort', label: '並び替え', icon: 'arrowUpDown', action: () => {
+        const button = anchor();
+        return _callGlobal('showDbSortMenu', button ? { target: button, currentTarget: button } : null);
+      } },
+      { id: 'sheet-reload', label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
+    ];
+  }
+
   function _toolMenuItems(toolType) {
     if (toolType === 'folder') {
       return [
         { id: 'create', label: '新規作成', icon: 'plus', action: () => _openNewItemSheet() },
         { id: 'command-palette', label: 'コマンドパレット', icon: 'command', action: () => _callGlobal('showCommandPalette') },
         { id: 'folder-tree', label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
+        // パソコン表示のフォルダパネルのメインメニューと同じ（UI共通ルール19）。ツリーの画面を開き、今のフォルダを選ぶ。
+        { id: 'reveal-in-folder-tree', label: 'フォルダツリーで表示', icon: 'folderTree', action: () => _callGlobal('revealCurrentInFolderTree', 'folder', null) },
         { id: 'reload', label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
         { id: 'display-settings', label: '表示設定', icon: 'slidersHorizontal', action: () => _callGlobal('showFolderDisplaySettings') },
         { id: 'slideshow', label: 'スライドショー', icon: 'play', action: () => _callGlobal('openFolderSlideshow') },
@@ -480,6 +495,13 @@
       ];
     }
     const desktopItems = _desktopToolMenuItemsForMobile(toolType);
+    // ノートのツールバーもスマホでは隠れる。読込と目次を同じ処理へ接続する。
+    if (toolType === 'page') return [
+      { id: 'note-reload', label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
+      { id: 'note-toc', label: '目次の表示/非表示', icon: 'listCollapse', action: () => _callGlobal('toggleNoteToc') },
+      ...desktopItems,
+    ];
+    if (toolType === 'database') return [..._sheetToolbarItemsForMobile(), ...desktopItems];
     if (toolType !== 'calendar') return desktopItems;
     // 制作タスクリスト面では、汎用カレンダー操作を混在させず制作操作だけを表示する。
     // 「カレンダーに戻る」が同面を識別する安定した印になる。
@@ -876,25 +898,3 @@
   }
 
   function _toggleAnnotationVisibility() {
-    if (_callGlobal('toggleOverlayVisibility')) {
-      _syncAnnotationBarState();
-      return true;
-    }
-    document.getElementById('btn-overlay-toggle')?.click?.();
-    _syncAnnotationBarState();
-    return true;
-  }
-
-  function _closeAnnotationToolbar() {
-    if (document.body?.dataset) delete document.body.dataset.cloudMobileAnnotationRequested;
-    return _callGlobal('closeAnnotationToolbar');
-  }
-
-  function _syncAnnotationBarState() {
-    if (!_annotationBar) return;
-    const tool = _currentAnnotationTool();
-    _annotationBar.querySelectorAll('[data-ann-mobile-tool]').forEach((button) => {
-      button.classList.toggle('active', button.dataset.annMobileTool === tool);
-    });
-    _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
-      const group = button.dataset.annMobileGroup;

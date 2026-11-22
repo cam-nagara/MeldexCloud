@@ -434,7 +434,7 @@
   function _getPaneInfoById(paneId) {
     if (!paneId) return null;
     const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
-    const paneNode = paneInfo?.node || null;
+    const paneNode = paneInfo?.node || GBLayout.paneMap?.[paneId]?.node || null;
     const activeTab = paneNode?.tabs?.[paneNode.activeTabIndex] || null;
     const contentEl = GBLayout.paneMap?.[paneId]?.contentEl || null;
     if (!paneNode || !activeTab || !contentEl) return null;
@@ -549,6 +549,7 @@
   }
 
   function _getCurrentAnnotationTarget(preferredPaneId) {
+    if (!preferredPaneId && window.GBAnnotationSurfaces?.enabled()) return window.GBAnnotationSurfaces.target()?.path || '';
     const info = _getAnnotationContentPaneInfo(preferredPaneId);
     return _getAnnotationTargetForTab(info?.activeTab) || '';
   }
@@ -622,6 +623,15 @@
   }
 
   function _mountFloatingAnnotationUi(options = {}) {
+    if (window.GBAnnotationSurfaces?.enabled()) {
+      document.querySelectorAll('.annotation-fab-mirror').forEach(el => el.remove());
+      const oldButton = document.getElementById('btn-tb-annotation');
+      if (oldButton) oldButton.hidden = true;
+      const oldOverlay = document.getElementById('ann-overlay');
+      if (oldOverlay) oldOverlay.style.display = 'none';
+      window.GBAnnotationSurfaces.sync();
+      return;
+    }
     if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     const storage = document.getElementById('legacy-views');
     const overlay = document.getElementById('ann-overlay');
@@ -730,7 +740,8 @@
 
     // 既にこのペインにある場合はスキップ
     if (viewEl.parentNode !== contentEl) {
-      contentEl.appendChild(viewEl);
+      if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(contentEl, viewEl);
+      else contentEl.appendChild(viewEl);
     }
     _containerPane[containerId] = paneId;
 
@@ -786,7 +797,8 @@
         }
         if (id === 'media-view') _gbPauseMediaContentPlayback();
         el.style.display = 'none';
-        storage.appendChild(el);
+        if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(storage, el);
+        else storage.appendChild(el);
         delete _containerPane[id];
       }
     });

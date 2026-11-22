@@ -87,7 +87,9 @@
 
   function _postEvent(id, payload) {
     // silentError: 状態機械側で表示・報告を制御するため、apiFetch標準のエラートーストは出さない。
-    return apiPost('/cal/events', payload, { silentError: true });
+    const promise = apiPost('/cal/events', payload, { silentError: true });
+    // 30秒終わらない保存を自己記録へ残し、状態表示に出す（止まった保存を利用者に見せる）。
+    return window.MeldexDiagnostics?.watchScheduleTask?.('event-create', promise) ?? promise;
   }
 
   async function _confirmEventExists(id) {
@@ -130,9 +132,12 @@
     calendar._render?.();
   }
 
-  function _enterUnsaved(calendar, id, payload) {
+  function _enterUnsaved(calendar, id, payload, error) {
     _applyState(calendar, id, { _saveState: 'unsaved' });
     calendar._render?.();
+    // 保存できなかったことと原因を画面に出す（予定は「未保存」として残し、裏で再試行する）。
+    const detail = String(error?.userMessage || error?.message || '').trim();
+    calendar._showStatus?.('予定を保存できませんでした' + (detail ? `（${detail}）` : '') + '。通信回復後に自動で再試行します', true);
     _scheduleBackgroundRetry(calendar, id, payload, 0);
   }
 
@@ -180,8 +185,8 @@
       await _postEvent(id, payload);
       _markSaved(calendar, id);
       return id;
-    } catch {
-      _enterUnsaved(calendar, id, payload);
+    } catch (retryError) {
+      _enterUnsaved(calendar, id, payload, retryError || error);
       return id;
     }
   }

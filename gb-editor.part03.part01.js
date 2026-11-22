@@ -55,14 +55,14 @@
       const colorStyle = cColor ? ' style="color:' + esc(cColor) + ';"' : '';
       const cIconSpec = typeof GBIconAssets !== 'undefined' ? GBIconAssets.normalizeSpec(cIconRaw) : cIconRaw;
       const cIconHtml = typeof GBIconAssets !== 'undefined' ? GBIconAssets.render(cIconSpec, 20, { contextPath: _mdMediaBasePath }) : (typeof lucide === 'function' ? lucide(cIconRaw, 20) : esc(cIconRaw));
-      const iconHtml = `<span class="callout-icon" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
+      const iconHtml = `<span class="callout-icon" data-e2e-id="note-callout-icon:${i}" role="button" tabindex="0" aria-label="コールアウトアイコンを変更" data-icon="${esc(cIconSpec)}"${cColor ? ' data-color="' + esc(cColor) + '"' : ''}${meta.label ? ' data-icon-label="' + esc(meta.label) + '"' : ''}${meta.keywords ? ' data-icon-keywords="' + esc(meta.keywords) + '"' : ''}${colorStyle}>${cIconHtml}</span>`;
       const blockAttrs = (meta.background ? ` data-callout-background="${esc(meta.background)}"` : '')
         + (meta.border ? ` data-callout-border="${esc(meta.border)}"` : '')
         + ` data-callout-color-linked="${_calloutColorsLinked(meta)}"`;
       const colors = _calloutColorStyles(meta, cColor);
       const blockStyle = _calloutColorsLinked(meta) ? (cColor ? `--callout-linked-color:${cColor};` : '')
         : `background-color:${colors.background};border-color:${colors.border};`;
-      html += `<div class="callout-block${cls}"${blockAttrs} style="${esc(blockStyle)}" contenteditable="false">${iconHtml}<div class="callout-body" contenteditable="true">${cBody}</div></div>`;
+      html += `<div class="callout-block${cls}"${blockAttrs} style="${esc(blockStyle)}" contenteditable="false">${iconHtml}<div class="callout-body" data-e2e-id="note-callout-body:${i}" contenteditable="true">${cBody}</div></div>`;
       continue;
     }
     // 引用（複数行をまとめて1つの<blockquote>に + 出典行検出）
@@ -91,7 +91,7 @@
       const indent = clm[1].length;
       const checked = clm[2].toLowerCase() === 'x';
       adjustListDepth(indent, 'ul');
-      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}`;
+      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check:${i}"${checked ? ' checked' : ''}>${inlinemd(clm[3])}`;
       continue;
     }
     // リスト（箇条書き）
@@ -158,6 +158,9 @@
       }
       marker.remove();
       if (standalone) holder.remove();
+    });
+    _tmp.querySelectorAll('a[href]').forEach((link, index) => {
+      if (!link.dataset.e2eId) link.dataset.e2eId = `note-url-link:${index}`;
     });
     html = _tmp.innerHTML;
   } catch (_) {}
@@ -620,8 +623,12 @@ function htmlToMd(html) {
       }
       case 'B': case 'STRONG': return '**' + children + '**';
       case 'I': case 'EM': return '*' + children + '*';
-      case 'S': case 'DEL': return '~~' + children + '~~';
-      case 'U': return children; // Markdownに下線はない
+      case 'S': case 'DEL': case 'STRIKE': return '~~' + children + '~~';
+      case 'U': {
+        // Markdownに下線の専用記法は無いので、既存の安全な文字書式で往復する。
+        const style = _noteSafeInlineStyle('text-decoration-line: underline;' + (node.getAttribute('style') || ''));
+        return '<span data-meldex-text-style="1" style="' + esc(style) + '">' + children + '</span>';
+      }
       case 'CODE':
         if (node.parentElement?.tagName === 'PRE') return children;
         return '`' + children + '`';
@@ -708,7 +715,10 @@ function htmlToMd(html) {
         rows.forEach((tr, ri) => {
           const cells = [...tr.querySelectorAll('th, td')].map(c => tableCellMarkdown(walk(c).trim()));
           md += '| ' + cells.join(' | ') + ' |\n';
-          if (ri === 0) md += '| ' + cells.map(() => '---').join(' | ') + ' |\n';
+          if (ri === 0) md += '| ' + [...tr.querySelectorAll('th, td')].map(cell => {
+            const alignment = cell.style.textAlign || cell.getAttribute('align');
+            return alignment === 'center' ? ':---:' : alignment === 'right' ? '---:' : alignment === 'left' ? ':---' : '---';
+          }).join(' | ') + ' |\n';
         });
         return md;  // 最終行の\nで終わるため追加不要
       }
@@ -751,6 +761,9 @@ function htmlToMd(html) {
         if (node.classList?.contains('_nl-id')) return '';
         // コメントバッジ（Phase 2e-ii）は UI 装飾なので保存しない
         if (node.classList?.contains('cmt-badge')) return '';
+        // 辞書の自動リンク・自動ルビは表示だけの装飾なので保存しない（本文のまま）。
+        // 以前は自動リンクがMarkdownのリンクとして本文へ書き込まれ、切り替えをオフにしても消えなかった。
+        if (node.dataset?.autoLink === 'true' || node.dataset?.autoRuby) return children;
         // auto-linkスパン: data-pathがあればMarkdownリンクとして保存
         if (node.classList?.contains('auto-link')) {
           const linkPath = node.dataset?.path;

@@ -16,6 +16,7 @@
   function _button(label, action) {
     const el = document.createElement('button');
     el.type = 'button'; el.textContent = label; el.dataset.embedAction = action;
+    el.dataset.e2eId = 'note-embed-' + action;
     return el;
   }
   function _open(block) {
@@ -120,6 +121,10 @@
     wrap.addEventListener('click', (event) => {
       const action = event.target.closest?.('[data-embed-action]')?.dataset.embedAction;
       const current = models.get(runtimeId) || block;
+      if ((action === 'replace' || action === 'height') && !wrap.closest?.('[contenteditable="true"]')) {
+        global.showStatus?.('読み取り専用のため埋め込みを変更できません', true);
+        return;
+      }
       if (action === 'open') _open(current);
       if (action === 'replace') _requestView(current.resourceType, current, (next) => replaceView(runtimeId, next));
       if (action === 'height') global.dispatchEvent(new CustomEvent('meldex-note-request-embed-height', {
@@ -198,8 +203,11 @@
     const runtimeId = _resolveRuntimeId(blockId);
     const old = models.get(runtimeId); if (!old || !ref) return false;
     const next = _defaultBlock(ref.resourceType || old.resourceType, Object.assign({}, old, ref, { blockId: old.blockId }));
-    models.set(runtimeId, next);
     const element = _findBlockElement(runtimeId);
+    const editable = element?.closest?.('[contenteditable="true"]');
+    if (element && !editable) return false;
+    if (editable && typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
+    models.set(runtimeId, next);
     const title = element?.querySelector?.('.meldex-note-embed-title');
     if (title) title.textContent = next.fallback.title;
     if (element) {
@@ -215,8 +223,11 @@
     const runtimeId = _resolveRuntimeId(blockId);
     const old = models.get(runtimeId); if (!old) return false;
     const next = _normalize(Object.assign({}, old, { display: Object.assign({}, old.display, { height }) }));
-    models.set(runtimeId, next);
     const element = _findBlockElement(runtimeId);
+    const editable = element?.closest?.('[contenteditable="true"]');
+    if (element && !editable) return false;
+    if (editable && typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
+    models.set(runtimeId, next);
     element?.style.setProperty('--meldex-embed-height', next.display.height + 'px');
     _markEditorChanged(element);
     return next;
@@ -272,6 +283,28 @@
       created.push(element);
     });
     return created;
+  }
+  function captureUndo(root, html) {
+    if (!root) return [];
+    let source = root;
+    if (typeof html === 'string' && html !== root.innerHTML) {
+      source = document.createElement('div'); source.innerHTML = html;
+    }
+    return Array.from(source.querySelectorAll('.meldex-note-embed')).flatMap(element => {
+      const runtimeId = _runtimeIdForElement(element), block = models.get(runtimeId);
+      return block ? [{ runtimeId, block: JSON.parse(JSON.stringify(block)) }] : [];
+    });
+  }
+  function restoreUndo(root, snapshots) {
+    if (!root || !Array.isArray(snapshots)) return;
+    _ensureRemovalObserver(root);
+    snapshots.forEach(snapshot => {
+      const element = Array.from(root.querySelectorAll('.meldex-note-embed'))
+        .find(node => _runtimeIdForElement(node) === snapshot.runtimeId);
+      if (!element || !snapshot.block) return;
+      _disposeBlock(snapshot.runtimeId);
+      element.replaceWith(createElement(snapshot.block));
+    });
   }
   function disposeWithin(root) {
     if (!root?.querySelectorAll) return 0;
@@ -337,7 +370,7 @@
   if (typeof document !== 'undefined') _bindTransfer();
   const api = { MIME, createElement, insertEmbed, replaceView, setHeight, duplicateReference,
     removeReference, menuItems, isInsertCommand, insertFromCommand, openOriginal: _open,
-    cloneForMarkdown, hydrate, disposeWithin,
+    cloneForMarkdown, hydrate, disposeWithin, captureUndo, restoreUndo,
     reconnect(blockId) { return host ? host.refresh(_resolveRuntimeId(blockId)) : 0; },
     destroy() {
       Array.from(disposers.keys()).forEach(_disposeBlock);

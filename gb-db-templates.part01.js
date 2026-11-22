@@ -587,11 +587,6 @@ function _pushDbTemplateStorageHistory(label, beforeSnapshot, keys, detail, dbPa
   );
 }
 
-function _confirmDbTemplate(message) {
-  if (typeof cfConfirm === 'function') return cfConfirm(message);
-  return Promise.resolve(window.confirm(message));
-}
-
 function getCustomTemplates() {
   try { return JSON.parse(localStorage.getItem(CUSTOM_DB_TEMPLATES_KEY)) || []; }
   catch { return []; }

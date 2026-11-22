@@ -37,7 +37,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       effective?.name,
       effective?.type?.name,
       effective?.character?.name,
-    ].filter((value) => value != null));
+    ].filter((value) => value != null && String(value) !== ''));
+    // 「（タイプなし）」の鍵（空文字）は、タイプもキャラも持たない行だけに当てる。
+    // キャラの無い行（ト書き等）の row.character の空文字を鍵に入れると、タイプの「表示」を
+    // 外しても「（タイプなし）」の表示で残ってしまう（M-014 S15）。
+    if (!roleKeys.size) roleKeys.add('');
     if (this._hideRoles && [...roleKeys].some((key) => this._hideRoles.has(key))) return false;
     if (this._filterRoles && ![...roleKeys].some((key) => this._filterRoles.has(key))) return false;
     if (this.doc?.editor?.statusEnabled) {
@@ -90,6 +94,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
     keyHandler = (ev) => {
       if (ev.key !== 'Escape') return;
+      // ポップアップが閉じる処理を通らずに外された時は、残った Escape 処理が次の Escape を横取りしないよう後始末だけする（M-014 S20/S21）。
+      if (!popup.isConnected) { close(); return; }
       ev.preventDefault();
       ev.stopPropagation();
       close();
@@ -100,6 +106,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     allLbl.className = 'sn2-filter-all-row';
     const allCb = document.createElement('input');
     allCb.type = 'checkbox';
+    allCb.dataset.e2eId = 'scriptnote-filter-all';
+    allCb.setAttribute('aria-label', 'すべて表示');
     allCb.checked = !hasAnyFilter();
     allCb.addEventListener('change', () => {
       this._filterRoles = null;
@@ -141,13 +149,17 @@ Object.assign(ScriptNoteEditor.prototype, {
       popup.appendChild(headerRow);
 
       const visibleSet = this[visibleProp] || new Set(items.map((item) => item.key));
-      items.forEach((item) => {
+      const sectionKey = visibleProp === '_filterStatuses' ? 'status' : 'role';
+      items.forEach((item, itemIndex) => {
         const row = document.createElement('div');
         row.className = 'sn2-filter-row';
 
         const showCb = document.createElement('input');
         showCb.type = 'checkbox';
         showCb.className = 'sn2-filter-checkbox';
+        // 安定ID: 区分と並び順で項目ごとに別の値にする（名前はタイプ名を含む aria-label）。
+        showCb.dataset.e2eId = `scriptnote-filter-${sectionKey}-show-${itemIndex}`;
+        showCb.setAttribute('aria-label', `表示: ${item.label}`);
         showCb.checked = visibleSet.has(item.key);
         showCb.addEventListener('click', (ev) => {
           if (ev.altKey) {
@@ -189,6 +201,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         const hideCb = document.createElement('input');
         hideCb.type = 'checkbox';
         hideCb.className = 'sn2-filter-checkbox';
+        hideCb.dataset.e2eId = `scriptnote-filter-${sectionKey}-hide-${itemIndex}`;
+        hideCb.setAttribute('aria-label', `非表示: ${item.label}`);
         hideCb.checked = !!(this[hiddenProp] && this[hiddenProp].has(item.key));
         hideCb.title = 'チェックすると常に非表示';
         hideCb.dataset.filterHiddenProp = hiddenProp;

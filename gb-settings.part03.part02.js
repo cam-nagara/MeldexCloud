@@ -413,6 +413,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof renderXBookmarksSettings === 'function') renderXBookmarksSettings(modal);
       if ((typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable())
         && typeof renderXAccountPostsSettings === 'function') renderXAccountPostsSettings(modal);
+      window.MeldexIntakeRecoverySettings?.render?.(modal.querySelector('#settings-intake-recovery-card'));
       return;
     }
     if (canonical === '拡張機能' && typeof _loadExtensionStatus === 'function') {

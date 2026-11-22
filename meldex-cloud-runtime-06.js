@@ -306,7 +306,8 @@
   async function addWorkspaceFromSidebar() {
     if (!window.MeldexWorkspaces) return;
     let picked = null;
-    try { picked = await window.MeldexWorkspaces.pickFolder(); } catch {}
+    try { picked = await window.MeldexWorkspaces.pickFolder(); }
+    catch (error) { _status('フォルダを選べませんでした。パスを入力してください: ' + (error?.message || error), true); }
     let path = String(picked?.path || '').trim();
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
@@ -314,13 +315,14 @@
         : window.MeldexRuntimeAdapter?.isBrowserMode?.()
           ? 'ワークスペースにする端末内フォルダ'
           : 'ワークスペースにするフォルダの絶対パス';
-      path = window.prompt(promptLabel, '');
+      // 共通の入力の画面を使う（ブラウザ標準の prompt は使わない: UI共通ルール。2026-11-22 M-014）
+      path = typeof cfPrompt === 'function' ? await cfPrompt(promptLabel, '') : null;
       if (path == null) return;
       path = String(path || '').trim();
     }
     if (!path) return;
     const defaultName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'ワークスペース';
-    const name = window.prompt('ワークスペース名', defaultName);
+    const name = typeof cfPrompt === 'function' ? await cfPrompt('ワークスペース名', defaultName) : null;
     if (name == null) return;
     try {
       await window.MeldexWorkspaces.create({
@@ -509,7 +511,8 @@
 
   async function addWorkspaceFromSettings() {
     let picked = null;
-    try { picked = await window.MeldexWorkspaces?.pickFolder?.(); } catch {}
+    try { picked = await window.MeldexWorkspaces?.pickFolder?.(); }
+    catch (error) { _status('フォルダを選べませんでした: ' + (error?.message || error), true); }
     let path = String(picked?.path || '').trim();
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
@@ -517,13 +520,14 @@
         : window.MeldexRuntimeAdapter?.isBrowserMode?.()
           ? 'ワークスペースにする端末内フォルダ'
           : 'ワークスペースにするフォルダの絶対パス';
-      path = window.prompt(promptLabel, '');
+      // ブラウザ標準の prompt は使わない（UI共通ルール: 共通の入力の画面。2026-11-22 M-014 で見つけた B13 と同じ）
+      path = typeof cfPrompt === 'function' ? await cfPrompt(promptLabel, '') : null;
       if (path == null) return;
       path = String(path || '').trim();
     }
     if (!path) return;
     const defaultName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'ワークスペース';
-    const name = window.prompt('ワークスペース名', defaultName);
+    const name = typeof cfPrompt === 'function' ? await cfPrompt('ワークスペース名', defaultName) : null;
     if (name == null) return;
     try {
       await window.MeldexWorkspaces.create({
@@ -4227,58 +4231,34 @@
 
     showReadOnlySnapshotModal(snapshot, options = {}) {
       if (!snapshot) return;
-      const modal = document.createElement('div');
-      modal.className = 'gb-modal gb-production-snapshot-modal';
-      modal.dataset.e2eId = 'gb-production-snapshot-modal';
-      modal.style.position = 'fixed';
-      modal.style.top = '0';
-      modal.style.left = '0';
-      modal.style.width = '100vw';
-      modal.style.height = '100vh';
-      modal.style.background = 'rgba(0,0,0,0.5)';
-      modal.style.display = 'flex';
-      modal.style.alignItems = 'center';
-      modal.style.justifyContent = 'center';
-      modal.style.zIndex = '9999';
-
-      const content = document.createElement('div');
-      content.className = 'gb-modal-content';
-      content.style.background = 'var(--bg-main, #fff)';
-      content.style.borderRadius = '8px';
-      content.style.width = '90%';
-      content.style.maxWidth = '640px';
-      content.style.maxHeight = '80vh';
-      content.style.overflow = 'auto';
-      content.style.padding = '16px';
-
-      const header = document.createElement('div');
-      header.style.display = 'flex';
-      header.style.justifyContent = 'space-between';
-      header.style.alignItems = 'center';
-      header.style.borderBottom = '1px solid var(--border, #ccc)';
-      header.style.paddingBottom = '8px';
-      header.innerHTML = `
-        <div>
-          <strong style="font-size:16px;">制作日次記録（${esc(snapshot.target_date)}）</strong>
-          <span style="display:inline-block;margin-left:8px;font-size:11px;padding:2px 6px;background:var(--ui-bg-control,var(--bg3));color:var(--ui-fg-default,var(--fg));border-radius:4px;">読み取り専用</span>
-        </div>
-      `;
-
-      const closeBtn = document.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.className = 'gb-btn gb-btn-sm';
-      closeBtn.textContent = '✕';
-      closeBtn.addEventListener('click', () => modal.remove());
-      header.appendChild(closeBtn);
-      content.appendChild(header);
-
       const body = document.createElement('div');
-      body.style.marginTop = '12px';
-      this.renderDayView(body, snapshot, options);
-
-      content.appendChild(body);
-      modal.appendChild(content);
-      document.body.appendChild(modal);
+      body.className = 'gb-production-snapshot-body';
+      const badge = document.createElement('div');
+      badge.className = 'gb-production-snapshot-readonly';
+      badge.textContent = '読み取り専用';
+      badge.style.cssText = 'display:inline-block;margin-bottom:8px;font-size:11px;padding:2px 6px;background:var(--ui-bg-control,var(--bg3));color:var(--ui-fg-default,var(--fg));border-radius:4px;';
+      body.appendChild(badge);
+      const view = document.createElement('div');
+      this.renderDayView(view, snapshot, options);
+      body.appendChild(view);
+      // 共通のダイアログ（GBUI.createModal。UI共通ルール 4.0）で開く: 名前のある閉じるボタン・Esc・外側のクリックで閉じる、
+      // スマホの下から出るシート。以前は独自の重ね表示で、閉じるボタンが「✕」の文字だけ・Esc で閉じなかった（M-014 で発見）。
+      if (window.GBUI?.createModal) {
+        const api = window.GBUI.createModal({
+          id: 'gb-production-snapshot-modal',
+          title: `制作日次記録（${String(snapshot.target_date || '')}）`,
+          body,
+          closeLabel: '日次記録を閉じる',
+          closeOnEsc: true,
+          closeOnOverlay: true,
+          geometryKey: 'gb-production-snapshot-modal',
+        });
+        api.overlay.dataset.e2eId = 'gb-production-snapshot-modal';
+        api.open();
+        return api;
+      }
+      console.warn('[production] 共通のダイアログ（GBUI.createModal）が無いため、日次記録を開けません');
+      return null;
     }
 
     // ==== 読み取り専用の日次ビュー（予定枠と実績区間を重ねた過去カレンダー） ====
@@ -5858,9 +5838,9 @@
         });
         const actions = document.createElement('div');
         actions.className = 'gb-production-topic-resource-actions';
+        // 追加の時にダイアログを出さない（OSの入力ダイアログは使わない）。既定の名前で作り、名前は開いた先で変える。
         const createResource = async (kind, defaultLabel) => {
-          const label = window.prompt?.(`${defaultLabel}の名前を入力してください`, defaultLabel);
-          if (label == null) return;
+          const label = defaultLabel;
           const key = kind + '\0' + String(label);
           const mutationId = pendingCreation.get(key)
             || `production-resource-create-${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -6222,6 +6202,24 @@
     else if (state.mode === 'taskSettings') window.MeldexSchedulerUi?.renderTaskSettings?.(content, context.component);
     else if (state.mode === 'allocation') window.MeldexSchedulerUi?.renderAllocation?.(content, context.component);
     else if (state.mode === 'calendar') window.MeldexSchedulerUi?.renderCalendar?.(content, context.component);
+    appendProposalSection(content.parentElement, state);
+  }
+
+  // 自動割り当てで作った案の確認・比較・採用・保管の入口。2026-08-25 の統合で「割り当て」モードを外した時に
+  // 入口ごと消え、案を作れても採用も保管もできなくなっていた（カレンダーの案の表示は「採用すると確定版へ反映」と案内する）。
+  // 案を選んでいる時の操作はここ（制作管理タブの下段）に置く。
+  function appendProposalSection(shell, state) {
+    const renderAllocation = window.MeldexSchedulerUi?.renderAllocation;
+    if (!shell || typeof renderAllocation !== 'function') return;
+    if (state.mode === 'detail' && state.row) return; // タスクの編集中はフォームを優先する（案の操作は未選択の時）
+    const section = document.createElement('section');
+    section.className = 'gb-production-sidebar-proposals';
+    section.setAttribute('aria-label', 'スケジュール案');
+    const host = document.createElement('div');
+    host.className = 'gb-scheduler-allocation-host';
+    section.appendChild(host);
+    shell.appendChild(section);
+    renderAllocation(host);
   }
 
   function openTask(row, component, options = {}) {
@@ -9455,6 +9453,7 @@
   'use strict';
 
   let activeProposal = null;
+  let activeSignature = 'null';
   let installed = false;
   let refreshQueued = false;
 
@@ -9684,7 +9683,12 @@
   }
 
   function setActive(proposal) {
-    activeProposal = proposal?.id ? proposal : null;
+    const next = proposal?.id ? proposal : null;
+    const signature = JSON.stringify(next);
+    // チャットを開いた際の「案なし」や同じ通知で、スケジュールを描き直さない。
+    if (signature === activeSignature) return activeProposal;
+    activeSignature = signature;
+    activeProposal = next;
     scheduleRefresh();
     return activeProposal;
   }
@@ -10814,12 +10818,12 @@
     toolbarObserver.observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('meldex:scheduler-proposals-changed', event => {
       syncAllSelectors();
-      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.(event));
+      document.querySelectorAll('.gb-production-sidebar-content, .gb-scheduler-allocation-host').forEach(host => host.__schedulerRefresh?.(event));
     });
     // タスクリスト面の空状態カード（同じ「制作管理を始める」導線）から開始した場合も、
     // 同時に開いているこのパネルの空状態を即座に解除する。
     document.addEventListener('meldex:production-management-started', () => {
-      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.());
+      document.querySelectorAll('.gb-production-sidebar-content, .gb-scheduler-allocation-host').forEach(host => host.__schedulerRefresh?.());
     });
   }
 
@@ -12209,6 +12213,7 @@
   }
 
   function _currentWriteGuard(instance) {
+    if (instance.readOnly) return { blocked:true, locked:false, path:instance.ctx?.dbPath || '', reason:'読み取り専用' };
     const path = instance._guardPath || instance._currentPath || instance.ctx?.dbPath || '';
     const availability = _cloudWriteAvailability();
     const hasLockCache = typeof isItemLocked === 'function';
@@ -12412,6 +12417,14 @@
   }
 
   function _handleWriteGuardEvent(instance, event) {
+    if(instance.readOnly && event.target?.closest?.('.gb-toolbar, .db-pane-view-switcher, .db-view-tabs')) return;
+    const historyOpenGesture = event.type === 'click' && event.target?.closest?.('.entity-name-label, .entity-row-open-btn')
+      || event.type === 'keydown' && ['Enter',' '].includes(event.key) && event.target?.closest?.('td.col-entity');
+    if (instance.readOnly && historyOpenGesture) {
+      const name=event.target.closest('tr[data-entity-name]')?.dataset.entityName;
+      const path=instance.ctx?.pivotData?.entities?.[name]?._entry_path;
+      if (path) {event.preventDefault();event.stopImmediatePropagation();window.MeldexChatManagementSheet?.openRow(path);return;}
+    }
     const guard = _renderWriteGuard(instance);
     if (!guard.blocked || _writeGuardAllowsEvent(event)) return;
     event.preventDefault?.();
@@ -12688,7 +12701,15 @@
     return instance;
   }
 
-  window.MeldexProductionSheetEmbed = Object.freeze({ create });
+  function bindReadOnly(ctx) {
+    // A normal pane also hosts the application toolbar. Guard the Sheet data
+    // surface, preserving its ordinary display/filter/undo controls.
+    const containerEl=ctx.containerEl?.querySelector?.('.db-view-container, #db-view-container') || ctx.containerEl;
+    const instance = { readOnly:true, ctx, containerEl, _lastWriteGuardAnnouncement:0 };
+    _installWriteGuard(instance);
+    return () => _destroyWriteGuard(instance);
+  }
+  window.MeldexProductionSheetEmbed = Object.freeze({ create, bindReadOnly });
 })();
 
 ;
@@ -13919,6 +13940,9 @@
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'row-select-cb gb-production-all-flat-select';
+    // 行の部品にも安定IDを付ける（タスクのファイル名で区別。画面テストと操作の記録が行を特定できるように）
+    const rowKey = path.split('/').pop().replace(/\.md$/i, '').replace(/[^\p{L}\p{N}_-]+/gu, '-');
+    checkbox.dataset.e2eId = 'gb-production-all-flat-row-select-' + rowKey;
     checkbox.checked = instance._selectedPaths.has(path);
     checkbox.setAttribute('aria-label', (row?.name || 'タスク') + 'を選択');
     checkbox.addEventListener('change', () => {
@@ -13949,6 +13973,7 @@
           const jump = document.createElement('button');
           jump.type = 'button';
           jump.className = 'gb-production-all-flat-work-jump';
+          jump.dataset.e2eId = 'gb-production-all-flat-work-jump-' + rowKey;
           jump.title = '作品タブで開く';
           jump.setAttribute('aria-label', `「${sheet.work_title || sheet.sheet_name}」のタブで開く`);
           jump.appendChild(_icon('arrowUpRight', 12));
@@ -14370,6 +14395,7 @@
   }
 
   function openSystemSheet(providerId, scopeId, options = {}) {
+    if (providerId === 'chat-history' && window.MeldexChatManagementSheet) return window.MeldexChatManagementSheet.open();
     const provider = getSystemSheetProvider(providerId);
     if (!provider) throw new Error(`システムシート供給元が見つかりません: ${providerId}`);
     const detail = {
@@ -14476,6 +14502,10 @@
 
     activate() {
       super.activate();
+      if (this.state?.providerId === 'chat-history' && window.MeldexChatManagementSheet) {
+        window.MeldexChatManagementSheet.open();
+        return;
+      }
       if (!this._loadedKey || this._loadedKey !== this._currentKey()) this._load();
     }
 
@@ -14796,6 +14826,274 @@
     registerToolComponent('system-sheet', { cls: SystemSheetComponent, icon: 'db', label: 'システムシート', multi: true });
   }
 })();
+
+;
+
+/* === gb-search-filter-row.js === */
+;
+/* Shared compact search + filter toolbar. Consumers supply filter definitions. */
+(function (global) {
+  'use strict';
+  let active = null;
+  function closePopup(restore = true) {
+    if (!active) return;
+    const { popup, anchor, outside, keydown } = active;
+    active = null;
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('keydown', keydown, true);
+    popup.remove(); anchor.setAttribute('aria-expanded', 'false');
+    if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
+  }
+  function openPopup(anchor, title, content) {
+    closePopup(false);
+    const popup = document.createElement('div');
+    popup.className = 'gb-context-menu gb-search-filter-popup';
+    popup.dataset.uiComponent = 'filter-popup';
+    popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', title);
+    popup.append(content); document.body.append(popup);
+    anchor.setAttribute('aria-expanded', 'true');
+    const outside = event => { if (!popup.contains(event.target) && !anchor.contains(event.target)) closePopup(false); };
+    const keydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closePopup(); }
+      else if (event.key === 'Tab' && typeof gbCyclePopupFocus === 'function') { event.preventDefault(); gbCyclePopupFocus(popup, event.shiftKey); }
+    };
+    active = { popup, anchor, outside, keydown };
+    global.attachMeldexDropdownCloseButton(popup, { trigger: anchor, close: () => closePopup() });
+    positionPopup(popup, anchor.getBoundingClientRect(), { prefer: 'below' });
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', keydown, true);
+    popup.querySelector('input, select, button')?.focus();
+    return popup;
+  }
+
+  function create(options = {}) {
+    const el = document.createElement('div'); el.className = 'gb-search-filter-row gb-toolbar';
+    el.dataset.uiComponent = 'search-filter-row';
+    const input = document.createElement('input'); input.type = 'search'; input.className = 'tb-input gb-search-filter-input';
+    input.placeholder = options.placeholder || 'ワード検索'; input.setAttribute('aria-label', options.label || input.placeholder);
+    const controls = document.createElement('div'); controls.className = 'gb-search-filter-buttons';
+    const actions = document.createElement('div'); actions.className = 'gb-search-filter-actions';
+    input.dataset.toolbarOverflowPriority='1';actions.dataset.toolbarOverflowPriority='1';
+    el.append(input, controls, actions);
+    let value = { query: '', filters: {} };
+    const buttons = new Map();
+    const notify = (emit = true) => {
+      buttons.forEach((button, id) => {
+        const current = value.filters[id];
+        const enabled = typeof current === 'object' ? !!(current?.from || current?.to) : !!current;
+        button.classList.toggle('active', enabled); button.setAttribute('aria-pressed', String(enabled));
+      });
+      if(emit) options.onChange?.(structuredClone(value));
+    };
+    input.addEventListener('input', event => { if (event.isComposing) return; value.query = input.value; notify(); });
+    input.addEventListener('compositionend', () => { value.query = input.value; notify(); });
+    function showFilter(def, anchor) {
+      const content = document.createElement('div'); content.className = 'gb-search-filter-fields';
+      const add = (label, type, initial, change) => {
+        const wrap = document.createElement('label'); wrap.textContent = label;
+        const field = document.createElement(type === 'select' ? 'select' : 'input');
+        if (type !== 'select') field.type = type;
+        field.className = type === 'select' ? 'gb-select' : 'gb-input'; field.setAttribute('aria-label', label);
+        if (type === 'select') {
+          const items = typeof def.options === 'function' ? def.options() : def.options || [];
+          [{value:'',label:'すべて'}, ...items].forEach(item => {
+            const option = document.createElement('option'); option.value = typeof item === 'string' ? item : item.value;
+            option.textContent = typeof item === 'string' ? item : item.label; field.append(option);
+          });
+        }
+        field.value = initial || ''; field.addEventListener(type === 'select' ? 'change' : 'input', () => { change(field.value); notify(); });
+        wrap.append(field); content.append(wrap);
+      };
+      if (def.type === 'date-range') {
+        const dates = { ...(value.filters[def.id] || {}) };
+        add('開始日', 'date', dates.from, v => { dates.from = v; value.filters[def.id] = { ...dates }; });
+        add('終了日', 'date', dates.to, v => { dates.to = v; value.filters[def.id] = { ...dates }; });
+      } else add(def.label, def.type === 'text' ? 'text' : 'select', value.filters[def.id], v => { value.filters[def.id] = v; });
+      openPopup(anchor, def.label, content);
+    }
+    (options.filters || []).forEach(def => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'tb-icon-btn';
+      button.setAttribute('aria-label', def.label); button.setAttribute('data-tooltip', def.label);
+      button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-pressed', 'false');
+      button.innerHTML = typeof lucide === 'function' ? lucide(def.icon || 'filter', 16) : def.label;
+      button.onclick = () => active?.anchor === button ? closePopup() : showFilter(def, button);
+      controls.append(button); buttons.set(def.id, button);
+    });
+    return { el, input, actions, getValue: () => structuredClone(value),
+      setValue(next, emit = false) { value = { query: next?.query || '', filters: { ...(next?.filters || {}) } }; input.value = value.query; notify(emit); },
+      destroy() { if (active && el.contains(active.anchor)) closePopup(false); el.remove(); },
+    };
+  }
+  global.MeldexSearchFilterRow = Object.freeze({ create });
+  global.MeldexFilterPopup = Object.freeze({ open: openPopup, close: closePopup });
+})(window);
+
+;
+
+/* === gb-chat-management-sheet.js === */
+;
+/* Read-only history projection consumed by the ordinary Sheet app. */
+(function (global) {
+  'use strict';
+  const PATH = 'meldex-chat-history/管理シート';
+  const columns = [
+    ['provider','プロバイダー','text'],['model','モデル','text'],['targetPath','対象ファイル','text'],
+    ['created','作成日時','date'],['modified','最終更新日時','date'],['messageCount','メッセージ数','number'],
+    ['hasAttachments','添付','checkbox'],['path','履歴の保存場所','text'],['store','保存元','text'],
+  ];
+  let rows = [], loaded = false, pending = null, toolbar = null, selection = {query:'',filters:{}}, refreshTimer;
+  const byPath = new Map();
+  const isPath = path => String(path || '').startsWith('meldex-chat-history/');
+  const cloud = () => global.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+  async function loadCloud() {
+    const home = await GBChatStorageContext.resolveForHistory();
+    const sources = new Map([[home.sourceFolder,{sourceFolder:home.sourceFolder}]]);
+    const options = typeof _chatSourceOptions==='function' ? _chatSourceOptions() : [];
+    options.forEach(option=>{
+      const folder=String(option.path || option.value || '');
+      if(folder && !sources.has(folder))sources.set(folder,{sourceFolder:folder,workspaceId:option.workspaceId || ''});
+    });
+    const items=[], seen=new Set();let unreadableCount=0;
+    // One listing per scope, never a request per conversation.
+    for(const scope of sources.values()) {
+      try {
+        const query=scope.workspaceId?'workspace_id='+encodeURIComponent(scope.workspaceId):'source_folder='+encodeURIComponent(scope.sourceFolder);
+        const data=await apiFetch('/chat/history?'+query);
+        unreadableCount+=Number(data.unreadableCount || 0);
+        for(const row of data.items || []) {
+          const id=scope.sourceFolder+'/'+row.path;
+          if(seen.has(id))continue;seen.add(id);
+          items.push({...row,id,sourceFolder:scope.sourceFolder});
+        }
+      } catch(error) {
+        if(scope.sourceFolder===home.sourceFolder)throw error;
+        unreadableCount++;
+      }
+    }
+    return {items,unreadableCount};
+  }
+  async function load(refresh = false) {
+    if (pending) return pending;
+    if (loaded && !refresh) return rows;
+    pending = (async () => {
+      const data = cloud() ? await loadCloud() : await apiFetch('/chat/management-history');
+      if(!data || !Array.isArray(data.items))throw new Error('履歴を読み込めませんでした。再試行してください');
+      rows = (data?.items || []).map(row => ({...row, id:row.id || row.path}));
+      rows.sort((a,b)=>(Date.parse(b.modified || '') || 0)-(Date.parse(a.modified || '') || 0));
+      if(data.unreadableCount && typeof showStatus==='function')showStatus(`${data.unreadableCount}件の履歴を読み込めませんでした`,true);
+      loaded = true;
+      return rows;
+    })().finally(() => { pending = null; });
+    return pending;
+  }
+  function matches(row, value = selection) {
+    const query = String(value.query || '').trim().toLocaleLowerCase();
+    if (query && !(`${row.title || ''}\n${row.searchText || ''}`).toLocaleLowerCase().includes(query)) return false;
+    const filters = value.filters || {};
+    if (filters.provider && row.provider !== filters.provider) return false;
+    if (filters.model && row.model !== filters.model) return false;
+    if (filters.target && !String(row.targetPath || '').toLocaleLowerCase().includes(filters.target.toLocaleLowerCase())) return false;
+    const date = String(row.modified || '').slice(0,10);
+    if (filters.date?.from && date < filters.date.from) return false;
+    if (filters.date?.to && date > filters.date.to) return false;
+    if (filters.attachments && !!row.hasAttachments !== (filters.attachments === 'yes')) return false;
+    return true;
+  }
+  function pivot() {
+    const entities = Object.create(null); byPath.clear();
+    rows.filter(row=>matches(row)).forEach(row => {
+      const token = encodeURIComponent(row.id);
+      const entryPath = PATH + '/' + token;
+      let name = row.title || '無題のチャット';
+      if(Object.hasOwn(entities,name)) name += ' · ' + token;
+      const entry = {_id:entryPath, _entry_path:entryPath};
+      columns.forEach(([key,label]) => {entry[label] = [{id:entryPath+'/'+key, value:key==='hasAttachments'?(row[key]?'true':'false'):String(row[key] ?? ''),status:'採用',entry_path:entryPath}];});
+      entities[name] = entry; byPath.set(entryPath,row);
+    });
+    return {properties:columns.map(c=>c[1]),entities,format:'new'};
+  }
+  function metadata() {
+    return {display_title:'チャット履歴（読み取り専用）',system_managed:true,
+      property_types:Object.fromEntries(columns.map(([,label,type])=>[label,{type,readOnly:true}])),view_config:getDbViewConfig(PATH)};
+  }
+  async function handleApi(path, opts = {}) {
+    const url = new URL(path,'http://local');
+    let body; try {body=typeof opts.body==='string'?JSON.parse(opts.body):opts.body;} catch {}
+    const values = [...url.searchParams.values(), ...Object.values(body || {})];
+    if (!values.some(v => typeof v === 'string' && isPath(v))) return null;
+    const method = String(opts.method || 'GET').toUpperCase();
+    if (url.pathname==='/view-lock') {
+      // This generated document has no backing file. Display locks belong to
+      // this device, just like its column widths and saved views.
+      const viewKey=url.searchParams.get('view_key') || body?.view_key || PATH;
+      const key='meldex:chat-history-view-lock:'+viewKey;
+      if(method==='PUT') {
+        const lock={...body,view_key:viewKey};localStorage.setItem(key,JSON.stringify(lock));
+        return {value:{ok:true,...lock}};
+      }
+      if(method==='GET')return {value:JSON.parse(localStorage.getItem(key) || 'null') || {view_key:viewKey,locked:false,state:{}}};
+    }
+    if (url.pathname==='/db-metadata' && method==='PUT' && body?.view_config && Object.keys(body).every(k=>k==='view_config')) return {value:{ok:true}};
+    if (method !== 'GET') throw new Error('チャット履歴の管理シートは読み取り専用です');
+    if (url.pathname==='/db-metadata') return {value:metadata()};
+    if (url.pathname==='/pivot') {await load(true);return {value:pivot()};}
+    if (url.pathname==='/contained-files') return {value:[]};
+    throw new Error('この管理シートでは利用できない操作です');
+  }
+  function contexts() {return typeof _dbPaneContextsForPath==='function' ? _dbPaneContextsForPath(PATH) : [];}
+  function redraw() {
+    const data = pivot();
+    contexts().forEach(ctx => {
+      ctx.pivotData=data;
+      if(state.currentDbPath===PATH)state.pivotData=data;
+      if(typeof _renderCurrentDbView==='function')_renderCurrentDbView(ctx,PATH);else renderPivot(ctx);
+    });
+  }
+  async function refresh() {if(pending)await pending;await load(true);redraw();return rows;}
+  async function open() {
+    const cfg=getDbViewConfig(PATH);
+    if(!cfg.savedViews?.length) saveDbViewConfig(PATH,{...cfg,savedViews:[{name:'履歴',viewMode:'pivot',entityColumnLabel:'タイトル'}],currentViewIdx:0},{skipBackend:true,skipHistory:true});
+    const paneId=GBPaneDefaultLayout.resolveMainPaneId({contentOnly:true});
+    GBTabs.addTab(paneId,'チャット履歴 管理シート','pivot',PATH,{dbPath:PATH},{preferTargetPane:true});
+    return selectDatabase(PATH,typeof getPaneContext==='function'?getPaneContext(paneId):null);
+  }
+  function notifyMutation(path, body) {
+    if(!loaded)return;
+    const route=String(path).split('?')[0];
+    if(!route.startsWith('/chat/') && !route.startsWith('/cli-transcripts/') && !JSON.stringify(body || {}).replace(/\\\\/g,'/').includes('_chat/'))return;
+    clearTimeout(refreshTimer);
+    refreshTimer=setTimeout(()=>refresh().then(()=>renderChatHistory({localOnly:true,skipSheetRefresh:true})).catch(error=>showStatus('履歴を更新できません: '+error.message,true)),30);
+  }
+  function openRow(path) {
+    const row=byPath.get(path);if(!row)return false;
+    if(row.store==='cli') {switchChatHistoryView('cli');global.GBChatCli?.openSession?.(row.provider,row.sessionId);}
+    else openSavedChat(row.path,'',row.sourceFolder);
+    return true;
+  }
+  function ensureToolbar() {
+    const host=document.getElementById('chat-history-management-tools');if(!host)return;
+    if(toolbar?.el.parentElement===host)return;
+    const button=host.querySelector('#chat-history-open-sheet') || document.createElement('button');
+    button.remove();
+    toolbar?.destroy();
+    host.replaceChildren();
+    const options = key => [...new Set(rows.map(row=>row[key]).filter(Boolean))].sort();
+    toolbar=MeldexSearchFilterRow.create({label:'チャットのタイトルと本文を検索',placeholder:'ワード検索',filters:[
+      {id:'provider',label:'プロバイダー',icon:'bot',options:()=>options('provider')},
+      {id:'model',label:'モデル',icon:'cpu',options:()=>options('model')},
+      {id:'target',label:'対象ファイル・フォルダー',icon:'folder',type:'text'},
+      {id:'date',label:'期間',icon:'calendar',type:'date-range'},
+      {id:'attachments',label:'添付',icon:'paperclip',options:[{value:'yes',label:'あり'},{value:'no',label:'なし'}]},
+    ],onChange:value=>{selection=value;redraw();if(typeof renderChatHistory==='function')renderChatHistory({localOnly:true,skipSheetRefresh:true});}});
+    toolbar.setValue(selection);
+    button.id='chat-history-open-sheet';button.type='button';button.className='tb-text-btn';button.textContent='管理シート';
+    button.dataset.e2eId='chat-history-open-sheet';button.dataset.action='openChatHistorySheet()';toolbar.actions.append(button);
+    host.append(toolbar.el);
+  }
+  global.MeldexChatManagementSheet=Object.freeze({PATH,isPath,load,matches,handleApi,openRow,ensureToolbar,rows:()=>rows,refresh,redraw,notifyMutation,open});
+  global.openChatHistorySheet=open;
+  global.refreshOpenChatHistorySheet=refresh;
+})(window);
 
 ;
 

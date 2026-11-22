@@ -79,7 +79,40 @@
   const activeCalendarLeases = new WeakMap();
   const LEASE_PROVIDER_ORIGINAL = Symbol.for('meldex.lease.originalProvider');
 
+  // 同じ画面の中の別々の更新（既定カレンダーの作成と表示の保存など）が同時に共有の更新ロックを取ると、
+  // 互いのロックを奪い合って両方とも「更新ロックを失いました」で失敗していた（M-014 スケジュール網羅、Cloud版の初回起動で発見）。
+  // 同じ保存先への更新は、この画面の中では順番に行う。入れ子の呼び出しで待ち続けないよう、待つのは最大30秒まで。
+  const calendarLeaseQueues = new WeakMap();
+  const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
+
   async function withCalendarLease(provider, operation, context = null) {
+    const active = activeCalendarLeases.get(provider);
+    if (context?.token && active?.token === context.token) return operation(active.context);
+    const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
+    // ロックの中で渡された保存先（guardProvider の写し）からの呼び出しは、今のロックの中の入れ子なので待たない。
+    if (active && key !== provider) return operation(active.context);
+    const previous = (key && calendarLeaseQueues.get(key)) || Promise.resolve();
+    let releaseTurn = () => {};
+    const turn = new Promise(resolve => { releaseTurn = resolve; });
+    if (key) calendarLeaseQueues.set(key, previous.then(() => turn, () => turn));
+    let timer = null;
+    const waited = await Promise.race([
+      previous.then(() => 'turn', () => 'turn'),
+      new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 30000); }),
+    ]);
+    clearTimeout(timer);
+    if (waited === 'timeout') {
+      releaseTurn();
+      fail('カレンダーは別の更新の途中です。少し待ってから再試行してください', 409, 'calendar_lease_conflict');
+    }
+    try {
+      return await withCalendarLeaseNow(provider, operation, context);
+    } finally {
+      releaseTurn();
+    }
+  }
+
+  async function withCalendarLeaseNow(provider, operation, context = null) {
     const store = window.MeldexActiveLockStore;
     if (!store?.acquire || !store?.release || !store?.heartbeat) {
       fail('共有カレンダーの更新ロックを利用できません。再読み込みしてから再試行してください', 503, 'CALENDAR_LOCK_UNAVAILABLE');
@@ -89,7 +122,10 @@
     const token = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `calendar-${Date.now()}-${Math.random()}`;
     const holderId = `calendar-mutation:${token}`;
     const lease = {
-      path: 'カレンダー', token, holder_id: holderId, locked_by: 'カレンダー更新',
+      // ロックの持ち主は、この画面で1つ（PAGE_LEASE_TOKEN）。更新ごとに新しい持ち主を作ると、Dropbox の持ち主ごとの
+      // ロックの記録が解放後も残って増え続け、以後のロックの読み書きが全部の記録を読むため、1回の保存が数百回の通信になっていた
+      // （M-014 スケジュール網羅の Cloud版で発見: 数分で43個・約4,400回の読み込み）。更新ごとの区別は holder_id で行う。
+      path: 'カレンダー', token: PAGE_LEASE_TOKEN, holder_id: holderId, locked_by: 'カレンダー更新',
       device_label: 'カレンダー', kind: 'calendar-mutation', include_descendants: true, lease_seconds: 300,
     };
     await store.acquire(provider, lease);
@@ -155,7 +191,7 @@
       guardedAliases.forEach(alias => {
         if (activeCalendarLeases.get(alias)?.token === token) activeCalendarLeases.delete(alias);
       });
-      try { await store.release(provider, lease.path, token, holderId); }
+      try { await store.release(provider, lease.path, PAGE_LEASE_TOKEN, holderId); }
       catch (error) { console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error); }
     }
   }

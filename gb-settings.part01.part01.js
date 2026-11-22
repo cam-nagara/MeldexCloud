@@ -308,6 +308,7 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-panel-grid > *{break-inside:avoid;margin:0 0 10px;}
       .settings-modal .settings-panel-grid .settings-section-wide{column-span:all;}
       .settings-modal #settings-cloud-link-card:empty{display:none;}
+      .settings-modal #settings-intake-recovery-card:empty{display:none;}
       .settings-modal[data-settings-mobile-layout="1"] [data-settings-webclip-desktop]{display:none!important;}
       @media (max-width: 900px){
         .settings-modal .settings-panel.settings-panel-grid{column-count:1;}
@@ -816,6 +817,7 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
+      <div id="settings-intake-recovery-card" data-settings-view="external-import x-bookmarks x-account-posts"></div>
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>

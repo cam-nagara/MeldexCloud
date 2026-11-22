@@ -742,6 +742,10 @@ function bdClearCardStyleOverrides(node) {
     '_userFontBold',
     '_userW',
   ].forEach(key => delete node[key]);
+  // ほかの項目の個別の書式の印（_userShape など）も外す。スタイル自体の選択の印（_userCardStyle）は呼び出し元が扱う。
+  Object.keys(node).forEach(key => {
+    if (/^_user[A-Z]\w*$/.test(key) && key !== '_userCardStyle') delete node[key];
+  });
 }
 
 function bdSetNodeCardStyleRef(node, styleId, options = {}) {

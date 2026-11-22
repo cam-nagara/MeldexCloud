@@ -197,19 +197,22 @@
       this._showStatus('複製できるイベントがありません', true);
       return;
     }
-    this._pushUndo('イベント一括複製');
+    // 取り消しの履歴の枠は操作の時点で取り、全件の複製が成功した時だけ中身を入れる（失敗した操作は作った分を消して戻すので履歴を残さない）。
+    const undo = this._reserveUndo('イベント一括複製');
     const createdIds = [];
     try {
       for (const ev of targets) {
         const result = await apiPost('/cal/events', this._eventDuplicatePayload(ev));
         if (result?.id) createdIds.push(result.id);
       }
+      undo.commit();
       await this._loadEvents();
       this._setSelectedEvents(createdIds, createdIds[createdIds.length - 1] || '');
       this._render();
       const suffix = skipped ? `（${skipped}件は複製対象外）` : '';
       this._showStatus(`${createdIds.length} 件を複製しました${suffix}`);
     } catch (error) {
+      undo.cancel();
       await Promise.all(createdIds.map(id => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {})));
       await this._loadEvents();
       this._render();
@@ -235,11 +238,8 @@
     const beforeLast = this._lastSelectedEventId || '';
     const deletedEventMeta = new Map(plan.eventIds.map(id => [id, beforeEvents.find(event => event.id === id) || null]));
     const eventIdSet = new Set(plan.eventIds);
-    const undoSnapshot = plan.eventIds.length ? {
-      events: this._snapshotEventsForUndo(),
-      tasks: this._snapshotTasksForUndo(),
-      eventWindow: this._snapshotEventWindowForUndo(),
-    } : null;
+    // 取り消しの履歴の枠は操作の時点で取り、1件以上の削除が成功した時だけ中身を入れる。
+    const undo = plan.eventIds.length ? this._reserveUndo('イベント一括削除') : null;
     this._events = (this._events || []).filter(event => !eventIdSet.has(event.id));
     plan.shiftIds.forEach(shiftId => {
       if (typeof this._removeShiftOptimistic === 'function') this._removeShiftOptimistic(shiftId);
@@ -252,7 +252,10 @@
     this._renderCalendarList?.();
     this._render();
     const operations = [
-      ...plan.eventIds.map(id => ({ kind: 'event', id, run: () => apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' }) })),
+      ...plan.eventIds.map(id => ({ kind: 'event', id, run: () => {
+        const promise = apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
+        return window.MeldexDiagnostics?.watchScheduleTask?.('event-delete', promise) ?? promise;
+      } })),
       ...plan.shiftIds.map(id => ({ kind: 'shift', id, run: () => apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' }) })),
     ];
     const settled = await Promise.allSettled(operations.map(operation => operation.run()));
@@ -262,7 +265,8 @@
     });
     const failed = operations.filter((operation, index) => !succeeded.includes(operation));
     const succeededEventIds = succeeded.filter(operation => operation.kind === 'event').map(operation => operation.id);
-    if (succeededEventIds.length && undoSnapshot) this._pushUndo('イベント一括削除', undoSnapshot);
+    if (succeededEventIds.length) undo?.commit();
+    else undo?.cancel();
     succeededEventIds.forEach(id => {
         apiPost('/annotations/orphan-by-target', {
           target_kind: 'calendar_event',
@@ -545,6 +549,8 @@
       item.type = 'button';
       item.className = 'gb-context-menu-item' + (options.danger ? ' danger' : '') + (options.disabled ? ' disabled' : '');
       item.dataset.calEventCardAction = options.action || label;
+      // 項目の安定ID（メニューの照合・操作の記録用）。表示名ではなく操作の種類で付ける。
+      item.dataset.e2eId = 'calendar-event-card-' + String(options.action || 'item');
       item.setAttribute('role', 'menuitem');
       item.disabled = !!options.disabled;
       item.innerHTML = `${_calIcon(icon, 14)}<span>${_calEsc(label)}</span>`;

@@ -363,7 +363,7 @@
   function scheduleBoardRender() {
     const board = getBoardState();
     if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    const render = global.bdRefreshThemeStyles;
     if (typeof render !== 'function') return;
     const token = ++_boardRenderToken;
     const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));

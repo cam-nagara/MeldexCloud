@@ -302,7 +302,8 @@
         card.setAttribute('role', 'option');
         card.setAttribute('aria-selected', item.id === selectedId ? 'true' : 'false');
         card.dataset.templateId = item.id;
-        card.dataset.e2eId = e2e.card || `${pickerId}-card`;
+        // 安定ID: カードごとに別の値（テンプレートのIDを付ける）。同じ画面に同じIDの部品が並ばないように。
+        card.dataset.e2eId = `${e2e.card || `${pickerId}-card`}:${item.id}`;
         const thumb = el('span', 'gb-tpl-thumb');
         thumb.setAttribute('aria-hidden', 'true');
         renderThumb(item, thumb, 'card');
@@ -326,7 +327,7 @@
           renderPreview();
         });
         card.addEventListener('dblclick', () => runPrimary(item));
-        const favorite = button(favorites.has(item.id) ? '★' : '☆', 'gb-tpl-favorite', `${pickerId}-favorite`);
+        const favorite = button(favorites.has(item.id) ? '★' : '☆', 'gb-tpl-favorite', `${pickerId}-favorite:${item.id}`);
         favorite.dataset.templateId = item.id;
         favorite.setAttribute('aria-label', favorites.has(item.id) ? `${item.name}をお気に入りから外す` : `${item.name}をお気に入りに追加`);
         favorite.setAttribute('aria-pressed', favorites.has(item.id) ? 'true' : 'false');

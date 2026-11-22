@@ -217,6 +217,10 @@ const MeldexStartupTabGuard = (() => {
 
   function deferMount(pane, contentEl, tab, viewName, remount) {
     if (!shouldVerifyStartupTabPath(viewName, tab)) return false;
+    // サブパネル等の配置の外の仮のパネルは確認しない（2026-11-21 報告）。確認後の表示の戻しは配置の中の
+    // パネルしか探せず、「復元タブのファイルを確認しています...」のまま止まっていた。サブパネルは
+    // 読めない時の表示を自前で持つ。
+    if (!findPaneWithTabId(tab?.id || '')) return false;
     const key = startupPathKey(tab, viewName);
     const recovery = tab?.state?.startupRecovery;
     if (!isStartupRestoreActive() && recovery?.environment === currentRestoreEnvironment()) {

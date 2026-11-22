@@ -201,7 +201,7 @@
     showfolderpanelsettings: 'フォルダビューのオプションを開きます',
     showpanelmenu: 'パネルメニューを開きます',
     showsettingsmodal: '設定を開きます',
-    showtoolmenu: 'ツールメニューを開きます',
+    showtoolmenu: 'メインメニューを開きます',
     showunifiedfiltermodal: 'フィルタ条件を設定します',
     showusermenu: 'ユーザー設定を開きます',
     showvalidationrulesmodal: '検証ルールを管理します',
@@ -1052,6 +1052,7 @@
   regSemantic('panel.right.toggle', { label: '右サイドバー', desc: '右サイドバーを開閉します' });
   regSemantic('history.undo', { label: '元に戻す', desc: '直前の操作を元に戻します', shortcutId: 'global.undo' });
   regSemantic('history.redo', { label: 'やり直す', desc: '元に戻した操作をやり直します', shortcutId: 'global.redo' });
+  regSemantic('toolbar.mainMenu', { label: 'メインメニュー', desc: 'このアプリのメニュー（新規作成・保存・書き出し・フォルダツリーで表示など）を開きます' });
   regSemantic('file.save', { label: '保存', desc: '現在の内容を保存します', shortcutId: 'global.save' });
   regSemantic('file.open', { label: '開く', desc: 'ファイルを選んで開きます' });
   regSemantic('file.new', { label: '新規作成', desc: '新しいファイルを作成します' });
@@ -1351,7 +1352,7 @@
   regAction('openscenariocharacterdbimport', { label: 'キャラ取り込み', desc: 'シナリオで使うキャラ情報をシートから取り込みます' });
 
   // ツールメニュー / モバイル / スクショ
-  regAction('showtoolmenu',          { label: 'ツールメニュー', desc: '現在のビューのツールメニューを開きます' });
+  regAction('showtoolmenu',          { label: 'メインメニュー', desc: 'このアプリのメニューを開きます' });
   regAction('showmobiletoolmenu',    { label: 'ツールメニュー', desc: 'モバイル向けツールメニューを開きます' });
   regAction('showscreenshotmenu',    { label: 'スクリーンショット', desc: 'スクリーンショット撮影メニューを開きます' });
   regAction('opentooltab',           { label: 'ツールタブを開く', desc: '指定したツールのタブを開きます' });

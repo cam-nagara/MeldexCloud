@@ -515,7 +515,9 @@ class ScriptNoteEditor {
         if (!loaded) throw new Error('最新版の読み込みに失敗しました');
       } else {
         const data = await apiFetch('/file?path=' + encodeURIComponent(path));
-        const parsed = JSON.parse(data.content || '{}');
+        const parsed = typeof _sn2ParseScenarioContent === 'function'
+          ? _sn2ParseScenarioContent(data.content, path)
+          : JSON.parse(String(data.content || '{}').replace(/^\uFEFF/, ''));
         if (typeof _sn2ExpandDefaultFileStyle === 'function') _sn2ExpandDefaultFileStyle(parsed);
         if (typeof isScriptNoteFileDoc === 'function' && !isScriptNoteFileDoc(parsed)) {
           throw new Error('シナリオ形式ファイルではありません');
@@ -601,6 +603,8 @@ class ScriptNoteEditor {
       // 保存要求と現在内容が一致する時だけ回復用下書きを同期済みにする。
       // 保存中に追加編集された場合は、その新しい下書きを消さない。
       if (unchanged) await window.MeldexDraftRecovery?.markSynced?.(savePath);
+      // 同じシナリオを開いている別のパネルへ、保存した内容を届ける（設計意図§31。S2）
+      if (unchanged && this._path === savePath) this._syncSiblingEditorsAfterSave(documentKey, savePath, json, saveResult);
       // 削除された行IDを抽出し、該当コメントを孤児化 (annotation_unification_plan.md §5.3)
       const removed = [...prevIds].filter(id => !currIds.has(id));
       if (removed.length > 0) {
@@ -653,6 +657,52 @@ class ScriptNoteEditor {
       if (typeof showStatus === 'function') showStatus('保存失敗: ' + e.message, true);
       return false;
     }
+  }
+
+  // 同じシナリオ（同じ文書キー）を開いている別のエディタのうち、未保存の変更を持たないものへ、
+  // いま保存した内容と新しい版を反映する。未保存の変更・保存中・競合の保留・編集ロック・入力中
+  // （キャレットがある）のエディタには触らない（従来どおり、その保存は版の照合で競合として止まる）。
+  // 反映したエディタは再読込と同じく取り消しの履歴を新しくする（古い内容へ戻して相手の保存を消さない）。
+  _syncSiblingEditorsAfterSave(documentKey, savePath, json, saveResult) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    if (!coordinator?.getParticipants || !documentKey) return;
+    let participants = [];
+    try { participants = coordinator.getParticipants(documentKey) || []; } catch { return; }
+    const siblings = participants.filter(other => other && other !== this
+      && other instanceof ScriptNoteEditor && other.doc && other.host?.isConnected);
+    if (!siblings.length) return;
+    let savedDoc = null;
+    try { savedDoc = JSON.parse(json); } catch { return; }
+    siblings.forEach((other) => {
+      try {
+        if (other._readOnly || other._imeComposing || other._saveTimer) return;
+        if (coordinator.getConflict?.(documentKey) || coordinator.hasUnsettledSaveFrom?.(documentKey, other)) return;
+        const otherKey = other._path ? coordinator.documentKeyForPath(other._path) : '';
+        if (otherKey !== documentKey) return;
+        if (other._cellEditMode && other.host.contains(document.activeElement)) return;
+        other._syncAllFromDom();
+        if (other._dirty) return;
+        const registry = typeof _sn2Editors !== 'undefined' ? _sn2Editors : null;
+        const registeredForPath = registry ? registry[other._path] : null;
+        const wasActive = typeof _sn2GetActiveEditor === 'function' && _sn2GetActiveEditor() === other;
+        // 取り消しの履歴は新しいスコープで始める（再読込と同じ）
+        other._historyScopeId = null;
+        const loaded = other.loadDoc(JSON.parse(JSON.stringify(savedDoc)), other._path, saveResult?.etag || '', null, {
+          ...(saveResult || {}),
+          transport_revision: saveResult?.transport_revision || saveResult?.etag || '',
+        });
+        // パスごとのエディタの登録は、保存した側の対応を奪わない
+        if (registry && registeredForPath && registeredForPath !== other && registeredForPath.doc) {
+          registry[other._path] = registeredForPath;
+        }
+        if (!loaded) return;
+        if (wasActive && typeof historySetScope === 'function') historySetScope(other._historyScope());
+        // タイトル欄・ツールバーの切替表示など、文書の外側の表示も同じ内容へ合わせる
+        window.dispatchEvent(new CustomEvent('meldex:scriptnote-history-restored', { detail: { editor: other } }));
+      } catch (error) {
+        console.warn('[Meldex] 別のパネルのシナリオへ保存内容を反映できませんでした', error);
+      }
+    });
   }
 
   async preserveDraftForClose() {
@@ -1260,7 +1310,7 @@ class ScriptNoteEditor {
         const state = this.doc.editor || {};
         const currentMode = state.viewMode || 'horizontal';
         if (!state.wrapMode || currentMode !== viewMode) return;
-        this._render();
+        this._repackWrapForResize?.();
       }, 0);
     };
     const checkSize = () => {
@@ -1318,6 +1368,7 @@ class ScriptNoteEditor {
 
   _render() {
     if (!this.host || !this.doc) return;
+    this._repackWrapForResize = null;
     this._teardownWrapResizeObserver();
     if (typeof this._sanitizeRowSelection === 'function') this._sanitizeRowSelection();
     // フロートバーを除去（document.body上にあるため host.innerHTML='' では消えない）
@@ -1569,6 +1620,8 @@ class ScriptNoteEditor {
             };
             escapeHandler = (e) => {
               if (e.key !== 'Escape') return;
+              // メニューが別の経路で取り除かれていたら、Escape を横取りせずに後始末だけする。
+              if (!popup.isConnected) { closePopup(false); return; }
               e.preventDefault();
               e.stopPropagation();
               closePopup(true);

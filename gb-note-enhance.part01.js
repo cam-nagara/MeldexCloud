@@ -714,6 +714,8 @@ if (_origOpenPage) {
     if (btn) btn.classList.toggle('active', _indentOn);
     // ブロックドラッグハンドル初期化
     _initBlockDragHandle();
+    // テーマ・見出しの表示用装飾まで済んだ状態を、未編集の比較元にする。
+    if (pc) window.MeldexNoteSaveAdapter?.rememberLoadedBaseline?.(pc);
     return opened;
   };
 }

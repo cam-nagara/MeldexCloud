@@ -1,7 +1,8 @@
   // 改行コード正規化（CRLF→LF）
   md = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   // フロントマター（YAML）を除去
-  md = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  const frontmatter = typeof _noteFrontmatterPrefix === 'function' ? _noteFrontmatterPrefix(md) : '';
+  if (frontmatter) md = md.slice(frontmatter.length);
   // 段落ステータスは可読なHTMLコメントとしてMarkdownへ保存する。未知の
   // Markdown処理系ではコメントとして無視され、Meldexでは直後の論理ブロックへ戻す。
   md = md.replace(/^<!--meldex-status:([a-z][a-z0-9-]*)-->\r?\n([^\n]*)/gm, (_m, status, nextLine) => {
@@ -42,6 +43,7 @@
   let html = '';
   let inCodeBlock = false, codeLang = '';
   let inTable = false, _tableRowCount = 0;
+  let tableAlignments = [];
   let pendingTableLayout = null;
   let pendingNoteTitle = false;
   let pendingCalloutMetadata = null;
@@ -105,6 +107,12 @@
     return cells;
   }
 
+  function isMarkdownTableSeparator(line) {
+    if (!/^\|.*\|$/.test(line)) return false;
+    const cells = splitMarkdownTableRow(line);
+    return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const calloutMetadataMatch = lines[i].match(/^<!--meldex-callout:([^<>]*)-->$/);
     if (!inCodeBlock && calloutMetadataMatch && /^>\s*\[!/.test(lines[i + 1] || '')) {
@@ -155,9 +163,13 @@
     if (line.match(/^\|.*\|$/)) {
       closeListAll();
       // 区切り行（|---|---|）はスキップ
-      if (line.match(/^\|[\s\-:|]+\|$/)) continue;
+      if (inTable && _tableRowCount === 1 && isMarkdownTableSeparator(line)) continue;
       const cells = splitMarkdownTableRow(line);
       if (!inTable) {
+        const separator = String(lines[i + 1] || '').trim();
+        tableAlignments = isMarkdownTableSeparator(separator)
+          ? splitMarkdownTableRow(separator).map(value => value.startsWith(':') && value.endsWith(':') ? 'center'
+            : value.endsWith(':') ? 'right' : value.startsWith(':') ? 'left' : '') : [];
         const layoutJson = pendingTableLayout ? esc(JSON.stringify(pendingTableLayout)) : '';
         const hasWidths = Array.isArray(pendingTableLayout?.colWidths) && pendingTableLayout.colWidths.some(width => Number(width) > 0);
         html += `<table style="border-collapse:collapse;width:100%;margin:8px 0;${hasWidths ? 'table-layout:fixed;' : ''}"${layoutJson ? ` data-note-table-layout="${layoutJson}" data-note-table-resized="1"` : ''}>`;
@@ -178,7 +190,7 @@
       _tableRowCount++;
       const rowStyle = rowHeight ? ` style="height:${rowHeight}px;"` : '';
       const cellHeight = rowHeight ? `height:${rowHeight}px;` : '';
-      html += `<tr${rowStyle}>` + cells.map(c => `<${tag} style="border:1px solid var(--border);padding:4px 8px;${cellHeight}">${inlinemd(c)}</${tag}>`).join('') + '</tr>';
+      html += `<tr${rowStyle}>` + cells.map((c, ci) => `<${tag} style="border:1px solid var(--border);padding:4px 8px;${cellHeight}${tableAlignments[ci] ? 'text-align:' + tableAlignments[ci] + ';' : ''}">${inlinemd(c)}</${tag}>`).join('') + '</tr>';
       continue;
     }
     if (inTable) { html += '</table>'; inTable = false; pendingTableLayout = null; }

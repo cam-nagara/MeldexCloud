@@ -121,15 +121,27 @@
         if (!editable || group.dataset.saving === '1') return;
         const previous = Number(group.dataset.rating) || 0;
         const next = previous === value ? 0 : value;
+        const scopeToken = window.MeldexFileIcons?.scope?.();
+        const vaultPath = typeof state !== 'undefined' ? state.vaultPath : '';
+        const reservation = typeof historyReserve === 'function' ? historyReserve('ファイル: 評価', '') : null;
         group.dataset.saving = '1';
         setRatingButtons(group, next);
         try {
           await update(path, { rating: next }, writeContext);
+          const restore = rating => {
+            if (scopeToken !== window.MeldexFileIcons?.scope?.() || vaultPath !== (typeof state !== 'undefined' ? state.vaultPath : '')) {
+              throw new Error('保存先が変わったため評価を戻せません');
+            }
+            return update(path, { rating }, writeContext);
+          };
+          const register = () => typeof historyPush === 'function' && historyPush('ファイル: 評価', () => restore(previous), () => restore(next), '');
+          if (reservation) reservation.capture(register); else register();
           if (typeof showStatus === 'function') showStatus(next ? `評価を${next}つ星にしました` : '評価を解除しました');
         } catch (error) {
           setRatingButtons(group, previous);
           if (typeof showStatus === 'function') showStatus('評価を保存できませんでした: ' + (error?.message || error), true);
         } finally {
+          reservation?.cancel();
           delete group.dataset.saving;
         }
       });

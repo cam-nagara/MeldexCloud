@@ -199,6 +199,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     const btnNext = popup.querySelector('[data-sn-search-next]');
     const btnReplace = popup.querySelector('[data-sn-search-replace]');
     const btnReplaceAll = popup.querySelector('[data-sn-search-replace-all]');
+    // 安定ID と名前（M-014 S31）。
+    [[queryInput, 'scriptnote-search-query', '検索する文字'], [replaceInput, 'scriptnote-search-replace-text', '置換後の文字'],
+      [btnPrev, 'scriptnote-search-prev', '前の一致へ'], [btnNext, 'scriptnote-search-next', '次の一致へ'],
+      [btnReplace, 'scriptnote-search-replace', ''], [btnReplaceAll, 'scriptnote-search-replace-all', ''],
+      [popup.querySelector('[data-sn-search-close]'), 'scriptnote-search-close', '']].forEach(([el, id, label]) => {
+      if (!el) return;
+      el.dataset.e2eId = id;
+      if (label) { el.setAttribute('aria-label', label); if (el.tagName === 'BUTTON') el.title = label; }
+    });
 
     queryInput.value = this._searchState.query || '';
     replaceInput.value = this._searchState.replace || '';

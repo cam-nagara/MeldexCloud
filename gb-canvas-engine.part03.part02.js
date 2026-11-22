@@ -658,9 +658,12 @@ async function bdSave() {
     // 工程2-C項目2: 500ms自動保存・切替/閉じる保存（いずれもbdSave経由）を
     // 文書単位single-flightへ接続する。coordinator未ロード時は従来通り直接送信する
     // （フォールバック。単独版の一部読込順で発生し得るため黙って壊さない）。
-    const saveResult = coordinator
-      ? await coordinator.requestSave(documentKey, bd, savePath, markdown, sendFn, { reason: 'board-auto' })
-      : await sendFn();
+    const savePromise = coordinator
+      ? coordinator.requestSave(documentKey, bd, savePath, markdown, sendFn, { reason: 'board-auto' })
+      : sendFn();
+    // 30秒たっても保存が終わらない時は、問題の自己記録に残し、状態表示で知らせる（シートと同じ仕組み。M-014）。
+    window.MeldexDiagnostics?.watchSheetTask?.('board.save', savePath, savePromise, { label: 'ボードの保存' });
+    const saveResult = await savePromise;
     if (saveResult?.conflictPending) {
       // conflict-pending中はコーディネーターがネットワーク送信自体をスキップしている。
       // 何も送っていないため dirty のまま維持し、バナーだけ最新化する。
@@ -684,6 +687,10 @@ async function bdSave() {
         saveResult.transport_revision || saveResult.etag,
       );
       coordinator.bindDocumentIdentity(savePath, saveResult);
+    } else if (!coordinator && (saveResult?.transport_revision || saveResult?.etag)) {
+      // 保存の調整役を読み込まない単独ボードアプリでも、次の保存の版を新しくする（古い版のままだと
+      // 2回目以降の保存が「if_match_etagとtransport_revisionが一致しません」ですべて失敗していた。M-014）。
+      bd.lastSavedTransportRevision = saveResult.transport_revision || saveResult.etag;
     }
     const unchanged = bdToMd() === markdown;
     if (unchanged) {
@@ -721,6 +728,11 @@ async function bdSave() {
       _bdShowConflictPending(documentKey, savePath);
       showStatus('ボードは上書きされていません。別の端末で更新されています。最新のボードを開き直してから編集内容を反映してください', true);
     } else {
+      // 保存の失敗は問題の自己記録に残す（ボードの保存は /file なので、通信の失敗からの自動の記録には載らない）。
+      window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+        op: 'board.save', endpoint: '/file', method: 'PUT', status: Number(e?.status || e?.httpStatus || 0) || 0,
+        errorType: String(e?.name || 'Error').slice(0, 60), sheet: savePath,
+      });
       // A signature/storage failure must retain the unsaved cards as a local
       // recovery draft. This does not mark the Cloud document as saved.
       if (bd.path === savePath && recoveryScopeAtRequest !== undefined && recoveryScope() === recoveryScopeAtRequest) {

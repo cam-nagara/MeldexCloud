@@ -76,6 +76,7 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 - [openpyxl](https://openpyxl.readthedocs.io/) — MIT License
 - [python-docx](https://github.com/python-openxml/python-docx) — MIT License
 - [Pillow](https://python-pillow.github.io/) — MIT-CMU
+- [python-zstandard](https://github.com/indygreg/python-zstandard) — BSD 3-Clause（Blenderの圧縮プレビュー読込）
 - [python-multipart](https://github.com/Kludex/python-multipart) — Apache License 2.0
 - [watchdog](https://github.com/gorakhargosh/watchdog) — Apache License 2.0
 - [pystray](https://github.com/moses-palmer/pystray) — LGPL v3
@@ -93,3 +94,13 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 - Radicale / icalendar / PyAutoGUI / pywebview / pywin32 / torch / transformers — 詳細は [THIRD-PARTY.md](THIRD-PARTY.md) を参照してください。
 
 詳細な同梱形態と権利表記チェック結果は [THIRD-PARTY.md](THIRD-PARTY.md) を参照してください。
+
+## Optional viewer OCR models
+
+利用者が明示取得するローカルOCRモデルです。アプリのソースや通常の配布物へモデル本体を含めません。
+
+- [Comic Text Detector](https://github.com/dmMaze/comic-text-detector) — dmMaze、GPL-3.0。[ONNX配布](https://huggingface.co/mayocream/comic-text-detector-onnx)。
+- [Manga OCR](https://github.com/kha-white/manga-ocr) — kha-white、Apache-2.0。[ONNX配布](https://huggingface.co/mayocream/manga-ocr-onnx)。
+- [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) — Apache-2.0 / BSD-3-Clause。含まれるPDFiumの第三者ライセンスも同梱パッケージに従います。
+
+固定モデルの版・容量・検査方法は [文字選択とOCRの接続契約](app/docs/viewer-text-selection-contract.md) を参照してください。

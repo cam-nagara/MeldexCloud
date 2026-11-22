@@ -574,7 +574,19 @@ function bdSwapSibling(nodeId, dir) {
   if (typeof bd === 'undefined') return false;
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n || !n.parent) return false;
-  const siblings = (typeof bdChildren === 'function') ? bdChildren(n.parent) : [];
+  let siblings = (typeof bdChildren === 'function') ? bdChildren(n.parent) : [];
+  // 自動整列のない木（親に従う・構造なし）では、手で動かすと内部の並びと画面の並びがずれる。
+  // その時に内部の並びの前後と入れ替えると、画面では上の兄弟を飛び越えて2つ先と入れ替わった（M-014 ボード網羅テストで発見）。
+  // 利用者が見ている並び（右・左へ伸びる木は上下、上・下へ伸びる木は左右）の前後と入れ替える。
+  // 自動整列のある木は、位置が内部の並びから決まるので従来どおり内部の並びを使う。
+  const swapStructure = (typeof bdStructureOf === 'function') ? bdStructureOf(nodeId) : '';
+  if (!swapStructure && siblings.length > 1) {
+    const treeDir = (typeof bdTreeDirection === 'function') ? bdTreeDirection(nodeId) : 'right';
+    const axis = (treeDir === 'up' || treeDir === 'down') ? 'x' : 'y';
+    siblings = siblings.map((s, i) => [s, i])
+      .sort((a, b) => ((Number(a[0][axis]) || 0) - (Number(b[0][axis]) || 0)) || (a[1] - b[1]))
+      .map(pair => pair[0]);
+  }
   const idx = siblings.findIndex(s => s.id === nodeId);
   if (idx < 0) return false;
   const otherIdx = dir === 'prev' ? idx - 1 : idx + 1;

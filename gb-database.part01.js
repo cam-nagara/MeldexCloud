@@ -310,7 +310,8 @@ async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
 }
 
 async function selectDatabase(dbPath, ctx, opts) {
-  const openOpts = opts || {};
+  const historyProjection = window.MeldexChatManagementSheet?.isPath?.(dbPath) === true;
+  const openOpts = historyProjection ? { ...opts, readOnly:true, skipAutoVersion:true, skipRecent:true } : (opts || {});
   const requestedViewMode = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form']
     .includes(String(openOpts.requestedViewMode || '').trim())
     ? String(openOpts.requestedViewMode).trim()
@@ -319,6 +320,13 @@ async function selectDatabase(dbPath, ctx, opts) {
   const dbPerfTargetLabel = String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || '');
   ctx = _resolveDatabasePaneContext(ctx);
   if (!ctx) return { ok: false, destroyed: true };
+  ctx._historyReadOnlyCleanup?.();
+  ctx._historyReadOnlyCleanup = null;
+  if (ctx._historyReadOnly) {ctx.writeBlocked=false;ctx.readOnly=false;ctx._historyReadOnly=false;}
+  if (historyProjection) {
+    ctx.readOnly = true; ctx._historyReadOnly = true;
+    ctx._historyReadOnlyCleanup = window.MeldexProductionSheetEmbed?.bindReadOnly?.(ctx);
+  }
   if (ctx.embedded && ctx.hostController && openOpts.embeddedHostDispatch !== true) {
     const opened = await ctx.hostController.open(dbPath, { ...openOpts, forceReload: true });
     return { ok: opened !== false, stale: opened === false, destroyed: !!ctx.destroyed, dbPath };
@@ -552,6 +560,13 @@ async function selectDatabase(dbPath, ctx, opts) {
         if (!openOpts.skipShowView) showView(dbViewMode, ctx);
       }
     }
+    // このシートの自動リンクの切り替え（表示設定 view_config.displayLayers に保存）を登録する。
+    // セルの描画はこの値を見る。自動ルビはシートには無い。
+    if (typeof globalThis.MeldexDisplayLayers?.registerApp === 'function') {
+      if (typeof _registerSheetDisplayLayers === 'function') _registerSheetDisplayLayers();
+      MeldexDisplayLayers.setFileState(dbPath, getDbViewConfig(dbPath)?.displayLayers, { supportsAutoRuby: false });
+      MeldexDisplayLayers.refreshControls();
+    }
     // DB自身のスタイル（style: 優先、旧 theme: も後方互換で読む）は DB パネルにのみ適用
     const _dbStyle = ctx.dbMetadata && (ctx.dbMetadata.style || ctx.dbMetadata.theme);
     if (!openOpts.skipGlobalUi && _dbStyle && typeof applyFileStyleToPanel === 'function') {
@@ -651,6 +666,10 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (window.GbDbEntryIdentity) window.GbDbEntryIdentity.registerPivot(dbPath, pivotData);
     ctx.pivotData = pivotData;
     if (syncGlobalState) state.pivotData = ctx.pivotData; // グローバル同期
+    // 中断した旧形式の列名の変更が残っていれば、元の状態に戻す（gb-db-property-types.part01.part01.js）。
+    if (typeof _ptRecoverInterruptedLegacyRename === 'function') {
+      _ptRecoverInterruptedLegacyRename(dbPath, ctx).catch(error => console.warn('中断した列名の変更の確認に失敗:', error));
+    }
     const entityCountForPerf = Object.keys(ctx.pivotData.entities || {}).length;
     const propertyCountForPerf = Array.isArray(ctx.pivotData.properties) ? ctx.pivotData.properties.length : 0;
     if (typeof _logPerfEvent === 'function') {
@@ -786,6 +805,7 @@ async function selectDatabase(dbPath, ctx, opts) {
 }
 
 async function selectEntity(entityPath, opts) {
+  if (window.MeldexChatManagementSheet?.isPath?.(entityPath)) return window.MeldexChatManagementSheet.openRow(entityPath);
   const openOpts = opts || {};
   const entityLoadSeq = (window._selectEntityLoadSeq || 0) + 1;
   window._selectEntityLoadSeq = entityLoadSeq;
@@ -1008,6 +1028,28 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
     async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
     async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
     scope
+  );
+}
+// 空のセルへ新しく作った候補値の取り消し（取り消しで候補値を消し、やり直しで同じ値を作り直す）。
+// created は _apiPostValue の応答（path / property / candidate_id / entry_id / candidate_index）。
+function _dbUndoCreatedValue(label, entityPath, propName, value, created, options = {}) {
+  if (typeof historyPush !== 'function' || !created) return;
+  const dbPath = _dbResolveUndoDbPath(null, { ...options, entityPath });
+  const ctx = _dbResolveUndoCtx(dbPath, options);
+  const refOf = res => ({
+    file: res?.path || res?.file || entityPath,
+    property: res?.property || propName,
+    candidate_id: res?.candidate_id, entry_id: res?.entry_id, candidate_index: res?.candidate_index,
+  });
+  let ref = refOf(created);
+  historyPush(label,
+    async () => { await _apiPutValue(ref, { _delete: true }); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
+    async () => {
+      const again = await _apiPostValue(entityPath, propName, value, options.status || '採用', options.note || '');
+      ref = refOf(again);
+      if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
+    },
+    _dbScope(dbPath)
   );
 }
 // ペアリレーション対応Undo（ペア側も自動で戻す）

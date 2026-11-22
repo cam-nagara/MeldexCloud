@@ -19,7 +19,14 @@ Object.assign(ScriptNoteEditor.prototype, {
   runShortcutAction(id, e) {
     if (e?.isComposing) return false;
     const ae = document.activeElement;
-    if (ae && ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName)) return false;
+    // 文字を入力する欄（検索欄・自由入力欄など）ではシナリオのショートカットを動かさない。
+    // 行の選択欄（チェックボックス）では、選択を扱うショートカット（Escape・全選択・選択解除）だけは
+    // 動かす。除外すると、選択欄を押した直後の Escape で行の選択が解除されなかった（M-014 S20）。
+    // Tab などはこれまでどおりブラウザの既定（フォーカス移動）に任せる。
+    const isRowCheckbox = ae?.tagName === 'INPUT' && ['checkbox', 'radio'].includes(String(ae.type || '').toLowerCase())
+      && !!this.host?.contains(ae)
+      && ['scenario.escape', 'scenario.selectAll', 'scenario.deselectAll'].includes(id);
+    if (ae && ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName) && !isRowCheckbox) return false;
     switch (id) {
       case 'scenario.undo':
         if (typeof this.undo !== 'function') return false;
@@ -39,9 +46,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       case 'scenario.deselectAll':
         return this._runDeselectAllShortcut();
       case 'scenario.selectAll': {
-        // セル内で Ctrl+A: 全行選択ではなくそのセルの内容全体を選択する
-        const cell = ae?.closest?.('.sn2-text[contenteditable], .sn2-custom-text[contenteditable]');
-        if (cell && this.host?.contains(cell)) {
+        // 編集中のセル内で Ctrl+A: 全行選択ではなくそのセルの内容全体を選択する。
+        // 選択しただけ（編集していない）のセルは contenteditable="false" なので対象外にし、
+        // ショートカットの名前どおり全行を選択する（M-014 S22）。
+        const cell = ae?.closest?.('.sn2-text[contenteditable="true"], .sn2-custom-text[contenteditable="true"]');
+        if (cell && this.host?.contains(cell) && !this._isActiveNonEditingTarget?.(cell)) {
           // 過去のセル範囲選択が残っていると、この後のDeleteで無関係なセルまで消えるため先に解除する
           this._clearGridCellSelection?.();
           this._clearTextCellSelection?.();
@@ -141,32 +150,52 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
     if (targetIdx < 0 || targetIdx >= this.doc.rows.length) return false;
     this._pushUndo('行入れ替え');
+    // 入れ替えでスクロールが動かないよう、今の位置を覚えておく（フィルタありで表を描き直すと、
+    // フォーカスとキャレットの追従で「最後の行が画面の端に来る位置」へ戻っていた。2026-11-21）。
+    const scrollBefore = this.host?.querySelector('.sn2-scroll');
+    const savedScroll = scrollBefore ? { top: scrollBefore.scrollTop, left: scrollBefore.scrollLeft } : null;
     const targetRowId = this.doc.rows[targetIdx].id;
     const tmp = this.doc.rows[idx];
     this.doc.rows[idx] = this.doc.rows[targetIdx];
     this.doc.rows[targetIdx] = tmp;
     this._calcCache = null;
     const targetRow = this.host?.querySelector(`.sn2-row[data-row-id="${targetRowId}"]`);
-    if (row && targetRow && !this._filterRoles) {
+    // フィルタで隠れた行は表に無いが、入れ替え相手は表示中の隣の行なので、表の上でも隣どうしを入れ替えればよい
+    // （以前はフィルタありだと表全体を描き直していた）。
+    if (row && targetRow && row.parentNode === targetRow.parentNode) {
       if (dir === -1) row.parentNode.insertBefore(row, targetRow);
       else row.parentNode.insertBefore(row, targetRow.nextSibling);
-      this._updateGuttersFrom(Math.min(idx, targetIdx));
+      this._updateGuttersFrom(Math.min(idx, targetIdx), { movedRowIds: [rowId, targetRowId] });
       row.classList.add('sn2-swap-highlight');
       setTimeout(() => row.classList.remove('sn2-swap-highlight'), 400);
     } else {
       this._render();
     }
     this._markDirty({ skipUndo: true });
+    const keepScroll = (textEl) => {
+      const scroll = this.host?.querySelector('.sn2-scroll');
+      if (!savedScroll || !scroll) return;
+      scroll.scrollTop = savedScroll.top;
+      scroll.scrollLeft = savedScroll.left;
+      // 動かした行が見えなくなった時だけ、最小限だけ動かして見せる。
+      const r = textEl?.getBoundingClientRect?.();
+      const v = scroll.getBoundingClientRect();
+      if (r && (r.bottom < v.top || r.top > v.bottom || r.right < v.left || r.left > v.right)) {
+        textEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+      }
+    };
     requestAnimationFrame(() => {
       const curRow = this.host?.querySelector(`.sn2-row[data-row-id="${rowId}"]`);
       const newText = curRow?.querySelector('.sn2-text');
       if (!newText) return;
       const sel = window.getSelection();
       const inText = sel?.anchorNode && newText.contains(sel.anchorNode);
-      if (!inText) this._focusText(newText, 'start');
+      if (!inText) this._focusText(newText, 'start', { preventScroll: true });
       if (this._caretSelChangeHandler) this._caretSelChangeHandler();
+      keepScroll(newText);
       requestAnimationFrame(() => {
         if (this._caretSelChangeHandler) this._caretSelChangeHandler();
+        keepScroll(newText);
       });
     });
     return true;
@@ -318,6 +347,15 @@ Object.assign(ScriptNoteEditor.prototype, {
     this._bindDragSelection(host);
     this._bindRowSelectionCopy();
     if (typeof this._bindRowCheckDragToggle === 'function') this._bindRowCheckDragToggle(host);
+    // 行の選択欄にフォーカスがある時の Escape は、ショートカットの振り分け（文書全体）を待たずに
+    // ここで選択の解除まで行う（M-014 S20。振り分けはダイアログ表示中などに処理を飛ばすため）。
+    host.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return;
+      if (!e.target?.closest?.('.sn2-row-check') || !this._rowSelection?.size) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._runEscapeShortcut();
+    });
     if (typeof this._bindRoleCellSelection === 'function') this._bindRoleCellSelection(host);
     this._bindRightDragPan(host);
   },

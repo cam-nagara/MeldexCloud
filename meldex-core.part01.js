@@ -575,11 +575,44 @@ if (typeof window !== 'undefined') {
 // 親メニューの overflow/スクロールや zoom 環境でも見切れない
 // panelEl は最初は hidden（display:none）で、class '.gb-context-menu' を付けておくこと
 // （closeTreeContextMenu 等の一括削除対象になる）
-function attachHoverSubmenu(triggerEl, panelEl) {
+const _hoverSubmenuOwners = new WeakMap();
+const _hoverSubmenuGroups = new WeakMap();
+function attachHoverSubmenu(triggerEl, panelEl, options = {}) {
   let hideTimer = null;
-  const clearHide = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
-  const show = () => {
+  let origin = null;
+  let pendingSwitch = null;
+  triggerEl.setAttribute('aria-haspopup', 'menu');
+  triggerEl.setAttribute('aria-expanded', 'false');
+  if (!triggerEl.hasAttribute('tabindex')) triggerEl.tabIndex = 0;
+  panelEl.setAttribute('role', 'menu');
+  const clearHide = (cancelSwitch = true) => {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (cancelSwitch) pendingSwitch = null;
+    document.removeEventListener('mousemove', travel);
+  };
+  const travel = event => {
+    if (!panelEl.isConnected || !triggerEl.isConnected) { clearHide(); return; }
+    if (!origin) return;
+    const rect = panelEl.getBoundingClientRect();
+    const edge = rect.left >= origin.x ? rect.left : rect.right;
+    const fraction = (event.clientX - origin.x) / (edge - origin.x);
+    const top = origin.y + (rect.top - 6 - origin.y) * fraction;
+    const bottom = origin.y + (rect.bottom + 6 - origin.y) * fraction;
+    if (fraction >= 0 && fraction <= 1 && event.clientY >= top && event.clientY <= bottom) hide();
+  };
+  const show = event => {
+    const host = triggerEl.closest('.gb-context-menu, .ab-dropdown');
+    const previous = host && _hoverSubmenuGroups.get(host);
+    if (event?.type === 'mouseenter' && previous && previous !== owner && previous.visible()) {
+      previous.switchTo(() => show());
+      return;
+    }
+    if (previous && previous !== owner) previous.close();
+    if (host) _hoverSubmenuGroups.set(host, owner);
     clearHide();
+    keepAncestors();
+    if (Number.isFinite(event?.clientX)) origin = { x: event.clientX, y: event.clientY };
+    triggerEl.setAttribute('aria-expanded', 'true');
     if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
     panelEl.style.position = 'fixed';
     panelEl.style.zIndex = '10002';
@@ -587,27 +620,68 @@ function attachHoverSubmenu(triggerEl, panelEl) {
     panelEl.style.maxWidth = ''; panelEl.style.maxHeight = '';
     panelEl.style.overflowX = ''; panelEl.style.overflowY = '';
     panelEl.style.display = 'block';
+    panelEl.hidden = false;
     const rect = triggerEl.getBoundingClientRect();
     const z = _getZoom();
     panelEl.style.left = (rect.right / z) + 'px';
     panelEl.style.top = (rect.top / z - 4) + 'px';
-    clampPopupToViewport(panelEl);
     // 右端で見切れる場合は trigger の左側に反転
     const pr = panelEl.getBoundingClientRect();
     const vw = window.innerWidth / z;
     if (pr.right / z > vw - 4) {
       panelEl.style.left = Math.max(4, (rect.left / z) - (pr.width / z)) + 'px';
-      clampPopupToViewport(panelEl);
     }
+    clampPopupToViewport(panelEl);
+    options.onShow?.();
   };
   const hide = () => {
-    clearHide();
-    hideTimer = setTimeout(() => { panelEl.style.display = 'none'; }, 200);
+    clearHide(false);
+    hideTimer = setTimeout(() => {
+      const next = pendingSwitch;
+      hideNow();
+      next?.();
+    }, 200);
+    document.addEventListener('mousemove', travel);
   };
+  const keepAncestors = () => {
+    const owner = _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'));
+    owner?.keep();
+  };
+  const hideNow = () => {
+    _hoverSubmenuGroups.get(panelEl)?.close();
+    clearHide(); panelEl.style.display = 'none';
+    triggerEl.setAttribute('aria-expanded', 'false');
+    options.onHide?.();
+  };
+  const leaveAncestors = () => _hoverSubmenuOwners.get(triggerEl.closest('.gb-context-menu'))?.leave();
+  const owner = {
+    keep: () => { clearHide(); keepAncestors(); },
+    leave: () => { hide(); leaveAncestors(); },
+    visible: () => panelEl.isConnected && panelEl.style.display !== 'none',
+    close: hideNow,
+    switchTo: next => { pendingSwitch = next; hide(); },
+  };
+  _hoverSubmenuOwners.set(panelEl, owner);
   triggerEl.addEventListener('mouseenter', show);
   triggerEl.addEventListener('mouseleave', hide);
-  panelEl.addEventListener('mouseenter', clearHide);
-  panelEl.addEventListener('mouseleave', hide);
+  triggerEl.addEventListener('mousemove', event => { origin = { x: event.clientX, y: event.clientY }; });
+  panelEl.addEventListener('mouseenter', () => { clearHide(); keepAncestors(); });
+  panelEl.addEventListener('mouseleave', () => { hide(); leaveAncestors(); });
+  // 呼出元ごとの実装差に関わらず同じ左右キーで往復できる。
+  triggerEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowRight') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    show();
+    const first = panelEl.querySelector('.gb-context-menu-item:not(.disabled):not(:disabled), .ab-dropdown-item:not(.disabled)');
+    if (first) { if (!first.hasAttribute('tabindex')) first.tabIndex = 0; first.focus({ preventScroll: true }); }
+  }, true);
+  panelEl.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowLeft') return;
+    // ポータル化された更に深い子のキーはその子自身が受け持つ。
+    event.preventDefault(); event.stopImmediatePropagation();
+    hideNow();
+    triggerEl.focus({ preventScroll: true });
+  }, true);
 }
 
 // 全てのポップアップ要素にclampPopupToViewportを自動適用する安全網
@@ -815,9 +889,80 @@ function _showMobileStatusToast(text, isError) {
   }, isError ? 5000 : 3500);
 }
 
+// ── 進捗は処理パネル（共通の進捗表示 MeldexOperationProgress）に出し、ステータスバーには出さない ──
+// （2026-11-21 ユーザー指示・UI共通ルール §10）。「〜中...」「〜しています…」のような進行中の知らせは
+// 処理パネルの1件として出し、次の結果・エラーの知らせ（ステータスバーに出す）でその1件を終える。
+const _STATUS_PROGRESS_ELLIPSIS_RE = /(?:\.{3}|…|・・・)\s*$/;
+const _STATUS_PROGRESS_IDLE_MS = 120000;
+let _statusProgressHandle = null;
+let _statusProgressIdleTimer = 0;
+
+function _isStatusProgressMessage(text, isError, options) {
+  if (options?.progress === true) return true;
+  if (options?.progress === false || isError || !text) return false;
+  const core = text.replace(_STATUS_PROGRESS_ELLIPSIS_RE, '');
+  if (core !== text) return /中|して(?:い|お)|ています|ており|準備/.test(core);
+  return /中(?:です)?$/.test(text);
+}
+
+function _statusProgressApi() {
+  const api = typeof window !== 'undefined' ? window.MeldexOperationProgress : null;
+  return api && typeof api.begin === 'function' ? api : null;
+}
+
+function _statusProgressLabel(text) {
+  return String(text || '').replace(_STATUS_PROGRESS_ELLIPSIS_RE, '').trim() || '処理中';
+}
+
+function _beginStatusProgress(api, text) {
+  const label = _statusProgressLabel(text);
+  const current = _statusProgressHandle;
+  const state = current?.getState?.();
+  if (current && state && !api.isTerminalStatus?.(state.status)) current.update({ label });
+  else _statusProgressHandle = api.begin({ kind: 'status-progress', label, delayMs: 250 });
+  clearTimeout(_statusProgressIdleTimer);
+  // 終わりの知らせが来ない処理（保存のダイアログを閉じた等）でも、処理パネルに残り続けない。
+  _statusProgressIdleTimer = setTimeout(() => _endStatusProgress('', false), _STATUS_PROGRESS_IDLE_MS);
+}
+
+function _endStatusProgress(text, isError) {
+  const handle = _statusProgressHandle;
+  if (!handle) return;
+  _statusProgressHandle = null;
+  clearTimeout(_statusProgressIdleTimer);
+  if (isError) handle.fail({ error: text || '失敗しました' });
+  else handle.succeed(text ? { summary: text } : {});
+}
+
+// 長い処理（HTMLの作成など）を処理パネルに出しながら実行する。開始直後から表示し、終わったら閉じる。
+async function runWithProgress(label, task, options = {}) {
+  const api = _statusProgressApi();
+  const handle = api ? api.begin({ kind: options.kind || 'operation', label: label || '処理中', showImmediately: options.showImmediately !== false, delayMs: options.delayMs }) : null;
+  if (!handle && typeof showStatus === 'function') showStatus((label || '処理中') + '...', false, { progress: false });
+  try {
+    const result = await task(handle);
+    const state = handle?.getState?.();
+    if (handle && state && !api.isTerminalStatus?.(state.status)) {
+      if (result === false) handle.cancelled?.({});
+      else handle.succeed(options.summary ? { summary: options.summary } : {});
+    }
+    return result;
+  } catch (error) {
+    handle?.fail?.(error instanceof Error ? error : { error: String(error?.message || error || '失敗しました') });
+    throw error;
+  }
+}
+if (typeof window !== 'undefined') window.runWithProgress = runWithProgress;
+
 function showStatus(msg, isError, options) {
   const el = document.getElementById('sb-msg');
   const text = String(msg || '');
+  if (_isStatusProgressMessage(text, isError, options)) {
+    const api = _statusProgressApi();
+    if (api) { _beginStatusProgress(api, text); return; }
+  } else if (text || isError) {
+    _endStatusProgress(text, isError);
+  }
   if (!el) {
     console.log((isError ? 'ERROR: ' : '') + text);
     if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
@@ -962,6 +1107,8 @@ const LUCIDE = {
   tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   tags: '<path d="m15 5 6.3 6.3a2.4 2.4 0 0 1 0 3.4L17 19"/><path d="M9.586 5.586A2 2 0 0 0 8.172 5H3a1 1 0 0 0-1 1v5.172a2 2 0 0 0 .586 1.414L8.29 18.29a2.426 2.426 0 0 0 3.42 0l3.58-3.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/>',
   link2: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>',
+  // 自動ルビの切り替え（親文字の上にルビの線）
+  furigana: '<path d="M8 3h8"/><path d="M6 9h12"/><path d="M12 9v12"/><path d="M9 21h6"/>',
   alignLeft: '<line x1="21" x2="3" y1="6" y2="6"/><line x1="15" x2="3" y1="12" y2="12"/><line x1="17" x2="3" y1="18" y2="18"/>',
   calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
   sigma: '<path d="M18 6H7.5l4.244 6L7.5 18H18"/>',
@@ -1147,15 +1294,16 @@ function uiTypeIconName(type) {
   return UI_TYPE_ICONS[type] || '';
 }
 
-// 主要アプリツールバー左端のアプリアイコン（UI共通ルール19「ツールバー」）。
+// 主要アプリツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19「ツールバー」）。
 // どのアプリを開いているかを一目で見分けるため、タブ・フォルダツリーと同じ種別アイコンを
-// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。操作は持たない。
+// uiTypeIconName() から引き、ツールバーの他のアイコンより大きく出す。押すと、そのアプリの
+// メインメニュー（旧☰メニューと同じ項目）を開く。☰ボタンと「フォルダツリーで表示」ボタンは置かない。
 const UI_TOOLBAR_APP_ICON_LABELS = {
   database: 'シート',
   page: 'ノート',
   scriptnote: 'シナリオ',
   board: 'ボード',
-  calendar: 'カレンダー',
+  calendar: 'スケジュール',
   'form-app': 'フォーム',
   map: 'マップ',
   csv: 'CSV',
@@ -1165,34 +1313,72 @@ const UI_TOOLBAR_APP_ICON_LABELS = {
 };
 const UI_TOOLBAR_APP_ICON_EXTRA = { 'quick-memo': 'notebookPen' };
 const UI_TOOLBAR_APP_ICON_SIZE = 24;
+const UI_TOOLBAR_MAIN_MENU_TITLE = 'メインメニュー';
 
 function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-function toolbarAppIconHtml(type) {
+// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
+// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
+function toolbarMainMenuCaretHtml() {
+  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
+}
+
+function toolbarMainMenuLabel(type) {
+  const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
+  return label ? `${label}のメインメニュー` : UI_TOOLBAR_MAIN_MENU_TITLE;
+}
+
+// options.menu: 旧☰と同じ showToolMenu(event, toolType) を開く種別。省略時は toolType=type。
+// options.menu === false の時だけ、操作を持たない目印（role="img"）を返す（現役の呼び出しはない）。
+function toolbarAppIconHtml(type, options) {
   const key = String(type ?? '').replace(/[^A-Za-z0-9_-]/g, '');
-  const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
   const name = toolbarAppIconName(key);
-  return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : ''}</span>`;
+  const svg = name ? lucide(name, UI_TOOLBAR_APP_ICON_SIZE) : '';
+  if (options?.menu === false) {
+    const label = UI_TOOLBAR_APP_ICON_LABELS[key] || '';
+    return `<span class="tb-app-icon" data-app-icon="${key}" role="img" aria-label="${label}">${svg}</span>`;
+  }
+  const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
+  const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
+  return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
 }
 
-function toolbarAppIconElement(type) {
+// JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
+function toolbarAppIconElement(type, options) {
   const template = document.createElement('template');
-  template.innerHTML = toolbarAppIconHtml(type);
-  return template.content.firstElementChild;
+  const onClick = typeof options?.onClick === 'function' ? options.onClick : null;
+  template.innerHTML = toolbarAppIconHtml(type, onClick ? { ...options, action: false } : options);
+  const el = template.content.firstElementChild;
+  if (el && onClick) el.addEventListener('click', onClick);
+  return el;
 }
 
+// 静的HTMLに置いた空の .tb-app-icon を埋める。メインメニューボタン（button）の名前・状態も揃える。
 function hydrateToolbarAppIcons(root) {
   const scope = root?.querySelectorAll ? root : document;
   const nodes = [];
   if (scope.matches?.('.tb-app-icon[data-app-icon]')) nodes.push(scope);
   scope.querySelectorAll('.tb-app-icon[data-app-icon]').forEach(el => nodes.push(el));
   nodes.forEach(el => {
-    if (el.querySelector('svg')) return;
     const key = el.getAttribute('data-app-icon') || '';
-    const name = toolbarAppIconName(key);
-    if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    if (!el.querySelector('svg')) {
+      const name = toolbarAppIconName(key);
+      if (name) el.innerHTML = lucide(name, UI_TOOLBAR_APP_ICON_SIZE);
+    }
+    if (el.tagName === 'BUTTON') {
+      // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
+      if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
+      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
+      if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
+      if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
+      if (!el.hasAttribute('aria-haspopup')) el.setAttribute('aria-haspopup', 'menu');
+      if (!el.hasAttribute('aria-expanded')) el.setAttribute('aria-expanded', 'false');
+      return;
+    }
     if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
     if (!el.getAttribute('aria-label') && UI_TOOLBAR_APP_ICON_LABELS[key]) el.setAttribute('aria-label', UI_TOOLBAR_APP_ICON_LABELS[key]);
   });
@@ -1200,6 +1386,7 @@ function hydrateToolbarAppIcons(root) {
 if (typeof window !== 'undefined') {
   window.toolbarAppIconHtml = toolbarAppIconHtml;
   window.toolbarAppIconElement = toolbarAppIconElement;
+  window.toolbarMainMenuLabel = toolbarMainMenuLabel;
   window.hydrateToolbarAppIcons = hydrateToolbarAppIcons;
 }
 
@@ -1331,6 +1518,8 @@ function replaceIcons(root) {
     else if (cls.includes('ico-clipboardCheck')) name = 'clipboardCheck';
     else if (cls.includes('ico-disc')) name = 'disc';
     else if (cls.includes('ico-funnel')) name = 'funnel';
+    else if (cls.includes('ico-scanText')) name = 'scanText';
+    else if (cls.includes('ico-textCursorInput')) name = 'textCursorInput';
     else if (cls.includes('ico-type')) name = 'type';
     else if (cls.includes('ico-table')) name = 'table';
     // 右レール タグパネル等のタグアイコン（ico-tags は ico-tag より前に置く）
@@ -1353,11 +1542,19 @@ function replaceIcons(root) {
     // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
     // ボタン(ico-terminal)が未登録で常に空アイコンになっていたため追加。
     else if (cls.includes('ico-terminal')) name = 'terminal';
+    // ツールバーの自動ルビの切り替え（2026-11-21）
+    else if (cls.includes('ico-furigana')) name = 'furigana';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');
       const iconSize = inToolbar ? 16 : 18;
-      el.innerHTML = lucide(name, iconSize);
+      const html = lucide(name, iconSize);
+      // 同じ絵がすでに描かれていれば描き直さない。描き直すと押している最中のボタンの中身が差し替わり、
+      // クリックが届かなくなる（オプションの描き直しなどページ全体を対象にした呼び出しで起きていた）。
+      if (el._gbIcoHtml === html && el._gbIcoNode && el.firstElementChild === el._gbIcoNode && el.childNodes.length === 1) return;
+      el.innerHTML = html;
+      el._gbIcoHtml = html;
+      el._gbIcoNode = el.firstElementChild;
       // ツールバー外の旧互換アイコンだけインラインサイズを補完する
       if (!inToolbar) {
         el.style.width = '18px';

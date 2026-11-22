@@ -18,6 +18,14 @@
       const oldPath = nodeData.path;
       // 通信を待たずに、開いているタブやツールバーの名前も先に変える
       applyOptimisticRenameLabel(oldPath, nv, nodeData.type || 'page');
+      // 履歴の枠は確定の時点で取る。画面の名前は先に変わるので、保存の往復の前に Ctrl+Z を押すと、
+      // 名前の変更ではなくその前の操作が取り消されていた（2026-11-22 M-014 フォルダツリー網羅テスト。v0.7.529 と同じ型）。
+      const renameReservation = typeof historyReserve === 'function' ? historyReserve(`リネーム: ${old} → ${nv}`, '') : null;
+      let resolvePendingRename;
+      const pendingRename = { promise: new Promise(resolve => { resolvePendingRename = resolve; }) };
+      const pendingKey = _outlinerPendingRenameKey(oldPath);
+      _outlinerPendingRenames.set(pendingKey, pendingRename);
+      let renameOutcome = { ok: false };
       try {
         const res = await apiPost('/outliner/rename', {
           old_path: oldPath,
@@ -26,11 +34,17 @@
           title_only: false
         });
         if (!res || !res.new_path) throw new Error('rename failed');
-        _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
+        const applySuccess = () => _outlinerApplyRenameSuccess(oldPath, res.new_path, nv, res.file_id, nodeData, old, {etag:res.etag,titleOnly:res.title_only});
+        if (renameReservation) renameReservation.capture(applySuccess); else applySuccess();
+        renameOutcome = { ok: true, newPath: _outlinerTreeFormPath(oldPath, res.new_path), newName: nv, fileId: res.file_id };
         if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
       } catch (e) {
+        renameReservation?.cancel();
         if (e && e.isTimeout) {
           await _outlinerHandleTreeRenameTimeout(labelEl, nodeData, old, nv, oldPath);
+          if (nodeData.path && nodeData.path !== oldPath) renameOutcome = {
+            ok: true, newPath: nodeData.path, newName: nodeData.name || nv, fileId: nodeData.file_id,
+          };
         } else {
           // API失敗時はラベルを元に戻す（無言で戻すとユーザーが失敗に気づけないため理由も表示）
           applyOptimisticRenameLabel(oldPath, old, nodeData.type || 'page');
@@ -38,6 +52,9 @@
           const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
           showStatus(`「${old}」のリネームに失敗` + (reason ? `（${reason}）` : ''), true);
         }
+      } finally {
+        if (_outlinerPendingRenames.get(pendingKey) === pendingRename) _outlinerPendingRenames.delete(pendingKey);
+        resolvePendingRename(renameOutcome);
       }
     }
     if (onFinish) onFinish();
@@ -53,7 +70,22 @@
 }
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
+// 名前の変更の結果（保存先の相対パス）を、ツリーの行と同じ形（ソースフォルダの絶対パスから始まる形）にそろえる。
+// 名前の変更は同じフォルダの中の変更なので、元のパスの親に新しい名前を付ける。形がずれると、取り消し・やり直しの
+// 後にツリーの行のパスが更新されず、その行をクリックしても開かなくなっていた（2026-11-22 M-014 パネル担当の報告）。
+function _outlinerTreeFormPath(fromPath, responsePath) {
+  const from = String(fromPath || '');
+  const next = String(responsePath || '');
+  if (!next) return from;
+  const isAbs = value => /^(?:[a-z]:[\\/]|\/)/i.test(value);
+  if (!isAbs(from) || isAbs(next)) return next;
+  const cut = Math.max(from.lastIndexOf('/'), from.lastIndexOf('\\'));
+  const baseName = next.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return (cut >= 0 ? from.slice(0, cut + 1) : '') + baseName;
+}
+
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
+  newPath = _outlinerTreeFormPath(oldPath, newPath);
   const aliasPairs = (Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : [])
     .filter(alias => alias && alias !== oldPath)
     .map(alias => {
@@ -74,6 +106,10 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   };
   _renameTreeNode(oldPath, newPath, newName, fileId);
   aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
+  // フォルダパネルが同じフォルダを開いていれば、新しい名前をすぐ出す
+  // （フォルダパネルでの名前の変更はパネル自身が表示を直すので、ツリーの行の名前の変更の時だけ）
+  const fromTree = Array.from(document.querySelectorAll('#sidebar .tree-node')).some(node => node._nodeData === nodeData);
+  if (fromTree && typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([_outlinerParentPath(newPath), _outlinerParentPath(oldPath)]);
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
@@ -99,10 +135,10 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   const renameTo = async (fromPath, fileStem, displayTitle) => {
     if (titleOnlyRename) {
       const res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: displayTitle, type: itemType, title_only: true });
-      return { response: res, path: res?.new_path || fromPath };
+      return { response: res, path: _outlinerTreeFormPath(fromPath, res?.new_path || fromPath) };
     }
     let res = await apiPost('/outliner/rename', { old_path: fromPath, new_name: fileStem, type: itemType, title_only: false });
-    let path = res?.new_path || fromPath;
+    let path = _outlinerTreeFormPath(fromPath, res?.new_path || fromPath);
     if (displayTitle && displayTitle !== fileStem) {
       const titled = await apiPost('/outliner/rename', { old_path: path, new_name: displayTitle, type: itemType, title_only: true });
       res = { ...res, ...titled, new_path: path, file_id: titled?.file_id || res?.file_id };
@@ -514,8 +550,23 @@ function _outlinerKeyboardFirstChildNode(nodeEl) {
 }
 
 function _handleOutlinerTreeKeydown(event) {
+  // フォルダツリーにフォーカスがある時の Ctrl+Z / Ctrl+Y は、フォルダツリーの操作（作成・複製・移動・削除・
+  // 編集ロック）が入る共通の履歴を戻す・進める。以前は開いているエディタ（クリックで開いたノート等）の範囲になり、
+  // 作った・複製したものを消す記録へは安全のため落ちないので「元に戻す操作がありません」になっていた（2026-11-22 M-014）。
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.defaultPrevented) {
+    const key = String(event.key || '').toLowerCase();
+    const isUndo = key === 'z' && !event.shiftKey;
+    const isRedo = key === 'y' || (key === 'z' && event.shiftKey);
+    if ((isUndo || isRedo) && !event.target?.closest?.('input, textarea, select, [contenteditable="true"]')
+        && _outlinerKeyboardScopeFromTarget(event.target) && typeof historyUndo === 'function') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isUndo) historyUndo(''); else historyRedo('');
+      return;
+    }
+  }
   if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2', 'Delete'].includes(event.key)) return;
   const target = event.target;
   if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
@@ -565,6 +616,17 @@ function _handleOutlinerTreeKeydown(event) {
   }
   if (event.key === 'F2') {
     if (current) _outlinerKeyboardStartRename(current);
+    return;
+  }
+  // Delete: ツリーにフォーカスがある時はツリーの選択を削除する（マニュアルのショートカット）。
+  // 以前はツリーで扱わず、全体のショートカットがフォルダパネルの選択を削除していた（2026-11-22 M-014）。
+  if (event.key === 'Delete') {
+    if (current && !treeSelection.has(current)) {
+      treeSelection.clear();
+      treeSelection.add(current);
+      treeSelection.lastClicked = current;
+    }
+    if (typeof deleteOutlinerTreeSelection === 'function') deleteOutlinerTreeSelection();
     return;
   }
   if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {

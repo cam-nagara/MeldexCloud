@@ -55,7 +55,7 @@
     const notice = (failureCount || 0) >= CAL_EXT_AUTO_SYNC_FAILURE_NOTICE_THRESHOLD
       ? '<div class="gb-cal-sync-auto-status-error">自動同期が連続で失敗しています。手動で取得・送信してください。</div>'
       : '';
-    return `<div class="gb-cal-sync-auto-status">自動同期: 5分ごと ${fieldHelp('接続中は5分ごとに新着・変更・削除を自動で同期します。Meldexを起動している間のみ実行されます。')}</div>${notice}`;
+    return `<div class="gb-cal-sync-auto-status">自動同期: 5分ごと ${fieldHelp('接続中は5分ごとに新着・変更・削除を自動で同期します。Meldexを起動している間のみ実行されます。', { e2eId: 'calendar-sync-help-auto' })}</div>${notice}`;
   }
 
   function _openHttpUrl(value) {
@@ -80,16 +80,16 @@
   // gb-cal-oauth-browser.js / gb-cal-ics-subscribe.js が未実装の機能（Google ToDo・
   // iCal URL購読）はボタンごと非表示にする（行き止まりUI禁止。cloud-mobile-product
   // -quality-gate.md 準拠）。
-  function _cloudGoogleAuthHelp() {
+  function _cloudGoogleAuthHelp(place = 'calendar') {
     return fieldHelp('Google Cloud Consoleで「OAuthクライアントID」（種類: ウェブアプリケーション）を作成し、'
       + `承認済みのリダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
-      + '認証情報はこの端末内の専用保存領域で管理され、Dropboxには平文で保存されません。');
+      + '認証情報はこの端末内の専用保存領域で管理され、Dropboxには平文で保存されません。', { e2eId: 'calendar-sync-help-google-auth-' + place });
   }
 
-  function _cloudMicrosoftAuthHelp() {
+  function _cloudMicrosoftAuthHelp(place = 'calendar') {
     return fieldHelp('Microsoft Entra管理センターでアプリを登録し、プラットフォームを「シングルページアプリケーション(SPA)」にして、'
       + `リダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
-      + 'APIのアクセス許可に Calendars.ReadWrite / offline_access を追加してください。');
+      + 'APIのアクセス許可に Calendars.ReadWrite / offline_access を追加してください。', { e2eId: 'calendar-sync-help-microsoft-auth-' + place });
   }
 
   // triggerEl: このモーダルを開いた「外側の本来のトリガー要素」。省略時（外部からの
@@ -127,7 +127,7 @@
       ${_syncCard('Google ToDo', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
         ${!googleTasks.connected && googleTasks.available !== false ? (cloud ? `
-          <div class="field"><label>Client ID ${_cloudGoogleAuthHelp()}</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
+          <div class="field"><label>Client ID ${_cloudGoogleAuthHelp('tasks')}</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
           <div class="field"><label>Client Secret</label><input class="sync-gtask-secret" type="password"></div>
           <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>` : `
           <div class="field"><label>Client ID</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
@@ -152,7 +152,7 @@
           <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
         </div>
       ` : cloud ? `
-        <div class="gb-cal-sync-status">.icsファイルをインポート・エクスポートできます${fieldHelp('認証付きURLからの定期取り込みは、静的ホスティング(CORS制約)のため現時点では利用できません。取得したファイルを.icsインポートしてください。')}</div>
+        <div class="gb-cal-sync-status">.icsファイルをインポート・エクスポートできます${fieldHelp('認証付きURLからの定期取り込みは、静的ホスティング(CORS制約)のため現時点では利用できません。取得したファイルを.icsインポートしてください。', { e2eId: 'calendar-sync-help-ics' })}</div>
         <div class="gb-cal-sync-actions">
           <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
           <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
@@ -171,7 +171,7 @@
         </div>
       `)}
       ${cloud ? _syncCard('iPhoneの照会カレンダー', `
-        <div class="gb-cal-sync-status">Meldexの予定をDropbox経由で読み取り専用購読できます${fieldHelp('iPhoneの「設定」→「カレンダー」→「アカウントを追加」→「照会（購読）カレンダーを追加」で、作成したURLを登録してください。URLを知っている人は誰でも閲覧できる公開リンクです。更新はMeldexでカレンダーを開いている間に反映されます（Google/Microsoftカレンダーの自動同期のタイミングに便乗するため、どちらも未接続の場合は自動更新されません。その場合は「購読用URLを作成」を押し直すと最新化されます）。双方向に同期したい場合はGoogle/Microsoftカレンダー連携をご利用ください。')}</div>
+        <div class="gb-cal-sync-status">Meldexの予定をDropbox経由で読み取り専用購読できます${fieldHelp('iPhoneの「設定」→「カレンダー」→「アカウントを追加」→「照会（購読）カレンダーを追加」で、作成したURLを登録してください。URLを知っている人は誰でも閲覧できる公開リンクです。更新はMeldexでカレンダーを開いている間に反映されます（Google/Microsoftカレンダーの自動同期のタイミングに便乗するため、どちらも未接続の場合は自動更新されません。その場合は「購読用URLを作成」を押し直すと最新化されます）。双方向に同期したい場合はGoogle/Microsoftカレンダー連携をご利用ください。', { e2eId: 'calendar-sync-help-subscribe' })}</div>
         <div class="gb-cal-sync-status">URLを知っている人は誰でも閲覧できる公開リンクです</div>
         <div class="sync-ics-result gb-cal-sync-status gb-cal-sync-auth-status">${icsEnabled ? '購読用ファイルの自動更新: Meldexでカレンダーを開いている間' : ''}</div>
         <div class="gb-cal-sync-actions"><button class="sync-ics-create gb-cal-sync-action primary" type="button">購読用URLを作成</button></div>
@@ -180,6 +180,20 @@
     if (!isAdmin) {
       content.querySelectorAll('.gb-cal-sync-admin-only').forEach((card) => card.remove());
     }
+    // 入力欄とボタンに安定ID（sync-○○ の部分）を付ける（M-014 の部品の照合）。
+    // 入力欄には名前（aria-label）も付ける（見出しのラベルが入力と結び付いていないため）。
+    const syncProviders = { gcal: 'Google Calendar', gtask: 'Google ToDo', ms: 'Microsoft Calendar', ical: 'iCal', ics: '照会カレンダー' };
+    content.querySelectorAll('input, button').forEach(control => {
+      const syncClass = [...control.classList].find(name => name.startsWith('sync-'));
+      if (syncClass && !control.dataset.e2eId) control.dataset.e2eId = 'calendar-sync-' + syncClass.slice('sync-'.length);
+      if (control.tagName === 'INPUT' && !control.getAttribute('aria-label')) {
+        const labelEl = control.closest('.field')?.querySelector('label');
+        const labelText = labelEl ? [...labelEl.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join('').trim() : '';
+        const provider = syncProviders[String(syncClass || '').split('-')[1] || ''] || '';
+        const name = [provider, labelText].filter(Boolean).join('の');
+        if (name) control.setAttribute('aria-label', name);
+      }
+    });
     const closeButton = document.createElement('button');
     closeButton.className = 'sync-close gb-btn gb-btn-quiet gb-cal-sync-action';
     closeButton.type = 'button';
@@ -719,7 +733,7 @@
       if (resultEl) {
         const path = _calSyncEsc(e.manualPath || window.MeldexCalIcsSubscribe.ICS_RELATIVE_PATH);
         resultEl.innerHTML = `自動作成できませんでした。Dropbox上の <code>${path}</code> を右クリックして共有リンクを作成し、`
-          + `そのURLをiPhoneの照会カレンダーへ登録してください${fieldHelp('Dropboxアプリまたはdropbox.comで対象ファイルを開き、「共有」→「リンクを作成」で取得できます。')}`;
+          + `そのURLをiPhoneの照会カレンダーへ登録してください${fieldHelp('Dropboxアプリまたはdropbox.comで対象ファイルを開き、「共有」→「リンクを作成」で取得できます。', { e2eId: 'calendar-sync-help-dropbox-link' })}`;
       }
     }
   };

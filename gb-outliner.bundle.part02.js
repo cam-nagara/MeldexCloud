@@ -1,3 +1,49 @@
+  // lastClickedがDOMからアンマウントされ得るため（gb-outliner-virtual-render.js）、
+  // DOM参照が切れてもrangeTo()が復元できるよう、代入のたびに併記保持する
+  // （下のlastClickedゲッター/セッター経由で、既存の全代入箇所を変更せず自動追従する）。
+  _lastClickedPath: null,
+  get lastClicked() { return this._lastClicked; },
+  set lastClicked(nodeEl) {
+    this._lastClicked = nodeEl;
+    this._lastClickedPath = (nodeEl && nodeEl._nodeData && nodeEl._nodeData.path) || null;
+  },
+  clear() {
+    this.items.forEach(n => n.querySelector('.tree-node-row')?.classList.remove('selected'));
+    this.items.clear();
+  },
+  add(nodeEl) {
+    this.items.add(nodeEl);
+    nodeEl.querySelector('.tree-node-row')?.classList.add('selected');
+  },
+  remove(nodeEl) {
+    this.items.delete(nodeEl);
+    nodeEl.querySelector('.tree-node-row')?.classList.remove('selected');
+  },
+  has(nodeEl) { return this.items.has(nodeEl); },
+  toggle(nodeEl) { this.has(nodeEl) ? this.remove(nodeEl) : this.add(nodeEl); },
+  // Shiftクリック: 同じツリー内の可視ノードだけを対象に範囲選択
+  rangeTo(nodeEl) {
+    const scopeSelector = _getTreeSelectionScope(nodeEl);
+    if (!this.lastClicked || _getTreeSelectionScope(this.lastClicked) !== scopeSelector) {
+      this.clear();
+      this.add(nodeEl);
+      return;
+    }
+    const allRows = _getVisibleTreeNodes(scopeSelector);
+    const from = allRows.indexOf(this.lastClicked);
+    const to = allRows.indexOf(nodeEl);
+    if (from < 0 || to < 0) {
+      // DOM当たり判定(_getVisibleTreeNodes)で見つからない: 仮想化コンテナ内でアンカー
+      // (lastClicked)がスクロールによりアンマウント済みの可能性がある。安定パスと
+      // 論理モデル(GBOutlinerVirtual)で範囲を復元できるか試み、駄目なら単一選択へ。
+      if (this._virtualRangeTo(nodeEl)) return;
+      this.clear();
+      this.add(nodeEl);
+      return;
+    }
+    this.clear();
+    const [start, end] = from < to ? [from, to] : [to, from];
+    for (let i = start; i <= end; i++) this.add(allRows[i]);
   },
   // 仮想化コンテナ内でのDOM当たり判定失敗時の範囲選択復元（rangeTo()専用の内部ヘルパー）。
   // 起点(lastClicked)・終点(nodeEl)の両方が「同一の」仮想化コンテナに属する場合のみ対応し、
@@ -165,7 +211,7 @@ function _saveOutlinerDropPlacement(target, siblings, movedItems) {
   const index = target.anchorPath ? anchor + (target.position === 'below' ? 1 : 0) : rest.length;
   rest.splice(index, 0, ...movedItems);
   const key = target.path || '_root';
-  setManualOrder(key, rest.map(item => item.path));
+  if (setManualOrder(key, rest.map(item => item.path)) === false) throw new Error('並び順を保存できませんでした');
   setSortSetting(key, 'manual', 'asc');
 }
 
@@ -192,6 +238,9 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const targetPath = targetItem?.path || '';
   if (!targetItem || !Array.isArray(items) || items.length === 0) return 0;
   const placement = { position: 'inside', ...targetItem, path: targetPath };
+  const moveReservation = typeof historyReserve === 'function'
+    ? historyReserve(`フォルダツリー: ${items.length} 件を移動`, '') : null;
+  try {
   let siblings;
   try {
     siblings = await _outlinerDropSiblings(placement);
@@ -205,9 +254,15 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   let succeeded = 0;
   const failures = [];
   const movedItems = [];
+  const pendingPaths = typeof _folderPendingMovePaths !== 'undefined'
+    ? items.filter(source => source.sourceSurface !== 'sheet-image' && _folderIsDirectChildOfCurrent(source.path)).map(source => _folderMembershipKey(source.path)) : [];
+  const selectedPaths = typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems.map(item => item.path) : [];
+  pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
+  if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
   try {
     for (const source of items) {
       try {
+        await _outlinerAwaitPendingRename(source);
         const copySource = source.sourceSurface === 'sheet-image';
         if (source.linked || isItemLocked(source.path) || isItemLocked(targetPath)) {
           throw new Error('リンクファイルや編集ロック中の項目は移動できません');
@@ -225,9 +280,14 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
         });
         movedItems.push({ ...source, oldPath: copySource ? '' : source.path, path: res.new_path || source.path, name: res.new_name || source.name });
         succeeded += 1;
+        if (!copySource && typeof _folderApplyCommittedMoves === 'function') {
+          _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
+          _folderApplyCommittedMoves([{ oldPath: source.path, newPath: res.new_path || source.path, name: res.new_name || source.name, item: source }]);
+        }
         try {
           if (!copySource && res?.new_path && res.new_path !== source.path && typeof renameAppPathReferences === 'function') {
             renameAppPathReferences(source.path, res.new_path, {
+              preserveMountedViews: true,
               label: res.new_name || source.name,
               fileId: res.file_id,
               type: source.type || 'file',
@@ -238,12 +298,17 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
           console.warn('[Meldex] 移動後の表示を再読み込みします', error);
         }
       } catch (error) {
+        if (typeof _folderPendingMovePaths !== 'undefined') {
+          _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
+          if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+        }
         failures.push({ source, error });
       }
       processed += 1;
       progress?.updateOperation?.(processed, null, progressToken);
     }
   } finally {
+    pendingPaths.forEach(path => _folderPendingMovePaths.delete(path));
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
   }
   let refreshError = null;
@@ -271,7 +336,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   } else {
     showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
-  window.MeldexFileMoveHistory?.register?.(
+  const registerMove = () => window.MeldexFileMoveHistory?.register?.(
     movedItems.map(item => ({
       oldPath: item.oldPath,
       newPath: item.path,
@@ -286,7 +351,11 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
       refresh: () => refreshOutliner({ force: true, reason: 'outliner-move-history' }),
     },
   );
+  if (moveReservation) moveReservation.capture(registerMove); else registerMove();
   return succeeded;
+  } finally {
+    moveReservation?.cancel();
+  }
 }
 
 function _treeDragPayload(primaryItem, actualNodes) {
@@ -345,7 +414,7 @@ function setManualOrder(folderPath, names) {
     localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
     return true;
   } catch (error) {
-    if (typeof console !== 'undefined') console.error('[outliner] 手動並び順を保存できませんでした', error);
+    if (typeof console !== 'undefined') console.warn('[outliner] 手動並び順を保存できませんでした', error);
     return false;
   }
 }
@@ -378,7 +447,7 @@ function applyManualSort(container, folderPath) {
 }
 function saveManualOrderFromDOM(container, folderPath) {
   const names = [...container.querySelectorAll(':scope > .tree-node')].map(n => n._nodeData?.name).filter(Boolean);
-  setManualOrder(folderPath, names);
+  return setManualOrder(folderPath, names);
 }
 
 // 配列そのものを保存済み手動順で並べ替える（仮想化コンテナはDOM順ではなく配列順が正なので、
@@ -504,8 +573,12 @@ function _fileLockEntryFromEntries(entries, path) {
   const target = _normalizeLockedItemPath(path);
   return (entries || []).find(entry => {
     if (fid && entry?.file_id === fid) return true;
-    const base = _normalizeLockedItemPath(entry?.normalized_path || entry?.path || '');
-    return base && (target === base || target.startsWith(base + '/'));
+    // normalized_path はサーバーで解決した絶対パス、path は設定時の表示パス（ワークスペース相対）。
+    // 画面のパスは相対なので両方と照合する（file_id の無いファイルのロックが見つからなかった。S4）
+    return [entry?.normalized_path, entry?.path].some((raw) => {
+      const base = _normalizeLockedItemPath(raw || '');
+      return base && (target === base || target.startsWith(base + '/'));
+    });
   }) || null;
 }
 async function _migrateLegacyLocksToServerIfOwner() {
@@ -618,7 +691,9 @@ function pushOutlinerFileLockHistory(path, beforeSnapshot, afterSnapshot) {
     label,
     () => _restoreFileLockHistorySnapshot(path, beforeSnapshot),
     () => _restoreFileLockHistorySnapshot(path, afterSnapshot),
-    'outliner:file-lock',
+    // 共通の履歴に積む（フォルダツリーの移動・削除と同じ）。以前の専用の範囲はどの画面の Ctrl+Z からも届かず、
+    // 編集ロックを取り消せなかった（2026-11-22 M-014 フォルダツリー網羅テスト）。
+    '',
     path || ''
   );
   return true;
@@ -823,78 +898,3 @@ function getNodeColor(path) {
   const colors = getNodeColors();
   const fid = _pathToFileId(path);
   return (fid && colors[fid]) || colors[path] || '';
-}
-function setNodeColor(path, color) {
-  const colors = getNodeColors();
-  const key = _pathToFileId(path) || path;
-  if (color) colors[key] = color; else delete colors[key];
-  try { localStorage.setItem(NODE_COLORS_KEY, JSON.stringify(colors)); } catch {}
-}
-
-const OUTLINER_SETTINGS_HISTORY_KEYS = [
-  SORT_SETTINGS_KEY,
-  MANUAL_ORDER_KEY,
-  LOCKED_ITEMS_KEY,
-  NODE_COLORS_KEY,
-  'meldex-favorites',
-];
-
-function refreshOutlinerSettingsAfterHistory() {
-  if (typeof refreshOutliner === 'function') {
-    refreshOutliner();
-    return;
-  }
-  if (typeof loadOutliner === 'function') loadOutliner();
-  if (typeof renderFavorites === 'function') renderFavorites();
-  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree({ reason: 'settings-history' });
-  if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-}
-
-async function refreshOutliner(options) {
-  const opts = options && typeof options === 'object' ? options : {};
-  const refreshJobs = [];
-  if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(opts)));
-  if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
-  if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree({ reason: opts.reason || 'refresh-outliner' })));
-  if (typeof renderWorkspaceSidebar === 'function') refreshJobs.push(Promise.resolve().then(() => renderWorkspaceSidebar()));
-  return Promise.allSettled(refreshJobs);
-}
-
-let _topicRecordsOutlinerRefreshTimer = null;
-if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('meldex:topic-records-updated', (event) => {
-    // シートの読み込み通知は表示データの投影用で、フォルダ構造の変更ではない。
-    // 全ツリーを消して復元すると、別シートを開くだけで展開した枝が一旦閉じてしまう。
-    // 列名変更前の最新化（column-confirm）と移動前の最新化（before-transfer）も同じく
-    // トピック名やフォルダを変えない。以前は列名変更のたびにフォルダツリー全体を読み直していた。
-    if (['open', 'outliner-expand', 'column-confirm', 'before-transfer'].includes(event.detail?.reason)) return;
-    // セルの値だけを保存した通知もトピック名やフォルダを変えない。連続入力のたびに
-    // ツリー全体を読み直していた（2026-11-19）。名前が変わる保存は structural のまま届く。
-    if (event.detail?.reason === 'save' && event.detail?.structural === false) return;
-    // ボードのトピック更新はフォルダ構造を変えない。旧ボードの移行・
-    // 再照合や snapshot 更新は save 以外（reason なしを含む）でも通知する。
-    // 通知理由に依存せず文書を判定し、別パネルを含む全ツリー再構築を避ける。
-    const detail = event.detail || {};
-    const boardDocument = detail.viewDocument?.defaultSurface === 'board'
-      || /(?:\.mel-board|\.board\.md|\.board\.json|\.canvas\.json)$/i.test(detail.dbPath || detail.legacyPath || '');
-    if (boardDocument) return;
-    clearTimeout(_topicRecordsOutlinerRefreshTimer);
-    _topicRecordsOutlinerRefreshTimer = setTimeout(async () => {
-      const settled = await refreshOutliner({ force: true, reason: 'topic-records-updated' });
-      const failures = settled.filter(result => result.status === 'rejected');
-      if (!failures.length) return;
-      const detail = {
-        failures: failures.map(result => String(result.reason?.message || result.reason || '再読込に失敗しました')),
-        retry: () => refreshOutliner({ force: true, reason: 'topic-records-retry' }),
-      };
-      window.dispatchEvent(new CustomEvent('meldex:topic-outliner-refresh-failed', { detail }));
-      if (typeof showStatus === 'function') {
-        showStatus('保存は完了しましたが、フォルダ／トピック一覧を更新できませんでした。更新ボタンで再試行してください', true);
-      }
-    }, 40);
-  });
-}
-
-async function refreshOutlinerFromButton(event) {
-  event?.preventDefault?.();
-  event?.stopPropagation?.();

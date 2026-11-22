@@ -142,7 +142,9 @@ function _dbActionFocusTrigger(triggerEl) {
 
 // === エントリ詳細にアクションボタンを表示 ===
 async function _renderEntityActions(data, entityPath) {
-  const container = document.getElementById('entity-freetext');
+  // 本文が空のトピックは本文欄（#entity-freetext）を作らないので、列一覧（#entity-props-grid）を基準にする。
+  // 本文欄だけを基準にしていた時は、本文の無いトピック（作りたてのトピックの大半）でアクションが出なかった。
+  const container = document.getElementById('entity-freetext') || document.getElementById('entity-props-grid');
   if (!container) return;
   // トピック詳細（MeldexEntityDetail）では本文がタブの中にあり、本文タブ以外を表示中は隠れる。
   // アクションは本文の表示状態に関係なく使えるよう、本文を含むタブ区画の直前（詳細の直下）に置く。
@@ -301,6 +303,37 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
   });
 }
 
+// アクションで作ったトピックは、行の追加と同じく Ctrl+Z で消し、Ctrl+Y で同じ名前・値で作り直す。
+function _pushDbActionHistory(action, targetDb, name, entityPath, entryId, valueWrites) {
+  if (typeof historyPush !== 'function' || !targetDb || !name) return;
+  let currentPath = entityPath || (targetDb + '/' + name + '.md');
+  let currentId = entryId || '';
+  const scope = typeof _dbScopeForPath === 'function'
+    ? _dbScopeForPath(targetDb)
+    : (typeof _dbScope === 'function' ? _dbScope(targetDb) : 'db:' + String(targetDb).replace(/\\/g, '/'));
+  historyPush((action?.label || 'アクション') + ': ' + name,
+    async () => {
+      const result = await window.GbDbEntryIdentity.deleteEntries({
+        dbPath: targetDb,
+        entries: [{ name, path: currentPath, entryId: currentId }],
+        source: 'db-action-undo',
+      });
+      if (result?.failures?.length) throw result.failures[0].error;
+      await _refreshDbActionPanels(targetDb);
+    },
+    async () => {
+      const redo = await apiPost('/entity/create', { parent_path: targetDb, name });
+      currentPath = (redo && (redo.path || redo.entry_path)) || (targetDb + '/' + name + '.md');
+      currentId = String(redo?.entry_id || redo?.id || '');
+      for (const item of valueWrites || []) {
+        await apiPost('/value', { ..._dbActionValueTarget(currentPath), property: item.property, value: item.value, status: '採用', note: '' });
+      }
+      await _refreshDbActionPanels(targetDb);
+    },
+    scope,
+  );
+}
+
 // === アクション実行 ===
 async function _executeDbAction(action, data, entityPath, inputValues) {
   const entryName = data.entity || '';
@@ -347,6 +380,7 @@ async function _executeDbAction(action, data, entityPath, inputValues) {
     }
 
     showStatus((action.label || 'アクション') + ' 完了: ' + newEntryName);
+    _pushDbActionHistory(action, targetDb, newEntryName, newEntityPath, String(created?.entry_id || created?.id || ''), valueWrites);
     await _refreshDbActionPanels(targetDb);
   } catch (e) {
     if (newEntityPath) {

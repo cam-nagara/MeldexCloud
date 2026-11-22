@@ -361,11 +361,19 @@ class InformationComponent extends ContextRailComponent {
     }
     const path = target.contextPath || target.path;
     if (!window.MeldexFileInfoPanel?.renderInto) return this._empty('プロパティパネルを読み込めませんでした');
-    void window.MeldexFileInfoPanel.renderInto(this.bodyEl, path, {
+    const isCurrent = () => window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) !== false;
+    const rendered = window.MeldexFileInfoPanel.renderInto(this.bodyEl, path, {
       kind: target.kind || 'file',
       type: target.kind || 'file',
-      isCurrent: () => window.GBOptionTargetContext?.isCurrentRevision?.(ctx.selectionRevision) !== false,
+      isCurrent,
     });
+    // ボードの時は、ボードのリンクを開く設定（ファイルを開く場所・選ぶとサブパネルに表示）も出す。
+    if (target.kind === 'board' && window.MeldexBoardInfoPanel?.appendOpenTargetSettings) {
+      const bodyEl = this.bodyEl;
+      void Promise.resolve(rendered).catch(() => null).then(() => {
+        if (this.bodyEl === bodyEl && bodyEl?.isConnected && isCurrent()) window.MeldexBoardInfoPanel.appendOpenTargetSettings(bodyEl);
+      });
+    }
   }
 }
 

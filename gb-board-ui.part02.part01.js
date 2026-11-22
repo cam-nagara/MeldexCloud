@@ -120,8 +120,24 @@ function _bdEnsureBoardStyleManagerTabs() {
   renderers.forEach(entry => {
     const el = document.getElementById(entry.id);
     if (!el) return;
-    // 既にレンダー済みなら skip (子要素が存在する)
-    if (el.childElementCount > 0) return;
+    // 既にレンダー済みなら skip (子要素が存在する)。ただし、表示中のスタイルが取り消し等で
+    // 無くなっていたら描き直す（消えたスタイルを出したままだと、編集が別のスタイルへ入っていた）。
+    if (el.childElementCount > 0) {
+      if (entry.kind === 'card' || entry.kind === 'line') {
+        const shownId = el.querySelector('[data-bd-style-panel-picker]')?.dataset.bdCurrentStyleId || '';
+        const list = entry.kind === 'card' ? bd.cardStyles : bd.lineStyles;
+        if (shownId && Array.isArray(list) && list.length && !list.some(style => style?.id === shownId)
+            && typeof _bdRenderStyleManagerInPanel === 'function') {
+          _bdRenderStyleManagerInPanel(entry.kind, el, null);
+        } else if (shownId && typeof _bdStyleTabSignature === 'function' && typeof _bdRenderStyleManagerInPanel === 'function'
+            && el._bdShownStyleSig !== undefined && el._bdShownStyleSig !== _bdStyleTabSignature(entry.kind, shownId)
+            && !el.contains(document.activeElement)) {
+          // 取り消し・やり直しなどで表示中のスタイルの値が変わった（入力中でない時だけ描き直す）
+          _bdRenderStyleManagerInPanel(entry.kind, el, shownId);
+        }
+      }
+      return;
+    }
     if (entry.kind === 'group') {
       window.MeldexBoardTopicIntegration?.mountGroupControls?.(el, bd, { panel: true });
     } else if (entry.kind === 'depth') {
@@ -129,6 +145,18 @@ function _bdEnsureBoardStyleManagerTabs() {
     } else {
       if (typeof _bdRenderStyleManagerInPanel === 'function') _bdRenderStyleManagerInPanel(entry.kind, el, null);
     }
+  });
+}
+
+// グループスタイルタブの「編集するグループ」はタブを作った時のグループ一覧のままだった
+// （グループ化した直後に開いても空で、開き直すまで選べない）。タブへ切り替えた時に作り直す。
+if (typeof document !== 'undefined' && !window.__bdGroupTabRefreshBound) {
+  window.__bdGroupTabRefreshBound = true;
+  document.addEventListener('meldex:detail-tab-switched', event => {
+    if (event?.detail?.tab !== 'board-group-style') return;
+    const el = document.getElementById('detail-tab-board-group-style');
+    if (!el || typeof bd === 'undefined' || !bd?.path) return;
+    window.MeldexBoardTopicIntegration?.mountGroupControls?.(el, bd, { panel: true });
   });
 }
 

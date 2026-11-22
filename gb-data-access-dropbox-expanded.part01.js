@@ -185,10 +185,20 @@
     return { ...receipt.result };
   }
 
-  function _finishValueWrite(frontmatter, body, result) {
+  // 利用者が見ていたセルの中身（cell_base）が保存先の今のセルと同じか（デスクトップ版の cell_base_matches と同じ規則）。
+  // 行の版が古くても、そのセル自体が変わっていなければ保存してよい（別の画面・AIが同じ行の別のセルを書き換えただけ）。
+  function _cellBaseMatches(candidates, body) {
+    if (!body || !Array.isArray(body.cell_base)) return false;
+    const signature = list => (Array.isArray(list) ? list : []).map(item => (item && typeof item === 'object')
+      ? [String(item.value ?? ''), String(item.status || '採用')] : [String(item), '採用']);
+    return JSON.stringify(signature(candidates)) === JSON.stringify(signature(body.cell_base));
+  }
+
+  function _finishValueWrite(frontmatter, body, result, options = {}) {
     const current = Number(frontmatter.meldex_revision || 0);
     for (const key of ['baseRevision', 'base_revision', 'entryRevision', 'revision']) {
       if (body?.[key] == null || body[key] === '') continue;
+      if (options.cellUnchanged) break;
       if (!Number.isInteger(Number(body[key])) || Number(body[key]) !== current) {
         throw Object.assign(new Error('トピックが別の画面または端末で更新されています'), { status: 409, code: 'entry_revision_conflict' });
       }
@@ -267,7 +277,7 @@
       if (snapshot && (snapshot.provider !== provider || snapshot.path !== normalized)) {
         throw Object.assign(new Error('読込元と保存先が一致しません'), { status: 409, code: 'snapshot_target_mismatch' });
       }
-      await provider.uploadBytesConditional(normalized, new TextEncoder().encode(content), snapshot?.revision ?? null);
+      return provider.uploadBytesConditional(normalized, new TextEncoder().encode(content), snapshot?.revision ?? null);
     } else {
       if (snapshot) throw Object.assign(new Error('条件付き保存を利用できません'), { status: 503, code: 'strict_cas_unavailable' });
       await provider.writeText(normalized, content);
@@ -290,11 +300,28 @@
     return entry?.kind === 'file' ? note : '';
   }
 
+  // 読み取った世代（_frontmatterReadRevision）は記号のキーなので structuredClone で落ちる。
+  // 落ちると次の保存が「新しいファイルの作成」として送られ、既存のシート設定と必ず競合する（2026-11-21）。
+  function _cloneFolderNote(note) {
+    const copy = structuredClone(note);
+    const revision = note?.frontmatter?.[_frontmatterReadRevision];
+    if (revision && copy?.frontmatter && typeof copy.frontmatter === 'object') copy.frontmatter[_frontmatterReadRevision] = revision;
+    return copy;
+  }
+
+  // 保存した後の世代で、同じ内容を書き戻せるようにした控え（列名変更の巻き戻しなどで使う）。
+  function _frontmatterAtSavedRevision(frontmatter, saved) {
+    const snapshot = frontmatter?.[_frontmatterReadRevision];
+    const revision = String(saved?.revision || saved?.rev || '').trim();
+    if (!snapshot || !revision) return frontmatter;
+    return { ...frontmatter, [_frontmatterReadRevision]: { ...snapshot, revision } };
+  }
+
   async function _folderFrontmatter(provider, folderPath) {
     let flights = _folderNoteFlights.get(provider);
     if (!flights) { flights = new Map(); _folderNoteFlights.set(provider, flights); }
     const key = JSON.stringify([provider._mediaScope || '', provider._dropboxLocation?.(folderPath) || folderPath]);
-    if (flights.has(key)) return structuredClone(await flights.get(key));
+    if (flights.has(key)) return _cloneFolderNote(await flights.get(key));
     const pending = (async () => {
       const note = await _folderNotePath(provider, folderPath);
       if (!note) return { path: '', frontmatter: {}, body: '' };
@@ -302,7 +329,7 @@
       return { path: note, ...parsed };
     })();
     flights.set(key, pending);
-    try { return structuredClone(await pending); }
+    try { return _cloneFolderNote(await pending); }
     finally { if (flights.get(key) === pending) flights.delete(key); }
   }
 
@@ -1068,6 +1095,30 @@
   }
   internals._deleteSheetStoreEntryIfNeeded = _deleteSheetStoreEntryIfNeeded;
 
+  // 削除の確認（gb-cloud-delete-confirmation.js）で使う、シートの保管ファイルにだけある行の状態（2026-11-22）。
+  // 行ごとのファイルが無い行は Dropbox の状態を引けず、行の削除も、追加した行の取り消しも
+  // 「削除対象の状態を確認できません」で必ず止まっていた。行の識別と中身で確かめ、変わったら止める。
+  async function _sheetStoreRowConfirmationMetadata(provider, rawPath) {
+    const path = _normalizeFolderPath(rawPath || '');
+    if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
+    const dbPath = _dirname(path);
+    if (_isProductionManagementSheetMetadataPath(dbPath)) return null;
+    const store = await _sheetStoreForRead(provider, dbPath);
+    const fileName = _sheetStoreFileName(path);
+    const row = store?.rows?.[fileName];
+    if (!row || row.deleted) return null;
+    const body = String(row.body || '');
+    return {
+      kind: 'file',
+      meta: {
+        id: String(row.frontmatter?._id || row.frontmatter?.id || `sheet-row:${_joinPath(dbPath, fileName)}`),
+        revision: JSON.stringify([row.frontmatter || {}, body, row.updated || '']),
+      },
+      size: body.length,
+    };
+  }
+  internals._sheetStoreRowConfirmationMetadata = _sheetStoreRowConfirmationMetadata;
+
   // _deleteSheetStoreEntryIfNeeded が書いたtombstoneを、その直後の物理ファイル
   // 移動が失敗した時だけ元に戻す（デスクトップ側のロールバック
   // sync_sheet_entry_if_needed(strict=True) と対称）。これが無いと、移動失敗時に
@@ -1375,8 +1426,13 @@
       const fm = _parseFrontmatter(await provider.readText(_joinPath(path, noteName))).frontmatter;
       if (fm.type !== 'settings-db' || fm.meldex_registry !== 'quick-memo-v1') return null;
       return { quick_memo_folder: path, display_path: _quickMemoDisplayPath(path, root) };
-    } catch {
-      return null;
+    } catch (error) {
+      // "Missing" is the only reason to try a different sheet. Permissions,
+      // connectivity and namespace failures must keep their original evidence
+      // and must never silently redirect a pending memo to another root.
+      if (error?.status === 404 || error?.name === 'NotFoundError'
+          || /^(?:not_found|path\/not_found)(?:\/|$)/.test(String(error?.code || error?.message || ''))) return null;
+      throw error;
     }
   }
 
@@ -1659,6 +1715,7 @@
       throw new Error('制作管理に必要な列の名前は変更できません');
     }
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
+    const cellUnchanged = _cellBaseMatches(props[prop], body);
     const list = _normalizeCandidates(props[prop]);
     let index = Number.isInteger(body?.candidate_index) ? body.candidate_index : Number(body?.candidate_index);
     if (!Number.isInteger(index) || index < 0 || index >= list.length) {
@@ -1699,7 +1756,7 @@
     parsed.frontmatter.properties = props;
     return {
       body: parsed.body || '',
-      result: _finishValueWrite(parsed.frontmatter, body, { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex }),
+      result: _finishValueWrite(parsed.frontmatter, body, { ok: true, path, property: body?._delete ? prop : newProp, candidate_index: resultIndex }, { cellUnchanged }),
     };
   }
 
@@ -2294,6 +2351,7 @@
       folderFrontmatter: path => _folderFrontmatter(provider, path),
       readFrontmatter: path => _readFrontmatterFile(provider, path),
       writeFrontmatter: (path, frontmatter, text) => _writeFrontmatterFile(provider, path, frontmatter, text),
+      atSavedRevision: (frontmatter, saved) => _frontmatterAtSavedRevision(frontmatter, saved),
       listDirectoryEntries: path => _listDirectoryEntries(provider, path),
       listDatabases: () => _listDatabases(provider),
       sheetStoreMode: path => _sheetStoreMode(provider, path),
@@ -2535,7 +2593,12 @@
     const schemaOperations = fm.schema_operations && typeof fm.schema_operations === 'object'
       ? { ...fm.schema_operations }
       : {};
-    if (operationId && schemaOperations[operationId]) return { ...schemaOperations[operationId] };
+    if (operationId && schemaOperations[operationId]) {
+      // 控えには全列の property_ids を持たない。再送の応答はシートの今の値で補う。
+      const receipt = { ...schemaOperations[operationId] };
+      if (!('property_ids' in receipt)) receipt.property_ids = { ...(fm.property_ids || {}) };
+      return receipt;
+    }
     if (expectedSchemaRevision != null && Number(expectedSchemaRevision) !== currentSchemaRevision) {
       const error = new Error('列設定が別の画面または端末で更新されています');
       error.status = 409;
@@ -2569,7 +2632,15 @@
       result.property_ids = fm.property_ids || {};
       result.operation_id = operationId;
       if (operationId) {
-        schemaOperations[operationId] = { ...result };
+        Object.keys(schemaOperations).forEach((key) => {
+          const stored = schemaOperations[key];
+          if (stored && typeof stored === 'object' && 'property_ids' in stored) {
+            const { property_ids: _omitted, ...compact } = stored;
+            schemaOperations[key] = compact;
+          }
+        });
+        const { property_ids: _resultIds, ...receipt } = result;
+        schemaOperations[operationId] = receipt;
         while (Object.keys(schemaOperations).length > 50) delete schemaOperations[Object.keys(schemaOperations)[0]];
         fm.schema_operations = schemaOperations;
       }

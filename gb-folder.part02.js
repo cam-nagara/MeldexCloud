@@ -331,7 +331,7 @@ function _refreshFolderLinkUi(filePath, folderPath, tagsContainer) {
   }
 }
 
-function _pushFolderLinkHistory(label, filePath, fileId, folderPath, folderId, tagsContainer, detail) {
+function _pushFolderLinkHistory(label, filePath, fileId, folderPath, folderId, tagsContainer, detail, historyScope) {
   if (typeof historyPush !== 'function' || !fileId || (!folderPath && !folderId)) return false;
   const removePayload = { file_id: fileId };
   if (folderId) removePayload.folder_id = folderId;
@@ -351,7 +351,13 @@ function _pushFolderLinkHistory(label, filePath, fileId, folderPath, folderId, t
       else await apiPost('/folder-links/remove', removePayload);
       _refreshFolderLinkUi(filePath, folderPath, tagsContainer);
     },
-    '',
+    // 操作した画面の取り消し範囲へ積む（共通の範囲に積むと、シート等の画面では Ctrl+Z が
+    // その画面の別の操作を戻し、登録が取り消せなかった）。localStorage の設定履歴と同じ扱い。
+    // ただしフォルダツリー・フォルダパネルの右クリックから登録した時は、ファイルの作成・移動・削除と同じ
+    // 共通の履歴へ積む（開いているノートの範囲に積むと、ツリーやパネルからの Ctrl+Z が届かなかった:
+    // 2026-11-22 M-014 フォルダツリー網羅テスト）。呼び出し側が historyScope で指定する。
+    typeof historyScope === 'string' ? historyScope
+      : ((typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '') || ''),
     detail || ''
   );
   return true;
@@ -376,7 +382,8 @@ async function addFolderLinkWithHistory(filePath, folderPath, options = {}) {
       resolvedFolderPath,
       resolvedFolderId,
       tagsContainer,
-      (filePath || '') + ' → ' + (resolvedFolderPath || resolvedFolderId)
+      (filePath || '') + ' → ' + (resolvedFolderPath || resolvedFolderId),
+      options.historyScope
     );
   }
   _refreshFolderLinkUi(filePath, resolvedFolderPath, tagsContainer);
@@ -481,7 +488,7 @@ async function _folderRemoveLinkFromTag(filePath, link, container) {
   }
 }
 
-function showAddFolderLinkModal(filePath, tagsContainer) {
+function showAddFolderLinkModal(filePath, tagsContainer, options = {}) {
   if (typeof window.GBUI?.createModal !== 'function') {
     throw new Error('フォルダリンク登録を初期化できませんでした。');
   }
@@ -500,11 +507,13 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   cancelButton.type = 'button';
   cancelButton.className = 'gb-btn gb-btn-sm';
   cancelButton.dataset.role = 'cancel';
+  cancelButton.dataset.e2eId = 'folder-link-register-cancel';
   cancelButton.textContent = 'キャンセル';
   const submitButton = document.createElement('button');
   submitButton.type = 'button';
   submitButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   submitButton.dataset.role = 'submit';
+  submitButton.dataset.e2eId = 'folder-link-register-submit';
   submitButton.textContent = '登録';
   let busy = false;
   const modalApi = window.GBUI.createModal({
@@ -529,6 +538,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   o._folderLinkModalApi = modalApi;
   o._folderLinkFilePath = filePath;
   o._folderLinkTagsContainer = tagsContainer;
+  o._folderLinkHistoryScope = typeof options.historyScope === 'string' ? options.historyScope : undefined;
   o._setFolderLinkBusy = value => {
     busy = !!value;
     o.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -584,8 +594,12 @@ async function submitAddFolderLink(filePath, overlay) {
   }
   activeOverlay?._setFolderLinkBusy?.(true);
   try {
-    await addFolderLinkWithHistory(filePath, folder, { tagsContainer: activeOverlay?._folderLinkTagsContainer });
-    showStatus('リンク登録しました');
+    const res = await addFolderLinkWithHistory(filePath, folder, {
+      tagsContainer: activeOverlay?._folderLinkTagsContainer,
+      historyScope: activeOverlay?._folderLinkHistoryScope,
+    });
+    // 既に登録済みの時は「登録しました」と出さない（作られていないのに成功と表示していた）
+    showStatus(res?.created === false ? 'このフォルダにはすでにリンクがあります' : 'リンク登録しました');
     activeOverlay?._folderLinkModalApi?.close?.('saved');
   } catch (e) {
     showStatus('リンク登録に失敗', true);
@@ -900,13 +914,35 @@ function openViewer(url, opts) {
 }
 
 // フォルダビュー表示設定
+// 表示項目（ファイル名・更新日時・サムネイルの表示など）は開いているフォルダごと（gb-folder-display-settings.js）。
+// フィルタ・検索の条件は従来どおり端末内の全体の値。
 function getFolderDisplayConfig() {
   const defaults = { showName: true, showDate: true, showType: true,
     showSize: false, showDimensions: false, showRating: false, showTags: false };
-  try { return { ...defaults, ...JSON.parse(localStorage.getItem('folder-display-config') || '{}') }; }
-  catch { return defaults; }
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem('folder-display-config') || '{}') || {}; } catch { stored = {}; }
+  const perFolder = window.MeldexFolderDisplaySettings;
+  if (!perFolder?.currentPath?.()) return { ...defaults, ...stored };
+  return { ...defaults, ...stored, ...perFolder.displayConfig() };
 }
-function saveFolderDisplayConfig(cfg) { localStorage.setItem('folder-display-config', JSON.stringify(cfg)); }
+function saveFolderDisplayConfig(cfg) {
+  const perFolder = window.MeldexFolderDisplaySettings;
+  if (!perFolder?.currentPath?.()) {
+    localStorage.setItem('folder-display-config', JSON.stringify(cfg));
+    return;
+  }
+  // 表示項目はフォルダへ、それ以外（フィルタ等）は全体へ。全体の表示項目は保存の無いフォルダの初期値として残す。
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem('folder-display-config') || '{}') || {}; } catch { stored = {}; }
+  const display = {};
+  const shared = { ...stored };
+  Object.keys(cfg || {}).forEach(name => {
+    if (perFolder.DISPLAY_KEYS.includes(name)) display[name] = cfg[name];
+    else shared[name] = cfg[name];
+  });
+  localStorage.setItem('folder-display-config', JSON.stringify(shared));
+  perFolder.update({ display });
+}
 
 function _fdSection(menu, title, actionNode, titleDataset) {
   const head = document.createElement('div');
@@ -1145,31 +1181,7 @@ function showFolderDisplaySettings(options) {
     return;
   }
 
-  const layoutItems = [
-    { key: 'list', label: 'リスト', icon: 'list' },
-    { key: 'grid', label: 'グリッド', icon: 'grid3x3' },
-    { key: 'waterfall', label: 'ウォーターフォール', icon: 'layoutGrid' },
-    { key: 'hflow', label: '横並び', icon: 'galleryHorizontal' },
-  ];
-  _fdSection(menu, '表示形式');
-  layoutItems.forEach(item => {
-    const row = document.createElement('div');
-    row.className = 'gb-context-menu-item';
-    row.innerHTML = radioMark(_folderLayout === item.key) + (typeof lucide === 'function' ? lucide(item.icon, 14) + ' ' : '') + item.label;
-    row.addEventListener('click', () => {
-      if (typeof setFolderLayout === 'function') setFolderLayout(item.key);
-      else {
-        _folderLayout = item.key;
-        localStorage.setItem('folder-layout', item.key);
-        renderFolderGrid();
-      }
-      menu.remove();
-    });
-    menu.appendChild(row);
-  });
-
-  _fdSep(menu);
-
+  // 表示形式はツールバーの表示形式のプルダウンで選ぶ（このポップアップには置かない。2026-11-22）。
   _fdSection(menu, 'サムネイルサイズ');
   const thumbControls = document.createElement('div');
   thumbControls.className = 'fd-thumbnail-size-controls';
@@ -1202,8 +1214,10 @@ function showFolderDisplaySettings(options) {
     const px = Math.max(48, Math.min(1000, parseInt(thumbRange.value, 10) || 120));
     thumbValue.textContent = `${px} × ${px}px`;
     _folderZoom = px / 120;
-    localStorage.setItem('folder-zoom', String(_folderZoom));
-    localStorage.setItem('folder-thumbnail-size-px', String(px));
+    if (!window.MeldexFolderDisplaySettings?.update?.({ thumbnailPx: px })) {
+      localStorage.setItem('folder-zoom', String(_folderZoom));
+      localStorage.setItem('folder-thumbnail-size-px', String(px));
+    }
     if (persist && cfg.showThumb === false) {
       cfg.showThumb = true;
       showThumbInput.checked = true;
@@ -1706,13 +1720,20 @@ async function compressFolderItems(items) {
     showStatus('圧縮機能を利用できません（お使いのブラウザが対応していない可能性があります）', true);
     return;
   }
+  const reservation = typeof historyReserve === 'function' ? historyReserve('フォルダ: 圧縮', '') : null;
   try {
     showStatus('圧縮しています...');
     const result = await apiPost('/archive/compress', { paths: targets.map(item => item.path) }, { silentError: true });
+    if (result?.path) {
+      const register = () => pushCreatedOutlinerItemHistory({ path: result.path, kind: 'file' }, 'フォルダ: 圧縮', { scope: '' });
+      if (reservation) reservation.capture(register); else register();
+    }
     if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
     showStatus('圧縮しました: ' + (result?.name || result?.path || 'ZIP'));
   } catch (err) {
     showStatus('圧縮に失敗しました: ' + (err?.userMessage || err?.message || err), true);
+  } finally {
+    reservation?.cancel();
   }
 }
 

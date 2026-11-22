@@ -259,7 +259,22 @@ function _outlinerContainerNodeMatchesFilter(data) {
 }
 
 function _snapshotBaseTreeVisibility() {
+  // 名前の検索で隠れている行を「フィルタで隠れている」と記録しない。記録すると、検索で開いたフォルダの中の一致が
+  // 祖先ごと出なくなっていた（2026-11-22 M-014 フォルダツリー網羅テスト）。検索中に隠れている行は、
+  // フィルタだけで決まる見え方を記録する。
+  const searching = typeof _treeSearchQuery !== 'undefined' && !!_treeSearchQuery;
   document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
+    if (searching && node.style.display === 'none') {
+      const d = node._nodeData;
+      let visible = true;
+      if (d && !d._isRoot && d.type !== 'folder') {
+        if (d.type === 'database') visible = _showDatabaseByGlobalFilter();
+        else if (d.type === 'entity') visible = _showEntityByGlobalFilter();
+        else visible = _showRegularNodeByGlobalFilter(d);
+      }
+      node.dataset.baseVisible = visible ? '1' : '0';
+      return;
+    }
     node.dataset.baseVisible = node.style.display === 'none' ? '0' : '1';
   });
 }
@@ -943,7 +958,8 @@ function initSidebarSectionHeaders() {
 
 // ソースフォルダの管理を開く
 function _openSourceFolderSettings() {
-  if (typeof showSettingsModal === 'function') showSettingsModal();
+  // ソースフォルダを管理する「保存先・フォルダ」のページを開く（以前は全般のページが開いていた: 2026-11-22 M-014）
+  if (typeof showSettingsModal === 'function') showSettingsModal({ panel: '保存先・フォルダ' });
 }
 
 // ホームセクションの追加メニュー
@@ -963,7 +979,7 @@ function _showHomeAddMenu(e) {
     const el = document.createElement('div');
     el.className = 'gb-context-menu-item';
     el.innerHTML = '<span class="menu-icon">' + lucide(icon, 14) + '</span>' + label;
-    el.addEventListener('click', async () => { menu.remove(); await addItemAt(_homeFolderPath || '', type); });
+    el.addEventListener('click', async () => { menu.remove(); await addItemAt(_homeFolderPath || '', type, { preferHome: true }); });
     menu.appendChild(el);
   });
   document.body.appendChild(menu);
@@ -1132,6 +1148,7 @@ function updateRecentItems() {
   }
   const savedScrollTop = (!lockActive && treeScroll) ? treeScroll.scrollTop : 0;
   const recent = _outlinerReadStorageArray('meldex-recent').filter(item => item && typeof item === 'object').slice(0, 5);
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   container.innerHTML = '';
   const _restoreAfter = () => {
     if (lockActive || !treeScroll) return; // ガード稼働中はスキップ
@@ -1147,9 +1164,12 @@ function updateRecentItems() {
   recent.forEach(r => {
     const item = document.createElement('div');
     item.className = 'fav-item';
+    // 選んだ項目のパス（開いた後の追従で、同じファイルのツリーの行へ強調を移さない判定に使う: R-012）
+    item.dataset.filePath = r.path || '';
     const name = r.label || r.name || r.path?.split('/').pop() || '?';
     const iconName = _outlinerIconName(r.type, r.path, false);
-    item.innerHTML = lucide(iconName, 18) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(name) + '</span>';
+    item.innerHTML = '<span class="shortcut-file-visual">' + (typeof _outlinerIconMarkup === 'function' ? _outlinerIconMarkup(r, 18) : lucide(iconName, 18)) + '</span> <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(name) + '</span>';
+    window.GBOutlinerThumbnails?.attachToIcon?.(item.firstElementChild, r, 24);
     item.title = r.path || '';
     // 単クリック=選択のみ、ダブルクリック=開く（§2.4・フォルダツリー行と同じ操作語彙に統一）
     item.addEventListener('click', (e) => {
@@ -1236,6 +1256,7 @@ function _favExists(tree, path, fileId = typeof _pathToFileId === 'function' ? _
 
 function addToFavorites(name, path, type) {
   const favs = getFavorites();
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   if (_favExists(favs, path)) return;
   const before = typeof captureOutlinerSettingsHistory === 'function'
     ? captureOutlinerSettingsHistory(['meldex-favorites'])
@@ -1395,11 +1416,11 @@ function _showFavoriteItemMenu(event, node, isFavFolder) {
     addItem('開く', () => _openStoredOutlinerItem(node, { fromExplorer: true }), 'folderOpen');
     addItem('お気に入りを外す', () => removeFromFavorites(node.path), 'starOff');
   } else {
-    addItem('フォルダを削除', async () => {
-      const ok = typeof cfConfirm === 'function'
-        ? await cfConfirm('「' + node.name + '」フォルダを削除しますか？（中身は失われます）')
-        : confirm('「' + node.name + '」フォルダを削除しますか？（中身は失われます）');
-      if (ok) removeFavFolder(node.path);
+    // 取り消し・やり直し・ヒストリーで戻せるので確認を出さない（app/AGENTS.md）。以前は戻せるのに
+    // 「中身は失われます」と確認していた（2026-11-22 M-014 フォルダツリー網羅テスト）。
+    addItem('フォルダを削除', () => {
+      removeFavFolder(node.path);
+      if (typeof showStatus === 'function') showStatus('「' + node.name + '」フォルダを削除しました（Undoで戻せます）');
     }, 'trash2', true);
   }
   document.body.appendChild(menu);
@@ -1489,6 +1510,9 @@ function renderFavorites() {
 
     const row = document.createElement('div');
     row.className = 'fav-item';
+    // 選んだ項目のパス。以前はお気に入りの行がパスを持たず、開いた後の追従でツリーの同じファイルの行にも
+    // 強調が付き、2か所が強調されていた（R-012。2026-11-22 M-014 横断の検査）
+    if (!isFavFolder) row.dataset.filePath = node.path || '';
     row.draggable = true;
 
     if (isFavFolder) {
@@ -1549,8 +1573,9 @@ function renderFavorites() {
     } else {
       const iconName = _outlinerIconName(node.type, node.path, node.type === 'folder' && isWorkFolder(node.path));
       const ico = document.createElement('span');
-      ico.innerHTML = lucide(iconName, 18);
+      ico.innerHTML = typeof _outlinerIconMarkup === 'function' ? _outlinerIconMarkup(node, 18) : lucide(iconName, 18);
       ico.style.cssText = 'display:inline-flex;flex-shrink:0;';
+      window.GBOutlinerThumbnails?.attachToIcon?.(ico, node, 24);
       row.appendChild(ico);
       const lbl = document.createElement('span');
       lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;';

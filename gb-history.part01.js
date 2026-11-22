@@ -400,7 +400,8 @@ function _sameVersionTargetPath(a, b) {
 }
 
 function _isScriptNoteVersionPath(path) {
-  return /\.scriptnote\.json$/i.test(_normalizeVersionComparePath(path));
+  // 現行の .mel-scenario と旧拡張子 .scriptnote.json の両方がシナリオ（M-014 S6）。
+  return /(?:\.mel-scenario|\.scriptnote\.json)$/i.test(_normalizeVersionComparePath(path));
 }
 
 async function _refreshOpenScriptNoteVersionTarget(path) {
@@ -507,6 +508,20 @@ async function _refreshRestoredVersionTarget(path, type) {
 
   if (targetType === 'db') {
     if (_sameVersionTargetPath(state.currentDbPath, path) && typeof selectDatabase === 'function') await Promise.resolve(selectDatabase(path));
+    return;
+  }
+
+  // 開いているボードを復元した時は、右レールのバージョン管理を押した後でも（今の対象が別のものを指していても）
+  // ボードを読み直す。読み直さないと画面が古いままで、次の編集で競合か上書きになる（M-014 ボード網羅テストで発見）。
+  if (typeof bd !== 'undefined' && bd?.path && path && _sameVersionTargetPath(bd.path, path) && typeof bdOpenBoard === 'function') {
+    const label = bd.label || path.split('/').pop()?.replace(/\.\w+$/, '') || '';
+    // 復元は利用者が確認して選んだ上書きなので、復元より前の未保存の編集は保存せずに捨てる
+    // （開き直しの前の保存は、復元した版と食い違って断られ、開き直しごと止まっていた）。
+    clearTimeout(window._bdTimer);
+    window._bdTimer = null;
+    bd.dirty = false;
+    if (bd.editing) bd.editing = null;
+    await Promise.resolve(bdOpenBoard(label, bd.path));
     return;
   }
 
@@ -826,11 +841,11 @@ async function compareVersion(path, versionName, type) {
   const curData = await apiFetch('/file?path=' + encodeURIComponent(path));
   const oldText = verData.content || '';
   const newText = curData.content || '';
-  // 台本(.scriptnote.json)の場合は構造化差分
-  if (path.endsWith('.scriptnote.json')) {
+  // シナリオ（.mel-scenario / 旧 .scriptnote.json）の場合は構造化差分
+  if (_isScriptNoteVersionPath(path)) {
     try {
-      const oldDoc = JSON.parse(oldText);
-      const newDoc = JSON.parse(newText);
+      const oldDoc = JSON.parse(String(oldText).replace(/^\uFEFF/, ''));
+      const newDoc = JSON.parse(String(newText).replace(/^\uFEFF/, ''));
       if (oldDoc.fileType === 'meldex-scriptnote' && newDoc.fileType === 'meldex-scriptnote') {
         showScriptNoteDiff(oldDoc, newDoc, versionName, '現在');
         return;

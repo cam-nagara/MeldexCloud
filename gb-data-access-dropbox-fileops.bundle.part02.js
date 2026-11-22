@@ -19,7 +19,7 @@
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
     await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
-    for (const step of steps) {
+    for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
       if (inProgress && inProgress.name !== step.name) throw new Error('Cloud aftercareの実行中stepが一致しません');
@@ -59,11 +59,13 @@
           before_manifest_digest: String(intent.aftercare_in_progress?.before_manifest_digest || ''),
           after_manifest_digest: String(after?.manifest_digest || ''),
         } };
-      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
       completed.add(step.name);
       intent.aftercare_completed = [...completed];
       if (checkpoint) intent.aftercare_manifest_digest = after.manifest_digest;
-      delete intent.aftercare_in_progress;
+      const next = steps.slice(stepIndex + 1).find(candidate => !completed.has(candidate.name));
+      if (next) intent.aftercare_in_progress = { name: next.name,
+        before_manifest_digest: String(after?.manifest_digest || '') };
+      else delete intent.aftercare_in_progress;
       await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
     }
     return { ...record, intent };
@@ -835,6 +837,32 @@ async function _writeAnnotationRecord(provider, record) {
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
 
+// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
+// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
+async function _restoreAnnotationRecord(provider, body) {
+  const id = _safeId(body.id, 'annotation id');
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
+  const matches = await _findAnnotationRecordsById(provider, id);
+  const match = matches[0];
+  const current = match?.stored || null;
+  const existing = current?.payload || null;
+  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
+  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
+  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
+  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
+  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
+  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
+  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
+  delete record.tombstone; delete record.deleted; delete record.deleted_at;
+  if (record.state === 'deleted') delete record.state;
+  if (record.status === 'tombstoned') delete record.status;
+  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return { ok: true, id };
+}
+
 // created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
 // identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
 // 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
@@ -870,31 +898,3 @@ async function _coverAnnotationIndexBatch(provider, scope, kind) {
     throw _annotationUnavailable(new Error('metadata generation API unavailable'), '索引coverage確認');
   }
   const generation = await scope.adapter.documentCollectionGeneration(kind, {
-    excludeDocumentIds: [resolver.INDEX_ID],
-  });
-  if (coverage.complete && coverage.revision === generation) return coverage;
-  const page = await scope.adapter.listDocumentHeaders(kind, { cursor: coverage.cursor, limit: 50 });
-  const rows = [];
-  for (const header of page.entries || []) {
-    if (header.documentId === resolver.INDEX_ID) continue;
-    const stored = await scope.adapter.load(kind, header.documentId);
-    if (!stored?.payload) continue;
-    if (_annotationDeleted(stored.payload)) { rows.push(stored.payload); continue; }
-    const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, header.documentId);
-    if (migrated.record?.payload) rows.push(migrated.record.payload);
-  }
-  let complete = page.complete === true;
-  if (complete) {
-    const readbackGeneration = await scope.adapter.documentCollectionGeneration(kind, {
-      excludeDocumentIds: [resolver.INDEX_ID],
-    });
-    complete = readbackGeneration === generation;
-  }
-  const next = { cursor: page.cursor || '', revision: generation, complete };
-  await resolver.indexCoverBatch(scope.adapter, kind, rows, next);
-  return next;
-}
-
-async function _ensureAnnotationIndexCoverage(provider, scope, kind) {
-  // A normal first read can require several 50-record pages, followed by a
-  // second pass after legacy migration changes the collection generation.

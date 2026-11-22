@@ -630,9 +630,9 @@
         });
         const actions = document.createElement('div');
         actions.className = 'gb-production-topic-resource-actions';
+        // 追加の時にダイアログを出さない（OSの入力ダイアログは使わない）。既定の名前で作り、名前は開いた先で変える。
         const createResource = async (kind, defaultLabel) => {
-          const label = window.prompt?.(`${defaultLabel}の名前を入力してください`, defaultLabel);
-          if (label == null) return;
+          const label = defaultLabel;
           const key = kind + '\0' + String(label);
           const mutationId = pendingCreation.get(key)
             || `production-resource-create-${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -994,6 +994,24 @@
     else if (state.mode === 'taskSettings') window.MeldexSchedulerUi?.renderTaskSettings?.(content, context.component);
     else if (state.mode === 'allocation') window.MeldexSchedulerUi?.renderAllocation?.(content, context.component);
     else if (state.mode === 'calendar') window.MeldexSchedulerUi?.renderCalendar?.(content, context.component);
+    appendProposalSection(content.parentElement, state);
+  }
+
+  // 自動割り当てで作った案の確認・比較・採用・保管の入口。2026-08-25 の統合で「割り当て」モードを外した時に
+  // 入口ごと消え、案を作れても採用も保管もできなくなっていた（カレンダーの案の表示は「採用すると確定版へ反映」と案内する）。
+  // 案を選んでいる時の操作はここ（制作管理タブの下段）に置く。
+  function appendProposalSection(shell, state) {
+    const renderAllocation = window.MeldexSchedulerUi?.renderAllocation;
+    if (!shell || typeof renderAllocation !== 'function') return;
+    if (state.mode === 'detail' && state.row) return; // タスクの編集中はフォームを優先する（案の操作は未選択の時）
+    const section = document.createElement('section');
+    section.className = 'gb-production-sidebar-proposals';
+    section.setAttribute('aria-label', 'スケジュール案');
+    const host = document.createElement('div');
+    host.className = 'gb-scheduler-allocation-host';
+    section.appendChild(host);
+    shell.appendChild(section);
+    renderAllocation(host);
   }
 
   function openTask(row, component, options = {}) {

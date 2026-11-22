@@ -1500,6 +1500,53 @@ const GBLayout = (() => {
     return true;
   }
 
+  // パネルのタブ1枚（アイコン・名前・「…」）。メインパネルとサブパネルのタブ行が同じ部品を使う。
+  function _createPaneTabElement(tab, opts = {}) {
+    const tabEl = document.createElement('div');
+    tabEl.className = 'gb-tab' + (opts.active ? ' active' : '');
+    tabEl.dataset.tabTitle = tab.label || 'タブ';
+    if (opts.e2eId) tabEl.dataset.e2eId = opts.e2eId;
+    tabEl.tabIndex = -1;
+    tabEl.setAttribute('aria-haspopup', 'menu');
+    tabEl.setAttribute('aria-expanded', 'false');
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'gb-tab-icon';
+    if (typeof lucide === 'function') {
+      const fallback = lucide(tab.icon || 'page', 14);
+      iconSpan.innerHTML = window.MeldexFileIcons?.tabIcon(tab, 14, fallback) ?? fallback;
+    }
+    tabEl.appendChild(iconSpan);
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'gb-tab-label';
+    labelSpan.textContent = tab.label || '';
+    tabEl.appendChild(labelSpan);
+
+    if (typeof opts.onMore === 'function') {
+      const tabMoreBtn = document.createElement('button');
+      tabMoreBtn.type = 'button';
+      tabMoreBtn.className = 'gb-tab-more';
+      if (opts.moreE2eId) tabMoreBtn.dataset.e2eId = opts.moreE2eId;
+      tabMoreBtn.title = tab.label || 'タブ';
+      tabMoreBtn.setAttribute('aria-label', `${tab.label || 'タブ'}のタブ操作`);
+      tabMoreBtn.setAttribute('aria-haspopup', 'menu');
+      tabMoreBtn.setAttribute('aria-expanded', 'false');
+      tabMoreBtn.draggable = false;
+      tabMoreBtn.innerHTML = lucide('moreHorizontal', 14);
+      tabMoreBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+      });
+      tabMoreBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        opts.onMore(e);
+      });
+      tabEl.appendChild(tabMoreBtn);
+    }
+    return tabEl;
+  }
+
   function renderPane(node, depth) {
     const pane = document.createElement('div');
     pane.className = 'gb-pane' + (node.id === _activePane ? ' gb-pane-active' : '') + (node.locked ? ' gb-pane-locked' : '');
@@ -1558,6 +1605,8 @@ const GBLayout = (() => {
     const navCtrls = document.createElement('span');
     navCtrls.className = 'gb-pane-nav-ctrls';
     navCtrls.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    // サブパネルのタブ行はメインパネルと同じ部品で描く。戻る/進むはサブパネルのタブの履歴を使う。
+    const isSubpanelWorkspace = node.meldexRole === 'subpanel-workspace' && typeof window.GBSubPanel?.renderTabStrip === 'function';
     const backBtn = document.createElement('button');
     backBtn.type = 'button';
     backBtn.className = 'gb-pane-nav-btn gb-pane-nav-back';
@@ -1566,11 +1615,13 @@ const GBLayout = (() => {
     backBtn.innerHTML = lucide('arrowLeft', 18);
     backBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (isSubpanelWorkspace) { window.GBSubPanel.navBack?.(); return; }
       if (typeof navBack === 'function') navBack(node.id);
     });
     backBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (isSubpanelWorkspace) return;
       if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'back');
     });
@@ -1582,11 +1633,13 @@ const GBLayout = (() => {
     forwardBtn.innerHTML = lucide('arrowRight', 18);
     forwardBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (isSubpanelWorkspace) { window.GBSubPanel.navForward?.(); return; }
       if (typeof navForward === 'function') navForward(node.id);
     });
     forwardBtn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (isSubpanelWorkspace) return;
       if (typeof GBPanelSet?.rightRailNavigationState === 'function' && GBPanelSet.rightRailNavigationState(node.id)) return;
       if (typeof showPaneNavHistoryDropdown === 'function') showPaneNavHistoryDropdown(e, node.id, 'forward');
     });
@@ -1682,52 +1735,16 @@ const GBLayout = (() => {
     if (subpanelTabStrip) window.GBSubPanel.renderTabStrip(tabsScroll, node);
     if (!subpanelTabStrip && node.tabs && node.tabs.length > 0) {
       node.tabs.forEach((tab, i) => {
-        const tabEl = document.createElement('div');
-        tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
+        const tabEl = _createPaneTabElement(tab, {
+          active: i === node.activeTabIndex,
+          e2eId: `pane-${node.id}-tab-${tab.id}`,
+          moreE2eId: `pane-${node.id}-tab-${tab.id}-actions`,
+          onMore: _isMainPaneNode(node) && !node.collapsed ? (e) => _showTabContextMenu(e, node.id, tab) : null,
+        });
         tabEl.dataset.tabId = tab.id;
-        tabEl.dataset.tabTitle = tab.label || 'タブ';
-        tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
         const canReorderMainTab = _canReorderMainPaneTabs(node);
         const canDragMainFile = _isMainPaneNode(node) && !node.locked && !node.collapsed && !!tab.path;
         tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab || canDragMainFile;
-        tabEl.tabIndex = -1;
-        tabEl.setAttribute('aria-haspopup', 'menu');
-        tabEl.setAttribute('aria-expanded', 'false');
-
-        const iconSpan = document.createElement('span');
-        iconSpan.className = 'gb-tab-icon';
-        if (typeof lucide === 'function') {
-          const fallback = lucide(tab.icon || 'page', 14);
-          iconSpan.innerHTML = window.MeldexFileIcons?.tabIcon(tab, 14, fallback) ?? fallback;
-        }
-        tabEl.appendChild(iconSpan);
-
-        const labelSpan = document.createElement('span');
-        labelSpan.className = 'gb-tab-label';
-        labelSpan.textContent = tab.label || '';
-        tabEl.appendChild(labelSpan);
-
-        if (_isMainPaneNode(node) && !node.collapsed) {
-          const tabMoreBtn = document.createElement('button');
-          tabMoreBtn.type = 'button';
-          tabMoreBtn.className = 'gb-tab-more';
-          tabMoreBtn.dataset.e2eId = `pane-${node.id}-tab-${tab.id}-actions`;
-          tabMoreBtn.title = tab.label || 'タブ';
-          tabMoreBtn.setAttribute('aria-label', `${tab.label || 'タブ'}のタブ操作`);
-          tabMoreBtn.setAttribute('aria-haspopup', 'menu');
-          tabMoreBtn.setAttribute('aria-expanded', 'false');
-          tabMoreBtn.draggable = false;
-          tabMoreBtn.innerHTML = lucide('moreHorizontal', 14);
-          tabMoreBtn.addEventListener('pointerdown', (e) => {
-            e.stopPropagation();
-          });
-          tabMoreBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            _showTabContextMenu(e, node.id, tab);
-          });
-          tabEl.appendChild(tabMoreBtn);
-        }
 
         // 閉じる操作は右クリックメニュー経由に統一（タブ内に × ボタンは置かない）
 
@@ -1867,10 +1884,11 @@ const GBLayout = (() => {
       }
       // ＋ボタンを押したペインをアクティブにしてからメニューを開く
       // → パネルメニュー経由の追加先がこのペインになる
-      if (typeof setActivePane === 'function') setActivePane(node.id);
+      // サブパネルはメインパネルの操作対象を奪わないよう、追加先だけをメニューへ渡す。
+      if (!subpanelTabStrip && typeof setActivePane === 'function') setActivePane(node.id);
       if (typeof showPanelMenu === 'function') showPanelMenu(e, { paneId: node.id });
     });
-    if (!_isSidebarPaneNode(node) && !subpanelTabStrip) tabsScroll.appendChild(addTabBtn);
+    if (!_isSidebarPaneNode(node)) tabsScroll.appendChild(addTabBtn);
 
     tabBar.appendChild(tabsScroll);
     if (ctrls.childElementCount) tabBar.appendChild(ctrls);

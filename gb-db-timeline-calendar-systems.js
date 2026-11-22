@@ -438,18 +438,6 @@ function _timelineCalendarRemoveButton() {
   return button;
 }
 
-async function _timelineConfirmCalendarPresetDelete(system) {
-  const name = system?.name || '選択中の暦';
-  const message = `暦プリセット「${name}」を削除しますか？\n削除した暦を使用中の場合、このシートの表示はグレゴリオ暦に戻ります。`;
-  if (typeof cfConfirm === 'function') {
-    return !!await cfConfirm(message, { danger: true, okLabel: '削除' });
-  }
-  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-    return !!window.confirm(message);
-  }
-  return false;
-}
-
 function _timelineCalendarPresetFileName(system) {
   const name = system?.name || 'timeline-calendar';
   const safe = typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.sanitizeTitle === 'function'
@@ -907,17 +895,8 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
         updatePresetActionStates();
         return;
       }
-      setBusy(true, '削除を確認中...');
-      let confirmed = false;
-      try {
-        confirmed = await _timelineConfirmCalendarPresetDelete(deleteTarget);
-      } catch (err) {
-        if (typeof showStatus === 'function') showStatus('削除確認を表示できませんでした: ' + (err?.message || err), true);
-      }
-      if (!confirmed) {
-        setBusy(false);
-        return;
-      }
+      // 確認は出さない。暦プリセットの削除は Ctrl+Z・やり直し・共通の履歴で戻せる（使用中のシートの暦も戻る）。
+      // app/AGENTS.md「3経路で復元できる場合に限り確認を出さない」。2026-11-21 予期しないダイアログの検査で検出。
       if (status) status.textContent = '削除中...';
       const latestCfg = dbPath && typeof getTimelineConfig === 'function' ? getTimelineConfig(dbPath, { ctx }) : cfg;
       const nextSystems = _timelineCustomCalendarSystems(latestCfg).filter(system => system.id !== selectedId);

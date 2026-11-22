@@ -86,6 +86,10 @@
     }
     const imageCell = element.closest('.gb-image-cell');
     if (imageCell) return {kind:'native', target:imageCell};
+    // トピックの関連ファイルの欄は、ドロップしたファイルをそのトピックへリンクする（欄の受け口へ渡す）。
+    // ここで止めないと、トピックを開いたシートのタブとしてシートへの取り込み（新しいトピックの作成）になる。
+    const attachments = element.closest('[data-e2e-id="entity-attachments-section"],.meldex-entity-attachments-section');
+    if (attachments) return {kind:'native', target:attachments};
     const note = element.closest('#page-content,#entity-freetext,.gb-subpanel-note-content,[data-editor-local-id="page-content"]');
     const noteRoot = element.closest('#page-view,.gb-note-root,.gb-tool-editor');
     const editable = note || noteRoot?.querySelector('#page-content,[contenteditable="true"]');

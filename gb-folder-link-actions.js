@@ -81,7 +81,7 @@
           try {
             if (typeof renameAppPathReferences === 'function') {
               renameAppPathReferences(from, move.currentPath, {
-                label: response?.new_name || move.name || move.item?.name || '',
+                preserveMountedViews: true, label: response?.new_name || move.name || move.item?.name || '',
                 fileId: response?.file_id || move.fileId || move.item?.file_id,
                 type: move.type || move.item?.type || 'file',
               });
@@ -221,10 +221,12 @@
         if (choice !== 'cancel' && suppress) {
           setFolderPasteLinkChoiceSuppressed(true);
         }
+        // 先に選んだ結果で確定してから閉じる。閉じる処理は onClose を同期で呼び、未確定なら「キャンセル」で
+        // 確定してしまうため、コピー・リンクを押しても何も貼り付けられなかった（2026-11-22 M-014 フォルダツリー網羅テスト）。
+        finish(choice, suppress);
         if (modalController?.close) {
           modalController.close(choice);
         }
-        finish(choice, suppress);
       };
 
       cancelBtn.addEventListener('click', () => handleChoice('cancel'));
@@ -325,13 +327,15 @@
             conflict_policy: 'error',
           });
           try {
-            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
+            if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { preserveMountedViews: true, label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
           try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res); }
           catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
           const newPath = res?.new_path || item.path;
           pastedPaths.push(newPath);
           executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
+          if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(executedMoves.slice(-1));
+          if (typeof _outlinerApplyCommittedMove === 'function') _outlinerApplyCommittedMove(oldPath, newPath, res?.new_name || item.name, res?.file_id);
         } else {
           const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
           const newPath = res?.new_path || '';

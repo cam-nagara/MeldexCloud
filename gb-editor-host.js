@@ -28,6 +28,21 @@
     if (host?.root.dataset.editorLocalId === id) return host.root;
     return host?.root.querySelector('[data-editor-local-id="' + id + '"]') || document.getElementById(id);
   }
+  // 書き出し・公開などが「表示中の本文・表」を探す時の共通の入口。サブパネル・トピック内の
+  // エディタが操作対象ならその中から、そうでなければページから探す（ID が1つと決め打ちしない）。
+  function surfaceElement(id) {
+    const host = get();
+    if (host && id === 'pivot-table' && host.ctx?.tableId) {
+      const table = host.root.querySelector('#' + CSS.escape(host.ctx.tableId));
+      if (table) return table;
+    }
+    if (host) {
+      const local = host.root.dataset.editorLocalId === id ? host.root
+        : host.root.querySelector('[data-editor-local-id="' + id + '"], #' + CSS.escape(id));
+      if (local) return local;
+    }
+    return document.getElementById(id);
+  }
   function ownerOf(element) {
     const host = hosts.get(element?.closest?.('[data-editor-host]'));
     if (host?.resolveCtx) host.ctx = host.resolveCtx();
@@ -37,9 +52,12 @@
   function ownsComponent(component) {
     return !!component && [...hosts.values()].some(host => host.component === component);
   }
-  function bindState(host) {
+  // runHook: 面ごとの切り替え（host.activate。サブパネルではアプリの activate → オプションの描き直し）も行うか。
+  // 押した直後（pointerdown）にこれを行うと、オプションの描き直しがページ全体のアイコンを描き直し、
+  // 押したボタンの中身が差し替わってクリックが届かなくなる（2026-11-21 サブパネルのシナリオのツールバーが無反応）。
+  function bindState(host, runHook = true) {
     if (host.resolveCtx) host.ctx = host.resolveCtx();
-    host.activate?.();
+    if (runHook) host.activate?.();
     if (host.kind === 'page') {
       const editor = host.root.querySelector('[data-editor-local-id="page-content"],#page-content');
       if (editor && typeof rtTarget !== 'undefined') {
@@ -75,13 +93,16 @@
       window.GBOptionTargetContext?.renderHeader(document.getElementById(id), null, { caption: host.surface === 'subpanel' ? '対象 サブ' : '対象 メイン' });
     }
   }
-  function activate(host) {
+  // fromUserEvent: 押す・フォーカスの移動から呼ばれた時。面の切り替え（host.activate）は、対象が変わった時だけ、
+  // 押している途中ならクリックの後の sync で行う（同じ面の中でセルを移るたびにオプションを描き直さない）。
+  // プログラムからの呼び出しは従来どおり毎回行う（ボードのように付け直しを任せている面がある）。
+  function activate(host, fromUserEvent = false) {
     if (!host?.root?.isConnected) return;
     const changed = current !== host;
     current = host;
     host.mainStamp = mainStamp();
     // Only runtime binding here: no remount, DOM replacement, or focus change.
-    bindState(host);
+    bindState(host, fromUserEvent ? (changed && !pointerPending) : true);
     if (!changed) return;
     generation++;
     // Invalidate an older inspector load before this pointer's click executes.
@@ -129,7 +150,7 @@
         host.ctx = typeof getPaneContext === 'function' ? getPaneContext(paneId) : null;
         if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
       }
-      activate(host); return;
+      activate(host, true); return;
     }
     const entity = el?.closest('.meldex-entity-detail[data-path]');
     const pane = el?.closest('.gb-pane');
@@ -147,7 +168,7 @@
           historyScope: () => 'page:' + String(host.path).replace(/^\/+/, '') }).host;
         host.path = tab.path;
         if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
-        activate(host);
+        activate(host, true);
         return;
       }
     }
@@ -281,5 +302,5 @@
     clearTimeout(syncTimer);
     if (get() && needsSync) syncTimer = setTimeout(sync, 0);
   }, true);
-  window.GBEditorHost = { get, ownerOf, ownsComponent, register, activate, element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
+  window.GBEditorHost = { get, surfaceElement, ownerOf, ownsComponent, register, activate: host => activate(host), element, toolbar, sync, flushSurface, flushPath, reloadPath, reloadNote, returnToMain, onPathRename, generation: () => generation };
 })();

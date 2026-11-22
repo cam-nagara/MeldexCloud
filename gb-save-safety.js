@@ -217,6 +217,7 @@
       close.type = 'button';
       close.className = 'gb-btn gb-btn-sm';
       close.textContent = '確認しました';
+      close.dataset.e2eId = 'save-failure-modal-confirm';
       const modal = GBUI.createModal({ title, body, footer: close, closeOnOverlay: false, onClose: () => { modalOpen = false; } });
       close.addEventListener('click', modal.close);
       document.body.appendChild(modal.overlay);
