@@ -760,6 +760,13 @@ function _setAnnotationRenderedTarget(targetPath) {
 function _markAnnotationMutated(targetPath) {
   _annMutationSeq += 1;
   _annMutationTargetPath = _normalizeAnnotationTargetPath(targetPath || ann?.targetPath || '');
+  if (typeof _markAnnotationVersionDirty === 'function') _markAnnotationVersionDirty(_annMutationTargetPath);
+}
+function _markAnnotationVersionDirty(path) {
+  if (typeof markAutoVersionDirty !== 'function' || !path) return;
+  const documentPath = String(path).replace(/(\.pdf)#page=\d+$/i,'$1');
+  const surface = window.GBAnnotationSurfaces?.captureTargets?.().find(s => _normalizeAnnotationTargetPath(s.sourcePath) === _normalizeAnnotationTargetPath(documentPath));
+  markAutoVersionDirty(documentPath, ['database','calendar'].includes(surface?.type) ? 'db' : 'file');
 }
 function _resolveAnnotationWriteTarget() {
   if (_isTrayAnnotationHost()) {
@@ -808,7 +815,11 @@ function _refreshEmbeddedAnnotationHistoryTarget(targetPath) {
 }
 
 function _refreshAnnotationHistoryTarget(row) {
-  if (window.GBAnnotationSurfaces?.enabled()) { window.GBAnnotationSurfaces.reloadTarget(row?.target_path); return; }
+  if (window.GBAnnotationSurfaces?.enabled()) {
+    window.GBAnnotationSurfaces.reloadTarget(row?.target_path);
+    if (typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
+    return;
+  }
   const targetPath = row?.target_path || ann?.targetPath || '';
   _markAnnotationMutated(targetPath);
   if (!_refreshEmbeddedAnnotationHistoryTarget(targetPath) && typeof loadAnnotations === 'function') loadAnnotations();
@@ -844,6 +855,7 @@ function _pushAnnotationHistory(label, beforeRow, afterRow, detail, scopeOverrid
   const before = _normalizeAnnotationHistoryRow(beforeRow);
   const after = _normalizeAnnotationHistoryRow(afterRow);
   if (!before && !after) return false;
+  if (typeof _markAnnotationVersionDirty === 'function') _markAnnotationVersionDirty((after || before).target_path);
   let beforeKey = '';
   let afterKey = '';
   try {
@@ -1083,7 +1095,7 @@ function openCurrentAnnotationVersions() {
     button.setAttribute('aria-label', '現在の対象のアノテートバージョン');
     button.innerHTML = typeof lucide === 'function' ? lucide('gitBranch', 12) : '版';
     button.addEventListener('click', openCurrentAnnotationVersions);
-    header.querySelector('span')?.insertAdjacentElement('afterend', button);
+    (header.querySelector('.gb-search-filter-buttons') || header.querySelector('span'))?.insertAdjacentElement('afterend', button);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
   else install();

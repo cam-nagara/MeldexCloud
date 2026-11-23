@@ -77,6 +77,7 @@
     _buildBrowseItem,
     _sortBrowseItems,
     _linkedItemsForFolder,
+    _folderLinkPathKey,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
     _rewriteStoredPathsBatchForProvider,
@@ -249,18 +250,18 @@
     return links;
   }
 
-  async function _folderLinksStateForProvider(provider) {
+  async function _folderLinksStateForProvider(provider, documentId) {
     if (typeof _readFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データを読み込めません');
     }
-    return _readFolderLinksManaged(provider);
+    return _readFolderLinksManaged(provider, documentId);
   }
 
-  async function _updateFolderLinksStateForProvider(provider, updater) {
+  async function _updateFolderLinksStateForProvider(provider, updater, documentId, writeSession = null) {
     if (typeof _updateFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データの原子的更新を利用できません');
     }
-    return _updateFolderLinksManaged(provider, updater);
+    return _updateFolderLinksManaged(provider, updater, documentId, writeSession);
   }
 
   async function _folderLinksManagementScope(provider) {
@@ -334,8 +335,12 @@
   function _safeTrashRestoreRelativePath(rawPath) {
     const raw = String(rawPath || '').trim().replace(/\\/g, '/');
     const segments = raw.split('/');
-    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
-      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const chatIndex = segments.indexOf('_chat');
+    const chatDocument = chatIndex >= 0 && segments.length === chatIndex + 4
+      && segments[chatIndex + 1] === 'llm' && /\.md$/i.test(segments[segments.length - 1]);
+    if (!raw || raw.startsWith('/') || segments.some((segment, index) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.')
+      || (segment.startsWith('_') && !(chatDocument && index >= chatIndex)))) throw _invalidTrashRestorePath();
     const normalized = _normalizeFolderPath(raw);
     if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
     return normalized;

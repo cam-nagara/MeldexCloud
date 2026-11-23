@@ -149,7 +149,7 @@
           'タスクリスト',
           taskSheet,
           row._entry_name || 'タスク',
-          row,
+          deps.taskRowProps(row),
           journal,
           `structure:${row['作成キー']}`,
         );

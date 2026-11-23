@@ -278,7 +278,40 @@ function openCalendar() {
 // アノテートパネルのフィルタ入力にリロードを接続（Phase 2e-i）
 (function _setupRpAnnotationFilters() {
   function wire() {
-    const search = document.getElementById('rp-ann-search');
+    let search = document.getElementById('rp-ann-search');
+    if (search && !search.dataset.rpBound && window.MeldexSearchFilterRow) {
+      const old = search;
+      const row = old.parentElement;
+      const storage = document.createElement('div'); storage.hidden = true;
+      const group = (id, label, icon, ids) => {
+        const fields = document.createElement('div'); fields.className = 'gb-search-filter-fields';
+        for (const name of ids) {
+          const field = document.getElementById('rp-ann-' + name);
+          if (!field) continue;
+          const wrap = document.createElement('label'); wrap.textContent = field.getAttribute('aria-label') || field.title;
+          field.className = field.tagName === 'SELECT' ? 'gb-select' : 'gb-input'; field.removeAttribute('style');
+          wrap.append(field); fields.append(wrap);
+        }
+        storage.append(fields);
+        return { id, label, icon, content: () => fields, onClose: () => storage.append(fields) };
+      };
+      const shared = MeldexSearchFilterRow.create({ label: 'アノテートを検索', onChange: () => shared.input.dispatchEvent(new Event('change')),
+        filters: [
+          group('display', 'アノテートの表示と並び順', 'slidersHorizontal', ['view', 'sort']),
+          group('filter', 'アノテートの絞り込み', 'filter', ['type', 'scope', 'status', 'user', 'date-from', 'date-to']),
+        ] });
+      shared.input.id = old.id;
+      shared.input.value = old.value;
+      Object.assign(shared.input.dataset, old.dataset);
+      row.replaceChildren(shared.el, storage);
+      shared.el.style.flex = '1';
+      const toolbar = document.querySelector('[data-annotation-toolbar]');
+      toolbar?.classList.add('gb-search-filter-row');
+      const version = toolbar?.querySelector('[data-annotation-version-button]');
+      if (version) version.before(shared.controls);
+      else toolbar?.querySelector('span')?.after(shared.controls);
+      search = shared.input;
+    }
     const view = document.getElementById('rp-ann-view');
     const sort = document.getElementById('rp-ann-sort');
     const type = document.getElementById('rp-ann-type');
@@ -294,16 +327,18 @@ function openCalendar() {
     if (dateFrom) dateFrom.value = localStorage.getItem('rp-ann-date-from') || '';
     if (dateTo) dateTo.value = localStorage.getItem('rp-ann-date-to') || '';
     let tid = 0;
+    const refreshFilters = () => loadRpAnnotationList({ reuseItems: true });
     const clearTargetFilter = () => { delete search.dataset.targetFilter; };
-    search.addEventListener('input', () => { clearTargetFilter(); clearTimeout(tid); tid = setTimeout(loadRpAnnotationList, 200); });
-    if (view) view.addEventListener('change', () => { localStorage.setItem('rp-ann-view-mode', view.value || 'preview'); loadRpAnnotationList(); });
-    if (sort) sort.addEventListener('change', () => { localStorage.setItem('rp-ann-sort-mode', sort.value || 'modified-desc'); loadRpAnnotationList(); });
-    if (type) type.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
-    if (scope) scope.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
-    if (status) status.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
-    if (user) user.addEventListener('change', () => { clearTargetFilter(); loadRpAnnotationList(); });
-    if (dateFrom) dateFrom.addEventListener('change', () => { localStorage.setItem('rp-ann-date-from', dateFrom.value || ''); loadRpAnnotationList(); });
-    if (dateTo) dateTo.addEventListener('change', () => { localStorage.setItem('rp-ann-date-to', dateTo.value || ''); loadRpAnnotationList(); });
+    search.addEventListener('input', () => { clearTargetFilter(); clearTimeout(tid); tid = setTimeout(refreshFilters, 200); });
+    search.addEventListener('change', () => { clearTargetFilter(); clearTimeout(tid); tid = setTimeout(refreshFilters, 200); });
+    if (view) view.addEventListener('change', () => { localStorage.setItem('rp-ann-view-mode', view.value || 'preview'); refreshFilters(); });
+    if (sort) sort.addEventListener('change', () => { localStorage.setItem('rp-ann-sort-mode', sort.value || 'modified-desc'); refreshFilters(); });
+    if (type) type.addEventListener('change', () => { clearTargetFilter(); refreshFilters(); });
+    if (scope) scope.addEventListener('change', () => { clearTargetFilter(); refreshFilters(); });
+    if (status) status.addEventListener('change', () => { clearTargetFilter(); refreshFilters(); });
+    if (user) user.addEventListener('change', () => { clearTargetFilter(); refreshFilters(); });
+    if (dateFrom) dateFrom.addEventListener('change', () => { localStorage.setItem('rp-ann-date-from', dateFrom.value || ''); refreshFilters(); });
+    if (dateTo) dateTo.addEventListener('change', () => { localStorage.setItem('rp-ann-date-to', dateTo.value || ''); refreshFilters(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
   else wire();

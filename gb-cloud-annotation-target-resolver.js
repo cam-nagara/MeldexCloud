@@ -325,7 +325,8 @@
       if (row.tombstone === true) return false;
       if (annId) return row.id === annId;
       if (targetId && row.target_id !== targetId) return false;
-      if (targetPath && row.target_path !== targetPath && !(folderPrefix && row.target_path.startsWith(targetPath + '/'))) return false;
+      if (targetPath && row.target_path !== targetPath && !(folderPrefix && row.target_path.startsWith(targetPath + '/'))
+        && !(query.includePdfPages && row.target_path.startsWith(targetPath + '#page='))) return false;
       if (user && row.user !== user) return false;
       if (annotationType && row.type !== annotationType) return false;
       return true;

@@ -1,5 +1,7 @@
 .gb-map-app{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;position:relative;background:var(--bg);color:var(--fg)}
 .gb-map-app [hidden]{display:none!important}.gb-map-toolbar,.gb-map-tools{display:flex;align-items:center;gap:5px;padding:6px 8px;flex-shrink:0;border-bottom:1px solid var(--border,#ddd);overflow:auto;white-space:nowrap}
+.gb-map-app .gb-map-pin.selected{outline:none;box-shadow:none;background:var(--ui-bg-control-active,var(--bg3));color:var(--ui-control-active-fg,var(--fg))!important;text-shadow:none}
+.gb-map-app .gb-map-pin.gb-map-active-feature{box-shadow:inset 0 0 0 var(--ui-active-frame-width,2px) var(--ui-active-frame-color,var(--ui-accent))}
 .gb-map-app .gb-btn{font-size:var(--ui-font-12, 12px);min-height:var(--ui-h-sm, 28px);white-space:nowrap}.gb-map-app .gb-btn[aria-pressed=true]{background:var(--accent,#387cae);color:var(--ui-accent-fg,#fff)}
 .gb-map-app button:focus-visible,.gb-map-app input:focus-visible,.gb-map-app select:focus-visible{outline:2px solid var(--accent,#387cae);outline-offset:2px}
 .gb-map-save-status{font-size:11px;color:var(--fg2);margin-left:auto;white-space:normal;max-width:380px;min-width:60px}.gb-map-save-status.error{color:var(--danger,#b44036)}

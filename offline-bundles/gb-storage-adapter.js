@@ -1019,6 +1019,17 @@
       return this.getMetadata(normalized);
     }
 
+    async resolveFileIdentity(id, pathHint) {
+      if (!/^id:[A-Za-z0-9_-]+$/.test(String(id || ''))) throw new Error('Dropboxの識別番号が不正です');
+      const location = this._dropboxLocation(pathHint);
+      const meta = await this._rpc('files/get_metadata', { path: id, include_deleted: false }, location);
+      if (meta?.id !== id || !meta.path_display) throw new Error('保存先の同一性を確認できません');
+      const path = this._relativeFromDropboxPath(meta.path_display, location.sourceId);
+      const verified = await this.refreshMetadata(path);
+      if (verified?.id !== id) throw new Error('保存先の同一性を確認できません');
+      return path;
+    }
+
     async statPath(relativePath) {
       const meta = await this.getMetadata(relativePath);
       if (!meta) return null;

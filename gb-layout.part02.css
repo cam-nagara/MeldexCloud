@@ -1075,3 +1075,9 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
   display: none !important;
 }
 .gb-subwindow-mode .gb-subwindow-hidden { display: none !important; }
+
+@media (max-width: 640px) {
+  /* 固定レールは1パネル1タブ。外枠の見出しと同じ名前を二重に出さない。 */
+  .gb-dock-popup-body > .gb-pane[data-meldex-role="right-sidebar"] > .gb-mobile-tab-dropdown { display: none !important; }
+  .gb-dock-popup-close { width: 44px; height: 44px; flex: 0 0 44px; font-size: 20px; }
+}

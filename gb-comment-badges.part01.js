@@ -1028,7 +1028,7 @@
 
   // Audit-P1 H-5: インライン textarea によるコメント入力。
   // anchorEl の近傍に textarea を表示し、Enter=保存 / ESC=キャンセル / blur=保存 / Shift+Enter=改行。
-  function _promptInlineComment(anchorEl, initialText, kindLabel) {
+  function _promptInlineComment(anchorEl, initialText, kindLabel, onSubmit) {
     return new Promise((resolve) => {
       document.querySelectorAll('._inline-comment-input').forEach(el => el.remove());
       const box = document.createElement('div');
@@ -1070,17 +1070,33 @@
         try { box.remove(); } catch (_) {}
         resolve(val);
       };
+      let saving = false;
+      const submit = async () => {
+        if (resolved || saving) return;
+        const text = ta.value;
+        if (!onSubmit || !text.trim()) { finalize(text); return; }
+        saving = true; ta.readOnly = true; box.setAttribute('aria-busy', 'true');
+        label.textContent = 'コメントを保存しています…';
+        try {
+          if (await onSubmit(text) !== false) finalize(text);
+          else if (!box.isConnected) finalize(null);
+          else label.textContent = '保存できません。本文は残っています。Enterで再試行、ESCで閉じる';
+        } finally {
+          saving = false; ta.readOnly = false; box.removeAttribute('aria-busy');
+          if (!resolved && box.isConnected) ta.focus({ preventScroll: true });
+        }
+      };
       ta.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
           e.preventDefault();
-          finalize(ta.value);
+          submit();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          finalize(null);
+          if (!saving) finalize(null);
         }
       });
       // blur は Escape 押下での finalize と競合するため次フレームに遅延
-      ta.addEventListener('blur', () => { setTimeout(() => finalize(ta.value), 0); });
+      ta.addEventListener('blur', () => { setTimeout(submit, 0); });
       setTimeout(() => { try { ta.focus(); } catch (_) {} }, 0);
     });
   }

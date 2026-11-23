@@ -244,7 +244,8 @@ function _isArchiveShellVerb(verb) {
   return text.includes('圧縮')
     || text.includes('解凍')
     || text.includes('展開')
-    || /\b(compress|archive|extract|unzip|zip)\b/.test(text);
+    || /\b(compress|archive|extract|unzip|zip)\b/.test(text)
+    || /\b(7-zip|7z|winrar|bandizip|peazip|lhaplus|cubeice|explzh)\b/.test(text);
 }
 
 function isPinnedShellVerb(verb) {
@@ -257,6 +258,9 @@ function isPinnedShellVerb(verb) {
 async function appendShellVerbsToMenu(menu, path, options = {}) {
   if (!path || !_shellVerbsAvailable()) return;
   const editingLocked = !!options.editingLocked;
+  if (!editingLocked && window.MeldexArchiveTools?.desktop()) {
+    window.MeldexArchiveTools.appendMenu(menu, [{ path }], () => menu.remove());
+  }
   const beforeDisplay = options.beforeDisplay === true;
 
   function reclampMenu() {
@@ -294,6 +298,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   const hidden = getHiddenShellVerbs();
   const visibleVerbs = verbs.filter(v => (
     !hidden.includes(v.name) && !(editingLocked && _isEditMutationShellVerb(v))
+      && !(window.MeldexArchiveTools?.desktop() && _isArchiveShellVerb(v))
   ));
   const archiveVerbs = visibleVerbs.filter(_isArchiveShellVerb);
   if (archiveVerbs.length) {

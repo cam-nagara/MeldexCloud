@@ -734,6 +734,9 @@ function _showNoteTableCellControls(cell) {
   const controls = _ensureNoteTableCellControls();
   _noteTableActiveCell = cell;
   controls._cell = cell;
+  // 画面端のセルでは、枠や追加ボタンを画面内へ押し戻すと互いに重なる。
+  // CSSのscroll-marginを含めて選択セルを見える位置へ寄せる（本文の配置は変えない）。
+  cell.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   _positionNoteTableCellControls(cell, controls);
 
   const reposition = () => _positionNoteTableCellControls(controls._cell, controls);

@@ -78,7 +78,13 @@ bd.statusFilter = ''; // 空=全表示
 function bdAlign(type) {
   const ids = [...bd.selected]; if (ids.length<2) return;
   // contained カードは相対座標で inline フロー表示されるため整列対象から除外
-  const elems = ids.map(id=>({id, n:bd.nodes.find(n=>n.id===id), el:document.getElementById('bdn-'+id)})).filter(v=>v.n&&v.el&&!v.n.contained);
+  const elems = ids.map(id => {
+    const n = bd.nodes.find(node => node.id === id);
+    const el = document.getElementById('bdn-' + id);
+    // Offscreen cards are intentionally not mounted by the board renderer.
+    // Selection still includes them, so use their last measured dimensions.
+    return { id, n, el: el || { offsetWidth: n?._rw || n?.w || 160, offsetHeight: n?._rh || n?.h || 36 } };
+  }).filter(v => v.n && !v.n.contained && !v.n.locked);
   if (elems.length < 2) return;
   if ((type === 'distributeH' || type === 'distributeV') && elems.length < 3) return;
   bdPushUndo();
@@ -125,8 +131,8 @@ function _bdGetNormalizeMetrics(node, el) {
     node,
     el,
     isImage: !!(node?.img && baseImageWidth && baseImageHeight),
-    width: node?.img && baseImageWidth ? baseImageWidth : (el?.offsetWidth || node?.w || 160),
-    height: node?.img && baseImageHeight ? baseImageHeight : (el?.offsetHeight || node?.h || 36),
+    width: node?.img && baseImageWidth ? baseImageWidth : (el?.offsetWidth || node?._rw || node?.w || 160),
+    height: node?.img && baseImageHeight ? baseImageHeight : (el?.offsetHeight || node?._rh || node?.h || 36),
     ratio: ratio > 0 ? ratio : 1,
   };
 }
@@ -134,6 +140,7 @@ function _bdGetNormalizeMetrics(node, el) {
 function _bdApplyNormalizedDimensions(metric, type, targetValue) {
   const node = metric?.node;
   if (!node) return;
+  if (metric.isImage || type === 'width' || type === 'size') node._userW = true;
   if (metric.isImage) {
     const ratio = metric.ratio || 1;
     let nextImageWidth = metric.width;
@@ -152,7 +159,7 @@ function _bdApplyNormalizedDimensions(metric, type, targetValue) {
 function _bdNormalizeMetricsForIds(ids) {
   return [...(ids || [])]
     .map(id => ({ id, n: bd.nodes.find(n => n.id === id), el: document.getElementById('bdn-' + id) }))
-    .filter(v => v.n && v.el && !v.n.contained && !v.n.locked)
+    .filter(v => v.n && !v.n.contained && !v.n.locked)
     .map(v => _bdGetNormalizeMetrics(v.n, v.el));
 }
 
@@ -205,7 +212,8 @@ function _bdArrangeItemsForIds(ids) {
   const items = ids.map(id => {
     const n = bd.nodes.find(v => v.id === id);
     const el = document.getElementById('bdn-' + id);
-    return n && el && !n.contained && !n.locked ? { n, w: el.offsetWidth, h: el.offsetHeight } : null;
+    return n && !n.contained && !n.locked
+      ? { n, w: el?.offsetWidth || n._rw || n.w || 160, h: el?.offsetHeight || n._rh || n.h || 36 } : null;
   }).filter(Boolean);
   if (items.length < 2) return null;
   const minX = Math.min(...items.map(item => item.n.x));
@@ -561,6 +569,7 @@ async function _bdReviewConflict(path, documentKey) {
         throw new Error('ボードの競合状態が更新されたため、上書き結果を確定できません');
       }
       if (bd.path === path) {
+        bd._topicSaveVersion = Number(bd._topicSaveVersion || 0) + 1;
         bd.lastSavedEtag = result?.etag || bd.lastSavedEtag || '';
         bd.lastSavedTransportRevision = coordinator
           ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), result?.transport_revision || result?.etag || '')
@@ -617,17 +626,18 @@ async function bdSave() {
     catch (_) { return undefined; }
   };
   const recoveryScopeAtRequest = recoveryScope();
+  const openSeqAtRequest = bd._openSeq;
   let markdown = bdToMd();
   let pendingNodeTextWrites = typeof bdWaitPendingNodeTextWrites === 'function'
     ? bdWaitPendingNodeTextWrites(bd.nodes) : null;
   while (pendingNodeTextWrites) {
     if (!await pendingNodeTextWrites) return false;
-    if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+    if (bd.path !== savePath || bd._openSeq !== openSeqAtRequest || recoveryScope() !== recoveryScopeAtRequest) return false;
     window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
     markdown = bdToMd();
     pendingNodeTextWrites = bdWaitPendingNodeTextWrites(bd.nodes);
   }
-  if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return false;
+  if (bd.path !== savePath || bd._openSeq !== openSeqAtRequest || recoveryScope() !== recoveryScopeAtRequest) return false;
   if (!bd.editing && reservedDraftAtRequest && bd._draftReservationContent === reservedDraftAtRequest) {
     // Commit/layout may have changed geometry since the live-input snapshot.
     // Preserve the exact attempted document, while a later input keeps its own reservation.
@@ -664,6 +674,7 @@ async function bdSave() {
     // 30秒たっても保存が終わらない時は、問題の自己記録に残し、状態表示で知らせる（シートと同じ仕組み。M-014）。
     window.MeldexDiagnostics?.watchSheetTask?.('board.save', savePath, savePromise, { label: 'ボードの保存' });
     const saveResult = await savePromise;
+    if (bd.path !== savePath || bd._openSeq !== openSeqAtRequest || recoveryScope() !== recoveryScopeAtRequest) return true;
     if (saveResult?.conflictPending) {
       // conflict-pending中はコーディネーターがネットワーク送信自体をスキップしている。
       // 何も送っていないため dirty のまま維持し、バナーだけ最新化する。
@@ -679,7 +690,9 @@ async function bdSave() {
       showStatus('ボードは未保存です。接続後に再試行します', true);
       return false;
     }
-    if (bd.path !== savePath || recoveryScope() !== recoveryScopeAtRequest) return true;
+    // 下書きの後片づけで待つ前に、保存前の読込結果を無効にする。
+    // dirty を外してから呼出元へ戻るまでにも、古い読込が届くことがある。
+    bd._topicSaveVersion = Number(bd._topicSaveVersion || 0) + 1;
     if (saveResult?.etag) bd.lastSavedEtag = saveResult.etag;
     if (coordinator && (saveResult?.transport_revision || saveResult?.etag)) {
       bd.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
@@ -696,6 +709,11 @@ async function bdSave() {
     if (unchanged) {
       bd.dirty=false;
       if (!bd.editing) await window.MeldexDraftRecovery?.markSynced?.(savePath, reservedDraftAtRequest || markdown);
+    } else {
+      // 保存の応答を待つ間の編集や寸法確定を取り残さない。
+      // 応答が古いスナップショットの成功でも、最新状態を改めて保存する。
+      clearTimeout(window._bdTimer);
+      window._bdTimer = setTimeout(bdAutoSave, 500);
     }
     bd._lastSavedNodeIds = currIds;
     showStatus('ボードを保存しました', false, { passiveSave: true });
@@ -714,6 +732,7 @@ async function bdSave() {
     }
     return true;
   } catch(e) {
+    if (bd.path !== savePath || bd._openSeq !== openSeqAtRequest || recoveryScope() !== recoveryScopeAtRequest) return false;
     const detail = String(e?.message || e || '不明なエラー');
     if (_bdLooksLikeConflictError(e)) {
       // 工程2-A/2-Cと同じ契約: 409を受けた文書をconflict-pendingへ遷移させ、

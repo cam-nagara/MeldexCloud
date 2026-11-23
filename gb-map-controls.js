@@ -117,7 +117,7 @@ const MeldexMapControls = (() => {
   function layers(app) {
     const root = app.layerList; root.replaceChildren();
     app.store.doc.layers.forEach((layer, index) => {
-      const row = document.createElement('div'); row.className = 'gb-map-layer';
+      const row = document.createElement('div'); row.className = 'gb-map-layer'; row.dataset.mapLayerId = layer.id;
       const pick = app._button(layer.name, () => { app._activeLayer = layer.id; layers(app); }); pick.setAttribute('aria-pressed', String(layer.id === app._activeLayer)); row.appendChild(pick);
       const edit = mutator => { app.update(doc => mutator(doc.layers.find(l => l.id === layer.id))); app._render(); };
       for (const [key, label] of [['visible', '表示'], ['locked', 'ロック']]) {
@@ -145,18 +145,30 @@ const MeldexMapControls = (() => {
     });
   }
   function places(app) {
-    app.placeList.replaceChildren();
-    for (const f of app.store.doc.features.filter(f => app.view._visible(f))) {
-      const row = app._button(f.label || '名前なし', () => { app._select(f.id); app.view.focus(f); });
-      row.setAttribute('aria-pressed', String(app._selection?.has(f.id) || f.id === app._selected)); row.dataset.mapFeatureId = f.id; app.placeList.appendChild(row);
+    const features = app.store.doc.features.filter(f => app.view._visible(f));
+    const rows = new Map([...app.placeList.children].filter(row=>row.dataset.mapFeatureId).map(row => [row.dataset.mapFeatureId,row]));
+    const wanted = new Set(features.map(f => f.id));
+    for (const [id,row] of rows) if (!wanted.has(id)) row.remove();
+    if (features.length) app.placeList.querySelector('.gb-empty-state')?.remove();
+    let anchor = app.placeList.firstElementChild;
+    for (const f of features) {
+      const id = f.id;
+      const row = rows.get(id) || app._button(f.label || '名前なし', () => {
+        const current = app.store.doc.features.find(item => item.id === id);
+        if (current) { app._select(id); app.view.focus(current); }
+      });
+      if (row.textContent !== (f.label || '名前なし')) row.textContent = f.label || '名前なし';
+      row.setAttribute('aria-pressed', String(app._selection?.has(id) || id === app._selected)); row.dataset.mapFeatureId = id;
+      if (row !== anchor) app.placeList.insertBefore(row,anchor);
+      anchor = row.nextElementSibling;
     }
-    if (!app.placeList.children.length) app.placeList.textContent = '表示する地点・図形がありません';
+    if (!features.length && !app.placeList.querySelector('.gb-empty-state')) renderEmptyState(app.placeList,'map-pin','表示する地点・図形はありません','検索・種類・レイヤー・章の条件を確認してください');
   }
   function inspector(app) {
     const root = app.inspector; root.replaceChildren();
     const f = app.store.doc.features.find(item => item.id === app._selected);
     const title = document.createElement('h3'); title.textContent = '選択項目'; root.appendChild(title);
-    if (!f) { const hint = document.createElement('p'); hint.textContent = '地点や図形を選択すると、名前・説明・関連資料を編集できます。'; root.appendChild(hint); return; }
+    if (!f) { const hint = document.createElement('p'); hint.textContent = app.editingDisabled ? '地点や図形を選択すると、名前・説明・関連資料を確認できます。' : '地点や図形を選択すると、名前・説明・関連資料を編集できます。'; root.appendChild(hint); return; }
     const locked = app.editingDisabled || app.store.doc.layers.find(l => l.id === f.layer_id)?.locked;
     MeldexMapPeriods.inspector(app, root, f);
     field(app, root, '名前', f.label, value => app._editFeature(next => { next.label = value; }), { disabled: locked });

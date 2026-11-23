@@ -9,7 +9,7 @@
    （--fade-ms / --panel-bg）だけをここで定義する。 */
 :root {
   --fade-ms: 300ms;
-  --panel-bg: rgba(20,25,35,0.92);
+  --panel-bg: color-mix(in srgb, var(--bg2) 93%, transparent);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }

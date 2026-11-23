@@ -111,10 +111,18 @@
   }
 
   function duplicateGroupStyle(document, groupStyleId, value, idFactory) {
-    const source = normalizeGroupStyles(document).groupStyles.find(style => style.groupStyleId === groupStyleId);
+    const normalized = normalizeGroupStyles(document);
+    const source = normalized.groupStyles.find(style => style.groupStyleId === groupStyleId);
     if (!source) throw new RangeError('group style was not found');
+    let name = value?.name;
+    if (!name) {
+      const base = `${source.name} のコピー`;
+      const names = new Set(normalized.groupStyles.map(style => style.name.trim().toLocaleLowerCase()));
+      name = base;
+      for (let index = 2; names.has(name.trim().toLocaleLowerCase()); index += 1) name = `${base} (${index})`;
+    }
     return createGroupStyle(document, {
-      ...clone(source), groupStyleId: idFactory?.('group-style'), name: value?.name || `${source.name} のコピー`,
+      ...clone(source), groupStyleId: idFactory?.('group-style'), name,
     }, idFactory);
   }
 

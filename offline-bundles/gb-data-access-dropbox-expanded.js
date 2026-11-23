@@ -85,6 +85,15 @@
   const calendarLeaseQueues = new WeakMap();
   const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
 
+  async function waitForCalendarIdle(provider) {
+    const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
+    let pending;
+    do {
+      pending = key && calendarLeaseQueues.get(key);
+      if (pending) await pending;
+    } while (pending !== (key && calendarLeaseQueues.get(key)));
+  }
+
   async function withCalendarLease(provider, operation, context = null) {
     const active = activeCalendarLeases.get(provider);
     if (context?.token && active?.token === context.token) return operation(active.context);
@@ -496,7 +505,7 @@
     TIME_ENTRY_TYPES, strictDate, validTimestamp, dayOffset, state, assertNormalAction, affectedTargets,
     validateCsvQuery, buildCsv, intervalMaps, createMutationService,
   });
-  window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease });
+  window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease, waitIdle: waitForCalendarIdle });
 })();
 /* Shared calendar history engine and browser-local active /cal/* adapter. */
 (function () {
@@ -911,7 +920,7 @@
     if (!calendar) {
       const now = new Date().toISOString();
       calendar = {
-        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#d19a66',
+        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#99602d',
         user: shift.user || actor(), source: 'shift', visible: 1, sort_order: 0,
         folder: workspaceId || 'シフトカレンダー', edit_role: 'admin', workspace_id: workspaceId,
         member_id: memberId, created: now, modified: now,
@@ -1528,6 +1537,9 @@
   }
 
   async function _requireUnlocked(provider, path, options) {
+    if (_isProductionManagementSheetMetadataPath(path) || _isProductionManagementSheetMetadataPath(_dirname(path))) {
+      await window.MeldexProductionManagement?.releasePendingCloudLeases?.(provider);
+    }
     if (typeof _requireUnlockedPath === 'function') return _requireUnlockedPath(provider, path, options || {});
     const checker = window.MeldexFileLockStore?.requireUnlocked;
     if (typeof checker === 'function') return checker(provider, path, options || {});
@@ -2762,7 +2774,9 @@
     if (memory) return { ...memory };
     if (_quickMemoTargetInflight.has(scope)) return _quickMemoTargetInflight.get(scope);
     const generation = _quickMemoTargetCacheGeneration;
-    const task = (async () => {
+    let active = true;
+    let timer;
+    const read = (async () => {
       const roots = await _quickMemoRoots(provider);
       const key = _quickMemoTargetCacheKey(scope);
       let cached = null;
@@ -2771,12 +2785,20 @@
       const target = validated
         || await _preferredQuickMemoTarget(provider, roots)
         || await _discoverQuickMemoTarget(provider, roots);
-      if (generation === _quickMemoTargetCacheGeneration) {
+      if (active && generation === _quickMemoTargetCacheGeneration) {
         _quickMemoTargetMemory.set(scope, target);
         try { window.localStorage?.setItem(key, JSON.stringify(target)); } catch {}
       }
       return { ...target };
-    })().finally(() => _quickMemoTargetInflight.delete(scope));
+    })();
+    const task = Promise.race([read, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('保存先の確認に時間がかかっています。今すぐ再送してください')), 12000);
+    })]).finally(() => {
+      active = false;
+      clearTimeout(timer);
+      // A timed-out/invalidated read must not erase a newer retry's task.
+      if (_quickMemoTargetInflight.get(scope) === task) _quickMemoTargetInflight.delete(scope);
+    });
     _quickMemoTargetInflight.set(scope, task);
     return task;
   }
@@ -3279,7 +3301,18 @@
     return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
-  async function _createEntity(provider, body) {
+  async function _resolvePublishedSheet(provider, sheet) {
+    let path = _normalizeFolderPath(sheet?.path || '');
+    if (sheet?.cloud_id) {
+      const current = await provider.getMetadata(path);
+      if (current?.id !== sheet.cloud_id) path = await provider.resolveFileIdentity(sheet.cloud_id, path);
+    }
+    const metadata = (await _folderFrontmatter(provider, path)).frontmatter;
+    if (metadata?.type !== 'settings-db') throw new Error('回答用シートが見つかりません');
+    return path;
+  }
+
+  async function _createEntity(provider, body, publicSubmissionId = '') {
     const parent = _normalizeFolderPath(body?.parent_path || '');
     const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
     const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
@@ -3298,9 +3331,18 @@
     if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
       const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
     }
-    const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
+    const targetName = publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
+    if (publicSubmissionId) {
+      const stored = await _readSheetStoreEntry(provider, path);
+      const existing = stored || (await _pathExists(provider, path) ? await _readFrontmatterFile(provider, path) : null);
+      if (existing) {
+        if (existing.frontmatter?.public_form_submission_id !== publicSubmissionId)
+          throw Object.assign(new Error('回答先が別のトピックに変わっています'), { status: 409 });
+        return { ok: true, replayed: true, path };
+      }
+    }
     const now = _nowIso();
     const frontmatter = {
       type: 'settings-entry',
@@ -3313,6 +3355,7 @@
       relations: [],
       source: body?.source || '',
       reviewed: body?.reviewed === true,
+      ...(publicSubmissionId ? { public_form_submission_id: publicSubmissionId } : {}),
     };
     await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
     const history = _sharedEditHistory();
@@ -4318,7 +4361,10 @@
     return result;
   }
 
-  async function _readMigratedDropboxEvents(provider) {
+  async function _readMigratedDropboxEvents(provider, leaseToken = '') {
+    // 現行形式の通常読取では更新ロックを作らない。移行時だけ取得後に読み直す。
+    const rows = await _readStore(provider, 'events');
+    if (!rows.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) return rows;
     const operation = async guardedProvider => {
       const current = await _readStore(guardedProvider, 'events');
       if (!current.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) {
@@ -4335,7 +4381,7 @@
     };
     const lease = window.MeldexCloudCalendarLease;
     if (!lease?.withLease) return operation(provider);
-    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider), leaseToken ? { token: leaseToken } : null);
   }
 
   async function _calendarVisibilityRows(provider) {
@@ -4370,8 +4416,8 @@
     await _writeStore(provider, 'calendar-visibility', rows);
   }
 
-  async function _calendarList(provider, name, url) {
-    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider) : await _readStore(provider, name);
+  async function _calendarList(provider, name, url, leaseToken = '') {
+    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider, leaseToken) : await _readStore(provider, name);
     const requestedUser = url.searchParams.get('user') || '';
     if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
       throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');
@@ -5817,7 +5863,8 @@
     }
     const store = await _readSheetStoreMaybe(provider, base);
     return { format: 'new-format-v1', db_type: dbType,
-      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso() };
+      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso(),
+      annotation_snapshot: await window.MeldexFileVersionProviderOps.captureAnnotations(provider, base) };
   }
 
   async function _readDbVersionSnapshot(provider, path, version) {
@@ -5878,7 +5925,11 @@
     const note = files.find(file => file.path === noteName)
       || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
     const dbType = note ? String(_parseFrontmatter(note.text).frontmatter?.type || '') : '';
-    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '' };
+    const currentAnnotations = meta.annotation_snapshot == null ? null : await window.MeldexFileVersionProviderOps.captureAnnotations(provider, normalized);
+    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '',
+      annotation_snapshot: meta.annotation_snapshot, current_annotation_snapshot: currentAnnotations,
+      restore_revision: meta.annotation_snapshot ? await window.MeldexFolderVersionProviderOps.restoreRevision(provider, normalized, meta.files || []) : '',
+      annotation_revision: currentAnnotations ? 'fnv64:'+_fnvFileId(JSON.stringify(currentAnnotations)) : '' };
   }
 
   function _recurrenceObject(value) {
@@ -6846,9 +6897,9 @@
     const leaseToken = String(body?._calendar_lease_token || '').trim();
     const routeBody = { ...(body || {}) };
     delete routeBody._calendar_lease_token;
-    if (method === 'GET' && !id) return _calendarList(provider, name, url);
+    if (method === 'GET' && !id) return _calendarList(provider, name, url, leaseToken);
     if (method === 'GET' && id && ['events', 'tasks', 'shifts'].includes(name)) {
-      const visibleRows = await _calendarList(provider, name, url);
+      const visibleRows = await _calendarList(provider, name, url, leaseToken);
       const row = visibleRows.find(item => String(item?.id) === String(id));
       if (!row) throw _calendarError('対象が見つからないか、参照権限がありません', 404, 'CALENDAR_ROW_NOT_FOUND');
       return row;
@@ -6959,6 +7010,75 @@
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal, headers }) {
+    if (pathname === '/file-path' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return { path: await provider.resolveFileIdentity(url.searchParams.get('id'), url.searchParams.get('hint') || '') };
+    }
+    if (pathname === '/form-publication/prepare' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const path = _normalizeFolderPath(body?.path || '');
+      await _requireUnlocked(provider, path, { action: 'form-publication' });
+      const doc = window.MeldexFormDocument.parse(await provider.readText(path));
+      const sheetPath = await _resolvePublishedSheet(provider, doc.sheet);
+      await _requireUnlocked(provider, sheetPath, { action: 'form-publication' });
+      const [source, sheet] = await Promise.all([provider.getMetadata(path), provider.getMetadata(sheetPath)]);
+      if (!source?.id || !sheet?.id) throw new Error('フォームとシートの識別番号を確認できません');
+      return { form_source_id: doc.publish?.form_source_id || source.id, sheet_cloud_id: sheet.id,
+        sheet_id: doc.sheet.id || '', sheet_path: sheetPath,
+        receipt_store_path: doc.publish?.receipt_store?.path || _joinPath(_dirname(path), '_meldex-form-receipts/' + crypto.randomUUID().replace(/-/g, '')) };
+    }
+    if (pathname === '/form-publication/import' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const source = _normalizeFolderPath(body?.source_path || '');
+      await _requireUnlocked(provider, source, { action: 'form-response-import' });
+      const doc = window.MeldexFormDocument.parse(await provider.readText(source));
+      const cfg = doc.publish || {};
+      if (!cfg.form_submit_enabled || cfg.form_submit_token !== body?.token || cfg.form_source_id !== body?.form_source_id)
+        throw Object.assign(new Error('フォームの受付が停止・変更されています'), { status: 403 });
+      const id = String(body?.submission_id || '');
+      if (!/^[a-f0-9]{32}$/.test(id) || !body.fields || Array.isArray(body.fields) || typeof body.fields !== 'object')
+        throw new Error('回答の形式が不正です');
+      const parent = await _resolvePublishedSheet(provider, doc.sheet);
+      const metadata = (await _folderFrontmatter(provider, parent)).frontmatter || {};
+      const invalid = window.MeldexDbFormModel.validatePublicFields(doc, body.fields, metadata.property_types || {});
+      if (invalid) throw Object.assign(new Error(invalid), { status: 400 });
+      // The durable private receipt also survives deleting an imported row and
+      // losing browser storage; an old packet must never resurrect that row.
+      await _requireUnlocked(provider, parent, { action: 'form-response-import' });
+      const result = await window.MeldexCloudFormRelay.withReceipt(cfg, id, body.fields, {
+        read: async path => {
+          const meta = await provider.refreshMetadata(path);
+          return meta ? { content: await provider.readText(path), etag: meta.rev } : null;
+        },
+        write: async (path, content, etag) => {
+          await _requireUnlocked(provider, path, { action: 'form-response-receipt' });
+          return provider.uploadBytesConditional(path, new TextEncoder().encode(content), etag);
+        },
+      }, async () => {
+        const properties = await window.MeldexCloudFormRelay.normalizeImages(body.fields, metadata.property_types || {}, async (bytes, ext, hash) => {
+          const attachments = window.MeldexSheetAttachments;
+          const folder = attachments.attachmentFolderNameFromFrontmatter(metadata) || attachments.ATTACHMENT_FOLDER_NAME;
+          const dir = _joinPath(parent, folder), path = _joinPath(dir, hash + '.' + ext);
+          await _requireUnlocked(provider, dir, { action: 'form-response-image' });
+          if (!metadata.attachment_folder) {
+            await _directoryHandle(provider, dir, true);
+            await _putDbMetadata(provider, parent, { attachment_folder: folder });
+            metadata.attachment_folder = folder;
+          }
+          if (!await _pathExists(provider, path)) {
+            const aftercare = window.MeldexCreatedImageIdentityAftercare;
+            const prepared = await aftercare.prepare(provider, path, bytes, { source: 'public-form', filename: hash + '.' + ext });
+            try { if (prepared.mode === 'not-image' || prepared.publish_required) await provider.uploadBytesConditional(path, bytes, null); }
+            catch (error) { await aftercare.cancel(provider, prepared, error?.message).catch(console.warn); throw error; }
+            await aftercare.record(provider, path, bytes, { source: 'public-form', prepared });
+          }
+          return path;
+        });
+        return _createEntity(provider, { parent_path: parent, name: 'フォーム回答-' + id,
+          properties, source: 'public-form', reviewed: false }, id);
+      });
+      return { ok: true, submission_id: id, replayed: !!result.replayed };
+    }
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -7042,7 +7162,7 @@
     }
     if (/^\/version\/(list-db|save-db|restore-db|delete-db|undelete-db)/.test(pathname)) {
       const route = pathname.replace('-db', '-folder');
-      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body, headers });
+      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body: { ...body, include_annotations: true }, headers });
     }
 
     if (pathname === '/calendar-db/events' && method === 'GET') return _calendarDbEvents(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

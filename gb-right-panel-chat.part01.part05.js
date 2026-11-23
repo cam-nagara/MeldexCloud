@@ -456,13 +456,33 @@ function _chatEnhanceSelectAsListbox(select) {
   });
 }
 
-function _chatDecorateHistoryList() {
-  const list = document.getElementById('chat-history-list');
+function _chatDecorateHistoryList(list = document.getElementById('chat-history-list')) {
   if (!list) return;
   list.setAttribute('role', 'listbox');
   list.setAttribute('aria-label', 'AIチャット履歴');
-  list.querySelectorAll('[data-chat-session-id]').forEach(row => {
+  const rows = [...list.querySelectorAll('[data-chat-session-id]')];
+  const entry = rows.find(row => row === document.activeElement)
+    || rows.find(row => row.dataset.chatSessionId === _chatState.sessionId) || rows[0];
+  rows.forEach(row => {
     row.setAttribute('role', 'option');
+    row.tabIndex = row === entry ? 0 : -1;
+    row.setAttribute('aria-selected', String(row.dataset.chatSessionId === _chatState.sessionId));
+    row.onfocus = () => rows.forEach(item => { item.tabIndex = item === row ? 0 : -1; });
+    row.onkeydown = event => {
+      if (event.target !== row) return;
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      const index = rows.indexOf(row);
+      const next = event.key === 'ArrowDown' ? Math.min(rows.length - 1, index + 1)
+        : event.key === 'ArrowUp' ? Math.max(0, index - 1)
+        : event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : -1;
+      if (next < 0 && event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (next >= 0) {
+        rows[next].focus();
+        rows[next].scrollIntoView({ block: 'nearest' });
+      } else row.click();
+    };
     if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
   });
 }

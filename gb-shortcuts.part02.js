@@ -150,7 +150,8 @@
     const els = document.querySelectorAll('#folder-grid .fv-item');
     if (typeof _folderItems !== 'undefined') {
       _folderSelectedItems = [];
-      els.forEach(el => { el.classList.add('selected'); const it = _folderItems[parseInt(el.dataset.idx)]; if (it) _folderSelectedItems.push(it); });
+      const visibleItems = typeof _folderVisibleItems !== 'undefined' && _folderVisibleItems.length ? _folderVisibleItems : _folderItems;
+      els.forEach(el => { if (el.inert) return; el.classList.add('selected'); const it = visibleItems[parseInt(el.dataset.idx)]; if (it) _folderSelectedItems.push(it); });
       _folderSelected = _folderSelectedItems.length ? _folderSelectedItems[_folderSelectedItems.length - 1] : null;
       if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
       if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
@@ -222,7 +223,7 @@ document.addEventListener('keydown', (e) => {
   // ツールバーのボタン（メインメニューボタン等）にフォーカスがある時の Enter / Space は、
   // ボタン自身を押す操作としてブラウザへ任せる。アプリのショートカットとして横取りしない。
   if ((e.key === 'Enter' || e.key === ' ') && !e.ctrlKey && !e.metaKey && !e.altKey
-      && e.target?.closest?.('button, [role="button"]')?.closest?.('.gb-toolbar, .folder-toolbar, [role="toolbar"], .sa-toolbar, .qm-header')) return;
+      && e.target?.closest?.('button, [role="button"]')?.closest?.('.gb-toolbar, .folder-toolbar, [role="toolbar"], .sa-toolbar, .qm-header, #rp-chat')) return;
 
   // モーダルダイアログが開いている場合はスキップ（ダイアログ自身が処理する）
   if (document.querySelector('.modal-overlay')) return;

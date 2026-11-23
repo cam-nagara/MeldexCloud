@@ -36,38 +36,66 @@ class MapAppComponent extends ToolComponent {
       this.el.append(message);
       if (!this._tab()?.state?.pendingCreate) this.el.append(this._button('マップを作成', () => addPanelMenuTool('map', { paneId: this.paneId })));
     }
-    this.view?.map?.invalidateSize({ pan: true, animate: false });
+    this.view?._resize();
     this._syncDetailPanel();
     if (this.paneId === GBLayout.activePane && typeof historySetScope === 'function') historySetScope(this._historyScope());
   }
   async load(path, options = {}) {
     if (!MeldexMapDocument.isAvailable()) { this.el.textContent = 'マップ初期版はデスクトップ版本体で開いてください。'; return false; }
     if (this.store && !options.ignoreDraft && !await this.flush()) return false;
+    if (this.store?.dirty && options.ignoreDraft) {
+      // The reload confirmation promises to retain the unsaved draft. A new
+      // owner prevents the clean loaded store from deleting that draft key.
+      const ignored = this._ignoredDraftKeys ||= new Set();
+      ignored.add(this._draftKey());
+      if (this._recoveredKey) ignored.add(this._recoveredKey);
+      this._draftOwner = MeldexMapDocument.id(); this._recoveredKey = null;
+    }
     const generation = ++this._generation;
+    const storageScope = this._draftScope();
     this._sheetSignature = null; this._sheetCache = new Map(); this._directParents = [];
     clearTimeout(this._saveTimer); this._generatorPreview?.destroy(); this._settlementsPreview?.destroy(); this._climatePreview?.destroy(); this._worldPreview?.destroy();this._terrainPreview?.destroy(); this._interchange?.destroy(); this.view?.destroy(); MeldexMapChrome.destroy(this); this.view = null; this.store = null; this.path = path;
     this.el.textContent = 'マップを読み込んでいます…';
     try {
       const [loaded, access] = await Promise.all([apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, false)]);
       if (generation !== this._generation || !this.el) return false;
+      if ((!storageScope && !access.readOnly) || storageScope !== this._draftScope()) throw new Error('保存先を確認できません。元の保存先でマップを開き直してください');
       const doc = MeldexMapDocument.parse(loaded.content);
+      this._draftStorageScope = storageScope;
+      this._draftLegacyIdentity = 'legacy:' + loaded.etag;
+      this._draftKeys = new Set();
       this.readOnly = !!access.readOnly;
       const target = path;
       this.store = new MeldexMapDocument.Store(doc, loaded.etag, async (content, etag) => {
         const actual = this.path;
-        const access = await MeldexEntityDetail.resolveReadOnly(actual, false);
-        if (access.readOnly) throw new Error('マップは読み取り専用です');
-        const result = await apiPut('/file?path=' + encodeURIComponent(actual), { content, if_match_etag: etag });
-        await window.GbBacklinks?.requestUpdate?.(actual);
-        return result;
+        try {
+          const write = (async () => {
+            const requireScope = () => { if (!storageScope || storageScope !== this._draftScope()) throw new Error('保存先が切り替わりました。元の保存先へ戻るか、マップを書き出してください'); };
+            requireScope();
+            const access = await MeldexEntityDetail.resolveReadOnly(actual, false);
+            if (access.readOnly) throw new Error('マップは読み取り専用です');
+            requireScope();
+            const result = await apiPut('/file?path=' + encodeURIComponent(actual), { content, if_match_etag: etag }, { silentError: true });
+            await window.GbBacklinks?.requestUpdate?.(actual);
+            return result;
+          })();
+          return await (window.MeldexDiagnostics?.watchSheetTask?.('map.save', actual, write, { label: 'マップの保存' }) || write);
+        } catch (error) {
+          this._message('マップを保存できません: ' + (error.userMessage || error.message));
+          window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+            op: 'map.save', endpoint: '/file', method: 'PUT', sheet: actual,
+            status: Number(error.status || error.httpStatus || 0), errorType: String(error.name || 'Error').slice(0,60),
+          });
+          throw error;
+        }
       }, () => this._changed());
-      const cached = !options.ignoreDraft && !this.readOnly && this._readDraft();
+      const cached = !options.ignoreDraft && !this.readOnly && await this._readDraft();
       if (cached && await cfConfirm('保存できていないマップの下書きを復元しますか？')) {
-        if (generation !== this._generation || this.path !== target) return false;
+        if (generation !== this._generation || this.path !== target || storageScope !== this._draftScope()) return false;
         this.store.doc = MeldexMapDocument.parse(cached.doc); this.store.etag = cached.etag;
         this.store.revision++; this._recoveredKey = cached.key;
       }
-      if (generation !== this._generation || !this.el) return false;
+      if (generation !== this._generation || !this.el || storageScope !== this._draftScope()) return false;
       this.state = { ...this.state, mapPath: path, label: doc.display_title || doc.title };
       if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
       this._activeLayer = this.store.doc.layers[0].id; this._selected = null; this._selection = new Set(); this._inputDirty = false;
@@ -134,32 +162,77 @@ class MapAppComponent extends ToolComponent {
     this._render();
     return true;
   }
-  _draftPrefix() { return 'meldex-map-draft:' + this.path + ':'; }
+  _draftScope() {
+    const runtime = window.MeldexRuntimeAdapter;
+    const workspace = runtime?.getWorkspaceState?.();
+    const mode = runtime?.getMode?.() || 'legacy';
+    const kind = workspace?.kind || mode;
+    if (mode === 'dropbox' || kind === 'dropbox') return mode === 'dropbox' && kind === 'dropbox' && workspace?.accountId && workspace?.securityScopeId
+      ? JSON.stringify(['dropbox', workspace.accountId, workspace.securityScopeId]) : null;
+    const root = workspace?.path || (typeof state !== 'undefined' && state.vaultPath);
+    return root ? JSON.stringify([mode, kind, String(root).replace(/\\/g, '/')]) : null;
+  }
+  _draftIdentity() { return this.store?.doc?.meldex?.document_id || this._draftLegacyIdentity || null; }
+  _draftPrefix() { return 'meldex-map-draft:v2:' + encodeURIComponent(JSON.stringify([this._draftStorageScope, this._draftIdentity(), this.path])) + ':'; }
   _draftKey() { return this._draftPrefix() + this._draftOwner; }
-  _readDraft() {
+  async _readDraft() {
     try {
-      const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter(key => key?.startsWith(this._draftPrefix()));
-      return keys.map(key => { try { return { ...JSON.parse(localStorage.getItem(key)), key }; } catch (_) { return null; } })
-        .filter(draft => { try { return draft && MeldexMapDocument.parse(draft.doc) && typeof draft.etag === 'string'; } catch (_) { return false; } })
-        .sort((a, b) => b.time - a.time)[0];
+      const scope = this._draftStorageScope, identity = this._draftIdentity(), prefix = this._draftPrefix();
+      if (!scope || !identity || scope !== this._draftScope()) return null;
+      const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter(key => key?.startsWith(prefix) && !this._ignoredDraftKeys?.has(key));
+      const large = await MeldexMapDocument.drafts.list(prefix).catch(() => []);
+      if (scope !== this._draftScope() || identity !== this._draftIdentity() || prefix !== this._draftPrefix()) return null;
+      return [...keys.map(key => { try { return { ...JSON.parse(localStorage.getItem(key)), key }; } catch (_) { return null; } }),
+        ...large.filter(draft => draft.key?.startsWith(prefix) && !this._ignoredDraftKeys?.has(draft.key))]
+        .filter(draft => { try { return draft && draft.scope === scope && draft.documentId === identity
+          && (MeldexMapDocument.parse(draft.doc).meldex?.document_id || this._draftLegacyIdentity) === identity
+          && typeof draft.etag === 'string'; } catch (_) { return false; } })
+        .sort((a, b) => b.time - a.time)[0] || null;
     } catch (_) { return null; }
   }
   _changed() {
     const store = this.store;
     if (!store || !this.el) return;
     if (store.dirty) {
-      try { localStorage.setItem(this._draftKey(), JSON.stringify({ doc: store.doc, etag: store.etag, time: Date.now() })); this._draftFailed = false; }
-      catch (_) { this._draftFailed = true; }
+      const draft={doc:store.doc,etag:store.etag,time:Date.now(),key:this._draftKey(),scope:this._draftStorageScope,documentId:this._draftIdentity()};
+      (this._draftKeys ||= new Set()).add(draft.key);
+      // Avoid serializing a known-large atlas into the small synchronous store
+      // only to hit its quota. The durable transaction is still awaited by flush.
+      const atlas = store.doc.atlas;
+      const large = (store.doc.background?.data_url?.length || 0) + (atlas ?
+        Object.values(atlas.modes || {}).reduce((sum, shapes) => sum + shapes.reduce((n, shape) => n + shape.path.length, 0), 0) : 0) > 1024 * 1024;
+      let written = false;
+      if (!large) try { localStorage.setItem(draft.key, JSON.stringify(draft)); this._draftFailed = false; written = true; } catch (_) {}
+      if (!written) {
+        // Serialize writes and deletes so an older in-flight copy cannot
+        // overwrite a newer edit or reappear after a successful file save.
+        this._draftPending=(this._draftPending || Promise.resolve()).then(()=>MeldexMapDocument.drafts.put(draft.key,draft))
+          .then(()=>{if(this.store!==store||store.doc!==draft.doc||!store.dirty)return;this._draftFailed=false;try{localStorage.setItem(draft.key,JSON.stringify({indexedDB:true,time:draft.time}));}catch(_){};})
+          .catch(()=>{if(this.store!==store||store.doc!==draft.doc||!store.dirty)return;this._draftFailed=true;if(this.saveStatus)this.saveStatus.textContent+='（下書きの保全にも失敗しました。マップを書き出してください）';});
+      }
     } else {
-      try { localStorage.removeItem(this._draftKey()); if (this._recoveredKey) localStorage.removeItem(this._recoveredKey); } catch (_) {}
+      const keys=[...new Set([this._draftKey(),this._recoveredKey,...(this._draftKeys || [])])].filter(key=>key&&!this._ignoredDraftKeys?.has(key));
+      try { keys.forEach(key=>localStorage.removeItem(key)); } catch (_) {}
+      this._draftPending=(this._draftPending || Promise.resolve()).then(()=>Promise.all(keys.map(key=>MeldexMapDocument.drafts.remove(key)))).catch(()=>{});
       this._recoveredKey = null;
+      this._draftKeys?.clear();
     }
     if (this.saveStatus) {
-      this.saveStatus.textContent = store.error ? '保存できません: ' + (store.error.userMessage || store.error.message)
+      let status = store.error ? '保存できません: ' + (store.error.userMessage || store.error.message)
         : store.pending ? '保存しています…' : this.readOnly ? '読み取り専用' : store.dirty ? '未保存' : '保存済み';
-      if (this._draftFailed && store.dirty) this.saveStatus.textContent += '（下書きの保全にも失敗しました。マップを書き出してください）';
-      this.saveStatus.title = this.saveStatus.textContent;
+      if (this._draftFailed && store.dirty) status += '（下書きの保全にも失敗しました。マップを書き出してください）';
+      if (this.saveStatus.textContent !== status) this.saveStatus.textContent = status;
+      if (this.saveStatus.title !== status) this.saveStatus.title = status;
       this.saveStatus.classList.toggle('error', !!store.error || !!this._draftFailed && store.dirty);
+    }
+    for (const host of [this.optionsRoot,this.inspector].filter(Boolean)) {
+      let notice=host.querySelector(':scope > .gb-inline-error');
+      if(!notice&&(store.error||this._draftFailed&&store.dirty)) { notice=GBUI.createInlineError({onRetry:()=>this.flush()});host.prepend(notice); }
+      if(notice) {
+        const message=store.error ? '保存できません: '+(store.error.userMessage||store.error.message)+'。未保存の編集を保持しています。保存先を確認して再試行してください'
+          : this._draftFailed&&store.dirty ? '下書きを保全できません。マップを書き出してください' : '';
+        notice.setMessage(message);notice.setBusy(!!store.pending);
+      }
     }
     const commonHistory = this._hasCommonHistory();
     const scope = commonHistory ? this._historyScope() : '';
@@ -263,7 +336,9 @@ class MapAppComponent extends ToolComponent {
   }
   _editName(id) {
     this._select(id); if (!id || !this._editGuard(id)()) return;
-    const input = this.inspector.querySelector('[aria-label="名前"]'); input?.focus(); input?.select();
+    let input = this.inspector.querySelector('[aria-label="名前"]');
+    if (input && !input.getClientRects().length) this.inspectorToggle?.click();
+    input = this.inspector.querySelector('[aria-label="名前"]'); input?.focus(); input?.select();
   }
   async _deleteSelected(ids = [...(this._selection || [])]) {
     if (this.editingDisabled) return;
@@ -328,10 +403,11 @@ class MapAppComponent extends ToolComponent {
     this.view.featureKind = this.state.mapFeatureKind || '';
     this.view.layerVisibility = this.state.mapLayerVisibility || {};
     const viewport = this.state.mapViewport;
+    this._selection = new Set([...(this._selection || [])].filter(id => this.store.doc.features.some(f => f.id === id)));
+    this.view.selectedIds = new Set(this._selection); this.view.selectedId = this._selected;
     // Tab viewport is only reused in the coordinate system that captured it.
     this.view.setDocument({ ...this.store.doc, view: viewport && this.state.mapViewSystem === this.store.doc.coordinate_system ? viewport : this.store.doc.view }, this.editingDisabled);
-    this._selection = new Set([...(this._selection || [])].filter(id => this.store.doc.features.some(f => f.id === id)));
-    this.view.selectedIds = new Set(this._selection); this.view.selectedId = this._selected; this.view._features(); this._renderZoom();
+    this._renderZoom();
     MeldexMapPeriods.render(this); this._renderLayers(); this._renderPlaces(); this._renderInspector(); this._changed();
     MeldexMapSavedViews.render(this);
     this.breadcrumbs.replaceChildren(); MeldexMapRelations.breadcrumbs(this, this.breadcrumbs);
@@ -455,7 +531,7 @@ class MapAppComponent extends ToolComponent {
     this.zoomSlider.value = world ? z : 100 * 2 ** z; this.zoomLabel.textContent = world ? 'Z ' + z.toFixed(2) : (100 * 2 ** z).toLocaleString('ja-JP', { maximumFractionDigits: 1 }) + '%';
     this.rotationSlider.value = v.rotation; this.rotationLabel.textContent = Math.round(v.rotation) + '°';
   }
-  _renderLayers() { MeldexMapControls.layers(this); }
+  _renderLayers() { MeldexMapControls.layers(this); MeldexMapChrome.identifyControls(this); }
   // マップの方式はAzgaar方式に統一した。旧方式の格子地形だけを持つ地図は、開いた時に変換前の版を保存してから変換する。
   // 版を保存できない時は変換しない（元データを失わないため）。画像を背景にした地図は対象外。
   async _convertLegacyTerrain(generation) {
@@ -489,7 +565,7 @@ class MapAppComponent extends ToolComponent {
   addAnnotation(anchorEl) {
     const context = this.annotationContext();
     if (!context || !window.CommentBadges?.addCommentHere) return false;
-    window.CommentBadges.addCommentHere(context, { anchorEl: anchorEl || this.inspector || this.el });
+    window.CommentBadges.addCommentHere(context, { anchorEl: anchorEl || this.inspector || this.el, retainOnFailure: true });
     return true;
   }
   // アノテート一覧から地点・図形へ移動する。
@@ -507,11 +583,16 @@ class MapAppComponent extends ToolComponent {
   }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.mapPath;
-    if (this._skipDetailSync || this.paneId !== GBLayout.activePane) return;
+    if (this._skipDetailSync || !this._isDetailOwner()) return;
     // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
     if (!path) { window.GBOptionTargetContext?.clear?.('map-new'); return; }
     if (typeof _syncDetailPanel === 'function') return Promise.resolve(_syncDetailPanel(this.state.label || 'マップ', path, 'map')).then(() => MeldexMapChrome.details(this));
     window.GBOptionTargetContext?.set({ path, kind: 'map', fileType: 'map' }, 'map-open');
+  }
+  _isDetailOwner() {
+    const owner = window.GBEditorHost?.get?.();
+    if (owner?.surface === 'subpanel') return owner.component === this;
+    return this.paneId === GBLayout.activePane;
   }
   async restore(direction) {
     this._commitInput();
@@ -532,6 +613,7 @@ class MapAppComponent extends ToolComponent {
     if (!this.editingDisabled && this._viewport) this.update(doc => { doc.view = this._viewport; }, false);
     clearTimeout(this._saveTimer);
     const store = this.store, hadChanges = store.dirty || !!store.error, saved = await store.save();
+    await this._draftPending;
     // A user can keep typing while a save is in flight. Do not close the tab
     // over an input that has not yet reached its change/blur commit boundary.
     const clean = saved && this.store === store && !store.dirty && !this._inputDirty;
@@ -584,7 +666,7 @@ class MapAppComponent extends ToolComponent {
   onPathRename(oldPath, newPath, options) {
     if (!this.store || !this.path) return;
     const next = _mapRenamedPath(this.path, oldPath, newPath);
-    if (next !== this.path) { const key = this._draftKey(); this.path = next; this.state.mapPath = next; if (this.store.dirty) { this._changed(); try { localStorage.removeItem(key); } catch (_) {} } }
+    if (next !== this.path) { this.path = next; this.state.mapPath = next; }
     if (this.path === newPath && options?.label != null) {
       this.state.label = this.store.doc.title = options.label;
       if (this.store.doc.display_title != null || options.titleOnly) this.store.doc.display_title = options.label;
@@ -605,6 +687,8 @@ class MapAppComponent extends ToolComponent {
 }
 
 function _meldexMapHistoryTarget(scope) {
+  const editor = window.GBEditorHost?.get?.()?.component;
+  if (editor instanceof MapAppComponent && editor.store && editor._historyScope() === scope) return editor;
   if (typeof getComponentInstance === 'function' && typeof _meldexActiveTabForPane === 'function') {
     const tab = _meldexActiveTabForPane();
     const active = tab?.type === 'map' ? getComponentInstance(tab.id) : null;
@@ -615,7 +699,11 @@ function _meldexMapHistoryTarget(scope) {
     const target = match ? getComponentInstance(match.tabId) : null;
     if (target?.store && target._historyScope?.() === scope) return target;
   }
-  return null;
+  let found = null;
+  if (typeof forEachComponent === 'function') forEachComponent(c => {
+    if (c instanceof MapAppComponent && c.store && c.el?.isConnected && c._historyScope() === scope) found = c;
+  });
+  return found;
 }
 
 window.MeldexMapHistorySnapshots = {

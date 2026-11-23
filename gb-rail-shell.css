@@ -109,3 +109,4 @@
   box-sizing: border-box;
 }
 .annotation-fab[hidden] { display: none !important; }
+body[data-panel-screenshot-selecting] [data-annotation-selected="true"]::after { display: none; }

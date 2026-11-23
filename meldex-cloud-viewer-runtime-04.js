@@ -117,7 +117,7 @@
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
     'viewer.flipH':         [() => { Scene.toggleFlipH(); Scene.flashStatus('左右反転: ' + (Scene.getFlipH() ? 'ON' : 'OFF')); }, false],
-    'viewer.original':      [() => { Scene.setOriginal(); Scene.flashStatus('原寸表示'); }, false],
+    'viewer.original':      [() => { if (Scene.setOriginal()) Scene.flashStatus('原寸表示'); }, false],
     'viewer.rotate':        [() => { Scene.rotate(); Scene.flashStatus('回転: ' + Scene.getRotateDeg() + '°'); }, false],
     'viewer.zoomIn':        [() => Scene.zoomIn(), true],
     'viewer.zoomOut':       [() => Scene.zoomOut(), true],
@@ -360,9 +360,250 @@
   // 親ウィンドウのテーマ色を継承（meldex-core.js提供）
   try {
     if (typeof inheritParentTheme === 'function') inheritParentTheme();
-    const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim() || '#111419';
-    document.documentElement.style.setProperty('--panel-bg', bg2 + 'ee');
   } catch(e) {}
+})();
+
+;
+
+/* === viewer-page-list.js === */
+;
+/* Bounded, lazy page list. The viewer's document and media nodes stay mounted. */
+(function () {
+  'use strict';
+  const Scene = window.MeldexViewerScene;
+  const prefs = window.MeldexViewerPageState;
+  const pane = document.getElementById('viewer-pages');
+  const toggle = document.getElementById('btn-page-list');
+  const scroll = document.getElementById('viewer-pages-scroll');
+  const rowsHost = document.getElementById('viewer-pages-rows');
+  const mode = document.getElementById('viewer-pages-mode');
+  const first = document.getElementById('viewer-pages-first');
+  const grip = document.getElementById('viewer-pages-resize');
+  const status = document.getElementById('viewer-pages-status');
+  const folderStatus = document.getElementById('viewer-pages-load-status');
+  const narrow = () => document.documentElement.dataset.toolbarDensity !== 'desktop' && matchMedia('(max-width: 820px)').matches;
+  const rowHeight = 152;
+  let identity = '', source = null, signature = '', groups = [], indexRows = [];
+  let visible = false, width = 200, frame = 0, version = 0, rendering = false;
+  let documentRef = null;
+  let extraEntries = [], folderEntries = [], folderRequest = null;
+  async function loadFolder() {
+    if (!visible || !Scene.canListFolder() || folderRequest) return;
+    const requestIdentity = identity;
+    folderRequest = { identity };
+    try {
+      const entries = await window.MeldexViewerSceneUtils.fetchJsonChecked('/api/browse?path=' + encodeURIComponent(Scene.getFolderPath()) + '&all_files=true');
+      if (requestIdentity !== identity) return;
+      folderEntries = entries.filter(entry => entry.type !== 'folder' && !entry.is_dir);
+      signature = ''; sync();
+    } catch (_) {
+      if (requestIdentity === identity) {
+        folderStatus.textContent = 'ファイル一覧を読み込めませんでした。';
+        const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '再試行';
+        retry.onclick = () => { folderStatus.replaceChildren(); folderRequest = null; loadFolder(); };
+        folderStatus.appendChild(retry);
+      }
+    }
+  }
+  const cache = new Map(); // At most 64 small previews; never full-size PDF pages.
+  function save(patch) {
+    const ok = Scene.savePageSettings(patch);
+    status.textContent = ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
+  }
+  function layout() {
+    pane.hidden = !visible;
+    toggle.setAttribute('aria-expanded', String(visible));
+    document.body.style.setProperty('--viewer-page-list-width', width + 'px');
+    document.body.classList.toggle('viewer-pages-open', visible);
+    grip.setAttribute('aria-valuenow', String(width));
+    // viewer-resize observes the actual display size once, after layout.
+  }
+  function setVisible(value) {
+    visible = value;
+    save({ visible });
+    layout();
+    if (visible) sync(true);
+    else toggle.focus({ preventScroll: true });
+  }
+  function schedule() {
+    if (!frame) frame = requestAnimationFrame(() => { frame = 0; draw(); });
+  }
+  function sync(reveal = false) {
+    const nextIdentity = Scene.preferenceIdentity();
+    if (identity !== nextIdentity) {
+      identity = nextIdentity;
+      const saved = prefs.read(identity);
+      visible = saved.visible === true;
+      width = Number.isFinite(saved.width) ? Math.max(160, Math.min(480, saved.width)) : 200;
+      scroll.scrollTop = 0;
+      extraEntries = []; folderEntries = []; folderRequest = null;
+      folderStatus.replaceChildren(); status.replaceChildren();
+      layout();
+      reveal = true;
+    }
+    mode.value = Scene.getMode();
+    first.value = Scene.getFirstSide();
+    first.disabled = mode.value === 'single';
+    const items = Scene.getItems();
+    const names = new Set(items.map(item => item.name));
+    extraEntries = folderEntries.filter(entry => !names.has(entry.name));
+    const nextSignature = mode.value + ':' + first.value + ':' + Scene.getIndex() + ':' + items.map(item => item.w + 'x' + item.h).join(',') + ':' + extraEntries.length;
+    if (source !== items || signature !== nextSignature) {
+      source = items; signature = nextSignature;
+      groups = []; indexRows = [];
+      for (let i = 0; i < items.length;) {
+        let group = Scene.getGroup(i);
+        if (i < Scene.getIndex() && group.includes(Scene.getIndex())) group = group.filter(n => n < Scene.getIndex());
+        if (!group.length) break;
+        group.forEach(n => { indexRows[n] = groups.length; });
+        groups.push(group);
+        i += group.length;
+      }
+      extraEntries.forEach((_, i) => groups.push([items.length + i]));
+      // Keep complete spread groups together while sorting all folder files naturally.
+      if (!Scene.isPdf()) {
+        const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+        groups.sort((a, b) => collator.compare((items[a[0]] || extraEntries[a[0] - items.length]).name, (items[b[0]] || extraEntries[b[0] - items.length]).name));
+        groups.forEach((group, row) => group.forEach(n => { if (n < items.length) indexRows[n] = row; }));
+      }
+      rowsHost.style.height = groups.length * rowHeight + 'px';
+      version++;
+    }
+    if (documentRef !== Scene.getPdfDocument()) {
+      documentRef = Scene.getPdfDocument(); cache.clear(); version++;
+    }
+    if (visible) {
+      const top = (indexRows[Scene.getIndex()] || 0) * rowHeight;
+      if (reveal || top < scroll.scrollTop || top + rowHeight > scroll.scrollTop + scroll.clientHeight) scroll.scrollTop = top;
+      schedule();
+      loadFolder();
+    }
+  }
+  function makeCell(index) {
+    const item = source[index] || extraEntries[index - source.length];
+    const extra = index >= source.length;
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'note-toc-item viewer-page-item';
+    button.dataset.index = index;
+    const current = Scene.getGroup(Scene.getIndex()).includes(index);
+    button.setAttribute('aria-current', current ? 'page' : 'false');
+    const label = Scene.isPdf() ? 'ページ ' + (index + 1) : item.name || item.path;
+    button.title = label; button.setAttribute('aria-label', label);
+    const preview = document.createElement('span'); preview.className = 'viewer-page-preview';
+    if (Scene.isPdf()) {
+      const cached = cache.get(index);
+      if (cached) preview.appendChild(cached);
+      else { preview.textContent = 'PDF'; button.dataset.pending = 'true'; }
+    } else if (!extra && item.type === 'image') {
+      const image = document.createElement('img'); image.loading = 'lazy'; image.alt = '';
+      const thumbnail = window.MeldexStandaloneNative || /^(?:blob:|data:)/i.test(item.path || '') ? item.url
+        : '/api/thumbnail?path=' + encodeURIComponent(item.path) + '&size=160';
+      Promise.resolve(window.MeldexPwaFileUrl?.ensureDisplayUrl?.(thumbnail)).then(info => {
+        if (image.isConnected) image.src = info?.url || thumbnail;
+      }).catch(() => { if (image.isConnected) preview.textContent = '画像'; });
+      image.onerror = () => { preview.textContent = '画像'; };
+      preview.appendChild(image);
+    } else preview.textContent = item.type === 'video' ? '▶ 動画' : item.type === 'audio' ? '♪ 音声' : /\.pdf$/i.test(item.name) ? 'PDF' : 'ファイル';
+    const text = document.createElement('span'); text.className = 'viewer-page-label'; text.textContent = label;
+    button.append(preview, text);
+    button.onclick = async () => {
+      Scene.pause();
+      if (!extra) Scene.goToIndex(groups[indexRows[index]]?.[0] ?? index);
+      else if (/\.pdf$/i.test(item.name)) await Scene.reopenWithUrl('viewer.html?pdf=' + encodeURIComponent(item.path));
+      else if (window.parent !== window && window.parent.GBSubPanel && window.parent.GBLinkRouter) {
+        window.parent.GBSubPanel.open(window.parent.GBLinkRouter.resolve(item.path, { label: item.name }));
+      } else if (window.MeldexStandaloneNative) {
+        try {
+          await window.MeldexStandaloneNative.loadFeature('integration');
+          await window.MeldexStandaloneParity.openTarget({ path: item.path, type: item.type }, 'main', { expectedRoot: Scene.currentRootPath() });
+        } catch (error) { Scene.flashStatus('ファイルを開けませんでした: ' + error.message); }
+      } else Scene.flashStatus('この形式はMeldex本体の対応アプリで開いてください');
+      if (narrow()) setVisible(false);
+    };
+    return button;
+  }
+  function draw() {
+    if (!visible || !source) return;
+    const begin = Math.max(0, Math.floor(scroll.scrollTop / rowHeight) - 1);
+    const end = Math.min(groups.length, begin + Math.ceil(scroll.clientHeight / rowHeight) + 3);
+    const fragment = document.createDocumentFragment();
+    for (let i = begin; i < end; i++) {
+      const row = document.createElement('div'); row.className = 'viewer-page-row'; row.style.top = i * rowHeight + 'px';
+      const group = groups[i];
+      const order = mode.value === 'manga' ? [...group].reverse() : group;
+      if (mode.value !== 'single') {
+        row.classList.add('viewer-page-spread');
+        if (group.length === 1 && group[0] < source.length) row.dataset.firstSide = group[0] === 0 ? first.value : (mode.value === 'manga' ? 'right' : 'left');
+      }
+      order.forEach(n => row.appendChild(makeCell(n)));
+      fragment.appendChild(row);
+    }
+    rowsHost.replaceChildren(fragment);
+    pump();
+  }
+  async function pump() {
+    if (rendering || !visible || !documentRef) return;
+    rendering = true;
+    try {
+      while (visible) {
+        const cell = rowsHost.querySelector('[data-pending="true"]');
+        if (!cell) break;
+        cell.dataset.pending = 'working';
+        const index = Number(cell.dataset.index), stamp = version, doc = documentRef;
+        try {
+          const page = await doc.getPage(index + 1);
+          if (stamp !== version || !visible || !cell.isConnected) continue;
+          const natural = page.getViewport({ scale: 1 });
+          const viewport = page.getViewport({ scale: Math.min(108 / natural.width, 108 / natural.height) });
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          if (stamp !== version || !visible) continue;
+          cache.set(index, canvas);
+          if (cache.size > 64) cache.delete(cache.keys().next().value);
+          if (cell.isConnected) cell.querySelector('.viewer-page-preview').replaceChildren(canvas);
+          else schedule();
+        } catch (_) {
+          if (cell.isConnected) {
+            const preview = cell.querySelector('.viewer-page-preview');
+            preview.textContent = '再試行';
+            preview.onclick = e => { e.stopPropagation(); cell.dataset.pending = 'true'; pump(); };
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    } finally { rendering = false; }
+  }
+  toggle.onclick = () => setVisible(!visible);
+  toggle.addEventListener('mousedown', e => e.preventDefault());
+  document.getElementById('viewer-pages-close').onclick = () => setVisible(false);
+  mode.onchange = () => { Scene.setMode(mode.value); sync(true); };
+  first.onchange = () => { Scene.setFirstSide(first.value); sync(true); };
+  scroll.addEventListener('scroll', schedule, { passive: true });
+  pane.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); setVisible(false); } });
+  function resize(value, persist) {
+    width = Math.max(160, Math.min(480, value)); layout();
+    if (persist) save({ width });
+  }
+  grip.onpointerdown = e => {
+    if (narrow()) return;
+    grip.setPointerCapture(e.pointerId);
+    const start = e.clientX, initial = width;
+    grip.onpointermove = event => resize(initial + event.clientX - start, false);
+    grip.onpointerup = grip.onpointercancel = () => { grip.onpointermove = null; save({ width }); };
+  };
+  grip.onkeydown = e => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault(); e.stopPropagation(); resize(width + (e.key === 'ArrowLeft' ? -16 : 16), true);
+    }
+  };
+  new ResizeObserver(schedule).observe(scroll);
+  window.addEventListener('viewer-page-state', () => sync());
+  window.addEventListener('viewer-page-settings-save', e => {
+    status.textContent = e.detail.ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
+  });
+  window.addEventListener('resize', layout);
+  Scene.ready.then(() => sync(true));
 })();
 
 ;
@@ -2856,7 +3097,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function renderRect(scene, data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(NS, 'rect'), data, color, opacity, false);
+    const el = document.createElementNS(NS, Array.isArray(data.boxes) && data.boxes.length ? 'g' : 'rect');
+    if (el.tagName.toLowerCase() === 'g') {
+      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), box, color, opacity, false));
+    } else _applyRectEl(el, data, color, opacity, false);
     // renderStroke同様、pointer-eventsは親svgからの継承に一本化する（個別指定禁止）。
     if (annId) el.dataset.annId = annId;
     scene.strokesG.appendChild(el);
@@ -2982,11 +3226,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
     try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; }
   }
   let _lastSaveFailureAt = 0;
+  let _lastSaveFailureMessage = '';
   function viewerAnnotationSaveFailed(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
-    if (typeof window.showStatus === 'function' && now - _lastSaveFailureAt > 1500) {
-      window.showStatus(message, true);
+    if (message !== _lastSaveFailureMessage || now - _lastSaveFailureAt > 1500) {
+      window.showStatus?.(message, true);
+      // 単独の閲覧画面には本体のステータスバーがない。ログだけで済ませずHUDにも残す。
+      window.MeldexViewerScene?.flashStatus?.(message, 5000);
       _lastSaveFailureAt = now;
+      _lastSaveFailureMessage = message;
     }
     try { console.warn(message, error); } catch {}
   }
@@ -2997,9 +3245,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const eraserWidth = Number(_ann.widths?.eraser);
     const tolerance = localLengthForScreenPx(scene.svg, Math.max(4, (Number.isFinite(eraserWidth) && eraserWidth > 0 ? eraserWidth : 14) * 0.7));
     const els = Array.from(scene.strokesG.querySelectorAll('path, polygon, rect')).reverse();
-    for (const el of els) {
+    for (const shape of els) {
+      const el = shape.closest('[data-ann-id]') || shape;
       if (el.classList.contains('viewer-ann-preview')) continue;
-      if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(el, local.x, local.y, tolerance)) {
+      if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(shape, local.x, local.y, tolerance)) {
         try {
           const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
           const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
@@ -3196,6 +3445,189 @@ async function _applyImportedCustomColors(rawColors, mode) {
     isDrawing: () => _draw.isDrawing(),
     viewerAnnotationUser,
     viewerAnnotationSaveFailed,
+  };
+})();
+
+;
+
+/* === viewer-highlights.js === */
+;
+/* Shift-drag selects an image/PDF region; the shared context menu applies a theme highlight. */
+(function () {
+  'use strict';
+  const engine = () => window.MeldexViewerAnnotationScene;
+  async function ensureNative() {
+    if(!window.MeldexStandaloneNative||window.MeldexViewerAnnotations)return;
+    await window.MeldexStandaloneNative.loadFeature('annotations');
+    document.documentElement.dataset.viewerAnnotationCapability='enabled';
+    await window.MeldexViewerAnnotations.load();
+  }
+  let nativeRead=0;
+  const cardReads=new WeakMap();
+  async function renderCards(host) {
+    const token=(cardReads.get(host)||0)+1;cardReads.set(host,token);
+    host._highlightCardObserver?.disconnect();host._highlightCardObserver=null;
+    const scene=window.MeldexViewerScene;
+    const path=scene?.itemAnnotationPath?.(scene.getItems()?.[scene.getIndex()]);
+    if(!path){host.textContent='ファイルを開いてください';return;}
+    host.textContent='読み込み中...';
+    try {
+      await ensureNative();
+      const rows=await window.apiFetch('/annotations?target='+encodeURIComponent(path));
+      if(cardReads.get(host)!==token||!host.isConnected)return;
+      const items=[];
+      for(const row of rows||[]){
+        let data=row.data||{};try{if(typeof data==='string')data=JSON.parse(data);}catch{continue;}
+        if(!data.highlight&&row.type!=='highlight')continue;
+        items.push({row,data});
+      }
+      const build=({row,data})=>{
+        const card=document.createElement('button');card.type='button';card.className='gb-btn';
+        card.dataset.viewerHighlightCard=row.id;
+        card.style.cssText='display:flex;flex-direction:column;align-items:flex-start;width:100%;height:auto;white-space:normal;text-align:left;gap:var(--ui-space-2);margin-bottom:var(--ui-space-2)';
+        const quote=document.createElement('span');quote.textContent=data.text||row.body||'ハイライト';card.append(quote);
+        if(data.thumbnail){const img=document.createElement('img');img.src=data.thumbnail;img.alt='ハイライトした範囲';img.style.cssText='max-width:100%;max-height:120px;object-fit:contain';card.append(img);}
+        card.addEventListener('click',()=>window.MeldexViewerHighlights.reveal(row));return card;
+      };
+      host._highlightCardObserver?.disconnect();host.replaceChildren();host.dataset.highlightTotal=String(items.length);
+      if(!items.length){host.textContent='ハイライトはありません';return;}
+      let count=0;const more=document.createElement('button');more.type='button';more.className='gb-btn';more.dataset.highlightMore='';
+      const append=()=>{
+        const fragment=document.createDocumentFragment(),end=Math.min(items.length,count+80);
+        while(count<end)fragment.append(build(items[count++]));more.before(fragment);
+        if(count===items.length){more.remove();host._highlightCardObserver?.disconnect();}
+        else more.textContent=`さらに表示（残り ${items.length-count}件）`;
+      };
+      more.addEventListener('click',append);host.append(more);append();
+      if(count<items.length&&typeof IntersectionObserver!=='undefined'){
+        host._highlightCardObserver=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))append();},
+          {root:host.closest('.sa-secondary-panel-body'),rootMargin:'100px'});host._highlightCardObserver.observe(more);
+      }
+    }catch(error){if(cardReads.get(host)===token)host.textContent='読み込めませんでした: '+error.message;}
+  }
+  async function loadNativeExisting() {
+    if(!window.MeldexStandaloneNative||window.MeldexViewerAnnotations)return;
+    const token=++nativeRead,scene=window.MeldexViewerScene;
+    const path=scene?.itemAnnotationPath?.(scene.getItems()?.[scene.getIndex()]);
+    if(!path)return;
+    try {
+      const rows=await window.apiFetch('/annotations?target='+encodeURIComponent(path));
+      if(token===nativeRead&&rows?.length)await ensureNative();
+    }catch{}
+  }
+  let selection = null, dragging = null, armedColor = null;
+  function colors() {
+    try { if (parent !== window && parent.GBAnnotationHighlights) return parent.GBAnnotationHighlights.colors(); } catch {}
+    return (window.getThemeColorSlotSettings?.() || []).filter(Boolean).map(slot => slot.color).filter(Boolean).concat(window.PALETTE_COLORS || ['#e4bd60', '#90bc83', '#7eacd1', '#c48080']).slice(0, 8);
+  }
+  function cancel() { selection?.element?.remove(); selection = null; dragging = null; armedColor = null; }
+  function captureText() {
+    const text = window.MeldexViewerTextLayer?.getSelection?.();
+    if (!text?.text || !text.boxes?.length) return;
+    const basePath = path => String(path || '').replace(/#page=\d+$/, '').replace(/\\/g, '/');
+    const scene = engine()?.getScenes().find(s => basePath(s.path) === basePath(text.path)
+      && (!s.isPdf || s.pageIndex === text.pageIndex));
+    if (!scene || !(text.mediaWidth > 0) || !(text.mediaHeight > 0)) return;
+    const sx = scene.mediaWidth / text.mediaWidth, sy = scene.mediaHeight / text.mediaHeight;
+    const boxes = text.boxes.map(b => ({ x: b.x * sx, y: b.y * sy, width: b.width * sx, height: b.height * sy }))
+      .filter(b => Object.values(b).every(Number.isFinite) && b.width > 0 && b.height > 0);
+    if (!boxes.length) return;
+    const x = Math.min(...boxes.map(b => b.x)), y = Math.min(...boxes.map(b => b.y));
+    cancel();
+    selection = { scene, path: scene.path, data: { x, y,
+      width: Math.max(...boxes.map(b => b.x + b.width)) - x,
+      height: Math.max(...boxes.map(b => b.y + b.height)) - y,
+      boxes, text: text.text, textSource: { engine: text.engine, version: text.version } } };
+  }
+  function bounds(scene, a, b) {
+    const x = Math.max(0, Math.min(scene.mediaWidth, Math.min(a.x, b.x)));
+    const y = Math.max(0, Math.min(scene.mediaHeight, Math.min(a.y, b.y)));
+    return { x, y, width: Math.max(0, Math.min(scene.mediaWidth, Math.max(a.x, b.x)) - x), height: Math.max(0, Math.min(scene.mediaHeight, Math.max(a.y, b.y)) - y) };
+  }
+  function thumbnail(scene, data) {
+    try {
+      const canvas = document.createElement('canvas'), ratio = Math.min(1, 320 / Math.max(data.width, data.height));
+      canvas.width = Math.max(1, Math.round(data.width * ratio)); canvas.height = Math.max(1, Math.round(data.height * ratio));
+      const scaleX = (scene.mediaEl.naturalWidth || scene.mediaEl.width) / scene.mediaWidth;
+      const scaleY = (scene.mediaEl.naturalHeight || scene.mediaEl.height) / scene.mediaHeight;
+      canvas.getContext('2d').drawImage(scene.mediaEl, data.x * scaleX, data.y * scaleY,
+        data.width * scaleX, data.height * scaleY, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/webp', 0.8);
+    } catch (error) { console.warn('[viewer-highlight] thumbnail failed', error.message); return ''; }
+  }
+  async function apply(color) {
+    if (!selection?.scene.wrap.isConnected || !engine().getScenes().includes(selection.scene) || selection.path !== selection.scene.path
+      || selection.data.width < 1 || selection.data.height < 1) { cancel(); armedColor = color; return; }
+    const { scene, data, element, path: targetPath } = selection;
+    const requestId = crypto.randomUUID();
+    selection = null; armedColor = null; element?.remove();
+    const savedData = { ...data, coordinateSpace: engine().COORD_SPACE, highlight: true,
+      mediaWidth: scene.mediaWidth, mediaHeight: scene.mediaHeight, thumbnail: thumbnail(scene, data), clientRequestId: requestId };
+    if (scene.isPdf) savedData.pageIndex = scene.pageIndex;
+    const painted = engine().renderRect(scene, savedData, color, 0.42, null);
+    if (parent !== window) parent.postMessage({ type: 'viewer-ann-highlight-pending', requestId, targetPath: scene.path }, location.origin);
+    try {
+      const row = { type: 'rect', target_path: scene.path, target_kind: 'viewer_region', color, opacity: 0.42,
+        body: data.text || '', data: savedData, target_ref: { file: scene.path, pageIndex: scene.pageIndex }, user: engine().viewerAnnotationUser() };
+      const result = await window.apiPost('/annotations', row);
+      const after = { ...row, id: result.id, created: result.created, modified: result.modified || result.created };
+      painted.dataset.annId = result.id; painted._viewerAnnotationHistoryRow = after;
+      window.__viewerAnnotationReportSave?.(true, 'create', null, { ...result, highlightRequestId: requestId }, { before: null, after });
+    } catch (error) {
+      painted.remove(); engine().viewerAnnotationSaveFailed(error);
+      window.__viewerAnnotationReportSave?.(false, 'create', error, { highlightRequestId: requestId });
+      if (engine().getScenes().includes(scene) && scene.path === targetPath) selection = { scene, data, path: targetPath, element: engine().renderRect(scene, data, 'var(--accent)', 0.2, null) };
+    }
+  }
+  document.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.shiftKey && !armedColor || document.documentElement.dataset.viewerAnnotationCapability === 'disabled') return;
+    const scene = engine()?.findSceneForClientPoint(event.clientX, event.clientY);
+    if (!scene) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const color = armedColor; cancel(); armedColor = color;
+    dragging = { scene, path: scene.path, point: engine().clientToLocal(scene.svg, event.clientX, event.clientY), pointer: event.pointerId };
+    try { scene.wrap.setPointerCapture(event.pointerId); } catch {}
+  }, true);
+  document.addEventListener('pointermove', event => {
+    if (!dragging || event.pointerId !== dragging.pointer) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const { scene, point } = dragging;
+    if (!engine().getScenes().includes(scene) || dragging.path !== scene.path) { cancel(); return; }
+    const data = bounds(scene, point, engine().clientToLocal(scene.svg, event.clientX, event.clientY));
+    selection?.element?.remove();
+    const element = engine().renderRect(scene, data, armedColor || 'var(--accent)', 0.25, null);
+    element.dataset.highlightSelection = '';
+    element.setAttribute('stroke', 'var(--accent)'); element.setAttribute('stroke-width', engine().localLengthForScreenPx(scene.svg, 1));
+    selection = { scene, path: dragging.path, data, element };
+  }, true);
+  document.addEventListener('pointerup', event => {
+    if (!dragging || event.pointerId !== dragging.pointer) return;
+    event.preventDefault(); event.stopImmediatePropagation(); dragging = null;
+    if (armedColor) void apply(armedColor);
+  }, true);
+  document.addEventListener('pointercancel', cancel, true);
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !window.MeldexContextMenuUI?.isOpen()) cancel(); }, true);
+  window.MeldexViewerHighlights = {
+    ensureNative, loadNativeExisting, renderCards,
+    menuItems: () => {
+      captureText(); // Keep media coordinates before the menu takes focus.
+      return [{ label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({ label: 'テーマカラー ' + (index + 1), ariaLabel: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => apply(color) })) }];
+    },
+    reveal(item) {
+      const data = typeof item.data === 'string' ? JSON.parse(item.data) : item.data || {};
+      const normalize = path => String(path || '').replace(/\\/g, '/');
+      let scene = engine()?.getScenes().find(s => normalize(s.path) === normalize(item.target_path) && (data.pageIndex == null || s.pageIndex === data.pageIndex));
+      if (!scene && data.pageIndex != null && window.MeldexViewerScene.getIndex() !== data.pageIndex) { window.MeldexViewerScene.goToIndex(data.pageIndex); return false; }
+      if (!scene) return false;
+      const target = scene.strokesG.querySelector(`[data-ann-id="${CSS.escape(item.id)}"]`) || scene.notesG?.querySelector(`[data-ann-id="${CSS.escape(item.id)}"]`);
+      if (!target) return false;
+      const viewer=window.MeldexViewerScene,rect=target.getBoundingClientRect();
+      const dx=innerWidth/2-(rect.left+rect.width/2),dy=innerHeight/2-(rect.top+rect.height/2);
+      const delta=window.MeldexViewerSceneUtils.logicalPointFromScreenDelta(dx,dy,viewer.getFlipH(),viewer.getFlipV(),viewer.getRotateDeg());
+      viewer.panBy(delta.x,delta.y);
+      const before = target.style.filter; target.style.filter = 'drop-shadow(0 0 4px var(--accent))';
+      setTimeout(() => { target.style.filter = before; }, 1200); return true;
+    },
   };
 })();
 
@@ -3796,6 +4228,48 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _usesParentToolbar() {
     try { return window.parent !== window && !!window.parent.GBAnnotationSurfaces?.enabled(); } catch { return false; }
   }
+  const _incidentKey = 'meldex:sheet-incidents';
+  const _recentIncidents = new Map();
+  function _recordSaveIncident(kind, method, startedAt, error) {
+    // 本文・画像・パス・エラー文は記録しない。既存の自己記録と同じ安全な項目だけ。
+    const op = 'viewer.annotations.' + method.toLowerCase();
+    const fingerprint = kind + ':' + op;
+    const now = Date.now();
+    if (now - (_recentIncidents.get(fingerprint) || 0) < 10000) return;
+    _recentIncidents.set(fingerprint, now);
+    const cloud = !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+    const surface = window.MeldexStandaloneNative ? 'standalone' : cloud ? (window.innerWidth <= 767 ? 'mobile' : 'cloud') : 'desktop';
+    const entry = { kind, op, endpoint: '/annotations', method, ms: now - startedAt,
+      status: Number(error?.status || error?.httpStatus) || 0, errorType: error ? 'Error' : 'stalled',
+      surface, time: new Date().toISOString() };
+    try {
+      const old = JSON.parse(localStorage.getItem(_incidentKey) || '[]');
+      localStorage.setItem(_incidentKey, JSON.stringify([...(Array.isArray(old) ? old : []), entry].slice(-200)));
+    } catch {}
+    try {
+      if (window.parent !== window && window.parent.MeldexDiagnostics?.recordSheetIncident) {
+        if (!window.parent.MeldexRuntimeAdapter?.isBrowserDataMode?.()) window.parent.MeldexDiagnostics.recordSheetIncident(kind, entry);
+      } else if (!window.MeldexStandaloneNative && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+        window.apiFetch('/diagnostics/sheet-incident', { method: 'POST', body: JSON.stringify(entry),
+          headers: { 'Content-Type': 'application/json' }, silentError: true }).catch(() => {});
+      }
+    } catch {}
+  }
+  async function _watchAnnotationSave(method, run) {
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      _recordSaveIncident('stalled', method, startedAt);
+      window.MeldexViewerScene?.flashStatus?.('アノテートの保存が終わっていません', 10000);
+      if (_usesParentToolbar()) window.parent.showStatus?.('アノテートの保存が終わっていません', true);
+    }, 30000);
+    try { return await run(); }
+    catch (error) {
+      if (error && typeof error === 'object') error.requireRemoteCommit = true;
+      _recordSaveIncident('save-failed', method, startedAt, error);
+      throw error;
+    }
+    finally { clearTimeout(timer); }
+  }
   // Embedded annotations use the owning shell's API boundary, including its
   // active edit lock. Other viewer requests and standalone windows stay local.
   function _installSharedAnnotationApi() {
@@ -3803,9 +4277,19 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const original = window[name];
       if (typeof original !== 'function') continue;
       window[name] = function(path, ...args) {
-        if (_usesParentToolbar() && /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''))
-            && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
-        return original.call(this, path, ...args);
+        const annotation = /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''));
+        // 注釈の履歴・描画には保存先が返す正式なidが必要。送信待ちを保存成功へ
+        // 置き換えず、失敗を描画側へ返して選択・プレビューを再試行可能に保つ。
+        if (annotation) {
+          const optionsIndex = name === 'apiPost' || name === 'apiPut' ? 1 : 0;
+          args[optionsIndex] = { ...(args[optionsIndex] || {}), requireRemoteCommit: true };
+        }
+        const run = () => {
+          if (annotation && _usesParentToolbar() && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
+          return original.call(this, path, ...args);
+        };
+        const method = { apiPost: 'POST', apiPut: 'PUT', apiDelete: 'DELETE' }[name];
+        return annotation && method ? _watchAnnotationSave(method, run) : run();
       };
     }
   }
@@ -3837,7 +4321,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _currentTargetPath() {
     const scene = Scene();
     if (!scene) return '';
-    return scene.isPdf() ? (scene.getPdfPath() || '') : (SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '');
+    if (scene.isPdf()) {
+      const index = Number(scene.getIndex()) || 0;
+      return SceneEngine()?.getScenes?.().find(entry => entry.pageIndex === index)?.path
+        || (scene.getPdfPath() ? scene.getPdfPath() + '#page=' + (index + 1) : '');
+    }
+    return SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '';
   }
   function _currentPageIndex() {
     const scene = Scene();
@@ -3872,12 +4361,46 @@ async function _applyImportedCustomColors(rawColors, mode) {
   // 保存結果側。読み込み結果は setState(true)/onSceneChanged 完了時の viewer-ann-state-changed で
   // 代替する — シーン再構築のたびに現在の active/drawing 状態を親へ通知することで、親側は
   // 「今開いている画像のアノテートを読み込み終えた」タイミングを間接的に把握できる）。
+  const localHistory = [], localRedo = [];
+  let localHistoryBusy = false;
+  async function replayLocalHistory(redo) {
+    if (localHistoryBusy || window.parent !== window) return false;
+    const from = redo ? localRedo : localHistory, to = redo ? localHistory : localRedo;
+    const entry = from.at(-1);
+    if (!entry) return false;
+    const desired = redo ? entry.after : entry.before, previous = redo ? entry.before : entry.after;
+    localHistoryBusy = true;
+    try {
+      if (desired) await window.apiPost('/annotations/restore', { ...desired,
+        ...(previous ? { expected_modified: previous.modified || previous.created } : { expected_absent: true }) });
+      else await window.apiDelete('/annotations/' + encodeURIComponent(previous.id)
+        + '?expected_modified=' + encodeURIComponent(previous.modified || previous.created || ''));
+      from.pop(); to.push(entry);
+      await SceneEngine().rebuild();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      return true;
+    } catch (error) { SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした'); return false; }
+    finally { localHistoryBusy = false; }
+  }
+  document.addEventListener('keydown', event => {
+    if (window.parent !== window || !(event.ctrlKey || event.metaKey) || event.altKey
+      || event.target.closest?.('input,textarea,[contenteditable=true]')) return;
+    const key = event.key.toLowerCase();
+    if (key !== 'z' && key !== 'y') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    void replayLocalHistory(key === 'y' || event.shiftKey);
+  }, true);
   window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result, history) {
+    if (ok && history && window.parent === window && !localHistoryBusy) {
+      localHistory.push(structuredClone(history)); localRedo.length = 0;
+    }
+    if (ok) window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     _postToParent({
       type: 'viewer-ann-save-result',
       ok: !!ok,
       action: action || '',
-      targetPath: _currentTargetPath(),
+      highlightRequestId: result?.highlightRequestId || '',
+      targetPath: history?.after?.target_path || history?.before?.target_path || _currentTargetPath(),
       pageIndex: _currentPageIndex(),
       annotationRevision: ok ? String(result?.annotationRevision || '') : '',
       invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
@@ -4028,11 +4551,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
   // viewer-scene.js の showGroup() からのコールバック（画像ロード・レイヤー入替後）。
   function resetPointerPath() { /* 新設計ではシーン単位でイベントを受けるため不要（互換のため残置） */ }
   function onSceneChanged() {
+    window.MeldexViewerScreenshotSource?.load?.();
     SceneEngine()?.rebuild?.().then(() => {
       // シーン再構築後（対象パス/ページが変わった可能性がある）、保持している最新スナップショットを
       // 現在の対象と照合し、一致する場合だけ再適用する（不一致データを別ファイルへ適用しない）。
       if (_lastSnapshot && _snapshotMatchesCurrentTarget(_lastSnapshot)) _applySnapshot(_lastSnapshot);
       _notifyParentStateChanged();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     });
   }
 
@@ -4054,7 +4579,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _snapshotMatchesCurrentTarget(msg) {
     if (!msg || !msg.targetPath) return true;
     const currentPath = _currentTargetPath();
-    if (!currentPath || msg.targetPath !== currentPath) return false;
+    if (!currentPath) return false;
+    const legacyPdfFile = Scene()?.isPdf?.() && !/#page=\d+$/i.test(msg.targetPath)
+      && currentPath.replace(/#page=\d+$/i, '') === msg.targetPath;
+    if (msg.targetPath !== currentPath && !legacyPdfFile) return false;
     if (msg.pageIndex != null && Scene()?.isPdf?.()) {
       return Number(msg.pageIndex) === _currentPageIndex();
     }
@@ -4141,6 +4669,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const autoMarkup = new URLSearchParams(location.search).get('markup') === '1';
   (Scene()?.ready || Promise.resolve()).then(() => {
     if (autoMarkup) toggle(true);
+    else if (!SceneEngine()?.getScenes?.().length) onSceneChanged();
   });
 
   window.MeldexViewerAnnotations = {
@@ -4149,6 +4678,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     setAvailability,
     toggleFromShortcut, isActive, isDrawing,
     resetPointerPath, onSceneChanged,
+    canUndo: () => !localHistoryBusy && localHistory.length > 0,
+    canRedo: () => !localHistoryBusy && localRedo.length > 0,
   };
 })();
 
@@ -4396,6 +4927,27 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
 ;
 
+/* === viewer-screenshot-source.js === */
+;
+/* A PNG opened in the viewer can return to the recorded source position. */
+(function(){
+  'use strict';
+  let path='',link=null,sequence=0;
+  function load(){
+    if(parent===window||!parent.GBPanelScreenshot)return;
+    const current=window.MeldexViewerScene?.currentPath?.()||'';
+    if(current===path)return;
+    path=current;link=null;const token=++sequence;
+    if(!/\.png$/i.test(current))return;
+    window.apiFetch('/annotation/screenshot-source?path='+encodeURIComponent(current))
+      .then(value=>{if(token===sequence)link=value.source_link||null;}).catch(()=>{});
+  }
+  window.MeldexViewerScreenshotSource={load,menuItems:()=>link?[{label:'撮影元の位置へ移動',icon:'externalLink',action:()=>parent.GBPanelScreenshot.openSourceLink(link)}]:[]};
+  (window.MeldexViewerScene?.ready||Promise.resolve()).then(load);
+})();
+
+;
+
 /* === viewer-context-menu.js === */
 ;
 /* viewer-context-menu.js — 共通MeldexContextMenuUIを使うビューワー右クリック/長押しメニュー。 */
@@ -4420,6 +4972,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function items() {
     const scene = Scene();
     return [
+      ...(window.MeldexViewerScreenshotSource?.menuItems?.() || []),
       ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
       { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
@@ -4464,6 +5017,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       ] },
       ...(annotationsAvailable() ? [
         sep(),
+        ...(window.MeldexViewerHighlights?.menuItems() || []),
         { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
         ...(annotationVersionsAvailable() ? [
           { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
@@ -4476,7 +5030,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     ];
   }
 
-  function openMenuAt(clientX, clientY) {
+  async function openMenuAt(clientX, clientY) {
+    if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && window.MeldexViewerTextLayer?.getSelection()) {
+      try {
+        await window.MeldexViewerHighlights.ensureNative();
+      } catch(error) { window.showStatus?.('ハイライトを読み込めませんでした: '+error.message,true); return; }
+    }
     window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
   }
 
@@ -4485,12 +5044,18 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const mainMenuButton = document.getElementById('btn-viewer-main-menu');
   if (mainMenuButton) {
     let closedByButtonPress = false;
-    mainMenuButton.addEventListener('pointerdown', () => {
-      closedByButtonPress = !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
-    });
+    // 共通メニューはdocumentのcaptureで外側クリックを閉じる。その前に
+    // 押す直前の状態を記録し、閉じた直後にclickで再び開くことを防ぐ。
+    window.addEventListener('pointerdown', event => {
+      closedByButtonPress = mainMenuButton.contains(event.target)
+        && !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
+    }, true);
     mainMenuButton.addEventListener('click', event => {
       event.stopPropagation();
-      if (closedByButtonPress) { closedByButtonPress = false; return; }
+      const closePressed = (event.detail > 0 && closedByButtonPress)
+        || (!!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true');
+      closedByButtonPress = false;
+      if (closePressed) { window.MeldexContextMenuUI?.close?.(); return; }
       if (!window.MeldexContextMenuUI?.openAt) return;
       mainMenuButton.setAttribute('aria-expanded', 'true');
       window.MeldexContextMenuUI.openAt({

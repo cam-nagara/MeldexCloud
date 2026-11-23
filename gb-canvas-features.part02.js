@@ -1162,6 +1162,7 @@ function _bdApplyLineStyleFromMenu(connIds, styleId) {
     const target = typeof bdGetConnectionById === 'function' ? bdGetConnectionById(connId) : bd.connections.find(conn => conn.id === connId);
     if (!target) return;
     target.styleRef = styleId || '';
+    target._userLineStyle = true;
   });
   bdDrawConns({ connIds: ids, reason: 'line-style-menu' });
   bdDirty();
@@ -1202,6 +1203,12 @@ function bdConnContextMenu(e, conn) {
   item('反転 (from / to 入替)', () => {
     bdPushUndo();
     const tmp = conn.from; conn.from = conn.to; conn.to = tmp;
+    for (const suffix of ['Endpoint', 'TopicRef']) {
+      const from = conn['from' + suffix];
+      const to = conn['to' + suffix];
+      if (to !== undefined) conn['from' + suffix] = to; else delete conn['from' + suffix];
+      if (from !== undefined) conn['to' + suffix] = from; else delete conn['to' + suffix];
+    }
     const tmpFromPoint = conn.fromPoint;
     const tmpToPoint = conn.toPoint;
     if (tmpToPoint !== undefined) conn.fromPoint = tmpToPoint; else delete conn.fromPoint;
@@ -1219,7 +1226,7 @@ function bdConnContextMenu(e, conn) {
   });
   item('複製', () => {
     bdPushUndo();
-    const duplicated = { ...conn };
+    const duplicated = JSON.parse(JSON.stringify(conn));
     duplicated.id = typeof bdId === 'function' ? bdId() : ('conn-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
     // ラベル重複を避けるため clone に「 (コピー)」を付けない。from/to が同じなので別配線として識別できる。
     bd.connections.push(duplicated);
@@ -1302,8 +1309,16 @@ function bdConnContextMenu(e, conn) {
   if (hasOverride) {
     item('形状を既定にリセット', () => {
       bdPushUndo();
+      conn._userLineStyle = true;
       delete conn.fromAnchor;
       delete conn.toAnchor;
+      for (const side of ['from', 'to']) {
+        const endpoint = conn[side + 'Endpoint'];
+        if (endpoint) {
+          delete endpoint.outlinePosition;
+          delete endpoint.legacyAnchor;
+        }
+      }
       delete conn.controlPoints;
       delete conn.branchRatio;
       delete conn.cornerRadius;

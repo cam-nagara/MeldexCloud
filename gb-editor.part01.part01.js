@@ -499,6 +499,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
     return { outcome: 'unchanged' };
   }
   const _prevSavedForDiff = prevSaved;
+  const pendingHistory = !skipHistory && window.MeldexNoteHistory?.reserveSavedEdit?.(currentPath);
   window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
   try {
     // フォールバック: window.MeldexNoteSaveAdapter が読み込まれていない環境
@@ -528,7 +529,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(_prevSavedForDiff, md)
         : '内容を更新';
-      window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, _prevSavedForDiff, md, detail);
+      const record = () => window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, _prevSavedForDiff, md, detail);
+      if (pendingHistory) pendingHistory.capture(record); else record();
     }
     return { outcome: 'saved' };
   } catch (error) {
@@ -536,6 +538,8 @@ async function _runNoteAutoSave(pc, expectedPath) {
       showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
     }
     return { outcome: 'failed' };
+  } finally {
+    pendingHistory?.cancel();
   }
 }
 
@@ -1134,6 +1138,12 @@ async function openPage(label, path, opts) {
   // 無関係のはずの読込が「追い越された」と誤判定され中断してしまう）。
   const isStalePageLoad = () => isStaleInvocation() || pc.dataset.path !== path;
   pc.dataset.path = path;
+  // 入力の最初の一文字まで表示ロック取得を遅らせない。読込・描画と
+  // 並行して確認し、通常の編集可能状態になる前に同じガードのcacheを用意する。
+  const initialViewLockInfo = !openOpts.skipGlobalUi && typeof _getActiveViewLockInfo === 'function'
+    ? _getActiveViewLockInfo() : null;
+  const viewLockReady = initialViewLockInfo?.viewKey
+    ? window.ViewLock?.get?.(initialViewLockInfo.viewKey) : null;
   // バージョン管理タブの追従同期。_getCurrentVersionTarget() は state.view==='page' の時
   // #page-content の dataset.path を見るため、navPush() 呼び出し時点（この直前）ではまだ
   // 古いパスのままで間に合わない。dataset.path を確定させたこの時点で同期する。
@@ -1207,6 +1217,15 @@ async function openPage(label, path, opts) {
     _loadPageIcon();
     if (!openOpts.skipGlobalUi && typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
+    await viewLockReady;
+    if (isStalePageLoad()) return;
+    // 描画の間に選択中の面が確定した場合も、入力時と同じview_keyを準備する。
+    const readyViewLockInfo = !openOpts.skipGlobalUi && typeof _getActiveViewLockInfo === 'function'
+      ? _getActiveViewLockInfo() : null;
+    if (readyViewLockInfo?.viewKey && readyViewLockInfo.viewKey !== initialViewLockInfo?.viewKey) {
+      await window.ViewLock?.get?.(readyViewLockInfo.viewKey);
+      if (isStalePageLoad()) return;
+    }
     delete pc.dataset.loadPending;
     pageLoadSucceeded = true;
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
@@ -1259,6 +1278,7 @@ async function openPage(label, path, opts) {
       return;
     }
     const prevMd = this.dataset.lastSavedMd || '';
+    const pendingHistory = window.MeldexNoteHistory?.reserveSavedEdit?.(currentPath);
     try {
       // 工程1項目3・5: 直接apiPutを呼ばず、保存コーディネーターへ
       // reason:'blur' とフォーカス移動先（relatedTarget）を渡す。進行中の
@@ -1289,13 +1309,16 @@ async function openPage(label, path, opts) {
         const detail = typeof summarizeHistoryTextChange === 'function'
           ? summarizeHistoryTextChange(prevMd, md)
           : '内容を更新';
-        window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, prevMd, md, detail);
+        const record = () => window.MeldexNoteHistory?.recordSavedEdit?.(currentPath, prevMd, md, detail);
+        if (pendingHistory) pendingHistory.capture(record); else record();
       }
       // DOM再構築はしない（ラウンドトリップで改行消失を防止）
     } catch (saveError) {
       if (!_handleNoteSaveFailure(saveError, currentPath, md, this)) {
         showStatus('ノートの保存に失敗しました。ネットワークを確認してください', true);
       }
+    } finally {
+      pendingHistory?.cancel();
     }
   };
 

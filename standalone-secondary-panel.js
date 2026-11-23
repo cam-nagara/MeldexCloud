@@ -16,7 +16,12 @@
   }
 
   function saveValue(key, value) {
-    try { localStorage.setItem(key, String(value)); } catch { /* 保存できない環境では画面中だけ維持。 */ }
+    try { localStorage.setItem(key, String(value)); return true; }
+    catch {
+      // 操作中の配置は保って使えるようにし、保存できなかったことは黙って隠さない。
+      root.MeldexViewerScene?.flashStatus?.('オプションの表示設定を保存できませんでした。もう一度操作してください', 5000);
+      return false;
+    }
   }
 
   function readBool(key, fallback = false) {
@@ -192,6 +197,7 @@
         const button = bar.querySelector(`[data-secondary-tab="${tab.id}"]`);
         button?.classList.toggle('gb-inner-tab-active', active);
         button?.setAttribute('aria-selected', active ? 'true' : 'false');
+        if (button) button.tabIndex = active ? 0 : -1;
         const host = panels.get(tab.id);
         if (host) host.hidden = !active;
       });
@@ -212,6 +218,17 @@
       button.setAttribute('aria-selected', 'false');
       button.textContent = tab.label;
       button.addEventListener('click', () => activate(tab.id));
+      button.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const index = tabs.indexOf(tab);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+          : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+          : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
+        if (next < 0) return;
+        event.preventDefault(); event.stopPropagation();
+        activate(tabs[next].id);
+        bar.querySelector(`[data-secondary-tab="${tabs[next].id}"]`)?.focus({ preventScroll: true });
+      });
       bar.appendChild(button);
       const host = document.createElement('div');
       host.className = 'sa-secondary-tabpanel';
@@ -343,7 +360,13 @@
         onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
       },
       { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
+      { id: 'annotations', label: 'アノテート', onActivate: host => root.MeldexViewerHighlights?.renderCards(host) },
     ]);
+    const refreshAnnotations = () => {
+      const host=tabs.panels.get('annotations');
+      if(host&&!host.hidden&&shell.panel.classList.contains('is-open'))root.MeldexViewerHighlights?.renderCards(host);
+    };
+    root.addEventListener('meldex-viewer-annotations-changed',refreshAnnotations);
     // 表示中のファイルが変わったら「プロパティ」タブを追従させる
     if (infoSource) {
       new MutationObserver(() => {

@@ -383,7 +383,15 @@
       return false;
     }
     await _ensureOutlinerLoadedIfEmpty();
-    const expandedNode = await _expandTreeToPath(path);
+    let expandedNode = await _expandTreeToPath(path);
+    if (!expandedNode && typeof refreshOutliner === 'function') {
+      // 新規作成や改名の直後は、表示中の枝がまだ古い場合がある。
+      // 同じ古い枝を待ち続ける前に、一度だけ現在の一覧を取得する。
+      try {
+        await refreshOutliner({ reason: 'reveal-missing-target' });
+        expandedNode = await _expandTreeToPath(path);
+      } catch (_) {}
+    }
     if (expandedNode && _selectTreeNode(expandedNode, { preserveFocus: true })) {
       if (activeSnapshot?.paneId && typeof GBLayout !== 'undefined' && GBLayout.activePane !== activeSnapshot.paneId) {
         _restoreActivePane(activeSnapshot);

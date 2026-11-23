@@ -3,12 +3,15 @@
   'use strict';
 
   const CACHE = new Map();
+  // 読み取りでは進めない。連続する自分の編集・履歴復元だけが版を引き継ぐ。
+  const historyRevisions = new Map();
   let capabilities = null;
   let proposals = [];
   let selectedId = '';
   let loading = null;
   let contextKey = '';
   let contextGeneration = 0;
+  let mutationGeneration = 0;
   let listIncludesArchived = false;
   let loadingIncludesArchived = false;
   let listLoaded = false;
@@ -38,8 +41,9 @@
     if (key !== contextKey) {
       contextKey = key;
       contextGeneration++;
+      mutationGeneration++;
       capabilities = null; proposals = []; selectedId = ''; loading = null;
-      listIncludesArchived = false; listLoaded = false; CACHE.clear();
+      listIncludesArchived = false; listLoaded = false; CACHE.clear(); historyRevisions.clear();
     }
     return contextGeneration;
   }
@@ -89,7 +93,11 @@
     if (!proposal?.id) return proposal;
     CACHE.set(String(proposal.id), proposal);
     const index = proposals.findIndex(item => item.id === proposal.id);
-    if (index >= 0) proposals[index] = proposal;
+    const hidden = ['allocation-pending', 'cancelled'].includes(proposal.status)
+      || (!listIncludesArchived && ['archived', 'adopted', 'rejected'].includes(proposal.status));
+    if (hidden) {
+      if (index >= 0) proposals.splice(index, 1);
+    } else if (index >= 0) proposals[index] = proposal;
     else proposals.unshift(proposal);
     return proposal;
   }
@@ -164,11 +172,14 @@
       const sameFilter = loadingIncludesArchived === includeArchived;
       const result = await loading;
       assertContext(generation);
-      if (sameFilter) return result.slice();
+      if (sameFilter && result !== null) return result.slice();
       return list(force, includeArchived);
     }
+    const startedMutation = mutationGeneration;
     const pending = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
       .then(result => {
+        // 取得開始後の保存・取り消しを、古い一覧で巻き戻さない。
+        if (startedMutation !== mutationGeneration) return null;
         CACHE.clear();
         proposals = Array.isArray(result?.proposals) ? result.proposals.slice() : [];
         listIncludesArchived = includeArchived;
@@ -183,7 +194,9 @@
       }).finally(() => { if (loading === pending) loading = null; });
     loading = pending;
     loadingIncludesArchived = includeArchived;
-    return pending;
+    const result = await pending;
+    assertContext(generation);
+    return result === null ? list(true, includeArchived) : result;
   }
 
   async function get(id, force = false) {
@@ -209,59 +222,100 @@
     return proposal;
   }
 
-  async function createAllocation(body) {
+  async function createAllocation(body, history = null) {
+    const generation = syncContext();
     const result = await request('/scheduler/allocation/preview', {
       method: 'POST', body: { allowEstimateCompression: false, ...(body || {}) },
     });
     if (result?.cancelled) return result;
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('create');
     return result;
   }
 
-  async function patch(id, values) {
+  async function patch(id, values, history = null) {
     const generation = syncContext();
     const current = await get(id);
     assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
       method: 'PATCH', body: { patch: values, expectedRevision: current.storageRevision },
     });
+    mutationGeneration++;
+    historyRevisions.set(String(id), result.proposal.storageRevision);
     remember(result.proposal);
     emit('patch');
+    recordPatchHistory(id, current, result.proposal, values, history, generation);
     return result.proposal;
   }
 
-  async function archive(id) {
-    const generation = syncContext();
-    const current = await get(id);
-    assertContext(generation);
-    const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}${query({
-      current_user: user(), root_path: rootPath(), expected_revision: current.storageRevision,
-    })}`, { method: 'DELETE' });
+  function recordPatchHistory(id, current, updated, values, history, generation) {
+    historyRevisions.set(String(id), updated.storageRevision);
+    if (history && typeof historyPush === 'function') {
+      // 履歴が保存した版に対してだけ戻す。他人の変更を読み直して上書きしない。
+      const before = {}, after = {};
+      for (const key of Object.keys(values)) {
+        if (key === 'name' || key === 'status') {
+          before[key] = String(current[key] || ''); after[key] = String(updated[key] || '');
+        } else if (key === 'fixedPlacements') {
+          const keys = new Set([...Object.keys(current.fixedPlacements || {}), ...Object.keys(values.fixedPlacements || {})]);
+          before[key] = Object.fromEntries([...keys].map(k => [k, !!current.fixedPlacements?.[k]]));
+          after[key] = Object.fromEntries([...keys].map(k => [k, !!updated.fixedPlacements?.[k]]));
+        }
+      }
+      if (Object.keys(before).length && Object.keys(before).length === Object.keys(values).length) {
+        const restore = async payload => {
+          assertContext(generation);
+          const restored = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
+            method: 'PATCH', body: { patch: payload, expectedRevision: historyRevisions.get(String(id)) },
+          });
+          mutationGeneration++;
+          historyRevisions.set(String(id), restored.proposal.storageRevision);
+          remember(restored.proposal);
+          if (payload.status === 'archived') {
+            proposals = proposals.filter(item => item.id !== id);
+            if (selectedId === id) await select(proposals[0]?.id || '');
+          } else if (payload.status === 'active') await select(id);
+          emit('history');
+        };
+        historyPush(history.label || '案を編集', () => restore(before), () => restore(after), history.scope || '');
+      }
+    }
+  }
+
+  async function archive(id, history = null) {
+    const proposal = await patch(id, { status: 'archived' }, history);
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);
     if (selectedId === id) await select(proposals[0]?.id || '');
     emit('archive');
-    return result.proposal;
+    return proposal;
   }
 
-  async function branch(id, name) {
+  async function branch(id, name, history = null) {
+    const generation = syncContext();
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/branch`, {
       method: 'POST', body: { name: name || '' },
     });
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('branch');
     return result.proposal;
   }
 
-  async function recalculate(id, overrides = {}) {
+  async function recalculate(id, overrides = {}, history = null) {
+    const generation = syncContext();
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/recalculate`, {
       method: 'POST', body: { overrides }, timeoutMs: 300000,
     });
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('recalculate');
     return result.proposal;
   }
@@ -280,7 +334,10 @@
     if (!key) throw new Error('固定する配置を特定できませんでした');
     const fixedPlacements = { ...(current.fixedPlacements || {}) };
     fixedPlacements[key] = !!fixed;
-    return patch(id, { fixedPlacements });
+    return patch(id, { fixedPlacements }, {
+      label: fixed ? '配置を固定' : '配置の固定を解除',
+      scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+    });
   }
 
   async function listBaselines() {
@@ -301,6 +358,7 @@
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/adoption/apply`, {
       method: 'POST', timeoutMs: 300000,
     });
+    mutationGeneration++;
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);
     if (selectedId === id) await select(proposals[0]?.id || '');

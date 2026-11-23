@@ -39,7 +39,26 @@ function bdClampZoom(value) {
 }
 
 // --- ID生成・親子ヘルパー ---
-function bdId() { return 'b' + (++bd._id) + '_' + Date.now().toString(36); }
+// 読込済みIDに含まれる日時・UUIDの数字を連結すると整数の精度上限を超える。
+// 端末内の連番は読込やUndoで巻き戻さず、同じ時刻に複数枚作っても重複させない。
+let _bdGeneratedIdSequence = 0n;
+function bdId() {
+  const seed = Number.isSafeInteger(bd._id) && bd._id >= 0 ? BigInt(bd._id) : 0n;
+  _bdGeneratedIdSequence = (seed > _bdGeneratedIdSequence ? seed : _bdGeneratedIdSequence) + 1n;
+  bd._id = _bdGeneratedIdSequence <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(_bdGeneratedIdSequence) : 0;
+  return 'b' + _bdGeneratedIdSequence.toString() + '_' + Date.now().toString(36);
+}
+function bdResetIdCounter() {
+  let maximum = 0;
+  for (const items of [bd.nodes, bd.connections, bd.groups]) {
+    for (const item of items || []) {
+      const match = /^b(\d+)_/.exec(String(item?.id || ''));
+      const value = match ? Number(match[1]) : 0;
+      if (Number.isSafeInteger(value) && value > maximum) maximum = value;
+    }
+  }
+  bd._id = maximum;
+}
 function bdNode(text, x, y, w, h, opts) {
   // opts.id が明示的に undefined/空で渡された場合（例: フロントマターの ids: に
   // 該当エントリが無い見出しノード）、`...opts` の展開が `id: bdId()` を
@@ -911,6 +930,7 @@ function bdParseMd(raw) {
         const ptm = cl.match(/pathType:\s*([^\s,}]+)/); if(ptm) c.pathType = ptm[1];
         const wm = cl.match(/width:\s*([\d.]+)/); if(wm) c.width = +wm[1];
         const srm = cl.match(/styleRef:\s*([^\s,}]+)/); if(srm) c.styleRef = srm[1];
+        if (/_userLineStyle:\s*true\b/.test(cl)) c._userLineStyle = true;
         const semm = cl.match(/semanticId:\s*([^\s,}]+)/); if(semm) c.semanticId = semm[1];
         const ltc = cl.match(/labelTextColor:\s*"((?:[^"\\]|\\.)*)"/); if(ltc) c.labelTextColor = ltc[1];
         const lbc = cl.match(/labelBgColor:\s*"((?:[^"\\]|\\.)*)"/); if(lbc) c.labelBgColor = lbc[1];
@@ -1050,6 +1070,7 @@ function bdParseMd(raw) {
           to: c.to ? (jIdMap[c.to] || c.to) : '',
           label: c.label || '',
           styleRef: c.styleRef || '',
+          ...(c._userLineStyle ? { _userLineStyle: true } : {}),
           width: c.width,
           pathType: c.pathType || (c.straight ? 'straight' : ''),
         };
@@ -1123,7 +1144,9 @@ function bdParseMd(raw) {
       const heading = hm[1] || '';
       const isImg = heading.startsWith('[img]');
       const text = isImg ? '' : heading.replace(/^\\(\[img\])/, '$1');
-      cur = bdNode(text, pos.x, pos.y, sz.w||160, sz.h||0, { id: nodeIds[nid] || undefined, img: isImg ? heading.replace('[img]','').trim() : '', parent: '', structure: '' });
+      // IDをまだ保存していない見出しも、移行側と同じ文書内IDで対応付ける。
+      // 開くたびに乱数IDにすると共通トピックと別のカードになり、二重に表示される。
+      cur = bdNode(text, pos.x, pos.y, sz.w||160, sz.h||0, { id: nodeIds[nid] || nid, img: isImg ? heading.replace('[img]','').trim() : '', parent: '', structure: '' });
       cur._nid = nid;
     } else if (cur) {
       if (!line.trim()) continue;

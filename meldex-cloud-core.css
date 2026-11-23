@@ -513,7 +513,7 @@ input[type=number] { -moz-appearance: textfield; }
   --a11y-warning-border: #f59f00;
 }
 
-:focus-visible:not(td.active-cell):not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input) {
+:focus-visible:not(td.active-cell):not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input):not(.gb-map-places .gb-btn) {
   outline: 2px solid var(--a11y-focus-ring) !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 3px var(--a11y-focus-shadow) !important;
@@ -1542,6 +1542,17 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   color: var(--ui-button-hover-fg, var(--fg));
   border-color: var(--ui-button-hover-border, var(--border));
   outline: none;
+}
+/* Keep the keyboard frame inside the action: the next bubble can cover an outer ring. */
+#chat-messages {
+  scroll-padding-block: var(--ui-space-4, 8px);
+}
+#chat-messages :is(button, a[href], [tabindex]) {
+  scroll-margin-block: var(--ui-space-4, 8px);
+}
+#chat-messages button:focus-visible {
+  outline-offset: -2px !important;
+  box-shadow: none !important;
 }
 /* Message editing uses shared control colors without changing bubble geometry. */
 .chat-message-edit-cancel,
@@ -2592,10 +2603,10 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   flex-shrink: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 8px;
-  border-right: 1px solid var(--border);
-  background: var(--bg2);
-  font-size: 12px;
+  padding: var(--ui-outline-padding, 8px);
+  border-right: 1px solid var(--ui-outline-border, var(--border));
+  background: var(--ui-outline-bg, var(--bg2));
+  font-size: var(--ui-outline-font-size, 12px);
 }
 
 :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {
@@ -3704,6 +3715,12 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
 }
 .gb-subwindow-mode .gb-subwindow-hidden { display: none !important; }
 
+@media (max-width: 640px) {
+  /* 固定レールは1パネル1タブ。外枠の見出しと同じ名前を二重に出さない。 */
+  .gb-dock-popup-body > .gb-pane[data-meldex-role="right-sidebar"] > .gb-mobile-tab-dropdown { display: none !important; }
+  .gb-dock-popup-close { width: 44px; height: 44px; flex: 0 0 44px; font-size: 20px; }
+}
+
 
 /* 固定レール共通シェル: 上端固定 / 中央のみスクロール / 下端固定 */
 .gb-dock-bar-fixed {
@@ -3816,6 +3833,7 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
   box-sizing: border-box;
 }
 .annotation-fab[hidden] { display: none !important; }
+body[data-panel-screenshot-selecting] [data-annotation-selected="true"]::after { display: none; }
 
 /* タイムラインビュー専用の上書き */
 
@@ -8735,7 +8753,7 @@ html[data-single-window="1"] .left-chrome-floating {
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet-closing {
     transform: translateY(calc(100% + 24px)) !important;
-    transition: transform 0.18s ease-in;
+    transition: transform 0.1s ease-in;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.gb-mobile-dialog-sheet-open {
@@ -11913,6 +11931,10 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   padding: 6px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
 }
 .rp-ann-preview-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.rp-ann-preview-head > span:first-child { flex-wrap: wrap; }
+.rp-ann-preview-head .rp-ann-preview-meta { flex-basis: 100%; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+.rp-ann-preview-card:focus-visible { outline: 2px solid var(--annotation-accent); outline-offset: -2px; }
+.rp-ann-preview-card:has(:focus-visible):not(:focus-visible) { outline: none; }
 .rp-ann-preview-body { padding: 8px; }
 .rp-ann-preview-meta {
   padding: 0 8px 7px; color: var(--annotation-muted-fg); font-size: 10px;
@@ -15537,6 +15559,11 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
    カレンダーコンポーネント (.gb-cal-*)
    Phase C: calendar.html → gb-tool-calendar.js
    ============================== */
+:root {
+  /* 小さな白いシフト文字に4.5:1以上の差を確保。明示した個別テーマ色は優先される。 */
+  --cal-shift-work-bg: #99602d;
+  --cal-shift-break-bg: #386d9e;
+}
 .gb-cal-root {
   display: flex; flex-direction: column; flex: 1; overflow: hidden; font-size: 13px;
   background: var(--cal-bg, var(--bg)); color: var(--cal-fg, var(--fg));
@@ -15571,6 +15598,10 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--cal-control-bg, var(--ui-bg-control)); color: var(--cal-control-fg, var(--cal-toolbar-fg, var(--ui-toolbar-fg))); border-color: var(--cal-control-border, var(--ui-border)); }
 /* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準に統一。中央揃えだけカレンダー固有として保持 */
 .gb-cal-title { font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); min-width: 0; text-align: center; color: var(--cal-toolbar-fg, var(--ui-toolbar-fg)); }
+@media (min-width: 701px) {
+  /* 現在の表示範囲は省略せず、周囲の操作を共通のあふれメニューへ退避する。 */
+  .gb-toolbar-cal.gb-toolbar-overflow-host > .gb-cal-title { flex: 0 0 auto; min-width: max-content; }
+}
 @media (pointer: coarse), (max-width: 640px) {
   .gb-toolbar-cal .tb-icon-btn {
     width: var(--ui-h-touch, 44px);
@@ -16816,6 +16847,28 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   }
 }
 
+/* 狭幅では予定名を優先し、補助情報は選択後の詳細で示す。 */
+@media (max-width: 640px) {
+  .gb-cal-day-event > .gb-cal-event-source-icon,
+  .gb-cal-week-event > .gb-cal-event-source-icon,
+  .gb-cal-day-event > .gb-cal-event-avatars,
+  .gb-cal-week-event > .gb-cal-event-avatars { display: none; }
+  .gb-cal-day-event,
+  .gb-cal-week-event { padding-left: 3px; padding-right: 3px; }
+  .gb-cal-event-source-icon + .gb-cal-event-title { display: block; max-width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .gb-cal-timed-view { --cal-event-create-gap: 4px; }
+  .gb-cal-day-event:not(.gb-cal-event-selected) > .gb-cal-event-more,
+  .gb-cal-week-event:not(.gb-cal-event-selected) > .gb-cal-event-more { display: none; }
+}
+
+@media (max-width: 640px) {
+  /* 週の各日を複数日ビューと同じ96px以上にし、予定名を残す。全体でなく時間軸内だけをスクロールする。 */
+  .gb-cal-timed-view:has(> .gb-cal-week:not(.gb-cal-day-grid):not(.gb-cal-multi-day-grid)) > :is(.gb-cal-week, .gb-cal-all-day-strip) { min-width: 732px; }
+}
+
 
 /* ==============================
    キャンバスコンポーネント (.bd-*)
@@ -17511,6 +17564,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .bd-frame-label { position: absolute; top: -18px; left: 8px; font-size: 11px; color: var(--bd-group-color, var(--accent)); font-weight: bold; pointer-events: auto; cursor: default; padding: 0 4px; border-radius: 2px; }
 .bd-frame-label:hover { background: var(--bg3); }
 .bd-frame-label[contenteditable="true"] { outline: none; cursor: text; color: var(--fg); }
+.bd-frame.bd-group-collapsed { padding: 0 !important; box-sizing: border-box; }
+.bd-group-collapsed > .bd-frame-label { top: 2px; max-width: calc(100% - 16px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bd-conn-action-btn { position: absolute; transform: translate(-50%, -50%); min-width: var(--ui-h-sm, 28px); height: var(--ui-h-xs, 22px); display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg2) 96%, transparent); border: 1px solid var(--border); border-radius: var(--ui-radius-pill, 999px); cursor: pointer; font-size: var(--ui-font-12, 12px); color: var(--fg); z-index: 10; padding: 0 var(--ui-space-4, 8px); line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
 .bd-conn-label { position: absolute; transform: translate(-50%, -50%); transform-origin: center center; font-size: 11px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); color: var(--fg2); background: color-mix(in srgb, var(--bg) 92%, transparent); padding: 1px 6px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap; cursor: default; pointer-events: auto; z-index: 4; }
 .bd-conn-label:hover { border-color: var(--border); }
@@ -18547,6 +18602,11 @@ button.gb-context-menu-item {
 }
 
 /* ノート表: 選択セルの周囲に出す行/列追加コントロール */
+:is(#page-content, #entity-freetext, #dp-editable, #board-note-editable,
+    [data-editor-local-id="page-content"], [data-editor-local-id="entity-freetext"],
+    [data-editor-local-id="dp-editable"], [data-editor-local-id="board-note-editable"]) :is(td, th) {
+  scroll-margin: calc(var(--ui-h-xs, 22px) + 12px);
+}
 .note-table-cell-controls {
   position: fixed;
   inset: 0;
@@ -18555,6 +18615,7 @@ button.gb-context-menu-item {
 }
 .note-table-cell-frame {
   position: fixed;
+  z-index: 10022;
   border: var(--page-cell-edit-outline-width, 2px) solid var(--page-cell-edit-outline-color, var(--accent));
   border-radius: 2px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--page-cell-edit-outline-color, var(--accent)) 35%, transparent);
@@ -20930,6 +20991,31 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 #page-note-filter-btn.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent)}
 
 /* Schedule production task workspace */
+.gb-cal-mobile-range { display: none; }
+@media (max-width: 700px), (pointer: coarse) {
+  /* #rp-detail のPC用12px指定より優先し、電話の入力時の文字縮小・自動ズームを避ける。 */
+  body[data-cloud-mobile="1"] #rp-detail .gb-production-sidebar :is(input, select, textarea) {
+    font-size: max(16px, var(--ui-font-16, 16px)) !important;
+  }
+  body[data-cloud-mobile="1"] #rp-detail .gb-production-sidebar button {
+    font-size: max(14px, var(--ui-font-14, 14px)) !important;
+  }
+}
+@media (max-width: 700px) {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
+    .gb-cal-mobile-range:not([hidden]) {
+    display: block;
+    flex: 0 0 auto;
+    min-height: var(--ui-h-sm, 28px);
+    padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
+    box-sizing: border-box;
+    font-size: var(--ui-font-14, 14px);
+    font-weight: 600;
+    color: var(--cal-fg, var(--fg));
+    background: var(--cal-bg, var(--bg));
+  }
+}
+
 .gb-cal-toolbar-actions {
   display: flex;
   flex: 0 0 auto;
@@ -21213,6 +21299,11 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   resize: vertical;
 }
 
+/* 選択肢の標準280px幅でgridの自動列が広がり、矢印が狭いパネルの外へ出ないようにする。 */
+.gb-production-sidebar-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .gb-production-sidebar-actions,
 .gb-production-template-card-actions,
 .gb-production-dialog-actions {
@@ -21286,6 +21377,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-embed-host .gb-production-sheet-embed {
   flex: 1 1 auto;
+}
+
+/* 埋め込みシートと同じ領域を使う。内容幅のカードを左端へ寄せない。 */
+.gb-production-embed-host > .gb-production-empty-state {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .gb-production-task-empty-notice {
@@ -21443,6 +21541,9 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-list-switch.db-view-tabs {
   padding: var(--ui-view-tab-row-padding);
   gap: 2px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn {
@@ -21728,6 +21829,14 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   line-height: 1.6;
 }
 
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-empty-state > .gb-btn {
+    min-height: var(--ui-h-touch, 44px);
+    font-size: var(--ui-font-15, 15px);
+  }
+  .gb-production-empty-state p { font-size: var(--ui-font-14, 14px); }
+}
+
 /* 制作管理UX改善計画（2026-08-04）§6-2: タスク詳細サイドバーの読み取り専用表示（予定・目標時間） */
 .gb-production-sidebar-readonly-value {
   padding: 5px 7px;
@@ -21852,6 +21961,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-task-hierarchy label {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
 }
 
@@ -22359,11 +22469,12 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   table-layout: fixed;
 }
 
 .gb-production-all-flat-table thead th {
+  font-size: var(--ui-font-12, 12px);
   position: sticky;
   top: 0;
   z-index: 2;
@@ -22426,12 +22537,26 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   color: var(--cal-accent, var(--accent));
 }
 
-.gb-production-all-flat-select-col {
-  width: 32px;
+.gb-production-all-flat-table .gb-production-all-flat-select-col {
+  width: var(--production-select-column-width, 32px);
+  min-width: var(--production-select-column-width, 32px);
+  padding: 0;
+  text-align: center;
+}
+
+.gb-production-all-flat-table th,
+.gb-production-all-flat-table td {
+  font-size: var(--ui-font-12, 12px);
+  box-sizing: border-box;
 }
 
 .gb-production-all-flat-table td {
-  padding: 5px 8px;
+  height: var(--ui-row-height, 22px);
+  padding: 0 var(--ui-space-4, 8px);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-bottom: 1px solid var(--cal-grid-line, var(--border));
   vertical-align: middle;
 }
@@ -22444,13 +22569,24 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   background: var(--cal-cell-hover-bg, var(--ui-hover-bg, var(--bg3)));
 }
 
+.gb-production-all-flat-work-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2, 4px);
+  min-width: 0;
+}
+
 .gb-production-all-flat-work-text {
-  margin-right: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gb-production-all-flat-work-jump {
-  min-width: 22px;
-  min-height: 22px;
+  flex: 0 0 auto;
+  min-width: var(--ui-h-2xs, 18px);
+  min-height: var(--ui-h-2xs, 18px);
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -22468,10 +22604,17 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   background: var(--cal-control-bg, var(--bg));
 }
 
-.gb-production-all-flat-no-rows {
-  padding: 24px 10px;
-  text-align: center;
+.gb-production-all-flat-table td.gb-production-all-flat-no-rows {
+  padding: 24px 12px;
+  text-align: left;
+  overflow: visible;
   color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-all-flat-no-rows > span {
+  display: inline-block;
+  position: sticky;
+  left: 12px;
 }
 
 .gb-production-all-flat-load-more {
@@ -22512,6 +22655,18 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-all-flat-search,
   .gb-production-all-flat-filter { font-size: 14px; }
   .gb-production-all-flat-status { font-size: 12px; }
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-all-view { --production-select-column-width: var(--ui-h-touch, 44px); }
+  .gb-production-all-flat-table td,
+  .gb-production-all-flat-table th {
+    height: var(--ui-h-touch, 44px);
+  }
+  .gb-production-all-flat-work-jump {
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+  }
 }
 
 .gb-production-task-topic-resources {
@@ -22600,7 +22755,8 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   border-color: transparent;
 }
 
-@media (max-width: 640px), (pointer: coarse) {
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-task-topic-resources [data-e2e-id="gb-production-topic-retry"],
   .gb-production-topic-resource-open,
   .gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
   .gb-production-topic-resource-actions > button {
@@ -22876,9 +23032,10 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
 
 .gb-scheduler-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
 .gb-scheduler-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--ui-h-md, 32px); }
-.gb-scheduler-modal .gb-modal-body { display: flex; flex-direction: column; gap: 12px; }
+.gb-scheduler-modal .gb-modal-body { display: flex; flex-direction: column; gap: 12px; font-size: var(--ui-font-13, 13px); }
 .gb-scheduler-allocation-form { display: grid; gap: 12px; min-width: min(540px, 76vw); }
 .gb-scheduler-field { display: grid; gap: 5px; min-width: 0; }
+.gb-scheduler-allocation-form input[type="number"] { width: 96px; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .gb-scheduler-field-label { color: var(--fg2); font-size: 11px; font-weight: 600; }
 .gb-scheduler-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .gb-scheduler-scope-grid .gb-scheduler-field:last-child { grid-column: 1 / -1; }
@@ -22890,7 +23047,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
 .gb-scheduler-advanced[open] { display: grid; gap: 10px; }
 .gb-scheduler-progress { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; color: var(--fg2); }
 .gb-scheduler-progress.is-error,
-.gb-scheduler-current-summary.is-error { color: var(--danger, #d9485f); }
+.gb-scheduler-current-summary.is-error { color: var(--ui-danger, var(--red, #d9485f)); }
 .gb-scheduler-proposal-selector label { display: grid; gap: 4px; color: var(--fg2); font-size: 10px; }
 .gb-scheduler-proposal-selector select { min-width: 140px; max-width: 220px; }
 .gb-scheduler-proposal-selector.is-toolbar { display: flex; align-self: center; align-items: center; min-height: 32px; margin-inline: 4px; padding-block: 2px; overflow: visible; box-sizing: border-box; }
@@ -22966,8 +23123,21 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   .gb-scheduler-advanced summary,
   .gb-scheduler-advanced > .gb-check { min-height: var(--ui-h-touch, 44px); }
   .gb-scheduler-allocation-form { min-width: 0; }
+  .gb-scheduler-modal .gb-modal-body { font-size: var(--ui-font-15, 15px); }
+  .gb-scheduler-field-label,
+  .gb-scheduler-panel-status,
+  .gb-scheduler-current-summary,
+  .gb-scheduler-progress,
+  .gb-scheduler-progress.is-error,
+  .gb-scheduler-placement-card > span { font-size: var(--ui-font-14, 14px); }
+  .gb-scheduler-placement-card > strong { font-size: var(--ui-font-15, 15px); }
   .gb-scheduler-scope-grid { grid-template-columns: 1fr; }
   .gb-scheduler-scope-grid .gb-scheduler-field:last-child { grid-column: auto; }
+  .gb-scheduler-proposal-selector label { font-size: var(--ui-font-14, 14px); }
+  .gb-scheduler-proposal-selector select { min-height: var(--ui-h-touch, 44px); font-size: var(--ui-font-16, 16px); }
+  body[data-cloud-mobile="1"] #rp-detail .gb-scheduler-proposal-selector select {
+    font-size: max(16px, var(--ui-font-16, 16px)) !important;
+  }
   .gb-scheduler-proposal-selector.is-toolbar label { font-size: 0; }
   .gb-scheduler-proposal-selector.is-toolbar select { width: min(34vw, 150px); min-height: var(--ui-h-touch, 44px); font-size: var(--ui-font-12, 12px); }
   .gb-scheduler-proposal-actions { grid-template-columns: 1fr; }
@@ -22995,6 +23165,11 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
    Phase 1: UI Token
    ============================================================ */
 :root {
+  /* Document outlines: note TOC and viewer page list share the same surface. */
+  --ui-outline-padding: 8px;
+  --ui-outline-font-size: 12px;
+  --ui-outline-bg: var(--bg2);
+  --ui-outline-border: var(--border);
   /* 色 — 意味ベース別名（gb-theme.css の素の変数を直接参照しないための層） */
   --ui-bg-app: var(--bg);
   --ui-bg-panel: var(--bg2);
@@ -23492,7 +23667,7 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
 .gb-btn-primary {
   background: var(--ui-accent);
   border-color: var(--ui-accent);
-  color: var(--ui-fg-strong);
+  color: var(--ui-accent-fg, var(--ui-fg-strong));
 }
 .gb-btn-primary:hover { background: color-mix(in srgb, var(--ui-accent) 85%, #fff); }
 .gb-btn-primary:active { background: color-mix(in srgb, var(--ui-accent) 70%, #000); }
@@ -24661,6 +24836,11 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   padding: 0 var(--ui-space-7) 0 var(--ui-space-2);
   font-size: var(--ui-font-11);
   border-radius: var(--ui-radius-xs);
+}
+/* 保存・読込の失敗を、操作中の領域内へ残す共通本文。 */
+.gb-inline-error { margin: var(--ui-space-2, 8px) 0; min-width: 0; color: var(--ui-danger, var(--red, #d9485f)); font-size: var(--ui-font-13, 13px); line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-inline-error { font-size: var(--ui-font-14, 14px); }
 }
 
 
@@ -29028,7 +29208,10 @@ input[type="range"]::-moz-range-thumb {
 /* ============================================================
    ユーティリティ (狭い修飾)
    ============================================================ */
-.gb-visually-hidden {
+  .gb-inline-error{display:flex;flex-direction:column;align-items:flex-start;gap:var(--ui-space-3);padding:var(--ui-space-4);margin-block:var(--ui-space-4);border:1px solid var(--ui-danger);border-radius:var(--ui-radius-sm);color:var(--ui-fg-default);font-size:var(--ui-font-12);line-height:1.5;overflow-wrap:anywhere}
+  .gb-inline-error[hidden]{display:none}
+  @media(pointer:coarse){.gb-inline-error .gb-btn{min-width:var(--ui-h-touch,44px);min-height:var(--ui-h-touch,44px)}}
+  .gb-visually-hidden {
   position: absolute !important;
   width: 1px; height: 1px;
   padding: 0; margin: -1px;
@@ -30118,7 +30301,7 @@ input.gb-fmt-num { min-width: 64px; }
     min-width: 44px;
     min-height: 44px;
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb) {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb) {
     width: var(--ui-h-touch, 44px);
     height: var(--ui-h-touch, 44px);
     min-width: var(--ui-h-touch, 44px);
@@ -30126,7 +30309,7 @@ input.gb-fmt-num { min-width: 64px; }
     border: 0;
     background: transparent;
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::before {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb)::before {
     content: '';
     position: absolute;
     width: var(--ui-h-xs, 22px);
@@ -30137,11 +30320,11 @@ input.gb-fmt-num { min-width: 64px; }
     border-radius: var(--ui-radius-xs);
     background: var(--ui-bg-app);
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
     border-color: var(--ui-accent);
     background: var(--ui-accent);
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::after {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb)::after {
     z-index: 1;
   }
 
@@ -32279,6 +32462,9 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   flex: 0 1 200px;
   min-width: 64px;
 }
+.bd-depth-in-panel .bd-style-panel-picker .bd-style-picker-label {
+  flex: 0 0 auto;
+}
 .bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker.bd-depth-preset-picker .bd-style-picker-preview {
   flex: 0 1 120px;
   min-width: 48px;
@@ -32287,8 +32473,14 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
 .bd-depth-in-panel .bd-style-format-open {
   width: 100%;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.bd-depth-in-panel .bd-style-format-open > .bd-style-format-preview {
+  flex: 0 1 112px;
+  min-width: 48px;
 }
 .bd-depth-in-panel .bd-style-format-open > span:last-child {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 /* 区切りの列（1fr = minmax(auto,1fr)）が中身の最小幅で広がり、枠より数px はみ出していた。列を 0 まで縮められるようにする。 */
@@ -35607,7 +35799,7 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not([data-ui-component="search-filter-row"]),
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not(.chat-session-toolbar):not([data-ui-component="search-filter-row"]),
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar {
     display: none !important;
   }
@@ -35738,6 +35930,16 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
     background: var(--bg2, #252525);
     border-top: 1px solid var(--border, #333);
     box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.32);
+  }
+
+  /* サブのドロワー（10100）を操作する描画バーと、その一覧は対象面より手前へ出す。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-side-drawer-open="1"] .cloud-mobile-annotationbar,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-side-drawer-open="1"] .gb-dock-popup:has(#rp-annotation) {
+    z-index: 10110 !important;
+  }
+  body[data-cloud-mobile-side-drawer-open="1"]:has(.gb-dock-popup #rp-annotation) > .gb-context-menu,
+  body[data-cloud-mobile-side-drawer-open="1"]:has(.gb-dock-popup #rp-annotation) > .gb-search-filter-popup {
+    z-index: 10120 !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .cloud-mobile-editbar-row {
@@ -38453,6 +38655,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
 .gb-map-app{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;position:relative;background:var(--bg);color:var(--fg)}
 .gb-map-app [hidden]{display:none!important}.gb-map-toolbar,.gb-map-tools{display:flex;align-items:center;gap:5px;padding:6px 8px;flex-shrink:0;border-bottom:1px solid var(--border,#ddd);overflow:auto;white-space:nowrap}
+.gb-map-app .gb-map-pin.selected{outline:none;box-shadow:none;background:var(--ui-bg-control-active,var(--bg3));color:var(--ui-control-active-fg,var(--fg))!important;text-shadow:none}
+.gb-map-app .gb-map-pin.gb-map-active-feature{box-shadow:inset 0 0 0 var(--ui-active-frame-width,2px) var(--ui-active-frame-color,var(--ui-accent))}
 .gb-map-app .gb-btn{font-size:var(--ui-font-12, 12px);min-height:var(--ui-h-sm, 28px);white-space:nowrap}.gb-map-app .gb-btn[aria-pressed=true]{background:var(--accent,#387cae);color:var(--ui-accent-fg,#fff)}
 .gb-map-app button:focus-visible,.gb-map-app input:focus-visible,.gb-map-app select:focus-visible{outline:2px solid var(--accent,#387cae);outline-offset:2px}
 .gb-map-save-status{font-size:11px;color:var(--fg2);margin-left:auto;white-space:normal;max-width:380px;min-width:60px}.gb-map-save-status.error{color:var(--danger,#b44036)}
@@ -38497,12 +38701,13 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
 .gb-map-app>.gb-toolbar{flex-shrink:0;min-height:32px;box-sizing:border-box}
 .gb-map-app>.gb-toolbar-map.gb-toolbar-main{min-height:var(--ui-toolbar-main-height)}
-.gb-toolbar-map .gb-map-save-status{flex:0 0 auto;min-width:0;max-width:160px;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gb-toolbar-map .gb-map-save-status{flex:0 0 64px;width:64px;min-width:0;max-width:64px;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gb-map-app .gb-toolbar .tb-icon-btn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
 .gb-map-app .gb-toolbar .tb-icon-btn svg{width:16px;height:16px;flex-shrink:0}
 .gb-map-app .gb-toolbar .tb-range{padding:0;background:transparent;border:0;width:110px}
 .gb-map-app .gb-toolbar output{font-size:11px;min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
 .gb-map-app .gb-map-contextbar{gap:8px;min-height:28px;padding:2px 8px}
+.gb-map-app .gb-map-contextbar{position:absolute;top:calc(var(--ui-toolbar-main-height) + 8px);left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100% - 16px);box-sizing:border-box;z-index:802;background:var(--ui-toolbar-bg,var(--bg2));border:1px solid var(--ui-border-strong,var(--border));border-radius:var(--ui-radius-md,4px)}
 .gb-map-app .gb-map-contextbar .gb-select{max-width:160px;height:var(--ui-h-xs, 22px);font-size:var(--ui-font-12, 12px)}
 .gb-map-brush{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
 .gb-map-color-button{color:var(--map-color)!important}
@@ -38527,11 +38732,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
 .gb-map-app .gb-map-places .gb-btn,.gb-map-app .gb-map-layer>.gb-btn{border-color:transparent;background:transparent}
 .gb-map-app .gb-map-places .gb-btn:hover,.gb-map-app .gb-map-layer>.gb-btn:hover{background:var(--ui-hover-bg);color:var(--ui-hover-fg)}
 .gb-map-app .gb-map-places .gb-btn[aria-pressed=true],.gb-map-app .gb-map-layer>.gb-btn[aria-pressed=true]{background:var(--ui-control-active-bg,var(--ui-bg-control-active));color:var(--ui-control-active-fg,var(--ui-fg-default));border-color:var(--ui-accent)}
+.gb-map-app .gb-map-places .gb-btn[aria-pressed=true]{border-color:transparent}
+.gb-map-app .gb-map-places .gb-btn:focus-visible{outline:none;box-shadow:inset 0 0 0 var(--ui-active-frame-width,2px) var(--ui-active-frame-color,var(--ui-accent))}
+.gb-map-app:has(.gb-map-places .gb-btn:focus-visible) .gb-map-active-feature{box-shadow:none}
 .gb-map-app .gb-map-viewport,.gb-map-app .gb-map-surface{background:var(--bd-bg,var(--content-bg,var(--bg)))!important}
 .gb-map-empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;max-width:420px;width:calc(100% - 48px);color:var(--ui-fg-muted,var(--fg2));pointer-events:none;z-index:401;font-size:13px;line-height:1.5}
 .gb-map-empty strong{font-size:16px}.gb-map-empty p{margin:8px 0 12px}.gb-map-empty button{pointer-events:auto;margin:0 4px}
 .gb-map-generator.gb-map-modal-content{position:static;transform:none;width:auto;max-height:none;overflow:visible;border:0;box-shadow:none;padding:0;background:transparent;color:inherit}
 .gb-map-modal-content>h3{display:none}.gb-map-modal-content .gb-map-generator-preview{height:240px;position:relative}
+.gb-map-mobile-options #rp-detail{display:flex!important;flex-direction:column;min-height:0;width:100%}
+.gb-map-mobile-options .gb-modal-body{max-height:70dvh;overflow:auto}
 .gb-map-modal-content .gb-map-world-preview{height:320px}.gb-map-world-generator>p{line-height:1.5}.gb-map-world-generator>[role=status]{font-size:12px;color:var(--ui-fg-muted,var(--fg2))}
 .gb-map-modal-content[aria-label$="のプレビュー"]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
 .gb-map-modal-content[aria-label$="のプレビュー"]>:not(.gb-map-field){grid-column:1/-1}
@@ -38539,10 +38749,13 @@ svg.leaflet-image-layer.leaflet-interactive path {
 .gb-map-app .gb-map-zoom-control{display:none}.gb-map-app .gb-map-compass,.gb-map-app .gb-map-scale,.gb-map-app .leaflet-control-attribution{background:var(--ui-popup-bg,var(--bg));color:var(--ui-fg-default,var(--fg));box-shadow:var(--ui-shadow-sm)}
 .gb-map-app .gb-map-scale>div{border-color:currentColor}
 /* Local map editing remains available when a desktop window enters compact UI. */
-body[data-mobile-ui-local="1"][data-cloud-mobile-editing-ui="1"] #main-views .gb-map-app>.gb-toolbar:not([hidden]){display:flex!important}
+body:is([data-cloud-mode="dropbox"],[data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-map-app>.gb-toolbar:not([hidden]){display:flex!important}
+body:is([data-cloud-mode="dropbox"],[data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] .gb-map-app .gb-toolbar-option-panel-btn:not(.gb-tbo-hidden){display:inline-flex!important}
 
 .gb-form-app { display:flex; flex-direction:column; width:100%; height:100%; min-height:0; overflow:hidden; background:var(--bg); color:var(--text); }
 .gb-form-app-toolbar { flex-shrink:0; box-sizing:border-box; }
+/* フォームには代替のモバイル編集バーがないため、共通の操作と退避メニューを残す。 */
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-form-app > .gb-toolbar:not([hidden]) { display:flex !important; }
 .gb-form-app-toolbar label { display:flex; flex-wrap:nowrap; align-items:center; gap:8px; }
 .gb-form-app-toolbar .gb-form-source-sheet { padding:0; border:0; background:transparent; }
 .gb-form-app-toolbar .gb-form-source-sheet > .tb-select { height:var(--ui-h-xs); min-height:var(--ui-h-xs); }

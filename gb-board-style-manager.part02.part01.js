@@ -759,7 +759,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
         <div class="bd-detail-section-title">階層一覧を開く</div>
         <div class="bd-detail-style-row">
           <button type="button" class="bd-style-panel-picker" data-bd-depth-panel-picker="depth" data-bd-depth-current-index="${idx}" aria-label="階層一覧を開く" aria-haspopup="dialog" aria-expanded="false">
-            <span class="bd-style-picker-preview">${previewHtml}</span>
+            <span class="bd-style-picker-preview" aria-hidden="true">${previewHtml}</span>
             <span class="bd-style-picker-label">${esc(pickerLabelText)}</span>
             <span class="bd-style-picker-caret" aria-hidden="true">▾</span>
           </button>

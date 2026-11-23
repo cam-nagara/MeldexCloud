@@ -84,6 +84,10 @@
   let libraryController = null;
   let tagLoadPromise = null;
   let storageLocationEpoch = 0;
+  let sendLease = false;
+  let deliveryProgress = null;
+  let resolvedDeliveryTarget = null;
+  const PREPARATION_TIMEOUT_MS = 15000;
   const durableMemory = new Map();
   const failedLocalWrites = new Set();
 
@@ -170,6 +174,12 @@
       const path = String(target?.display_path || target?.quick_memo_folder || '').trim();
       if (!path) throw new Error('保存先を確認できませんでした');
       els.storageLocation.textContent = `保存先: ${cloud ? 'Dropbox / ' : ''}${path}`;
+      if (cloud) {
+        const folder = String(target.quick_memo_folder || '');
+        const location = window.MeldexStorageAdapter?.getProvider?.()?._dropboxLocation?.(folder);
+        resolvedDeliveryTarget = { path: location?.path || folder, namespace: location?.namespaceKind || '' };
+        window.dispatchEvent(new Event('meldex:quick-memo-delivery'));
+      }
     } catch (error) {
       if (epoch !== storageLocationEpoch) return;
       els.storageLocation.textContent = cloud && !cloudConnected() ? '保存先: Dropboxに接続してください'
@@ -1147,8 +1157,22 @@
   }
 
   async function flushQueue() {
-    if (navigator.locks?.request) return navigator.locks.request('meldex:quick-memo:sync', flushQueueUnlocked);
-    return flushQueueUnlocked();
+    const run = async lock => {
+      if (lock === null) {
+        state.lastSaveError = '別の画面がメモを送信中です。そちらの画面を開くか閉じてから、今すぐ再送してください';
+        for (const item of readJson(QUEUE_KEY, [])) recordDelivery(item, {
+          state: 'failed', reason: state.lastSaveError, code: 'send_lock_busy', blocker: '送信担当の確保',
+        });
+        return false;
+      }
+      sendLease = true;
+      try { return await flushQueueUnlocked(); }
+      finally { sendLease = false; }
+    };
+    // An iOS background tab can retain this origin's lock indefinitely. Never
+    // queue behind it, and never steal it: the other writer may still commit.
+    if (navigator.locks?.request) return navigator.locks.request('meldex:quick-memo:sync', { ifAvailable: true }, run);
+    return run(undefined);
   }
 
   async function flushQueueUnlocked() {
@@ -1156,13 +1180,12 @@
     const snapshot = readJson(QUEUE_KEY, []);
     if (!Array.isArray(snapshot) || !snapshot.length) return true;
     const cloud = isCloudMode();
-    if (cloud && !cloudConnected()) return false;
     const sent = new Set();
     const failed = new Set();
     const results = new Map();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
     for (const item of snapshot) {
-      recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '' });
+      recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '', blocker: '' });
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
@@ -1196,7 +1219,7 @@
           await window.MeldexGlobalTags.mergeExistingTagNames(result.path || item.server_path, item.tags, { createMissing: true });
         }
         sent.add(item.memo_id);
-        recordDelivery(item, { state: 'sent', reason: '保存済みです' });
+        recordDelivery(item, { state: 'sent', reason: '保存済みです', blocker: '' });
       } catch (error) {
         state.lastSaveError = syncFailureDetail(error);
         recordDelivery(item, { state: 'failed', reason: state.lastSaveError,
@@ -1227,6 +1250,8 @@
     const records = readJson(DELIVERY_KEY, {}) || {};
     const previous = records[item.memo_id] || {};
     const entry = { ...previous, ...update, version: appVersion() };
+    if (entry.state === 'sending') deliveryProgress = { memoId: item.memo_id, blocker: entry.blocker || '送信開始' };
+    else if (deliveryProgress?.memoId === item.memo_id) deliveryProgress = null;
     records[item.memo_id] = entry;
     // Diagnostics have a separate key: never mutate the queued snapshot used
     // to detect edits made while a save is in flight.
@@ -1256,10 +1281,26 @@
         ['アプリの版', appVersion()],
         ['最後の送信', entry.attempted_at ? new Date(entry.attempted_at).toLocaleString('ja-JP') : 'まだ送信を試していません'],
         ['送信結果', entry.reason || (cloudConnected() ? '送信の準備を待っています' : 'Dropboxに接続してください')],
-        ['保存先', entry.target_path || item.server_path || '保存先の確認前です'],
+        ['保存先', entry.target_path || item.server_path || resolvedDeliveryTarget?.path || '保存先の確認前です'],
         ['失敗した場所', entry.failure_path || 'なし'],
-        ['Dropboxの領域', entry.namespace === 'team_root' ? 'チーム領域' : entry.namespace === 'home' ? '個人ホーム' : '確認前です'],
+        ['Dropboxの領域', (entry.namespace || resolvedDeliveryTarget?.namespace) === 'team_root' ? 'チーム領域' : (entry.namespace || resolvedDeliveryTarget?.namespace) === 'home' ? '個人ホーム' : '確認前です'],
+        ['停止・確認中の場所', entry.blocker || 'なし'],
+        ['送信全体の確認中の場所', deliveryProgress
+          ? (deliveryProgress.memoId === item.memo_id ? '' : '先行するメモ: ') + deliveryProgress.blocker : 'なし'],
       ];
+      const cloud = window.MeldexStandaloneCloud?.getStatus?.() || {};
+      if (cloud.initializationStage) rows.push(['Cloudの確認中の場所', cloud.initializationStage]);
+      const checks = [
+        ['メモの保持', entry.state === 'sent' || readJson(QUEUE_KEY, []).some(memo => memo.memo_id === item.memo_id)],
+        ['Dropbox接続', !isCloudMode() || cloud.connected === true],
+        ['アカウント・設定の読込', !isCloudMode() || cloud.initialized === true],
+        ['保存機能の読込', !isCloudMode() || typeof window.apiFetch === 'function'],
+        ['送信担当の確保', sendLease || entry.state === 'sent'],
+        ['保存先の確認', !!(entry.target_path || resolvedDeliveryTarget?.path)],
+        ['Dropbox領域の確認', !!(entry.namespace || resolvedDeliveryTarget?.namespace)],
+        ['編集ロック・権限の確認と保存', entry.state === 'sent'],
+      ];
+      rows.push(...checks.map(([label, ok]) => ['準備 ' + label, (ok ? '✓' : '×') + (ok ? ' 確認済み' : ' 未確認・未完了')]));
       for (const [label, value] of rows) {
         const line = document.createElement('p');
         line.textContent = label + ': ' + value;
@@ -1270,8 +1311,8 @@
     const retry = document.createElement('button');
     retry.type = 'button'; retry.className = 'gb-btn'; retry.textContent = '今すぐ再送';
     retry.addEventListener('click', async () => {
-      retry.disabled = true;
-      try { await flushPendingQueue(); render(); } finally { retry.disabled = false; }
+      retry.setAttribute('aria-busy', 'true');
+      try { await flushPendingQueue(); render(); } finally { retry.removeAttribute('aria-busy'); }
     });
     const footer = [retry];
     let dialog;
@@ -1595,17 +1636,22 @@
   }
 
   async function saveMemoCloud(item) {
-    await window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true });
-    const path = cloudMemoPath(item, item.server_path ? '' : await cloudFolderPath());
+    const prepare = async (label, task) => {
+      recordDelivery(item, { blocker: label, reason: label + 'を確認しています' });
+      return window.MeldexQuickMemoLibrary.readWithTimeout(Promise.resolve().then(task),
+        label + 'に時間がかかっています。入力は端末に残っています。今すぐ再送してください', PREPARATION_TIMEOUT_MS);
+    };
+    await prepare('アカウント・設定の読込', () => window.MeldexStandaloneCloud.ensureReady?.({ requireConnection: true }));
+    const path = cloudMemoPath(item, item.server_path ? '' : await prepare('保存先の確認', cloudFolderPath));
     const location = window.MeldexStorageAdapter?.getProvider?.()?._dropboxLocation?.(path);
-    recordDelivery(item, { target_path: location?.path || path, namespace: location?.namespaceKind || '' });
+    recordDelivery(item, { target_path: location?.path || path, namespace: location?.namespaceKind || '', blocker: '既存メモの確認' });
     const folder = path.split('/').slice(0, -1).join('/');
     const tags = cloudMemoTags(item);
     // 本文とクイックメモ識別子を一度の条件付き書込で保存する。
     // 空のエントリを先に作ると、本文の失敗・再試行で重複が残る。
     let existingData = null;
     try {
-      existingData = await window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(path));
+      existingData = await prepare('既存メモの確認', () => window.apiFetch('/quick-memo/file?path=' + encodeURIComponent(path)));
     } catch (error) {
       if (!cloudNotFound(error)) {
         throw error;
@@ -1622,6 +1668,7 @@
       item = { ...item, audio_clips: window.MeldexQuickMemoLibrary.parseMemoText(existingData.content, path).audio_clips };
     }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
+    recordDelivery(item, { blocker: '編集ロック・権限の確認と保存', reason: 'Dropboxへ保存しています' });
     const written = await cloudWriteFile(
       path,
       cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter),

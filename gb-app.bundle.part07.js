@@ -1,3 +1,8 @@
+  : (parseInt(localStorage.getItem('ui-scale'), 10) || 100));
+
+// ステータスバー表示状態復元
+try {
+  if (typeof applyStatusbarHidden === 'function') {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
   }
 } catch (e) { console.warn('ステータスバー状態復元失敗:', e); }

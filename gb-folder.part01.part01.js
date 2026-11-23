@@ -111,6 +111,8 @@ async function openFolder(label, path, opts) {
     _folderShowTakeoverNotice(displayLabel);
   }
   _folderRenderContainerOverride = nextRenderOverride;
+  const folderLoadingGrid = _folderGridEl();
+  if (folderLoadingGrid) folderLoadingGrid.setAttribute('aria-busy', 'true');
   // 別のフォルダへ切り替える時は、読み込みが終わるまで前のフォルダの中身（空なら「このフォルダは空です」）を
   // 残さず「読み込み中...」にする。大きなフォルダ（数千件）では読み込みに数秒かかり、その間「空です」と
   // 前のフォルダの表示が出ていた（2026-11-22 M-014 フォルダの横断の検査: 三千件のフォルダ）。
@@ -139,8 +141,10 @@ async function openFolder(label, path, opts) {
     _folderUnifiedSearchTimer = 0;
     ++_folderUnifiedSearchSeq;
     _folderUnifiedSearchPaths = new Set();
-    _folderSelected = null;
-    _folderSelectedItems = [];
+    if (switchingFolder) {
+      _folderSelected = null;
+      _folderSelectedItems = [];
+    }
     if (!openOpts.skipShowView) showView('folder');
     if (!openOpts.skipGlobalUi && typeof applyFolderFileStyle === 'function') applyFolderFileStyle(path);
     if (!openOpts.skipGlobalUi) {
@@ -181,10 +185,12 @@ async function openFolder(label, path, opts) {
       if (isStaleFolderLoad()) return;
     }
     registerFileTypes(_folderItems);
-    const openSelectedPaths = [
+    const requestedSelectedPaths = [
       ...(Array.isArray(openOpts.selectedPaths) ? openOpts.selectedPaths : []),
       openOpts.selectedPath,
     ].filter(Boolean);
+    const openSelectedPaths = Array.isArray(openOpts.selectedPaths) || openOpts.selectedPath !== undefined
+      ? requestedSelectedPaths : switchingFolder ? [] : (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
     await renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
     if (isStaleFolderLoad()) return;
     // 直接フォルダを開いた経路も、実際に描画済みの対象を記録する。
@@ -218,6 +224,7 @@ async function openFolder(label, path, opts) {
       showStatus('フォルダ読み込みエラー: ' + (e?.message || e), true);
     }
   } finally {
+    if (folderLoadingGrid && (!isStaleFolderLoad() || _folderGridEl() !== folderLoadingGrid)) folderLoadingGrid.removeAttribute('aria-busy');
     if (loadingShown) {
       hideLoading(loading);
     }
@@ -630,184 +637,8 @@ function _updateFolderDisplayFilterButton(cfg) {
   }
 }
 
-function renderFolderGrid(opts) {
-  const renderOpts = opts || {};
-  const preserveSelectedPaths = new Set((renderOpts.preserveSelectedPaths || []).filter(Boolean));
-  const resetScrollTop = !!renderOpts.resetScrollTop;
-  const container = _folderGridEl();
-  if (!container) return;
-  _folderUpdateStatusCounts(_folderItems);
-  const renderSeq = ++_folderRenderSeq;
-  window.GBOutlinerThumbnails?.detachWithin?.(container);
-  container.innerHTML = '';
-  if (resetScrollTop) container.scrollTop = 0;
-  const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
-  const layoutClass = layoutMap[_folderLayout] || 'grid-layout';
-  // レイアウトモードclassをまるごと差し替える（containerが#folder-gridの場合は
-  // 元々classを持たないため問題ない）。独立した描画先（サブパネル等）は自身の
-  // 識別class（gb-subpanel-folder-root。gb-subpanel.cssの対応スタイルが参照する）
-  // を残す必要があるため、置き換えではなく保持したうえでレイアウトmode classを付ける。
-  container.className = _folderIsIndependentSurface()
-    ? ('gb-subpanel-folder-root ' + layoutClass)
-    : layoutClass;
-  _installFolderBlankContextMenu(container);
-  if (!_folderIsIndependentSurface()) {
-    const layoutSelect = document.getElementById('folder-layout-select');
-    if (layoutSelect) layoutSelect.value = _folderLayout;
-  }
-  applyFolderZoom();
-
-  _folderSelectedItems = [];
-  _folderSelected = null;
-  _updateFolderBulkBar();
-  // パネルレイアウトを適用
-  applyFvPanelLayout();
-  // ウォーターフォール以外: 高さリセット
-  if (_folderLayout !== 'waterfall') {
-    _disconnectWaterfallResizeObserver();
-    container.style.height = '';
-    const oldSpacer = container.querySelector('.wf-spacer');
-    if (oldSpacer) oldSpacer.remove();
-  }
-
-  const dcfg = getFolderDisplayConfig();
-  const showThumb = dcfg.showThumb !== false;
-  const showName = dcfg.showName !== false;
-  const showSize = dcfg.showSize !== false;
-  const showDate = dcfg.showDate !== false;
-  const showType = dcfg.showType !== false;
-  const showDimensions = dcfg.showDimensions !== false;
-  const showRating = dcfg.showRating !== false;
-  const showTags = dcfg.showTags !== false;
-  if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
-  const activeTagFilter = _folderHasActiveTagFilter(dcfg);
-  const tagLoadPromise = (showTags || activeTagFilter)
-    ? _folderEnsureTags(_folderItems, { rerender: activeTagFilter })
-    : null;
-  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems())
-    .filter(item => !_folderPendingMovePaths.has(_folderMembershipKey(item.path)));
-  _folderVisibleItems = filteredItems;
-  _updateFolderDisplayFilterButton(dcfg);
-  if (!_folderIsIndependentSurface()) {
-    const folderCountEl = document.getElementById('folder-item-count');
-    if (folderCountEl) folderCountEl.textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
-  }
-  const isListLayout = _folderLayout === 'list';
-  const showThumbForLayout = isListLayout || showThumb;
-  _folderConfigureListLayout(container, isListLayout);
-  if (isListLayout) _folderRenderListHeader(container);
-
-  if (_folderBrowseIncomplete) {
-    const warning = document.createElement('div');
-    warning.className = 'fv-browse-warning';
-    warning.setAttribute('role', 'status');
-    warning.style.cssText = 'grid-column:1 / -1;width:100%;box-sizing:border-box;flex:none;padding:8px 12px;color:var(--fg2);';
-    if (_folderLayout === 'waterfall') {
-      warning.style.position = 'absolute';
-      warning.style.top = '0';
-      warning.style.left = '0';
-    }
-    warning.textContent = _folderBrowseIncomplete.truncated
-      ? 'サブフォルダーの表示上限に達しました。一部は未確認です。'
-      : '一部のサブフォルダーを読み込めませんでした。';
-    const retry = document.createElement('button');
-    retry.type = 'button';
-    retry.className = 'gb-btn gb-btn-sm';
-    retry.dataset.e2eId = 'folder-browse-retry';
-    retry.textContent = '再読み込み';
-    const retryPath = _folderPath;
-    retry.addEventListener('click', () => {
-      if (_folderPath !== retryPath) return;
-      openFolder(retryPath.split(/[\\/]/).pop(), retryPath, {
-        silent: true, skipNavPush: true, skipSaveLastView: true,
-        selectedPaths: _folderSelectedItems.map(item => item.path),
-        containerEl: _folderResolveRenderOverride(),
-      });
-    });
-    warning.appendChild(retry);
-    container.appendChild(warning);
-  }
-
-  if (filteredItems.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'fv-empty-state';
-    const searchTags = window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || [];
-    const filteredOut = _folderItems.length > 0 && (_folderHasActiveFilters(dcfg) || searchTags.length > 0);
-    empty.textContent = filteredOut ? `${_folderItems.length}項目が絞り込みで非表示です`
-      : _folderBrowseIncomplete ? '読み込めた項目はありません' : 'このフォルダは空です';
-    if (filteredOut) {
-      empty.style.flexDirection = 'column';
-      empty.style.gap = '12px';
-      const summary = document.createElement('div');
-      const conditions = [];
-      if (String(dcfg.filterText || '').trim()) conditions.push('名前・パス');
-      const types = _folderFilterArray(dcfg.filterTypes);
-      if (types.length) conditions.push('種類: ' + types.map(_folderItemTypeLabel).join('、'));
-      if (_folderFilterArray(dcfg.filterExts).length) conditions.push('拡張子');
-      if (_folderHasActiveFolderFilter(dcfg)) conditions.push('所属フォルダ');
-      if (_folderHasActiveTagFilter(dcfg) || searchTags.length) conditions.push('タグ');
-      if (dcfg.filterModifiedPreset && dcfg.filterModifiedPreset !== 'all') conditions.push('更新日時');
-      summary.textContent = '適用中の条件: ' + conditions.join(' / ');
-      empty.appendChild(summary);
-      const reset = document.createElement('button');
-      reset.type = 'button';
-      reset.className = 'gb-btn gb-btn-sm';
-      reset.dataset.e2eId = 'folder-empty-clear-filters';
-      reset.textContent = '絞り込みを解除';
-      reset.addEventListener('click', () => {
-        _clearFolderFilters();
-        if (searchTags.length) window.MeldexUnifiedSearch?.writeTagCondition?.({ tagIds: [] });
-        renderFolderGrid({ resetScrollTop: true });
-      });
-      empty.appendChild(reset);
-    }
-    container.appendChild(empty);
-    return;
-  }
-
-  let nextRenderIndex = 0;
-  // 先頭のカードをすぐ表示し、残りは画面から外した場所で組み立てて最後に一度だけ置く。
-  // 各80件を画面へ置くたびに周辺の寸法計算と描画が走り、三千件で数秒かかっていた。
-  const stagedCards = filteredItems.length > FOLDER_PANEL_RENDER_CHUNK_SIZE ? document.createDocumentFragment() : null;
-  let resolveRender;
-  const rendered = new Promise(resolve => { resolveRender = resolve; });
-  const finishFolderGridRender = () => {
-    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
-    _syncFolderCheckboxes();
-    _updateFolderBulkBar();
-    if (preserveSelectedPaths.size > 0 && _folderSelected) {
-      const panelCfg = _getFvPanelCfg();
-      if ((panelCfg.previewVisible ?? true) || (panelCfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
-    }
-
-    // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
-    if (_folderLayout === 'waterfall') {
-      _scheduleWaterfallLayout();
-      let _wfDebounceTimer = null;
-      const debouncedLayout = () => {
-        clearTimeout(_wfDebounceTimer);
-        _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
-      };
-      container.querySelectorAll('img').forEach(img => {
-        if (!img.complete) img.onload = debouncedLayout;
-      });
-      _ensureWaterfallResizeObserver();
-    }
-    tagLoadPromise?.then(() => {
-      if (renderSeq !== _folderRenderSeq) return;
-      window.MeldexEmbeddedMetadata?.refreshFolderTags?.(container);
-      if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
-    });
-    resolveRender(true);
-  };
-  const renderFolderGridChunk = () => {
-    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
-    const fragment = document.createDocumentFragment();
-    const firstChunk = nextRenderIndex === 0;
-    const endIndex = Math.min(filteredItems.length, nextRenderIndex + _folderPanelRenderChunkSize(filteredItems.length));
-    for (; nextRenderIndex < endIndex; nextRenderIndex++) {
-      const item = filteredItems[nextRenderIndex];
-      const idx = nextRenderIndex;
+function _folderCreateItemCard(item, idx, context) {
+  const { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, showName, showSize, showDate, showType, showDimensions, showRating, showTags } = context;
     const el = document.createElement('div');
     el.className = 'fv-item';
     if (item.type === 'folder' || item.type === 'database') el.classList.add('fv-folder-list-item');
@@ -816,10 +647,16 @@ function renderFolderGrid(opts) {
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
+    if ((typeof _folderPasteMovePending === 'function' && _folderPasteMovePending(item.path))
+        || (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path))) {
+      el.inert = true;
+      el.setAttribute('aria-busy', 'true');
+      el.style.opacity = '0.62';
+    }
     const fileLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
     const itemLocked = !!item.contained_reference || fileLocked;
     el.draggable = !itemLocked;
-    if (preserveSelectedPaths.has(item.path)) {
+    if (preserveSelectedPaths.has(item.path) && !el.inert) {
       el.classList.add('selected');
       _folderSelectedItems.push(item);
       _folderSelected = item;
@@ -1146,7 +983,7 @@ function renderFolderGrid(opts) {
       el.classList.remove('fv-link-drop');
       _folderClearManualDropIndicators();
       if (osDrop) { await _folderImportOsDrop(e, item); return; }
-      if (manualDrop && _folderApplyManualDrop(manualDrop, item)) return;
+      if (manualDrop) { _folderApplyManualDrop(manualDrop, item); return; }
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const completed = linkDrop
         ? await _folderCreateLinksFromDrop(e, item, resolved?.payload)
@@ -1187,6 +1024,230 @@ function renderFolderGrid(opts) {
       }
       el.appendChild(children);
     }
+  return el;
+}
+
+// 作成した項目だけを追加する。既存カードと選択・スクロール・プレビューを保持する。
+function _folderApplyCreatedItems(items) {
+  const container = _folderGridEl();
+  if (!container || !Array.isArray(_folderItems)) return;
+  const normalize = path => String(path || '').replace(/\\/g, '/').toLowerCase();
+  const known = new Set(_folderItems.map(item => normalize(item.path)));
+  const added = (items || []).filter(item => item?.path && !known.has(normalize(item.path)));
+  if (!added.length) return;
+  _folderItems.push(...added);
+  const ordered = _folderSortVisibleItems(_getFolderFilteredItems()).filter(item => !_folderPendingMovePaths.has(_folderMembershipKey(item.path)));
+  // カードの範囲選択が参照する配列そのものは替えない。
+  const filteredItems = _folderVisibleItems;
+  filteredItems.splice(0, filteredItems.length, ...ordered);
+  const existing = new Map(Array.from(container.querySelectorAll('.fv-item'), card => [normalize(card.dataset.path), card]));
+  const dcfg = getFolderDisplayConfig();
+  const isListLayout = _folderLayout === 'list';
+  const context = { container, filteredItems, preserveSelectedPaths: new Set(), isListLayout,
+    showThumbForLayout: isListLayout || dcfg.showThumb !== false,
+    showName: dcfg.showName !== false, showSize: dcfg.showSize !== false, showDate: dcfg.showDate !== false,
+    showType: dcfg.showType !== false, showDimensions: dcfg.showDimensions !== false,
+    showRating: dcfg.showRating !== false, showTags: dcfg.showTags !== false };
+  const scroll = [container.scrollLeft, container.scrollTop];
+  if (filteredItems.length) container.querySelectorAll('.fv-empty-state').forEach(node => node.remove());
+  filteredItems.forEach((item, index) => {
+    const key = normalize(item.path);
+    const card = existing.get(key);
+    if (card) { card.dataset.idx = index; return; }
+    const created = _folderCreateItemCard(item, index, context);
+    const next = filteredItems.slice(index + 1).map(nextItem => existing.get(normalize(nextItem.path))).find(Boolean);
+    container.insertBefore(created, next || null);
+    existing.set(key, created);
+  });
+  container.scrollLeft = scroll[0]; container.scrollTop = scroll[1];
+  _folderUpdateStatusCounts(_folderItems);
+  const count = document.getElementById('folder-item-count');
+  if (count) count.textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
+  if (typeof registerFileTypes === 'function') registerFileTypes(added);
+  _syncFolderCheckboxes(); _updateFolderBulkBar();
+  if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
+}
+
+function renderFolderGrid(opts) {
+  const renderOpts = opts || {};
+  const preserveSelectedPaths = new Set((renderOpts.preserveSelectedPaths
+    ?? (_folderSelectedItems || []).map(item => item?.path)).filter(Boolean));
+  const resetScrollTop = !!renderOpts.resetScrollTop;
+  const container = _folderGridEl();
+  if (!container) return;
+  _folderUpdateStatusCounts(_folderItems);
+  const renderSeq = ++_folderRenderSeq;
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
+  container.innerHTML = '';
+  if (resetScrollTop) container.scrollTop = 0;
+  const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
+  const layoutClass = layoutMap[_folderLayout] || 'grid-layout';
+  // レイアウトモードclassをまるごと差し替える（containerが#folder-gridの場合は
+  // 元々classを持たないため問題ない）。独立した描画先（サブパネル等）は自身の
+  // 識別class（gb-subpanel-folder-root。gb-subpanel.cssの対応スタイルが参照する）
+  // を残す必要があるため、置き換えではなく保持したうえでレイアウトmode classを付ける。
+  container.className = _folderIsIndependentSurface()
+    ? ('gb-subpanel-folder-root ' + layoutClass)
+    : layoutClass;
+  _installFolderBlankContextMenu(container);
+  if (!_folderIsIndependentSurface()) {
+    const layoutSelect = document.getElementById('folder-layout-select');
+    if (layoutSelect) layoutSelect.value = _folderLayout;
+  }
+  applyFolderZoom();
+
+  _folderSelectedItems = [];
+  _folderSelected = null;
+  _updateFolderBulkBar();
+  // パネルレイアウトを適用
+  applyFvPanelLayout();
+  // ウォーターフォール以外: 高さリセット
+  if (_folderLayout !== 'waterfall') {
+    _disconnectWaterfallResizeObserver();
+    container.style.height = '';
+    const oldSpacer = container.querySelector('.wf-spacer');
+    if (oldSpacer) oldSpacer.remove();
+  }
+
+  const dcfg = getFolderDisplayConfig();
+  const showThumb = dcfg.showThumb !== false;
+  const showName = dcfg.showName !== false;
+  const showSize = dcfg.showSize !== false;
+  const showDate = dcfg.showDate !== false;
+  const showType = dcfg.showType !== false;
+  const showDimensions = dcfg.showDimensions !== false;
+  const showRating = dcfg.showRating !== false;
+  const showTags = dcfg.showTags !== false;
+  if (_folderHasActiveFolderFilter(dcfg)) _folderEnsureMemberships(_folderItems, { rerender: true });
+  const activeTagFilter = _folderHasActiveTagFilter(dcfg);
+  const tagLoadPromise = (showTags || activeTagFilter)
+    ? _folderEnsureTags(_folderItems, { rerender: activeTagFilter })
+    : null;
+  const filteredItems = _folderSortVisibleItems(_getFolderFilteredItems())
+    .filter(item => !_folderPendingMovePaths.has(_folderMembershipKey(item.path)));
+  _folderVisibleItems = filteredItems;
+  _updateFolderDisplayFilterButton(dcfg);
+  if (!_folderIsIndependentSurface()) {
+    const folderCountEl = document.getElementById('folder-item-count');
+    if (folderCountEl) folderCountEl.textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
+  }
+  const isListLayout = _folderLayout === 'list';
+  const showThumbForLayout = isListLayout || showThumb;
+  _folderConfigureListLayout(container, isListLayout);
+  if (isListLayout) _folderRenderListHeader(container);
+
+  if (_folderBrowseIncomplete) {
+    const warning = document.createElement('div');
+    warning.className = 'fv-browse-warning';
+    warning.setAttribute('role', 'status');
+    warning.style.cssText = 'grid-column:1 / -1;width:100%;box-sizing:border-box;flex:none;padding:8px 12px;color:var(--fg2);';
+    if (_folderLayout === 'waterfall') {
+      warning.style.position = 'absolute';
+      warning.style.top = '0';
+      warning.style.left = '0';
+    }
+    warning.textContent = _folderBrowseIncomplete.truncated
+      ? 'サブフォルダーの表示上限に達しました。一部は未確認です。'
+      : '一部のサブフォルダーを読み込めませんでした。';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'gb-btn gb-btn-sm';
+    retry.dataset.e2eId = 'folder-browse-retry';
+    retry.textContent = '再読み込み';
+    const retryPath = _folderPath;
+    retry.addEventListener('click', () => {
+      if (_folderPath !== retryPath) return;
+      openFolder(retryPath.split(/[\\/]/).pop(), retryPath, {
+        silent: true, skipNavPush: true, skipSaveLastView: true,
+        selectedPaths: _folderSelectedItems.map(item => item.path),
+        containerEl: _folderResolveRenderOverride(),
+      });
+    });
+    warning.appendChild(retry);
+    container.appendChild(warning);
+  }
+
+  if (filteredItems.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'fv-empty-state';
+    const searchTags = window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || [];
+    const filteredOut = _folderItems.length > 0 && (_folderHasActiveFilters(dcfg) || searchTags.length > 0);
+    empty.textContent = filteredOut ? `${_folderItems.length}項目が絞り込みで非表示です`
+      : _folderBrowseIncomplete ? '読み込めた項目はありません' : 'このフォルダは空です';
+    if (filteredOut) {
+      empty.style.flexDirection = 'column';
+      empty.style.gap = '12px';
+      const summary = document.createElement('div');
+      const conditions = [];
+      if (String(dcfg.filterText || '').trim()) conditions.push('名前・パス');
+      const types = _folderFilterArray(dcfg.filterTypes);
+      if (types.length) conditions.push('種類: ' + types.map(_folderItemTypeLabel).join('、'));
+      if (_folderFilterArray(dcfg.filterExts).length) conditions.push('拡張子');
+      if (_folderHasActiveFolderFilter(dcfg)) conditions.push('所属フォルダ');
+      if (_folderHasActiveTagFilter(dcfg) || searchTags.length) conditions.push('タグ');
+      if (dcfg.filterModifiedPreset && dcfg.filterModifiedPreset !== 'all') conditions.push('更新日時');
+      summary.textContent = '適用中の条件: ' + conditions.join(' / ');
+      empty.appendChild(summary);
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'gb-btn gb-btn-sm';
+      reset.dataset.e2eId = 'folder-empty-clear-filters';
+      reset.textContent = '絞り込みを解除';
+      reset.addEventListener('click', () => {
+        _clearFolderFilters();
+        if (searchTags.length) window.MeldexUnifiedSearch?.writeTagCondition?.({ tagIds: [] });
+        renderFolderGrid({ resetScrollTop: true });
+      });
+      empty.appendChild(reset);
+    }
+    container.appendChild(empty);
+    return;
+  }
+
+  let nextRenderIndex = 0;
+  // 先頭のカードをすぐ表示し、残りは画面から外した場所で組み立てて最後に一度だけ置く。
+  // 各80件を画面へ置くたびに周辺の寸法計算と描画が走り、三千件で数秒かかっていた。
+  const stagedCards = filteredItems.length > FOLDER_PANEL_RENDER_CHUNK_SIZE ? document.createDocumentFragment() : null;
+  let resolveRender;
+  const rendered = new Promise(resolve => { resolveRender = resolve; });
+  const finishFolderGridRender = () => {
+    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
+    _syncFolderCheckboxes();
+    _updateFolderBulkBar();
+    if (preserveSelectedPaths.size > 0 && _folderSelected) {
+      const panelCfg = _getFvPanelCfg();
+      if ((panelCfg.previewVisible ?? true) || (panelCfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
+    }
+
+    // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
+    if (_folderLayout === 'waterfall') {
+      _scheduleWaterfallLayout();
+      let _wfDebounceTimer = null;
+      const debouncedLayout = () => {
+        clearTimeout(_wfDebounceTimer);
+        _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
+      };
+      container.querySelectorAll('img').forEach(img => {
+        if (!img.complete) img.onload = debouncedLayout;
+      });
+      _ensureWaterfallResizeObserver();
+    }
+    tagLoadPromise?.then(() => {
+      if (renderSeq !== _folderRenderSeq) return;
+      window.MeldexEmbeddedMetadata?.refreshFolderTags?.(container);
+      if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
+    });
+    resolveRender(true);
+  };
+  const renderFolderGridChunk = () => {
+    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
+    const fragment = document.createDocumentFragment();
+    const firstChunk = nextRenderIndex === 0;
+    const endIndex = Math.min(filteredItems.length, nextRenderIndex + _folderPanelRenderChunkSize(filteredItems.length));
+    for (; nextRenderIndex < endIndex; nextRenderIndex++) {
+      const item = filteredItems[nextRenderIndex];
+      const idx = nextRenderIndex;
+    const el = _folderCreateItemCard(item, idx, { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, showName, showSize, showDate, showType, showDimensions, showRating, showTags });
     fragment.appendChild(el);
     }
     (stagedCards && !firstChunk ? stagedCards : container).appendChild(fragment);
@@ -1559,7 +1620,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
     }, null, 'tags');
   }
-  if (!blankTarget && item.path) {
+  if (!blankTarget && item.path && window.MeldexArchiveTools?.desktop()) {
+    window.MeldexArchiveTools.appendMenu(menu, _folderSelectedItems.length > 1 ? _folderSelectedItems.slice() : [item], closeMenu);
+  } else if (!blankTarget && item.path) {
     const canCompress = typeof _folderCanCompress === 'function' ? _folderCanCompress() : !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
     const archiveTargets = _folderSelectedItems.length > 1 ? _folderSelectedItems : [item];
     const extractTargets = archiveTargets.filter(target => (

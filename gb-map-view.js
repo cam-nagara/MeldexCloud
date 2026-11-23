@@ -78,9 +78,16 @@
     _resize() {
       if (!this.map || !this.host) return;
       const w = this.container.clientWidth, h = this.container.clientHeight;
+      if (!w || !h) return;
       const size = this.rotation ? Math.ceil(Math.hypot(w, h)) : null;
       Object.assign(this.host.style, { width: (size || w) + 'px', height: (size || h) + 'px', transform: `translate(-50%,-50%) rotate(${this.rotation}deg)` });
-      this.map.invalidateSize({ pan: true, animate: false }); this._indicators();
+      const center = this.map.getCenter(), zoom = this.map.getZoom();
+      this.map.invalidateSize({ pan: true, animate: false });
+      const after = this.map.getCenter();
+      // Leaflet rounds the resize pan to whole pixels. At low zoom every drawer
+      // toggle otherwise accumulates several map units of camera drift.
+      if (after.lat !== center.lat || after.lng !== center.lng) this.map.setView(center, zoom, { animate: false, reset: true });
+      this._indicators();
     }
     zoomAt(zoom, screen = null, anchor = null) {
       zoom = Math.max(this.map.getMinZoom(), Math.min(this.map.getMaxZoom(), zoom));
@@ -106,7 +113,8 @@
     }
     setDocument(doc, readOnly = false) {
       const rebuild = !this.map || this.doc?.coordinate_system !== doc.coordinate_system;
-      if (this.doc?.features !== doc.features || readOnly || doc.atlas?.locked) { this.interaction.cancel(); if(this._atlasPainting)this.cancel(); }
+      const projectionChanged = this.doc && (this.doc.coordinate_system !== doc.coordinate_system || this.doc.canvas.width !== doc.canvas.width || this.doc.canvas.height !== doc.canvas.height || !!this.doc.atlas !== !!doc.atlas || this.doc.atlas?.width !== doc.atlas?.width || this.doc.atlas?.height !== doc.atlas?.height || this.doc.background?.data_url !== doc.background?.data_url);
+      if (projectionChanged || this.doc?.features !== doc.features || readOnly || doc.atlas?.locked) { this.interaction.cancel(); if(this._atlasPainting)this.cancel(); }
       this.doc = doc; this.readOnly = readOnly;
       this.container.classList.toggle('gb-map-native-atlas',!!doc.atlas);
       if (rebuild) this._create();
@@ -141,7 +149,7 @@
       const local = this.doc.coordinate_system === 'local';
       this.map = L.map(this.host, { crs: local ? L.CRS.Simple : L.CRS.EPSG3857, minZoom: local ? -5 : 1,
         maxZoom: local ? Math.log2(5) : 19, zoomControl: false, attributionControl: true, worldCopyJump: !local,
-        dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false,
+        dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false, trackResize: false,
         preferCanvas: false, zoomSnap: 0, zoomAnimation: false, markerZoomAnimation: false });
       this.map.mouseEventToContainerPoint = event => this.interaction.native(this.interaction.local(event));
       this.container.appendChild(this.map._controlContainer);
@@ -271,13 +279,26 @@
         this.featureKind, this.filter, [...(this.selectedIds || [])], this.selectedId, this.readOnly, this.tool, this.editVertices, doc.coordinate_system, doc.canvas, !!doc.atlas]);
       if (this._featuresKey === featuresKey && this._featuresKeyGroup === this.features && this._featuresKeyMap === this.map) return;
       this._featuresKey = featuresKey; this._featuresKeyGroup = this.features; this._featuresKeyMap = this.map;
-      this.features.clearLayers();
-      this.items.clear();
+      // A large local point map must not recreate every marker for a rename or
+      // selection change. Keep the full renderer for atlases and line geometry.
+      const pointOnly = doc.coordinate_system === 'local' && !doc.atlas && doc.layers.length === 1 && doc.features.every(f => ['pin','label'].includes(f.kind));
+      const reusable = pointOnly && this._pointCacheGroup === this.features && this._pointCacheMap === this.map;
+      const previous = reusable ? new Map(this.items) : null;
+      const wanted = new Set(doc.features.filter(f => this._visible(f)).map(f => f.id));
+      if (previous) {
+        for (const [id,item] of previous) if (!wanted.has(id)) { this.features.removeLayer(item); this.items.delete(id); }
+      } else { this.features.clearLayers(); this.items.clear(); }
+      this._pointCacheGroup = pointOnly ? this.features : null; this._pointCacheMap = pointOnly ? this.map : null;
+      const renderContext = pointOnly ? JSON.stringify([doc.canvas,doc.display,this.elementVisibility,this.readOnly,this.tool]) : '';
       for (const layer of [...this.doc.layers].reverse()) for (const feature of this.doc.features.filter(f => f.layer_id === layer.id && this._visible(f))) {
         const selected = this.selectedIds.has(feature.id) || feature.id === this.selectedId, editable = !this.readOnly && !layer.locked && this.tool === 'select';
+        const renderKey = pointOnly ? JSON.stringify([feature,layer,selected,feature.id === this.selectedId,renderContext]) : '';
+        const retained = previous?.get(feature.id);
+        if (retained?._mapRenderKey === renderKey) continue;
+        if (retained) this.features.removeLayer(retained);
         const points = D().drawPoints(feature, this.doc).map(p => this.latlng(p)), cart = root.MeldexMapTerrainRender.style(feature), marker = root.MeldexMapTerrainRender.marker(feature); let item;
         if (['pin', 'label'].includes(feature.kind)) {
-          const el = document.createElement('span'); el.className = 'gb-map-pin' + (selected ? ' selected' : '') + (feature.kind === 'label' ? ' text-only' : '');
+          const el = document.createElement('span'); el.className = 'gb-map-pin' + (selected ? ' selected' : '') + (feature.id === this.selectedId ? ' gb-map-active-feature' : '') + (feature.kind === 'label' ? ' text-only' : '');
           el.style.color = feature.color; el.dataset.mapFeatureId = feature.id; el.dataset.mapRole = cart.role;
           el.dataset.mapRank = feature.cartography?.rank === 'minor' ? 'minor' : 'major';
           if (cart.role) el.style.fontSize = cart.fontSize + 'px';
@@ -309,6 +330,7 @@
           if (feature.label) { const tip = document.createElement('span'); tip.textContent = feature.label; item.bindTooltip(tip); }
         }
         this.items.set(feature.id, item);
+        if (pointOnly) item._mapRenderKey = renderKey;
         item.addTo(this.features);
         item.on('keypress', event => {
           if (event.originalEvent?.key === 'Enter') { this.choose([feature.id], feature.id); this.container.focus({ preventScroll: true }); }
@@ -350,6 +372,19 @@
       // path hit-test, so inspect the element at the actual pointer position.
       const target = this.container.hasPointerCapture(event.pointerId)
         ? document.elementFromPoint(event.clientX, event.clientY) : event.target;
+      // Glyph boxes contain transparent font padding. A nearby foreground pin
+      // must not steal a click on the visible centre of a pin behind it.
+      // Text labels retain their own direct target, even far from the anchor.
+      if (target?.closest?.('b') && this.container.contains(target)) {
+        let nearest=null,distance=Infinity;const seen=new Set();
+        for(const el of document.elementsFromPoint(event.clientX,event.clientY)){
+          const glyph=el.closest?.('[data-map-feature-id] b'),feature=glyph?.closest('[data-map-feature-id]'),key=feature?.dataset.mapFeatureId;
+          if(!glyph||!this.container.contains(glyph)||seen.has(key)||excluded.has(key)||!this.items.has(key))continue;
+          seen.add(key);const box=glyph.getBoundingClientRect(),score=Math.hypot(event.clientX-box.left-box.width/2,event.clientY-box.top-box.height/2);
+          if(score<distance){nearest=key;distance=score;}
+        }
+        if(nearest)return this.doc.features.find(feature=>feature.id===nearest);
+      }
       const id = target && this.container.contains(target) ? target.closest?.('[data-map-feature-id]')?.dataset.mapFeatureId : null;
       if (id && !excluded.has(id)) return this.doc.features.find(f => f.id === id && this._visible(f));
       const point = this.map.mouseEventToLayerPoint(event);

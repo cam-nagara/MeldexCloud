@@ -108,6 +108,10 @@
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.findPaneWithTab === 'function' && typeof GBTabs.closeTab === 'function') {
       const detailTab = GBTabs.findPaneWithTab('detail', '');
       if (detailTab) {
+        if (typeof GBLayout !== 'undefined' && GBLayout.isFixedRailPane?.(detailTab.paneId)) {
+          window.GBDockPopup?.close?.();
+          return;
+        }
         GBTabs.closeTab(detailTab.paneId, detailTab.tabId);
         return;
       }
@@ -209,6 +213,7 @@
       control.type = 'checkbox';
       control.checked = String(rawValue || '').trim().toLowerCase() === 'true';
       control.dataset.propName = name;
+      control.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name);
       const caption = document.createElement('span');
       caption.textContent = labelText;
       label.append(control, caption);
@@ -227,10 +232,12 @@
       const parts = String(rawValue || '').split('|');
       const start = document.createElement('input');
       start.type = 'datetime-local';
+      start.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name) + '-start';
       start.value = dateInputValue(parts[0]);
       start.setAttribute('aria-label', `${labelText} 開始`);
       const end = document.createElement('input');
       end.type = 'datetime-local';
+      end.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name) + '-end';
       end.value = dateInputValue(parts[1]);
       end.setAttribute('aria-label', `${labelText} 終了`);
       wrap.append(start, end);
@@ -299,6 +306,7 @@
     if (control.tagName === 'SELECT') control.className = 'gb-select ' + (type === 'status' || type === 'priority' ? 'gb-select-medium' : 'gb-select-column');
     control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
+    control.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name);
     label.appendChild(control);
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
   }
@@ -508,11 +516,21 @@
         const workRow = (data.rows || []).find(item => item.name === work || prop(item, '作品タイトル_話数') === work);
         if (!workRow) throw new Error('作品リストに対象の作品が見つかりません');
         const labels = controls.map(item => item.value().trim()).map((value, index) => value || NEW_LEVEL_NAMES[index]);
-        await api().patchEntry({
+        await api().patchEntryWithHistory({
           sheet: '作品リスト', path: workRow.path, id: workRow.id,
           entry_revision: workRow.entry_revision,
           transport_revision: workRow.transport_revision,
           properties: { '階層数': '3', '階層ラベル': labels.join(',') },
+        }, workRow, {
+          label: '分類名を編集', scope: 'schedule:' + (component?.tabId || ''),
+          onRestore: updated => {
+            const restoredLabels = String(updated.properties?.['階層ラベル'] || '').split(',');
+            if (component?._productionTaskState?.workMeta?.[work]) {
+              component._productionTaskState.workMeta[work].classification_labels = restoredLabels;
+            }
+            emitUpdated(row, 'classification-labels'); syncTask(row, component);
+          },
+          onRefreshError: () => status('変更は保存しましたが、表示を更新できませんでした', true),
         });
         if (component?._productionTaskState?.workMeta?.[work]) {
           component._productionTaskState.workMeta[work].classification_labels = labels;
@@ -571,6 +589,13 @@
     const entryPath = String(row?.path || '').trim();
     let loadSeq = 0;
     const pendingCreation = new Map();
+    const retryButton = (failed = false) => {
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'gb-btn gb-btn-sm'; retry.textContent = failed ? '再試行' : '再読み込み';
+      retry.dataset.e2eId = 'gb-production-topic-retry';
+      retry.addEventListener('click', async () => { retry.disabled = true; await render(); });
+      return retry;
+    };
     const render = async () => {
       const seq = ++loadSeq;
       host.dataset.state = 'loading';
@@ -653,13 +678,15 @@
           }));
           actions.appendChild(button);
         });
+        actions.appendChild(retryButton());
         host.replaceChildren(heading, list, actions);
       } catch (error) {
         if (seq !== loadSeq || !host.isConnected) return;
         host.dataset.state = 'error';
         host.setAttribute('aria-busy', 'false');
-        host.replaceChildren(state);
-        state.textContent = error?.message || 'このタスクの関連リソースを読み込めませんでした';
+        host.replaceChildren(state, retryButton(true));
+        state.textContent = '関連ノート・チャットを読み込めませんでした。再試行してください。';
+        state.title = error?.message || '';
       }
     };
     queueMicrotask(render);
@@ -859,6 +886,7 @@
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
+      form.querySelector(':scope > [data-e2e-id="gb-production-task-detail-error"]')?.remove();
       const properties = changedProperties();
       if (!Object.keys(properties).length) {
         status('変更はありません');
@@ -868,12 +896,16 @@
       const savingState = STATE.get(options.body);
       if (savingState) savingState.saveInFlight = true;
       try {
-        const result = await api().patchEntry({
+        const result = await api().patchEntryWithHistory({
           sheet: 'タスクリスト', path: row.path, id: row.id,
           expectedModified: row.modified || '',
           entry_revision: row.entry_revision,
           transport_revision: row.transport_revision,
           properties,
+        }, row, {
+          label: 'タスクを編集', scope: 'schedule:' + (component?.tabId || ''),
+          onRestore: updated => { emitUpdated(updated); syncTask(updated, component); },
+          onRefreshError: () => status('変更は保存しましたが、表示を更新できませんでした', true),
         });
         const updated = result.row || row;
         status('タスクを保存しました');
@@ -900,8 +932,19 @@
           status('タスクは保存しましたが、カレンダーを再読み込みできませんでした。カレンダーを再読み込みしてください', true);
         }
       } catch (error) {
-        status(error?.message || 'タスクを保存できませんでした', true);
         setFormBusy(false);
+        const translated = window.MeldexErrorMessages?.translate?.(error, { path: row.path });
+        const reason = String(error?.userMessage || (translated?.matched
+          ? [translated.message, translated.action].filter(Boolean).join(' ') : error?.message)
+          || '保存先を確認して再試行してください。')
+          .replace(/^\s*HTTP\s+\d{3}\s*:?\s*/i, '');
+        const message = 'タスクを保存できませんでした。入力はそのままです。 ' + reason;
+        const feedback = window.GBUI.createInlineError(message);
+        feedback.dataset.e2eId = 'gb-production-task-detail-error';
+        feedback.title = String(error?.message || '');
+        form.insertBefore(feedback, actions);
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        status(message, true);
       } finally {
         if (savingState) savingState.saveInFlight = false;
       }
@@ -976,9 +1019,15 @@
       classificationDirty: false,
       pendingRow: null,
       saveInFlight: false,
+      contextGeneration: window.MeldexProductionApi?.contextGeneration?.() ?? null,
       revision: Number(previous.revision || 0) + 1,
     };
     STATE.set(body, state);
+    if (state.row?.path) {
+      window.GBOptionTargetContext?.set?.({ path: state.row.path, kind: 'file' }, 'production-task');
+      const detailEl = body.closest?.('#rp-detail');
+      if (detailEl) window.GBOptionTargetContext?.renderHeader?.(detailEl);
+    }
     const context = { ...options, body, row: state.row, component, revision: state.revision };
     delete context.eventRequestId;
     const content = buildShell(body, state, context);
@@ -1036,7 +1085,8 @@
       state.pendingRow = row;
       return { synced: false, dirty: true };
     }
-    render(body, { mode: 'detail', row, component: component || state.component });
+    const forceDetail = !!body.querySelector('[data-e2e-id="gb-production-task-detail-form"]');
+    render(body, { mode: 'detail', row, component: component || state.component, forceDetail });
     return { synced: true, dirty: false };
   }
 
@@ -1097,6 +1147,11 @@
     if (!body) return;
     const current = STATE.get(body);
     if ((current?.mode && current.mode !== 'detail') || current?.detailDirty || current?.taskDetailDirty || current?.classificationDirty) return;
+    const rows = component?._productionTaskState?.allView?._rows;
+    if (current?.row && current.component === component && current.contextGeneration != null
+      && current.contextGeneration === window.MeldexProductionApi?.contextGeneration?.()
+      && Array.isArray(rows) && rows.some(row => rowIdentity(row) === rowIdentity(current.row))
+      && body.querySelector('[data-e2e-id="gb-production-task-detail-form"]')) return;
     if (!body.querySelector('[data-e2e-id="gb-production-task-list-sidebar-note"]')) {
       render(body, { mode: 'detail', row: null, component, taskListSurface: true });
     }

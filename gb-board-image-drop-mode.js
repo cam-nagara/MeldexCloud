@@ -50,7 +50,7 @@
   function storeImageDropMode(mode) {
     const next = normalizeImageDropMode(mode) || defaultImageDropMode();
     if (typeof localStorage !== 'undefined') {
-      try { localStorage.setItem(storageKey(), next); } catch (e) {}
+      localStorage.setItem(storageKey(), next);
     }
     return next;
   }
@@ -108,7 +108,8 @@
   }
 
   function fileRawUrl(path) {
-    const base = typeof global.API_BASE === 'string' ? global.API_BASE : (isStandaloneBoardApp() ? '/api' : '');
+    const base = typeof API_BASE === 'string' ? API_BASE
+      : (typeof global.API_BASE === 'string' ? global.API_BASE : '/api');
     return base + '/file-raw?path=' + encodeURIComponent(String(path || '').replace(/\\/g, '/'));
   }
 
@@ -347,21 +348,24 @@
       return modeChangePromise;
     }
     modeChangePromise = (async () => {
+      // Promise の登録後に処理を始め、同期的な保存失敗でも再試行を妨げない。
+      await Promise.resolve();
       try {
+        // 設定を保存できない端末で画像変換やファイル作成だけを先に進めない。
+        storeImageDropMode(next);
         if (imageNodes().length && typeof global.showStatus === 'function') {
           global.showStatus('画像追加方式を切り替えています: ' + label);
         }
         const changed = await convertCurrentBoardImages(next);
-        storeImageDropMode(next);
         if (typeof global.showStatus === 'function') {
           const suffix = changed ? '（' + changed + '件変換）' : '';
           global.showStatus('画像追加方式: ' + label + suffix);
         }
         return next;
       } catch (error) {
-        storeImageDropMode(previous);
+        try { storeImageDropMode(previous); } catch (_) {}
         if (typeof global.showStatus === 'function') {
-          global.showStatus('画像追加方式を切り替えられませんでした: ' + (error?.message || error), true);
+          global.showStatus('画像追加方式の切り替えに失敗しました: ' + (error?.message || error), true);
         }
         return previous;
       } finally {

@@ -1,4 +1,29 @@
 /* Schedule production task workspace */
+.gb-cal-mobile-range { display: none; }
+@media (max-width: 700px), (pointer: coarse) {
+  /* #rp-detail のPC用12px指定より優先し、電話の入力時の文字縮小・自動ズームを避ける。 */
+  body[data-cloud-mobile="1"] #rp-detail .gb-production-sidebar :is(input, select, textarea) {
+    font-size: max(16px, var(--ui-font-16, 16px)) !important;
+  }
+  body[data-cloud-mobile="1"] #rp-detail .gb-production-sidebar button {
+    font-size: max(14px, var(--ui-font-14, 14px)) !important;
+  }
+}
+@media (max-width: 700px) {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
+    .gb-cal-mobile-range:not([hidden]) {
+    display: block;
+    flex: 0 0 auto;
+    min-height: var(--ui-h-sm, 28px);
+    padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
+    box-sizing: border-box;
+    font-size: var(--ui-font-14, 14px);
+    font-weight: 600;
+    color: var(--cal-fg, var(--fg));
+    background: var(--cal-bg, var(--bg));
+  }
+}
+
 .gb-cal-toolbar-actions {
   display: flex;
   flex: 0 0 auto;
@@ -282,6 +307,11 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   resize: vertical;
 }
 
+/* 選択肢の標準280px幅でgridの自動列が広がり、矢印が狭いパネルの外へ出ないようにする。 */
+.gb-production-sidebar-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .gb-production-sidebar-actions,
 .gb-production-template-card-actions,
 .gb-production-dialog-actions {
@@ -355,6 +385,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-embed-host .gb-production-sheet-embed {
   flex: 1 1 auto;
+}
+
+/* 埋め込みシートと同じ領域を使う。内容幅のカードを左端へ寄せない。 */
+.gb-production-embed-host > .gb-production-empty-state {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .gb-production-task-empty-notice {
@@ -512,6 +549,9 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-production-list-switch.db-view-tabs {
   padding: var(--ui-view-tab-row-padding);
   gap: 2px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .gb-production-list-switch.db-view-tabs .gb-production-list-switch-btn {
@@ -797,6 +837,14 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   line-height: 1.6;
 }
 
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-empty-state > .gb-btn {
+    min-height: var(--ui-h-touch, 44px);
+    font-size: var(--ui-font-15, 15px);
+  }
+  .gb-production-empty-state p { font-size: var(--ui-font-14, 14px); }
+}
+
 /* 制作管理UX改善計画（2026-08-04）§6-2: タスク詳細サイドバーの読み取り専用表示（予定・目標時間） */
 .gb-production-sidebar-readonly-value {
   padding: 5px 7px;
@@ -921,6 +969,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-task-hierarchy label {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
 }
 
@@ -1428,11 +1477,12 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--ui-font-12, 12px);
   table-layout: fixed;
 }
 
 .gb-production-all-flat-table thead th {
+  font-size: var(--ui-font-12, 12px);
   position: sticky;
   top: 0;
   z-index: 2;
@@ -1495,12 +1545,26 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   color: var(--cal-accent, var(--accent));
 }
 
-.gb-production-all-flat-select-col {
-  width: 32px;
+.gb-production-all-flat-table .gb-production-all-flat-select-col {
+  width: var(--production-select-column-width, 32px);
+  min-width: var(--production-select-column-width, 32px);
+  padding: 0;
+  text-align: center;
+}
+
+.gb-production-all-flat-table th,
+.gb-production-all-flat-table td {
+  font-size: var(--ui-font-12, 12px);
+  box-sizing: border-box;
 }
 
 .gb-production-all-flat-table td {
-  padding: 5px 8px;
+  height: var(--ui-row-height, 22px);
+  padding: 0 var(--ui-space-4, 8px);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-bottom: 1px solid var(--cal-grid-line, var(--border));
   vertical-align: middle;
 }
@@ -1513,13 +1577,24 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   background: var(--cal-cell-hover-bg, var(--ui-hover-bg, var(--bg3)));
 }
 
+.gb-production-all-flat-work-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2, 4px);
+  min-width: 0;
+}
+
 .gb-production-all-flat-work-text {
-  margin-right: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gb-production-all-flat-work-jump {
-  min-width: 22px;
-  min-height: 22px;
+  flex: 0 0 auto;
+  min-width: var(--ui-h-2xs, 18px);
+  min-height: var(--ui-h-2xs, 18px);
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -1537,10 +1612,17 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   background: var(--cal-control-bg, var(--bg));
 }
 
-.gb-production-all-flat-no-rows {
-  padding: 24px 10px;
-  text-align: center;
+.gb-production-all-flat-table td.gb-production-all-flat-no-rows {
+  padding: 24px 12px;
+  text-align: left;
+  overflow: visible;
   color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-all-flat-no-rows > span {
+  display: inline-block;
+  position: sticky;
+  left: 12px;
 }
 
 .gb-production-all-flat-load-more {
@@ -1581,4 +1663,16 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-all-flat-search,
   .gb-production-all-flat-filter { font-size: 14px; }
   .gb-production-all-flat-status { font-size: 12px; }
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-all-view { --production-select-column-width: var(--ui-h-touch, 44px); }
+  .gb-production-all-flat-table td,
+  .gb-production-all-flat-table th {
+    height: var(--ui-h-touch, 44px);
+  }
+  .gb-production-all-flat-work-jump {
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+  }
 }

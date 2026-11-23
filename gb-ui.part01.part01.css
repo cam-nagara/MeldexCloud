@@ -8,6 +8,11 @@
    Phase 1: UI Token
    ============================================================ */
 :root {
+  /* Document outlines: note TOC and viewer page list share the same surface. */
+  --ui-outline-padding: 8px;
+  --ui-outline-font-size: 12px;
+  --ui-outline-bg: var(--bg2);
+  --ui-outline-border: var(--border);
   /* 色 — 意味ベース別名（gb-theme.css の素の変数を直接参照しないための層） */
   --ui-bg-app: var(--bg);
   --ui-bg-panel: var(--bg2);
@@ -505,7 +510,7 @@
 .gb-btn-primary {
   background: var(--ui-accent);
   border-color: var(--ui-accent);
-  color: var(--ui-fg-strong);
+  color: var(--ui-accent-fg, var(--ui-fg-strong));
 }
 .gb-btn-primary:hover { background: color-mix(in srgb, var(--ui-accent) 85%, #fff); }
 .gb-btn-primary:active { background: color-mix(in srgb, var(--ui-accent) 70%, #000); }

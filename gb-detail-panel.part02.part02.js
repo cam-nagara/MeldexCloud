@@ -108,7 +108,7 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'form-app' && _currentDetailTab === 'form-field') switchDetailTab(null);
   const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'map', 'form-app']);
   const dbTypes = new Set(['database']);
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote']);
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'board', 'scriptnote', 'form-app']);
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
   if (typeof showNoteRubyDetailTab === 'function') showNoteRubyDetailTab(type === 'page');

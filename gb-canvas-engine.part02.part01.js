@@ -26,7 +26,7 @@ function bdDrawFrames(options = {}) {
     gNodes.forEach(n => {
       const el=document.getElementById('bdn-'+n.id);
       x0=Math.min(x0,n.x); y0=Math.min(y0,n.y);
-      x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
+      x1=Math.max(x1,n.x+(el?.offsetWidth||n._rw||n.w||160)); y1=Math.max(y1,n.y+(el?.offsetHeight||n._rh||n.h||36));
     });
     if (!gNodes.length) {
       x0 = +g.x + 12; y0 = +g.y + 22; x1 = x0 + Math.max(1, +g.w - 24); y1 = y0 + Math.max(1, +g.h - 34);
@@ -53,9 +53,19 @@ function bdDrawFrames(options = {}) {
     if (Number.isFinite(+groupStyle.labelFontSize)) label.style.fontSize = Math.max(8, +groupStyle.labelFontSize) + 'px';
     if (groupStyle.labelFontFamily) label.style.fontFamily = groupStyle.labelFontFamily;
     if (groupStyle.labelBold) label.style.fontWeight = '700';
+    if (g.collapsed) {
+      const fontSize = Math.max(8, +groupStyle.labelFontSize || 11);
+      const borderWidth = Math.max(0, +groupStyle.borderWidth || 2);
+      const width = Math.min(400, Math.max(120, String(g.name || '').length * fontSize * 0.8 + 24));
+      const height = Math.max(32, fontSize + 4 + borderWidth * 2);
+      frame.style.width = width + 'px'; frame.style.height = height + 'px';
+      g.w = width; g.h = height;
+      label.title = g.name || '';
+    }
     label.style.cursor = 'move';
     label.ondblclick = (ev) => {
       ev.stopPropagation();
+      if (g.locked) return;
       label.contentEditable = 'true'; label.focus();
       label.style.cursor = 'text';
       const s=window.getSelection(), r=document.createRange(); r.selectNodeContents(label); s.removeAllRanges(); s.addRange(r);
@@ -72,18 +82,23 @@ function bdDrawFrames(options = {}) {
         bdDirty();
       };
       label.onblur = finish;
-      label.onkeydown = (ke) => { if(ke.key==='Enter'){ke.preventDefault();label.blur();} if(ke.key==='Escape'){label.textContent=g.name;label.blur();} ke.stopPropagation(); };
+      label.onkeydown = (ke) => {
+        ke.stopPropagation();
+        if (ke.isComposing || ke.keyCode === 229) return;
+        if (ke.key === 'Enter') { ke.preventDefault(); label.blur(); }
+        if (ke.key === 'Escape') { label.textContent = g.name; label.blur(); }
+      };
     };
     // グループのドラッグ移動 (ユーザー要望)。label の pointerdown でドラッグ開始、
     // document の pointermove/up を使って group.nodeIds 内の全カードを移動する。
     // PDRAG_THRESHOLD を超えたら「ドラッグ」と判定し、それ未満のクリックは通常のクリック扱い。
     label.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
-      if (g.locked) return;
+      if (g.locked) { ev.preventDefault(); ev.stopPropagation(); return; }
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
-      const zoom = bdSafeZoom(bd.zoom);
+      const startWorld = bdScreenToWorld(startX, startY);
       // 対象ノード (contained 以外のグループメンバー) の元座標を保存
       const targets = (g.nodeIds || [])
         .map(id => bd.nodes.find(n => n.id === id))
@@ -93,8 +108,11 @@ function bdDrawFrames(options = {}) {
       let dragged = false;
       const THRESHOLD = 4;
       const onMove = (mv) => {
-        const dx = (mv.clientX - startX) / zoom;
-        const dy = (mv.clientY - startY) / zoom;
+        // グループも通常トピックと同じく、ボードの回転・倍率・アプリ倍率を
+        // 含む座標変換を通す。画面の差を倍率だけで割ると回転中に斜めへずれる。
+        const world = bdScreenToWorld(mv.clientX, mv.clientY);
+        const dx = world.x - startWorld.x;
+        const dy = world.y - startWorld.y;
         if (!dragged) {
           if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < THRESHOLD) return;
           dragged = true;
@@ -159,9 +177,10 @@ function bdUpdateFramesForNodes(nodeIds) {
     });
     frame.style.left = `${x0 - 12}px`;
     frame.style.top = `${y0 - 22}px`;
+    group.x = x0 - 12; group.y = y0 - 22;
+    if (group.collapsed) return;
     frame.style.width = `${x1 - x0 + 24}px`;
     frame.style.height = `${y1 - y0 + 34}px`;
-    group.x = x0 - 12; group.y = y0 - 22;
     group.w = x1 - x0 + 24; group.h = y1 - y0 + 34;
   });
 }

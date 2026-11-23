@@ -193,9 +193,10 @@
       throw new Error('ファイル保護モジュールが未読込のため、安全に保存できません');
     }
   }
-  async function _prepareWorkspace() {
+  async function _prepareWorkspace(isCurrent = () => true) {
     window.MeldexRuntimeAdapter?.setMode?.('dropbox');
     const session = await window.MeldexDropboxAuth.getValidSession();
+    if (!isCurrent()) throw new Error('接続確認を中断しました。再送できます');
     state.connected = !!session?.accessToken;
     if (!state.connected) return false;
     await window.MeldexStorageAdapter.restoreWorkspace();
@@ -209,7 +210,7 @@
     }
     await window.MeldexSourceFolderRegistry.loadRegistry({ writeIfMissing: true });
   }
-  async function _loadRoots() {
+  async function _loadRoots(isCurrent = () => true) {
     if (!state.connected) {
       state.roots = [];
       state.allRoots = [];
@@ -220,6 +221,7 @@
     const roots = typeof registry.loadOutlinerRoots === 'function'
       ? await registry.loadOutlinerRoots()
       : (await registry.loadRegistry({ writeIfMissing: false })).roots.map((root) => registry.toOutlinerRoot(root)).filter(Boolean);
+    if (!isCurrent()) throw new Error('保存先の確認を中断しました。再送できます');
     state.allRoots = roots;
     state.roots = roots.filter((root) => root?.visible !== false);
     const appKey = ACTIVE_ROOT_KEY + ':' + getAppSpec().id;
@@ -265,23 +267,39 @@
   async function init() {
     if (!isCloudMode()) return { cloud: false, connected: false };
     if (state.initPromise) return state.initPromise;
+    const attempt = state.initializationAttempt = (state.initializationAttempt || 0) + 1;
+    const isCurrent = () => state.initializationAttempt === attempt;
     state.initPromise = (async () => {
+      // Phone startup must fail visibly rather than cache an unresolved init
+      // forever. A failed read is retryable through the ordinary init path.
+      const read = async (label, task) => {
+        state.initializationStage = label;
+        if (getAppSpec().id !== 'quick-memo') return task();
+        let timer;
+        try {
+          return await Promise.race([Promise.resolve().then(task), new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(label + 'に時間がかかっています。今すぐ再送してください')), 12000);
+          })]);
+        } finally { clearTimeout(timer); }
+      };
       _requireReadDependencies();
       window.MeldexRuntimeAdapter?.setMode?.('dropbox');
-      const callback = await window.MeldexDropboxAuth.handleRedirectCallback();
+      const callback = await read('Dropboxの接続情報', () => window.MeldexDropboxAuth.handleRedirectCallback());
       if (callback?.handled && callback.ok === false) throw new Error(callback.error || 'Dropboxへ接続できませんでした');
-      await window.MeldexDropboxHomeHandoff?.prepareLaunch?.();
-      await window.MeldexDropboxSessionBroker?.prepareLaunch?.();
+      await read('ホーム画面からの接続引継ぎ', () => window.MeldexDropboxHomeHandoff?.prepareLaunch?.());
+      await read('アカウント接続の復元', () => window.MeldexDropboxSessionBroker?.prepareLaunch?.());
       if (callback?.handled && callback.ok === true) await _setupAfterAuthorization();
-      await _prepareWorkspace();
-      await _loadRoots();
+      await read('Dropboxのアカウントとホーム', () => _prepareWorkspace(isCurrent));
+      await read('保存先と共有設定', () => _loadRoots(isCurrent));
       state.config = _makeConfig('');
       state.initialized = true;
+      state.initializationStage = '';
       installAdapters();
       _dispatch('meldex:standalone-cloud-ready', getStatus());
       if (!state.connected) _dispatch('meldex:standalone-auth-required', getStatus());
       return getStatus();
     })().catch((error) => {
+      if (isCurrent()) state.initializationAttempt += 1;
       state.initPromise = null;
       state.initialized = false;
       _dispatch('meldex:standalone-cloud-error', { error });
@@ -298,6 +316,7 @@
   function getStatus() {
     return {
       cloud: isCloudMode(), initialized: state.initialized, connected: state.connected,
+      initializationStage: state.initializationStage || '',
       app: getAppSpec().id, roots: getRoots(), activeRoot: getActiveRoot(),
       workspace: window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null,
     };

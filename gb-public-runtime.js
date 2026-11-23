@@ -37,6 +37,7 @@ const MeldexPublicRuntime = (() => {
     + "  var form = document.querySelector('form[data-publish-form]');\n"
     + "  if (!form) return;\n"
     + "  var msg = document.getElementById('meldex-publish-msg');\n"
+    + "  var pendingKey = '', pendingId = '', pendingName = '';\n"
     + "  function successMessage() { return cfg.success_message || cfg.successMessage || '送信しました'; }\n"
     + "  function pad2(value) { return String(value).padStart(2, '0'); }\n"
     + "  function templateEntityName(template) {\n"
@@ -117,6 +118,11 @@ const MeldexPublicRuntime = (() => {
     + "  form.addEventListener('submit', async function (e) {\n"
     + "    e.preventDefault();\n"
     + "    if (!cfg.form_submit_enabled) { if (msg) msg.textContent = '現在受付停止中です'; return; }\n"
+    + "    if (form._meldexSubmitting) return;\n"
+    + "    form._meldexSubmitting = true;\n"
+    + "    var submitButton = form.querySelector('button[type=submit]'), wasDisabled = submitButton && submitButton.disabled;\n"
+    + "    if (submitButton) submitButton.disabled = true;\n"
+    + "    try {\n"
     + "    var limited = form.querySelectorAll('[data-form-min-length], [data-form-max-length]');\n"
     + "    for (var n = 0; n < limited.length; n += 1) {\n"
     + "      var input = limited[n], raw = String(input.value || '').trim(), error = '';\n"
@@ -137,10 +143,23 @@ const MeldexPublicRuntime = (() => {
     + "      db_path: cfg.db_path || '',\n"
     + "      token: cfg.form_submit_token || '',\n"
     + "      form_id: cfg.form_id || '',\n"
+    + "      form_source_id: cfg.form_source_id || '',\n"
     + "      name: buildEntityName(fields),\n"
     + "      fields: fields\n"
     + "    };\n"
+    + "    var key = JSON.stringify([body.form_source_id, body.token, body.form_id, fields]);\n"
+    + "    if (key !== pendingKey) {\n"
+    + "      var bytes = new Uint8Array(16); crypto.getRandomValues(bytes);\n"
+    + "      pendingId = Array.from(bytes).map(function(v){return v.toString(16).padStart(2,'0');}).join('');\n"
+    + "      pendingKey = key; pendingName = body.name;\n"
+    + "    }\n"
+    + "    body.submission_id = pendingId; body.name = pendingName;\n"
     + "    try {\n"
+    + "      if (cfg.intake) {\n"
+    + "        await MeldexCloudFormRelay.submitViaCloud(cfg.intake, body);\n"
+    + "        if (msg) msg.textContent = '回答を受け付けました。作成者がMeldexを開くとシートへ反映されます';\n"
+    + "        pendingKey = ''; form.reset(); return;\n"
+    + "      }\n"
     + "      var res = await fetch(cfg.submit_url || '/api/public-form/submit', {\n"
     + "        method: 'POST', headers: { 'Content-Type': 'application/json' },\n"
     + "        body: JSON.stringify(body)\n"
@@ -148,11 +167,12 @@ const MeldexPublicRuntime = (() => {
     + "      if (msg) msg.textContent = res.ok ? successMessage() : ('送信失敗 (' + res.status + ')');\n"
     + "      if (res.ok) {\n"
     + "        postFeedbackToGoogle({ dbPath: body.db_path, formId: body.form_id, fields: fields, source: 'public-form', userAgent: navigator.userAgent || '' });\n"
-    + "        form.reset();\n"
+    + "        pendingKey = ''; form.reset();\n"
     + "      }\n"
     + "    } catch (err) {\n"
     + "      if (msg) msg.textContent = '送信失敗: ' + (err && err.message || err);\n"
     + "    }\n"
+    + "    } finally { form._meldexSubmitting = false; if (submitButton) submitButton.disabled = !!wasDisabled; }\n"
     + "  });\n"
     + "  }\n"
     + "  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();\n"
@@ -193,15 +213,16 @@ const MeldexPublicRuntime = (() => {
         notFound: 'ノートが開かれていません',
       };
     }
-    if (viewType === 'database') {
+    if (viewType === 'database' || viewType === 'form-app') {
+      const app = viewType === 'form-app' ? publishCfg.form_app : null;
       // 現在の DB ビューモードで分岐: フォームビューならフォームを、それ以外はテーブルを公開
-      const dbPath = (typeof state !== 'undefined' && state.currentDbPath) || '';
-      const viewMode = (typeof getCurrentViewMode === 'function' && dbPath) ? getCurrentViewMode(dbPath) : (state?.view || 'pivot');
+      const dbPath = app?.ctx.dbPath || (typeof state !== 'undefined' && state.currentDbPath) || '';
+      const viewMode = app ? 'form' : (typeof getCurrentViewMode === 'function' && dbPath) ? getCurrentViewMode(dbPath) : (state?.view || 'pivot');
       if (viewMode === 'form') {
         // 公開用フォームを新規構築 (_buildFormAnswerPanel で publicMode=true 指定)
-        const props = state.pivotData?.properties || [];
-        const propTypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(dbPath) || {} : {};
-        const formCfg = (typeof getActiveFormConfig === 'function')
+        const props = app?.ctx.pivotData?.properties || state.pivotData?.properties || [];
+        const propTypes = (typeof getPropertyTypes === 'function') ? getPropertyTypes(dbPath, app?.ctx) || {} : {};
+        const formCfg = app ? app.getConfig(props, propTypes) : (typeof getActiveFormConfig === 'function')
           ? getActiveFormConfig(dbPath, props, propTypes)
           : null;
         if (!formCfg) return { el: null, cssFiles: [], extraCss: '', notFound: 'フォーム設定を取得できません' };
@@ -508,11 +529,14 @@ const MeldexPublicRuntime = (() => {
       fontCss = subset?.css || await MeldexExportHtml.embedFont(fontWeights, assetCollector);
     }
 
-    const isFormPublication = !!def.preserveFormControls && !!clone.querySelector('form[data-publish-form]');
+    const isFormPublication = !!def.preserveFormControls && !!(clone.matches?.('form[data-publish-form]') || clone.querySelector('form[data-publish-form]'));
     // ランタイム設定は公開フォームにだけ埋め込む。通常公開へdb pathやtokenを
     // 混ぜない。
     const runtimeCfg = isFormPublication ? {
-      db_path: publishCfg.db_path || (typeof state !== 'undefined' && state.currentDbPath) || '',
+      db_path: viewType === 'form-app' ? '' : publishCfg.db_path || (typeof state !== 'undefined' && state.currentDbPath) || '',
+      form_source_id: publishCfg.form_source_id || '',
+      title: publishCfg.title || '',
+      intake: publishCfg.intake || null,
       form_submit_enabled: !!publishCfg.form_submit_enabled,
       form_submit_token: publishCfg.form_submit_token || '',
       form_id: publishCfg.form_id || '',
@@ -540,12 +564,13 @@ const MeldexPublicRuntime = (() => {
     const csp = isFormPublication
       ? `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; script-src 'unsafe-inline'; connect-src ${Array.from(new Set(connectOrigins)).join(' ') || "'none'"}; form-action 'none'`
       : `default-src 'none'; style-src 'unsafe-inline'; img-src ${assetSource}; font-src ${assetSource}; media-src ${assetSource}; form-action 'none'`;
+    const relayScript = runtimeCfg.intake ? MeldexCloudFormRelay.publicRuntimeSource() : '';
     const extraHeadHtml = '<meta http-equiv="Content-Security-Policy" content="'
       + MeldexEscape.html(csp) + '">\n'
       + (isFormPublication
         ? '<script type="application/json" id="meldex-publish-cfg">'
           + _jsonForScript(runtimeCfg)
-          + '</script>\n<script>' + RUNTIME_SCRIPT + '</script>'
+          + '</script>\n' + (relayScript ? '<script>' + relayScript.replace(/<\/script/gi, '<\\/script') + '</script>\n' : '') + '<script>' + RUNTIME_SCRIPT + '</script>'
         : '');
 
     // body: クローン済み HTML + メッセージ領域

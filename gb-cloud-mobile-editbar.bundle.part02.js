@@ -1,3 +1,12 @@
+
+  function _openAnnotationColor() {
+    const swatch = document.getElementById('ann-color-swatch');
+    if (!swatch) return false;
+    swatch.click();
+    return true;
+  }
+
+  function _toggleAnnotationVisibility() {
     if (_callGlobal('toggleOverlayVisibility')) {
       _syncAnnotationBarState();
       return true;

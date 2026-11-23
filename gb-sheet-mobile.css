@@ -108,7 +108,7 @@
     min-width: 44px;
     min-height: 44px;
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb) {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb) {
     width: var(--ui-h-touch, 44px);
     height: var(--ui-h-touch, 44px);
     min-width: var(--ui-h-touch, 44px);
@@ -116,7 +116,7 @@
     border: 0;
     background: transparent;
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::before {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb)::before {
     content: '';
     position: absolute;
     width: var(--ui-h-xs, 22px);
@@ -127,11 +127,11 @@
     border-radius: var(--ui-radius-xs);
     background: var(--ui-bg-app);
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb):checked::before {
     border-color: var(--ui-accent);
     background: var(--ui-accent);
   }
-  :is(#pivot-table, .pivot-table) input:is(.row-select-cb, .row-select-all-cb)::after {
+  :is(#pivot-table, .pivot-table, .gb-production-all-flat-table) input:is(.row-select-cb, .row-select-all-cb)::after {
     z-index: 1;
   }
 

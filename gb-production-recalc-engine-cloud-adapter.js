@@ -102,7 +102,8 @@
       const rangeText = propValueFromFrontmatter(fm, '作業予定日時');
       const planned = rangeValue(rangeText);
       const plannedSegments = Engine.parseSegments(propValueFromFrontmatter(fm, '作業予定区間'));
-      const workTitle = propValueFromFrontmatter(fm, '作品タイトル') || propValueFromFrontmatter(fm, '作品タイトル_話数');
+      const workTitle = propValueFromFrontmatter(fm, '作品タイトル') || propValueFromFrontmatter(fm, '作品タイトル_話数')
+        || String(entry.inferredWorkTitle || '');
       const assigneeFixed = Engine.truthy(propValueFromFrontmatter(fm, '担当者固定'));
       rows.push({
         path: entry.path,
@@ -122,6 +123,7 @@
         current_segments: plannedSegments,
         planned_hours: Engine.safeFloat(propValueFromFrontmatter(fm, '作業予定時間'), 0),
         target_hours: Engine.safeFloat(propValueFromFrontmatter(fm, '目標作業時間_値'), 1),
+        estimate_configured: Engine.safeFloat(propValueFromFrontmatter(fm, '目標作業時間_値'), 0) > 0,
         creation_key: propValueFromFrontmatter(fm, '作成キー'),
         assignee_fixed: assigneeFixed,
         fixed_user: assigneeFixed ? propValueFromFrontmatter(fm, '担当者') : '',
@@ -167,12 +169,13 @@
 
   async function loadShiftRows(provider, internals, deps, periodValue) {
     const all = await deps.readCalendarStore(provider, internals, 'shifts');
-    const filtered = (all || []).filter(row => row && row.type === 'work' && row.date >= periodValue.start && row.date <= periodValue.end);
+    const filtered = (all || []).filter(row => row && row.date >= periodValue.start && row.date <= periodValue.end);
     filtered.sort((a, b) => (_SHIFT_SORT_KEY(a) < _SHIFT_SORT_KEY(b) ? -1 : _SHIFT_SORT_KEY(a) > _SHIFT_SORT_KEY(b) ? 1 : 0));
     const rows = [];
     filtered.forEach(row => {
       const parsed = Engine.shiftDatetimes(row);
       if (parsed) rows.push({ ...row, _start: parsed[0], _end: parsed[1] });
+      else if (row.type !== 'work') rows.push({ ...row, _start: new Date(row.date + 'T00:00'), _end: new Date(row.date + 'T00:00') });
     });
     return rows;
   }
@@ -405,14 +408,23 @@
   function applyTaskOptions(tasks, body) {
     const raw = body && (body.taskOptions || body.task_options);
     const optionsByTask = raw && typeof raw === 'object' ? raw : {};
+    const defaultHours = Math.max(0, Engine.safeFloat(body?.default_estimate_hours, 0));
+    const commonDeadline = String(body?.common_deadline || '');
     tasks.forEach(task => {
       const identifiers = [String(task.id || ''), String(task.path || ''), Engine.canonicalTaskPath(task.path)];
       const options = identifiers.map(id => optionsByTask[id]).find(value => value && typeof value === 'object') || {};
+      if (defaultHours && (task.estimate_configured === false || !(task.target_hours > 0))) task.target_hours = defaultHours;
       if (options.remainingHours != null) task.target_hours = Math.max(0, Engine.safeFloat(options.remainingHours, task.target_hours));
+      task.split_allowed = Engine.truthy(options.splitAllowed);
+      task.minimum_slot_minutes = Math.max(10, Number(options.minimumSlotMinutes) || 10);
+      task.parallel_allowed = Engine.truthy(options.parallelAllowed);
+      task.earliest_start = String(options.earliestStart || '');
+      task.required_assignee_count = Math.max(1, Math.floor(Number(options.requiredAssigneeCount) || 1));
       task.candidate_users = Array.isArray(options.assigneeCandidates) ? options.assigneeCandidates.map(String) : [];
       task.dependencies = Array.isArray(options.dependencies) ? options.dependencies.map(String) : [];
       task.required_equipment = Array.isArray(options.requiredEquipment) ? options.requiredEquipment.map(String) : [];
       if (options.deadline) task.deadline = String(options.deadline);
+      else if (commonDeadline && (body?.deadline_policy === 'replace' || !task.deadline)) task.deadline = commonDeadline;
     });
   }
 
@@ -459,6 +471,7 @@
     const scopedTasks = Engine.applyRecalculationScope(tasks, body || {});
     const planResult = Engine.buildPlan(scopedTasks, staff, shifts, periodValue, order, candidates, {
       equipment: Array.isArray(body && body.equipment) ? body.equipment : [],
+      allow_estimate_compression: body?.allowEstimateCompression !== false && body?.allow_estimate_compression !== false,
     });
     const shiftWarnings = await loadShiftWarnings(provider, internals, deps, periodValue);
     const warnings = [...shiftWarnings, ...planResult.warnings];

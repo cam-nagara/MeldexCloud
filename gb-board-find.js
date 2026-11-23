@@ -422,7 +422,9 @@ function _bdFindReplaceOne() {
   }
   if (!target || !replacementResult?.count) return;
   bdPushUndo();
+  const beforeText = target[field];
   target[field] = replacementResult.text;
+  if (field === 'text') void bdPersistEditedNodeText(target, beforeText);
   bdRender(); bdDirty();
   // 再検索後も同じ位置 (置換したマッチの位置) を維持し、そこから次のマッチを表示。
   // 置換で件数が減っていた場合は循環させて先頭に戻す。
@@ -454,7 +456,11 @@ function _bdFindReplaceAll() {
     if (!n.text) return;
     const result = _bdReplaceFindOccurrencesByIndex(n.text, q, r, nodeOccurrences.get(n.id));
     if (result.count) {
-      updates.push(() => { n.text = result.text; });
+      const beforeText = n.text;
+      updates.push(() => {
+        n.text = result.text;
+        void bdPersistEditedNodeText(n, beforeText);
+      });
       count += result.count;
     }
   });

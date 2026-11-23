@@ -363,6 +363,8 @@
     const editableSel = `${editableInputSel}, [contenteditable="true"], [contenteditable="plaintext-only"], [contenteditable]:not([contenteditable="false"]), [role="textbox"]`;
     const interactiveSel = `button, select, input[type=checkbox], input[type=radio], input[type=range], input[type=button], input[type=submit], a[href], [role="button"], [data-vl-guard], ${editableSel}`;
     const pointerGuardSel = '.gb-split-handle, .gb-resize-handle, .resize-handle, .sidebar-resizer, [data-resize-handle], [data-vl-guard-pointer]';
+    const pendingInputs = new WeakMap();
+    let replayingInput = false;
     const toolbarSel = '#app-toolbar, .gb-toolbar, .gb-pane-toolbar, .gb-tool-header, [data-vl-toolbar]';
     const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel, #rp-chat, .gb-tool-chat';
     const isElementNode = (node) => {
@@ -428,6 +430,20 @@
       }
       const range = replay.range;
       if (!range || !range.commonAncestorContainer?.isConnected) return;
+      const command = ({ insertText: 'insertText', insertFromPaste: 'insertText',
+        insertParagraph: 'insertParagraph', insertLineBreak: 'insertLineBreak',
+        deleteContentBackward: 'delete', deleteContentForward: 'forwardDelete' })[replay.inputType];
+      if (command && typeof document.execCommand === 'function') {
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        // Let the browser perform structural edits and emit their real input event.
+        // A replay must not start another asynchronous lock check.
+        replayingInput = true;
+        try { document.execCommand(command, false, command === 'insertText' ? replay.data : null); }
+        finally { replayingInput = false; }
+        return;
+      }
       range.deleteContents();
       const textNode = document.createTextNode(replay.data);
       range.insertNode(textNode);
@@ -473,6 +489,7 @@
       if (value !== undefined) el._vlPrevValue = value;
     };
     const handler = (e) => {
+      if (replayingInput) return;
       try {
         const t = e.target;
         if (!isElementNode(t)) return;
@@ -484,12 +501,21 @@
         if (e.type === 'pointerdown' && !isStructuralPointerGuard(el)) return;
         if (!isInGuardArea(t, info, el, e.type)) return;
         const cached = _cache.get(info.viewKey);
-        if (cached && !cached.locked) {
+        if (cached && !cached.locked && !pendingInputs.has(el)) {
           delete el._vlPrevValue;
           return;
         }
         const prevValue = el._vlPrevValue !== undefined ? el._vlPrevValue : readValue(el);
         const inputReplay = captureInputReplay(e, el);
+        let pendingInput = null;
+        if (inputReplay) {
+          pendingInput = pendingInputs.get(el);
+          if (!pendingInput || pendingInput.viewKey !== info.viewKey) {
+            pendingInput = { viewKey: info.viewKey, count: 0, origin: null, end: null };
+            pendingInputs.set(el, pendingInput);
+          }
+          pendingInput.count++;
+        }
         // ロック状態の初回取得中にドラッグ開始を失わない。解除・確認が
         // 成功し、同じポインターを押し続けている場合だけ開始を再配信する。
         let pointerEnded = false;
@@ -510,7 +536,10 @@
         };
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-        guardAction(info.viewKey, info.kind).then((ok) => {
+        const allowed = pendingInput
+          ? (pendingInput.allowed || (pendingInput.allowed = guardAction(info.viewKey, info.kind)))
+          : guardAction(info.viewKey, info.kind);
+        allowed.then((ok) => {
           try {
             if (!ok) {
               writeValue(el, prevValue);
@@ -524,7 +553,28 @@
               const target = t.isConnected && el.contains?.(t) && typeof t.click === 'function' ? t : el;
               if (typeof target.click === 'function') target.click();
             } else if (inputReplay) {
+              if (getActiveInfo()?.viewKey !== info.viewKey) return;
+              // Several keystrokes can arrive while the same lock request is pending.
+              // Their live ranges all point before the first replayed character.
+              // Continue at the previous replay's end only for that same selection;
+              // a selection deliberately moved elsewhere keeps its own position.
+              const origin = pendingInput.origin;
+              if (inputReplay.kind === 'contenteditable') {
+                const same = origin?.kind === 'contenteditable'
+                  && inputReplay.range?.compareBoundaryPoints(0, origin.range) === 0
+                  && inputReplay.range?.compareBoundaryPoints(2, origin.range) === 0;
+                if (same && pendingInput.end) inputReplay.range = pendingInput.end.cloneRange();
+                else pendingInput.origin = { kind: inputReplay.kind, range: inputReplay.range?.cloneRange() };
+              } else {
+                const same = origin?.kind === 'value' && origin.start === inputReplay.start && origin.end === inputReplay.end;
+                if (same && pendingInput.end !== null) inputReplay.start = inputReplay.end = pendingInput.end;
+                else pendingInput.origin = { kind: inputReplay.kind, start: inputReplay.start, end: inputReplay.end };
+              }
               replayInput(el, inputReplay);
+              const selection = window.getSelection?.();
+              pendingInput.end = inputReplay.kind === 'contenteditable'
+                ? (selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : inputReplay.range?.cloneRange())
+                : inputReplay.start + inputReplay.data.length;
             } else if (replayPointer && !pointerEnded && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {
               const init = event => ({ bubbles: true, cancelable: true, pointerId: e.pointerId,
                 pointerType: e.pointerType, isPrimary: e.isPrimary, button: 0, buttons: 1,
@@ -533,11 +583,11 @@
               if (latestPointer !== e) document.dispatchEvent(new PointerEvent('pointermove', init(latestPointer)));
             }
           } catch (_) {}
-          finally {
-            cleanupPointer();
-            delete el._vlPrevValue;
-          }
-        }).catch(() => { cleanupPointer(); delete el._vlPrevValue; });
+        }).catch(() => {}).finally(() => {
+          if (pendingInput && --pendingInput.count === 0 && pendingInputs.get(el) === pendingInput) pendingInputs.delete(el);
+          cleanupPointer();
+          delete el._vlPrevValue;
+        });
       } catch (_) {}
     };
     document.addEventListener('pointerdown', rememberValue, { capture: true });

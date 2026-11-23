@@ -81,29 +81,41 @@
 
   function legacyGroupsToView(board) {
     const byId = new Map((board.nodes || []).map((node) => [node.id, node.topicRef]));
-    return (board.groups || []).map((group, index) => ({
-      ...clone(group),
-      groupId: String(group.groupId || group.id || `group-${index + 1}`),
-      name: String(group.name || 'グループ'),
-      topicRefs: (group.topicRefs || group.nodeIds || []).map((value) => (
-        value?.sourceId ? value : byId.get(value)
-      )).filter(Boolean).map(clone),
-      styleRef: group.styleRef || null,
-      styleOverrides: clone(group.styleOverrides || group.style || {}),
-      locked: !!group.locked,
-      collapsed: !!group.collapsed,
-      x: Number(group.x) || 0,
-      y: Number(group.y) || 0,
-      w: Number(group.w) || undefined,
-      h: Number(group.h) || undefined,
-    }));
+    return (board.groups || []).map((group, index) => {
+      const saved = clone(group);
+      // 文書側はgroupIdが正本。実行時のDOM用idを追加し直さない。
+      delete saved.id;
+      return {
+        ...saved,
+        groupId: String(group.groupId || group.id || `group-${index + 1}`),
+        name: String(group.name || 'グループ'),
+        topicRefs: (group.topicRefs || group.nodeIds || []).map((value) => (
+          value?.sourceId ? value : byId.get(value)
+        )).filter(Boolean).map(clone),
+        styleRef: group.styleRef || null,
+        styleOverrides: clone(group.styleOverrides || group.style || {}),
+        locked: !!group.locked,
+        collapsed: !!group.collapsed,
+        x: Number(group.x) || 0,
+        y: Number(group.y) || 0,
+        w: Number(group.w) || undefined,
+        h: Number(group.h) || undefined,
+      };
+    });
+  }
+
+  function lineWithoutEditState(line) {
+    const result = clone(line);
+    for (const key of ['_editingInline', '_labelWasEmpty', '_labelPlaceholderUndoCaptured', '_labelEditOriginalLabel']) delete result[key];
+    return result;
   }
 
   function legacyLinesToView(board) {
     const refs = Object.fromEntries((board.nodes || []).map((node) => [node.id, node.topicRef]));
     return (board.connections || []).map((line) => {
-      if (!global.MeldexBoardOutlineEndpoints) return clone(line);
-      return global.MeldexBoardOutlineEndpoints.normalizeLine(line, refs);
+      const saved = lineWithoutEditState(line);
+      if (!global.MeldexBoardOutlineEndpoints) return saved;
+      return global.MeldexBoardOutlineEndpoints.normalizeLine(saved, refs);
     });
   }
 
@@ -365,7 +377,7 @@
   }
 
   function recordText(record) {
-    const title = String(record?.title || '無題');
+    const title = String(record?.title ?? '');
     return typeof record?.note === 'string' && record.note ? `${title}\n${record.note}` : title;
   }
 
@@ -384,10 +396,37 @@
     return changed;
   }
 
+  function runtimeDisplaySignature(board) {
+    const runtime = runtimeForCapture(board);
+    runtime.nodes = runtime.nodes.map(node => ({ ...node, collapsed: !!node.collapsed,
+      _topicCanonicalOnly: !!node._topicCanonicalOnly, _topicReadOnly: !!node._topicReadOnly }));
+    // 共通の保存契約が補ったnullは、端点の自動位置の見た目を変えない。
+    // 追加直後のラインにも同じ既定値を当てて比較し、初回保存で全体を描き直さない。
+    runtime.lines = runtime.lines.map(line => {
+      const result = { ...line };
+      for (const side of ['from', 'to']) {
+        result[side + 'Anchor'] = result[side + 'Anchor'] || null;
+        const endpoint = result[side + 'Endpoint'];
+        if (endpoint) result[side + 'Endpoint'] = { ...endpoint,
+          outlinePosition: endpoint.outlinePosition || null, legacyAnchor: endpoint.legacyAnchor || null };
+      }
+      return result;
+    });
+    const ordered = value => {
+      if (Array.isArray(value)) return value.map(ordered);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])]));
+    };
+    // 保存先のJSONのキー順や、未設定からfalseへの正規化は表示変更ではない。
+    return JSON.stringify(ordered(runtime));
+  }
+
   function reconcileBoardPlacements(board, detail) {
     if (!detail?.viewDocument || normalizePath(board.path) !== normalizePath(detail.dbPath || detail.legacyPath)) {
       return false;
     }
+    const beforeRuntime = runtimeDisplaySignature(board);
+    const beforeViewId = board.activeBoardViewId;
     const document = normalizeTopicDocument(detail.viewDocument, board, board.path);
     // 開いた直後のボードは、手元で作った仮のビューID（board-view:<hash>）を持つ。共通トピックへの移行で
     // 保存先の文書が別のビューIDを返すと、仮のIDで配置を絞り込んで0件になり、全トピックを消した後に
@@ -396,10 +435,15 @@
     const viewIds = new Set((document.boardViews || []).map(view => String(view?.boardViewId || '')));
     const activeId = [board.activeBoardViewId, document.activeBoardViewId, document.boardViews?.[0]?.boardViewId]
       .find(id => id && viewIds.has(String(id))) || null;
+    const members = new Set((document.membership?.manualTopicRefs || []).map(topicKey));
+    const manualMembership = detail.authoritativePlacements === true
+      && !document.systemProvider && document.membership?.mode === 'manual'
+      && detail.mode !== 'preview' && detail.readOnly !== true;
     const placements = (document.placements || []).filter(item => item?.surface === 'board'
-      && (!activeId || String(item.viewId) === String(activeId)));
-    // 保存先の配置が1件も無いのに手元に共通トピックがある時は、手元を消さない（作り直しで中身を失わない）。
-    if (!placements.length && (board.nodes || []).some(node => node?.topicRef)) return false;
+      && (!activeId || String(item.viewId) === String(activeId))
+      && (document.systemProvider || document.membership?.mode !== 'manual' || members.has(topicKey(item.topicRef))));
+    // 手動の登録先を確定できない写しが空でも、手元のトピックを消さない。
+    if (!placements.length && !manualMembership && (board.nodes || []).some(node => node?.topicRef)) return false;
     const allowed = new Set(placements.map(item => topicKey(item.topicRef)));
     const records = new Map((detail.topicRecords || []).map(record => [
       topicKey(record?.topicRef || canonicalRef(detail.sourceId, record?.topicId)), record,
@@ -410,7 +454,10 @@
       if (!existing.has(key)) existing.set(key, []);
       existing.get(key).push(node);
     });
-    const existingNodes = board.nodes || [];
+    // 配置の写しが遅れているだけなら保持する。一方、明示的な登録先の一覧から
+    // 外されたトピックは、移動／「この場所から外す」の結果なので表示からも外す。
+    const existingNodes = (board.nodes || []).filter(node => !manualMembership
+      || !node.topicRef || members.has(topicKey(node.topicRef)));
     const nodes = [];
     placements.forEach((placement, index) => {
       const key = topicKey(placement.topicRef);
@@ -419,7 +466,9 @@
       const visuals = existing.get(key) || [];
       const created = !visuals.length;
       if (created) {
-        const id = `topic-${hashText(key)}`;
+        const legacyId = record?.originDocumentId === document.documentId ? String(record?.legacyNodeId || '') : '';
+        const id = legacyId && !(board.nodes || []).some(node => node.id === legacyId)
+          ? legacyId : `topic-${hashText(key)}`;
         const x = Number.isFinite(+position.x) ? +position.x : 40 + (index % 5) * 180;
         const y = Number.isFinite(+position.y) ? +position.y : 40 + Math.floor(index / 5) * 100;
         const node = typeof global.bdNode === 'function'
@@ -442,8 +491,8 @@
         if (!nodes.some(item => item.id === node.id)) nodes.push(node);
       });
     });
-    // 手元のトピックは消さない。保存先の写しに配置が無いトピック（保存の直後で写しが古い時の、追加したばかりの
-    // トピック等）を外すと、次の保存でファイルからも消えていた（M-014 link で発見: 追加→取り消し→やり直し→再読込の後）。
+    // 配置の写しにまだ無い登録済みトピックも保持する。配置の欠落だけで外すと、
+    // 追加→取り消し→やり直しの後、次の保存でファイルからも消えていた。
     const createdNodes = nodes.filter(node => !existingNodes.includes(node));
     board.nodes = [...existingNodes, ...createdNodes];
     board.topicViewDocument = document;
@@ -451,19 +500,26 @@
     // 写しのビューへ手元の配置・ライン・グループを写してから表示へ当てる（古い写しで手元の配置を戻さない）。
     if (activeId) captureRuntime(board, { commitEdits: false });
     applyView(board, activeView(board));
-    return true;
+    // 保存後や別パネルの操作に続く同じ通知を、配置変更として扱わない。
+    // 文書の照合自体は行うが、表示が同じならカードDOMを作り直す必要はない。
+    return beforeViewId !== board.activeBoardViewId
+      || beforeRuntime !== runtimeDisplaySignature(board);
   }
 
   function canonicalizeBoard(board, detail) {
-    if (board.editing || board.dirty) return { replacementCount: 0, placementsChanged: false, displayChanged: false, deferred: true };
+    if (board.editing || board.dirty || (board.connections || []).some(line => line._editingInline)) {
+      return { replacementCount: 0, placementsChanged: false, displayChanged: false, deferred: true };
+    }
     const sourceId = String(detail?.sourceId || '');
     const mapping = detail?.legacyNodeTopicIds || {};
     const replacements = new Map();
     (board.nodes || []).forEach((node) => {
       const topicId = String(mapping[node.id] || '');
       if (!sourceId || !topicId) return;
-      replacements.set(topicKey(node.topicRef), canonicalRef(sourceId, topicId));
-      node.topicRef = canonicalRef(sourceId, topicId);
+      const nextRef = canonicalRef(sourceId, topicId);
+      if (topicKey(node.topicRef) === topicKey(nextRef)) return;
+      replacements.set(topicKey(node.topicRef), nextRef);
+      node.topicRef = nextRef;
     });
     if (replacements.size) {
       board.nodes.forEach(node => {
@@ -471,11 +527,18 @@
       });
       board.topicViewDocument = replaceDocumentTopicRefs(board.topicViewDocument, replacements);
       board.hiddenTopicRefs = (board.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
-      applyView(board, activeView(board));
+      const runtime = replaceDocumentTopicRefs({ boardViews: [{ groups: board.groups || [], lines: board.connections || [] }] }, replacements).boardViews[0];
+      runtime.groups.forEach((group, index) => Object.assign(board.groups[index], group));
+      runtime.lines.forEach((line, index) => Object.assign(board.connections[index], line));
+      // Binding canonical identities does not switch views. Preserve edits
+      // made since the saved view snapshot, including geometry and camera.
+      captureRuntime(board, { commitEdits: false });
     }
     const placementsChanged = reconcileBoardPlacements(board, detail);
     const displayChanged = updateBoardRecordDisplays(board, detail);
-    if (replacements.size || placementsChanged || displayChanged) {
+    // 保存先の管理番号を結び直してもカードID・見た目は変わらない。
+    // 初回保存のたびに全カードを再生成すると、入力と部分描画を止めてしまう。
+    if (placementsChanged || displayChanged) {
       redraw();
       const active = board.topicViewDocument?.activeViewRef;
       const mountPoint = global._bdToolbarRoot?.()?.querySelector?.('.bd-mixed-sheet-mount');
@@ -541,7 +604,7 @@
   function viewLinesToLegacy(board, lines) {
     const nodeByRef = new Map((board.nodes || []).map((node) => [topicKey(node.topicRef), node.id]));
     return (lines || []).map((line) => {
-      const result = clone(line);
+      const result = lineWithoutEditState(line);
       ['from', 'to'].forEach((side) => {
         const endpoint = result[`${side}Endpoint`];
         if (!endpoint) return;
@@ -567,11 +630,23 @@
   function applyView(board, view) {
     if (!view || !global.MeldexBoardTopicViews) return;
     const next = global.MeldexBoardTopicViews.applyViewState(view, { nodes: board.nodes || [] });
-    board.nodes = next.nodes;
+    // Pointer, label and context-menu handlers retain these objects. Applying
+    // a view must update them in place, otherwise an in-flight edit writes to
+    // a detached copy while the visible board keeps the old value.
+    const retainObjects = (previous, incoming) => {
+      const byId = new Map((previous || []).map(item => [item.id, item]));
+      return incoming.map(item => {
+        const live = byId.get(item.id);
+        if (!live) return item;
+        for (const key of Object.keys(live)) if (!(key in item)) delete live[key];
+        return Object.assign(live, item);
+      });
+    };
+    board.nodes = retainObjects(board.nodes, next.nodes);
     const canonicalIds = new Set(view.canonicalTopicNodeIds || []);
     board.nodes.forEach(node => { if (canonicalIds.has(node.id)) node._topicCanonicalOnly = true; });
-    board.groups = viewGroupsToLegacy(board, view.groups);
-    board.connections = viewLinesToLegacy(board, view.lines);
+    board.groups = retainObjects(board.groups, viewGroupsToLegacy(board, view.groups));
+    board.connections = retainObjects(board.connections, viewLinesToLegacy(board, view.lines));
     board.hiddenTopicRefs = clone(view.hiddenTopicRefs || []);
     const collapsed = new Set((view.collapsedTopicRefs || []).map(topicKey));
     const counts = new Map();
@@ -723,29 +798,59 @@
     const active = () => activeView(board);
     const selectedGroup = (groupId) => (active()?.groups || []).find((group) => group.groupId === groupId) || null;
     const rejectReadOnly = () => ({ ok: false, reason: 'read-only' });
+    const redrawGroups = (previousGroups) => {
+      if (typeof global.bdCollapsedGroupNodeIds !== 'function') {
+        redraw();
+        return;
+      }
+      const before = global.bdCollapsedGroupNodeIds(previousGroups);
+      const after = global.bdCollapsedGroupNodeIds(board.groups || []);
+      const changed = [...new Set([...before, ...after])].filter(id => before.has(id) !== after.has(id));
+      const previousSelection = [...(board.selected || [])];
+      previousSelection.forEach(id => { if (after.has(id)) board.selected.delete(id); });
+      if (after.has(board._activeNode)) board._activeNode = [...(board.selected || [])][0] || null;
+      if (board.selected?.size !== previousSelection.length) global.bdMarkSelectionDirty?.(previousSelection, 'group-collapse');
+      if (typeof global.bdRefreshNodesPartial !== 'function') { redraw(); return; }
+      if (changed.length) global.bdRefreshNodesPartial(changed, 'group-visibility', { boardUi: false });
+      global.bdDrawFrames?.();
+      if (typeof global.bdMarkConnectionDirty === 'function') {
+        (board.connections || []).forEach(line => {
+          if (line.fromEndpoint?.targetKind === 'group' || line.toEndpoint?.targetKind === 'group') {
+            global.bdMarkConnectionDirty(line.id, 'group-frame');
+          }
+        });
+      } else if (changed.length) global.bdDrawConns?.();
+      global.bdSyncBoardUi?.(true);
+    };
     const commitView = (view, label) => {
       if (readOnly) return false;
       const index = board.topicViewDocument.boardViews.findIndex((item) => item.boardViewId === view.boardViewId);
       if (index < 0) return false;
+      const previousGroups = clone(board.groups || []);
       global.bdPushUndo?.(label);
       board.topicViewDocument.boardViews[index] = view;
       applyView(board, view);
       global.bdDirty?.();
-      redraw();
+      redrawGroups(previousGroups);
       return true;
     };
     const commitDocument = (documentValue, label) => {
       if (readOnly) return false;
+      const previousGroups = clone(board.groups || []);
       global.bdPushUndo?.(label);
       board.topicViewDocument = groupsApi.normalizeGroupStyles(documentValue);
       const view = activeView(board);
       if (view) applyView(board, view);
       global.bdDirty?.();
-      redraw();
+      redrawGroups(previousGroups);
       return true;
     };
     const attempt = (callback) => {
-      try { return callback(); }
+      try {
+        // 保存待ちの移動・カメラ・入力を先に取り込み、枠の変更で古い配置へ戻さない。
+        captureRuntime(board);
+        return callback();
+      }
       catch (error) {
         showGroupMessage(error?.message || 'グループを更新できません', true);
         return { ok: false, error };
@@ -811,8 +916,11 @@
           const nextDoc = groupsApi.updateGroupStyle(board.topicViewDocument, group.styleRef, {
             visualStyle: { ...(style?.visualStyle || {}), ...(group.styleOverrides || {}) },
           });
-          commitDocument(nextDoc, '個別上書きをグループスタイルへ反映');
-          return { ok: commitView(groupsApi.updateGroup(active(), groupId, { styleOverrides: {} }), 'グループの個別上書きを解除') };
+          // スタイル更新と個別上書きの解除は一つの操作として取り消す。
+          // 別々に確定すると、1回のUndoでは名前付きスタイルだけ変更後のまま残る。
+          const viewIndex = nextDoc.boardViews.findIndex(view => view.boardViewId === active()?.boardViewId);
+          nextDoc.boardViews[viewIndex] = groupsApi.updateGroup(nextDoc.boardViews[viewIndex], groupId, { styleOverrides: {} });
+          return { ok: commitDocument(nextDoc, '個別上書きをグループスタイルへ反映') };
         });
       },
       removeGroupStyle(groupStyleId, mode, replacementId) {
@@ -1188,6 +1296,7 @@
           cell.style.paddingInlineStart = `${8 + depth * 20}px`;
           if (hasChildren) {
             const toggle = document.createElement('button'); toggle.type = 'button';
+            toggle.dataset.e2eId = `board-sheet-toggle:${viewId}:${node.id}`;
             const collapsed = (view.collapsedTopicRefs || []).some(item => topicKey(item) === topicKey(node.topicRef));
             toggle.textContent = collapsed ? '▸' : '▾'; toggle.setAttribute('aria-label', collapsed ? '展開' : '折りたたむ');
             toggle.setAttribute('aria-expanded', String(!collapsed)); toggle.disabled = readOnly;
@@ -1207,6 +1316,7 @@
         const note = separator < 0 ? '' : text.slice(separator + 1);
         const value = key === 'title' ? title : key === 'note' ? note : key === 'status' ? node.status : node.properties?.[key];
         const input = document.createElement('textarea'); input.rows = 1;
+        input.dataset.e2eId = `board-sheet-cell:${viewId}:${node.id}:${key}`;
         input.setAttribute('aria-label', `${column.name || key}: ${title}`);
         const scalar = value == null || ['string', 'number', 'boolean'].includes(typeof value);
         input.value = global.MeldexTopicDetail?.valueText

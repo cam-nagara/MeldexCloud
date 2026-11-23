@@ -81,6 +81,7 @@
     _buildBrowseItem,
     _sortBrowseItems,
     _linkedItemsForFolder,
+    _folderLinkPathKey,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
     _rewriteStoredPathsBatchForProvider,
@@ -253,18 +254,18 @@
     return links;
   }
 
-  async function _folderLinksStateForProvider(provider) {
+  async function _folderLinksStateForProvider(provider, documentId) {
     if (typeof _readFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データを読み込めません');
     }
-    return _readFolderLinksManaged(provider);
+    return _readFolderLinksManaged(provider, documentId);
   }
 
-  async function _updateFolderLinksStateForProvider(provider, updater) {
+  async function _updateFolderLinksStateForProvider(provider, updater, documentId, writeSession = null) {
     if (typeof _updateFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データの原子的更新を利用できません');
     }
-    return _updateFolderLinksManaged(provider, updater);
+    return _updateFolderLinksManaged(provider, updater, documentId, writeSession);
   }
 
   async function _folderLinksManagementScope(provider) {
@@ -338,8 +339,12 @@
   function _safeTrashRestoreRelativePath(rawPath) {
     const raw = String(rawPath || '').trim().replace(/\\/g, '/');
     const segments = raw.split('/');
-    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
-      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const chatIndex = segments.indexOf('_chat');
+    const chatDocument = chatIndex >= 0 && segments.length === chatIndex + 4
+      && segments[chatIndex + 1] === 'llm' && /\.md$/i.test(segments[segments.length - 1]);
+    if (!raw || raw.startsWith('/') || segments.some((segment, index) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.')
+      || (segment.startsWith('_') && !(chatDocument && index >= chatIndex)))) throw _invalidTrashRestorePath();
     const normalized = _normalizeFolderPath(raw);
     if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
     return normalized;
@@ -712,9 +717,22 @@
   // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
   // 同じ関数スコープの続きとして連結され、最後に .part02.js が `})();` で閉じる
   // (ファイル冒頭のコメント参照。既存の -folder-versions.js と同じ「継続ファイル」方式)。
-/* Durable CAS journal for Cloud duplicate/save-as identity transactions. */
+/* Durable CAS journals; image records stay outside the legacy copy document. */
   const _CLOUD_COPY_COMPLETED_LIMIT = 512;
   const _cloudCopyFlights = new Map();
+  const _cloudImageJournalDocumentId = 'cloud-created-image-identities';
+
+  function _cloudCopyJournalDocumentId(operation) {
+    return operation === 'created-cloud-image-identity' ? _cloudImageJournalDocumentId : undefined;
+  }
+
+  async function _readCloudCopyJournal(provider, operation) {
+    return _folderLinksStateForProvider(provider, _cloudCopyJournalDocumentId(operation));
+  }
+
+  async function _updateCloudCopyJournal(provider, operation, updater, writeSession = null) {
+    return _updateFolderLinksStateForProvider(provider, updater, _cloudCopyJournalDocumentId(operation), writeSession);
+  }
 
   function _canonicalCloudCopyValue(value) {
     if (Array.isArray(value)) return value.map(_canonicalCloudCopyValue);
@@ -731,8 +749,9 @@
   async function _cloudCopyIdentity(provider, operationId, operation, payload) {
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload),
-      key: `${scope}\u0000${operationId}` };
+    const key = `${scope}\u0000${operationId}`;
+    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload), key,
+      writeSession: _cloudCopyFlights.get(key)?.writeSession || null };
   }
 
   function _assertCloudCopyRecord(record, operationId, operation, identity) {
@@ -763,8 +782,10 @@
       }
       return previous.promise;
     }
+    const writeSession = {};
+    identity.writeSession = writeSession;
     const promise = Promise.resolve().then(() => task(identity));
-    const record = { fingerprint: identity.fingerprint, promise };
+    const record = { fingerprint: identity.fingerprint, promise, writeSession };
     _cloudCopyFlights.set(identity.key, record);
     try { return await promise; }
     finally { if (_cloudCopyFlights.get(identity.key) === record) _cloudCopyFlights.delete(identity.key); }
@@ -772,7 +793,7 @@
 
   async function _loadCloudCopyOperation(provider, operationId, operation, payload, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     const record = _normalizeOutlinerOperations(state.outliner_operations)
       .find(row => row.operation_id === operationId) || null;
     _assertCloudCopyRecord(record, operationId, operation, resolved);
@@ -783,7 +804,7 @@
     const bounded = Math.max(1, Math.min(50, Number(limit) || 50));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => (record.state === 'prepared' || record.state === 'awaiting_proof')
         && (!operation || record.operation === operation)
@@ -796,7 +817,7 @@
     const bounded = Math.max(1, Math.min(_CLOUD_COPY_COMPLETED_LIMIT, Number(limit) || 512));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => record.state === 'completed'
         && (!operation || record.operation === operation)
@@ -808,7 +829,7 @@
   async function _prepareCloudCopyOperation(provider, operationId, operation, payload, intent, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const previous = operations.find(row => row.operation_id === operationId) || null;
       _assertCloudCopyRecord(previous, operationId, operation, resolved);
@@ -821,13 +842,13 @@
       };
       return { ...state, outliner_operations: previous ? operations
         : _pruneCloudCopyOperations([...operations, selected]) };
-    });
+    }, resolved.writeSession);
     return selected;
   }
 
   async function _updateCloudCopyIntent(provider, operationId, operation, payload, intent) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -840,12 +861,12 @@
         ...previous, state: nextState, intent: structuredClone(intent), saved_at: new Date().toISOString(),
       };
       return { ...state, outliner_operations: operations };
-    });
+    }, identity.writeSession);
   }
 
   async function _failCloudCopyOperation(provider, operationId, operation, payload, reason) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -863,7 +884,7 @@
   async function _rearmCloudCopyOperation(provider, operationId, operation, payload, publisherToken) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -877,24 +898,3 @@
       delete intent.provider_id;
       delete intent.provider_rev;
       delete intent.sha256;
-      delete intent.aftercare_in_progress;
-      delete intent.aftercare_effects;
-      intent.operation_state = 'awaiting_proof';
-      intent.publisher_token = String(publisherToken || '');
-      intent.claim_boundary = '';
-      intent.aftercare_completed = [];
-      selected = {
-        ...previous, state: 'awaiting_proof', intent,
-        failure_reason: '', saved_at: new Date().toISOString(),
-      };
-      operations[index] = selected;
-      return { ...state, outliner_operations: operations };
-    });
-    return selected;
-  }
-
-  async function _completeCloudCopyOperation(provider, operationId, operation, payload, result) {
-    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    let selected = result;
-    await _updateFolderLinksStateForProvider(provider, state => {
-      const operations = _normalizeOutlinerOperations(state.outliner_operations);

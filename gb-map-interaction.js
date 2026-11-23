@@ -101,6 +101,12 @@
         this.rectangle = document.createElement('div'); this.rectangle.className = 'gb-map-selection-rect'; this.el.appendChild(this.rectangle);
       }
       this.gesture = g; this.block(e); this.el.setPointerCapture(e.pointerId);
+      if (e.pointerType === 'touch' && mode === 'feature') {
+        this.longPressTimer=setTimeout(()=>{
+          if(this.gesture!==g||g.moved||this.touches.size!==1||v.doc.features!==g.source)return;
+          this.cancel();this.menu(e,hit);
+        },450);
+      }
       if (mode === 'erase') this.erase(e);
       if (nav) { this.usedSpace = true; this.el.style.cursor = 'grabbing'; }
     }
@@ -115,6 +121,7 @@
       if (g.pointerId !== e.pointerId) return;
       this.block(e); const p = this.local(e), dx = p[0] - g.start[0], dy = p[1] - g.start[1]; g.last = p;
       g.moved ||= Math.hypot(dx, dy) >= 4;
+      if(g.moved){clearTimeout(this.longPressTimer);this.longPressTimer=null;}
       if(g.mode==='freehand'){if(Math.hypot(p[0]-g.screen[0],p[1]-g.screen[1])>=2&&g.points.length<2048){g.screen=p;g.points.push(this.point(e));v.draft=g.points.slice();v._draft();}}
       else if (g.mode === 'pan') {
         const d = rotate([dx, dy], -g.rotation); v.map.setView(v.map.unproject(g.center.subtract(L.point(...d)), g.zoom), g.zoom, { animate: false });
@@ -143,6 +150,7 @@
       if (hit && !v.doc.layers.find(l => l.id === hit.layer_id)?.locked) { g.erased.add(hit.id); v.previewHidden(g.erased); }
     }
     up(e) {
+      clearTimeout(this.longPressTimer);this.longPressTimer=null;
       const v = this.view, g = this.gesture;
       this.touches.delete(e.pointerId);
       if (!g || !v.map) return;
@@ -166,6 +174,7 @@
     }
     abortPointer(e) { if (this.gesture?.pointerId === e.pointerId || this.touches.has(e.pointerId)) this.reset(); }
     cancel(clearTouches = true) {
+      clearTimeout(this.longPressTimer);this.longPressTimer=null;
       const g = this.gesture; this.gesture = null; this.rectangle?.remove(); this.rectangle = null;
       if (clearTouches && g?.pointerId != null && this.el.hasPointerCapture(g.pointerId)) this.el.releasePointerCapture(g.pointerId);
       if (clearTouches) for (const id of this.touches.keys()) if (this.el.hasPointerCapture(id)) this.el.releasePointerCapture(id);

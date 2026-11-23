@@ -101,6 +101,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
       { id: 'setup', label: 'Meldex本体', panels: ['全般'], view: 'setup', commitMode: 'immediate-safe' },
       { id: 'quick-memo-setup', label: 'クイックメモ', panels: ['全般'], view: 'quick-memo-setup', commitMode: 'immediate-safe' },
       { id: 'file-associations', label: 'ファイル関連付け', panels: ['全般'], view: 'file-associations', commitMode: 'immediate-safe' },
+      { id: 'archive-tools', label: '圧縮・解凍', panels: ['全般'], view: 'archive-tools', commitMode: 'immediate-safe' },
       { id: 'renderlist', label: 'RenderList', panels: ['全般'], view: 'renderlist', commitMode: 'immediate-safe' },
     ],
   },
@@ -205,7 +206,7 @@ function _settingsAutoTagPageVisible() {
 function _settingsNavigationRuntimeTabs() {
   const autoTagVisible = _settingsAutoTagPageVisible();
   const desktop = _settingsDesktopFeaturesAvailable();
-  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates', 'usage-costs']);
+  const desktopPages = new Set(['local-llm', 'extensions', 'file-associations', 'archive-tools', 'renderlist', 'import-schedules', 'feedback-management', 'notion-sync', 'x-account-posts', 'duplicates', 'usage-costs']);
   return MELDEX_SETTINGS_NAVIGATION.map(tab => ({
     ...tab,
     desc: !desktop && tab.id === 'AI' ? 'AIキー、管理者AI、記憶・指示、AI使用量'
@@ -214,7 +215,7 @@ function _settingsNavigationRuntimeTabs() {
       : !desktop && tab.id === 'Webクリップ' ? 'Web Clipper、Xブックマークの共通設定'
       : !desktop && tab.id === 'ゴミ箱・データ保守' ? '削除したファイルの復元、タグのメンテナンス'
       : !desktop && tab.id === 'フィードバック' ? '不具合・要望の報告、送信設定、診断・更新' : tab.desc,
-    pages: tab.pages.filter(page => (page.id !== 'auto-tag' || autoTagVisible) && (desktop || !desktopPages.has(page.id)))
+    pages: tab.pages.filter(page => (page.id !== 'auto-tag' || autoTagVisible) && (desktop || !desktopPages.has(page.id)) && (page.id !== 'archive-tools' || /Windows/i.test(window.navigator?.userAgent || '')))
       .map(page => !desktop && page.id === 'cli' ? { ...page, label: '管理者AI', commitMode: 'immediate-safe' } : page),
   })).filter(tab => tab.pages.length);
 }

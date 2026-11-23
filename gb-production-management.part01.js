@@ -394,6 +394,7 @@
       body: PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {},
     });
     const removedIds = [];
+    const retainedIds = new Set((rows || []).map(_pmShiftId));
     for (const current of currentRows || []) {
       const id = String(current?.id || '');
       if (!id.startsWith('pm-shift-')) continue;
@@ -403,6 +404,8 @@
     }
     for (const shiftId of [...new Set(removedIds)]) {
       await _pmCloudDeleteShiftRecord(provider, internals, shiftId);
+      // 同じシフトの予定ノートはUpsertへ渡し、本文と独自情報を保持する。
+      if (retainedIds.has(shiftId)) continue;
       const schedulePath = await _pmCloudFindByProp(provider, internals, 'スケジュール', '作成キー', shiftId);
       if (schedulePath && journal) await _pmCloudJournalText(journal, schedulePath);
       await _pmCloudDeleteScheduleEntry(provider, schedulePath);
@@ -434,7 +437,7 @@
       ].includes(pathname));
       const provider = await internals._requirePwaProvider(readOnlyRequest ? 'read' : 'readwrite');
       let migrationMeta = {};
-      if (migrateOnFirstDisplay) {
+      if (migrateOnFirstDisplay && await _pmCloudEntryExists(provider, PM_ROOT, internals)) {
         // コミット前レビュー指摘 #15: provider同一性ではなく管理ルートキーで判定する
         // （解決できない場合はprovider単位のフォールバックへ。_pmCloudMigrationAlreadyDone参照）。
         const rootKey = await _pmCloudRootMigrationKey(provider);
@@ -579,12 +582,14 @@
       const registry = await _pmCloudRegisterShiftStaff(rows, journal);
       const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows, journal);
       const removed = new Set(cleanup.removed_ids || []);
+      const pathsByKey = new Map((await _pmCloudListEntries(provider, internals, 'スケジュール'))
+        .map(entry => [_pmCloudPropValue(entry.frontmatter, '作成キー'), entry.path]).filter(([key]) => key));
       let created = 0;
       let updated = 0;
       for (const row of rows) {
         const id = _pmShiftId(row);
         const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
-        await _pmCloudUpsertEntry(
+        const schedulePath = await _pmCloudUpsertEntry(
           provider,
           internals,
           'スケジュール',
@@ -592,8 +597,9 @@
           _pmScheduleProps(row, id),
           '作成キー',
           id,
-          { beforeWrite: path => _pmCloudJournalText(journal, path) },
+          { existingPath: pathsByKey.get(id) || '', skipLookup: true, beforeWrite: path => _pmCloudJournalText(journal, path) },
         );
+        pathsByKey.set(id, schedulePath);
         await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST',
           body: { id, ...row, ...(PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {}) } });
         if (removed.has(id)) updated += 1;
@@ -663,7 +669,9 @@
     const needsSchedule = missing.some(item => item.includes('スケジュール') || item === PM_ROOT);
     const needsTasks = missing.some(item => item.includes('タスクリスト') || item === PM_ROOT);
     if (needsSchedule) {
-      const shifts = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => []);
+      const shifts = await window.MeldexDataAccess.requestJson('/cal/shifts', {
+        body: PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {},
+      }).catch(() => []);
       for (const row of shifts || []) {
         const normalized = _pmNormalizeIncomingShift(row);
         if (!normalized) continue;
@@ -672,7 +680,9 @@
       }
     }
     if (needsTasks) {
-      const events = await window.MeldexDataAccess.requestJson('/cal/events').catch(() => []);
+      const events = await window.MeldexDataAccess.requestJson('/cal/events', {
+        body: PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {},
+      }).catch(() => []);
       for (const row of (events || []).filter(event => event.calendar_source === 'production-task')) {
         const key = 'calendar:' + String(row.external_id || row.id || row.title || '');
         await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.title || '復旧した作業予定', { '担当者': row.user || '', '作業予定日時': row.start && row.end ? `${row.start}|${row.end}` : row.start || '', '状況': '着手待ち', '作成キー': key, '備考': row.description || 'カレンダーから復旧' }, '作成キー', key);

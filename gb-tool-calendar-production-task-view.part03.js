@@ -342,4 +342,15 @@
     if (state) state.root = null;
     return baseDestroy.call(this);
   };
+
+  // 復元された制作管理タブが先に描画されると、部品の読込待ち表示だけが残る。
+  // 部品を登録し終えた時に、その表示中のタブを通常の描画経路へ戻す。
+  if (typeof forEachComponent === 'function') {
+    forEachComponent(instance => {
+      if (instance instanceof CalendarComponent && instance._initialized
+          && instance._surface === 'productionTasks' && instance.el?.isConnected) {
+        instance._render();
+      }
+    });
+  }
 })();

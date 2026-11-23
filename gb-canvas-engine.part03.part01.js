@@ -747,7 +747,12 @@ function bdDrawConns(options) {
           if (!c.label) bdDrawConns({ connIds: [c.id], reason: 'conn-label-empty' });
         };
         labelDiv.onblur = finish;
-        labelDiv.onkeydown = (ke) => { if (ke.key==='Enter'){ke.preventDefault();labelDiv.blur();} if(ke.key==='Escape'){labelDiv.textContent=c.label;labelDiv.blur();} ke.stopPropagation(); };
+        labelDiv.onkeydown = (ke) => {
+          ke.stopPropagation();
+          if (ke.isComposing || ke.keyCode === 229) return;
+          if (ke.key === 'Enter') { ke.preventDefault(); labelDiv.blur(); }
+          if (ke.key === 'Escape') { labelDiv.textContent = c.label; labelDiv.blur(); }
+        };
       };
       labelDiv.ondblclick = (ev) => {
         // Ctrl / Shift / Meta + ダブルクリックは編集に入らない (Phase 5-1 計画書: 複数選択モードを維持)

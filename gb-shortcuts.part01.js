@@ -211,7 +211,7 @@ const GB_SHORTCUTS = {
   'board.mouseRectSelect': { key: '', display: '左ドラッグ（空白）',      label: '範囲選択',                        scope: 'board', readonly: true },
   'board.mouseMoveCard':   { key: '', display: '左ドラッグ（トピック）',  label: 'トピックを移動',                  scope: 'board', readonly: true },
   'board.mouseRightPan':   { key: '', display: '右ドラッグ（空白）',      label: '表示位置を移動',                  scope: 'board', readonly: true },
-  'board.mouseLine':       { key: '', display: '右ドラッグ（トピック）',  label: 'ラインを引く',                    scope: 'board', readonly: true },
+  'board.mouseLine':       { key: '', display: 'Alt+左ドラッグ（トピック／空白）',  label: 'ラインを引く',                    scope: 'board', readonly: true },
   'board.wheelZoom':       { key: '', display: 'ホイール',               label: '拡大・縮小',                      scope: 'board', readonly: true },
   'board.middlePan':       { key: '', display: '中ボタンドラッグ',        label: '表示位置を移動',                  scope: 'board', readonly: true },
   'board.spacePan':        { key: '', display: 'Space+ドラッグ',         label: '表示位置を移動',                  scope: 'board', readonly: true },

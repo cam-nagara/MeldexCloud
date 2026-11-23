@@ -4,19 +4,21 @@
   let active = null;
   function closePopup(restore = true) {
     if (!active) return;
-    const { popup, anchor, outside, keydown } = active;
+    const { popup, anchor, outside, keydown, onClose } = active;
     active = null;
     document.removeEventListener('pointerdown', outside, true);
     document.removeEventListener('keydown', keydown, true);
     popup.remove(); anchor.setAttribute('aria-expanded', 'false');
+    onClose?.();
     if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
   }
-  function openPopup(anchor, title, content) {
+  function openPopup(anchor, title, content, options = {}) {
     closePopup(false);
     const popup = document.createElement('div');
     popup.className = 'gb-context-menu gb-search-filter-popup';
     popup.dataset.uiComponent = 'filter-popup';
     popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', title);
+    popup.setAttribute('aria-modal', 'false');
     popup.append(content); document.body.append(popup);
     anchor.setAttribute('aria-expanded', 'true');
     const outside = event => { if (!popup.contains(event.target) && !anchor.contains(event.target)) closePopup(false); };
@@ -24,7 +26,7 @@
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closePopup(); }
       else if (event.key === 'Tab' && typeof gbCyclePopupFocus === 'function') { event.preventDefault(); gbCyclePopupFocus(popup, event.shiftKey); }
     };
-    active = { popup, anchor, outside, keydown };
+    active = { popup, anchor, outside, keydown, onClose: options.onClose };
     global.attachMeldexDropdownCloseButton(popup, { trigger: anchor, close: () => closePopup() });
     positionPopup(popup, anchor.getBoundingClientRect(), { prefer: 'below' });
     document.addEventListener('pointerdown', outside, true);
@@ -54,7 +56,16 @@
     };
     input.addEventListener('input', event => { if (event.isComposing) return; value.query = input.value; notify(); });
     input.addEventListener('compositionend', () => { value.query = input.value; notify(); });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && input.value && !event.isComposing) {
+        event.preventDefault(); event.stopPropagation(); input.value = ''; value.query = ''; notify();
+      }
+    });
     function showFilter(def, anchor) {
+      if (typeof def.content === 'function') {
+        openPopup(anchor, def.label, def.content(), { onClose: def.onClose });
+        return;
+      }
       const content = document.createElement('div'); content.className = 'gb-search-filter-fields';
       const add = (label, type, initial, change) => {
         const wrap = document.createElement('label'); wrap.textContent = label;
@@ -80,15 +91,16 @@
     }
     (options.filters || []).forEach(def => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'tb-icon-btn';
+      button.dataset.e2eId = (options.id || 'search-filter') + '-' + def.id;
       button.setAttribute('aria-label', def.label); button.setAttribute('data-tooltip', def.label);
       button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-pressed', 'false');
       button.innerHTML = typeof lucide === 'function' ? lucide(def.icon || 'filter', 16) : def.label;
       button.onclick = () => active?.anchor === button ? closePopup() : showFilter(def, button);
       controls.append(button); buttons.set(def.id, button);
     });
-    return { el, input, actions, getValue: () => structuredClone(value),
+    return { el, input, actions, controls, getValue: () => structuredClone(value),
       setValue(next, emit = false) { value = { query: next?.query || '', filters: { ...(next?.filters || {}) } }; input.value = value.query; notify(emit); },
-      destroy() { if (active && el.contains(active.anchor)) closePopup(false); el.remove(); },
+      destroy() { if (active && (el.contains(active.anchor) || controls.contains(active.anchor))) closePopup(false); controls.remove(); el.remove(); },
     };
   }
   global.MeldexSearchFilterRow = Object.freeze({ create });

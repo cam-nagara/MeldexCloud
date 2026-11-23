@@ -24,6 +24,76 @@ function bdOpenLineStyleManager(source) {
   if (typeof switchDetailTab === 'function') switchDetailTab('board-line-style');
 }
 
+// 表示切替で本文や選択、オプションパネルを作り直さない。
+function bdApplyDisplayFilterChange(key) {
+  const root = typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document;
+  const canvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
+  if (key === '_showShadow') {
+    canvas?.classList.toggle('bd-shadow-on', !!bd._showShadow);
+    return;
+  }
+  if (['showConnections', 'showConnLabels', '_textRotateOnLine'].includes(key)) {
+    if (typeof bdDrawConns === 'function') {
+      if (key === 'showConnections') bdDrawConns();
+      else bdDrawConns({ connIds: (bd.connections || []).filter(conn => conn.label).map(conn => conn.id), reason: 'display-label-filter' });
+    }
+  } else {
+    const highlight = key === 'highlightParentChildGroups' && typeof bdCreateRenderContext === 'function'
+      ? bdCreateRenderContext().parentChildGroupColors : null;
+    const geometryIds = [];
+    for (const node of bd.nodes || []) {
+      const div = root?.querySelector?.('#bdn-' + CSS.escape(node.id));
+      if (!div) continue;
+      const enabled = bd.displayFilters?.[key] !== false;
+      const remove = selector => div.querySelectorAll(':scope > ' + selector).forEach(el => el.remove());
+      if (key === 'showMenuButtons') {
+        remove('.bd-card-menu-btn');
+        if (enabled) bdAppendCardMenuButton(div, node);
+      } else if (key === 'showMarkers') {
+        remove('.bd-marker-hud');
+        if (enabled) bdAppendMarkerHud(div, node);
+      } else if (key === 'showLinkBadges') {
+        remove('.bd-link-open-btn');
+        if (enabled && (node.link || node.imageSourcePath || node.img)) {
+          const resolved = typeof MeldexBoardOpenTarget !== 'undefined'
+            ? MeldexBoardOpenTarget.resolve(node) : { path: node.link || node.imageSourcePath || node.img };
+          bdAppendLinkOpenButton(div, node, resolved);
+        }
+      } else if (key === 'showStatus' && node.status) {
+        remove('.bd-status-hud');
+        if (enabled) bdAppendStatusHud(div, node);
+        const sample = document.createElement('div');
+        bdApplyNodeBaseStyles(sample, node, bdGetNodeStyle(node), enabled);
+        for (const prop of ['opacity', 'borderColor', 'borderWidth', 'borderStyle']) div.style[prop] = sample.style[prop];
+        geometryIds.push(node.id);
+      } else if (key === 'showImageNames' && node.img) {
+        const oldText = div.querySelector(':scope > .bd-text');
+        const next = oldText?.nextSibling;
+        oldText?.remove();
+        bdAppendNodeText(div, node, bdGetNodeStyle(node), { showImageNames: enabled });
+        if (next) div.insertBefore(div.querySelector(':scope > .bd-text'), next);
+        geometryIds.push(node.id);
+      } else if (key === 'highlightParentChildGroups') {
+        delete div.dataset.bdGroupColor;
+        div.classList.remove('bd-group-hi-clip');
+        div.style.removeProperty('--bd-group-hi');
+        div.style.removeProperty('--bd-group-hi-filter');
+        const color = highlight?.get(node.id);
+        if (color) _bdApplyParentChildGroupHighlight(div, div.dataset.shape || '', color);
+      }
+    }
+    if (geometryIds.length) {
+      geometryIds.forEach(id => bdMeasureNodeElement(id));
+      if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(geometryIds, 'display-filter');
+      if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(geometryIds, 'display-filter');
+    }
+  }
+  if (['showConnections', 'showStatus', 'showImageNames'].includes(key)) {
+    if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
+    if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
+  }
+}
+
 function bdOpenFilterMenu(anchor) {
   if (typeof bdEnsureBoardUiState === 'function') bdEnsureBoardUiState();
   bdCloseStylePicker();
@@ -79,15 +149,33 @@ function bdOpenFilterMenu(anchor) {
     showMenuButtons: '... ボタン',
     showImageNames: '画像ファイル名',
   };
+  // 設計意図「カードHUD / ポップアップメニュー」で廃止済みの表示。
+  // 既存の保存値を消さず、以前の項目は理由付きの利用不可表示として残す。
+  const retired = {
+    showProgress: '進捗バーは廃止済みです。ステータス表示を使用してください。',
+    showNotes: '旧ノートインジケータの表示切替は廃止済みです。',
+  };
   Object.entries(labels).forEach(([key, label]) => {
     const row = document.createElement('div');
+    if (retired[key]) {
+      row.className = 'gb-context-menu-item disabled';
+      row.tabIndex = -1;
+      row.setAttribute('role', 'menuitem');
+      row.setAttribute('aria-disabled', 'true');
+      row.setAttribute('aria-label', label + '。' + retired[key]);
+      row.textContent = label + '（廃止済み）';
+      row.title = retired[key];
+      menu.appendChild(row);
+      return;
+    }
     const checked = bd.displayFilters[key] !== false;
     prepareToggleRow(row, checked);
     row.innerHTML = `${radioMark(checked)}${esc(label)}`;
     row.addEventListener('click', () => {
+      if (typeof bdPushUndo === 'function') bdPushUndo('ボード: ' + label + 'の表示');
       bd.displayFilters[key] = !(bd.displayFilters[key] !== false);
       closeMenu(true);
-      _bdRenderKeepingDetailTab();
+      bdApplyDisplayFilterChange(key);
       bdDirty();
     });
     menu.appendChild(row);
@@ -103,9 +191,12 @@ function bdOpenFilterMenu(anchor) {
     prepareToggleRow(row, checked);
     row.innerHTML = `${radioMark(checked)}${esc(label)}`;
     row.addEventListener('click', () => {
+      if (typeof bdPushUndo === 'function') bdPushUndo('ボード: ' + label + 'の表示');
       bd[key] = !bd[key];
+      // 同じ影を変えるテーマ欄と保存値を共有し、再読込で古い値を優先させない。
+      if (key === '_showShadow') bd._fileStyle = { ...(bd._fileStyle || {}), '--bd-shadow': bd[key] ? '1' : '0' };
       closeMenu(true);
-      _bdRenderKeepingDetailTab();
+      bdApplyDisplayFilterChange(key);
       bdDirty();
     });
     menu.appendChild(row);
@@ -120,9 +211,10 @@ function bdOpenFilterMenu(anchor) {
     prepareToggleRow(row, checked);
     row.innerHTML = `${radioMark(checked)}${esc('親子関係ハイライト')}`;
     row.addEventListener('click', () => {
+      if (typeof bdPushUndo === 'function') bdPushUndo('ボード: 親子関係ハイライト');
       bd.displayFilters[key] = bd.displayFilters[key] !== true;
       closeMenu(true);
-      _bdRenderKeepingDetailTab();
+      bdApplyDisplayFilterChange(key);
       bdDirty();
     });
     menu.appendChild(row);

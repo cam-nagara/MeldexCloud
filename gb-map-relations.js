@@ -101,6 +101,7 @@ const MeldexMapRelations = (() => {
       const canEdit = app._editGuard(feature.id), parentPath = app.path;
       const name = await cfPrompt('子地図の名前', (feature.label || '地点') + 'の詳細地図');
       if (!name?.trim() || !canEdit() || app._selected !== feature.id) return;
+      await runWithProgress('子地図を作成しています', async () => {
       const normalized = parentPath.replace(/\\/g, '/'), parent = normalized.slice(0, normalized.lastIndexOf('/') + 1);
       const result = await apiPost('/outliner/add', { type: 'map', label: name.trim(), parent });
       const path = result.node?.path;
@@ -111,6 +112,7 @@ const MeldexMapRelations = (() => {
         if (!await app.flush()) { app._message('子地図を作成しましたが親地図を保存できません。関連付けは下書きに残っています: ' + path); return; }
         await openChild(app, feature, { path, label: result.node.label });
       }
+      });
     }, { disabled: locked }));
   }
   // 詳細地図: 親地図（Azgaar方式）の地点の周りを切り出し、起伏・海岸線を引き継いだ子地図を作る。
@@ -135,6 +137,7 @@ const MeldexMapRelations = (() => {
     const { box, terrain } = detailTerrain(parent, feature, divisor);
     const name = await cfPrompt('詳細地図の名前', (feature.label || '地点') + 'の詳細地図');
     if (!name?.trim() || !canEdit() || app._selected !== feature.id) return;
+    await runWithProgress('詳細地図を作成しています', async () => {
     const normalized = parentPath.replace(/\\/g, '/'), folder = normalized.slice(0, normalized.lastIndexOf('/') + 1);
     const result = await apiPost('/outliner/add', { type: 'map', label: name.trim(), parent: folder });
     const path = result.node?.path;
@@ -171,6 +174,7 @@ const MeldexMapRelations = (() => {
     });
     if (!await app.flush()) { app._message('詳細地図を作成しましたが親地図を保存できません: ' + path); return; }
     await openChild(app, feature, { path, label: result.node.label });
+    });
   }
   function sources(app, root) {
     const heading = document.createElement('h3'); heading.textContent = 'シートの場所'; root.appendChild(heading);

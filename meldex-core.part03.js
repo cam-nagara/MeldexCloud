@@ -765,7 +765,8 @@ function addLongPressHandler(el, handler, opts = {}) {
     timer = setTimeout(() => {
       timer = null;
       fired = true;
-      handler({
+      const contextEvent = {
+        meldexLongPress: true,
         clientX: startX,
         clientY: startY,
         target: touchStartEv?.target || el,
@@ -773,7 +774,10 @@ function addLongPressHandler(el, handler, opts = {}) {
         pointerType: touchStartEv?.pointerType || 'touch',
         preventDefault: () => {},
         stopPropagation: () => {},
-      });
+      };
+      const decorateAnnotations = window.GBAnnotationHighlights?.prepareMenu?.(contextEvent);
+      handler(contextEvent);
+      if (decorateAnnotations) setTimeout(decorateAnnotations, 0);
     }, DURATION);
   });
 

@@ -113,7 +113,7 @@
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
     'viewer.flipH':         [() => { Scene.toggleFlipH(); Scene.flashStatus('左右反転: ' + (Scene.getFlipH() ? 'ON' : 'OFF')); }, false],
-    'viewer.original':      [() => { Scene.setOriginal(); Scene.flashStatus('原寸表示'); }, false],
+    'viewer.original':      [() => { if (Scene.setOriginal()) Scene.flashStatus('原寸表示'); }, false],
     'viewer.rotate':        [() => { Scene.rotate(); Scene.flashStatus('回転: ' + Scene.getRotateDeg() + '°'); }, false],
     'viewer.zoomIn':        [() => Scene.zoomIn(), true],
     'viewer.zoomOut':       [() => Scene.zoomOut(), true],
@@ -356,7 +356,5 @@
   // 親ウィンドウのテーマ色を継承（meldex-core.js提供）
   try {
     if (typeof inheritParentTheme === 'function') inheritParentTheme();
-    const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim() || '#111419';
-    document.documentElement.style.setProperty('--panel-bg', bg2 + 'ee');
   } catch(e) {}
 })();

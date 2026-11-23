@@ -312,7 +312,8 @@
   }
 
   function _estimatedInputTokens(body) {
-    const text = _chatMessages(body).map(message => message.text || '').join('\n');
+    const text = _chatMessages(body).map(message => message.text || '').join('\n')
+      + (body?._meldexToolTurns?.length ? JSON.stringify(body._meldexToolTurns) : '');
     return Math.max(1, Math.ceil(text.length / 4));
   }
 
@@ -651,7 +652,8 @@
       payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 1);
       if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     }
-    const tools = [];
+    window.MeldexLlmTools?.history(payload,'anthropic',body._meldexToolTurns);
+    const tools = window.MeldexLlmTools?.declarations('anthropic') || [];
     if (_requestFlag(body, 'allow_web_search', true)) {
       tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 5 });
     }
@@ -659,12 +661,26 @@
       tools.push({ type: 'code_execution_20250522', name: 'code_execution' });
     }
     if (tools.length) payload.tools = tools;
+    const blocks=new Map();let completed=false,stopReason=null,usage={};
     const handleData = data => {
+      if(data.type==='message_stop')completed=true;
+      if(data.type==='message_delta'&&data.delta?.stop_reason)stopReason=data.delta.stop_reason;
+      if(data.type==='message_start'&&data.message?.usage){usage={...usage,...data.message.usage};send({type:'usage',usage});}
+      if(data.type==='content_block_start')blocks.set(data.index,{...data.content_block});
+      if(data.type==='content_block_delta'){
+        const block=blocks.get(data.index),delta=data.delta||{};
+        if(block){
+          if(delta.partial_json)block._json=(block._json||'')+delta.partial_json;
+          if(delta.thinking)block.thinking=(block.thinking||'')+delta.thinking;
+          if(delta.signature)block.signature=(block.signature||'')+delta.signature;
+          if(delta.text)block.text=(block.text||'')+delta.text;
+        }
+      }
       if (data.type === 'content_block_start' && data.content_block?.type === 'server_tool_use') {
         send({ type: 'code_exec_start', language: 'python', code: String(data.content_block.input || data.content_block.code || '') });
       }
       if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') {
-        send({ type: 'tool_start', name: data.content_block.name || 'tool' });
+        // Named calls are executed only after the provider confirms completion.
       }
       if (data.type === 'content_block_start' && data.content_block?.type === 'code_execution_tool_result') {
         const result = data.content_block || {};
@@ -679,7 +695,7 @@
       if (data.type === 'content_block_delta' && (data.delta?.thinking || data.delta?.summary)) {
         send({ type: 'thinking_delta', content: String(data.delta.thinking || data.delta.summary) });
       }
-      if (data.type === 'message_delta' && data.usage) send({ type: 'usage', usage: data.usage });
+      if (data.type === 'message_delta' && data.usage) { usage={...usage,...data.usage};send({ type:'usage',usage }); }
     };
     const request = async () => {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -694,6 +710,14 @@
         body: JSON.stringify(payload),
       });
       await _readSse(res, handleData);
+      const assistant=[...blocks.entries()].sort((a,b)=>a[0]-b[0]).map(([,value])=>{
+        const block={...value};if(block._json)block.input=JSON.parse(block._json);delete block._json;return block;
+      });
+      const calls=assistant.filter(block=>block.type==='tool_use').map(block=>({id:block.id,name:block.name,arguments:block.input}));
+      if(calls.length){
+        if(!completed||stopReason!=='tool_use')throw new Error('道具を実行する前に応答が切断されました');
+        send({type:'meldex_tool_turn',format:'anthropic',assistant,calls});
+      }
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -784,9 +808,12 @@
       temperature: _generationNumber(body, 'temperature', 0.7, 0, 2),
       max_tokens: Math.floor(_generationNumber(body, 'max_tokens', 8192, 1024, 32768)),
     };
+    payload.tools = window.MeldexLlmTools?.declarations('chat') || [];
+    window.MeldexLlmTools?.history(payload,'chat',body._meldexToolTurns);
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
     const reasoningLevel = _reasoningLevel(body);
     if (reasoningLevel !== 'off') payload.reasoning_effort = _openAiReasoningEffort(reasoningLevel);
+    const toolCalls=new Map();let finishReason=null,assistantText="";
     let sawResponseEvent = false;
     const request = async () => {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -800,10 +827,24 @@
       });
       await _readSse(res, data => {
         sawResponseEvent = true;
+        const choice=data.choices?.[0];if(choice?.finish_reason)finishReason=choice.finish_reason;
+        if(choice?.delta?.content)assistantText+=choice.delta.content;
+        for(const delta of choice?.delta?.tool_calls||[]){
+          const call=toolCalls.get(delta.index)||{id:'',name:'',arguments:''};
+          if(delta.id)call.id+=delta.id;
+          if(delta.function?.name)call.name+=delta.function.name;
+          if(delta.function?.arguments)call.arguments+=delta.function.arguments;
+          toolCalls.set(delta.index,call);
+        }
         const delta = data.choices?.[0]?.delta?.content;
         if (delta) send({ type: 'text_delta', content: delta });
+        if(data.choices?.[0]?.delta?.reasoning_content)send({type:'thinking_delta',content:data.choices[0].delta.reasoning_content});
         if (data.usage) send({ type: 'usage', usage: data.usage });
       });
+      if(toolCalls.size){
+        if(finishReason!=='tool_calls')throw new Error('道具を実行する前に応答が切断されました');
+        send({type:'meldex_tool_turn',format:'chat',text:assistantText,calls:[...toolCalls.values()]});
+      }
     };
     let lastError = null;
     for (let retry = 0; retry < 6; retry += 1) {
@@ -846,7 +887,7 @@
 
   async function _streamOpenAiResponses(body, apiKey, send, signal) {
     const model = _defaultModel('openai', body.model);
-    const tools = [];
+    const tools = window.MeldexLlmTools?.declarations('responses') || [];
     if (_requestFlag(body, 'allow_code_execution', false)) {
       tools.push({ type: 'code_interpreter', container: { type: 'auto' } });
     }
@@ -858,6 +899,8 @@
       stream: true,
       max_output_tokens: Math.floor(_generationNumber(body, 'max_tokens', 8192, 1024, 32768)),
     };
+    window.MeldexLlmTools?.history(payload,'responses',body._meldexToolTurns);
+    payload.include = ['reasoning.encrypted_content'];
     if (tools.length) payload.tools = tools;
     if (Number.isFinite(Number(body.temperature))) payload.temperature = _generationNumber(body, 'temperature', 0.7, 0, 2);
     if (Number.isFinite(Number(body.top_p))) payload.top_p = _generationNumber(body, 'top_p', 1, 0, 1);
@@ -871,6 +914,7 @@
       payload.store = false;
       if (effort !== 'none') { delete payload.temperature; delete payload.top_p; }
     }
+    const toolCalls=new Map();let assistant=[],completed=false;
     let emittedCodeStart = false;
     const seenCitations = new Set();
     let sawResponseEvent = false;
@@ -889,6 +933,13 @@
         sawEvent = true;
         sawResponseEvent = true;
         const type = String(data?.type || '');
+        if(type==='response.output_item.done'&&data.item?.type==='function_call')toolCalls.set(data.item.call_id,{...data.item});
+        if(type==='response.completed'){
+          completed=data.response?.status==='completed';
+          assistant=Array.isArray(data.response?.output)?data.response.output:[];
+          for(const item of assistant)if(item.type==='function_call')toolCalls.set(item.call_id,{...item});
+        }
+        if(type==='response.reasoning_summary_text.delta'&&data.delta)send({type:'thinking_delta',content:String(data.delta)});
         if (type === 'response.failed' || type === 'error') throw new Error('OpenAI Responses API error: ' + JSON.stringify(data.error || data.response?.error || data));
         _sendOpenAiAnnotationCitations(data, send, seenCitations);
         if (type === 'response.output_text.delta' && data.delta) {
@@ -918,6 +969,12 @@
           if (usage) send({ type: 'usage', usage });
         }
       });
+      if(toolCalls.size){
+        if(!completed)throw new Error('道具を実行する前に応答が切断されました');
+        if([...toolCalls.values()].some(item=>item.status&&item.status!=='completed'))throw new Error('道具の引数が未完了です');
+        const calls=[...toolCalls.values()].map(item=>({id:item.call_id,name:item.name,arguments:item.arguments}));
+        send({type:'meldex_tool_turn',format:'responses',assistant,calls});
+      }
       return sawEvent;
     };
     let lastError = null;
@@ -983,7 +1040,8 @@
       delete payload.generationConfig.temperature;
       delete payload.generationConfig.topP;
     }
-    const tools = [];
+    window.MeldexLlmTools?.history(payload,'gemini',body._meldexToolTurns);
+    const tools = window.MeldexLlmTools?.declarations('gemini') || [];
     if (_requestFlag(body, 'allow_web_search', true)) tools.push({ google_search: {} });
     if (_requestFlag(body, 'allow_code_execution', false)) tools.push({ code_execution: {} });
     if (tools.length) payload.tools = tools;
@@ -999,8 +1057,11 @@
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);
+    const assistantParts=[];let completed=false;
     const handleData = data => {
+      if(data.candidates?.[0]?.finishReason==='STOP')completed=true;
       const parts = data.candidates?.[0]?.content?.parts || [];
+      assistantParts.push(...parts);
       parts.forEach(part => {
         const executable = part?.executableCode || part?.executable_code;
         if (executable?.code) {
@@ -1013,7 +1074,8 @@
           send({ type: 'code_exec_done', exit_code: !outcome || outcome === 'ok' || outcome === 'outcome_ok' ? 0 : 1 });
         }
       });
-      const text = parts.map(part => part?.text || '').join('');
+      parts.filter(part=>part.thought&&part.text).forEach(part=>send({type:'thinking_delta',content:String(part.text)}));
+      const text = parts.filter(part=>!part.thought).map(part => part?.text || '').join('');
       if (text) send({ type: 'text_delta', content: text });
       const grounding = data.candidates?.[0]?.groundingMetadata || data.candidates?.[0]?.grounding_metadata;
       (grounding?.groundingChunks || grounding?.grounding_chunks || []).forEach(chunk => {
@@ -1030,6 +1092,12 @@
         body: JSON.stringify(payload),
       });
       await _readSse(res, handleData);
+      const calls=assistantParts.filter(part=>part.functionCall).map((part,index)=>({id:part.functionCall.id||'gemini-'+(body._meldexToolTurns?.length||0)+'-'+index,providerId:part.functionCall.id,
+        name:part.functionCall.name,arguments:part.functionCall.args}));
+      if(calls.length){
+        if(!completed)throw new Error('道具を実行する前に応答が切断されました');
+        send({type:'meldex_tool_turn',format:'gemini',assistant:{role:'model',parts:assistantParts},calls});
+      }
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -1078,7 +1146,7 @@
       _assertClientBudget(requestBody, provider, model);
       let latestUsage = null;
       const trackedSend = payload => {
-        if (payload?.type === 'usage' && payload.usage) latestUsage = payload.usage;
+        if (payload?.type === 'usage' && payload.usage) latestUsage = {...latestUsage,...payload.usage};
         send(payload);
       };
       const recordUsage = () => {
@@ -1091,23 +1159,38 @@
         });
         if (record) trackedSend({ type: 'usage_recorded', usage: record });
       };
-      if (provider === 'anthropic') {
-        await _streamAnthropic(requestBody, apiKey, trackedSend, options.signal);
-        recordUsage();
-        return;
-      }
-      if (provider === 'openai') {
-        if (model.startsWith('gpt-6') || _requestFlag(requestBody, 'allow_code_execution', false) || _requestFlag(requestBody, 'allow_web_search', true)) {
-          await _streamOpenAiResponses(requestBody, apiKey, trackedSend, options.signal);
-          recordUsage();
-          return;
+      const tools=window.MeldexLlmTools?.create(requestBody,trackedSend,options.signal);
+      const turns=[];
+      for(let iteration=0;iteration<16;iteration++){
+        const roundBody={...requestBody,_meldexToolTurns:turns};
+        _assertClientBudget(roundBody,provider,model);
+        let turn=null;latestUsage=null;
+        const roundSend=event=>{
+          if(event?.type==='meldex_tool_turn'){if(turn)throw new Error('道具の応答が重複しています');turn=event;}
+          else trackedSend(event);
+        };
+        try {
+        if(provider==='anthropic')await _streamAnthropic(roundBody,apiKey,roundSend,options.signal);
+        else if(provider==='openai'){
+          if(model.startsWith('gpt-6')||_requestFlag(roundBody,'allow_code_execution',false)||_requestFlag(roundBody,'allow_web_search',true))
+            await _streamOpenAiResponses(roundBody,apiKey,roundSend,options.signal);
+          else await _streamOpenAi(roundBody,apiKey,roundSend,options.signal);
+        }else await _streamGemini(roundBody,apiKey,roundSend,options.signal);
+        } finally { recordUsage(); }
+        if(!turn?.calls?.length)return;
+        if(!tools)throw new Error('道具の実行機能を読み込めません。再読込してください');
+        if(turn.calls.length>32)throw new Error('一度に実行できる道具の数を超えました');
+        const ids=new Set(),results=[];
+        for(const call of turn.calls){
+          if(!call.id||ids.has(call.id))throw new Error('道具の識別情報が不正です');ids.add(call.id);
+          trackedSend({type:'tool_start',name:call.name});
+          const content=await tools.execute(call.name,call.arguments);
+          results.push({id:call.id,name:call.name,content});
+          trackedSend({type:'tool_result',name:call.name,result:content});
         }
-        await _streamOpenAi(requestBody, apiKey, trackedSend, options.signal);
-        recordUsage();
-        return;
+        turns.push({...turn,results});
       }
-      await _streamGemini(requestBody, apiKey, trackedSend, options.signal);
-      recordUsage();
+      throw new Error('道具の往復回数の上限に達しました。続きを実行する場合は送信し直してください');
     });
   }
 

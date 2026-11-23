@@ -567,7 +567,7 @@
     const promise = Promise.resolve().then(() => _confirmedSend(doc, hostRef, path, md, sendFn, previousResult)).then(
       (res) => {
         const savedMd = typeof res?.saved_frontmatter === 'string'
-          ? res.saved_frontmatter + md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+          ? res.saved_frontmatter + md.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
           : md;
         const saved = Object.assign({}, res, { savedMd, savedPath: path, joined: false });
         _finishInFlight(doc, promise);

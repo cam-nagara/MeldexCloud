@@ -619,7 +619,7 @@ function _normalizeFolderSelectionForVisibleItems() {
   const selectedPaths = [];
   grid.querySelectorAll('.fv-item.selected').forEach(el => {
     const path = String(el.dataset.path || '');
-    if (!path || !byPath.has(path)) {
+    if (el.inert || !path || !byPath.has(path)) {
       el.classList.remove('selected');
       const chk = el.querySelector('.fv-check');
       if (chk) chk.checked = false;
@@ -679,17 +679,7 @@ async function fvBulkDelete() {
     _updateFolderBulkBar();
     return;
   }
-  const impactTargets = targets.map(item => ({
-    path: item.path,
-    kind: item.type === 'folder' ? 'folder' : 'file',
-    ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-  }));
-  const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
-    : { confirmed: true, operation: 'trash' };
-  if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
-    confirmation: confirmed,
     label: targets.length + ' 件を削除',
     refresh: async () => {
       if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
@@ -770,7 +760,7 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     const grid = _folderGridEl();
     if (!grid) return;
-    const items = Array.from(grid.querySelectorAll('.fv-item'));
+    const items = Array.from(grid.querySelectorAll('.fv-item')).filter(el => !el.inert);
     if (items.length === 0) return;
     const curIdx = _folderSelected ? items.findIndex(el => el.classList.contains('selected')) : -1;
     let cols = 1;

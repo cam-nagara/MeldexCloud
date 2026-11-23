@@ -12,6 +12,7 @@ const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 let _folderPath = '';
 let _folderItems = [];
 const _folderPendingMovePaths = new Set();
+const _folderPendingPasteMoves = new Set();
 let _folderBrowseIncomplete = null;
 let _folderUnifiedSearchPaths = new Set();
 let _folderUnifiedSearchSeq = 0;
@@ -77,25 +78,7 @@ async function _folderRunMenuAction(fn, label) {
 
 // 複数項目の複製。部分失敗も成功件数・失敗件数・最初の原因を表示する。
 async function _folderDuplicateItems(items, refresh) {
-  const result = { ok: 0, failed: 0, error: null };
-  // 複製を取り消せるようにする（作ったものをゴミ箱へ移す。フォルダツリーの複製と同じ。2026-11-22 M-014 フォルダパネル網羅テスト）
-  const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
-  for (const target of items || []) {
-    try {
-      const res = await apiPost('/outliner/duplicate', { path: target.path });
-      result.ok += 1;
-      if (res?.new_path && typeof pushCreatedOutlinerItemHistory === 'function') {
-        pushCreatedOutlinerItemHistory({ path: res.new_path, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file' },
-          '複製: ' + (res.new_name || String(res.new_path).split('/').pop()), {
-            scope: historyScope,
-            refresh: typeof refresh === 'function' ? () => refresh() : undefined,
-          });
-      }
-    } catch (error) {
-      result.failed += 1;
-      if (!result.error) result.error = error;
-    }
-  }
+  const result = await _outlinerDuplicateItems(items, { refresh });
   if (result.ok > 0 && typeof refresh === 'function') {
     // ツリーも複製したフォルダの子だけを差分で反映する（以前はツリーに出るのが次の読み直しまで遅れていた）
     const treeSync = typeof folderToolbarSyncTree === 'function'
@@ -779,11 +762,48 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
 }
 
 function _folderDropPathsEqual(left, right) {
+  const provider = window.MeldexStorageAdapter?.getProvider?.();
+  const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
+  if (left && right && provider?._dropboxLocation && cloudKey) {
+    const key = cloudKey(provider, left);
+    return !!key && key === cloudKey(provider, right);
+  }
   const normalize = value => {
     const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
     return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
   };
   return !!left && !!right && normalize(left) === normalize(right);
+}
+
+function _folderStageCreateTreePreview(parentPath, type, label) {
+  const container = _folderVisibleOutlinerChildren(parentPath);
+  if (!container || container.dataset.virtual === 'true' || typeof _createOutlinerPendingCreateNode !== 'function') return () => {};
+  const node = _createOutlinerPendingCreateNode(type, label);
+  container.appendChild(node);
+  return () => node.remove();
+}
+
+function _folderPasteMovePending(path) {
+  return [..._folderPendingPasteMoves].some(pending => _folderDropPathsEqual(path, pending));
+}
+
+function _folderStagePasteMove(item, destination) {
+  if (!item?.path || !_folderDropPathsEqual(_folderPath, destination)) return () => {};
+  const path = destination.replace(/\/+$/, '') + '/' + item.path.replace(/\\/g, '/').split('/').pop();
+  if (_folderItems.some(existing => _folderDropPathsEqual(existing.path, path))) return () => {};
+  const pending = { ...item, path, file_id: undefined, assetId: undefined, asset_id: undefined };
+  _folderPendingPasteMoves.add(path);
+  _folderItems.push(pending);
+  const render = () => renderFolderGrid({ preserveSelectedPaths: _folderSelectedItems.map(selected => selected.path) });
+  render();
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    _folderPendingPasteMoves.delete(path);
+    _folderItems = _folderItems.filter(existing => existing !== pending);
+    render();
+  };
 }
 
 function _folderDroppedFileFallbackItem(saved, file) {
@@ -811,8 +831,14 @@ function _folderDroppedFileFallbackItem(saved, file) {
 }
 
 function _folderVisibleOutlinerChildren(parentPath) {
+  if (typeof _homeFolderPath !== 'undefined' && _folderDropPathsEqual(parentPath, _homeFolderPath)) {
+    const home = document.getElementById('body-home');
+    if (home) return home;
+  }
   if (typeof _findTreeNodeByPath !== 'function') return null;
-  const parentNode = _findTreeNodeByPath(parentPath);
+  const parentNode = _findTreeNodeByPath(parentPath) || Array.from(document.querySelectorAll(
+    '#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node'
+  )).find(node => _folderDropPathsEqual(node._nodeData?.path, parentPath));
   if (!parentNode) {
     return (typeof _homeFolderPath !== 'undefined' && _folderDropPathsEqual(parentPath, _homeFolderPath))
       ? document.getElementById('body-home')
@@ -828,7 +854,9 @@ function _folderVisibleOutlinerChildren(parentPath) {
 function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
   const container = _folderVisibleOutlinerChildren(parentPath);
   if (!container || !items.length || typeof createTreeNodeFromBrowse !== 'function') return;
-  const fresh = items.filter(item => typeof _findTreeNodeByPath !== 'function' || !_findTreeNodeByPath(item.path));
+  const existing = container._virtualState?.allItems || Array.from(container.children || []).map(node => node._nodeData).filter(Boolean);
+  const fresh = items.filter(item => (typeof _findTreeNodeByPath !== 'function' || !_findTreeNodeByPath(item.path))
+    && !existing.some(current => _folderDropPathsEqual(current.path, item.path)));
   if (!fresh.length) return;
   const virtual = window.GBOutlinerVirtualRender;
   if (virtual?.isVirtualContainer?.(container)) {
@@ -837,7 +865,8 @@ function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
   }
   fresh.forEach(item => {
     const node = createTreeNodeFromBrowse(item);
-    if (typeof _insertOutlinerCreateNode === 'function') _insertOutlinerCreateNode(container, node, null);
+    const pendingCopy = typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path);
+    if (!pendingCopy && typeof _insertOutlinerCreateNode === 'function') _insertOutlinerCreateNode(container, node, null);
     else container.appendChild(node);
     if (typeof _registerTreeNode === 'function') _registerTreeNode(node);
   });
@@ -850,6 +879,9 @@ function _folderApplySavedDropResults(parentPath, savedResults, files) {
   if (_folderDropPathsEqual(_folderPath, parentPath)) {
     const pathKey = value => {
       const normalized = String(value || '').replace(/\\/g, '/');
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
+      if (provider?._dropboxLocation && cloudKey) return cloudKey(provider, value) || 'unresolved:' + normalized;
       return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
     };
     const byPath = new Map(_folderItems.map(item => [pathKey(item?.path), item]));
@@ -1156,11 +1188,11 @@ function _folderApplyManualDrop(intent, targetItem) {
     typeof MANUAL_ORDER_KEY !== 'undefined' ? MANUAL_ORDER_KEY : 'outliner-manual-order',
   ];
   const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
-  setSortSetting(_folderPath || '', 'manual', 'asc');
   if (setManualOrder(_folderPath || '', remaining) === false) {
     showStatus('並び順を保存できませんでした：この端末の保存領域に書き込めません', true);
     return false;
   }
+  setSortSetting(_folderPath || '', 'manual', 'asc');
   if (typeof pushOutlinerSettingsHistory === 'function') {
     pushOutlinerSettingsHistory('フォルダ: マニュアル並び替え', before, targetItem.name, historyKeys);
   }

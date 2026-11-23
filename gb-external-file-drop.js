@@ -94,7 +94,8 @@
     const noteRoot = element.closest('#page-view,.gb-note-root,.gb-tool-editor');
     const editable = note || noteRoot?.querySelector('#page-content,[contenteditable="true"]');
     if (editable) return {kind:'native', target:editable, editable:true};
-    const canvas = element.closest('#bd-canvas') || element.closest('.gb-board-root,.gb-tool-board')?.querySelector('#bd-canvas');
+    const canvas = element.closest('[data-bd-role="canvas"],#bd-canvas')
+      || element.closest('.gb-canvas-root,.gb-board-root,.gb-tool-board')?.querySelector('[data-bd-role="canvas"],#bd-canvas');
     if (canvas) return {kind:'native', target:canvas};
     const sheet = element.closest('#db-view-container,.gb-database-root');
     if (sheet || (tab?.type === 'database' && !auxiliary)) {
@@ -299,6 +300,11 @@
     // Ordinary editor file drops keep their actual target and existing handler.
     if (transfer.files.length && route.kind === 'native' && route.target.contains(event.target)) return;
     const item = transfer.files.length || transfer.items.some(entry => entry.kind === 'file') ? null : webItem(transfer);
+    // ボード自身が解釈できる通常のURLと埋め込み画像は元の内容で渡す。
+    // HTTP画像／ダウンロードファイルの安全な取得は既存の共通経路を維持する。
+    if (route.kind === 'native' && route.target.matches('[data-bd-role="canvas"],#bd-canvas')
+        && route.target.contains(event.target) && !transfer.files.length
+        && (!item || !item.downloadable || /^data:image\//i.test(item.url))) return;
     if (!transfer.files.length && !transfer.items.some(entry => entry.kind === 'file') && !item) return;
     event.preventDefault(); event.stopImmediatePropagation();
     // Pin destination now: a later app/tab change cannot redirect the write.

@@ -1206,6 +1206,7 @@
     let assistantDiv = null;
     let fullText = '';
     let stderrText = '';
+    let cliToolAuditWarning = '';
     let cliThinkingText = '';
     let cliThinkingLogEl = null;
     let lastStatusText = 'CLIへ質問を送信中...';
@@ -1220,7 +1221,7 @@
     let autoContinueRequest = null;
     const continuationCount = cliChatContinuationCount(options);
     const prepareAutoContinue = (reason) => {
-      if (options.disableAutoContinue || continuationCount >= CLI_CHAT_AUTO_CONTINUE_MAX) return false;
+      if (cliToolAuditWarning || options.disableAutoContinue || continuationCount >= CLI_CHAT_AUTO_CONTINUE_MAX) return false;
       autoContinueRequest = {
         count: continuationCount + 1,
         reason: String(reason || '').trim(),
@@ -1236,6 +1237,7 @@
         model: streamModelLabel,
         ...streamReasoningRecord,
         timestamp: assistantTimestamp,
+        ...(cliToolAuditWarning ? {tool_audit_warning:cliToolAuditWarning} : {}),
       };
     };
     const findAssistantBubble = () => {
@@ -1258,6 +1260,7 @@
           && assistantDiv.firstChild) return assistantDiv;
       if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, text, []);
       else if (assistantDiv) assistantDiv.textContent = text;
+      if (assistantDiv && cliToolAuditWarning && typeof _chatRenderToolAuditWarning === 'function') _chatRenderToolAuditWarning(assistantDiv, cliToolAuditWarning);
       renderedAssistantDiv = assistantDiv;
       renderedAssistantText = text;
       return assistantDiv;
@@ -1325,12 +1328,12 @@
       lastCliOutputAt = Date.now();
       if (isText) lastCliTextAt = lastCliOutputAt;
     };
-    const appendCliThinking = (chunk, label = 'CLIの思考内容を受信中...') => {
+    const appendCliThinking = (chunk, label = 'CLIの思考内容を受信中...', isProgress = true) => {
       // SSEのdelta境界は文章境界ではない。CLIが送った文字だけを順番どおり連結する。
       const text = chunk == null ? '' : String(chunk);
       if (!text) return;
       cliThinkingText += text;
-      markCliOutput();
+      if (isProgress) markCliOutput();
       refreshActivityStatus(label);
       if (streamVisibleInCurrentChat()) {
         activity.log.style.display = 'flex';
@@ -1379,7 +1382,8 @@
     if (streamExecution) streamExecution.restore = activeCliChatStream.restore;
     const saveStreamMessages = async (throwOnError = false) => {
       if (typeof chatAutoSave !== 'function') return false;
-      const saved = await chatAutoSave({
+      const save = typeof _chatAutoSaveAfterStream === 'function' ? _chatAutoSaveAfterStream : chatAutoSave;
+      const saved = await save({
         messages: streamMessages,
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
@@ -1391,7 +1395,7 @@
         model: streamModelSelection,
         silent: !throwOnError,
       });
-      if (saved && typeof renderChatHistory === 'function') renderChatHistory();
+      if (saved && save === chatAutoSave && typeof renderChatHistory === 'function') renderChatHistory();
       return saved;
     };
 
@@ -1485,6 +1489,12 @@
             markCliOutput(true);
             if (!streamVisibleInCurrentChat()) assistantDiv = null;
             scheduleStreamPaint({ assistant: true, scroll: true });
+          } else if (data.type === 'meldex_file_changed') {
+            try {
+              const recorded = window.meldexApplyLlmFileChange?.(data);
+              if (recorded) Promise.resolve(window.reloadOpenFilesAfterExternalMutation?.([data.path, ...(data.path_aliases || [])]))
+                .catch(error => showStatus('AIの変更を画面へ反映できませんでした: ' + (error?.message || error), true));
+            } catch (error) { showStatus('AIの変更を履歴へ反映できませんでした: ' + (error?.message || error), true); }
           } else if (data.type === 'meldex_sheet_changed') {
             // AIのツールがシートを書き換えた。開いているシートへ映し、取り消しの履歴へ積む。
             if (typeof window.meldexApplyLlmSheetChange === 'function') {
@@ -1503,6 +1513,13 @@
           } else if (data.type === 'thinking_delta') {
             appendCliThinking(data.content, 'CLIの思考内容を受信中...');
           } else if (data.type === 'cli_activity') {
+            if (data.tool_failed === true) {
+              cliToolAuditWarning = 'CLIの操作の一部が失敗しました。保存先と変更結果を確認してから、必要なら再試行してください。';
+              if (streamVisibleInCurrentChat()) {
+                appendCliChatLog(activity.log, cliToolAuditWarning);
+                if (assistantDiv && typeof _chatRenderToolAuditWarning === 'function') _chatRenderToolAuditWarning(assistantDiv, cliToolAuditWarning);
+              }
+            }
             markCliOutput();
             refreshActivityStatus('CLIが質問を処理中...');
             scheduleStreamPaint();
@@ -1514,7 +1531,7 @@
             }
           } else if (data.type === 'error') {
             const detail = summarizeCliChatErrorDetail(data.detail || stderrText);
-            if (detail) appendCliThinking('CLIエラー詳細:\n' + detail, 'CLIエラーを確認中...');
+            if (detail) appendCliThinking('CLIエラー詳細:\n' + detail, 'CLIエラーを確認中...', false);
             const streamError = new Error(data.error || 'CLIチャットでエラーが発生しました');
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
             streamError.operationStarted = data.operation_started;
@@ -1550,6 +1567,10 @@
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, fullText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
         const assistantMessage = { role: 'assistant', content: fullText, msg_id: assistantMessageId, provider, model: streamModelLabel, ...streamReasoningRecord, timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()) };
+        if (cliToolAuditWarning) {
+          assistantMessage.tool_audit_warning = cliToolAuditWarning;
+          if (assistantDiv && typeof _chatRenderToolAuditWarning === 'function') _chatRenderToolAuditWarning(assistantDiv, cliToolAuditWarning);
+        }
         if (cliThinkingText.trim()) assistantMessage.thinking = cliThinkingText;
         streamMessages.push(assistantMessage);
         sendOk = true;
@@ -1569,6 +1590,7 @@
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(abortedText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, abortedText, []);
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
+        if (assistantDiv && cliToolAuditWarning && typeof _chatRenderToolAuditWarning === 'function') _chatRenderToolAuditWarning(assistantDiv, cliToolAuditWarning);
         if (error?.errorCode === 'cli_auth_required') attachCliAuthRecovery(assistantDiv, provider);
         streamMessages.push({
           role: 'assistant',
@@ -1579,6 +1601,7 @@
           ...streamReasoningRecord,
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           aborted: !clientIdleAbortMessage,
+          ...(cliToolAuditWarning ? {tool_audit_warning:cliToolAuditWarning} : {}),
           auto_stopped: !!clientIdleAbortMessage,
           ...(cliThinkingText.trim() ? { thinking: cliThinkingText } : {}),
         });
@@ -1586,17 +1609,19 @@
         saveStreamMessages().catch(() => {});
       } else {
         const label = cliChatMeta(provider)?.label || provider || 'CLI';
-        const recoverable = cliChatErrorAllowsContinuation(error);
+        const recoverable = lastCliOutputAt > 0 && cliChatErrorAllowsContinuation(error);
         const autoContinuing = recoverable && prepareAutoContinue(error?.message || error);
         const actionText = String(error?.action || '').trim();
-        const errorText = autoContinuing
+        const errorNotice = autoContinuing
           ? `${label} の実行が時間内に終わりませんでした。\n\n作業を分割して、自動で続きから実行します。`
           : `${label} がエラーで終了しました。\n\n${error?.message || error}${actionText ? '\n\n' + actionText : ''}`;
+        const errorText = (fullText.trim() ? fullText.trimEnd() + '\n\n' : '') + errorNotice;
         if (!streamVisibleInCurrentChat()) assistantDiv = null;
         if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, renderOptions());
         else if (assistantDiv && typeof _chatRenderAssistantStream === 'function') _chatRenderAssistantStream(assistantDiv, errorText, []);
         else if (assistantDiv) assistantDiv.textContent = errorText;
         if (assistantDiv && typeof _chatRenderThinking === 'function') _chatRenderThinking(assistantDiv, cliThinkingText);
+        if (assistantDiv && cliToolAuditWarning && typeof _chatRenderToolAuditWarning === 'function') _chatRenderToolAuditWarning(assistantDiv, cliToolAuditWarning);
         if (!autoContinuing && error?.errorCode === 'cli_auth_required') attachCliAuthRecovery(assistantDiv, provider);
         streamMessages.push({
           role: 'assistant',
@@ -1608,6 +1633,7 @@
           timestamp: assistantTimestamp || (typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString()),
           error: !autoContinuing,
           error_code: error?.errorCode || 'cli_exit_nonzero',
+          ...(cliToolAuditWarning ? {tool_audit_warning:cliToolAuditWarning} : {}),
           error_detail: error?.detail || '',
           action: actionText,
           auto_continue: !!autoContinuing,

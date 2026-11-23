@@ -266,19 +266,9 @@
         close.addEventListener('click', () => window.GBChatSidebar?.close());
         chat.firstElementChild?.appendChild(close);
       }
-      const savedProvider = localStorage.getItem('chat-provider');
-      const savedModel = localStorage.getItem('chat-model');
-      if (savedProvider) {
-        const sel = document.getElementById('chat-provider');
-        if (sel) sel.value = savedProvider;
-      }
-      if (typeof updateChatModels === 'function') updateChatModels();
-      if (savedModel) {
-        const modelSel = document.getElementById('chat-model');
-        if (modelSel && [...modelSel.options].some(o => o.value === savedModel)) {
-          modelSel.value = savedModel;
-        }
-      }
+      // The live chat already owns its provider/model (including saved-session
+      // choices). Remounting must not reapply another conversation's global
+      // preferences or refetch/rebuild the model choices.
       // モード決定（保存セッションの復元 / team既定へのフォールバック）はセッション内の
       // 初回ライブマウント時のみ行う。以降のライブ再マウント（リサイズ再描画等での
       // 全ペインDOM再構築）では、ユーザーが選択済みのモードタブをそのまま維持する。
@@ -416,6 +406,7 @@
   }
 
   function _resolveDbPaneDisplayView(viewName, tab) {
+    if (viewName === 'csv') return 'csv';
     const normalizedViewName = _normalizeDbPaneView(viewName);
     if (!DB_SUB_VIEWS[normalizedViewName]) return normalizedViewName;
     const dbPath = tab?.path || tab?.state?.dbPath || state.currentDbPath || '';
@@ -787,6 +778,7 @@
       if (id === exceptId) return;
       const el = document.getElementById(id);
       if (el && el.parentNode === contentEl) {
+        _captureLiveChatState(id, el);
         // Keep the already initialized viewer shell beside the active Sheet,
         // only hidden. Reparenting its iframe through #legacy-views forces a
         // full viewer reload and defeats the postMessage fast-open path.
@@ -825,6 +817,7 @@
     const storage = document.getElementById('legacy-views');
     const el = document.getElementById(containerId);
     if (el && storage) {
+      _captureLiveChatState(containerId, el);
       if (containerId === 'media-view') _gbPauseMediaContentPlayback();
       el.style.display = 'none';
       storage.appendChild(el);

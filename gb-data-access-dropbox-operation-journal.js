@@ -1,6 +1,19 @@
-/* Durable CAS journal for Cloud duplicate/save-as identity transactions. */
+/* Durable CAS journals; image records stay outside the legacy copy document. */
   const _CLOUD_COPY_COMPLETED_LIMIT = 512;
   const _cloudCopyFlights = new Map();
+  const _cloudImageJournalDocumentId = 'cloud-created-image-identities';
+
+  function _cloudCopyJournalDocumentId(operation) {
+    return operation === 'created-cloud-image-identity' ? _cloudImageJournalDocumentId : undefined;
+  }
+
+  async function _readCloudCopyJournal(provider, operation) {
+    return _folderLinksStateForProvider(provider, _cloudCopyJournalDocumentId(operation));
+  }
+
+  async function _updateCloudCopyJournal(provider, operation, updater, writeSession = null) {
+    return _updateFolderLinksStateForProvider(provider, updater, _cloudCopyJournalDocumentId(operation), writeSession);
+  }
 
   function _canonicalCloudCopyValue(value) {
     if (Array.isArray(value)) return value.map(_canonicalCloudCopyValue);
@@ -17,8 +30,9 @@
   async function _cloudCopyIdentity(provider, operationId, operation, payload) {
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload),
-      key: `${scope}\u0000${operationId}` };
+    const key = `${scope}\u0000${operationId}`;
+    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload), key,
+      writeSession: _cloudCopyFlights.get(key)?.writeSession || null };
   }
 
   function _assertCloudCopyRecord(record, operationId, operation, identity) {
@@ -49,8 +63,10 @@
       }
       return previous.promise;
     }
+    const writeSession = {};
+    identity.writeSession = writeSession;
     const promise = Promise.resolve().then(() => task(identity));
-    const record = { fingerprint: identity.fingerprint, promise };
+    const record = { fingerprint: identity.fingerprint, promise, writeSession };
     _cloudCopyFlights.set(identity.key, record);
     try { return await promise; }
     finally { if (_cloudCopyFlights.get(identity.key) === record) _cloudCopyFlights.delete(identity.key); }
@@ -58,7 +74,7 @@
 
   async function _loadCloudCopyOperation(provider, operationId, operation, payload, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     const record = _normalizeOutlinerOperations(state.outliner_operations)
       .find(row => row.operation_id === operationId) || null;
     _assertCloudCopyRecord(record, operationId, operation, resolved);
@@ -69,7 +85,7 @@
     const bounded = Math.max(1, Math.min(50, Number(limit) || 50));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => (record.state === 'prepared' || record.state === 'awaiting_proof')
         && (!operation || record.operation === operation)
@@ -82,7 +98,7 @@
     const bounded = Math.max(1, Math.min(_CLOUD_COPY_COMPLETED_LIMIT, Number(limit) || 512));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => record.state === 'completed'
         && (!operation || record.operation === operation)
@@ -94,7 +110,7 @@
   async function _prepareCloudCopyOperation(provider, operationId, operation, payload, intent, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const previous = operations.find(row => row.operation_id === operationId) || null;
       _assertCloudCopyRecord(previous, operationId, operation, resolved);
@@ -107,13 +123,13 @@
       };
       return { ...state, outliner_operations: previous ? operations
         : _pruneCloudCopyOperations([...operations, selected]) };
-    });
+    }, resolved.writeSession);
     return selected;
   }
 
   async function _updateCloudCopyIntent(provider, operationId, operation, payload, intent) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -126,12 +142,12 @@
         ...previous, state: nextState, intent: structuredClone(intent), saved_at: new Date().toISOString(),
       };
       return { ...state, outliner_operations: operations };
-    });
+    }, identity.writeSession);
   }
 
   async function _failCloudCopyOperation(provider, operationId, operation, payload, reason) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -149,7 +165,7 @@
   async function _rearmCloudCopyOperation(provider, operationId, operation, payload, publisherToken) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -182,7 +198,7 @@
   async function _completeCloudCopyOperation(provider, operationId, operation, payload, result) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = result;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -195,16 +211,25 @@
           saved_at: new Date().toISOString() };
       }
       return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
-    });
+    }, identity.writeSession);
     return selected;
   }
 
   async function _runCloudCopyAftercare(provider, operationId, operation, payload, record, steps, checkpoint = null) {
     let intent = structuredClone(record.intent || {});
     const completed = new Set(Array.isArray(intent.aftercare_completed) ? intent.aftercare_completed : []);
+    // 呼出元が対象形式から副作用なしと証明できる手順は、最初の保存へ完了をまとめる。
+    for (const step of steps) {
+      if (step.noop !== true) continue;
+      completed.add(step.name);
+      if (intent.aftercare_in_progress?.name === step.name) delete intent.aftercare_in_progress;
+    }
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
-    await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    // 最初の手順の開始と同時に必要な手順一覧を確定する。効果の実行前の保存は保つ。
+    if (steps.every(step => completed.has(step.name))) {
+      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    }
     for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;

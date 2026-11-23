@@ -34,9 +34,9 @@ function _bdCardTailColor(cardEl) {
   return cardEl?.style?.background || '';
 }
 
-// 端点のドラッグ・Alt+Shift+ドラッグでの新規作成は、操作の区切りで1件だけボードの取り消し
-// 履歴へ積む（pointermoveのたびに積まない）。_installDrag からドラッグ開始時に一度だけ呼ばれる。
-function _bdCardTailOnDragStart() {
+// 確定直前に元の形へ戻した状態で1件だけ履歴へ積む。
+// 中断した操作はUndoを増やさず、残っているRedoも消さない。
+function _bdCardTailOnDragCommit() {
   if (typeof bdPushUndo === 'function') bdPushUndo('ボード: フキダシのしっぽ');
 }
 
@@ -59,7 +59,7 @@ function bdInstallCardTail(cardEl, node) {
     legacyFallback: false,
     canDragHandles: _bdCardTailCanDragHandles,
     dragExcludeSelector: BD_CARD_TAIL_DRAG_EXCLUDE_SELECTOR,
-    onDragStart: _bdCardTailOnDragStart,
+    onDragCommit: _bdCardTailOnDragCommit,
   });
 }
 

@@ -116,6 +116,19 @@
 
   let PM_CALENDAR_LEASE_TOKEN = '';
   const PM_LEASE_PROVIDER_ORIGINAL = Symbol.for('meldex.lease.originalProvider');
+  const PM_PENDING_LEASE_RELEASES = new Map();
+  const PM_PAGE_LEASE_TOKENS = new Map();
+
+  async function _pmCloudReleasePendingLeases(provider, knownKey = null) {
+    if (!PM_PENDING_LEASE_RELEASES.size) return;
+    const key = knownKey || (typeof _pmCloudRootMigrationKey === 'function' && await _pmCloudRootMigrationKey(provider)) || provider;
+    const pending = PM_PENDING_LEASE_RELEASES.get(key);
+    if (!pending) return;
+    const store = window.MeldexActiveLockStore;
+    if (typeof store?.release !== 'function') throw _pmCloudError(503, '終了済み操作のロックを解放できません');
+    await store.release(provider, PM_ROOT, pending.token, pending.holderId);
+    PM_PENDING_LEASE_RELEASES.delete(key);
+  }
 
   async function _pmCloudWithProductionLease(provider, operation) {
     const serialize = window.MeldexProductionSchemaMigration?.serializeProviderLeaseOperation;
@@ -125,18 +138,32 @@
     return _pmCloudWithProductionLeaseUnlocked(provider, operation);
   }
 
+  async function _pmCloudWaitForProductionIdle(provider) {
+    const serialize = window.MeldexProductionSchemaMigration?.serializeProviderLeaseOperation;
+    const cleanup = () => _pmCloudReleasePendingLeases(provider);
+    return typeof serialize === 'function' ? serialize(provider, cleanup) : cleanup();
+  }
+
   async function _pmCloudWithProductionLeaseUnlocked(provider, operation) {
+    const store = window.MeldexActiveLockStore;
+    const releaseKey = (typeof _pmCloudRootMigrationKey === 'function' && await _pmCloudRootMigrationKey(provider)) || provider;
+    // 終了済み操作のトークンとholderだけを条件付きで解放する。
+    await _pmCloudReleasePendingLeases(provider, releaseKey);
     const requireUnlocked = window.MeldexFileLockStore?.requireUnlocked;
     if (typeof requireUnlocked === 'function') {
       await requireUnlocked(provider, PM_ROOT, { action: 'production-management', includeDescendants: true });
     }
-    const store = window.MeldexActiveLockStore;
     if (!store?.acquire || !store?.release || !store?.heartbeat) {
       if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _pmCloudError(503, '共有更新ロックを利用できません');
       return operation(provider);
     }
-    const token = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `pm-${Date.now()}-${_pmHash(Math.random())}`;
-    const holderId = `production-task-create:${token}`;
+    const operationId = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `pm-${Date.now()}-${_pmHash(Math.random())}`;
+    // 操作の所有者は画面ごとに固定し、セル編集の所有者とは分ける。
+    // 旧版の保持者別読込でも共有ストアの更新ロックが隠れないようにする。
+    const pageOwner = window.MeldexActiveLocks?.token?.() || '';
+    if (pageOwner && !PM_PAGE_LEASE_TOKENS.has(pageOwner)) PM_PAGE_LEASE_TOKENS.set(pageOwner, operationId);
+    const token = PM_PAGE_LEASE_TOKENS.get(pageOwner) || operationId;
+    const holderId = `production-task-create:${operationId}`;
     const lease = {
       path: PM_ROOT,
       token,
@@ -147,7 +174,14 @@
       include_descendants: true,
       lease_seconds: 300,
     };
-    await store.acquire(provider, lease);
+    try {
+      await store.acquire(provider, lease);
+    } catch (error) {
+      // 保存後に応答だけを失った可能性もある。自分のトークンに限り清掃する。
+      try { await store.release(provider, PM_ROOT, token, holderId); }
+      catch { PM_PENDING_LEASE_RELEASES.set(releaseKey, { token, holderId }); }
+      throw error;
+    }
     let leaseLost = null;
     let heartbeatPromise = null;
     const lostError = cause => {
@@ -199,6 +233,7 @@
       try {
         await store.release(provider, PM_ROOT, token, holderId);
       } catch (error) {
+        PM_PENDING_LEASE_RELEASES.set(releaseKey, { token, holderId });
         console.warn('[ProductionManagement] 制作管理ロックの解放に失敗しました', error);
       }
     }

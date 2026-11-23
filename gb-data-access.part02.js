@@ -10,6 +10,7 @@
     _buildBrowseItem,
     _sortBrowseItems,
     _linkedItemsForFolder,
+    _folderLinkPathKey,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
     _rewriteStoredPathsBatchForProvider,
@@ -1021,7 +1022,9 @@
     const finalName = `${finalStem}.zip`;
     const outputPath = _joinPath(outputDir, finalName);
     await _writeBytes(provider, outputPath, zipBytes);
-    return { ok: true, path: outputPath, name: finalName, count: sourcePaths.length };
+    const created = new Date().toISOString();
+    return { ok: true, path: outputPath, name: finalName, count: sourcePaths.length,
+      entry: { path: outputPath, name: finalName, type: 'archive', ext: '.zip', size: zipBytes.length, created, modified: created } };
   }
 
   async function _archiveReadArchiveBytes(provider, rawArchivePath) {

@@ -520,7 +520,7 @@ const MeldexExportSave = (() => {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const res = await put(ifMatch ? { if_match_etag: ifMatch } : { create_only: true });
-        const etag = String(res?.transport_revision || res?.etag || '');
+        const etag = String(res?.transport_revision?.token || res?.etag || '');
         _notifyManualSaveSuccess((options.okMessage || '公開HTMLを保存しました') + ': ' + path);
         return { ok: true, path, etag, vault_relative_path: path, inside_vault: true };
       } catch (error) {
@@ -529,7 +529,7 @@ const MeldexExportSave = (() => {
             && await options.confirmOverwrite(path)) {
           try {
             const current = await apiFetch(url + '&metadata_only=1', { silentError: true });
-            ifMatch = String(current?.transport_revision || current?.etag || '');
+            ifMatch = String(current?.transport_revision?.token || current?.etag || '');
           } catch (readError) {
             return _failWithReason(options, readError);
           }

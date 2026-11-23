@@ -62,7 +62,7 @@
     const placement = matchingPlacement(loaded.viewDocument, ref, location);
     if (requirePlacement && !placement) throw new Error('履歴の操作元が変更または削除されています');
     let record = recordFromSnapshot(loaded, ref);
-    if (!record && typeof global.apiFetch === 'function') {
+    if ((!record || !placement) && typeof global.apiFetch === 'function') {
       try {
         const topic = await global.apiFetch(
           `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
@@ -98,6 +98,22 @@
   }
 
   async function runPlacement(operation, ref, sourceLocation, targetLocation, options) {
+    // 開いているボードの保存・遅延移行を先に確定する。履歴の移動先がそのボードの時も、
+    // 先に版を読んでしまうと、この後の遅延移行で版が変わり取り消しが409になる。
+    let board;
+    try { board = typeof bd !== 'undefined' ? bd : global.bd; } catch (_) { board = global.bd; }
+    const norm = value => String(value || '').replace(/\\/g, '/').replace(/\/$/, '');
+    const opened = board?.path && [sourceLocation, targetLocation].find(location => location?.surface === 'board'
+      && norm(location.path) === norm(board?.path));
+    if (opened && global.GbTopicLiveBridge?.flushOpenedSheet) {
+      global.MeldexBoardTopicIntegration?.commitPendingEdits?.(board);
+      const pending = global.bdWaitPendingNodeTextWrites?.(board.nodes);
+      if (pending && await pending === false) throw new Error('トピックの保存を完了できません');
+      if (board.dirty && await global.bdSave?.() !== true) throw new Error('ボードの保存を完了できません');
+      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(board.path, { owner: board });
+      if (!flushed.ok || flushed.mode !== 'commit') throw new Error('履歴の対象ボードの最新状態を確認できません: '
+        + (flushed.error?.message || flushed.status || flushed.mode));
+    }
     const needsPlacement = ['move', 'detach'].includes(operation);
     const source = await sourceAt(ref, sourceLocation, false, needsPlacement);
     const target = targetLocation ? await targetAt(targetLocation) : null;

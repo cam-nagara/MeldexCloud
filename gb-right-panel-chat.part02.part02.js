@@ -255,6 +255,60 @@ function chatSave(event) {
   return showChatExportMenu(event);
 }
 
+const _chatHistoryDeleting = new Set();
+async function _chatDeleteHistoryItem(item) {
+  const path = String(item.path || '');
+  if (!path || item.store === 'cli' || _chatHistoryDeleting.has(path)) return;
+  if (_chatAnyExecutionRunning()) {
+    showStatus('応答生成中は会話を削除できません', true);
+    return;
+  }
+  _chatHistoryDeleting.add(path);
+  document.querySelectorAll('#chat-history-list [data-chat-history-path]').forEach(row => {
+    if (row.dataset.chatHistoryPath === path) row.hidden = true;
+  });
+  try {
+    const sourceFolder = item.source_folder || item.sourceFolder || (await GBChatStorageContext.resolveForHistory()).sourceFolder;
+    const fullPath = /^(?:[A-Za-z]:[\\/]|\/)/.test(path) ? path : sourceFolder.replace(/[\\/]$/, '') + '/' + path;
+    const targets = [{path: fullPath, name: item.title || item.name, type: 'page'}];
+    const confirmation = await MeldexDeleteImpactWarning.authorizeReversibleDelete([{path:fullPath,kind:'file'}]);
+    if (!confirmation) return;
+    const refresh = async () => { await renderChatHistory(); };
+    const result = await deleteOutlinerItemsWithHistory(targets, {
+      label: 'チャット: 会話を削除', confirmation, refresh, refreshSuccessfulRedo: true,
+    });
+    if (!result.deletedCount) {
+      const error = result.failed?.[0]?.error;
+      throw new Error(error?.message || String(error || '会話を削除できませんでした'));
+    }
+    if (String(item.name) === String(_chatState.sessionId)
+        && _chatNormalizePath(sourceFolder) === _chatNormalizePath(_chatState.historySourceFolder || GBChatStorageContext.peekHistory()?.sourceFolder)) {
+      // Keep unsent text, selections and attachments in the composer.
+      chatClear({preserveComposer:true,skipHistoryRefresh:true});
+    }
+    showStatus('会話を削除しました');
+  } catch (error) {
+    showStatus('会話の削除に失敗しました: ' + (error?.message || error), true);
+  } finally {
+    _chatHistoryDeleting.delete(path);
+    await renderChatHistory();
+  }
+}
+
+function _chatHistoryItemMenu(event, item, row) {
+  event.preventDefault();
+  event.stopPropagation();
+  const anchor = event.currentTarget?.getBoundingClientRect();
+  const zoom = typeof _getZoom === 'function' ? _getZoom() : 1;
+  return MeldexContextMenuUI.openAt({
+    x: event.type === 'contextmenu' ? event.clientX / zoom : anchor.left,
+    y: event.type === 'contextmenu' ? event.clientY / zoom : anchor.bottom,
+    ariaLabel: '会話の操作', restoreFocus: row,
+    items: [{icon:'trash2',label:'チャットを削除',disabled:_chatAnyExecutionRunning() || _chatHistoryDeleting.has(String(item.path)),
+      action:()=>_chatDeleteHistoryItem(item)}],
+  });
+}
+
 // チャット履歴一覧を表示
 async function renderChatHistory(options = {}) {
   const listEl = document.getElementById('chat-history-list');
@@ -263,11 +317,13 @@ async function renderChatHistory(options = {}) {
   try {
     const history = window.MeldexChatManagementSheet;
     const allItems = await history.load(!options.localOnly);
-    const items = allItems.filter(row => history.matches(row)).slice(0,50).map(row=>({...row,name:row.name || row.sessionId || String(row.path).split(/[\\/]/).pop()?.replace(/\.md$/i,'')}));
+    const items = allItems.filter(row => history.matches(row) && !_chatHistoryDeleting.has(String(row.path))).slice(0,50).map(row=>({...row,name:row.name || row.sessionId || String(row.path).split(/[\\/]/).pop()?.replace(/\.md$/i,'')}));
     if (!items || items.length === 0) {
       listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴がありません</div>';
       return;
     }
+    const focusedRow = document.activeElement?.closest?.('[data-chat-session-id]');
+    const focusedSessionId = focusedRow && listEl.contains(focusedRow) ? focusedRow.dataset.chatSessionId : '';
     listEl.innerHTML = '';
     listEl.setAttribute('role', 'listbox');
     listEl.setAttribute('aria-label', 'AIチャット履歴');
@@ -283,6 +339,7 @@ async function renderChatHistory(options = {}) {
         _chatMarkReplySeen(sessionId, replyVersion);
       }
       div.dataset.chatSessionId = sessionId;
+      div.dataset.chatHistoryPath = String(item.path || '');
       div.dataset.chatReplyVersion = replyVersion;
       div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
@@ -305,9 +362,28 @@ async function renderChatHistory(options = {}) {
         if(item.store==='cli') {switchChatHistoryView('cli');window.GBChatCli?.openSession(item.provider,item.sessionId);}
         else openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
+      if (item.store !== 'cli') {
+        div.addEventListener('contextmenu', event => _chatHistoryItemMenu(event, item, div));
+        div.addEventListener('keydown', event => {
+          if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) _chatHistoryItemMenu(event, item, div);
+        });
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'tb-icon-btn';
+        more.dataset.chatHistoryMore = '';
+        more.setAttribute('aria-label', '会話の操作');
+        more.innerHTML = lucide('ellipsis', 14);
+        more.addEventListener('click', event => _chatHistoryItemMenu(event, item, div));
+        div.querySelector('[data-chat-state-host]').appendChild(more);
+      }
       listEl.appendChild(div);
     });
     window.MeldexChatListbox?.decorateHistory?.();
+    if (focusedSessionId) {
+      const replacement = [...listEl.querySelectorAll('[data-chat-session-id]')]
+        .find(row => row.dataset.chatSessionId === focusedSessionId);
+      replacement?.focus({ preventScroll: true });
+    }
   } catch (e) {
     if(!listEl.children.length) listEl.innerHTML = '<div role="status">履歴を取得できません。再試行してください</div>';
   } finally {
@@ -338,7 +414,7 @@ function _chatSearchClose() {
   if (bar) bar.style.display = 'none';
   const results = document.getElementById('chat-search-results');
   if (results) { results.style.display = 'none'; results.innerHTML = ''; }
-  const msgs = _chatLiveMessagesContainer();
+  const msgs = _chatLiveElement('chat-messages', { allowHidden: true });
   if (msgs) msgs.style.display = 'flex';
   // ハイライト除去
   if (msgs) msgs.querySelectorAll('.chat-search-hl').forEach(m => {
@@ -376,7 +452,7 @@ function _chatAppendHighlightedText(parent, text, query) {
   if (lastIndex < source.length) parent.appendChild(document.createTextNode(source.slice(lastIndex)));
 }
 
-function _chatSearch() {
+function _chatSearch(options = {}) {
   const q = document.getElementById('chat-search-input')?.value?.trim();
   const scope = document.getElementById('chat-search-scope')?.value || 'session';
   const countEl = document.getElementById('chat-search-count');
@@ -386,8 +462,15 @@ function _chatSearch() {
     // セッション内検索: メッセージ内テキストをハイライト
     const results = document.getElementById('chat-search-results');
     if (results) { results.style.display = 'none'; }
-    const msgs = _chatLiveMessagesContainer();
+    const msgs = _chatLiveElement('chat-messages', { allowHidden: true });
     if (!msgs) return;
+    if (_chatState.messages.length > CHAT_HISTORY_PAGE_SIZE && options.keepWindow !== true) {
+      const index = _chatState.messages.findIndex(message => _chatContentToText(message?.content || '').toLowerCase().includes(q.toLowerCase()));
+      if (index >= 0) {
+        msgs.replaceChildren();
+        _chatAppendStoredMessages(msgs, _chatState.messages, { end: Math.min(_chatState.messages.length, index + CHAT_HISTORY_PAGE_SIZE) });
+      }
+    }
     if (msgs) msgs.style.display = 'flex';
     // 既存ハイライト除去
     msgs.querySelectorAll('.chat-search-hl').forEach(m => m.replaceWith(document.createTextNode(m.textContent)));
@@ -423,13 +506,16 @@ function _chatSearch() {
         parent.replaceChild(frag, tnode);
       }
     }
-    if (countEl) countEl.textContent = count + '件';
+    const total = _chatState.messages.length > CHAT_HISTORY_PAGE_SIZE
+      ? _chatState.messages.reduce((sum, message) => sum + _chatContentToText(message?.content || '').toLowerCase().split(lq).length - 1, 0)
+      : count;
+    if (countEl) countEl.textContent = total + '件';
     // 最初のハイライトにスクロール
     const first = msgs.querySelector('.chat-search-hl');
     if (first) first.scrollIntoView({ block: 'center' });
   } else {
     // 全チャット検索: API経由
-    const msgs = _chatLiveMessagesContainer();
+    const msgs = _chatLiveElement('chat-messages', { allowHidden: true });
     if (msgs) msgs.style.display = 'none';
     const results = document.getElementById('chat-search-results');
     if (!results) return;
@@ -467,7 +553,7 @@ function _chatSearch() {
 // 検索入力のデバウンス
 document.getElementById('chat-search-input')?.addEventListener('input', () => {
   clearTimeout(_chatSearchTimer);
-  _chatSearchTimer = setTimeout(_chatSearch, 300);
+  _chatSearchTimer = setTimeout(_chatSearch, 120);
 });
 document.getElementById('chat-search-scope')?.addEventListener('change', () => { _chatSearch(); });
 
@@ -765,22 +851,31 @@ async function showChatHistoryDropdown(event) {
   document.body.appendChild(popup);
   positionPopup(popup, comboRect);
   _chatTitleDropdown = popup;
+  document.getElementById('chat-title-dropdown-btn')?.setAttribute('aria-expanded', 'true');
 
   const onOutside = (e) => {
     if (!popup.contains(e.target) && e.target.id !== 'chat-title-dropdown-btn') _closeChatTitleDropdown();
   };
-  const onKey = (e) => { if (e.key === 'Escape') _closeChatTitleDropdown(); };
-  setTimeout(() => {
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    _closeChatTitleDropdown();
+    document.getElementById('chat-title-dropdown-btn')?.focus();
+  };
+  const listenerTimer = setTimeout(() => {
+    if (_chatTitleDropdown !== popup || !popup.isConnected) return;
     document.addEventListener('mousedown', onOutside);
     document.addEventListener('keydown', onKey);
   }, 0);
   popup._cleanup = () => {
+    clearTimeout(listenerTimer);
     document.removeEventListener('mousedown', onOutside);
     document.removeEventListener('keydown', onKey);
   };
 
   try {
     const items = await window.GBChatStorageContext.fetchHistory('/chat/list');
+    if (_chatTitleDropdown !== popup || !popup.isConnected) return;
     popup.innerHTML = '';
     if (!items || items.length === 0) {
       const empty = document.createElement('div');
@@ -823,16 +918,13 @@ async function showChatHistoryDropdown(event) {
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       };
       row.addEventListener('click', openRow);
-      row.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        openRow();
-      });
       popup.appendChild(row);
       if (typeof _chatUpdateSessionStateRow === 'function') _chatUpdateSessionStateRow(row);
     });
-    popup.querySelector('[role="option"]')?.focus();
+    _chatDecorateHistoryList(popup);
+    popup.querySelector('[role="option"][tabindex="0"]')?.focus();
   } catch (e) {
+    if (_chatTitleDropdown !== popup || !popup.isConnected) return;
     popup.innerHTML = '';
     const err = document.createElement('div');
     err.style.cssText = 'padding:8px;color:var(--fg2);text-align:center;';
@@ -847,13 +939,17 @@ function _closeChatTitleDropdown() {
   if (typeof _chatTitleDropdown._cleanup === 'function') _chatTitleDropdown._cleanup();
   _chatTitleDropdown.remove();
   _chatTitleDropdown = null;
+  document.getElementById('chat-title-dropdown-btn')?.setAttribute('aria-expanded', 'false');
 }
 
 // ============================
 // マルチモーダル: 画像添付
 // ============================
 let _chatSessionGen = 0;
-function _chatBumpSessionGen() { _chatSessionGen++; }
+function _chatBumpSessionGen() {
+  _chatSessionGen++;
+  if (typeof _chatStopVoiceInput === 'function') _chatStopVoiceInput({ discard: true, focus: false });
+}
 window._chatBumpSessionGen = _chatBumpSessionGen;
 let _chatDraftUploadedLinks = [];
 let _chatDraftUploadCleanupPaused = 0;

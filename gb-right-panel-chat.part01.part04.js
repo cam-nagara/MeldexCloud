@@ -205,8 +205,33 @@ function _chatAbortActiveStreamForNavigation() {
 }
 
 let _chatSpeechRecognition = null;
+let _chatSpeechRecognitionEpoch = 0;
+
+function _chatResetVoiceInput(recognition, focus = true) {
+  if (_chatSpeechRecognition !== recognition) return;
+  _chatSpeechRecognition = null;
+  const btn = document.getElementById('chat-voice-btn');
+  if (btn) {
+    btn.dataset.recording = '0';
+    btn.style.color = 'var(--fg2)';
+    btn.title = '音声入力';
+  }
+  if (focus && !window.GBChatFormatting?.focusInput?.()) document.getElementById('chat-input')?.focus();
+}
+
+function _chatStopVoiceInput(options = {}) {
+  const recognition = _chatSpeechRecognition;
+  if (!recognition) return;
+  if (options.discard) _chatSpeechRecognitionEpoch++;
+  _chatResetVoiceInput(recognition, options.focus !== false);
+  try {
+    if (options.discard && typeof recognition.abort === 'function') recognition.abort();
+    else recognition.stop();
+  } catch {}
+}
 
 function chatToggleVoiceInput() {
+  if (_chatSpeechRecognition) { _chatStopVoiceInput(); return; }
   const input = document.getElementById('chat-input');
   const btn = document.getElementById('chat-voice-btn');
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -214,22 +239,23 @@ function chatToggleVoiceInput() {
     if (typeof showStatus === 'function') showStatus('このブラウザは音声入力に対応していません', true);
     return;
   }
-  if (_chatSpeechRecognition) {
-    try { _chatSpeechRecognition.stop(); } catch {}
-    _chatSpeechRecognition = null;
-    if (btn) {
-      btn.dataset.recording = '0';
-      btn.style.color = 'var(--fg2)';
-      btn.title = '音声入力';
-    }
-    return;
-  }
   const recognition = new SpeechRecognition();
+  const epoch = ++_chatSpeechRecognitionEpoch, generation = _chatSessionGen;
+  let acceptingResults = true;
   recognition.lang = 'ja-JP';
   recognition.interimResults = true;
   recognition.continuous = false;
   const baseValue = input.value;
+  let lastAppliedValue = baseValue;
   recognition.onresult = event => {
+    if (!acceptingResults || epoch !== _chatSpeechRecognitionEpoch || generation !== _chatSessionGen) return;
+    // Hand edits always win, including edits made after Stop while the browser
+    // is still delivering its final recognition notification.
+    if (input.value !== lastAppliedValue) {
+      acceptingResults = false;
+      if (_chatSpeechRecognition === recognition) _chatStopVoiceInput({ discard: true, focus: false });
+      return;
+    }
     const finalParts = [];
     const interimParts = [];
     for (let i = 0; i < event.results.length; i++) {
@@ -238,21 +264,22 @@ function chatToggleVoiceInput() {
       else interimParts.push(text);
     }
     const speechText = (finalParts.join('') + interimParts.join('')).trim();
-    const next = (baseValue + (baseValue && speechText ? '\n' : '') + speechText).trimStart();
-    input.value = next;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const nextValue = baseValue + (baseValue && speechText ? '\n' : '') + speechText;
+    if (nextValue === input.value) return;
+    if (!window.GBChatFormatting?.replaceInputSource?.(nextValue)) {
+      input.value = nextValue;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    lastAppliedValue = input.value;
   };
   recognition.onerror = event => {
+    acceptingResults = false;
+    if (_chatSpeechRecognition !== recognition) return;
     if (typeof showStatus === 'function') showStatus('音声入力エラー: ' + (event.error || 'unknown'), true);
   };
   recognition.onend = () => {
-    _chatSpeechRecognition = null;
-    if (btn) {
-      btn.dataset.recording = '0';
-      btn.style.color = 'var(--fg2)';
-      btn.title = '音声入力';
-    }
-    if (!window.GBChatFormatting?.focusInput?.()) input.focus();
+    acceptingResults = false;
+    _chatResetVoiceInput(recognition);
   };
   _chatSpeechRecognition = recognition;
   if (btn) {
@@ -260,10 +287,19 @@ function chatToggleVoiceInput() {
     btn.style.color = 'var(--accent)';
     btn.title = '録音停止';
   }
-  recognition.start();
+  try { recognition.start(); }
+  catch (error) {
+    acceptingResults = false;
+    _chatResetVoiceInput(recognition);
+    if (typeof showStatus === 'function') showStatus('音声入力の開始に失敗しました: ' + (error?.message || error), true);
+  }
 }
 
 async function chatSend(options = {}) {
+  if (typeof _chatHistoryDeleting !== 'undefined' && _chatHistoryDeleting.size) {
+    showStatus('会話の削除処理中です。完了後に送信してください', true);
+    return false;
+  }
   const requestedStreamMessages = Array.isArray(options.streamMessages) ? options.streamMessages : null;
   if (requestedStreamMessages && requestedStreamMessages !== _chatState.messages) {
     // 裏で続くチャットの自動送信。そのチャット自身が応答中の時だけ見送る。
@@ -586,6 +622,7 @@ async function chatSend(options = {}) {
   let liveThinkingTextEl = null;
   let streamError = null;
   let streamCompleted = false;
+  let receivedDone = false;
   // 受信のたびに回答全文を描き直すと、長い回答ほど画面全体が重くなる。途中経過は
   // 一定間隔にまとめ、完了時は保留分を描き切ってから最終処理へ進む。中断・失敗時は
   // 保留分を捨てる（後から発火して最終表示を上書きしないため）。

@@ -11,7 +11,7 @@ const MeldexExportHtml = (() => {
   const INLINE_ASSET_MAX_BYTES = 50 * 1024 * 1024;
   // 公開（HTML出力）できる元ファイルの種類。本体側の PUBLISH_SOURCE_KINDS（meldex_api_shell.py）と
   // 同じ一覧でなければならない（tests/test_meldex_publish_source_kinds.py が食い違いを検出する）。
-  const PUBLISH_SOURCE_KINDS = Object.freeze(['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote']);
+  const PUBLISH_SOURCE_KINDS = Object.freeze(['page', 'entity', 'database', 'csv', 'calendar', 'board', 'scriptnote', 'form-app']);
   const ASSET_BASE_TOKEN = '__MELDEX_ASSET_BASE__';
 
   function _assetExtension(blob, rawUrl) {
@@ -1081,7 +1081,7 @@ ${bodyHtml}
     if (!publishCtx || (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true))) {
       return false;
     }
-    if (publishCtx.kind === 'board' && !publishCtx.board && typeof preparePublishContextSnapshot === 'function') {
+    if ((publishCtx.kind === 'board' && !publishCtx.board || publishCtx.kind === 'form-app' && !publishCtx.formSourceId) && typeof preparePublishContextSnapshot === 'function') {
       publishCtx = await preparePublishContextSnapshot(publishCtx);
       if (!publishCtx) return false;
     }
@@ -1094,7 +1094,7 @@ ${bodyHtml}
       showStatus('公開HTMLランタイムを読み込めませんでした', true);
       return false;
     }
-    const cfg = typeof getPublishConfigForContext === 'function' ? getPublishConfigForContext(publishCtx) : {};
+    let cfg = typeof getPublishConfigForContext === 'function' ? getPublishConfigForContext(publishCtx) : {};
     if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) {
       return false;
     }
@@ -1104,12 +1104,35 @@ ${bodyHtml}
     if (typeof isPublishContextSnapshotCurrent === 'function' && !isPublishContextSnapshotCurrent(publishCtx, true)) {
       return false;
     }
+    const browserData = typeof MeldexExportSave !== 'undefined' && !!MeldexExportSave.isBrowserDataContext?.();
+    let formTargetPath = '';
+    let formIntake = null;
+    if (kind === 'form-app' && browserData) {
+      formTargetPath = String(publishOpts.targetPath || (!publishOpts.changePath && (cfg.html_vault_path || cfg.html_path)) || '');
+      if (!formTargetPath) formTargetPath = await pickPublishTargetPath(publishCtx, cfg);
+      if (!formTargetPath || !isPublishContextSnapshotCurrent(publishCtx, true)) return false;
+      const app = _publishFormAppForPath(publishCtx.path);
+      const channel = cfg.intake_channel || await MeldexCloudFormRelay.createChannel();
+      app._update(doc => { doc.publish = { ...doc.publish, intake_channel: channel }; }, { history: false });
+      if (!await app.flush()) return false;
+      cfg = getPublishConfigForContext(publishCtx);
+      const folderPath = formTargetPath.includes('/') ? formTargetPath.slice(0, formTargetPath.lastIndexOf('/')) : '';
+      const folder = await MeldexStorageAdapter.getProvider().getMetadata(folderPath);
+      if (!folder?.id) throw new Error('公開先フォルダの識別番号を確認できません');
+      formIntake = { channel_id: channel.id, public_key: channel.publicKey, artifact_path: formTargetPath,
+        folder_id: folder.id,
+        generation: await MeldexCloudFormRelay.generation(cfg.form_source_id, cfg.form_submit_token),
+        cloud_url: new URL(location.pathname, location.origin).href };
+    }
     // 公開設定にコンテキスト由来の値を合成してランタイムへ渡す
     const mergedCfg = {
       ...cfg,
       title: _getViewTitle(kind),
       db_path: kind === 'board' ? '' : (publishCtx.path || cfg.db_path || ''),
       board_snapshot: publishCtx.board || null,
+      form_source_id: publishCtx.formSourceId || '',
+      form_app: kind === 'form-app' ? _publishFormAppForPath(publishCtx.path) : null,
+      intake: formIntake,
     };
     // 公開用のHTMLの作成中は処理パネルに出す（ステータスバーには進捗を出さない。2026-11-21）。
     const buildPublication = async () => {
@@ -1135,8 +1158,7 @@ ${bodyHtml}
     if (typeof assertPublishAllowedForContext === 'function' && !await assertPublishAllowedForContext(publishCtx)) return false;
     if (typeof assertPublishSourceRevisionCurrent === 'function' && !await assertPublishSourceRevisionCurrent(publishCtx)) return false;
     let result = false;
-    const browserData = typeof MeldexExportSave !== 'undefined' && !!MeldexExportSave.isBrowserDataContext?.();
-    let targetPath = String(publishOpts.targetPath || '');
+    let targetPath = formTargetPath || String(publishOpts.targetPath || '');
     if (!targetPath && !cfg.html_path && !publishOpts.changePath) {
       // 未公開のファイルは、元のファイルと同じフォルダの「元の名前.html」へ保存する
       targetPath = defaultPublishHtmlPath(publishCtx);
@@ -1179,6 +1201,7 @@ ${bodyHtml}
         last_published_at: new Date().toISOString(),
       };
       await savePublishConfigForContext(publishCtx, next);
+      if (kind === 'form-app') _publishFormAppForPath(publishCtx.path)?._scheduleResponseIntake?.();
     }
     if (result?.path) _reportPublishedLocation(result, browserData);
     return !!result;
@@ -1314,6 +1337,12 @@ ${bodyHtml}
 
   function _getViewTitle(viewType) {
     switch (viewType) {
+      case 'form-app': {
+        const context = typeof getCurrentPublishContext === 'function' ? getCurrentPublishContext() : null;
+        const app = context?.path ? _publishFormAppForPath(context.path) : null;
+        return app?.getConfig?.(app.ctx?.pivotData?.properties || [], app.ctx?.dbMetadata?.property_types || {})?.headerTitle || app?.store?.doc.formConfig?.headerTitle
+          || app?.store?.doc.title || context?.label || 'フォーム';
+      }
       case 'scriptnote': {
         const editor = _activeScriptNoteEditorForPath('');
         const stem = String(editor?._path || '').split('/').pop().replace(/(\.mel-scenario|\.scriptnote\.json)$/i, '');

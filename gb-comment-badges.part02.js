@@ -72,9 +72,7 @@
       map_feature: 'マップの地点・図形', form_field: 'フォームの項目',
       text_range: '選択範囲', none: '未紐付',
     })[ctx.targetKind] || ctx.targetKind;
-    let body = null;
-    body = await _promptInlineComment(opts.anchorEl || _commentPromptAnchorFromContext(ctx), '', kindLabel);
-    if (body == null || !body.trim()) return;
+    async function save(body) {
     try {
       const payload = {
         type: 'comment',
@@ -135,10 +133,16 @@
         if (panel?.classList.contains('open')) loadRpAnnotationList();
       }
       if (typeof showStatus === 'function') showStatus(`コメントを追加 (${kindLabel})`);
+      return true;
     } catch (error) {
       // 原因を画面に出す（以前は理由なしで「失敗」とだけ出し、ボードのラインのコメントの失敗の原因が分からなかった）。
       if (typeof showStatus === 'function') showStatus('コメント追加に失敗: ' + String(error?.message || error || '不明なエラー').slice(0, 160), true);
+      return false;
     }
+    }
+    const body = await _promptInlineComment(opts.anchorEl || _commentPromptAnchorFromContext(ctx), '', kindLabel,
+      opts.retainOnFailure ? save : null);
+    if (!opts.retainOnFailure && body != null && body.trim()) await save(body);
   }
 
   // === マップ・フォーム ===

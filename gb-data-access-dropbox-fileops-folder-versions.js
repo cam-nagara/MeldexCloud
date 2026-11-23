@@ -77,6 +77,7 @@
       label: options?.label || '',
       auto: !!options?.auto,
       files,
+      ...(options?.include_annotations ? { annotation_snapshot: await _captureVersionAnnotations(provider, normalized) } : {}),
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
@@ -205,9 +206,10 @@
   async function _readFolderVersion(provider, folderPath, version, includeRevision = false) {
     const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
     if (!record) throw new Error('フォルダバージョンが見つかりません');
-    if (!includeRevision) return record.payload;
+    const payload={...record.payload,annotation_snapshot:_rebindVersionAnnotations(record.payload.annotation_snapshot,_normalizeFolderPath(folderPath))};
+    if (!includeRevision) return payload;
     const baseline = await _folderRestoreBaseline(provider, _normalizeFolderPath(folderPath), record.payload.files || []);
-    return { ...record.payload, restore_revision: baseline.token };
+    return { ...payload, restore_revision: baseline.token };
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
@@ -253,7 +255,7 @@
       plan.nextBytes = Uint8Array.from(atob(file.content_base64), char => char.charCodeAt(0));
       await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
     }
-    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore', include_annotations: meta.annotation_snapshot != null });
     const committed = [];
     try {
       for (const plan of baseline.plans) {
@@ -265,6 +267,7 @@
         const readback = await _readConflictSnapshot(provider, plan.path);
         if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
       }
+      await _restoreVersionAnnotations(provider, normalized, meta.annotation_snapshot, options.annotation_revision);
     } catch (error) {
       const incomplete = [];
       for (const { plan, revision } of [...committed].reverse()) {
@@ -319,4 +322,5 @@
   window.MeldexFolderVersionProviderOps = Object.freeze({
     save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
     read: (provider, path, version) => _readFolderVersion(provider, path, version),
+    restoreRevision: async (provider,path,files) => (await _folderRestoreBaseline(provider,path,files)).token,
   });

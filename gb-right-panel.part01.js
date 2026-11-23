@@ -63,7 +63,7 @@ function _resolveRpAnnotationCurrentTarget() {
   ];
   for (const candidate of candidates) {
     if (_isRpAnnotationConcreteTarget(candidate)) {
-      if (targetFilter?.targetPath && targetFilter.targetPath !== candidate && search) delete search.dataset.targetFilter;
+      if (targetFilter?.targetPath && !_rpAnnotationPathsMatch(targetFilter.targetPath, candidate) && search) delete search.dataset.targetFilter;
       return _rememberRpAnnotationCurrentTarget(candidate);
     }
   }
@@ -83,10 +83,11 @@ function _syncLegacyRightPanelTargetHeaders() {
   }
   const path = _resolveRpAnnotationCurrentTarget();
   // 保存用のファイル名と画面のノート名は別。開いているタブの表示名で揃える。
-  const panes = typeof GBLayout !== 'undefined' && GBLayout.root ? GBLayout.getAllPanes(GBLayout.root) : [];
-  const tab = panes.flatMap(pane => pane.tabs || []).find(tab => tab.path === path);
-  const context = path ? { targets: [{ path, kind: 'file', label: tab?.label || '' }] } : targetContext;
-  window.GBOptionTargetContext?.renderHeader?.(annotation, context);
+  const context = path ? { targets: [{ path, kind: 'file', label: _rpAnnotationFileLabel({ target_path: path }) }] } : targetContext;
+  const surface = window.GBAnnotationSurfaces?.target();
+  const caption = surface ? (surface.id === 'gb-subpanel-inner-pane' || surface.host.closest('#gb-subpanel-content') ? '対象 サブ' : '対象 メイン') : undefined;
+  const pdfPage = /\.pdf#page=(\d+)$/i.exec(path)?.[1];
+  window.GBOptionTargetContext?.renderHeader?.(annotation, context, { caption: pdfPage ? `${caption || '対象'} ・ ${pdfPage}ページ` : caption });
 }
 
 document.addEventListener('meldex:option-target-changed', _syncLegacyRightPanelTargetHeaders);
@@ -240,9 +241,20 @@ function switchRightTab(tabName, source) {
 
 // 右パネル: アノテート一覧（コメントはスレッド形式、他タイプは従来の簡易リスト）
 // Phase 2e-i: コメントを target_kind + target_ref でグルーピングし、解決/削除を操作可能に
-async function loadRpAnnotationList() {
+let _rpAnnotationListRevision = 0;
+let _rpAnnotationListController = null;
+let _rpAnnotationListSnapshot = null;
+async function loadRpAnnotationList(options = {}) {
+  const revision = ++_rpAnnotationListRevision;
   const list = document.getElementById('rp-ann-list');
   if (!list) return;
+  _rpAnnotationListController?.abort();
+  const controller = new AbortController();
+  _rpAnnotationListController = controller;
+  const requestOptions = { foreground: list.getClientRects().length > 0, signal: controller.signal };
+  list._rpAnnotationObserver?.disconnect();
+  list._rpAnnotationObserver = null;
+  list.dataset.annotationTotal = '0';
   list.innerHTML = '<div style="padding:12px;text-align:center;color:var(--fg2);font-size:12px;">読み込み中...</div>';
   const viewMode = document.getElementById('rp-ann-view')?.value || localStorage.getItem('rp-ann-view-mode') || 'preview';
   const sortMode = document.getElementById('rp-ann-sort')?.value || localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
@@ -255,9 +267,21 @@ async function loadRpAnnotationList() {
   const dateTo = document.getElementById('rp-ann-date-to')?.value || '';
   const searchEl = document.getElementById('rp-ann-search');
   const searchQuery = searchEl?.value?.toLowerCase() || '';
+  for (const [label, active] of [
+    ['アノテートの表示と並び順', viewMode !== 'preview' || sortMode !== 'modified-desc'],
+    ['アノテートの絞り込み', !!(typeFilter || scopeFilter !== 'current' || statusFilter !== 'open' || userFilter || dateFrom || dateTo)],
+  ]) {
+    const button = document.querySelector(`[data-annotation-toolbar] button[aria-label="${label}"]`);
+    button?.classList.toggle('active', active); button?.setAttribute('aria-pressed', String(active));
+  }
   const currentTarget = scopeFilter === 'current' ? _resolveRpAnnotationCurrentTarget() : '';
   let targetFilter = _readRpAnnotationTargetFilter(searchEl);
   const currentTargetCandidates = scopeFilter === 'current' ? _rpAnnotationCurrentTargetCandidates(currentTarget) : [];
+  const snapshotKey = JSON.stringify([scopeFilter, currentTargetCandidates]);
+  const generation = typeof _gbAppApiFetchCacheGeneration === 'number' ? _gbAppApiFetchCacheGeneration : -1;
+  const snapshot = options.reuseItems && _rpAnnotationListSnapshot?.key === snapshotKey &&
+    _rpAnnotationListSnapshot.generation === generation ? _rpAnnotationListSnapshot : null;
+  if (!snapshot) _rpAnnotationListSnapshot = null;
   if (scopeFilter === 'current' && !currentTarget) {
     _renderRpAnnotationEmptyState(list, {
       unresolved: true,
@@ -272,19 +296,28 @@ async function loadRpAnnotationList() {
   }
   try {
     let items = [];
-    if (scopeFilter === 'current' && currentTargetCandidates.length) {
+    if (snapshot) {
+      items = snapshot.items;
+    } else if (scopeFilter === 'current' && currentTargetCandidates.length) {
       const byId = new Map();
-      for (const candidate of currentTargetCandidates) {
-        const rows = await apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY + '&target=' + encodeURIComponent(candidate));
+      // Desktop resolves locator aliases in one read; browser providers retain
+      // their existing per-locator fallback for older saved annotations.
+      const queries = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+        ? currentTargetCandidates : currentTargetCandidates.slice(0, 1);
+      const pages = await Promise.all(queries.map(candidate =>
+        apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY + '&target=' + encodeURIComponent(candidate), requestOptions)));
+      for (const rows of pages) {
         (rows || []).forEach(row => {
           if (row?.id && !byId.has(row.id)) byId.set(row.id, row);
         });
       }
       items = [...byId.values()];
     } else {
-      items = await apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY);
+      items = await apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY, requestOptions);
     }
-    const norm = (items || []).map(_normalizeAnnotationRow);
+    if (revision !== _rpAnnotationListRevision) return;
+    const norm = snapshot ? items : (items || []).map(_normalizeAnnotationRow);
+    _rpAnnotationListSnapshot = { key: snapshotKey, generation, items: norm };
     _populateRpAnnotationUsers(norm, userFilter);
     // 状態フィルタ
     let filtered = norm.filter(a => {
@@ -313,16 +346,8 @@ async function loadRpAnnotationList() {
     }
     // 検索
     if (searchQuery) {
-      filtered = filtered.filter(a =>
-        (a.body || '').toLowerCase().includes(searchQuery) ||
-        (a.data?.text || '').toLowerCase().includes(searchQuery) ||
-        _stripRpAnnotationHtml(a.data?.html || '').toLowerCase().includes(searchQuery) ||
-        (a.target_path || '').toLowerCase().includes(searchQuery) ||
-        (a.target_ref?.file || '').toLowerCase().includes(searchQuery) ||
-        (a.target_file_name || '').toLowerCase().includes(searchQuery) ||
-        (a.target_snapshot || '').toLowerCase().includes(searchQuery) ||
-        (a.user || '').toLowerCase().includes(searchQuery)
-      );
+      filtered = filtered.filter(a => MeldexSearchField.matches([a.body, a.data?.text, _stripRpAnnotationHtml(a.data?.html || ''),
+        a.target_path, a.target_ref?.file, _rpAnnotationFileLabel(a), a.target_snapshot, a.user].filter(Boolean).join('\n'), searchQuery));
     }
     _sortRpAnnotations(filtered, sortMode);
     if (filtered.length === 0) {
@@ -339,6 +364,7 @@ async function loadRpAnnotationList() {
     if (viewMode === 'list') _renderRpAnnotationListView(list, filtered);
     else _renderRpAnnotationPreviewView(list, filtered);
   } catch (e) {
+    if (revision !== _rpAnnotationListRevision) return;
     list.innerHTML = '<div style="padding:12px;color:var(--red);font-size:12px;">読み込み失敗</div>';
   }
 }
@@ -358,6 +384,13 @@ function _rpSameAnnotationPath(a, b) {
   const right = _rpNormalizeAnnotationPath(b);
   if (!left || !right) return false;
   return left === right;
+}
+
+function _rpAnnotationPathsMatch(a, b) {
+  const isAbsolute = path => /^(?:[a-z]:\/|\/)/i.test(_rpNormalizeAnnotationPath(path));
+  if (isAbsolute(a) && isAbsolute(b)) return _rpSameAnnotationPath(a, b);
+  const left = new Set(_rpAnnotationTargetCandidates(a).map(_rpNormalizeAnnotationPath));
+  return _rpAnnotationTargetCandidates(b).some(path => left.has(_rpNormalizeAnnotationPath(path)));
 }
 
 function _rpAnnotationTargetCandidates(target) {
@@ -514,6 +547,7 @@ function _normalizeAnnotationRow(a) {
 function _rpAnnotationUiKind(a) {
   const type = a?.type || '';
   const data = a?.data || {};
+  if (type === 'highlight' || data.highlight) return 'highlight';
   if (type === 'screenshot') return 'screenshot';
   if (type === 'sticky') return 'sticky';
   const isSticky = ['comment', 'note', 'sticky'].includes(type)
@@ -530,6 +564,7 @@ function _rpAnnotationTypeLabel(kind) {
   return ({
     stroke: 'ストローク',
     marker: 'マーカー',
+    highlight: 'ハイライト',
     lasso: '投げ縄',
     rect: '矩形塗り',
     comment: 'コメント',
@@ -539,7 +574,7 @@ function _rpAnnotationTypeLabel(kind) {
 }
 
 function _rpAnnotationIcon(kind, size) {
-  const icon = ({ stroke: 'pencil', marker: 'highlighter', lasso: 'lasso', rect: 'square', comment: 'messageSquareText', sticky: 'stickyNote', screenshot: 'camera' })[kind] || 'messageSquare';
+  const icon = ({ stroke: 'pencil', marker: 'highlighter', highlight: 'highlighter', lasso: 'lasso', rect: 'square', comment: 'messageSquareText', sticky: 'stickyNote', screenshot: 'camera' })[kind] || 'messageSquare';
   return typeof lucide === 'function' ? lucide(icon, size || 14) : '';
 }
 
@@ -563,7 +598,12 @@ function _rpAnnotationPreviewText(a) {
 function _rpAnnotationTime(a, key) {
   const raw = key === 'created' ? a.created_at : (a.modified_at || a.created_at);
   if (!raw) return '';
-  try { return new Date(raw).toLocaleString('ja'); } catch { return String(raw).substring(0, 16).replace('T', ' '); }
+  const cache = _rpAnnotationTime._batchCache;
+  if (cache?.has(raw)) return cache.get(raw);
+  let value;
+  try { value = new Date(raw).toLocaleString('ja'); } catch { value = String(raw).substring(0, 16).replace('T', ' '); }
+  cache?.set(raw, value);
+  return value;
 }
 
 function _sortRpAnnotations(items, sortMode) {
@@ -583,7 +623,7 @@ function _sortRpAnnotations(items, sortMode) {
 function _populateRpAnnotationUsers(items, selected) {
   const sel = document.getElementById('rp-ann-user');
   if (!sel) return;
-  const users = [...new Set((items || []).map(a => a.user).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'ja'));
+  const users = [...new Set([...(items || []).map(a => a.user), selected].filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'ja'));
   sel.innerHTML = '<option value="">全ユーザー</option>';
   users.forEach(user => {
     const opt = document.createElement('option');
@@ -629,23 +669,66 @@ async function _augmentRpAnnotationUsersWithRoster(selected) {
 }
 
 function _renderRpAnnotationListView(container, items) {
-  items.forEach(a => container.appendChild(_buildRpAnnotationListItem(a)));
+  _renderRpAnnotationBatches(container, items, _buildRpAnnotationListItem);
 }
 
 function _renderRpAnnotationPreviewView(container, items) {
-  items.forEach(a => container.appendChild(_buildRpAnnotationPreviewCard(a)));
+  _renderRpAnnotationBatches(container, items, _buildRpAnnotationPreviewCard);
+}
+
+function _renderRpAnnotationBatches(container, items, build) {
+  let count = 0;
+  container.dataset.annotationTotal = String(items.length);
+  const more = document.createElement('button'); more.type = 'button'; more.className = 'gb-btn';
+  more.dataset.annotationMore = '';
+  const append = () => {
+    const fragment = document.createDocumentFragment(), end = Math.min(items.length, count + 80);
+    // Repeated cards share dates and file labels. Reuse only during this
+    // synchronous batch so a rename/time-zone change is visible next time.
+    const previousTimes = _rpAnnotationTime._batchCache, previousLabels = _rpAnnotationFileLabel._batchCache;
+    _rpAnnotationTime._batchCache = new Map(); _rpAnnotationFileLabel._batchCache = new Map();
+    try {
+      while (count < end) fragment.appendChild(build(items[count++]));
+    } finally {
+      _rpAnnotationTime._batchCache = previousTimes; _rpAnnotationFileLabel._batchCache = previousLabels;
+    }
+    more.before(fragment);
+    if (count === items.length) { more.remove(); container._rpAnnotationObserver?.disconnect(); container._rpAnnotationObserver = null; }
+    else more.textContent = `さらに表示（残り ${items.length - count}件）`;
+  };
+  more.addEventListener('click', append); container.appendChild(more); append();
+  if (count < items.length && typeof IntersectionObserver !== 'undefined') {
+    container._rpAnnotationObserver = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) append(); }, { root: container, rootMargin: '100px' });
+    container._rpAnnotationObserver.observe(more);
+  }
 }
 
 // Phase 5-b: ファイル名・ユーザー名(生値。ローカル利用時は「local」)に続けて、
 // 作成者アイコン+名前を追加する。DOM要素を返す(文字列だとアイコンを差し込め
 // ないため)。呼び出し側は要素へ appendChild する。
+function _rpAnnotationFileLabel(a) {
+  const path = String(a.target_ref?.file || a.target_path || '').replace(/(\.pdf)#page=\d+$/i, '$1');
+  const cache = _rpAnnotationFileLabel._batchCache, key = path || 'fallback:' + (a.target_file_name || '');
+  if (cache?.has(key)) return cache.get(key);
+  const panes = typeof GBLayout !== 'undefined' && GBLayout.root ? GBLayout.getAllPanes(GBLayout.root) : [];
+  const tabs = panes.flatMap(pane => pane.tabs || []);
+  const sub = window.GBSubPanel?.getCurrentTarget?.();
+  if (sub) tabs.push(sub);
+  const tab = tabs.find(tab => _rpAnnotationPathsMatch(tab.path, path));
+  const label = tab?.label || path.split(/[\\/]/).pop() || a.target_file_name || '(不明)';
+  cache?.set(key, label);
+  return label;
+}
+
 function _rpAnnotationMeta(a) {
   const rawPath = a.target_ref?.file || a.target_path || '';
-  const path = a.target_file_name || rawPath.split('/').pop() || '(不明)';
+  const path = _rpAnnotationFileLabel(a);
   const time = _rpAnnotationTime(a, 'modified') || _rpAnnotationTime(a, 'created');
   const flags = [a.resolved ? '解決済み' : '', a.orphan ? '孤児' : '', a.deleted ? '削除済み' : ''].filter(Boolean);
   const frag = document.createDocumentFragment();
-  frag.append(`${path} ・ ${a.user || ''}`);
+  frag.append(path);
+  const pdfPage = /\.pdf#page=(\d+)$/i.exec(rawPath)?.[1];
+  if (pdfPage) frag.append(` ・ ${pdfPage}ページ`);
   const badge = _rpAnnotationUserBadge(a.user);
   if (badge) frag.append(' ・ ', badge);
   if (time) frag.append(' ・ ' + time);
@@ -765,6 +848,8 @@ function _saveRpAnnotationTargetFile(target) {
 function _buildRpAnnotationListItem(a) {
   const row = document.createElement('div');
   row.className = 'rp-ann-row';
+  row.dataset.annCardId = a.id || '';
+  row.dataset.e2eId = 'rp-ann-row-' + (a.id || 'unknown');
   row.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(row)) return; _jumpFromRpAnnotation(a); });
   const text = _rpAnnotationPreviewText(a);
   row.innerHTML = `
@@ -785,6 +870,10 @@ function _buildRpAnnotationListItem(a) {
 function _buildRpAnnotationPreviewCard(a) {
   const card = document.createElement('div');
   card.className = 'rp-ann-preview-card';
+  card.tabIndex = 0;
+  card.dataset.annCardId = a.id || '';
+  card.dataset.e2eId = 'rp-ann-card-' + (a.id || 'unknown');
+  card.addEventListener('keydown', event => { if (event.target === card && ['Enter', ' '].includes(event.key)) { event.preventDefault(); _jumpFromRpAnnotation(a); } });
   card.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(card)) return; _jumpFromRpAnnotation(a); });
   const head = document.createElement('div');
   head.className = 'rp-ann-preview-head';
@@ -793,15 +882,23 @@ function _buildRpAnnotationPreviewCard(a) {
   const body = document.createElement('div');
   body.className = 'rp-ann-preview-body';
   body.appendChild(_buildRpAnnotationPreviewBody(a));
-  const meta = document.createElement('div');
+  const meta = document.createElement('span');
   meta.className = 'rp-ann-preview-meta';
   meta.appendChild(_rpAnnotationMeta(a));
-  card.append(head, body, meta);
+  head.firstElementChild.appendChild(meta);
+  card.append(head, body);
   _installRpAnnotationDrag(card, a);
   return card;
 }
 
 function _buildRpAnnotationPreviewBody(a) {
+  if (a.uiKind === 'highlight' && a.data?.thumbnail) {
+    const preview = document.createElement('div');
+    const image = document.createElement('img'); image.src = a.data.thumbnail; image.alt = 'ハイライトした範囲';
+    image.style.cssText = 'max-width:100%;max-height:120px;object-fit:contain';
+    if (a.data.text) { const quote = document.createElement('div'); quote.textContent = a.data.text; preview.append(quote); }
+    preview.append(image); return preview;
+  }
   if (a.uiKind === 'screenshot') return _buildRpScreenshotPreview(a);
   if (['stroke', 'marker', 'lasso', 'rect'].includes(a.uiKind)) return _buildRpStrokePreview(a);
   if (a.uiKind === 'sticky') return _buildRpStickyPreview(a);
@@ -1017,6 +1114,48 @@ function _jumpToFirstAnnotationLink(a) {
 
 function _appendRpAnnotationActions(container, a) {
   if (!container) return;
+  const more = _rpAnnotationActionButton('ellipsis', 'アノテートの操作');
+  more.dataset.e2eId = 'rp-ann-more-' + (a.id || 'unknown');
+  more.dataset.rpAnnAction = 'more';
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  more.addEventListener('click', event => {
+    event.stopPropagation();
+    const actions = document.createElement('div');
+    _appendRpAnnotationActionItems(actions, a);
+    more.setAttribute('aria-expanded', 'true');
+    MeldexContextMenuUI.openAt({ anchorRect: more.getBoundingClientRect(), restoreFocus: more,
+      ariaLabel: 'アノテートの操作', onClose: () => more.setAttribute('aria-expanded', 'false'),
+      items: [...actions.children].map(button => ({ label: button.title, ariaLabel: button.title, disabled: button.disabled,
+        e2eId: button.dataset.testid, action: () => button.click() })) });
+  });
+  container.appendChild(more);
+}
+
+function _appendRpAnnotationActionItems(container, a) {
+  if (!container) return;
+  if (a.uiKind === 'screenshot' && a.data?.source_link) {
+    const source = _rpAnnotationActionButton('externalLink', '撮影元の位置へ移動');
+    source.addEventListener('click',event=>{event.stopPropagation();void GBPanelScreenshot.openSourceLink(a.data.source_link);});
+    container.append(source);
+  }
+  if (a.uiKind === 'highlight') {
+    const color = _rpAnnotationActionButton('palette', 'ハイライトの色を変更');
+    color.addEventListener('click', event => {
+      event.stopPropagation();
+      MeldexContextMenuUI.openAt({ anchorRect: document.querySelector('[data-annotation-toolbar]').getBoundingClientRect(), ariaLabel: 'ハイライトの色',
+        items: GBAnnotationHighlights.colors().map((value, index) => ({ label: 'テーマカラー ' + (index + 1), icon: 'square', color: value, action: () => void GBAnnotationHighlights.mutate(a, value) })) });
+    });
+    container.append(color);
+    const remove = _rpAnnotationActionButton('trash2', 'ハイライトを削除');
+    remove.disabled = !_rpCanDeleteAnnotation(a);
+    remove.addEventListener('click', async event => {
+      event.stopPropagation();
+      await GBAnnotationHighlights.mutate(a, null);
+    });
+    container.append(remove);
+    return;
+  }
   if (a.uiKind === 'comment') {
     const editBtn = _rpAnnotationActionButton('pencil', '編集');
     editBtn.dataset.rpAnnAction = 'edit';
@@ -1145,7 +1284,16 @@ function _scrollToRpAnnotationGeometry(a) {
   _flashRpAnnotationElement(a);
 }
 
-function _jumpFromRpAnnotation(a) {
+async function _jumpFromRpAnnotation(a) {
+  if (window.MeldexCloudMobileSideDrawer?.isEnabled?.() &&
+      window.GBDockPopup?.getCurrentPopupTarget?.()?.tabType === 'annotation') {
+    GBDockPopup.close();
+  }
+  const kind = _rpCommentTargetKind(a);
+  if (['calendar_event', 'map_feature', 'form_field'].includes(kind) || a.target_ref?.container?.kind === 'calendar_event') {
+    _jumpToCommentTarget(a); return;
+  }
+  if (a.uiKind !== 'screenshot' && window.GBAnnotationSurfaces?.enabled() && await GBAnnotationSurfaces.reveal(a)) return;
   if (a.uiKind === 'comment') {
     _jumpToCommentTarget(a);
     return;

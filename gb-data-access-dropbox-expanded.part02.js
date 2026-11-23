@@ -744,7 +744,8 @@
     }
     const store = await _readSheetStoreMaybe(provider, base);
     return { format: 'new-format-v1', db_type: dbType,
-      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso() };
+      files: _dbSnapshotFileList(_overlaySheetStoreRows(markdownFiles, store)), timestamp: _nowIso(),
+      annotation_snapshot: await window.MeldexFileVersionProviderOps.captureAnnotations(provider, base) };
   }
 
   async function _readDbVersionSnapshot(provider, path, version) {
@@ -805,7 +806,11 @@
     const note = files.find(file => file.path === noteName)
       || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
     const dbType = note ? String(_parseFrontmatter(note.text).frontmatter?.type || '') : '';
-    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '' };
+    const currentAnnotations = meta.annotation_snapshot == null ? null : await window.MeldexFileVersionProviderOps.captureAnnotations(provider, normalized);
+    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '',
+      annotation_snapshot: meta.annotation_snapshot, current_annotation_snapshot: currentAnnotations,
+      restore_revision: meta.annotation_snapshot ? await window.MeldexFolderVersionProviderOps.restoreRevision(provider, normalized, meta.files || []) : '',
+      annotation_revision: currentAnnotations ? 'fnv64:'+_fnvFileId(JSON.stringify(currentAnnotations)) : '' };
   }
 
   function _recurrenceObject(value) {
@@ -1773,9 +1778,9 @@
     const leaseToken = String(body?._calendar_lease_token || '').trim();
     const routeBody = { ...(body || {}) };
     delete routeBody._calendar_lease_token;
-    if (method === 'GET' && !id) return _calendarList(provider, name, url);
+    if (method === 'GET' && !id) return _calendarList(provider, name, url, leaseToken);
     if (method === 'GET' && id && ['events', 'tasks', 'shifts'].includes(name)) {
-      const visibleRows = await _calendarList(provider, name, url);
+      const visibleRows = await _calendarList(provider, name, url, leaseToken);
       const row = visibleRows.find(item => String(item?.id) === String(id));
       if (!row) throw _calendarError('対象が見つからないか、参照権限がありません', 404, 'CALENDAR_ROW_NOT_FOUND');
       return row;
@@ -1886,6 +1891,75 @@
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname, signal, headers }) {
+    if (pathname === '/file-path' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return { path: await provider.resolveFileIdentity(url.searchParams.get('id'), url.searchParams.get('hint') || '') };
+    }
+    if (pathname === '/form-publication/prepare' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const path = _normalizeFolderPath(body?.path || '');
+      await _requireUnlocked(provider, path, { action: 'form-publication' });
+      const doc = window.MeldexFormDocument.parse(await provider.readText(path));
+      const sheetPath = await _resolvePublishedSheet(provider, doc.sheet);
+      await _requireUnlocked(provider, sheetPath, { action: 'form-publication' });
+      const [source, sheet] = await Promise.all([provider.getMetadata(path), provider.getMetadata(sheetPath)]);
+      if (!source?.id || !sheet?.id) throw new Error('フォームとシートの識別番号を確認できません');
+      return { form_source_id: doc.publish?.form_source_id || source.id, sheet_cloud_id: sheet.id,
+        sheet_id: doc.sheet.id || '', sheet_path: sheetPath,
+        receipt_store_path: doc.publish?.receipt_store?.path || _joinPath(_dirname(path), '_meldex-form-receipts/' + crypto.randomUUID().replace(/-/g, '')) };
+    }
+    if (pathname === '/form-publication/import' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const source = _normalizeFolderPath(body?.source_path || '');
+      await _requireUnlocked(provider, source, { action: 'form-response-import' });
+      const doc = window.MeldexFormDocument.parse(await provider.readText(source));
+      const cfg = doc.publish || {};
+      if (!cfg.form_submit_enabled || cfg.form_submit_token !== body?.token || cfg.form_source_id !== body?.form_source_id)
+        throw Object.assign(new Error('フォームの受付が停止・変更されています'), { status: 403 });
+      const id = String(body?.submission_id || '');
+      if (!/^[a-f0-9]{32}$/.test(id) || !body.fields || Array.isArray(body.fields) || typeof body.fields !== 'object')
+        throw new Error('回答の形式が不正です');
+      const parent = await _resolvePublishedSheet(provider, doc.sheet);
+      const metadata = (await _folderFrontmatter(provider, parent)).frontmatter || {};
+      const invalid = window.MeldexDbFormModel.validatePublicFields(doc, body.fields, metadata.property_types || {});
+      if (invalid) throw Object.assign(new Error(invalid), { status: 400 });
+      // The durable private receipt also survives deleting an imported row and
+      // losing browser storage; an old packet must never resurrect that row.
+      await _requireUnlocked(provider, parent, { action: 'form-response-import' });
+      const result = await window.MeldexCloudFormRelay.withReceipt(cfg, id, body.fields, {
+        read: async path => {
+          const meta = await provider.refreshMetadata(path);
+          return meta ? { content: await provider.readText(path), etag: meta.rev } : null;
+        },
+        write: async (path, content, etag) => {
+          await _requireUnlocked(provider, path, { action: 'form-response-receipt' });
+          return provider.uploadBytesConditional(path, new TextEncoder().encode(content), etag);
+        },
+      }, async () => {
+        const properties = await window.MeldexCloudFormRelay.normalizeImages(body.fields, metadata.property_types || {}, async (bytes, ext, hash) => {
+          const attachments = window.MeldexSheetAttachments;
+          const folder = attachments.attachmentFolderNameFromFrontmatter(metadata) || attachments.ATTACHMENT_FOLDER_NAME;
+          const dir = _joinPath(parent, folder), path = _joinPath(dir, hash + '.' + ext);
+          await _requireUnlocked(provider, dir, { action: 'form-response-image' });
+          if (!metadata.attachment_folder) {
+            await _directoryHandle(provider, dir, true);
+            await _putDbMetadata(provider, parent, { attachment_folder: folder });
+            metadata.attachment_folder = folder;
+          }
+          if (!await _pathExists(provider, path)) {
+            const aftercare = window.MeldexCreatedImageIdentityAftercare;
+            const prepared = await aftercare.prepare(provider, path, bytes, { source: 'public-form', filename: hash + '.' + ext });
+            try { if (prepared.mode === 'not-image' || prepared.publish_required) await provider.uploadBytesConditional(path, bytes, null); }
+            catch (error) { await aftercare.cancel(provider, prepared, error?.message).catch(console.warn); throw error; }
+            await aftercare.record(provider, path, bytes, { source: 'public-form', prepared });
+          }
+          return path;
+        });
+        return _createEntity(provider, { parent_path: parent, name: 'フォーム回答-' + id,
+          properties, source: 'public-form', reviewed: false }, id);
+      });
+      return { ok: true, submission_id: id, replayed: !!result.replayed };
+    }
     if (pathname === '/outliner/add' && method === 'POST' && ['database', 'calendar'].includes(String(body?.type || ''))) {
       const provider = await _requirePwaProvider('readwrite');
       const parent = _normalizeFolderPath(body?.parent || '');
@@ -1969,7 +2043,7 @@
     }
     if (/^\/version\/(list-db|save-db|restore-db|delete-db|undelete-db)/.test(pathname)) {
       const route = pathname.replace('-db', '-folder');
-      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body, headers });
+      return window.MeldexDataAccess.requestJson(route + (url.search || ''), { method, body: { ...body, include_annotations: true }, headers });
     }
 
     if (pathname === '/calendar-db/events' && method === 'GET') return _calendarDbEvents(await _requirePwaProvider('read'), url.searchParams.get('path') || '');

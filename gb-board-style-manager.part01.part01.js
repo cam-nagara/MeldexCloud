@@ -236,6 +236,7 @@ function bdScheduleFontStyleMapUpdate() {
 
 function _bdApplyStyleFieldChange(kind, style, field, value) {
   if (!style) return;
+  if (kind === 'line' && typeof bd !== 'undefined' && bd.connections?.includes(style)) style._userLineStyle = true;
   const markNodeOverride = () => {
     if (typeof bd === 'undefined' || !Array.isArray(bd.nodes) || !bd.nodes.includes(style)) return;
     if (field === 'width') style._userW = true;
@@ -772,6 +773,7 @@ function _bdSaveCurrentConnectionLineStyle(conn) {
   const style = bdGetLineStyleById(conn.styleRef || bd.activeLineStyle);
   if (!style) return;
   if (typeof bdPushUndo === 'function') bdPushUndo();
+  conn._userLineStyle = true;
   // conn の overrides を style にコピー → conn 側は削除
   let copied = 0;
   _BD_LINE_OVERRIDE_KEYS.forEach(key => {

@@ -49,6 +49,10 @@ function bdPreserveUnknownFrontmatter(fm) {
 function bdFrontmatterTopLevelKey(line) {
   const text = String(line || '').replace(/\s+$/, '');
   if (!text || /^[\s#%]/.test(text)) return null;
+  // YAML整形後の配列は親キーと同じ桁から始まることがある。
+  // `- id:` を別の設定キーとみなすと、管理済みリストの中身だけを
+  // 未知の設定として追記してしまい、次の保存版が読めなくなる。
+  if (/^-(?:\s|$)/.test(text)) return null;
   if (text[0] === '?') return '';
   let quote = '';
   for (let index = 0; index < text.length; index += 1) {

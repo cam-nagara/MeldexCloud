@@ -1,3 +1,8 @@
+    showStatus(`xlsx取込: ${label}`);
+  } catch (err) {
+    showStatus('xlsx取込に失敗しました: ' + err.message, true);
+  }
+}
 
 // Phase C: ボードエンジンはgb-canvas-engine.js + gb-canvas-features.js + gb-canvas-interact.js に移行済み
 // bd オブジェクトは gb-canvas-engine.js で定義
@@ -893,8 +898,3 @@ document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリング�
 // gb-ui-scale.js が一手に引き受ける。ここでは決まった値を適用するだけにする。
 applyUIScale(window.MeldexUIScale
   ? window.MeldexUIScale.resolveStartupScale()
-  : (parseInt(localStorage.getItem('ui-scale'), 10) || 100));
-
-// ステータスバー表示状態復元
-try {
-  if (typeof applyStatusbarHidden === 'function') {

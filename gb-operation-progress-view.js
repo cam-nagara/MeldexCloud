@@ -424,6 +424,7 @@
         button.type = 'button';
         button.className = 'meldex-operation-link';
         button.dataset.action = 'open-operation-link-' + index;
+        button.dataset.e2eId = 'operation-progress-link:' + operation.id + ':' + index;
         button.textContent = link.label;
         button.title = link.title || link.label;
         button.addEventListener('click', function () {

@@ -1,3 +1,5 @@
+  const fid = _pathToFileId(path);
+  return (fid && colors[fid]) || colors[path] || '';
 }
 function setNodeColor(path, color) {
   const colors = getNodeColors();
@@ -151,6 +153,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   div.className = 'tree-node';
   div._nodeData = item;
   if (item.path) div.dataset.path = item.path;
+  if (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path)) _outlinerSetCopyPendingNode(div, true);
   if (item.sourceId) div.dataset.sourceId = item.sourceId;
   if (item.rootKind) div.dataset.rootKind = item.rootKind;
   if (item.workspaceId) div.dataset.workspaceId = item.workspaceId;
@@ -895,6 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
       const placeOptimistically = () => {
         nodes.forEach(n => {
           if (!pendingMoves.has(n)) return;
-          if (!n.isConnected || !n.parentElement || n.parentElement.dataset.virtual === 'true' || n.contains(optimisticContainer)) return;
-          if (n.parentElement === optimisticContainer) return;
-          // 開いたフォルダの一覧に同じ名前の行が既に出ていれば（保存の往復が先に終わった）、重ねて置かない

@@ -608,6 +608,12 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      // Release the shared refresh promise when Safari leaves a request open.
+      // A manual retry must issue a new refresh, rather than await it forever.
+      signal: AbortSignal.timeout(12000),
+    }).catch(error => {
+      if (error?.name === 'TimeoutError') throw new Error('Dropboxの接続更新に時間がかかっています。今すぐ再送してください');
+      throw error;
     });
     let payload = null;
     try {
@@ -1165,7 +1171,10 @@
         const result = await fetch('https://content.dropboxapi.com/2/' + String(route || '').replace(/^\/+/, ''), requestInit);
         // Keep the slot until the download body finishes, not just its headers.
         if (result.ok && (route === 'files/download' || route === 'files/get_thumbnail_v2')) {
-          return new Response(await result.blob(), { status: result.status, statusText: result.statusText, headers: result.headers });
+          // A Response backed by a Blob asks WebKit to read an internal blob
+          // URL again. Keep the already downloaded bytes directly, including
+          // binary thumbnails, without that second access-control boundary.
+          return new Response(await result.arrayBuffer(), { status: result.status, statusText: result.statusText, headers: result.headers });
         }
         if (result.ok && route === 'files/download_zip') {
           // Bound a racing folder expansion, and hold the shared queue slot for

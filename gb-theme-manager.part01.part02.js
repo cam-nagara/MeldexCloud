@@ -557,6 +557,18 @@
       for (const states of Object.values(theme.ui.themeUiApplications || {})) {
         if (states.selected && 'fg' in states.selected) states.selected.fg = 'color:#ffffff';
       }
+      // 白い選択文字は不透明なアクセント背景と組にする。
+      // 保存済みの個別テーマには適用しない。
+      if (isThemeLight(theme)) {
+        for (const id of ['panel-tab', 'inner-tab', 'style-detail']) {
+          if (theme.ui.themeUiApplications[id]?.selected) theme.ui.themeUiApplications[id].selected.bg = 'color:' + theme.ui.cssVars['--accent'];
+        }
+        if (theme.ui.themeUiApplications['style-calendar']?.selected) theme.ui.themeUiApplications['style-calendar'].selected.fg = 'color:' + theme.ui.cssVars['--accent'];
+      }
+      for (const id of ['panel-tab', 'inner-tab']) {
+        const selected = theme.ui.themeUiApplications[id]?.selected;
+        if (selected) selected.bg = 'var:--ui-accent';
+      }
       // The starter rail uses white icons. Shade only its shipped background;
       // saved custom themes keep their explicit foreground and background.
       const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])

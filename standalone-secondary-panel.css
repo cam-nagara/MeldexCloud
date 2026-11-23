@@ -191,6 +191,34 @@ body {
   }
 }
 
+/* 表示だけを縮めず、狭幅とタッチ端末の操作領域は共通の44pxに揃える。 */
+@media (pointer: coarse), (max-width: 820px) {
+  .sa-secondary-panel :is(button, [role="button"], select, input:not([type="checkbox"]):not([type="radio"]), textarea, summary) {
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+  }
+  .sa-secondary-panel label:has(input[type="checkbox"]),
+  .sa-secondary-panel label:has(input[type="radio"]) {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--ui-h-touch, 44px);
+  }
+  .sa-secondary-panel .file-embedded-row:has(.file-rating) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .sa-secondary-panel .file-rating {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .sa-secondary-panel .shortcut-key[role="button"] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sa-secondary-panel {
     transition: none;

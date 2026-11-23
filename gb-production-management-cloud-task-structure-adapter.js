@@ -26,6 +26,7 @@
 
   function _pmCloudTaskStructureDeps() {
     return {
+      taskRowProps: _pmTaskRowProps,
       propValue: _pmCloudPropValue,
       belongsToWork: _pmCloudTaskBelongsToWork,
       hash: _pmHash,

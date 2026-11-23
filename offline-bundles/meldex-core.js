@@ -860,8 +860,11 @@ let _mobileStatusToastTimer = 0;
 function _isMobileStatusToastNeeded() {
   const status = document.getElementById('status-bar');
   if (!status) return false;
-  const width = Math.min(window.innerWidth || 0, document.documentElement?.clientWidth || window.innerWidth || 0);
-  if (width > 0 && width <= 768) return true;
+  // CSSと同じ幅条件を使う。全選択直後のclientWidth読取は大量カードの配置を同期確定させる。
+  const mobile = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)').matches
+    : window.innerWidth > 0 && window.innerWidth <= 768;
+  if (mobile) return true;
   try {
     return getComputedStyle(status).display === 'none';
   } catch {
@@ -4167,7 +4170,8 @@ function addLongPressHandler(el, handler, opts = {}) {
     timer = setTimeout(() => {
       timer = null;
       fired = true;
-      handler({
+      const contextEvent = {
+        meldexLongPress: true,
         clientX: startX,
         clientY: startY,
         target: touchStartEv?.target || el,
@@ -4175,7 +4179,10 @@ function addLongPressHandler(el, handler, opts = {}) {
         pointerType: touchStartEv?.pointerType || 'touch',
         preventDefault: () => {},
         stopPropagation: () => {},
-      });
+      };
+      const decorateAnnotations = window.GBAnnotationHighlights?.prepareMenu?.(contextEvent);
+      handler(contextEvent);
+      if (decorateAnnotations) setTimeout(decorateAnnotations, 0);
     }, DURATION);
   });
 

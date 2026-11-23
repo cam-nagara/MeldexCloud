@@ -1,3 +1,21 @@
+            kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
+            ...(item.assetId ? { assetId: item.assetId } : {}),
+            ...confirmationPayload,
+          }).catch(error => {
+            redoFailures.push({ item, error });
+            return null;
+          });
+          const ref = _outlinerTrashRefFromResponse(res);
+          if (ref) {
+            record.trashRef = ref;
+            record.deleted = true;
+          }
+          else if (res) redoFailures.push({ item, error: new Error('取り消しに必要なゴミ箱情報がありません') });
+        }
+        if (pendingPaths.length) _clearOutlinerDeletePending(pendingPaths);
+        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
+        trashNames = _outlinerTrashRefsToNames(trashRefs);
+        const redonePaths = pendingRecords.filter(record => record.deleted).map(record => record.currentPath);
         if (redonePaths.length && typeof purgeAppPathReferences === 'function') {
           purgeAppPathReferences(redonePaths);
         }
@@ -19,6 +37,8 @@
 
   return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
   } catch (error) {
+    _clearOutlinerDeletePending(targetPaths);
+    try { await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', { failedPaths: targetPaths }); } catch {}
     historyReservation?.cancel();
     throw error;
   }
@@ -286,41 +306,147 @@ function _outlinerApplyCommittedMove(oldPath, newPath, name, fileId) {
   }
 }
 
-async function _outlinerDuplicateItems(items) {
+function isOutlinerCopyPendingPath(path) {
+  return [..._outlinerPendingCopyPreviews].some(record => typeof _folderDropPathsEqual === 'function'
+    ? _folderDropPathsEqual(record.path, path)
+    : _normalizeOutlinerPathForCompare(record.path) === _normalizeOutlinerPathForCompare(path));
+}
+
+function _outlinerSetCopyPendingNode(node, pending) {
+  if (!node) return;
+  if (pending && node.dataset.copyPending !== 'true') {
+    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity };
+    node.dataset.copyPending = 'true'; node.inert = true; node.style.opacity = '0.62';
+    node.setAttribute('aria-busy', 'true');
+  } else if (!pending && node.dataset.copyPending === 'true') {
+    node.inert = node._copyPreviewPrevious?.inert || false;
+    node.style.opacity = node._copyPreviewPrevious?.opacity || '';
+    delete node._copyPreviewPrevious; delete node.dataset.copyPending;
+    node.removeAttribute('aria-busy');
+  }
+}
+
+function _beginOutlinerPublishedCopyPreview(item, detail) {
+  const path = detail.new_path;
+  const parent = _outlinerParentPath(path);
+  const same = other => typeof _folderDropPathsEqual === 'function' ? _folderDropPathsEqual(path, other) : path === other;
+  const findNode = () => (typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null)
+    || Array.from(document.querySelectorAll('.tree-node[data-path]')).find(node => same(node.dataset.path));
+  const hadTree = !!findNode();
+  const hadPanel = typeof _folderItems !== 'undefined' && _folderItems.some(row => same(row.path));
+  const record = { path }; _outlinerPendingCopyPreviews.add(record);
+  let finished = false;
+  const finish = outcome => {
+    if (finished) return; finished = true; _outlinerPendingCopyPreviews.delete(record);
+    if (outcome === 'abandon') return; // 接続切替後の別アカウントの表示には触れない。
+    const stillPending = isOutlinerCopyPendingPath(path);
+    if (outcome === false && !stillPending) {
+      if (!hadPanel && typeof _removeFolderItemsForPaths === 'function') _removeFolderItemsForPaths([path]);
+      if (!hadTree && typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([path]);
+    }
+    _outlinerSetCopyPendingNode(findNode(), stillPending);
+    if (typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+      renderFolderGrid({ preserveSelectedPaths: (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []).map(row => row.path) });
+    }
+  };
+  try {
+    _folderApplySavedDropResults(parent, [{ item: { path, name: detail.new_name || item.name,
+      type: item.type || 'page', kind: item.type === 'folder' ? 'folder' : 'file' } }], []);
+    _outlinerSetCopyPendingNode(findNode(), true);
+  } catch (error) { try { finish(false); } catch {} console.warn('[copy preview] 表示に失敗', error); }
+  return finish;
+}
+
+function _outlinerRevealCopyDestination(path) {
+  const node = (typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null)
+    || Array.from(document.querySelectorAll('.tree-node[data-path]')).find(node => _folderDropPathsEqual(node.dataset.path, path));
+  const toggle = node?.querySelector(':scope > .tree-node-row > .tree-toggle');
+  if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+}
+
+async function _outlinerPostCopyWithPreview(route, body, item, options = {}) {
+  if (typeof window.addEventListener !== 'function' || typeof window.removeEventListener !== 'function') return apiPost(route, body);
+  const prepared = window.MeldexStableCopyOperationIds?.prepare?.(route, body)
+    || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+  const origin = typeof state !== 'undefined' ? state.vaultPath : '';
+  let active = true, succeeded = false, finishPreview = null;
+  const abandon = () => {
+    active = false;
+    try { finishPreview?.('abandon'); } catch {} finishPreview = null;
+  };
+  const published = event => {
+    const detail = event.detail || {};
+    if (!active || finishPreview || detail.operation_id !== prepared.body.operation_id || !detail.new_path) return;
+    if ((typeof state !== 'undefined' ? state.vaultPath : '') !== origin) { abandon(); return; }
+    try { finishPreview = _beginOutlinerPublishedCopyPreview(item, detail); }
+    catch (error) { console.warn('[copy preview] 表示に失敗', error); }
+  };
+  window.addEventListener('meldex:copy-published', published);
+  window.addEventListener('meldex:dropbox-auth-session-changed', abandon);
+  window.addEventListener('meldex:mode-changed', abandon);
+  try {
+    if (options.revealTreeDestination) _outlinerRevealCopyDestination(body.dest_folder || _outlinerParentPath(body.path));
+    const result = await apiPost(route, prepared.body);
+    succeeded = result?.ok !== false;
+    if (succeeded && active) window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
+    return result;
+  } finally {
+    window.removeEventListener('meldex:copy-published', published);
+    window.removeEventListener('meldex:dropbox-auth-session-changed', abandon);
+    window.removeEventListener('meldex:mode-changed', abandon);
+    try { finishPreview?.(succeeded); } catch (error) { console.warn('[copy preview] 表示の確定に失敗', error); }
+  }
+}
+
+async function _outlinerDuplicateItems(items, options = {}) {
   const result = { ok: 0, failed: 0, error: null, created: [] };
   // 複製を取り消せるようにする（作ったものをゴミ箱へ移す。2026-11-21 ユーザー決定の「作る操作は取り消せる」。
   // ツール・メニューの複製は記録していたが、フォルダツリー・フォルダパネルの右クリックの複製は記録していなかった:
   // 2026-11-22 M-014 フォルダツリー網羅テスト）。複数を一度に複製した時は1回の取り消しで全部を戻す。
   const historyScope = '';
   const createdItems = [];
-  for (const target of items || []) {
-    try {
-      const res = await apiPost('/outliner/duplicate', { path: target.path });
+  const reservation = typeof historyReserve === 'function' ? historyReserve('複製', historyScope) : null;
+  try {
+  const targets = Array.from(items || []);
+  for (let offset = 0; offset < targets.length; offset += 2) {
+    const outcomes = await Promise.all(targets.slice(offset, offset + 2).map(async target => {
+      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, options) }; }
+      catch (error) { return { target, error }; }
+    }));
+    for (const { target, res, error } of outcomes) {
+      if (error) { result.failed += 1; if (!result.error) result.error = error; continue; }
       result.ok += 1;
       const createdPath = res?.new_path || '';
       if (createdPath) {
         result.created.push(createdPath);
         createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
           name: res?.new_name || createdPath.split('/').pop() || createdPath });
+        try {
+          if (typeof _folderApplySavedDropResults === 'function') {
+            _folderApplySavedDropResults(_outlinerParentPath(createdPath), [{ item: createdItems[createdItems.length - 1] }], []);
+          }
+        } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
       }
-    } catch (error) {
-      result.failed += 1;
-      if (!result.error) result.error = error;
     }
   }
+  const register = () => {
   if (createdItems.length === 1 && typeof pushCreatedOutlinerItemHistory === 'function') {
-    pushCreatedOutlinerItemHistory(createdItems[0], '複製: ' + createdItems[0].name, { scope: historyScope });
+    pushCreatedOutlinerItemHistory(createdItems[0], '複製: ' + createdItems[0].name, { scope: historyScope, ...(typeof options.refresh === 'function' ? { refresh: options.refresh } : {}) });
   } else if (createdItems.length > 1) {
-    _pushCreatedOutlinerItemsHistory(createdItems, `複製: ${createdItems.length} 件`, historyScope);
+    _pushCreatedOutlinerItemsHistory(createdItems, `複製: ${createdItems.length} 件`, historyScope, options);
   }
+  };
+  if (reservation) reservation.capture(register); else register();
   return result;
+  } finally { reservation?.cancel(); }
 }
 
 // 複数の作ったものを1つの取り消しの記録にする（取り消し=全部をゴミ箱へ、やり直し=ゴミ箱から全部戻す）。
-function _pushCreatedOutlinerItemsHistory(createdItems, label, scope) {
+function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = {}) {
   if (typeof historyPush !== 'function' || !createdItems.length) return null;
   const records = createdItems.map(item => ({ ...item, trashRef: null }));
   const refresh = async () => {
+    if (typeof options.refresh === 'function') { await options.refresh(); return; }
     await _outlinerSyncFoldersOrReload(records.map(record => _outlinerParentPath(record.path)));
     if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
       await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
@@ -710,18 +836,8 @@ async function deleteOutlinerTreeSelection() {
         return;
       }
       const names = targets.map(item => item.name).join('、');
-      const impactTargets = targets.map(item => ({
-        path: item.path,
-        kind: item.type === 'folder' ? 'folder' : 'file',
-        ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-      }));
-      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
-        : { confirmed: true, operation: 'trash' };
-      if (!confirmed) return;
       treeSelection.clear();
       const result = await deleteOutlinerItemsWithHistory(targets, {
-        confirmation: confirmed,
         label: targets.length + ' 件を削除',
         detail: names,
         onItemDeleted: (item) => {
@@ -782,119 +898,3 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   // 複数選択時は先頭に件数見出しを置く（フォルダパネルの複数選択メニューと同じ）。
   if (isMulti) {
     menu.dataset.folderMultiSelection = String(selectedCount);
-    const heading = document.createElement('div');
-    heading.className = 'gb-context-menu-label';
-    heading.dataset.e2eId = 'folder-tree-context-selection-count';
-    heading.textContent = `${selectedCount}件を選択中`;
-    menu.appendChild(heading);
-  }
-
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
-  const contextOperationItems = (isMulti ? treeSelection.getNodeData() : [nodeData])
-    .filter(item => item?.path && item.type !== 'entity' && !item._isRoot);
-  const editableContextItems = contextOperationItems.filter(item => !isItemLocked(item.path));
-  const deleteContextItems = async () => {
-    closeTreeContextMenu();
-    await deleteOutlinerTreeSelection();
-  };
-
-  if (typeof appendFolderOperationButtons === 'function') {
-    appendFolderOperationButtons(menu, {
-      e2ePrefix: 'folder-tree-context',
-      closeMenu: closeTreeContextMenu,
-      onCopy: () => { _outlinerClipboardOrigin = { mode: 'copy', paths: contextOperationItems.map(item => item.path) }; folderToolbarCopyItems(contextOperationItems); },
-      onCut: () => { _outlinerClipboardOrigin = { mode: 'cut', paths: editableContextItems.map(item => item.path) }; folderToolbarCutItems(contextOperationItems); },
-      onPaste: () => folderToolbarPasteToFolder(addParent, { refresh: pasted => _outlinerRefreshAfterTreePaste(addParent, pasted) }),
-      onDuplicate: () => _outlinerRunDuplicate(editableContextItems),
-      onDelete: deleteContextItems,
-      copyDisabled: contextOperationItems.length === 0,
-      cutDisabled: editableContextItems.length === 0,
-      pasteDisabled: !folderToolbarCanPasteTo(addParent),
-      duplicateDisabled: editableContextItems.length === 0,
-      deleteDisabled: editableContextItems.length === 0,
-    });
-    addSep();
-  }
-
-  if (!isMulti && isEntity && window.MeldexTopicPlacementUI) {
-    const topicSource = window.MeldexTopicPlacementUI.treeSource(nodeData);
-    if (topicSource) {
-      window.MeldexTopicPlacementUI.menuItems(topicSource).forEach(item => {
-        addMenuItem(item.label, () => {
-          closeTreeContextMenu();
-          item.action();
-        }, null, item.icon);
-      });
-      addSep();
-    }
-  }
-
-  // --- 新規作成サブメニュー ---（作成先が押した1項目で決まるため、複数選択時は出さない）
-  if (!isMulti && !(addParent && isItemLocked(addParent))) {
-    const createPanel = _outlinerCreateSubmenu('フォルダツリー新規作成');
-    _outlinerAppendSubmenu(menu, '新規作成', 'plus', createPanel);
-    _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
-      _outlinerAppendMenuItem(createPanel, {
-        label,
-        icon,
-        action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
-      });
-    });
-  }
-  addSep();
-
-  // --- 開く系は利用頻度が高いため、上部の1つのサブメニューへ集約する ---
-  if (!isMulti && nodeData.path && !nodeData._isRoot) {
-    const openType = typeof _normalizeOpenTypeForNav === 'function'
-      ? _normalizeOpenTypeForNav(nodeData.type)
-      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
-    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
-    const canUseRightSidebar = typeof GBPaneBridge === 'undefined'
-      || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
-      || typeof GBPaneBridge.surfaceOf !== 'function'
-      || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(nodeEl));
-    const openPanel = _outlinerCreateSubmenu('開く');
-    _outlinerAppendSubmenu(menu, '開く', 'folderOpen', openPanel);
-    _outlinerAppendMenuItem(openPanel, {
-      label: 'メインパネルで開く', icon: 'panelTop', action: () => {
-        closeTreeContextMenu();
-        window.GBOutlinerActivation?.activateNode(nodeEl);
-      },
-    });
-    _outlinerAppendMenuItem(openPanel, {
-      label: '新しいタブで開く', icon: 'externalLink', action: () => {
-        closeTreeContextMenu();
-        _openInNewTab(nodeData.name || '', nodeData.path, openType);
-      },
-    });
-    if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
-      _outlinerAppendMenuItem(openPanel, {
-        label: 'サブパネルで開く', icon: 'panelRight', action: () => {
-          closeTreeContextMenu();
-          openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
-        },
-      });
-    }
-    if (typeof openLinkedPathStandalone === 'function'
-        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nodeData.path, nodeData.type))) {
-      _outlinerAppendMenuItem(openPanel, {
-        label: '単独アプリで開く', icon: 'appWindow', action: () => {
-          closeTreeContextMenu();
-          openLinkedPathStandalone(nodeData.path, nodeData.name, { linkType: nodeData.type });
-        },
-      });
-    }
-    _outlinerAppendMenuItem(openPanel, {
-      label: '新しいウィンドウで開く', icon: 'monitor', action: () => {
-        closeTreeContextMenu();
-        if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
-        else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
-      },
-    });
-    if (!isFolder && typeof openNative === 'function') {
-      const needsExternalApp = !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type));
-      addMenuItem('アプリで開く', () => {
-          closeTreeContextMenu();
-          openNative(nodeData.path);
-        }, null, needsExternalApp ? 'externalLink' : 'appWindow', openPanel);
-    }

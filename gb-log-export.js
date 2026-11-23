@@ -791,6 +791,7 @@
   // フォルダツリー・フォルダパネルのファイル操作（作成・改名・移動・削除・復元・複製・貼り付け・リンク・アイコン）の
   // 失敗も同じ記録へ残す（2026-11-22 M-014 フォルダ網羅テスト: 改名の保存の失敗が記録0件だった）。
   const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|delete|delete-batch|restore|duplicate|save-as)|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display)(?:\/|$)/;
+  const CHAT_INCIDENT_ROUTES = /^\/(?:chat|cli-chat|chat_rules)(?:\/|$)/;
   const SHEET_INCIDENT_LOCAL_KEY = 'meldex:sheet-incidents';
   const _sheetIncidentRecent = new Map();
   function _incidentRoute(path) {
@@ -853,7 +854,7 @@
       if (now - (_sheetIncidentRecent.get(fingerprint) || 0) < 10000) return false;
       _sheetIncidentRecent.set(fingerprint, now);
       if (_sheetIncidentRecent.size > 200) _sheetIncidentRecent.delete(_sheetIncidentRecent.keys().next().value);
-      _push(operationLogs, { label: 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
+      _push(operationLogs, { label: /^(chat|cli-chat)/.test(entry.op) ? 'チャットの問題' : 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
       if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
         try {
           const list = JSON.parse(localStorage.getItem(SHEET_INCIDENT_LOCAL_KEY) || '[]');
@@ -875,7 +876,8 @@
     const route = _incidentRoute(path);
     if (!route || route.startsWith('/diagnostics') || route.startsWith('/debug-log')) return;
     const schedule = SCHEDULE_INCIDENT_ROUTES.test(route);
-    if (!schedule && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
+    const chat = CHAT_INCIDENT_ROUTES.test(route);
+    if (!schedule && !chat && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
     const method = String(opts?.method || 'GET').toUpperCase();
     if (method === 'GET' && (opts?.silentError || error?.name === 'AbortError')) return;
     // 予定などの ID はパスに入るので、記録の操作名からは外す（/cal/events/<id> → schedule.cal.events.put）。
@@ -883,7 +885,7 @@
     recordSheetIncident(method === 'GET' ? 'load-failed' : 'save-failed', {
       op: (opts?.diagnosticOp || (opRoute + '.' + method.toLowerCase())),
       endpoint: route, method, status: error?.status || error?.httpStatus || 0,
-      errorType: _incidentErrorType(error), sheet: schedule ? '' : _incidentSheetFrom(path, opts),
+      errorType: _incidentErrorType(error), sheet: schedule || chat ? '' : _incidentSheetFrom(path, opts),
     });
   }
   // 保存などの処理が一定時間（既定30秒）終わらない時に1回だけ記録し、既存の状態表示で知らせる。

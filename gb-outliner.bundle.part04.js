@@ -1,3 +1,6 @@
+          if (!n.isConnected || !n.parentElement || n.parentElement.dataset.virtual === 'true' || n.contains(optimisticContainer)) return;
+          if (n.parentElement === optimisticContainer) return;
+          // 開いたフォルダの一覧に同じ名前の行が既に出ていれば（保存の往復が先に終わった）、重ねて置かない
           const name = n._nodeData?.name;
           if (name && Array.from(optimisticContainer.children).some(child => child !== n && child._nodeData?.name === name)) return;
           if (position === 'inside') optimisticContainer.appendChild(n);
@@ -658,12 +661,12 @@ function _removeFolderItemsForPaths(paths) {
   if (typeof _scheduleWaterfallLayout === 'function') _scheduleWaterfallLayout();
 }
 
-function _markOutlinerDeletePending(paths) {
+function _markOutlinerDeletePending(paths, options = {}) {
   const pendingPaths = _setOutlinerDeletePending(paths, true);
   if (!pendingPaths.length) return pendingPaths;
   _removeOutlinerNodesForPaths(pendingPaths);
   _removeFolderItemsForPaths(pendingPaths);
-  if (typeof purgeAppPathReferences === 'function') {
+  if (!options.preserveReferences && typeof purgeAppPathReferences === 'function') {
     purgeAppPathReferences(pendingPaths);
   }
   return pendingPaths;
@@ -786,13 +789,28 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     ? historyReserve(options.label || (targets.length + ' 件を削除'), options.scope || '', options.detail || targetPaths.join(', '))
     : null;
   try {
-  _markOutlinerDeletePending(targetPaths);
+  _markOutlinerDeletePending(targetPaths, { preserveReferences: true });
   if (typeof options.onOptimisticDelete === 'function') {
     try { options.onOptimisticDelete(targets); } catch {}
   }
 
+  const confirmation = options.confirmation || (typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(targets.map(item => ({
+      path: item.path, kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
+      ...(item.assetId ? { assetId: item.assetId } : {}),
+    }))) : { confirmed: true, operation: 'trash' });
+  if (!confirmation) {
+    _clearOutlinerDeletePending(targetPaths);
+    const failed = targets.map(item => ({ ...item, error: '参照の確認に失敗したため削除を中止しました' }));
+    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', { failed, failedPaths: targetPaths });
+    historyReservation?.cancel();
+    return { targets, requestedTargets, succeeded: [], skipped: [], failed, failedCount: targets.length, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
+  }
+  // 確認が済むまでは、未保存のエディタやタブの参照を保つ。
+  if (typeof purgeAppPathReferences === 'function') purgeAppPathReferences(targetPaths);
+
   const results = await _deleteOutlinerTargetsSequentially(targets, {
-    confirmation: options.confirmation,
+    confirmation,
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
     },
@@ -880,21 +898,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
           const item = record.item;
           const res = await apiPost('/outliner/delete', {
             path: record.currentPath,
-            kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
-            ...(item.assetId ? { assetId: item.assetId } : {}),
-            ...confirmationPayload,
-          }).catch(error => {
-            redoFailures.push({ item, error });
-            return null;
-          });
-          const ref = _outlinerTrashRefFromResponse(res);
-          if (ref) {
-            record.trashRef = ref;
-            record.deleted = true;
-          }
-          else if (res) redoFailures.push({ item, error: new Error('取り消しに必要なゴミ箱情報がありません') });
-        }
-        if (pendingPaths.length) _clearOutlinerDeletePending(pendingPaths);
-        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
-        trashNames = _outlinerTrashRefsToNames(trashRefs);
-        const redonePaths = pendingRecords.filter(record => record.deleted).map(record => record.currentPath);

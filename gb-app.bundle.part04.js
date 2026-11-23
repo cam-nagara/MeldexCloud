@@ -361,8 +361,8 @@ apiFetch = async function(path, opts) {
   const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
     ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
     : null;
-  const deferredCreateUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/add';
+  const deferredCommittedUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, ''));
   let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
@@ -388,10 +388,10 @@ apiFetch = async function(path, opts) {
     return result;
   } finally {
     const release = transientLease?.release?.();
-    if (deferredCreateUnlock && mutationSucceeded) {
-      // The new item is durable. Show it while the short-lived parent lease
+    if (deferredCommittedUnlock && mutationSucceeded) {
+      // The new item and copy aftercare are durable. Show it while the short-lived lease
       // is released; the lock store waits for that release before reacquiring.
-      void Promise.resolve(release).catch(error => console.warn('新規追加後のロック解除に失敗:', error));
+      void Promise.resolve(release).catch(error => console.warn('保存後のロック解除に失敗:', error));
     } else await release;
   }
 };

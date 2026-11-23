@@ -1,4 +1,51 @@
 /* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
+    function _preserveNoteTextFormat(text, original) {
+      const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+      original = original.replace(/^\uFEFF/, '');
+      text = String(text).replace(/^\uFEFF/, '');
+      const endings = original.match(/\r\n|\r|\n/g) || [];
+      if (!endings.length) return bom + text;
+      const counts = new Map();
+      for (const ending of endings) counts.set(ending, (counts.get(ending) || 0) + 1);
+      const majority = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+      const normalized = text.replace(/\r\n?/g, '\n');
+      if (counts.size === 1) return bom + normalized.replace(/\n/g, majority);
+      const split = value => (value.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) || []).filter(Boolean)
+        .map(line => { const end = /(?:\r\n|\r|\n)$/.exec(line)?.[0] || ''; return [line.slice(0, line.length - end.length), end]; });
+      const old = split(original), next = split(normalized);
+      const result = next.map(line => line[1] ? majority : '');
+      const keep = (a, b) => { if (result[b]) result[b] = old[a][1] || majority; };
+      // Match unchanged edges and unique lines (patience anchors). Repeated-line
+      // gaps of equal size keep their positional endings; new lines use majority.
+      // Uniform files, including large notes, take the linear fast path above.
+      const segments = [[0, old.length, 0, next.length]];
+      while (segments.length) {
+        let [a, b, c, d] = segments.pop();
+        while (a < b && c < d && old[a][0] === next[c][0]) keep(a++, c++);
+        while (a < b && c < d && old[b-1][0] === next[d-1][0]) keep(--b, --d);
+        if (a === b || c === d) continue;
+        const indices = (rows, start, end) => {
+          const map = new Map();
+          for (let i = start; i < end; i++) map.set(rows[i][0], map.has(rows[i][0]) ? -1 : i);
+          return map;
+        };
+        const left = indices(old, a, b), right = indices(next, c, d), pairs = [];
+        for (const [line, i] of left) if (i >= 0 && right.get(line) >= 0) pairs.push([i, right.get(line)]);
+        const tails = [], previous = [];
+        for (let i = 0; i < pairs.length; i++) {
+          let lo = 0, hi = tails.length;
+          while (lo < hi) { const mid = (lo + hi) >>> 1; if (pairs[tails[mid]][1] < pairs[i][1]) lo = mid + 1; else hi = mid; }
+          previous[i] = lo ? tails[lo-1] : -1; tails[lo] = i;
+        }
+        if (!tails.length) { if (b-a === d-c) for (let i = 0; i < b-a; i++) keep(a+i, c+i); continue; }
+        const anchors = [];
+        for (let i = tails[tails.length-1]; i >= 0; i = previous[i]) anchors.push(pairs[i]);
+        for (const [i, j] of anchors.reverse()) { segments.push([a, i, c, j]); keep(i, j); a = i+1; c = j+1; }
+        segments.push([a, b, c, d]);
+      }
+      return bom + next.map((line, i) => line[0] + result[i]).join('');
+    }
+
     function _pwaFileTransport() {
       return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
     }
@@ -21,9 +68,10 @@
       if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
         content = await provider.readText(filePath).catch(() => '');
       }
-      const identityFormat = identity?.formatForPath?.(filePath, content);
+      const identityContent = /\.md$/i.test(filePath) ? String(content || '').replace(/\r\n?/g, '\n') : content;
+      const identityFormat = identity?.formatForPath?.(filePath, identityContent);
       const documentId = identityFormat
-        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        ? String(identity?.readDocumentId?.(String(identityContent || ''), identityFormat) || '')
         : '';
       return {
         etag: token,
@@ -101,6 +149,7 @@
     }
 
     function _savedNoteMetadata(filePath, content) {
+      content = String(content || '').replace(/\r\n?/g, '\n');
       if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
       return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
     }

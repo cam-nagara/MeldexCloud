@@ -35,14 +35,15 @@
   }
 
   function _pmOptionBody(options = {}) {
-    _pmOpenOptionPanel(options.select !== false);
     const helpers = window.MeldexCalendarOptionPanel || {};
     if (typeof helpers.container === 'function') {
       return helpers.container('スケジュール', {
         tabId: 'calendar-production',
         select: options.select !== false,
+        openPanel: options.select !== false,
       });
     }
+    _pmOpenOptionPanel(options.select !== false);
     const detailEl = typeof _resolveDetailEl === 'function' ? _resolveDetailEl() : document.getElementById('rp-detail');
     if (!detailEl) return null;
     detailEl.style.display = '';

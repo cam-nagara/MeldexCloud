@@ -200,7 +200,7 @@
   // ------------------------------------------------------------
   function _syncVirtualSelectedId(nodeEl, selected) {
     var path = nodeEl && nodeEl._nodeData && nodeEl._nodeData.path;
-    if (!path) return;
+    if (!path || (selected && typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(path))) return;
     var entry = _pathToContainer.get(path);
     if (!entry || !entry.state || !entry.state.selectedIds) return;
     if (selected) entry.state.selectedIds.add(path);

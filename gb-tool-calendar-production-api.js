@@ -57,6 +57,66 @@
   }
   function invalidateReady() { readyCache = null; }
 
+  const entryHistoryRows = new Map();
+  const SIMPLE_HISTORY_PROPERTIES = new Set(['備考', '優先度', '階層数', '階層ラベル']);
+  let entryHistoryContext = '', entryHistoryGeneration = 0;
+  function assigneeHistoryIsSafe(row) {
+    const engine = window.MeldexProductionTaskActualEngine;
+    if (typeof engine?.normalizeTaskStatus !== 'function') return false;
+    const status = engine.normalizeTaskStatus(row?.properties?.['状況']);
+    return typeof status === 'string' && [engine.CANONICAL_STATUS_NOT_STARTED, engine.CANONICAL_STATUS_PENDING,
+      engine.CANONICAL_STATUS_REVIEW_WAITING, engine.CANONICAL_STATUS_DONE].includes(status);
+  }
+  function historyContext() {
+    const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const key = JSON.stringify([typeof getUsername === 'function' ? getUsername() : '',
+      typeof state !== 'undefined' ? state.vaultPath || '' : '',
+      window.MeldexRuntimeAdapter?.getMode?.() || '',
+      window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
+      workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || '',
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+    if (key !== entryHistoryContext) { entryHistoryContext = key; entryHistoryGeneration++; entryHistoryRows.clear(); }
+    return entryHistoryGeneration;
+  }
+
+  async function patchEntryWithHistory(payload, previous, history = {}) {
+    const generation = historyContext();
+    const result = await request('/production-management/entries', { method: 'PATCH', body: payload });
+    if (generation !== historyContext() || !result?.row) return result;
+    const key = String(result.row.path || payload.path || '');
+    entryHistoryRows.set(key, result.row);
+    const names = Object.keys(payload.properties || {});
+    // 作業中の状況・担当変更は実績区間に影響する。閉じた区間を変更しない状態の
+    // 担当変更だけ、版を照合する逆PATCHで計画の改訂を追加して戻す。
+    const assigneeChange = names.includes('担当者');
+    const safeAssignee = assigneeChange && assigneeHistoryIsSafe(previous) && assigneeHistoryIsSafe(result.row);
+    if (!names.length || !names.every(name => SIMPLE_HISTORY_PROPERTIES.has(name) || name === '担当者' && safeAssignee)
+        || !previous || result.unchanged || typeof historyPush !== 'function') return result;
+    const before = Object.fromEntries(names.map(name => [name, previous.properties?.[name] ?? '']));
+    const after = Object.fromEntries(names.map(name => [name, result.row.properties?.[name] ?? '']));
+    const restore = async properties => {
+      if (historyContext() !== generation) {
+        const error = new Error('制作管理の対象が切り替わったため、この履歴は使えません');
+        error.code = 'production_history_context_changed'; throw error;
+      }
+      const current = entryHistoryRows.get(key);
+      if (assigneeChange && !assigneeHistoryIsSafe(current)) {
+        const error = new Error('現在作業中のため、この担当変更を取り消せません。現在の担当を確認して変更してください');
+        error.code = 'production_assignee_history_active'; throw error;
+      }
+      const restored = await request('/production-management/entries', { method: 'PATCH', body: {
+        ...payload, properties, entry_revision: current.entry_revision,
+        transport_revision: current.transport_revision, expectedModified: current.modified || '',
+      } });
+      entryHistoryRows.set(key, restored.row);
+      try { await history.onRestore?.(restored.row); }
+      catch (error) { history.onRefreshError?.(error); console.warn('[Production] 履歴の保存後に表示を更新できませんでした', error); }
+    };
+    historyPush(history.label || '制作管理を編集', () => restore(before), () => restore(after), history.scope || '');
+    return result;
+  }
+
   window.MeldexProductionApi = {
     summary: () => request('/production-management/summary'),
     status: () => request('/production-management/status'),
@@ -67,6 +127,8 @@
     taskCreateCatalog: () => request('/production-management/task-create-catalog'),
     createTaskSheet: (payload) => request('/production-management/task-sheets', { method: 'POST', body: payload }),
     queryTasks: (payload = {}) => request('/production-management/tasks/query', { method: 'POST', body: payload }),
+    patchEntryWithHistory,
+    contextGeneration: historyContext,
     patchEntry: (payload) => request('/production-management/entries', { method: 'PATCH', body: payload }),
     createEntry: (payload) => request('/production-management/entries', { method: 'POST', body: payload }),
     previewTasks: (payload) => request('/production-management/tasks/preview', { method: 'POST', body: payload }),

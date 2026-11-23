@@ -411,7 +411,7 @@
     if (!calendar) {
       const now = new Date().toISOString();
       calendar = {
-        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#d19a66',
+        id: randomId('shift-cal'), name: `シフト: ${shift.user || ''}`.trim(), color: '#99602d',
         user: shift.user || actor(), source: 'shift', visible: 1, sort_order: 0,
         folder: workspaceId || 'シフトカレンダー', edit_role: 'admin', workspace_id: workspaceId,
         member_id: memberId, created: now, modified: now,

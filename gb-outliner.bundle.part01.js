@@ -65,6 +65,7 @@ function compareItemsForFolderSort(a, b, sort = 'name', order = 'asc') {
  */
 
 const _outlinerPendingRenames = new Map();
+const _outlinerPendingCopyPreviews = new Set();
 const _outlinerPendingRenameKey = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 async function _outlinerAwaitPendingRename(item) {
   for (let depth = 0; depth < 16; depth++) {
@@ -897,4 +898,3 @@ window.MeldexVisibleSelection = Object.freeze({
 const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
   _lastClicked: null,
-  // lastClickedの安定パス（ファイルパス）。仮想化フォルダ(150件超)ではスクロールで

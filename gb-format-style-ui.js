@@ -1302,9 +1302,13 @@
     const raw = _rawForField(field, prop, value, options);
     const normalized = typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
     const result = adapter.set(field, normalized || '');
+    // ボードは未保存の入力を保持する。通信完了まで文字の見た目を待たせず、
+    // 遅い応答で別ボードへ再適用しない。他の面の保存順序は従来どおり。
+    const appliedImmediately = adapter.ctx === 'board' && adapter.isCurrent?.() !== false;
+    if (appliedImmediately) adapter.applyCss(field, normalized || '');
     const apply = saved => {
       if (saved === false || adapter.isCurrent?.() === false) return false;
-      adapter.applyCss(field, normalized || '');
+      if (!appliedImmediately) adapter.applyCss(field, normalized || '');
       return true;
     };
     return result?.then ? result.then(apply) : apply(result);

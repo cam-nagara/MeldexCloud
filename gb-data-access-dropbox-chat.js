@@ -125,6 +125,8 @@
     // 返信に記録した思考の深さ（デスクトップ側 meldex_api_chat.py と同じ許可値）。
     if (['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'ultra'].includes(String(msg.reasoning_level || '').trim())) clean.reasoning_level = String(msg.reasoning_level).trim();
     if (msg.aborted === true) clean.aborted = true;
+    if (msg.error === true) clean.error = true;
+    if (typeof msg.error_code === 'string' && msg.error_code.trim()) clean.error_code = msg.error_code.trim().slice(0, 128);
     if (str(msg.thinking).trim()) clean.thinking = str(msg.thinking).trim();
     if (str(msg.tool_audit_warning).trim()) clean.tool_audit_warning = str(msg.tool_audit_warning).trim();
     if (msg.compressed === true) clean.compressed = true;
@@ -210,6 +212,7 @@
     const match = text.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) return { frontmatter: {}, body: text, valid: false };
     const fm = {};
+    let messagesAreJson = false;
     match[1].split(/\r?\n/).forEach(line => {
       if (!/^[A-Za-z_][A-Za-z0-9_-]*\s*:/.test(line)) return;
       const idx = line.indexOf(':');
@@ -218,7 +221,10 @@
       const value = line.slice(idx + 1).trim();
       if (!key) return;
       if (!value) { fm[key] = ''; return; }
-      try { fm[key] = JSON.parse(value); }
+      try {
+        fm[key] = JSON.parse(value);
+        if (key === 'messages' && Array.isArray(fm[key])) messagesAreJson = true;
+      }
       catch { fm[key] = value.replace(/^['"]|['"]$/g, ''); }
     });
     const yamlLite = _yamlLiteObject(match[1]);
@@ -228,6 +234,7 @@
     });
     return {
       frontmatter: fm,
+      messagesAreJson,
       body: text.slice(match[0].length),
       valid: String(fm.type || 'chat') === 'chat' && Object.keys(fm).length > 0,
     };
@@ -335,7 +342,20 @@
 
   function _messagesFromChatBody(body) {
     const text = String(body || '');
-    const matches = Array.from(text.matchAll(CHAT_SECTION_RE));
+    const fences = [];
+    let fence = null;
+    for (const line of text.matchAll(/^.*(?:\r?\n|$)/gm)) {
+      const marker = line[0].match(/^ {0,3}(`{3,}|~{3,})/);
+      if (!marker) continue;
+      if (!fence) fence = { start: line.index, marker: marker[1][0], length: marker[1].length };
+      else if (marker[1][0] === fence.marker && marker[1].length >= fence.length) {
+        fences.push([fence.start, line.index + line[0].length]);
+        fence = null;
+      }
+    }
+    if (fence) fences.push([fence.start, text.length]);
+    const matches = Array.from(text.matchAll(CHAT_SECTION_RE))
+      .filter(match => !fences.some(([start, end]) => match.index >= start && match.index < end));
     if (!matches.length) return [];
     const messages = [];
     for (let i = 0; i < matches.length; i += 1) {
@@ -374,6 +394,9 @@
     const bodyMessages = _messagesFromChatBody(parsed.body);
     if (Array.isArray(parsed.frontmatter.messages)) {
       const frontmatterMessages = parsed.frontmatter.messages.map(_chatNormalizeMessage);
+      // Cloud自身が保存したJSON配列が正本。本文中の見出しを発言区切りと誤認して
+      // 本文だけへ戻すと、ID・日時・添付・思考・失敗の印が消えてしまう。
+      if (parsed.messagesAreJson) return frontmatterMessages;
       return _shouldUseBodyChatMessages(frontmatterMessages, bodyMessages) ? bodyMessages : frontmatterMessages;
     }
     return bodyMessages;
@@ -429,7 +452,18 @@
 
   async function _loadPwaChat(provider, path, sourceFolder) {
     const chatPath = _resolveChatPath(sourceFolder, path || '');
-    const raw = await provider.readText(chatPath);
+    let raw;
+    try {
+      raw = await provider.readText(chatPath);
+    } catch (error) {
+      // Dropbox reports a missing path as 409; the chat API uses 404.
+      // Keep conflicts, permission errors and unavailable storage distinct.
+      if (error?.status === 409 && (error?.code === 'path_not_found'
+          || /(?:^|:\s*)path\/not_found\//i.test(String(error?.message || '')))) {
+        throw Object.assign(new Error('チャット履歴が見つかりません', {cause:error}), {status:404});
+      }
+      throw error;
+    }
     const parsed = _parsePwaChatFrontmatter(raw);
     const messages = _messagesFromParsedChat(parsed);
     delete parsed.frontmatter.messages;

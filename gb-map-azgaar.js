@@ -4,8 +4,19 @@
   const version='1.156.0',revision='67d555b83f0b2f40ae50b03c9bbfd018175acc6d';
   const workerURL=typeof document==='undefined'?'':new URL('vendor/azgaar/azgaar-worker.js',document.currentScript?.src||location.href).href;
   const modes=['biomes','elevation','temperature','rain','political'];
-  const pathOK=p=>typeof p==='string'&&p.length>0&&p.length<=4e6&&/^[MmLlHhVvCcSsQqTtAaZz\d\s.,+eE-]+$/.test(p)&&/^[Mm]/.test(p)
-    &&(p.match(/[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/g)||[]).every(n=>Number.isFinite(+n)&&Math.abs(+n)<=1e7);
+  // Validation depends only on the exact path string. Reuse successful checks
+  // across parsed copies without trusting mutable atlas/feature objects.
+  const validPaths=new Map();let validPathBytes=0;
+  function pathOK(p){
+    if(typeof p!=='string'||!p.length||p.length>4e6)return false;
+    if(validPaths.has(p))return true;
+    if(!/^[MmLlHhVvCcSsQqTtAaZz\d\s.,+eE-]+$/.test(p)||!/^[Mm]/.test(p)
+      ||!(p.match(/[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/g)||[]).every(n=>Number.isFinite(+n)&&Math.abs(+n)<=1e7))return false;
+    while(validPaths.size&&(validPathBytes+p.length*2>8*1024*1024||validPaths.size>=4096)){
+      const first=validPaths.keys().next().value;validPathBytes-=first.length*2;validPaths.delete(first);
+    }
+    validPaths.set(p,true);validPathBytes+=p.length*2;return true;
+  }
   const colorOK=c=>typeof c==='string'&&/^#[\da-f]{6}$/i.test(c);
   function valid(a){
     if(!a||a.version!==1||a.engine!=='Azgaar'||!Number.isFinite(a.width)||!Number.isFinite(a.height)||a.width<128||a.height<128||a.width>4096||a.height>4096||!modes.includes(a.presentation))return false;

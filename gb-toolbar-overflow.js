@@ -7,10 +7,13 @@
   // あふれ処理の対象にすると行要素ごと隠れて操作が消えるため対象外にする。
   const hiddenClass = 'gb-tbo-hidden';
   const registry = new Map();
+  const dirtyToolbars = new Set();
   let active = null;
   let pending = false;
   let hostSequence = 0;
-  const externalClass = value => String(value || '').split(/\s+/).filter(name => name && name !== hiddenClass && name !== 'gb-toolbar-overflow-host').join(' ');
+  const geometryIds = new WeakMap();
+  let geometrySequence = 0;
+  const externalClass = value => String(value || '').split(/\s+/).filter(name => name && name !== hiddenClass && name !== 'gb-toolbar-overflow-host' && name !== 'gb-tbo-title-compact').join(' ');
   const matches = (el, selectors) => selectors.some(selector => el.matches(selector));
   const label = el => el.getAttribute('aria-label') || el.title || el.textContent.trim() || '操作';
   const controls = el => (el.matches('button, select, input:not([type="hidden"])') ? [el]
@@ -92,6 +95,7 @@
       row.dataset.overflowSource = source.id || source.dataset.e2eId || source.dataset.noteRtCmd || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || '';
       row.dataset.e2eId = 'toolbar-overflow-' + (source.id || source.dataset.snAction || source.dataset.bdAction || source.dataset.bdTool || source.dataset.noteRtCmd || source.dataset.sheetAction || source.dataset.e2eId || source.dataset.calAction || source.dataset.calSurface || source.dataset.calSetting || source.dataset.action || 'control');
       const text = document.createElement('span');
+      text.className = 'gb-tbo-label';
       text.textContent = label(source);
       text.title = text.textContent;
       if (source.tagName === 'BUTTON') {
@@ -136,6 +140,10 @@
     const { toolbar, more } = entry;
     const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
+    // MAP changes save/selection state frequently without changing bar geometry.
+    // Reuse only explicitly opted-in layouts; live popup state is still synced.
+    const signature = entry.stableGeometry ? geometrySignature(entry) : null;
+    if (signature !== null && signature === entry.geometrySignature) { syncPopup(entry); return; }
     if (toolbar.lastElementChild !== more) toolbar.appendChild(more);
     const compactTitle = toolbar.matches('.gb-toolbar-main')
       ? Array.from(toolbar.children).find(el => el.matches('.tb-file-title'))
@@ -183,9 +191,32 @@
     if (more.hidden !== (entry.overflow.length === 0)) more.hidden = entry.overflow.length === 0;
     if (hadMoreFocus && !more.hidden) more.focus({ preventScroll: true });
     if (active === entry && (before.length !== entry.overflow.length || before.some((el, i) => el !== entry.overflow[i]))) close(true);
+    entry.geometrySignature = entry.stableGeometry ? geometrySignature(entry) : null;
+    syncPopup(entry);
+  }
+
+  function geometrySignature(entry) {
+    const { toolbar, more } = entry;
+    const style = getComputedStyle(toolbar);
+    const nodes = [...toolbar.querySelectorAll('*')].filter(el => el !== more && !more.contains(el));
+    return JSON.stringify([toolbar.clientWidth, toolbar.clientHeight, innerWidth, innerHeight,
+      externalClass(toolbar.className), toolbar.getAttribute('style'),
+      document.documentElement.className, document.documentElement.getAttribute('style'),
+      document.body.className, document.body.getAttribute('style'), style.font, style.zoom,
+      entry.keep, entry.priority, nodes.map(el => {
+        if (!geometryIds.has(el)) geometryIds.set(el, ++geometrySequence);
+        return [geometryIds.get(el), el.tagName, externalClass(el.className?.baseVal ?? el.className),
+        el.getAttribute('style'), el.hidden, el.getAttribute('width'), el.getAttribute('size'),
+        el.matches('[data-toolbar-fixed-text], [data-toolbar-fixed-text] *') ? '' :
+          [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('')]; })]);
+  }
+
+  function syncPopup(entry) {
     if (active === entry) entry.popup.querySelectorAll('.gb-tbo-row').forEach(row => {
       const source = row._gbTboSource;
       if (!source) return;
+      const text = row.querySelector('.gb-tbo-label'), caption = label(source);
+      if (text && text.textContent !== caption) { text.textContent = caption; text.title = caption; }
       if (row.tagName === 'BUTTON') {
         row.disabled = source.disabled;
         const pressed = source.classList.contains('active') || source.getAttribute('aria-pressed') === 'true';
@@ -198,15 +229,21 @@
     });
   }
 
-  function schedule() {
+  function schedule(toolbar) {
+    // 1つのバーの変更で、無関係なバーの非表示を解除して配置を測り直さない。
+    // 明示的な全体更新・画面幅・フォント変更では従来どおり全てを確認する。
+    if (registry.has(toolbar)) dirtyToolbars.add(toolbar);
+    else registry.forEach((_, host) => dirtyToolbars.add(host));
     if (pending) return;
     pending = true;
     // Timers also run in hidden embedded panels where animation frames may pause.
     setTimeout(() => {
       pending = false;
+      const changed = new Set(dirtyToolbars);
+      dirtyToolbars.clear();
       registry.forEach((entry, toolbar) => {
         if (!toolbar.isConnected) { if (active === entry) close(); entry.observer.disconnect(); registry.delete(toolbar); }
-        else recompute(entry);
+        else if (changed.has(toolbar)) recompute(entry);
       });
     }, 0);
   }
@@ -219,7 +256,9 @@
       const entry = registry.get(toolbar);
       entry.keep = opts.keep || entry.keep;
       entry.priority = opts.priority || entry.priority;
-      schedule();
+      if (opts.stableGeometry !== undefined) entry.stableGeometry = opts.stableGeometry;
+      entry.geometrySignature = null;
+      schedule(toolbar);
       return entry;
     }
     const more = document.createElement('button');
@@ -238,15 +277,15 @@
     more.setAttribute('aria-haspopup', 'dialog');
     more.setAttribute('aria-expanded', 'false');
     more.hidden = true;
-    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [] };
+    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [], stableGeometry: !!opts.stableGeometry };
     registry.set(toolbar, entry);
     toolbar.classList.add('gb-toolbar-overflow-host');
     toolbar.appendChild(more);
     more.addEventListener('mousedown', event => { event.preventDefault(); window.closeAllFormatPopups?.(); });
     more.addEventListener('click', event => { event.stopPropagation(); open(entry); });
-    entry.observer = new ResizeObserver(schedule);
+    entry.observer = new ResizeObserver(() => schedule(toolbar));
     entry.observer.observe(toolbar);
-    schedule();
+    schedule(toolbar);
     return entry;
   }
 
@@ -258,17 +297,21 @@
   function start() {
     scan(document.body);
     new MutationObserver(records => {
-      let changed = false;
+      const changed = new Set();
       for (const record of records) {
         if (record.target.matches?.('.gb-toolbar-overflow-button')) continue;
         if (record.type === 'childList') record.addedNodes.forEach(scan);
         if (record.target.closest?.(hosts) && !record.target.closest('.gb-toolbar-overflow-popup')) {
           // Ignore our own visibility classes to avoid a measurement loop.
-          if (record.attributeName !== 'class' || externalClass(record.oldValue) !== externalClass(record.target.className)) changed = true;
+          if (record.attributeName !== 'class' || externalClass(record.oldValue) !== externalClass(record.target.className)) {
+            registry.forEach((_, toolbar) => { if (toolbar.contains(record.target)) changed.add(toolbar); });
+          }
         }
-        if (record.type === 'attributes' && record.target.querySelector?.(hosts) && record.attributeName !== 'class') changed = true;
+        if (record.type === 'attributes' && record.attributeName !== 'class') {
+          registry.forEach((_, toolbar) => { if (record.target !== toolbar && record.target.contains?.(toolbar)) changed.add(toolbar); });
+        }
       }
-      if (changed) schedule();
+      changed.forEach(toolbar => schedule(toolbar));
     }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeOldValue: true,
       attributeFilter: ['hidden', 'style', 'class', 'disabled', 'data-cal-surface'] });
     document.addEventListener('pointerdown', event => { if (active && !active.popup.contains(event.target) && !active.more.contains(event.target)) close(); });

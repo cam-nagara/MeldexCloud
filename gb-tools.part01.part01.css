@@ -1625,6 +1625,10 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   padding: 6px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
 }
 .rp-ann-preview-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.rp-ann-preview-head > span:first-child { flex-wrap: wrap; }
+.rp-ann-preview-head .rp-ann-preview-meta { flex-basis: 100%; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+.rp-ann-preview-card:focus-visible { outline: 2px solid var(--annotation-accent); outline-offset: -2px; }
+.rp-ann-preview-card:has(:focus-visible):not(:focus-visible) { outline: none; }
 .rp-ann-preview-body { padding: 8px; }
 .rp-ann-preview-meta {
   padding: 0 8px 7px; color: var(--annotation-muted-fg); font-size: 10px;

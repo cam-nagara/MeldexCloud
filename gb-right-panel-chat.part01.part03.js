@@ -520,16 +520,45 @@ function _chatRenderStoredMessages() {
   if (!container) return;
   if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
   container.innerHTML = '';
-  _ensureChatMessageIds(_chatState.messages).forEach((message, index) => {
-    if (!message || typeof message !== 'object') return;
-    chatAddMessage(message.role || 'assistant', message.content, _chatMessageRenderOptions(message, index));
-  });
+  _chatAppendStoredMessages(container, _chatState.messages);
   _chatRenderQueuedMessageBubbles();
   // CLI側の復元口は表示中チャットの実行（API/CLIとも）を描き直す。未読込の画面では直接呼ぶ。
   if (window.GBChatCliRestoreActivity) window.GBChatCliRestoreActivity?.();
   else { try { _chatVisibleExecution()?.restore?.(); } catch {} }
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
   if (typeof _chatRefreshMessageDeleteButtons === 'function') _chatRefreshMessageDeleteButtons();
+}
+
+const CHAT_HISTORY_PAGE_SIZE = 80;
+function _chatAppendStoredMessages(container, messages, options = {}) {
+  const end = Math.min(messages.length, options.end ?? messages.length);
+  const start = Math.max(0, options.start ?? end - CHAT_HISTORY_PAGE_SIZE);
+  const fragment = document.createDocumentFragment();
+  const pageButton = (label, id, nextEnd, top) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-sm chat-history-page';
+    button.dataset.e2eId = id;
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      container.replaceChildren();
+      _chatAppendStoredMessages(container, messages, { end: nextEnd });
+      container.scrollTop = top ? 0 : container.scrollHeight;
+      if (document.getElementById('chat-search-input')?.value?.trim()) _chatSearch({ keepWindow: true });
+    });
+    return button;
+  };
+  if (start > 0) fragment.appendChild(pageButton('以前のメッセージを表示（残り' + start + '件）', 'chat-history-earlier', start, false));
+  _ensureChatMessageIds(messages).slice(start, end).forEach((message, offset) => {
+    if (!message || typeof message !== 'object') return;
+    chatAddMessage(message.role || 'assistant', message.content, {
+      ..._chatMessageRenderOptions(message, start + offset), container: fragment, deferScroll: true,
+    });
+  });
+  if (end < messages.length) fragment.appendChild(pageButton('新しいメッセージを表示', 'chat-history-later', Math.min(messages.length, end + CHAT_HISTORY_PAGE_SIZE), true));
+  container.appendChild(fragment);
+  container.dataset.chatHistoryStart = String(start);
+  container.dataset.chatHistoryEnd = String(end);
 }
 
 function _chatApplyCompression(data, options = {}) {
@@ -761,19 +790,23 @@ function chatEditUserMessage(index) {
   const bubble = wrapper?.querySelector('.chat-message-bubble');
   if (!bubble || bubble.querySelector('textarea')) return;
   const original = _chatContentToText(_chatState.messages[idx]?.content || '');
-  const bubbleWidth = Math.ceil(bubble.getBoundingClientRect?.().width || 0);
+  const bubbleRect = bubble.getBoundingClientRect();
+  const bubbleWidth = Math.ceil(bubbleRect.width || 0);
   if (bubbleWidth > 0) bubble.style.width = bubbleWidth + 'px';
   bubble.style.maxWidth = '100%';
   bubble.style.boxSizing = 'border-box';
   bubble.style.whiteSpace = 'normal';
+  bubble.style.height = Math.ceil(bubbleRect.height) + 'px';
+  bubble.style.position = 'relative';
   const textarea = document.createElement('textarea');
   textarea.className = 'chat-message-edit-textarea';
   textarea.value = original;
   textarea.rows = Math.min(10, Math.max(3, original.split('\n').length + 1));
-  textarea.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;background:var(--ui-input-bg,var(--bg3));color:var(--ui-input-fg,var(--fg));border:1px solid var(--ui-input-border,var(--border));border-radius:6px;padding:6px;font:inherit;resize:vertical;';
+  textarea.style.cssText = 'position:absolute;inset:0;display:block;width:100%;height:100%;min-width:0;max-height:100%;box-sizing:border-box;background:var(--ui-input-bg,var(--bg3));color:var(--ui-input-fg,var(--fg));border:1px solid var(--ui-input-border,var(--border));border-radius:6px;padding:6px;font:inherit;resize:none;';
+  textarea.style.setProperty('min-height', '0', 'important');
   const actions = document.createElement('div');
   actions.className = 'chat-message-edit-actions';
-  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap;';
+  actions.style.cssText = 'position:absolute;top:calc(100% + 4px);right:0;z-index:20;display:flex;justify-content:flex-end;gap:6px;padding:4px;flex-wrap:wrap;background:var(--ui-popup-bg,var(--bg2));border:1px solid var(--border);border-radius:4px;';
   const cancel = document.createElement('button');
   cancel.type = 'button';
   cancel.className = 'chat-message-edit-cancel';
@@ -811,12 +844,12 @@ function chatEditUserMessage(index) {
 }
 
 function chatAddMessage(role, content, options = {}) {
-  const container = _chatLiveMessagesContainer();
+  const container = options.container || _chatLiveMessagesContainer();
   if (!container) return null;
   container.querySelectorAll('.chat-empty-placeholder').forEach(el => el.remove());
   const isControl = options?.origin === 'meldex-control';
   const isUser = role === 'user' && !isControl;
-  const shouldScrollAfterAppend = _chatShouldStickToBottom(container, options?.forceScroll === true || (isUser && options?.forceScroll !== false));
+  const shouldScrollAfterAppend = !options.deferScroll && _chatShouldStickToBottom(container, options?.forceScroll === true || (isUser && options?.forceScroll !== false));
   const isQueued = !!options?.queued_for_next_response;
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
@@ -1086,6 +1119,7 @@ function _chatToolMutationPaths(parsed) {
   const values = [];
   const add = value => { if (typeof value === 'string' && value.trim()) values.push(value.trim()); };
   ['path', 'old_path', 'new_path', 'target_path', 'db_path'].forEach(key => add(parsed[key]));
+  for (const path of Array.isArray(parsed.path_aliases) ? parsed.path_aliases : []) add(path);
   for (const row of Array.isArray(parsed.changes) ? parsed.changes : []) {
     add(row?.old_path || row?.source);
     add(row?.new_path || row?.destination);
@@ -1093,7 +1127,7 @@ function _chatToolMutationPaths(parsed) {
   return [...new Set(values)];
 }
 
-const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'batch_rename', 'batch_rename_undo', 'batch_rename_redo', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
+const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'sheet_domain_mutate', 'sheet_property_rename', 'topic_mutate', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'batch_rename', 'batch_rename_undo', 'batch_rename_redo', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
 const CHAT_NONEMPTY_RESULT_TOOLS = new Set(['search', 'search_knowledge', 'llm_list_ui_controls']);
 
 function _chatToolResultHasMatches(parsed) {
@@ -1137,6 +1171,16 @@ function _chatClaimsMutation(text) {
 }
 
 function _chatToolTruthAudit(assistantText, latestUserText, toolEvents) {
+  const failedWrites = (Array.isArray(toolEvents) ? toolEvents : [])
+    .filter(event => CHAT_WRITE_VERIFY_TOOLS.has(String(event?.name || '')) && !_chatToolEventSucceeded(event));
+  if (failedWrites.length) {
+    const reasons = failedWrites.slice(0, 3).map(event => {
+      const result = _parseChatToolResult(event.result);
+      const reason = result?.message || result?.error || String(event.result || '操作を保存できませんでした');
+      return event.name + ': ' + (typeof reason === 'string' ? reason : JSON.stringify(reason)).slice(0, 240);
+    });
+    return '保存に失敗した操作があります。操作は完了していません。\n' + reasons.join('\n');
+  }
   const assistant = String(assistantText || '');
   const user = String(latestUserText || '');
   if (!assistant.trim()) return '';

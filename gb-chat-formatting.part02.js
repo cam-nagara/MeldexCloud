@@ -366,6 +366,12 @@
       const editor = _chatRichInput();
       return input && editor && input.id === 'chat-input' ? editor : input;
     },
+    replaceInputSource: (text) => {
+      const input = _chatInput();
+      if (!input) return false;
+      const source = String(input.value || ''), next = String(text || '');
+      return _applyRichInputSourceEdit(source, next, source.length, source.length, next.length, next.length);
+    },
     insertText: (text) => _insertSourceTextAtRichSelection(text),
     copyHistoryText: (range) => _chatCopyHistoryText(range),
     close: _closePopup,

@@ -174,8 +174,12 @@
   function _safeTrashRestoreRelativePath(rawPath) {
     const raw = String(rawPath || '').trim().replace(/\\/g, '/');
     const segments = raw.split('/');
-    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
-      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const chatIndex = segments.indexOf('_chat');
+    const chatDocument = chatIndex >= 0 && segments.length === chatIndex + 4
+      && segments[chatIndex + 1] === 'llm' && /\.md$/i.test(segments[segments.length - 1]);
+    if (!raw || raw.startsWith('/') || segments.some((segment, index) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.')
+      || (segment.startsWith('_') && !(chatDocument && index >= chatIndex)))) throw _invalidTrashRestorePath();
     const normalized = _normalizeFolderPath(raw);
     if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
     return normalized;

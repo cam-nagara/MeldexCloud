@@ -2,6 +2,18 @@
 
 let _bdRenderNodeE2ESeq = 0;
 
+function bdCollapsedGroupNodeIds(groups) {
+  const active = Array.isArray(groups) ? groups : (typeof bd !== 'undefined' ? bd.groups || [] : []);
+  const hidden = new Set();
+  active.filter(group => group.collapsed).forEach(group => {
+    (group.nodeIds || []).forEach(id => {
+      hidden.add(id);
+      if (typeof bdDescendants === 'function') bdDescendants(id).forEach(child => hidden.add(child));
+    });
+  });
+  return hidden;
+}
+
 function bdCreateRenderContext(options = {}) {
   const hiddenIds = options.hiddenIds instanceof Set ? options.hiddenIds : new Set();
   if (!(options.hiddenIds instanceof Set) && typeof bd !== 'undefined') {
@@ -20,6 +32,8 @@ function bdCreateRenderContext(options = {}) {
       }
     });
   }
+  // 全描画と差分描画で同じ判定を使い、別グループに属する子も早まって再表示しない。
+  bdCollapsedGroupNodeIds().forEach(id => hiddenIds.add(id));
   const drillRoot = options.drillRoot !== undefined
     ? options.drillRoot
     : ((typeof _bdDrillRoot !== 'undefined' && _bdDrillRoot) ? _bdDrillRoot : '');
@@ -344,7 +358,7 @@ function bdAppendNodeHuds(div, node, opts) {
   if (opts.showStatus && !opts.fastCardRender) bdAppendStatusHud(div, node);
   if (opts.showMarkers && typeof BD_MARKERS !== 'undefined') bdAppendMarkerHud(div, node);
   if (!opts.fastCardRender) bdAppendCommentHud(div, node);
-  if (node.link || node.imageSourcePath || node.img) bdAppendLinkBadge(div, node, opts.showStatus);
+  if (node.link || node.imageSourcePath || node.img) bdAppendLinkBadge(div, node, opts.showLinkBadges);
   if (opts.showMenuButtons) bdAppendCardMenuButton(div, node);
 }
 
@@ -673,7 +687,7 @@ function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
   return _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc);
 }
 
-function bdAppendLinkBadge(div, node, showStatus) {
+function bdAppendLinkBadge(div, node, showLinkBadges = true) {
   const resolved = typeof MeldexBoardOpenTarget !== 'undefined'
     ? MeldexBoardOpenTarget.resolve(node)
     : {
@@ -721,7 +735,7 @@ function bdAppendLinkBadge(div, node, showStatus) {
       bdOpenLinkedPath(resolved.path, resolved.label, { linkType: resolved.linkType });
     }
   });
-  bdAppendLinkOpenButton(div, node, resolved);
+  if (showLinkBadges) bdAppendLinkOpenButton(div, node, resolved);
   const showLinkTooltip = () => {
     if (node.link && typeof _showLinkTooltip === 'function') _showLinkTooltip(div, node.link, node.linkType);
   };
@@ -872,7 +886,14 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   const txt = document.createElement('div');
   txt.className = 'bd-text';
   const numPrefix = (typeof _bdGetNumber === 'function') ? _bdGetNumber(node.id) : '';
-  const rawText = (node.img && !options.showImageNames) ? '' : (node.minimized ? String(node.text || '').split('\n')[0] : node.text);
+  // 画像ドロップで本文を持たない既存カードも、表示だけ保存先のファイル名で補う。
+  // 元の本文・リンク先は変更しない（非表示と再表示で文書を変えない）。
+  const imagePath = node.img
+    ? (typeof bdImageNodeLinkPath === 'function' ? bdImageNodeLinkPath(node) : (node.imageSourcePath || node.link || ''))
+    : '';
+  const imageName = String(imagePath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+  const sourceText = node.text || (node.img ? imageName : '');
+  const rawText = (node.img && !options.showImageNames) ? '' : (node.minimized ? String(sourceText).split('\n')[0] : sourceText);
   const displayText = numPrefix + (rawText || '');
   const findBar = document.getElementById('bd-find-bar');
   const findActive = !!(findBar && findBar.style.display !== 'none' && bd?._findQuery

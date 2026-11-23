@@ -142,11 +142,21 @@
     if (clipMode === 'cut') return false;
     if (isFolderPasteLinkChoiceSuppressed()) return false;
     if (!items || !items.length || !destFolder) return false;
-    const normDest = _normalizePath(destFolder);
+    const folderKey = path => {
+      let key = _normalizePath(path);
+      const vault = _normalizePath(typeof state !== 'undefined' ? state.vaultPath : '');
+      // Windowsの保存先に限って相対表記を解決する。Cloudの仮想ルート・別の共有領域を末尾だけで同一視しない。
+      if (/^(?:[a-z]:\/|\/\/)/i.test(vault)) {
+        if (key && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(key)) key = vault + '/' + key;
+        if (/^(?:[a-z]:\/|\/\/)/i.test(key)) key = key.toLowerCase();
+      }
+      return key;
+    };
+    const normDest = folderKey(destFolder);
     // 同一フォルダ内への貼り付け（複製）はダイアログを出さず通常コピー
     const allSameFolder = items.every(item => {
       const parent = _normalizePath(item.parent || (item.path ? item.path.split(/[\\/]/).slice(0, -1).join('/') : ''));
-      return parent === normDest;
+      return folderKey(parent) === normDest;
     });
     if (allSameFolder) return false;
     return true;
@@ -290,6 +300,10 @@
       // choice === 'copy' の場合は通常コピー処理へ進む
     }
 
+    const reservation = typeof historyReserve === 'function'
+      ? historyReserve(mode === 'cut' ? 'フォルダ: 切り取り貼り付け' : 'フォルダ: コピー貼り付け', '') : null;
+    const pendingPreviews = new Map();
+    try {
     // cut または copy の実行
     const pastedPaths = [];
     const failed = [];
@@ -302,6 +316,24 @@
       { delayMs: 0, kind: mode === 'cut' ? 'file-move' : 'file-copy' },
     );
     let processed = 0;
+
+    // 複数移動でも、最初の保存を待つ前に全対象を操作中の表示へ移す。
+    if (mode === 'cut') for (const item of items) {
+      const parent = item.parent || (typeof _folderToolbarParentPath === 'function' ? _folderToolbarParentPath(item.path) : '');
+      const destination = typeof _folderToolbarNormalizePath === 'function' ? _folderToolbarNormalizePath(destFolder) : destFolder;
+      if (parent === destination || (typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path))) continue;
+      if (typeof isItemLocked === 'function' && isItemLocked(item.path)) continue;
+      if (typeof _outlinerAwaitPendingRename === 'function') await _outlinerAwaitPendingRename(item);
+      const finishPanel = typeof _folderStagePasteMove === 'function' ? _folderStagePasteMove(item, destFolder) : () => {};
+      const node = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(item.path) : null;
+      const parentNode = typeof _folderVisibleOutlinerChildren === 'function' ? _folderVisibleOutlinerChildren(destFolder) : null;
+      const finishTree = node && typeof _stageOutlinerMovePreview === 'function'
+        ? _stageOutlinerMovePreview(node, parentNode || document.createDocumentFragment(), destFolder) : () => {};
+      pendingPreviews.set(item, () => {
+        if (!pendingPreviews.has(item)) return;
+        pendingPreviews.delete(item); finishTree(true); finishPanel();
+      });
+    }
 
     for (const item of items) {
       try {
@@ -321,11 +353,13 @@
             continue;
           }
           const oldPath = item.path;
-          const res = await apiPost('/outliner/move', {
-            path: item.path,
-            dest_folder: destFolder,
-            conflict_policy: 'error',
-          });
+          const finishPending = pendingPreviews.get(item) || (() => {});
+          let res;
+          try {
+            res = await apiPost('/outliner/move', {
+              path: item.path, dest_folder: destFolder, conflict_policy: 'error',
+            });
+          } finally { finishPending(); }
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { preserveMountedViews: true, label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
           } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
@@ -337,11 +371,20 @@
           if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(executedMoves.slice(-1));
           if (typeof _outlinerApplyCommittedMove === 'function') _outlinerApplyCommittedMove(oldPath, newPath, res?.new_name || item.name, res?.file_id);
         } else {
-          const res = await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
+          const res = typeof _outlinerPostCopyWithPreview === 'function'
+            ? await _outlinerPostCopyWithPreview('/outliner/save-as', { path: item.path, dest_folder: destFolder }, item, options)
+            : await apiPost('/outliner/save-as', { path: item.path, dest_folder: destFolder });
           const newPath = res?.new_path || '';
           if (newPath) {
             pastedPaths.push(newPath);
             executedCopies.push({ origPath: item.path, newPath, applied: true, item });
+            try {
+              if (typeof _folderApplySavedDropResults === 'function') {
+                _folderApplySavedDropResults(destFolder, [{ item: {
+                  path: newPath, name: res?.new_name || item.name, type: item.type,
+                } }], []);
+              }
+            } catch (error) { console.warn('[paste] 保存済みの表示反映に失敗', error); }
           }
         }
       } catch (_) {
@@ -363,11 +406,12 @@
       } else if (typeof _folderToolbarClipboard !== 'undefined') {
         _folderToolbarClipboard = failed.length ? { mode: 'cut', items: failed } : null;
       }
-      registerFileMoveHistory(executedMoves, {
+      const registerMoves = () => registerFileMoveHistory(executedMoves, {
         ...options,
         label: 'フォルダ: 切り取り貼り付け',
         detail: `${executedMoves.length} 件 → ${destFolder}`,
       });
+      if (reservation) reservation.capture(registerMoves); else registerMoves();
     } else {
       if (executedCopies.length && typeof historyPush === 'function') {
         const copyUndo = () => replayHistoryItems(executedCopies, false, async c => {
@@ -381,7 +425,8 @@
             : await apiPost('/outliner/save-as', { path: c.origPath, dest_folder: destFolder });
           c.newPath = result?.restored_path || result?.new_path || c.newPath;
         }, options);
-        historyPush('フォルダ: コピー貼り付け', copyUndo, copyRedo, '', `${executedCopies.length} 件 → ${destFolder}`);
+        const registerCopies = () => historyPush('フォルダ: コピー貼り付け', copyUndo, copyRedo, '', `${executedCopies.length} 件 → ${destFolder}`);
+        if (reservation) reservation.capture(registerCopies); else registerCopies();
       }
     }
 
@@ -396,6 +441,10 @@
       if (typeof showStatus === 'function') showStatus('同じフォルダへの移動のため、変更はありません');
     }
     if (typeof updateFolderToolbarActions === 'function') updateFolderToolbarActions();
+    } finally {
+      [...pendingPreviews.values()].reverse().forEach(finish => finish());
+      reservation?.cancel();
+    }
   }
 
   async function materializeFolderLinkWithHistory(filePath, folderPath, options = {}) {

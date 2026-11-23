@@ -74,10 +74,9 @@
   function setDefaultTarget(value) {
     const target = value === 'float' || value === 'sidebar' ? 'right-sidebar' : (VALID_TARGETS.has(value) ? value : 'right-sidebar');
     if (global.MeldexBoardOpenTarget?.setDefault) {
-      global.MeldexBoardOpenTarget.setDefault(target);
-      return;
+      return global.MeldexBoardOpenTarget.setDefault(target) !== false;
     }
-    try { global.localStorage?.setItem(STORAGE_KEY, target); } catch {}
+    try { global.localStorage?.setItem(STORAGE_KEY, target); return true; } catch { return false; }
   }
 
   function getSelectAutoSubpanelEnabled() {
@@ -95,10 +94,9 @@
   function setSelectAutoSubpanelEnabled(value) {
     const next = value !== false;
     if (typeof global.MeldexBoardSelectAutoSubpanel?.setEnabled === 'function') {
-      global.MeldexBoardSelectAutoSubpanel.setEnabled(next);
-      return;
+      return global.MeldexBoardSelectAutoSubpanel.setEnabled(next) !== false;
     }
-    try { global.localStorage?.setItem(SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0'); } catch {}
+    try { global.localStorage?.setItem(SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0'); return true; } catch { return false; }
   }
 
   function availableTargets() {
@@ -157,11 +155,19 @@
 
   function bindSettings(host) {
     host.querySelector('[data-bd-default-open-target]')?.addEventListener('change', event => {
-      setDefaultTarget(event.currentTarget.value);
+      if (!setDefaultTarget(event.currentTarget.value)) {
+        event.currentTarget.value = getDefaultTarget();
+        global.showStatus?.('ファイルを開く場所を保存できません。この端末の保存領域を確認してください', true);
+        return;
+      }
       if (typeof global.showStatus === 'function') global.showStatus('ファイルを開く場所を保存しました');
     });
     host.querySelector('[data-bd-select-auto-subpanel]')?.addEventListener('change', event => {
-      setSelectAutoSubpanelEnabled(!!event.currentTarget.checked);
+      if (!setSelectAutoSubpanelEnabled(!!event.currentTarget.checked)) {
+        event.currentTarget.checked = getSelectAutoSubpanelEnabled();
+        global.showStatus?.('選択時の表示設定を保存できません。この端末の保存領域を確認してください', true);
+        return;
+      }
       if (typeof global.showStatus === 'function') global.showStatus('選択時の表示設定を保存しました');
     });
   }

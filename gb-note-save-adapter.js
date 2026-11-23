@@ -88,16 +88,21 @@
     _loadedBaselines.delete(hostEl);
     hostEl._noteEditSerializeCache = null;
     _loadedBaselines.set(hostEl, { source, serialized: serialize(hostEl),
+      frontmatter: hostEl.dataset.frontmatter || '',
       path: hostEl.dataset.path, loadSeq: hostEl._openPageLoadSeq });
   }
 
   function preserveLoadedMarkdown(hostEl, serialized) {
     const loaded = _loadedBaselines.get(hostEl);
-    return loaded && loaded.path === hostEl.dataset.path && loaded.loadSeq === hostEl._openPageLoadSeq
-      && loaded.serialized === serialized ? loaded.source : serialized;
+    if (!loaded || loaded.path !== hostEl.dataset.path || loaded.loadSeq !== hostEl._openPageLoadSeq) return serialized;
+    const beforePrefix = loaded.frontmatter;
+    const prefix = hostEl.dataset.frontmatter || '';
+    if (!loaded.source.startsWith(beforePrefix) || !loaded.serialized.startsWith(beforePrefix)) return serialized;
+    return prefix + loaded.serialized.slice(beforePrefix.length) === serialized
+      ? prefix + loaded.source.slice(beforePrefix.length) : serialized;
   }
 
-  function isUnchanged(hostEl, md) {
+  function isUnchanged(hostEl, md, options = {}) {
     const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
     const coordinator = _coordinator();
     const key = hostEl?.dataset?.documentKey || documentKeyForPath(hostEl?.dataset?.path || '');
@@ -105,8 +110,15 @@
     // An unchanged sibling must not submit its old copy over another host's edit.
     const loaded = _loadedBaselines.get(hostEl);
     const matchesLoaded = loaded?.source === prevSaved && md === loaded.serialized;
+    const uncertain = _uncertainSaves.get(hostEl)?.get(hostEl?.dataset?.path || '');
+    const retry = options.retrySave;
+    // A failed history save keeps its original guarded payload for recovery.
+    // Only that exact request may retry; ordinary saves and newer drafts remain blocked.
+    const sameRetry = !!(uncertain && retry && typeof retry.if_match_etag === 'string' && retry.if_match_etag
+      && uncertain.md === retry.content && uncertain.payload.if_match_etag === retry.if_match_etag
+      && uncertain.payload.expected_content === retry.expected_content);
     return (md === prevSaved || matchesLoaded) && !coordinator?.hasUnsettledSaveFrom?.(key, hostEl)
-      && !_uncertainSaves.get(hostEl)?.has(hostEl?.dataset?.path || '');
+      && (!uncertain || sameRetry);
   }
 
   // 文書単位のarbiterへ「このホストは今この文書を表示している」ことだけを
@@ -524,9 +536,16 @@
         uncertainSaves.delete(path);
         previousResult = Object.assign({}, recovered, { savedMd:
           typeof recovered?.saved_frontmatter === 'string'
-            ? recovered.saved_frontmatter + uncertainSave.md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+            ? recovered.saved_frontmatter + uncertainSave.md.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
             : uncertainSave.md,
         });
+        // A revision-pinned external undo can retry the very same operation.
+        // Its recovered ACK already confirms that write; sending it again with
+        // the original pinned revision would reject our own committed result.
+        if (uncertainSave.md === md && options.extra?.if_match_etag
+            && options.extra.if_match_etag === uncertainSave.payload.if_match_etag) {
+          return previousResult;
+        }
       }
       const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
       const revisionForWrite = chainedRevision

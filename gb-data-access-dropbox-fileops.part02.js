@@ -22,7 +22,7 @@
       const items = _sortBrowseItems(folders, sort, order).concat(_sortBrowseItems(files, sort, order));
       const existing = new Set(items.map((item) => item.path));
       const folderLinks = await _folderLinksForProvider(provider);
-      for (const linked of _linkedItemsForFolder(browsePath, folderLinks)) {
+      for (const linked of _linkedItemsForFolder(browsePath, folderLinks, path => _folderLinkPathKey(provider, path))) {
         signal?.throwIfAborted();
         if (existing.has(linked.path)) continue;
         const entry = await _resolveEntryHandle(provider, linked.path);
@@ -71,13 +71,15 @@
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       // include_videos=1 はビューワーのフォルダ内前後移動用（サーバー版 /api/images-in-folder と同じ拡張子集合）
       const includeVideos = url.searchParams.get('include_videos') === '1';
-      const videoExts = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
+      const videoExts = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v', '.ogv']);
+      const includeAudio = url.searchParams.get('include_audio') === '1';
+      const audioExts = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
       const entries = await _listDirectoryEntries(provider, targetPath);
       const items = [];
       for (const entry of entries) {
         if (entry.handle.kind !== 'file') continue;
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext))) continue;
+        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext)) && !(includeAudio && audioExts.has(ext))) continue;
         const itemPath = entry.path || _joinPath(targetPath, entry.name);
         const stats = await _fileStats(entry.handle);
         items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
@@ -106,6 +108,10 @@
         };
       }
       const snapshot = await _readFileSnapshot(provider, filePath, entry);
+      if (_boolParam(url.searchParams.get('raw_text'))) {
+        const content = new TextDecoder('utf-8', { fatal:true, ignoreBOM:true }).decode(snapshot.bytes);
+        return {path:filePath,content,...await _fileIdentityAndRevision(provider,filePath,entry,snapshot.etag,null,content)};
+      }
       if (/\.csv$/i.test(filePath)) {
         const bytes = snapshot.bytes;
         const view = new Uint8Array(bytes);
@@ -131,7 +137,9 @@
         };
       }
       const etag = snapshot.etag;
-      const content = new TextDecoder().decode(snapshot.bytes);
+      const isNote = /\.md$/i.test(filePath);
+      const raw = new TextDecoder('utf-8', { ignoreBOM: isNote }).decode(snapshot.bytes);
+      const content = isNote ? raw.replace(/\r\n?/g, '\n') : raw;
       return {
         path: filePath,
         content,
@@ -188,12 +196,27 @@
           throw error;
         }
       }
-      const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
+      const isNote = /\.md$/i.test(filePath);
+      const currentContent = snapshot ? new TextDecoder('utf-8', { ignoreBOM: isNote }).decode(snapshot.bytes) : '';
+      const currentViewContent = isNote ? currentContent.replace(/\r\n?/g, '\n') : currentContent;
+      if (/\.mel-map$/i.test(filePath)) {
+        // Validate both sides before preparing history or uploading. Unknown future
+        // formats must never be silently overwritten by an older Cloud client.
+        const map = window.MeldexMapDocument;
+        if (!map?.parse) throw new Error('マップの保存検査を読み込めませんでした');
+        try {
+          map.parse(content);
+          if (currentContent) map.parse(currentContent);
+        } catch (error) {
+          error.status = 422; error.code = 'invalid_map_document'; error.meldexCode = 'invalid_map_document';
+          throw error;
+        }
+      }
       if (!body?._file_icon_write && window.MeldexFileIcons) {
-        content = window.MeldexFileIcons.preserve(content, currentContent, filePath);
+        content = window.MeldexFileIcons.preserve(content, currentViewContent, filePath);
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const storedTitle = titleHelper?.read(currentContent, filePath);
+      const storedTitle = titleHelper?.read(currentViewContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
         content = titleHelper.write(content, body?.display_title || storedTitle, filePath);
       }
@@ -203,10 +226,10 @@
       if (incomingIdentityFmt) {
         let existingDocumentId = '';
         if (entry) {
-          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
+          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentViewContent);
           docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
           existingDocumentId = String(
-            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentViewContent, docIdentityFmt)
             || '',
           );
         }
@@ -218,7 +241,8 @@
           ).text;
         }
       }
-      const canonical = value => String(value).replace(/\r\n/g, '\n');
+      if (entry && isNote) content = _preserveNoteTextFormat(content, currentContent);
+      const canonical = value => isNote ? String(value).replace(/\r\n?/g, '\n') : String(value).replace(/\r\n/g, '\n');
       if (entry && canonical(content) === canonical(currentContent)) {
         // A committed write may have lost its response. Acknowledge the exact
         // current snapshot without another upload or another history version.
@@ -227,6 +251,7 @@
           ok: true, unchanged: true,
           ...await _fileIdentityAndRevision(provider, filePath, entry, snapshot.etag, null, currentContent),
           ..._savedNoteMetadata(filePath, currentContent),
+          ...(body?.include_saved_content?{saved_content:currentContent}:{}),
         };
       }
       if (entry && expectedEtag && expectedEtag !== snapshot.etag) {
@@ -268,6 +293,7 @@
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
         ..._savedNoteMetadata(filePath, content),
+        ...(body?.include_saved_content?{saved_content:content}:{}),
         history_recorded: !historySyncPending,
         history_sync_pending: historySyncPending,
       };
@@ -471,7 +497,7 @@
       const now = _nowIso();
       const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
       await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id, created: record.created };
+      return { ok: true, id: record.id, created: record.created, modified: record.modified };
     }
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -502,6 +528,13 @@
       }
       return { ok: true, orphaned: directCount, cascade_orphaned: cascadeCount };
     }
+    if (pathname === '/annotation/screenshot-source' && method === 'GET') {
+      const provider=await _requirePwaProvider('read');
+      const path=url.searchParams.get('path')||'';
+      if(!/\.png$/i.test(path))return {source_link:null};
+      const file=await provider.downloadAsFile(path);
+      return {source_link:window.GBScreenshotPng.read(new Uint8Array(await file.arrayBuffer()))};
+    }
     if (pathname === '/annotation/screenshot' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
@@ -515,8 +548,10 @@
       const ts = _versionTimestamp();
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
-      const screenshotBytes = _decodeUploadData(dataUrl);
+      let screenshotBytes = _decodeUploadData(dataUrl);
       const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
+      const sourceLink=window.GBScreenshotPng.validate(body?.source_link,sourceTarget);
+      if(sourceLink)screenshotBytes=window.GBScreenshotPng.embed(screenshotBytes,sourceLink);
       const annotationTarget = sourceTarget || targetPath;
       // アノテートrecordはbytes publish前に確定させ、identity claimと同じ
       // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
@@ -525,13 +560,14 @@
       const annRecord = _mergeAnnotationRecord(null, {
         type: 'screenshot',
         target_path: annotationTarget,
-        user: (typeof _currentUserName !== 'undefined' && _currentUserName) ? _currentUserName : 'local',
+        user: _currentUserName(body),
         data: {
           path: targetPath,
           mode: String(body?.mode || ''),
           width: body?.width || null,
           height: body?.height || null,
           source_file: sourceTarget ? _basename(sourceTarget) : null,
+          ...(sourceLink?{source_link:sourceLink}:{}),
         },
       }, { id: _randomId('ann'), now: _nowIso() });
       const prepared = await imageAftercare.prepare(provider, targetPath, screenshotBytes, {
@@ -560,18 +596,23 @@
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
       const existing = await _readAnnotationRecord(provider, id);
       if (!existing) throw new Error('アノテートが見つかりません');
+      const modified = existing.modified || existing.modified_at || existing.created || existing.created_at || '';
+      if (body?.expected_modified && modified !== body.expected_modified) {
+        const error = new Error('他の画面で更新されたためアノテートを変更できません');
+        error.status = 409; throw error;
+      }
       const updateBody = {};
       ANNOTATION_UPDATE_KEYS.forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(body || {}, key)) updateBody[key] = body[key];
       });
       const record = _mergeAnnotationRecord(existing, updateBody, { id, now: _nowIso() });
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true };
+      await _writeAnnotationRecord(provider, record, { expectedModified: modified });
+      return { ok: true, modified: record.modified };
     }
     if (/^\/annotations\/[^/]+$/.test(pathname) && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
-      await _deleteAnnotationRecordFully(provider, id);
+      await _deleteAnnotationRecordFully(provider, id, { expectedModified: url.searchParams.get('expected_modified') || '' });
       return { ok: true };
     }
 
@@ -618,6 +659,7 @@
       const actor = _versionActor(url, body);
       return _saveFolderVersion(provider, body?.path || '', {
         label: body?.label || '', auto: !!body?.auto,
+        include_annotations: !!body?.include_annotations,
         metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
       });
     }
@@ -697,7 +739,7 @@
           || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
+      const managed = ['page','board','database','calendar','scriptnote','form-app','map'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
@@ -780,6 +822,16 @@
           throw error;
         }
         return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
+      if (type === 'map') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-map');
+        const targetPath = _joinPath(parent, labelName + '.mel-map');
+        if (typeof internals._requireUnlockedPath !== 'function') throw new Error('編集ロックを確認できません');
+        await internals._requireUnlockedPath(provider, parent, { action: 'outliner-add-parent' });
+        await internals._requireUnlockedPath(provider, targetPath, { action: 'outliner-add-map' });
+        const doc = window.MeldexMapDocument.create(shown(labelName));
+        await createText(targetPath, titled(JSON.stringify(doc, null, 2), targetPath));
+        return { ok: true, node: { type: 'map', label: shown(labelName), path: targetPath } };
       }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');

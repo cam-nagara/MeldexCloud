@@ -155,7 +155,7 @@
     });
     const save = app._button('ZIPを保存', async () => {
       if (busy || !plan || !current()) return;
-      setBusy(true);
+      setBusy(true); status.textContent = '書き出しています…';
       try {
         const blob = await build(plan, async name => {
           const response = await fetch(new URL(name, document.baseURI), { signal: controller.signal });

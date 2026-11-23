@@ -397,17 +397,35 @@
     return { adapter, record, payload: record?.payload || null };
   }
 
-  async function _writeManagementPayload(provider, kind, documentId, updater, retries = 5) {
-    const adapter = await _managementAdapter(provider, kind);
+  async function _writeManagementPayload(provider, kind, documentId, updater, retries = 5, writeSession = null) {
+    let adapter = await _managementAdapter(provider, kind);
+    let session = null;
+    if (writeSession) {
+      const description = await adapter.describe?.();
+      const account = await window.MeldexDropboxAuth?.getCurrentAccount?.(false);
+      if (description && account?.account_id) {
+        const scope = JSON.stringify([account.account_id, description.boundary, description.management_root, description.namespace_kind, kind, documentId]);
+        if (writeSession.scope && (writeSession.scope !== scope || writeSession.provider !== provider)) {
+          throw new Error('複製中に保存先またはアカウントが変わったため停止しました');
+        }
+        if (!writeSession.scope) Object.assign(writeSession, { scope, provider, adapter });
+        adapter = writeSession.adapter;
+        session = writeSession;
+      } else if (writeSession.scope) throw new Error('複製中の保存先またはアカウントを確認できません');
+    }
     let lastError = null;
     for (let attempt = 0; attempt < retries; attempt += 1) {
-      const current = await adapter.load(kind, documentId);
-      const next = updater(current?.payload || null);
+      const current = session?.record || await adapter.load(kind, documentId);
+      const next = await updater(current?.payload || null);
       try {
-        return await adapter.save(kind, documentId, next, {
+        const saved = await adapter.save(kind, documentId, next, {
           expectedRevision: current?.revision ?? null,
+          baseRecord: current,
         });
+        if (session) session.record = saved;
+        return saved;
       } catch (error) {
+        if (session) delete session.record;
         lastError = error;
         if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
       }
@@ -635,16 +653,40 @@
       const id = String(record?.operation_id || '').trim();
       const operation = String(record?.operation || '');
       const state = String(record?.state || '');
-      if (!id || ids.has(id) || !['duplicate', 'save-as'].includes(operation)
-          || !['prepared', 'completed'].includes(state)
+      const image = operation === 'created-cloud-image-identity';
+      const states = image ? ['awaiting_proof', 'prepared', 'completed', 'failed'] : ['prepared', 'completed'];
+      if (!id || ids.has(id) || !['duplicate', 'save-as', 'created-cloud-image-identity'].includes(operation)
+          || !states.includes(state)
           || !/^[a-f0-9]{64}$/.test(String(record?.fingerprint || ''))
           || typeof record?.scope_id !== 'string' || !record.scope_id
           || !record?.intent || typeof record.intent !== 'object' || Array.isArray(record.intent)
           || typeof record.saved_at !== 'string') {
         throw new Error('ファイル操作の再試行履歴が破損しています');
       }
+      if (image) {
+        const intent = record.intent;
+        const proof = state === 'prepared' || state === 'completed';
+        if (intent.identity_kind !== 'asset'
+            || typeof intent.source_locator !== 'string' || !intent.source_locator
+            || !/^[a-f0-9]{32}$/.test(String(intent.portable_uid || ''))
+            || !/^[a-f0-9]{64}$/.test(String(intent.expected_sha256 || ''))
+            || !['awaiting_proof', 'proof_ready'].includes(intent.operation_state)
+            || (proof && (intent.operation_state !== 'proof_ready'
+              || typeof intent.provider_id !== 'string' || !intent.provider_id
+              || typeof intent.provider_rev !== 'string' || !intent.provider_rev
+              || intent.sha256 !== intent.expected_sha256))
+            || (state === 'awaiting_proof' && intent.operation_state !== 'awaiting_proof')
+            || (state === 'failed' && (typeof record.failure_reason !== 'string' || !record.failure_reason))) {
+          throw new Error('Cloud画像の再試行履歴が破損しています');
+        }
+      }
       if (state === 'completed' && (!record.result || record.result.ok !== true
-          || record.result.operation_id !== id || typeof record.result.new_path !== 'string')) {
+          || record.result.operation_id !== id
+          || (image ? (record.result.path !== record.intent.source_locator
+            || record.result.portable_uid !== record.intent.portable_uid
+            || record.result.provider_id !== record.intent.provider_id
+            || record.result.provider_rev !== record.intent.provider_rev)
+            : typeof record.result.new_path !== 'string'))) {
         throw new Error('ファイル操作の保存結果が破損しています');
       }
       ids.add(id);
@@ -673,12 +715,12 @@
     return _folderLinksStore();
   }
 
-  async function _readFolderLinksManaged(provider) {
+  async function _readFolderLinksManaged(provider, documentId = FOLDER_LINKS_DOCUMENT_ID) {
     const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
     if (!provider || !kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
-    const managed = await _readManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID);
+    const managed = await _readManagementPayload(provider, kind, documentId);
     const current = managed.payload;
-    if (!current) return { links: await _readFolderLinks(provider), requests: [], outliner_operations: [] };
+    if (!current) return { links: documentId === FOLDER_LINKS_DOCUMENT_ID ? await _readFolderLinks(provider) : [], requests: [], outliner_operations: [] };
     const currentRaw = Array.isArray(current) ? current : current?.links;
     return {
       links: _validateManagedFolderLinks(currentRaw),
@@ -687,13 +729,13 @@
     };
   }
 
-  async function _updateFolderLinksManaged(provider, updater) {
+  async function _updateFolderLinksManaged(provider, updater, documentId = FOLDER_LINKS_DOCUMENT_ID, writeSession = null) {
     const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
     if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
     let committed = null;
-    const fallbackLinks = await _readFolderLinks(provider);
-    await _writeManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID, (current) => {
-      const currentRaw = current == null ? fallbackLinks
+    await _writeManagementPayload(provider, kind, documentId, async (current) => {
+      // 旧形式は対象の管理文書が無い時だけ読み、保存時の最新版との照合を保つ。
+      const currentRaw = current == null ? (documentId === FOLDER_LINKS_DOCUMENT_ID ? await _readFolderLinks(provider) : [])
         : (Array.isArray(current) ? current : current?.links);
       const state = {
         links: _validateManagedFolderLinks(currentRaw),
@@ -715,8 +757,8 @@
         requests: committed.requests,
         outliner_operations: committed.outliner_operations,
       };
-    }, 5);
-    _writeFolderLinksStore(committed.links);
+    }, 5, writeSession);
+    if (documentId === FOLDER_LINKS_DOCUMENT_ID) _writeFolderLinksStore(committed.links);
     return committed;
   }
 
@@ -1052,9 +1094,18 @@
     return rows;
   }
 
-  function _linkedItemsForFolder(folderPath, links) {
-    const normalizedFolder = _normalizeFolderPath(folderPath);
-    return _normalizeFolderLinks(links || _folderLinksStore()).filter((link) => link.folder_path === normalizedFolder).map((link) => ({
+  function _folderLinkPathKey(provider, path) {
+    if (!provider?._dropboxLocation) return _normalizeFolderPath(path);
+    try {
+      const location = provider._dropboxLocation(path);
+      if (!location?.path) return '';
+      return `${location.namespaceKind || 'home'}:${_normalizeFolderPath(location.path).toLowerCase()}`;
+    } catch (_) { return ''; }
+  }
+
+  function _linkedItemsForFolder(folderPath, links, pathKey = _normalizeFolderPath) {
+    const normalizedFolder = pathKey(folderPath);
+    return _normalizeFolderLinks(links || _folderLinksStore()).filter((link) => normalizedFolder && pathKey(link.folder_path) === normalizedFolder).map((link) => ({
       file_id: link.file_id || _fnvFileId(link.path),
       path: link.path,
       name: _displayLabelForPath(link.path, ''),

@@ -479,7 +479,11 @@
 
     // Escape
     _keyListener = (ev) => {
-      if (ev.key === 'Escape' && _popup) closePopup();
+      if (ev.key !== 'Escape' || !_popup || ev.defaultPrevented || ev.isComposing) return;
+      // The field or the foreground popup owns this Escape; keep its dock open.
+      if (ev.__meldexMenuOpenAtKeydown || _isPopupOwnedFloatingElement(ev.target)
+        || ev.target?.matches?.('.gb-search-filter-input') && ev.target.value) return;
+      closePopup();
     };
     document.addEventListener('keydown', _keyListener, true);
 

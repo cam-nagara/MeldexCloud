@@ -1,3 +1,6 @@
+      const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
+      if (_saCurrentTargetPath() !== targetPath) return;
+      if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
       else _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, res.id);
     } catch (error) { _saReportSaveFailure(error); }
     finally { _ann.path = []; _ann.pressures = []; _ann.targetPath = ''; }
@@ -575,7 +578,8 @@ function addLongPressHandler(el, handler, opts = {}) {
     timer = setTimeout(() => {
       timer = null;
       fired = true;
-      handler({
+      const contextEvent = {
+        meldexLongPress: true,
         clientX: startX,
         clientY: startY,
         target: touchStartEv?.target || el,
@@ -583,7 +587,10 @@ function addLongPressHandler(el, handler, opts = {}) {
         pointerType: touchStartEv?.pointerType || 'touch',
         preventDefault: () => {},
         stopPropagation: () => {},
-      });
+      };
+      const decorateAnnotations = window.GBAnnotationHighlights?.prepareMenu?.(contextEvent);
+      handler(contextEvent);
+      if (decorateAnnotations) setTimeout(decorateAnnotations, 0);
     }, DURATION);
   });
 

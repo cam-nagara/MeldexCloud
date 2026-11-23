@@ -243,6 +243,52 @@
     return true;
   }
 
+  // 作成した項目だけを加える。既存の表示行を取り外さず、索引と位置だけ更新する。
+  function insertItems(childrenDiv, newItems) {
+    var owner = _resolvedVirtualContainer(childrenDiv);
+    var state = owner && owner._virtualState;
+    if (!state) return false;
+    var parentPath = childrenDiv._virtualParentPath || null;
+    var target = _siblingListFor(state, parentPath).slice();
+    var known = new Set(target.map(function (item) { return item.path; }));
+    var added = (newItems || []).filter(function (item) { return item && item.path && !known.has(item.path); });
+    if (!added.length) return true;
+    target.push.apply(target, added);
+    var folderPath = parentPath || (state.folderItem && state.folderItem.path) || state.rootPath;
+    if (typeof getSortForFolder === 'function') {
+      var sort = getSortForFolder(folderPath);
+      if (sort.sort === 'manual' && typeof _sortItemsByManualOrder === 'function') target = _sortItemsByManualOrder(target, folderPath);
+      else if (typeof compareItemsForFolderSort === 'function') target.sort(function (a, b) { return compareItemsForFolderSort(a, b, sort.sort, sort.order); });
+    }
+    var oldFlat = state.flat, oldOffsets = state.offsets;
+    var anchor = oldFlat[state.rangeStart];
+    var beforeOffset = oldOffsets[state.rangeStart] || 0;
+    var mounted = Array.from(state.mountedByIndex.entries());
+    if (parentPath) state.childrenByParent.set(parentPath, target); else state.allItems = target;
+    added.forEach(function (item) { _pathToContainer.set(item.path, { childrenDiv: owner, state: state }); });
+    _rebuildModel(state);
+    var indices = new Map(state.flat.map(function (entry, index) { return [entry.id, index]; }));
+    var remapped = new Map();
+    mounted.forEach(function (pair) {
+      var index = indices.get(oldFlat[pair[0]].id), node = pair[1];
+      if (index === undefined) {
+        var currentFlat = state.flat;
+        state.flat = oldFlat;
+        try { _unmountRow(state, pair[0]); } finally { state.flat = currentFlat; }
+        return;
+      }
+      node.dataset.gbVirtualIndex = String(index);
+      node.style.top = state.offsets[index] + 'px';
+      remapped.set(index, node);
+    });
+    state.mountedByIndex = remapped;
+    owner.style.height = state.totalHeight + 'px';
+    var scroller = _scroller(), anchorIndex = anchor && indices.get(anchor.id);
+    if (scroller && anchorIndex !== undefined) scroller.scrollTop += (state.offsets[anchorIndex] || 0) - beforeOffset;
+    _remountVisible(owner);
+    return true;
+  }
+
   // 同一コンテナ内でのabove/below並べ替え（movedPaths を targetPath の前後へ移動）
   function reorderAround(childrenDiv, movedPaths, targetPath, position) {
     var owner = _resolvedVirtualContainer(childrenDiv);
@@ -496,6 +542,7 @@
     setDragExempt: setDragExempt,
     clearDragExempt: clearDragExempt,
     dropInto: dropInto,
+    insertItems: insertItems,
     removeFromContainer: removeFromContainer,
     removeMatchingPaths: removeMatchingPaths,
     reorderAround: reorderAround,

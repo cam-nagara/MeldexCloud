@@ -115,6 +115,14 @@
           } else if (data.type === 'client_tool_request') {
             showLiveActivityLog(data.name + ' を実行中...');
             await _chatHandleClientToolRequest(data, activityLog);
+          } else if (data.type === 'meldex_file_changed') {
+            try { window.meldexApplyLlmFileChange?.(data); }
+            catch (error) { showStatus('AIの変更を履歴へ反映できませんでした: ' + (error?.message || error), true); }
+          } else if (data.type === 'meldex_sheet_changed') {
+            if (typeof window.meldexApplyLlmSheetChange === 'function') {
+              try { await window.meldexApplyLlmSheetChange(data); }
+              catch (error) { showStatus('AIの変更を画面へ反映できませんでした: ' + (error?.message || error), true); }
+            }
           } else if (data.type === 'tool_result') {
             responseToolEvents.push({ name: String(data.name || ''), result: data.result == null ? '' : String(data.result) });
             const toolDivs = activityLog.querySelectorAll('.chat-tool-use');
@@ -126,6 +134,7 @@
             _handleChatToolWorkspaceEffect(data.name, data.result);
             showLiveActivity('結果を処理中...');
           } else if (data.type === 'done') {
+            receivedDone = true;
             hideLiveActivity();
           }
         } catch (e) {}
@@ -133,6 +142,7 @@
     }
 
     if (streamError) throw streamError;
+    if (!receivedDone) throw new Error('応答が完了前に切断されました。接続を確認して再送信してください。');
     flushAssistantStreamPaint();
     streamCompleted = true;
 
@@ -174,7 +184,7 @@
       if (auditWarning) assistantMessage.tool_audit_warning = auditWarning;
       streamMessages.push(assistantMessage);
       sendOk = true;
-      chatAutoSave({
+      _chatAutoSaveAfterStream({
         messages: streamMessages,
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
@@ -184,7 +194,7 @@
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
         model: streamModel,
-      }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
+      });
     }
   } catch (e) {
     cancelAssistantStreamPaint();
@@ -206,7 +216,7 @@
       if (responseThinking.trim()) assistantMessage.thinking = responseThinking;
       streamMessages.push(assistantMessage);
       sendOk = true;
-      chatAutoSave({
+      _chatAutoSaveAfterStream({
         messages: streamMessages,
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
@@ -216,9 +226,11 @@
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
         model: streamModel,
-      }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
+      });
     } else {
-      const errorText = '応答を完了できませんでした。接続または送信設定を確認して、もう一度お試しください。';
+      window.MeldexDiagnostics?.recordSheetIncident?.('exception', { op: 'chat.stream', endpoint: '/chat/stream', method: 'POST', errorType: 'Error' });
+      const errorText = (fullText ? fullText.trimEnd() + '\n\n' : '')
+        + '[エラー: ' + String(e?.message || '応答を完了できませんでした。接続または送信設定を確認して、もう一度お試しください。') + ']';
       if (!streamVisibleInCurrentChat()) assistantDiv = null;
       if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, _assistantRenderOptions());
       else assistantDiv.textContent = errorText;
@@ -234,7 +246,7 @@
         error_code: e?.meldexCode || 'stream_failed',
       });
       sendOk = true;
-      chatAutoSave({
+      _chatAutoSaveAfterStream({
         messages: streamMessages,
         sessionId: streamSessionId,
         sessionTitle: streamSessionTitle,
@@ -244,7 +256,7 @@
         workspaceId: streamWorkspaceId,
         provider: streamProvider,
         model: streamModel,
-      }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
+      });
     }
   } finally {
     cancelAssistantStreamPaint();
@@ -462,7 +474,7 @@ async function openFileChat(targetPath) {
       if (data.messages?.length > 0) {
         if (!restoreStillCurrent()) return false;
         _chatState.messages = _ensureChatMessageIds(data.messages);
-        _chatState.sessionId = (item.path.split('/').pop() || '').replace('.md', '');
+        _chatState.sessionId = _chatFilenameFromPath(item.path).replace(/\.md$/i, '');
         _chatState.historySourceFolder = window.GBChatStorageContext.peekHistory()?.sourceFolder || '';
         _chatState.targetPath = targetPath;
         _chatState.lastImplicitTargetPath = '';
@@ -480,9 +492,7 @@ async function openFileChat(targetPath) {
         if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
         const container = _chatLiveMessagesContainer();
         if (container) container.innerHTML = '';
-        _chatState.messages.forEach((m, index) => {
-          chatAddMessage(m.role, m.content, _chatMessageRenderOptions(m, index));
-        });
+        _chatAppendStoredMessages(container, _chatState.messages);
         if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
         restored = true;
         break;
@@ -526,9 +536,7 @@ async function openFileChat(targetPath) {
             if (typeof _chatAdoptRunningExecution === 'function') _chatAdoptRunningExecution();
             const container = _chatLiveMessagesContainer();
             if (container) container.innerHTML = '';
-            _chatState.messages.forEach((m, index) => {
-              chatAddMessage(m.role, m.content, _chatMessageRenderOptions(m, index));
-            });
+            _chatAppendStoredMessages(container, _chatState.messages);
             if (typeof _chatResumeVisibleExecution === 'function') _chatResumeVisibleExecution();
             restored = true;
             break;
@@ -660,7 +668,16 @@ function _chatScrollToMessage(msgId) {
   const id = String(msgId || '').trim();
   if (!id) return;
   const safeId = MeldexEscape.cssIdent(id);
-  const target = document.querySelector(`#chat-messages [data-msg-id="${safeId}"]`);
+  let target = document.querySelector(`#chat-messages [data-msg-id="${safeId}"]`);
+  if (!target) {
+    const index = _chatState.messages.findIndex(message => String(message?.msg_id || '') === id);
+    const container = _chatLiveMessagesContainer();
+    if (index >= 0 && container) {
+      container.replaceChildren();
+      _chatAppendStoredMessages(container, _chatState.messages, { end: Math.min(_chatState.messages.length, index + CHAT_HISTORY_PAGE_SIZE) });
+      target = container.querySelector(`[data-msg-id="${safeId}"]`);
+    }
+  }
   if (!target) return;
   target.scrollIntoView({ block: 'start', behavior: 'smooth' });
   target.style.outline = '2px solid var(--accent)';
@@ -671,6 +688,10 @@ function _chatScrollToMessage(msgId) {
 }
 
 // 保存済みチャットを開いてリプレイ＋続行
+function _chatFilenameFromPath(path) {
+  return String(path || '').replace(/\\/g, '/').split('/').pop() || '';
+}
+
 async function openSavedChat(path, anchor = '', sourceFolder) {
   window.GBChatDrafts?.flush?.();
   const restoreGuard = typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreGuard === 'function'
@@ -724,12 +745,6 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   }
   if (!restoreStillCurrent()) return false;
   if (typeof _chatBumpSessionGen === 'function') _chatBumpSessionGen();
-  if (typeof _chatClearPendingAttachments === 'function') {
-    _chatClearPendingAttachments({ cleanupUploads: true });
-  } else {
-    _chatState.pendingAttachments = [];
-    if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
-  }
   // 直接 fetch して status を判定（404 を他のエラーと区別するため apiFetch は使わない）
   let data = null;
   let notFound = false;
@@ -755,6 +770,14 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   }
 
   if (!restoreStillCurrent()) return false;
+  if (!otherError) {
+    if (typeof _chatClearPendingAttachments === 'function') {
+      _chatClearPendingAttachments({ cleanupUploads: true });
+    } else {
+      _chatState.pendingAttachments = [];
+      if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
+    }
+  }
   if (notFound) {
     // 404フォールバック: 存在しないチャット → 穏やかに通知してリセット
     _chatState.messages = [];
@@ -774,8 +797,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
           // 該当 savedPath と一致する場合のみクリア（他チャットを誤って消さない）
-          const legacySaved = '_chat/llm/' + (path.split('/').pop() || '');
-          const targetSaved = _chatSavedPathForSession((path.split('/').pop() || '').replace(/\.md$/, ''));
+          const legacySaved = '_chat/llm/' + _chatFilenameFromPath(path);
+          const targetSaved = _chatSavedPathForSession(_chatFilenameFromPath(path).replace(/\.md$/i, ''));
           const matchesMissingPath = value => value === path || value === targetSaved || value === legacySaved;
           let changed = false;
           if (matchesMissingPath(parsed.savedPath)) {
@@ -810,7 +833,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   if (!restoreStillCurrent()) return false;
   _chatState.messages = _ensureChatMessageIds(data.messages || []);
   // セッションIDをファイル名から復元
-  const fname = path.split('/').pop().replace('.md', '');
+  const fname = _chatFilenameFromPath(path).replace(/\.md$/i, '');
   _chatState.sessionId = fname;
   _chatState.historySourceFolder = legacySource ? explicitSourceFolder : historyContext.sourceFolder;
   _chatState.targetPath = data.frontmatter?.targetPath || '';
@@ -840,10 +863,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   if (typeof _chatRefreshCurrentTargetDisplay === 'function') _chatRefreshCurrentTargetDisplay();
   else _showChatTargetBadge(_chatState.targetPath);
   chatAddSystem('保存済みチャットを読み込みました。');
-  _chatState.messages.forEach((m, index) => {
-    if (m.role === 'user') chatAddMessage('user', m.content, _chatMessageRenderOptions(m, index));
-    else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
-  });
+  _chatAppendStoredMessages(container, _chatState.messages);
   const openedReplyVersion = typeof _chatReplyVersionForMessages === 'function'
     ? _chatReplyVersionForMessages(_chatState.messages) : '';
   if (document.visibilityState !== 'hidden' && typeof _chatMarkReplySeen === 'function') {
@@ -864,7 +884,8 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
   }
 }
 
-function chatClear() {
+function chatClear(options = {}) {
+  const preserveComposer = options?.preserveComposer === true;
   window.GBChatDrafts?.flush?.();
   const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
   const previousWasStreaming = !!_chatState.streaming;
@@ -874,15 +895,15 @@ function chatClear() {
   _chatState.targetPath = '';
   _chatState.lastImplicitTargetPath = '';
   if (typeof _chatResetTargetForNewSession === 'function') _chatResetTargetForNewSession();
-  if (typeof _chatClearPendingAttachments === 'function') {
+  if (!preserveComposer && typeof _chatClearPendingAttachments === 'function') {
     _chatClearPendingAttachments({ cleanupUploads: true });
-  } else {
+  } else if (!preserveComposer) {
     _chatState.pendingAttachments = [];
   }
-  if (typeof _chatCleanupDraftUploads === 'function') _chatCleanupDraftUploads('chat-input', { force: true });
+  if (!preserveComposer && typeof _chatCleanupDraftUploads === 'function') _chatCleanupDraftUploads('chat-input', { force: true });
   // 裏で応答中のチャットがあれば、その待機カードを残す。
-  if (!_chatState.streaming && !_chatAnyExecutionRunning() && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
-  else {
+  if (!preserveComposer && !_chatState.streaming && !_chatAnyExecutionRunning() && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  else if (!preserveComposer) {
     if (!previousWasStreaming && previousQueueScope && typeof _chatDrainQueuedMessagesForScope === 'function') _chatDrainQueuedMessagesForScope(previousQueueScope);
     if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
   }
@@ -893,8 +914,8 @@ function chatClear() {
   _showChatTargetBadge(typeof _chatEffectiveTargetPath === 'function' ? _chatEffectiveTargetPath() : '');
   chatAddSystem('新しいチャットを開始しました');
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
-  window.GBChatDrafts?.restore?.();
-  renderChatHistory();
+  if (!preserveComposer) window.GBChatDrafts?.restore?.();
+  if (!options?.skipHistoryRefresh) renderChatHistory();
 }
 
 // セッションIDを生成/取得
@@ -906,6 +927,52 @@ function _ensureSessionId() {
 }
 
 // 自動保存（毎回のアシスタント応答後に呼ばれる）
+async function _chatAutoSaveAfterStream(options = {}) {
+  const sessionId = String(options.sessionId || _chatState.sessionId || '');
+  const failureRows = () => [...(_chatLiveMessagesContainer()?.querySelectorAll('[data-chat-save-failure-session]') || [])]
+    .filter(row => row.dataset.chatSaveFailureSession === sessionId);
+  try {
+    const saved = await chatAutoSave({ ...options, silent: false });
+    if (!saved) throw new Error('会話を保存できませんでした');
+    failureRows().forEach(row => row.remove());
+    if (typeof renderChatHistory === 'function') renderChatHistory();
+    return true;
+  } catch (error) {
+    const message = '会話の保存に失敗しました: ' + String(error?.message || error);
+    if (typeof showStatus === 'function') showStatus(message, true);
+    window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', { op: 'chat.save', endpoint: '/chat/save', method: 'POST', errorType: 'Error' });
+    if (sessionId === String(_chatState.sessionId || '')) {
+      const existing = failureRows()[0];
+      if (existing) {
+        existing._chatSaveRetryOptions = options;
+        existing.querySelector('[data-chat-save-error]').textContent = message;
+        return false;
+      }
+      const row = chatAddSystem(message);
+      if (row) {
+        row.dataset.chatSaveFailureSession = sessionId;
+        row._chatSaveRetryOptions = options;
+        const label = document.createElement('span');
+        label.dataset.chatSaveError = '';
+        label.textContent = message;
+        row.replaceChildren(label);
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'gb-btn gb-btn-sm';
+        retry.dataset.chatSaveRetry = '';
+        retry.textContent = '保存を再試行';
+        retry.addEventListener('click', async () => {
+          retry.disabled = true;
+          if (await _chatAutoSaveAfterStream(row._chatSaveRetryOptions)) row.remove();
+          else retry.disabled = false;
+        });
+        row.appendChild(retry);
+      }
+    }
+    return false;
+  }
+}
+
 async function chatAutoSave(options = {}) {
   const silent = options?.silent !== false;
   const messages = Array.isArray(options?.messages) ? options.messages : _chatState.messages;
@@ -951,7 +1018,7 @@ async function chatAutoSave(options = {}) {
     const knowledgeAutomation = typeof _chatKnowledgeAutomationForSave === 'function'
       ? await _chatKnowledgeAutomationForSave()
       : null;
-    const saved = await apiPost('/chat/save', _chatPostPayload({
+    const saving = apiPost('/chat/save', _chatPostPayload({
       path: savePath,
       messages,
       provider,
@@ -965,6 +1032,8 @@ async function chatAutoSave(options = {}) {
       user: typeof getUsername === 'function' ? getUsername() : '',
       ...(knowledgeAutomation ? { knowledge_automation: knowledgeAutomation } : {}),
     }));
+    const saved = await (window.MeldexDiagnostics?.watchSheetTask
+      ? window.MeldexDiagnostics.watchSheetTask('chat.save', '', saving, { label: '会話の保存' }) : saving);
     if (savingCurrentSession) {
       _chatState.historySourceFolder = sourceFolder;
       if (!_chatState.sessionTitle && saved?.title) _setChatSessionTitle(saved.title);

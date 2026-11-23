@@ -20,6 +20,7 @@
   function items() {
     const scene = Scene();
     return [
+      ...(window.MeldexViewerScreenshotSource?.menuItems?.() || []),
       ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
       { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
@@ -64,6 +65,7 @@
       ] },
       ...(annotationsAvailable() ? [
         sep(),
+        ...(window.MeldexViewerHighlights?.menuItems() || []),
         { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
         ...(annotationVersionsAvailable() ? [
           { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
@@ -76,7 +78,12 @@
     ];
   }
 
-  function openMenuAt(clientX, clientY) {
+  async function openMenuAt(clientX, clientY) {
+    if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && window.MeldexViewerTextLayer?.getSelection()) {
+      try {
+        await window.MeldexViewerHighlights.ensureNative();
+      } catch(error) { window.showStatus?.('ハイライトを読み込めませんでした: '+error.message,true); return; }
+    }
     window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
   }
 
@@ -85,12 +92,18 @@
   const mainMenuButton = document.getElementById('btn-viewer-main-menu');
   if (mainMenuButton) {
     let closedByButtonPress = false;
-    mainMenuButton.addEventListener('pointerdown', () => {
-      closedByButtonPress = !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
-    });
+    // 共通メニューはdocumentのcaptureで外側クリックを閉じる。その前に
+    // 押す直前の状態を記録し、閉じた直後にclickで再び開くことを防ぐ。
+    window.addEventListener('pointerdown', event => {
+      closedByButtonPress = mainMenuButton.contains(event.target)
+        && !!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true';
+    }, true);
     mainMenuButton.addEventListener('click', event => {
       event.stopPropagation();
-      if (closedByButtonPress) { closedByButtonPress = false; return; }
+      const closePressed = (event.detail > 0 && closedByButtonPress)
+        || (!!window.MeldexContextMenuUI?.isOpen?.() && mainMenuButton.getAttribute('aria-expanded') === 'true');
+      closedByButtonPress = false;
+      if (closePressed) { window.MeldexContextMenuUI?.close?.(); return; }
       if (!window.MeldexContextMenuUI?.openAt) return;
       mainMenuButton.setAttribute('aria-expanded', 'true');
       window.MeldexContextMenuUI.openAt({

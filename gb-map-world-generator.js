@@ -106,10 +106,23 @@
       if(pending||!prepared||!current())return;const candidate=prepared;const valid=()=>current()&&prepared===candidate&&store.doc===source&&signature===conditions();
       if(!valid()){clear();status.textContent='地図または条件が変更されました。プレビューを作り直してください。';return;}
       pending=true;generate.disabled=adopt.disabled=true;
-      try{if((source.terrain||source.background)&&!await cfConfirm('背景・縮尺・北方向（上）を生成した世界地図へ更新します。手描き図形を保持し、以前の世界生成レイヤーは非表示にします。採用しますか？'))return;
-        if(!valid())return;const access=await MeldexEntityDetail.resolveReadOnly(path,false);if(!valid())return;if(access.readOnly){status.textContent=access.reason||'編集ロック中のため採用できません';return;}
-        if(app.update(d=>Object.assign(d,candidate.doc))){for(const id of candidate.previousLayers)if(app.state.mapLayerVisibility)delete app.state.mapLayerVisibility[id];app.state.mapSearch='';app.state.mapFeatureKind='';app.search.value='';app.kindFilter.value='';app._selection=new Set();app._selected=null;app._activeLayer=candidate.layers.cities.id;cleanup();app._buildSettingsRefresh();app._render();app.view.fit();app._saveViewState();}
-      }finally{pending=false;generate.disabled=false;adopt.disabled=!prepared;}
+      // The confirmation must not keep a second large map rendering behind it.
+      // Restore the same prepared preview when the user cancels or access fails.
+      preview?.destroy();preview=null;canvas.replaceChildren();
+      let accessCheck;
+      try{if((source.terrain||source.background)&&!await cfConfirm('背景・縮尺・北方向（上）を生成した世界地図へ更新します。手描き図形を保持し、以前の世界生成レイヤーは非表示にします。採用しますか？',{
+        onAccept:()=>{accessCheck=MeldexEntityDetail.resolveReadOnly(path,false);}
+      }))return;
+        if(!valid())return;
+        status.textContent='反映しています…';
+        const access=await(accessCheck||MeldexEntityDetail.resolveReadOnly(path,false));if(!valid())return;if(access.readOnly){status.textContent=access.reason||'編集ロック中のため採用できません';return;}
+        // Generation retains the local canvas and projection. Fit its existing
+        // light view first so the new vector layers are projected only once.
+        if(app.update(d=>Object.assign(d,candidate.doc))){for(const id of candidate.previousLayers)if(app.state.mapLayerVisibility)delete app.state.mapLayerVisibility[id];app.state.mapSearch='';app.state.mapFeatureKind='';app.search.value='';app.kindFilter.value='';app._selection=new Set();app._selected=null;app._activeLayer=candidate.layers.cities.id;cleanup();app._buildSettingsRefresh();app.view.fit();app._render();app._saveViewState();}
+      }finally{
+        if(!preview&&valid()){preview=new MeldexMapView(canvas,{select:()=>{}});preview.setDocument(candidate.doc,true);}
+        pending=false;generate.disabled=false;adopt.disabled=!prepared;
+      }
     },{disabled:true});
     panel.append(generate,adopt,app._button('閉じる',cleanup));app._worldPreview={panel,kind:'world',destroy:cleanup};MeldexMapChrome.openPanel(panel);
   }

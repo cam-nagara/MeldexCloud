@@ -63,6 +63,9 @@
   flex: 0 1 200px;
   min-width: 64px;
 }
+.bd-depth-in-panel .bd-style-panel-picker .bd-style-picker-label {
+  flex: 0 0 auto;
+}
 .bd-depth-in-panel .bd-detail-style-row .bd-style-panel-picker.bd-depth-preset-picker .bd-style-picker-preview {
   flex: 0 1 120px;
   min-width: 48px;
@@ -71,8 +74,14 @@
 .bd-depth-in-panel .bd-style-format-open {
   width: 100%;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.bd-depth-in-panel .bd-style-format-open > .bd-style-format-preview {
+  flex: 0 1 112px;
+  min-width: 48px;
 }
 .bd-depth-in-panel .bd-style-format-open > span:last-child {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 /* 区切りの列（1fr = minmax(auto,1fr)）が中身の最小幅で広がり、枠より数px はみ出していた。列を 0 まで縮められるようにする。 */

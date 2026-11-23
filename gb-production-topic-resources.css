@@ -84,7 +84,8 @@
   border-color: transparent;
 }
 
-@media (max-width: 640px), (pointer: coarse) {
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-production-task-topic-resources [data-e2e-id="gb-production-topic-retry"],
   .gb-production-topic-resource-open,
   .gb-production-topic-resource-list [data-e2e-id="gb-production-topic-resource-detach"],
   .gb-production-topic-resource-actions > button {

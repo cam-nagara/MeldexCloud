@@ -1,3 +1,24 @@
+      delete intent.aftercare_in_progress;
+      delete intent.aftercare_effects;
+      intent.operation_state = 'awaiting_proof';
+      intent.publisher_token = String(publisherToken || '');
+      intent.claim_boundary = '';
+      intent.aftercare_completed = [];
+      selected = {
+        ...previous, state: 'awaiting_proof', intent,
+        failure_reason: '', saved_at: new Date().toISOString(),
+      };
+      operations[index] = selected;
+      return { ...state, outliner_operations: operations };
+    });
+    return selected;
+  }
+
+  async function _completeCloudCopyOperation(provider, operationId, operation, payload, result) {
+    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
+    let selected = result;
+    await _updateCloudCopyJournal(provider, operation, state => {
+      const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
       _assertCloudCopyRecord(previous, operationId, operation, identity);
@@ -9,16 +30,25 @@
           saved_at: new Date().toISOString() };
       }
       return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
-    });
+    }, identity.writeSession);
     return selected;
   }
 
   async function _runCloudCopyAftercare(provider, operationId, operation, payload, record, steps, checkpoint = null) {
     let intent = structuredClone(record.intent || {});
     const completed = new Set(Array.isArray(intent.aftercare_completed) ? intent.aftercare_completed : []);
+    // 呼出元が対象形式から副作用なしと証明できる手順は、最初の保存へ完了をまとめる。
+    for (const step of steps) {
+      if (step.noop !== true) continue;
+      completed.add(step.name);
+      if (intent.aftercare_in_progress?.name === step.name) delete intent.aftercare_in_progress;
+    }
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
-    await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    // 最初の手順の開始と同時に必要な手順一覧を確定する。効果の実行前の保存は保つ。
+    if (steps.every(step => completed.has(step.name))) {
+      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    }
     for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
@@ -824,7 +854,7 @@ async function _readAnnotationRecord(provider, id, targetPathHint) {
   return legacy && typeof legacy === 'object' ? legacy : null;
 }
 
-async function _writeAnnotationRecord(provider, record) {
+async function _writeAnnotationRecord(provider, record, options = {}) {
   const docId = _safeId(record.id, 'annotation id');
   const adapter = await _managementAdapterForProvider(
     provider,
@@ -832,7 +862,25 @@ async function _writeAnnotationRecord(provider, record) {
     record.target_path || record.path || '',
   );
   const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  await adapter.save(kind, docId, record);
+  let saveOptions;
+  if (options.expectedModified) {
+    let current = await adapter.load(kind, docId);
+    if (!current) {
+      const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+      if (legacy && _annotationRow(legacy).modified === options.expectedModified) {
+        // Retain the legacy source and claim an absent common-store slot first.
+        // A retry can then edit that same snapshot with the normal CAS guard.
+        await adapter.save(kind, docId, legacy, { expectedRevision: null });
+        current = await adapter.load(kind, docId);
+      }
+    }
+    if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを変更できません');
+      error.status = 409; throw error;
+    }
+    saveOptions = { expectedRevision: current.revision };
+  }
+  await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
@@ -850,51 +898,3 @@ async function _restoreAnnotationRecord(provider, body) {
   const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
   if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
   if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
-  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
-  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
-  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
-  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
-  delete record.tombstone; delete record.deleted; delete record.deleted_at;
-  if (record.state === 'deleted') delete record.state;
-  if (record.status === 'tombstoned') delete record.status;
-  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
-  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
-  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
-  return { ok: true, id };
-}
-
-// created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
-// identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
-// 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
-// (aftercare側は実行時にこのレジストリを参照するため、このファイルが
-// aftercare側より先に読み込まれても後に読み込まれても問題ない)。
-window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
-window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
-
-async function _deleteAnnotationRecordFully(provider, id) {
-  const docId = _safeId(id, 'annotation id');
-  const contract = window.MeldexSystemStorage;
-  const matches = await _findAnnotationRecordsById(provider, docId);
-  if (matches.length === 1) {
-    const match = matches[0];
-    const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
-      adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
-      documentId: docId, expectedRevision: match.stored.revision,
-    });
-    await _annotationTargetResolver().indexTombstone(
-      match.scope.adapter, contract.SystemStorageKind.ANNOTATIONS, tombstoned.payload,
-    );
-    return;
-  }
-  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
-  if (legacy) await provider.deletePath(_annotationPath(docId));
-}
-
-async function _coverAnnotationIndexBatch(provider, scope, kind) {
-  const resolver = _annotationTargetResolver();
-  const coverage = await resolver.indexCoverage(scope.adapter, kind);
-  if (typeof scope.adapter.listDocumentHeaders !== 'function'
-      || typeof scope.adapter.documentCollectionGeneration !== 'function') {
-    throw _annotationUnavailable(new Error('metadata generation API unavailable'), '索引coverage確認');
-  }
-  const generation = await scope.adapter.documentCollectionGeneration(kind, {

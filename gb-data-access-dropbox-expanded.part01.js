@@ -285,6 +285,9 @@
   }
 
   async function _requireUnlocked(provider, path, options) {
+    if (_isProductionManagementSheetMetadataPath(path) || _isProductionManagementSheetMetadataPath(_dirname(path))) {
+      await window.MeldexProductionManagement?.releasePendingCloudLeases?.(provider);
+    }
     if (typeof _requireUnlockedPath === 'function') return _requireUnlockedPath(provider, path, options || {});
     const checker = window.MeldexFileLockStore?.requireUnlocked;
     if (typeof checker === 'function') return checker(provider, path, options || {});
@@ -1519,7 +1522,9 @@
     if (memory) return { ...memory };
     if (_quickMemoTargetInflight.has(scope)) return _quickMemoTargetInflight.get(scope);
     const generation = _quickMemoTargetCacheGeneration;
-    const task = (async () => {
+    let active = true;
+    let timer;
+    const read = (async () => {
       const roots = await _quickMemoRoots(provider);
       const key = _quickMemoTargetCacheKey(scope);
       let cached = null;
@@ -1528,12 +1533,20 @@
       const target = validated
         || await _preferredQuickMemoTarget(provider, roots)
         || await _discoverQuickMemoTarget(provider, roots);
-      if (generation === _quickMemoTargetCacheGeneration) {
+      if (active && generation === _quickMemoTargetCacheGeneration) {
         _quickMemoTargetMemory.set(scope, target);
         try { window.localStorage?.setItem(key, JSON.stringify(target)); } catch {}
       }
       return { ...target };
-    })().finally(() => _quickMemoTargetInflight.delete(scope));
+    })();
+    const task = Promise.race([read, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('保存先の確認に時間がかかっています。今すぐ再送してください')), 12000);
+    })]).finally(() => {
+      active = false;
+      clearTimeout(timer);
+      // A timed-out/invalidated read must not erase a newer retry's task.
+      if (_quickMemoTargetInflight.get(scope) === task) _quickMemoTargetInflight.delete(scope);
+    });
     _quickMemoTargetInflight.set(scope, task);
     return task;
   }
@@ -2036,7 +2049,18 @@
     return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
-  async function _createEntity(provider, body) {
+  async function _resolvePublishedSheet(provider, sheet) {
+    let path = _normalizeFolderPath(sheet?.path || '');
+    if (sheet?.cloud_id) {
+      const current = await provider.getMetadata(path);
+      if (current?.id !== sheet.cloud_id) path = await provider.resolveFileIdentity(sheet.cloud_id, path);
+    }
+    const metadata = (await _folderFrontmatter(provider, path)).frontmatter;
+    if (metadata?.type !== 'settings-db') throw new Error('回答用シートが見つかりません');
+    return path;
+  }
+
+  async function _createEntity(provider, body, publicSubmissionId = '') {
     const parent = _normalizeFolderPath(body?.parent_path || '');
     const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
     const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
@@ -2055,9 +2079,18 @@
     if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
       const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
     }
-    const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
+    const targetName = publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
+    if (publicSubmissionId) {
+      const stored = await _readSheetStoreEntry(provider, path);
+      const existing = stored || (await _pathExists(provider, path) ? await _readFrontmatterFile(provider, path) : null);
+      if (existing) {
+        if (existing.frontmatter?.public_form_submission_id !== publicSubmissionId)
+          throw Object.assign(new Error('回答先が別のトピックに変わっています'), { status: 409 });
+        return { ok: true, replayed: true, path };
+      }
+    }
     const now = _nowIso();
     const frontmatter = {
       type: 'settings-entry',
@@ -2070,6 +2103,7 @@
       relations: [],
       source: body?.source || '',
       reviewed: body?.reviewed === true,
+      ...(publicSubmissionId ? { public_form_submission_id: publicSubmissionId } : {}),
     };
     await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
     const history = _sharedEditHistory();
@@ -3075,7 +3109,10 @@
     return result;
   }
 
-  async function _readMigratedDropboxEvents(provider) {
+  async function _readMigratedDropboxEvents(provider, leaseToken = '') {
+    // 現行形式の通常読取では更新ロックを作らない。移行時だけ取得後に読み直す。
+    const rows = await _readStore(provider, 'events');
+    if (!rows.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) return rows;
     const operation = async guardedProvider => {
       const current = await _readStore(guardedProvider, 'events');
       if (!current.some(row => !Object.prototype.hasOwnProperty.call(row || {}, 'color_override'))) {
@@ -3092,7 +3129,7 @@
     };
     const lease = window.MeldexCloudCalendarLease;
     if (!lease?.withLease) return operation(provider);
-    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+    return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider), leaseToken ? { token: leaseToken } : null);
   }
 
   async function _calendarVisibilityRows(provider) {
@@ -3127,8 +3164,8 @@
     await _writeStore(provider, 'calendar-visibility', rows);
   }
 
-  async function _calendarList(provider, name, url) {
-    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider) : await _readStore(provider, name);
+  async function _calendarList(provider, name, url, leaseToken = '') {
+    const rows = name === 'events' ? await _readMigratedDropboxEvents(provider, leaseToken) : await _readStore(provider, name);
     const requestedUser = url.searchParams.get('user') || '';
     if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
       throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');

@@ -693,6 +693,17 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   border-color: var(--ui-button-hover-border, var(--border));
   outline: none;
 }
+/* Keep the keyboard frame inside the action: the next bubble can cover an outer ring. */
+#chat-messages {
+  scroll-padding-block: var(--ui-space-4, 8px);
+}
+#chat-messages :is(button, a[href], [tabindex]) {
+  scroll-margin-block: var(--ui-space-4, 8px);
+}
+#chat-messages button:focus-visible {
+  outline-offset: -2px !important;
+  box-shadow: none !important;
+}
 /* Message editing uses shared control colors without changing bubble geometry. */
 .chat-message-edit-cancel,
 .chat-message-edit-save {
@@ -1742,10 +1753,10 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   flex-shrink: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 8px;
-  border-right: 1px solid var(--border);
-  background: var(--bg2);
-  font-size: 12px;
+  padding: var(--ui-outline-padding, 8px);
+  border-right: 1px solid var(--ui-outline-border, var(--border));
+  background: var(--ui-outline-bg, var(--bg2));
+  font-size: var(--ui-outline-font-size, 12px);
 }
 
 :is(#note-toc-resize,[data-editor-local-id="note-toc-resize"]) {

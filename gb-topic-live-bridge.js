@@ -7,6 +7,7 @@
   const DEFAULT_DEBOUNCE_MS = 450;
   const ROOT_CACHE_MS = 10000;
   const inflight = new Map();
+  const requestOwners = new WeakMap();
   const saveTimers = new Map();
   const ownerStates = new WeakMap();
   let rootsCache = null;
@@ -126,9 +127,18 @@
     return Number(error?.status || error?.response?.status || error?.payload?.status || 0);
   }
 
-  async function requestMigration(target, previewOnly) {
+  async function requestMigration(target, previewOnly, options) {
     const key = `${target.sourceId}\n${target.relativePath}\n${previewOnly ? 'preview' : 'commit'}`;
-    if (inflight.has(key)) return inflight.get(key);
+    const owner = options?.owner;
+    const stamp = `${Number(owner?._topicMutationVersion || 0)}:${Number(owner?._openSeq || 0)}:${Number(owner?._topicSaveVersion || 0)}`;
+    if (inflight.has(key)) {
+      const pending = inflight.get(key);
+      const started = requestOwners.get(pending);
+      if (!owner || (started?.owner === owner && started?.stamp === stamp)) return pending;
+      // 同じファイルでも、編集や開き直しを挟んだ要求は古い読込結果を共有しない。
+      await pending.catch(() => {});
+      return requestMigration(target, previewOnly, options);
+    }
     const request = global.apiPost('/topic-migrations/open', {
       sourceId: target.sourceId,
       relativePath: target.relativePath,
@@ -137,6 +147,7 @@
       if (inflight.get(key) === request) inflight.delete(key);
     });
     inflight.set(key, request);
+    requestOwners.set(request, { owner, stamp });
     return request;
   }
 
@@ -144,7 +155,7 @@
     if (typeof global.apiPost !== 'function') return { ok: false, status: 'offline', target };
     const previewOnly = options?.readOnly === true || options?.previewOnly === true;
     try {
-      const response = await requestMigration(target, previewOnly);
+      const response = await requestMigration(target, previewOnly, options);
       let archive = null;
       const archiveRelativePath = response?.migration?.archiveRelativePath;
       if (!previewOnly && archiveRelativePath) {
@@ -164,7 +175,7 @@
     } catch (error) {
       if (!previewOnly && [403, 409].includes(statusOf(error))) {
         try {
-          const response = await requestMigration(target, true);
+          const response = await requestMigration(target, true, options);
           return { ok: true, mode: 'preview', response, target, error };
         } catch (previewError) {
           return { ok: false, status: 'fallback', error: previewError, target };
@@ -227,6 +238,7 @@
     const owner = options?.owner;
     const mutationVersion = Number(owner?._topicMutationVersion || 0);
     const openVersion = Number(owner?._openSeq || 0);
+    const saveVersion = Number(owner?._topicSaveVersion || 0);
     const startedGeneration = generation;
     if (!ownerActive(owner, dbPath)) return { ok: false, status: 'destroyed' };
     const target = await resolveRegisteredPath(dbPath, options);
@@ -235,8 +247,12 @@
     if (startedGeneration !== generation || !ownerActive(owner, dbPath)) {
       return { ok: false, status: 'destroyed', target };
     }
-    if (mutationVersion !== Number(owner?._topicMutationVersion || 0)
-        || openVersion !== Number(owner?._openSeq || 0)) {
+    // 編集後に始まった読込でも、未保存の間はディスク上の古い本文を返す。
+    // 保存要求の応答前にそれを描くと、新しい文字を古い文字で上書きしてしまう。
+    if (owner?.dirty === true
+        || mutationVersion !== Number(owner?._topicMutationVersion || 0)
+        || openVersion !== Number(owner?._openSeq || 0)
+        || saveVersion !== Number(owner?._topicSaveVersion || 0)) {
       return { ok: false, status: 'superseded', target };
     }
     if (result.ok) result.detail = publish(result, options?.reason, options?.structural !== false);
@@ -260,7 +276,7 @@
     }
     const pending = inflight.get(`${target.sourceId}\n${target.relativePath}\ncommit`);
     if (pending) await pending.catch(() => {});
-    return migrateOpenedSheet(dbPath, { ...options, reason: 'before-transfer', refreshRoots: false });
+    return migrateOpenedSheet(dbPath, { ...options, reason: options?.reason || 'before-transfer', refreshRoots: false });
   }
 
   function scheduleAfterSave(dbPath, options) {
@@ -275,7 +291,7 @@
     const timer = setTimeout(() => {
       saveTimers.delete(key);
       if (!ownerActive(owner, dbPath)) return;
-      void migrateOpenedSheet(dbPath, { ...options, structural, reason: 'save', refreshRoots: false });
+      void flushOpenedSheet(dbPath, { ...options, structural, reason: 'save', refreshRoots: false });
     }, delay);
     saveTimers.set(key, { timer, owner, structural });
     return timer;

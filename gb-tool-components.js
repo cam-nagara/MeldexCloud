@@ -368,7 +368,7 @@ class InformationComponent extends ContextRailComponent {
       isCurrent,
     });
     // ボードの時は、ボードのリンクを開く設定（ファイルを開く場所・選ぶとサブパネルに表示）も出す。
-    if (target.kind === 'board' && window.MeldexBoardInfoPanel?.appendOpenTargetSettings) {
+    if ((target.kind === 'board' || ctx.origin === 'board-selection') && window.MeldexBoardInfoPanel?.appendOpenTargetSettings) {
       const bodyEl = this.bodyEl;
       void Promise.resolve(rendered).catch(() => null).then(() => {
         if (this.bodyEl === bodyEl && bodyEl?.isConnected && isCurrent()) window.MeldexBoardInfoPanel.appendOpenTargetSettings(bodyEl);

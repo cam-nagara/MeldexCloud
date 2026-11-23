@@ -128,11 +128,13 @@
   }
 
   function shouldQueue(error) {
+    if (error?.requireRemoteCommit) return false;
     const message = String(error?.userMessage || error?.message || error);
     return !BLOCKED_RE.test(message) && (navigator.onLine === false || RETRYABLE_RE.test(message));
   }
 
   async function callOrQueue(kind, path, body, options) {
+    if (options?.requireRemoteCommit) return originals[kind](path, body, options);
     const operationId = String(body?.operation_id || '') || id();
     const payload = withOperationId(body, operationId);
     try {
@@ -158,6 +160,7 @@
   }
 
   async function callFetchOrQueue(path, options) {
+    if (options?.requireRemoteCommit) return originals.apiFetch(path, options);
     const method = String(options?.method || 'GET').toUpperCase();
     if (method === 'GET' || method === 'HEAD') return originals.apiFetch(path, options);
     const operationId = String(options?.body?.operation_id || '') || id();

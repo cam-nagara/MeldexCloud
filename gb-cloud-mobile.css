@@ -1240,7 +1240,7 @@
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet-closing {
     transform: translateY(calc(100% + 24px)) !important;
-    transition: transform 0.18s ease-in;
+    transition: transform 0.1s ease-in;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.gb-mobile-dialog-sheet-open {

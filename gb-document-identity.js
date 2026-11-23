@@ -221,7 +221,7 @@
   }
 
   function _readBoardDocumentId(text) {
-    const match = FRONTMATTER_RE.exec(String(text || ''));
+    const match = FRONTMATTER_RE.exec(String(text || '').replace(/\r\n?/g, '\n'));
     if (!match) return null;
     const block = _extractTopLevelYamlBlock(match[2], 'meldex');
     if (block === null) return null;
@@ -368,6 +368,11 @@
     } else if (JSON_FORMATS.has(fmt)) {
       nextText = _injectJsonDocumentId(text, id);
       if (nextText === null) return { text, changed: false, documentId: null };
+      if (fmt === 'form') {
+        const copied = JSON.parse(nextText);
+        delete copied.publish;
+        nextText = JSON.stringify(copied, null, 2);
+      }
     } else {
       return { text, changed: false, documentId: null };
     }

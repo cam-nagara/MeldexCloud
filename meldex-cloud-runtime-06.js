@@ -775,6 +775,263 @@
 
 ;
 
+/* === gb-archive-tools.js === */
+;
+/* 端末の圧縮ソフト。Cloudは既存のZIP経路だけを使う。 */
+(function (global) {
+  'use strict';
+  const builtin = { id: 'meldex', name: 'Meldex内蔵 ZIP', compress_formats: ['zip'], extract_formats: ['zip', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tgz', 'tbz2', 'txz'] };
+  let catalog = null;
+  let loading = null;
+  const desktop = () => !global.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    && (typeof _settingsDesktopFeaturesAvailable !== 'function' || _settingsDesktopFeaturesAvailable())
+    && !['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '')
+    && /Windows/i.test(navigator.userAgent);
+  const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  const help = text => typeof fieldHelp === 'function' ? fieldHelp(text) : '';
+  async function load(refresh = false) {
+    if (!desktop()) return null;
+    if (catalog && !refresh) return catalog;
+    if (!loading || refresh) {
+      loading = apiFetch('/archive/tools' + (refresh ? '?refresh=true' : ''), { silentError: true })
+        .then(data => {
+          data.settings.tools = data.settings.tools.map(tool => {
+            const current = data.detected.find(row => row.id === tool.id);
+            return { ...tool, ...current, available: current?.available === true };
+          });
+          catalog = data; return data;
+        }).finally(() => { loading = null; });
+    }
+    return loading;
+  }
+  function toolsFor(operation, items) {
+    const cloud = global.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+    const tools = [builtin, ...(desktop() ? (catalog?.settings?.tools || []).filter(t => t.available !== false) : [])];
+    const compatible = tools.filter(tool => tool[operation + '_formats']?.length && (operation === 'compress' || items.every(item => tool.extract_formats.some(ext => String(item.path).toLowerCase().endsWith('.' + ext)))));
+    const defaultId = catalog?.settings?.[operation + '_default'] || 'meldex';
+    return compatible.filter(t => !cloud || t.id === 'meldex' && (operation === 'compress' || items.every(i => /\.zip$/i.test(i.path))))
+      .sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId));
+  }
+
+  async function refreshAffected(result) {
+    const canonical = path => String(path || '').split(String.fromCharCode(92)).join('/').replace(new RegExp('/+$'), '');
+    const parent = result.parent || canonical(result.path).split('/').slice(0, -1).join('/');
+    const normalize = path => canonical(path).toLowerCase();
+    const key = normalize(parent);
+    const descriptor = result.entry || { name: result.name || canonical(result.path).split('/').pop(), type: result.is_dir ? 'folder' : 'archive', ext: result.is_dir ? '' : '.zip' };
+    const entryFor = path => ({ ...descriptor, path: canonical(path) + '/' + descriptor.name });
+    const treeNodes = Array.from(document.querySelectorAll('.tree-node')).filter(node => normalize(node._nodeData?.path || node.dataset.path) === key);
+    for (const node of treeNodes) {
+      const path = node._nodeData?.path || node.dataset.path;
+      const children = node.querySelector(':scope > .tree-children');
+      if (!children) continue;
+      const entry = entryFor(path);
+      const virtual = global.GBOutlinerVirtualRender;
+      if (virtual?.isVirtualContainer?.(children)) { virtual.insertItems(children, [entry]); continue; }
+      if (children.dataset.loaded !== 'true') continue;
+      const existing = new Map(Array.from(children.querySelectorAll(':scope > .tree-node')).filter(child => child._nodeData?.path).map(child => [normalize(child._nodeData.path), child]));
+      if (existing.has(normalize(entry.path))) continue;
+      const items = [...existing.values()].map(child => child._nodeData).concat([entry]);
+      const sort = getSortForFolder(path);
+      const ordered = sort.sort === 'manual' ? _sortItemsByManualOrder(items, path) : items.sort((a, b) => compareItemsForFolderSort(a, b, sort.sort, sort.order));
+      const index = ordered.indexOf(entry);
+      const next = ordered.slice(index + 1).map(item => existing.get(normalize(item.path))).find(Boolean);
+      children.insertBefore(createTreeNodeFromBrowse(entry), next || null);
+    }
+    const current = typeof _folderPath === 'undefined' ? '' : _folderPath;
+    if (current && (normalize(current) === key || key.endsWith('/' + normalize(current))) && typeof _folderApplyCreatedItems === 'function') {
+      _folderApplyCreatedItems([entryFor(current)]);
+    }
+  }
+
+  function optionsFor(tool, operation) {
+    if (operation === 'compress' && tool.compress_formats.length > 1 || tool.password || operation === 'compress' && tool.split) {
+      return new Promise(resolve => {
+        const body = document.createElement('div');
+        body.innerHTML = `${operation === 'compress' ? `<label class="gb-field"><span class="gb-label">形式</span><select class="gb-select" name="format">${tool.compress_formats.map(fmt => `<option>${esc(fmt)}</option>`).join('')}</select></label>` : ''}
+          ${tool.password ? '<label class="gb-field"><span class="gb-label">パスワード</span><input class="gb-input" name="password" type="password" autocomplete="new-password"></label>' : ''}
+          ${operation === 'compress' && tool.split ? `<label class="gb-field"><span class="gb-label">分割サイズ ${help('空欄で分割なし。100m、1g のように指定します。分割片は1つのフォルダにまとめて保存します。')}</span><input class="gb-input" name="split" placeholder="100m"></label>` : ''}
+          `;
+        const start = document.createElement('button'); start.className = 'gb-btn gb-btn-primary'; start.textContent = '実行';
+        const cancel = document.createElement('button'); cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+        const modal = GBUI.createModal({ title: tool.name + (operation === 'compress' ? 'で圧縮' : 'で解凍'), body, footer: [cancel, start], onClose: () => resolve(null) });
+        cancel.onclick = () => modal.close();
+        start.onclick = () => {
+          const values = Object.fromEntries(Array.from(body.querySelectorAll('input, select'), input => [input.name, input.value]));
+          resolve(values); modal.close();
+        };
+        modal.open();
+      });
+    }
+    return Promise.resolve({});
+  }
+
+  async function run(operation, items, tool) {
+    if (!desktop()) return operation === 'compress' ? compressFolderItems(items) : extractArchiveItems(items);
+    try {
+      if (tool?.id !== 'meldex') await load();
+      tool ||= toolsFor(operation, items)[0];
+      if (!tool) throw new Error('この形式に対応する圧縮ソフトを設定してください');
+      const options = await optionsFor(tool, operation);
+      if (!options) return;
+      const targets = operation === 'compress' ? [items] : items.map(item => [item]);
+      const results = [];
+      const failures = [];
+      const reservation = typeof historyReserve === 'function' ? historyReserve('フォルダ: ' + (operation === 'compress' ? '圧縮' : '解凍'), '') : null;
+      try {
+        for (const group of targets) {
+          let result;
+          let cancelled = null;
+          try {
+            result = await runBackgroundJob('/archive/run', { operation, tool_id: tool.id, paths: group.map(i => i.path), ...options }, {
+              label: operation === 'compress' ? '圧縮しています' : '解凍しています', operationKind: 'archive', operationDelayMs: 0, pollIntervalMs: 200,
+              successMessage: operation === 'compress' ? '圧縮しました' : '解凍しました',
+            });
+          } catch (error) {
+            if (error?.name === 'AbortError') {
+              result = error.jobStatus?.result;
+              if (!result?.path) throw error;
+              cancelled = error;
+              cancelled.message = '中止要求の直前に保存が完了しました。保存済みの結果は残しています';
+            } else { failures.push(error); continue; }
+          }
+          results.push(result);
+          const register = () => typeof pushCreatedOutlinerItemHistory === 'function' && pushCreatedOutlinerItemHistory({ path: result.path, kind: result.is_dir ? 'folder' : 'file' }, 'フォルダ: ' + (operation === 'compress' ? '圧縮' : '解凍'), { scope: '' });
+          if (reservation) reservation.capture(register); else register();
+          try { await refreshAffected(result); }
+          catch { showStatus('保存しました。フォルダの表示を更新できませんでした', true); }
+          if (cancelled) throw cancelled;
+        }
+      } finally { reservation?.cancel(); }
+      if (failures.length) {
+        const reason = failures[0]?.userMessage || failures[0]?.message || '処理できませんでした';
+        showStatus(targets.length === 1 ? (operation === 'compress' ? '圧縮に失敗しました: ' : '解凍に失敗しました: ') + reason : `${results.length}件を完了、${failures.length}件に失敗しました: ${reason}`, true);
+      } else if (operation === 'extract' && results.length > 1) showStatus(`${results.length}件をすべて解凍しました`);
+      else showStatus((operation === 'compress' ? '圧縮しました: ' : '解凍しました: ') + results.map(r => r.name).join('、'));
+      return results;
+    } catch (error) {
+      showStatus(error?.userMessage || error?.message || '処理に失敗しました', error?.name !== 'AbortError');
+    }
+  }
+
+  function appendMenu(menu, items, close) {
+    if (!desktop() || menu.dataset.archiveTools === '1' || !items?.length || items.some(i => !i.path || i.archive_path)) return;
+    menu.dataset.archiveTools = '1';
+    const panels = [];
+    const render = () => {
+      // Other actions (including the pending OS group) may have been added
+      // since the first render. Refresh the archive group in its original slot.
+      const next = panels[panels.length - 1]?.nextSibling || null;
+      panels.splice(0).forEach(node => node.remove());
+      for (const operation of ['compress', 'extract']) {
+        const tools = toolsFor(operation, items);
+        if (!tools.length) continue;
+        const label = operation === 'compress' ? '圧縮' : '解凍';
+        const panel = _outlinerCreateSubmenu(label);
+        const before = new Set(menu.children);
+        _outlinerAppendSubmenu(menu, label, 'archive', panel);
+        const added = Array.from(menu.children).filter(node => !before.has(node));
+        added.forEach(node => menu.insertBefore(node, next));
+        panels.push(...added);
+        tools.forEach(tool => _outlinerAppendMenuItem(panel, { label: tool.name, action: () => { close?.(); return run(operation, items, tool); } }));
+      }
+    };
+    render();
+    load().then(() => { if (menu.isConnected) render(); }).catch(() => {});
+  }
+
+  function renderSettings(modal) {
+    if (!desktop()) return;
+    const panel = modal.querySelector('.settings-panel[data-panel="全般"]');
+    if (!panel || panel.querySelector('[data-archive-settings]')) return;
+    const section = document.createElement('section');
+    section.className = 'gb-section gb-section--boxed settings-section-wide';
+    section.dataset.settingsView = 'archive-tools'; section.dataset.archiveSettings = '1'; section.hidden = modal.dataset.settingsActivePageId !== 'archive-tools';
+    section.innerHTML = '<div role="status">圧縮ソフトを確認しています...</div>';
+    panel.appendChild(section);
+    async function paint(refresh) {
+      try {
+        const data = await load(refresh);
+        if (!section.isConnected) return;
+        const saved = data.settings;
+        const selected = new Set(saved.tools.map(t => t.id));
+        section.innerHTML = `<div class="gb-section-title">圧縮・解凍ソフト ${help('このWindows端末だけの設定です。選んだ実行ファイルを画面を開かず使います。Meldex内蔵ZIPは常に表示されます。')}</div>
+          <div data-archive-list></div>
+          ${['compress', 'extract'].map(op => `<label class="gb-field"><span class="gb-label">${op === 'compress' ? '圧縮' : '解凍'}の既定</span><select class="gb-select" name="${op}_default"></select></label>`).join('')}
+          <div class="gb-section-title">カスタム ${help('実行ファイルの絶対パスと、引数ごとのJSON配列を指定します。{inputs} は複数の入力、{archive} は解凍元、{output} は一時出力先です。画面を開かない引数を指定してください。')}</div>
+          <label class="gb-check"><input type="checkbox" name="custom_enabled"><span>カスタムを表示する</span></label>
+          ${[['custom_name', '表示名'], ['custom_executable', '実行ファイル'], ['custom_compress_args', '圧縮の引数'], ['custom_extract_args', '解凍の引数'], ['custom_compress_formats', '圧縮できる形式'], ['custom_extract_formats', '解凍できる形式']].map(([id, label]) => `<label class="gb-field"><span class="gb-label">${label}</span><input class="gb-input" name="${id}"></label>`).join('')}
+          <div class="gb-field-row"><button class="gb-btn" type="button" data-archive-rescan>再検出</button><button class="gb-btn gb-btn-primary" type="button" data-archive-save>適用</button></div><div role="status" data-archive-status></div>`;
+        const list = section.querySelector('[data-archive-list]');
+        for (const tool of data.detected.filter(t => t.id !== 'custom')) {
+          const row = document.createElement('div'); row.className = 'gb-check-help-row';
+          row.innerHTML = `<label class="gb-check"><input type="checkbox" data-tool-id="${esc(tool.id)}" ${selected.has(tool.id) ? 'checked' : ''} ${(tool.available && (tool.compress_formats.length || tool.extract_formats.length)) || selected.has(tool.id) ? '' : 'disabled'}><span>${esc(tool.name)}${tool.status_label ? ` — ${esc(tool.status_label)}` : ''}</span></label>${help(tool.executable + ' / ' + (tool.reason || (!tool.available ? '実行ファイルが見つかりません。選択を解除して適用できます。' : `圧縮: ${tool.compress_formats.join('、')} / 解凍: ${tool.extract_formats.join('、')}${tool.password ? ' / パスワード対応' : ''}${tool.split ? ' / 分割対応' : ''}`)))}`;
+          list.appendChild(row);
+        }
+        const custom = saved.tools.find(t => t.id === 'custom');
+        section.querySelector('[name="custom_enabled"]').checked = !!custom;
+        for (const field of ['name', 'executable', 'compress_args', 'extract_args']) section.querySelector(`[name="custom_${field}"]`).value = custom ? (Array.isArray(custom[field]) ? JSON.stringify(custom[field]) : custom[field]) : '';
+        for (const op of ['compress', 'extract']) section.querySelector(`[name="custom_${op}_formats"]`).value = (custom?.[op + '_formats'] || ['zip']).join(',');
+        function defaults() {
+          const ids = new Set(Array.from(section.querySelectorAll('[data-tool-id]:checked'), input => input.dataset.toolId));
+          const rows = [builtin, ...data.detected.filter(t => ids.has(t.id) && t.available)];
+          if (section.querySelector('[name="custom_enabled"]').checked) rows.push({ id: 'custom', name: 'カスタム', compress_formats: ['zip'], extract_formats: ['zip'] });
+          for (const op of ['compress', 'extract']) {
+            const select = section.querySelector(`[name="${op}_default"]`);
+            const value = select.value || saved[op + '_default'];
+            const compatible = rows.filter(t => t[op + '_formats'].length);
+            select.replaceChildren(...compatible.map(t => new Option(t.name, t.id)));
+            select.value = compatible.some(t => t.id === value) ? value : 'meldex';
+          }
+        }
+        defaults(); section.onchange = defaults;
+        section.querySelector('[data-archive-rescan]').onclick = () => paint(true);
+        section.querySelector('[data-archive-save]').onclick = async event => {
+          const button = event.currentTarget; button.disabled = true;
+          const status = section.querySelector('[data-archive-status]');
+          try {
+            const payload = { selected: Array.from(section.querySelectorAll('[data-tool-id]:checked'), input => input.dataset.toolId) };
+            for (const op of ['compress', 'extract']) payload[op + '_default'] = section.querySelector(`[name="${op}_default"]`).value;
+            if (section.querySelector('[name="custom_enabled"]').checked) {
+              payload.custom = {};
+              for (const field of ['name', 'executable', 'compress_args', 'extract_args']) {
+                const value = section.querySelector(`[name="custom_${field}"]`).value;
+                payload.custom[field] = field.endsWith('_args') ? JSON.parse(value) : value;
+              }
+              for (const op of ['compress', 'extract']) payload.custom[op + '_formats'] = section.querySelector(`[name="custom_${op}_formats"]`).value.toLowerCase().split(',').map(value => value.trim()).filter(Boolean);
+            }
+            const result = await apiPost('/archive/tools/settings', payload, { silentError: true });
+            catalog.settings = result.settings; status.textContent = '設定を保存しました';
+          } catch (error) { status.textContent = error instanceof SyntaxError ? '引数をJSON配列で入力してください' : error?.message || '設定を保存できませんでした'; }
+          finally { button.disabled = false; }
+        };
+      } catch (error) { section.textContent = error?.message || 'ソフトを検出できませんでした'; }
+    }
+    paint(false);
+  }
+  const observer = new MutationObserver(() => document.querySelectorAll('.settings-modal').forEach(renderSettings));
+  async function resumeJobs() {
+    if (!desktop() || typeof runBackgroundJob !== 'function') return;
+    try {
+      const data = await apiFetch('/jobs?category=archive&active_only=1', { silentError: true });
+      for (const job of data.jobs || []) {
+        if (global.MeldexOperationProgress?.findByPersistentJobId(job.id)) continue;
+        runBackgroundJob('/archive/run', {}, { resumeJobId: job.id, operationKind: 'archive', label: job.label || '圧縮・解凍', successMessage: (job.label || '圧縮・解凍') + 'が完了しました', operationDelayMs: 0, pollIntervalMs: 200 })
+          .then(async result => {
+            if (!result.path) return;
+            if (typeof pushCreatedOutlinerItemHistory === 'function') pushCreatedOutlinerItemHistory({ path: result.path, kind: result.is_dir ? 'folder' : 'file' }, 'フォルダ: 圧縮・解凍', { scope: '' });
+            await refreshAffected(result);
+          }).catch(error => showStatus(error?.message || '処理の結果を確認できませんでした', error?.name !== 'AbortError'));
+      }
+    } catch { /* 次の画面起動時に再確認できる。未確認を成功にしない。 */ }
+  }
+  function start() { observer.observe(document.documentElement, { childList: true, subtree: true }); document.querySelectorAll('.settings-modal').forEach(renderSettings); resumeJobs(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+  global.MeldexArchiveTools = { desktop, load, toolsFor, run, appendMenu, renderSettings, refreshAffected };
+})(window);
+
+;
+
 /* === gb-tool-calendar-production-api.js === */
 ;
 /* gb-tool-calendar-production-api.js: production management option-panel API */
@@ -836,6 +1093,66 @@
   }
   function invalidateReady() { readyCache = null; }
 
+  const entryHistoryRows = new Map();
+  const SIMPLE_HISTORY_PROPERTIES = new Set(['備考', '優先度', '階層数', '階層ラベル']);
+  let entryHistoryContext = '', entryHistoryGeneration = 0;
+  function assigneeHistoryIsSafe(row) {
+    const engine = window.MeldexProductionTaskActualEngine;
+    if (typeof engine?.normalizeTaskStatus !== 'function') return false;
+    const status = engine.normalizeTaskStatus(row?.properties?.['状況']);
+    return typeof status === 'string' && [engine.CANONICAL_STATUS_NOT_STARTED, engine.CANONICAL_STATUS_PENDING,
+      engine.CANONICAL_STATUS_REVIEW_WAITING, engine.CANONICAL_STATUS_DONE].includes(status);
+  }
+  function historyContext() {
+    const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const key = JSON.stringify([typeof getUsername === 'function' ? getUsername() : '',
+      typeof state !== 'undefined' ? state.vaultPath || '' : '',
+      window.MeldexRuntimeAdapter?.getMode?.() || '',
+      window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
+      workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || '',
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+    if (key !== entryHistoryContext) { entryHistoryContext = key; entryHistoryGeneration++; entryHistoryRows.clear(); }
+    return entryHistoryGeneration;
+  }
+
+  async function patchEntryWithHistory(payload, previous, history = {}) {
+    const generation = historyContext();
+    const result = await request('/production-management/entries', { method: 'PATCH', body: payload });
+    if (generation !== historyContext() || !result?.row) return result;
+    const key = String(result.row.path || payload.path || '');
+    entryHistoryRows.set(key, result.row);
+    const names = Object.keys(payload.properties || {});
+    // 作業中の状況・担当変更は実績区間に影響する。閉じた区間を変更しない状態の
+    // 担当変更だけ、版を照合する逆PATCHで計画の改訂を追加して戻す。
+    const assigneeChange = names.includes('担当者');
+    const safeAssignee = assigneeChange && assigneeHistoryIsSafe(previous) && assigneeHistoryIsSafe(result.row);
+    if (!names.length || !names.every(name => SIMPLE_HISTORY_PROPERTIES.has(name) || name === '担当者' && safeAssignee)
+        || !previous || result.unchanged || typeof historyPush !== 'function') return result;
+    const before = Object.fromEntries(names.map(name => [name, previous.properties?.[name] ?? '']));
+    const after = Object.fromEntries(names.map(name => [name, result.row.properties?.[name] ?? '']));
+    const restore = async properties => {
+      if (historyContext() !== generation) {
+        const error = new Error('制作管理の対象が切り替わったため、この履歴は使えません');
+        error.code = 'production_history_context_changed'; throw error;
+      }
+      const current = entryHistoryRows.get(key);
+      if (assigneeChange && !assigneeHistoryIsSafe(current)) {
+        const error = new Error('現在作業中のため、この担当変更を取り消せません。現在の担当を確認して変更してください');
+        error.code = 'production_assignee_history_active'; throw error;
+      }
+      const restored = await request('/production-management/entries', { method: 'PATCH', body: {
+        ...payload, properties, entry_revision: current.entry_revision,
+        transport_revision: current.transport_revision, expectedModified: current.modified || '',
+      } });
+      entryHistoryRows.set(key, restored.row);
+      try { await history.onRestore?.(restored.row); }
+      catch (error) { history.onRefreshError?.(error); console.warn('[Production] 履歴の保存後に表示を更新できませんでした', error); }
+    };
+    historyPush(history.label || '制作管理を編集', () => restore(before), () => restore(after), history.scope || '');
+    return result;
+  }
+
   window.MeldexProductionApi = {
     summary: () => request('/production-management/summary'),
     status: () => request('/production-management/status'),
@@ -846,6 +1163,8 @@
     taskCreateCatalog: () => request('/production-management/task-create-catalog'),
     createTaskSheet: (payload) => request('/production-management/task-sheets', { method: 'POST', body: payload }),
     queryTasks: (payload = {}) => request('/production-management/tasks/query', { method: 'POST', body: payload }),
+    patchEntryWithHistory,
+    contextGeneration: historyContext,
     patchEntry: (payload) => request('/production-management/entries', { method: 'PATCH', body: payload }),
     createEntry: (payload) => request('/production-management/entries', { method: 'POST', body: payload }),
     previewTasks: (payload) => request('/production-management/tasks/preview', { method: 'POST', body: payload }),
@@ -5316,6 +5635,10 @@
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.findPaneWithTab === 'function' && typeof GBTabs.closeTab === 'function') {
       const detailTab = GBTabs.findPaneWithTab('detail', '');
       if (detailTab) {
+        if (typeof GBLayout !== 'undefined' && GBLayout.isFixedRailPane?.(detailTab.paneId)) {
+          window.GBDockPopup?.close?.();
+          return;
+        }
         GBTabs.closeTab(detailTab.paneId, detailTab.tabId);
         return;
       }
@@ -5417,6 +5740,7 @@
       control.type = 'checkbox';
       control.checked = String(rawValue || '').trim().toLowerCase() === 'true';
       control.dataset.propName = name;
+      control.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name);
       const caption = document.createElement('span');
       caption.textContent = labelText;
       label.append(control, caption);
@@ -5435,10 +5759,12 @@
       const parts = String(rawValue || '').split('|');
       const start = document.createElement('input');
       start.type = 'datetime-local';
+      start.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name) + '-start';
       start.value = dateInputValue(parts[0]);
       start.setAttribute('aria-label', `${labelText} 開始`);
       const end = document.createElement('input');
       end.type = 'datetime-local';
+      end.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name) + '-end';
       end.value = dateInputValue(parts[1]);
       end.setAttribute('aria-label', `${labelText} 終了`);
       wrap.append(start, end);
@@ -5507,6 +5833,7 @@
     if (control.tagName === 'SELECT') control.className = 'gb-select ' + (type === 'status' || type === 'priority' ? 'gb-select-medium' : 'gb-select-column');
     control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
+    control.dataset.e2eId = 'gb-production-field-' + encodeURIComponent(name);
     label.appendChild(control);
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
   }
@@ -5716,11 +6043,21 @@
         const workRow = (data.rows || []).find(item => item.name === work || prop(item, '作品タイトル_話数') === work);
         if (!workRow) throw new Error('作品リストに対象の作品が見つかりません');
         const labels = controls.map(item => item.value().trim()).map((value, index) => value || NEW_LEVEL_NAMES[index]);
-        await api().patchEntry({
+        await api().patchEntryWithHistory({
           sheet: '作品リスト', path: workRow.path, id: workRow.id,
           entry_revision: workRow.entry_revision,
           transport_revision: workRow.transport_revision,
           properties: { '階層数': '3', '階層ラベル': labels.join(',') },
+        }, workRow, {
+          label: '分類名を編集', scope: 'schedule:' + (component?.tabId || ''),
+          onRestore: updated => {
+            const restoredLabels = String(updated.properties?.['階層ラベル'] || '').split(',');
+            if (component?._productionTaskState?.workMeta?.[work]) {
+              component._productionTaskState.workMeta[work].classification_labels = restoredLabels;
+            }
+            emitUpdated(row, 'classification-labels'); syncTask(row, component);
+          },
+          onRefreshError: () => status('変更は保存しましたが、表示を更新できませんでした', true),
         });
         if (component?._productionTaskState?.workMeta?.[work]) {
           component._productionTaskState.workMeta[work].classification_labels = labels;
@@ -5779,6 +6116,13 @@
     const entryPath = String(row?.path || '').trim();
     let loadSeq = 0;
     const pendingCreation = new Map();
+    const retryButton = (failed = false) => {
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'gb-btn gb-btn-sm'; retry.textContent = failed ? '再試行' : '再読み込み';
+      retry.dataset.e2eId = 'gb-production-topic-retry';
+      retry.addEventListener('click', async () => { retry.disabled = true; await render(); });
+      return retry;
+    };
     const render = async () => {
       const seq = ++loadSeq;
       host.dataset.state = 'loading';
@@ -5861,13 +6205,15 @@
           }));
           actions.appendChild(button);
         });
+        actions.appendChild(retryButton());
         host.replaceChildren(heading, list, actions);
       } catch (error) {
         if (seq !== loadSeq || !host.isConnected) return;
         host.dataset.state = 'error';
         host.setAttribute('aria-busy', 'false');
-        host.replaceChildren(state);
-        state.textContent = error?.message || 'このタスクの関連リソースを読み込めませんでした';
+        host.replaceChildren(state, retryButton(true));
+        state.textContent = '関連ノート・チャットを読み込めませんでした。再試行してください。';
+        state.title = error?.message || '';
       }
     };
     queueMicrotask(render);
@@ -6067,6 +6413,7 @@
     form.addEventListener('submit', async event => {
       event.preventDefault();
       if (window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
+      form.querySelector(':scope > [data-e2e-id="gb-production-task-detail-error"]')?.remove();
       const properties = changedProperties();
       if (!Object.keys(properties).length) {
         status('変更はありません');
@@ -6076,12 +6423,16 @@
       const savingState = STATE.get(options.body);
       if (savingState) savingState.saveInFlight = true;
       try {
-        const result = await api().patchEntry({
+        const result = await api().patchEntryWithHistory({
           sheet: 'タスクリスト', path: row.path, id: row.id,
           expectedModified: row.modified || '',
           entry_revision: row.entry_revision,
           transport_revision: row.transport_revision,
           properties,
+        }, row, {
+          label: 'タスクを編集', scope: 'schedule:' + (component?.tabId || ''),
+          onRestore: updated => { emitUpdated(updated); syncTask(updated, component); },
+          onRefreshError: () => status('変更は保存しましたが、表示を更新できませんでした', true),
         });
         const updated = result.row || row;
         status('タスクを保存しました');
@@ -6108,8 +6459,19 @@
           status('タスクは保存しましたが、カレンダーを再読み込みできませんでした。カレンダーを再読み込みしてください', true);
         }
       } catch (error) {
-        status(error?.message || 'タスクを保存できませんでした', true);
         setFormBusy(false);
+        const translated = window.MeldexErrorMessages?.translate?.(error, { path: row.path });
+        const reason = String(error?.userMessage || (translated?.matched
+          ? [translated.message, translated.action].filter(Boolean).join(' ') : error?.message)
+          || '保存先を確認して再試行してください。')
+          .replace(/^\s*HTTP\s+\d{3}\s*:?\s*/i, '');
+        const message = 'タスクを保存できませんでした。入力はそのままです。 ' + reason;
+        const feedback = window.GBUI.createInlineError(message);
+        feedback.dataset.e2eId = 'gb-production-task-detail-error';
+        feedback.title = String(error?.message || '');
+        form.insertBefore(feedback, actions);
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        status(message, true);
       } finally {
         if (savingState) savingState.saveInFlight = false;
       }
@@ -6184,9 +6546,15 @@
       classificationDirty: false,
       pendingRow: null,
       saveInFlight: false,
+      contextGeneration: window.MeldexProductionApi?.contextGeneration?.() ?? null,
       revision: Number(previous.revision || 0) + 1,
     };
     STATE.set(body, state);
+    if (state.row?.path) {
+      window.GBOptionTargetContext?.set?.({ path: state.row.path, kind: 'file' }, 'production-task');
+      const detailEl = body.closest?.('#rp-detail');
+      if (detailEl) window.GBOptionTargetContext?.renderHeader?.(detailEl);
+    }
     const context = { ...options, body, row: state.row, component, revision: state.revision };
     delete context.eventRequestId;
     const content = buildShell(body, state, context);
@@ -6244,7 +6612,8 @@
       state.pendingRow = row;
       return { synced: false, dirty: true };
     }
-    render(body, { mode: 'detail', row, component: component || state.component });
+    const forceDetail = !!body.querySelector('[data-e2e-id="gb-production-task-detail-form"]');
+    render(body, { mode: 'detail', row, component: component || state.component, forceDetail });
     return { synced: true, dirty: false };
   }
 
@@ -6305,6 +6674,11 @@
     if (!body) return;
     const current = STATE.get(body);
     if ((current?.mode && current.mode !== 'detail') || current?.detailDirty || current?.taskDetailDirty || current?.classificationDirty) return;
+    const rows = component?._productionTaskState?.allView?._rows;
+    if (current?.row && current.component === component && current.contextGeneration != null
+      && current.contextGeneration === window.MeldexProductionApi?.contextGeneration?.()
+      && Array.isArray(rows) && rows.some(row => rowIdentity(row) === rowIdentity(current.row))
+      && body.querySelector('[data-e2e-id="gb-production-task-detail-form"]')) return;
     if (!body.querySelector('[data-e2e-id="gb-production-task-list-sidebar-note"]')) {
       render(body, { mode: 'detail', row: null, component, taskListSurface: true });
     }
@@ -8675,7 +9049,9 @@
 
   async function patchProposal(adapter, owner, id, patch, expectedRevision, workspace) {
     const record = await getProposal(adapter, owner, id, workspace);
-    if (record.payload.status !== 'active') {
+    const reopening = record.payload.status === 'archived' && patch?.status === 'active'
+      && Object.keys(patch).length === 1 && expectedRevision != null;
+    if (record.payload.status !== 'active' && !reopening) {
       const error = new Error('採用済みまたは保管済みの案は変更できません');
       error.status = 409;
       throw error;
@@ -8719,14 +9095,22 @@
     const source = await getProposal(adapter, owner, id, workspace);
     const request = deepMerge(source.payload.allocationRequest || {}, body?.overrides || {});
     const preview = await requestContext.productionRequest('/production-management/recalculate/preview', request);
-    const branched = await branchProposal(adapter, owner, id, { name: body?.name || `${source.payload.name || '案'} 再計算` }, workspace);
-    return patchProposal(adapter, owner, branched.proposal.id, {
+    // 計算結果を含めて一度で保存し、途中の失敗で未完成の案を残さない。
+    const timestamp = nowIso();
+    const placements = canonicalPlacements(preserveFixedPlacements(source.payload.placements, preview.rows, source.payload.fixedPlacements));
+    const branch = {
+      ...structuredClone(source.payload), id: newId('proposal'),
+      name: String(body?.name || `${source.payload.name || '案'} 再計算`),
+      status: 'active', parentProposalId: id, createdAt: timestamp, updatedAt: timestamp,
       allocationRequest: request,
-      placements: preserveFixedPlacements(source.payload.placements, preview.rows, source.payload.fixedPlacements),
+      placements, placementRevision: await window.MeldexSystemStorage.computeRevision(placementProjection(placements)),
+      metrics: metrics(placements),
       inputRevision: await sourceRevision(preview.rows),
       engineVersion: ENGINE_VERSION,
       warnings: preview.warnings || [], suggestions: preview.suggestions || [],
-    }, branched.proposal.storageRevision, workspace);
+    };
+    const saved = await saveRecord(adapter, 'proposal', owner, branch, null, workspace);
+    return { ok: true, proposal: withRevision(saved) };
   }
 
   async function adoptionPreview(adapter, owner, id, workspace, requestContext) {
@@ -9116,12 +9500,15 @@
   'use strict';
 
   const CACHE = new Map();
+  // 読み取りでは進めない。連続する自分の編集・履歴復元だけが版を引き継ぐ。
+  const historyRevisions = new Map();
   let capabilities = null;
   let proposals = [];
   let selectedId = '';
   let loading = null;
   let contextKey = '';
   let contextGeneration = 0;
+  let mutationGeneration = 0;
   let listIncludesArchived = false;
   let loadingIncludesArchived = false;
   let listLoaded = false;
@@ -9151,8 +9538,9 @@
     if (key !== contextKey) {
       contextKey = key;
       contextGeneration++;
+      mutationGeneration++;
       capabilities = null; proposals = []; selectedId = ''; loading = null;
-      listIncludesArchived = false; listLoaded = false; CACHE.clear();
+      listIncludesArchived = false; listLoaded = false; CACHE.clear(); historyRevisions.clear();
     }
     return contextGeneration;
   }
@@ -9202,7 +9590,11 @@
     if (!proposal?.id) return proposal;
     CACHE.set(String(proposal.id), proposal);
     const index = proposals.findIndex(item => item.id === proposal.id);
-    if (index >= 0) proposals[index] = proposal;
+    const hidden = ['allocation-pending', 'cancelled'].includes(proposal.status)
+      || (!listIncludesArchived && ['archived', 'adopted', 'rejected'].includes(proposal.status));
+    if (hidden) {
+      if (index >= 0) proposals.splice(index, 1);
+    } else if (index >= 0) proposals[index] = proposal;
     else proposals.unshift(proposal);
     return proposal;
   }
@@ -9277,11 +9669,14 @@
       const sameFilter = loadingIncludesArchived === includeArchived;
       const result = await loading;
       assertContext(generation);
-      if (sameFilter) return result.slice();
+      if (sameFilter && result !== null) return result.slice();
       return list(force, includeArchived);
     }
+    const startedMutation = mutationGeneration;
     const pending = request(`/scheduler/proposals${query({ current_user: user(), root_path: rootPath(), include_archived: includeArchived })}`)
       .then(result => {
+        // 取得開始後の保存・取り消しを、古い一覧で巻き戻さない。
+        if (startedMutation !== mutationGeneration) return null;
         CACHE.clear();
         proposals = Array.isArray(result?.proposals) ? result.proposals.slice() : [];
         listIncludesArchived = includeArchived;
@@ -9296,7 +9691,9 @@
       }).finally(() => { if (loading === pending) loading = null; });
     loading = pending;
     loadingIncludesArchived = includeArchived;
-    return pending;
+    const result = await pending;
+    assertContext(generation);
+    return result === null ? list(true, includeArchived) : result;
   }
 
   async function get(id, force = false) {
@@ -9322,59 +9719,100 @@
     return proposal;
   }
 
-  async function createAllocation(body) {
+  async function createAllocation(body, history = null) {
+    const generation = syncContext();
     const result = await request('/scheduler/allocation/preview', {
       method: 'POST', body: { allowEstimateCompression: false, ...(body || {}) },
     });
     if (result?.cancelled) return result;
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('create');
     return result;
   }
 
-  async function patch(id, values) {
+  async function patch(id, values, history = null) {
     const generation = syncContext();
     const current = await get(id);
     assertContext(generation);
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
       method: 'PATCH', body: { patch: values, expectedRevision: current.storageRevision },
     });
+    mutationGeneration++;
+    historyRevisions.set(String(id), result.proposal.storageRevision);
     remember(result.proposal);
     emit('patch');
+    recordPatchHistory(id, current, result.proposal, values, history, generation);
     return result.proposal;
   }
 
-  async function archive(id) {
-    const generation = syncContext();
-    const current = await get(id);
-    assertContext(generation);
-    const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}${query({
-      current_user: user(), root_path: rootPath(), expected_revision: current.storageRevision,
-    })}`, { method: 'DELETE' });
+  function recordPatchHistory(id, current, updated, values, history, generation) {
+    historyRevisions.set(String(id), updated.storageRevision);
+    if (history && typeof historyPush === 'function') {
+      // 履歴が保存した版に対してだけ戻す。他人の変更を読み直して上書きしない。
+      const before = {}, after = {};
+      for (const key of Object.keys(values)) {
+        if (key === 'name' || key === 'status') {
+          before[key] = String(current[key] || ''); after[key] = String(updated[key] || '');
+        } else if (key === 'fixedPlacements') {
+          const keys = new Set([...Object.keys(current.fixedPlacements || {}), ...Object.keys(values.fixedPlacements || {})]);
+          before[key] = Object.fromEntries([...keys].map(k => [k, !!current.fixedPlacements?.[k]]));
+          after[key] = Object.fromEntries([...keys].map(k => [k, !!updated.fixedPlacements?.[k]]));
+        }
+      }
+      if (Object.keys(before).length && Object.keys(before).length === Object.keys(values).length) {
+        const restore = async payload => {
+          assertContext(generation);
+          const restored = await request(`/scheduler/proposals/${encodeURIComponent(id)}`, {
+            method: 'PATCH', body: { patch: payload, expectedRevision: historyRevisions.get(String(id)) },
+          });
+          mutationGeneration++;
+          historyRevisions.set(String(id), restored.proposal.storageRevision);
+          remember(restored.proposal);
+          if (payload.status === 'archived') {
+            proposals = proposals.filter(item => item.id !== id);
+            if (selectedId === id) await select(proposals[0]?.id || '');
+          } else if (payload.status === 'active') await select(id);
+          emit('history');
+        };
+        historyPush(history.label || '案を編集', () => restore(before), () => restore(after), history.scope || '');
+      }
+    }
+  }
+
+  async function archive(id, history = null) {
+    const proposal = await patch(id, { status: 'archived' }, history);
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);
     if (selectedId === id) await select(proposals[0]?.id || '');
     emit('archive');
-    return result.proposal;
+    return proposal;
   }
 
-  async function branch(id, name) {
+  async function branch(id, name, history = null) {
+    const generation = syncContext();
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/branch`, {
       method: 'POST', body: { name: name || '' },
     });
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('branch');
     return result.proposal;
   }
 
-  async function recalculate(id, overrides = {}) {
+  async function recalculate(id, overrides = {}, history = null) {
+    const generation = syncContext();
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/recalculate`, {
       method: 'POST', body: { overrides }, timeoutMs: 300000,
     });
+    mutationGeneration++;
     remember(result.proposal);
     await select(result.proposal.id);
+    recordPatchHistory(result.proposal.id, { status: 'archived' }, result.proposal, { status: 'active' }, history, generation);
     emit('recalculate');
     return result.proposal;
   }
@@ -9393,7 +9831,10 @@
     if (!key) throw new Error('固定する配置を特定できませんでした');
     const fixedPlacements = { ...(current.fixedPlacements || {}) };
     fixedPlacements[key] = !!fixed;
-    return patch(id, { fixedPlacements });
+    return patch(id, { fixedPlacements }, {
+      label: fixed ? '配置を固定' : '配置の固定を解除',
+      scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+    });
   }
 
   async function listBaselines() {
@@ -9414,6 +9855,7 @@
     const result = await request(`/scheduler/proposals/${encodeURIComponent(id)}/adoption/apply`, {
       method: 'POST', timeoutMs: 300000,
     });
+    mutationGeneration++;
     CACHE.delete(id);
     proposals = proposals.filter(item => item.id !== id);
     if (selectedId === id) await select(proposals[0]?.id || '');
@@ -10101,9 +10543,18 @@
 
   function placementRange(placement) {
     const direct = String(placement?.after_range || '').trim();
-    if (direct) return direct.replace('|', '〜');
-    if (placement?.start && placement?.end) return `${placement.start}〜${placement.end}`;
-    return placement?.reason || '未配置';
+    const values = direct ? direct.split('|') : [placement?.start, placement?.end];
+    const fallback = direct ? direct.replace('|', '〜')
+      : values.every(Boolean) ? `${values[0]}〜${values[1]}` : placement?.reason || '未配置';
+    if (values.length !== 2 || !values.every(Boolean)
+      || typeof parseLocalDate !== 'function' || typeof formatLocalDateTime !== 'function') return fallback;
+    const start = formatLocalDateTime(parseLocalDate(values[0]));
+    const end = formatLocalDateTime(parseLocalDate(values[1]));
+    if (!start || !end) return fallback;
+    const first = start.replaceAll('-', '/').replace('T', ' ');
+    const last = start.slice(0, 10) === end.slice(0, 10) ? end.slice(11)
+      : (start.slice(0, 4) === end.slice(0, 4) ? end.slice(5) : end).replaceAll('-', '/').replace('T', ' ');
+    return `${first}〜${last}`;
   }
 
   function renderPlacements(host, proposal, caps, refresh) {
@@ -10124,6 +10575,7 @@
       card.disabled = !writable || !key; card.setAttribute('aria-pressed', fixed ? 'true' : 'false');
       const name = document.createElement('strong'); name.textContent = placement.task_name || placement.task_id || '名称未設定のタスク';
       const range = document.createElement('span'); range.textContent = placementRange(placement);
+      range.title = String(placement.after_range || (placement.start && placement.end ? `${placement.start}〜${placement.end}` : ''));
       const assignee = document.createElement('span'); assignee.textContent = placement.user ? `担当: ${placement.user}` : '担当: 未割り当て';
       const action = document.createElement('span'); action.className = 'gb-scheduler-placement-action';
       action.append(icon(fixed ? 'unlock' : 'lock'), document.createTextNode(fixed ? '再計算に任せる' : 'この配置を固定'));
@@ -10144,7 +10596,7 @@
       const text = document.createElement('p'); text.textContent = '固定した配置を維持して、残りを再計算できます。';
       recalc.append(text, button('固定を維持して再計算', 'refreshCw', async event => {
         const control = event.currentTarget; control.disabled = true;
-        try { await Api().recalculate(proposal.id); status('固定した配置を維持して再計算しました'); await refresh(); }
+        try { await Api().recalculate(proposal.id, {}, { label: '案を再計算', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '' }); status('固定した配置を維持して再計算しました'); await refresh(); }
         catch (error) { control.disabled = false; status(Api().errorMessage(error), true); }
       }, { primary: true, disabled: !caps.features?.proposalRecalculate || !writable, e2eId: 'scheduler-fixed-recalculate' }));
       section.appendChild(recalc);
@@ -10216,6 +10668,25 @@
   });
 
   function status(message, error = false) {
+    const visible = element => element.getClientRects().length && !element.closest('[aria-hidden="true"]');
+    if (error) {
+      const modals = [...document.querySelectorAll('.gb-scheduler-modal')].filter(visible);
+      const panels = [...document.querySelectorAll('[data-scheduler-allocation-host]')].filter(visible);
+      const host = modals.at(-1)?.querySelector('.gb-modal-body') || panels.at(-1);
+      if (host) {
+        let feedback = host.querySelector(':scope > .gb-scheduler-action-error');
+        if (!feedback) {
+          feedback = window.GBUI.createInlineError(message);
+          feedback.classList.add('gb-scheduler-progress', 'is-error', 'gb-scheduler-action-error');
+          host.insertBefore(feedback, host.querySelector(':scope > .gb-scheduler-proposal-actions'));
+        }
+        feedback.dataset.proposalId = Api()?.selectedId?.() || '';
+        feedback.textContent = message;
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      }
+    } else {
+      document.querySelectorAll('.gb-scheduler-action-error').forEach(element => element.remove());
+    }
     if (typeof showStatus === 'function') showStatus(message, error);
     else console[error ? 'error' : 'log'](message);
   }
@@ -10397,8 +10868,8 @@
   function allocationRequest(body, selectedPaths) {
     const request = {
       date_from: body.querySelector('[data-e2e-id="scheduler-scope-from"]')?.value || today(),
-      date_to: body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value
-        || body.querySelector('[data-e2e-id="scheduler-scope-to"]')?.value || today(14),
+      date_to: body.querySelector('[data-e2e-id="scheduler-scope-to"]')?.value
+        || body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value || today(14),
       strategy: body.querySelector('[data-e2e-id="scheduler-strategy"]')?.value || 'recommended',
       allow_overtime: !!body.querySelector('[data-e2e-id="scheduler-allow-overtime"]')?.checked,
     };
@@ -10414,6 +10885,8 @@
     }
     const estimate = Number(body.querySelector('[data-e2e-id="scheduler-common-estimate"]')?.value || 0);
     if (estimate > 0) request.default_estimate_hours = estimate;
+    const deadline = body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value;
+    if (deadline) request.common_deadline = deadline;
     request.deadline_policy = body.querySelector('[data-e2e-id="scheduler-deadline-policy"]')?.value || 'preserve';
     return request;
   }
@@ -10432,14 +10905,15 @@
     body.appendChild(selectedPaths.length ? selectedScope(selectedPaths) : noSelectionScope());
     const deadline = input('date', today(14), 'scheduler-common-deadline');
     const estimate = input('number', '', 'scheduler-common-estimate');
-    estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '既存値を使用';
+    estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '指定なし';
+    estimate.title = '見積時間が未設定のタスクだけに使います。個別の見積時間は変更しません。';
     const deadlinePolicy = document.createElement('select');
     deadlinePolicy.className = 'gb-select gb-select-sm gb-select-medium';
     deadlinePolicy.dataset.e2eId = 'scheduler-deadline-policy';
-    [['preserve', '個別の期限を維持'], ['replace', '共通の期限で上書き']].forEach(([value, label]) => {
+    [['preserve', '個別を維持'], ['replace', '共通で上書き']].forEach(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; deadlinePolicy.appendChild(option);
     });
-    body.append(field('共通の期限', deadline), field('共通の見積時間', estimate), field('既存の期限', deadlinePolicy));
+    body.append(field('共通の期限', deadline), field('未設定時の見積時間', estimate), field('既存の期限', deadlinePolicy));
     const details = document.createElement('details');
     details.className = 'gb-scheduler-advanced';
     const summary = document.createElement('summary');
@@ -10478,7 +10952,9 @@
       }, { e2eId: 'scheduler-allocation-cancel' });
       progress.appendChild(stop);
       try {
-        const result = await Api().createAllocation({ ...request, requestId });
+        const result = await Api().createAllocation({ ...request, requestId }, {
+          label: '割り当て案を作成', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+        });
         if (result.cancelled) status('自動割り当てを中止しました');
         else status(`${result.proposal.name}を作成しました`);
         modal.close('complete');
@@ -10487,6 +10963,7 @@
         progress.textContent = Api().errorMessage(error);
         progress.classList.add('is-error');
         run.disabled = false; cancel.disabled = false;
+        progress.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     }, { primary: true, e2eId: 'scheduler-allocation-create' });
     modal.footer.append(cancel, run);
@@ -10506,7 +10983,12 @@
       const next = name.value.trim();
       if (!next) return name.focus();
       save.disabled = true;
-      try { await Api().patch(current.id, { name: next }); modal.close('save'); syncAllSelectors(true); }
+      try {
+        await Api().patch(current.id, { name: next }, {
+          label: '案の名前を変更', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+        });
+        modal.close('save'); syncAllSelectors(true);
+      }
       catch (error) { save.disabled = false; status(Api().errorMessage(error), true); }
     }, { primary: true, e2eId: 'scheduler-rename-save' });
     modal.footer.append(cancel, save); modal.modal.appendChild(modal.footer); modal.open();
@@ -10554,7 +11036,12 @@
     if (!current) return;
     const ok = await confirmation('案を保管', `${current.name || 'この案'}を検討中の一覧から外します。`, '保管する');
     if (!ok) return;
-    try { await Api().archive(current.id); syncAllSelectors(true); }
+    try {
+      await Api().archive(current.id, {
+        label: '案を保管', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+      });
+      syncAllSelectors(true);
+    }
     catch (error) { status(Api().errorMessage(error), true); }
   }
 
@@ -10579,6 +11066,7 @@
 
   async function renderAllocation(host) {
     host.replaceChildren();
+    host.dataset.schedulerAllocationHost = '1';
     const renderSeq = (host.__schedulerAllocationSeq = (host.__schedulerAllocationSeq || 0) + 1);
     const checkReady = window.MeldexProductionApi?.checkReady;
     if (typeof checkReady === 'function') {
@@ -10600,11 +11088,19 @@
     const proposalDetails = document.createElement('div');
     proposalDetails.className = 'gb-scheduler-proposal-details';
     host.append(selector, summary, actions, proposalDetails);
+    let refreshSeq = 0;
     async function refresh() {
+      const seq = ++refreshSeq;
+      const isCurrent = () => seq === refreshSeq && host.__schedulerAllocationSeq === renderSeq;
       let caps;
       try { caps = await Api().loadCapabilities(); await Api().list(); }
-      catch (error) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); return; }
+      catch (error) { if (isCurrent()) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); } return; }
+      if (!isCurrent()) return;
       const current = Api().current();
+      host.querySelectorAll(':scope > .gb-scheduler-action-error').forEach(element => {
+        if (element.dataset.proposalId !== String(current?.id || '')) element.remove();
+      });
+      summary.classList.remove('is-error');
       summary.textContent = current
         ? `${current.metrics?.scheduled || 0}件配置・${current.metrics?.unassigned || 0}件未配置`
         : '確定版を表示しています';
@@ -10631,17 +11127,27 @@
       actions.append(
         button('名前を変更', 'pencil', renameCurrent, { disabled: !writable, e2eId: 'scheduler-proposal-rename' }),
         button('分岐', 'gitBranch', async () => {
-          try { await Api().branch(current.id); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
+          try {
+            await Api().branch(current.id, '', {
+              label: '案を分岐', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+            });
+            syncAllSelectors(true);
+          } catch (error) { status(Api().errorMessage(error), true); }
         }, { disabled: !caps.features?.proposalBranch, e2eId: 'scheduler-proposal-branch' }),
-        button('現在の情報で再計算', 'refreshCw', async () => {
-          try { await Api().recalculate(current.id); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
-        }, { disabled: !caps.features?.proposalRecalculate, e2eId: 'scheduler-proposal-recalculate' }),
+        button('再計算', 'refreshCw', async () => {
+          try { await Api().recalculate(current.id, {}, { label: '案を再計算', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '' }); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
+        }, { disabled: !caps.features?.proposalRecalculate, e2eId: 'scheduler-proposal-recalculate', title: '現在のタスク・勤務情報で案を作り直します。元の案は残ります。' }),
         button('比較', 'gitCompare', compareCurrent, { disabled: !caps.features?.proposalCompare, e2eId: 'scheduler-proposal-compare' }),
         button('採用', 'checkCircle', adoptCurrent, { primary: true, disabled: !caps.features?.adoptionApply || caps.allowed?.['scheduler.adopt'] === false, e2eId: 'scheduler-proposal-adopt' }),
         button('保管', 'archive', archiveCurrent, { disabled: !writable, e2eId: 'scheduler-proposal-archive' }),
       );
-      await window.MeldexSchedulerProposalControlsUi?.render?.(proposalDetails, current, caps, refresh);
-      proposalDetails.prepend(metricsLine);
+      // 比較情報を待つ間に新しい案へ切り替わっても、古い描画を表示へ追記しない。
+      const nextDetails = document.createElement('div');
+      const pendingDetails = window.MeldexSchedulerProposalControlsUi?.render?.(nextDetails, current, caps, refresh);
+      if (!isCurrent()) return;
+      // 配置と比較の読込表示は即座に出す。比較の応答はこの描画の要素だけを更新する。
+      proposalDetails.replaceChildren(metricsLine, ...nextDetails.childNodes);
+      await pendingDetails;
     }
     refresh();
     host.__schedulerRefresh = refresh;
@@ -10834,1176 +11340,6 @@
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
   else install();
-})();
-
-;
-
-/* === gb-tool-calendar-production-task-view.js === */
-;
-/* gb-tool-calendar-production-task-view.js: schedule production task workspace
- * シート表を埋め込んで直接編集し、作品別タスクリストの切替だけを表の直上に置く。
- * 管理リストはカレンダー共通の上段タブから開き、制作操作は共通ツールバーへ集約する。
- * 選択中リストは component state と tab.state の双方へ保存して再構築後も復元する。
- */
-(function() {
-  'use strict';
-
-  if (typeof CalendarComponent === 'undefined') return;
-
-  const MANAGED_LISTS = [
-    ['works', '作品設定', '作品リスト'],
-    ['targets', '作業対象', '作業対象リスト'],
-    ['contents', '作業内容', '作業内容リスト'],
-    ['scales', '作業規模', '作業規模リスト'],
-  ];
-
-  function api() {
-    if (!window.MeldexProductionApi) throw new Error('制作管理APIを初期化できませんでした');
-    return window.MeldexProductionApi;
-  }
-
-  function icon(name, size = 14) {
-    const span = document.createElement('span');
-    span.className = 'gb-production-task-icon';
-    if (typeof lucide === 'function') span.innerHTML = lucide(name, size);
-    return span;
-  }
-
-  function notify(message, error = false) {
-    if (typeof showStatus === 'function') showStatus(message, error);
-  }
-
-  function ensureProductionWritable(options) {
-    return window.MeldexProductionUiAvailability?.ensureWritable?.(options) !== false;
-  }
-
-  function syncWriteAvailability(state) {
-    const availability = window.MeldexProductionUiAvailability?.current?.()
-      || { blocked: false, reason: '', kind: '' };
-    if (state.root) {
-      if (availability.blocked) state.root.dataset.productionWriteBlocked = availability.kind || 'blocked';
-      else delete state.root.dataset.productionWriteBlocked;
-    }
-    if (state.writeAvailabilityEl) {
-      state.writeAvailabilityEl.hidden = !availability.blocked;
-      state.writeAvailabilityEl.textContent = availability.blocked
-        ? `${availability.reason}。表示、選択、フィルタ、並べ替えは利用できます。`
-        : '';
-    }
-    return availability;
-  }
-
-  function prop(row, name) {
-    return row?.properties?.[name] ?? '';
-  }
-
-  function currentUser() {
-    return typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
-  }
-
-  function makeButton(label, iconName, handler, primary = false) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-production-task-button' + (primary ? ' primary' : '');
-    if (iconName) button.appendChild(icon(iconName));
-    button.appendChild(document.createTextNode(label));
-    if (handler) button.addEventListener('click', handler);
-    return button;
-  }
-
-  // ---------------------------------------------------------------------
-  // state
-  // ---------------------------------------------------------------------
-
-  function stateFor(component) {
-    if (!component._productionTaskState) {
-      component._productionTaskState = {
-        root: null,
-        listBarEl: null,
-        writeAvailabilityEl: null,
-        embedHostEl: null,
-        embed: null,
-        allView: null,
-        sheets: [],
-        pmRootPath: '',
-        sheetsLoaded: false,
-        sheetsLoading: false,
-        sheetsError: '',
-        sheetsLoadSeq: 0,
-        workMeta: {},
-        selection: null,
-        pendingTabKey: '',
-        lastTaskSheetName: component.state?.productionTaskLastSheetName || '',
-        // タスクリスト面で最後に見ていた保存ビュー（surfaceタブ往復時の復元用）
-        lastTasksMode: component.state?.productionTaskSelection?.kind === 'all' ? 'all' : '',
-        // アプリ起動後、最初にタスクリストへ入る時だけ「すべて」を既定にする。
-        initialTaskListPending: true,
-        addingList: false,
-        // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ判定（undefined=未確認、
-        // true=開始済み、false=未セットアップ=空状態カードを表示中）。
-        productionReady: undefined,
-        productionReadyChecking: false,
-      };
-    }
-    return component._productionTaskState;
-  }
-
-  // /production-management/status は _ensure_existing_or_template を呼ばない唯一の読み取り
-  // のため、これで未セットアップと確認できたら taskSheets() 等の自己修復読み取りを呼ばず、
-  // 空状態カードだけを表示する。checkReady が無いAPI実装（テスト用の簡易スタブ等）では
-  // ゲート自体を素通りし、既存どおりの挙動にfail-openする。
-  function ensureProductionReadyGate(component, state) {
-    if (state.productionReady === true) return true;
-    const checkReady = window.MeldexProductionApi?.checkReady;
-    if (typeof checkReady !== 'function') { state.productionReady = true; return true; }
-    if (state.productionReady === false || state.productionReadyChecking) return false;
-    state.productionReadyChecking = true;
-    checkReady().then(ready => {
-      state.productionReadyChecking = false;
-      state.productionReady = !!ready;
-      component._renderProductionTaskView();
-    }).catch(() => {
-      state.productionReadyChecking = false;
-      state.productionReady = true;
-      component._renderProductionTaskView();
-    });
-    return false;
-  }
-
-  function renderProductionEmptyState(component, state) {
-    if (!state.embedHostEl) return;
-    state.listBarEl?.replaceChildren();
-    state.embed?.setVisible(false);
-    state.allView?.setVisible(false);
-    // 依頼8の追加調査で判明した実バグの修正: ensureWorkspaceMounted() は必ずこの関数より先に
-    // 呼ばれており、埋め込みシートは既にここへマウント済み（display:none で非表示にしただけ）。
-    // 埋め込みシートの containerEl は「非表示時もDOMから外さない」制約を持つ
-    // （gb-tool-calendar-production-sheet-embed.js の _setVisible。detachすると
-    // _resolveDatabasePaneContext() がグローバルstateへ静かにフォールバックし、以後
-    // setVisible(true)しても復帰しない）。かつて embedHostEl 全体を replaceChildren() で
-    // 置き換えていたため、この制約に反して埋め込みシートのDOMごと外れてしまい、
-    // 未セットアップ判定→開始操作後もタスクリストが永久に表示されない不具合があった
-    // （制作管理UX改善計画 2026-08-04 §6-1 空状態カード追加時に再発を確認・修正）。
-    // 空状態カードは埋め込みシートの兄弟として追加し、カード自身だけを追跡して差し替える。
-    state._emptyStateCardEl?.remove();
-    state._emptyStateCardEl = null;
-    if (state.productionReadyChecking) return;
-    const card = window.MeldexProductionManagementActions?.emptyStateCard?.(() => {
-      state.productionReady = true;
-      component._renderProductionTaskView();
-    });
-    if (card) {
-      state.embedHostEl.appendChild(card);
-      state._emptyStateCardEl = card;
-    }
-  }
-
-  // 他の画面（管理操作パネル）から制作管理を開始した場合も、このタスクリスト面の
-  // 空状態を解除して再読み込みする。
-  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-    document.addEventListener('meldex:production-management-started', () => {
-      if (typeof forEachComponent !== 'function' || typeof CalendarComponent === 'undefined') return;
-      forEachComponent(instance => {
-        const state = instance instanceof CalendarComponent ? instance._productionTaskState : null;
-        if (!state || state.productionReady === true) return;
-        state.productionReady = true;
-        state.productionReadyChecking = false;
-        if (instance._surface === 'productionTasks' && typeof instance._renderProductionTaskView === 'function') {
-          instance._renderProductionTaskView();
-        }
-      });
-    });
-  }
-
-  // 旧「かんたん割当」（等分配・equal_until_deadline方式の簡易割当ボタン）は廃止し、
-  // フル再計算エンジンへ一本化した（2026-08-05 ユーザー判断。当時の表示名は「割当再計算」）。
-  // 2026-08-08 にユーザー判断で表示名のみ「自動割り当て」へ差し戻した。ここでは
-  // その自動割り当てボタンの状態だけを同期する。
-  function syncQuickPlanToolbar(component, state) {
-    // フル再計算エンジン（自動割り当て）はCloud（Dropboxモード）にも移植済み
-    // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
-    // dropboxMode による無効化は撤去し、Desktop/Cloud両対応にする。
-    const recalculateButton = component.el?.querySelector?.('[data-e2e-id="gb-production-task-recalculate"]');
-    if (recalculateButton) {
-      recalculateButton.disabled = false;
-      recalculateButton.title = '自動割り当て';
-      recalculateButton.setAttribute('aria-label', '自動割り当て');
-    }
-  }
-
-  function productionSheetDisplayReady(state) {
-    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
-      return !!state.allView?.isReady?.();
-    }
-    const path = String(state.selection?.path || '');
-    const ctx = state.embed?.ctx;
-    return !!path && !state.sheetsLoading && !state.embedLoading
-      && state.embed?.getCurrentPath?.() === path
-      && ctx?.dbPath === path
-      && !!ctx.pivotData;
-  }
-
-  function syncSheetDisplayToolbar(component, state) {
-    const ready = productionSheetDisplayReady(state);
-    ['gb-production-sheet-auto-fit', 'gb-production-sheet-column-display-order', 'gb-production-sheet-filter', 'gb-production-sheet-sort'].forEach(id => {
-      const button = component.el?.querySelector?.(`[data-e2e-id="${id}"]`);
-      if (!button) return;
-      button.disabled = !ready;
-      button.setAttribute('aria-busy', ready ? 'false' : 'true');
-      if (!ready) button.title = '表示中のシートを読み込んでから利用できます';
-      else button.title = button.getAttribute('aria-label') || '';
-    });
-  }
-
-  function managedListInfo(managedKey) {
-    return MANAGED_LISTS.find(([key]) => key === managedKey) || null;
-  }
-
-  function managedPath(state, sheetName) {
-    return state.pmRootPath ? `${state.pmRootPath}/シート/${sheetName}` : '';
-  }
-
-  function buildWorkMeta(listData) {
-    const meta = {};
-    (listData?.rows || []).forEach(row => {
-      const title = row.name || prop(row, '作品タイトル_話数');
-      if (!title) return;
-      const labels = String(prop(row, '階層ラベル') || '').split(/[,、]/).map(part => part.trim()).filter(Boolean).slice(0, 3);
-      meta[title] = {
-        classification_labels: labels,
-        classification_count: Number(prop(row, '階層数')) || labels.length,
-      };
-    });
-    return meta;
-  }
-
-  // ---------------------------------------------------------------------
-  // sheet-list / work-meta loading
-  // ---------------------------------------------------------------------
-
-  async function loadSheetsAndMeta(component, state, options = {}) {
-    if (state.sheetsLoading && !options.force) return;
-    const seq = ++state.sheetsLoadSeq;
-    state.sheetsLoading = true;
-    state.sheetsError = '';
-    syncQuickPlanToolbar(component, state);
-    syncSheetDisplayToolbar(component, state);
-    renderListBar(component, state);
-    try {
-      let sheetData;
-      let workData;
-      if (typeof api().taskCreateCatalog === 'function') {
-        try {
-          const snapshot = await api().taskCreateCatalog();
-          sheetData = { root: snapshot?.root || '', sheets: snapshot?.task_sheets || [] };
-          workData = snapshot?.works || { rows: [] };
-        } catch (_error) {
-          // Compatibility for Cloud providers from before the combined catalog read.
-        }
-      }
-      if (!sheetData) {
-        [sheetData, workData] = await Promise.all([
-          api().taskSheets(),
-          api().list('作品リスト', { limit: 1000 }).catch(() => ({ rows: [] })),
-        ]);
-      }
-      if (seq !== state.sheetsLoadSeq) return;
-      state.sheets = Array.isArray(sheetData?.sheets) ? sheetData.sheets : [];
-      state.pmRootPath = String(sheetData?.root || '').replace(/[\\/]+$/, '');
-      state.workMeta = buildWorkMeta(workData);
-      state.sheetsLoaded = true;
-      ensureSelectionDefault(component, state);
-    } catch (error) {
-      if (seq !== state.sheetsLoadSeq) return;
-      state.sheetsError = error?.message || 'タスクリストを読み込めませんでした';
-    } finally {
-      if (seq === state.sheetsLoadSeq) state.sheetsLoading = false;
-    }
-    syncQuickPlanToolbar(component, state);
-    syncSheetDisplayToolbar(component, state);
-    renderListBar(component, state);
-    component._syncSurfaceControls?.();
-    if (state.selection && options.openSelection !== false) openSelectionIfNeeded(component, state);
-    else state.allView?.setVisible(false);
-  }
-
-  function preferredTaskSheet(component, state) {
-    const sheetName = state.lastTaskSheetName || component.state?.productionTaskLastSheetName || '';
-    return state.sheets.find(sheet => sheet.sheet_name === sheetName) || state.sheets[0] || null;
-  }
-
-  function ensureSelectionDefault(component, state) {
-    const requestedTab = state.pendingTabKey;
-    if (state.initialTaskListPending && (!requestedTab || requestedTab === 'tasks')) {
-      state.initialTaskListPending = false;
-      if (state.sheets.length) selectAllLists(component, state, { persist: true, open: false });
-      else state.selection = null;
-      return;
-    }
-    if (requestedTab === 'tasks') {
-      if (state.lastTasksMode === 'all' && state.sheets.length) {
-        selectAllLists(component, state, { persist: false, open: false });
-        return;
-      }
-      const sheet = preferredTaskSheet(component, state);
-      if (sheet) selectTaskList(component, state, sheet, { persist: false, open: false });
-      else { state.pendingTabKey = ''; state.selection = null; }
-      return;
-    }
-    if (requestedTab) {
-      const managed = managedListInfo(requestedTab);
-      if (managed) { selectManagedList(component, state, managed, { persist: false, open: false }); return; }
-      state.pendingTabKey = '';
-    }
-    if (state.selection) {
-      if (state.selection.kind === 'all') {
-        if (state.sheets.length) return;
-        state.selection = null;
-      } else {
-        if (state.selection.kind === 'managed') {
-          const managed = managedListInfo(state.selection.managedKey);
-          if (managed) {
-            state.selection.path = managedPath(state, managed[2]);
-            return;
-          }
-        }
-        if (state.sheets.some(sheet => sheet.sheet_name === state.selection.sheetName)) return;
-      }
-    }
-    const pending = component.state?.productionTaskSelection;
-    if (pending?.kind === 'all' && state.sheets.length) {
-      selectAllLists(component, state, { persist: false, open: false });
-      return;
-    }
-    if (pending?.kind === 'managed') {
-      const managed = managedListInfo(pending.managedKey);
-      if (managed) { selectManagedList(component, state, managed, { persist: false, open: false }); return; }
-    } else if (pending?.kind === 'task' && pending.sheetName) {
-      const sheet = state.sheets.find(item => item.sheet_name === pending.sheetName);
-      if (sheet) { selectTaskList(component, state, sheet, { persist: false, open: false }); return; }
-    }
-    if (state.sheets.length) selectTaskList(component, state, state.sheets[0], { persist: false, open: false });
-    else state.selection = null;
-  }
-
-  // ---------------------------------------------------------------------
-  // selection
-  // ---------------------------------------------------------------------
-
-  function selectTaskList(component, state, sheet, options = {}) {
-    state.addingList = false;
-    state.pendingTabKey = '';
-    state.lastTaskSheetName = sheet.sheet_name;
-    state.lastTasksMode = 'sheet';
-    state.selection = { kind: 'task', workTitle: sheet.work_title || sheet.sheet_name, sheetName: sheet.sheet_name, path: sheet.dir, label: sheet.work_title || sheet.sheet_name };
-    renderListBar(component, state);
-    component._syncSurfaceControls?.();
-    syncQuickPlanToolbar(component, state);
-    syncSheetDisplayToolbar(component, state);
-    if (options.persist !== false) persistSelection(component, state);
-    if (options.open !== false) {
-      return openSelectionIfNeeded(component, state, { refreshCurrent: options.refreshCurrent === true });
-    }
-    return Promise.resolve(true);
-  }
-
-  // 「すべて」: 一つの論理シートから作品フィルター無しの保存ビューを選ぶ。
-  function selectAllLists(component, state, options = {}) {
-    if (!state.sheets.length) return Promise.resolve(false);
-    state.addingList = false;
-    state.pendingTabKey = '';
-    state.lastTasksMode = 'all';
-    state.selection = { kind: 'all', label: 'すべて', workTitle: '', sheetName: '', path: '' };
-    renderListBar(component, state);
-    component._syncSurfaceControls?.();
-    syncQuickPlanToolbar(component, state);
-    syncSheetDisplayToolbar(component, state);
-    if (options.persist !== false) persistSelection(component, state);
-    if (options.open !== false) {
-      return openSelectionIfNeeded(component, state, { refreshCurrent: options.refreshCurrent === true });
-    }
-    return Promise.resolve(true);
-  }
-
-  // selectManagedList 自体は async 関数だが、await を使わないため呼び出しと
-  // 同じ同期ターン内で完了する（作品設定/作業対象/作業内容/作業規模タブの
-  // 選択タイミングに余計な非同期の一拍を持ち込まない）。
-  async function selectManagedList(component, state, managedInfo, options = {}) {
-    const [key, label, sheetName] = managedInfo;
-    state.addingList = false;
-    state.pendingTabKey = '';
-    state.selection = { kind: 'managed', managedKey: key, label, sheetName, path: managedPath(state, sheetName) };
-    renderListBar(component, state);
-    component._syncSurfaceControls?.();
-    syncQuickPlanToolbar(component, state);
-    syncSheetDisplayToolbar(component, state);
-    if (options.persist !== false) persistSelection(component, state);
-    if (options.open !== false) openSelectionIfNeeded(component, state);
-  }
-
-  function persistSelection(component, state) {
-    if (!component.state) return;
-    component.state.productionTaskSelection = state.selection ? {
-      kind: state.selection.kind,
-      workTitle: state.selection.workTitle || '',
-      sheetName: state.selection.sheetName || '',
-      managedKey: state.selection.managedKey || '',
-    } : null;
-    component.state.productionTaskLastSheetName = state.lastTaskSheetName || '';
-    if (typeof component._persistViewToTabState === 'function') component._persistViewToTabState(component._view);
-  }
-
-  function persistPendingTab(component, state, key) {
-    if (!component.state) return;
-    component.state.productionTaskSelection = key === 'tasks'
-      ? (state.lastTasksMode === 'all'
-        ? { kind: 'all', workTitle: '', sheetName: '', managedKey: '' }
-        : { kind: 'task', workTitle: '', sheetName: state.lastTaskSheetName || '', managedKey: '' })
-      : { kind: 'managed', workTitle: '', sheetName: '', managedKey: key };
-    component.state.productionTaskLastSheetName = state.lastTaskSheetName || '';
-    component._persistViewToTabState?.(component._view);
-  }
-
-  async function openSelectionIfNeeded(component, state, options = {}) {
-    syncSheetDisplayToolbar(component, state);
-    if (!state.selection || !state.embed) return false;
-    if (state.selection.kind === 'all' || state.selection.kind === 'task') return openTaskSheetView(component, state, options);
-    state.allView?.setVisible(false);
-    state.embed.setVisible(true);
-    if (!state.selection.path) {
-      notify('制作管理の保存場所を確認できませんでした', true);
-      return false;
-    }
-    const currentPath = state.embed.getCurrentPath();
-    const currentReady = currentPath === state.selection.path
-      && state.embed.ctx?.dbPath === state.selection.path
-      && !!state.embed.ctx?.pivotData;
-    if (currentReady) {
-      state.embedLoading = false;
-      if (options.refreshCurrent === true) {
-        const refreshed = !!(await state.embed.refresh());
-        syncSheetDisplayToolbar(component, state);
-        renderListBar(component, state);
-        return refreshed;
-      }
-      syncSheetDisplayToolbar(component, state);
-      renderListBar(component, state);
-      return true;
-    }
-    // 先行する open() が後発の選択に追い越された場合、getCurrentPath() だけが
-    // 一致して ctx.pivotData が空のまま残ることがある。同一パスでも実データが
-    // 揃っていなければ必ず再読込し、空表示を固定化させない。
-    const targetPath = state.selection.path;
-    const reqSeq = (state._openSeq = (state._openSeq || 0) + 1);
-    state.embedLoading = true;
-    syncSheetDisplayToolbar(component, state);
-    let opened = false;
-    try {
-      opened = !!(await state.embed.open(targetPath, {
-        forceReload: currentPath === targetPath,
-      }));
-    } finally {
-      if (reqSeq === state._openSeq) {
-        state.embedLoading = false;
-      }
-    }
-    if (reqSeq !== state._openSeq || state.selection?.path !== targetPath) {
-      return false;
-    }
-    syncSheetDisplayToolbar(component, state);
-    renderListBar(component, state);
-    return opened;
-  }
-
-  // 「すべて」と各作品は同じ論理シートの保存ビューとして、一つのインスタンスで切り替える。
-  async function openTaskSheetView(component, state, options = {}) {
-    if (!window.MeldexProductionAllView) {
-      notify('すべて表示を初期化できませんでした', true);
-      return false;
-    }
-    if (!state.allView) {
-      state.allView = window.MeldexProductionAllView.create({
-        idSuffix: (component.tabId || component.paneId || 'production') + '-all',
-        // 作品セルから対応する保存ビューへ移動する。
-        onOpenWork: sheet => selectTaskList(component, state, sheet),
-        onSelectView: workTitle => {
-          if (!workTitle) return selectAllLists(component, state);
-          const sheet = state.sheets.find(item => String(item?.work_title || item?.sheet_name || '') === String(workTitle));
-          return sheet ? selectTaskList(component, state, sheet) : false;
-        },
-        // 行クリック: フラット表はセル直接編集を持たないため、既存のタスク詳細サイドバーを
-        // 強制的に開く（作品別タブでは埋め込みシート自体が編集場所のため通常は抑止される）
-        onOpenTask: row => window.MeldexProductionSidebar?.openTask?.(row, component, { forceDetail: true }),
-      });
-    }
-    if (!state.allView.isMounted()) state.allView.mount(state.embedHostEl);
-    state.embed?.setVisible(false);
-    state.allView.setVisible(true);
-    // 作品ドロップダウン・作品セルの「作品タブで開く」導線用に、タブバーの並び順に合わせて
-    // シート一覧を渡す（閉じたタブのシートも末尾に含める）
-    const tabsModule = window.MeldexProductionListTabs;
-    const arranged = tabsModule ? tabsModule.arrange(state.sheets, state.pmRootPath) : null;
-    const orderedSheets = arranged ? arranged.visible.concat(arranged.hidden) : state.sheets;
-    const opened = await state.allView.open(orderedSheets, {
-      pmRoot: state.pmRootPath,
-      refresh: options.refreshCurrent === true,
-      viewWork: state.selection?.kind === 'task' ? state.selection.workTitle : '',
-    });
-    syncSheetDisplayToolbar(component, state);
-    return opened;
-  }
-
-  async function refreshEmbedAfterMutation(component) {
-    const state = stateFor(component);
-    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
-      if (!state.allView?.isMounted?.()) return { ok: true, skipped: true };
-      return { ok: !!(await state.allView.refresh()) };
-    }
-    if (!state.embed || !state.embed.getCurrentPath()) return { ok: true, skipped: true };
-    const ok = await state.embed.refresh();
-    return { ok: !!ok };
-  }
-
-  // ---------------------------------------------------------------------
-  // list switch bar (rebuilt in place, without touching the embed)
-  // ---------------------------------------------------------------------
-
-  function listSwitchButton(label, active, e2eId, onSelect) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-production-list-switch-btn' + (active ? ' is-active' : '');
-    button.setAttribute('role', 'tab');
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
-    button.tabIndex = active ? 0 : -1;
-    button.dataset.e2eId = e2eId;
-    button.textContent = label;
-    button.addEventListener('click', onSelect);
-    return button;
-  }
-
-  function buildAddListControl(component, state) {
-    const wrap = document.createElement('span');
-    wrap.className = 'gb-production-list-switch-add';
-    if (!state.addingList) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'gb-production-list-switch-btn gb-production-list-switch-add-btn';
-      button.title = 'タスクリストを追加';
-      button.setAttribute('aria-label', 'タスクリストを追加');
-      button.dataset.e2eId = 'gb-production-list-switch-add-open';
-      button.appendChild(icon('plus', 14));
-      window.MeldexProductionUiAvailability?.markWriteControl?.(button);
-      button.addEventListener('click', () => {
-        state.addingList = true;
-        renderListBar(component, state);
-        state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]')?.focus();
-      });
-      wrap.appendChild(button);
-      return wrap;
-    }
-    const form = document.createElement('form');
-    form.className = 'gb-production-list-switch-add-form';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = '作品名（新しいタスクリスト）';
-    input.dataset.e2eId = 'gb-production-list-switch-add-input';
-    input.setAttribute('aria-label', '新しいタスクリストの作品名');
-    window.MeldexProductionUiAvailability?.markWriteControl?.(input);
-    const cancel = () => { state.addingList = false; renderListBar(component, state); };
-    input.addEventListener('keydown', event => {
-      if (event.key === 'Escape') { event.preventDefault(); cancel(); }
-    });
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'submit';
-    confirmBtn.className = 'gb-production-list-switch-add-confirm';
-    confirmBtn.dataset.e2eId = 'gb-production-list-switch-add-confirm';
-    confirmBtn.setAttribute('aria-label', '追加を確定');
-    confirmBtn.appendChild(icon('check', 14));
-    window.MeldexProductionUiAvailability?.markWriteControl?.(confirmBtn);
-    window.MeldexProductionUiAvailability?.markWriteForm?.(form);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'gb-production-list-switch-add-cancel';
-    cancelBtn.setAttribute('aria-label', 'キャンセル');
-    cancelBtn.appendChild(icon('x', 14));
-    cancelBtn.addEventListener('click', cancel);
-    form.append(input, confirmBtn, cancelBtn);
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
-      if (!ensureProductionWritable()) return;
-      const workTitle = input.value.trim();
-      if (!workTitle) { input.focus(); return; }
-      confirmBtn.disabled = true;
-      cancelBtn.disabled = true;
-      input.disabled = true;
-      try {
-        const created = await api().createTaskSheet({ work_title: workTitle });
-        state.addingList = false;
-        const createdSheet = {
-          sheet_name: created.sheet_name,
-          work_title: created.work_title,
-          dir: created.dir,
-        };
-        const existingIndex = state.sheets.findIndex(item => item.sheet_name === created.sheet_name);
-        if (existingIndex >= 0) state.sheets.splice(existingIndex, 1, { ...state.sheets[existingIndex], ...createdSheet });
-        else state.sheets.push(createdSheet);
-        // 保存成功後は、全管理リストの再読込を待たず新しいタブを表示する。
-        // 大きい制作管理データでも「確定」を押したままに見えず、再読込失敗時も
-        // 作成済みリストへの入口を失わない。続く強制読込で正規の一覧へ照合する。
-        await selectTaskList(component, state, createdSheet);
-        notify(`「${createdSheet.work_title}」のタスクリストを追加しました`);
-        // createTaskSheetの応答が正規のsheet ID/pathを返すため、ここで全管理リストを
-        // もう一度ロック付きで読み直す必要はない。通常の更新操作・再表示時に照合する。
-        // 直後の別操作を長いcatalog読込で塞がず、利用者のタブ移動も上書きしない。
-      } catch (error) {
-        notify(error?.message || 'タスクリストを追加できませんでした', true);
-        confirmBtn.disabled = false;
-        cancelBtn.disabled = false;
-        input.disabled = false;
-        input.focus();
-      }
-    });
-    wrap.appendChild(form);
-    return wrap;
-  }
-
-  function renderListBar(component, state) {
-    const bar = state.listBarEl;
-    if (!bar) return;
-    const managedActive = !!managedListInfo(state.pendingTabKey) || state.selection?.kind === 'managed';
-    bar.hidden = managedActive;
-    bar.replaceChildren();
-    if (managedActive) return;
-    if (state.sheetsLoading && !state.sheetsLoaded) {
-      const loading = document.createElement('span');
-      loading.className = 'gb-production-list-switch-loading';
-      loading.textContent = 'タスクリストを読み込み中…';
-      bar.appendChild(loading);
-      return;
-    }
-    if (state.sheetsError && !state.sheetsLoaded) {
-      const error = document.createElement('span');
-      error.className = 'gb-production-list-switch-error';
-      error.textContent = state.sheetsError;
-      bar.appendChild(error);
-      bar.appendChild(makeButton('再試行', 'refreshCw', () => loadSheetsAndMeta(component, state, { force: true })));
-      return;
-    }
-    const tabsModule = window.MeldexProductionListTabs || null;
-    const arranged = tabsModule
-      ? tabsModule.arrange(state.sheets, state.pmRootPath)
-      : { visible: state.sheets, hidden: [] };
-    if (state.sheets.length) {
-      const allButton = listSwitchButton('すべて', state.selection?.kind === 'all', 'gb-production-list-switch-all', () => selectAllLists(component, state));
-      // classList はテスト用DOMスタブに無いため className 連結で付与する
-      allButton.className += ' gb-production-list-switch-all-btn';
-      allButton.title = '全作品のタスクリストをまとめて表示';
-      bar.appendChild(allButton);
-    }
-    arranged.visible.forEach((sheet, index) => {
-      const active = state.selection?.kind === 'task' && state.selection.sheetName === sheet.sheet_name;
-      // 作品名など日本語主体の文字列を潰さないよう、Unicodeの文字/数字はそのまま保持する
-      // (ASCII限定の置換だと別作品同士のe2e-idが衝突し得るため)。
-      const e2eId = 'gb-production-list-switch-task-' + sheet.sheet_name.replace(/[^\p{L}\p{N}_-]+/gu, '-');
-      const button = listSwitchButton(sheet.work_title || sheet.sheet_name, active, e2eId, () => selectTaskList(component, state, sheet));
-      tabsModule?.decorateTab(button, {
-        sheetName: sheet.sheet_name,
-        pmRoot: state.pmRootPath,
-        sheets: state.sheets,
-        canSwapLeft: index > 0,
-        canSwapRight: index < arranged.visible.length - 1,
-        onChanged: () => {
-          renderListBar(component, state);
-          // 同じ論理シートの保存ビュー順へ即追従させる。
-          if (state.selection?.kind === 'all' || state.selection?.kind === 'task') openSelectionIfNeeded(component, state);
-        },
-        onHide: () => hideListTab(component, state, sheet),
-      });
-      bar.appendChild(button);
-    });
-    bar.appendChild(buildAddListControl(component, state));
-    if (tabsModule && arranged.hidden.length) {
-      bar.appendChild(tabsModule.buildHiddenMenuButton(arranged.hidden, {
-        pmRoot: state.pmRootPath,
-        sheets: state.sheets,
-        onReopen: sheet => selectTaskList(component, state, sheet),
-      }));
-    }
-    if (state.selection?.kind === 'task') {
-      const structureButton = makeButton(
-        'タスク構成を更新',
-        'panelsTopLeft',
-        event => openTaskStructureDialog(component, state, event.currentTarget),
-      );
-      structureButton.dataset.e2eId = 'gb-production-task-structure-open';
-      structureButton.title = '作品設定のページ数・見開きページを未着手タスクへ反映';
-      window.MeldexProductionUiAvailability?.markWriteControl?.(structureButton);
-      bar.appendChild(structureButton);
-    }
-  }
-
-  // タブを閉じる＝リスト切替バーからの非表示（タスクリスト本体は削除しない）。
-  // 表示中のタブを閉じた場合は「すべて」へ退避して、表が空にならないようにする。
-  function hideListTab(component, state, sheet) {
-    const tabsModule = window.MeldexProductionListTabs;
-    if (!tabsModule?.hideTab(state.pmRootPath, state.sheets, sheet.sheet_name)) return;
-    notify(`「${sheet.work_title || sheet.sheet_name}」のタブを閉じました。「＋」の隣のボタンから再表示できます`);
-    if (state.selection?.kind === 'task' && state.selection.sheetName === sheet.sheet_name) {
-      selectAllLists(component, state);
-      return;
-    }
-    renderListBar(component, state);
-  }
-
-  function openTaskStructureDialog(component, state, trigger) {
-    if (!ensureProductionWritable()) return null;
-    const workTitle = String(state.selection?.workTitle || '').trim();
-    if (!workTitle || !window.GBUI?.createModal) {
-      notify('作品別タスクリストを選択してから実行してください', true);
-      return null;
-    }
-    const panel = document.createElement('section');
-    panel.className = 'gb-production-quick-plan';
-    panel.dataset.e2eId = 'gb-production-task-structure-dialog';
-    const intro = document.createElement('p');
-    intro.textContent = `「${workTitle}」のページ数・見開き設定を、未着手タスクへ反映します。進行中・完了・予定済み・実績あり・固定済みのタスクは変更しません。`;
-    const summary = document.createElement('div');
-    summary.className = 'gb-production-bulk-summary';
-    summary.setAttribute('role', 'status');
-    summary.setAttribute('aria-live', 'polite');
-    summary.textContent = '変更内容を確認しています…';
-    const detail = document.createElement('p');
-    detail.className = 'gb-production-bulk-result';
-    detail.setAttribute('role', 'alert');
-    panel.append(intro, summary, detail);
-
-    const cancel = makeButton('閉じる', 'x');
-    const apply = makeButton('この構成に更新', 'check', null, true);
-    apply.dataset.e2eId = 'gb-production-task-structure-apply';
-    apply.disabled = true;
-    let preview = null;
-    let busy = true;
-    const dialog = window.GBUI.createModal({
-      title: 'タスク構成を更新',
-      body: panel,
-      footer: [cancel, apply],
-      closeLabel: 'タスク構成の更新を閉じる',
-      closeOnOverlay: false,
-      closeOnEsc: false,
-      extraClass: 'gb-production-modal',
-    });
-    const setBusy = value => {
-      busy = !!value;
-      dialog.modal.setAttribute('aria-busy', busy ? 'true' : 'false');
-      cancel.disabled = busy;
-      apply.disabled = busy || !preview?.apply_allowed;
-      apply.textContent = busy ? '処理中…' : 'この構成に更新';
-    };
-    const close = () => { if (!busy) dialog.close?.(); };
-    cancel.addEventListener('click', close);
-    apply.addEventListener('click', async () => {
-      if (!preview?.fingerprint || busy) return;
-      setBusy(true);
-      detail.textContent = '';
-      try {
-        const result = await api().applyTaskStructure({
-          work_title: workTitle,
-          fingerprint: preview.fingerprint,
-        });
-        await loadSheetsAndMeta(component, state, { force: true });
-        await component._showProductionTaskWork?.(workTitle);
-        document.dispatchEvent(new CustomEvent('meldex:production-task-updated', {
-          detail: { workTitle, sourceComponent: component, structureUpdated: true },
-        }));
-        notify(
-          `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
-          + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
-          + '必要に応じて「自動割り当て」を実行してください。',
-        );
-        busy = false;
-        dialog.close?.();
-      } catch (error) {
-        detail.textContent = error?.message || 'タスク構成を更新できませんでした。もう一度プレビューしてください。';
-        setBusy(false);
-      }
-    });
-    document.body.appendChild(dialog.overlay);
-    window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
-    setBusy(true);
-    api().previewTaskStructure({ work_title: workTitle }).then((data) => {
-      preview = data;
-      const units = (data.page_units || []).join('、');
-      summary.textContent = [
-        `ページ単位: ${units || '変更なし'}`,
-        `新規 ${Number(data.create_count || 0)}件`,
-        `アーカイブ ${Number(data.archive_count || 0)}件`,
-        `保護して維持 ${Number(data.protected_count || 0)}件`,
-        `変更なし ${Number(data.unchanged_count || 0)}件`,
-      ].join(' ／ ');
-      detail.textContent = data.protected_count
-        ? '作業中・予定済みなどの保護対象は元の構成のまま残ります。'
-        : data.apply_allowed ? '内容を確認して「この構成に更新」を押してください。' : '更新が必要なタスクはありません。';
-      setBusy(false);
-    }).catch((error) => {
-      detail.textContent = error?.message || '変更内容を確認できませんでした。';
-      setBusy(false);
-    });
-    return dialog;
-  }
-
-  async function refreshCalendarEvents(component) {
-    if (typeof component?._loadEvents !== 'function') return { ok: true, skipped: true };
-    try {
-      return await component._loadEvents() || { ok: true };
-    } catch (error) {
-      return { ok: false, stale: false, error };
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // workspace build / mount (rootを再利用し、面切替をまたいで表の状態を保持する)
-  // ---------------------------------------------------------------------
-
-  // テンプレートカードを埋め込みシートへドロップ→現在のタスクリストへ追加(計画書5.2章)。
-  // カレンダー面用の _bindProductionTemplateDnD (component.el 全体・capture段階) は、対象が
-  // .gb-cal-week-cell 等のカレンダーセルでなければ何もしないため(calendarDrop()がnullを返す)、
-  // ここで embedHost 単位に bubble 段階のハンドラーを別途登録しても競合しない。
-  // 「リストへ追加」ボタンと同じ制約(管理リスト表示中は不可)をドロップにも適用する。
-  function bindEmbedTemplateDrop(component, state) {
-    if (state.embedHostEl._productionTemplateDropBound) return;
-    state.embedHostEl._productionTemplateDropBound = true;
-    const host = state.embedHostEl;
-    // 「すべて」表示中もドロップ可（作品未確定のため、作成時に作品選択を促す）
-    const canDropHere = () => state.selection?.kind === 'task' || state.selection?.kind === 'all';
-    host.addEventListener('dragover', event => {
-      if (!window.MeldexProductionTemplates?.hasDrag?.(event.dataTransfer) || !canDropHere()) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = 'copy';
-      host.classList.add('is-production-template-drop-target');
-    });
-    host.addEventListener('dragleave', event => {
-      if (!host.contains(event.relatedTarget)) host.classList.remove('is-production-template-drop-target');
-    });
-    host.addEventListener('drop', event => {
-      const payload = window.MeldexProductionTemplates?.readDrag?.(event.dataTransfer);
-      host.classList.remove('is-production-template-drop-target');
-      if (!payload || !canDropHere()) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!ensureProductionWritable()) return;
-      component._createProductionTaskFromTemplate(payload, { surface: 'list' }, {});
-    });
-  }
-
-  function buildWorkspace(component, state) {
-    const root = document.createElement('div');
-    root.className = 'gb-production-task-view gb-production-task-workspace';
-    root.dataset.e2eId = 'gb-production-task-workspace';
-
-    const listBar = document.createElement('div');
-    listBar.className = 'gb-production-list-switch db-view-tabs';
-    listBar.setAttribute('role', 'tablist');
-    listBar.setAttribute('aria-label', 'タスクリストのシートビュー');
-    listBar.dataset.e2eId = 'gb-production-list-switch';
-    listBar.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      const tabs = [...listBar.querySelectorAll('[role="tab"]')].filter(tab => !tab.disabled);
-      const index = tabs.indexOf(event.target.closest('[role="tab"]'));
-      if (index < 0 || !tabs.length) return;
-      event.preventDefault();
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
-        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-      tabs[next].focus();
-      tabs[next].click();
-    });
-    state.listBarEl = listBar;
-
-    const embedHost = document.createElement('div');
-    embedHost.className = 'gb-production-embed-host';
-    embedHost.dataset.e2eId = 'gb-production-embed-host';
-    state.embedHostEl = embedHost;
-
-    const availabilityNotice = document.createElement('div');
-    availabilityNotice.className = 'gb-production-write-availability';
-    availabilityNotice.setAttribute('role', 'status');
-    availabilityNotice.setAttribute('aria-live', 'polite');
-    availabilityNotice.dataset.e2eId = 'gb-production-write-availability';
-    availabilityNotice.hidden = true;
-    state.writeAvailabilityEl = availabilityNotice;
-
-    root.append(listBar, availabilityNotice, embedHost);
-    component._contentEl.replaceChildren(root);
-    state.root = root;
-
-    state.embed = window.MeldexProductionSheetEmbed.create({ idSuffix: component.tabId || component.paneId || 'production' });
-    state.embed.mount(embedHost);
-    bindEmbedTemplateDrop(component, state);
-
-    renderListBar(component, state);
-    syncWriteAvailability(state);
-    return root;
-  }
-
-  function ensureWorkspaceMounted(component, state) {
-    if (!state.root) {
-      buildWorkspace(component, state);
-      return;
-    }
-    if (state.root.parentElement !== component._contentEl) {
-      component._contentEl.replaceChildren(state.root);
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // CalendarComponent prototype
-  // ---------------------------------------------------------------------
-
-  CalendarComponent.prototype._productionTaskContext = function() {
-    const state = stateFor(this);
-    return {
-      workTitle: state.selection?.kind === 'task' ? (state.selection.workTitle || '') : '',
-      classification: {},
-      isManagedList: state.selection?.kind === 'managed',
-    };
-  };
-
-  CalendarComponent.prototype._productionActiveTabKey = function() {
-    if (this._surface !== 'productionTasks') return 'calendar';
-    const state = stateFor(this);
-    if (state.pendingTabKey === 'tasks' || managedListInfo(state.pendingTabKey)) return state.pendingTabKey;
-    const selection = state.selection || this.state?.productionTaskSelection;
-    return selection?.kind === 'managed' && managedListInfo(selection.managedKey) ? selection.managedKey : 'tasks';
-  };
-
-  CalendarComponent.prototype._selectProductionTab = function(key) {
-    const tabKey = key === 'calendar' || key === 'tasks' || managedListInfo(key) ? key : 'tasks';
-    const state = stateFor(this);
-    if (tabKey === 'calendar') {
-      state.pendingTabKey = '';
-      this.setSurface('calendar');
-      return true;
-    }
-    if (this._surface !== 'productionTasks') {
-      const switched = this.setSurface('productionTasks', () => this._selectProductionTab(tabKey));
-      if (switched === false || switched === undefined) return false;
-      if (this._surface !== 'productionTasks') return false;
-    }
-    state.pendingTabKey = tabKey;
-    state.selection = null;
-    persistPendingTab(this, state, tabKey);
-    if (state.sheetsLoaded) {
-      ensureSelectionDefault(this, state);
-      if (state.selection) openSelectionIfNeeded(this, state);
-    } else {
-      renderListBar(this, state);
-      this._syncSurfaceControls?.();
-      syncQuickPlanToolbar(this, state);
-      if (!state.sheetsLoading) loadSheetsAndMeta(this, state);
-    }
-    return true;
-  };
-
-  CalendarComponent.prototype._openProductionRecalculate = function(trigger) {
-    // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
-    // improvement-plan-2026-08-04.md §4-1）。Desktop限定ガードは撤去した。
-    if (typeof window.openProductionRecalculate !== 'function') {
-      notify('自動割り当て画面を初期化できませんでした', true);
-      return;
-    }
-    const state = stateFor(this);
-    // 管理リスト（作業対象/作業内容/作業規模/スタッフ）を表示中は、選択行が
-    // タスクファイルではないため再計算対象として渡さない。
-    // すべて／作品別は同じ論理シート面なので、同じ選択集合から渡す。
-    const selectedTaskPaths = state.selection?.kind === 'task' || state.selection?.kind === 'all'
-      ? (state.allView?.getSelectedEntryPaths?.() || [])
-      : [];
-    window.openProductionRecalculate({ trigger, selectedTaskPaths });
-  };
-
-  CalendarComponent.prototype._runProductionSheetDisplayAction = function(action, trigger) {
-    const state = stateFor(this);
-    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
-      if (!state.allView?.isReady?.()) {
-        notify('表示中のシートを読み込んでから操作してください', true);
-        return false;
-      }
-      if (action === 'sheetAutoFit') return state.allView.autoFitColumns();
-      if (action === 'sheetColumnDisplayOrder') return !!state.allView.showColumnDisplayOrder();
-      if (action === 'sheetFilter') return state.allView.focusFilters();
-      if (action === 'sheetSort') return state.allView.focusSort();
-    }
-    const ctx = state.embed?.ctx;
-    const dbPath = String(state.selection?.path || '');
-    if (!productionSheetDisplayReady(state) || !ctx || ctx.dbPath !== dbPath) {
-      notify('表示中のシートを読み込んでから操作してください', true);
-      return false;
-    }
-    if (action === 'sheetAutoFit' && typeof autoFitCurrentSheetColumns === 'function') {
-      autoFitCurrentSheetColumns(trigger, ctx, dbPath);
-      return true;
-    }
-    if (action === 'sheetColumnDisplayOrder' && typeof showColumnDisplayOrderModal === 'function') {
-      showColumnDisplayOrderModal(ctx);
-      return true;
-    }
-    if (action === 'sheetFilter' && typeof showUnifiedFilterModal === 'function') {
-      showUnifiedFilterModal({ ctx, event: trigger });
-      return true;
-    }
-    if (action === 'sheetSort' && typeof showDbSortMenu === 'function') {
-      showDbSortMenu({ currentTarget: trigger, target: trigger }, ctx, dbPath);
-      return true;
-    }
-    notify('シート表示操作を初期化できませんでした', true);
-    return false;
-  };
-
-  CalendarComponent.prototype._productionSheetDisplayReady = function() {
-    return productionSheetDisplayReady(stateFor(this));
-  };
-
-  CalendarComponent.prototype._renderProductionTaskView = function() {
-    const state = stateFor(this);
-    if (typeof this._bindProductionTemplateDnD === 'function') this._bindProductionTemplateDnD();
-    ensureWorkspaceMounted(this, state);
-    if (!ensureProductionReadyGate(this, state)) {
-      renderProductionEmptyState(this, state);
-      return;
-    }
-    // 空状態カードは埋め込みシートを detach せず兄弟として追加している（renderProductionEmptyState
-    // 参照）。準備完了後はカードだけを取り除く（埋め込みシート側は setVisible(true) で復帰する）。
-    if (state._emptyStateCardEl) {
-      state._emptyStateCardEl.remove();
-      state._emptyStateCardEl = null;
-    }
-    if ((state.selection?.kind === 'all' || state.selection?.kind === 'task') && state.allView?.isMounted?.()) {
-      state.embed?.setVisible(false);
-      state.allView.setVisible(true);
-    } else {
-      state.allView?.setVisible(false);
-      state.embed?.setVisible(true);
-    }
-    window.MeldexProductionSidebar?.syncTaskListSurface?.(this);
-    syncQuickPlanToolbar(this, state);
-    syncSheetDisplayToolbar(this, state);
-    syncWriteAvailability(state);
-    if (!state.sheetsLoaded && !state.sheetsLoading) loadSheetsAndMeta(this, state);
-    else if (state.selection) openSelectionIfNeeded(this, state);
-    if (!this._productionTaskUpdateHandler) {
-      this._productionTaskUpdateHandler = event => {
-        // 一括作成の発火元は、対象シートを既に明示的に開き直している。同じ475行を
-        // イベント経由でもう一度読み込まず、別コンポーネントだけを同期する。
-        if (event?.detail?.sourceComponent === this) return;
-        if (this._surface === 'productionTasks') {
-          refreshEmbedAfterMutation(this).catch(error => notify(error?.message || 'タスクリストを更新できませんでした', true));
-        }
-      };
-      document.addEventListener('meldex:production-task-updated', this._productionTaskUpdateHandler);
-    }
-    if (!this._productionWriteAvailabilityHandler) {
-      this._productionWriteAvailabilityHandler = () => syncWriteAvailability(stateFor(this));
-      document.addEventListener('meldex:production-write-availability-changed', this._productionWriteAvailabilityHandler);
-    }
-  };
-
-  // 「更新」ボタン・カレンダーのリロード操作から呼ばれる: リスト一覧と埋め込みシートの
-  // 両方を最新化する。
-  CalendarComponent.prototype._refreshProductionTaskEmbed = async function() {
-    const state = stateFor(this);
-    await Promise.all([
-      loadSheetsAndMeta(this, state, { force: true }),
-      refreshEmbedAfterMutation(this),
-    ]);
-  };
-
-  // 一括作成後は、作成対象の作品別シートを選択して結果をその場で確認できるようにする。
-  CalendarComponent.prototype._showProductionTaskWork = async function(workTitle) {
-    const requested = String(workTitle || '').trim();
-    if (!requested) return false;
-    if (this._surface !== 'productionTasks') this.setSurface('productionTasks');
-    const state = stateFor(this);
-    await loadSheetsAndMeta(this, state, { force: true, openSelection: false });
-    const sheet = state.sheets.find(item => String(item?.work_title || '').trim() === requested);
-    if (!sheet) return false;
-    return await selectTaskList(this, state, sheet, { refreshCurrent: true });
-  };
-
-  // カレンダー面へ切り替えた時は破棄せず非表示にするだけに留める(埋め込みシートのctx・
-  // 未保存の入力状態を保持したまま。実際には calendar 側の描画が _contentEl を書き換えて
-  // ワークスペース全体をDOMから切り離すが、参照は保持しているため次回タスク面へ戻った際に
-  // 同じ埋め込みインスタンスへ再アタッチできる)。
-  CalendarComponent.prototype._hideProductionTaskEmbed = function() {
-    const state = this._productionTaskState;
-    if (state?.embed?.isMounted?.()) state.embed.setVisible(false);
-    if (state?.allView?.isMounted?.()) state.allView.setVisible(false);
-  };
-
-  CalendarComponent.prototype._createProductionTaskFromTemplate = async function(template, drop = {}, context = {}) {
-    if (!ensureProductionWritable()) return null;
-    const state = stateFor(this);
-    let work = context.workTitle || (state.selection?.kind === 'task' ? state.selection.workTitle : '') || '';
-    if (!work) {
-      work = await window.MeldexProductionTemplates?.chooseWork?.(Object.keys(state.workMeta || {}), '');
-      if (!work) return null;
-    }
-    const classification = context.classification || {};
-    let data;
-    try {
-      data = await api().fromTemplate({
-        template_id: template?.templateId || '',
-        template_path: template?.templatePath || '',
-        work_title: work,
-        classification,
-        drop,
-        current_user: currentUser(),
-      });
-    } catch (error) {
-      notify(error?.message || 'テンプレートからタスクを追加できませんでした', true);
-      return null;
-    }
-    notify(`「${data?.row?.name || '制作タスク'}」を追加しました`);
-    await refreshEmbedAfterMutation(this);
-    if (drop.surface === 'calendar') {
-      const calendarRefresh = await refreshCalendarEvents(this);
-      if (calendarRefresh?.ok === false) {
-        notify('タスクは追加しましたが、カレンダーを再読み込みできませんでした。カレンダーを再読み込みしてください', true);
-      } else if (this._surface === 'calendar') {
-        this._render();
-      }
-    }
-    // タスクリスト面はシート表そのものが編集場所なので、同じ内容の右詳細を重ねて開かない。
-    // 表が見えないカレンダー配置時だけ、作成結果の詳細を右側へ表示する。
-    if (data?.row && drop.surface === 'calendar') window.MeldexProductionSidebar?.openTask?.(data.row, this);
-    return data;
-  };
-
-  window.MeldexProductionTaskView = Object.freeze({ renderListBar });
-
-  const baseDestroy = CalendarComponent.prototype.destroy;
-  CalendarComponent.prototype.destroy = function() {
-    if (this._productionTaskUpdateHandler) {
-      document.removeEventListener('meldex:production-task-updated', this._productionTaskUpdateHandler);
-      this._productionTaskUpdateHandler = null;
-    }
-    if (this._productionWriteAvailabilityHandler) {
-      document.removeEventListener('meldex:production-write-availability-changed', this._productionWriteAvailabilityHandler);
-      this._productionWriteAvailabilityHandler = null;
-    }
-    const state = this._productionTaskState;
-    this._productionTaskCreateDialog?.close?.();
-    this._productionTaskCreateDialog = null;
-    if (state?.embed) {
-      state.embed.destroy();
-      state.embed = null;
-    }
-    if (state?.allView) {
-      state.allView.destroy();
-      state.allView = null;
-    }
-    if (state) state.root = null;
-    return baseDestroy.call(this);
-  };
 })();
 
 ;
@@ -13615,6 +12951,12 @@
     });
   }
 
+  function _syncTableWidth(instance) {
+    if (instance._tableEl) instance._tableEl.style.width =
+      'calc(var(--production-select-column-width, 32px) + ' +
+      _orderedColumns(instance).reduce((sum, column) => sum + _columnWidth(instance, column.key), 0) + 'px)';
+  }
+
   function _setColumnWidth(instance, key, width, persist = true) {
     const next = _columnWidth({ _columnWidths: { [key]: width } }, key);
     instance._columnWidths[key] = next;
@@ -13624,10 +12966,11 @@
       cell.style.minWidth = next + 'px';
       cell.style.maxWidth = next + 'px';
     });
+    _syncTableWidth(instance);
     if (persist) _savePrefs(instance);
   }
 
-  function _renderColumnLayout(instance) {
+  function _renderColumnLayout(instance, renderRows = true) {
     if (!instance._headRowEl || !instance._selectHeaderEl) return;
     const headers = _orderedColumns(instance).map(column => instance._headerCells.get(column.key)).filter(Boolean);
     headers.forEach(th => {
@@ -13637,8 +12980,9 @@
       th.style.maxWidth = width + 'px';
     });
     instance._headRowEl.replaceChildren(instance._selectHeaderEl, ...headers);
+    _syncTableWidth(instance);
     _renderHeaderLabels(instance);
-    _renderTable(instance);
+    if (renderRows) _renderTable(instance);
   }
 
   function _moveColumn(instance, fromKey, targetKey, before) {
@@ -13797,6 +13141,8 @@
     wrap.className = 'gb-production-all-flat-table-wrap';
 
     const table = document.createElement('table');
+    instance._tableEl = table;
+    _syncTableWidth(instance);
     table.className = 'pivot-table gb-production-all-flat-table';
     table.dataset.e2eId = 'gb-production-all-flat-table';
 
@@ -13898,6 +13244,11 @@
     instance._tbodyEl = tbody;
     table.appendChild(tbody);
 
+    tbody.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && event.target.matches?.('tr[data-row-path]')) {
+        event.preventDefault(); event.target.click();
+      }
+    });
     tbody.addEventListener('click', event => {
       if (event.target.closest?.('.gb-production-all-flat-select, .gb-production-all-flat-work-jump')) return;
       const rowEl = event.target.closest?.('tr[data-row-path]');
@@ -13931,12 +13282,16 @@
     const tr = document.createElement('tr');
     tr.dataset.rowPath = path;
     tr.className = 'gb-production-all-flat-row';
+    tr.tabIndex = 0;
+    tr.dataset.e2eId = 'gb-production-all-flat-row-' + encodeURIComponent(path || row?.id || row?.name || 'task');
+    tr.setAttribute('aria-label', [_workTitleOf(row, instance), row?.name || '制作タスク'].filter(Boolean).join(' '));
     if (row?._schedulerProposal) {
       tr.classList.add('gb-scheduler-proposal-row');
       tr.dataset.schedulerProposalId = row._schedulerProposalId || '';
     }
 
     const selectTd = document.createElement('td');
+    selectTd.className = 'gb-production-all-flat-select-col';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'row-select-cb gb-production-all-flat-select';
@@ -13963,11 +13318,15 @@
       td.style.width = width + 'px';
       td.style.minWidth = width + 'px';
       td.style.maxWidth = width + 'px';
+      td.title = _cellText(instance, row, column);
       if (column.key === 'work') {
+        const workCell = document.createElement('div');
+        workCell.className = 'gb-production-all-flat-work-cell';
+        td.appendChild(workCell);
         const text = document.createElement('span');
         text.className = 'gb-production-all-flat-work-text';
         text.textContent = _cellText(instance, row, column);
-        td.appendChild(text);
+        workCell.appendChild(text);
         const sheet = instance._sheetsByWork.get(_workTitleOf(row, instance));
         if (sheet) {
           const jump = document.createElement('button');
@@ -13981,7 +13340,7 @@
             event.stopPropagation();
             instance.onOpenWork?.(sheet);
           });
-          td.appendChild(jump);
+          workCell.appendChild(jump);
         }
       } else {
         td.textContent = _cellText(instance, row, column);
@@ -14001,7 +13360,9 @@
       const td = document.createElement('td');
       td.colSpan = _orderedColumns(instance).length + 1;
       td.className = 'gb-production-all-flat-no-rows';
-      td.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
+      const message = document.createElement('span');
+      message.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
+      td.appendChild(message);
       tr.appendChild(td);
       tbody.appendChild(tr);
     } else {
@@ -14026,6 +13387,12 @@
       return false;
     }
     const append = opts.append === true;
+    // 更新通知が追加読込を追い越しても、利用者が開いた範囲を縮めない。
+    const loadedCount = instance._rows.length;
+    const requestedCount = append
+      ? Math.min(instance._total || Infinity, loadedCount + LIMIT)
+      : opts.preserveWindow ? Math.max(LIMIT, loadedCount, instance._requestedRowCount || 0) : LIMIT;
+    instance._requestedRowCount = requestedCount;
     const seq = ++instance._loadSeq;
     instance._loading = true;
     _renderStatus(instance);
@@ -14038,11 +13405,21 @@
       q: instance._filters.q || '',
       sort: [{ field: instance._sort.field, direction: instance._sort.direction }],
       offset: append ? instance._rows.length : 0,
-      limit: LIMIT,
+      limit: append ? LIMIT : Math.min(1000, requestedCount),
     };
     let data;
     try {
       data = await window.MeldexProductionApi.queryTasks(body);
+      if (!append && requestedCount > body.limit) {
+        data = { ...data, rows: [...(Array.isArray(data?.rows) ? data.rows : [])] };
+        while (data.rows.length < Math.min(requestedCount, Number(data.total || 0))) {
+          if (seq !== instance._loadSeq || instance._destroyed) return false;
+          const next = await window.MeldexProductionApi.queryTasks({ ...body, offset: data.rows.length,
+            limit: Math.min(1000, requestedCount - data.rows.length) });
+          if (!next?.rows?.length) break;
+          data.rows.push(...next.rows);
+        }
+      }
     } catch (error) {
       if (seq !== instance._loadSeq || instance._destroyed) return false;
       instance._loading = false;
@@ -14123,7 +13500,7 @@
       instance._pmRoot = pmRoot;
     }
     instance._filters.work = String(opts?.viewWork || '');
-    _renderColumnLayout(instance);
+    _renderColumnLayout(instance, false);
     instance._emptyEl.hidden = list.length > 0;
     _renderFilterOptions(instance);
     _renderHeaderLabels(instance);
@@ -14135,14 +13512,14 @@
       return true;
     }
     if (opts?.refresh === true || !instance._hasLoadedOnce || previousWorkView !== instance._filters.work) {
-      return _fetchRows(instance, { append: false });
+      return _fetchRows(instance, { append: false, preserveWindow: previousWorkView === instance._filters.work });
     }
     return true;
   }
 
   function _refresh(instance) {
     if (instance._destroyed || !instance._mounted) return Promise.resolve(false);
-    return _fetchRows(instance, { append: false });
+    return _fetchRows(instance, { append: false, preserveWindow: true });
   }
 
   function create(options) {
@@ -14238,8 +13615,17 @@
     instance.focusSort = function () { instance._headerCells.get(_orderedColumns(instance)[0]?.key)?.focus(); return true; };
 
     instance.applySchedulerProposal = function (proposal) {
+      const projectionKey = JSON.stringify(proposal || null);
+      if (instance._projectionBase === instance._baseRows && instance._projectionKey === projectionKey) {
+        return instance._projectionResult;
+      }
       const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(instance._baseRows, proposal);
-      instance._rows = projection?.rows || instance._baseRows;
+      instance._projectionBase = instance._baseRows;
+      instance._projectionKey = projectionKey;
+      instance._projectionResult = projection;
+      const nextRows = projection?.rows || instance._baseRows;
+      if (instance._rows === nextRows) return projection || { rows: nextRows, warnings: [] };
+      instance._rows = nextRows;
       _renderTable(instance);
       _renderStatus(instance);
       return projection || { rows: instance._rows, warnings: [] };
@@ -14271,6 +13657,1187 @@
   }
 
   window.MeldexProductionAllView = Object.freeze({ create });
+})();
+
+;
+
+/* === gb-tool-calendar-production-task-view.js === */
+;
+/* gb-tool-calendar-production-task-view.js: schedule production task workspace
+ * シート表を埋め込んで直接編集し、作品別タスクリストの切替だけを表の直上に置く。
+ * 管理リストはカレンダー共通の上段タブから開き、制作操作は共通ツールバーへ集約する。
+ * 選択中リストは component state と tab.state の双方へ保存して再構築後も復元する。
+ */
+(function() {
+  'use strict';
+
+  if (typeof CalendarComponent === 'undefined') return;
+
+  const MANAGED_LISTS = [
+    ['works', '作品設定', '作品リスト'],
+    ['targets', '作業対象', '作業対象リスト'],
+    ['contents', '作業内容', '作業内容リスト'],
+    ['scales', '作業規模', '作業規模リスト'],
+  ];
+
+  function api() {
+    if (!window.MeldexProductionApi) throw new Error('制作管理APIを初期化できませんでした');
+    return window.MeldexProductionApi;
+  }
+
+  function icon(name, size = 14) {
+    const span = document.createElement('span');
+    span.className = 'gb-production-task-icon';
+    if (typeof lucide === 'function') span.innerHTML = lucide(name, size);
+    return span;
+  }
+
+  function notify(message, error = false) {
+    if (typeof showStatus === 'function') showStatus(message, error);
+  }
+
+  function ensureProductionWritable(options) {
+    return window.MeldexProductionUiAvailability?.ensureWritable?.(options) !== false;
+  }
+
+  function syncWriteAvailability(state) {
+    const availability = window.MeldexProductionUiAvailability?.current?.()
+      || { blocked: false, reason: '', kind: '' };
+    if (state.root) {
+      if (availability.blocked) state.root.dataset.productionWriteBlocked = availability.kind || 'blocked';
+      else delete state.root.dataset.productionWriteBlocked;
+    }
+    if (state.writeAvailabilityEl) {
+      state.writeAvailabilityEl.hidden = !availability.blocked;
+      state.writeAvailabilityEl.textContent = availability.blocked
+        ? `${availability.reason}。表示、選択、フィルタ、並べ替えは利用できます。`
+        : '';
+    }
+    return availability;
+  }
+
+  function prop(row, name) {
+    return row?.properties?.[name] ?? '';
+  }
+
+  function currentUser() {
+    return typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
+  }
+
+  function makeButton(label, iconName, handler, primary = false) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-production-task-button' + (primary ? ' primary' : '');
+    if (iconName) button.appendChild(icon(iconName));
+    button.appendChild(document.createTextNode(label));
+    if (handler) button.addEventListener('click', handler);
+    return button;
+  }
+
+  // ---------------------------------------------------------------------
+  // state
+  // ---------------------------------------------------------------------
+
+  function stateFor(component) {
+    if (!component._productionTaskState) {
+      component._productionTaskState = {
+        root: null,
+        listBarEl: null,
+        writeAvailabilityEl: null,
+        embedHostEl: null,
+        embed: null,
+        allView: null,
+        sheets: [],
+        pmRootPath: '',
+        sheetsLoaded: false,
+        sheetsLoading: false,
+        sheetsError: '',
+        sheetsLoadSeq: 0,
+        workMeta: {},
+        selection: null,
+        pendingTabKey: '',
+        lastTaskSheetName: component.state?.productionTaskLastSheetName || '',
+        // タスクリスト面で最後に見ていた保存ビュー（surfaceタブ往復時の復元用）
+        lastTasksMode: component.state?.productionTaskSelection?.kind === 'all' ? 'all' : '',
+        // アプリ起動後、最初にタスクリストへ入る時だけ「すべて」を既定にする。
+        initialTaskListPending: true,
+        addingList: false,
+        // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ判定（undefined=未確認、
+        // true=開始済み、false=未セットアップ=空状態カードを表示中）。
+        productionReady: undefined,
+        productionReadyChecking: false,
+      };
+    }
+    return component._productionTaskState;
+  }
+
+  // /production-management/status は _ensure_existing_or_template を呼ばない唯一の読み取り
+  // のため、これで未セットアップと確認できたら taskSheets() 等の自己修復読み取りを呼ばず、
+  // 空状態カードだけを表示する。checkReady が無いAPI実装（テスト用の簡易スタブ等）では
+  // ゲート自体を素通りし、既存どおりの挙動にfail-openする。
+  function ensureProductionReadyGate(component, state) {
+    if (state.productionReady === true) return true;
+    const checkReady = window.MeldexProductionApi?.checkReady;
+    if (typeof checkReady !== 'function') { state.productionReady = true; return true; }
+    if (state.productionReady === false || state.productionReadyChecking) return false;
+    state.productionReadyChecking = true;
+    checkReady().then(ready => {
+      state.productionReadyChecking = false;
+      state.productionReady = !!ready;
+      component._renderProductionTaskView();
+    }).catch(() => {
+      state.productionReadyChecking = false;
+      state.productionReady = true;
+      component._renderProductionTaskView();
+    });
+    return false;
+  }
+
+  function renderProductionEmptyState(component, state) {
+    if (!state.embedHostEl) return;
+    state.listBarEl?.replaceChildren();
+    state.embed?.setVisible(false);
+    state.allView?.setVisible(false);
+    // 依頼8の追加調査で判明した実バグの修正: ensureWorkspaceMounted() は必ずこの関数より先に
+    // 呼ばれており、埋め込みシートは既にここへマウント済み（display:none で非表示にしただけ）。
+    // 埋め込みシートの containerEl は「非表示時もDOMから外さない」制約を持つ
+    // （gb-tool-calendar-production-sheet-embed.js の _setVisible。detachすると
+    // _resolveDatabasePaneContext() がグローバルstateへ静かにフォールバックし、以後
+    // setVisible(true)しても復帰しない）。かつて embedHostEl 全体を replaceChildren() で
+    // 置き換えていたため、この制約に反して埋め込みシートのDOMごと外れてしまい、
+    // 未セットアップ判定→開始操作後もタスクリストが永久に表示されない不具合があった
+    // （制作管理UX改善計画 2026-08-04 §6-1 空状態カード追加時に再発を確認・修正）。
+    // 空状態カードは埋め込みシートの兄弟として追加し、カード自身だけを追跡して差し替える。
+    state._emptyStateCardEl?.remove();
+    state._emptyStateCardEl = null;
+    if (state.productionReadyChecking) return;
+    const card = window.MeldexProductionManagementActions?.emptyStateCard?.(() => {
+      state.productionReady = true;
+      component._renderProductionTaskView();
+    });
+    if (card) {
+      state.embedHostEl.appendChild(card);
+      state._emptyStateCardEl = card;
+    }
+  }
+
+  // 他の画面（管理操作パネル）から制作管理を開始した場合も、このタスクリスト面の
+  // 空状態を解除して再読み込みする。
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('meldex:production-management-started', () => {
+      if (typeof forEachComponent !== 'function' || typeof CalendarComponent === 'undefined') return;
+      forEachComponent(instance => {
+        const state = instance instanceof CalendarComponent ? instance._productionTaskState : null;
+        if (!state || state.productionReady === true) return;
+        state.productionReady = true;
+        state.productionReadyChecking = false;
+        if (instance._surface === 'productionTasks' && typeof instance._renderProductionTaskView === 'function') {
+          instance._renderProductionTaskView();
+        }
+      });
+    });
+  }
+
+  // 旧「かんたん割当」（等分配・equal_until_deadline方式の簡易割当ボタン）は廃止し、
+  // フル再計算エンジンへ一本化した（2026-08-05 ユーザー判断。当時の表示名は「割当再計算」）。
+  // 2026-08-08 にユーザー判断で表示名のみ「自動割り当て」へ差し戻した。ここでは
+  // その自動割り当てボタンの状態だけを同期する。
+  function syncQuickPlanToolbar(component, state) {
+    // フル再計算エンジン（自動割り当て）はCloud（Dropboxモード）にも移植済み
+    // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
+    // dropboxMode による無効化は撤去し、Desktop/Cloud両対応にする。
+    const recalculateButton = component.el?.querySelector?.('[data-e2e-id="gb-production-task-recalculate"]');
+    if (recalculateButton) {
+      recalculateButton.disabled = false;
+      recalculateButton.title = '自動割り当て';
+      recalculateButton.setAttribute('aria-label', '自動割り当て');
+    }
+  }
+
+  function productionSheetDisplayReady(state) {
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      return !!state.allView?.isReady?.();
+    }
+    const path = String(state.selection?.path || '');
+    const ctx = state.embed?.ctx;
+    return !!path && !state.sheetsLoading && !state.embedLoading
+      && state.embed?.getCurrentPath?.() === path
+      && ctx?.dbPath === path
+      && !!ctx.pivotData;
+  }
+
+  function syncSheetDisplayToolbar(component, state) {
+    const ready = productionSheetDisplayReady(state);
+    ['gb-production-sheet-auto-fit', 'gb-production-sheet-column-display-order', 'gb-production-sheet-filter', 'gb-production-sheet-sort'].forEach(id => {
+      const button = component.el?.querySelector?.(`[data-e2e-id="${id}"]`);
+      if (!button) return;
+      button.disabled = !ready;
+      button.setAttribute('aria-busy', ready ? 'false' : 'true');
+      if (!ready) button.title = '表示中のシートを読み込んでから利用できます';
+      else button.title = button.getAttribute('aria-label') || '';
+    });
+  }
+
+  function managedListInfo(managedKey) {
+    return MANAGED_LISTS.find(([key]) => key === managedKey) || null;
+  }
+
+  function managedPath(state, sheetName) {
+    return state.pmRootPath ? `${state.pmRootPath}/シート/${sheetName}` : '';
+  }
+
+  function buildWorkMeta(listData) {
+    const meta = {};
+    (listData?.rows || []).forEach(row => {
+      const title = row.name || prop(row, '作品タイトル_話数');
+      if (!title) return;
+      const labels = String(prop(row, '階層ラベル') || '').split(/[,、]/).map(part => part.trim()).filter(Boolean).slice(0, 3);
+      meta[title] = {
+        classification_labels: labels,
+        classification_count: Number(prop(row, '階層数')) || labels.length,
+      };
+    });
+    return meta;
+  }
+
+  // ---------------------------------------------------------------------
+  // sheet-list / work-meta loading
+  // ---------------------------------------------------------------------
+
+  async function loadSheetsAndMeta(component, state, options = {}) {
+    if (state.sheetsLoading && !options.force) return;
+    const seq = ++state.sheetsLoadSeq;
+    state.sheetsLoading = true;
+    state.sheetsError = '';
+    syncQuickPlanToolbar(component, state);
+    syncSheetDisplayToolbar(component, state);
+    renderListBar(component, state);
+    try {
+      let sheetData;
+      let workData;
+      if (typeof api().taskCreateCatalog === 'function') {
+        try {
+          const snapshot = await api().taskCreateCatalog();
+          sheetData = { root: snapshot?.root || '', sheets: snapshot?.task_sheets || [] };
+          workData = snapshot?.works || { rows: [] };
+        } catch (_error) {
+          // Compatibility for Cloud providers from before the combined catalog read.
+        }
+      }
+      if (!sheetData) {
+        [sheetData, workData] = await Promise.all([
+          api().taskSheets(),
+          api().list('作品リスト', { limit: 1000 }).catch(() => ({ rows: [] })),
+        ]);
+      }
+      if (seq !== state.sheetsLoadSeq) return;
+      state.sheets = Array.isArray(sheetData?.sheets) ? sheetData.sheets : [];
+      state.pmRootPath = String(sheetData?.root || '').replace(/[\\/]+$/, '');
+      state.workMeta = buildWorkMeta(workData);
+      state.sheetsLoaded = true;
+      ensureSelectionDefault(component, state);
+    } catch (error) {
+      if (seq !== state.sheetsLoadSeq) return;
+      state.sheetsError = error?.message || 'タスクリストを読み込めませんでした';
+    } finally {
+      if (seq === state.sheetsLoadSeq) state.sheetsLoading = false;
+    }
+    syncQuickPlanToolbar(component, state);
+    syncSheetDisplayToolbar(component, state);
+    renderListBar(component, state);
+    component._syncSurfaceControls?.();
+    if (state.selection && options.openSelection !== false) openSelectionIfNeeded(component, state);
+    else state.allView?.setVisible(false);
+  }
+
+  function preferredTaskSheet(component, state) {
+    const sheetName = state.lastTaskSheetName || component.state?.productionTaskLastSheetName || '';
+    return state.sheets.find(sheet => sheet.sheet_name === sheetName) || state.sheets[0] || null;
+  }
+
+  function ensureSelectionDefault(component, state) {
+    const requestedTab = state.pendingTabKey;
+    if (state.initialTaskListPending && (!requestedTab || requestedTab === 'tasks')) {
+      state.initialTaskListPending = false;
+      if (state.sheets.length) selectAllLists(component, state, { persist: true, open: false });
+      else state.selection = null;
+      return;
+    }
+    if (requestedTab === 'tasks') {
+      if (state.lastTasksMode === 'all' && state.sheets.length) {
+        selectAllLists(component, state, { persist: false, open: false });
+        return;
+      }
+      const sheet = preferredTaskSheet(component, state);
+      if (sheet) selectTaskList(component, state, sheet, { persist: false, open: false });
+      else { state.pendingTabKey = ''; state.selection = null; }
+      return;
+    }
+    if (requestedTab) {
+      const managed = managedListInfo(requestedTab);
+      if (managed) { selectManagedList(component, state, managed, { persist: false, open: false }); return; }
+      state.pendingTabKey = '';
+    }
+    if (state.selection) {
+      if (state.selection.kind === 'all') {
+        if (state.sheets.length) return;
+        state.selection = null;
+      } else {
+        if (state.selection.kind === 'managed') {
+          const managed = managedListInfo(state.selection.managedKey);
+          if (managed) {
+            state.selection.path = managedPath(state, managed[2]);
+            return;
+          }
+        }
+        if (state.sheets.some(sheet => sheet.sheet_name === state.selection.sheetName)) return;
+      }
+    }
+    const pending = component.state?.productionTaskSelection;
+    if (pending?.kind === 'all' && state.sheets.length) {
+      selectAllLists(component, state, { persist: false, open: false });
+      return;
+    }
+    if (pending?.kind === 'managed') {
+      const managed = managedListInfo(pending.managedKey);
+      if (managed) { selectManagedList(component, state, managed, { persist: false, open: false }); return; }
+    } else if (pending?.kind === 'task' && pending.sheetName) {
+      const sheet = state.sheets.find(item => item.sheet_name === pending.sheetName);
+      if (sheet) { selectTaskList(component, state, sheet, { persist: false, open: false }); return; }
+    }
+    if (state.sheets.length) selectTaskList(component, state, state.sheets[0], { persist: false, open: false });
+    else state.selection = null;
+  }
+
+  // ---------------------------------------------------------------------
+  // selection
+  // ---------------------------------------------------------------------
+
+  function selectTaskList(component, state, sheet, options = {}) {
+    state.addingList = false;
+    state.pendingTabKey = '';
+    state.lastTaskSheetName = sheet.sheet_name;
+    state.lastTasksMode = 'sheet';
+    state.selection = { kind: 'task', workTitle: sheet.work_title || sheet.sheet_name, sheetName: sheet.sheet_name, path: sheet.dir, label: sheet.work_title || sheet.sheet_name };
+    renderListBar(component, state);
+    component._syncSurfaceControls?.();
+    syncQuickPlanToolbar(component, state);
+    syncSheetDisplayToolbar(component, state);
+    if (options.persist !== false) persistSelection(component, state);
+    if (options.open !== false) {
+      return openSelectionIfNeeded(component, state, { refreshCurrent: options.refreshCurrent === true });
+    }
+    return Promise.resolve(true);
+  }
+
+  // 「すべて」: 一つの論理シートから作品フィルター無しの保存ビューを選ぶ。
+  function selectAllLists(component, state, options = {}) {
+    if (!state.sheets.length) return Promise.resolve(false);
+    state.addingList = false;
+    state.pendingTabKey = '';
+    state.lastTasksMode = 'all';
+    state.selection = { kind: 'all', label: 'すべて', workTitle: '', sheetName: '', path: '' };
+    renderListBar(component, state);
+    component._syncSurfaceControls?.();
+    syncQuickPlanToolbar(component, state);
+    syncSheetDisplayToolbar(component, state);
+    if (options.persist !== false) persistSelection(component, state);
+    if (options.open !== false) {
+      return openSelectionIfNeeded(component, state, { refreshCurrent: options.refreshCurrent === true });
+    }
+    return Promise.resolve(true);
+  }
+
+  // selectManagedList 自体は async 関数だが、await を使わないため呼び出しと
+  // 同じ同期ターン内で完了する（作品設定/作業対象/作業内容/作業規模タブの
+  // 選択タイミングに余計な非同期の一拍を持ち込まない）。
+  async function selectManagedList(component, state, managedInfo, options = {}) {
+    const [key, label, sheetName] = managedInfo;
+    state.addingList = false;
+    state.pendingTabKey = '';
+    state.selection = { kind: 'managed', managedKey: key, label, sheetName, path: managedPath(state, sheetName) };
+    renderListBar(component, state);
+    component._syncSurfaceControls?.();
+    syncQuickPlanToolbar(component, state);
+    syncSheetDisplayToolbar(component, state);
+    if (options.persist !== false) persistSelection(component, state);
+    if (options.open !== false) openSelectionIfNeeded(component, state);
+  }
+
+  function persistSelection(component, state) {
+    if (!component.state) return;
+    component.state.productionTaskSelection = state.selection ? {
+      kind: state.selection.kind,
+      workTitle: state.selection.workTitle || '',
+      sheetName: state.selection.sheetName || '',
+      managedKey: state.selection.managedKey || '',
+    } : null;
+    component.state.productionTaskLastSheetName = state.lastTaskSheetName || '';
+    if (typeof component._persistViewToTabState === 'function') component._persistViewToTabState(component._view);
+  }
+
+  function persistPendingTab(component, state, key) {
+    if (!component.state) return;
+    component.state.productionTaskSelection = key === 'tasks'
+      ? (state.lastTasksMode === 'all'
+        ? { kind: 'all', workTitle: '', sheetName: '', managedKey: '' }
+        : { kind: 'task', workTitle: '', sheetName: state.lastTaskSheetName || '', managedKey: '' })
+      : { kind: 'managed', workTitle: '', sheetName: '', managedKey: key };
+    component.state.productionTaskLastSheetName = state.lastTaskSheetName || '';
+    component._persistViewToTabState?.(component._view);
+  }
+
+  async function openSelectionIfNeeded(component, state, options = {}) {
+    syncSheetDisplayToolbar(component, state);
+    if (!state.selection || !state.embed) return false;
+    if (state.selection.kind === 'all' || state.selection.kind === 'task') return openTaskSheetView(component, state, options);
+    state.allView?.setVisible(false);
+    state.embed.setVisible(true);
+    if (!state.selection.path) {
+      notify('制作管理の保存場所を確認できませんでした', true);
+      return false;
+    }
+    const currentPath = state.embed.getCurrentPath();
+    const currentReady = currentPath === state.selection.path
+      && state.embed.ctx?.dbPath === state.selection.path
+      && !!state.embed.ctx?.pivotData;
+    if (currentReady) {
+      state.embedLoading = false;
+      if (options.refreshCurrent === true) {
+        const refreshed = !!(await state.embed.refresh());
+        syncSheetDisplayToolbar(component, state);
+        renderListBar(component, state);
+        return refreshed;
+      }
+      syncSheetDisplayToolbar(component, state);
+      renderListBar(component, state);
+      return true;
+    }
+    // 先行する open() が後発の選択に追い越された場合、getCurrentPath() だけが
+    // 一致して ctx.pivotData が空のまま残ることがある。同一パスでも実データが
+    // 揃っていなければ必ず再読込し、空表示を固定化させない。
+    const targetPath = state.selection.path;
+    const reqSeq = (state._openSeq = (state._openSeq || 0) + 1);
+    state.embedLoading = true;
+    syncSheetDisplayToolbar(component, state);
+    let opened = false;
+    try {
+      opened = !!(await state.embed.open(targetPath, {
+        forceReload: currentPath === targetPath,
+      }));
+    } finally {
+      if (reqSeq === state._openSeq) {
+        state.embedLoading = false;
+      }
+    }
+    if (reqSeq !== state._openSeq || state.selection?.path !== targetPath) {
+      return false;
+    }
+    syncSheetDisplayToolbar(component, state);
+    renderListBar(component, state);
+    return opened;
+  }
+
+  // 「すべて」と各作品は同じ論理シートの保存ビューとして、一つのインスタンスで切り替える。
+  async function openTaskSheetView(component, state, options = {}) {
+    if (!window.MeldexProductionAllView) {
+      notify('すべて表示を初期化できませんでした', true);
+      return false;
+    }
+    if (!state.allView) {
+      state.allView = window.MeldexProductionAllView.create({
+        idSuffix: (component.tabId || component.paneId || 'production') + '-all',
+        // 作品セルから対応する保存ビューへ移動する。
+        onOpenWork: sheet => selectTaskList(component, state, sheet),
+        onSelectView: workTitle => {
+          if (!workTitle) return selectAllLists(component, state);
+          const sheet = state.sheets.find(item => String(item?.work_title || item?.sheet_name || '') === String(workTitle));
+          return sheet ? selectTaskList(component, state, sheet) : false;
+        },
+        // 行クリック: フラット表はセル直接編集を持たないため、既存のタスク詳細サイドバーを
+        // 強制的に開く（作品別タブでは埋め込みシート自体が編集場所のため通常は抑止される）
+        onOpenTask: row => window.MeldexProductionSidebar?.openTask?.(row, component, { forceDetail: true }),
+      });
+    }
+    if (!state.allView.isMounted()) state.allView.mount(state.embedHostEl);
+    state.embed?.setVisible(false);
+    state.allView.setVisible(true);
+    // 作品ドロップダウン・作品セルの「作品タブで開く」導線用に、タブバーの並び順に合わせて
+    // シート一覧を渡す（閉じたタブのシートも末尾に含める）
+    const tabsModule = window.MeldexProductionListTabs;
+    const arranged = tabsModule ? tabsModule.arrange(state.sheets, state.pmRootPath) : null;
+    const orderedSheets = arranged ? arranged.visible.concat(arranged.hidden) : state.sheets;
+    const opened = await state.allView.open(orderedSheets, {
+      pmRoot: state.pmRootPath,
+      refresh: options.refreshCurrent === true,
+      viewWork: state.selection?.kind === 'task' ? state.selection.workTitle : '',
+    });
+    syncSheetDisplayToolbar(component, state);
+    return opened;
+  }
+
+  async function refreshEmbedAfterMutation(component) {
+    const state = stateFor(component);
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      if (!state.allView?.isMounted?.()) return { ok: true, skipped: true };
+      return { ok: !!(await state.allView.refresh()) };
+    }
+    if (!state.embed || !state.embed.getCurrentPath()) return { ok: true, skipped: true };
+    const ok = await state.embed.refresh();
+    return { ok: !!ok };
+  }
+
+  // ---------------------------------------------------------------------
+  // list switch bar (rebuilt in place, without touching the embed)
+  // ---------------------------------------------------------------------
+
+  function listSwitchButton(label, active, e2eId, onSelect) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-production-list-switch-btn' + (active ? ' is-active' : '');
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
+    button.dataset.e2eId = e2eId;
+    button.textContent = label;
+    button.addEventListener('click', onSelect);
+    return button;
+  }
+
+  function buildAddListControl(component, state) {
+    const wrap = document.createElement('span');
+    wrap.className = 'gb-production-list-switch-add';
+    if (!state.addingList) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-production-list-switch-btn gb-production-list-switch-add-btn';
+      button.title = 'タスクリストを追加';
+      button.setAttribute('aria-label', 'タスクリストを追加');
+      button.dataset.e2eId = 'gb-production-list-switch-add-open';
+      button.appendChild(icon('plus', 14));
+      window.MeldexProductionUiAvailability?.markWriteControl?.(button);
+      button.addEventListener('click', () => {
+        state.addingList = true;
+        renderListBar(component, state);
+        state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]')?.focus();
+      });
+      wrap.appendChild(button);
+      return wrap;
+    }
+    const form = document.createElement('form');
+    form.className = 'gb-production-list-switch-add-form';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '作品名（新しいタスクリスト）';
+    input.dataset.e2eId = 'gb-production-list-switch-add-input';
+    input.setAttribute('aria-label', '新しいタスクリストの作品名');
+    window.MeldexProductionUiAvailability?.markWriteControl?.(input);
+    const cancel = () => { state.addingList = false; renderListBar(component, state); };
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+    });
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'submit';
+    confirmBtn.className = 'gb-production-list-switch-add-confirm';
+    confirmBtn.dataset.e2eId = 'gb-production-list-switch-add-confirm';
+    confirmBtn.setAttribute('aria-label', '追加を確定');
+    confirmBtn.appendChild(icon('check', 14));
+    window.MeldexProductionUiAvailability?.markWriteControl?.(confirmBtn);
+    window.MeldexProductionUiAvailability?.markWriteForm?.(form);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'gb-production-list-switch-add-cancel';
+    cancelBtn.setAttribute('aria-label', 'キャンセル');
+    cancelBtn.appendChild(icon('x', 14));
+    cancelBtn.addEventListener('click', cancel);
+    form.append(input, confirmBtn, cancelBtn);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!ensureProductionWritable()) return;
+      const workTitle = input.value.trim();
+      if (!workTitle) { input.focus(); return; }
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      input.disabled = true;
+      try {
+        const created = await api().createTaskSheet({ work_title: workTitle });
+        state.addingList = false;
+        const createdSheet = {
+          sheet_name: created.sheet_name,
+          work_title: created.work_title,
+          dir: created.dir,
+        };
+        const existingIndex = state.sheets.findIndex(item => item.sheet_name === created.sheet_name);
+        if (existingIndex >= 0) state.sheets.splice(existingIndex, 1, { ...state.sheets[existingIndex], ...createdSheet });
+        else state.sheets.push(createdSheet);
+        // 保存成功後は、全管理リストの再読込を待たず新しいタブを表示する。
+        // 大きい制作管理データでも「確定」を押したままに見えず、再読込失敗時も
+        // 作成済みリストへの入口を失わない。続く強制読込で正規の一覧へ照合する。
+        await selectTaskList(component, state, createdSheet);
+        notify(`「${createdSheet.work_title}」のタスクリストを追加しました`);
+        // createTaskSheetの応答が正規のsheet ID/pathを返すため、ここで全管理リストを
+        // もう一度ロック付きで読み直す必要はない。通常の更新操作・再表示時に照合する。
+        // 直後の別操作を長いcatalog読込で塞がず、利用者のタブ移動も上書きしない。
+      } catch (error) {
+        notify(error?.message || 'タスクリストを追加できませんでした', true);
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+      }
+    });
+    wrap.appendChild(form);
+    return wrap;
+  }
+
+  function renderListBar(component, state) {
+    const bar = state.listBarEl;
+    if (!bar) return;
+    const managedActive = !!managedListInfo(state.pendingTabKey) || state.selection?.kind === 'managed';
+    bar.hidden = managedActive;
+    bar.replaceChildren();
+    if (managedActive) return;
+    if (state.sheetsLoading && !state.sheetsLoaded) {
+      const loading = document.createElement('span');
+      loading.className = 'gb-production-list-switch-loading';
+      loading.textContent = 'タスクリストを読み込み中…';
+      bar.appendChild(loading);
+      return;
+    }
+    if (state.sheetsError && !state.sheetsLoaded) {
+      const error = document.createElement('span');
+      error.className = 'gb-production-list-switch-error';
+      error.textContent = state.sheetsError;
+      bar.appendChild(error);
+      bar.appendChild(makeButton('再試行', 'refreshCw', () => loadSheetsAndMeta(component, state, { force: true })));
+      return;
+    }
+    const tabsModule = window.MeldexProductionListTabs || null;
+    const arranged = tabsModule
+      ? tabsModule.arrange(state.sheets, state.pmRootPath)
+      : { visible: state.sheets, hidden: [] };
+    if (state.sheets.length) {
+      const allButton = listSwitchButton('すべて', state.selection?.kind === 'all', 'gb-production-list-switch-all', () => selectAllLists(component, state));
+      // classList はテスト用DOMスタブに無いため className 連結で付与する
+      allButton.className += ' gb-production-list-switch-all-btn';
+      allButton.title = '全作品のタスクリストをまとめて表示';
+      bar.appendChild(allButton);
+    }
+    arranged.visible.forEach((sheet, index) => {
+      const active = state.selection?.kind === 'task' && state.selection.sheetName === sheet.sheet_name;
+      // 作品名など日本語主体の文字列を潰さないよう、Unicodeの文字/数字はそのまま保持する
+      // (ASCII限定の置換だと別作品同士のe2e-idが衝突し得るため)。
+      const e2eId = 'gb-production-list-switch-task-' + sheet.sheet_name.replace(/[^\p{L}\p{N}_-]+/gu, '-');
+      const button = listSwitchButton(sheet.work_title || sheet.sheet_name, active, e2eId, () => selectTaskList(component, state, sheet));
+      tabsModule?.decorateTab(button, {
+        sheetName: sheet.sheet_name,
+        pmRoot: state.pmRootPath,
+        sheets: state.sheets,
+        canSwapLeft: index > 0,
+        canSwapRight: index < arranged.visible.length - 1,
+        onChanged: () => {
+          renderListBar(component, state);
+          // 同じ論理シートの保存ビュー順へ即追従させる。
+          if (state.selection?.kind === 'all' || state.selection?.kind === 'task') openSelectionIfNeeded(component, state);
+        },
+        onHide: () => hideListTab(component, state, sheet),
+      });
+      bar.appendChild(button);
+    });
+    bar.appendChild(buildAddListControl(component, state));
+    if (tabsModule && arranged.hidden.length) {
+      bar.appendChild(tabsModule.buildHiddenMenuButton(arranged.hidden, {
+        pmRoot: state.pmRootPath,
+        sheets: state.sheets,
+        onReopen: sheet => selectTaskList(component, state, sheet),
+      }));
+    }
+    if (state.selection?.kind === 'task') {
+      const structureButton = makeButton(
+        'タスク構成を更新',
+        'panelsTopLeft',
+        event => openTaskStructureDialog(component, state, event.currentTarget),
+      );
+      structureButton.dataset.e2eId = 'gb-production-task-structure-open';
+      structureButton.title = '作品設定のページ数・見開きページを未着手タスクへ反映';
+      window.MeldexProductionUiAvailability?.markWriteControl?.(structureButton);
+      bar.appendChild(structureButton);
+    }
+  }
+
+  // タブを閉じる＝リスト切替バーからの非表示（タスクリスト本体は削除しない）。
+  // 表示中のタブを閉じた場合は「すべて」へ退避して、表が空にならないようにする。
+  function hideListTab(component, state, sheet) {
+    const tabsModule = window.MeldexProductionListTabs;
+    if (!tabsModule?.hideTab(state.pmRootPath, state.sheets, sheet.sheet_name)) return;
+    notify(`「${sheet.work_title || sheet.sheet_name}」のタブを閉じました。「＋」の隣のボタンから再表示できます`);
+    if (state.selection?.kind === 'task' && state.selection.sheetName === sheet.sheet_name) {
+      selectAllLists(component, state);
+      return;
+    }
+    renderListBar(component, state);
+  }
+
+  function openTaskStructureDialog(component, state, trigger) {
+    if (!ensureProductionWritable()) return null;
+    const workTitle = String(state.selection?.workTitle || '').trim();
+    if (!workTitle || !window.GBUI?.createModal) {
+      notify('作品別タスクリストを選択してから実行してください', true);
+      return null;
+    }
+    const panel = document.createElement('section');
+    panel.className = 'gb-production-quick-plan';
+    panel.dataset.e2eId = 'gb-production-task-structure-dialog';
+    const intro = document.createElement('p');
+    intro.textContent = `「${workTitle}」のページ数・見開き設定を、未着手タスクへ反映します。進行中・完了・予定済み・実績あり・固定済みのタスクは変更しません。`;
+    const summary = document.createElement('div');
+    summary.className = 'gb-production-bulk-summary';
+    summary.setAttribute('role', 'status');
+    summary.setAttribute('aria-live', 'polite');
+    summary.textContent = '変更内容を確認しています…';
+    const detail = document.createElement('p');
+    detail.className = 'gb-production-bulk-result';
+    detail.setAttribute('role', 'alert');
+    panel.append(intro, summary, detail);
+
+    const cancel = makeButton('閉じる', 'x');
+    const apply = makeButton('この構成に更新', 'check', null, true);
+    apply.dataset.e2eId = 'gb-production-task-structure-apply';
+    apply.disabled = true;
+    let preview = null;
+    let busy = true;
+    const dialog = window.GBUI.createModal({
+      title: 'タスク構成を更新',
+      body: panel,
+      footer: [cancel, apply],
+      closeLabel: 'タスク構成の更新を閉じる',
+      closeOnOverlay: false,
+      closeOnEsc: false,
+      extraClass: 'gb-production-modal',
+    });
+    const setBusy = value => {
+      busy = !!value;
+      dialog.modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+      cancel.disabled = busy;
+      apply.disabled = busy || !preview?.apply_allowed;
+      apply.textContent = busy ? '処理中…' : 'この構成に更新';
+    };
+    const close = () => { if (!busy) dialog.close?.(); };
+    cancel.addEventListener('click', close);
+    apply.addEventListener('click', async () => {
+      if (!preview?.fingerprint || busy) return;
+      setBusy(true);
+      detail.textContent = '';
+      try {
+        const result = await api().applyTaskStructure({
+          work_title: workTitle,
+          fingerprint: preview.fingerprint,
+        });
+        await loadSheetsAndMeta(component, state, { force: true });
+        await component._showProductionTaskWork?.(workTitle);
+        document.dispatchEvent(new CustomEvent('meldex:production-task-updated', {
+          detail: { workTitle, sourceComponent: component, structureUpdated: true },
+        }));
+        notify(
+          `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
+          + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
+          + '必要に応じて「自動割り当て」を実行してください。',
+        );
+        busy = false;
+        dialog.close?.();
+      } catch (error) {
+        detail.textContent = error?.message || 'タスク構成を更新できませんでした。もう一度プレビューしてください。';
+        setBusy(false);
+      }
+    });
+    document.body.appendChild(dialog.overlay);
+    window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
+    setBusy(true);
+    api().previewTaskStructure({ work_title: workTitle }).then((data) => {
+      preview = data;
+      const units = (data.page_units || []).join('、');
+      summary.textContent = [
+        `ページ単位: ${units || '変更なし'}`,
+        `新規 ${Number(data.create_count || 0)}件`,
+        `アーカイブ ${Number(data.archive_count || 0)}件`,
+        `保護して維持 ${Number(data.protected_count || 0)}件`,
+        `変更なし ${Number(data.unchanged_count || 0)}件`,
+      ].join(' ／ ');
+      detail.textContent = data.protected_count
+        ? '作業中・予定済みなどの保護対象は元の構成のまま残ります。'
+        : data.apply_allowed ? '内容を確認して「この構成に更新」を押してください。' : '更新が必要なタスクはありません。';
+      setBusy(false);
+    }).catch((error) => {
+      detail.textContent = error?.message || '変更内容を確認できませんでした。';
+      setBusy(false);
+    });
+    return dialog;
+  }
+
+  async function refreshCalendarEvents(component) {
+    if (typeof component?._loadEvents !== 'function') return { ok: true, skipped: true };
+    try {
+      return await component._loadEvents() || { ok: true };
+    } catch (error) {
+      return { ok: false, stale: false, error };
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // workspace build / mount (rootを再利用し、面切替をまたいで表の状態を保持する)
+  // ---------------------------------------------------------------------
+
+  // テンプレートカードを埋め込みシートへドロップ→現在のタスクリストへ追加(計画書5.2章)。
+  // カレンダー面用の _bindProductionTemplateDnD (component.el 全体・capture段階) は、対象が
+  // .gb-cal-week-cell 等のカレンダーセルでなければ何もしないため(calendarDrop()がnullを返す)、
+  // ここで embedHost 単位に bubble 段階のハンドラーを別途登録しても競合しない。
+  // 「リストへ追加」ボタンと同じ制約(管理リスト表示中は不可)をドロップにも適用する。
+  function bindEmbedTemplateDrop(component, state) {
+    if (state.embedHostEl._productionTemplateDropBound) return;
+    state.embedHostEl._productionTemplateDropBound = true;
+    const host = state.embedHostEl;
+    // 「すべて」表示中もドロップ可（作品未確定のため、作成時に作品選択を促す）
+    const canDropHere = () => state.selection?.kind === 'task' || state.selection?.kind === 'all';
+    host.addEventListener('dragover', event => {
+      if (!window.MeldexProductionTemplates?.hasDrag?.(event.dataTransfer) || !canDropHere()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'copy';
+      host.classList.add('is-production-template-drop-target');
+    });
+    host.addEventListener('dragleave', event => {
+      if (!host.contains(event.relatedTarget)) host.classList.remove('is-production-template-drop-target');
+    });
+    host.addEventListener('drop', event => {
+      const payload = window.MeldexProductionTemplates?.readDrag?.(event.dataTransfer);
+      host.classList.remove('is-production-template-drop-target');
+      if (!payload || !canDropHere()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!ensureProductionWritable()) return;
+      component._createProductionTaskFromTemplate(payload, { surface: 'list' }, {});
+    });
+  }
+
+  function buildWorkspace(component, state) {
+    const root = document.createElement('div');
+    root.className = 'gb-production-task-view gb-production-task-workspace';
+    root.dataset.e2eId = 'gb-production-task-workspace';
+
+    const listBar = document.createElement('div');
+    listBar.className = 'gb-production-list-switch db-view-tabs';
+    listBar.setAttribute('role', 'tablist');
+    listBar.setAttribute('aria-label', 'タスクリストのシートビュー');
+    listBar.dataset.e2eId = 'gb-production-list-switch';
+    listBar.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...listBar.querySelectorAll('[role="tab"]')].filter(tab => !tab.disabled);
+      const index = tabs.indexOf(event.target.closest('[role="tab"]'));
+      if (index < 0 || !tabs.length) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      tabs[next].click();
+    });
+    state.listBarEl = listBar;
+
+    const embedHost = document.createElement('div');
+    embedHost.className = 'gb-production-embed-host';
+    embedHost.dataset.e2eId = 'gb-production-embed-host';
+    state.embedHostEl = embedHost;
+
+    const availabilityNotice = document.createElement('div');
+    availabilityNotice.className = 'gb-production-write-availability';
+    availabilityNotice.setAttribute('role', 'status');
+    availabilityNotice.setAttribute('aria-live', 'polite');
+    availabilityNotice.dataset.e2eId = 'gb-production-write-availability';
+    availabilityNotice.hidden = true;
+    state.writeAvailabilityEl = availabilityNotice;
+
+    root.append(listBar, availabilityNotice, embedHost);
+    component._contentEl.replaceChildren(root);
+    state.root = root;
+
+    state.embed = window.MeldexProductionSheetEmbed.create({ idSuffix: component.tabId || component.paneId || 'production' });
+    state.embed.mount(embedHost);
+    bindEmbedTemplateDrop(component, state);
+
+    renderListBar(component, state);
+    syncWriteAvailability(state);
+    return root;
+  }
+
+  function ensureWorkspaceMounted(component, state) {
+    if (!state.root) {
+      buildWorkspace(component, state);
+      return;
+    }
+    if (state.root.parentElement !== component._contentEl) {
+      component._contentEl.replaceChildren(state.root);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // CalendarComponent prototype
+  // ---------------------------------------------------------------------
+
+  CalendarComponent.prototype._productionTaskContext = function() {
+    const state = stateFor(this);
+    return {
+      workTitle: state.selection?.kind === 'task' ? (state.selection.workTitle || '') : '',
+      classification: {},
+      isManagedList: state.selection?.kind === 'managed',
+    };
+  };
+
+  CalendarComponent.prototype._productionActiveTabKey = function() {
+    if (this._surface !== 'productionTasks') return 'calendar';
+    const state = stateFor(this);
+    if (state.pendingTabKey === 'tasks' || managedListInfo(state.pendingTabKey)) return state.pendingTabKey;
+    const selection = state.selection || this.state?.productionTaskSelection;
+    return selection?.kind === 'managed' && managedListInfo(selection.managedKey) ? selection.managedKey : 'tasks';
+  };
+
+  CalendarComponent.prototype._selectProductionTab = function(key) {
+    const tabKey = key === 'calendar' || key === 'tasks' || managedListInfo(key) ? key : 'tasks';
+    const state = stateFor(this);
+    if (tabKey === 'calendar') {
+      state.pendingTabKey = '';
+      this.setSurface('calendar');
+      return true;
+    }
+    if (this._surface !== 'productionTasks') {
+      const switched = this.setSurface('productionTasks', () => this._selectProductionTab(tabKey));
+      if (switched === false || switched === undefined) return false;
+      if (this._surface !== 'productionTasks') return false;
+    }
+    state.pendingTabKey = tabKey;
+    state.selection = null;
+    persistPendingTab(this, state, tabKey);
+    if (state.sheetsLoaded) {
+      ensureSelectionDefault(this, state);
+      if (state.selection) openSelectionIfNeeded(this, state);
+    } else {
+      renderListBar(this, state);
+      this._syncSurfaceControls?.();
+      syncQuickPlanToolbar(this, state);
+      if (!state.sheetsLoading) loadSheetsAndMeta(this, state);
+    }
+    return true;
+  };
+
+  CalendarComponent.prototype._openProductionRecalculate = function(trigger) {
+    // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
+    // improvement-plan-2026-08-04.md §4-1）。Desktop限定ガードは撤去した。
+    if (typeof window.openProductionRecalculate !== 'function') {
+      notify('自動割り当て画面を初期化できませんでした', true);
+      return;
+    }
+    const state = stateFor(this);
+    // 管理リスト（作業対象/作業内容/作業規模/スタッフ）を表示中は、選択行が
+    // タスクファイルではないため再計算対象として渡さない。
+    // すべて／作品別は同じ論理シート面なので、同じ選択集合から渡す。
+    const selectedTaskPaths = state.selection?.kind === 'task' || state.selection?.kind === 'all'
+      ? (state.allView?.getSelectedEntryPaths?.() || [])
+      : [];
+    window.openProductionRecalculate({ trigger, selectedTaskPaths });
+  };
+
+  CalendarComponent.prototype._runProductionSheetDisplayAction = function(action, trigger) {
+    const state = stateFor(this);
+    if (state.selection?.kind === 'all' || state.selection?.kind === 'task') {
+      if (!state.allView?.isReady?.()) {
+        notify('表示中のシートを読み込んでから操作してください', true);
+        return false;
+      }
+      if (action === 'sheetAutoFit') return state.allView.autoFitColumns();
+      if (action === 'sheetColumnDisplayOrder') return !!state.allView.showColumnDisplayOrder();
+      if (action === 'sheetFilter') return state.allView.focusFilters();
+      if (action === 'sheetSort') return state.allView.focusSort();
+    }
+    const ctx = state.embed?.ctx;
+    const dbPath = String(state.selection?.path || '');
+    if (!productionSheetDisplayReady(state) || !ctx || ctx.dbPath !== dbPath) {
+      notify('表示中のシートを読み込んでから操作してください', true);
+      return false;
+    }
+    if (action === 'sheetAutoFit' && typeof autoFitCurrentSheetColumns === 'function') {
+      autoFitCurrentSheetColumns(trigger, ctx, dbPath);
+      return true;
+    }
+    if (action === 'sheetColumnDisplayOrder' && typeof showColumnDisplayOrderModal === 'function') {
+      showColumnDisplayOrderModal(ctx);
+      return true;
+    }
+    if (action === 'sheetFilter' && typeof showUnifiedFilterModal === 'function') {
+      showUnifiedFilterModal({ ctx, event: trigger });
+      return true;
+    }
+    if (action === 'sheetSort' && typeof showDbSortMenu === 'function') {
+      showDbSortMenu({ currentTarget: trigger, target: trigger }, ctx, dbPath);
+      return true;
+    }
+    notify('シート表示操作を初期化できませんでした', true);
+    return false;
+  };
+
+  CalendarComponent.prototype._productionSheetDisplayReady = function() {
+    return productionSheetDisplayReady(stateFor(this));
+  };
+
+  CalendarComponent.prototype._renderProductionTaskView = function() {
+    const state = stateFor(this);
+    if (typeof this._bindProductionTemplateDnD === 'function') this._bindProductionTemplateDnD();
+    ensureWorkspaceMounted(this, state);
+    if (!ensureProductionReadyGate(this, state)) {
+      renderProductionEmptyState(this, state);
+      return;
+    }
+    // 空状態カードは埋め込みシートを detach せず兄弟として追加している（renderProductionEmptyState
+    // 参照）。準備完了後はカードだけを取り除く（埋め込みシート側は setVisible(true) で復帰する）。
+    if (state._emptyStateCardEl) {
+      state._emptyStateCardEl.remove();
+      state._emptyStateCardEl = null;
+    }
+    if ((state.selection?.kind === 'all' || state.selection?.kind === 'task') && state.allView?.isMounted?.()) {
+      state.embed?.setVisible(false);
+      state.allView.setVisible(true);
+    } else {
+      state.allView?.setVisible(false);
+      state.embed?.setVisible(true);
+    }
+    window.MeldexProductionSidebar?.syncTaskListSurface?.(this);
+    syncQuickPlanToolbar(this, state);
+    syncSheetDisplayToolbar(this, state);
+    syncWriteAvailability(state);
+    if (!state.sheetsLoaded && !state.sheetsLoading) loadSheetsAndMeta(this, state);
+    else if (state.selection) openSelectionIfNeeded(this, state);
+    if (!this._productionTaskUpdateHandler) {
+      this._productionTaskUpdateHandler = event => {
+        // 一括作成の発火元は、対象シートを既に明示的に開き直している。同じ475行を
+        // イベント経由でもう一度読み込まず、別コンポーネントだけを同期する。
+        if (event?.detail?.sourceComponent === this) return;
+        if (this._surface === 'productionTasks') {
+          refreshEmbedAfterMutation(this).catch(error => notify(error?.message || 'タスクリストを更新できませんでした', true));
+        }
+      };
+      document.addEventListener('meldex:production-task-updated', this._productionTaskUpdateHandler);
+    }
+    if (!this._productionWriteAvailabilityHandler) {
+      this._productionWriteAvailabilityHandler = () => syncWriteAvailability(stateFor(this));
+      document.addEventListener('meldex:production-write-availability-changed', this._productionWriteAvailabilityHandler);
+    }
+  };
+
+  // 「更新」ボタン・カレンダーのリロード操作から呼ばれる: リスト一覧と埋め込みシートの
+  // 両方を最新化する。
+  CalendarComponent.prototype._refreshProductionTaskEmbed = async function() {
+    const state = stateFor(this);
+    await Promise.all([
+      loadSheetsAndMeta(this, state, { force: true }),
+      refreshEmbedAfterMutation(this),
+    ]);
+  };
+
+  // 一括作成後は、作成対象の作品別シートを選択して結果をその場で確認できるようにする。
+  CalendarComponent.prototype._showProductionTaskWork = async function(workTitle) {
+    const requested = String(workTitle || '').trim();
+    if (!requested) return false;
+    if (this._surface !== 'productionTasks') this.setSurface('productionTasks');
+    const state = stateFor(this);
+    await loadSheetsAndMeta(this, state, { force: true, openSelection: false });
+    const sheet = state.sheets.find(item => String(item?.work_title || '').trim() === requested);
+    if (!sheet) return false;
+    return await selectTaskList(this, state, sheet, { refreshCurrent: true });
+  };
+
+  // カレンダー面へ切り替えた時は破棄せず非表示にするだけに留める(埋め込みシートのctx・
+  // 未保存の入力状態を保持したまま。実際には calendar 側の描画が _contentEl を書き換えて
+  // ワークスペース全体をDOMから切り離すが、参照は保持しているため次回タスク面へ戻った際に
+  // 同じ埋め込みインスタンスへ再アタッチできる)。
+  CalendarComponent.prototype._hideProductionTaskEmbed = function() {
+    const state = this._productionTaskState;
+    if (state?.embed?.isMounted?.()) state.embed.setVisible(false);
+    if (state?.allView?.isMounted?.()) state.allView.setVisible(false);
+  };
+
+  CalendarComponent.prototype._createProductionTaskFromTemplate = async function(template, drop = {}, context = {}) {
+    if (!ensureProductionWritable()) return null;
+    const state = stateFor(this);
+    let work = context.workTitle || (state.selection?.kind === 'task' ? state.selection.workTitle : '') || '';
+    if (!work) {
+      work = await window.MeldexProductionTemplates?.chooseWork?.(Object.keys(state.workMeta || {}), '');
+      if (!work) return null;
+    }
+    const classification = context.classification || {};
+    let data;
+    try {
+      data = await api().fromTemplate({
+        template_id: template?.templateId || '',
+        template_path: template?.templatePath || '',
+        work_title: work,
+        classification,
+        drop,
+        current_user: currentUser(),
+      });
+    } catch (error) {
+      notify(error?.message || 'テンプレートからタスクを追加できませんでした', true);
+      return null;
+    }
+    notify(`「${data?.row?.name || '制作タスク'}」を追加しました`);
+    await refreshEmbedAfterMutation(this);
+    if (drop.surface === 'calendar') {
+      const calendarRefresh = await refreshCalendarEvents(this);
+      if (calendarRefresh?.ok === false) {
+        notify('タスクは追加しましたが、カレンダーを再読み込みできませんでした。カレンダーを再読み込みしてください', true);
+      } else if (this._surface === 'calendar') {
+        this._render();
+      }
+    }
+    // タスクリスト面はシート表そのものが編集場所なので、同じ内容の右詳細を重ねて開かない。
+    // 表が見えないカレンダー配置時だけ、作成結果の詳細を右側へ表示する。
+    if (data?.row && drop.surface === 'calendar') window.MeldexProductionSidebar?.openTask?.(data.row, this);
+    return data;
+  };
+
+  window.MeldexProductionTaskView = Object.freeze({ renderListBar });
+
+  const baseDestroy = CalendarComponent.prototype.destroy;
+  CalendarComponent.prototype.destroy = function() {
+    if (this._productionTaskUpdateHandler) {
+      document.removeEventListener('meldex:production-task-updated', this._productionTaskUpdateHandler);
+      this._productionTaskUpdateHandler = null;
+    }
+    if (this._productionWriteAvailabilityHandler) {
+      document.removeEventListener('meldex:production-write-availability-changed', this._productionWriteAvailabilityHandler);
+      this._productionWriteAvailabilityHandler = null;
+    }
+    const state = this._productionTaskState;
+    this._productionTaskCreateDialog?.close?.();
+    this._productionTaskCreateDialog = null;
+    if (state?.embed) {
+      state.embed.destroy();
+      state.embed = null;
+    }
+    if (state?.allView) {
+      state.allView.destroy();
+      state.allView = null;
+    }
+    if (state) state.root = null;
+    return baseDestroy.call(this);
+  };
+
+  // 復元された制作管理タブが先に描画されると、部品の読込待ち表示だけが残る。
+  // 部品を登録し終えた時に、その表示中のタブを通常の描画経路へ戻す。
+  if (typeof forEachComponent === 'function') {
+    forEachComponent(instance => {
+      if (instance instanceof CalendarComponent && instance._initialized
+          && instance._surface === 'productionTasks' && instance.el?.isConnected) {
+        instance._render();
+      }
+    });
+  }
 })();
 
 ;
@@ -14837,19 +15404,21 @@
   let active = null;
   function closePopup(restore = true) {
     if (!active) return;
-    const { popup, anchor, outside, keydown } = active;
+    const { popup, anchor, outside, keydown, onClose } = active;
     active = null;
     document.removeEventListener('pointerdown', outside, true);
     document.removeEventListener('keydown', keydown, true);
     popup.remove(); anchor.setAttribute('aria-expanded', 'false');
+    onClose?.();
     if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
   }
-  function openPopup(anchor, title, content) {
+  function openPopup(anchor, title, content, options = {}) {
     closePopup(false);
     const popup = document.createElement('div');
     popup.className = 'gb-context-menu gb-search-filter-popup';
     popup.dataset.uiComponent = 'filter-popup';
     popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', title);
+    popup.setAttribute('aria-modal', 'false');
     popup.append(content); document.body.append(popup);
     anchor.setAttribute('aria-expanded', 'true');
     const outside = event => { if (!popup.contains(event.target) && !anchor.contains(event.target)) closePopup(false); };
@@ -14857,7 +15426,7 @@
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closePopup(); }
       else if (event.key === 'Tab' && typeof gbCyclePopupFocus === 'function') { event.preventDefault(); gbCyclePopupFocus(popup, event.shiftKey); }
     };
-    active = { popup, anchor, outside, keydown };
+    active = { popup, anchor, outside, keydown, onClose: options.onClose };
     global.attachMeldexDropdownCloseButton(popup, { trigger: anchor, close: () => closePopup() });
     positionPopup(popup, anchor.getBoundingClientRect(), { prefer: 'below' });
     document.addEventListener('pointerdown', outside, true);
@@ -14887,7 +15456,16 @@
     };
     input.addEventListener('input', event => { if (event.isComposing) return; value.query = input.value; notify(); });
     input.addEventListener('compositionend', () => { value.query = input.value; notify(); });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && input.value && !event.isComposing) {
+        event.preventDefault(); event.stopPropagation(); input.value = ''; value.query = ''; notify();
+      }
+    });
     function showFilter(def, anchor) {
+      if (typeof def.content === 'function') {
+        openPopup(anchor, def.label, def.content(), { onClose: def.onClose });
+        return;
+      }
       const content = document.createElement('div'); content.className = 'gb-search-filter-fields';
       const add = (label, type, initial, change) => {
         const wrap = document.createElement('label'); wrap.textContent = label;
@@ -14913,15 +15491,16 @@
     }
     (options.filters || []).forEach(def => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'tb-icon-btn';
+      button.dataset.e2eId = (options.id || 'search-filter') + '-' + def.id;
       button.setAttribute('aria-label', def.label); button.setAttribute('data-tooltip', def.label);
       button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-pressed', 'false');
       button.innerHTML = typeof lucide === 'function' ? lucide(def.icon || 'filter', 16) : def.label;
       button.onclick = () => active?.anchor === button ? closePopup() : showFilter(def, button);
       controls.append(button); buttons.set(def.id, button);
     });
-    return { el, input, actions, getValue: () => structuredClone(value),
+    return { el, input, actions, controls, getValue: () => structuredClone(value),
       setValue(next, emit = false) { value = { query: next?.query || '', filters: { ...(next?.filters || {}) } }; input.value = value.query; notify(emit); },
-      destroy() { if (active && el.contains(active.anchor)) closePopup(false); el.remove(); },
+      destroy() { if (active && (el.contains(active.anchor) || controls.contains(active.anchor))) closePopup(false); controls.remove(); el.remove(); },
     };
   }
   global.MeldexSearchFilterRow = Object.freeze({ create });

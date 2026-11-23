@@ -1,3 +1,15 @@
+    const canvas = canvasEl || document.getElementById('bd-canvas');
+    const world = worldEl || document.getElementById('bd-world');
+    applyBoardThemeCssVars(board, canvas, world, themeDef);
+    if (canvas) {
+      const fileStyle = board?._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : {};
+      const fileStyleBg = String(fileStyle['--bd-bg'] || '').trim();
+      const documentBg = typeof global.getCssVar === 'function' ? (global.getCssVar('--bd-bg') || '').trim() : '';
+      const bg = fileStyleBg || (boardUsesDocumentTheme(board)
+        ? (documentBg || themeDef?.board?.backgroundColor || '')
+        : (themeDef?.ui?.cssVars?.['--bd-bg'] || themeDef?.board?.backgroundColor || ''));
+      if (typeof global.bdApplyCanvasBackground === 'function') {
+        global.bdApplyCanvasBackground(canvas, bg);
       } else {
         canvas.style.background = board?._bgColor || bg;
       }

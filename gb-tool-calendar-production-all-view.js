@@ -249,6 +249,12 @@
     });
   }
 
+  function _syncTableWidth(instance) {
+    if (instance._tableEl) instance._tableEl.style.width =
+      'calc(var(--production-select-column-width, 32px) + ' +
+      _orderedColumns(instance).reduce((sum, column) => sum + _columnWidth(instance, column.key), 0) + 'px)';
+  }
+
   function _setColumnWidth(instance, key, width, persist = true) {
     const next = _columnWidth({ _columnWidths: { [key]: width } }, key);
     instance._columnWidths[key] = next;
@@ -258,10 +264,11 @@
       cell.style.minWidth = next + 'px';
       cell.style.maxWidth = next + 'px';
     });
+    _syncTableWidth(instance);
     if (persist) _savePrefs(instance);
   }
 
-  function _renderColumnLayout(instance) {
+  function _renderColumnLayout(instance, renderRows = true) {
     if (!instance._headRowEl || !instance._selectHeaderEl) return;
     const headers = _orderedColumns(instance).map(column => instance._headerCells.get(column.key)).filter(Boolean);
     headers.forEach(th => {
@@ -271,8 +278,9 @@
       th.style.maxWidth = width + 'px';
     });
     instance._headRowEl.replaceChildren(instance._selectHeaderEl, ...headers);
+    _syncTableWidth(instance);
     _renderHeaderLabels(instance);
-    _renderTable(instance);
+    if (renderRows) _renderTable(instance);
   }
 
   function _moveColumn(instance, fromKey, targetKey, before) {
@@ -431,6 +439,8 @@
     wrap.className = 'gb-production-all-flat-table-wrap';
 
     const table = document.createElement('table');
+    instance._tableEl = table;
+    _syncTableWidth(instance);
     table.className = 'pivot-table gb-production-all-flat-table';
     table.dataset.e2eId = 'gb-production-all-flat-table';
 
@@ -532,6 +542,11 @@
     instance._tbodyEl = tbody;
     table.appendChild(tbody);
 
+    tbody.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && event.target.matches?.('tr[data-row-path]')) {
+        event.preventDefault(); event.target.click();
+      }
+    });
     tbody.addEventListener('click', event => {
       if (event.target.closest?.('.gb-production-all-flat-select, .gb-production-all-flat-work-jump')) return;
       const rowEl = event.target.closest?.('tr[data-row-path]');
@@ -565,12 +580,16 @@
     const tr = document.createElement('tr');
     tr.dataset.rowPath = path;
     tr.className = 'gb-production-all-flat-row';
+    tr.tabIndex = 0;
+    tr.dataset.e2eId = 'gb-production-all-flat-row-' + encodeURIComponent(path || row?.id || row?.name || 'task');
+    tr.setAttribute('aria-label', [_workTitleOf(row, instance), row?.name || '制作タスク'].filter(Boolean).join(' '));
     if (row?._schedulerProposal) {
       tr.classList.add('gb-scheduler-proposal-row');
       tr.dataset.schedulerProposalId = row._schedulerProposalId || '';
     }
 
     const selectTd = document.createElement('td');
+    selectTd.className = 'gb-production-all-flat-select-col';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'row-select-cb gb-production-all-flat-select';
@@ -597,11 +616,15 @@
       td.style.width = width + 'px';
       td.style.minWidth = width + 'px';
       td.style.maxWidth = width + 'px';
+      td.title = _cellText(instance, row, column);
       if (column.key === 'work') {
+        const workCell = document.createElement('div');
+        workCell.className = 'gb-production-all-flat-work-cell';
+        td.appendChild(workCell);
         const text = document.createElement('span');
         text.className = 'gb-production-all-flat-work-text';
         text.textContent = _cellText(instance, row, column);
-        td.appendChild(text);
+        workCell.appendChild(text);
         const sheet = instance._sheetsByWork.get(_workTitleOf(row, instance));
         if (sheet) {
           const jump = document.createElement('button');
@@ -615,7 +638,7 @@
             event.stopPropagation();
             instance.onOpenWork?.(sheet);
           });
-          td.appendChild(jump);
+          workCell.appendChild(jump);
         }
       } else {
         td.textContent = _cellText(instance, row, column);
@@ -635,7 +658,9 @@
       const td = document.createElement('td');
       td.colSpan = _orderedColumns(instance).length + 1;
       td.className = 'gb-production-all-flat-no-rows';
-      td.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
+      const message = document.createElement('span');
+      message.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
+      td.appendChild(message);
       tr.appendChild(td);
       tbody.appendChild(tr);
     } else {
@@ -660,6 +685,12 @@
       return false;
     }
     const append = opts.append === true;
+    // 更新通知が追加読込を追い越しても、利用者が開いた範囲を縮めない。
+    const loadedCount = instance._rows.length;
+    const requestedCount = append
+      ? Math.min(instance._total || Infinity, loadedCount + LIMIT)
+      : opts.preserveWindow ? Math.max(LIMIT, loadedCount, instance._requestedRowCount || 0) : LIMIT;
+    instance._requestedRowCount = requestedCount;
     const seq = ++instance._loadSeq;
     instance._loading = true;
     _renderStatus(instance);
@@ -672,11 +703,21 @@
       q: instance._filters.q || '',
       sort: [{ field: instance._sort.field, direction: instance._sort.direction }],
       offset: append ? instance._rows.length : 0,
-      limit: LIMIT,
+      limit: append ? LIMIT : Math.min(1000, requestedCount),
     };
     let data;
     try {
       data = await window.MeldexProductionApi.queryTasks(body);
+      if (!append && requestedCount > body.limit) {
+        data = { ...data, rows: [...(Array.isArray(data?.rows) ? data.rows : [])] };
+        while (data.rows.length < Math.min(requestedCount, Number(data.total || 0))) {
+          if (seq !== instance._loadSeq || instance._destroyed) return false;
+          const next = await window.MeldexProductionApi.queryTasks({ ...body, offset: data.rows.length,
+            limit: Math.min(1000, requestedCount - data.rows.length) });
+          if (!next?.rows?.length) break;
+          data.rows.push(...next.rows);
+        }
+      }
     } catch (error) {
       if (seq !== instance._loadSeq || instance._destroyed) return false;
       instance._loading = false;
@@ -757,7 +798,7 @@
       instance._pmRoot = pmRoot;
     }
     instance._filters.work = String(opts?.viewWork || '');
-    _renderColumnLayout(instance);
+    _renderColumnLayout(instance, false);
     instance._emptyEl.hidden = list.length > 0;
     _renderFilterOptions(instance);
     _renderHeaderLabels(instance);
@@ -769,14 +810,14 @@
       return true;
     }
     if (opts?.refresh === true || !instance._hasLoadedOnce || previousWorkView !== instance._filters.work) {
-      return _fetchRows(instance, { append: false });
+      return _fetchRows(instance, { append: false, preserveWindow: previousWorkView === instance._filters.work });
     }
     return true;
   }
 
   function _refresh(instance) {
     if (instance._destroyed || !instance._mounted) return Promise.resolve(false);
-    return _fetchRows(instance, { append: false });
+    return _fetchRows(instance, { append: false, preserveWindow: true });
   }
 
   function create(options) {
@@ -872,8 +913,17 @@
     instance.focusSort = function () { instance._headerCells.get(_orderedColumns(instance)[0]?.key)?.focus(); return true; };
 
     instance.applySchedulerProposal = function (proposal) {
+      const projectionKey = JSON.stringify(proposal || null);
+      if (instance._projectionBase === instance._baseRows && instance._projectionKey === projectionKey) {
+        return instance._projectionResult;
+      }
       const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(instance._baseRows, proposal);
-      instance._rows = projection?.rows || instance._baseRows;
+      instance._projectionBase = instance._baseRows;
+      instance._projectionKey = projectionKey;
+      instance._projectionResult = projection;
+      const nextRows = projection?.rows || instance._baseRows;
+      if (instance._rows === nextRows) return projection || { rows: nextRows, warnings: [] };
+      instance._rows = nextRows;
       _renderTable(instance);
       _renderStatus(instance);
       return projection || { rows: instance._rows, warnings: [] };

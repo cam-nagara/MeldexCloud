@@ -627,6 +627,7 @@
     return /^\s*(```|#{1,6}\s+|>\s*|[-*+]\s+|\d+\.\s+|---+\s*$)/.test(line || '');
   }
 
+  let markdownControlScope = 0;
   function renderChatMarkdown(container, markdown, options) {
     if (!container) return null;
     const root = document.createElement('div');
@@ -741,6 +742,11 @@
     }
     // 動画・SNSポストの共有リンクは段落の下に埋め込みを表示する（発言テキストは変えない）
     try { global.GBWebEmbeds?.decorateChat?.(root); } catch (_) { /* 埋め込みに失敗しても本文は表示する */ }
+    const scope = container.dataset.chatMarkdownControlScope
+      || (container.dataset.chatMarkdownControlScope = String(++markdownControlScope));
+    root.querySelectorAll('a.chat-md-link, button.chat-code-copy-btn').forEach((control, index) => {
+      control.dataset.e2eId = 'chat-markdown-' + scope + '-' + index;
+    });
     container.replaceChildren(root);
     container.style.whiteSpace = 'normal';
     _verifyBareWorkspaceLinks(root);

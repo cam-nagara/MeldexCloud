@@ -191,6 +191,11 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
    カレンダーコンポーネント (.gb-cal-*)
    Phase C: calendar.html → gb-tool-calendar.js
    ============================== */
+:root {
+  /* 小さな白いシフト文字に4.5:1以上の差を確保。明示した個別テーマ色は優先される。 */
+  --cal-shift-work-bg: #99602d;
+  --cal-shift-break-bg: #386d9e;
+}
 .gb-cal-root {
   display: flex; flex-direction: column; flex: 1; overflow: hidden; font-size: 13px;
   background: var(--cal-bg, var(--bg)); color: var(--cal-fg, var(--fg));
@@ -225,6 +230,10 @@ a[href]:not([aria-disabled="true"]) { cursor: pointer; }
 .gb-toolbar-cal button:not(.tb-icon-btn):not(.tb-text-btn):not(.tb-app-icon) { background: var(--cal-control-bg, var(--ui-bg-control)); color: var(--cal-control-fg, var(--cal-toolbar-fg, var(--ui-toolbar-fg))); border-color: var(--cal-control-border, var(--ui-border)); }
 /* 2026-04-18: ツールバーのタイトル欄を .tb-title 標準に統一。中央揃えだけカレンダー固有として保持 */
 .gb-cal-title { font-size: var(--ui-font-12); font-weight: var(--ui-weight-semibold); min-width: 0; text-align: center; color: var(--cal-toolbar-fg, var(--ui-toolbar-fg)); }
+@media (min-width: 701px) {
+  /* 現在の表示範囲は省略せず、周囲の操作を共通のあふれメニューへ退避する。 */
+  .gb-toolbar-cal.gb-toolbar-overflow-host > .gb-cal-title { flex: 0 0 auto; min-width: max-content; }
+}
 @media (pointer: coarse), (max-width: 640px) {
   .gb-toolbar-cal .tb-icon-btn {
     width: var(--ui-h-touch, 44px);
@@ -1468,4 +1477,26 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
     width: 100%;
     min-height: var(--ui-h-touch, 44px);
   }
+}
+
+/* 狭幅では予定名を優先し、補助情報は選択後の詳細で示す。 */
+@media (max-width: 640px) {
+  .gb-cal-day-event > .gb-cal-event-source-icon,
+  .gb-cal-week-event > .gb-cal-event-source-icon,
+  .gb-cal-day-event > .gb-cal-event-avatars,
+  .gb-cal-week-event > .gb-cal-event-avatars { display: none; }
+  .gb-cal-day-event,
+  .gb-cal-week-event { padding-left: 3px; padding-right: 3px; }
+  .gb-cal-event-source-icon + .gb-cal-event-title { display: block; max-width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .gb-cal-timed-view { --cal-event-create-gap: 4px; }
+  .gb-cal-day-event:not(.gb-cal-event-selected) > .gb-cal-event-more,
+  .gb-cal-week-event:not(.gb-cal-event-selected) > .gb-cal-event-more { display: none; }
+}
+
+@media (max-width: 640px) {
+  /* 週の各日を複数日ビューと同じ96px以上にし、予定名を残す。全体でなく時間軸内だけをスクロールする。 */
+  .gb-cal-timed-view:has(> .gb-cal-week:not(.gb-cal-day-grid):not(.gb-cal-multi-day-grid)) > :is(.gb-cal-week, .gb-cal-all-day-strip) { min-width: 732px; }
 }

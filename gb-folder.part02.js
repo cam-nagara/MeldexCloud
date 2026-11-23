@@ -1716,6 +1716,7 @@ function _folderCanExtractArchive(item) {
 async function compressFolderItems(items) {
   const targets = (Array.isArray(items) ? items : [items]).filter(item => item?.path);
   if (!targets.length) return;
+  if (window.MeldexArchiveTools?.desktop()) return window.MeldexArchiveTools.run('compress', targets);
   if (!_folderCanCompress()) {
     showStatus('圧縮機能を利用できません（お使いのブラウザが対応していない可能性があります）', true);
     return;
@@ -1728,7 +1729,7 @@ async function compressFolderItems(items) {
       const register = () => pushCreatedOutlinerItemHistory({ path: result.path, kind: 'file' }, 'フォルダ: 圧縮', { scope: '' });
       if (reservation) reservation.capture(register); else register();
     }
-    if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
+    if (window.MeldexArchiveTools) await window.MeldexArchiveTools.refreshAffected(result);
     showStatus('圧縮しました: ' + (result?.name || result?.path || 'ZIP'));
   } catch (err) {
     showStatus('圧縮に失敗しました: ' + (err?.userMessage || err?.message || err), true);
@@ -1739,6 +1740,7 @@ async function compressFolderItems(items) {
 
 async function extractArchiveItem(item) {
   if (!item?.path) return;
+  if (window.MeldexArchiveTools?.desktop()) return window.MeldexArchiveTools.run('extract', [item]);
   if (!_folderCanExtractArchive(item)) {
     openNative(item.path);
     return;
@@ -1747,6 +1749,7 @@ async function extractArchiveItem(item) {
 }
 
 async function extractArchiveItems(items) {
+  if (window.MeldexArchiveTools?.desktop()) return window.MeldexArchiveTools.run('extract', (Array.isArray(items) ? items : [items]).filter(i => i?.path));
   const targets = (Array.isArray(items) ? items : [items])
     .filter(item => item?.path && _folderCanExtractArchive(item));
   if (!targets.length) return;
@@ -1762,7 +1765,7 @@ async function extractArchiveItems(items) {
         failures.push({ target, error });
       }
     }
-    if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
+    if (window.MeldexArchiveTools) for (const result of results) await window.MeldexArchiveTools.refreshAffected({ ...result, is_dir: true });
     if (failures.length) {
       const first = failures[0];
       if (targets.length === 1) {

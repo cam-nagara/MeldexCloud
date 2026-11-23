@@ -1,3 +1,6 @@
+// 処理パネルの1件として出し、次の結果・エラーの知らせ（ステータスバーに出す）でその1件を終える。
+const _STATUS_PROGRESS_ELLIPSIS_RE = /(?:\.{3}|…|・・・)\s*$/;
+const _STATUS_PROGRESS_IDLE_MS = 120000;
 let _statusProgressHandle = null;
 let _statusProgressIdleTimer = 0;
 
@@ -895,6 +898,3 @@ function initIframeMarkup(scrollContainer, options = {}) {
       const sin = Math.sin(rad);
       const rx = lx * cos - ly * sin;
       const ry = lx * sin + ly * cos;
-      lx = rx + cx;
-      ly = ry + cy;
-    }

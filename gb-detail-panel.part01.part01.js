@@ -46,7 +46,7 @@ function _normalizeDetailTab(tab) {
 // 対象タイプの主要タブ) を保持する。互換性が無い場合のみ defaultTab にフォールバック。
 function _resolveDetailTabForType(type, defaultTab) {
   const cur = (typeof _currentDetailTab !== 'undefined') ? _currentDetailTab : null;
-  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'scriptnote']);
+  const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'scriptnote', 'form-app']);
   if (cur === 'publish' && publishTypes.has(type)) return cur;
   const compatible = {
     page: ['note-ruby', 'publish'],

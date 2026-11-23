@@ -533,7 +533,7 @@ async function bdOpenBoard(label, path, opts) {
       const t = (getCssVar('--bd-auto-align') || '').trim();
       if (t !== '') bd.autoAlign = t !== '0';
     }
-    bd._id = Math.max(0, ...bd.nodes.map(n => parseInt(n.id?.replace(/\D/g, '')) || 0));
+    bdResetIdCounter();
     bd.dirty = false;
     if (typeof bdApplyBoardFileStyleAndTheme === 'function') {
       bdApplyBoardFileStyleAndTheme();

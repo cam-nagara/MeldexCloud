@@ -167,11 +167,11 @@
 
   // フォルダ操作はグローバルスコープの共通履歴を使う（meldexUndo/meldexRedoに委譲）
   function folderToolbarUndo() {
-    if (typeof meldexUndo === 'function') meldexUndo();
+    if (typeof meldexUndo === 'function') return meldexUndo();
   }
 
   function folderToolbarRedo() {
-    if (typeof meldexRedo === 'function') meldexRedo();
+    if (typeof meldexRedo === 'function') return meldexRedo();
   }
 
   function _folderToolbarScheduleUpdate() {
@@ -242,13 +242,17 @@
     const hasSelection = selection.length > 0;
     const currentPath = _folderToolbarCurrentPath();
     const targetLocked = _folderToolbarIsLockedPath(currentPath);
-    buttons.copy.disabled = !hasSelection;
-    buttons.cut.disabled = !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem);
-    buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
-    buttons.paste.disabled = (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked;
-    buttons.add.disabled = !currentPath || targetLocked;
-    if (buttons.up) buttons.up.disabled = !_folderToolbarUpTarget();
-    buttons.add.setAttribute('aria-expanded', document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false');
+    const setDisabled = (button, disabled) => {
+      if (button && button.disabled !== !!disabled) button.disabled = !!disabled;
+    };
+    setDisabled(buttons.copy, !hasSelection);
+    setDisabled(buttons.cut, !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem));
+    setDisabled(buttons.delete, !hasSelection || selection.every(_folderToolbarIsLockedItem));
+    setDisabled(buttons.paste, (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked);
+    setDisabled(buttons.add, !currentPath || targetLocked);
+    setDisabled(buttons.up, !_folderToolbarUpTarget());
+    const expanded = document.querySelector('.folder-toolbar-create-menu') ? 'true' : 'false';
+    if (buttons.add.getAttribute('aria-expanded') !== expanded) buttons.add.setAttribute('aria-expanded', expanded);
     // 取り消し・やり直しボタン展開: フォルダ操作はグローバルスコープの共通履歴を使うため、
     // ここでも一緒に有効/無効を更新する（data-undo-button/data-redo-button経由の一括更新と重複してもよい）
     if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
@@ -357,7 +361,8 @@
     labelEl.textContent = label;
     item.append(iconEl, labelEl);
     item.addEventListener('click', async () => {
-      const parent = _folderToolbarCurrentPath();
+      const requestedParent = _folderToolbarCurrentPath();
+      const parent = typeof _outlinerCreateParentPath === 'function' ? _outlinerCreateParentPath(requestedParent, type) : requestedParent;
       _folderToolbarCloseMenus({ restoreFocus: true });
       if (!parent) return;
       if (_folderToolbarIsLockedPath(parent)) {
@@ -369,9 +374,15 @@
       const historyScope = '';
       const reservation = typeof historyReserve === 'function' ? historyReserve('新規作成: 無題', historyScope) : null;
       try {
-        const res = await apiPost('/outliner/add', { type, label: '無題', parent });
+        const finishPreview = typeof _folderStageCreateTreePreview === 'function' ? _folderStageCreateTreePreview(parent, type, '無題') : () => {};
+        let res;
+        try { res = await apiPost('/outliner/add', { type, label: '無題', parent }); }
+        finally { finishPreview(); }
         const node = res?.node || {};
         const name = node.name || node.label || '無題';
+        if (node.path && typeof _folderApplySavedDropResults === 'function') {
+          _folderApplySavedDropResults(parent, [{ item: { ...node, name } }], []);
+        }
         // フォームは入力先のシートも一緒に作る。取り消しで両方をゴミ箱へ移す（フォルダツリーの新規作成と同じ）。
         const companions = Array.isArray(node.companion_paths) ? node.companion_paths.filter(Boolean) : [];
         const pushHistory = () => {
@@ -388,8 +399,16 @@
             })
             : null;
         };
-        if (reservation) reservation.capture(pushHistory); else pushHistory();
-        await _folderToolbarRefresh(node.path ? [node.path] : [], { treeFolders: [parent] });
+        try {
+          // 保存済みの行を一度描いてから一覧を照合する。ホームの再読込で、
+          // 確定した行まで描画前に「読み込み中」へ置き換えない。
+          const schedulePaint = typeof _folderScheduleRenderFrame === 'function' ? _folderScheduleRenderFrame : callback => setTimeout(callback, 0);
+          await new Promise(resolve => schedulePaint(() => schedulePaint(() => setTimeout(resolve, 0))));
+          await _folderToolbarRefresh(node.path ? [node.path] : [], { treeFolders: [parent] });
+        } finally {
+          // 一覧更新に失敗しても、実際に作れた項目を取り消せるようにする。
+          if (reservation) reservation.capture(pushHistory); else pushHistory();
+        }
         showStatus((node.type === 'folder' ? 'フォルダ' : 'ファイル') + 'を作成しました: ' + name);
       } catch (e) {
         reservation?.cancel();
@@ -702,17 +721,7 @@
       ? await handleDisplayedFolderLinkDelete(topLevelTargets, _folderToolbarCurrentPath(), { refresh: _folderToolbarRefresh })
       : { handled: false, result: null };
     if (linkedDelete.handled) return;
-    const impactTargets = topLevelTargets.map(item => ({
-      path: item.path,
-      kind: item.type === 'folder' ? 'folder' : 'file',
-      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
-    }));
-    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-      ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(impactTargets)
-      : { confirmed: true, operation: 'trash' };
-    if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
-      confirmation: confirmed,
       label: topLevelTargets.length + ' 件を削除',
       refresh: async () => {
         await _folderToolbarRefresh();
@@ -731,7 +740,14 @@
     if (!button || button.dataset.folderToolbarBound === '1') return;
     button.dataset.folderToolbarBound = '1';
     button.innerHTML = _folderToolbarIcon(iconName, 16);
-    button.addEventListener('click', handler);
+    button.addEventListener('click', function(event) {
+      const report = error => _folderReportFailure(button.title || 'フォルダ操作', error);
+      try {
+        return Promise.resolve(handler.call(this, event)).catch(report);
+      } catch (error) {
+        report(error);
+      }
+    });
   }
 
   function _folderToolbarWrapBulkBarUpdate() {

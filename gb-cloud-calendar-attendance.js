@@ -85,6 +85,15 @@
   const calendarLeaseQueues = new WeakMap();
   const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
 
+  async function waitForCalendarIdle(provider) {
+    const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
+    let pending;
+    do {
+      pending = key && calendarLeaseQueues.get(key);
+      if (pending) await pending;
+    } while (pending !== (key && calendarLeaseQueues.get(key)));
+  }
+
   async function withCalendarLease(provider, operation, context = null) {
     const active = activeCalendarLeases.get(provider);
     if (context?.token && active?.token === context.token) return operation(active.context);
@@ -496,5 +505,5 @@
     TIME_ENTRY_TYPES, strictDate, validTimestamp, dayOffset, state, assertNormalAction, affectedTargets,
     validateCsvQuery, buildCsv, intervalMaps, createMutationService,
   });
-  window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease });
+  window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease, waitIdle: waitForCalendarIdle });
 })();

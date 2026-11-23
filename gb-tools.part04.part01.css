@@ -282,6 +282,11 @@ button.gb-context-menu-item {
 }
 
 /* ノート表: 選択セルの周囲に出す行/列追加コントロール */
+:is(#page-content, #entity-freetext, #dp-editable, #board-note-editable,
+    [data-editor-local-id="page-content"], [data-editor-local-id="entity-freetext"],
+    [data-editor-local-id="dp-editable"], [data-editor-local-id="board-note-editable"]) :is(td, th) {
+  scroll-margin: calc(var(--ui-h-xs, 22px) + 12px);
+}
 .note-table-cell-controls {
   position: fixed;
   inset: 0;
@@ -290,6 +295,7 @@ button.gb-context-menu-item {
 }
 .note-table-cell-frame {
   position: fixed;
+  z-index: 10022;
   border: var(--page-cell-edit-outline-width, 2px) solid var(--page-cell-edit-outline-color, var(--accent));
   border-radius: 2px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--page-cell-edit-outline-color, var(--accent)) 35%, transparent);

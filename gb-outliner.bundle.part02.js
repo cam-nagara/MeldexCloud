@@ -1,3 +1,4 @@
+  // lastClickedの安定パス（ファイルパス）。仮想化フォルダ(150件超)ではスクロールで
   // lastClickedがDOMからアンマウントされ得るため（gb-outliner-virtual-render.js）、
   // DOM参照が切れてもrangeTo()が復元できるよう、代入のたびに併記保持する
   // （下のlastClickedゲッター/セッター経由で、既存の全代入箇所を変更せず自動追従する）。
@@ -12,6 +13,7 @@
     this.items.clear();
   },
   add(nodeEl) {
+    if (!nodeEl || nodeEl.inert || nodeEl.classList.contains('tree-node-pending-create')) return;
     this.items.add(nodeEl);
     nodeEl.querySelector('.tree-node-row')?.classList.add('selected');
   },
@@ -69,14 +71,14 @@
     for (let i = start; i <= end; i++) {
       const entry = state.flat[i];
       const path = entry && entry.data && entry.data.path;
-      if (!path) continue;
+      if (!path || (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(path))) continue;
       const mountedEl = state.mountedById.get(path);
       if (mountedEl) this.add(mountedEl);
       else state.selectedIds.add(path);
     }
     return true;
   },
-  getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
+  getNodeData() { return [...this.items].filter(n => !n.inert && !n.classList.contains('tree-node-pending-create')).map(n => n._nodeData).filter(Boolean); },
 };
 
 function _treeNodeIsAncestor(parentNode, childNode) {
@@ -896,5 +898,3 @@ function getNodeColors() {
 }
 function getNodeColor(path) {
   const colors = getNodeColors();
-  const fid = _pathToFileId(path);
-  return (fid && colors[fid]) || colors[path] || '';

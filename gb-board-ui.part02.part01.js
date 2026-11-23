@@ -275,6 +275,8 @@ function _bdBuildNodeDetailHtml(node) {
 }
 
 function bdClearConnectionStyleOverrides(conn) {
+  // 明示的に選んだ共通スタイルも、読込時の階層別スタイルより優先する。
+  conn._userLineStyle = true;
   [
     'color', 'colorOpacity', 'width', 'style', 'arrow', 'straight', 'pathType',
     'branchRatio', 'cornerRadius',
@@ -407,9 +409,12 @@ function _bdBindSelectionDetailPanel() {
 
 function _bdUpdateNodeFromField(node, field, value) {
   switch (field) {
-    case 'text':
+    case 'text': {
+      const beforeText = node.text;
       node.text = value || '';
+      void bdPersistEditedNodeText(node, beforeText);
       break;
+    }
     case 'link':
       if (value) {
         node.link = value;
@@ -743,6 +748,7 @@ function _bdBindNodeDetailPanel(nodeId) {
       // 見た目に戻すという意味。共通スタイル自体は変更しない (他のカードに影響しないように)。
       bdPushUndo();
       if (typeof bdClearCardStyleOverrides === 'function') bdClearCardStyleOverrides(target);
+      target._userCardStyle = true;
       rerenderNodeDetail();
       showStatus(`トピックスタイル「${style.name}」の個別設定をクリアしました`);
     });

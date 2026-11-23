@@ -1150,6 +1150,7 @@ function updateRecentItems() {
   const recent = _outlinerReadStorageArray('meldex-recent').filter(item => item && typeof item === 'object').slice(0, 5);
   window.GBOutlinerThumbnails?.detachWithin?.(container);
   container.innerHTML = '';
+  // 一覧の差し替えが同期で終わった時点だけ復元する。次フレームへの再予約は、その後のスクロールを古い位置へ戻す。
   const _restoreAfter = () => {
     if (lockActive || !treeScroll) return; // ガード稼働中はスキップ
     if (treeScroll.scrollTop !== savedScrollTop) treeScroll.scrollTop = savedScrollTop;
@@ -1158,7 +1159,6 @@ function updateRecentItems() {
     // 空のときは何も表示しない（ソースフォルダ・ホームフォルダ・お気に入り
     // ＝renderFavorites() と同じ扱い。「なし」プレースホルダは出さない）。
     _restoreAfter();
-    requestAnimationFrame(_restoreAfter);
     return;
   }
   recent.forEach(r => {
@@ -1207,7 +1207,6 @@ function updateRecentItems() {
     container.appendChild(item);
   });
   _restoreAfter();
-  requestAnimationFrame(_restoreAfter);
 }
 
 // お気に入り
@@ -1256,7 +1255,6 @@ function _favExists(tree, path, fileId = typeof _pathToFileId === 'function' ? _
 
 function addToFavorites(name, path, type) {
   const favs = getFavorites();
-  window.GBOutlinerThumbnails?.detachWithin?.(container);
   if (_favExists(favs, path)) return;
   const before = typeof captureOutlinerSettingsHistory === 'function'
     ? captureOutlinerSettingsHistory(['meldex-favorites'])
@@ -1496,7 +1494,9 @@ function renderFavorites() {
   _bindFavoriteFileDropTarget();
   const container = document.getElementById('body-favorites');
   if (!container) return;
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   const favs = getFavorites();
+  window.GBOutlinerThumbnails?.detachWithin?.(container);
   container.innerHTML = '';
 
   if (favs.length === 0) return;

@@ -5,13 +5,14 @@
 function bdEditConnLabel(conn) {
   setTimeout(() => {
     if (!conn || !conn.id) return;
+    conn._editingInline = true;
     let lbl = document.querySelector(`.bd-conn-label[data-conn-id="${conn.id}"]`);
     if (!lbl && typeof bdDrawConns === 'function') {
       conn._editingInline = true;
       bdDrawConns({ connIds: [conn.id], reason: 'conn-label-edit-html-fallback' });
       lbl = document.querySelector(`.bd-conn-label[data-conn-id="${conn.id}"]`);
     }
-    if (!lbl) return;
+    if (!lbl) { delete conn._editingInline; return; }
     lbl.contentEditable = 'true'; lbl.focus();
     const s=window.getSelection(), r=document.createRange();
     r.selectNodeContents(lbl); s.removeAllRanges(); s.addRange(r);
@@ -62,12 +63,13 @@ function bdEditConnLabel(conn) {
     };
     lbl.onblur = finish;
     lbl.onkeydown = (ke) => {
+      ke.stopPropagation();
+      if (ke.isComposing || ke.keyCode === 229) return;
       if (ke.key === 'Enter') { ke.preventDefault(); lbl.blur(); }
       if (ke.key === 'Escape') {
         lbl.textContent = conn._labelEditOriginalLabel || '';
         lbl.blur();
       }
-      ke.stopPropagation();
     };
   }, 50);
 }

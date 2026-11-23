@@ -174,6 +174,8 @@
       const name = ctx.data?.entry_id || ctx.data?.id || ctx.data?.entity;
       const formCfg = { fields: [...cfg.fields, cfg.relationProp], required: [cfg.relationProp], labels: {}, descriptions: {}, placeholders: {}, entityNameProp: cfg.fields[0], submitLabel: '行を追加' };
       opened.panel.appendChild(_buildFormAnswerPanel(cfg.dbPath, formCfg, types, false, {
+        historyScope: () => api().historyScope(ctx), ownerRoot: () => ctx.grid,
+        onHistoryChanged: load,
         fixedFields: { [cfg.relationProp]: String(name || '') },
         canWrite: async () => !ctx.readOnly && await api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx)
           && await api().canWrite(opened.panel, cfg.dbPath, cfg.dbPath, null),

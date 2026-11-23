@@ -1016,6 +1016,10 @@
 
   root.MeldexCsvWorkbench = Object.freeze({
     open,
+    adoptSavedDialect(dialect) {
+      model.dialect = root.MeldexCsv.normalizeDialect(dialect);
+      return render(true);
+    },
     render,
     serialize,
     saveMetadata,

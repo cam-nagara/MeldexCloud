@@ -236,7 +236,12 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
       return;
     }
     if (!draggedNode || !_homeFolderPath) return;
+    if (typeof isItemLocked === 'function' && isItemLocked(_homeFolderPath)) {
+      showStatus('編集ロック中のフォルダには移動できません', true); return;
+    }
     const nodes = (draggedNodes || [draggedNode]).filter(Boolean);
+    const reservation = typeof historyReserve === 'function' ? historyReserve(`ホームフォルダへ ${nodes.length} 件を移動`, '') : null;
+    try {
     let movedCount = 0;
     let skippedCount = 0;
     const movedItems = [];
@@ -255,6 +260,8 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
         skippedCount++; processed++; window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
         showStatus('リンクファイルは移動できません'); continue;
       }
+      if (typeof _outlinerAwaitPendingRename === 'function') await _outlinerAwaitPendingRename(dragData);
+      const finishPending = _stageOutlinerMovePreview(n, homeBody, _homeFolderPath);
       try {
         const oldPath = dragData.path;
         const _res = await apiPost('/outliner/move', {
@@ -262,6 +269,7 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
           dest_folder: _homeFolderPath,
           conflict_policy: 'error',
         });
+        finishPending(false);
         movedCount++;
         movedItems.push({
           oldPath,
@@ -276,14 +284,14 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
         } catch (error) { console.warn('[Meldex] 移動後のパス更新に失敗しました', error); }
         try { if (typeof handleRelocateResponse === 'function') handleRelocateResponse(_res); }
         catch (error) { console.warn('[Meldex] 移動後の表示更新に失敗しました', error); }
-      } catch { skippedCount++; showStatus('移動に失敗', true); }
+      } catch (error) { finishPending(true); skippedCount++; showStatus('移動に失敗: ' + (error?.message || error), true); }
       processed += 1;
       window.MeldexImportProgress?.updateOperation?.(processed, null, progressToken);
     }
     window.MeldexImportProgress?.finishOperation?.(progressToken, { failed: skippedCount, summary: `${movedCount}件移動・${skippedCount}件失敗` });
     await renderHomeFolderTree({ force: true, reason: 'home-drop' });
     await loadOutliner();
-    window.MeldexFileMoveHistory?.register?.(movedItems, {
+    const registerMove = () => window.MeldexFileMoveHistory?.register?.(movedItems, {
       label: `ホームフォルダへ ${movedItems.length} 件を移動`,
       detail: `→ ${_homeFolderPath}`,
       refresh: async () => {
@@ -291,12 +299,40 @@ if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) l
         await loadOutliner();
       },
     });
+    if (reservation) reservation.capture(registerMove); else registerMove();
     const statusText = skippedCount
       ? movedCount + ' 件をホームフォルダに移動しました。' + skippedCount + ' 件は移動できませんでした'
       : movedCount + ' 件をホームフォルダに移動しました';
     showStatus(statusText, skippedCount > 0);
+    } finally { reservation?.cancel(); }
   });
 })();
+
+// ホームへの移動も、保存先が確定するまでは表示だけを移し、失敗時に元の位置へ戻す。
+function _stageOutlinerMovePreview(node, homeBody, destination) {
+  const before = { parent: node.parentElement, next: node.nextSibling, path: node.dataset.path, inert: node.inert };
+  homeBody.appendChild(node);
+  node.dataset.path = destination + '/' + String(before.path || '').split('/').pop();
+  node.inert = true;
+  node.setAttribute('aria-busy', 'true');
+  if (!node._outlinerPendingHomeMoveGuard) {
+    node._outlinerPendingHomeMoveGuard = true;
+    const guard = event => {
+      if (!node.inert || node.getAttribute('aria-busy') !== 'true') return;
+      if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && /^[zy]$/i.test(event.key)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+    };
+    ['click', 'dblclick', 'contextmenu', 'dragstart', 'keydown'].forEach(type => node.addEventListener(type, guard, true));
+  }
+  return failed => {
+    node.dataset.path = before.path;
+    node.inert = before.inert;
+    node.removeAttribute('aria-busy');
+    if (failed && before.parent?.isConnected) {
+      before.parent.insertBefore(node, before.next?.parentElement === before.parent ? before.next : null);
+    }
+  };
+}
 
 function closeSidebar() {
   const sidebar = document.getElementById('sidebar');

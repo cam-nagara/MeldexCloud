@@ -2,7 +2,7 @@
 <html data-standalone-app="viewer" data-standalone-cloud="viewer" data-meldex-cloud-app="viewer" lang="ja" spellcheck="false">
 <head>
   <base href="../../">
-  <meta name="meldex-app-version" content="0.7.588">
+  <meta name="meldex-app-version" content="0.7.651">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
@@ -28,7 +28,8 @@
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-loading-indicators.css">
 <link rel="stylesheet" href="viewer.css">
-<link rel="stylesheet" href="viewer-text-layer.css"><script src="gb-escape.js"></script>
+<link rel="stylesheet" href="viewer-text-layer.css">
+<link rel="stylesheet" href="viewer-page-list.css"><script src="gb-escape.js"></script>
 <script src="gb-theme-migration.js"></script>
 <script src="offline-bundles/gb-theme-manager.js"></script>
 <script src="gb-theme-document.js"></script>
@@ -41,11 +42,13 @@
 <script src="gb-system-storage-dropbox.js"></script>
 <script src="gb-dropbox-management-root-resolver.js"></script>
 <script src="gb-source-folder-registry.js"></script>
+<script src="gb-workspace-shared-ledger.js"></script>
+<script src="gb-workspace-ledger-io.js"></script>
 <script src="offline-bundles/gb-storage-adapter.js"></script>
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="offline-bundles/gb-data-access.js"></script>
 <script src="gb-document-identity.js"></script>
-<script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-screenshot-png.js"></script><script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
 <script src="gb-archive-zip-engine.js"></script>
 <script src="gb-cloud-fetch.js"></script>
 <script src="gb-cloud-file-url.js"></script>
@@ -62,6 +65,17 @@
 <body>
 <div class="bg-layer" id="bgA"></div>
 <div class="bg-layer" id="bgB"></div>
+<aside id="viewer-pages" aria-label="ページ一覧" hidden>
+  <div class="viewer-pages-header"><strong>ページ一覧</strong><button id="viewer-pages-close" class="tb-icon-btn" aria-label="ページ一覧を閉じる" title="ページ一覧を閉じる">×</button></div>
+  <div class="viewer-pages-settings">
+    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単体</option><option value="spread">見開き（左→右）</option><option value="manga">見開き（右→左）</option></select></label>
+    <label>開始ページ<select id="viewer-pages-first" class="tb-select"><option value="left">左ページ</option><option value="right">右ページ</option></select></label>
+  </div>
+  <div id="viewer-pages-status" role="status" aria-live="polite"></div>
+  <div id="viewer-pages-load-status" role="status" aria-live="polite"></div>
+  <div id="viewer-pages-scroll" data-editor-local-id="note-toc" tabindex="0" aria-label="ページ一覧のスクロール領域"><div id="viewer-pages-rows"></div></div>
+  <div id="viewer-pages-resize" data-editor-local-id="note-toc-resize" role="separator" aria-label="ページ一覧の幅" aria-orientation="vertical" tabindex="0"></div>
+</aside>
 <div id="display">
   <div class="layer" id="layerA"></div>
   <div class="layer" id="layerB"></div>
@@ -77,12 +91,13 @@
 </div>
 
 <div id="hud">
-  <div id="hud-status">ビューワー</div>
+  <div id="hud-status" role="status" aria-live="polite">ビューワー</div>
   <div id="hud-info"></div>
 </div>
 
 <div id="controls" class="gb-toolbar gb-toolbar-main gb-toolbar-viewer">
   <button id="btn-viewer-main-menu" class="tb-app-icon tb-main-menu-btn" data-app-icon="media" data-gb-tooltip-key="toolbar.mainMenu" type="button" title="メインメニュー" aria-label="ビューワーのメインメニュー" aria-haspopup="menu" aria-expanded="false" data-e2e-id="viewer-main-menu"></button>
+  <button id="btn-page-list" class="tb-icon-btn" title="ページ一覧" aria-label="ページ一覧" aria-expanded="false" aria-controls="viewer-pages"><span class="ico ico-list"></span></button>
   <!-- 前後のフォルダのアイコン（skipBack / skipForward）は共通のアイコン置換表に無いため、viewer-controls.js が描画する -->
   <button id="btn-prev-folder" class="tb-icon-btn" title="前のフォルダ (↑)" aria-label="前のフォルダ" data-e2e-id="viewer-prev-folder"></button>
   <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ"><span class="ico ico-arrowLeft"></span></button>
@@ -139,6 +154,7 @@
 <script src="viewer-media-seek.js"></script>
 <script src="viewer-video.js"></script>
 <script src="viewer-audio.js"></script>
+<script src="viewer-page-state.js"></script>
 <script src="viewer-scene.js"></script>
 <script src="viewer-cloud-file-open.js"></script>
 <script src="viewer-open-request.js"></script>
@@ -155,14 +171,16 @@
   });
 </script>
 <script src="viewer-controls.js"></script>
+<script src="viewer-page-list.js"></script>
 <!-- アノテートのフロートパネルは本体と同じ共通カラーパレットを開く（gb-color-palette.js） -->
 <script src="offline-bundles/gb-color-palette.js"></script>
 <script src="viewer-annotation-toolbar.js"></script>
 <script src="viewer-annotation-scene.js"></script>
+<script src="viewer-highlights.js"></script>
 <script src="viewer-annotation-notes.js"></script>
 <script src="viewer-annotation-legacy.js"></script>
 <script src="viewer-annotations.js"></script>
 <script src="standalone-version-history.js"></script>
-<script src="viewer-context-menu.js"></script>
+<script src="viewer-screenshot-source.js"></script><script src="viewer-context-menu.js"></script>
 </body>
 </html>

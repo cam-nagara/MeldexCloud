@@ -126,8 +126,12 @@
     let el = entry.el && entry.el.isConnected ? entry.el : null;
     if (!el && entry.id) el = document.getElementById(entry.id);
     if (!el) return false;
+    // ツリーはペインの退避で取り外されない。同じ描画の遅延復元で、その後のスクロールを上書きしない。
+    const stableTree = entry.id === 'tree-scroll-container';
+    if (stableTree && entry.restoredTreeElement === el) return true;
     if (typeof el.scrollTop === 'number') el.scrollTop = entry.top;
     if (typeof el.scrollLeft === 'number') el.scrollLeft = entry.left;
+    if (stableTree) entry.restoredTreeElement = el;
     return true;
   }
 

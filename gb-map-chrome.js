@@ -58,12 +58,31 @@
     const spacer = document.createElement('div'); spacer.className = 'tb-spacer'; toolbar.appendChild(spacer);
     app.sidebarToggle = iconButton(app, 'レイヤーと地点一覧', 'layers', () => { app.sidebar.hidden = !app.sidebar.hidden; app.sidebarToggle.setAttribute('aria-pressed', String(!app.sidebar.hidden)); }, 'navigator');
     app.sidebarToggle.setAttribute('aria-pressed', 'false');
-    app.inspectorToggle = iconButton(app, 'オプションを開く', 'panelRight', () => { app._syncDetailPanel(); toggleOptionPanel(); }, 'options');
+    app.inspectorToggle = iconButton(app, 'オプションを開く', 'panelRight', () => {
+      app._syncDetailPanel();
+      if (window.MeldexCloudMobile?.isMobileEditingUiEnabled?.()) {
+        const panel = document.getElementById('rp-detail');
+        // The subpanel already occupies the sole mobile drawer. Keep it mounted
+        // while its options use the shared modal, then restore the detail host.
+        if (app.el.closest('.cloud-mobile-side-drawer[data-drawer-kind="panel"]')) {
+          if (app._mobileOptionsModal) return;
+          const placeholder = document.createComment('map-mobile-options');
+          panel.before(placeholder);
+          const modal = GBUI.createModal({ title: 'マップのオプション', body: panel,
+            extraClass: 'gb-map-mobile-options', onBeforeClose: () => app.flush(),
+            onClose: () => { placeholder.replaceWith(panel); app._mobileOptionsModal = null; } });
+          app._mobileOptionsModal = modal; modal.open(); return;
+        }
+        if (window.MeldexCloudMobileSideDrawer?.openElement?.('オプション', panel, { kind: 'detail', beforeClose: () => app.flush() })) return;
+      }
+      toggleOptionPanel();
+    }, 'options');
     app.inspectorToggle.classList.add('gb-toolbar-option-panel-btn'); app.inspectorToggle.dataset.gbTooltipKey = 'panel.right.toggle';
     const search = iconButton(app, '地図内を検索', 'search', () => { app.sidebar.hidden = false; app.sidebarToggle.setAttribute('aria-pressed', 'true'); app._mapNavigatorTab('places'); app.search.focus(); }, 'search');
     const reload = commands.get('再読込');
     toolbar.append(app.sidebarToggle, convert(reload, '再読み込み', 'refreshCw'), search, app.inspectorToggle, app.saveStatus);
     app.saveStatus.classList.add('tb-meta');
+    app.saveStatus.dataset.toolbarFixedText = '1';
 
     tools.className = 'gb-toolbar gb-map-contextbar'; tools.setAttribute('role', 'toolbar');
     app.symbolInput.className = 'gb-select';
@@ -115,7 +134,8 @@
     bar.appendChild(app.position);
     const breadcrumbs = app.breadcrumbs; breadcrumbs.className = 'gb-map-breadcrumbs'; app.el.insertBefore(breadcrumbs, app.el.querySelector('.gb-map-body'));
     refresh(app);
-    root.MeldexToolbarOverflow?.setup(toolbar, { keep: ['[data-map-action="menu"]', '[data-map-action="options"]', '[data-map-action="select"]'] });
+    root.MeldexToolbarOverflow?.setup(toolbar, { stableGeometry: true, keep: ['[data-map-action="menu"]', '[data-map-action="options"]', '[data-map-action="select"]'] });
+    for (const el of [tools, bar]) root.MeldexToolbarOverflow?.setup(el, { stableGeometry: true });
   }
   function refresh(app) {
     if (!app._contextBar || !app.view || !app.store || app.view._destroyed) return;
@@ -126,11 +146,30 @@
     app._contextColor.hidden = ['select', 'measure', 'erase', 'land', 'sea'].includes(tool);
     app.finishButton.hidden = app._contextCancel.hidden = !draft;
     for (const [id, b] of app.toolButtons) b.classList.toggle('active', id === tool);
-    if (app._mapTitle) { app._mapTitle.textContent = app.state.label || 'マップ'; app._mapTitle.title = app._mapTitle.textContent; }
-    root.MeldexToolbarOverflow?.refresh();
+    if (app._mapTitle && app._mapTitle.textContent !== (app.state.label || 'マップ')) { app._mapTitle.textContent = app.state.label || 'マップ'; app._mapTitle.title = app._mapTitle.textContent; }
+    app.el.querySelectorAll('.gb-toolbar').forEach(el => root.MeldexToolbarOverflow?.refresh(el));
+    identifyControls(app);
+  }
+  // Stable semantic identities survive repaint, option remount and multiple MAP tabs.
+  function identifyControls(app) {
+    const groups = [[app.el, 'surface'], [app.optionsRoot, 'settings'], [app.inspector, 'selection']];
+    for (const [host, area] of groups) {
+      if (!host) continue;
+      for (const el of host.querySelectorAll('button,input,select,textarea,a[href],[role=button],[role=tab]')) {
+        if (el.id || el.dataset.e2eId) continue;
+        if (area === 'surface' && (app.optionsRoot?.contains(el) || app.inspector?.contains(el))) continue;
+        const key = el.dataset.mapFeatureId || el.querySelector('[data-map-feature-id]')?.dataset.mapFeatureId || el.dataset.mapAction || el.getAttribute('aria-label') || el.title || el.labels?.[0]?.textContent?.trim() || el.textContent?.trim();
+        if (!key) continue;
+        const layer = el.closest('[data-map-layer-id]')?.dataset.mapLayerId || '';
+        const empty = el.closest('.gb-map-empty') ? 'empty-' : el.closest('.gb-map-sidebar') ? 'navigator-' : el.closest('.gb-map-surface') ? 'geometry-' : '';
+        const vertexIndex = el.dataset.mapVertex ?? el.querySelector('[data-map-vertex]')?.dataset.mapVertex;
+        const vertex = vertexIndex != null ? ':vertex-' + vertexIndex : '';
+        el.dataset.e2eId = ['map', app.tabId, area, empty + layer, key + vertex].join(':');
+      }
+    }
   }
   function details(app, tab = null) {
-    if (app._active === false || app.paneId !== GBLayout.activePane || !app.view?.map || !app.store || !app.optionsRoot || !app.inspector) return;
+    if (app._active === false || !app._isDetailOwner() || !app.view?.map || !app.store || !app.optionsRoot || !app.inspector) return;
     const settings = document.getElementById('detail-tab-map-settings'), selection = document.getElementById('detail-tab-map-selection');
     if (!settings || !selection) return;
     if (settings.firstElementChild !== app.optionsRoot) settings.replaceChildren(app.optionsRoot);
@@ -138,6 +177,7 @@
     document.querySelectorAll('.detail-tab-map').forEach(el => { el.hidden = false; });
     const chosen = tab || (typeof _resolveDetailTabForType === 'function' ? _resolveDetailTabForType('map', app._selected ? 'map-selection' : 'map-settings') : 'map-settings');
     if (typeof switchDetailTab === 'function' && _currentDetailTab !== chosen) switchDetailTab(chosen);
+    identifyControls(app);
   }
   function menuItems(app) {
     const run = action => async () => { try { await action(); } catch (e) { app._message(e.userMessage || e.message); } };
@@ -152,7 +192,7 @@
         ...[['nations', '国家を生成'], ['vegetation', '植生を生成'], ['town', '都市・集落の詳細図']].map(([kind, label]) => ({ label, action: run(() => MeldexMapWorldBuilding.show(app, kind)), disabled: app.editingDisabled || !!app.store.doc.atlas && !app.store.doc.atlas.surface && kind !== 'town' })),
       ] }] : []),
       { label: '読み込み・書き出し', icon: 'import', submenu: [command('データ入出力', 'データ入出力', 'arrowLeftRight'), command('マップを書き出す', 'マップを書き出す', 'fileDown'), ...(local ? [command('PNG画像を書き出す', 'PNG', 'image'), command('持ち出しパッケージ', '持ち出しパッケージ', 'package')] : [])] },
-      { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },
+      { separator: true }, { label: '地図の設定', icon: 'settings', action: () => { details(app, 'map-settings'); if (window.MeldexCloudMobile?.isMobileEditingUiEnabled?.()) app.inspectorToggle.click(); else if (typeof openRightPanelTab === 'function') openRightPanelTab('detail'); } },
       { label: 'レイヤーと地点一覧', icon: 'layers', action: () => app.sidebarToggle.click() }, { label: '全体表示', icon: 'maximize', shortcut: 'Ctrl+0', action: () => app.view.fit() }];
   }
   function destroy(app) {
@@ -162,5 +202,5 @@
     app.optionsRoot?.remove(); app.inspector?.remove();
     app._contextBar = null;
   }
-  root.MeldexMapChrome = Object.freeze({ decorate, refresh, details, menuItems, destroy, openPanel, closePanel });
+  root.MeldexMapChrome = Object.freeze({ decorate, refresh, details, menuItems, destroy, openPanel, closePanel, identifyControls });
 })(globalThis);

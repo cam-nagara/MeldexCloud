@@ -165,7 +165,7 @@
         if (!host) host = register(noteRoot, { auto: true, kind: 'page', path: tab.path, label: tab.label,
           surface: 'main', ctx: typeof getPaneContext === 'function' ? getPaneContext(paneId) : null,
           flush: () => flushNote(noteRoot), reload: () => reloadNote(noteRoot, host.label, host.path),
-          historyScope: () => 'page:' + String(host.path).replace(/^\/+/, '') }).host;
+          historyScope: () => 'page:' + String(host.path).replace(/\\/g, '/').replace(/^\/+/, '') }).host;
         host.path = tab.path;
         if (host.ctx) { host.ctx.pagePath = tab.path; host.ctx.viewMode = 'page'; }
         activate(host, true);

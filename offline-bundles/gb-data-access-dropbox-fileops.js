@@ -77,6 +77,7 @@
     _buildBrowseItem,
     _sortBrowseItems,
     _linkedItemsForFolder,
+    _folderLinkPathKey,
     _rewriteStoredPaths,
     _rewriteStoredPathsForProvider,
     _rewriteStoredPathsBatchForProvider,
@@ -249,18 +250,18 @@
     return links;
   }
 
-  async function _folderLinksStateForProvider(provider) {
+  async function _folderLinksStateForProvider(provider, documentId) {
     if (typeof _readFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データを読み込めません');
     }
-    return _readFolderLinksManaged(provider);
+    return _readFolderLinksManaged(provider, documentId);
   }
 
-  async function _updateFolderLinksStateForProvider(provider, updater) {
+  async function _updateFolderLinksStateForProvider(provider, updater, documentId, writeSession = null) {
     if (typeof _updateFolderLinksManaged !== 'function') {
       throw new Error('フォルダリンク管理データの原子的更新を利用できません');
     }
-    return _updateFolderLinksManaged(provider, updater);
+    return _updateFolderLinksManaged(provider, updater, documentId, writeSession);
   }
 
   async function _folderLinksManagementScope(provider) {
@@ -334,8 +335,12 @@
   function _safeTrashRestoreRelativePath(rawPath) {
     const raw = String(rawPath || '').trim().replace(/\\/g, '/');
     const segments = raw.split('/');
-    if (!raw || raw.startsWith('/') || segments.some((segment) => !segment
-      || segment === '.' || segment === '..' || segment.startsWith('.') || segment.startsWith('_'))) throw _invalidTrashRestorePath();
+    const chatIndex = segments.indexOf('_chat');
+    const chatDocument = chatIndex >= 0 && segments.length === chatIndex + 4
+      && segments[chatIndex + 1] === 'llm' && /\.md$/i.test(segments[segments.length - 1]);
+    if (!raw || raw.startsWith('/') || segments.some((segment, index) => !segment
+      || segment === '.' || segment === '..' || segment.startsWith('.')
+      || (segment.startsWith('_') && !(chatDocument && index >= chatIndex)))) throw _invalidTrashRestorePath();
     const normalized = _normalizeFolderPath(raw);
     if (!normalized || normalized !== raw) throw _invalidTrashRestorePath();
     return normalized;
@@ -708,9 +713,22 @@
   // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
   // 同じ関数スコープの続きとして連結され、最後に .part02.js が `})();` で閉じる
   // (ファイル冒頭のコメント参照。既存の -folder-versions.js と同じ「継続ファイル」方式)。
-/* Durable CAS journal for Cloud duplicate/save-as identity transactions. */
+/* Durable CAS journals; image records stay outside the legacy copy document. */
   const _CLOUD_COPY_COMPLETED_LIMIT = 512;
   const _cloudCopyFlights = new Map();
+  const _cloudImageJournalDocumentId = 'cloud-created-image-identities';
+
+  function _cloudCopyJournalDocumentId(operation) {
+    return operation === 'created-cloud-image-identity' ? _cloudImageJournalDocumentId : undefined;
+  }
+
+  async function _readCloudCopyJournal(provider, operation) {
+    return _folderLinksStateForProvider(provider, _cloudCopyJournalDocumentId(operation));
+  }
+
+  async function _updateCloudCopyJournal(provider, operation, updater, writeSession = null) {
+    return _updateFolderLinksStateForProvider(provider, updater, _cloudCopyJournalDocumentId(operation), writeSession);
+  }
 
   function _canonicalCloudCopyValue(value) {
     if (Array.isArray(value)) return value.map(_canonicalCloudCopyValue);
@@ -727,8 +745,9 @@
   async function _cloudCopyIdentity(provider, operationId, operation, payload) {
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload),
-      key: `${scope}\u0000${operationId}` };
+    const key = `${scope}\u0000${operationId}`;
+    return { scope, fingerprint: await _cloudCopyDigest(scope, operation, payload), key,
+      writeSession: _cloudCopyFlights.get(key)?.writeSession || null };
   }
 
   function _assertCloudCopyRecord(record, operationId, operation, identity) {
@@ -759,8 +778,10 @@
       }
       return previous.promise;
     }
+    const writeSession = {};
+    identity.writeSession = writeSession;
     const promise = Promise.resolve().then(() => task(identity));
-    const record = { fingerprint: identity.fingerprint, promise };
+    const record = { fingerprint: identity.fingerprint, promise, writeSession };
     _cloudCopyFlights.set(identity.key, record);
     try { return await promise; }
     finally { if (_cloudCopyFlights.get(identity.key) === record) _cloudCopyFlights.delete(identity.key); }
@@ -768,7 +789,7 @@
 
   async function _loadCloudCopyOperation(provider, operationId, operation, payload, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     const record = _normalizeOutlinerOperations(state.outliner_operations)
       .find(row => row.operation_id === operationId) || null;
     _assertCloudCopyRecord(record, operationId, operation, resolved);
@@ -779,7 +800,7 @@
     const bounded = Math.max(1, Math.min(50, Number(limit) || 50));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => (record.state === 'prepared' || record.state === 'awaiting_proof')
         && (!operation || record.operation === operation)
@@ -792,7 +813,7 @@
     const bounded = Math.max(1, Math.min(_CLOUD_COPY_COMPLETED_LIMIT, Number(limit) || 512));
     const scope = await _folderLinksManagementScope(provider);
     if (!scope) throw new Error('Cloudファイル操作の保存境界を識別できません');
-    const state = await _folderLinksStateForProvider(provider);
+    const state = await _readCloudCopyJournal(provider, operation);
     return _normalizeOutlinerOperations(state.outliner_operations)
       .filter(record => record.state === 'completed'
         && (!operation || record.operation === operation)
@@ -804,7 +825,7 @@
   async function _prepareCloudCopyOperation(provider, operationId, operation, payload, intent, identity = null) {
     const resolved = identity || await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const previous = operations.find(row => row.operation_id === operationId) || null;
       _assertCloudCopyRecord(previous, operationId, operation, resolved);
@@ -817,13 +838,13 @@
       };
       return { ...state, outliner_operations: previous ? operations
         : _pruneCloudCopyOperations([...operations, selected]) };
-    });
+    }, resolved.writeSession);
     return selected;
   }
 
   async function _updateCloudCopyIntent(provider, operationId, operation, payload, intent) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -836,12 +857,12 @@
         ...previous, state: nextState, intent: structuredClone(intent), saved_at: new Date().toISOString(),
       };
       return { ...state, outliner_operations: operations };
-    });
+    }, identity.writeSession);
   }
 
   async function _failCloudCopyOperation(provider, operationId, operation, payload, reason) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -859,7 +880,7 @@
   async function _rearmCloudCopyOperation(provider, operationId, operation, payload, publisherToken) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = null;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -892,7 +913,7 @@
   async function _completeCloudCopyOperation(provider, operationId, operation, payload, result) {
     const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
     let selected = result;
-    await _updateFolderLinksStateForProvider(provider, state => {
+    await _updateCloudCopyJournal(provider, operation, state => {
       const operations = _normalizeOutlinerOperations(state.outliner_operations);
       const index = operations.findIndex(row => row.operation_id === operationId);
       const previous = index < 0 ? null : operations[index];
@@ -905,16 +926,25 @@
           saved_at: new Date().toISOString() };
       }
       return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
-    });
+    }, identity.writeSession);
     return selected;
   }
 
   async function _runCloudCopyAftercare(provider, operationId, operation, payload, record, steps, checkpoint = null) {
     let intent = structuredClone(record.intent || {});
     const completed = new Set(Array.isArray(intent.aftercare_completed) ? intent.aftercare_completed : []);
+    // 呼出元が対象形式から副作用なしと証明できる手順は、最初の保存へ完了をまとめる。
+    for (const step of steps) {
+      if (step.noop !== true) continue;
+      completed.add(step.name);
+      if (intent.aftercare_in_progress?.name === step.name) delete intent.aftercare_in_progress;
+    }
     intent.aftercare_required = steps.map(step => step.name);
     intent.aftercare_completed = [...completed];
-    await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    // 最初の手順の開始と同時に必要な手順一覧を確定する。効果の実行前の保存は保つ。
+    if (steps.every(step => completed.has(step.name))) {
+      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    }
     for (const [stepIndex, step] of steps.entries()) {
       if (completed.has(step.name)) continue;
       const inProgress = intent.aftercare_in_progress || null;
@@ -1720,7 +1750,7 @@ async function _readAnnotationRecord(provider, id, targetPathHint) {
   return legacy && typeof legacy === 'object' ? legacy : null;
 }
 
-async function _writeAnnotationRecord(provider, record) {
+async function _writeAnnotationRecord(provider, record, options = {}) {
   const docId = _safeId(record.id, 'annotation id');
   const adapter = await _managementAdapterForProvider(
     provider,
@@ -1728,7 +1758,25 @@ async function _writeAnnotationRecord(provider, record) {
     record.target_path || record.path || '',
   );
   const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  await adapter.save(kind, docId, record);
+  let saveOptions;
+  if (options.expectedModified) {
+    let current = await adapter.load(kind, docId);
+    if (!current) {
+      const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+      if (legacy && _annotationRow(legacy).modified === options.expectedModified) {
+        // Retain the legacy source and claim an absent common-store slot first.
+        // A retry can then edit that same snapshot with the normal CAS guard.
+        await adapter.save(kind, docId, legacy, { expectedRevision: null });
+        current = await adapter.load(kind, docId);
+      }
+    }
+    if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを変更できません');
+      error.status = 409; throw error;
+    }
+    saveOptions = { expectedRevision: current.revision };
+  }
+  await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
@@ -1767,12 +1815,16 @@ async function _restoreAnnotationRecord(provider, body) {
 window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
 window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
 
-async function _deleteAnnotationRecordFully(provider, id) {
+async function _deleteAnnotationRecordFully(provider, id, options = {}) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
   const matches = await _findAnnotationRecordsById(provider, docId);
   if (matches.length === 1) {
     const match = matches[0];
+    if (options.expectedModified && _annotationRow(match.stored.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを削除できません');
+      error.status = 409; throw error;
+    }
     const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
       adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
       documentId: docId, expectedRevision: match.stored.revision,
@@ -1783,6 +1835,10 @@ async function _deleteAnnotationRecordFully(provider, id) {
     return;
   }
   const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  if (options.expectedModified && (!legacy || _annotationRow(legacy).modified !== options.expectedModified)) {
+    const error = new Error('他の画面で更新されたためアノテートを削除できません');
+    error.status = 409; throw error;
+  }
   if (legacy) await provider.deletePath(_annotationPath(docId));
 }
 
@@ -2748,13 +2804,14 @@ async function _saveFileVersion(provider, path, options) {
   }
   const source = await _resolveEntryHandle(provider, normalized);
   if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-  if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
+  const textFile = _isTextLikePath(normalized);
   const versionName = _fileVersionName(normalized, options || {});
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   const expectedRevision = String(options?.expectedRevision || '');
   const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
   const before = expectedRevision ? await provider.getMetadata(normalized) : null;
-  const content = await provider.readText(normalized);
+  const content = textFile ? await provider.readText(normalized) : '';
+  const binary = textFile ? {} : await _versionFileBase64(provider, normalized);
   const after = expectedRevision ? await provider.getMetadata(normalized) : null;
   if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
     throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
@@ -2764,6 +2821,8 @@ async function _saveFileVersion(provider, path, options) {
     original_relative_path: normalized,
     version_name: versionName,
     content,
+    ...binary,
+    annotation_snapshot: await _captureVersionAnnotations(provider, normalized),
     auto: !!options?.auto,
     label: String(options?.label || ''),
     file_kind: _historyFileKind(normalized, content),
@@ -2773,7 +2832,7 @@ async function _saveFileVersion(provider, path, options) {
   };
   let documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
   if (pointMetadata.restore_point_kind === 'periodic') {
-    payload.content_hash = payload.content_hash || _contentHistoryHash(content);
+    payload.content_hash = _contentHistoryHash((textFile ? content : binary.content_base64) + JSON.stringify(payload.annotation_snapshot));
     await _awaitPendingEditFinalizations();
     const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
     const existing = rows.find(row => {
@@ -2985,7 +3044,12 @@ async function _readFileVersion(provider, path, version) {
   const { record, name } = await _findFileVersionRecord(provider, path, version, false);
   if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
   const current = await _readConflictSnapshot(provider, _normalizeFolderPath(path));
+  const currentAnnotations = record.payload?.annotation_snapshot == null ? null : await _captureVersionAnnotations(provider, path);
   return { content: String(record.payload?.content || ''), name,
+    ...(record.payload?.content_base64 != null ? { binary: true, content_base64: record.payload.content_base64,
+      size: record.payload.byte_length, sha256: await _conflictSnapshotSha256(Uint8Array.from(atob(record.payload.content_base64), c=>c.charCodeAt(0))), current_sha256: current.sha256 } : {}),
+    annotation_snapshot: _rebindVersionAnnotations(record.payload?.annotation_snapshot, _normalizeFolderPath(path)), current_annotation_snapshot: currentAnnotations,
+    annotation_revision: currentAnnotations ? _contentHistoryHash(JSON.stringify(currentAnnotations)) : '',
     etag: current.revision, transport_revision: { transport: 'provider-revision', token: current.revision } };
 }
 
@@ -3008,9 +3072,82 @@ async function _restoreFileVersion(provider, path, version, options = {}) {
   if (!expected || expected !== data.etag) throw Object.assign(new Error('復元対象が更新されました。再確認してください'), { status: 409 });
   _rejectProductionLegacyEntryContent(normalized, data.content || '');
   await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-  const saved = await provider.uploadBytesConditional(normalized, new TextEncoder().encode(data.content || ''), expected);
+  const rollbackAnnotations = await _restoreVersionAnnotations(provider, normalized, data.annotation_snapshot, options.annotation_revision);
+  let saved;
+  try { saved = await provider.uploadBytesConditional(normalized, data.binary
+    ? Uint8Array.from(atob(data.content_base64),c=>c.charCodeAt(0)) : new TextEncoder().encode(data.content || ''), expected); }
+  catch(error) { await rollbackAnnotations(); throw error; }
   const token = String(saved?.rev || saved?.revision || '');
   return { ok: true, etag: token, transport_revision: { transport: 'provider-revision', token } };
+}
+
+async function _captureVersionAnnotations(provider, path) {
+  const normalized = _normalizeFolderPath(path);
+  const rows = (await _listAnnotationRecords(provider, { targetPath: normalized, includePdfPages: true }))
+    .filter(row => _normalizeFolderPath(row.target_path) === normalized || _normalizeFolderPath(row.target_path).startsWith(normalized+'#page='))
+    .sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+  return { schemaVersion: 1, targets: { [normalized]: rows } };
+}
+
+function _rebindVersionAnnotations(snapshot, path) {
+  if(snapshot==null)return snapshot;
+  const invalid=()=>{throw Object.assign(new Error('アノテートの保存版の対象が不正です'),{status:400});};
+  if(snapshot.schemaVersion!==1||!snapshot.targets||Array.isArray(snapshot.targets))invalid();
+  const roots=[...new Set(Object.keys(snapshot.targets).map(key=>key.replace(/\\/g,'/').split('#page=')[0]))];
+  if(roots.length!==1)invalid();
+  const owner=roots[0],rows=[];
+  const map=value=>{
+    const parts=String(value||'').replace(/\\/g,'/').split('#page='),base=parts[0];
+    if(base!==owner&&!(/^(?:[a-z]:\/|\/)/i.test(owner)&&owner.endsWith('/'+base))||parts.length>2||parts.length===2&&!/^[1-9]\d*$/.test(parts[1]))invalid();
+    return path+(parts.length===2?'#page='+parts[1]:'');
+  };
+  for(const [key,items] of Object.entries(snapshot.targets)){
+    map(key);if(!Array.isArray(items))invalid();
+    for(const item of items){
+      const row={...item,target_path:map(item.target_path)};
+      let ref=row.target_ref;const stringRef=typeof ref==='string';
+      if(stringRef){try{ref=JSON.parse(ref);}catch{ref=null;}}
+      if(ref&&typeof ref==='object'){
+        ref={...ref};for(const field of ['file','path'])if(field in ref)ref[field]=map(ref[field]);
+        row.target_ref=stringRef?JSON.stringify(ref):ref;
+      }
+      if('target_file_name' in row)row.target_file_name=path.split('/').pop();
+      rows.push(row);
+    }
+  }
+  return {schemaVersion:1,targets:{[path]:rows}};
+}
+
+async function _restoreVersionAnnotations(provider, path, snapshot, expectedRevision) {
+  if (snapshot == null) return async()=>{};
+  const normalized = _normalizeFolderPath(path);
+  const current = await _captureVersionAnnotations(provider, normalized);
+  if (snapshot.schemaVersion !== 1 || !snapshot.targets || Object.keys(snapshot.targets).some(key=>key!==normalized))
+    throw Object.assign(new Error('別ファイルのアノテートは復元できません'),{status:400});
+  if (expectedRevision && expectedRevision !== _contentHistoryHash(JSON.stringify(current)))
+    throw Object.assign(new Error('アノテートが更新されました。再確認してください'),{status:409});
+  const desired = snapshot.targets[normalized] || [], before = current.targets[normalized];
+  if (!Array.isArray(desired) || desired.some(row=>_normalizeFolderPath(row.target_path).replace(/#page=\d+$/,'')!==normalized)
+    || new Set(desired.map(row=>row.id)).size!==desired.length) throw Object.assign(new Error('アノテートの版が不正です'),{status:400});
+  const applied=[];
+  async function restoreRow(row, previous) {
+    if(row) {
+      const existing=(await _findAnnotationRecordsById(provider,row.id))[0]?.stored?.payload;
+      if(existing && !_annotationDeleted(existing) && _normalizeFolderPath(existing.target_path).replace(/#page=\d+$/,'')!==normalized)
+        throw Object.assign(new Error('アノテートは別の対象へ移動されています'),{status:409});
+      await _restoreAnnotationRecord(provider,{...row,...(previous?{expected_modified:previous.modified}:{expected_absent:true})});
+    } else await _deleteAnnotationRecordFully(provider,previous.id,{expectedModified:previous.modified});
+  }
+  async function rollback() { for(const [old,next] of [...applied].reverse()) await restoreRow(old,next); }
+  try {
+    for(const row of desired) {
+      const old=before.find(item=>item.id===row.id)||null;
+      if(JSON.stringify(old)===JSON.stringify(row))continue;
+      await restoreRow(row,old);applied.push([old,row]);
+    }
+    for(const old of before) if(!desired.some(row=>row.id===old.id)) { await restoreRow(null,old);applied.push([old,null]); }
+  }catch(error){await rollback();throw error;}
+  return rollback;
 }
 
 async function _deleteFileVersion(provider, path, version) {
@@ -3046,6 +3183,7 @@ async function _undeleteFileVersion(provider, path, token) {
 window.MeldexFileVersionProviderOps = Object.freeze({
   save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
   read: (provider, path, version) => _readFileVersion(provider, path, version),
+  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
 });
   /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
@@ -3126,6 +3264,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       label: options?.label || '',
       auto: !!options?.auto,
       files,
+      ...(options?.include_annotations ? { annotation_snapshot: await _captureVersionAnnotations(provider, normalized) } : {}),
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
@@ -3254,9 +3393,10 @@ window.MeldexFileVersionProviderOps = Object.freeze({
   async function _readFolderVersion(provider, folderPath, version, includeRevision = false) {
     const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
     if (!record) throw new Error('フォルダバージョンが見つかりません');
-    if (!includeRevision) return record.payload;
+    const payload={...record.payload,annotation_snapshot:_rebindVersionAnnotations(record.payload.annotation_snapshot,_normalizeFolderPath(folderPath))};
+    if (!includeRevision) return payload;
     const baseline = await _folderRestoreBaseline(provider, _normalizeFolderPath(folderPath), record.payload.files || []);
-    return { ...record.payload, restore_revision: baseline.token };
+    return { ...payload, restore_revision: baseline.token };
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
@@ -3302,7 +3442,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       plan.nextBytes = Uint8Array.from(atob(file.content_base64), char => char.charCodeAt(0));
       await window.MeldexFileLockStore?.requireUnlocked?.(provider, plan.path, { action: 'folder-version-restore' });
     }
-    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const backup = await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore', include_annotations: meta.annotation_snapshot != null });
     const committed = [];
     try {
       for (const plan of baseline.plans) {
@@ -3314,6 +3454,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
         const readback = await _readConflictSnapshot(provider, plan.path);
         if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
       }
+      await _restoreVersionAnnotations(provider, normalized, meta.annotation_snapshot, options.annotation_revision);
     } catch (error) {
       const incomplete = [];
       for (const { plan, revision } of [...committed].reverse()) {
@@ -3368,6 +3509,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
   window.MeldexFolderVersionProviderOps = Object.freeze({
     save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
     read: (provider, path, version) => _readFolderVersion(provider, path, version),
+    restoreRevision: async (provider,path,files) => (await _folderRestoreBaseline(provider,path,files)).token,
   });
   async function _findDropboxConflictedCopies(provider, limit) {
     const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
@@ -3684,7 +3826,13 @@ async function _resolveCloudLinkFolder(provider, body) {
   return { folderPath, folderId };
 }
 
-function _cloudFolderLinkMatches(link, fileId, folderPath, folderId) {
+function _cloudFolderLinkMatches(link, fileId, folderPath, folderId, filePath, pathKey) {
+  if (pathKey) {
+    const folderKey = pathKey(folderPath);
+    const fileKey = filePath ? pathKey(filePath) : '';
+    return !!folderKey && folderKey === pathKey(link.folder_path)
+      && (link.file_id === fileId || (!!fileKey && fileKey === pathKey(link.path)));
+  }
   return link.file_id === fileId && (link.folder_id === folderId || (!link.folder_id && link.folder_path === folderPath));
 }
 
@@ -3715,11 +3863,11 @@ async function _validateFolderLinkBatch(provider, operation, body) {
   return { folderPath, folderId, validated, validationFailures };
 }
 
-function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, folderId) {
+function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, folderId, pathKey) {
   const next = currentLinks.map(link => ({ ...link }));
   const results = validated.map(item => {
     const result = { ...item, folder_path: folderPath, folder_id: folderId };
-    const index = next.findIndex(link => _cloudFolderLinkMatches(link, item.file_id, folderPath, folderId));
+    const index = next.findIndex(link => _cloudFolderLinkMatches(link, item.file_id, folderPath, folderId, item.file_path, pathKey));
     if (operation === 'add') {
       if (index >= 0) {
         if (!next[index].folder_id) next[index] = { ...next[index], folder_path: folderPath, folder_id: folderId };
@@ -3755,7 +3903,8 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
     const previous = requestId ? state.requests.find(record => record.request_id === requestId) : null;
     _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
     if (previous) return { ...state, result: previous.result };
-    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId);
+    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId,
+      typeof _folderLinkPathKey === 'function' ? path => _folderLinkPathKey(provider, path) : undefined);
     const result = _folderLinkBatchSummary(operation, requestId, applied.results.concat(validationFailures));
     const requests = requestId ? [...state.requests, {
       request_id: requestId,
@@ -3765,7 +3914,7 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
       result,
       saved_at: new Date().toISOString(),
     }].slice(-_FOLDER_LINK_REQUEST_LIMIT) : state.requests;
-    return { links: applied.links, requests, result };
+    return { ...state, links: applied.links, requests, result };
   });
   return committed.result;
 }
@@ -3819,7 +3968,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const items = _sortBrowseItems(folders, sort, order).concat(_sortBrowseItems(files, sort, order));
       const existing = new Set(items.map((item) => item.path));
       const folderLinks = await _folderLinksForProvider(provider);
-      for (const linked of _linkedItemsForFolder(browsePath, folderLinks)) {
+      for (const linked of _linkedItemsForFolder(browsePath, folderLinks, path => _folderLinkPathKey(provider, path))) {
         signal?.throwIfAborted();
         if (existing.has(linked.path)) continue;
         const entry = await _resolveEntryHandle(provider, linked.path);
@@ -3868,13 +4017,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       // include_videos=1 はビューワーのフォルダ内前後移動用（サーバー版 /api/images-in-folder と同じ拡張子集合）
       const includeVideos = url.searchParams.get('include_videos') === '1';
-      const videoExts = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
+      const videoExts = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v', '.ogv']);
+      const includeAudio = url.searchParams.get('include_audio') === '1';
+      const audioExts = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
       const entries = await _listDirectoryEntries(provider, targetPath);
       const items = [];
       for (const entry of entries) {
         if (entry.handle.kind !== 'file') continue;
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext))) continue;
+        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext)) && !(includeAudio && audioExts.has(ext))) continue;
         const itemPath = entry.path || _joinPath(targetPath, entry.name);
         const stats = await _fileStats(entry.handle);
         items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
@@ -3903,6 +4054,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         };
       }
       const snapshot = await _readFileSnapshot(provider, filePath, entry);
+      if (_boolParam(url.searchParams.get('raw_text'))) {
+        const content = new TextDecoder('utf-8', { fatal:true, ignoreBOM:true }).decode(snapshot.bytes);
+        return {path:filePath,content,...await _fileIdentityAndRevision(provider,filePath,entry,snapshot.etag,null,content)};
+      }
       if (/\.csv$/i.test(filePath)) {
         const bytes = snapshot.bytes;
         const view = new Uint8Array(bytes);
@@ -3928,7 +4083,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         };
       }
       const etag = snapshot.etag;
-      const content = new TextDecoder().decode(snapshot.bytes);
+      const isNote = /\.md$/i.test(filePath);
+      const raw = new TextDecoder('utf-8', { ignoreBOM: isNote }).decode(snapshot.bytes);
+      const content = isNote ? raw.replace(/\r\n?/g, '\n') : raw;
       return {
         path: filePath,
         content,
@@ -3985,12 +4142,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
       }
-      const currentContent = snapshot ? new TextDecoder().decode(snapshot.bytes) : '';
+      const isNote = /\.md$/i.test(filePath);
+      const currentContent = snapshot ? new TextDecoder('utf-8', { ignoreBOM: isNote }).decode(snapshot.bytes) : '';
+      const currentViewContent = isNote ? currentContent.replace(/\r\n?/g, '\n') : currentContent;
+      if (/\.mel-map$/i.test(filePath)) {
+        // Validate both sides before preparing history or uploading. Unknown future
+        // formats must never be silently overwritten by an older Cloud client.
+        const map = window.MeldexMapDocument;
+        if (!map?.parse) throw new Error('マップの保存検査を読み込めませんでした');
+        try {
+          map.parse(content);
+          if (currentContent) map.parse(currentContent);
+        } catch (error) {
+          error.status = 422; error.code = 'invalid_map_document'; error.meldexCode = 'invalid_map_document';
+          throw error;
+        }
+      }
       if (!body?._file_icon_write && window.MeldexFileIcons) {
-        content = window.MeldexFileIcons.preserve(content, currentContent, filePath);
+        content = window.MeldexFileIcons.preserve(content, currentViewContent, filePath);
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const storedTitle = titleHelper?.read(currentContent, filePath);
+      const storedTitle = titleHelper?.read(currentViewContent, filePath);
       if (titleHelper && (body?.display_title || storedTitle)) {
         content = titleHelper.write(content, body?.display_title || storedTitle, filePath);
       }
@@ -4000,10 +4172,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (incomingIdentityFmt) {
         let existingDocumentId = '';
         if (entry) {
-          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
+          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentViewContent);
           docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
           existingDocumentId = String(
-            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentViewContent, docIdentityFmt)
             || '',
           );
         }
@@ -4015,7 +4187,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ).text;
         }
       }
-      const canonical = value => String(value).replace(/\r\n/g, '\n');
+      if (entry && isNote) content = _preserveNoteTextFormat(content, currentContent);
+      const canonical = value => isNote ? String(value).replace(/\r\n?/g, '\n') : String(value).replace(/\r\n/g, '\n');
       if (entry && canonical(content) === canonical(currentContent)) {
         // A committed write may have lost its response. Acknowledge the exact
         // current snapshot without another upload or another history version.
@@ -4024,6 +4197,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ok: true, unchanged: true,
           ...await _fileIdentityAndRevision(provider, filePath, entry, snapshot.etag, null, currentContent),
           ..._savedNoteMetadata(filePath, currentContent),
+          ...(body?.include_saved_content?{saved_content:currentContent}:{}),
         };
       }
       if (entry && expectedEtag && expectedEtag !== snapshot.etag) {
@@ -4065,6 +4239,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
         ..._savedNoteMetadata(filePath, content),
+        ...(body?.include_saved_content?{saved_content:content}:{}),
         history_recorded: !historySyncPending,
         history_sync_pending: historySyncPending,
       };
@@ -4268,7 +4443,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const now = _nowIso();
       const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
       await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id, created: record.created };
+      return { ok: true, id: record.id, created: record.created, modified: record.modified };
     }
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -4299,6 +4474,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       }
       return { ok: true, orphaned: directCount, cascade_orphaned: cascadeCount };
     }
+    if (pathname === '/annotation/screenshot-source' && method === 'GET') {
+      const provider=await _requirePwaProvider('read');
+      const path=url.searchParams.get('path')||'';
+      if(!/\.png$/i.test(path))return {source_link:null};
+      const file=await provider.downloadAsFile(path);
+      return {source_link:window.GBScreenshotPng.read(new Uint8Array(await file.arrayBuffer()))};
+    }
     if (pathname === '/annotation/screenshot' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
@@ -4312,8 +4494,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const ts = _versionTimestamp();
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
-      const screenshotBytes = _decodeUploadData(dataUrl);
+      let screenshotBytes = _decodeUploadData(dataUrl);
       const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
+      const sourceLink=window.GBScreenshotPng.validate(body?.source_link,sourceTarget);
+      if(sourceLink)screenshotBytes=window.GBScreenshotPng.embed(screenshotBytes,sourceLink);
       const annotationTarget = sourceTarget || targetPath;
       // アノテートrecordはbytes publish前に確定させ、identity claimと同じ
       // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
@@ -4322,13 +4506,14 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const annRecord = _mergeAnnotationRecord(null, {
         type: 'screenshot',
         target_path: annotationTarget,
-        user: (typeof _currentUserName !== 'undefined' && _currentUserName) ? _currentUserName : 'local',
+        user: _currentUserName(body),
         data: {
           path: targetPath,
           mode: String(body?.mode || ''),
           width: body?.width || null,
           height: body?.height || null,
           source_file: sourceTarget ? _basename(sourceTarget) : null,
+          ...(sourceLink?{source_link:sourceLink}:{}),
         },
       }, { id: _randomId('ann'), now: _nowIso() });
       const prepared = await imageAftercare.prepare(provider, targetPath, screenshotBytes, {
@@ -4357,18 +4542,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
       const existing = await _readAnnotationRecord(provider, id);
       if (!existing) throw new Error('アノテートが見つかりません');
+      const modified = existing.modified || existing.modified_at || existing.created || existing.created_at || '';
+      if (body?.expected_modified && modified !== body.expected_modified) {
+        const error = new Error('他の画面で更新されたためアノテートを変更できません');
+        error.status = 409; throw error;
+      }
       const updateBody = {};
       ANNOTATION_UPDATE_KEYS.forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(body || {}, key)) updateBody[key] = body[key];
       });
       const record = _mergeAnnotationRecord(existing, updateBody, { id, now: _nowIso() });
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true };
+      await _writeAnnotationRecord(provider, record, { expectedModified: modified });
+      return { ok: true, modified: record.modified };
     }
     if (/^\/annotations\/[^/]+$/.test(pathname) && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
-      await _deleteAnnotationRecordFully(provider, id);
+      await _deleteAnnotationRecordFully(provider, id, { expectedModified: url.searchParams.get('expected_modified') || '' });
       return { ok: true };
     }
 
@@ -4415,6 +4605,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const actor = _versionActor(url, body);
       return _saveFolderVersion(provider, body?.path || '', {
         label: body?.label || '', auto: !!body?.auto,
+        include_annotations: !!body?.include_annotations,
         metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
       });
     }
@@ -4494,7 +4685,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           || parent !== personal && !parent.startsWith(personal + '/')) parent = personal;
       }
       const titleHelper = window.GBPathUtils?.displayTitle;
-      const managed = ['page','board','database','calendar','scriptnote','form-app'].includes(type);
+      const managed = ['page','board','database','calendar','scriptnote','form-app','map'].includes(type);
       const title = managed && titleHelper ? titleHelper.validate(body?.label || '無題') : null;
       const label = title !== null ? titleHelper.storageName(title) : _validateItemName(body?.label || '無題', 'label');
       const shown = name => title !== null && title !== label ? title : name;
@@ -4577,6 +4768,16 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           throw error;
         }
         return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+      }
+      if (type === 'map') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-map');
+        const targetPath = _joinPath(parent, labelName + '.mel-map');
+        if (typeof internals._requireUnlockedPath !== 'function') throw new Error('編集ロックを確認できません');
+        await internals._requireUnlockedPath(provider, parent, { action: 'outliner-add-parent' });
+        await internals._requireUnlockedPath(provider, targetPath, { action: 'outliner-add-map' });
+        const doc = window.MeldexMapDocument.create(shown(labelName));
+        await createText(targetPath, titled(JSON.stringify(doc, null, 2), targetPath));
+        return { ok: true, node: { type: 'map', label: shown(labelName), path: targetPath } };
       }
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
@@ -4725,6 +4926,53 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
     }
 /* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
+    function _preserveNoteTextFormat(text, original) {
+      const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+      original = original.replace(/^\uFEFF/, '');
+      text = String(text).replace(/^\uFEFF/, '');
+      const endings = original.match(/\r\n|\r|\n/g) || [];
+      if (!endings.length) return bom + text;
+      const counts = new Map();
+      for (const ending of endings) counts.set(ending, (counts.get(ending) || 0) + 1);
+      const majority = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+      const normalized = text.replace(/\r\n?/g, '\n');
+      if (counts.size === 1) return bom + normalized.replace(/\n/g, majority);
+      const split = value => (value.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) || []).filter(Boolean)
+        .map(line => { const end = /(?:\r\n|\r|\n)$/.exec(line)?.[0] || ''; return [line.slice(0, line.length - end.length), end]; });
+      const old = split(original), next = split(normalized);
+      const result = next.map(line => line[1] ? majority : '');
+      const keep = (a, b) => { if (result[b]) result[b] = old[a][1] || majority; };
+      // Match unchanged edges and unique lines (patience anchors). Repeated-line
+      // gaps of equal size keep their positional endings; new lines use majority.
+      // Uniform files, including large notes, take the linear fast path above.
+      const segments = [[0, old.length, 0, next.length]];
+      while (segments.length) {
+        let [a, b, c, d] = segments.pop();
+        while (a < b && c < d && old[a][0] === next[c][0]) keep(a++, c++);
+        while (a < b && c < d && old[b-1][0] === next[d-1][0]) keep(--b, --d);
+        if (a === b || c === d) continue;
+        const indices = (rows, start, end) => {
+          const map = new Map();
+          for (let i = start; i < end; i++) map.set(rows[i][0], map.has(rows[i][0]) ? -1 : i);
+          return map;
+        };
+        const left = indices(old, a, b), right = indices(next, c, d), pairs = [];
+        for (const [line, i] of left) if (i >= 0 && right.get(line) >= 0) pairs.push([i, right.get(line)]);
+        const tails = [], previous = [];
+        for (let i = 0; i < pairs.length; i++) {
+          let lo = 0, hi = tails.length;
+          while (lo < hi) { const mid = (lo + hi) >>> 1; if (pairs[tails[mid]][1] < pairs[i][1]) lo = mid + 1; else hi = mid; }
+          previous[i] = lo ? tails[lo-1] : -1; tails[lo] = i;
+        }
+        if (!tails.length) { if (b-a === d-c) for (let i = 0; i < b-a; i++) keep(a+i, c+i); continue; }
+        const anchors = [];
+        for (let i = tails[tails.length-1]; i >= 0; i = previous[i]) anchors.push(pairs[i]);
+        for (const [i, j] of anchors.reverse()) { segments.push([a, i, c, j]); keep(i, j); a = i+1; c = j+1; }
+        segments.push([a, b, c, d]);
+      }
+      return bom + next.map((line, i) => line[0] + result[i]).join('');
+    }
+
     function _pwaFileTransport() {
       return window.MeldexRuntimeAdapter?.isBrowserMode?.() ? 'browser-local' : 'dropbox-rev';
     }
@@ -4747,9 +4995,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (content == null && identity?.formatForPath?.(filePath) && typeof provider?.readText === 'function') {
         content = await provider.readText(filePath).catch(() => '');
       }
-      const identityFormat = identity?.formatForPath?.(filePath, content);
+      const identityContent = /\.md$/i.test(filePath) ? String(content || '').replace(/\r\n?/g, '\n') : content;
+      const identityFormat = identity?.formatForPath?.(filePath, identityContent);
       const documentId = identityFormat
-        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        ? String(identity?.readDocumentId?.(String(identityContent || ''), identityFormat) || '')
         : '';
       return {
         etag: token,
@@ -4827,6 +5076,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
 
     function _savedNoteMetadata(filePath, content) {
+      content = String(content || '').replace(/\r\n?/g, '\n');
       if (window.MeldexDocumentIdentity?.formatForPath?.(filePath, content) !== 'note') return {};
       return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
     }
@@ -4933,8 +5183,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             ...record.intent, provider_id: ownership.id, provider_rev: ownership.rev,
             manifest_digest: transaction.manifest_digest || '',
           };
-          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-          record = await journal.load(provider, operationId, operation, payload);
+          // publish前の証明は既に永続化済み。所有情報は直後のaftercare開始と一緒に、効果の実行前に確定する。
         } else if (ownership.id !== record.intent.provider_id
             || (source.kind !== 'directory' && ownership.rev !== record.intent.provider_rev)) {
           throw Object.assign(new Error('prepared Cloud複製先が後続更新と競合しています'), { status: 409 });
@@ -4949,8 +5198,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
           }
         }
+        // 実体と公開前の復旧証明を確認済み。後処理中の表示だけを先に通知する。
+        try {
+          window.dispatchEvent?.(new CustomEvent('meldex:copy-published', { detail: {
+            operation_id: operationId, source_path: payload.path, new_path: destPath,
+            new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+          } }));
+        } catch (error) { console.warn('[copy] 公開済みの表示通知に失敗', error); }
         record = await journal.runAftercare(provider, operationId, operation, payload, record, [
-          { name: 'csv-sidecars', run: () => _relocateCsvSidecars(
+          { name: 'csv-sidecars', noop: source.kind !== 'directory' && !/\.csv$/i.test(payload.path), run: () => _relocateCsvSidecars(
             provider, payload.path, destPath, source.kind === 'directory', true,
           ) },
           { name: 'path-mutation-hooks', run: () => _runPathMutationHooks({

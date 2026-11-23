@@ -30,6 +30,8 @@
     queryCloudTasksWithProvider: _pmCloudQueryTasks,
     cloudRecalcDeps: _pmRecalcEngineDeps,
     withCloudProductionLease: _pmCloudWithProductionLease,
+    releasePendingCloudLeases: _pmCloudReleasePendingLeases,
+    waitForCloudProductionIdle: _pmCloudWaitForProductionIdle,
     async renameCloudManagedEntry(body) {
       const internals = window.__MeldexPwaDataAccessInternals;
       if (!internals) throw new Error('Cloudデータ操作を利用できません');

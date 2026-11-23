@@ -100,6 +100,10 @@
 
   // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
   // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
+  if (!_locked && nodeData.path && window.MeldexArchiveTools?.desktop()) {
+    const archiveItems = isMulti ? [...treeSelection.items].map(node => node._nodeData).filter(data => data?.path) : [nodeData];
+    window.MeldexArchiveTools.appendMenu(menu, archiveItems, closeTreeContextMenu);
+  }
   const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
   const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
   if (shellReady) {
@@ -412,16 +416,42 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
   }
 }
 
+// フォームの原本と回答用シートは、サーバーと同じく個人ホームの中へ作る。
+function _outlinerCreateParentPath(parentPath, type) {
+  if (type !== 'form-app' || typeof _homeFolderPath === 'undefined' || !_homeFolderPath) return parentPath;
+  const key = path => {
+    let value = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const vault = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (/^(?:[a-z]:\/|\/\/)/i.test(vault) && value && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(value)) value = vault + '/' + value;
+    return /^(?:[a-z]:\/|\/\/)/i.test(value) ? value.toLowerCase() : value;
+  };
+  const home = key(_homeFolderPath), parent = key(parentPath);
+  return parent === home || parent.startsWith(home + '/') ? parentPath : _homeFolderPath;
+}
+
 // アイテムを指定パス配下に追加（部分更新、チラつき防止）
 async function addItemAt(parentPath, type, options = {}) {
   if (_isCloudPhase1BlockedCreateType(type)) {
     _showCloudPhase1BlockedCreate(type);
     return;
   }
+  const createParent = _outlinerCreateParentPath(parentPath, type);
+  if (createParent !== parentPath) {
+    parentPath = createParent;
+    options = { ...options, anchorNode: null, preferHome: true };
+  }
+  // 改名で空いた旧名を次の作成が再利用する前に、改名の画面と保存先参照の更新まで終える。
+  // 順序が逆になると、遅れて届いた改名が新しく同じ旧名で作った行・タブまで変更してしまう。
+  const originVault = typeof state !== 'undefined' ? state.vaultPath : '';
+  if (typeof _outlinerPendingRenames !== 'undefined' && _outlinerPendingRenames.size) {
+    await Promise.all([..._outlinerPendingRenames.values()].map(pending => pending.promise));
+    if (originVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
+  }
   const label = '無題';
   // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
   const anchorNode = options.anchorNode;
-  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: false, preferHome: options.preferHome });
+  // 閉じた作成先は、保存と並行して読み込む。行の＋は並び順を先に確かめる従来の経路を保つ。
+  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: !anchorNode, preferHome: options.preferHome });
   const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
   const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
   let pendingNode = null;
@@ -513,9 +543,16 @@ async function addItemAt(parentPath, type, options = {}) {
       await _outlinerCreateFallbackToReload(pendingNode, nd, name);
       return;
     }
-    const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
+    const virtualInsert = !insertTarget.deferTreeInsert
+      && window.GBOutlinerVirtualRender?.isVirtualContainer(insertTarget.container);
+    if (virtualInsert) {
+      if (pendingNode?.parentNode) pendingNode.remove();
+      window.GBOutlinerVirtualRender.dropInto(insertTarget.container, [res.node]);
+    }
+    const newNode = insertTarget.deferTreeInsert ? null
+      : virtualInsert ? _findTreeNodeByPath(res.node.path) : createTreeNodeFromBrowse(res.node);
 
-    if (!insertTarget.deferTreeInsert && newNode) {
+    if (!insertTarget.deferTreeInsert && newNode && !virtualInsert) {
       if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
       else _insertOutlinerCreateNode(insertTarget.container, newNode, anchorNode);
       // 挿入直後に切断されている場合の軽い保険
@@ -524,9 +561,12 @@ async function addItemAt(parentPath, type, options = {}) {
 
     // 選択状態にする
     if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
+    if (typeof _folderApplySavedDropResults === 'function') {
+      _folderApplySavedDropResults(parentPath, [{ item: { ...res.node, name } }], []);
+    }
     // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
     const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
-    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
     _openOutlinerCreatedNode(nd, name);
@@ -602,6 +642,19 @@ async function showAddOutlinerItem(type) {
 
 // フォルダツリーのラベルをインライン編集
 function startTreeLabelEdit(labelEl, nodeData, onFinish) {
+  const pending = typeof _outlinerPendingRenames !== 'undefined'
+    ? _outlinerPendingRenames.get(_outlinerPendingRenameKey(nodeData?.path)) : null;
+  if (pending) {
+    // 最初の失敗の表示とラベルの復帰の間にF2が来ても、仮の名前を次の変更前の値にしない。
+    pending.retryLabels ||= new WeakSet();
+    if (!pending.retryLabels.has(labelEl)) {
+      pending.retryLabels.add(labelEl);
+      pending.promise.then(() => {
+        if (labelEl.isConnected && !labelEl.querySelector('input')) startTreeLabelEdit(labelEl, nodeData, onFinish);
+      }).catch(error => showStatus('名前の入力を再開できませんでした: ' + (error?.message || error), true));
+    }
+    return;
+  }
   const old = labelEl.textContent;
   const input = document.createElement('input');
   input.type = 'text';

@@ -94,7 +94,10 @@
   async function _pmCloudEntryTransportRevision(provider, path, parsed) {
     let token = '';
     if (typeof provider?.getMetadata === 'function') {
-      try { token = String((await provider.getMetadata(path))?.revision || ''); } catch (_error) {}
+      try {
+        const metadata = await provider.getMetadata(path);
+        token = String(metadata?.revision || metadata?.rev || '');
+      } catch (_error) {}
     }
     return { transport: _pmCloudTransportName(), token: token || _pmCloudFallbackTransportToken(parsed) };
   }

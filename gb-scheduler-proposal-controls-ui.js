@@ -29,9 +29,18 @@
 
   function placementRange(placement) {
     const direct = String(placement?.after_range || '').trim();
-    if (direct) return direct.replace('|', '〜');
-    if (placement?.start && placement?.end) return `${placement.start}〜${placement.end}`;
-    return placement?.reason || '未配置';
+    const values = direct ? direct.split('|') : [placement?.start, placement?.end];
+    const fallback = direct ? direct.replace('|', '〜')
+      : values.every(Boolean) ? `${values[0]}〜${values[1]}` : placement?.reason || '未配置';
+    if (values.length !== 2 || !values.every(Boolean)
+      || typeof parseLocalDate !== 'function' || typeof formatLocalDateTime !== 'function') return fallback;
+    const start = formatLocalDateTime(parseLocalDate(values[0]));
+    const end = formatLocalDateTime(parseLocalDate(values[1]));
+    if (!start || !end) return fallback;
+    const first = start.replaceAll('-', '/').replace('T', ' ');
+    const last = start.slice(0, 10) === end.slice(0, 10) ? end.slice(11)
+      : (start.slice(0, 4) === end.slice(0, 4) ? end.slice(5) : end).replaceAll('-', '/').replace('T', ' ');
+    return `${first}〜${last}`;
   }
 
   function renderPlacements(host, proposal, caps, refresh) {
@@ -52,6 +61,7 @@
       card.disabled = !writable || !key; card.setAttribute('aria-pressed', fixed ? 'true' : 'false');
       const name = document.createElement('strong'); name.textContent = placement.task_name || placement.task_id || '名称未設定のタスク';
       const range = document.createElement('span'); range.textContent = placementRange(placement);
+      range.title = String(placement.after_range || (placement.start && placement.end ? `${placement.start}〜${placement.end}` : ''));
       const assignee = document.createElement('span'); assignee.textContent = placement.user ? `担当: ${placement.user}` : '担当: 未割り当て';
       const action = document.createElement('span'); action.className = 'gb-scheduler-placement-action';
       action.append(icon(fixed ? 'unlock' : 'lock'), document.createTextNode(fixed ? '再計算に任せる' : 'この配置を固定'));
@@ -72,7 +82,7 @@
       const text = document.createElement('p'); text.textContent = '固定した配置を維持して、残りを再計算できます。';
       recalc.append(text, button('固定を維持して再計算', 'refreshCw', async event => {
         const control = event.currentTarget; control.disabled = true;
-        try { await Api().recalculate(proposal.id); status('固定した配置を維持して再計算しました'); await refresh(); }
+        try { await Api().recalculate(proposal.id, {}, { label: '案を再計算', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '' }); status('固定した配置を維持して再計算しました'); await refresh(); }
         catch (error) { control.disabled = false; status(Api().errorMessage(error), true); }
       }, { primary: true, disabled: !caps.features?.proposalRecalculate || !writable, e2eId: 'scheduler-fixed-recalculate' }));
       section.appendChild(recalc);

@@ -276,7 +276,10 @@
   }
 
   function renderRect(scene, data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(NS, 'rect'), data, color, opacity, false);
+    const el = document.createElementNS(NS, Array.isArray(data.boxes) && data.boxes.length ? 'g' : 'rect');
+    if (el.tagName.toLowerCase() === 'g') {
+      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), box, color, opacity, false));
+    } else _applyRectEl(el, data, color, opacity, false);
     // renderStroke同様、pointer-eventsは親svgからの継承に一本化する（個別指定禁止）。
     if (annId) el.dataset.annId = annId;
     scene.strokesG.appendChild(el);
@@ -402,11 +405,15 @@
     try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; }
   }
   let _lastSaveFailureAt = 0;
+  let _lastSaveFailureMessage = '';
   function viewerAnnotationSaveFailed(error, message = 'アノテートの保存に失敗しました') {
     const now = Date.now();
-    if (typeof window.showStatus === 'function' && now - _lastSaveFailureAt > 1500) {
-      window.showStatus(message, true);
+    if (message !== _lastSaveFailureMessage || now - _lastSaveFailureAt > 1500) {
+      window.showStatus?.(message, true);
+      // 単独の閲覧画面には本体のステータスバーがない。ログだけで済ませずHUDにも残す。
+      window.MeldexViewerScene?.flashStatus?.(message, 5000);
       _lastSaveFailureAt = now;
+      _lastSaveFailureMessage = message;
     }
     try { console.warn(message, error); } catch {}
   }
@@ -417,9 +424,10 @@
     const eraserWidth = Number(_ann.widths?.eraser);
     const tolerance = localLengthForScreenPx(scene.svg, Math.max(4, (Number.isFinite(eraserWidth) && eraserWidth > 0 ? eraserWidth : 14) * 0.7));
     const els = Array.from(scene.strokesG.querySelectorAll('path, polygon, rect')).reverse();
-    for (const el of els) {
+    for (const shape of els) {
+      const el = shape.closest('[data-ann-id]') || shape;
       if (el.classList.contains('viewer-ann-preview')) continue;
-      if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(el, local.x, local.y, tolerance)) {
+      if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(shape, local.x, local.y, tolerance)) {
         try {
           const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
           const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;

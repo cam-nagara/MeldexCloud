@@ -278,3 +278,8 @@
   font-size: var(--ui-font-11);
   border-radius: var(--ui-radius-xs);
 }
+/* 保存・読込の失敗を、操作中の領域内へ残す共通本文。 */
+.gb-inline-error { margin: var(--ui-space-2, 8px) 0; min-width: 0; color: var(--ui-danger, var(--red, #d9485f)); font-size: var(--ui-font-13, 13px); line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 700px), (pointer: coarse) {
+  .gb-inline-error { font-size: var(--ui-font-14, 14px); }
+}

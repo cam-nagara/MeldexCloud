@@ -586,8 +586,22 @@ function bdNormalizeDisplayFilters(filters) {
 function bdEnsureBoardUiState() {
   if (typeof bd === 'undefined') return;
   bdApplyStylePresetMigration();
-  bd.cardStyles = bdNormalizeCardStyles(bd.cardStyles);
-  bd.lineStyles = bdNormalizeLineStyles(bd.lineStyles);
+  // 書式欄や管理メニューが保持する参照を切らずに正規化する。
+  const retainStyles = (previous, normalized) => {
+    if (!Array.isArray(previous)) return normalized;
+    const used = new Set();
+    const next = normalized.map(style => {
+      const live = previous.find(item => item?.id === style.id && !used.has(item));
+      if (!live) return style;
+      used.add(live);
+      Object.keys(live).forEach(key => { if (!(key in style)) delete live[key]; });
+      return Object.assign(live, style);
+    });
+    previous.splice(0, previous.length, ...next);
+    return previous;
+  };
+  bd.cardStyles = retainStyles(bd.cardStyles, bdNormalizeCardStyles(bd.cardStyles));
+  bd.lineStyles = retainStyles(bd.lineStyles, bdNormalizeLineStyles(bd.lineStyles));
   // ボード初回ロード時にグローバルデフォルトを各ビルトインスタイルへ適用する。
   // 既に適用済みフラグが立っていれば重複適用しない (ユーザーがこのボードでカスタム
   // した後に他ボードで global を変更した場合、既存カスタムを上書きしない)

@@ -412,20 +412,17 @@
       this._namespaceKind = _normalizeNamespaceKind(namespaceKind);
       this._auditSink = typeof auditSink === 'function' ? auditSink : null;
       this._compatibilityLockProvider = compatibilityLockProvider || null;
+      this._loadedWriteBases = new WeakMap();
     }
-
     get boundary() { return this._boundary; }
     get environment() { return this._environment; }
     get namespaceKind() { return this._namespaceKind; }
-
     _pathFor(kind, documentId) {
       return _joinDropboxPath(this._managementRoot, _contract().documentRelativePath(kind, documentId));
     }
-
     _folderFor(kind) {
       return _joinDropboxPath(this._managementRoot, _contract().kindSubpathSegment(kind));
     }
-
     async _assertCompatibilityWriteAllowed(kind) {
       if (this._environment !== 'dropbox-shared-workspace' || _migrationWriteScopeDepth > 0) return;
       const contract = _contract();
@@ -460,7 +457,6 @@
       error.compatibilityLock = lock || { locked: true };
       throw error;
     }
-
     _audit(level, operation, kind, documentId, extra) {
       _contract().recordStorageAuditEvent(this._auditSink, {
         level, operation, kind, documentId, environment: this._environment,
@@ -468,7 +464,6 @@
         detail: extra && extra.detail,
       });
     }
-
     async _readExisting(kind, documentId, freshMissingCheck = false) {
       const path = this._pathFor(kind, documentId);
       const result = await _downloadEnvelope(path, this._namespaceKind, freshMissingCheck);
@@ -482,7 +477,6 @@
         throw error;
       }
     }
-
     async _readExistingAtRevision(kind, documentId, listedRev) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
@@ -533,13 +527,18 @@
       }
       return record;
     }
-
     async load(kind, documentId, options) {
       const contract = _contract();
       const docId = contract.sanitizeDocumentId(documentId);
-      return this._readExisting(kind, docId, options?.fresh === true);
+      const record = await this._readExisting(kind, docId, options?.fresh === true);
+      if (record) {
+        this._loadedWriteBases.set(record, {
+          kind, documentId: docId, account: await _envelopeCacheAccount(),
+          record: JSON.parse(JSON.stringify(record)),
+        });
+      }
+      return record;
     }
-
     async _listFolderEntries(folderPath, { reuseRecent = false } = {}) {
       // 認証側の共有一覧を通して取得する。直後に続く「このファイルは在るか」の確認が
       // 同じ一覧を使えるので、同じフォルダを続けて2回一覧する通信が1回で済む。
@@ -571,7 +570,6 @@
       }
       return entries;
     }
-
     async listDocuments(kind) {
       const contract = _contract();
       const entries = await this._listFolderEntries(this._folderFor(kind));
@@ -608,7 +606,6 @@
       );
       return loaded.filter(Boolean);
     }
-
     async listActiveLeaseRecords() {
       // Include valid legacy conflict copies, without renaming or deleting them.
       // A broken lease record must not become an empty/unlocked store.
@@ -634,10 +631,10 @@
             || /^active-lock-owner-[0-9a-f]{64}$/.test(record.documentId))) {
           throw new contract.SystemStorageCorruptRecordError('編集リースの管理情報が一致しません');
         }
+        this._loadedWriteBases.set(record, { kind, documentId: record.documentId, account: await _envelopeCacheAccount(), record: JSON.parse(JSON.stringify(record)) });
         return record;
       });
     }
-
     async listDocumentHeaders(kind, options) {
       const contract = _contract();
       const opts = options || {};
@@ -668,7 +665,6 @@
         revision: String(payload.cursor || ''),
       };
     }
-
     async documentCollectionGeneration(kind, options) {
       const contract = _contract();
       const excluded = new Set((options?.excludeDocumentIds || []).map(String));
@@ -682,7 +678,6 @@
       headers.sort((a, b) => a[0].localeCompare(b[0]));
       return contract.computeRevision(headers);
     }
-
     async _totalBytesForKind(kind, excludeDocumentId) {
       let entries;
       try {
@@ -697,7 +692,6 @@
         .filter(entry => entry['.tag'] === 'file' && (!excludeName || entry.name !== excludeName))
         .reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     }
-
     async _preserveConflictBackup(kind, documentId, attemptedPayload, existing, options) {
       const contract = _contract();
       const backupId = `${documentId}-conflict-${Math.random().toString(16).slice(2, 14)}${Date.now().toString(36)}`;
@@ -717,7 +711,6 @@
         return '';
       }
     }
-
     async save(kind, documentId, payload, options) {
       const contract = _contract();
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -740,14 +733,21 @@
       }
       const path = this._pathFor(kind, docId);
       await this._assertCompatibilityWriteAllowed(kind);
-
-      const existing = await this._readExisting(kind, docId, true);
+      const loadedBase = opts.baseRecord && this._loadedWriteBases.get(opts.baseRecord);
+      if (opts.baseRecord) this._loadedWriteBases.delete(opts.baseRecord);
+      // load→更新→save の直列処理だけは、同じアダプタ・アカウントで取得した控えを再利用する。
+      // 外部更新は後段の Dropbox update(rev) が必ず検出し、競合時は従来の退避経路へ進む。
+      // 変更なし・初期設定・アカウント指定の保存は、従来どおり直前に読み直す。
+      const canReuseBase = loadedBase?.account && loadedBase.kind === kind && loadedBase.documentId === docId
+        && !initialSnapshot && !opts.expectedAccountId && expectedRevision === loadedBase.record.revision
+        && loadedBase.account === await _envelopeCacheAccount()
+        && contract.canonicalJsonStringify(loadedBase.record.payload) !== contract.canonicalJsonStringify(payload);
+      const existing = canReuseBase ? loadedBase.record : await this._readExisting(kind, docId, true);
       const currentRevision = existing ? existing.revision : null;
       const sameInitial = record => initialSnapshot && !opts.expectedAccountId && record
         && record.boundary === initialBoundary && record.createdAt === initialEpoch
         && contract.canonicalJsonStringify(record.payload) === contract.canonicalJsonStringify(payload);
       if (sameInitial(existing)) return existing;
-
       // undefined は「CAS指定なし」。明示 null は「未作成を期待する
       // create-only CAS」なので、既存レコードがあれば必ず競合にする。
       if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
@@ -760,13 +760,11 @@
           kind, documentId: docId, expectedRevision, currentRevision, conflictBackupDocumentId,
         });
       }
-
       // Account-bound writes retain the transport's explicit account check.
       if (!opts.expectedAccountId && existing
           && contract.canonicalJsonStringify(existing.payload) === contract.canonicalJsonStringify(payload)) {
         return existing;
       }
-
       await _ensureFolder(this._managementRoot, this._namespaceKind);
       await _ensureFolder(this._folderFor(kind), this._namespaceKind);
 
@@ -829,6 +827,7 @@
       }
       record.revision = String((uploadMeta && uploadMeta.rev) || currentRevision || '');
       this._audit('info', 'save', kind, docId, { message: '保存しました' });
+      this._loadedWriteBases.set(record, { kind, documentId: docId, account: await _envelopeCacheAccount(), record: JSON.parse(JSON.stringify(record)) });
       return record;
     }
 

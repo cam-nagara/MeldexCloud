@@ -1,3 +1,172 @@
+  }
+  // Delete: ツリーにフォーカスがある時はツリーの選択を削除する（マニュアルのショートカット）。
+  // 以前はツリーで扱わず、全体のショートカットがフォルダパネルの選択を削除していた（2026-11-22 M-014）。
+  if (event.key === 'Delete') {
+    if (current && !treeSelection.has(current)) {
+      treeSelection.clear();
+      treeSelection.add(current);
+      treeSelection.lastClicked = current;
+    }
+    if (typeof deleteOutlinerTreeSelection === 'function') deleteOutlinerTreeSelection();
+    return;
+  }
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
+  }
+  const nodes = _getVisibleTreeNodes(scopeSelector);
+  if (!nodes.length) return;
+  const rawIndex = nodes.indexOf(current);
+  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
+  const nextIndex = event.key === 'ArrowUp'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(nodes.length - 1, currentIndex + 1);
+  _outlinerKeyboardSelectNode(nodes[nextIndex]);
+}
+
+// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
+// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
+// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
+// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
+// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
+// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
+// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
+// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
+// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
+// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
+// （非仮想化フォルダの既存挙動は変更しない）。
+function _outlinerKeyboardVirtualContainerFor(nodeEl) {
+  const childrenDiv = nodeEl && nodeEl.parentElement;
+  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
+}
+
+function _outlinerKeyboardTryVirtualStep(current, key) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
+
+  let childrenDiv = null;
+  let path = null;
+  let recoveringUnmounted = false;
+  if (current) {
+    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
+    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
+    path = current._nodeData && current._nodeData.path;
+  } else {
+    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
+    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
+    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
+    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
+    childrenDiv = vr.containerForPath(lastPath);
+    if (!childrenDiv) return false;
+    path = lastPath;
+    recoveringUnmounted = true;
+  }
+
+  const state = childrenDiv._virtualState;
+  if (!state || !path) return false;
+  const currentIndex = state.flat.findIndex(entry => entry.id === path);
+  if (currentIndex < 0) return false;
+
+  const delta = key === 'ArrowUp' ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
+  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
+  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
+  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
+
+  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
+  if (!target) return false;
+  _outlinerKeyboardSelectNode(target);
+  return true;
+}
+
+(function initOutlinerTreeKeyboardNavigation() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
+  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
+})();
+
+// ドラッグ中のホイールスクロール対応
+(function() {
+  let _isDragging = false;
+  document.addEventListener('dragstart', () => { _isDragging = true; });
+  document.addEventListener('dragend', () => { _isDragging = false; });
+  document.addEventListener('drop', () => { _isDragging = false; });
+  // ドラッグ中にホイールでスクロール可能にする
+  const scrollTargets = ['tree-scroll-container'];
+  scrollTargets.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('wheel', (e) => {
+      if (!_isDragging) return;
+      e.preventDefault();
+      el.scrollTop += e.deltaY;
+    }, { passive: false });
+  });
+})();
+
+(function initOutlinerLassoSelection() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  const LASSO_DRAG_THRESHOLD = 4;
+  let active = false;
+  let tracking = false;
+  let box = null;
+  let startX = 0;
+  let startY = 0;
+  let startClientX = 0;
+  let startClientY = 0;
+  let selectionMode = 'replace';
+  let selectionScope = '#outliner-tree,#body-home';
+  let baseSelection = [];
+  let pointerId = null;
+  let pointerCaptured = false;
+  let _savedScrollerPosition = null;
+
+  function _outlinerLassoMode(event) {
+    if (event.ctrlKey || event.metaKey) return 'toggle';
+    if (event.shiftKey) return 'add';
+    return 'replace';
+  }
+
+  function _outlinerLassoScopeFromTarget(target) {
+    if (target?.closest?.('#body-home')) return '#body-home';
+    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
+    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
+    const section = target?.closest?.('.sidebar-section');
+    if (section?.id === 'section-home') return '#body-home';
+    if (section?.id === 'section-workspaces') return '#body-workspaces';
+    if (section?.id === 'section-roots') return '#outliner-tree';
+    return '#outliner-tree,#body-home';
+  }
+
+  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
+  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
+  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
+  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
+  function _outlinerLassoIsBlankTarget(target) {
+    if (window.GBOutlinerInput?.classifyPointerTarget) {
+      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
+    }
+    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
+    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
+    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
+    const section = target?.closest?.('.sidebar-section');
+    if (section?.id === 'section-workspaces') return true;
+    return section?.id === 'section-roots' || section?.id === 'section-home';
+  }
+
+  function _outlinerLassoRectForEvent(event) {
+    const rect = scroller.getBoundingClientRect();
+    const currentX = event.clientX - rect.left + scroller.scrollLeft;
+    const currentY = event.clientY - rect.top + scroller.scrollTop;
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    return { left, top, right: left + width, bottom: top + height, width, height };
+  }
+
+  function _outlinerLassoRowRect(row) {
     const rowRect = row.getBoundingClientRect();
     const scrollerRect = scroller.getBoundingClientRect();
     return {

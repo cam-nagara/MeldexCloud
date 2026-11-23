@@ -199,7 +199,7 @@ async function _readAnnotationRecord(provider, id, targetPathHint) {
   return legacy && typeof legacy === 'object' ? legacy : null;
 }
 
-async function _writeAnnotationRecord(provider, record) {
+async function _writeAnnotationRecord(provider, record, options = {}) {
   const docId = _safeId(record.id, 'annotation id');
   const adapter = await _managementAdapterForProvider(
     provider,
@@ -207,7 +207,25 @@ async function _writeAnnotationRecord(provider, record) {
     record.target_path || record.path || '',
   );
   const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  await adapter.save(kind, docId, record);
+  let saveOptions;
+  if (options.expectedModified) {
+    let current = await adapter.load(kind, docId);
+    if (!current) {
+      const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+      if (legacy && _annotationRow(legacy).modified === options.expectedModified) {
+        // Retain the legacy source and claim an absent common-store slot first.
+        // A retry can then edit that same snapshot with the normal CAS guard.
+        await adapter.save(kind, docId, legacy, { expectedRevision: null });
+        current = await adapter.load(kind, docId);
+      }
+    }
+    if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを変更できません');
+      error.status = 409; throw error;
+    }
+    saveOptions = { expectedRevision: current.revision };
+  }
+  await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
@@ -246,12 +264,16 @@ async function _restoreAnnotationRecord(provider, body) {
 window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
 window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
 
-async function _deleteAnnotationRecordFully(provider, id) {
+async function _deleteAnnotationRecordFully(provider, id, options = {}) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
   const matches = await _findAnnotationRecordsById(provider, docId);
   if (matches.length === 1) {
     const match = matches[0];
+    if (options.expectedModified && _annotationRow(match.stored.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを削除できません');
+      error.status = 409; throw error;
+    }
     const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
       adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
       documentId: docId, expectedRevision: match.stored.revision,
@@ -262,6 +284,10 @@ async function _deleteAnnotationRecordFully(provider, id) {
     return;
   }
   const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  if (options.expectedModified && (!legacy || _annotationRow(legacy).modified !== options.expectedModified)) {
+    const error = new Error('他の画面で更新されたためアノテートを削除できません');
+    error.status = 409; throw error;
+  }
   if (legacy) await provider.deletePath(_annotationPath(docId));
 }
 

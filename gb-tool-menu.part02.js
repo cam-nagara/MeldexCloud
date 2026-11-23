@@ -161,6 +161,8 @@ function buildToolMenuItems(toolType, component) {
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
     ],
     'form-app': [
+      { label: '公開設定...', action: context => showPublishSettingsModal({ returnFocus: context?.trigger }), disabled: !formComponent?.store },
+      { label: '公開を更新', action: () => MeldexExportHtml.publishCurrentView('form-app'), disabled: !formComponent?.store },
       { label: 'テンプレートに登録', action: () => {
         return formComponent?.registerTemplate?.();
       }, disabled: !formComponent?.store },

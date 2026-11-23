@@ -1056,7 +1056,9 @@
 
   async function patchProposal(adapter, owner, id, patch, expectedRevision, workspace) {
     const record = await getProposal(adapter, owner, id, workspace);
-    if (record.payload.status !== 'active') {
+    const reopening = record.payload.status === 'archived' && patch?.status === 'active'
+      && Object.keys(patch).length === 1 && expectedRevision != null;
+    if (record.payload.status !== 'active' && !reopening) {
       const error = new Error('採用済みまたは保管済みの案は変更できません');
       error.status = 409;
       throw error;
@@ -1100,14 +1102,22 @@
     const source = await getProposal(adapter, owner, id, workspace);
     const request = deepMerge(source.payload.allocationRequest || {}, body?.overrides || {});
     const preview = await requestContext.productionRequest('/production-management/recalculate/preview', request);
-    const branched = await branchProposal(adapter, owner, id, { name: body?.name || `${source.payload.name || '案'} 再計算` }, workspace);
-    return patchProposal(adapter, owner, branched.proposal.id, {
+    // 計算結果を含めて一度で保存し、途中の失敗で未完成の案を残さない。
+    const timestamp = nowIso();
+    const placements = canonicalPlacements(preserveFixedPlacements(source.payload.placements, preview.rows, source.payload.fixedPlacements));
+    const branch = {
+      ...structuredClone(source.payload), id: newId('proposal'),
+      name: String(body?.name || `${source.payload.name || '案'} 再計算`),
+      status: 'active', parentProposalId: id, createdAt: timestamp, updatedAt: timestamp,
       allocationRequest: request,
-      placements: preserveFixedPlacements(source.payload.placements, preview.rows, source.payload.fixedPlacements),
+      placements, placementRevision: await window.MeldexSystemStorage.computeRevision(placementProjection(placements)),
+      metrics: metrics(placements),
       inputRevision: await sourceRevision(preview.rows),
       engineVersion: ENGINE_VERSION,
       warnings: preview.warnings || [], suggestions: preview.suggestions || [],
-    }, branched.proposal.storageRevision, workspace);
+    };
+    const saved = await saveRecord(adapter, 'proposal', owner, branch, null, workspace);
+    return { ok: true, proposal: withRevision(saved) };
   }
 
   async function adoptionPreview(adapter, owner, id, workspace, requestContext) {

@@ -320,7 +320,7 @@
     if (typeof historySetScope !== 'function') return;
     const embedScope = typeof _meldexProductionEmbedHistoryScope === 'function' ? _meldexProductionEmbedHistoryScope() : '';
     if (embedScope) { historySetScope(embedScope); return; }
-    if (this._surface !== 'productionTasks' && typeof _schedHistoryScope === 'function') {
+    if (!embedScope && typeof _schedHistoryScope === 'function') {
       historySetScope(_schedHistoryScope(this));
       return;
     }

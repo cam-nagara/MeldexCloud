@@ -342,7 +342,29 @@
         const layout = ctx?.formApp?.getLayout() || _elGetState(dbPath).layouts.find(item => item.id === cfg.layoutId);
         const displayTypes = { ...propTypes };
         (layout?.cells || []).forEach(cell => { if (cell.type === 'field' && !displayTypes[cell.prop]) displayTypes[cell.prop] = { type: cell.columnType || 'text', options: cell.columnOptions || [] }; });
-        const form = _buildFormAnswerPanel(dbPath, effective, displayTypes, false, { canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
+        const ownerApp = ctx?.formApp, ownerDoc = ownerApp?.store?.doc?.meldex?.document_id;
+        const form = _buildFormAnswerPanel(dbPath, effective, displayTypes, false, { ctx,
+          historyScope: () => ownerApp?._historyScope?.() || (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : 'db:' + dbPath),
+          ownerRoot: () => ctx?.containerEl || panel,
+          async onHistoryChanged() {
+            const updated = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+            const paths = new Set(Object.keys(updated.entities || {}).map(name => normalPath(_entityPath(dbPath, name, updated))));
+            for (const path of session.created.keys()) if (!paths.has(normalPath(path))) session.created.delete(path);
+            if (session.path && !paths.has(normalPath(session.path))) { session.historyPath = session.path; session.path = ''; }
+            else if (!session.path && session.historyPath && paths.has(normalPath(session.historyPath))) { session.path = session.historyPath; session.historyPath = ''; }
+            if (ctx) ctx.pivotData = updated;
+            if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
+            if (panel.isConnected) {
+              select.replaceChildren(fresh);
+              for (const name of Object.keys(updated.entities || {})) {
+                const option = document.createElement('option'); option.value = _entityPath(dbPath, name, updated); option.textContent = name; select.appendChild(option);
+              }
+              select.value = session.path; await renderRecord();
+            } else if (ownerApp?.el && ownerApp.ctx?.dbPath === dbPath && (!ownerDoc || ownerApp.store?.doc?.meldex?.document_id === ownerDoc)) {
+              ownerApp.ctx.pivotData = updated; renderDbFormView(ownerApp.ctx);
+            }
+          },
+          canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
           if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
           const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';
           session.created.set(result.path, name);
@@ -383,5 +405,5 @@
     }
     renderRecord();
   }
-  globalThis.MeldexDbFormRuntime = { renderField, renderView, canWrite, writable, validation, saveScalar, confirmLeave, normalPath, applyNewLayout };
+  globalThis.MeldexDbFormRuntime = { renderField, renderView, canWrite, writable, validation, saveScalar, confirmLeave, normalPath, applyNewLayout, historyScope };
 })();

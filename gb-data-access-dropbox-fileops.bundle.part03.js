@@ -1,3 +1,59 @@
+  if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
+  const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
+  if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
+  if (body.modified) { record.modified = body.modified; record.modified_at = body.modified_at || body.modified; }
+  delete record.tombstone; delete record.deleted; delete record.deleted_at;
+  if (record.state === 'deleted') delete record.state;
+  if (record.status === 'tombstoned') delete record.status;
+  await adapter.save(kind, id, record, { expectedRevision: current?.revision || null });
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, id);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return { ok: true, id };
+}
+
+// created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
+// identity claimと同じ保留/復帰の対象へアノテート書込みを含められるようにする登録。
+// 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
+// (aftercare側は実行時にこのレジストリを参照するため、このファイルが
+// aftercare側より先に読み込まれても後に読み込まれても問題ない)。
+window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
+window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
+
+async function _deleteAnnotationRecordFully(provider, id, options = {}) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const match = matches[0];
+    if (options.expectedModified && _annotationRow(match.stored.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを削除できません');
+      error.status = 409; throw error;
+    }
+    const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
+      adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
+      documentId: docId, expectedRevision: match.stored.revision,
+    });
+    await _annotationTargetResolver().indexTombstone(
+      match.scope.adapter, contract.SystemStorageKind.ANNOTATIONS, tombstoned.payload,
+    );
+    return;
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  if (options.expectedModified && (!legacy || _annotationRow(legacy).modified !== options.expectedModified)) {
+    const error = new Error('他の画面で更新されたためアノテートを削除できません');
+    error.status = 409; throw error;
+  }
+  if (legacy) await provider.deletePath(_annotationPath(docId));
+}
+
+async function _coverAnnotationIndexBatch(provider, scope, kind) {
+  const resolver = _annotationTargetResolver();
+  const coverage = await resolver.indexCoverage(scope.adapter, kind);
+  if (typeof scope.adapter.listDocumentHeaders !== 'function'
+      || typeof scope.adapter.documentCollectionGeneration !== 'function') {
+    throw _annotationUnavailable(new Error('metadata generation API unavailable'), '索引coverage確認');
+  }
+  const generation = await scope.adapter.documentCollectionGeneration(kind, {
     excludeDocumentIds: [resolver.INDEX_ID],
   });
   if (coverage.complete && coverage.revision === generation) return coverage;
@@ -842,59 +898,3 @@ function _folderVersionDir(path) {
 
 async function _fileEtag(provider, path, entry, writeMeta) {
   const meta = writeMeta?.meta || writeMeta || {};
-  const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
-  if (metaToken) return String(metaToken);
-  if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
-    const browserMeta = await provider.getMetadata(path);
-    return String(browserMeta?.revision || '');
-  }
-  const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
-  const statMeta = stat?.meta || {};
-  const statToken = statMeta.rev || statMeta.revision || statMeta.content_hash || statMeta.etag || '';
-  if (statToken) return String(statToken);
-  const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
-  const stats = handle ? await _fileStats(handle).catch(() => null) : null;
-  return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
-}
-
-function _throwEtagConflict(path, expected, current) {
-  const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
-  error.status = 409;
-  error.code = 'etag_conflict';
-  error.detail = {
-    code: 'etag_conflict',
-    path: _normalizeFolderPath(path),
-    expected_etag: String(expected || ''),
-    current_etag: String(current || ''),
-  };
-  throw error;
-}
-
-async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
-  await _awaitPendingEditFinalizations();
-  const normalizedOld = _normalizeFolderPath(oldPath);
-  const normalizedNew = _normalizeFolderPath(newPath);
-  if (!normalizedOld || normalizedOld === normalizedNew) return false;
-  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-  const adapter = await _managementAdapterForProvider(provider, kind, normalizedOld);
-  const records = await adapter.listDocuments(kind);
-  let moved = 0;
-  for (const record of records) {
-    const payload = record?.payload || {};
-    const current = _normalizeFolderPath(payload.original_relative_path || '');
-    const matches = current === normalizedOld || (isFolder && current.startsWith(normalizedOld + '/'));
-    if (!matches) continue;
-    const suffix = current === normalizedOld ? '' : current.slice(normalizedOld.length);
-    await adapter.save(
-      kind,
-      record.documentId,
-      { ...payload, original_relative_path: normalizedNew + suffix },
-      { expectedRevision: record.revision },
-    );
-    moved += 1;
-  }
-  return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;

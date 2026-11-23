@@ -47,7 +47,13 @@ async function _resolveCloudLinkFolder(provider, body) {
   return { folderPath, folderId };
 }
 
-function _cloudFolderLinkMatches(link, fileId, folderPath, folderId) {
+function _cloudFolderLinkMatches(link, fileId, folderPath, folderId, filePath, pathKey) {
+  if (pathKey) {
+    const folderKey = pathKey(folderPath);
+    const fileKey = filePath ? pathKey(filePath) : '';
+    return !!folderKey && folderKey === pathKey(link.folder_path)
+      && (link.file_id === fileId || (!!fileKey && fileKey === pathKey(link.path)));
+  }
   return link.file_id === fileId && (link.folder_id === folderId || (!link.folder_id && link.folder_path === folderPath));
 }
 
@@ -78,11 +84,11 @@ async function _validateFolderLinkBatch(provider, operation, body) {
   return { folderPath, folderId, validated, validationFailures };
 }
 
-function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, folderId) {
+function _applyFolderLinkBatch(currentLinks, operation, validated, folderPath, folderId, pathKey) {
   const next = currentLinks.map(link => ({ ...link }));
   const results = validated.map(item => {
     const result = { ...item, folder_path: folderPath, folder_id: folderId };
-    const index = next.findIndex(link => _cloudFolderLinkMatches(link, item.file_id, folderPath, folderId));
+    const index = next.findIndex(link => _cloudFolderLinkMatches(link, item.file_id, folderPath, folderId, item.file_path, pathKey));
     if (operation === 'add') {
       if (index >= 0) {
         if (!next[index].folder_id) next[index] = { ...next[index], folder_path: folderPath, folder_id: folderId };
@@ -118,7 +124,8 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
     const previous = requestId ? state.requests.find(record => record.request_id === requestId) : null;
     _assertFolderLinkRequestFingerprint(previous, operation, fingerprint, scopeId);
     if (previous) return { ...state, result: previous.result };
-    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId);
+    const applied = _applyFolderLinkBatch(state.links, operation, validated, folderPath, folderId,
+      typeof _folderLinkPathKey === 'function' ? path => _folderLinkPathKey(provider, path) : undefined);
     const result = _folderLinkBatchSummary(operation, requestId, applied.results.concat(validationFailures));
     const requests = requestId ? [...state.requests, {
       request_id: requestId,
@@ -128,7 +135,7 @@ async function _executeFolderLinkBatch(provider, operation, body, scopeId, finge
       result,
       saved_at: new Date().toISOString(),
     }].slice(-_FOLDER_LINK_REQUEST_LIMIT) : state.requests;
-    return { links: applied.links, requests, result };
+    return { ...state, links: applied.links, requests, result };
   });
   return committed.result;
 }

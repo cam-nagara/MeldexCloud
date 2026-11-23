@@ -13,7 +13,7 @@
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const id = () => globalThis.crypto?.randomUUID?.() || 'map-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   const IMAGE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\r\n]+$/;
-  const isAvailable = () => !globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  const isAvailable = () => true;
   function create(title = '無題', coordinateSystem = 'local') {
     return { fileType: 'meldex-map', schema_version: 1, title,
       coordinate_system: coordinateSystem, canvas: { width: 2000, height: 1200 },
@@ -182,6 +182,9 @@
       if (mutator(next) === false) return false;
       parse(next);
       if (JSON.stringify(next) === JSON.stringify(this.doc)) return false;
+      // Gestures carry the feature-array identity as their stale-edit guard.
+      // Camera/options-only updates must retain it; geometry edits still replace it.
+      if (JSON.stringify(next.features) === JSON.stringify(this.doc.features)) next.features = this.doc.features;
       if (history) { this.undoStack.push(clone(this.doc)); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
       this.doc = next; this.revision++; this.error = null; this.changed(this); return true;
     }
@@ -209,5 +212,27 @@
       return !this.error && (!this.dirty || this.save());
     }
   }
-  return Object.freeze({ clone, id, create, parse, visibleInPeriod, feature, distance, distanceLabel, drawPoints, scaleBar, generate, Store, isAvailable });
+  // Large generated maps exceed localStorage's per-origin quota. Keep their
+  // complete recovery copy in IndexedDB; resolve only after transaction commit.
+  async function draftTransaction(mode, action) {
+    const db = await new Promise((resolve,reject) => {
+      const request = indexedDB.open('meldex-map-drafts-v1',1);
+      request.onupgradeneeded = () => request.result.createObjectStore('drafts');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise((resolve,reject) => {
+        const tx=db.transaction('drafts',mode),request=action(tx.objectStore('drafts'));
+        tx.oncomplete=()=>resolve(request?.result);
+        tx.onabort=tx.onerror=()=>reject(tx.error || new Error('下書きを保全できません'));
+      });
+    } finally { db.close(); }
+  }
+  const drafts=Object.freeze({
+    put:(key,value)=>draftTransaction('readwrite',store=>store.put(value,key)),
+    remove:key=>draftTransaction('readwrite',store=>store.delete(key)),
+    list:prefix=>draftTransaction('readonly',store=>store.getAll(IDBKeyRange.bound(prefix,prefix+'\uffff'))),
+  });
+  return Object.freeze({ clone, id, create, parse, visibleInPeriod, feature, distance, distanceLabel, drawPoints, scaleBar, generate, Store, isAvailable, drafts });
 });

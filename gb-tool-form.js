@@ -100,6 +100,7 @@ class FormAppComponent extends ToolComponent {
       else await this._loadSheet();
       if (generation !== this._generation) return false;
       this._render(); this._changed();
+      this._scheduleResponseIntake();
       this._syncDetailPanel();
       if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
@@ -189,7 +190,14 @@ class FormAppComponent extends ToolComponent {
         restored.title = owner.doc.title;
         if (owner.doc.display_title != null) restored.display_title = owner.doc.display_title;
         if (owner.doc.meldex) restored.meldex = MeldexFormDocument.clone(owner.doc.meldex);
+        // Publication permissions and decryption keys are independent of field/layout history.
+        // Undoing a design edit must never revive a revoked publication.
+        if (owner.doc.publish) restored.publish = MeldexFormDocument.clone(owner.doc.publish);
+        else delete restored.publish;
         for (const [from, to] of app._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        if (restored.sheet.path === owner.doc.sheet.path) restored.sheet = MeldexFormDocument.clone(owner.doc.sheet);
+        else if (restored.publish?.form_submit_enabled) restored.publish = { ...restored.publish,
+          form_submit_enabled: false, form_submit_token: crypto.randomUUID().replace(/-/g, '') };
         const previousPath = app.ctx?.dbPath;
         if (!app._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, restored); }, { history: false }))
           throw new Error('フォームを変更できません');
@@ -220,6 +228,7 @@ class FormAppComponent extends ToolComponent {
     const comparable = doc => {
       const copy = MeldexFormDocument.clone(doc || {});
       delete copy.title; delete copy.display_title; delete copy.meldex;
+      delete copy.publish;
       return JSON.stringify(copy);
     };
     const want = comparable(expected);
@@ -243,8 +252,11 @@ class FormAppComponent extends ToolComponent {
     if (!source.path) return;
     try {
       let path = source.path;
-      if (source.id) {
-        const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(source.id), { silentError: true }).catch(() => null);
+      const browserData = globalThis.MeldexExportSave?.isBrowserDataContext?.();
+      const identity = browserData ? source.cloud_id : source.id;
+      if (identity) {
+        const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(identity) + '&hint=' + encodeURIComponent(source.path), { silentError: true });
+        if (!resolved?.path) throw new Error('シートの識別番号を確認できません');
         if (resolved?.path) path = resolved.path;
       }
       const [metadata, pivot, access] = await Promise.all([
@@ -316,7 +328,11 @@ class FormAppComponent extends ToolComponent {
     try {
       const id = path ? await apiFetch('/file-id?path=' + encodeURIComponent(path), { silentError: true }).catch(() => null) : null;
       if (!current()) return;
-      this._update(doc => { doc.sheet = { ...doc.sheet, path, id: id?.file_id || '' }; });
+      this._update(doc => {
+        doc.sheet = { path, id: id?.file_id || '' };
+        if (doc.publish?.form_submit_enabled) doc.publish = { ...doc.publish, form_submit_enabled: false,
+          form_submit_token: crypto.randomUUID().replace(/-/g, '') };
+      });
       clearTimeout(this._saveTimer);
       this._pendingSheetSwitch = true;
       const saved = await this._saveDefinitionAndSheet();
@@ -465,6 +481,13 @@ class FormAppComponent extends ToolComponent {
       doc.layout.formConfig = MeldexDbFormModel.forLayout(doc.layout, doc.formConfig);
     }); this._render();
   }
+  _recordTemplateRegistration(template) {
+    if (typeof historyPush !== 'function') return;
+    const captured = MeldexFormDocument.clone(template);
+    historyPush('フォーム: テンプレートに登録',
+      () => MeldexDbTopicLayoutStyle.changeSharedTemplateInLibrary(captured, null),
+      () => MeldexDbTopicLayoutStyle.changeSharedTemplateInLibrary(null, captured), this._historyScope());
+  }
   async registerTemplate() {
     this._commitFocusedControl();
     const store = this.store;
@@ -497,6 +520,7 @@ class FormAppComponent extends ToolComponent {
         const template = MeldexDbTopicLayoutStyle.exportTemplate(layout, columns);
         const result = await MeldexDbTopicLayoutStyle.saveSharedTemplateToLibrary(template);
         if (!result.saved) throw new Error('同名のテンプレートがあります。別の名前で登録してください');
+        this._recordTemplateRegistration(template);
         status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。' : 'テンプレートに登録しました';
         if (this.store === store && this.el?.isConnected) {
           const select = this.el.querySelector('[data-form-templates]');
@@ -638,6 +662,25 @@ class FormAppComponent extends ToolComponent {
     }
     return false;
   }
+  _scheduleResponseIntake() {
+    clearTimeout(this._responseTimer);
+    if (!globalThis.MeldexCloudFormRelay?.drainApp || !this.store?.doc.publish?.intake_channel) return;
+    const run = async () => {
+      if (!this.el) return;
+      const store = this.store, generation = this._generation;
+      try {
+        const result = await MeldexCloudFormRelay.drainApp(this);
+        if (this.store !== store || this._generation !== generation) return;
+        if (result?.failed || result?.blocked) {
+          if (this.status) this.status.textContent = '未反映の回答があります。保存先・共有権限・受付設定を確認してください。';
+        } else if (result?.imported && this.status) this.status.textContent = '回答を' + result.imported + '件取り込みました。参照先シートで確認できます。';
+      } catch (error) { if (this.store === store && this._generation === generation && this.status) this.status.textContent = '回答を取り込めません: ' + (error.userMessage || error.message); }
+      if (this.store !== store || this._generation !== generation) return;
+      if (this.el) this._responseTimer = setTimeout(run, 30000);
+    };
+    this._responseTimer = setTimeout(run, 1000);
+  }
+
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.formPath;
     if (this._embedded || this.paneId !== GBLayout.activePane) return;
@@ -733,6 +776,7 @@ class FormAppComponent extends ToolComponent {
   destroy(options = {}) {
     if (!options.skipFlush && (this.store?.dirty || this.store?.pending
       || this.el?.querySelector('[data-form-dirty="true"],[data-form-has-pending]'))) return false;
+    clearTimeout(this._responseTimer);
     ++this._generation; clearTimeout(this._saveTimer);
     window.removeEventListener('beforeunload', this._beforeUnload);
     if (this.ctx) this.ctx.destroyed = true;

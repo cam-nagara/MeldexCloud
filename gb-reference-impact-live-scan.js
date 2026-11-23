@@ -71,22 +71,33 @@
     }
     const sources = [];
     let bytes = 0;
+    const maxBytes = Number(options.maxBytes || MAX_BYTES);
+    const candidates = [];
+    let declaredBytes = 0;
     for (const rawPath of files) {
       const path = String(rawPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       if (!path || targets.has(path) || !options.isTextLike(path)) continue;
       const size = Number(await options.statSize(path));
-      if (!Number.isFinite(size) || size < 0 || size > Number(options.maxBytes || MAX_BYTES) - bytes) {
+      if (!Number.isFinite(size) || size < 0 || size > maxBytes - declaredBytes) {
         throw Object.assign(new Error('参照影響の読取上限を超えました'), { status: 503 });
       }
-      const content = String(await options.readTextBounded(path, Number(options.maxBytes || MAX_BYTES) - bytes) || '');
+      declaredBytes += size;
+      candidates.push({ path, size });
+    }
+    // 読取上限を各ファイルへ配分してから最大4件を並行する。合計のメモリ上限を4倍にしない。
+    const slack = candidates.length ? Math.floor((maxBytes - declaredBytes) / candidates.length) : 0;
+    const targetRecords = [...targets].map(target => ({ target, assetId: requested.find(row => row.path === target)?.assetId || '' }));
+    const scanFile = async ({ path, size }) => {
+      const budget = size + slack;
+      const content = String(await options.readTextBounded(path, budget) || '');
       const canonicalQueryContent = _canonicalQueryEncoding(content);
-      bytes += new TextEncoder().encode(content).byteLength;
-      if (bytes > Number(options.maxBytes || MAX_BYTES)) {
+      const actualBytes = new TextEncoder().encode(content).byteLength;
+      bytes += actualBytes;
+      if (actualBytes > budget || bytes > maxBytes) {
         throw Object.assign(new Error('参照影響の読取上限を超えました'), { status: 503 });
       }
       let count = 0;
       const targetCounts = [];
-      const targetRecords = [...targets].map(target => ({ target, assetId: requested.find(row => row.path === target)?.assetId || '' }));
       for (const { target, assetId } of targetRecords) {
         const rawCount = _countOffsets(content, [target, assetId]);
         const encoded = [...new Set([encodeURIComponent(target), encodeURI(target)]
@@ -100,7 +111,15 @@
         display_name: options.displayName ? options.displayName(path) : path.split('/').pop(),
         exists: true, entry_type: '', occurrence_count: count, target_counts: targetCounts,
       });
-    }
+    };
+    let cursor = 0, failure = null;
+    await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+      while (!failure && cursor < candidates.length) {
+        const candidate = candidates[cursor++];
+        try { await scanFile(candidate); } catch (error) { failure ||= error; }
+      }
+    }));
+    if (failure) throw failure;
     sources.sort((a, b) => a.source_path.localeCompare(b.source_path, 'ja', { sensitivity: 'base' }));
     const graphRevision = await _sha256(JSON.stringify({
       targets: [...targets].sort(),

@@ -58,8 +58,8 @@ const MeldexLinkModal = (() => {
       name = data.name || '';
     } else {
       // fav-item / sidebar-item など _nodeData を持たない行: data-path + 拡張子から推定
-      const pathHost = row.closest('[data-path]') || (row.dataset?.path ? row : null);
-      path = pathHost?.dataset?.path || '';
+      const pathHost = row.closest('[data-path],[data-file-path]') || null;
+      path = pathHost?.dataset?.path || pathHost?.dataset?.filePath || '';
       name = path.split('/').pop() || path;
       type = _inferTypeFromPath(path);
     }

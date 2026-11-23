@@ -489,6 +489,15 @@ async function _flushOpenScriptNoteVersionTarget(path) {
 async function _flushOpenVersionTarget(path, type) {
   await globalThis.GBEditorHost?.flushPath?.(path);
   const flushed = await _flushOpenAppVersionTarget(path, '');
+  // ボードのファイル保存後に遅延している共通トピック反映も確定する。
+  // 復元前の比較元が古いと、復元した文字を「変更なし」とみなして編集後の文字を画面へ戻してしまう。
+  if (typeof bd !== 'undefined' && bd?.path && _sameVersionTargetPath(bd.path, path)
+      && globalThis.GbTopicLiveBridge?.flushOpenedSheet) {
+    const synced = await globalThis.GbTopicLiveBridge.flushOpenedSheet(path, { owner: bd });
+    if (synced?.ok === false && !['unregistered', 'destroyed'].includes(synced.status)) {
+      throw synced.error || new Error('ボードの共通トピックを確定できませんでした');
+    }
+  }
   if (_isScriptNoteVersionPath(path)) {
     return flushed + await _flushOpenScriptNoteVersionTarget(path);
   }
@@ -497,7 +506,9 @@ async function _flushOpenVersionTarget(path, type) {
 
 async function _refreshRestoredVersionTarget(path, type) {
   const targetType = type || 'file';
-  if (await globalThis.GBEditorHost?.reloadPath?.(path)) return;
+  const refreshedHosts = await globalThis.GBEditorHost?.reloadPath?.(path);
+  const openBoardTarget = typeof bd !== 'undefined' && bd?.path && path && _sameVersionTargetPath(bd.path, path);
+  if (refreshedHosts && !openBoardTarget) return;
   for (const adapter of [window.GBQuickMemoPanel]) {
     if (typeof adapter?.reloadVersionTarget === 'function' && await adapter.reloadVersionTarget(path)) return;
   }
@@ -702,7 +713,7 @@ async function restoreVersion(path, versionName, type) {
     if (type === 'db') {
       const revisionState = await apiFetch('/version/read-db?path=' + encodeURIComponent(path)
         + '&version=' + encodeURIComponent(versionName));
-      await apiPost('/version/restore-db', { path, version: versionName, restore_revision: revisionState?.restore_revision || '' });
+      await apiPost('/version/restore-db', { path, version: versionName, restore_revision: revisionState?.restore_revision || '', annotation_revision: revisionState?.annotation_revision || '' });
     } else {
       const revisionState = await apiFetch('/version/read?path=' + encodeURIComponent(path)
         + '&version=' + encodeURIComponent(versionName));
@@ -716,6 +727,7 @@ async function restoreVersion(path, versionName, type) {
         version: versionName,
         if_match_etag: revisionToken,
         transport_revision: transportRevision,
+        annotation_revision: revisionState?.annotation_revision || '',
       });
     }
     restored = true;
@@ -725,6 +737,8 @@ async function restoreVersion(path, versionName, type) {
     if (versionModal?._historyModalApi?.close) versionModal._historyModalApi.close('restore');
     else versionModal?.remove();
     await _refreshRestoredVersionTarget(path, type || 'file');
+    await window.GBAnnotationSurfaces?.reloadTarget?.(path);
+    if (typeof loadRpAnnotationList === 'function') await loadRpAnnotationList();
     _refreshVersionViews(path, type || 'file');
     showStatus('復元しました');
   } catch (err) {
@@ -741,7 +755,27 @@ async function previewVersion(path, versionName, type) {
     return;
   }
   const data = await apiFetch('/version/read?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
-  showTextPreview(data.binary ? 'バイナリファイルの保存版\n\nサイズ: ' + formatFileSize(data.size) + '\nSHA-256: ' + data.sha256 : data.content, versionName);
+  showTextPreview((data.binary ? 'バイナリファイルの保存版\n\nサイズ: ' + formatFileSize(data.size) + '\nSHA-256: ' + data.sha256 : data.content)
+    + _versionAnnotationText(data.annotation_snapshot), versionName);
+}
+
+function _versionAnnotationText(snapshot) {
+  if (!snapshot) return '';
+  const lines = [];
+  for (const rows of Object.values(snapshot.targets || {})) for (const row of rows) {
+    let data = row.data || {};
+    try { if (typeof data === 'string') data = JSON.parse(data); } catch { data = {}; }
+    const kind = data.highlight || row.type === 'highlight' ? 'ハイライト'
+      : ({comment:'コメント',screenshot:'スクリーンショット',stroke:'線',marker:'マーカー',rect:'矩形',lasso:'投げ縄'})[row.type] || '描画';
+    const text = String(row.body || data.text || '').replace(/\s+/g,' ').slice(0,200);
+    const area = ['x','y','width','height'].filter(key => data[key] != null).map(key => Number(data[key]).toFixed(1)).join(', ');
+    const points = data.points ? data.points.map(point => point.map(value => Number(value).toFixed(1)).join(',')).join(' / ') : '';
+    lines.push(`${kind} [${String(row.id).slice(0,8)}] ${text} ／色 ${row.color || '指定なし'} ／濃さ ${row.opacity ?? 1}`
+      + (data.pageIndex != null ? ` ／${data.pageIndex+1}ページ` : '') + (area ? ` ／範囲 ${area}` : '')
+      + (points ? ` ／線の位置 ${points}` : '') + (data.boxes ? ' ／文字の範囲 '+JSON.stringify(data.boxes) : '')
+      + (data.textAnchor ? ' ／文字の位置 '+data.textAnchor.start+'〜'+data.textAnchor.end : ''));
+  }
+  return '\n\nアノテート ('+lines.length+'件)\n'+(lines.join('\n') || 'なし')+'\n';
 }
 
 function showTextPreview(content, title) {
@@ -794,6 +828,7 @@ function showDbSnapshotPreview(data, title) {
   const body = document.createElement('div');
   body.innerHTML = `<div class="gb-section-desc" style="margin-bottom:var(--ui-space-2);">${esc(data.timestamp || '')}</div>
     <div style="overflow:auto;">${tableHtml}</div>`;
+  if (data.annotation_snapshot) { const detail = document.createElement('pre'); detail.textContent = _versionAnnotationText(data.annotation_snapshot); body.append(detail); }
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'gb-btn gb-btn-sm';
@@ -834,13 +869,15 @@ async function compareVersion(path, versionName, type) {
     return;
   }
   const verData = await apiFetch('/version/read?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
+  const oldAnnotations = _versionAnnotationText(verData.annotation_snapshot);
+  const currentAnnotations = verData.annotation_snapshot ? _versionAnnotationText(verData.current_annotation_snapshot) : '';
   if (verData.binary) {
-    showDiffModal('SHA-256: ' + verData.sha256, 'SHA-256: ' + verData.current_sha256, versionName, '現在');
+    showDiffModal('SHA-256: ' + verData.sha256 + oldAnnotations, 'SHA-256: ' + verData.current_sha256 + currentAnnotations, versionName, '現在');
     return;
   }
   const curData = await apiFetch('/file?path=' + encodeURIComponent(path));
-  const oldText = verData.content || '';
-  const newText = curData.content || '';
+  const oldText = (verData.content || '') + oldAnnotations;
+  const newText = (curData.content || '') + currentAnnotations;
   // シナリオ（.mel-scenario / 旧 .scriptnote.json）の場合は構造化差分
   if (_isScriptNoteVersionPath(path)) {
     try {
@@ -1217,6 +1254,12 @@ function showDbDiff(snapshot, title, currentData = null) {
   const body = document.createElement('div');
   body.style.overflow = 'auto';
   body.innerHTML = html;
+  if (snapshot.annotation_snapshot) {
+    const detail = document.createElement('pre');
+    detail.textContent = 'アノテートの比較\n保存版:\n' + _versionAnnotationText(snapshot.annotation_snapshot)
+      + '\n現在:\n' + _versionAnnotationText(data.annotation_snapshot || snapshot.current_annotation_snapshot);
+    body.append(detail);
+  }
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'gb-btn gb-btn-sm';

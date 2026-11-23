@@ -644,6 +644,7 @@ function showScreenshotMenu(e) {
   }
   addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
   addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
+  addItem('パネル単位で撮影', () => GBPanelScreenshot.start(), 'panel');
   addSep();
   addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
   addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
@@ -1199,8 +1200,12 @@ function cfConfirm(message, options) {
     ok.textContent = okLabel;
     let result = false;
     let modalApi = null;
+    let decisionTaken = false;
     const finish = (value, reason) => {
+      if (decisionTaken) return;
+      decisionTaken = true;
       result = value;
+      if (value && typeof opts.onAccept === 'function') opts.onAccept();
       modalApi.close(reason);
     };
     const onDocumentKeydown = event => {

@@ -5,7 +5,7 @@
   const MODAL_SELECTOR = ':scope > .modal, :scope > .gb-modal, :scope > .gb-cal-modal, :scope > .link-modal, :scope > .meldex-cloud-mode-modal, :scope > .meldex-cloud-setup-modal';
   const LIVE_DIALOG_SELECTOR = MODAL_SELECTOR + ', :scope > .gb-confirm';
   const MOBILE_OVERLAY_CLASSES = ['modal-overlay', 'gb-modal-overlay', 'gb-cal-modal-overlay', 'link-modal-overlay'];
-  const MOBILE_SHEET_CLOSE_MS = 220;
+  const MOBILE_SHEET_CLOSE_MS = 140;
   const RECOVERY_TARGET_SELECTOR = 'a, button, input, textarea, select, [data-action], .tree-node-row, .fav-item, .sidebar-item, [role="button"], [tabindex]';
   const VIEWPORT_PADDING = 12;
   const RESIZE_CLICK_SUPPRESS_MS = 350;

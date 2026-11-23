@@ -1189,7 +1189,7 @@ const _CHAT_DRAFT_DEBOUNCE_MS = 1200;
 const _CHAT_DRAFT_MAX_WAIT_MS = 5000;
 const _CHAT_DRAFT_MAX_CHARS = 512 * 1024;
 
-function _chatDraftScope() {
+function _chatComposerDraftScope() {
   return {
     user: typeof getUsername === 'function' ? String(getUsername() || '') : '',
     workspaceId: typeof _chatWorkspaceIdValue === 'function'
@@ -1200,7 +1200,7 @@ function _chatDraftScope() {
   };
 }
 
-function _chatDraftStorageKey(scope = _chatDraftScope()) {
+function _chatDraftStorageKey(scope = _chatComposerDraftScope()) {
   return _CHAT_DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify(scope));
 }
 
@@ -1210,6 +1210,12 @@ const _chatDraftManager = (() => {
   let maxTimer = 0;
   let restoring = false;
   let submissionKey = '';
+  const pendingDrafts = new Map();
+  const failedKeys = new Map();
+  let activeRetryButton = null;
+  let activeFailureRow = null;
+  let activeFailureMessage = null;
+  let activeFailureKey = '';
 
   const input = () => document.getElementById('chat-input');
   const cancelTimers = () => {
@@ -1218,21 +1224,77 @@ const _chatDraftManager = (() => {
     debounceTimer = 0;
     maxTimer = 0;
   };
+  const renderFailure = () => {
+    const key = _chatDraftStorageKey(), composer = document.getElementById('chat-composer');
+    const hasFailure = failedKeys.has(key) && pendingDrafts.has(key);
+    const text = (failedKeys.get(key) === 'limit'
+      ? '下書きの保存上限を超えています。本文を短くしてください。'
+      : '下書きをこの端末に保存できません。')
+      + '内容はこの画面で保持しています。画面を閉じる前に再試行してください。';
+    if (hasFailure && composer && activeFailureKey === key && activeFailureRow?.isConnected
+        && activeFailureRow.parentElement === composer) {
+      if (activeFailureMessage.textContent !== text) activeFailureMessage.textContent = text;
+      return;
+    }
+    document.querySelectorAll?.('[data-chat-draft-save-failure]').forEach(row => row.remove());
+    activeFailureRow = activeFailureMessage = activeRetryButton = null;
+    activeFailureKey = '';
+    if (!hasFailure || !composer) return;
+    const row = document.createElement('div');
+    row.dataset.chatDraftSaveFailure = '';
+    row.setAttribute('role', 'alert');
+    row.style.cssText = 'color:var(--fg2);font-size:11px;padding:4px;';
+    const message = document.createElement('span');
+    message.textContent = text;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'gb-btn gb-btn-sm';
+    retry.dataset.chatDraftSaveRetry = '';
+    retry.dataset.e2eId = 'chat-draft-save-retry';
+    retry.textContent = '下書きの保存を再試行';
+    retry.addEventListener('click', () => {
+      if (_chatDraftStorageKey() !== key) { renderFailure(); return; }
+      dirtyKey = key;
+      if (flush()) {
+        if (!window.GBChatFormatting?.focusInput?.()) input()?.focus?.();
+      } else activeRetryButton?.focus?.();
+    });
+    row.append(message, retry);
+    composer.prepend(row);
+    activeFailureKey = key;
+    activeFailureRow = row;
+    activeFailureMessage = message;
+    activeRetryButton = retry;
+  };
+  const reportFailure = (key, error) => {
+    if (!failedKeys.has(key)) {
+      console.warn('チャット下書きを保存できませんでした。内容は画面内に保持しています');
+      if (typeof showStatus === 'function') showStatus('チャットの下書きを保存できません。内容はこの画面に保持しています', true);
+      window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+        op: 'chat.draft.save', endpoint: 'localStorage', method: 'SET', errorType: 'Error',
+      });
+    }
+    failedKeys.set(key, error instanceof RangeError ? 'limit' : 'storage');
+    renderFailure();
+  };
   const persist = (key, value) => {
     if (!key) return false;
+    pendingDrafts.set(key, value);
     try {
       if (value) {
         if (value.length > _CHAT_DRAFT_MAX_CHARS) {
-          console.warn('チャット下書きが保存上限を超えたため、先頭部分だけを保存します');
-          value = value.slice(0, _CHAT_DRAFT_MAX_CHARS);
+          throw new RangeError('チャット下書きが保存上限を超えています');
         }
         localStorage.setItem(key, JSON.stringify({ value, savedAt: new Date().toISOString() }));
       } else {
         localStorage.removeItem(key);
       }
+      pendingDrafts.delete(key);
+      failedKeys.delete(key);
+      renderFailure();
       return true;
     } catch (error) {
-      console.warn('チャット下書きを保存できませんでした', error);
+      reportFailure(key, error);
       return false;
     }
   };
@@ -1260,6 +1322,7 @@ const _chatDraftManager = (() => {
     if (submissionKey && field.value) submissionKey = '';
     if (submissionKey && !field.value) return;
     dirtyKey = _chatDraftStorageKey();
+    pendingDrafts.set(dirtyKey, String(field.value || ''));
     schedule();
   };
   const beginSubmission = () => {
@@ -1285,12 +1348,18 @@ const _chatDraftManager = (() => {
     cancelTimers();
     const field = input();
     if (!field) return false;
+    const key = _chatDraftStorageKey();
     let value = '';
-    try {
-      const stored = JSON.parse(localStorage.getItem(_chatDraftStorageKey()) || 'null');
-      value = typeof stored?.value === 'string' ? stored.value : '';
-    } catch (error) {
-      console.warn('チャット下書きを復元できませんでした', error);
+    if (pendingDrafts.has(key)) {
+      value = pendingDrafts.get(key);
+      dirtyKey = key;
+    } else {
+      try {
+        const stored = JSON.parse(localStorage.getItem(key) || 'null');
+        value = typeof stored?.value === 'string' ? stored.value : '';
+      } catch (error) {
+        console.warn('チャット下書きを復元できませんでした', error);
+      }
     }
     restoring = true;
     field.value = value;
@@ -1298,6 +1367,8 @@ const _chatDraftManager = (() => {
     restoring = false;
     window.GBChatFormatting?.syncInput?.();
     if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(field, 2, 10);
+    if (dirtyKey) schedule();
+    renderFailure();
     return !!value;
   };
   input()?.addEventListener('input', onInput);

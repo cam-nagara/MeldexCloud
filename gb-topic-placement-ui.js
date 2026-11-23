@@ -781,7 +781,7 @@
     }),
   });
 
-  async function refreshView(documentId, path, sourceId) {
+  async function refreshView(documentId, path, sourceId, options) {
     if (!documentId || typeof global.apiFetch !== 'function') return null;
     const snapshot = await global.apiFetch(
       `/topic-views/${encodeURIComponent(documentId)}/snapshot`, { silentError: true },
@@ -798,8 +798,21 @@
         ...item.record, topicRef: item.topicRef,
       })).filter(Boolean),
       readOnly: snapshot.readOnly === true,
+      authoritativePlacements: options?.authoritativePlacements === true,
     };
     global.dispatchEvent?.(new CustomEvent('meldex:topic-records-updated', { detail }));
+    const board = liveBoardState();
+    if (detail.authoritativePlacements && !detail.readOnly
+        && board && normalizePath(board.path) === normalizePath(path) && !board.editing && !board.dirty) {
+      // 共通の配置が確定した結果を、開いている旧ボードの保存形式にも反映する。
+      // 通常の遅延読込では、未反映の手元のカードを消さない。
+      global.bdDirty?.();
+      global.clearTimeout?.(global._bdTimer);
+      global._bdTimer = null;
+      if (typeof global.bdSave === 'function' && await global.bdSave() === false) {
+        throw new Error('共通トピックの配置は保存しましたが、ボードの表示を保存できません');
+      }
+    }
     return detail;
   }
 
@@ -810,9 +823,11 @@
 
   async function refreshAffectedViews(items, options) {
     const settings = options || {};
-    const targets = uniqueRefreshTargets(items);
+    const targets = uniqueRefreshTargets(items).map(item => ({ ...item,
+      authoritativePlacements: item.authoritativePlacements === true
+        || String(settings.reason || '').startsWith('topic-placement-') }));
     const settled = await Promise.allSettled(targets.map(item => refreshView(
-      item.documentId, item.path, item.sourceId,
+      item.documentId, item.path, item.sourceId, item,
     )));
     const failures = settled.map((result, index) => result.status === 'rejected' && ({
       target: clone(targets[index]),
@@ -1034,7 +1049,7 @@
       `/topic-stores/${encodeURIComponent(ref.sourceId)}/topics/${encodeURIComponent(ref.topicId)}`,
       { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, silentError: true,
         body: JSON.stringify({ mutationId: mutationId('topic-board-text'),
-          baseRevision: loaded.topic.revision, changes: { title: title || '無題', note: noteLines.join('\n') } }) },
+          baseRevision: loaded.topic.revision, changes: { title, note: noteLines.join('\n') } }) },
     );
     const affected = [];
     for (const [path, cached] of viewsByPath.entries()) {
@@ -1063,6 +1078,12 @@
         || (['move', 'detach'].includes(operation) && !source?.placement)) {
       throw new Error('このトピックの配置情報を確認できません');
     }
+    let target = explicitTarget || null;
+    if (!target && ['move', 'link-duplicate'].includes(operation)) {
+      // 選択画面は保存の待機で塞がない。選択後に元のトピックを改めて検証する。
+      target = await pickTarget();
+      if (!target) return { ok: false, state: 'cancelled' };
+    }
     if (source.surface === 'board' && global.GbTopicLiveBridge?.flushOpenedSheet
         && !(source._savedSnapshotVerified && normalizePath(liveBoardState()?.path) !== normalizePath(source.path))) {
       const board = liveBoardState();
@@ -1070,18 +1091,30 @@
         throw new Error('元のボードを表示してから操作してください');
       }
       global.MeldexBoardTopicIntegration?.commitPendingEdits?.(board);
-      const pending = global.bdWaitPendingNodeTextWrites?.(board.nodes);
-      if (pending && await pending === false) throw new Error('トピックの保存を完了できません');
-      if (board.dirty && await global.bdSave?.() !== true) throw new Error('ボードの保存を完了できません');
-      const flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path, { owner: board });
+      const openSeq = board._openSeq;
+      let flushed;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (normalizePath(board.path) !== normalizePath(source.path) || board._openSeq !== openSeq || board.editing) {
+          throw new Error('操作中にボードの表示が変わったため、変更しませんでした');
+        }
+        const pending = global.bdWaitPendingNodeTextWrites?.(board.nodes);
+        if (pending && await pending === false) throw new Error('トピックの保存を完了できません');
+        if (board.dirty && await global.bdSave?.() !== true) throw new Error('ボードの保存を完了できません');
+        flushed = await global.GbTopicLiveBridge.flushOpenedSheet(source.path, { owner: board });
+        if (flushed.status !== 'superseded') break;
+      }
       if (!flushed.ok || flushed.mode !== 'commit') {
         throw new Error('最新のボードを確認できないため操作を中止しました: ' + (flushed.error?.message || flushed.status || flushed.mode));
       }
       const current = viewsByPath.get(normalizePath(source.path));
-      const record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
+      let record = current?.records.find(item => recordKey(item, current.sourceId) === topicKey(source.topicRef));
       const placement = current?.document?.placements?.find(item =>
         item.placementId === source.placement?.placementId && topicKey(item.topicRef) === topicKey(source.topicRef));
-      if (!record || !placement) throw new Error('トピックの配置が変更されています');
+      if (!placement && !['move', 'detach'].includes(operation)) {
+        const loaded = await global.apiFetch(`/topic-stores/${encodeURIComponent(source.topicRef.sourceId)}/topics/${encodeURIComponent(source.topicRef.topicId)}`, { silentError: true });
+        record = loaded?.topic || loaded?.record || loaded;
+      }
+      if (!record || (['move', 'detach'].includes(operation) && !placement)) throw new Error('トピックの配置が変更されています');
       source = { ...source, record, placement, document: current.document,
         revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
     }
@@ -1118,7 +1151,6 @@
         revision: checkpointId(current.checkpoint), readOnly: current.readOnly };
     }
     if (source.readOnly === true) throw new Error('このトピック表示は読み取り専用です');
-    let target = explicitTarget || null;
     if (operation === 'duplicate' && !target) {
       target = {
         documentId: source.placement.documentId, viewId: source.placement.viewId,

@@ -108,6 +108,18 @@
     }
     return output;
   }
-  return Object.freeze({ normalize, forLayout, layoutFields, ruleFor, validate, validateDefinition, orderedCells, arrange,
+  function validatePublicFields(doc, fields, types) {
+    if (Object.values(fields).some(value => typeof value !== 'string')) return '回答の値は文字列で指定してください';
+    const layout = doc.layout, config = layout ? forLayout(layout, doc.formConfig) : normalize(doc.formConfig, doc.formConfig?.fields || Object.keys(types));
+    const hidden = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'formula', 'rollup', 'button', 'chat']);
+    const allowed = config.fields.filter(name => !hidden.has(types[name]?.type));
+    if (Object.keys(fields).some(name => !allowed.includes(name))) return '公開していない項目への回答です';
+    for (const name of allowed) {
+      const message = validate(name, fields[name], types[name]?.type || 'text', ruleFor(config, name));
+      if (message) return message;
+    }
+    return '';
+  }
+  return Object.freeze({ normalize, forLayout, layoutFields, ruleFor, validate, validateDefinition, orderedCells, arrange, validatePublicFields,
     supportsScalar: type => scalarTypes.has(type || 'text') });
 });

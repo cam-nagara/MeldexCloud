@@ -546,6 +546,10 @@ function bdTreeDirection(nodeId) {
   if (struct === 'flowchart' || struct === 'orgchart' || struct === 'tree') return 'down';
   if (struct === 'logic') return 'right';
   if (struct === 'timeline') return n.parent ? 'down' : 'right';
+  if (struct === 'mindmap') {
+    const parent = n.parent && bd.nodes.find(v => v.id === n.parent);
+    return parent && n.x < parent.x ? 'left' : 'right';
+  }
   // mindmap および構造未設定は位置から動的判定
   const children = (typeof bdChildren === 'function') ? bdChildren(nodeId) : [];
   if (children.length > 0) {
@@ -580,6 +584,11 @@ function bdSwapSibling(nodeId, dir) {
   // 利用者が見ている並び（右・左へ伸びる木は上下、上・下へ伸びる木は左右）の前後と入れ替える。
   // 自動整列のある木は、位置が内部の並びから決まるので従来どおり内部の並びを使う。
   const swapStructure = (typeof bdStructureOf === 'function') ? bdStructureOf(nodeId) : '';
+  if (swapStructure === 'mindmap') {
+    const parent = bd.nodes.find(v => v.id === n.parent);
+    const side = node => Math.sign((Number(node.x) || 0) - (Number(parent?.x) || 0));
+    siblings = siblings.filter(sibling => side(sibling) === side(n));
+  }
   if (!swapStructure && siblings.length > 1) {
     const treeDir = (typeof bdTreeDirection === 'function') ? bdTreeDirection(nodeId) : 'right';
     const axis = (treeDir === 'up' || treeDir === 'down') ? 'x' : 'y';

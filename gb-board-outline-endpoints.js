@@ -227,6 +227,7 @@
   }
 
   function outlineToLegacyAnchor(position, tolerance) {
+    if (!position || !Number.isFinite(Number(position.pathT))) return null;
     const pathT = ((Number(position?.pathT) || 0) % 1 + 1) % 1;
     const limit = Number.isFinite(+tolerance) ? +tolerance : 0.06;
     let best = null;
@@ -264,6 +265,15 @@
       if (normalized.targetKind === 'topic' && typeof normalized.targetRef === 'string'
           && topicRefByLegacyId?.[normalized.targetRef]) {
         normalized.targetRef = clone(topicRefByLegacyId[normalized.targetRef]);
+      }
+      const legacyId = line?.[side];
+      const legacyRef = topicRefByLegacyId?.[legacyId];
+      const topicId = normalized.targetRef?.topicId;
+      // 旧ビューが一時参照を残した場合は、保存済みの端のIDとの完全な対応で補修する。
+      // 題名から推測したり、別の正式TopicRefを上書きしたりしない。
+      if (normalized.targetKind === 'topic' && legacyRef && typeof topicId === 'string'
+          && topicId.startsWith('legacy-board:') && topicId.endsWith(':' + legacyId)) {
+        normalized.targetRef = clone(legacyRef);
       }
       return normalized;
     }

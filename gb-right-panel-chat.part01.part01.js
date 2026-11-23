@@ -509,6 +509,7 @@ function _chatCopyIconHtml(size = 12) {
 
 function _chatCopyTextFallback(text) {
   if (typeof document === 'undefined' || !document.body) return false;
+  const activeElement = document.activeElement;
   const textarea = document.createElement('textarea');
   textarea.value = String(text || '');
   textarea.setAttribute('readonly', '');
@@ -528,6 +529,9 @@ function _chatCopyTextFallback(text) {
     ok = false;
   }
   textarea.remove();
+  if (activeElement?.isConnected && (!document.activeElement || document.activeElement === document.body)) {
+    try { activeElement.focus({ preventScroll: true }); } catch {}
+  }
   if (selection) {
     selection.removeAllRanges();
     ranges.forEach(range => selection.addRange(range));
@@ -1467,6 +1471,7 @@ async function chatCommitSessionTitle(showSavedStatus = true) {
   const nextTitle = input.value.trim();
   const previousTitle = _chatState.sessionTitle || '';
   const changed = nextTitle !== previousTitle;
+  const operationScope = typeof _chatSessionScopeSnapshot === 'function' ? _chatSessionScopeSnapshot() : null;
   _chatState.sessionTitle = nextTitle;
   if (!changed) return;
   renderChatHistory();
@@ -1474,6 +1479,13 @@ async function chatCommitSessionTitle(showSavedStatus = true) {
   try {
     const saved = await chatAutoSave({ silent: false });
     if (!saved) throw new Error('チャット名を保存できませんでした');
+    if (typeof historyPush === 'function') {
+      const scope = _chatHistoryScope();
+      if (typeof historySetScope === 'function') historySetScope(scope);
+      historyPush('チャット: 名前変更',
+        () => _chatApplySessionTitle(previousTitle, operationScope),
+        () => _chatApplySessionTitle(nextTitle, operationScope), scope, nextTitle);
+    }
     renderChatHistory();
     if (saved && showSavedStatus) showStatus('チャット名を保存しました');
   } catch (error) {
@@ -1481,6 +1493,23 @@ async function chatCommitSessionTitle(showSavedStatus = true) {
     _syncChatSessionTitleInput();
     renderChatHistory();
     if (typeof showStatus === 'function') showStatus('チャット名の保存に失敗: ' + (error?.message || error), true);
+  }
+}
+
+async function _chatApplySessionTitle(title, scope) {
+  if (scope && !_chatSessionScopeMatches(scope)) {
+    if (typeof showStatus === 'function') showStatus('別チャットの履歴操作は適用できません', true);
+    return false;
+  }
+  const before = _chatState.sessionTitle;
+  _setChatSessionTitle(title);
+  try {
+    if (!await chatAutoSave({ silent: false })) throw new Error('チャット名を保存できませんでした');
+    renderChatHistory();
+    return true;
+  } catch (error) {
+    _setChatSessionTitle(before);
+    throw error;
   }
 }
 

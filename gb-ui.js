@@ -1200,9 +1200,30 @@
   // ============================================================
   // Public API
   // ============================================================
+  // Persistent failure inside the affected region, including mobile drawers.
+  function createInlineError(opts = {}) {
+    if (typeof opts === 'string') opts = { message: opts };
+    const node = el('div', {cls:'gb-inline-error', attrs:{role:'alert'}});
+    const message = el('div'); node.append(message);
+    const retry = typeof opts.onRetry === 'function' ? createButton({label:'再試行'}) : null;
+    node.setMessage = text => { const value=String(text || ''); if(message.textContent!==value)message.textContent=value; node.hidden=!value; };
+    node.setBusy = busy => { if(retry)retry.disabled=!!busy; };
+    if (retry) {
+      node.append(retry);
+      retry.addEventListener('click', async () => {
+        node.setBusy(true);
+        try { await opts.onRetry(); }
+        catch(error) { node.setMessage(error.userMessage || error.message || '操作できません'); }
+        finally { node.setBusy(false); }
+      });
+    }
+    node.setMessage(opts.message);
+    return node;
+  }
   window.GBUI = {
     // primitives
     el,
+    createInlineError,
     // button
     createButton,
     // toolbar

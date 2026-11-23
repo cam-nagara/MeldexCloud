@@ -37,13 +37,14 @@ const GBPaneBridge = (() => {
     page:       'page-view',
     media:      'media-view',
     html:       'html-view',
-    csv:        'csv-view',
+    csv:        'db-view-container',
     folder:     'folder-view',
   };
 
   // DB系サブビューID
   const DB_SUB_VIEWS = {
     pivot:      'pivot-view',
+    csv:        'pivot-view',
     tree:       'tree-view',
     gallery:    'gallery-view',
     kanban:     'kanban-view',
@@ -473,7 +474,7 @@ const GBPaneBridge = (() => {
     detail: _detailScrollSelectors.slice(1),
     preview: ['#gb-preview-pane'],
     subpanel: ['#gb-subpanel-content'],
-    chat: ['__root__'],
+    chat: ['__root__', '#chat-messages', '#team-messages', '#chat-history-list'],
     annotation: ['__root__'],
     history: ['__root__'],
     outliner: ['__root__'],
@@ -535,6 +536,7 @@ const GBPaneBridge = (() => {
     const state = {
       scrolls: _captureScrollState(root, ['__root__', ...(_viewScrollSelectors[viewName] || [])]),
     };
+    if (viewName === 'chat') state.chatSessionId = typeof _chatState === 'undefined' ? '' : String(_chatState.sessionId || '');
     if (viewName === 'board') {
       const canvas = root.querySelector('[data-bd-role="canvas"]');
       const world = root.querySelector('[data-bd-role="world"]');
@@ -713,10 +715,22 @@ const GBPaneBridge = (() => {
       const tab = _findTabById(binding.tabId);
       if (tab && viewEl && _needsLegacySnapshot(binding.containerId, binding.tabId)) {
         _captureLegacySnapshotForTab(tab, binding.viewName, viewEl);
+      } else {
+        _captureLiveChatState(binding.containerId, viewEl);
       }
       if (binding.observer) binding.observer.disconnect();
     }
     _legacyLiveBindings.clear();
+  }
+
+  // A single chat has no mirrored snapshot, but moving its hidden container can
+  // still reset nested scroll offsets. Capture before hiding, without cloning
+  // the conversation or replacing the live editor/draft DOM.
+  function _captureLiveChatState(containerId, viewEl) {
+    const binding = _legacyLiveBindings.get(containerId);
+    if (binding?.viewName !== 'chat' || !viewEl?.getClientRects().length) return;
+    const tab = _findTabById(binding.tabId);
+    if (tab) _setLegacyUiState(tab, _captureLegacyDomState('chat', viewEl));
   }
 
   function _stopSnapshotInteraction(ev, preventDefault) {
@@ -829,6 +843,15 @@ const GBPaneBridge = (() => {
     binding.restoreToken = token;
     const savedState = _getLegacyUiState(tab);
     if (!savedState) return;
+    if (viewName === 'chat') {
+      // Chat already owns a live, fully rendered DOM. Restore at the visible
+      // mount, once. Delayed 80/220ms retries overwrite a user's new scroll,
+      // and a saved offset from another conversation must never be applied.
+      const sessionId = typeof _chatState === 'undefined' ? '' : String(_chatState.sessionId || '');
+      const root = document.getElementById(containerId);
+      if (root && savedState.chatSessionId === sessionId) _applyLegacyDomState(viewName, root, savedState, {live:true});
+      return;
+    }
     const restoresDetail = viewName === 'detail' || viewName === 'scriptnote';
     let detailSeq = typeof _detailSyncSeq !== 'undefined' ? _detailSyncSeq : null;
     [0, 80, 220].forEach(delay => {

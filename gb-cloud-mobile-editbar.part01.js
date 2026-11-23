@@ -114,6 +114,8 @@
     { id: 'reset-rotation', label: '回転リセット', icon: 'rotateCcw', action: () => _callGlobal('bdResetRotation') },
     { id: 'minimap', label: 'ミニマップ', icon: 'map', action: () => _callGlobal('bdToggleMinimap') },
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
+    { id: 'theme', label: 'テーマ', icon: 'palette', action: () => _callGlobal('openRightPanelTab', 'file-theme') },
+    { id: 'filters', label: '表示フィルタ', icon: 'filter', action: () => _boardOpenFilters() },
   ];
   const ANNOTATION_ITEMS = [
     { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
@@ -280,6 +282,7 @@
   }
 
   function _openToolPanel(type) {
+    if (type === 'annotation' && typeof window.openRightPanelTab === 'function') return _callGlobal('openRightPanelTab', type, document.getElementById('cloud-mobile-main-button'));
     if (_openPaneTool(type)) return true;
     return _callGlobal('openRightPanelTab', type);
   }
@@ -739,6 +742,12 @@
     } catch (_err) {
       // No board state available.
     }
+    return false;
+  }
+
+  function _boardOpenFilters() {
+    const trigger = _boardBar?.querySelector('[data-e2e-id="cloud-mobile-boardbar-more"]');
+    if (trigger?.isConnected) return _callGlobal('bdOpenFilterMenu', trigger);
     return false;
   }
 

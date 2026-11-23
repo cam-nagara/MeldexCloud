@@ -16,9 +16,9 @@
   }
 
   async function _pmCloudUpsertEntry(provider, internals, sheet, name, props, keyProp, keyValue, options = {}) {
-    let existing = keyProp && keyValue && !options.skipLookup
+    let existing = options.existingPath || (keyProp && keyValue && !options.skipLookup
       ? await _pmCloudFindByProp(provider, internals, sheet, keyProp, keyValue)
-      : '';
+      : '');
     const safeName = _pmSafeName(existing ? internals._basename(existing).replace(/\.md$/i, '') : name);
     let path = existing || internals._joinPath(_pmCloudRoot(internals), sheet, safeName + '.md');
     if (!existing && await _pmCloudEntryExists(provider, path, internals)) {

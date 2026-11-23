@@ -1,3 +1,6 @@
+
+      const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
+      colorItem.addEventListener('click', () => {
         closeMenu(false);
         if (typeof window.openColorPalette === 'function') {
           window.openColorPalette(note, item.color || '', (newColor) => {
@@ -895,6 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
       return;
     }
     try {
-      const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
-      if (_saCurrentTargetPath() !== targetPath) return;
-      if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);

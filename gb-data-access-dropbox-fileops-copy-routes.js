@@ -101,8 +101,7 @@
             ...record.intent, provider_id: ownership.id, provider_rev: ownership.rev,
             manifest_digest: transaction.manifest_digest || '',
           };
-          await journal.updateIntent(provider, operationId, operation, payload, record.intent);
-          record = await journal.load(provider, operationId, operation, payload);
+          // publish前の証明は既に永続化済み。所有情報は直後のaftercare開始と一緒に、効果の実行前に確定する。
         } else if (ownership.id !== record.intent.provider_id
             || (source.kind !== 'directory' && ownership.rev !== record.intent.provider_rev)) {
           throw Object.assign(new Error('prepared Cloud複製先が後続更新と競合しています'), { status: 409 });
@@ -117,8 +116,15 @@
             throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
           }
         }
+        // 実体と公開前の復旧証明を確認済み。後処理中の表示だけを先に通知する。
+        try {
+          window.dispatchEvent?.(new CustomEvent('meldex:copy-published', { detail: {
+            operation_id: operationId, source_path: payload.path, new_path: destPath,
+            new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+          } }));
+        } catch (error) { console.warn('[copy] 公開済みの表示通知に失敗', error); }
         record = await journal.runAftercare(provider, operationId, operation, payload, record, [
-          { name: 'csv-sidecars', run: () => _relocateCsvSidecars(
+          { name: 'csv-sidecars', noop: source.kind !== 'directory' && !/\.csv$/i.test(payload.path), run: () => _relocateCsvSidecars(
             provider, payload.path, destPath, source.kind === 'directory', true,
           ) },
           { name: 'path-mutation-hooks', run: () => _runPathMutationHooks({

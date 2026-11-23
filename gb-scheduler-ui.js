@@ -19,6 +19,25 @@
   });
 
   function status(message, error = false) {
+    const visible = element => element.getClientRects().length && !element.closest('[aria-hidden="true"]');
+    if (error) {
+      const modals = [...document.querySelectorAll('.gb-scheduler-modal')].filter(visible);
+      const panels = [...document.querySelectorAll('[data-scheduler-allocation-host]')].filter(visible);
+      const host = modals.at(-1)?.querySelector('.gb-modal-body') || panels.at(-1);
+      if (host) {
+        let feedback = host.querySelector(':scope > .gb-scheduler-action-error');
+        if (!feedback) {
+          feedback = window.GBUI.createInlineError(message);
+          feedback.classList.add('gb-scheduler-progress', 'is-error', 'gb-scheduler-action-error');
+          host.insertBefore(feedback, host.querySelector(':scope > .gb-scheduler-proposal-actions'));
+        }
+        feedback.dataset.proposalId = Api()?.selectedId?.() || '';
+        feedback.textContent = message;
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      }
+    } else {
+      document.querySelectorAll('.gb-scheduler-action-error').forEach(element => element.remove());
+    }
     if (typeof showStatus === 'function') showStatus(message, error);
     else console[error ? 'error' : 'log'](message);
   }
@@ -200,8 +219,8 @@
   function allocationRequest(body, selectedPaths) {
     const request = {
       date_from: body.querySelector('[data-e2e-id="scheduler-scope-from"]')?.value || today(),
-      date_to: body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value
-        || body.querySelector('[data-e2e-id="scheduler-scope-to"]')?.value || today(14),
+      date_to: body.querySelector('[data-e2e-id="scheduler-scope-to"]')?.value
+        || body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value || today(14),
       strategy: body.querySelector('[data-e2e-id="scheduler-strategy"]')?.value || 'recommended',
       allow_overtime: !!body.querySelector('[data-e2e-id="scheduler-allow-overtime"]')?.checked,
     };
@@ -217,6 +236,8 @@
     }
     const estimate = Number(body.querySelector('[data-e2e-id="scheduler-common-estimate"]')?.value || 0);
     if (estimate > 0) request.default_estimate_hours = estimate;
+    const deadline = body.querySelector('[data-e2e-id="scheduler-common-deadline"]')?.value;
+    if (deadline) request.common_deadline = deadline;
     request.deadline_policy = body.querySelector('[data-e2e-id="scheduler-deadline-policy"]')?.value || 'preserve';
     return request;
   }
@@ -235,14 +256,15 @@
     body.appendChild(selectedPaths.length ? selectedScope(selectedPaths) : noSelectionScope());
     const deadline = input('date', today(14), 'scheduler-common-deadline');
     const estimate = input('number', '', 'scheduler-common-estimate');
-    estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '既存値を使用';
+    estimate.min = '0.25'; estimate.step = '0.25'; estimate.placeholder = '指定なし';
+    estimate.title = '見積時間が未設定のタスクだけに使います。個別の見積時間は変更しません。';
     const deadlinePolicy = document.createElement('select');
     deadlinePolicy.className = 'gb-select gb-select-sm gb-select-medium';
     deadlinePolicy.dataset.e2eId = 'scheduler-deadline-policy';
-    [['preserve', '個別の期限を維持'], ['replace', '共通の期限で上書き']].forEach(([value, label]) => {
+    [['preserve', '個別を維持'], ['replace', '共通で上書き']].forEach(([value, label]) => {
       const option = document.createElement('option'); option.value = value; option.textContent = label; deadlinePolicy.appendChild(option);
     });
-    body.append(field('共通の期限', deadline), field('共通の見積時間', estimate), field('既存の期限', deadlinePolicy));
+    body.append(field('共通の期限', deadline), field('未設定時の見積時間', estimate), field('既存の期限', deadlinePolicy));
     const details = document.createElement('details');
     details.className = 'gb-scheduler-advanced';
     const summary = document.createElement('summary');
@@ -281,7 +303,9 @@
       }, { e2eId: 'scheduler-allocation-cancel' });
       progress.appendChild(stop);
       try {
-        const result = await Api().createAllocation({ ...request, requestId });
+        const result = await Api().createAllocation({ ...request, requestId }, {
+          label: '割り当て案を作成', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+        });
         if (result.cancelled) status('自動割り当てを中止しました');
         else status(`${result.proposal.name}を作成しました`);
         modal.close('complete');
@@ -290,6 +314,7 @@
         progress.textContent = Api().errorMessage(error);
         progress.classList.add('is-error');
         run.disabled = false; cancel.disabled = false;
+        progress.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     }, { primary: true, e2eId: 'scheduler-allocation-create' });
     modal.footer.append(cancel, run);
@@ -309,7 +334,12 @@
       const next = name.value.trim();
       if (!next) return name.focus();
       save.disabled = true;
-      try { await Api().patch(current.id, { name: next }); modal.close('save'); syncAllSelectors(true); }
+      try {
+        await Api().patch(current.id, { name: next }, {
+          label: '案の名前を変更', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+        });
+        modal.close('save'); syncAllSelectors(true);
+      }
       catch (error) { save.disabled = false; status(Api().errorMessage(error), true); }
     }, { primary: true, e2eId: 'scheduler-rename-save' });
     modal.footer.append(cancel, save); modal.modal.appendChild(modal.footer); modal.open();
@@ -357,7 +387,12 @@
     if (!current) return;
     const ok = await confirmation('案を保管', `${current.name || 'この案'}を検討中の一覧から外します。`, '保管する');
     if (!ok) return;
-    try { await Api().archive(current.id); syncAllSelectors(true); }
+    try {
+      await Api().archive(current.id, {
+        label: '案を保管', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+      });
+      syncAllSelectors(true);
+    }
     catch (error) { status(Api().errorMessage(error), true); }
   }
 
@@ -382,6 +417,7 @@
 
   async function renderAllocation(host) {
     host.replaceChildren();
+    host.dataset.schedulerAllocationHost = '1';
     const renderSeq = (host.__schedulerAllocationSeq = (host.__schedulerAllocationSeq || 0) + 1);
     const checkReady = window.MeldexProductionApi?.checkReady;
     if (typeof checkReady === 'function') {
@@ -403,11 +439,19 @@
     const proposalDetails = document.createElement('div');
     proposalDetails.className = 'gb-scheduler-proposal-details';
     host.append(selector, summary, actions, proposalDetails);
+    let refreshSeq = 0;
     async function refresh() {
+      const seq = ++refreshSeq;
+      const isCurrent = () => seq === refreshSeq && host.__schedulerAllocationSeq === renderSeq;
       let caps;
       try { caps = await Api().loadCapabilities(); await Api().list(); }
-      catch (error) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); return; }
+      catch (error) { if (isCurrent()) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); } return; }
+      if (!isCurrent()) return;
       const current = Api().current();
+      host.querySelectorAll(':scope > .gb-scheduler-action-error').forEach(element => {
+        if (element.dataset.proposalId !== String(current?.id || '')) element.remove();
+      });
+      summary.classList.remove('is-error');
       summary.textContent = current
         ? `${current.metrics?.scheduled || 0}件配置・${current.metrics?.unassigned || 0}件未配置`
         : '確定版を表示しています';
@@ -434,17 +478,27 @@
       actions.append(
         button('名前を変更', 'pencil', renameCurrent, { disabled: !writable, e2eId: 'scheduler-proposal-rename' }),
         button('分岐', 'gitBranch', async () => {
-          try { await Api().branch(current.id); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
+          try {
+            await Api().branch(current.id, '', {
+              label: '案を分岐', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '',
+            });
+            syncAllSelectors(true);
+          } catch (error) { status(Api().errorMessage(error), true); }
         }, { disabled: !caps.features?.proposalBranch, e2eId: 'scheduler-proposal-branch' }),
-        button('現在の情報で再計算', 'refreshCw', async () => {
-          try { await Api().recalculate(current.id); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
-        }, { disabled: !caps.features?.proposalRecalculate, e2eId: 'scheduler-proposal-recalculate' }),
+        button('再計算', 'refreshCw', async () => {
+          try { await Api().recalculate(current.id, {}, { label: '案を再計算', scope: typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '' }); syncAllSelectors(true); } catch (error) { status(Api().errorMessage(error), true); }
+        }, { disabled: !caps.features?.proposalRecalculate, e2eId: 'scheduler-proposal-recalculate', title: '現在のタスク・勤務情報で案を作り直します。元の案は残ります。' }),
         button('比較', 'gitCompare', compareCurrent, { disabled: !caps.features?.proposalCompare, e2eId: 'scheduler-proposal-compare' }),
         button('採用', 'checkCircle', adoptCurrent, { primary: true, disabled: !caps.features?.adoptionApply || caps.allowed?.['scheduler.adopt'] === false, e2eId: 'scheduler-proposal-adopt' }),
         button('保管', 'archive', archiveCurrent, { disabled: !writable, e2eId: 'scheduler-proposal-archive' }),
       );
-      await window.MeldexSchedulerProposalControlsUi?.render?.(proposalDetails, current, caps, refresh);
-      proposalDetails.prepend(metricsLine);
+      // 比較情報を待つ間に新しい案へ切り替わっても、古い描画を表示へ追記しない。
+      const nextDetails = document.createElement('div');
+      const pendingDetails = window.MeldexSchedulerProposalControlsUi?.render?.(nextDetails, current, caps, refresh);
+      if (!isCurrent()) return;
+      // 配置と比較の読込表示は即座に出す。比較の応答はこの描画の要素だけを更新する。
+      proposalDetails.replaceChildren(metricsLine, ...nextDetails.childNodes);
+      await pendingDetails;
     }
     refresh();
     host.__schedulerRefresh = refresh;

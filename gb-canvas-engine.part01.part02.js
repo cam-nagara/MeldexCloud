@@ -224,6 +224,7 @@
       if (c.hidden) s += ', hidden: true';
       if (hasOwn(c, 'width') && Number.isFinite(+c.width)) s += ', width: ' + (+c.width);
       if (c.styleRef) s += ', styleRef: ' + c.styleRef;
+      if (c._userLineStyle) s += ', _userLineStyle: true';
       if (c.semanticId) s += ', semanticId: ' + c.semanticId;
       if (hasOwn(c, 'labelTextColor')) s += `, labelTextColor: ${fmtJsonString(c.labelTextColor)}`;
       if (hasOwn(c, 'labelBgColor')) s += `, labelBgColor: ${fmtJsonString(c.labelBgColor)}`;
@@ -943,7 +944,13 @@ function bdRender() {
   bdCancelRenderRetry();
   // 全再描画時はミニマップキャッシュも無効化 (ノード数/スタイルが変わっている可能性)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
-  container.innerHTML = '';
+  // パネル切替直後などの遅延描画でも、入力中の要素を外さない。
+  // 外すと blur で入力が確定し、続く Enter が兄弟追加として実行される。
+  const editingElement = bd.editing && bd.nodes.some(node => node.id === bd.editing)
+    ? [...container.children].find(el => el.id === 'bdn-' + bd.editing && el.classList.contains('bd-editing')) : null;
+  if (editingElement) {
+    [...container.children].forEach(el => { if (el !== editingElement) el.remove(); });
+  } else container.innerHTML = '';
   const boardRoot = container.closest?.('.gb-canvas-root') || null;
   const boardEl = (role, fallbackId) => boardRoot?.querySelector?.(`[data-bd-role="${role}"]`)
     || ((typeof bdGetBoardElement === 'function') ? bdGetBoardElement(role, boardRoot) : document.getElementById(fallbackId));
@@ -970,15 +977,19 @@ function bdRender() {
     ? bdCreateRenderContext({ hiddenIds, parentChildGroupColors, fastCardRender: false })
     : { hiddenIds, parentChildGroupColors, fastCardRender: false };
   const renderFrag = document.createDocumentFragment();
+  const beforeEditing = document.createDocumentFragment();
+  let passedEditing = !editingElement;
   const renderedNodes = [];
   bd.nodes.forEach(n => {
+    if (editingElement && n.id === bd.editing) { passedEditing = true; return; }
     const div = typeof bdRenderNode === 'function'
       ? bdRenderNode(n, { renderContext })
       : null;
     if (!div) return;
-    renderFrag.appendChild(div);
+    (passedEditing ? renderFrag : beforeEditing).appendChild(div);
     renderedNodes.push({ n, div });
   });
+  if (editingElement) container.insertBefore(beforeEditing, editingElement);
   container.appendChild(renderFrag);
   renderedNodes.forEach(({ n, div }) => {
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(n, div);

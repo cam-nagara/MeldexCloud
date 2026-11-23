@@ -864,8 +864,11 @@ let _mobileStatusToastTimer = 0;
 function _isMobileStatusToastNeeded() {
   const status = document.getElementById('status-bar');
   if (!status) return false;
-  const width = Math.min(window.innerWidth || 0, document.documentElement?.clientWidth || window.innerWidth || 0);
-  if (width > 0 && width <= 768) return true;
+  // CSSと同じ幅条件を使う。全選択直後のclientWidth読取は大量カードの配置を同期確定させる。
+  const mobile = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)').matches
+    : window.innerWidth > 0 && window.innerWidth <= 768;
+  if (mobile) return true;
   try {
     return getComputedStyle(status).display === 'none';
   } catch {
@@ -895,6 +898,3 @@ function _showMobileStatusToast(text, isError) {
 
 // ── 進捗は処理パネル（共通の進捗表示 MeldexOperationProgress）に出し、ステータスバーには出さない ──
 // （2026-11-21 ユーザー指示・UI共通ルール §10）。「〜中...」「〜しています…」のような進行中の知らせは
-// 処理パネルの1件として出し、次の結果・エラーの知らせ（ステータスバーに出す）でその1件を終える。
-const _STATUS_PROGRESS_ELLIPSIS_RE = /(?:\.{3}|…|・・・)\s*$/;
-const _STATUS_PROGRESS_IDLE_MS = 120000;

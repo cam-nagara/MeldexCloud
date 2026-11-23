@@ -92,6 +92,19 @@ function bdRefreshSelectionDetails(forceEmpty) {
 
 function bdSyncBoardUi(forceEmptyDetail) {
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncBoardUi') : 0;
+  if (typeof state === 'undefined' || state.view === 'board') {
+    const selected = bd.nodes.filter(node => bd.selected.has(node.id));
+    const targets = selected.map(node => {
+      const path = String(node.link || '').trim();
+      return path && !/^(?:https?:|mailto:|tel:)/i.test(path)
+        ? { path, kind: node.linkType || 'file' } : null;
+    });
+    window.GBOptionTargetContext?.set(
+      targets.length && targets.every(Boolean) ? (targets.length === 1 ? targets[0] : targets)
+        : { path: bd.path, kind: 'board' },
+      'board-selection',
+    );
+  }
   bdRefreshBoardToolbar();
   // 描画予約だけで編集中の操作部を破棄しない。Undo/読込で実体が変わった場合は再生成する。
   const context = document.querySelector('.gb-fmt-popup--board-style')?._bdSelectionContext;

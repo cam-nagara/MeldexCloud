@@ -143,6 +143,14 @@
     active.submenuTrigger = null;
   }
 
+  function _onHover(button, action) {
+    let touch = false;
+    button.addEventListener('pointerenter', event => { touch = event.pointerType !== 'mouse'; });
+    // A touch tap synthesizes mouseenter before click. Opening an overlapping
+    // submenu there retargets that same tap to its first item on narrow screens.
+    button.addEventListener('mouseenter', () => { if (!touch) action(); });
+  }
+
   function _appendItem(menu, item) {
     if (!item || item.type === 'separator') { _appendSeparator(menu); return; }
     if (item.type === 'slider') { _appendSlider(menu, item); return; }
@@ -160,11 +168,13 @@
     button.type = 'button';
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
     button.setAttribute('role', 'menuitem');
+    if (item.ariaLabel) button.setAttribute('aria-label', String(item.ariaLabel));
     button.disabled = item.disabled === true;
     if (item.e2eId) button.dataset.e2eId = String(item.e2eId);
     if (item.icon && typeof global.lucide === 'function') {
       const icon = document.createElement('span');
       icon.className = 'menu-icon';
+      if (item.color && CSS.supports('color', item.color)) icon.style.color = item.color;
       icon.setAttribute('aria-hidden', 'true');
       icon.innerHTML = global.lucide(String(item.icon), 16);
       button.appendChild(icon);
@@ -185,14 +195,14 @@
       button.setAttribute('aria-haspopup', 'menu');
       button.setAttribute('aria-expanded', 'false');
       const open = () => _openSubmenu(button, item);
-      button.addEventListener('mouseenter', () => _hoverItem(menu, open));
+      _onHover(button, () => _hoverItem(menu, open));
       button.addEventListener('click', event => { event.stopPropagation(); open(); _focusEdge(active?.submenu, false); });
       button.addEventListener('keydown', event => {
         if (!['ArrowRight', 'Enter', ' '].includes(event.key)) return;
         event.preventDefault(); open(); _focusEdge(active?.submenu, false);
       });
     } else {
-      button.addEventListener('mouseenter', () => {
+      _onHover(button, () => {
         _hoverItem(menu, _closeSubmenu);
       });
       button.addEventListener('click', () => { close(); item.action?.(); });
@@ -212,7 +222,13 @@
 
   function openAt(options) {
     close();
-    const menu = _buildMenu(options?.items || [], options?.ariaLabel);
+    const menu = options?.menu || _buildMenu(options?.items || [], options?.ariaLabel);
+    if (options?.menu) {
+      const additions = _buildMenu(options.items || [], options.ariaLabel);
+      menu.prepend(...additions.children);
+      menu.classList.add('gb-context-menu');
+      menu.querySelectorAll(':scope > [role=menuitem]').forEach(item => item.classList.add('gb-context-menu-item'));
+    }
     if (options?.e2eId) menu.dataset.e2eId = String(options.e2eId);
     document.body.appendChild(menu);
     // anchorRect を渡すと、点ではなく矩形（行など）を基準に配置する。
@@ -251,6 +267,9 @@
     const keydown = event => {
       if (!active) return;
       if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      // スライダーにフォーカスがある間はブラウザー標準の値変更を優先する。
+      // Home/End・上下キーをメニュー項目の移動へ奪うと、キーボードで設定できない。
+      if (event.target?.matches?.('input[type="range"]')) return;
       const host = active.submenu?.contains(document.activeElement) ? active.submenu : active.menu;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault(); _cycle(host, event.key === 'ArrowDown' ? 1 : -1);
@@ -266,7 +285,7 @@
     active = {
       menu, submenu: null, submenuTrigger: null, outside, keydown, mousemove,
       restoreFocus: options?.restoreFocus || null,
-      onClose: typeof options?.onClose === 'function' ? options.onClose : null,
+      onClose: typeof options?.onClose === 'function' ? options.onClose : menu._meldexContextMenuCleanup || null,
     };
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keydown, true);
@@ -276,5 +295,7 @@
     return menu;
   }
 
-  global.MeldexContextMenuUI = Object.freeze({ openAt, close, isOpen: () => !!active });
+  global.MeldexContextMenuUI = Object.freeze({ openAt, close, isOpen: () => !!active,
+    contains: target => !!(active?.menu.contains(target) || active?.submenu?.contains(target)),
+  });
 })(typeof window !== 'undefined' ? window : globalThis);

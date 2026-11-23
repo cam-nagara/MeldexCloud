@@ -130,6 +130,7 @@ class CalendarComponent extends ToolComponent {
     <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" data-cal-action="detail" title="オプションを開く" aria-label="オプションを開く"><span class="ico ico-slidersHorizontal"></span></button>
   </div>
 </div>
+<div class="gb-cal-mobile-range" data-e2e-id="calendar-visible-range" role="heading" aria-level="2" hidden></div>
 <div class="gb-cal-main">
   <div class="gb-cal-sidebar">
     <div class="gb-cal-clock-panel">
@@ -922,8 +923,10 @@ class CalendarComponent extends ToolComponent {
   // === メイン描画 ===
   _render() {
     const renderSeq = ++this._renderSeq;
+    const visibleRange = this.el?.querySelector?.('.gb-cal-mobile-range');
     this._syncSurfaceControls();
     if (this._surface === 'productionTasks') {
+      if (visibleRange) visibleRange.hidden = true;
       this._titleEl.textContent = '';
       this._syncMultiDayControls();
       if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
@@ -941,6 +944,10 @@ class CalendarComponent extends ToolComponent {
       this._view === 'shifts' ? `${y}年${m+1}月 シフト表` :
       this._view === 'gantt' ? 'ガント' :
       `${y}年${m+1}月`;
+    if (visibleRange) {
+      visibleRange.textContent = this._titleEl.textContent;
+      visibleRange.hidden = ['tasks', 'gantt'].includes(this._view);
+    }
     this._syncMultiDayControls();
     if (this._view === 'month') this._renderMonth();
     else if (this._view === 'week') this._renderWeek();

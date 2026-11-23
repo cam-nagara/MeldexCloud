@@ -1,9 +1,18 @@
 /* 公開 HTML 設定 */
 
+function _publishFormAppForPath(path) {
+  return [...document.querySelectorAll('.gb-form-app')].map(el => el._gbFormApp)
+    .find(app => app?.path === path && app.store && app.ctx && !app.ctx.destroyed) || null;
+}
+
 function getCurrentPublishContext() {
   // サブパネル・トピック内のエディタが操作対象なら、その対象を公開する（メインパネルと同じ操作で公開できる）。
   const hostContext = _publishContextFromEditorHost();
   if (hostContext) return hostContext;
+  const formTab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.() : null;
+  if (formTab?.type === 'form-app' && formTab.path) {
+    return { kind: 'form-app', label: formTab.label || 'フォーム', path: formTab.path, tabId: String(formTab.id || '') };
+  }
   // シートは「今シートを表示している時」だけ公開対象にする。以前は、一度ギャラリー等のビューで開いた
   // シートがあると、ノートを表示していてもシートを公開対象と判定し、ノートの公開が
   // 「表示中の対象と公開種別が一致しません」で止まっていた。
@@ -142,6 +151,22 @@ function _publishBoardCanvasSnapshot() {
 // 固定スナップショット。ここで既存 bdSave/CAS を必ず通し、DOMだけを先行公開しない。
 async function preparePublishContextSnapshot(snapshot) {
   if (!snapshot || !isPublishContextSnapshotCurrent(snapshot, true)) return null;
+  if (snapshot.kind === 'form-app') {
+    const app = _publishFormAppForPath(snapshot.path);
+    if (!app || !await app.flush() || app.sheetError || app.definitionReadOnly) return null;
+    const prepared = await apiPost('/form-publication/prepare', { path: snapshot.path });
+    if (!prepared?.form_source_id || !(prepared?.sheet_id || prepared?.sheet_cloud_id) || !isPublishContextSnapshotCurrent(snapshot, true))
+      return _publishContextError('フォームとシートの識別番号を確認できません');
+    app._update(doc => {
+      if (prepared.sheet_id) doc.sheet.id = prepared.sheet_id;
+      if (prepared.sheet_cloud_id) doc.sheet.cloud_id = prepared.sheet_cloud_id;
+      doc.sheet.path = prepared.sheet_path;
+      doc.publish = { ...doc.publish, form_source_id: prepared.form_source_id };
+      if (prepared.receipt_store_path) doc.publish.receipt_store = { path: prepared.receipt_store_path };
+    }, { history: false });
+    if (!await app.flush()) return null;
+    return Object.freeze({ ...snapshot, formSourceId: prepared.form_source_id });
+  }
   if (snapshot.kind !== 'board') return snapshot;
   if (typeof bd === 'undefined' || String(bd.path || '') !== snapshot.path || typeof bdToMd !== 'function') {
     return _publishContextError('アクティブボードを確認できないため公開を停止しました');
@@ -233,6 +258,7 @@ if (typeof window !== 'undefined') {
 }
 
 function getPublishConfigForContext(ctx) {
+  if (ctx?.kind === 'form-app') return _publishFormAppForPath(ctx.path)?.store?.doc.publish || {};
   if (ctx?.kind === 'database') return state.dbMetadata?.publish || {};
   // entity / page / csv / calendar は localStorage にファイルパス単位で保存
   if (ctx?.path) {
@@ -288,6 +314,13 @@ if (typeof window !== 'undefined') window.assertPublishSourceRevisionCurrent = a
 async function savePublishConfigForContext(ctx, cfg) {
   if (!ctx?.kind) return false;
   const next = { ...(cfg || {}) };
+  if (ctx.kind === 'form-app') {
+    const app = _publishFormAppForPath(ctx.path);
+    if (!app || app.definitionReadOnly) throw new Error('フォームを変更できません');
+    app._update(doc => { doc.publish = next; }, { history: false });
+    if (!await app.flush()) throw new Error('公開設定を保存できません');
+    return true;
+  }
   if (ctx.kind === 'database') {
     if (!state.dbMetadata) state.dbMetadata = {};
     state.dbMetadata.publish = next;
@@ -347,7 +380,7 @@ function renderPublishSettingsPanel(contextSnapshot) {
     : '';
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
-  const isDb = ctx.kind === 'database';
+  const isDb = ctx.kind === 'database' || ctx.kind === 'form-app';
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
     <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます', { e2eId: 'publish-single-panel-help' }) : ''}</div>
     <div class="gb-section-desc">対象: ${esc(ctx.label)}${ctx.path ? ' / ' + esc(ctx.path) : ''}</div>
@@ -497,7 +530,7 @@ async function savePublishSettingsFromPanel(root, contextSnapshot) {
   const ctx = contextSnapshot || createPublishContextSnapshot();
   if (!ctx || !isPublishContextSnapshotCurrent(ctx, true)) return false;
   const prev = getPublishConfigForContext(ctx);
-  const isDb = ctx.kind === 'database';
+  const isDb = ctx.kind === 'database' || ctx.kind === 'form-app';
   const serverUrlInput = panel.querySelector('#publish-server-url');
   const submitUrlInput = panel.querySelector('#publish-submit-url');
   const serverUrl = isDb
@@ -522,7 +555,11 @@ async function savePublishSettingsFromPanel(root, contextSnapshot) {
     submit_url: submitUrl,
     submit_method: prev.submit_method || 'tunnel',
   };
+  if (ctx.kind === 'form-app' && cfg.form_submit_enabled && !prev.form_submit_enabled)
+    cfg.form_submit_token = _publishToken();
   if (!isPublishContextSnapshotCurrent(ctx, true)) return false;
   await savePublishConfigForContext(ctx, cfg);
+  const tokenControl = panel.querySelector('#publish-form-token');
+  if (tokenControl) tokenControl.value = cfg.form_submit_token;
   return true;
 }

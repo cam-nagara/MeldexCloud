@@ -429,7 +429,7 @@
     const explicitRows = excludeRegistryHolidays
       ? baseShiftRows.filter(row => staffAvailableForShift(staffMap.get(row.user), dateTextFromLocalDate(row._start)))
       : baseShiftRows;
-    const shiftRows = [...explicitRows, ...defaultStaffShifts(staff, explicitRows, periodValue)];
+    const shiftRows = [...explicitRows.filter(row => row.type === 'work'), ...defaultStaffShifts(staff, explicitRows, periodValue)];
     const lockedBusyMap = mergeBusy(lockedBusy(tasks), extraBusy || {});
     const segments = [];
     const shifts = [...shiftRows].sort((a, b) => (a.user < b.user ? -1 : a.user > b.user ? 1 : a._start - b._start));
@@ -479,6 +479,50 @@
       }
     }
     return null;
+  }
+
+  // 本体の分割・共同作業と同じ条件で、必要な勤務区間をまとめて確保する。
+  function reserveFlexibleSlot(task, candidates, segments, durationMs, deadline, earliestStart, resources, diagnostics) {
+    const count = Math.max(1, Math.floor(Number(task.required_assignee_count) || 1));
+    const required = task.required_equipment || [];
+    const ordered = [...segments].sort((a,b)=>(a.cursor-b.cursor)||(Number(a.overtime)-Number(b.overtime))||a.staff.localeCompare(b.staff));
+    const eligible = ordered.filter(seg=>candidates.has(seg.staff) && (!task.fixed_user || seg.staff===task.fixed_user));
+    const pack = (staff,start,end,parts) => ({staff,start,end,segments:parts,overtime:parts.some(p=>p.overtime)});
+    if (count > 1 || required.length) {
+      let staffOk=false, equipmentOk=false;
+      for(const anchor of eligible) {
+        const start=new Date(Math.max(anchor.cursor,anchor.start,earliestStart || 0));
+        const end=new Date(+start+durationMs);
+        if(end>anchor.end || end>deadline) continue;
+        const byUser=new Map();
+        eligible.forEach(seg=>{if(!byUser.has(seg.staff) && seg.cursor<=start && seg.start<=start && end<=seg.end)byUser.set(seg.staff,seg)});
+        const matching=[...byUser.values()].sort((a,b)=>a.staff.localeCompare(b.staff));
+        staffOk ||= matching.length>=count;
+        const available=equipmentAvailable(resources,required,start,end);equipmentOk ||= available;
+        if(matching.length<count || !available) continue;
+        const selected=matching.slice(0,count);selected.forEach(seg=>{seg.cursor=end});
+        const users=selected.map(seg=>seg.staff);
+        return pack(users[0],start,end,[{user:users[0],users,start:isoMinutes(start),end:isoMinutes(end),hours:pythonRoundTo(durationMs/3600000,2),overtime:selected.some(seg=>seg.overtime)}]);
+      }
+      diagnostics.reason=!staffOk ? '必要な人数の担当者が同時に空いていません' : !equipmentOk ? '必要な設備の空き時間が足りません' : '担当者と設備が同時に空いていません';
+      return null;
+    }
+    if(!task.split_allowed) return reserveSlot(task,candidates,segments,durationMs,deadline,earliestStart);
+    const saved=segments.map(seg=>[seg,seg.cursor]);
+    let remaining=durationMs,staff=null;const parts=[];
+    const minimum=Math.max(MIN_TASK_MINUTES,Number(task.minimum_slot_minutes)||MIN_TASK_MINUTES)*60000;
+    for(const seg of eligible) {
+      if(staff && !task.parallel_allowed && seg.staff!==staff)continue;
+      const start=new Date(Math.max(seg.cursor,seg.start,earliestStart || 0));
+      const available=Math.min(+seg.end,+deadline)-start;
+      if(available<minimum)continue;
+      const take=Math.min(remaining,available);const end=new Date(+start+take);
+      seg.cursor=end;staff ||= seg.staff;
+      parts.push({user:seg.staff,start:isoMinutes(start),end:isoMinutes(end),hours:pythonRoundTo(take/3600000,2),overtime:!!seg.overtime});
+      remaining-=take;
+      if(remaining<=0)return pack(staff,new Date(parts[0].start),end,parts);
+    }
+    saved.forEach(([seg,cursor])=>{seg.cursor=cursor});return null;
   }
 
   function topologicalTaskOrder(tasks) {
@@ -718,7 +762,7 @@
         }
         return;
       }
-      const durationMinutes = Math.max(MIN_TASK_MINUTES, pythonRoundTo(task.target_hours * 60 * ratio, 0));
+      const durationMinutes = Math.max(MIN_TASK_MINUTES, pythonRoundTo(safeFloat(task.remaining_hours, task.target_hours) * 60 * ratio, 0));
       const durationMs = durationMinutes * 60000;
       const candidates = candidateStaff(task, staffMap, contentCandidates);
       if (!candidates.size) {
@@ -732,19 +776,24 @@
       const groupStart = groupReady.get(groupKey) || null;
       const earliestStart = dependencyReady && (!groupStart || dependencyReady > groupStart) ? dependencyReady : groupStart;
       const requiredEquipment = task.required_equipment || [];
-      const slot = reserveSlot(
-        task, candidates, segments, durationMs, deadlineDt(task, periodValue), earliestStart,
-        (start, end) => equipmentAvailable(resources, requiredEquipment, start, end),
-      );
+      const diagnostics = {};
+      const explicitStart = task.earliest_start ? new Date(task.earliest_start) : null;
+      const minimumStart = explicitStart && (!earliestStart || explicitStart>earliestStart) ? explicitStart : earliestStart;
+      const slot = reserveFlexibleSlot(task,candidates,segments,durationMs,deadlineDt(task,periodValue),minimumStart,resources,diagnostics);
       if (!slot) {
-        rows.push(unassignedRow(task, '期間内の空き時間が足りません'));
+        rows.push(unassignedRow(task, diagnostics.reason || '期間内の空き時間が足りません'));
         warnings.push({ type: 'deadline', task: task.task_name, minutes: Math.floor(durationMs / 60000) });
         blockedGroups.add(groupKey);
         blockedTaskIds.add(String(task.id || ''));
         return;
       }
       reserveEquipment(resources, requiredEquipment, slot.start, slot.end);
-      rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs, slot.overtime));
+      const row = scheduledRow(task, slot.staff, slot.start, slot.end, durationMs, slot.overtime);
+      if(slot.segments) {
+        row.segments=slot.segments;
+        if(slot.segments[0]?.users)row.users=[...slot.segments[0].users];
+      }
+      rows.push(row);
       completedById.set(String(task.id || ''), slot.end);
       const current = groupReady.get(groupKey);
       groupReady.set(groupKey, (current && current > slot.end) ? current : slot.end);
@@ -755,7 +804,7 @@
   function buildPlan(tasks, staff, segments, periodValue, contentOrder, contentCandidates, runtimeOptions) {
     const movable = tasks.filter(task => !taskProtected(task));
     const baseRatio = compressionRatio(movable, segments);
-    const attempts = compressionAttempts(baseRatio);
+    const attempts = runtimeOptions?.allow_estimate_compression === false ? [1] : compressionAttempts(baseRatio);
     let bestRows = [];
     let bestWarnings = [];
     let bestScore = null;

@@ -25,6 +25,48 @@
   function _usesParentToolbar() {
     try { return window.parent !== window && !!window.parent.GBAnnotationSurfaces?.enabled(); } catch { return false; }
   }
+  const _incidentKey = 'meldex:sheet-incidents';
+  const _recentIncidents = new Map();
+  function _recordSaveIncident(kind, method, startedAt, error) {
+    // 本文・画像・パス・エラー文は記録しない。既存の自己記録と同じ安全な項目だけ。
+    const op = 'viewer.annotations.' + method.toLowerCase();
+    const fingerprint = kind + ':' + op;
+    const now = Date.now();
+    if (now - (_recentIncidents.get(fingerprint) || 0) < 10000) return;
+    _recentIncidents.set(fingerprint, now);
+    const cloud = !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+    const surface = window.MeldexStandaloneNative ? 'standalone' : cloud ? (window.innerWidth <= 767 ? 'mobile' : 'cloud') : 'desktop';
+    const entry = { kind, op, endpoint: '/annotations', method, ms: now - startedAt,
+      status: Number(error?.status || error?.httpStatus) || 0, errorType: error ? 'Error' : 'stalled',
+      surface, time: new Date().toISOString() };
+    try {
+      const old = JSON.parse(localStorage.getItem(_incidentKey) || '[]');
+      localStorage.setItem(_incidentKey, JSON.stringify([...(Array.isArray(old) ? old : []), entry].slice(-200)));
+    } catch {}
+    try {
+      if (window.parent !== window && window.parent.MeldexDiagnostics?.recordSheetIncident) {
+        if (!window.parent.MeldexRuntimeAdapter?.isBrowserDataMode?.()) window.parent.MeldexDiagnostics.recordSheetIncident(kind, entry);
+      } else if (!window.MeldexStandaloneNative && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+        window.apiFetch('/diagnostics/sheet-incident', { method: 'POST', body: JSON.stringify(entry),
+          headers: { 'Content-Type': 'application/json' }, silentError: true }).catch(() => {});
+      }
+    } catch {}
+  }
+  async function _watchAnnotationSave(method, run) {
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      _recordSaveIncident('stalled', method, startedAt);
+      window.MeldexViewerScene?.flashStatus?.('アノテートの保存が終わっていません', 10000);
+      if (_usesParentToolbar()) window.parent.showStatus?.('アノテートの保存が終わっていません', true);
+    }, 30000);
+    try { return await run(); }
+    catch (error) {
+      if (error && typeof error === 'object') error.requireRemoteCommit = true;
+      _recordSaveIncident('save-failed', method, startedAt, error);
+      throw error;
+    }
+    finally { clearTimeout(timer); }
+  }
   // Embedded annotations use the owning shell's API boundary, including its
   // active edit lock. Other viewer requests and standalone windows stay local.
   function _installSharedAnnotationApi() {
@@ -32,9 +74,19 @@
       const original = window[name];
       if (typeof original !== 'function') continue;
       window[name] = function(path, ...args) {
-        if (_usesParentToolbar() && /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''))
-            && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
-        return original.call(this, path, ...args);
+        const annotation = /^\/(?:api\/)?annotations(?:[/?]|$)/.test(String(path || ''));
+        // 注釈の履歴・描画には保存先が返す正式なidが必要。送信待ちを保存成功へ
+        // 置き換えず、失敗を描画側へ返して選択・プレビューを再試行可能に保つ。
+        if (annotation) {
+          const optionsIndex = name === 'apiPost' || name === 'apiPut' ? 1 : 0;
+          args[optionsIndex] = { ...(args[optionsIndex] || {}), requireRemoteCommit: true };
+        }
+        const run = () => {
+          if (annotation && _usesParentToolbar() && typeof window.parent[name] === 'function') return window.parent[name](path, ...args);
+          return original.call(this, path, ...args);
+        };
+        const method = { apiPost: 'POST', apiPut: 'PUT', apiDelete: 'DELETE' }[name];
+        return annotation && method ? _watchAnnotationSave(method, run) : run();
       };
     }
   }
@@ -66,7 +118,12 @@
   function _currentTargetPath() {
     const scene = Scene();
     if (!scene) return '';
-    return scene.isPdf() ? (scene.getPdfPath() || '') : (SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '');
+    if (scene.isPdf()) {
+      const index = Number(scene.getIndex()) || 0;
+      return SceneEngine()?.getScenes?.().find(entry => entry.pageIndex === index)?.path
+        || (scene.getPdfPath() ? scene.getPdfPath() + '#page=' + (index + 1) : '');
+    }
+    return SceneEngine()?.getScenes?.()[0]?.path || scene.getItems()?.[scene.getIndex()]?.path || scene.getSingleFile() || '';
   }
   function _currentPageIndex() {
     const scene = Scene();
@@ -101,12 +158,46 @@
   // 保存結果側。読み込み結果は setState(true)/onSceneChanged 完了時の viewer-ann-state-changed で
   // 代替する — シーン再構築のたびに現在の active/drawing 状態を親へ通知することで、親側は
   // 「今開いている画像のアノテートを読み込み終えた」タイミングを間接的に把握できる）。
+  const localHistory = [], localRedo = [];
+  let localHistoryBusy = false;
+  async function replayLocalHistory(redo) {
+    if (localHistoryBusy || window.parent !== window) return false;
+    const from = redo ? localRedo : localHistory, to = redo ? localHistory : localRedo;
+    const entry = from.at(-1);
+    if (!entry) return false;
+    const desired = redo ? entry.after : entry.before, previous = redo ? entry.before : entry.after;
+    localHistoryBusy = true;
+    try {
+      if (desired) await window.apiPost('/annotations/restore', { ...desired,
+        ...(previous ? { expected_modified: previous.modified || previous.created } : { expected_absent: true }) });
+      else await window.apiDelete('/annotations/' + encodeURIComponent(previous.id)
+        + '?expected_modified=' + encodeURIComponent(previous.modified || previous.created || ''));
+      from.pop(); to.push(entry);
+      await SceneEngine().rebuild();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      return true;
+    } catch (error) { SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした'); return false; }
+    finally { localHistoryBusy = false; }
+  }
+  document.addEventListener('keydown', event => {
+    if (window.parent !== window || !(event.ctrlKey || event.metaKey) || event.altKey
+      || event.target.closest?.('input,textarea,[contenteditable=true]')) return;
+    const key = event.key.toLowerCase();
+    if (key !== 'z' && key !== 'y') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    void replayLocalHistory(key === 'y' || event.shiftKey);
+  }, true);
   window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result, history) {
+    if (ok && history && window.parent === window && !localHistoryBusy) {
+      localHistory.push(structuredClone(history)); localRedo.length = 0;
+    }
+    if (ok) window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     _postToParent({
       type: 'viewer-ann-save-result',
       ok: !!ok,
       action: action || '',
-      targetPath: _currentTargetPath(),
+      highlightRequestId: result?.highlightRequestId || '',
+      targetPath: history?.after?.target_path || history?.before?.target_path || _currentTargetPath(),
       pageIndex: _currentPageIndex(),
       annotationRevision: ok ? String(result?.annotationRevision || '') : '',
       invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
@@ -257,11 +348,13 @@
   // viewer-scene.js の showGroup() からのコールバック（画像ロード・レイヤー入替後）。
   function resetPointerPath() { /* 新設計ではシーン単位でイベントを受けるため不要（互換のため残置） */ }
   function onSceneChanged() {
+    window.MeldexViewerScreenshotSource?.load?.();
     SceneEngine()?.rebuild?.().then(() => {
       // シーン再構築後（対象パス/ページが変わった可能性がある）、保持している最新スナップショットを
       // 現在の対象と照合し、一致する場合だけ再適用する（不一致データを別ファイルへ適用しない）。
       if (_lastSnapshot && _snapshotMatchesCurrentTarget(_lastSnapshot)) _applySnapshot(_lastSnapshot);
       _notifyParentStateChanged();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     });
   }
 
@@ -283,7 +376,10 @@
   function _snapshotMatchesCurrentTarget(msg) {
     if (!msg || !msg.targetPath) return true;
     const currentPath = _currentTargetPath();
-    if (!currentPath || msg.targetPath !== currentPath) return false;
+    if (!currentPath) return false;
+    const legacyPdfFile = Scene()?.isPdf?.() && !/#page=\d+$/i.test(msg.targetPath)
+      && currentPath.replace(/#page=\d+$/i, '') === msg.targetPath;
+    if (msg.targetPath !== currentPath && !legacyPdfFile) return false;
     if (msg.pageIndex != null && Scene()?.isPdf?.()) {
       return Number(msg.pageIndex) === _currentPageIndex();
     }
@@ -370,6 +466,7 @@
   const autoMarkup = new URLSearchParams(location.search).get('markup') === '1';
   (Scene()?.ready || Promise.resolve()).then(() => {
     if (autoMarkup) toggle(true);
+    else if (!SceneEngine()?.getScenes?.().length) onSceneChanged();
   });
 
   window.MeldexViewerAnnotations = {
@@ -378,5 +475,7 @@
     setAvailability,
     toggleFromShortcut, isActive, isDrawing,
     resetPointerPath, onSceneChanged,
+    canUndo: () => !localHistoryBusy && localHistory.length > 0,
+    canRedo: () => !localHistoryBusy && localRedo.length > 0,
   };
 })();

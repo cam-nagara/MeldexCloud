@@ -750,11 +750,12 @@ function _noteCtxMenuHandler(e, contextOverride) {
     menu.appendChild(el);
   });
 
+  menu._meldexContextMenuCleanup = () => closeNoteContextMenu(false);
   document.body.appendChild(menu);
   _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
   setTimeout(() => {
     menuPointerCloser = (ev) => {
-      if (menu.contains(ev.target)) return;
+      if (menu.contains(ev.target) || window.MeldexContextMenuUI?.contains?.(ev.target)) return;
       // 修正2: 「行種変更」サブメニュー(gb-note-block-menu.js の #note-block-menu)は
       // このメニューの子ではなく document.body 直下の別要素として開く。
       // pointerdown を素朴に「外側クリック」判定すると、サブメニュー項目を

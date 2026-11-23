@@ -1195,7 +1195,9 @@ function _meldexProductionEmbedHistoryScope() {
   const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
     : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
   if (!component || component._surface !== 'productionTasks') return '';
-  const embed = component._productionTaskState && component._productionTaskState.embed;
+  const taskState = component._productionTaskState;
+  if (taskState?.allView?.isMounted?.() && ['all', 'task'].includes(taskState.selection?.kind)) return '';
+  const embed = taskState && taskState.embed;
   const path = embed && typeof embed.getCurrentPath === 'function' ? embed.getCurrentPath() : '';
   if (!path) return '';
   return typeof _dbViewConfigHistoryScope === 'function'
@@ -1216,7 +1218,11 @@ function _meldexScheduleActiveComponent() {
   const editor = globalThis.GBEditorHost?.get();
   const component = editor ? (editor.kind === 'calendar' ? editor.component : null)
     : typeof _activeCalendarShortcutComponent === 'function' ? _activeCalendarShortcutComponent() : null;
-  if (!component || component._surface === 'productionTasks') return null;
+  if (!component) return null;
+  if (component._surface === 'productionTasks') {
+    const taskState = component._productionTaskState;
+    if (!taskState?.allView?.isMounted?.() || !['all', 'task'].includes(taskState.selection?.kind)) return null;
+  }
   return component;
 }
 
@@ -1300,7 +1306,7 @@ function _meldexResyncStaleHistoryScope(scope) {
 }
 
 async function meldexUndo() {
-  if (globalThis.GBAnnotationSurfaces?.isOpen()) return globalThis.GBAnnotationSurfaces.undo();
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return globalThis.GBAnnotationSurfaces.undo();
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdUndo === 'function') return bdUndo(); return false; }
   if (ctx === 'embedded-sheet') { if (typeof historyUndo === 'function') return historyUndo(_meldexProductionEmbedHistoryScope()); return false; }
@@ -1318,7 +1324,7 @@ async function meldexUndo() {
 }
 
 async function meldexRedo() {
-  if (globalThis.GBAnnotationSurfaces?.isOpen()) return globalThis.GBAnnotationSurfaces.redo();
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return globalThis.GBAnnotationSurfaces.redo();
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') { if (typeof bdRedo === 'function') return bdRedo(); return false; }
   if (ctx === 'embedded-sheet') { if (typeof historyRedo === 'function') return historyRedo(_meldexProductionEmbedHistoryScope()); return false; }
@@ -1365,7 +1371,7 @@ function historyCanRedo(scope) {
 // length を直接参照する暫定分岐が残る。
 function meldexCanUndo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if (globalThis.GBAnnotationSurfaces?.isOpen()) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanUndo(_bdHistoryScope()) : (typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanUndo(_meldexProductionEmbedHistoryScope());
@@ -1376,7 +1382,7 @@ function meldexCanUndo() {
 
 function meldexCanRedo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if (globalThis.GBAnnotationSurfaces?.isOpen()) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanRedo(_bdHistoryScope()) : (typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanRedo(_meldexProductionEmbedHistoryScope());
@@ -1409,7 +1415,7 @@ function _meldexScheduleCanRedo() {
 // 目印は data-undo-button / data-redo-button。ノート・自由記述欄（ブラウザ標準undo）は
 // 判定手段が無いため対象外＝常時有効のまま（この属性を付けない）。
 function _meldexHistoryButtonCan(button, direction, fallback) {
-  if (globalThis.GBAnnotationSurfaces?.isOpen()) return fallback;
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return fallback;
   const owner = globalThis.GBEditorHost?.ownerOf?.(button);
   const paneId = button.closest?.('.gb-pane')?.dataset.paneId;
   if (!owner && (!paneId || (typeof GBLayout !== 'undefined' && paneId === GBLayout.activePane && !globalThis.GBEditorHost?.get()))) return fallback;
@@ -1428,6 +1434,12 @@ function _meldexHistoryButtonCan(button, direction, fallback) {
 function updateUndoRedoButtonStates() {
   const canUndo = meldexCanUndo();
   const canRedo = meldexCanRedo();
-  document.querySelectorAll('[data-undo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'undo', canUndo); });
-  document.querySelectorAll('[data-redo-button]').forEach(btn => { btn.disabled = !_meldexHistoryButtonCan(btn, 'redo', canRedo); });
+  document.querySelectorAll('[data-undo-button]').forEach(btn => {
+    const disabled = !_meldexHistoryButtonCan(btn, 'undo', canUndo);
+    if (btn.disabled !== disabled) btn.disabled = disabled;
+  });
+  document.querySelectorAll('[data-redo-button]').forEach(btn => {
+    const disabled = !_meldexHistoryButtonCan(btn, 'redo', canRedo);
+    if (btn.disabled !== disabled) btn.disabled = disabled;
+  });
 }

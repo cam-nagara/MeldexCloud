@@ -4,6 +4,7 @@
  */
 
 const _outlinerPendingRenames = new Map();
+const _outlinerPendingCopyPreviews = new Set();
 const _outlinerPendingRenameKey = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 async function _outlinerAwaitPendingRename(item) {
   for (let depth = 0; depth < 16; depth++) {
@@ -851,6 +852,7 @@ const treeSelection = {
     this.items.clear();
   },
   add(nodeEl) {
+    if (!nodeEl || nodeEl.inert || nodeEl.classList.contains('tree-node-pending-create')) return;
     this.items.add(nodeEl);
     nodeEl.querySelector('.tree-node-row')?.classList.add('selected');
   },
@@ -908,14 +910,14 @@ const treeSelection = {
     for (let i = start; i <= end; i++) {
       const entry = state.flat[i];
       const path = entry && entry.data && entry.data.path;
-      if (!path) continue;
+      if (!path || (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(path))) continue;
       const mountedEl = state.mountedById.get(path);
       if (mountedEl) this.add(mountedEl);
       else state.selectedIds.add(path);
     }
     return true;
   },
-  getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
+  getNodeData() { return [...this.items].filter(n => !n.inert && !n.classList.contains('tree-node-pending-create')).map(n => n._nodeData).filter(Boolean); },
 };
 
 function _treeNodeIsAncestor(parentNode, childNode) {
@@ -1890,6 +1892,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
   div.className = 'tree-node';
   div._nodeData = item;
   if (item.path) div.dataset.path = item.path;
+  if (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path)) _outlinerSetCopyPendingNode(div, true);
   if (item.sourceId) div.dataset.sourceId = item.sourceId;
   if (item.rootKind) div.dataset.rootKind = item.rootKind;
   if (item.workspaceId) div.dataset.workspaceId = item.workspaceId;

@@ -221,10 +221,12 @@ if (typeof _initTrayAnnotationHost === 'function') {
 /* One menu, independent drawing and reload state for every visible surface. */
 window.GBAnnotationSurfaces = (() => {
   const surfaces = new Map();
-  let selected = null, scheduled = false;
+  let selected = null, scheduled = false, revealRevision = 0;
   const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
   const isOpen = () => enabled() && ann.active;
   const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
+  const samePath = (a, b) => typeof _rpAnnotationPathsMatch === 'function'
+    ? _rpAnnotationPathsMatch(a, b) : _normalizeAnnotationTargetPath(a) === _normalizeAnnotationTargetPath(b);
   function select(s) {
     if (!s || !s.host.isConnected) return;
     const changed = selected !== s;
@@ -235,6 +237,10 @@ window.GBAnnotationSurfaces = (() => {
     if (changed && isOpen()) {
       _refreshAnnFloatingViewLockButton({ force: true });
       if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+    }
+    if (changed && typeof _syncLegacyRightPanelTargetHeaders === 'function') {
+      _syncLegacyRightPanelTargetHeaders();
+      if (document.getElementById('rp-annotation')?.classList.contains('active') && typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
     }
   }
   function stateFor(s) {
@@ -265,6 +271,7 @@ window.GBAnnotationSurfaces = (() => {
       // A pending save must never be overwritten by an older read.
       if (s.bridge.layer.querySelector('[data-ann-client-id]:not([data-ann-id])')) return;
       s.bridge.handleMessage({ type: 'ann-load', items });
+      window.GBAnnotationHighlights?.render(s, items);
     } catch (error) { showStatus('アノテートを読み込めませんでした', true); }
   }
   function broadcast() {
@@ -283,6 +290,8 @@ window.GBAnnotationSurfaces = (() => {
     return rect.width > 1 && rect.height > 1 && getComputedStyle(host).visibility !== 'hidden';
   }
   function dispose(s) {
+    window.GBAnnotationHighlights?.dispose(s);
+    s.highlightPending?.forEach(reservation => reservation.cancel());
     if (s.iframe && s.onLoad) s.iframe.removeEventListener('load', s.onLoad);
     s.bridge?.dispose?.();
     s.host.removeAttribute('data-annotation-selected');
@@ -292,13 +301,14 @@ window.GBAnnotationSurfaces = (() => {
     for (const [id, info] of Object.entries(typeof GBLayout !== 'undefined' ? GBLayout.paneMap || {} : {})) {
       const node = info.node || GBLayout.findNode?.(GBLayout.root, id)?.node;
       const tab = node?.tabs?.[node.activeTabIndex];
-      if (tab && visible(info.contentEl) && _ANNOTATION_TARGET_VIEW_TYPES.has(tab.type)) {
+      // 対象外のフォルダ等では寸法を読まない。大量カードの追加直後に不要な全体配置を確定させない。
+      if (tab && _ANNOTATION_TARGET_VIEW_TYPES.has(tab.type) && visible(info.contentEl)) {
         out.push({ id, host: info.contentEl, tab });
       }
     }
     const host = document.getElementById('gb-subpanel-content');
     const tab = typeof GBSubPanel !== 'undefined' && GBSubPanel.isOpen() ? GBSubPanel.getCurrentTarget() : null;
-    if (visible(host) && tab && !out.some(s => s.host === host)) out.push({ id: 'gb-subpanel-inner-pane', host, tab });
+    if (tab && !out.some(s => s.host === host) && visible(host)) out.push({ id: 'gb-subpanel-inner-pane', host, tab });
     return out;
   }
   function sync() {
@@ -409,6 +419,13 @@ window.GBAnnotationSurfaces = (() => {
     if (e.origin !== location.origin || !enabled()) return;
     const s = [...surfaces.values()].find(item => item.iframe?.contentWindow === e.source);
     if (!s) return;
+    if (e.data?.type === 'viewer-ann-highlight-pending' && e.data.requestId) {
+      if (e.data.targetPath) s.path = String(e.data.targetPath);
+      select(s);
+      s.highlightPending ||= new Map();
+      if (!s.highlightPending.has(e.data.requestId)) s.highlightPending.set(e.data.requestId,
+        historyReserve('アノテート: 範囲ハイライト', scope({ ...s, path: e.data.targetPath || s.path }), e.data.targetPath || s.path));
+    }
     if (e.data?.type === 'viewer-ann-open-menu') {
       if (e.data.targetPath) s.path = String(e.data.targetPath);
       select(s); if (!ann.active) toggle(s.host); else broadcast();
@@ -421,17 +438,84 @@ window.GBAnnotationSurfaces = (() => {
     }
     if (e.data?.type === 'viewer-ann-save-result') {
       const msg = e.data;
+      const reservation = s.highlightPending?.get(msg.highlightRequestId);
+      if (msg.highlightRequestId) s.highlightPending?.delete(msg.highlightRequestId);
       if (msg.ok && msg.history) {
         const path = msg.targetPath || s.path;
-        _pushAnnotationHistory('アノテート: ビューワー', msg.history.before, msg.history.after, path, scope({ ...s, path }));
+        const push = () => _pushAnnotationHistory('アノテート: ビューワー', msg.history.before, msg.history.after, path, reservation?.entry.scope || scope({ ...s, path }));
+        if (reservation) reservation.capture(push); else push();
       }
+      else reservation?.cancel();
       _handleViewerAnnotationSaveResult(msg, { recordHistory: false });
+      if (msg.ok && typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
     }
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observe, { once: true }); else observe();
   return { enabled, isOpen, sync, toggle, close, broadcast, clear,
+    usesHistory: () => isOpen() || !!selected?.iframe,
+    forElement: fromElement,
+    captureTargets: () => { sync(); return [...surfaces.values()]; },
+    async reveal(item) {
+      const revision = ++revealRevision, deadline = performance.now() + 60000;
+      const path = item.target_ref?.file || item.target_path;
+      if (!path) return false;
+      const documentPath = path.replace(/(\.pdf)#page=\d+$/i, '$1');
+      const same = value => samePath(value, path);
+      sync();
+      const find = () => [selected, ...surfaces.values()].filter(Boolean).find(s => same(s.path)
+        || s.iframe && samePath(s.sourcePath, documentPath)
+        || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path));
+      let s = find();
+      if (!s) {
+        if (selected?.id === 'gb-subpanel-inner-pane' && window.GBSubPanel) {
+          await openLinkedPathInRightSidebar(documentPath, documentPath.split(/[\\/]/).pop(), { sourceEl: document.activeElement });
+        } else {
+          if (selected?.id && GBLayout.paneMap[selected.id]) GBLayout.setActivePane(selected.id);
+          if (/\.(?:pdf|png|jpe?g|gif|webp|bmp)$/i.test(documentPath)) openMedia(documentPath.split(/[\\/]/).pop(), documentPath, /\.pdf$/i.test(documentPath) ? 'pdf' : 'image');
+          else await jumpToAnnotation(documentPath);
+        }
+        while (performance.now() < deadline) {
+          if (revision !== revealRevision) return true;
+          sync(); s = find(); if (s) break;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
+      if (!s) { showStatus('アノテートの対象を開けませんでした', true); return true; }
+      select(s);
+      if (item.type === 'screenshot-source' && item.target_kind === 'none') return true;
+      if (s.iframe) {
+        const viewer = s.iframe.contentWindow;
+        while (performance.now() < deadline) {
+          if (revision !== revealRevision || !s.host.isConnected) return true;
+          if (viewer?.MeldexViewerHighlights?.reveal(item)) return true;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        showStatus('アノテートの位置が見つかりませんでした', true); return true;
+      }
+      if (item.type === 'highlight') {
+        if (window.GBAnnotationHighlights?.reveal(s, item)) return true;
+        await reload(s);
+        if (!window.GBAnnotationHighlights?.reveal(s, item)) showStatus('ハイライトの位置が見つかりませんでした', true);
+        return true;
+      }
+      const ref = item.target_ref || {}, cont = ref.container || {}, esc = CSS.escape;
+      const line = ref.lineId || cont.id;
+      let target = s.host.querySelector(`[data-ann-id="${esc(String(item.id || ''))}"],[data-cmt-id="${esc(String(item.id || ''))}"]`);
+      if (!target && line) target = s.host.querySelector(`._nl-id[data-line-id="${esc(line)}"]`)?.parentElement || s.host.querySelector(`.sn2-row[data-row-id="${esc(line)}"]`);
+      if (!target && (ref.entryId || cont.entryId)) target = s.host.querySelector(`tr[data-entity-name="${esc(ref.entryId || cont.entryId)}"] td[data-prop-name="${esc(ref.colId || cont.colId || '')}"]`);
+      if (!target && (ref.cardId || cont.kind === 'board_card')) target = s.host.querySelector(`.bd-node[data-card-id="${esc(ref.cardId || cont.id)}"]`);
+      const center = typeof _rpAnnotationCenter === 'function' ? _rpAnnotationCenter(item) : null;
+      const sc = s.bridge?.options?.scrollContainer || s.host;
+      if (center) {
+        sc.scrollTo({ top: Math.max(0, center.y - sc.clientHeight / 2), left: Math.max(0, center.x - sc.clientWidth / 2), behavior: 'instant' });
+        if (target) { const previous = target.style.filter; target.style.filter = 'drop-shadow(0 0 4px var(--accent))'; setTimeout(() => { target.style.filter = previous; }, 1200); }
+        return true;
+      }
+      if (target && typeof _flashRpCommentTarget === 'function') { _flashRpCommentTarget(target); return true; }
+      return item.target_kind === 'none';
+    },
     reloadTarget(path) { return Promise.all([...surfaces.values()]
-      .filter(s => !path || _normalizeAnnotationTargetPath(s.path) === _normalizeAnnotationTargetPath(path)
+      .filter(s => !path || samePath(s.path, path)
         || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path)).map(reload)); },
     describe: () => [...surfaces.values()].map(s => ({ id: s.id, path: s.path, type: s.type, embedded: !!s.iframe, host: s.host.id })),
     historyScope: () => selected ? scope(selected) : '',

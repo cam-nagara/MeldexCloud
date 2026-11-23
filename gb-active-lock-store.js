@@ -298,6 +298,10 @@
     return String(scope?.adapter?.environment || scope?.adapter?.describe?.()?.environment || '').startsWith('dropbox');
   }
 
+  const TRANSACTION_KINDS = new Set(['production-task-create', 'calendar-mutation']);
+  const _transactionEntry = entry => TRANSACTION_KINDS.has(String(entry?.kind || ''));
+  const _transactionHolder = holder => /^(production-task-create|calendar-mutation):/.test(String(holder || ''));
+
   async function _readOwnerRecords(scope, tokenHash = '') {
     if (typeof scope.adapter.listActiveLeaseRecords !== 'function') {
       throw new Error('編集リースの保持者別読込に対応した更新版が必要です');
@@ -316,7 +320,7 @@
       owners.set(owner, record);
     }
     const legacy = records.filter(record => record.documentId === STORE_DOCUMENT_ID)
-      .flatMap(record => _entriesFromStore(record.payload)).filter(row => !owners.has(row.token_hash));
+      .flatMap(record => _entriesFromStore(record.payload)).filter(row => _transactionEntry(row) || !owners.has(row.token_hash));
     const entries = _mergeEntryLists(legacy, ...[...owners.values()].map(record => _entriesFromStore(record.payload)));
     return { entries, owners, record: owners.get(tokenHash) || null };
   }
@@ -347,13 +351,14 @@
     for (let attempt = 0; attempt < 5; attempt++) {
       const [state, legacy] = await Promise.all([_readOwnerRecords(scope, tokenHash), _readLegacyEntries(provider, scope)]);
       const current = _mergeEntryLists(state.entries, legacy.filter(row => !state.owners.has(row.token_hash)));
-      const change = await updater(current);
+      const change = await updater(current, _entriesFromStore(state.record?.payload));
       if (change === false) return undefined;
-      const entries = (change?.entries || []).filter(row => row.token_hash === tokenHash);
+      const entries = (change?.entries || []).filter(row => row.token_hash === tokenHash && !_transactionEntry(row));
       const payload = { ...(state.record?.payload || {}), ..._storePayload(entries), format: 2, owner_token_hash: tokenHash };
       try {
         await scope.adapter.save(contract.SystemStorageKind.EDIT_LOCKS, OWNER_PREFIX + tokenHash, payload, {
           expectedRevision: state.record?.revision ?? null,
+          baseRecord: state.record,
         });
         return change?.result;
       } catch (error) {
@@ -363,10 +368,40 @@
     }
   }
 
-  async function _mutateStore(provider, scope, updater, tokenHash = '') {
+  // 複数ファイルを更新する操作は、保持者別ファイルでは排他できない。
+  // 既存の共有ストア1件へCAS保存し、別画面の取得を同じ版で競合させる。
+  async function _mutateTransactionStore(provider, scope, updater, tokenHash) {
+    const contract = window.MeldexSystemStorage;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const [record, state, legacy] = await Promise.all([
+        scope.adapter.load(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID),
+        _readOwnerRecords(scope, tokenHash), _readLegacyEntries(provider, scope),
+      ]);
+      const stored = _entriesFromStore(record?.payload);
+      const current = _mergeEntryLists(state.entries, legacy, stored);
+      const change = await updater(current, stored);
+      if (change === false) return undefined;
+      const keys = new Set(stored.map(row => row.token_hash + '\0' + row.normalized_path));
+      const entries = (change?.entries || []).filter(row => (_transactionEntry(row) && row.token_hash === tokenHash)
+        || keys.has(row.token_hash + '\0' + row.normalized_path));
+      const payload = _storePayload(entries);
+      if (JSON.stringify(payload.entries) === JSON.stringify(_storePayload(stored).entries)) return change?.result;
+      try {
+        await scope.adapter.save(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID, payload,
+          { expectedRevision: record?.revision ?? null });
+        return change?.result;
+      } catch (error) {
+        if (error instanceof contract.SystemStorageConflictError && attempt < 4) continue;
+        throw error;
+      }
+    }
+  }
+
+  async function _mutateStore(provider, scope, updater, tokenHash = '', transaction = false) {
     if (_usesOwnerRecords(scope)) {
       const owner = tokenHash || await _tokenHash(window.MeldexActiveLocks?.token?.() || '');
-      return _mutateOwnerStore(provider, scope, updater, owner);
+      return transaction ? _mutateTransactionStore(provider, scope, updater, owner)
+        : _mutateOwnerStore(provider, scope, updater, owner);
     }
     const adapter = scope.adapter;
     const contract = window.MeldexSystemStorage;
@@ -499,16 +534,20 @@
     const scope = await _scopeForPath(provider, path); // 書込はスコープ不明時に拒否(安全側)
     const canonical = _canonicalForScope(scope, path);
     const canonicalLower = _normalize(canonical);
+    const transaction = _transactionEntry(body);
+    const pageOwner = body?.kind === 'production-task-create' ? window.MeldexActiveLocks?.token?.() : '';
+    const pageOwnerHash = pageOwner ? await _tokenHash(pageOwner) : '';
     return _mutateStore(provider, scope, entries => {
       // writeJsonMerged の競合リトライごとに、必ずその時点の最新 entries で判定する。
-      const conflict = _findConflict(entries, canonical, tokenHash, { includeDescendants }, scope);
+      const conflicts = pageOwnerHash ? entries.filter(entry => entry.token_hash !== pageOwnerHash || _transactionEntry(entry)) : entries;
+      const conflict = _findConflict(conflicts, canonical, tokenHash, { includeDescendants }, scope);
       if (conflict) throw _conflictError(_localizedEntry(conflict, scope), path);
       const existing = entries.find(entry => _entryMatchesToken(entry, tokenHash, canonicalLower, scope));
       const next = entries.filter(entry => !_entryMatchesToken(entry, tokenHash, canonicalLower, scope));
       const entry = _entryPayload(canonical, body, tokenHash, existing);
       next.push(entry);
       return { entries: next, result: { ok: true, entry: _localizedEntry(entry, scope) } };
-    }, tokenHash);
+    }, tokenHash, transaction);
   }
 
   async function heartbeat(provider, body = {}, headers) {
@@ -528,7 +567,7 @@
     const holder = _cleanText(holderId, 160);
     const scope = await _scopeForPath(provider, path);
     const canonicalLower = _normalize(_canonicalForScope(scope, path));
-    return _mutateStore(provider, scope, entries => {
+    const update = entries => {
       let removed = false;
       const next = [];
       for (const entry of entries) {
@@ -546,7 +585,16 @@
         if (updated) next.push(updated);
       }
       return { entries: next, result: { ok: true, removed } };
-    }, tokenHash);
+    };
+    const ownerState = _usesOwnerRecords(scope) ? await _readOwnerRecords(scope, tokenHash) : null;
+    const transaction = _transactionHolder(holder) || ownerState?.entries.some(entry =>
+      _transactionEntry(entry) && _entryMatchesToken(entry, tokenHash, canonicalLower, scope));
+    const result = await _mutateStore(provider, scope, update, tokenHash, transaction);
+    // 旧版が保持者ファイルへ書いた更新ロックも、自分の記録がある時だけ清掃する。
+    if (transaction && ownerState?.record) {
+      await _mutateStore(provider, scope, update, tokenHash);
+    }
+    return result;
   }
 
   async function releaseAll(provider, token, holderId) {
@@ -565,28 +613,31 @@
     }
     let removed = 0;
     for (const scope of scopes) {
-      const result = await _mutateStore(provider, scope, entries => {
-        let scopeRemoved = 0;
-        const next = [];
-        for (const entry of entries) {
-          if (entry.token_hash !== tokenHash) {
-            next.push(entry);
-            continue;
+      for (const transaction of (_usesOwnerRecords(scope) ? [false, true] : [false])) {
+        const result = await _mutateStore(provider, scope, (entries, stored) => {
+          const storedKeys = stored ? new Set(stored.map(row => row.token_hash + '\0' + row.normalized_path)) : null;
+          let scopeRemoved = 0;
+          const next = [];
+          for (const entry of entries) {
+            if (entry.token_hash !== tokenHash || (storedKeys && !storedKeys.has(entry.token_hash + '\0' + entry.normalized_path))) {
+              next.push(entry);
+              continue;
+            }
+            if (!holder) {
+              scopeRemoved += 1;
+              continue;
+            }
+            const before = _entryHolders(entry);
+            const holders = before.filter(row => row.holder_id !== holder);
+            if (holders.length !== before.length) scopeRemoved += 1;
+            const updated = _entryWithHolders(entry, holders);
+            if (updated) next.push(updated);
           }
-          if (!holder) {
-            scopeRemoved += 1;
-            continue;
-          }
-          const before = _entryHolders(entry);
-          const holders = before.filter(row => row.holder_id !== holder);
-          if (holders.length !== before.length) scopeRemoved += 1;
-          const updated = _entryWithHolders(entry, holders);
-          if (updated) next.push(updated);
-        }
-        if (!scopeRemoved) return false; // 変更が無いスコープのストアは書き換えない。
-        return { entries: next, result: { ok: true, removed: scopeRemoved } };
-      }, tokenHash);
-      removed += Number(result?.removed || 0);
+          if (!scopeRemoved) return false; // 変更が無いスコープのストアは書き換えない。
+          return { entries: next, result: { ok: true, removed: scopeRemoved } };
+        }, tokenHash, transaction);
+        removed += Number(result?.removed || 0);
+      }
     }
     return { ok: true, removed };
   }
@@ -769,6 +820,10 @@
     const provider = await internals._requirePwaProvider('readwrite');
     const candidates = await _candidatePaths({ pathname, url, body, provider });
     if (!candidates.length) return;
+    if (['/value', '/production-management/entries'].includes(pathname)
+        && candidates.some(candidate => /(^|\/)制作管理(?:\/|$)/.test(String(candidate.path || '').replace(/\\/g, '/')))) {
+      await window.MeldexProductionManagement?.waitForCloudProductionIdle?.(provider);
+    }
     const token = _token(body || {}, headers);
     for (const candidate of candidates) {
       await requireAvailable(provider, candidate.path, token, {
@@ -790,6 +845,9 @@
     }
     if (pathname === '/active-lock' && method === 'PUT') {
       const provider = await internals._requirePwaProvider('readwrite');
+      if (/(^|\/)制作管理(?:\/|$)/.test(String(body?.path || '').replace(/\\/g, '/'))) {
+        await window.MeldexProductionManagement?.waitForCloudProductionIdle?.(provider);
+      }
       return acquire(provider, body || {}, headers);
     }
     if (pathname === '/active-lock/heartbeat' && method === 'POST') {

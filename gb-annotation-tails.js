@@ -282,12 +282,15 @@ const AnnotationStickyTail = (() => {
       [ex, ey],
     ].map(p => p.map(v => Number(v).toFixed(2)).join(',')).join(' ');
     const polygon = note.querySelector(':scope > .ann-tail-shape polygon');
-    polygon.setAttribute('points', points);
-    polygon.setAttribute('fill', color);
-    polygon.setAttribute('stroke', color);
-    polygon.setAttribute('stroke-width', '1');
-    note.querySelector(':scope > .ann-tail-handle[data-tail-handle="start"]').style.cssText = `left:${sx - 5}px;top:${sy - 5}px;`;
-    note.querySelector(':scope > .ann-tail-handle[data-tail-handle="end"]').style.cssText = `left:${ex - 5}px;top:${ey - 5}px;`;
+    for (const [key, value] of Object.entries({ points, fill: color, stroke: color, 'stroke-width': '1' })) {
+      if (polygon.getAttribute(key) !== String(value)) polygon.setAttribute(key, value);
+    }
+    for (const [which, x, y] of [['start', sx, sy], ['end', ex, ey]]) {
+      const handle = note.querySelector(`:scope > .ann-tail-handle[data-tail-handle="${which}"]`);
+      const left = Number((x - 5).toFixed(2)) + 'px', top = Number((y - 5).toFixed(2)) + 'px';
+      if (handle.style.left !== left) handle.style.left = left;
+      if (handle.style.top !== top) handle.style.top = top;
+    }
   }
 
   function _setTail(note, tail, persist) {
@@ -336,6 +339,56 @@ const AnnotationStickyTail = (() => {
     return !!toolbar && toolbar.classList.contains('visible');
   }
 
+  function _tailDragRestore(note) {
+    const ctx = note._annTailCtx;
+    const saved = {};
+    for (const key of ['tail', 'tailX', 'tailY']) {
+      if (Object.prototype.hasOwnProperty.call(ctx.data, key)) {
+        const value = ctx.data[key];
+        saved[key] = value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+      }
+    }
+    return () => {
+      if (note._annTailCtx !== ctx) return;
+      for (const key of ['tail', 'tailX', 'tailY']) {
+        if (Object.prototype.hasOwnProperty.call(saved, key)) ctx.data[key] = saved[key];
+        else delete ctx.data[key];
+      }
+      ctx.lastTargetClient = null;
+      ctx.lastNoteClient = null;
+      ctx.lastTargetLayout = null;
+      _updateDom(note);
+    };
+  }
+
+  // 中断後に遅れて届く pointerup が保存を確定しないよう、すべての入力を一緒に解除する。
+  function _bindTailDrag(note, startEvent, move, finish, restore) {
+    const matches = ev => startEvent.pointerId == null || ev.pointerId == null || ev.pointerId === startEvent.pointerId;
+    const cleanup = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', cancel);
+    };
+    const cancel = () => { cleanup(); restore(); };
+    const onMove = ev => {
+      if (!matches(ev)) return;
+      if (!note.isConnected) { cancel(); return; }
+      move(ev);
+    };
+    const onUp = ev => {
+      if (!matches(ev)) return;
+      cleanup();
+      if (!note.isConnected) { restore(); return; }
+      finish(ev);
+    };
+    const onCancel = ev => { if (matches(ev)) cancel(); };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', cancel);
+  }
+
   // 起点がアノテートの付箋以外（例: ボードのカード）の場合、端点ハンドルをドラッグしてよい条件が
   // 「アノテートツールバーが開いている」では意味を持たない。install() の canDragHandles オプションで
   // 差し替え可能にし、未指定時はアノテートの現行挙動 (_isAnnotationToolbarActive) をそのまま使う。
@@ -343,6 +396,7 @@ const AnnotationStickyTail = (() => {
     const canDragHandles = typeof options.canDragHandles === 'function' ? options.canDragHandles : _isAnnotationToolbarActive;
     const dragExcludeSelector = options.dragExcludeSelector || 'button,.ann-note-resize-handle,.gb-fmt-popup';
     const onDragStart = typeof options.onDragStart === 'function' ? options.onDragStart : null;
+    const onDragCommit = typeof options.onDragCommit === 'function' ? options.onDragCommit : null;
     note.addEventListener('pointerdown', (e) => {
       const handle = e.target.closest?.('.ann-tail-handle');
       if (handle && e.button === 0) {
@@ -350,7 +404,7 @@ const AnnotationStickyTail = (() => {
         e.preventDefault();
         e.stopPropagation();
         onDragStart?.({ kind: 'handle', which: handle.dataset.tailHandle });
-        _dragHandle(note, handle.dataset.tailHandle, e, persist);
+        _dragHandle(note, handle.dataset.tailHandle, e, persist, onDragCommit);
         return;
       }
       // しっぽの新規作成は Alt+Shift+ドラッグに統一する (2026-08-13 ユーザー確定)。
@@ -360,6 +414,7 @@ const AnnotationStickyTail = (() => {
       e.preventDefault();
       e.stopPropagation();
       onDragStart?.({ kind: 'create' });
+      const restore = _tailDragRestore(note);
       const start = _localPoint(note, e.clientX, e.clientY);
       const draft = { startX: start.x, startY: start.y, endX: start.x, endY: start.y, target: null };
       _setTail(note, draft, null);
@@ -369,26 +424,25 @@ const AnnotationStickyTail = (() => {
         _updateDom(note);
       };
       const onUp = (ev) => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
         const noteRect = note.getBoundingClientRect();
         const outside = ev.clientX < noteRect.left || ev.clientX > noteRect.right || ev.clientY < noteRect.top || ev.clientY > noteRect.bottom;
         if (!outside) {
-          _removeTail(note, null);
+          restore();
           return;
         }
         draft.target = _targetFromPoint(ev.clientX, ev.clientY, note);
+        if (onDragCommit) { restore(); onDragCommit({ kind: 'create' }); }
         _setTail(note, draft, persist);
       };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
+      _bindTailDrag(note, e, onMove, onUp, restore);
     });
   }
 
-  function _dragHandle(note, which, startEvent, persist) {
+  function _dragHandle(note, which, startEvent, persist, onDragCommit) {
     const ctx = note._annTailCtx;
     const tail = ctx?.data?.tail;
     if (!tail) return;
+    const restore = _tailDragRestore(note);
     const onMove = (ev) => {
       const pt = _localPoint(note, ev.clientX, ev.clientY);
       if (which === 'start') {
@@ -402,13 +456,11 @@ const AnnotationStickyTail = (() => {
       _updateDom(note);
     };
     const onUp = (ev) => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
       if (which === 'end') tail.target = _targetFromPoint(ev.clientX, ev.clientY, note);
+      if (onDragCommit) { restore(); onDragCommit({ kind: 'handle', which }); }
       _setTail(note, tail, persist);
     };
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
+    _bindTailDrag(note, startEvent, onMove, onUp, restore);
   }
 
   function _finiteNumber(value, fallback) {

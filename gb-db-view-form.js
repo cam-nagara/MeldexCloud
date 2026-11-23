@@ -628,6 +628,41 @@ function _customInstructionRelayErrorMessage(result) {
   return 'カスタムインストラクションに反映できませんでした';
 }
 
+function _recordFormCreatedResponse(form, dbPath, result, options) {
+  const identity = window.GbDbEntryIdentity;
+  if (!result?.path || !result.entry_id || typeof historyPush !== 'function' || !identity?.deleteEntries) return;
+  const scope = typeof options.historyScope === 'function' ? options.historyScope()
+    : typeof options.historyScope === 'string' ? options.historyScope
+    : options.ctx?.formApp?._historyScope?.() || (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : 'db:' + dbPath);
+  const entry = { path: result.path, name: result.name || result.path.split(/[\\/]/).pop().replace(/\.md$/, ''), entryId: result.entry_id };
+  let refs = [];
+  const before = async () => {
+    const root = typeof options.ownerRoot === 'function' ? options.ownerRoot() : options.ownerRoot || form;
+    if (root?.isConnected && !await MeldexDbFormRuntime.confirmLeave(root)) throw new Error('入力を確認してから取り消してください');
+  };
+  const refresh = () => options.onHistoryChanged ? options.onHistoryChanged()
+    : typeof selectDatabase === 'function' ? selectDatabase(dbPath, options.ctx, { silent: true, skipNavPush: true }) : null;
+  historyPush('フォーム: 回答を追加', async () => {
+    await before();
+    const removed = await identity.deleteEntries({ dbPath, ctx: options.ctx, entries: [entry], source: 'form-response-undo' });
+    refs = (removed.trashRefs || []).filter(ref => ref?.trash_name);
+    if (removed.failures?.length) throw removed.failures[0].error;
+    await refresh();
+  }, async () => {
+    await before();
+    const failed = [];
+    for (const ref of refs) {
+      try {
+        const restored = await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
+        if (restored?.path) entry.path = restored.path;
+      } catch (error) { failed.push(ref); }
+    }
+    refs = failed;
+    if (failed.length) throw new Error('回答を戻せませんでした。再試行してください');
+    await refresh();
+  }, scope);
+}
+
 async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) {
   if (form._dbFormSubmitting) return;
   form._dbFormSubmitting = true;
@@ -698,6 +733,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     }
     if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
     const createResult = await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
+    if (!cfg.betaFeedbackRelay && !cfg.customInstructionsRelay) _recordFormCreatedResponse(form, dbPath, createResult, options);
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
       if (relay?.ok === false) throw new Error(_customInstructionRelayErrorMessage(relay));

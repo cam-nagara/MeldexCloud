@@ -1,3 +1,6 @@
+      lx = rx + cx;
+      ly = ry + cy;
+    }
     const zoom = (typeof bd !== 'undefined') ? Math.max(0.1, bd.zoom || 1) : 1;
     const panX = (typeof bd !== 'undefined') ? (Number(bd.panX) || 0) : 0;
     const panY = (typeof bd !== 'undefined') ? (Number(bd.panY) || 0) : 0;
@@ -895,6 +898,3 @@
         }
         persistTailState();
       };
-
-      const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
-      colorItem.addEventListener('click', () => {

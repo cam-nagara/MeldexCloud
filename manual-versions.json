@@ -1,13 +1,187 @@
 {
   "type": "meldex-public-manual-versions",
   "schema_version": 1,
-  "latest": "0.7.588",
+  "latest": "0.7.651",
   "versions": [
     {
-      "version": "0.7.588",
-      "label": "v0.7.588（最新版）",
+      "version": "0.7.651",
+      "label": "v0.7.651（最新版）",
       "url": "manual.html",
       "latest": true
+    },
+    {
+      "version": "0.7.643",
+      "label": "v0.7.643",
+      "url": "manual-versions/v0.7.643/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.642",
+      "label": "v0.7.642",
+      "url": "manual-versions/v0.7.642/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.641",
+      "label": "v0.7.641",
+      "url": "manual-versions/v0.7.641/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.640",
+      "label": "v0.7.640",
+      "url": "manual-versions/v0.7.640/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.639",
+      "label": "v0.7.639",
+      "url": "manual-versions/v0.7.639/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.638",
+      "label": "v0.7.638",
+      "url": "manual-versions/v0.7.638/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.637",
+      "label": "v0.7.637",
+      "url": "manual-versions/v0.7.637/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.636",
+      "label": "v0.7.636",
+      "url": "manual-versions/v0.7.636/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.635",
+      "label": "v0.7.635",
+      "url": "manual-versions/v0.7.635/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.634",
+      "label": "v0.7.634",
+      "url": "manual-versions/v0.7.634/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.632",
+      "label": "v0.7.632",
+      "url": "manual-versions/v0.7.632/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.631",
+      "label": "v0.7.631",
+      "url": "manual-versions/v0.7.631/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.630",
+      "label": "v0.7.630",
+      "url": "manual-versions/v0.7.630/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.629",
+      "label": "v0.7.629",
+      "url": "manual-versions/v0.7.629/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.628",
+      "label": "v0.7.628",
+      "url": "manual-versions/v0.7.628/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.627",
+      "label": "v0.7.627",
+      "url": "manual-versions/v0.7.627/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.626",
+      "label": "v0.7.626",
+      "url": "manual-versions/v0.7.626/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.625",
+      "label": "v0.7.625",
+      "url": "manual-versions/v0.7.625/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.624",
+      "label": "v0.7.624",
+      "url": "manual-versions/v0.7.624/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.623",
+      "label": "v0.7.623",
+      "url": "manual-versions/v0.7.623/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.622",
+      "label": "v0.7.622",
+      "url": "manual-versions/v0.7.622/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.621",
+      "label": "v0.7.621",
+      "url": "manual-versions/v0.7.621/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.620",
+      "label": "v0.7.620",
+      "url": "manual-versions/v0.7.620/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.619",
+      "label": "v0.7.619",
+      "url": "manual-versions/v0.7.619/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.618",
+      "label": "v0.7.618",
+      "url": "manual-versions/v0.7.618/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.617",
+      "label": "v0.7.617",
+      "url": "manual-versions/v0.7.617/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.616",
+      "label": "v0.7.616",
+      "url": "manual-versions/v0.7.616/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.599",
+      "label": "v0.7.599",
+      "url": "manual-versions/v0.7.599/manual.html",
+      "latest": false
+    },
+    {
+      "version": "0.7.598",
+      "label": "v0.7.598",
+      "url": "manual-versions/v0.7.598/manual.html",
+      "latest": false
     },
     {
       "version": "0.7.568",

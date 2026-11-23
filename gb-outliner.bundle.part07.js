@@ -1,3 +1,149 @@
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'create-confirmation',
+    label: '作成結果を確認しています',
+    mode: 'indeterminate',
+    origin: pendingNode,
+    showImmediately: true,
+    showInTray: true,
+    priority: 60,
+  });
+  try {
+    if (!progress) showStatus('作成に時間がかかっています。結果を確認中…');
+    const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
+    for (const delay of _outlinerPostTimeoutConfirmDelays()) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindNewItemInListing(items, type, existingNames);
+      if (found) {
+        if (onConfirmed) await onConfirmed(found);
+        _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
+        return;
+      }
+    }
+    const message = '作成結果を確認できませんでした。重複を避けるため、再作成する前にフォルダを再読込してください';
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
+  } finally {
+    if (pendingNode?.parentNode) pendingNode.remove();
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: '作成結果の確認を完了できませんでした' });
+    }
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
+}
+
+// フォームの原本と回答用シートは、サーバーと同じく個人ホームの中へ作る。
+function _outlinerCreateParentPath(parentPath, type) {
+  if (type !== 'form-app' || typeof _homeFolderPath === 'undefined' || !_homeFolderPath) return parentPath;
+  const key = path => {
+    let value = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const vault = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (/^(?:[a-z]:\/|\/\/)/i.test(vault) && value && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(value)) value = vault + '/' + value;
+    return /^(?:[a-z]:\/|\/\/)/i.test(value) ? value.toLowerCase() : value;
+  };
+  const home = key(_homeFolderPath), parent = key(parentPath);
+  return parent === home || parent.startsWith(home + '/') ? parentPath : _homeFolderPath;
+}
+
+// アイテムを指定パス配下に追加（部分更新、チラつき防止）
+async function addItemAt(parentPath, type, options = {}) {
+  if (_isCloudPhase1BlockedCreateType(type)) {
+    _showCloudPhase1BlockedCreate(type);
+    return;
+  }
+  const createParent = _outlinerCreateParentPath(parentPath, type);
+  if (createParent !== parentPath) {
+    parentPath = createParent;
+    options = { ...options, anchorNode: null, preferHome: true };
+  }
+  // 改名で空いた旧名を次の作成が再利用する前に、改名の画面と保存先参照の更新まで終える。
+  // 順序が逆になると、遅れて届いた改名が新しく同じ旧名で作った行・タブまで変更してしまう。
+  const originVault = typeof state !== 'undefined' ? state.vaultPath : '';
+  if (typeof _outlinerPendingRenames !== 'undefined' && _outlinerPendingRenames.size) {
+    await Promise.all([..._outlinerPendingRenames.values()].map(pending => pending.promise));
+    if (originVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
+  }
+  const label = '無題';
+  // メニューを開いた行を固定し、API待機中の選択変更にも影響されないようにする。
+  const anchorNode = options.anchorNode;
+  // 閉じた作成先は、保存と並行して読み込む。行の＋は並び順を先に確かめる従来の経路を保つ。
+  const target = _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: !anchorNode, preferHome: options.preferHome });
+  const virtualTarget = !!window.GBOutlinerVirtualRender?.isVirtualContainer(target.container);
+  const needsReload = !!anchorNode && (target.deferTreeInsert || virtualTarget);
+  let pendingNode = null;
+  let existingNames = null;
+  let siblingNames = null;
+  if (!target.deferTreeInsert && target.container && !needsReload) {
+    existingNames = _outlinerSnapshotChildNames(target.container);
+    siblingNames = [...target.container.querySelectorAll(':scope > .tree-node')]
+      .map(node => node._nodeData?.path).filter(Boolean);
+    pendingNode = _createOutlinerPendingCreateNode(type, label);
+    _insertOutlinerCreateNode(target.container, pendingNode, anchorNode);
+  }
+  const saveCreateOrder = async (node) => {
+    if (!anchorNode || !siblingNames) return;
+    const names = siblingNames.slice();
+    const anchorIndex = anchorNode._nodeData?.path === parentPath
+      ? -1 : names.indexOf(anchorNode._nodeData?.path);
+    names.splice(anchorIndex + 1, 0, node.path);
+    setManualOrder(parentPath || '_root', names);
+    setSortSetting(parentPath || '_root', 'manual', 'asc');
+    if (needsReload) {
+      if (virtualTarget) {
+        const vr = window.GBOutlinerVirtualRender;
+        const inside = anchorNode._nodeData?.path === parentPath;
+        const referencePath = inside ? siblingNames[0] : anchorNode._nodeData?.path;
+        vr.dropInto(target.container, [node]);
+        if (referencePath) vr.reorderAround(target.container, [node.path], referencePath, inside ? 'above' : 'below');
+      }
+      _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true });
+    }
+  };
+  try {
+    if (needsReload) {
+      const sortCfg = getSortForFolder(parentPath);
+      const virtualItems = window.GBOutlinerVirtualRender?.stateChildItemsFor(target.container, parentPath);
+      const items = virtualItems || await _outlinerFetchFolderListingForConfirm(parentPath, anchorNode, {
+        detail: !['manual', 'name'].includes(sortCfg.sort),
+      });
+      if (!Array.isArray(items)) throw new Error('追加先の並び順を取得できませんでした。もう一度お試しください');
+      existingNames = new Set(items.map(item => _outlinerCreateItemIdentity(item.type, item.name)).filter(Boolean));
+      const ordered = virtualItems || (sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, parentPath)
+        : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order)));
+      siblingNames = ordered.map(item => item.path).filter(Boolean);
+    }
+    // 取り消しの記録は、操作を始めた画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは作ったものをゴミ箱へ移す）。
+    // フォルダツリー・フォルダパネル・コマンドパレットからの新規作成は、操作を始めた画面が「共通」の画面なので
+    // 共通の履歴へ積む。以前は、たまたま開いていたエディタ（前に作ったシナリオ等）の履歴に積んでいたため、
+    // 作ったファイルが新しいタブで開いた後は Ctrl+Z が届かず、元のエディタからの Ctrl+Z が別のファイルを
+    // ゴミ箱へ移していた（2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面からの共通履歴への落ち込みは
+    // 履歴の守り（作ったファイル以外を消す記録へは落ちない）が止める。
+    const createHistoryScope = '';
+    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
+    // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
+    if (!res.node.name) res.node.name = res.node.label;
+    const companions = Array.isArray(res.node.companion_paths) ? res.node.companion_paths.filter(Boolean) : [];
+    if (res.node.path && companions.length && typeof _pushCreatedOutlinerItemsHistory === 'function') {
+      // フォームは入力先のシートも一緒に作る。取り消しで両方をゴミ箱へ移す（以前はフォームだけが消え、
+      // シートが残っていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
+      _pushCreatedOutlinerItemsHistory([
+        { path: res.node.path, type: res.node.type || type, kind: 'file' },
+        ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
+      ], '新規作成: ' + (res.node.name || label), createHistoryScope);
+    } else if (res.node.path && typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: res.node.path, type: res.node.type || type }, '新規作成: ' + (res.node.name || label), {
+        scope: createHistoryScope,
+      });
+    }
+    await saveCreateOrder(res.node);
+    if (needsReload) {
+      // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
+      const createdNode = _findTreeNodeByPath(res.node.path);
+      _selectOutlinerCreateNode(createdNode);
+      _openOutlinerCreatedNode(res.node, res.node.name);
+      return;
+    }
 
     let insertTarget = target.deferTreeInsert
       ? _resolveOutlinerCreateInsertTarget(parentPath, { expandUnloaded: true, preferHome: options.preferHome })
@@ -14,9 +160,16 @@
       await _outlinerCreateFallbackToReload(pendingNode, nd, name);
       return;
     }
-    const newNode = insertTarget.deferTreeInsert ? null : createTreeNodeFromBrowse(res.node);
+    const virtualInsert = !insertTarget.deferTreeInsert
+      && window.GBOutlinerVirtualRender?.isVirtualContainer(insertTarget.container);
+    if (virtualInsert) {
+      if (pendingNode?.parentNode) pendingNode.remove();
+      window.GBOutlinerVirtualRender.dropInto(insertTarget.container, [res.node]);
+    }
+    const newNode = insertTarget.deferTreeInsert ? null
+      : virtualInsert ? _findTreeNodeByPath(res.node.path) : createTreeNodeFromBrowse(res.node);
 
-    if (!insertTarget.deferTreeInsert && newNode) {
+    if (!insertTarget.deferTreeInsert && newNode && !virtualInsert) {
       if (pendingNode && pendingNode.parentNode) pendingNode.replaceWith(newNode);
       else _insertOutlinerCreateNode(insertTarget.container, newNode, anchorNode);
       // 挿入直後に切断されている場合の軽い保険
@@ -25,9 +178,12 @@
 
     // 選択状態にする
     if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
+    if (typeof _folderApplySavedDropResults === 'function') {
+      _folderApplySavedDropResults(parentPath, [{ item: { ...res.node, name } }], []);
+    }
     // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
     const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
-    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
     _openOutlinerCreatedNode(nd, name);
@@ -103,6 +259,19 @@ async function showAddOutlinerItem(type) {
 
 // フォルダツリーのラベルをインライン編集
 function startTreeLabelEdit(labelEl, nodeData, onFinish) {
+  const pending = typeof _outlinerPendingRenames !== 'undefined'
+    ? _outlinerPendingRenames.get(_outlinerPendingRenameKey(nodeData?.path)) : null;
+  if (pending) {
+    // 最初の失敗の表示とラベルの復帰の間にF2が来ても、仮の名前を次の変更前の値にしない。
+    pending.retryLabels ||= new WeakSet();
+    if (!pending.retryLabels.has(labelEl)) {
+      pending.retryLabels.add(labelEl);
+      pending.promise.then(() => {
+        if (labelEl.isConnected && !labelEl.querySelector('input')) startTreeLabelEdit(labelEl, nodeData, onFinish);
+      }).catch(error => showStatus('名前の入力を再開できませんでした: ' + (error?.message || error), true));
+    }
+    return;
+  }
   const old = labelEl.textContent;
   const input = document.createElement('input');
   input.type = 'text';
@@ -729,172 +898,3 @@ function _handleOutlinerTreeKeydown(event) {
   if (event.key === 'F2') {
     if (current) _outlinerKeyboardStartRename(current);
     return;
-  }
-  // Delete: ツリーにフォーカスがある時はツリーの選択を削除する（マニュアルのショートカット）。
-  // 以前はツリーで扱わず、全体のショートカットがフォルダパネルの選択を削除していた（2026-11-22 M-014）。
-  if (event.key === 'Delete') {
-    if (current && !treeSelection.has(current)) {
-      treeSelection.clear();
-      treeSelection.add(current);
-      treeSelection.lastClicked = current;
-    }
-    if (typeof deleteOutlinerTreeSelection === 'function') deleteOutlinerTreeSelection();
-    return;
-  }
-  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
-  }
-  const nodes = _getVisibleTreeNodes(scopeSelector);
-  if (!nodes.length) return;
-  const rawIndex = nodes.indexOf(current);
-  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
-  const nextIndex = event.key === 'ArrowUp'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(nodes.length - 1, currentIndex + 1);
-  _outlinerKeyboardSelectNode(nodes[nextIndex]);
-}
-
-// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
-// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
-// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
-// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
-// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
-// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
-// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
-// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
-// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
-// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
-// （非仮想化フォルダの既存挙動は変更しない）。
-function _outlinerKeyboardVirtualContainerFor(nodeEl) {
-  const childrenDiv = nodeEl && nodeEl.parentElement;
-  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
-}
-
-function _outlinerKeyboardTryVirtualStep(current, key) {
-  const vr = window.GBOutlinerVirtualRender;
-  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
-
-  let childrenDiv = null;
-  let path = null;
-  let recoveringUnmounted = false;
-  if (current) {
-    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
-    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
-    path = current._nodeData && current._nodeData.path;
-  } else {
-    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
-    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
-    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
-    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
-    childrenDiv = vr.containerForPath(lastPath);
-    if (!childrenDiv) return false;
-    path = lastPath;
-    recoveringUnmounted = true;
-  }
-
-  const state = childrenDiv._virtualState;
-  if (!state || !path) return false;
-  const currentIndex = state.flat.findIndex(entry => entry.id === path);
-  if (currentIndex < 0) return false;
-
-  const delta = key === 'ArrowUp' ? -1 : 1;
-  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
-  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
-  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
-  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
-
-  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
-  if (!target) return false;
-  _outlinerKeyboardSelectNode(target);
-  return true;
-}
-
-(function initOutlinerTreeKeyboardNavigation() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
-  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
-})();
-
-// ドラッグ中のホイールスクロール対応
-(function() {
-  let _isDragging = false;
-  document.addEventListener('dragstart', () => { _isDragging = true; });
-  document.addEventListener('dragend', () => { _isDragging = false; });
-  document.addEventListener('drop', () => { _isDragging = false; });
-  // ドラッグ中にホイールでスクロール可能にする
-  const scrollTargets = ['tree-scroll-container'];
-  scrollTargets.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });
-})();
-
-(function initOutlinerLassoSelection() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  const LASSO_DRAG_THRESHOLD = 4;
-  let active = false;
-  let tracking = false;
-  let box = null;
-  let startX = 0;
-  let startY = 0;
-  let startClientX = 0;
-  let startClientY = 0;
-  let selectionMode = 'replace';
-  let selectionScope = '#outliner-tree,#body-home';
-  let baseSelection = [];
-  let pointerId = null;
-  let pointerCaptured = false;
-  let _savedScrollerPosition = null;
-
-  function _outlinerLassoMode(event) {
-    if (event.ctrlKey || event.metaKey) return 'toggle';
-    if (event.shiftKey) return 'add';
-    return 'replace';
-  }
-
-  function _outlinerLassoScopeFromTarget(target) {
-    if (target?.closest?.('#body-home')) return '#body-home';
-    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-home') return '#body-home';
-    if (section?.id === 'section-workspaces') return '#body-workspaces';
-    if (section?.id === 'section-roots') return '#outliner-tree';
-    return '#outliner-tree,#body-home';
-  }
-
-  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
-  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
-  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
-  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
-  function _outlinerLassoIsBlankTarget(target) {
-    if (window.GBOutlinerInput?.classifyPointerTarget) {
-      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
-    }
-    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
-    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
-    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-workspaces') return true;
-    return section?.id === 'section-roots' || section?.id === 'section-home';
-  }
-
-  function _outlinerLassoRectForEvent(event) {
-    const rect = scroller.getBoundingClientRect();
-    const currentX = event.clientX - rect.left + scroller.scrollLeft;
-    const currentY = event.clientY - rect.top + scroller.scrollTop;
-    const left = Math.min(startX, currentX);
-    const top = Math.min(startY, currentY);
-    const width = Math.abs(currentX - startX);
-    const height = Math.abs(currentY - startY);
-    return { left, top, right: left + width, bottom: top + height, width, height };
-  }
-
-  function _outlinerLassoRowRect(row) {

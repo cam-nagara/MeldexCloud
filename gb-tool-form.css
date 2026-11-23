@@ -1,5 +1,7 @@
 .gb-form-app { display:flex; flex-direction:column; width:100%; height:100%; min-height:0; overflow:hidden; background:var(--bg); color:var(--text); }
 .gb-form-app-toolbar { flex-shrink:0; box-sizing:border-box; }
+/* フォームには代替のモバイル編集バーがないため、共通の操作と退避メニューを残す。 */
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-form-app > .gb-toolbar:not([hidden]) { display:flex !important; }
 .gb-form-app-toolbar label { display:flex; flex-wrap:nowrap; align-items:center; gap:8px; }
 .gb-form-app-toolbar .gb-form-source-sheet { padding:0; border:0; background:transparent; }
 .gb-form-app-toolbar .gb-form-source-sheet > .tb-select { height:var(--ui-h-xs); min-height:var(--ui-h-xs); }
