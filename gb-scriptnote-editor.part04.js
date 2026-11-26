@@ -1034,3 +1034,20 @@ window.MeldexScriptNoteTitleSave = async function (body, preferredEditor = null)
 };
 
 // Clip Studio / SEP 連携は gb-scriptnote-clipstudio.js に分離
+
+function _sn2PreserveDraftsForUnload(event) {
+  if (typeof _sn2Editors === 'undefined') return;
+  const editors = new Set(Object.values(_sn2Editors));
+  let preserved = true;
+  for (const editor of editors) {
+    if (typeof editor?.preserveDraftForUnload === 'function' && !editor.preserveDraftForUnload()) preserved = false;
+  }
+  if (!preserved && event.type !== 'pagehide') {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener?.('beforeunload', _sn2PreserveDraftsForUnload);
+  window.addEventListener?.('pagehide', _sn2PreserveDraftsForUnload);
+}

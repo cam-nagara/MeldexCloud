@@ -67,6 +67,10 @@ function cfPrompt(message, defaultValue, options) {
 
 // xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
 function importXlsxToOutliner() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    showStatus('Excelからのシナリオ作成はデスクトップ版で利用できます', true);
+    return;
+  }
   document.getElementById('xlsx-import-input').click();
 }
 
@@ -100,6 +104,14 @@ async function handleXlsxImportToOutliner(e) {
     });
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
+    if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');
+    // 新規作成と同じ共通履歴へ積む。取り消しは作成ファイルだけをゴミ箱へ、
+    // やり直しはそこから復元する。以前開いていた文書の履歴には混ぜない。
+    if (typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: scriptnotePath, type: 'scriptnote' }, 'Excelからシナリオを作成: ' + label, {
+        scope: '',
+      });
+    }
 
     // 台本エディタで開く
     if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {

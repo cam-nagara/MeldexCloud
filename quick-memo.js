@@ -86,14 +86,21 @@
   let storageLocationEpoch = 0;
   let sendLease = false;
   let deliveryProgress = null;
+  let deliveryPosition = '';
   let resolvedDeliveryTarget = null;
   const PREPARATION_TIMEOUT_MS = 15000;
-  // 保存（編集ロック・権限の確認とシートへの書き込み）は録音つきでも終わる長さを取る。
-  // 返らない要求で先頭のメモが止まり、後ろのメモまで待たされ続けていた（2026-11-26 iPhone）。
-  // 時間切れは失敗として記録し、後ろのメモの送信へ進む。書き込みは条件付きなので、
+  // 保存（編集ロック・権限の確認とシートへの書き込み）は、Dropboxとの通信が
+  // この時間まったく返らない時だけ失敗にする。スマホでは通信が進んでいても1件1分以上
+  // かかることがあり、固定の2分で打ち切ると進行中の保存を失敗扱いにして次のメモと
+  // 書き込みがぶつかり、何度送っても片付かなかった（2026-11-26 iPhone, v0.7.819）。
+  // 返らない要求で先頭のメモが止まり後ろのメモまで待たされる問題は、この無通信の
+  // 期限で防ぐ。時間切れは失敗として記録し後ろのメモへ進む。書き込みは条件付きなので、
   // 遅れて成立しても再送は既存の行を確認して更新し、重複しない。
-  const SAVE_STEP_TIMEOUT_MS = Number(window.__MELDEX_QUICK_MEMO_TEST__?.saveTimeoutMs) > 0
-    ? Number(window.__MELDEX_QUICK_MEMO_TEST__.saveTimeoutMs) : 120000;
+  const SAVE_STALL_TIMEOUT_MS = Number(window.__MELDEX_QUICK_MEMO_TEST__?.saveTimeoutMs) > 0
+    ? Number(window.__MELDEX_QUICK_MEMO_TEST__.saveTimeoutMs) : 60000;
+  // 保存中のロックの延長（30秒ごと）も通信なので、無通信の期限だけでは返らない要求を
+  // 見逃す。1件の保存は5分で打ち切る（正常な1件はスマホで約1分、2026-11-26の実測から推定）。
+  const SAVE_STEP_MAX_MS = 5 * 60 * 1000;
   const durableMemory = new Map();
   const failedLocalWrites = new Set();
 
@@ -120,6 +127,7 @@
     registerCloseContract();
     switchMode(state.currentMode);
     initCloudMode();
+    releaseInterruptedDeliveries();
     initDeliveryInfo();
     if (!isCloudMode()) loadStorageLocation();
     loadTags();
@@ -1190,7 +1198,8 @@
     const failed = new Set();
     const results = new Map();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
-    for (const item of snapshot) {
+    for (const [index, item] of snapshot.entries()) {
+      deliveryPosition = `${snapshot.length}件中${index + 1}件目`;
       recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '', blocker: '', code: '', status: 0 });
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
@@ -1234,6 +1243,7 @@
         failed.add(item.memo_id);
       }
     }
+    deliveryPosition = '';
     const latest = readJson(QUEUE_KEY, []);
     const remaining = (Array.isArray(latest) ? latest : []).filter((item) => {
       if (!sent.has(item.memo_id) && !failed.has(item.memo_id)) return true;
@@ -1271,6 +1281,21 @@
     window.dispatchEvent(new Event('meldex:quick-memo-delivery'));
   }
 
+  // 画面を閉じた・強制終了した時点で「送信中」だった記録は、次に開いた時には誰も送っていない。
+  // 古い版が残したものも含めて「途中で終わった」に戻し、送信待ちの自動送信で送り直す。
+  function releaseInterruptedDeliveries() {
+    const records = readJson(DELIVERY_KEY, {}) || {};
+    let changed = false;
+    for (const entry of Object.values(records)) {
+      if (entry?.state !== 'sending') continue;
+      entry.state = 'interrupted';
+      entry.reason = '前回の送信は途中で終わりました。自動で送り直します';
+      entry.blocker = '';
+      changed = true;
+    }
+    if (changed) writeJson(DELIVERY_KEY, records);
+  }
+
   function appVersion() {
     return String(document.querySelector('meta[name="meldex-app-version"]')?.content
       || window.MELDEX_VERSION || window.MeldexCloudRuntimeConfig?.version?.semver || '不明');
@@ -1292,7 +1317,8 @@
         ['Dropboxの領域', (entry.namespace || resolvedDeliveryTarget?.namespace) === 'team_root' ? 'チーム領域' : (entry.namespace || resolvedDeliveryTarget?.namespace) === 'home' ? '個人ホーム' : '確認前です'],
         ['停止・確認中の場所', entry.blocker || 'なし'],
         ['送信全体の確認中の場所', deliveryProgress
-          ? (deliveryProgress.memoId === item.memo_id ? '' : '先行するメモ: ') + deliveryProgress.blocker : 'なし'],
+          ? (deliveryProgress.memoId === item.memo_id ? '' : '先行するメモ: ') + deliveryProgress.blocker
+            + (deliveryPosition ? `（${deliveryPosition}を送信中）` : '') : 'なし'],
       ];
       const cloud = window.MeldexStandaloneCloud?.getStatus?.() || {};
       if (cloud.initializationStage) rows.push(['Cloudの確認中の場所', cloud.initializationStage]);
@@ -1614,6 +1640,26 @@
     window.__MELDEX_QUICK_MEMO_TEST__.saveMemoCloud = saveMemoCloud;
   }
 
+  // Dropboxとの通信が最後に終わってからの時間を測る（送信処理の中身には手を入れず、
+  // ブラウザーの通信記録だけを見る）。記録を取れない環境では常に「今通信があった」扱いにし、
+  // 最大時間の期限だけで止める。
+  function watchDropboxActivity() {
+    let last = performance.now();
+    let observer = null;
+    try {
+      observer = new PerformanceObserver((list) => {
+        if (list.getEntries().some(entry => /dropboxapi\.com\//.test(String(entry.name || '')))) last = performance.now();
+      });
+      observer.observe({ type: 'resource', buffered: false });
+    } catch {
+      observer = null;
+    }
+    return {
+      idleMs: () => (observer ? performance.now() - last : 0),
+      stop: () => { try { observer?.disconnect(); } catch {} },
+    };
+  }
+
   // シート内の同じ行をetagで条件付き保存し、新規行はcreate_onlyで重複を防ぐ。
   function cloudNotFound(error) {
     const status = Number(error?.status || error?.status_code || 0);
@@ -1675,15 +1721,28 @@
     }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
     recordDelivery(item, { blocker: '編集ロック・権限の確認と保存', reason: 'Dropboxへ保存しています' });
+    const activity = watchDropboxActivity();
     let timer;
     const written = await Promise.race([
       cloudWriteFile(path, cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter), existingData),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Object.assign(new Error(
-          `編集ロック・権限の確認と保存が${Math.round(SAVE_STEP_TIMEOUT_MS / 1000)}秒以内に終わりませんでした。入力は端末に残っています。今すぐ再送してください`,
-        ), { code: 'save_timeout', dropboxPath: location?.path || path, namespaceKind: location?.namespaceKind || '' })), SAVE_STEP_TIMEOUT_MS);
+        const started = performance.now();
+        const check = () => {
+          const idle = activity.idleMs();
+          const total = performance.now() - started;
+          if (idle < SAVE_STALL_TIMEOUT_MS && total < SAVE_STEP_MAX_MS) {
+            timer = setTimeout(check, Math.min(1000, Math.max(100, SAVE_STALL_TIMEOUT_MS / 4)));
+            return;
+          }
+          const message = idle >= SAVE_STALL_TIMEOUT_MS
+            ? `編集ロック・権限の確認と保存で、Dropboxからの応答が${Math.round(SAVE_STALL_TIMEOUT_MS / 1000)}秒以内に終わりませんでした`
+            : `編集ロック・権限の確認と保存が${Math.round(SAVE_STEP_MAX_MS / 60000)}分以内に終わりませんでした`;
+          reject(Object.assign(new Error(message + '。入力は端末に残っています。今すぐ再送してください'),
+            { code: 'save_timeout', dropboxPath: location?.path || path, namespaceKind: location?.namespaceKind || '' }));
+        };
+        timer = setTimeout(check, Math.min(1000, Math.max(100, SAVE_STALL_TIMEOUT_MS / 4)));
       }),
-    ]).finally(() => clearTimeout(timer));
+    ]).finally(() => { clearTimeout(timer); activity.stop(); });
     return { ok: true, path, target_sheet: folder, tags, cloud_etag: written?.etag || '' };
   }
 

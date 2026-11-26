@@ -861,6 +861,9 @@ function _resolveAutoLinkPath(filePath) {
   if (/^(https?:|mailto:)/i.test(filePath)) return filePath;
   // Windowsの絶対パス（D:/ 等）またはUnix絶対パス（/で始まる）
   if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) return filePath;
+  // ソースフォルダの印つきパスは既に保存先を指定している。vaultを重ねない。
+  const source = window.MeldexSourceFolderRegistry?.parseSourcePath?.(filePath);
+  if (source) return source.virtualPath;
   // vaultパスがあればvault基準で解決
   if (state.vaultPath && !filePath.startsWith('./') && !filePath.startsWith('../')) {
     return state.vaultPath.replace(/\\/g, '/') + '/' + filePath;

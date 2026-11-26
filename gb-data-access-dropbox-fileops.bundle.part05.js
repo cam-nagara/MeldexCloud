@@ -1,3 +1,45 @@
+    let scannedDirs = 0;
+    let scanTruncated = false;
+
+    async function walk(relativePath) {
+      if (scanTruncated) return;
+      scannedDirs += 1;
+      if (scannedDirs > maxDirs) {
+        scanTruncated = true;
+        return;
+      }
+      const entries = await _listDirectoryEntries(provider, relativePath);
+      for (const entry of entries) {
+        const nextPath = entry.path || _joinPath(relativePath, entry.name);
+        if (!entry.name || entry.name.startsWith('.')) continue;
+        if (entry.handle.kind === 'directory') {
+          if (entry.name === '_meldex' || entry.name === '_trash' || entry.name === 'node_modules') continue;
+          await walk(nextPath);
+          if (scanTruncated) return;
+          continue;
+        }
+        scannedFiles += 1;
+        if (scannedFiles > maxFiles) {
+          scanTruncated = true;
+          return;
+        }
+        if (!_isDropboxConflictName(entry.name)) continue;
+        try {
+          const snapshot = await _readConflictSnapshot(provider, nextPath);
+          if (_resolvedConflictTombstone(snapshot.bytes)) continue;
+        } catch {}
+        total += 1;
+        if (items.length >= maxItems) continue;
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
+        const originalPath = _originalPathForConflict(nextPath);
+        items.push({
+          path: nextPath,
+          name: entry.name,
+          folder: _dirname(nextPath),
+          original_path: originalPath,
+          size: Number(stats.size || 0),
+          modified: stats.modified || '',
+        });
       }
     }
 
@@ -856,45 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       }
       return gate.prepareProviderDelete({
         provider, items, operation: body?.operation,
-        queryImpact: (currentProvider, currentItems) => _queryDeleteImpact(currentProvider, currentItems),
-      });
-    }
-
-    if (pathname === '/annotations' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const targetPath = _normalizeFolderPath(url.searchParams.get('target') || '');
-      const targetId = String(url.searchParams.get('target_id') || '').trim();
-      const annId = String(url.searchParams.get('ann_id') || '').trim();
-      const user = String(url.searchParams.get('user') || '').trim();
-      const annType = String(url.searchParams.get('ann_type') || '').trim();
-      const limitValue = Number(url.searchParams.get('limit') || 200);
-      const limit = Number.isFinite(limitValue) ? Math.floor(limitValue) : 200;
-      let rows = (await _listAnnotationRecords(provider, {
-        annId, targetId, targetPath, user, annType, limit, bulk: true,
-      })).map(_annotationRow);
-      if (annId) rows = rows.filter(row => String(row.id || '') === annId);
-      else if (targetId) rows = rows.filter(row => String(row.target_id || '') === targetId);
-      else if (targetPath) rows = rows.filter(row => _normalizeFolderPath(row.target_path || '') === targetPath);
-      if (user) rows = rows.filter(row => String(row.user || '') === user);
-      if (annType) rows = rows.filter(row => String(row.type || '') === annType);
-      rows.sort((a, b) => String(b.created || '').localeCompare(String(a.created || '')));
-      return limit > 0 ? rows.slice(0, limit) : rows;
-    }
-    if (pathname === '/annotations' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const now = _nowIso();
-      const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id, created: record.created, modified: record.modified };
-    }
-    if (pathname === '/annotations/restore' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
-    }
-    if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const now = _nowIso();
-      const targetFileName = _basename(body?.target_file || '');
-      const cascade = !!body?.cascade_container;
-      let directCount = 0;

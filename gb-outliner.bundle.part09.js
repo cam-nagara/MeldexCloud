@@ -1,3 +1,9 @@
+    pointerId = e.pointerId;
+    pointerCaptured = false;
+    selectionScope = _outlinerLassoScopeFromTarget(e.target);
+    baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
+    const rect = scroller.getBoundingClientRect();
+    startX = e.clientX - rect.left + scroller.scrollLeft;
     startY = e.clientY - rect.top + scroller.scrollTop;
     startClientX = e.clientX;
     startClientY = e.clientY;

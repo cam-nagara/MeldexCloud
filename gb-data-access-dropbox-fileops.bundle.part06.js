@@ -1,3 +1,45 @@
+        queryImpact: (currentProvider, currentItems) => _queryDeleteImpact(currentProvider, currentItems),
+      });
+    }
+
+    if (pathname === '/annotations' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const targetPath = _normalizeFolderPath(url.searchParams.get('target') || '');
+      const targetId = String(url.searchParams.get('target_id') || '').trim();
+      const annId = String(url.searchParams.get('ann_id') || '').trim();
+      const user = String(url.searchParams.get('user') || '').trim();
+      const annType = String(url.searchParams.get('ann_type') || '').trim();
+      const limitValue = Number(url.searchParams.get('limit') || 200);
+      const limit = Number.isFinite(limitValue) ? Math.floor(limitValue) : 200;
+      let rows = (await _listAnnotationRecords(provider, {
+        annId, targetId, targetPath, user, annType, limit, bulk: true,
+      })).map(_annotationRow);
+      if (annId) rows = rows.filter(row => String(row.id || '') === annId);
+      else if (targetId) rows = rows.filter(row => String(row.target_id || '') === targetId);
+      else if (targetPath) rows = rows.filter(row => _normalizeFolderPath(row.target_path || '') === targetPath);
+      if (user) rows = rows.filter(row => String(row.user || '') === user);
+      if (annType) rows = rows.filter(row => String(row.type || '') === annType);
+      rows.sort((a, b) => String(b.created || '').localeCompare(String(a.created || '')));
+      return limit > 0 ? rows.slice(0, limit) : rows;
+    }
+    if (pathname === '/annotations' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const now = _nowIso();
+      const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
+      await _writeAnnotationRecord(provider, record);
+      return { ok: true, id: record.id, created: record.created, modified: record.modified };
+    }
+    if (pathname === '/annotations/restore' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
+      return _restoreAnnotationRecord(provider, { ...(body || {}), id });
+    }
+    if (pathname === '/annotations/orphan-by-target' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const now = _nowIso();
+      const targetFileName = _basename(body?.target_file || '');
+      const cascade = !!body?.cascade_container;
+      let directCount = 0;
       let cascadeCount = 0;
       const records = await _listAnnotationRecords(provider);
       for (const record of records) {
@@ -432,6 +474,25 @@
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
+      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      let scenarioSnapshot = null;
+      let scenarioContent = '';
+      if (scenarioRename) {
+        scenarioSnapshot = await _readFileSnapshot(provider, oldPath, source);
+        const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
+        const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+        const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
+        const desiredTitle = displayName || newName;
+        if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
+          scenarioContent = original;
+        } else {
+          doc.title = desiredTitle;
+          if (hasDisplayTitle || keepDisplayTitle) doc.display_title = desiredTitle;
+          scenarioContent = bom + JSON.stringify(doc, null, 2);
+        }
+      }
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
         const heading = displayName || newName;
@@ -441,10 +502,13 @@
         // 上書きしていた（実データ388件が該当）。
         await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
       }
-      if (keepDisplayTitle) {
+      if (keepDisplayTitle && !scenarioRename) {
         await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
-      if (nextPath !== oldPath) {
+      if (scenarioRename) {
+        await _commitScenarioRenameTitle(provider, oldPath, nextPath, scenarioSnapshot, scenarioContent,
+          path => _readFileSnapshot(provider, path));
+      } else if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
       }
       const warnings = [];
@@ -465,7 +529,8 @@
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
+        ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };
     }
 
 /* === gb-data-access-dropbox-fileops-file-revision.js === */
@@ -833,68 +898,3 @@
           ok: true,
           unchanged: true,
           new_path: sourcePath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
-          file_id: _fnvFileId(sourcePath),
-          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
-        };
-      }
-      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
-      const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
-        action: 'move', oldPath: sourcePath, newPath: conflict.path,
-        isFolder: source.kind === 'directory',
-      });
-      await _moveEntry(provider, sourcePath, conflict.path);
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
-      ));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
-          : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
-      ));
-      await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
-        action: 'move', oldPath: sourcePath, newPath: conflict.path,
-        isFolder: source.kind === 'directory', annotationPlan,
-      }));
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
-      });
-      return {
-        ok: true,
-        new_path: conflict.path,
-        new_name: source.kind === 'file' ? _splitNameAndExt(_basename(conflict.path)).stem : _basename(conflict.path),
-        file_id: _fnvFileId(conflict.path),
-        relocate,
-        ..._resultWarnings(warnings),
-      };
-    }
-
-    // 一括改名の物理移動はproviderがまとめて行い、副作用はこの同一操作IDの
-    // aftercareへ集約する。単件/outliner/moveをファイル数分呼ばない。
-    if (!window.MeldexCloudBatchRenameAftercare) {
-      window.MeldexCloudBatchRenameAftercare = {
-        async prepare({ provider, entries, direction }) {
-          const plans = new Map();
-          for (const entry of entries || []) {
-            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
-            const newPath = direction === 'reverse' ? entry.source : entry.destination;
-            const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
-              action: 'rename', oldPath, newPath, isFolder: false,
-            });
-            plans.set(oldPath, annotationPlan);
-          }
-          return plans;
-        },
-        async apply({ provider, entries, operationId, direction, prepared }) {
-          const warnings = [];
-          const mappings = (entries || []).map(entry => ({
-            oldPath: direction === 'reverse' ? entry.destination : entry.source,
-            newPath: direction === 'reverse' ? entry.source : entry.destination,
-            isFolder: false,
-          }));
-          await _runPostMutationStep(warnings, 'version-history', async () => {
-            if (!mappings.length) return;

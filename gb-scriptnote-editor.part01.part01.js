@@ -154,6 +154,63 @@ function _sn2ReplaceRawTextByVisibleRange(rawText, startOffset, endOffset, repla
   return before + _sn2EscapeScriptNotePlainText(String(replacement || '')) + after;
 }
 
+// ファイル保存後の削除・復元を順番に反映する。保存拒否ではここへ来ない。
+// このエディタの行削除で孤児になったコメントだけを戻し、元から孤児のものは保つ。
+function _sn2QueueRowCommentSync(editor, path, removed, added) {
+  const states = editor._rowCommentStates ||= new Map();
+  const key = editor.doc?.meldex?.document_id || path;
+  if (!states.has(key) && !removed.length) return Promise.resolve();
+  if (!states.has(key)) states.set(key, { removed: new Set(), restored: new Set(), ids: new Map() });
+  const state = states.get(key);
+  const matches = (row, id) => {
+    let ref = row.target_ref;
+    try { if (typeof ref === 'string') ref = JSON.parse(ref); } catch (_) { return false; }
+    if (!ref || row.type !== 'comment') return false;
+    const sameFile = String(ref.file || path).replace(/\\/g, '/') === String(path).replace(/\\/g, '/');
+    return sameFile && ((row.target_kind === 'scriptnote_line' && ref.lineId === id)
+      || (ref.container?.kind === 'scriptnote_line' && ref.container.id === id));
+  };
+  const orphaned = row => row.orphan === true || Number(row.orphan) === 1;
+  const run = async () => {
+    for (const id of removed) { state.removed.add(id); state.restored.delete(id); }
+    for (const id of added) {
+      if (state.ids.has(id) || state.removed.has(id)) state.restored.add(id);
+      state.removed.delete(id);
+    }
+    if (!state.removed.size && !state.restored.size) return;
+    const result = await apiFetch('/annotations?target=' + encodeURIComponent(path) + '&type=comment', { silentError: true, skipBrowseCache: true });
+    const rows = Array.isArray(result) ? result : (result?.annotations || result?.items || []);
+    for (const id of [...state.removed]) {
+      const ids = state.ids.get(id) || new Set();
+      for (const row of rows) if (matches(row, id) && !orphaned(row)) ids.add(String(row.id));
+      state.ids.set(id, ids);
+      await apiPost('/annotations/orphan-by-target', {
+        target_kind: 'scriptnote_line', target_file: path, item_id: id, cascade_container: true,
+      }, { silentError: true });
+      state.removed.delete(id);
+    }
+    for (const id of [...state.restored]) {
+      const ids = state.ids.get(id) || new Set();
+      for (const row of rows) {
+        if (!ids.has(String(row.id)) || !matches(row, id) || !orphaned(row)) continue;
+        await apiPut('/annotations/' + encodeURIComponent(row.id), {
+          orphan: 0, orphaned_at: null, expected_modified: row.modified || row.modified_at || '',
+        }, { silentError: true });
+      }
+      state.restored.delete(id);
+    }
+    if (typeof CommentBadges !== 'undefined' && editor._path === path && editor.host) {
+      CommentBadges.invalidate(path);
+      CommentBadges.refreshScriptnote(path, editor.host);
+    }
+  };
+  editor._rowCommentSync = (editor._rowCommentSync || Promise.resolve()).then(run).catch(error => {
+    console.warn('行のコメントを整理できませんでした:', error);
+    if (typeof showStatus === 'function') showStatus(`シナリオは保存しましたが、コメント${state.removed.size + state.restored.size}件を整理できませんでした（${error?.message || error}）`, true);
+  });
+  return editor._rowCommentSync;
+}
+
 class ScriptNoteEditor {
   constructor(hostEl) {
     this.host = hostEl;
@@ -190,7 +247,7 @@ class ScriptNoteEditor {
 
   // === ドキュメント操作 ===
 
-  loadDoc(parsed, path = '', etag = '', conflictGeneration = null, identity = null) {
+  loadDoc(parsed, path = '', etag = '', conflictGeneration = null, identity = null, options = {}) {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     let documentKey = path;
     if (coordinator && path) {
@@ -230,6 +287,7 @@ class ScriptNoteEditor {
     this._ensureDefaultChara();
     applyLegacyScriptNoteDocMigrations(this.doc, {
       legacyDetectKindByName: (name) => this._legacyDetectKindByName(name),
+      preserveStoredRoleFlags: !!options.preserveStoredRoleFlags && Number(parsed?.schema_version) >= 4,
     });
     // 一元化移行の完了後にのみ補完される初期値（（なし）行の区切り背景=透明）を初回描画前に確定させる
     this._ensureDefaultChara();
@@ -612,26 +670,9 @@ class ScriptNoteEditor {
       if (unchanged && this._path === savePath) this._syncSiblingEditorsAfterSave(documentKey, savePath, json, saveResult);
       // 削除された行IDを抽出し、該当コメントを孤児化 (annotation_unification_plan.md §5.3)
       const removed = [...prevIds].filter(id => !currIds.has(id));
-      if (removed.length > 0) {
-        const path = savePath;
-        // 保存自体は完了しているので待たないが、失敗は黙って捨てずに件数と理由を知らせる。
-        Promise.allSettled(removed.map(id =>
-          apiPost('/annotations/orphan-by-target', {
-            target_kind: 'scriptnote_line',
-            target_file: path,
-            item_id: id,
-            cascade_container: true,
-          }, { silentError: true })
-        )).then(results => {
-          const failed = results.filter(result => result.status === 'rejected');
-          if (!failed.length) return;
-          console.warn('削除した行のコメントを整理できませんでした:', failed.map(result => result.reason));
-          const reason = failed[0]?.reason?.message || failed[0]?.reason || '';
-          if (typeof showStatus === 'function') {
-            showStatus(`シナリオは保存しましたが、削除した行のコメント${failed.length}件を整理できませんでした${reason ? `（${reason}）` : ''}`, true);
-          }
-        });
-      }
+      const added = [...currIds].filter(id => !prevIds.has(id));
+      // 保存自体は完了しているので待たない。失敗は表示し、次の保存で再試行する。
+      _sn2QueueRowCommentSync(this, savePath, removed, added);
       // Audit-P1 H-3: 保存完了後にコメントバッジキャッシュを無効化し、
       // 行並び替え・行挿入・行削除の結果を即座に反映する（3 秒 TTL キャッシュで
       // 古いバッジが残るのを防ぐ）。
@@ -708,6 +749,21 @@ class ScriptNoteEditor {
         console.warn('[Meldex] 別のパネルのシナリオへ保存内容を反映できませんでした', error);
       }
     });
+  }
+
+  preserveDraftForUnload() {
+    if (!this.doc) return true;
+    try {
+      this._syncAllFromDom();
+      if (!this._dirty) return true;
+      if (!this._path) return false;
+      const json = JSON.stringify(this.collectDoc(), null, 2);
+      // 読込・終了時は IndexedDB と250msの保管タイマーを待てない。
+      // 通常入力の遅延直列化は維持し、離れる瞬間だけ同期の予約を残す。
+      return window.MeldexDraftRecovery?.reserveDraft?.(this._path, json, this._lastSavedEtag || '')?.ok === true;
+    } catch (_) {
+      return false;
+    }
   }
 
   async preserveDraftForClose() {

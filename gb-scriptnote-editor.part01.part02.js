@@ -281,11 +281,23 @@
       this._bind();
       this._applyReadOnlyDom();
       this._adjustRubySpacing();
-      settleWrapPacking(true);
+      // 横書きでルビが無い場合は、この間に行寸法が変わらない。
+      // 同じ全行の計測と段組みを二重に行わず、入力直後の再レイアウトを抑える。
+      if (viewMode === 'vertical' || editor.querySelector('[data-ruby]')) settleWrapPacking(true);
       if (lastFinalRowSizes?.length === wrapRowKeys.length) {
+        // Undo/Redoで直前の本文へ戻る時も、その本文の実測寸法を再利用する。
+        // 最終配置は上で毎回検査する。異なる表示設定はglobalKeyで分離し、
+        // 保持量は現在の行数の3倍までにして、編集履歴全体を溜め込まない。
+        const measuredSizes = new Map(wrapSizeCache || []);
+        wrapRowKeys.forEach((key, index) => {
+          measuredSizes.delete(key);
+          measuredSizes.set(key, lastFinalRowSizes[index]);
+        });
+        const cacheLimit = Math.max(64, wrapRowKeys.length * 3);
+        while (measuredSizes.size > cacheLimit) measuredSizes.delete(measuredSizes.keys().next().value);
         this._wrapRowSizeCache = {
           globalKey: wrapSizeGlobalKey,
-          map: new Map(wrapRowKeys.map((key, index) => [key, lastFinalRowSizes[index]])),
+          map: measuredSizes,
         };
       }
       // 縦書き折り返し: 各段のヘッダー高さを測定し行に適用 + テキスト幅拡張

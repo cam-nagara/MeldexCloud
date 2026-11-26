@@ -535,6 +535,8 @@
     }
     if (toolType === 'scriptnote') {
       return [
+        { id: 'reveal-in-folder-tree', label: 'フォルダツリーで表示', icon: 'folderTree', action: () => _callGlobal('revealCurrentInFolderTree', 'scriptnote', null) },
+        { id: 'duplicate-file', label: 'ファイルを複製', icon: 'copy', action: () => _callGlobal('_duplicateCurrentFile', 'scriptnote') },
         { id: 'open', label: '開く', icon: 'folderOpen', action: () => _callGlobal('showScriptNoteOpenModal') },
         { id: 'new-scriptnote', label: '新規作成', icon: 'plus', action: () => _callGlobal('showAddOutlinerItem', 'scriptnote') },
         { id: 'import-scriptnote', label: '旧シナリオからインポート', icon: 'download', action: () => _callGlobal('showScriptNoteImportModal') },
@@ -896,5 +898,3 @@
   }
 
   function _currentAnnotationTool() {
-    const active = document.querySelector('#ann-toolbar .ann-tool.active[data-tool]');
-    if (active?.dataset?.tool) return active.dataset.tool;

@@ -1,3 +1,5 @@
+      new MutationObserver((records) => {
+        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
       }).observe(annToolbar, {
         attributes: true,
         attributeFilter: ['class', 'style'],

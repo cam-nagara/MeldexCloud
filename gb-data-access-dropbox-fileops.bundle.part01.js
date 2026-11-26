@@ -733,6 +733,48 @@
     return entry;
   }
 
+  async function _commitScenarioRenameTitle(provider, oldPath, newPath, snapshot, content, readSnapshot) {
+    const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(snapshot.bytes);
+    const changesTitle = original !== content;
+    if (changesTitle && (!snapshot.etag || typeof provider.uploadBytesConditional !== 'function')) {
+      throw new Error('題名の保存に必要な版の確認ができません');
+    }
+    if (newPath !== oldPath) await _moveEntry(provider, oldPath, newPath);
+    if (!changesTitle) return null;
+    try {
+      const moved = await readSnapshot(newPath);
+      if (!moved.etag) throw new Error('移動後の版を確認できないため題名を保存しません');
+      if (new TextDecoder('utf-8', { ignoreBOM: true }).decode(moved.bytes) !== original) {
+        const conflict = new Error('改名の間に文書が更新されたため題名の保存を中止しました');
+        conflict.status = 409;
+        throw conflict;
+      }
+      return await provider.uploadBytesConditional(newPath, new TextEncoder().encode(content), moved.etag);
+    } catch (error) {
+      let current;
+      try { current = await readSnapshot(newPath); } catch (_) { /* 応答不明の時は保存済み内容を戻し書きしない。 */ }
+      if (current && new TextDecoder('utf-8', { ignoreBOM: true }).decode(current.bytes) === content) {
+        // 保存できた後に応答だけが切れた。同じ内容と版を確認して完了にする。
+        return { rev: current.etag };
+      }
+      if (current && newPath !== oldPath) {
+        let restored = false;
+        try {
+          // 内容は書き戻さない。保存拒否・競合時は同じファイルを元の名前へ戻し、他の人の編集を保つ。
+          await _moveEntry(provider, newPath, oldPath);
+          restored = true;
+        } catch (_) { /* 戻せなければ実在する保全先をエラーへ添える。 */ }
+        if (restored) throw error;
+      } else if (current) {
+        throw error;
+      }
+      error.detail = { ...(error.detail || {}), recovery_path: newPath, source_path: oldPath };
+      error.message += `。ファイルは「${newPath}」に保全されています。接続後にフォルダツリーから開き直してください`;
+      throw error;
+    }
+  }
+  // シナリオ改名の保存処理ここまで
+
   // 注意: このIIFEはここでは閉じない。gb-data-access-dropbox-fileops-conflict-backups.js /
   // gb-data-access-dropbox-fileops-annotations.js / gb-data-access-dropbox-fileops-versions.js /
   // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
@@ -856,45 +898,3 @@
       _assertCloudCopyRecord(previous, operationId, operation, resolved);
       selected = previous || {
         operation_id: operationId, operation, fingerprint: resolved.fingerprint,
-        scope_id: resolved.scope,
-        state: intent?.operation_state === 'awaiting_proof' ? 'awaiting_proof' : 'prepared',
-        intent: structuredClone(intent),
-        saved_at: new Date().toISOString(),
-      };
-      return { ...state, outliner_operations: previous ? operations
-        : _pruneCloudCopyOperations([...operations, selected]) };
-    }, resolved.writeSession);
-    return selected;
-  }
-
-  async function _updateCloudCopyIntent(provider, operationId, operation, payload, intent) {
-    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateCloudCopyJournal(provider, operation, state => {
-      const operations = _normalizeOutlinerOperations(state.outliner_operations);
-      const index = operations.findIndex(row => row.operation_id === operationId);
-      const previous = index < 0 ? null : operations[index];
-      _assertCloudCopyRecord(previous, operationId, operation, identity);
-      if (!previous || (previous.state !== 'prepared' && previous.state !== 'awaiting_proof')) {
-        throw new Error('再開可能なCloudファイル操作履歴がありません');
-      }
-      const nextState = intent?.operation_state === 'proof_ready' ? 'prepared' : previous.state;
-      operations[index] = {
-        ...previous, state: nextState, intent: structuredClone(intent), saved_at: new Date().toISOString(),
-      };
-      return { ...state, outliner_operations: operations };
-    }, identity.writeSession);
-  }
-
-  async function _failCloudCopyOperation(provider, operationId, operation, payload, reason) {
-    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
-    await _updateCloudCopyJournal(provider, operation, state => {
-      const operations = _normalizeOutlinerOperations(state.outliner_operations);
-      const index = operations.findIndex(row => row.operation_id === operationId);
-      const previous = index < 0 ? null : operations[index];
-      _assertCloudCopyRecord(previous, operationId, operation, identity);
-      if (!previous) throw new Error('再開可能なCloudファイル操作履歴がありません');
-      if (previous.state === 'completed') return state;
-      operations[index] = {
-        ...previous, state: 'failed', failure_reason: String(reason || 'publish-failed'),
-        saved_at: new Date().toISOString(),
-      };

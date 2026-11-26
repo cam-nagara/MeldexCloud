@@ -1246,6 +1246,46 @@ if (typeof window !== 'undefined' && !window.__meldexSearchResultRevealBound) {
   window.addEventListener('meldex:search-result-open', event => revealSearchResultLocation(event.detail || {}));
 }
 
+async function _prepareVaultReplaceScriptnotes(targets) {
+  const normalize = path => String(path || '').replace(/\\/g, '/');
+  const paths = new Set(targets.map(target => normalize(target.path)));
+  const editors = new Set();
+  if (typeof forEachComponent === 'function') forEachComponent(component => {
+    const editor = component?._editor;
+    if (editor?.doc && paths.has(normalize(editor._path))) editors.add(editor);
+  });
+  const prepared = [];
+  for (const editor of editors) {
+    if (await editor.flush() === false || editor._dirty) {
+      throw new Error('シナリオの未保存の入力を確定できないため、全体置換を中止しました');
+    }
+    prepared.push({ editor, path: editor._path, before: editor._takeSnapshot() });
+  }
+  return prepared;
+}
+
+async function _refreshVaultReplaceScriptnotes(prepared) {
+  const loaded = new Map();
+  for (const { editor, path, before } of prepared) {
+    // 置換中に別の文書へ移ったり追加入力した時は、その内容を読み直しで消さない。
+    if (editor._path !== path || editor._dirty || editor._takeSnapshot() !== before) {
+      showStatus('全体置換は保存しました。追加入力を保っているシナリオは、保存内容を確認してから開き直してください', true);
+      continue;
+    }
+    if (!loaded.has(path)) loaded.set(path, await apiFetch('/file?path=' + encodeURIComponent(path), { skipBrowseCache: true }));
+    const saved = loaded.get(path);
+    const doc = JSON.parse(saved.content);
+    if (editor.loadDoc(doc, path, saved.etag || '', null, saved, { preserveStoredRoleFlags: true }) === false) {
+      throw new Error('置換したシナリオを画面へ反映できませんでした');
+    }
+    const after = editor._takeSnapshot();
+    if (before !== after && typeof historyPush === 'function') {
+      historyPush('シナリオ: 全体置換', () => editor._applySnapshot(before),
+        () => editor._applySnapshot(after), editor._historyScope());
+    }
+  }
+}
+
 async function doVaultReplace(all) {
   const q = document.getElementById('sp-query').value;
   const r = document.getElementById('sp-replace').value;
@@ -1281,7 +1321,14 @@ async function doVaultReplace(all) {
   if (!await cfConfirm(`${targets.length}ファイルの${all ? '全一致箇所' : '各ファイルの最初の一致箇所'}を一括置換しますか？\n途中で失敗した場合は全ファイルを元に戻します。\n\n「${q}」→「${r}」`)) return;
 
   let result;
+  let scriptnotes;
   try {
+    scriptnotes = await _prepareVaultReplaceScriptnotes(targets);
+    // flushで保存した場合は検索時の版が古くなるため、確定後の版で条件付き保存する。
+    for (const { editor, path } of scriptnotes) {
+      const target = targets.find(item => item.path === path);
+      if (target && editor._lastSavedEtag) target.etag = editor._lastSavedEtag;
+    }
     result = await apiPut('/replace-batch', {
       targets, search: q, replace: r, case: caseSensitive, regex: useRegex, all,
     });
@@ -1297,14 +1344,13 @@ async function doVaultReplace(all) {
   document.getElementById('sp-status').textContent = statusText;
   await doVaultSearch(); // 結果を更新
   document.getElementById('sp-status').textContent = statusText;
+  try { await _refreshVaultReplaceScriptnotes(scriptnotes); }
+  catch (error) { showStatus('全体置換は保存しましたが、画面を更新できませんでした: ' + error.message, true); }
 
   // 開いているファイルを再読み込み（置換結果を反映）
   try {
     const lastView = JSON.parse(localStorage.getItem('lastView') || '{}');
     if (lastView.type === 'page' && lastView.path) openPage(lastView.label || '', lastView.path);
-    else if ((lastView.type === 'scriptnote' || lastView.type === 'scenario') && lastView.path && typeof openScenarioInScriptNote === 'function') {
-      openScenarioInScriptNote(lastView.path, lastView.label || lastView.path.split('/').pop().replace(/\.\w+$/, ''));
-    }
     else if (lastView.type === 'entity' && lastView.entityPath) selectEntity(lastView.entityPath);
     else if ((lastView.type === 'pivot' || lastView.type === 'database') && lastView.dbPath && typeof selectDatabase === 'function') {
       await selectDatabase(lastView.dbPath, null, { skipNavPush: true, skipRecent: true, skipAutoVersion: true });

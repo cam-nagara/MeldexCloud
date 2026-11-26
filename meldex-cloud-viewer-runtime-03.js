@@ -9812,6 +9812,39 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (generation === targetGeneration) loadSiblingFolders();
   }
 
+  // PDFのページを編集した後に、同じPDFを読み直す。表示モード・倍率・回転は保ち、指定のページの辺りを表示する。
+  // 読み直しに失敗したら前の表示のまま知らせる（編集の結果はファイルに保存済み）。
+  async function reloadPdfDocument(nextIndex = idx) {
+    if (!isPdf || !pdfPath) return false;
+    const generation = ++targetGeneration;
+    showGroupToken++;
+    const base = Utils.fileRawUrlForPath(pdfPath);
+    const url = base + (base.includes('?') ? '&' : '?') + 'rev=' + Date.now();
+    let opened;
+    try {
+      opened = await PdfRenderer.openDocument(url);
+    } catch (error) {
+      if (generation === targetGeneration) flashStatus('編集後のPDFを読み直せませんでした: ' + (error?.message || error), 6000);
+      return false;
+    }
+    if (generation !== targetGeneration) return false;
+    const previous = pdfDoc;
+    pdfDoc = opened;
+    renderCache.clear();
+    items = [];
+    for (let i = 1; i <= pdfDoc.numPages; i++) items.push({ type: 'pdf-page', pageNum: i, url: '', w: 0, h: 0, path: pdfPath });
+    idx = Math.max(0, Math.min(items.length - 1, Number(nextIndex) || 0));
+    try {
+      const size = await PdfRenderer.getPageNaturalSize(pdfDoc, idx + 1);
+      if (generation !== targetGeneration) return false;
+      items[idx].w = size.width; items[idx].h = size.height;
+    } catch (_) {}
+    if (previous && previous !== opened) { try { previous.destroy?.(); } catch (_) {} }
+    await showGroup(pdfPairStart(idx));
+    notifyPageState();
+    return true;
+  }
+
   function rawItemUrl(item) { return item?.url || item?.path || ''; }
   function displayItemUrl(item) { return item?.displayUrl || window.MeldexPwaFileUrl?.displayUrl?.(rawItemUrl(item)) || item?.url || ''; }
   async function ensureItemUrl(item) {
@@ -11151,7 +11184,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     panBy, setPan, setOriginal, toggleFlipH, toggleFlipV, rotate, setRotateDeg,
     toggleBg, toggleHud, toggleFullscreen, setSpeed, setFadeMs, flashStatus, notifyResize,
     // iframe再利用（項目7。プロトコルはviewer-open-request.jsが担当し、本APIは判定/実行のみ）
-    canReopenWithUrl: Utils.canReopenWithUrl, reopenWithUrl,
+    canReopenWithUrl: Utils.canReopenWithUrl, reopenWithUrl, reloadPdfDocument,
   };
 })();
 

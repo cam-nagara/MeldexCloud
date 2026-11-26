@@ -16606,7 +16606,7 @@ const GBLayout = (() => {
         // そのケースを node.tabs.length の差分で検出し、このペインに新規追加された時だけ
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
-        const tabId = GBTabs.addTab(node.id, openLabel, openType, it.path, openState, { preferTargetPane: true });
+        const tabId = GBTabs.addTab(node.id, openLabel, openType, normalizedTarget?.path || it.path, openState, { preferTargetPane: true });
         if (!tabId) continue;
         openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
@@ -24268,8 +24268,31 @@ class VersionComponent extends ToolComponent {
       } catch (error) { errors.push('フォルダバージョン: ' + (error?.message || '取得失敗')); }
     } else {
       try {
-        versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
-      } catch (error) { errors.push('ファイルバージョン: ' + (error?.message || '取得失敗')); }
+        versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path), { silentError: true });
+      } catch (error) {
+        // SQLite内のトピックは論理パスを持つが、個別のMarkdownファイルは無い。
+        // 実在するトピックと確認できた場合だけ、保存先のシートの版を表示する。
+        const selected = typeof state !== 'undefined' ? state.currentEntityPath : '';
+        if (!isDb && error?.status === 404 && selected === path && /\.md$/i.test(path)) {
+          try {
+            const entity = await apiFetch('/entity?path=' + encodeURIComponent(path), { silentError: true });
+            if (this._destroyed || this._loadSeq !== loadSeq || !this.el || state.currentEntityPath !== path) return;
+            const parent = String(path).replace(/\\/g, '/').replace(/\/[^/]+$/, '');
+            if (entity?.path === path && Number(entity.revision) >= 1 && parent && parent !== path) {
+              window._meldexEntityVersionTarget = { path, dbPath: parent, sequence: window._selectEntityLoadSeq };
+              if (typeof GBLayout !== 'undefined') {
+                const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(item => item.id === this.tabId);
+                if (tab) {
+                  tab.path = parent;
+                  tab.state = { ...(tab.state || {}), versionPath: parent, versionType: 'db' };
+                }
+              }
+              return this._loadVersions(parent, 'db');
+            }
+          } catch (_) { /* 実際の不在・読込失敗は元のエラーとして表示する。 */ }
+        }
+        errors.push('ファイルバージョン: ' + (error?.message || '取得失敗'));
+      }
     }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     // 制作進行の日次記録は対象ファイルに紐づかないため、タイムラインAPIは呼ばない
@@ -24292,7 +24315,7 @@ class VersionComponent extends ToolComponent {
 
   _loadErrorHtml(path, vType, errors) {
     return `<div role="alert" class="gb-version-load-error" style="padding:8px;">一覧の一部を読み込めませんでした。<br>${errors.map(esc).join('<br>')}
-      <button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('refresh', path, '', vType)}>再読み込み</button></div>`;
+      <button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('refresh', path, '', vType, 'retry')}>再読み込み</button></div>`;
   }
 
   _syncVersionBusy() {
@@ -24671,14 +24694,14 @@ class VersionComponent extends ToolComponent {
   }
 
   _versionE2eToken(value) {
+    // 区切り文字や日本語を落とすと、別の文書・版が同じ識別子になる。
+    // エスケープ自身の「_」も符号化し、元の文字列を一意に保つ。
     return String(value == null ? '' : value)
-      .trim()
-      .replace(/[^a-zA-Z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '');
+      .replace(/[^a-zA-Z0-9]/g, char => '_' + char.charCodeAt(0).toString(16).padStart(4, '0'));
   }
 
-  _versionButtonAttrs(action, path, versionName = '', vType = '') {
-    const id = ['version', vType, path, versionName, action]
+  _versionButtonAttrs(action, path, versionName = '', vType = '', location = '') {
+    const id = ['version', vType, path, versionName, action, location]
       .map(value => this._versionE2eToken(value))
       .filter(Boolean)
       .join('-');
@@ -64437,6 +64460,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   characters.forEach((chara) => {
     const item = _scriptNotePlainObject(chara);
     if (item.isDefault) return;
+    if (options.preserveStoredRoleFlags) return;
     if (item.isBreak === undefined) {
       if (item.kind === 'break') item.isBreak = true;
       else if (item.name && (legacyBreakNames.includes(item.name) || legacyDetectKindByName(item.name) === 'break')) item.isBreak = true;
@@ -77122,12 +77146,18 @@ class ScriptNoteComponent extends ToolComponent {
           const stemNow = String(editor._path || '').split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
           if (!previousTitle.trim() || typeof storageNameFn !== 'function' || storageNameFn(previousTitle.trim()) === stemNow) return;
         }
-        editor._pushUndo('タイトル変更');
-        editor.doc.title = titleInput.value;
-        editor._markDirty();
-        // タイトル変更をファイル名にも反映
         const newTitle = titleInput.value.trim();
         const oldPath = editor._path;
+        // ファイル名も変える操作は、本文のタイトルだけを戻す履歴にしない。
+        // 通信中に行われた本文編集より先に履歴の位置を予約する。
+        editor._pushUndo('タイトル変更');
+        const titleHistory = newTitle && oldPath && typeof historyReserve === 'function'
+          && typeof _outlinerApplyRenameSuccess === 'function'
+          ? historyReserve('タイトル変更', editor._historyScope(), '', { preserveRedoOnCancel: true }) : null;
+        editor.doc.title = titleInput.value;
+        editor._markDirty({ skipUndo: !!titleHistory });
+        if (titleHistory) editor._lastPushedSnap = editor._takeSnapshot();
+        // タイトル変更をファイル名にも反映
         if (newTitle && oldPath) {
           // ツリーの行は絶対パスを持つことがあるため、同じファイルを指す行のパスも名前の変更の対象にする（S8）
           const treeAliases = _sn2TreePathsForFile(oldPath).filter(p => p !== oldPath);
@@ -77226,6 +77256,21 @@ class ScriptNoteComponent extends ToolComponent {
                 });
                 if (!treeAliases.length) _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
               }
+              if (titleHistory) {
+                _outlinerApplyRenameSuccess(oldPath, res.new_path, newTitle, res.file_id,
+                  { type: 'scriptnote', path: oldPath, name: previousTitle }, previousTitle, {
+                    historyOnly: true, skipStatus: true, historyReservation: titleHistory,
+                    etag: res.etag, titleOnly: res.title_only,
+                    onHistoryApplied: title => {
+                      // 改名の履歴を、後続の本文Undoへ重ねて記録しない。
+                      if (editor._lastPushedSnap) {
+                        const snapshot = JSON.parse(editor._lastPushedSnap);
+                        snapshot.title = title;
+                        editor._lastPushedSnap = JSON.stringify(snapshot);
+                      }
+                    },
+                  });
+              }
             }
             } finally {
               // パスと版の印を付け替えた後（失敗時も）に、待たせていた保存を通す。
@@ -77245,6 +77290,15 @@ class ScriptNoteComponent extends ToolComponent {
               showTreeLabel(previousTitle || fileStem);
             }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
+          } finally {
+            if (titleHistory && !titleHistory.finished) {
+              titleHistory.cancel();
+              if (editor._lastPushedSnap) {
+                const snapshot = JSON.parse(editor._lastPushedSnap);
+                snapshot.title = editor.doc.title;
+                editor._lastPushedSnap = JSON.stringify(snapshot);
+              }
+            }
           }
         }
       }
@@ -77884,6 +77938,10 @@ class ScriptNoteComponent extends ToolComponent {
       // ヒストリースコープ設定
       if (typeof historySetScope === 'function') historySetScope(this._editor._historyScope());
       if (this._skipDetailSync !== true && this._active) this._syncDetailPanel();
+      // 詳細欄の初期描画が補う既定の表示設定も、読込直後の基準へ含める。
+      // 含めないと未編集でも「編集」が履歴へ割り込み、ファイル複製の取り消しが
+      // 元のシナリオまで保存し直してしまう。
+      this._editor._lastPushedSnap = this._editor._takeSnapshot();
       // アノテートフローティング UI を再評価（targetPath を新ファイルに合わせ、ボタン表示を更新）
       // showView 経由ではコンポーネントタイプは早期 return するため、ここで明示的に呼ぶ
       if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountFloatingAnnotationUi === 'function') {
@@ -80290,6 +80348,11 @@ function renderDiff(modal = null) {
 // 現在のビューのパスとタイプを取得
 function _getCurrentVersionTarget() {
   const editor = globalThis.GBEditorHost?.get();
+  const entityTarget = globalThis._meldexEntityVersionTarget;
+  const entityPath = editor?.kind === 'entity' ? editor.path : typeof state !== 'undefined' && state.view === 'entity' ? state.currentEntityPath : '';
+  if (entityTarget?.path === entityPath && entityTarget.sequence === globalThis._selectEntityLoadSeq) {
+    return { path: entityTarget.dbPath, type: 'db' };
+  }
   if (editor) return { path: editor.path, type: ['database', 'calendar'].includes(editor.kind) ? 'db' : editor.kind === 'folder' ? 'folder' : 'file' };
   let path = '', type = 'file';
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
@@ -82108,7 +82171,7 @@ function historyCanRedo(scope) {
 // length を直接参照する暫定分岐が残る。
 function meldexCanUndo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScopeFor?.('undo') ?? globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanUndo(_bdHistoryScope()) : (typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanUndo(_meldexProductionEmbedHistoryScope());
@@ -82119,7 +82182,7 @@ function meldexCanUndo() {
 
 function meldexCanRedo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScopeFor?.('redo') ?? globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanRedo(_bdHistoryScope()) : (typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanRedo(_meldexProductionEmbedHistoryScope());
@@ -121089,6 +121152,9 @@ function _resolveAutoLinkPath(filePath) {
   if (/^(https?:|mailto:)/i.test(filePath)) return filePath;
   // Windowsの絶対パス（D:/ 等）またはUnix絶対パス（/で始まる）
   if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) return filePath;
+  // ソースフォルダの印つきパスは既に保存先を指定している。vaultを重ねない。
+  const source = window.MeldexSourceFolderRegistry?.parseSourcePath?.(filePath);
+  if (source) return source.virtualPath;
   // vaultパスがあればvault基準で解決
   if (state.vaultPath && !filePath.startsWith('./') && !filePath.startsWith('../')) {
     return state.vaultPath.replace(/\\/g, '/') + '/' + filePath;
@@ -132078,7 +132144,15 @@ async function _stampSendKeepingDraft(input, team, stampText, sendFn) {
               // セルなど編集ホスト内の場所を押した場合、ホスト全体へのclickに
               // 置き換えると最初のセル選択が失われる。接続中の元の対象へ戻す。
               const target = t.isConnected && el.contains?.(t) && typeof t.click === 'function' ? t : el;
-              if (typeof target.click === 'function') target.click();
+              // click() は修飾キーを落とすため、Ctrl/⌘の複数選択やShiftの範囲選択を保つ。
+              if ((e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) && typeof MouseEvent === 'function') {
+                target.dispatchEvent(new MouseEvent('click', {
+                  bubbles: true, cancelable: true, composed: true,
+                  ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey,
+                  button: e.button, buttons: e.buttons, detail: e.detail,
+                  clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+                }));
+              } else if (typeof target.click === 'function') target.click();
             } else if (inputReplay) {
               if (getActiveInfo()?.viewKey !== info.viewKey) return;
               // Several keystrokes can arrive while the same lock request is pending.
@@ -135140,6 +135214,21 @@ window.GBAnnotationSurfaces = (() => {
   const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
   const isOpen = () => enabled() && ann.active;
   const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
+  // 文書全体を書き換える操作（PDFのページ編集）の履歴。ページごとのscopeに積むと、編集後にページが
+  // 変わった時に取り消せなくなるため、同じ画面の文書単位のscopeに積み、取り消し・やり直しでは新しい方を選ぶ。
+  const documentScope = s => 'annotation-doc:' + _normalizeAnnotationTargetPath(String(s.sourcePath || s.path || '').replace(/#page=\d+$/i, '')) + '#' + s.id;
+  const stackTop = (key, direction) => {
+    const stack = typeof _getStack === 'function' ? _getStack(key)?.[direction] : null;
+    return stack?.length ? stack[stack.length - 1].id : null;
+  };
+  function activeScope(s, direction) {
+    const page = scope(s), whole = documentScope(s);
+    const pageTop = stackTop(page, direction), wholeTop = stackTop(whole, direction);
+    if (wholeTop == null) return page;
+    if (pageTop == null) return whole;
+    // 取り消しは後に積んだ方から。やり直しは後に取り消した方（先に積んだ方）から。
+    return direction === 'undo' ? (wholeTop > pageTop ? whole : page) : (wholeTop < pageTop ? whole : page);
+  }
   const samePath = (a, b) => typeof _rpAnnotationPathsMatch === 'function'
     ? _rpAnnotationPathsMatch(a, b) : _normalizeAnnotationTargetPath(a) === _normalizeAnnotationTargetPath(b);
   function select(s) {
@@ -135438,8 +135527,10 @@ window.GBAnnotationSurfaces = (() => {
     describe: () => [...surfaces.values()].map(s => ({ id: s.id, path: s.path, type: s.type, embedded: !!s.iframe, host: s.host.id })),
     historyScope: (surface = selected) => surface ? scope(surface) : '',
     target: () => selected,
-    undo: () => selected ? historyUndo(scope(selected)) : false,
-    redo: () => selected ? historyRedo(scope(selected)) : false,
+    historyScopeFor: (direction, surface = selected) => surface ? activeScope(surface, direction === 'redo' ? 'redo' : 'undo') : '',
+    documentHistoryScope: (surface = selected) => surface ? documentScope(surface) : '',
+    undo: () => selected ? historyUndo(activeScope(selected, 'undo')) : false,
+    redo: () => selected ? historyRedo(activeScope(selected, 'redo')) : false,
   };
 })();
 // Audit-P2 H-7: document キャプチャで UI 要素の click/change をガードする
@@ -160032,6 +160123,8 @@ function hideBoardNoteTab() {
     }
     if (toolType === 'scriptnote') {
       return [
+        { id: 'reveal-in-folder-tree', label: 'フォルダツリーで表示', icon: 'folderTree', action: () => _callGlobal('revealCurrentInFolderTree', 'scriptnote', null) },
+        { id: 'duplicate-file', label: 'ファイルを複製', icon: 'copy', action: () => _callGlobal('_duplicateCurrentFile', 'scriptnote') },
         { id: 'open', label: '開く', icon: 'folderOpen', action: () => _callGlobal('showScriptNoteOpenModal') },
         { id: 'new-scriptnote', label: '新規作成', icon: 'plus', action: () => _callGlobal('showAddOutlinerItem', 'scriptnote') },
         { id: 'import-scriptnote', label: '旧シナリオからインポート', icon: 'download', action: () => _callGlobal('showScriptNoteImportModal') },
@@ -271991,12 +272084,14 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
       type: nodeData.type || 'page',
     });
   };
-  _renameTreeNode(oldPath, newPath, newName, fileId);
-  aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
+  if (!options?.historyOnly) {
+    _renameTreeNode(oldPath, newPath, newName, fileId);
+    aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
+  }
   // フォルダパネルが同じフォルダを開いていれば、新しい名前をすぐ出す
   // （フォルダパネルでの名前の変更はパネル自身が表示を直すので、ツリーの行の名前の変更の時だけ）
   const fromTree = Array.from(document.querySelectorAll('#sidebar .tree-node')).some(node => node._nodeData === nodeData);
-  if (fromTree && typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([_outlinerParentPath(newPath), _outlinerParentPath(oldPath)]);
+  if (!options?.historyOnly && fromTree && typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([_outlinerParentPath(newPath), _outlinerParentPath(oldPath)]);
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
@@ -272040,24 +272135,28 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
     nodeData.path = toPath;
     nodeData.pathAliases = aliasPairs.map(pair => pair[aliasTo]);
   };
-  historyPush(`リネーム: ${oldName} → ${newName}`,
-    async () => {
+  const undoRename = async () => {
       const { response, path } = await renameTo(currentPath, originalStem, oldName);
       moveTreeTo(currentPath, path, oldName, response, 'newPath', 'oldPath');
       nodeData.name = oldName;
       currentPath = path;
+      options?.onHistoryApplied?.(oldName);
       if (path !== oldPath) showStatus(`元のファイル名に戻せなかったため「${baseNameOf(path)}」になりました`, true);
-    },
-    async () => {
+    };
+  const redoRename = async () => {
       const { response, path } = await renameTo(currentPath, storedStemOf(newPath, oldPath), newName);
       moveTreeTo(currentPath, path, newName, response, 'oldPath', 'newPath');
       nodeData.name = newName;
       currentPath = path;
-    }
-  );
+      options?.onHistoryApplied?.(newName);
+    };
+  if (options?.historyReservation) options.historyReservation.fill(undoRename, redoRename);
+  else historyPush(`リネーム: ${oldName} → ${newName}`, undoRename, redoRename, options?.historyScope);
   const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
-  applyPathReferences(oldPath, newPath, newName, initialResponse);
-  aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
+  if (!options?.historyOnly) {
+    applyPathReferences(oldPath, newPath, newName, initialResponse);
+    aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
+  }
   if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
@@ -276234,6 +276333,46 @@ if (typeof window !== 'undefined' && !window.__meldexSearchResultRevealBound) {
   window.addEventListener('meldex:search-result-open', event => revealSearchResultLocation(event.detail || {}));
 }
 
+async function _prepareVaultReplaceScriptnotes(targets) {
+  const normalize = path => String(path || '').replace(/\\/g, '/');
+  const paths = new Set(targets.map(target => normalize(target.path)));
+  const editors = new Set();
+  if (typeof forEachComponent === 'function') forEachComponent(component => {
+    const editor = component?._editor;
+    if (editor?.doc && paths.has(normalize(editor._path))) editors.add(editor);
+  });
+  const prepared = [];
+  for (const editor of editors) {
+    if (await editor.flush() === false || editor._dirty) {
+      throw new Error('シナリオの未保存の入力を確定できないため、全体置換を中止しました');
+    }
+    prepared.push({ editor, path: editor._path, before: editor._takeSnapshot() });
+  }
+  return prepared;
+}
+
+async function _refreshVaultReplaceScriptnotes(prepared) {
+  const loaded = new Map();
+  for (const { editor, path, before } of prepared) {
+    // 置換中に別の文書へ移ったり追加入力した時は、その内容を読み直しで消さない。
+    if (editor._path !== path || editor._dirty || editor._takeSnapshot() !== before) {
+      showStatus('全体置換は保存しました。追加入力を保っているシナリオは、保存内容を確認してから開き直してください', true);
+      continue;
+    }
+    if (!loaded.has(path)) loaded.set(path, await apiFetch('/file?path=' + encodeURIComponent(path), { skipBrowseCache: true }));
+    const saved = loaded.get(path);
+    const doc = JSON.parse(saved.content);
+    if (editor.loadDoc(doc, path, saved.etag || '', null, saved, { preserveStoredRoleFlags: true }) === false) {
+      throw new Error('置換したシナリオを画面へ反映できませんでした');
+    }
+    const after = editor._takeSnapshot();
+    if (before !== after && typeof historyPush === 'function') {
+      historyPush('シナリオ: 全体置換', () => editor._applySnapshot(before),
+        () => editor._applySnapshot(after), editor._historyScope());
+    }
+  }
+}
+
 async function doVaultReplace(all) {
   const q = document.getElementById('sp-query').value;
   const r = document.getElementById('sp-replace').value;
@@ -276269,7 +276408,14 @@ async function doVaultReplace(all) {
   if (!await cfConfirm(`${targets.length}ファイルの${all ? '全一致箇所' : '各ファイルの最初の一致箇所'}を一括置換しますか？\n途中で失敗した場合は全ファイルを元に戻します。\n\n「${q}」→「${r}」`)) return;
 
   let result;
+  let scriptnotes;
   try {
+    scriptnotes = await _prepareVaultReplaceScriptnotes(targets);
+    // flushで保存した場合は検索時の版が古くなるため、確定後の版で条件付き保存する。
+    for (const { editor, path } of scriptnotes) {
+      const target = targets.find(item => item.path === path);
+      if (target && editor._lastSavedEtag) target.etag = editor._lastSavedEtag;
+    }
     result = await apiPut('/replace-batch', {
       targets, search: q, replace: r, case: caseSensitive, regex: useRegex, all,
     });
@@ -276285,14 +276431,13 @@ async function doVaultReplace(all) {
   document.getElementById('sp-status').textContent = statusText;
   await doVaultSearch(); // 結果を更新
   document.getElementById('sp-status').textContent = statusText;
+  try { await _refreshVaultReplaceScriptnotes(scriptnotes); }
+  catch (error) { showStatus('全体置換は保存しましたが、画面を更新できませんでした: ' + error.message, true); }
 
   // 開いているファイルを再読み込み（置換結果を反映）
   try {
     const lastView = JSON.parse(localStorage.getItem('lastView') || '{}');
     if (lastView.type === 'page' && lastView.path) openPage(lastView.label || '', lastView.path);
-    else if ((lastView.type === 'scriptnote' || lastView.type === 'scenario') && lastView.path && typeof openScenarioInScriptNote === 'function') {
-      openScenarioInScriptNote(lastView.path, lastView.label || lastView.path.split('/').pop().replace(/\.\w+$/, ''));
-    }
     else if (lastView.type === 'entity' && lastView.entityPath) selectEntity(lastView.entityPath);
     else if ((lastView.type === 'pivot' || lastView.type === 'database') && lastView.dbPath && typeof selectDatabase === 'function') {
       await selectDatabase(lastView.dbPath, null, { skipNavPush: true, skipRecent: true, skipAutoVersion: true });
@@ -293902,6 +294047,10 @@ function cfPrompt(message, defaultValue, options) {
 
 // xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
 function importXlsxToOutliner() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    showStatus('Excelからのシナリオ作成はデスクトップ版で利用できます', true);
+    return;
+  }
   document.getElementById('xlsx-import-input').click();
 }
 
@@ -293935,6 +294084,14 @@ async function handleXlsxImportToOutliner(e) {
     });
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
+    if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');
+    // 新規作成と同じ共通履歴へ積む。取り消しは作成ファイルだけをゴミ箱へ、
+    // やり直しはそこから復元する。以前開いていた文書の履歴には混ぜない。
+    if (typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: scriptnotePath, type: 'scriptnote' }, 'Excelからシナリオを作成: ' + label, {
+        scope: '',
+      });
+    }
 
     // 台本エディタで開く
     if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {
@@ -298833,10 +298990,10 @@ function buildToolMenuItems(toolType, component) {
     },
     scriptnote: {
       import: [
-        { label: 'Excelからシナリオを作成...', action: () => {
+        ...(!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() ? [{ label: 'Excelからシナリオを作成...', action: () => {
           if (typeof importXlsxToOutliner === 'function') importXlsxToOutliner();
           else _showUnavailableToolMenuAction('Excelからシナリオを作成');
-        } },
+        } }] : []),
         { label: '旧シナリオからインポート...', action: context => showScriptNoteImportModal({ trigger: context?.trigger }) },
       ],
       export: [

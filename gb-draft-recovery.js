@@ -340,7 +340,8 @@
     await clearDraft(item.path, item.storageKey, item.content);
     const format = window.MeldexDocumentIdentity?.formatForPath?.(item.path, item.content);
     if ((format === 'scenario' || /\.(?:mel-scenario|scriptnote\.json)$/i.test(item.path)) && typeof openScenarioInScriptNote === 'function') {
-      await openScenarioInScriptNote(item.path, _fileLabel(item.path));
+      // 復旧保存で本文とetagが変わった。同じタブの古い編集面を再利用しない。
+      await openScenarioInScriptNote(item.path, _fileLabel(item.path), { forceReload: true });
     } else if ((format === 'board' || /\.mel-board$/i.test(item.path)) && typeof openBoard === 'function') {
       await openBoard(_fileLabel(item.path), item.path);
     } else if (typeof openPage === 'function') {
@@ -589,8 +590,8 @@
           <time datetime="${esc(item.savedAt || '')}">${esc(new Date(item.savedAt).toLocaleString())}</time>
         </div>
         <div class="draft-recovery-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="inspect" data-draft-index="${index}" aria-expanded="false">内容を確認</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="reveal" data-draft-index="${index}" title="フォルダツリーで表示">場所を表示</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="inspect" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-inspect" aria-expanded="false">内容を確認</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-draft-action="reveal" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-reveal" title="フォルダツリーで表示">場所を表示</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-draft-action="overwrite" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-overwrite">上書き保存</button>
           <button type="button" class="gb-btn gb-btn-sm" data-draft-action="save-as" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-save-as">別名保存</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} の保存されていない変更を破棄">破棄</button>

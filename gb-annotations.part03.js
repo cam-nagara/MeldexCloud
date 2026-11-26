@@ -225,6 +225,21 @@ window.GBAnnotationSurfaces = (() => {
   const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
   const isOpen = () => enabled() && ann.active;
   const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
+  // 文書全体を書き換える操作（PDFのページ編集）の履歴。ページごとのscopeに積むと、編集後にページが
+  // 変わった時に取り消せなくなるため、同じ画面の文書単位のscopeに積み、取り消し・やり直しでは新しい方を選ぶ。
+  const documentScope = s => 'annotation-doc:' + _normalizeAnnotationTargetPath(String(s.sourcePath || s.path || '').replace(/#page=\d+$/i, '')) + '#' + s.id;
+  const stackTop = (key, direction) => {
+    const stack = typeof _getStack === 'function' ? _getStack(key)?.[direction] : null;
+    return stack?.length ? stack[stack.length - 1].id : null;
+  };
+  function activeScope(s, direction) {
+    const page = scope(s), whole = documentScope(s);
+    const pageTop = stackTop(page, direction), wholeTop = stackTop(whole, direction);
+    if (wholeTop == null) return page;
+    if (pageTop == null) return whole;
+    // 取り消しは後に積んだ方から。やり直しは後に取り消した方（先に積んだ方）から。
+    return direction === 'undo' ? (wholeTop > pageTop ? whole : page) : (wholeTop < pageTop ? whole : page);
+  }
   const samePath = (a, b) => typeof _rpAnnotationPathsMatch === 'function'
     ? _rpAnnotationPathsMatch(a, b) : _normalizeAnnotationTargetPath(a) === _normalizeAnnotationTargetPath(b);
   function select(s) {
@@ -523,7 +538,9 @@ window.GBAnnotationSurfaces = (() => {
     describe: () => [...surfaces.values()].map(s => ({ id: s.id, path: s.path, type: s.type, embedded: !!s.iframe, host: s.host.id })),
     historyScope: (surface = selected) => surface ? scope(surface) : '',
     target: () => selected,
-    undo: () => selected ? historyUndo(scope(selected)) : false,
-    redo: () => selected ? historyRedo(scope(selected)) : false,
+    historyScopeFor: (direction, surface = selected) => surface ? activeScope(surface, direction === 'redo' ? 'redo' : 'undo') : '',
+    documentHistoryScope: (surface = selected) => surface ? documentScope(surface) : '',
+    undo: () => selected ? historyUndo(activeScope(selected, 'undo')) : false,
+    redo: () => selected ? historyRedo(activeScope(selected, 'redo')) : false,
   };
 })();

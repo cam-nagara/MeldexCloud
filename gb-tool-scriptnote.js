@@ -1007,12 +1007,18 @@ class ScriptNoteComponent extends ToolComponent {
           const stemNow = String(editor._path || '').split(/[\\/]/).pop().replace(/\.(?:mel-scenario|scenario\.json|scriptnote\.json|json)$/i, '');
           if (!previousTitle.trim() || typeof storageNameFn !== 'function' || storageNameFn(previousTitle.trim()) === stemNow) return;
         }
-        editor._pushUndo('タイトル変更');
-        editor.doc.title = titleInput.value;
-        editor._markDirty();
-        // タイトル変更をファイル名にも反映
         const newTitle = titleInput.value.trim();
         const oldPath = editor._path;
+        // ファイル名も変える操作は、本文のタイトルだけを戻す履歴にしない。
+        // 通信中に行われた本文編集より先に履歴の位置を予約する。
+        editor._pushUndo('タイトル変更');
+        const titleHistory = newTitle && oldPath && typeof historyReserve === 'function'
+          && typeof _outlinerApplyRenameSuccess === 'function'
+          ? historyReserve('タイトル変更', editor._historyScope(), '', { preserveRedoOnCancel: true }) : null;
+        editor.doc.title = titleInput.value;
+        editor._markDirty({ skipUndo: !!titleHistory });
+        if (titleHistory) editor._lastPushedSnap = editor._takeSnapshot();
+        // タイトル変更をファイル名にも反映
         if (newTitle && oldPath) {
           // ツリーの行は絶対パスを持つことがあるため、同じファイルを指す行のパスも名前の変更の対象にする（S8）
           const treeAliases = _sn2TreePathsForFile(oldPath).filter(p => p !== oldPath);
@@ -1111,6 +1117,21 @@ class ScriptNoteComponent extends ToolComponent {
                 });
                 if (!treeAliases.length) _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
               }
+              if (titleHistory) {
+                _outlinerApplyRenameSuccess(oldPath, res.new_path, newTitle, res.file_id,
+                  { type: 'scriptnote', path: oldPath, name: previousTitle }, previousTitle, {
+                    historyOnly: true, skipStatus: true, historyReservation: titleHistory,
+                    etag: res.etag, titleOnly: res.title_only,
+                    onHistoryApplied: title => {
+                      // 改名の履歴を、後続の本文Undoへ重ねて記録しない。
+                      if (editor._lastPushedSnap) {
+                        const snapshot = JSON.parse(editor._lastPushedSnap);
+                        snapshot.title = title;
+                        editor._lastPushedSnap = JSON.stringify(snapshot);
+                      }
+                    },
+                  });
+              }
             }
             } finally {
               // パスと版の印を付け替えた後（失敗時も）に、待たせていた保存を通す。
@@ -1130,6 +1151,15 @@ class ScriptNoteComponent extends ToolComponent {
               showTreeLabel(previousTitle || fileStem);
             }
             if (typeof showStatus === 'function') showStatus('ファイル名の変更に失敗: ' + (e.message || e), true);
+          } finally {
+            if (titleHistory && !titleHistory.finished) {
+              titleHistory.cancel();
+              if (editor._lastPushedSnap) {
+                const snapshot = JSON.parse(editor._lastPushedSnap);
+                snapshot.title = editor.doc.title;
+                editor._lastPushedSnap = JSON.stringify(snapshot);
+              }
+            }
           }
         }
       }
@@ -1769,6 +1799,10 @@ class ScriptNoteComponent extends ToolComponent {
       // ヒストリースコープ設定
       if (typeof historySetScope === 'function') historySetScope(this._editor._historyScope());
       if (this._skipDetailSync !== true && this._active) this._syncDetailPanel();
+      // 詳細欄の初期描画が補う既定の表示設定も、読込直後の基準へ含める。
+      // 含めないと未編集でも「編集」が履歴へ割り込み、ファイル複製の取り消しが
+      // 元のシナリオまで保存し直してしまう。
+      this._editor._lastPushedSnap = this._editor._takeSnapshot();
       // アノテートフローティング UI を再評価（targetPath を新ファイルに合わせ、ボタン表示を更新）
       // showView 経由ではコンポーネントタイプは早期 return するため、ここで明示的に呼ぶ
       if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountFloatingAnnotationUi === 'function') {

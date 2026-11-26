@@ -708,8 +708,31 @@ class VersionComponent extends ToolComponent {
       } catch (error) { errors.push('フォルダバージョン: ' + (error?.message || '取得失敗')); }
     } else {
       try {
-        versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
-      } catch (error) { errors.push('ファイルバージョン: ' + (error?.message || '取得失敗')); }
+        versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path), { silentError: true });
+      } catch (error) {
+        // SQLite内のトピックは論理パスを持つが、個別のMarkdownファイルは無い。
+        // 実在するトピックと確認できた場合だけ、保存先のシートの版を表示する。
+        const selected = typeof state !== 'undefined' ? state.currentEntityPath : '';
+        if (!isDb && error?.status === 404 && selected === path && /\.md$/i.test(path)) {
+          try {
+            const entity = await apiFetch('/entity?path=' + encodeURIComponent(path), { silentError: true });
+            if (this._destroyed || this._loadSeq !== loadSeq || !this.el || state.currentEntityPath !== path) return;
+            const parent = String(path).replace(/\\/g, '/').replace(/\/[^/]+$/, '');
+            if (entity?.path === path && Number(entity.revision) >= 1 && parent && parent !== path) {
+              window._meldexEntityVersionTarget = { path, dbPath: parent, sequence: window._selectEntityLoadSeq };
+              if (typeof GBLayout !== 'undefined') {
+                const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(item => item.id === this.tabId);
+                if (tab) {
+                  tab.path = parent;
+                  tab.state = { ...(tab.state || {}), versionPath: parent, versionType: 'db' };
+                }
+              }
+              return this._loadVersions(parent, 'db');
+            }
+          } catch (_) { /* 実際の不在・読込失敗は元のエラーとして表示する。 */ }
+        }
+        errors.push('ファイルバージョン: ' + (error?.message || '取得失敗'));
+      }
     }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     // 制作進行の日次記録は対象ファイルに紐づかないため、タイムラインAPIは呼ばない
@@ -732,7 +755,7 @@ class VersionComponent extends ToolComponent {
 
   _loadErrorHtml(path, vType, errors) {
     return `<div role="alert" class="gb-version-load-error" style="padding:8px;">一覧の一部を読み込めませんでした。<br>${errors.map(esc).join('<br>')}
-      <button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('refresh', path, '', vType)}>再読み込み</button></div>`;
+      <button class="gb-btn gb-btn-sm" ${this._versionButtonAttrs('refresh', path, '', vType, 'retry')}>再読み込み</button></div>`;
   }
 
   _syncVersionBusy() {
@@ -1111,14 +1134,14 @@ class VersionComponent extends ToolComponent {
   }
 
   _versionE2eToken(value) {
+    // 区切り文字や日本語を落とすと、別の文書・版が同じ識別子になる。
+    // エスケープ自身の「_」も符号化し、元の文字列を一意に保つ。
     return String(value == null ? '' : value)
-      .trim()
-      .replace(/[^a-zA-Z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '');
+      .replace(/[^a-zA-Z0-9]/g, char => '_' + char.charCodeAt(0).toString(16).padStart(4, '0'));
   }
 
-  _versionButtonAttrs(action, path, versionName = '', vType = '') {
-    const id = ['version', vType, path, versionName, action]
+  _versionButtonAttrs(action, path, versionName = '', vType = '', location = '') {
+    const id = ['version', vType, path, versionName, action, location]
       .map(value => this._versionE2eToken(value))
       .filter(Boolean)
       .join('-');

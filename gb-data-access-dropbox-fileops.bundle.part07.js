@@ -1,3 +1,68 @@
+          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
+          file_id: _fnvFileId(sourcePath),
+          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
+        };
+      }
+      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
+      const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+        action: 'move', oldPath: sourcePath, newPath: conflict.path,
+        isFolder: source.kind === 'directory',
+      });
+      await _moveEntry(provider, sourcePath, conflict.path);
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
+      ));
+      await _runPostMutationStep(warnings, 'stored-paths', () => (
+        typeof _rewriteStoredPathsForProvider === 'function'
+          ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
+          : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
+      ));
+      await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
+      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
+        action: 'move', oldPath: sourcePath, newPath: conflict.path,
+        isFolder: source.kind === 'directory', annotationPlan,
+      }));
+      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+      await _runPostMutationStep(warnings, 'references', async () => {
+        relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
+      });
+      return {
+        ok: true,
+        new_path: conflict.path,
+        new_name: source.kind === 'file' ? _splitNameAndExt(_basename(conflict.path)).stem : _basename(conflict.path),
+        file_id: _fnvFileId(conflict.path),
+        relocate,
+        ..._resultWarnings(warnings),
+      };
+    }
+
+    // 一括改名の物理移動はproviderがまとめて行い、副作用はこの同一操作IDの
+    // aftercareへ集約する。単件/outliner/moveをファイル数分呼ばない。
+    if (!window.MeldexCloudBatchRenameAftercare) {
+      window.MeldexCloudBatchRenameAftercare = {
+        async prepare({ provider, entries, direction }) {
+          const plans = new Map();
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+            });
+            plans.set(oldPath, annotationPlan);
+          }
+          return plans;
+        },
+        async apply({ provider, entries, operationId, direction, prepared }) {
+          const warnings = [];
+          const mappings = (entries || []).map(entry => ({
+            oldPath: direction === 'reverse' ? entry.destination : entry.source,
+            newPath: direction === 'reverse' ? entry.source : entry.destination,
+            isFolder: false,
+          }));
+          await _runPostMutationStep(warnings, 'version-history', async () => {
+            if (!mappings.length) return;
             await _awaitPendingEditFinalizations();
             const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
             const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);

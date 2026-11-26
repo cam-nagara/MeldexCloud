@@ -265,6 +265,10 @@ function cfPrompt(message, defaultValue, options) {
 
 // xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
 function importXlsxToOutliner() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    showStatus('Excelからのシナリオ作成はデスクトップ版で利用できます', true);
+    return;
+  }
   document.getElementById('xlsx-import-input').click();
 }
 
@@ -298,6 +302,14 @@ async function handleXlsxImportToOutliner(e) {
     });
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
+    if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');
+    // 新規作成と同じ共通履歴へ積む。取り消しは作成ファイルだけをゴミ箱へ、
+    // やり直しはそこから復元する。以前開いていた文書の履歴には混ぜない。
+    if (typeof pushCreatedOutlinerItemHistory === 'function') {
+      pushCreatedOutlinerItemHistory({ path: scriptnotePath, type: 'scriptnote' }, 'Excelからシナリオを作成: ' + label, {
+        scope: '',
+      });
+    }
 
     // 台本エディタで開く
     if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {
@@ -886,15 +898,3 @@ async function openBoard(label, path, opts) {
 
 function openMedia(label, path, type, opts) {
   const openOpts = opts || {};
-  // 音声は共有の #media-content へ直接描くため、ここでも表示の世代を進める（gb-folder.part02.js の _gbOpenViewerIframe 参照）。
-  window.GBViewerOpenGeneration = (Number(window.GBViewerOpenGeneration) || 0) + 1;
-  // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を
-  // 経由する showView('media') は行わない（openViewer 側の showView('html') に一本化）。
-  // media-view を一瞬マウントすると html-view が退避（DOM移動）され、iframe が強制
-  // 再読み込みされて開き直しの高速パスが成立しなくなる（v0.7.139検証で実測）。
-  const viewerRouted = (type === 'image' || type === 'pdf' || type === 'video');
-  if (!openOpts.skipShowView) { if (!viewerRouted) showView('media'); }
-  else if (!openOpts.skipStateView) state.view = 'media';
-  const mediaTitleEl = document.getElementById('media-title');
-  if (mediaTitleEl) mediaTitleEl.textContent = label;
-  const currentTitleEl = document.getElementById('current-title');

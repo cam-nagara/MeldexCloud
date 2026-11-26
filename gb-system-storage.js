@@ -636,6 +636,31 @@
     return permission === 'viewer' ? new ReadOnlySystemStorageAdapter(adapter) : adapter;
   }
 
+  // --- 一覧の版による読み直しの省略 ------------------------------------------
+  //
+  // 取り直したばかりの一覧が示す版（rev）が、前回読んだ時と同じ記録は内容も同じなので、
+  // ダウンロードし直さずに使う。画面の記憶だけで端末内には残さない。スマホのクイック
+  // メモ1件の送信で、全員分の編集中ロックの記録を約30回ダウンロードしていた
+  // （2026-11-26、1件約2分の主因）。download() は { data, rev } か null を返す。
+  //
+  // listDocuments(kind, { documentIdPrefix }) は名前の先頭が一致する記録だけを読む。
+  // 編集履歴は対象パスのハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ
+  // 読めば足りる。指定しないと全件（実データで3,199件・307MB）を読み、スマホの送信が
+  // 終わらなかった（2026-11-26）。
+  const _listedRevisionCache = new Map();
+  async function readAtListedRevision(cacheKey, listedRev, download) {
+    const cached = listedRev ? _listedRevisionCache.get(cacheKey) : null;
+    if (cached && cached.rev === listedRev) {
+      try { return { data: JSON.parse(cached.text), rev: cached.rev }; } catch { _listedRevisionCache.delete(cacheKey); }
+    }
+    const downloaded = await download();
+    if (downloaded?.rev && downloaded.rev === listedRev) {
+      if (_listedRevisionCache.size >= 256) _listedRevisionCache.clear();
+      _listedRevisionCache.set(cacheKey, { rev: downloaded.rev, text: JSON.stringify(downloaded.data) });
+    }
+    return downloaded;
+  }
+
   // --- 公開 --------------------------------------------------------------
 
   window.MeldexSystemStorage = {
@@ -675,5 +700,6 @@
     StorageEnvironment,
     detectStorageEnvironment,
     resolveSystemStorageAdapter,
+    readAtListedRevision,
   };
 })();

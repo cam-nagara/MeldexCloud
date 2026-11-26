@@ -1,3 +1,45 @@
+    catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+    try { stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId); }
+    catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) {
+      const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, docId);
+      return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
+    }
+    const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+    return legacy && typeof legacy === 'object' ? legacy : null;
+  }
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const migrated = await _migrateAnnotationStoredRecord(provider, matches[0].scope.adapter, docId);
+    return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  return legacy && typeof legacy === 'object' ? legacy : null;
+}
+
+async function _writeAnnotationRecord(provider, record, options = {}) {
+  const docId = _safeId(record.id, 'annotation id');
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+    record.target_path || record.path || '',
+  );
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  let saveOptions;
+  if (options.expectedModified) {
+    let current = await adapter.load(kind, docId);
+    if (!current) {
+      const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+      if (legacy && _annotationRow(legacy).modified === options.expectedModified) {
+        // Retain the legacy source and claim an absent common-store slot first.
+        // A retry can then edit that same snapshot with the normal CAS guard.
+        await adapter.save(kind, docId, legacy, { expectedRevision: null });
+        current = await adapter.load(kind, docId);
+      }
+    }
+    if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
+      const error = new Error('他の画面で更新されたためアノテートを変更できません');
+      error.status = 409; throw error;
     }
     saveOptions = { expectedRevision: current.revision };
   }
@@ -856,45 +898,3 @@ async function _finalizeCloudFileEdit(prepared, committedRevision) {
     return false;
   } catch {
     return true;
-  }
-}
-
-async function _abortCloudFileEdit(prepared) {
-  if (!prepared || prepared.skipped || !prepared.documentId) return;
-  await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
-  const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
-    ...prepared.payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'content_write_failed',
-  }, { expectedRevision: prepared.intentRevision || undefined }).catch(() => null);
-  if (saved) await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved).catch(() => null);
-}
-
-async function _trackCloudEdit(provider, options, mutation) {
-  if (typeof mutation !== 'function') throw new Error('編集処理が指定されていません');
-  const actor = options.actor || _versionActor(null, {});
-  const prepared = await _prepareCloudFileEdit(
-    provider,
-    options.path,
-    options.currentContent,
-    options.nextContent,
-    actor,
-    options.sourceRevision || '',
-    options.exists !== false,
-    options,
-  );
-  let result;
-  try {
-    result = await mutation();
-  } catch (error) {
-    await _abortCloudFileEdit(prepared);
-    throw error;
-  }
-  const pending = await _commitCloudFileEdit(prepared, options.committedRevision || '');
-  if (result && typeof result === 'object') {
-    result.history_recorded = !pending;
-    result.history_sync_pending = pending;
-  }
-  return result;
-}
-
-window.MeldexSharedEditHistory = {
-  actor: _versionActor,

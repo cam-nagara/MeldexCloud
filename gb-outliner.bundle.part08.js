@@ -107,12 +107,14 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
       type: nodeData.type || 'page',
     });
   };
-  _renameTreeNode(oldPath, newPath, newName, fileId);
-  aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
+  if (!options?.historyOnly) {
+    _renameTreeNode(oldPath, newPath, newName, fileId);
+    aliasPairs.forEach(pair => _renameTreeNode(pair.oldPath, pair.newPath, newName, fileId));
+  }
   // フォルダパネルが同じフォルダを開いていれば、新しい名前をすぐ出す
   // （フォルダパネルでの名前の変更はパネル自身が表示を直すので、ツリーの行の名前の変更の時だけ）
   const fromTree = Array.from(document.querySelectorAll('#sidebar .tree-node')).some(node => node._nodeData === nodeData);
-  if (fromTree && typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([_outlinerParentPath(newPath), _outlinerParentPath(oldPath)]);
+  if (!options?.historyOnly && fromTree && typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([_outlinerParentPath(newPath), _outlinerParentPath(oldPath)]);
   nodeData.path = newPath;
   nodeData.name = newName;
   nodeData.pathAliases = aliasPairs.map(pair => pair.newPath);
@@ -156,24 +158,28 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
     nodeData.path = toPath;
     nodeData.pathAliases = aliasPairs.map(pair => pair[aliasTo]);
   };
-  historyPush(`リネーム: ${oldName} → ${newName}`,
-    async () => {
+  const undoRename = async () => {
       const { response, path } = await renameTo(currentPath, originalStem, oldName);
       moveTreeTo(currentPath, path, oldName, response, 'newPath', 'oldPath');
       nodeData.name = oldName;
       currentPath = path;
+      options?.onHistoryApplied?.(oldName);
       if (path !== oldPath) showStatus(`元のファイル名に戻せなかったため「${baseNameOf(path)}」になりました`, true);
-    },
-    async () => {
+    };
+  const redoRename = async () => {
       const { response, path } = await renameTo(currentPath, storedStemOf(newPath, oldPath), newName);
       moveTreeTo(currentPath, path, newName, response, 'oldPath', 'newPath');
       nodeData.name = newName;
       currentPath = path;
-    }
-  );
+      options?.onHistoryApplied?.(newName);
+    };
+  if (options?.historyReservation) options.historyReservation.fill(undoRename, redoRename);
+  else historyPush(`リネーム: ${oldName} → ${newName}`, undoRename, redoRename, options?.historyScope);
   const initialResponse = { file_id: fileId, etag: options?.etag, title_only: options?.titleOnly };
-  applyPathReferences(oldPath, newPath, newName, initialResponse);
-  aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
+  if (!options?.historyOnly) {
+    applyPathReferences(oldPath, newPath, newName, initialResponse);
+    aliasPairs.forEach(pair => applyPathReferences(pair.oldPath, pair.newPath, newName, initialResponse));
+  }
   if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
@@ -892,9 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
     tracking = true;
     active = false;
     addDocumentPointerEndHandlers();
-    pointerId = e.pointerId;
-    pointerCaptured = false;
-    selectionScope = _outlinerLassoScopeFromTarget(e.target);
-    baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
-    const rect = scroller.getBoundingClientRect();
-    startX = e.clientX - rect.left + scroller.scrollLeft;

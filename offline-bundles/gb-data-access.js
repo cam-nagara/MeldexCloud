@@ -1274,7 +1274,10 @@
     const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
-    const rewritePathValue = (value) => _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+    const rewritePathValue = (value) => {
+      const rewritten = _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+      return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
+    };
     const rewriteReferenceText = (text) => {
       let next = String(text || '');
       next = next.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
@@ -1299,8 +1302,10 @@
       if (!_isTextLikePath(filePath)) return;
       try {
         const original = await _readTextSafe(provider, filePath, '');
-        if (!original || !original.includes(normalizedOld)) return;
-        const next = rewriteReferenceText(original);
+        if (!original) return;
+        const manual = _rewriteScenarioManualReferences(filePath, original, rewritePathValue);
+        if (manual === original && !original.includes(normalizedOld)) return;
+        const next = rewriteReferenceText(manual);
         if (next === original) return;
         await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
         await provider.writeText(filePath, next);
@@ -1322,14 +1327,19 @@
     const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
-    const rewriteValue = value => _rewriteByPathMap(value, normalized);
+    const rewriteValue = value => {
+      const rewritten = _rewriteByPathMap(value, normalized);
+      return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
+    };
     const rewrittenPaths = []; let failedCount = 0;
     await _iterateAllWorkspaceFiles(provider, async filePath => {
       if (!_isTextLikePath(filePath)) return;
       try {
         const original = await _readTextSafe(provider, filePath, '');
-        if (!original || !normalized.some(row => original.includes(row.oldPath))) return;
-        let next = original.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
+        if (!original) return;
+        const manual = _rewriteScenarioManualReferences(filePath, original, rewriteValue);
+        if (manual === original && !normalized.some(row => original.includes(row.oldPath))) return;
+        let next = manual.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
           const rewritten = rewriteValue(target); return rewritten === target ? match : prefix + rewritten + suffix;
         });
         next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
@@ -1356,7 +1366,23 @@
     await _iterateAllWorkspaceFiles(provider, async (filePath) => {
       if (!_isTextLikePath(filePath) || filePath === normalizedTarget) return;
       const content = await _readTextSafe(provider, filePath, '');
-      if (!content || !content.includes(normalizedTarget)) return;
+      if (!content) return;
+      if (/\.(?:mel-scenario|scriptnote\.json)$/i.test(filePath)) {
+        // シナリオの説明文や台詞に書いた裸のパスを参照と取り違えない。
+        let doc;
+        try { doc = JSON.parse(content); } catch { return; }
+        const codecs = window.MeldexReferenceCodecs;
+        const references = [];
+        const walk = (value, key = '') => {
+          if (typeof value === 'string') {
+            if (key === 'text') references.push(...(codecs?.scenarioManualLinkTargets?.(value) || []));
+            if (codecs?.isJsonReferencePathKey?.(key)) references.push(value);
+          } else if (Array.isArray(value)) value.forEach(item => walk(item, key));
+          else if (value && typeof value === 'object') Object.entries(value).forEach(([name, item]) => walk(item, name));
+        };
+        walk(doc);
+        if (!references.some(path => _normalizeFolderPath(path) === normalizedTarget)) return;
+      } else if (!content.includes(normalizedTarget)) return;
       items.push({
         source_path: filePath,
         display_name: _displayLabelForPath(filePath, ''),
@@ -1368,6 +1394,20 @@
     });
     items.sort((a, b) => String(a.display_name || '').localeCompare(String(b.display_name || ''), 'ja', { sensitivity: 'base' }));
     return { ok: true, target: normalizedTarget, items };
+  }
+
+  function _rewriteScenarioManualReferences(filePath, content, rewritePath) {
+    const rewrite = window.MeldexReferenceCodecs?.rewriteScenarioManualLinks;
+    if (!rewrite || !/\.(?:mel-scenario|scriptnote\.json)$/i.test(filePath)) return content;
+    let doc;
+    try { doc = JSON.parse(content); } catch { return content; }
+    let changed = false;
+    for (const row of Array.isArray(doc?.rows) ? doc.rows : []) {
+      if (typeof row?.text !== 'string') continue;
+      const next = rewrite(row.text, rewritePath);
+      if (next !== row.text) { row.text = next; changed = true; }
+    }
+    return changed ? JSON.stringify(doc, null, 2) + (content.endsWith('\n') ? '\n' : '') : content;
   }
 
   // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:

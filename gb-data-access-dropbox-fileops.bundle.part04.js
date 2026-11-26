@@ -1,3 +1,45 @@
+  }
+}
+
+async function _abortCloudFileEdit(prepared) {
+  if (!prepared || prepared.skipped || !prepared.documentId) return;
+  await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
+  const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
+    ...prepared.payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'content_write_failed',
+  }, { expectedRevision: prepared.intentRevision || undefined }).catch(() => null);
+  if (saved) await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved).catch(() => null);
+}
+
+async function _trackCloudEdit(provider, options, mutation) {
+  if (typeof mutation !== 'function') throw new Error('編集処理が指定されていません');
+  const actor = options.actor || _versionActor(null, {});
+  const prepared = await _prepareCloudFileEdit(
+    provider,
+    options.path,
+    options.currentContent,
+    options.nextContent,
+    actor,
+    options.sourceRevision || '',
+    options.exists !== false,
+    options,
+  );
+  let result;
+  try {
+    result = await mutation();
+  } catch (error) {
+    await _abortCloudFileEdit(prepared);
+    throw error;
+  }
+  const pending = await _commitCloudFileEdit(prepared, options.committedRevision || '');
+  if (result && typeof result === 'object') {
+    result.history_recorded = !pending;
+    result.history_sync_pending = pending;
+  }
+  return result;
+}
+
+window.MeldexSharedEditHistory = {
+  actor: _versionActor,
   prepare: _prepareCloudFileEdit,
   commit: _commitCloudFileEdit,
   settled: _awaitPendingEditFinalizations,
@@ -856,45 +898,3 @@ async function _undeleteFileVersion(provider, path, token) {
     const items = [];
     let total = 0;
     let scannedFiles = 0;
-    let scannedDirs = 0;
-    let scanTruncated = false;
-
-    async function walk(relativePath) {
-      if (scanTruncated) return;
-      scannedDirs += 1;
-      if (scannedDirs > maxDirs) {
-        scanTruncated = true;
-        return;
-      }
-      const entries = await _listDirectoryEntries(provider, relativePath);
-      for (const entry of entries) {
-        const nextPath = entry.path || _joinPath(relativePath, entry.name);
-        if (!entry.name || entry.name.startsWith('.')) continue;
-        if (entry.handle.kind === 'directory') {
-          if (entry.name === '_meldex' || entry.name === '_trash' || entry.name === 'node_modules') continue;
-          await walk(nextPath);
-          if (scanTruncated) return;
-          continue;
-        }
-        scannedFiles += 1;
-        if (scannedFiles > maxFiles) {
-          scanTruncated = true;
-          return;
-        }
-        if (!_isDropboxConflictName(entry.name)) continue;
-        try {
-          const snapshot = await _readConflictSnapshot(provider, nextPath);
-          if (_resolvedConflictTombstone(snapshot.bytes)) continue;
-        } catch {}
-        total += 1;
-        if (items.length >= maxItems) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        const originalPath = _originalPathForConflict(nextPath);
-        items.push({
-          path: nextPath,
-          name: entry.name,
-          folder: _dirname(nextPath),
-          original_path: originalPath,
-          size: Number(stats.size || 0),
-          modified: stats.modified || '',
-        });

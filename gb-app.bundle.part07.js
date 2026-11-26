@@ -1,3 +1,15 @@
+  // 音声は共有の #media-content へ直接描くため、ここでも表示の世代を進める（gb-folder.part02.js の _gbOpenViewerIframe 参照）。
+  window.GBViewerOpenGeneration = (Number(window.GBViewerOpenGeneration) || 0) + 1;
+  // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を
+  // 経由する showView('media') は行わない（openViewer 側の showView('html') に一本化）。
+  // media-view を一瞬マウントすると html-view が退避（DOM移動）され、iframe が強制
+  // 再読み込みされて開き直しの高速パスが成立しなくなる（v0.7.139検証で実測）。
+  const viewerRouted = (type === 'image' || type === 'pdf' || type === 'video');
+  if (!openOpts.skipShowView) { if (!viewerRouted) showView('media'); }
+  else if (!openOpts.skipStateView) state.view = 'media';
+  const mediaTitleEl = document.getElementById('media-title');
+  if (mediaTitleEl) mediaTitleEl.textContent = label;
+  const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
   if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
   if (!openOpts.skipNavPush) {

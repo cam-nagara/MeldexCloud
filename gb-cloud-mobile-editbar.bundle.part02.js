@@ -1,3 +1,5 @@
+    const active = document.querySelector('#ann-toolbar .ann-tool.active[data-tool]');
+    if (active?.dataset?.tool) return active.dataset.tool;
     try {
       if (typeof ann !== 'undefined' && ann?.tool) return ann.tool;
     } catch (_err) {
@@ -896,5 +898,3 @@
     const annToolbar = document.getElementById('ann-toolbar');
     if (annToolbar) {
       annToolbar.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
-      new MutationObserver((records) => {
-        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();

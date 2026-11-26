@@ -2066,7 +2066,7 @@ const GBLayout = (() => {
         // そのケースを node.tabs.length の差分で検出し、このペインに新規追加された時だけ
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
-        const tabId = GBTabs.addTab(node.id, openLabel, openType, it.path, openState, { preferTargetPane: true });
+        const tabId = GBTabs.addTab(node.id, openLabel, openType, normalizedTarget?.path || it.path, openState, { preferTargetPane: true });
         if (!tabId) continue;
         openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore

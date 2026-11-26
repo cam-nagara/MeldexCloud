@@ -1,11 +1,11 @@
 {
   "type": "meldex-manual-corpus",
   "schema_version": 1,
-  "manual_version": "0.7.819",
+  "manual_version": "0.7.827",
   "manual_url": "https://cam-nagara.github.io/MeldexCloud/manual.html",
-  "source_digest": "87dfa7a5f4004b28f88435e9dae9225d9ed313c52b8d05cd3afb567f15c7a702",
+  "source_digest": "43bf4c3ec1aec80bb5a8aeceea1368f6d53d3de17049704bbc0e33009a61f8bb",
   "document_count": 204,
-  "chunk_count": 2002,
+  "chunk_count": 2003,
   "documents": [
     {
       "path": "Meldex マニュアル.md",
@@ -186,7 +186,7 @@
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
-      "source_sha256": "b5c8824fc751c29ce50920c988025e12f8e68ed336eecf7c55c8900afb0911fd",
+      "source_sha256": "588e154d02be80166e66111fa7669844103f31d5b2f1fe464cd8004eb9d5ed43",
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md"
     },
     {
@@ -7808,7 +7808,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_6"
     },
     {
-      "id": "manual-chunk-886c1c1a36b8b785",
+      "id": "manual-chunk-4034b3457ee3ebea",
+      "path": "02_ツール別ガイド/ビューワー マニュアル.md",
+      "title": "ビューワー",
+      "category": "メインアプリ",
+      "heading": "目次でのPDFのページ編集",
+      "anchor": "pdf",
+      "text": "PDFを開いている時は、目次（ページ一覧）でページを編集できます。画像フォルダの目次では編集できません（ページの上にポインターを置くと、PDFだけが対象であることを表示します）。\n操作\n方法\n複数選択\nCtrl（macOSは Command）+クリックで1ページずつ、Shift+クリックで範囲を選びます\n一括処理\n選んだページを右クリックし、選んだ2ページを入れ替え・前へ移動・後ろへ移動・回転（90度・180度・270度）・反転（左右反転・上下反転）・削除 を選びます。選んだすべてのページにまとめて行います\n削除\n右クリックの 削除、またはページを選んで Delete\n開始ページ\n見開きの時、右クリックの 開始ページ で先頭を左・右に固定します\n並べ替え\n選んだページをドラッグし、落としたい位置で離します。ページの間に線（縦に並ぶ時は水平線、見開きで横に並ぶ時は縦線）が出ます\n別のPDFからコピー・移動\n別のビューワーの目次のページをドラッグして落とすとコピー、Shift を押しながら落とすと移動（移動元から消えます）\n画像の貼り付け\nエクスプローラーやブラウザから画像ファイルを目次へ落とすと、その位置にページとして入ります\n編集はすぐに保存されます。書き換える前の状態は版として残るので、取り消し（Ctrl+Z）・やり直し（Ctrl+Y）や版の管理から元に戻せます。\n画質は落ちません。ページの中身はそのまま移し、回転・反転は表示の向きだけを変えます。貼り付けたJPEGはそのまま、ほかの形式は劣化のない形で埋め込みます。\nほかの場所でPDFが変更されていた時、編集ロック中の時、保存できなかった時は、ファイルを変えずに理由を表示します。開き直してから同じ操作をやり直せます。\n別のPDFからのコピー・移動は、同じMeldexの画面どうし（本体のパネル・サブパネルの間など）でできます。別々に起動した単独アプリの画面どうしではできません。\n本体のチャットのAIにも、PDFのページの並べ替え・回転・反転・削除・画像の挿入を頼めます。画面からの編集と同じく、書き換える前の版を残し、ほかの場所で変更されていた時は書き換えません。",
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdf"
+    },
+    {
+      "id": "manual-chunk-3d515b4902e23296",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7818,17 +7828,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdfocr"
     },
     {
-      "id": "manual-chunk-b86606def0ccd933",
+      "id": "manual-chunk-65a6bb778c4ca813",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
       "heading": "PDFの画像検索・説明",
-      "anchor": "pdf",
+      "anchor": "pdf_1",
       "text": "デスクトップ版の OCR → PDFの画像検索・説明… で、表示中のPDFのページ全体と画像領域を索引にできます。本体のフォルダの 画像インデックスを作成 からは、PDFと既存の画像ファイルをまとめて指定できます。元のPDF・画像は変更しません。Cloud版ではローカルモデルの操作を表示しません。\nこのページ、文書全体、指定ページを選べます。Shiftを押して範囲を選んだ場合は 選択範囲の索引を追加 を使えます。進行状況から中止・再試行でき、再開時は保存済みページを再利用します。作り直す でも確認・編集した説明は保持します。原本を差し替えた場合や接続が切れた場合は、古い検索結果を表示せず、索引を更新してから使います。Meldex内の移動・改名には追従します。\n画像検索モデル は既存のCLIPとSigLIP 2を選べます。日本語で画像の内容を探す場合、今回の自作見本の比較ではSigLIP 2のほうが良い結果でした。モデルごとに索引を分けます。日本語の「螺旋階段」「逆光」「俯瞰構図」などを入力し、説明・タグ・OCR原文、または画像の内容で探します。結果には書籍名・ページ・領域画像・一致した説明または類似度が出ます。書籍ごとにまとめる で表示を切り替え、この領域を開く で対象ページの範囲を強調します。自動で見つけた領域は候補のため、ページ全体の結果も併用してください。\n画像の説明を生成する機能は初期状態でオフです。必要な場合だけチェックを入れるか、結果の 説明を生成 を押します。別のローカルモデルQwen3-VLを使い、原文を読むOCRとは分けて AIの推定・未確認 と表示します。説明・タグは確認・編集でき、保存に失敗しても入力を残します。元に戻す／やり直すに対応します。推定や不明という記述は、原本で確認してから直してください。\n追加ソフトとモデルは自動導入しません。モデルを取得… で容量と条件を確認し、明示的に決定した時だけ取得します。モデルを削除しても索引・編集した説明・原本は残ります。CPUが既定で、GPUは明示選択です。自作5ページのCPU実測ではSigLIP 2の意味検索が日本語4語すべてを上位5件に出しましたが、誤検出も残りました。説明生成込みでは約24分24秒・最大約12.76 GiBを使い、窓を扉と呼ぶ等の誤りがありました。説明だけの文字検索では見つからない場合もあるため、意味検索と併用し、説明の生成は必要なページ・領域に絞ってください。RTX 5090等のGPU・VRAMは未測定です。文書や画像を外部へ送信せず、有料サービスへ切り替えません。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdf"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdf_1"
     },
     {
-      "id": "manual-chunk-ce839522ad6359e6",
+      "id": "manual-chunk-387351de18669bb7",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7838,7 +7848,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_7"
     },
     {
-      "id": "manual-chunk-139c8f794181f59a",
+      "id": "manual-chunk-d610803a69a551b5",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7848,7 +7858,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_8"
     },
     {
-      "id": "manual-chunk-653925d6d0b68d7d",
+      "id": "manual-chunk-cb10a263d6631a2b",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7858,17 +7868,17 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_9"
     },
     {
-      "id": "manual-chunk-33bcafe89987a8c7",
+      "id": "manual-chunk-656c45d8e4a3b319",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
       "heading": "PDF",
-      "anchor": "pdf_1",
+      "anchor": "pdf_2",
       "text": "PDF は専用のビューワー (pdf-viewer.html) で表示されます。",
-      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdf_1"
+      "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=pdf_2"
     },
     {
-      "id": "manual-chunk-ac6216de14bf5579",
+      "id": "manual-chunk-2f637e1b216ff49a",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7878,7 +7888,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_10"
     },
     {
-      "id": "manual-chunk-9a070230f2fb20cb",
+      "id": "manual-chunk-1489fb034a85dbc8",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7888,7 +7898,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_11"
     },
     {
-      "id": "manual-chunk-5153ad83799885fa",
+      "id": "manual-chunk-a8e399e7260ef63b",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7898,7 +7908,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_12"
     },
     {
-      "id": "manual-chunk-224216245bb4bec6",
+      "id": "manual-chunk-20aabcb39ce9e465",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7908,7 +7918,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=_13"
     },
     {
-      "id": "manual-chunk-cb5fc63bdc72a379",
+      "id": "manual-chunk-2a5f64eec2be0544",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",
@@ -7918,7 +7928,7 @@
       "url": "https://cam-nagara.github.io/MeldexCloud/manual.html#path=02_%E3%83%84%E3%83%BC%E3%83%AB%E5%88%A5%E3%82%AC%E3%82%A4%E3%83%89/%E3%83%93%E3%83%A5%E3%83%BC%E3%83%AF%E3%83%BC%20%E3%83%9E%E3%83%8B%E3%83%A5%E3%82%A2%E3%83%AB.md&section=html"
     },
     {
-      "id": "manual-chunk-61fd82ad1b2f0eb8",
+      "id": "manual-chunk-f3c132dd614a1304",
       "path": "02_ツール別ガイド/ビューワー マニュアル.md",
       "title": "ビューワー",
       "category": "メインアプリ",

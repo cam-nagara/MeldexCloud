@@ -571,18 +571,12 @@
       return entries;
     }
     async listDocuments(kind, options) {
-      const contract = _contract();
-      // documentIdPrefix: 名前の先頭が一致する記録だけを読む。編集履歴は対象パスの
-      // ハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ読めば足りる。
-      // 指定しないと全件（実データで3199件・307MB）を読むため、スマホの送信が
-      // 終わらなかった（2026-11-26）。
-      const prefix = String(options?.documentIdPrefix || '');
+      const contract = _contract(), prefix = String(options?.documentIdPrefix || ''); // 契約側の説明を参照
       const entries = await this._listFolderEntries(this._folderFor(kind));
       const documents = [];
       for (const entry of entries) {
-        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '') || (prefix && !String(entry.name).startsWith(prefix))) continue;
         const documentId = String(entry.name).slice(0, -5);
-        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           contract.sanitizeDocumentId(documentId);
         } catch {
@@ -605,8 +599,7 @@
           return null;
         }
       });
-      // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
-      // 絞り込んだ一覧では他の記録の控えまで消してしまうので行わない。
+      // 一覧から消えた記録の控えを端末内から片付ける（待たせない。絞り込んだ一覧では他の控えを消すので行わない）。
       if (!prefix) _envelopeStorePrune(
         `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
         new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
@@ -631,7 +624,7 @@
       // 編集中ロックの確認は書き込み操作のたびに走る。読み取りだけなので並行して取得する
       // （1件でも読めなければ全体を失敗にする点は従来どおり）。
       return _mapInOrder(names, async (name) => {
-        const downloaded =await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false); // listed just above; a vanished file still fails the null check below
+        const downloaded = await contract.readAtListedRevision(`${await _envelopeCacheAccount()}|${this._namespaceKind}|${folder}/${name}`, String(files.find(file => file.name === name)?.rev || ''), () => _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false)); // listed just above (fresh); a vanished file still fails the null check below
         if (!downloaded) throw new contract.SystemStorageError('編集中ロックの読込中に同期状態が変わりました');
         const record = contract.recordFromEnvelope(downloaded.data, { revisionOverride: downloaded.rev });
         if (record.kind !== kind || !(record.documentId === 'active-lock-store'

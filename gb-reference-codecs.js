@@ -112,11 +112,31 @@
     });
   }
 
+  function rewriteScenarioManualLinks(text, rewritePath) {
+    return String(text || '').replace(/(\[(?:\\.|[^\]])+\]\(ml:)([^)]+)(\))/g,
+      (match, prefix, encoded, suffix) => {
+        let path;
+        try { path = decodeURIComponent(encoded); } catch { return match; }
+        const rewritten = rewritePath(path);
+        if (rewritten === path) return match;
+        return prefix + encodeURIComponent(rewritten).replace(/[()]/g,
+          ch => '%' + ch.charCodeAt(0).toString(16).toUpperCase()) + suffix;
+      });
+  }
+
+  function scenarioManualLinkTargets(text) {
+    const targets = [];
+    rewriteScenarioManualLinks(text, path => { targets.push(path); return path; });
+    return targets;
+  }
+
   window.MeldexReferenceCodecs = {
     CODEC_VERSION: 1,
     JSON_REFERENCE_PATH_KEYS: JSON_REFERENCE_PATH_KEYS,
     isJsonReferencePathKey: isJsonReferencePathKey,
     isExternalReference: isExternalReference,
+    rewriteScenarioManualLinks,
+    scenarioManualLinkTargets,
     _toSnakeCase: toSnakeCase,
   };
 })();

@@ -409,6 +409,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   characters.forEach((chara) => {
     const item = _scriptNotePlainObject(chara);
     if (item.isDefault) return;
+    if (options.preserveStoredRoleFlags) return;
     if (item.isBreak === undefined) {
       if (item.kind === 'break') item.isBreak = true;
       else if (item.name && (legacyBreakNames.includes(item.name) || legacyDetectKindByName(item.name) === 'break')) item.isBreak = true;

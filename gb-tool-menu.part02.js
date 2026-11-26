@@ -64,10 +64,10 @@ function buildToolMenuItems(toolType, component) {
     },
     scriptnote: {
       import: [
-        { label: 'Excelからシナリオを作成...', action: () => {
+        ...(!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() ? [{ label: 'Excelからシナリオを作成...', action: () => {
           if (typeof importXlsxToOutliner === 'function') importXlsxToOutliner();
           else _showUnavailableToolMenuAction('Excelからシナリオを作成');
-        } },
+        } }] : []),
         { label: '旧シナリオからインポート...', action: context => showScriptNoteImportModal({ trigger: context?.trigger }) },
       ],
       export: [

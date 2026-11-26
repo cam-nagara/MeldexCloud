@@ -1434,7 +1434,7 @@ function historyCanRedo(scope) {
 // length を直接参照する暫定分岐が残る。
 function meldexCanUndo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanUndo(globalThis.GBAnnotationSurfaces.historyScopeFor?.('undo') ?? globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanUndo(_bdHistoryScope()) : (typeof _bdUndoStack !== 'undefined' && _bdUndoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanUndo(_meldexProductionEmbedHistoryScope());
@@ -1445,7 +1445,7 @@ function meldexCanUndo() {
 
 function meldexCanRedo() {
   if (_historyBusy || (typeof _calHistoryBusy !== 'undefined' && _calHistoryBusy)) return false;
-  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScope());
+  if ((globalThis.GBAnnotationSurfaces?.usesHistory?.() ?? globalThis.GBAnnotationSurfaces?.isOpen())) return historyCanRedo(globalThis.GBAnnotationSurfaces.historyScopeFor?.('redo') ?? globalThis.GBAnnotationSurfaces.historyScope());
   const ctx = _meldexUndoRedoContext();
   if (ctx === 'board') return typeof _bdHistoryScope === 'function' ? historyCanRedo(_bdHistoryScope()) : (typeof _bdRedoStack !== 'undefined' && _bdRedoStack.length > 0);
   if (ctx === 'embedded-sheet') return historyCanRedo(_meldexProductionEmbedHistoryScope());

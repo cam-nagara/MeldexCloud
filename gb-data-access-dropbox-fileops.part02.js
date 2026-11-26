@@ -944,6 +944,25 @@
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
+      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      let scenarioSnapshot = null;
+      let scenarioContent = '';
+      if (scenarioRename) {
+        scenarioSnapshot = await _readFileSnapshot(provider, oldPath, source);
+        const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
+        const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+        const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
+        const desiredTitle = displayName || newName;
+        if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
+          scenarioContent = original;
+        } else {
+          doc.title = desiredTitle;
+          if (hasDisplayTitle || keepDisplayTitle) doc.display_title = desiredTitle;
+          scenarioContent = bom + JSON.stringify(doc, null, 2);
+        }
+      }
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
         const heading = displayName || newName;
@@ -953,10 +972,13 @@
         // 上書きしていた（実データ388件が該当）。
         await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
       }
-      if (keepDisplayTitle) {
+      if (keepDisplayTitle && !scenarioRename) {
         await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
-      if (nextPath !== oldPath) {
+      if (scenarioRename) {
+        await _commitScenarioRenameTitle(provider, oldPath, nextPath, scenarioSnapshot, scenarioContent,
+          path => _readFileSnapshot(provider, path));
+      } else if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
       }
       const warnings = [];
@@ -977,5 +999,6 @@
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
+        ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };
     }

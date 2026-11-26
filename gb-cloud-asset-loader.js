@@ -1,5 +1,5 @@
 (function(){
-const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=b3c7e14c4c20aa53", "meldex-cloud-scenario.css?v=74a2be005f16aef4"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
+const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=22838d966bb1c0fa", "meldex-cloud-scenario.css?v=74a2be005f16aef4"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
 window.MeldexCloudAssets={load(name){
  if(!groups[name])return Promise.resolve();
  if(pending.has(name))return pending.get(name);

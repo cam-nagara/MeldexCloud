@@ -1,3 +1,45 @@
+        scope_id: resolved.scope,
+        state: intent?.operation_state === 'awaiting_proof' ? 'awaiting_proof' : 'prepared',
+        intent: structuredClone(intent),
+        saved_at: new Date().toISOString(),
+      };
+      return { ...state, outliner_operations: previous ? operations
+        : _pruneCloudCopyOperations([...operations, selected]) };
+    }, resolved.writeSession);
+    return selected;
+  }
+
+  async function _updateCloudCopyIntent(provider, operationId, operation, payload, intent) {
+    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
+    await _updateCloudCopyJournal(provider, operation, state => {
+      const operations = _normalizeOutlinerOperations(state.outliner_operations);
+      const index = operations.findIndex(row => row.operation_id === operationId);
+      const previous = index < 0 ? null : operations[index];
+      _assertCloudCopyRecord(previous, operationId, operation, identity);
+      if (!previous || (previous.state !== 'prepared' && previous.state !== 'awaiting_proof')) {
+        throw new Error('再開可能なCloudファイル操作履歴がありません');
+      }
+      const nextState = intent?.operation_state === 'proof_ready' ? 'prepared' : previous.state;
+      operations[index] = {
+        ...previous, state: nextState, intent: structuredClone(intent), saved_at: new Date().toISOString(),
+      };
+      return { ...state, outliner_operations: operations };
+    }, identity.writeSession);
+  }
+
+  async function _failCloudCopyOperation(provider, operationId, operation, payload, reason) {
+    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
+    await _updateCloudCopyJournal(provider, operation, state => {
+      const operations = _normalizeOutlinerOperations(state.outliner_operations);
+      const index = operations.findIndex(row => row.operation_id === operationId);
+      const previous = index < 0 ? null : operations[index];
+      _assertCloudCopyRecord(previous, operationId, operation, identity);
+      if (!previous) throw new Error('再開可能なCloudファイル操作履歴がありません');
+      if (previous.state === 'completed') return state;
+      operations[index] = {
+        ...previous, state: 'failed', failure_reason: String(reason || 'publish-failed'),
+        saved_at: new Date().toISOString(),
+      };
       return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
     });
   }
@@ -856,45 +898,3 @@ async function _readAnnotationRecord(provider, id, targetPathHint) {
   if (hint) {
     let scope; let stored;
     try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, hint); }
-    catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
-    try { stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId); }
-    catch (error) { throw _annotationUnavailable(error, '読込'); }
-    if (stored) {
-      const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, docId);
-      return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
-    }
-    const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
-    return legacy && typeof legacy === 'object' ? legacy : null;
-  }
-  const matches = await _findAnnotationRecordsById(provider, docId);
-  if (matches.length === 1) {
-    const migrated = await _migrateAnnotationStoredRecord(provider, matches[0].scope.adapter, docId);
-    return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
-  }
-  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
-  return legacy && typeof legacy === 'object' ? legacy : null;
-}
-
-async function _writeAnnotationRecord(provider, record, options = {}) {
-  const docId = _safeId(record.id, 'annotation id');
-  const adapter = await _managementAdapterForProvider(
-    provider,
-    window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
-    record.target_path || record.path || '',
-  );
-  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  let saveOptions;
-  if (options.expectedModified) {
-    let current = await adapter.load(kind, docId);
-    if (!current) {
-      const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
-      if (legacy && _annotationRow(legacy).modified === options.expectedModified) {
-        // Retain the legacy source and claim an absent common-store slot first.
-        // A retry can then edit that same snapshot with the normal CAS guard.
-        await adapter.save(kind, docId, legacy, { expectedRevision: null });
-        current = await adapter.load(kind, docId);
-      }
-    }
-    if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
-      const error = new Error('他の画面で更新されたためアノテートを変更できません');
-      error.status = 409; throw error;

@@ -636,7 +636,15 @@
               // セルなど編集ホスト内の場所を押した場合、ホスト全体へのclickに
               // 置き換えると最初のセル選択が失われる。接続中の元の対象へ戻す。
               const target = t.isConnected && el.contains?.(t) && typeof t.click === 'function' ? t : el;
-              if (typeof target.click === 'function') target.click();
+              // click() は修飾キーを落とすため、Ctrl/⌘の複数選択やShiftの範囲選択を保つ。
+              if ((e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) && typeof MouseEvent === 'function') {
+                target.dispatchEvent(new MouseEvent('click', {
+                  bubbles: true, cancelable: true, composed: true,
+                  ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey,
+                  button: e.button, buttons: e.buttons, detail: e.detail,
+                  clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+                }));
+              } else if (typeof target.click === 'function') target.click();
             } else if (inputReplay) {
               if (getActiveInfo()?.viewKey !== info.viewKey) return;
               // Several keystrokes can arrive while the same lock request is pending.

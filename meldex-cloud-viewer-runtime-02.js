@@ -2035,6 +2035,31 @@
     return permission === 'viewer' ? new ReadOnlySystemStorageAdapter(adapter) : adapter;
   }
 
+  // --- 一覧の版による読み直しの省略 ------------------------------------------
+  //
+  // 取り直したばかりの一覧が示す版（rev）が、前回読んだ時と同じ記録は内容も同じなので、
+  // ダウンロードし直さずに使う。画面の記憶だけで端末内には残さない。スマホのクイック
+  // メモ1件の送信で、全員分の編集中ロックの記録を約30回ダウンロードしていた
+  // （2026-11-26、1件約2分の主因）。download() は { data, rev } か null を返す。
+  //
+  // listDocuments(kind, { documentIdPrefix }) は名前の先頭が一致する記録だけを読む。
+  // 編集履歴は対象パスのハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ
+  // 読めば足りる。指定しないと全件（実データで3,199件・307MB）を読み、スマホの送信が
+  // 終わらなかった（2026-11-26）。
+  const _listedRevisionCache = new Map();
+  async function readAtListedRevision(cacheKey, listedRev, download) {
+    const cached = listedRev ? _listedRevisionCache.get(cacheKey) : null;
+    if (cached && cached.rev === listedRev) {
+      try { return { data: JSON.parse(cached.text), rev: cached.rev }; } catch { _listedRevisionCache.delete(cacheKey); }
+    }
+    const downloaded = await download();
+    if (downloaded?.rev && downloaded.rev === listedRev) {
+      if (_listedRevisionCache.size >= 256) _listedRevisionCache.clear();
+      _listedRevisionCache.set(cacheKey, { rev: downloaded.rev, text: JSON.stringify(downloaded.data) });
+    }
+    return downloaded;
+  }
+
   // --- 公開 --------------------------------------------------------------
 
   window.MeldexSystemStorage = {
@@ -2074,6 +2099,7 @@
     StorageEnvironment,
     detectStorageEnvironment,
     resolveSystemStorageAdapter,
+    readAtListedRevision,
   };
 })();
 
@@ -2654,18 +2680,12 @@
       return entries;
     }
     async listDocuments(kind, options) {
-      const contract = _contract();
-      // documentIdPrefix: 名前の先頭が一致する記録だけを読む。編集履歴は対象パスの
-      // ハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ読めば足りる。
-      // 指定しないと全件（実データで3199件・307MB）を読むため、スマホの送信が
-      // 終わらなかった（2026-11-26）。
-      const prefix = String(options?.documentIdPrefix || '');
+      const contract = _contract(), prefix = String(options?.documentIdPrefix || ''); // 契約側の説明を参照
       const entries = await this._listFolderEntries(this._folderFor(kind));
       const documents = [];
       for (const entry of entries) {
-        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '') || (prefix && !String(entry.name).startsWith(prefix))) continue;
         const documentId = String(entry.name).slice(0, -5);
-        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           contract.sanitizeDocumentId(documentId);
         } catch {
@@ -2688,8 +2708,7 @@
           return null;
         }
       });
-      // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
-      // 絞り込んだ一覧では他の記録の控えまで消してしまうので行わない。
+      // 一覧から消えた記録の控えを端末内から片付ける（待たせない。絞り込んだ一覧では他の控えを消すので行わない）。
       if (!prefix) _envelopeStorePrune(
         `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
         new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
@@ -2714,7 +2733,7 @@
       // 編集中ロックの確認は書き込み操作のたびに走る。読み取りだけなので並行して取得する
       // （1件でも読めなければ全体を失敗にする点は従来どおり）。
       return _mapInOrder(names, async (name) => {
-        const downloaded =await _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false); // listed just above; a vanished file still fails the null check below
+        const downloaded = await contract.readAtListedRevision(`${await _envelopeCacheAccount()}|${this._namespaceKind}|${folder}/${name}`, String(files.find(file => file.name === name)?.rev || ''), () => _downloadEnvelope(_joinDropboxPath(folder, name), this._namespaceKind, false)); // listed just above (fresh); a vanished file still fails the null check below
         if (!downloaded) throw new contract.SystemStorageError('編集中ロックの読込中に同期状態が変わりました');
         const record = contract.recordFromEnvelope(downloaded.data, { revisionOverride: downloaded.rev });
         if (record.kind !== kind || !(record.documentId === 'active-lock-store'
@@ -9177,7 +9196,10 @@
     const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
-    const rewritePathValue = (value) => _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+    const rewritePathValue = (value) => {
+      const rewritten = _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+      return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
+    };
     const rewriteReferenceText = (text) => {
       let next = String(text || '');
       next = next.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
@@ -9202,8 +9224,10 @@
       if (!_isTextLikePath(filePath)) return;
       try {
         const original = await _readTextSafe(provider, filePath, '');
-        if (!original || !original.includes(normalizedOld)) return;
-        const next = rewriteReferenceText(original);
+        if (!original) return;
+        const manual = _rewriteScenarioManualReferences(filePath, original, rewritePathValue);
+        if (manual === original && !original.includes(normalizedOld)) return;
+        const next = rewriteReferenceText(manual);
         if (next === original) return;
         await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
         await provider.writeText(filePath, next);
@@ -9225,14 +9249,19 @@
     const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
-    const rewriteValue = value => _rewriteByPathMap(value, normalized);
+    const rewriteValue = value => {
+      const rewritten = _rewriteByPathMap(value, normalized);
+      return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
+    };
     const rewrittenPaths = []; let failedCount = 0;
     await _iterateAllWorkspaceFiles(provider, async filePath => {
       if (!_isTextLikePath(filePath)) return;
       try {
         const original = await _readTextSafe(provider, filePath, '');
-        if (!original || !normalized.some(row => original.includes(row.oldPath))) return;
-        let next = original.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
+        if (!original) return;
+        const manual = _rewriteScenarioManualReferences(filePath, original, rewriteValue);
+        if (manual === original && !normalized.some(row => original.includes(row.oldPath))) return;
+        let next = manual.replace(/(!?\[[^\]\n]*\]\()([^)\n]+)(\))/g, (match, prefix, target, suffix) => {
           const rewritten = rewriteValue(target); return rewritten === target ? match : prefix + rewritten + suffix;
         });
         next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
@@ -9259,7 +9288,23 @@
     await _iterateAllWorkspaceFiles(provider, async (filePath) => {
       if (!_isTextLikePath(filePath) || filePath === normalizedTarget) return;
       const content = await _readTextSafe(provider, filePath, '');
-      if (!content || !content.includes(normalizedTarget)) return;
+      if (!content) return;
+      if (/\.(?:mel-scenario|scriptnote\.json)$/i.test(filePath)) {
+        // シナリオの説明文や台詞に書いた裸のパスを参照と取り違えない。
+        let doc;
+        try { doc = JSON.parse(content); } catch { return; }
+        const codecs = window.MeldexReferenceCodecs;
+        const references = [];
+        const walk = (value, key = '') => {
+          if (typeof value === 'string') {
+            if (key === 'text') references.push(...(codecs?.scenarioManualLinkTargets?.(value) || []));
+            if (codecs?.isJsonReferencePathKey?.(key)) references.push(value);
+          } else if (Array.isArray(value)) value.forEach(item => walk(item, key));
+          else if (value && typeof value === 'object') Object.entries(value).forEach(([name, item]) => walk(item, name));
+        };
+        walk(doc);
+        if (!references.some(path => _normalizeFolderPath(path) === normalizedTarget)) return;
+      } else if (!content.includes(normalizedTarget)) return;
       items.push({
         source_path: filePath,
         display_name: _displayLabelForPath(filePath, ''),
@@ -9271,6 +9316,20 @@
     });
     items.sort((a, b) => String(a.display_name || '').localeCompare(String(b.display_name || ''), 'ja', { sensitivity: 'base' }));
     return { ok: true, target: normalizedTarget, items };
+  }
+
+  function _rewriteScenarioManualReferences(filePath, content, rewritePath) {
+    const rewrite = window.MeldexReferenceCodecs?.rewriteScenarioManualLinks;
+    if (!rewrite || !/\.(?:mel-scenario|scriptnote\.json)$/i.test(filePath)) return content;
+    let doc;
+    try { doc = JSON.parse(content); } catch { return content; }
+    let changed = false;
+    for (const row of Array.isArray(doc?.rows) ? doc.rows : []) {
+      if (typeof row?.text !== 'string') continue;
+      const next = rewrite(row.text, rewritePath);
+      if (next !== row.text) { row.text = next; changed = true; }
+    }
+    return changed ? JSON.stringify(doc, null, 2) + (content.endsWith('\n') ? '\n' : '') : content;
   }
 
   // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
@@ -12605,6 +12664,48 @@
     await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VIEW_LOCKS, docId, entry);
     return entry;
   }
+
+  async function _commitScenarioRenameTitle(provider, oldPath, newPath, snapshot, content, readSnapshot) {
+    const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(snapshot.bytes);
+    const changesTitle = original !== content;
+    if (changesTitle && (!snapshot.etag || typeof provider.uploadBytesConditional !== 'function')) {
+      throw new Error('題名の保存に必要な版の確認ができません');
+    }
+    if (newPath !== oldPath) await _moveEntry(provider, oldPath, newPath);
+    if (!changesTitle) return null;
+    try {
+      const moved = await readSnapshot(newPath);
+      if (!moved.etag) throw new Error('移動後の版を確認できないため題名を保存しません');
+      if (new TextDecoder('utf-8', { ignoreBOM: true }).decode(moved.bytes) !== original) {
+        const conflict = new Error('改名の間に文書が更新されたため題名の保存を中止しました');
+        conflict.status = 409;
+        throw conflict;
+      }
+      return await provider.uploadBytesConditional(newPath, new TextEncoder().encode(content), moved.etag);
+    } catch (error) {
+      let current;
+      try { current = await readSnapshot(newPath); } catch (_) { /* 応答不明の時は保存済み内容を戻し書きしない。 */ }
+      if (current && new TextDecoder('utf-8', { ignoreBOM: true }).decode(current.bytes) === content) {
+        // 保存できた後に応答だけが切れた。同じ内容と版を確認して完了にする。
+        return { rev: current.etag };
+      }
+      if (current && newPath !== oldPath) {
+        let restored = false;
+        try {
+          // 内容は書き戻さない。保存拒否・競合時は同じファイルを元の名前へ戻し、他の人の編集を保つ。
+          await _moveEntry(provider, newPath, oldPath);
+          restored = true;
+        } catch (_) { /* 戻せなければ実在する保全先をエラーへ添える。 */ }
+        if (restored) throw error;
+      } else if (current) {
+        throw error;
+      }
+      error.detail = { ...(error.detail || {}), recovery_path: newPath, source_path: oldPath };
+      error.message += `。ファイルは「${newPath}」に保全されています。接続後にフォルダツリーから開き直してください`;
+      throw error;
+    }
+  }
+  // シナリオ改名の保存処理ここまで
 
   // 注意: このIIFEはここでは閉じない。gb-data-access-dropbox-fileops-conflict-backups.js /
   // gb-data-access-dropbox-fileops-annotations.js / gb-data-access-dropbox-fileops-versions.js /
@@ -16801,6 +16902,25 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
+      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      let scenarioSnapshot = null;
+      let scenarioContent = '';
+      if (scenarioRename) {
+        scenarioSnapshot = await _readFileSnapshot(provider, oldPath, source);
+        const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
+        const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+        const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
+        const desiredTitle = displayName || newName;
+        if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
+          scenarioContent = original;
+        } else {
+          doc.title = desiredTitle;
+          if (hasDisplayTitle || keepDisplayTitle) doc.display_title = desiredTitle;
+          scenarioContent = bom + JSON.stringify(doc, null, 2);
+        }
+      }
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
         const heading = displayName || newName;
@@ -16810,10 +16930,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         // 上書きしていた（実データ388件が該当）。
         await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
       }
-      if (keepDisplayTitle) {
+      if (keepDisplayTitle && !scenarioRename) {
         await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
-      if (nextPath !== oldPath) {
+      if (scenarioRename) {
+        await _commitScenarioRenameTitle(provider, oldPath, nextPath, scenarioSnapshot, scenarioContent,
+          path => _readFileSnapshot(provider, path));
+      } else if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
       }
       const warnings = [];
@@ -16834,7 +16957,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
+        ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };
     }
 /* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
     function _preserveNoteTextFormat(text, original) {

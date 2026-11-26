@@ -1074,6 +1074,11 @@ function renderDiff(modal = null) {
 // 現在のビューのパスとタイプを取得
 function _getCurrentVersionTarget() {
   const editor = globalThis.GBEditorHost?.get();
+  const entityTarget = globalThis._meldexEntityVersionTarget;
+  const entityPath = editor?.kind === 'entity' ? editor.path : typeof state !== 'undefined' && state.view === 'entity' ? state.currentEntityPath : '';
+  if (entityTarget?.path === entityPath && entityTarget.sequence === globalThis._selectEntityLoadSeq) {
+    return { path: entityTarget.dbPath, type: 'db' };
+  }
   if (editor) return { path: editor.path, type: ['database', 'calendar'].includes(editor.kind) ? 'db' : editor.kind === 'folder' ? 'folder' : 'file' };
   let path = '', type = 'file';
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')

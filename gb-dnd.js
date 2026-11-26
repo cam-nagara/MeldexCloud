@@ -831,8 +831,8 @@ const MeldexDnD = (() => {
   }
 
   // --- ファイル種別判定 ---
-  const IMAGE_EXTS = ['png','jpg','jpeg','gif','bmp','webp','svg','ico','avif'];
-  const VIDEO_EXTS = ['mp4','webm','ogv','mov','avi'];
+  const IMAGE_EXTS = ['png','jpg','jpeg','jpe','jfif','apng','gif','bmp','webp','svg','ico','avif'];
+  const VIDEO_EXTS = ['mp4','webm','ogv','mov','avi','mkv'];
   const AUDIO_EXTS = ['mp3','wav','ogg','flac','aac','m4a'];
 
   function getMediaType(ext) {
@@ -880,6 +880,13 @@ const MeldexDnD = (() => {
     return declared || 'page';
   }
 
+  function _canonicalOpenTarget(target) {
+    if (target?.type !== 'map' || typeof MeldexLocationData === 'undefined'
+        || typeof MeldexLocationData.canonicalPath !== 'function') return target;
+    const path = MeldexLocationData.canonicalPath(target.path, typeof state !== 'undefined' ? state.vaultPath : '');
+    return { ...target, path, state: { ...(target.state || {}), mapPath: path } };
+  }
+
   function normalizeOpenTarget(item) {
     const path = String(item?.path || '').trim();
     if (!path) return null;
@@ -888,23 +895,30 @@ const MeldexDnD = (() => {
     const label = String(item?.label || item?.name || path.split(/[\\/]/).pop() || path);
     if ((!declared || declared === 'file' || (declared === 'document' && ext !== 'pdf'))
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolve === 'function') {
-      return GBLinkRouter.resolve({ path, label, type: declared === 'file' ? '' : declared });
+      return _canonicalOpenTarget(GBLinkRouter.resolve({ path, label, type: declared === 'file' ? '' : declared }));
     }
-    const type = resolveOpenType(declared, ext);
-    const state = { ...(item?.state || {}) };
+    // Explicit types need the same document-specific state as menu/link opens.
+    // Without mapPath/formPath/etc., the tab's component can open an empty app
+    // and replace its path instead of loading the dropped document.
+    const routed = ['map', 'form-app', 'scriptnote', 'board', 'calendar', 'scenario', 'sheet'].includes(declared)
+      && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolve === 'function'
+      ? GBLinkRouter.resolve({ path, label, type: declared }) : null;
+    const type = routed?.type || resolveOpenType(declared, ext);
+    const openState = { ...(routed?.state || {}), ...(item?.state || {}) };
+    if (type === 'map') openState.mapPath = path;
     if (type === 'media') {
-      state.mediaType = declared === 'media'
-        ? (state.mediaType || item?.mediaType || getMediaType(ext) || (ext === 'pdf' ? 'pdf' : 'file'))
+      openState.mediaType = declared === 'media'
+        ? (openState.mediaType || item?.mediaType || getMediaType(ext) || (ext === 'pdf' ? 'pdf' : 'file'))
         : (declared === 'pdf' || ext === 'pdf'
           ? 'pdf'
           : declared);
     }
-    return {
+    return _canonicalOpenTarget({
       type,
       path,
       label,
-      state,
-    };
+      state: openState,
+    });
   }
 
   // チャット本文のリンクにはツリーの型メタデータがない。拡張子のない
@@ -913,7 +927,7 @@ const MeldexDnD = (() => {
     const declared = String(item?.type || item?.toolType || '').trim().toLowerCase();
     if ((!declared || declared === 'file') && item?.path
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolveAsync === 'function') {
-      return GBLinkRouter.resolveAsync({ path: item.path, label: item.label || item.name });
+      return _canonicalOpenTarget(await GBLinkRouter.resolveAsync({ path: item.path, label: item.label || item.name }));
     }
     return normalizeOpenTarget(item);
   }

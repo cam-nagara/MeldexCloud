@@ -729,6 +729,48 @@
     return entry;
   }
 
+  async function _commitScenarioRenameTitle(provider, oldPath, newPath, snapshot, content, readSnapshot) {
+    const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(snapshot.bytes);
+    const changesTitle = original !== content;
+    if (changesTitle && (!snapshot.etag || typeof provider.uploadBytesConditional !== 'function')) {
+      throw new Error('題名の保存に必要な版の確認ができません');
+    }
+    if (newPath !== oldPath) await _moveEntry(provider, oldPath, newPath);
+    if (!changesTitle) return null;
+    try {
+      const moved = await readSnapshot(newPath);
+      if (!moved.etag) throw new Error('移動後の版を確認できないため題名を保存しません');
+      if (new TextDecoder('utf-8', { ignoreBOM: true }).decode(moved.bytes) !== original) {
+        const conflict = new Error('改名の間に文書が更新されたため題名の保存を中止しました');
+        conflict.status = 409;
+        throw conflict;
+      }
+      return await provider.uploadBytesConditional(newPath, new TextEncoder().encode(content), moved.etag);
+    } catch (error) {
+      let current;
+      try { current = await readSnapshot(newPath); } catch (_) { /* 応答不明の時は保存済み内容を戻し書きしない。 */ }
+      if (current && new TextDecoder('utf-8', { ignoreBOM: true }).decode(current.bytes) === content) {
+        // 保存できた後に応答だけが切れた。同じ内容と版を確認して完了にする。
+        return { rev: current.etag };
+      }
+      if (current && newPath !== oldPath) {
+        let restored = false;
+        try {
+          // 内容は書き戻さない。保存拒否・競合時は同じファイルを元の名前へ戻し、他の人の編集を保つ。
+          await _moveEntry(provider, newPath, oldPath);
+          restored = true;
+        } catch (_) { /* 戻せなければ実在する保全先をエラーへ添える。 */ }
+        if (restored) throw error;
+      } else if (current) {
+        throw error;
+      }
+      error.detail = { ...(error.detail || {}), recovery_path: newPath, source_path: oldPath };
+      error.message += `。ファイルは「${newPath}」に保全されています。接続後にフォルダツリーから開き直してください`;
+      throw error;
+    }
+  }
+  // シナリオ改名の保存処理ここまで
+
   // 注意: このIIFEはここでは閉じない。gb-data-access-dropbox-fileops-conflict-backups.js /
   // gb-data-access-dropbox-fileops-annotations.js / gb-data-access-dropbox-fileops-versions.js /
   // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
@@ -4924,6 +4966,25 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
+      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      let scenarioSnapshot = null;
+      let scenarioContent = '';
+      if (scenarioRename) {
+        scenarioSnapshot = await _readFileSnapshot(provider, oldPath, source);
+        const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
+        const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+        const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
+        const desiredTitle = displayName || newName;
+        if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
+          scenarioContent = original;
+        } else {
+          doc.title = desiredTitle;
+          if (hasDisplayTitle || keepDisplayTitle) doc.display_title = desiredTitle;
+          scenarioContent = bom + JSON.stringify(doc, null, 2);
+        }
+      }
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
         const heading = displayName || newName;
@@ -4933,10 +4994,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         // 上書きしていた（実データ388件が該当）。
         await provider.writeText(oldPath, original.replace(/^# .+/, () => '# ' + heading));
       }
-      if (keepDisplayTitle) {
+      if (keepDisplayTitle && !scenarioRename) {
         await provider.writeText(oldPath, titleHelper.write(await provider.readText(oldPath), displayName, oldPath, body?.type));
       }
-      if (nextPath !== oldPath) {
+      if (scenarioRename) {
+        await _commitScenarioRenameTitle(provider, oldPath, nextPath, scenarioSnapshot, scenarioContent,
+          path => _readFileSnapshot(provider, path));
+      } else if (nextPath !== oldPath) {
         await _moveEntry(provider, oldPath, nextPath);
       }
       const warnings = [];
@@ -4957,7 +5021,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
       });
-      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate, ..._resultWarnings(warnings) };
+      return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
+        ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };
     }
 /* Dropbox Cloud file identity/revision helpers continuation (hoisted declarations used by the /file routes in part02). */
     function _preserveNoteTextFormat(text, original) {

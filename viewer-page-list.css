@@ -13,10 +13,23 @@
 .viewer-page-row[data-first-side="right"] > :only-child { grid-column: 2; }
 #viewer-pages-scroll .viewer-page-item { min-width: 0; height: 140px; white-space: normal; }
 #viewer-pages-scroll .viewer-page-item[aria-current="page"] { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--bg4); }
+/* ページの編集（PDFだけ）: 選択の印とドロップ位置（UI共通ルール: 行と行の間＝アクセント色2pxの水平線と左端の小円、
+   横に並ぶページの間＝タブの並べ替えと同じ共通トークンの縦線）。強調は寸法を変えない。 */
+#viewer-pages-scroll .viewer-page-item.viewer-page-selected { background: color-mix(in srgb, var(--accent) 22%, var(--bg3)); box-shadow: inset 0 0 0 1px var(--accent); }
+#viewer-pages-scroll .viewer-page-item { position: relative; }
+.viewer-page-item.viewer-page-drop-horizontal::after { content: ''; position: absolute; left: 6px; right: 0; height: 2px; background: var(--accent); pointer-events: none; }
+.viewer-page-item.viewer-page-drop-horizontal::before { content: ''; position: absolute; left: 0; width: 6px; height: 6px; border: 2px solid var(--accent); border-radius: 50%; box-sizing: border-box; pointer-events: none; }
+.viewer-page-item.viewer-page-drop-horizontal.viewer-page-drop-before::after { top: -3px; }
+.viewer-page-item.viewer-page-drop-horizontal.viewer-page-drop-before::before { top: -5px; }
+.viewer-page-item.viewer-page-drop-horizontal.viewer-page-drop-after::after { bottom: -3px; }
+.viewer-page-item.viewer-page-drop-horizontal.viewer-page-drop-after::before { bottom: -5px; }
+.viewer-page-item.viewer-page-drop-vertical::after { content: ''; position: absolute; top: var(--ui-tab-drop-indicator-overhang, -2px); bottom: var(--ui-tab-drop-indicator-overhang, -2px); width: var(--ui-tab-drop-indicator-width, 3px); background: var(--ui-tab-drop-indicator-color, var(--accent)); border-radius: var(--ui-tab-drop-indicator-radius, 2px); pointer-events: none; }
+.viewer-page-item.viewer-page-drop-vertical.viewer-page-drop-before::after { left: calc(var(--ui-tab-drop-indicator-offset, -1px) - 2px); }
+.viewer-page-item.viewer-page-drop-vertical.viewer-page-drop-after::after { right: calc(var(--ui-tab-drop-indicator-offset, -1px) - 2px); }
 .viewer-page-preview { height: 112px; display: flex; justify-content: center; align-items: center; overflow: hidden; }
 .viewer-page-preview img, .viewer-page-preview canvas { max-width: 100%; max-height: 108px; object-fit: contain; }
 .viewer-page-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px; }
-#viewer-pages-resize { position: absolute; inset: 0 calc(var(--note-toc-resize-hit, 8px) / -2) 0 auto; width: var(--note-toc-resize-hit, 8px); cursor: col-resize; touch-action: none; }
+#viewer-pages-resize { position: absolute; z-index: 2; inset: 0 calc(var(--note-toc-resize-hit, 8px) / -2) 0 auto; width: var(--note-toc-resize-hit, 8px); cursor: col-resize; touch-action: none; }
 .viewer-pages-open #display { margin-left: var(--viewer-page-list-width, 200px); }
 /* 本文と操作バーの左端を揃え、一覧が「ページ一覧」ボタンやシークバーを覆わない。 */
 .viewer-pages-open #controls.gb-toolbar-viewer { left: var(--viewer-page-list-width, 200px); }

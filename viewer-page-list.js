@@ -138,6 +138,8 @@
     } else preview.textContent = item.type === 'video' ? '▶ 動画' : item.type === 'audio' ? '♪ 音声' : /\.pdf$/i.test(item.name) ? 'PDF' : 'ファイル';
     const text = document.createElement('span'); text.className = 'viewer-page-label'; text.textContent = label;
     button.append(preview, text);
+    // ページの編集（PDFだけ）の選択の印・ドラッグ・説明を付ける（viewer-page-edit.js）
+    window.MeldexViewerPageEdit?.decorateCell?.(button, index, { pdf: Scene.isPdf(), extra });
     button.onclick = async () => {
       Scene.pause();
       if (!extra) Scene.goToIndex(groups[indexRows[index]]?.[0] ?? index);
@@ -221,6 +223,7 @@
   }
   grip.onpointerdown = e => {
     if (narrow()) return;
+    e.preventDefault(); // 目次のページはドラッグで並べ替えられるため、幅の変更をページのドラッグにしない
     grip.setPointerCapture(e.pointerId);
     const start = e.clientX, initial = width;
     grip.onpointermove = event => resize(initial + event.clientX - start, false);
@@ -240,5 +243,11 @@
     status.textContent = e.detail.ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
   });
   window.addEventListener('resize', layout);
+  // ページの編集の後など、目次を描き直す入口
+  window.MeldexViewerPageList = Object.freeze({
+    redraw() { signature = ''; source = null; cache.clear(); version++; sync(); },
+    isVisible: () => visible,
+    rowsHost, scroll,
+  });
   Scene.ready.then(() => sync(true));
 })();
